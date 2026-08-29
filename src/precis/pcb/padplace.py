@@ -179,6 +179,17 @@ def place_footprint_pads(
         }
         if shape != "circle":
             base["h"] = round(h, 4)
+        if drill:
+            # Carry the drill ON the pad, not only in ``out_drills``. The
+            # pad rows already encode the CONSEQUENCE of being through-hole
+            # (they land on every copper layer, just below) while discarding
+            # the CAUSE, so nothing downstream could ask a pad whether it is
+            # plated-through. Solder paste is the consumer that needs it —
+            # paste over a plated hole falls through, so the stencil must
+            # skip THT pads — and inferring it back by matching a pad's
+            # coordinate against ``model["drills"]`` would be re-deriving a
+            # fact we chose to throw away, at rounding-tolerance risk.
+            base["drill"] = float(drill)
 
         target_layers = (
             list(layers)

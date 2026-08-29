@@ -7,6 +7,8 @@ members), re-runnability, and soft-delete. Uses the shared ``store`` fixture.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -81,6 +83,36 @@ def test_put_creates_and_lists(pcb):
     # listing shows it
     lst = pcb.get()
     assert "sensor-node" in lst.body
+
+
+def test_pcb_graph_carries_part_lcsc_per_instance(pcb, store):
+    """The join :func:`precis.pcb.session.footprints_by_refdes` needs:
+    ``Store.pcb_graph``'s instance rows must carry the SAME ``part_lcsc``
+    the store already joins (``pcb_components.part_lcsc``) for
+    ``pcb_load`` — before this it was selected there and nowhere else, so
+    nothing built off ``pcb_graph`` (every ``PcbIR``) had a C-number to
+    remap a cached footprint onto."""
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    by_refdes = {i["refdes"]: i["part_lcsc"] for i in graph["instances"]}
+    assert by_refdes == {"U1": "C2838500", "C1": "C1525", "R1": "C25900"}
+
+
+def test_pcb_graph_part_lcsc_is_none_for_a_part_less_component(pcb, store):
+    pcb.put(
+        id="part-less",
+        args={
+            "components": [
+                {"refdes": "MH1", "label": "mounting hole", "pins": [{"name": "1"}]}
+            ]
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="part-less")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    assert graph["instances"][0]["part_lcsc"] is None
 
 
 def test_toc_shows_placement_and_fanout(pcb):
@@ -404,6 +436,135 @@ def test_drc_view_warns_on_a_pcb_net_classes_elevated_clearance_requirement(pcb)
     drc = pcb.get(id="pd-board", view="drc")
     assert "warn" in drc.body
     assert "clearance" in drc.body
+
+
+def test_drc_view_reports_npth_clearance_near_a_mounting_hole(pcb):
+    """Defect: ``_render_drc`` built its ``check_npth_clearance`` model
+    with no ``drills`` key at all, ever -- so the rule (wired into
+    ``run_geometric_drc`` and reading ``model.get('drills')``) was
+    structurally incapable of firing regardless of design content, on
+    every board, every seed. A mounting hole feature sitting right under
+    a realized GND track must now trip it."""
+    design = {
+        "components": [
+            {
+                "refdes": "U1",
+                "label": "ic",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "U2",
+                "label": "ic",
+                "x": 10.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+        ],
+        "nets": [{"name": "GND"}],
+        "connections": [
+            {"net": "GND", "refdes": "U1", "pin": "1"},
+            {"net": "GND", "refdes": "U2", "pin": "1"},
+        ],
+        "features": [
+            {"ftype": "mounting_hole", "x": 5.0, "y": 0.0, "geom": {"diameter": 3.2}},
+        ],
+    }
+    pcb.put(id="npth-board", args=design)
+    ref = pcb.store.get_ref(kind="pcb", id="npth-board")
+    board_id = pcb.store.pcb_ensure_board(ref.id)
+    net_ids = pcb.store.pcb_net_ids(ref.id)
+    # A track runs straight over (5, 0) -- exactly where the mounting hole
+    # sits -- so the copper-to-NPTH gap is unambiguously negative.
+    pcb.store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["GND"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [10.0, 0.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            },
+        ],
+    )
+    pcb.store.pcb_routes_write(ref.id, board_id, {"GND": {"status": "realized"}})
+    drc = pcb.get(id="npth-board", view="drc")
+    assert "npth_clearance" in drc.body, drc.body
+
+
+def _many_pins(n: int) -> list[dict[str, Any]]:
+    return [{"name": str(i)} for i in range(1, n + 1)]
+
+
+def test_drc_view_reports_courtyard_overlap_with_real_derived_radii(pcb):
+    """Defect: the DRC courtyard check read a flat 1.0mm radius
+    (``DEFAULT_COURTYARD_RADIUS_MM``) for EVERY instance regardless of
+    its actual size -- smaller than any real multi-pin part's derived
+    keep-out, so placement (which uses the real, pad-geometry-derived
+    radius) always separated parts further apart than the flat DRC check
+    would ever flag. The rule was dormant by construction, on both
+    reference fixtures, on every seed.
+
+    Two 12-pin ("dual" package family) parts placed 3.0mm apart: each
+    part's real derived courtyard radius is ~2.51mm (pad radius ~1.91mm
+    + the same 0.6mm pad-breathing margin placement legality adds), so
+    their real courtyards overlap by ~2mm -- but their FLAT 1.0mm nominal
+    courtyards do not even touch (sum 2.0mm < 3.0mm separation), which is
+    exactly how this defect stayed invisible."""
+    design = {
+        "components": [
+            {
+                "refdes": "U1",
+                "label": "big1",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": _many_pins(12),
+            },
+            {
+                "refdes": "U2",
+                "label": "big2",
+                "x": 3.0,
+                "y": 0.0,
+                "pins": _many_pins(12),
+            },
+        ],
+        "nets": [{"name": "N1"}],
+        "connections": [
+            {"net": "N1", "refdes": "U1", "pin": "1"},
+            {"net": "N1", "refdes": "U2", "pin": "1"},
+        ],
+    }
+    pcb.put(id="big-parts", args=design)
+    ref = pcb.store.get_ref(kind="pcb", id="big-parts")
+    board_id = pcb.store.pcb_ensure_board(ref.id)
+    net_ids = pcb.store.pcb_net_ids(ref.id)
+    pcb.store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["N1"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [3.0, 0.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            },
+        ],
+    )
+    pcb.store.pcb_routes_write(ref.id, board_id, {"N1": {"status": "realized"}})
+    drc = pcb.get(id="big-parts", view="drc")
+    assert "courtyard_overlap" in drc.body, drc.body
 
 
 def test_proximity_view(pcb):

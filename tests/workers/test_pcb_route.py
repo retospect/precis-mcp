@@ -352,11 +352,20 @@ def test_plane_net_with_no_board_outline_is_reported_not_silently_stranded(
     pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
 
     assert not ctx.failures
-    status = {r["name"]: r["status"] for r in store.pcb_route_status(ref_id)}
-    assert status.get("N1") != "realized", (
+    rows = {r["name"]: r for r in store.pcb_route_status(ref_id)}
+    assert rows.get("N1", {}).get("status") != "realized", (
         "a net whose plane was never poured is not routed, and saying it is "
         "is the exact silence this rule exists to break"
     )
+    # docs/backlog/pcb-engine-plan.md "BOARD TWO" finding 2's sibling note:
+    # this used to be reported as generic ``unrouted`` with no distinguishing
+    # cause. ``pcb_routes.note`` (this table's own per-net summary) and
+    # ``pcb_routes.fail.problems[].reason`` (the per-segment detail) must
+    # both name it as an unpourable plane specifically, not just "unrouted".
+    assert "unpourable_plane" in (rows["N1"].get("note") or ""), rows["N1"]
+    routes = store.pcb_routes_get(ref_id)
+    problems = routes["N1"]["fail"]["problems"]
+    assert any(p.get("reason") == "unpourable_plane" for p in problems), problems
 
 
 def test_pcb_route_persists_optimizer_derived_plane_promotion(
@@ -421,6 +430,58 @@ def test_pcb_route_never_touches_an_authored_plane_assignment(store: Store) -> N
     handler = PcbHandler(hub=Hub(store=store))
     view = handler.get(id="route-authored-plane", view="planes")
     assert "authored" in view.body
+
+
+def test_pcb_route_locks_an_authored_plane_through_the_anneal(store: Store) -> None:
+    """gr267526's sharper form, found with no DB and no router: this cost
+    model has no term that wants a plane (measured: 79 PLANE_PROMOTE
+    proposals over 3000 iterations, all rejected on cost), so an
+    unlocked authored assignment gets PLANE_DEMOTEd and never recovers —
+    correct in the persisted row, absent from the realized board, because
+    realization reads the POST-ANNEAL IR, not the DB row the comment above
+    used to protect. ``OptimizeConfig.locked_plane_nets`` excludes an
+    AUTHORED net from PLANE_DEMOTE.
+
+    This checks the REALIZED COPPER, not just ``net_plane_layer`` /
+    ``pcb_planes`` — an IR-level assertion alone would pass on a board
+    whose pour path silently produced nothing, which is exactly the shape
+    of defect this whole file is written around."""
+    design = {
+        **_DESIGN,
+        "features": [
+            {
+                "ftype": "outline",
+                "geom": {
+                    "path": [[-5.0, -5.0], [15.0, -5.0], [15.0, 10.0], [-5.0, 10.0]]
+                },
+            }
+        ],
+    }
+    ref_id = _seed(store, "route-plane-locked", design)
+    assert store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
+
+    # 3000 iterations -- the figure the demotion was actually measured at;
+    # a short run may not exercise enough PLANE_DEMOTE proposals to be a
+    # real test of the lock.
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 3000, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    planes = store.pcb_planes_list(ref_id)
+    assert planes == [
+        {"layer": "In1.Cu", "net": "N1", "region_hint": None, "source": "authored"}
+    ], "the authored row itself must survive, same discipline as the sibling test above"
+
+    board_id = store.pcb_ensure_board(ref_id)
+    with store.pool.connection() as conn:
+        pours = conn.execute(
+            "SELECT geom FROM pcb_copper WHERE board_id = %s AND ctype = 'pour'",
+            (board_id,),
+        ).fetchall()
+    assert pours, (
+        "an authored plane net must actually be POURED, not merely persisted -- "
+        "a demoted-then-reverted net never reaches _pour_planes at all"
+    )
 
 
 def test_pcb_route_replaces_derived_plane_rows_across_reruns(
@@ -529,3 +590,216 @@ def test_pcb_route_fails_legibly_on_no_nets(store: Store) -> None:
     pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
     assert ctx.failures
     assert "no nets" in ctx.failures[0][0]
+
+
+# ── PIN_SWAP persistence (docs/backlog/pcb-engine-plan.md "PIN_SWAP is not
+# persisted") ───────────────────────────────────────────────────────────
+#
+# PIN_SWAP is dormant in production: `OptimizeConfig.pin_swap_groups`
+# defaults to `()`, `_gen_pin_swap` returns `None` whenever it is empty, and
+# nothing in `src/` ever sets it — `pcb_route._dispatch` builds its
+# `OptimizeConfig` with no `pin_swap_groups=` at all. Firing the move for
+# real needs a caller-supplied admissible pin-equivalence set (which of an
+# instance's pins are genuinely interchangeable — datasheet-derived
+# domain knowledge :mod:`precis.pcb.pinswap` deliberately never invents),
+# and no such data source (footprint pin-function / swap-group) exists in
+# the schema yet. These tests therefore force a settled swap the same way
+# `test_pcb_route_persists_optimizer_derived_plane_promotion` forces a
+# settled plane promotion above: deterministically, via a spy on the
+# imported `optimize` name, rather than relying on `pin_swap_groups` ever
+# being populated by this job today.
+_PIN_SWAP_DESIGN = {
+    "components": [
+        {
+            "refdes": "U0",
+            "label": "mcu",
+            "x": 0.0,
+            "y": 0.0,
+            "pins": [{"name": "left"}, {"name": "right"}],
+        },
+        {"refdes": "U1", "label": "ic", "x": -5.0, "y": 5.0, "pins": [{"name": "1"}]},
+        {"refdes": "U2", "label": "ic", "x": 5.0, "y": 5.0, "pins": [{"name": "1"}]},
+    ],
+    "nets": [{"name": "A", "class": "signal"}, {"name": "B", "class": "signal"}],
+    "connections": [
+        {"net": "A", "refdes": "U0", "pin": "right"},
+        {"net": "A", "refdes": "U1", "pin": "1"},
+        {"net": "B", "refdes": "U0", "pin": "left"},
+        {"net": "B", "refdes": "U2", "pin": "1"},
+    ],
+}
+
+
+def _swap_u0_pins(ir: Any) -> None:
+    pin_right = next(
+        p
+        for p in range(ir.n_pins)
+        if str(ir.pin_label[p]) == "right"
+        and str(ir.instance_refdes[int(ir.pin_instance[p])]) == "U0"
+    )
+    pin_left = next(
+        p
+        for p in range(ir.n_pins)
+        if str(ir.pin_label[p]) == "left"
+        and str(ir.instance_refdes[int(ir.pin_instance[p])]) == "U0"
+    )
+    ir.swap_pins(pin_left, pin_right)
+
+
+def test_pcb_route_persists_optimizer_derived_pin_swap(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The anneal's ``swap_pins`` result must survive the job — persisted
+    as a DERIVED override, never as a rewrite of the authored netlist
+    itself (``pcb_netconns`` stays exactly what was authored; the override
+    is layered on top, mirroring ``pcb_planes``'s authored/derived split,
+    gr267526)."""
+    real_optimize = pcb_route.optimize
+
+    def _force_swap(ir: Any, config: Any) -> Any:
+        _swap_u0_pins(ir)
+        return real_optimize(ir, config)
+
+    monkeypatch.setattr(pcb_route, "optimize", _force_swap)
+
+    ref_id = _seed(store, "route-pinswap", _PIN_SWAP_DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
+    assert swaps[("U0", "right")]["net"] == "B"
+    assert swaps[("U0", "left")]["net"] == "A"
+    assert all(r["source"] == "derived" for r in swaps.values())
+
+    # pcb_netconns — the authored netlist — is untouched: still U0.right on
+    # A and U0.left on B. The override lives ONLY in pcb_pin_swaps.
+    graph = store.pcb_graph(ref_id)
+    members = {
+        n["name"]: {(m["refdes"], m["pin"]) for m in n["members"]}
+        for n in graph["nets"]
+    }
+    assert members["A"] == {("U0", "right"), ("U1", "1")}
+    assert members["B"] == {("U0", "left"), ("U2", "1")}
+
+
+def test_pcb_route_reapplies_persisted_pin_swap_on_fresh_ir(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A persisted swap not re-applied on the NEXT rebuild is worse than no
+    persistence at all — the copper and the netlist would then disagree in
+    the other direction. Pinned by forcing a swap on run 1, then spying on
+    run 2's fresh IR BEFORE its own ``optimize()`` call sees it."""
+    real_optimize = pcb_route.optimize
+
+    def _force_swap(ir: Any, config: Any) -> Any:
+        _swap_u0_pins(ir)
+        return real_optimize(ir, config)
+
+    monkeypatch.setattr(pcb_route, "optimize", _force_swap)
+
+    ref_id = _seed(store, "route-pinswap-rebuild", _PIN_SWAP_DESIGN)
+    ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx1.failures
+    assert store.pcb_pin_swaps_list(ref_id)
+
+    seen: dict[str, str] = {}
+
+    def _spy(ir: Any, config: Any) -> Any:
+        for p in range(ir.n_pins):
+            inst = int(ir.pin_instance[p])
+            if str(ir.instance_refdes[inst]) == "U0":
+                seen[str(ir.pin_label[p])] = str(ir.net_name[int(ir.pin_net[p])])
+        return real_optimize(ir, config)
+
+    monkeypatch.setattr(pcb_route, "optimize", _spy)
+    ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 2})
+    pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx2.failures
+
+    assert seen == {"right": "B", "left": "A"}, (
+        "the FRESH IR handed to optimize() on run 2 must already carry the "
+        "settled swap from run 1 -- otherwise run 2 would route a netlist "
+        "that disagrees with what run 1 persisted"
+    )
+
+
+def test_pcb_place_reapplies_persisted_pin_swap(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``pcb_place`` cannot propose PIN_SWAP (``_PLACE_ONLY_SCHEDULE`` has
+    no PIN_SWAP weight) but must still see a persisted swap's effect on the
+    netlist it places against — same read-only re-application as its
+    plane fix (``tests/workers/test_pcb_place.py``)."""
+    from precis.workers.job_types import pcb_place
+
+    real_route_optimize = pcb_route.optimize
+
+    def _force_swap(ir: Any, config: Any) -> Any:
+        _swap_u0_pins(ir)
+        return real_route_optimize(ir, config)
+
+    monkeypatch.setattr(pcb_route, "optimize", _force_swap)
+    ref_id = _seed(store, "place-pinswap", _PIN_SWAP_DESIGN)
+    route_ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(route_ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not route_ctx.failures
+    assert store.pcb_pin_swaps_list(ref_id)
+
+    seen: dict[str, str] = {}
+    real_place_optimize = pcb_place.optimize
+
+    def _spy(ir: Any, config: Any) -> Any:
+        for p in range(ir.n_pins):
+            inst = int(ir.pin_instance[p])
+            if str(ir.instance_refdes[inst]) == "U0":
+                seen[str(ir.pin_label[p])] = str(ir.net_name[int(ir.pin_net[p])])
+        return real_place_optimize(ir, config)
+
+    monkeypatch.setattr(pcb_place, "optimize", _spy)
+    place_ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 3})
+    pcb_place._dispatch(place_ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    assert not place_ctx.failures
+
+    assert seen == {"right": "B", "left": "A"}
+
+
+def test_pcb_route_never_touches_an_authored_pin_swap(store: Store) -> None:
+    """No authoring verb exists yet for ``op='pin_swap'`` (out of this
+    change's scope), but the discipline is wired ahead of it: an
+    ``authored`` row (seeded directly here, standing in for a future
+    authoring call — both endpoints of the swap, the shape a real
+    authoring call would produce) must survive a route run byte-for-byte,
+    exactly like
+    :func:`test_pcb_route_never_touches_an_authored_plane_assignment`."""
+    ref_id = _seed(store, "route-pinswap-authored", _PIN_SWAP_DESIGN)
+    board_id = store.pcb_ensure_board(ref_id)
+    n = store.pcb_pin_swaps_replace_derived(
+        ref_id,
+        board_id,
+        [
+            {"refdes": "U0", "pin": "right", "net": "B"},
+            {"refdes": "U0", "pin": "left", "net": "A"},
+        ],
+    )
+    assert n == 2
+    with store.tx() as conn:
+        conn.execute(
+            'UPDATE pcb_pin_swaps SET meta = meta || \'{"source": "authored"}\' '
+            "WHERE board_id = %s",
+            (board_id,),
+        )
+
+    before = store.pcb_pin_swaps_list(ref_id)
+    assert before == [
+        {"refdes": "U0", "pin": "left", "net": "A", "source": "authored"},
+        {"refdes": "U0", "pin": "right", "net": "B", "source": "authored"},
+    ]
+
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    after = store.pcb_pin_swaps_list(ref_id)
+    assert after == before  # untouched: still authored, still swapped

@@ -771,13 +771,24 @@ class PcbMixin:
                     # it had settled, and the DRC view could not reproduce a
                     # single pin coordinate of the copper it was checking.
                     "rot": r[9],
+                    # `part_lcsc` was the SAME class of gap: real, joined
+                    # right here (`c.part_lcsc`), just never selected — so
+                    # `pcb.ir.PcbIR` (built off this graph) had no field to
+                    # carry it, and every caller with a Store handle and a
+                    # cached `Store.pcb_footprints_for` (keyed by C-number)
+                    # had no key to remap it onto a refdes-keyed dict with.
+                    # `precis.pcb.realize.pad_geometry` has taken a
+                    # refdes-keyed `footprints` arg all along; this is the
+                    # missing join that reaches it.
+                    "part_lcsc": r[10],
                 }
                 for r in conn.execute(
                     "SELECT i.refdes, i.x, i.y, i.layer, i.roles, c.label, "
                     "       c.height_mm, "
                     "       (SELECT count(*) FROM pcb_pins p "
                     "        WHERE p.component_id = i.component_id "
-                    "          AND p.retired_at IS NULL), i.fixed, i.rot "
+                    "          AND p.retired_at IS NULL), i.fixed, i.rot, "
+                    "       c.part_lcsc "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "WHERE i.ref_id = %s AND i.retired_at IS NULL "
@@ -1449,6 +1460,125 @@ class PcbMixin:
                     DO NOTHING
                     """,
                     (board_id, layer_name, int(net[0]), Jsonb({"source": "derived"})),
+                )
+                n += 1
+        return n
+
+    def pcb_pin_swaps_list(self, ref_id: int) -> list[dict[str, Any]]:
+        """Every live pin<->net override for a design (docs/backlog/
+        pcb-engine-plan.md "PIN_SWAP is not persisted") — both a future
+        human-``authored`` override (no authoring verb exists yet; the
+        ``source`` discipline is wired ahead of it, same shape as
+        :meth:`pcb_planes_list`) and optimizer-``derived`` rows
+        (:meth:`pcb_pin_swaps_replace_derived`, the ``pcb_route`` job's
+        write-back). ``pcb_netconns`` itself never changes — this is the
+        override layered on top, resolved by durable identity (refdes +
+        pin name, not the ephemeral IR-local pin int) so a caller can
+        re-apply it onto a freshly-built IR (:mod:`precis.pcb.session`).
+
+        ``source`` defaults to ``'authored'`` for a row with no
+        ``meta.source`` key, the same safe direction
+        :meth:`pcb_planes_list` documents (misreading a row as
+        ``'derived'`` would let a later replace silently retire it)."""
+        with self.pool.connection() as conn:
+            return [
+                {
+                    "refdes": r[0],
+                    "pin": r[1],
+                    "net": r[2],
+                    "source": r[3] or "authored",
+                }
+                for r in conn.execute(
+                    "SELECT i.refdes, p.name, n.name, sw.meta->>'source' "
+                    "FROM pcb_pin_swaps sw "
+                    "JOIN pcb_boards b ON b.board_id = sw.board_id "
+                    "JOIN pcb_instances i ON i.instance_id = sw.instance_id "
+                    "JOIN pcb_pins p ON p.pin_id = sw.pin_id "
+                    "JOIN pcb_nets n ON n.net_id = sw.net_id "
+                    "WHERE b.ref_id = %s AND sw.retired_at IS NULL "
+                    "ORDER BY i.refdes, p.name",
+                    (ref_id,),
+                ).fetchall()
+            ]
+
+    def pcb_pin_swaps_replace_derived(
+        self, ref_id: int, board_id: int, overrides: list[dict[str, Any]]
+    ) -> int:
+        """Optimizer-derived pin-swap write-back — the ``pcb_route`` job's
+        checkpoint for whatever :meth:`precis.pcb.ir.PcbIR.swap_pins` state
+        the anneal settled on (docs/backlog/pcb-engine-plan.md "PIN_SWAP is
+        not persisted": previously dropped entirely, so a swap the search
+        found genuinely beneficial reverted to ``pcb_netconns``'s original
+        wiring the moment the job ended, leaving the persisted netlist and
+        the persisted copper describe two different boards).
+
+        Provenance-scoped **replace**, the same DELETE(retire)+INSERT
+        cascade discipline :meth:`pcb_planes_replace_derived` uses: retires
+        every existing ``source='derived'`` row for this board, then
+        inserts the new set fresh. **Never touches a ``source='authored'``
+        row** — the retire filters on it, and the per-pin insert is
+        additionally guarded by ``ON CONFLICT ... DO NOTHING`` on the live
+        physical-pin key, so even a caller bug that forgot to exclude an
+        authored pin can't clobber it; the caller
+        (:mod:`precis.workers.job_types.pcb_route`) is still expected to
+        exclude authored pins from ``overrides`` using
+        :meth:`pcb_pin_swaps_list`'s ``source`` field.
+
+        ``overrides`` is ``[{"refdes", "pin", "net"}, ...]`` — the settled
+        net NAME each physical pin now carries. A ``(refdes, pin)`` or
+        ``net`` that doesn't resolve on this design is silently skipped
+        (the netlist changed under it), never an error. Returns the number
+        of overrides attempted (not necessarily inserted)."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE pcb_pin_swaps SET retired_at = now() "
+                "WHERE board_id = %s AND retired_at IS NULL "
+                "AND coalesce(meta->>'source', 'authored') = 'derived'",
+                (board_id,),
+            )
+            n = 0
+            for entry in overrides:
+                pin_row = conn.execute(
+                    """
+                    SELECT i.instance_id, p.pin_id, i.component_id
+                    FROM pcb_instances i
+                    JOIN pcb_pins p
+                        ON p.component_id = i.component_id AND p.retired_at IS NULL
+                    WHERE i.ref_id = %s AND i.retired_at IS NULL
+                      AND i.refdes = %s AND p.name = %s
+                    """,
+                    (ref_id, entry.get("refdes"), entry.get("pin")),
+                ).fetchone()
+                if pin_row is None:
+                    continue
+                net = conn.execute(
+                    "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
+                    "AND retired_at IS NULL",
+                    (ref_id, entry.get("net")),
+                ).fetchone()
+                if net is None:
+                    continue
+                instance_id, pin_id, component_id = (
+                    int(pin_row[0]),
+                    int(pin_row[1]),
+                    int(pin_row[2]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO pcb_pin_swaps
+                        (board_id, instance_id, pin_id, component_id, net_id, meta)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instance_id, pin_id) WHERE retired_at IS NULL
+                    DO NOTHING
+                    """,
+                    (
+                        board_id,
+                        instance_id,
+                        pin_id,
+                        component_id,
+                        int(net[0]),
+                        Jsonb({"source": "derived"}),
+                    ),
                 )
                 n += 1
         return n

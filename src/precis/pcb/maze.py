@@ -74,15 +74,6 @@ CONTESTED = -2
 #: separate questions and deliberately not wired together.
 VIA_COST_MM = 3.0
 
-#: Fallback pad keep-out radius. Real pad extents live in a footprint's
-#: land pattern, which :mod:`precis.pcb.landpattern` synthesises offsets
-#: for but not sizes; until that exists this is the honest generic pad
-#: half-extent, matching the scale of the 0.65mm-pitch parts the fixture
-#: uses. Deliberately NOT the 1.0mm courtyard radius: a courtyard is the
-#: component body (which copper may pass *under* on another layer), a pad
-#: is copper (which it may not).
-PAD_RADIUS_MM = 0.2
-
 #: Cap on A* node expansions for a single segment. A blocked net should
 #: fail in milliseconds and be reported, never spin: the grid is finite so
 #: the search always terminates, but "always" can mean after every cell on
@@ -682,7 +673,6 @@ __all__ = [
     "CONTESTED",
     "FREE",
     "MAX_EXPANSIONS",
-    "PAD_RADIUS_MM",
     "VIA_COST_MM",
     "GridSpec",
     "OccupancyGrid",

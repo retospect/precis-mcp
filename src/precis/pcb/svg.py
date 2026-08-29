@@ -27,6 +27,9 @@ writer's bugs.
   diffs cleanly.
 - Renderable subsets (:data:`DEFAULT_INCLUDE`, the ``layers=`` filter):
   single layer, copper-only, silk-only, for multi-panel figures.
+  ``drills`` is in the default set and draws bare holes on top of copper —
+  an unplated mounting hole has no annulus to reveal it, so leaving it out
+  rendered every such hole as nothing, or as a solid disc.
 - An mm scale bar (:func:`_scale_bar`) and a configurable palette
   (``palette=`` on both entry points).
 
@@ -40,17 +43,19 @@ wrap the returned markup in its own ``<g transform="scale(1,-1)
 translate(0,-H)">`` — a presentation choice, not a geometry one, so it
 belongs at the call site, not baked into every element here.
 
-**Pad and silkscreen geometry are intentionally out of scope for the
-handler-wired board render** (not this module — :func:`render_board` DOES
-support both generically, exercised by ``tests/test_pcb_svg.py`` against a
-synthetic model). The store has no data source for either yet: no
-component in a real design carries resolved, instance-transformed pad
-shapes (:mod:`precis.pcb.export`'s own DSN writer only ever emits
-placeholder-pitch or footprint-CENTROID pin offsets, never rotated real
-pad geometry — see its ``_pin_offsets``), and there is no silkscreen table
-at all. ``handlers/pcb.py``'s ``view='svg'`` board render therefore
-renders outline + realized copper (tracks/vias/pours) only, honestly
-matching what the store can supply today.
+**Pad and silkscreen geometry are out of scope for the handler-wired board
+render** — this module supports both generically (exercised by
+``tests/test_pcb_svg.py``), but ``handlers/pcb.py``'s ``view='svg'``
+``level='board'`` path feeds it outline + realized copper only, because
+that is what `pcb_copper_list` supplies.
+
+Both data sources now exist elsewhere (2026-08-29): :func:`precis.pcb.
+realize.pad_geometry` for pads and :func:`precis.pcb.silk.build_silk` for
+silk, wired into the gerber export and the ``level='fab'`` render. Feeding
+them here too is a call-site change, not a gap in this module. Prefer
+``level='fab'`` for anything that must match what a fab images — that view
+renders **from the gerbers**, so it cannot disagree with the artefact,
+which is the whole reason it exists.
 """
 
 from __future__ import annotations
@@ -88,7 +93,7 @@ _HATCH_SPACING: tuple[float, ...] = (1.0, 1.4, 0.7, 1.8)
 #: Every renderable board-level part; ``include=`` restricts to a subset
 #: (``{'copper'}`` → copper-only, ``{'silk'}`` → silk-only, etc).
 DEFAULT_INCLUDE: frozenset[str] = frozenset(
-    {"outline", "copper", "pours", "pads", "vias", "silk"}
+    {"outline", "copper", "pours", "pads", "vias", "silk", "drills"}
 )
 
 _UNASSIGNED_STROKE = "#999999"
@@ -216,6 +221,29 @@ def _via_el(item: dict[str, Any]) -> str:
         f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r_pad)}" '
         f'fill="#808080" stroke="#000000" stroke-width="0.02"/>'
         f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r_drill)}" fill="#ffffff"/>'
+    )
+
+
+def _drill_el(hole: dict[str, Any]) -> str:
+    """A bare hole — no copper around it, so nothing else on the figure
+    draws it. A plated hole (a via, a THT pad) already renders through
+    :func:`_via_el` / :func:`_pad_el`, which paint an annulus and punch a
+    white centre; an unplated mounting hole has no annulus, so without this
+    it renders as **nothing at all** — or worse, as a solid disc if some
+    other primitive happens to sit there. Measured before this existed: two
+    solder-on nuts with 3.2mm holes drew as solid copper discs.
+
+    Stroked rather than merely white-filled so it stays visible against the
+    white page as well as against copper.
+    """
+    x, y = float(hole["x"]), float(hole["y"])
+    r = float(hole.get("dia_mm") or hole.get("drill_mm") or 0.0) / 2
+    if r <= 0.0:
+        return ""
+    dash = "" if hole.get("plated", True) else ' stroke-dasharray="0.3,0.2"'
+    return (
+        f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r)}" '
+        f'fill="#ffffff" stroke="#000000" stroke-width="0.05"{dash}/>'
     )
 
 
@@ -517,6 +545,19 @@ def render_board(
             via_layers = _via_layer_names(item, all_layers)
             if any(vl in sel_layers for vl in via_layers):
                 body.append(_via_el(item))
+
+    # Drills go on TOP of copper: a hole is a hole regardless of what
+    # surrounds it, and hiding one under the annulus that plates it is how
+    # a through-hole board's every hole silently vanished from what this
+    # module calls a publication-quality figure.
+    if "drills" in inc:
+        for hole in sorted(
+            (h for h in model.get("drills") or []),
+            key=lambda h: (float(h.get("x", 0.0)), float(h.get("y", 0.0))),
+        ):
+            el = _drill_el(hole)
+            if el:
+                body.append(el)
 
     if "silk" in inc:
         silk = model.get("silkscreen") or {}

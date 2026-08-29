@@ -110,6 +110,20 @@ class PcbIR:
         np.ndarray
     )  # object[n_inst] -> str (opaque id = index; refdes is a late label)
     inst_extended_part: np.ndarray  # bool[n_inst] (JLC "Extended" part fee applies)
+    #: object[n_inst] -> str | None — the catalog LCSC C-number
+    #: (``pcb_components.part_lcsc``), when the instance's type is a real
+    #: catalog part. This is the join key a caller with real footprint
+    #: data (:meth:`~precis.store.Store.pcb_footprints_for`, keyed by
+    #: C-number) needs to build the refdes-keyed ``footprints`` dict
+    #: :func:`precis.pcb.realize.pad_geometry` accepts — added 2026-08-29
+    #: because that dict's own docstring records the exact gap: the store
+    #: query already joins ``pcb_components`` and already has this column,
+    #: :meth:`Store.pcb_graph` just never selected it, so nothing built
+    #: from that graph had anywhere to carry it. ``None`` for an
+    #: instance with no linked catalog part (a mounting hole, a
+    #: hand-authored placeholder) — never an empty string, so a caller
+    #: can tell "no part" from "empty C-number" without a second sentinel.
+    instance_part_lcsc: np.ndarray
     pin_instance: np.ndarray  # int32[n_pins]
     pin_label: np.ndarray  # object[n_pins] -> str (pad name; export label only)
     pin_net: np.ndarray  # int32[n_pins], NO_NET if unconnected
@@ -126,10 +140,26 @@ class PcbIR:
     #: and ROTATE / SIDE_FLIP / PIN_SWAP all provably cost-neutral for want
     #: of sub-instance geometry.
     #:
-    #: Populated from real ``part_footprints`` pads where cached, else
-    #: SYNTHESIZED by :mod:`precis.pcb.landpattern` — dimensionally sane for
-    #: the pin count, but not the real part. ``pin_offsets_synthesized``
-    #: says which, and must never be lost on the way to fabrication.
+    #: **ALWAYS SYNTHESIZED today** by :mod:`precis.pcb.landpattern` —
+    #: dimensionally sane for the pin count, but not the real part.
+    #: :func:`from_graph` takes no ``footprints`` argument, so there is no
+    #: path by which a cached pad's real offset can reach this array.
+    #:
+    #: This comment used to claim "populated from real ``part_footprints``
+    #: pads where cached", which was never true. Recording the correction
+    #: rather than quietly deleting it, because the false claim is exactly
+    #: what would stop someone noticing the gap: pad SIZE *is* now taken
+    #: from the real footprint (see ``pin_w``/``pin_h`` below and
+    #: :func:`precis.pcb.realize.pad_geometry`), so a cached part's pads
+    #: are reported at the right size and a **synthesized position**. The
+    #: fab export is unaffected — ``handlers/pcb.py::_render_gerber``
+    #: sources position and size together from
+    #: :func:`precis.pcb.padplace.board_pads`, bypassing the IR — but the
+    #: router, DRC and the ``level='fab'`` preview all read this array.
+    #:
+    #: Closing it means reconciling per-pin real offsets with netlist pin
+    #: identity through the L0 pin model; ``pin_offsets_synthesized`` says
+    #: which is which and must never be lost on the way to fabrication.
     pin_dx: np.ndarray
     pin_dy: np.ndarray
     #: bool[n_pins] — True where the offset above is a synthesized estimate
@@ -137,6 +167,37 @@ class PcbIR:
     #: :attr:`precis.pcb.cost.TermValue.is_bound`: a bound must never be
     #: silently reported as a measurement.
     pin_offsets_synthesized: np.ndarray
+    #: float64[n_pins] — this pin's own pad SIZE, footprint-local mm,
+    #: independent of ``pin_dx``/``pin_dy`` above (a pad's extent is not
+    #: implied by its position). Added 2026-08-29: before this every pin
+    #: in the whole engine — the maze router's obstacle grid, DRC, the
+    #: pre-fab-parts gerber preview — read one hardcoded 0.2mm keep-out
+    #: radius (the since-deleted ``maze.PAD_RADIUS_MM``) regardless of
+    #: package, so a 0402
+    #: chip pad, a QFN thermal pad and a BGA ball all reserved the
+    #: identical 0.4mm disc. :func:`from_graph` fills this from
+    #: :mod:`precis.pcb.landpattern`'s package-family synthesis
+    #: (:func:`~precis.pcb.landpattern.sizes_for`) by default;
+    #: :func:`precis.pcb.realize.pad_geometry` is where a caller with real
+    #: cached ``part_footprints`` pad geometry overrides this per pin —
+    #: never a second parallel size store, so router/DRC/gerber-preview
+    #: cannot read three different numbers for one pad again.
+    pin_w: np.ndarray
+    pin_h: np.ndarray
+    #: object[n_pins] -> str ('circle'|'rect') — real SMD pads are not
+    #: circles (module docstring's "non-circular pads" note); a synthesized
+    #: bound picks the shape its own package family would plausibly have
+    #: (round for a THT header/testpoint, rectangular otherwise). Nothing
+    #: downstream may assume 'circle' — :func:`precis.pcb.realize.
+    #: pads_for_ir`'s consumers read this field rather than hardcoding one.
+    pin_shape: np.ndarray
+    #: bool[n_pins] — same discipline as ``pin_offsets_synthesized``, but
+    #: tracked SEPARATELY: a pin's SIZE can be real (a cached footprint's
+    #: actual pad) even while its OFFSET stays a synthesized placeholder
+    #: (:mod:`precis.pcb.landpattern`'s offsets are synthesized always, by
+    #: design — see that module's docstring), so one flag cannot honestly
+    #: describe both.
+    pin_pad_synthesized: np.ndarray
     net_name: np.ndarray  # object[n_nets] -> str
     net_domain: np.ndarray  # object[n_nets] -> str ('electrical'|'fluidic'|'thermal')
     net_class: np.ndarray  # object[n_nets] -> str
@@ -546,6 +607,15 @@ def from_graph(
     pin_dx = np.zeros(n_pins, dtype=np.float64)
     pin_dy = np.zeros(n_pins, dtype=np.float64)
     pin_synth = np.zeros(n_pins, dtype=bool)
+    # Pad SIZE, same per-instance grouping and the same reason: two pins
+    # of one part must come from ONE package family's size table, not
+    # whichever pin happened to be visited first. See PcbIR.pin_w's own
+    # docstring for the defect this closes (every pad the same 0.4mm disc,
+    # regardless of package).
+    pin_w = np.zeros(n_pins, dtype=np.float64)
+    pin_h = np.zeros(n_pins, dtype=np.float64)
+    pin_shape = _obj_array([""] * n_pins)
+    pin_pad_synth = np.zeros(n_pins, dtype=bool)
     _pins_of_inst: dict[int, list[int]] = {}
     for pid, inst_id in enumerate(pin_instance):
         _pins_of_inst.setdefault(int(inst_id), []).append(pid)
@@ -556,6 +626,12 @@ def from_graph(
             pin_dx[pid] = dx
             pin_dy[pid] = dy
             pin_synth[pid] = synthesized
+        sizes, size_synthesized = landpattern.sizes_for(len(pids), label=label)
+        for pid, (w, h, shape) in zip(pids, sizes, strict=True):
+            pin_w[pid] = w
+            pin_h[pid] = h
+            pin_shape[pid] = shape
+            pin_pad_synth[pid] = size_synthesized
 
     # CSR slots are allocated by actual pin degree (every dart needs a
     # home), but the *order* within each pin's slot is plain segment-
@@ -593,12 +669,17 @@ def from_graph(
         inst_extended_part=np.array(
             [bool(inst.get("extended_part")) for inst in instances], dtype=bool
         ),
+        instance_part_lcsc=_obj_array([inst.get("part_lcsc") for inst in instances]),
         pin_instance=np.array(pin_instance, dtype=np.int32),
         pin_label=_obj_array(pin_label),
         pin_net=np.array(pin_net, dtype=np.int32),
         pin_dx=pin_dx,
         pin_dy=pin_dy,
         pin_offsets_synthesized=pin_synth,
+        pin_w=pin_w,
+        pin_h=pin_h,
+        pin_shape=pin_shape,
+        pin_pad_synthesized=pin_pad_synth,
         net_name=_obj_array(net_name),
         net_domain=_obj_array(net_domain),
         net_class=_obj_array(net_class),
@@ -1031,9 +1112,9 @@ def segment_points(
 
 
 def instance_pad_radius(ir: PcbIR) -> np.ndarray:
-    """Per-instance distance from the part centre to its outermost PAD —
-    i.e. how much room its land pattern actually occupies, derived from
-    ``pin_dx``/``pin_dy`` rather than assumed.
+    """Per-instance distance from the part centre to its outermost PIN —
+    i.e. how much room its land pattern occupies by pin OFFSET alone,
+    deliberately **not** widened by pad SIZE (``pin_w``/``pin_h``).
 
     This exists because a single fixed courtyard radius is not merely
     imprecise, it is *wrong by construction* for anything with more than
@@ -1044,17 +1125,84 @@ def instance_pad_radius(ir: PcbIR) -> np.ndarray:
     coordinate, which no router can undo and which the fixed-radius
     courtyard check cannot even see.
 
+    **Measured 2026-08-29: folding pad SIZE into this bound regresses the
+    acceptance fixture, and stays regressed at the exact bound.** Offset
+    alone is the same defect as the fixed-radius one, at a finer grain —
+    a pin's centre can sit well inside a legal-looking separation while
+    its pad's own copper still reaches past it — so a pad-size-aware
+    version was tried twice: first a LOOSE bound
+    (``hypot(dx, dy) + hypot(w, h) / 2``, offset plus the pad's own
+    enclosing-circle radius), then the EXACT axis-aligned far-corner
+    distance (``hypot(abs(dx) + w/2, abs(dy) + h/2)`` — exact because
+    this IR has no per-pin rotation independent of ``inst_rot``, so every
+    pad is axis-aligned in its footprint-local frame). Both were measured
+    against ``tests/test_pcb_reference_end_to_end.py``'s ESP32-C3
+    fixture, seeds 1-5 (baseline: 0 DRC errors, 11/11 fanout>=2 nets
+    routed, on every seed):
+
+    - loose bound: 4/7/2/4/3 unrouted findings, 7/4/9/7/8 of 11 routed —
+      every seed regressed.
+    - exact bound: 2/0/0/4/0 unrouted findings, 9/11/11/7/11 of 11 routed
+      — 3 of 5 seeds fully recovered, but seeds 1 and 4 still regressed.
+
+    Zero DRC clearance/courtyard/connectivity findings in every run at
+    either bound — placement legality itself was never the problem, every
+    finding was ``unrouted``. The keep-out really is too loose today (the
+    exact bound is measurably tighter than the loose one and measurably
+    better), but tightening it correctly exceeds what
+    :mod:`precis.pcb.maze`'s router can absorb at the current
+    iteration/schedule budget on 2 of 5 seeds — a router CAPACITY limit,
+    not a placement-legality bug. Fixing that is out of this function's
+    scope (and this module may not edit the router), so this stays
+    offset-only until that capacity gap is closed; widening this without
+    it is a straight regression on a ratcheted acceptance test, not a
+    tuning question. See :func:`instance_keepout_radius_mm` for the
+    shared consumer-facing keep-out formula this feeds — unaffected by
+    which bound this function eventually uses.
+
     Rotation-invariant: the maximum is over a radius, so it holds for any
     ``inst_rot``. A pinless instance (mounting hole, fiducial) gets 0.0 —
     the caller is expected to floor this with whatever body radius it
-    believes in, since this function only knows about pads.
+    believes in, since this function only knows about pins.
     """
     out = np.zeros(ir.n_instances, dtype=np.float64)
     if ir.n_pins == 0:
         return out
-    radii = np.hypot(ir.pin_dx, ir.pin_dy)
-    np.maximum.at(out, ir.pin_instance.astype(np.int64), radii)
+    reach = np.hypot(ir.pin_dx, ir.pin_dy)
+    np.maximum.at(out, ir.pin_instance.astype(np.int64), reach)
     return out
+
+
+#: Gap left around a part's outermost pad when deriving its placement/DRC
+#: keep-out. Two adjacent parts' pads end up at least twice this apart,
+#: which is where their escape routes have to fit — set it to zero and a
+#: legal placement can still be one the router cannot escape. Public (not
+#: ``optimize.py``-private) because :func:`instance_keepout_radius_mm`
+#: below is the ONE keep-out-radius formula every consumer — the placer's
+#: legality check, its seeder, and the DRC courtyard geometry
+#: :mod:`precis.handlers.pcb` builds — must share; a second copy is
+#: exactly the "one rule, two call sites, drifted" defect this module's
+#: other docstrings keep citing (see :func:`pads_for_ir`'s sibling note
+#: in :mod:`precis.pcb.realize`).
+PAD_BREATHING_MM = 0.6
+
+
+def instance_keepout_radius_mm(ir: PcbIR, *, min_radius_mm: float = 0.0) -> np.ndarray:
+    """Per-instance placement/DRC keep-out radius: each part's own
+    :func:`instance_pad_radius` plus :data:`PAD_BREATHING_MM`, floored at
+    ``min_radius_mm``.
+
+    ``min_radius_mm`` is the caller's own nominal half-courtyard floor
+    (``cost.COURTYARD_MIN_SEPARATION_MM / 2.0`` for every current caller)
+    rather than a default baked in here: this module sits BELOW
+    :mod:`precis.pcb.cost` (``cost.py`` imports from ``ir.py``, never the
+    reverse), so ``ir.py`` cannot import a cost-policy constant without
+    creating the cycle — see the module docstring's layering note. Two
+    instances are legal / clear when their centres are at least the SUM
+    of their two radii apart; a fixed radius for every part is wrong for
+    the same reason :func:`instance_pad_radius` is: a 14-pin dual-row
+    land pattern reaches 2.27mm from its own centre, a module 8.89mm."""
+    return np.maximum(instance_pad_radius(ir) + PAD_BREATHING_MM, min_radius_mm)
 
 
 def pin_point(ir: PcbIR, pin_id: int) -> tuple[float, float] | None:

@@ -228,7 +228,7 @@ from precis.pcb.ir import (
     UNSET_LAYER,
     Level,
     PcbIR,
-    instance_pad_radius,
+    instance_keepout_radius_mm,
     nearest_other_instance,
     segment_points,
 )
@@ -436,6 +436,28 @@ class OptimizeConfig:
     #: never fires, regardless of its schedule weight. This module never
     #: invents an equivalence class from a part number or footprint shape.
     pin_swap_groups: tuple[PinSwapGroup, ...] = ()
+    #: Net ids whose plane assignment a human AUTHORED (``ir.promote_plane``
+    #: called by something other than this search) rather than one this
+    #: search derived. A declaration is a constraint, not a hint: when a
+    #: caller says "GND is the plane on In1.Cu" it is supplying exactly the
+    #: domain judgment the search cannot derive on its own, so
+    #: :func:`_gen_plane_demote` must never offer a locked net and
+    #: :func:`_gen_plane_promote` must never move one to a different layer
+    #: or treat its own plane layer as free for another net.
+    #:
+    #: Without this, every authored plane assignment was silently reversed:
+    #: this cost model has already been measured to dislike planes (79
+    #: ``PLANE_PROMOTE`` proposals over 3000 iterations, all rejected on
+    #: cost — see the module docstring's PLANE_PROMOTE/DEMOTE note), so the
+    #: mirror fact was inevitable — every ``PLANE_DEMOTE`` on an authored
+    #: net was accepted immediately and permanently, because nothing
+    #: distinguished "the search's own exploration" from "the one thing the
+    #: caller told it not to explore away from". Realization runs on the
+    #: post-anneal IR, not the persisted authored row, so that demotion was
+    #: never a mere excursion — it was the final, shipped answer. Empty by
+    #: default: an optimizer-DERIVED plane assignment stays fully
+    #: explorable, only a human's stays fixed.
+    locked_plane_nets: frozenset[int] = frozenset()
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:
@@ -589,9 +611,8 @@ def seed_placement(
     """
     clusters = _cluster_instances(ir, max_cluster_size=max_cluster_size)
     clusters.sort(key=len, reverse=True)
-    radii = np.maximum(
-        instance_pad_radius(ir) + _PAD_BREATHING_MM,
-        max(COURTYARD_MIN_SEPARATION_MM / 2.0, pitch_mm / 8.0),
+    radii = instance_keepout_radius_mm(
+        ir, min_radius_mm=max(COURTYARD_MIN_SEPARATION_MM / 2.0, pitch_mm / 8.0)
     )
     order = [inst for members in clusters for inst in members]
     # A square-ish shelf region: total footprint area, with slack for the
@@ -692,12 +713,6 @@ def _pair_key(a: int, b: int) -> tuple[int, int]:
 #: board is not a margin to trade, so this is a domain boundary.
 _EDGE_MARGIN_MM = 0.5
 
-#: Gap left around a part's outermost pad when deriving its placement
-#: keep-out. Two adjacent parts' pads end up at least twice this apart,
-#: which is where their escape routes have to fit — set it to zero and
-#: the placer will legally produce a board the router cannot escape.
-_PAD_BREATHING_MM = 0.6
-
 #: Slack added between shelf-packed seed positions so a placement that is
 #: exactly at the keep-out limit lands strictly inside it — the legality
 #: test is a strict ``<``, and float arithmetic on the boundary is not
@@ -774,15 +789,19 @@ class OptimizeEngine:
         #: square), padded, then clipped to the outline inset by
         #: :data:`_EDGE_MARGIN_MM`.
         #: Per-instance placement keep-out RADIUS: the part's own outermost
-        #: pad (:func:`~precis.pcb.ir.instance_pad_radius`) plus a pad-to-
-        #: pad breathing gap, floored at the nominal half-courtyard so a
-        #: pinless part (mounting hole, fiducial) still occupies space.
-        #: Two instances are legal when their centres are at least the SUM
-        #: of their radii apart — see :meth:`_placement_is_legal` for why
-        #: a single constant is not merely coarse but incorrect.
-        self._keepout_r = np.maximum(
-            instance_pad_radius(ir) + _PAD_BREATHING_MM,
-            COURTYARD_MIN_SEPARATION_MM / 2.0,
+        #: pad plus a pad-to-pad breathing gap, floored at the nominal
+        #: half-courtyard so a pinless part (mounting hole, fiducial) still
+        #: occupies space — :func:`~precis.pcb.ir.instance_keepout_radius_mm`,
+        #: the ONE formula every keep-out consumer (this engine, its own
+        #: seeder, and the DRC courtyard geometry
+        #: :mod:`precis.handlers.pcb` builds) shares, so a part's placement
+        #: legality and its DRC courtyard radius cannot silently drift
+        #: apart into two different numbers for the same part. Two
+        #: instances are legal when their centres are at least the SUM of
+        #: their radii apart — see :meth:`_placement_is_legal` for why a
+        #: single constant is not merely coarse but incorrect.
+        self._keepout_r = instance_keepout_radius_mm(
+            ir, min_radius_mm=COURTYARD_MIN_SEPARATION_MM / 2.0
         )
         self._placement_bounds = self._derive_placement_bounds()
         #: ``t0`` and TRANSLATE's step both scale off ``board_side``. It is
@@ -1844,8 +1863,19 @@ def _gen_plane_promote(
     ir = engine.ir
     if not engine._plane_layers:
         return None
+    # A locked net is never itself a promotion candidate (it already has
+    # its human-fixed assignment) — see `OptimizeConfig.locked_plane_nets`'s
+    # docstring for why this is a hard constraint, not a move the search
+    # may merely disfavour. Its OWN plane layer still shows up in the
+    # `taken` set below unchanged (its `net_plane_layer` is left alone by
+    # every generator, so it stays != UNSET_LAYER throughout), so a locked
+    # net's plane layer is correctly unavailable to any other net without
+    # this function needing a second, separate exclusion for it.
+    locked = engine.config.locked_plane_nets
     candidates = [
-        n for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) == UNSET_LAYER
+        n
+        for n in range(ir.n_nets)
+        if int(ir.net_plane_layer[n]) == UNSET_LAYER and n not in locked
     ]
     if not candidates:
         return None
@@ -1876,8 +1906,17 @@ def _gen_plane_demote(
     engine: OptimizeEngine, rng: random.Random, temp: float
 ) -> Move | None:
     ir = engine.ir
+    # A locked net's assignment is a constraint, not a hint (see
+    # `OptimizeConfig.locked_plane_nets`'s docstring for the measured
+    # defect this closes: an authored plane demoted the instant this move
+    # was offered it, since nothing here distinguished "the search's own
+    # exploration" from "the one thing the caller said not to explore
+    # away from").
+    locked = engine.config.locked_plane_nets
     candidates = [
-        n for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) != UNSET_LAYER
+        n
+        for n in range(ir.n_nets)
+        if int(ir.net_plane_layer[n]) != UNSET_LAYER and n not in locked
     ]
     if not candidates:
         return None

@@ -616,6 +616,449 @@ subsume `BASELINE_ROUTED_FANOUT2` rather than sit beside it. Keep both
 anyway; they fail with different messages, and the routed count is the one
 a human reads.
 
+### "Pads are to be precisely what the footprint says" (user, 2026-08-29)
+
+**The join key was dropped in the middle, and both ends already worked.**
+`realize.pad_geometry(ir, footprints=...)` uses real per-pin geometry when
+given a footprints dict; `Store.pcb_footprints_for` returns exactly that,
+**keyed by LCSC C-number**; `pcb_graph` selected
+`refdes/x/y/layer/roles/label/height_mm/n_pins/fixed/rot` from a query that
+**already joined `pcb_components`** — and not `c.part_lcsc`. So nothing
+could ever pass `footprints=`, every pad on every board was a synthesized
+bound, and `gerber.export_fab` therefore refused every routed board
+forever, including one whose parts were all real. Identical shape to the
+write-only `inst_rot` defect: persisted, round-tripped, never selected.
+
+Closed: `pcb_graph` selects `part_lcsc`, `PcbIR.instance_part_lcsc` carries
+it (sentinel `None`, deliberately not an indexable value — see the NO_NET
+finding below), `session.footprints_by_refdes` does the remap, and the DRC,
+gerber, fab-preview and route-job call sites all pass it.
+
+**And a silent one found on the way, worse than the gap itself.**
+`_render_gerber`'s primary pad source is `padplace.board_pads()`, which by
+design "contributes nothing" for an **uncached** part; the handler's only
+fallback was all-or-nothing (`if not pads: pads = self._drc_pads(...)`),
+firing only when *every* part was uncached. So a **mixed** design — the
+realistic case — silently **dropped the uncached part's pads from the fab
+set entirely**. Not flagged, not synthesized, absent. And `export_fab`'s
+refusal only inspects `pad.get("synthesized")`, so with the pads simply
+gone it had nothing to object to and exported a complete-looking,
+unsolderable board. A guard that checks the pads it *has* cannot see the
+pads it *lost*. Fixed by merging per-pin synthesized pads for exactly the
+missing refdes' pins.
+
+**Still not "precisely what the footprint says", and this is the honest
+caveat.** Pad **size** now comes from the real footprint; pad **POSITION**
+does not. `from_graph` takes no `footprints` argument at all, so
+`pin_dx`/`pin_dy` are always `landpattern` synthesis. The fab export is
+unaffected (it sources position and size together from
+`padplace.board_pads`, bypassing the IR), but **the router, the DRC and
+the `level='fab'` preview all read the IR** — so they see a real pad size
+at a guessed position. `PcbIR.pin_dx`'s docstring actively claimed the
+opposite ("populated from real `part_footprints` pads where cached");
+corrected in place, with the correction recorded rather than quietly
+deleted, because that false claim is precisely what would stop the next
+reader noticing. Closing it means reconciling per-pin real offsets with
+netlist pin identity through the L0 pin model.
+
+### "Is the router aware where it cannot go?" (user, 2026-08-29) — partly
+
+Answered by reading what actually reaches `maze.OccupancyGrid`, not by
+reading the prose about it. **Copper-vs-copper: yes, structurally.
+Mechanical: no, and nothing anywhere says so.**
+
+**What the grid knows.** Every other net's copper — tracks, vias, pads —
+is *claimed* on the shared grid before it is drawn, which is what makes an
+inter-net clearance violation impossible rather than merely unlikely. That
+guarantee is real and it is the whole design.
+
+**What it does not know, in increasing order of how much it matters:**
+
+1. **A pad's actual shape.** Pads are claimed as **discs** — the enclosing
+   circle of the rectangle (`hypot(w,h)/2`). That errs toward *over*-claiming,
+   so it is safe, but it means a fine-pitch rectangular land pattern
+   reserves up to 41% more area than its copper occupies, and the router
+   is denied space that is genuinely free. Documented as deliberate in
+   `_realize_maze`; worth revisiting only if congestion becomes the
+   binding constraint (it now has, twice — see the keep-out measurement
+   above).
+2. **A non-rectangular board.** `realize._outline_clip` returns the
+   outline's **bounding box** inset by the edge clearance, and
+   `maze.grid_for` takes that as a rectangular clip. So an L-shaped board,
+   a rounded corner, a notch or an internal cutout is invisible: copper
+   can land inside the bbox and outside the actual profile. The docstring
+   is honest that this is an over-approximation and consistent with
+   `cost.outline_bbox` and the placer's bounds — but note the whole
+   containment DRC rule (`check_outline_containment`) uses the true
+   polygon, so **DRC can now report a violation the router had no way to
+   avoid**. That asymmetry is new and is the thing to fix first.
+3. **Mounting holes and every other mechanical feature.** Verified: zero
+   references to `mounting_hole`, `keepout`, `npth` or `drill` anywhere in
+   `maze.py` or in the grid-stamping paths of `realize.py`.
+   `session.outline_from_features` reads **only** `ftype == 'outline'` and
+   drops every other feature type on the floor. **So the router will route
+   a trace straight through a 3.2mm mounting hole**, and — since
+   `_drc_drills` now populates the DRC's `drills` input — DRC will report
+   it afterwards as an `npth_clearance` error the router could not have
+   prevented.
+
+The pattern across all three is one thing: **the grid's obstacle set is
+"copper other nets claimed", and the board's obstacle set is larger than
+that.** Everything mechanical — the profile, holes, cutouts, keepouts,
+courtyards, mask openings — reaches DRC and does not reach the grid. That
+is why the DRC/router asymmetry keeps appearing: they are reading two
+different models of the same board.
+
+**Fix direction:** one obstacle-assembly step that walks `pcb_features` and
+stamps *everything* non-routable into the grid before routing starts —
+holes and keepouts as claimed discs/polygons on all layers, the true
+outline polygon as the passable region rather than a bbox. It is the same
+"one source of truth" move that fixed pad geometry and the keep-out
+radius, applied to the obstacle set. Until it exists, the honest statement
+is that the router guarantees clearance from copper and nothing else.
+
+### SVG drills: closed (`pcb-residual-defects-0828.md` §3)
+
+`svg.DEFAULT_INCLUDE` was `{outline, copper, pours, pads, vias, silk}` —
+no `drills`, and `render_board` ignored the model's `drills` list
+entirely. Now included by default and drawn **on top of** copper, as a
+white disc with a stroked edge (dashed when unplated).
+
+Why the omission was invisible: a *plated* hole already renders, because
+`_via_el`/`_pad_el` paint an annulus and punch a white centre. Only a hole
+with no copper around it — a mounting hole — had nothing to reveal it, and
+it therefore rendered as **nothing at all**, or as a solid disc if
+something else happened to sit there. A missing feature that looks like a
+clean board is the worst way for a render to be wrong. The handler's
+`level='board'` model now supplies `drills` too, reusing `_drc_drills`
+rather than growing a second reader of the same features.
+
+### Two DRC rules that could not fire — both now live (2026-08-29)
+
+Board two's findings 2 and 3, fixed in `handlers/pcb.py::_render_drc`.
+
+**`check_npth_clearance` had no producer.** It reads `model["drills"]`;
+`_render_drc` built a model with `layers`/`copper`/`pads` and no `drills`
+key. New `_drc_drills` populates it from `mounting_hole` features, unplated
+(a mounting hole is mechanical, never a soldered lead — which is what makes
+it NPTH-eligible under the rule's own filter). The three existing consumers
+of the drill shape (`check_npth_clearance`, `gerber.excellon_files`,
+`padplace.place_footprint_pads`) were checked first and **already agreed**
+on `{x, y, dia_mm, plated}` — no drift, no third spelling. **Now fires:
+`npth_clearance: 1` on board two, seed 4.**
+
+Deliberately left out, and this is the right call: a through-hole
+component pad's own drill. DRC's pad source is `realize.pads_for_ir`, the
+IR path, which carries no through-hole concept at all. Pulling drills from
+`padplace`'s cached-footprint source instead would reintroduce exactly the
+two-sources-of-pad-truth drift that path was chosen to avoid. It is a real
+separate gap in `realize.py` — related to the paste finding above, where a
+pad also could not say it was through-hole.
+
+**`courtyard_overlap` read a flat 1.0mm.** Now reads the same derived
+per-part radius placement legality uses. `check_courtyard_overlap` itself
+is unchanged — it still measures between instance **centroids**, because a
+courtyard is the part BODY and pads sit inside it; only the radius source
+moved. Reads 0 on both boards, which now means placement's hard legality
+is being independently verified rather than rubber-stamped by a laxer
+check.
+
+**Measured and REVERTED, and the measurement is the point (2026-08-29):**
+`ir.instance_pad_radius` — which the placer's hard legality uses — derives
+from pin OFFSETS and ignores pad SIZE, so the placer packs as though every
+pad were a point. Fixing that is unambiguously more correct and it
+**regresses the acceptance board**, so it is not landed:
+
+| bound | seeds at 0 DRC / 11-of-11 |
+|---|---|
+| offset only (shipped) | 5 of 5 |
+| offset + pad enclosing circle | 0 of 5 (2-7 unrouted per seed) |
+| exact far-corner `hypot(|dx|+w/2, |dy|+h/2)` | 3 of 5 |
+
+Every finding at every bound was `unrouted` — **zero** clearance,
+courtyard or connectivity errors throughout. So placement legality was
+never the confound: the keep-out really is too loose, tightening it
+correctly and tightly still spreads the board past what `pcb/maze.py` can
+absorb at the current iteration/schedule budget on 2 of 5 seeds. **That
+names a router capacity limit nothing else has named**, and it is worth
+more on the books than a quietly-shrunk constant would have been. The
+per-seed numbers live in `instance_pad_radius`'s own docstring so a
+future attempt starts from them.
+
+Related, now answered: `landpattern._TIGHT_FRACTION`/`_LONG_FRACTION`
+were reduced 0.35/0.65 → 0.25/0.45 when real pad sizes first congested
+the fixture, and the open question was whether honest placer legality
+would make the larger values viable again. **It does not** — measured
+with the fix applied, 0.35/0.65 is *further* from viable than before
+(10-16 findings per seed, 3-5 of 11 routed). Same router capacity
+ceiling, approached from the other side.
+
+**Follow-up, filed:** that unification left the keep-out formula
+`max(instance_pad_radius[i] + _PAD_BREATHING_MM,
+COURTYARD_MIN_SEPARATION_MM/2)` written out in **three** places —
+`OptimizeEngine`, `seed_placement`, and the DRC handler, the last
+importing a private constant across a module boundary. Collapse to one
+`ir.instance_keepout_radius_mm`.
+
+### The annealer silently DEMOTES an authored ground plane (2026-08-29)
+
+**Found by rendering the board and looking at it**, which is now three for
+three on defects no check could have caught. Declared GND on `In1.Cu` and
+VCC3V3 on `In2.Cu` through the real tool surface
+(`put(args={'op':'plane_net', ...})`), placed, routed, rendered the fab
+SVG — and the two plane layers carry **26 via barrels and zero poured
+copper**. No ground plane. The declaration reached the database and never
+reached the board.
+
+Isolated in six lines, no DB, no router: build the IR, `promote_plane`
+GND and VCC3V3, run `optimize(iters=3000, seed=1)`, read
+`net_plane_layer` back.
+
+```
+BEFORE anneal: {'VCC3V3': 2, 'GND': 1}
+AFTER  anneal: {}
+```
+
+**`PLANE_DEMOTE` is offered every plane-promoted net with no regard for
+where the assignment came from.** It is already measured that this cost
+model dislikes planes — 79 `PLANE_PROMOTE` moves proposed over 3000
+iterations, all rejected on cost — so the mirror-image fact was
+inevitable and nobody looked for it: every `PLANE_DEMOTE` on an authored
+net is *accepted*, immediately and permanently.
+
+`pcb_route`'s write-back is careful never to overwrite the authored row,
+and its comment states the intent plainly: *"an authored row is a standing
+instruction the optimizer is free to explore away from during search but
+whose PERSISTED value this job must never overwrite."* That reasoning is
+what makes the bug invisible. Realization runs on the **post-anneal IR**,
+not on the persisted row — so "free to explore away from" is not a
+temporary excursion, it is the final answer. The persisted row is
+protected and inert: correct in the database, absent from the board, and
+re-read on the next run only to be demoted again.
+
+**A declaration is a constraint, not a hint.** When the LLM says "GND is
+the plane on In1.Cu" it is supplying exactly the domain judgment the
+search cannot derive — see §"Placement quality is a ratsnest problem".
+Fix: authored plane nets are **locked** — excluded from `PLANE_DEMOTE`,
+and from `PLANE_PROMOTE` onto a different layer. Optimizer-*derived*
+assignments stay fully explorable; only the human's do not. Needs an
+`OptimizeConfig` field carrying the locked net ids, plumbed from
+`pcb_route` which already computes `authored_net_names` for the
+write-back and can reuse it unchanged.
+
+Note what this does NOT fix: the cost model still has no reason to *want*
+a plane, so `PLANE_PROMOTE` will keep being rejected and a board with no
+authored declaration still gets no planes. That is the cost-model gap
+already recorded. Locking makes the declared case work, which is the case
+that matters, because deciding which nets are power and ground is a
+judgment call and not a search problem.
+
+### Solder paste, and the pad that could not say it was through-hole (2026-08-29)
+
+`export_gerbers` emitted copper, mask, silk and outline but **no solder
+paste** — the stencil film, missing from every fab set the system has ever
+produced. Added as `gerber.solderpaste_gerber` (+ `F_Paste`/`B_Paste` in
+the viewer's stack, off by default so it does not read as a recolouring of
+`F_Cu`).
+
+Writing it found a real gap immediately, which is the argument for adding
+the film rather than deferring it. Paste must skip through-hole pads —
+paste printed over a plated hole falls through it — so the filter is
+`pad.get("drill")`. **It never fired.** `padplace.place_footprint_pads`
+splits a THT pad into a pad row and a `model["drills"]` row, and the pad
+row keeps only `net/shape/x/y/w/h/layer`. So the pad rows encode the
+*consequence* of being through-hole (they land on every copper layer) while
+discarding the *cause*, and nothing downstream can ask a pad whether it is
+plated-through. Fixed by carrying `drill` on the pad. The tempting
+alternative — matching a pad's coordinate against `model["drills"]` — is
+re-deriving a fact we chose to throw away, at rounding-tolerance risk.
+
+Detection method: writing the first consumer that needed to ask the
+question. Nothing before paste had ever needed to distinguish SMD from THT
+at the pad, so nothing had noticed the pad could not answer.
+
+Deliberately NOT built: a global paste-aperture shrink. Stencil houses
+reduce fine-pitch apertures 5-15%, but the correct reduction is a function
+of pitch, stencil thickness and aspect ratio, none of which this model
+carries. A single constant would be a number tuned to nothing — the exact
+defect class this subsystem keeps producing. 1:1 and say so.
+
+### PIN_SWAP: persisted, and still structurally unable to fire (2026-08-29)
+
+Closed the netlist-divergence hole. New `pcb_pin_swaps` table (migration
+`0141`), deliberately a **derived-assignment table rather than a rewrite of
+`pcb_netconns`**: `pcb_netconns` IS the authored fact and enforces "a
+physical pin is on at most one net", so rewriting it in place would destroy
+the human's wiring with no way to tell a search result from it afterwards.
+Same `meta.source` authored/derived discipline `pcb_planes` established.
+Both jobs re-apply on a fresh `build_ir`; only `pcb_route` writes back,
+because only `pcb_route` can create a swap.
+
+**Fixed in passing, and it is the more consequential half:** `pcb_place`
+was not re-applying persisted **plane** assignments at all. An authored
+`op='plane_net'` declaration was invisible to the placement anneal, which
+optimized as though GND were an ordinary high-fanout signal net that wants
+to be short; routing then applied the declaration to a placement chosen
+under the wrong model. `inst_rot`-class, one rule two call sites.
+
+**Still open, and it should be decided rather than left:**
+`OptimizeConfig.pin_swap_groups` defaults to `()` and **nothing in `src/`
+ever sets it** — `pcb_route` constructs `OptimizeConfig(iters, seed)` with
+no groups. So PIN_SWAP is dead by construction while carrying a 0.2 weight
+in the late-stage `DEFAULT_SCHEDULE`. Firing it for real needs a
+caller-supplied pin-equivalence set per instance (datasheet domain
+judgment `pinswap.py` deliberately refuses to invent) and a schema place
+for it (footprint pin-function data, which does not exist). Either wire
+those and add an `op='pin_swap'` authoring verb, or take PIN_SWAP out of
+the schedule. The persistence path is now correct and tested either way —
+it is no longer the blocker.
+
+### BOARD TWO: the benchmark experiment has been run (2026-08-29)
+
+§Obligations item 3 has been discharged as a *measurement*. The second
+reference design exists: `tests/fixtures/pcb/motor_power_reference.json`
+— a 21-part buck regulator + H-bridge motor driver, pinned structurally by
+`tests/test_pcb_second_reference_design.py` and driven through the real
+tool surface by `tests/test_pcb_second_reference_end_to_end.py`.
+
+Structurally different from board one along axes board one never touched:
+**3.0-3.5A nets** (board one's worst is 0.5A, near the fab floor), **eight
+through-hole parts** (board one is 100% SMD), an authored **bottom-side**
+part, two `mounting_hole` features, a **concentrated** net-degree profile
+(GND/VIN/VM = 47% of all connections), and a **70×50mm outline** rather
+than board one's flagged 300×300mm-for-44mm-of-parts.
+
+**First-run result, seeds 1-5** (DRC errors and routed count always
+together — routing nothing satisfies the first one alone):
+
+| seed | DRC errors | breakdown | routed | disconnected | runtime |
+|---|---|---|---|---|---|
+| 1 | 14 | connectivity 6, unrouted 8 | 6/14 | 6 | 13.2s |
+| 2 | 12 | connectivity 6, unrouted 6 | 8/14 | 6 | 8.4s |
+| 3 | 11 | connectivity 6, unrouted 5 | 9/14 | 6 | 13.9s |
+| 4 | 12 | connectivity 6, unrouted 6 | 8/14 | 6 | 9.8s |
+| 5 | 15 | connectivity 6, unrouted 9 | 5/14 | 6 | 10.5s |
+
+**The answer to the A-vs-B question is the ratio, and the ratio is
+lopsided in a way that supports BOTH halves of the plan's own prediction.**
+Classified: **0 wrong-constant, 3 missing-invariant, 2
+one-rule-two-call-sites, 1 unclassified.**
+
+- **Zero** new instances of "a magic number tuned to board one". Pin
+  geometry, placement legality and the maze router's clearance guarantee
+  all transferred cleanly to a structurally different board. That is the
+  user's explanation B, confirmed, on exactly the class B predicted would
+  vanish.
+- **Full recurrence** in the classes B predicted would persist, because
+  neither the missing invariant nor the shared function was ever built.
+- Plus **one failure mode neither framing names**, and it is the largest
+  number in the run — see below. It exists only because board two combined
+  realistic current with realistic density, which no re-run of board one
+  could have produced. That is evidence for A's general claim, and it cost
+  a new board to find.
+
+So: not a wash, and not a clean win for either. The honest statement for
+the paper is the ratio above plus the observation that **the classes split
+by whether a shared definition exists**, not by how fast the system was
+built.
+
+#### What board two found
+
+1. **Every current-annotated net fails to route, 100% of the time, on
+   every seed — with no diagnostic at all.** GND, VIN, VM, OUT_A, OUT_B
+   always fail. Causally isolated, not guessed: same board, same topology,
+   only the current annotation changed — **0 unrouted at 0.3A** (widths
+   0.09mm), **25/25 segments unrouted at 3.0-3.5A** (widths 1.37-1.69mm).
+   `RealizeResult.warnings` is **completely silent**, because the
+   `gap-capacity` channel only covers "found a path but it is tight" and
+   never "found no path at all". A caller sees net names with no reason.
+   Two things are true and both need fixing: the width itself is wrong
+   (per-net current applied uniformly to every segment of a star from one
+   hub pin over-widens every leaf and stacks multiple full-width branches
+   at one physical pin — **this is precisely the failure decision 3b
+   predicts and 3b is unbuilt**), and total routing failure produces no
+   explanation, which is the "fail legibly" gap in its sharpest form.
+2. **`check_npth_clearance` cannot ever fire.** It reads
+   `model.get("drills")`; `handlers/pcb.py::_render_drc` builds a model
+   with `layers`/`copper`/`pads` and **no `drills` key, ever**. Board two
+   authors two mounting holes and gets 0 findings — as the code predicts
+   regardless of design content. Same always-zero-estimator family as
+   crossings and via_count: wired into `run_geometric_drc`, structurally
+   dead.
+3. **`courtyard_overlap` still uses a flat `DEFAULT_COURTYARD_RADIUS_MM =
+   1.0`** while placement legality uses the real per-part
+   `ir.instance_pad_radius`. One rule, two call sites, drifted — the
+   recurrence the plan predicted. It reads as 0 findings on both boards,
+   and **that zero means the check is dormant, not that the geometry is
+   right**: the flat 1.0mm is smaller than any real part's derived
+   keepout, so placement always separates parts further than DRC would
+   flag. A TO-220's real several-mm courtyard is checked against nothing.
+4. **`pcb_instances.layer` is dropped by `ir.from_graph`** — persisted,
+   round-tripped through `pcb_graph`, then never read. `PcbIR` has no side
+   array. Board two authors `C3` on the bottom deliberately, so this is now
+   concrete rather than theoretical: C3 is an ordinary top-side instance to
+   the placer, the router and DRC. This is `pcb-residual-defects-0828.md`
+   §1, confirmed against a design that actually uses it.
+5. **The tool surface hard-blocks non-4-layer boards; everything under it
+   supports 2-layer.** `_enqueue_op` raises `BadInput` on
+   `len(stackup) != 4`, but `pcb_route._process_for_stackup` handles `n==2`
+   and `pcb_capabilities.json` has a real `2layer` row. Verified by
+   bypassing the gate: place + route + DRC ran to completion, 7/15 nets
+   realized (worse, as expected — no plane relief, every crossing costs a
+   via). The v1-scope decision is real; the *message* misleads, because a
+   caller reads it as an engine limitation.
+6. **Not root-caused:** in the 2-layer run, the genuinely dangling net
+   `VM_TP` (1 connection, should be one pad and no copper) is reported by
+   `check_connectivity` as 2 disconnected pieces ~20mm apart. `pads_for_ir`
+   emits one pad per pin, so two disjoint witnesses for a single-pin net
+   implies a second primitive is being tagged with this net name, or a
+   net-identity mixup in the connectivity model build. Flagged rather than
+   guessed at.
+
+### Placement quality is a ratsnest problem, not a cost-weight problem (user, 2026-08-29)
+
+Recorded as the user's direction, not yet built. Observation that prompted
+it: on the rendered reference board, connected parts sit scattered and nets
+run right across the outline. The reflex is to reach for cost weights. The
+user's call is that this is the wrong lever:
+
+> *Placement quality is something we can fix with the layered rubber bands.
+> If the LLM tells us what power and ground nets are we can minimize the
+> rest at rubber-band ratsnest time.*
+
+Two claims, and they compose:
+
+1. **The layered rubber-band engine is where placement quality comes from.**
+   Not a wirelength weight bolted onto the annealer — the rubber bands *are*
+   the objective, pulling connected parts together as a physical consequence
+   of the representation. This is decision 1 ("the in-house layered
+   rubber-banding graph engine is the system") reaching placement, and it
+   subsumes the deleted `place.py` `W_LEN` term rather than reviving it.
+2. **Power and ground must be DECLARED, not inferred, and then excluded from
+   the pull.** A 200-pin GND net contributes a star that dominates every
+   other force and drags the whole board onto its hub — the classic
+   fanout-dominance failure. But the fix is not fanout normalization
+   (decision 3b already deletes that): it is that GND and VCC *do not want
+   to be short*. They want to be a plane. So the ratsnest that the rubber
+   bands minimize should be **the signal nets only**, with the declared
+   power/ground nets removed from it and handed to the plane/pour path
+   instead.
+
+**Who declares.** The LLM caller does — it is exactly the kind of judgment
+the agent surface exists to carry, and it is not reliably inferrable from
+geometry (name heuristics on `GND`/`VCC`/`3V3` are a guess, and a board with
+two isolated grounds breaks them). This is the same declaration the pour
+path needs to produce actual ground planes, so it pays for two things at
+once and should be built once, on the net row, not twice.
+
+**Watch the decap trap** (already recorded under §"The findings that change
+the design"): excluding plane nets from `w_ij` makes a decap — whose only
+nets are PWR and GND — an isolated vertex with nothing pulling it anywhere.
+Exclusion from the *ratsnest* must not mean exclusion from *placement*; a
+decap's placement constraint is proximity to the pin it decouples, which is
+a different (and stronger) relation than the net star it currently rides on.
+Do not ship the exclusion without answering this.
+
 ### Viewer + geometry-quality direction (user, 2026-08-29) — 1,2,3,5 DONE
 
 Shipped: layer-selector SVG rendered from the gerbers
@@ -693,10 +1136,49 @@ model whose pads are synthesized (`SynthesizedPadError`) because
 Round-tripped and measured on the reference board: F_Cu 99 flashes, F_Mask
 81 flashes with the correct `SOLDERMASK_EXPANSION_MM` swell, PTH 18 holes.
 
-Still genuinely missing: **silkscreen** (no table; refdes and part outlines
-absent) and real pad SIZES (`maze.PAD_RADIUS_MM` is still a constant, so
-every pad exports as a 0.4mm circle — which is exactly why the
-synthesized-pad refusal has to stay).
+**Both of the gaps this section used to name are now closed (2026-08-29).**
+
+**Silkscreen** exists: `pcb/stroke_font.py` (a hand-authored single-stroke
+font, no font files, no new dependency) + `pcb/silk.py` (`build_silk`),
+emitting a refdes label, a body outline sized from the part's OWN land
+pattern, and a pin-1 tick per instance. Silk is checked against real pad
+geometry and **relocated, then dropped, rather than printed over a pad** —
+a fab scrapes silk off pads, so text under one is silently lost. Drops and
+relocations are returned, never swallowed. One builder, called from both
+`_render_gerber` and `_render_fab_svg`, per the `pads_for_ir` precedent.
+
+*And a defect the render caught immediately:* a part rotated 180° got
+upside-down text, one at 270° got text running top-to-bottom. Silk exists
+to be READ; every EDA tool folds text rotation into a readable half-turn
+and this one now does too (`silk.readable_text_rotation`, KiCad's
+`(-90, 90]` rule). Only the glyph orientation folds — the label's anchor
+still follows the footprint.
+
+**Real pad sizes** exist: `ir.pin_w`/`pin_h`/`pin_shape`/
+`pin_pad_synthesized` from `landpattern.sizes_for`, merged by
+`realize.pad_geometry` (real cached footprint if available, honestly
+labelled synthesized bound otherwise). Router, DRC and the gerber preview
+all read it; `maze.PAD_RADIUS_MM` is demoted to a documented last-resort
+fallback with no production reader. The synthesized-pad **refusal stays**
+— a bound is still not a measurement.
+
+Two threads left dangling by that work, both recorded so they are not
+lost:
+- **Real footprints still do not reach the IR.** `pad_geometry` accepts a
+  `footprints=` kwarg and nothing passes one, because
+  `Store.pcb_footprints_for` keys by LCSC part number and `PcbIR` has no
+  `part_lcsc` field to remap by. So every pad on both reference boards is
+  a synthesized bound today.
+- **The synthesized-bound fractions were tuned against the fixture.**
+  `landpattern._TIGHT_FRACTION`/`_LONG_FRACTION` went to 0.25/0.45 after
+  0.35/0.65 regressed the acceptance board to 10 DRC errors. That is a
+  defensible choice among plausible bounds and it is documented with its
+  numbers — but the suspected cause of the congestion is that
+  `ir.instance_pad_radius` (which the placer's legality uses) still
+  derives from pin OFFSETS and ignores pad SIZE, so the placer packs as
+  though every pad were a point. Fix that first, then re-measure whether
+  the larger fractions become viable; the answer decides whether the
+  tuning was engineering or a workaround.
 
 ### Fab output: the original diagnosis (2026-08-29 morning)
 

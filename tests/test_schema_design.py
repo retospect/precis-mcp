@@ -133,6 +133,7 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_net_classes.rules",
         "pcb_netconns.meta",
         "pcb_nets.meta",
+        "pcb_pin_swaps.meta",
         "pcb_pins.meta",
         "pcb_planes.meta",
         "pcb_planes.region_hint",

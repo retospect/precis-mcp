@@ -141,6 +141,52 @@ def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
     assert (j1["x"], j1["y"]) == (0.0, 0.0)
 
 
+def test_pcb_place_reapplies_persisted_plane_without_writing_back(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A human's authored ``op='plane_net'`` declaration must be visible to
+    the PLACEMENT anneal too (not just ``pcb_route``'s later re-apply) — see
+    ``pcb_place.py``'s docstring comment on the write-boundary. Pinned two
+    ways: (1) the IR the optimizer actually runs against has
+    ``net_plane_layer`` set for the declared net BEFORE ``optimize()`` is
+    called (a spy on the imported ``optimize`` name), and (2) this job never
+    writes back to ``pcb_planes`` — it cannot change a plane assignment
+    (``_PLACE_ONLY_SCHEDULE`` carries no PLANE_PROMOTE/DEMOTE weight), so
+    only the authored row may exist afterward."""
+    ref_id = _seed(store, "place-plane", _CROSSED)
+    store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
+
+    seen_layers: list[int] = []
+    real_optimize = pcb_place.optimize
+
+    def _spy_optimize(ir: Any, config: Any) -> Any:
+        net_id = next(n for n in range(ir.n_nets) if str(ir.net_name[n]) == "N1")
+        seen_layers.append(int(ir.net_plane_layer[net_id]))
+        return real_optimize(ir, config)
+
+    monkeypatch.setattr(pcb_place, "optimize", _spy_optimize)
+
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 3})
+    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+
+    assert not ctx.failures
+    from precis.pcb.ir import UNSET_LAYER
+
+    assert seen_layers and seen_layers[0] != UNSET_LAYER, (
+        "the IR handed to optimize() must already have the authored plane "
+        "promoted -- placement must see it as fixed context, not learn "
+        "about it only after pcb_route re-applies it"
+    )
+
+    planes = store.pcb_planes_list(ref_id)
+    assert len(planes) == 1
+    assert planes[0]["net"] == "N1"
+    assert planes[0]["source"] == "authored", (
+        "pcb_place cannot change a plane assignment (no PLANE_* move in "
+        "its schedule) -- it must never write one back"
+    )
+
+
 def test_pcb_place_fails_legibly_on_empty_design(store: Store) -> None:
     handler = PcbHandler(hub=Hub(store=store))
     handler.put(id="place-empty", args={})

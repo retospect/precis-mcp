@@ -87,6 +87,43 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
     outline = pcb_session.outline_from_features(ctx.store.pcb_features_list(pcb_ref_id))
     ir = pcb_session.build_ir(graph, outline=outline)
+
+    # Re-apply persisted plane assignments (authored `op='plane_net'` AND a
+    # prior pcb_route run's derived write-back) onto the fresh IR BEFORE
+    # placement runs — promote_plane() is L1 state the IR never persists on
+    # its own (same discipline pcb_route.py already uses). This is read-only
+    # context the placement anneal optimizes AROUND, never a move it can
+    # propose: `_PLACE_ONLY_SCHEDULE` carries no PLANE_PROMOTE/DEMOTE weight,
+    # so nothing here re-enables that move class. Without this, a human's
+    # "GND is the plane on In1.Cu" declaration is invisible to placement,
+    # which then treats a 200-pin GND net as an ordinary short-path signal
+    # net to optimize around — the exact "one rule, two call sites, drifted"
+    # shape the plane write-back bug (gr267526) already was. Because this
+    # job cannot change a plane assignment (no PLANE_* move in its
+    # schedule), it must never write back to pcb_planes — only the job that
+    # can change a thing may persist it (pcb_route.py's job, not this one).
+    net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    layer_name_to_idx = {
+        str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
+    }
+    for plane in ctx.store.pcb_planes_list(pcb_ref_id):
+        net_id = net_name_to_id.get(plane["net"])
+        layer_idx = layer_name_to_idx.get(plane["layer"])
+        if net_id is not None and layer_idx is not None:
+            ir.promote_plane(net_id, layer_idx)
+
+    # Same discipline for a persisted pin swap (docs/backlog/
+    # pcb-engine-plan.md "PIN_SWAP is not persisted"): PcbIR.swap_pins() is
+    # L0 state the IR never persists on its own, so placement's ratsnest
+    # must be built against the SAME netlist pcb_route will later realize
+    # copper for -- otherwise the two jobs would optimize/route two
+    # different boards. Read-only here too: `_PLACE_ONLY_SCHEDULE` has no
+    # PIN_SWAP weight, so this job can never propose a new swap, and it
+    # never calls pcb_pin_swaps_replace_derived -- only the job that can
+    # change a thing may persist it.
+    ir_pin_swaps = ctx.store.pcb_pin_swaps_list(pcb_ref_id)
+    pcb_session.apply_pin_swap_overrides(ir, ir_pin_swaps)
+
     config = OptimizeConfig(iters=iters, seed=seed, schedule=_PLACE_ONLY_SCHEDULE)
     result = optimize(ir, config)
 

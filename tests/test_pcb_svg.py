@@ -100,6 +100,10 @@ _MODEL: dict[str, Any] = {
         ],
         "bottom": [],
     },
+    # An UNPLATED mounting hole: no pad, no via, no copper of any kind
+    # around it. Nothing else in this model draws at (17, 12), so if the
+    # renderer ignores `drills` the hole is simply absent from the figure.
+    "drills": [{"x": 17.0, "y": 12.0, "dia_mm": 3.2, "plated": False}],
 }
 
 
@@ -160,6 +164,21 @@ def test_copper_only_excludes_silk_and_outline():
     both = svg.render_board(_MODEL)  # sanity: both DO appear when included
     assert 'stroke-width="0.15"' in both
     assert "M 0,0 L 20,0" in both
+
+
+def test_an_unplated_mounting_hole_is_drawn_and_is_not_a_solid_disc():
+    """A bare hole has no annulus to reveal it, so a renderer that ignores
+    ``drills`` shows nothing there — and the failure looks like a clean
+    board rather than a missing feature. Measured before this was wired:
+    two solder-on nuts with 3.2mm holes rendered as solid discs."""
+    text = svg.render_board(_MODEL)
+    hole = re.search(r'<circle cx="17(?:\.0)?" cy="12(?:\.0)?" r="1\.6"[^/]*/>', text)
+    assert hole is not None, "the 3.2mm mounting hole was not drawn at all"
+    assert 'fill="#ffffff"' in hole.group(0), "a hole must not read as copper"
+    assert "stroke" in hole.group(0), "a white hole on a white page needs an edge"
+
+    without = svg.render_board(_MODEL, include=svg.DEFAULT_INCLUDE - {"drills"})
+    assert re.search(r'cx="17(?:\.0)?" cy="12(?:\.0)?"', without) is None
 
 
 def test_silk_only_excludes_copper():

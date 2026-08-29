@@ -150,15 +150,46 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
     pcb_session.apply_route_overrides(ir, routes_by_net)
 
+    # ``ir.pin_net`` right after a fresh build IS ``pcb_netconns``'s
+    # authored wiring — the baseline every persisted pin-swap override is
+    # measured against below (docs/backlog/pcb-engine-plan.md "PIN_SWAP is
+    # not persisted"). Captured BEFORE re-applying any existing override
+    # (next block), since that re-application is exactly what would make
+    # this copy indistinguishable from the post-optimize settled state.
+    baseline_pin_net = ir.pin_net.copy()
+
+    # Re-apply BOTH a (currently hypothetical -- no authoring verb exists
+    # yet) authored pin-swap override and a prior pcb_route run's derived
+    # write-back onto the fresh IR, same discipline as the route-overrides
+    # and plane re-application just above/below: PcbIR.swap_pins() is L0
+    # state the IR never persists on its own, so a fresh build must
+    # re-derive it every run. Skipping this is worse than not persisting
+    # at all -- the copper and the netlist would then disagree in the
+    # OTHER direction (persisted swap says one thing, the freshly-built,
+    # un-swapped IR realizes another).
+    pin_swaps = ctx.store.pcb_pin_swaps_list(pcb_ref_id)
+    pcb_session.apply_pin_swap_overrides(ir, pin_swaps)
+    authored_pin_keys = {
+        (row["refdes"], row["pin"])
+        for row in pin_swaps
+        if row.get("source", "authored") != "derived"
+    }
+
     # Re-apply BOTH authored (op='plane_net') and optimizer-derived
     # (a prior pcb_route run's write-back, gr267526) plane assignments —
     # promote_plane() is L1 state the IR never persists on its own, so a
     # fresh build must re-derive it every run, same discipline as the
     # topology/layer_assign re-application just above. A derived row is a
-    # reasonable warm start even though this run may move off it; an
-    # authored row is a standing instruction the optimizer is free to
-    # explore away from during search but whose PERSISTED value this job
-    # must never overwrite (see the write-back below).
+    # reasonable warm start even though this run may move off it. An
+    # AUTHORED row is a CONSTRAINT, not a hint, and must stay set through
+    # the anneal (`OptimizeConfig.locked_plane_nets` below), never merely
+    # "explored away from" — realization reads the anneal's POST-ANNEAL
+    # IR, not the persisted DB row, so an authored net demoted mid-search
+    # comes out as a plane in the database and a blank layer on the
+    # board. Measured: this cost model has no term that wants a plane at
+    # all (79 PLANE_PROMOTE proposals over 3000 iterations, all rejected
+    # on cost), so an unlocked authored net's PLANE_DEMOTE is accepted
+    # immediately and permanently, every run.
     net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
     layer_name_to_idx = {
         str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
@@ -172,7 +203,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         if plane.get("source", "authored") != "derived":
             authored_net_names.add(plane["net"])
 
-    config = OptimizeConfig(iters=iters, seed=seed)
+    # Only AUTHORED nets are locked (see the comment above) -- a derived
+    # assignment (this run's own prior write-back) must stay fully
+    # explorable, which is the whole distinction `meta.source` exists to
+    # carry.
+    locked_plane_nets = frozenset(
+        net_name_to_id[name] for name in authored_net_names if name in net_name_to_id
+    )
+    config = OptimizeConfig(iters=iters, seed=seed, locked_plane_nets=locked_plane_nets)
     result = optimize(ir, config)
 
     # Write back the anneal's settled plane decisions (gr267526: this used
@@ -191,6 +229,24 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     }
     ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
 
+    # Write back the anneal's settled pin-swap decisions (pcb-engine-plan
+    # "PIN_SWAP is not persisted": previously `ir.swap_pins` genuinely
+    # mutated pin->net during search and nothing ever wrote the result
+    # back, so the stored netlist and the stored copper would describe two
+    # different boards the moment this job ended). Diffed against the
+    # RAW netconn baseline captured above (not the warm-started state), so
+    # a pin already at its authored net writes nothing; only pins already
+    # covered by an authored override are excluded from the write, same
+    # "never overwrite an authored row" discipline as the plane path.
+    pin_swap_overrides = [
+        entry
+        for entry in pcb_session.pin_swap_diff(ir, baseline_pin_net)
+        if (entry["refdes"], entry["pin"]) not in authored_pin_keys
+    ]
+    ctx.store.pcb_pin_swaps_replace_derived(
+        pcb_ref_id, int(board_id), pin_swap_overrides
+    )
+
     pose = pcb_session.positions(ir)
     ctx.store.pcb_set_pose(pcb_ref_id, pose)
 
@@ -202,7 +258,18 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps, class_rules=graph.get("net_classes")
     )
-    rres = pcb_realize.realize(ir, config=realize_config)
+    # part_lcsc -> Store.pcb_footprints_for (LCSC-keyed) -> refdes-keyed,
+    # via PcbIR.instance_part_lcsc (the join pcb_graph/from_graph now
+    # carry). Without it every pad on every routed board reads as a
+    # land-pattern BOUND regardless of what is actually cached, and
+    # gerber.export_fab therefore refuses EVERY routed board — including
+    # one whose parts are all real. The two ends of this path both
+    # existed; only the join key was missing, the same shape as the
+    # write-only `inst_rot` defect.
+    footprints = pcb_session.footprints_by_refdes(
+        ir, ctx.store.pcb_footprints_for(pcb_ref_id)
+    )
+    rres = pcb_realize.realize(ir, config=realize_config, footprints=footprints)
     plane_net_ids = {
         n for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) != UNSET_LAYER
     }
@@ -227,17 +294,33 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # reports it, the persister ignored it — one rule, two components, the
     # recurring shape. Worse for a plane-promoted net, which took the
     # unconditional 'realized' branch below whatever happened to it.
+    #
+    # `RealizeResult.unrouted_reasons` closes the sibling gap: total routing
+    # failure used to carry no diagnostic at all (docs/backlog/
+    # pcb-engine-plan.md "BOARD TWO" finding 1) -- every current-annotated
+    # net failed 100% of the time with nothing distinguishing "the width
+    # doesn't fit anywhere" from "lost a corridor race" from "walled in".
+    # `reason_by_seg` is index-aligned by seg_id, not by list position (the
+    # realizer's own docstring warning), so this is a dict lookup, not a
+    # zip.
+    reason_by_seg = {r.seg_id: r for r in rres.unrouted_reasons}
     unrouted_fail: dict[str, list[dict[str, Any]]] = {}
     for seg_id in rres.unrouted:
         net_name = str(ir.net_name[int(ir.seg_net[seg_id])])
         a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+        reason = reason_by_seg.get(seg_id)
         unrouted_fail.setdefault(net_name, []).append(
             {
                 "kind": "unrouted",
+                "reason": reason.kind if reason else "unknown",
                 "segment": pcb_session.segment_key(ir, seg_id),
                 "message": (
-                    f"no route found from pin {a} to pin {b} without crossing "
-                    "another net's copper"
+                    reason.message
+                    if reason
+                    else (
+                        f"no route found from pin {a} to pin {b} without crossing "
+                        "another net's copper (no diagnostic available)"
+                    )
                 ),
             }
         )
@@ -273,9 +356,18 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             + congestion_fail.get(net_name, [])
             + unrouted_fail.get(net_name, [])
         )
+        note = None
         if problems:
             status = "failed"
             n_failed += 1
+            # `_render_drc` (handlers/pcb.py) reads `pcb_routes.note` per NET
+            # for its own `unrouted=` finding, one level coarser than the
+            # per-segment `reason` above -- a caller who only looks at the
+            # DRC view (never `pcb_routes.fail`) still sees WHY, not just
+            # THAT, a net failed.
+            kinds = sorted({str(p["reason"]) for p in problems if p.get("reason")})
+            if kinds:
+                note = f"unrouted: {', '.join(kinds)}"
         elif net_id in routed_nets or int(ir.net_plane_layer[net_id]) != UNSET_LAYER:
             status = "realized"
             n_realized += 1
@@ -285,6 +377,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             **entry,
             "status": status,
             "fail": {"problems": problems} if problems else None,
+            "note": note,
         }
     ctx.store.pcb_routes_write(pcb_ref_id, int(board_id), rows)
 

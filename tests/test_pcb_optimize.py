@@ -231,6 +231,79 @@ def test_plane_promote_reduces_gap_capacity_penalty_to_zero():
         assert engine._margin[("gap_capacity", s)].raw == 0.0
 
 
+# ── locked_plane_nets: an authored plane assignment is a constraint ──────
+def test_gen_plane_demote_excludes_locked_nets():
+    """A locked net is never a PLANE_DEMOTE candidate; an unlocked
+    promoted net on the SAME board still is -- the "locked" filter must
+    not turn into a blanket freeze of every plane assignment."""
+    ir = _seeded_ir(10, graph_seed=71, seed_rng_seed=72)
+    ir.promote_plane(0, 1)  # In1.Cu
+    ir.promote_plane(1, 2)  # In2.Cu
+    engine = OptimizeEngine(
+        ir, OptimizeConfig(seed=72, locked_plane_nets=frozenset({0}))
+    )
+    rng = random.Random(73)
+    seen_nets = set()
+    for _ in range(50):
+        move = MOVE_GENERATORS[MoveKind.PLANE_DEMOTE](engine, rng, 5.0)
+        assert move is not None  # net 1 is always a candidate
+        assert move.net != 0, "a locked net must never be offered to PLANE_DEMOTE"
+        seen_nets.add(move.net)
+    assert seen_nets == {1}, "the only unlocked promoted net must be the one proposed"
+
+
+def test_gen_plane_promote_excludes_locked_nets_and_their_layer():
+    """A locked net is never itself a promotion candidate, and its OWN
+    plane layer is never offered to a different net -- both halves of
+    "already spoken for", not just one."""
+    ir = _seeded_ir(10, graph_seed=74, seed_rng_seed=75)
+    ir.promote_plane(0, 1)  # In1.Cu -- locked
+    engine = OptimizeEngine(
+        ir, OptimizeConfig(seed=75, locked_plane_nets=frozenset({0}))
+    )
+    rng = random.Random(76)
+    for _ in range(50):
+        move = MOVE_GENERATORS[MoveKind.PLANE_PROMOTE](engine, rng, 5.0)
+        if move is None:
+            continue
+        assert move.net != 0, "a locked net must never be re-offered to PLANE_PROMOTE"
+        assert move.new_int is not None
+        assert move.new_int[0] != 1, (
+            "In1.Cu is the locked net's own layer -- it must never be offered "
+            "to a different net as if it were free"
+        )
+
+
+def test_locked_plane_net_survives_a_full_anneal_unlocked_one_still_demotes():
+    """The end-to-end contract: run the REAL search, not just the move
+    generator, over a graph with a locked authored plane assignment
+    alongside an unlocked (optimizer-visible) one.
+
+    Before ``locked_plane_nets`` existed this was measured as a silent
+    regression on the ESP32-C3 reference fixture: an authored
+    ``{'VCC3V3': 2, 'GND': 1}`` came back ``{}`` after a 3000-iteration
+    anneal at seed 1 -- every authored plane demoted, because nothing
+    distinguished a human's declaration from the search's own exploration
+    (this cost model already disfavours planes: 79 PLANE_PROMOTE proposals
+    over 3000 iterations, all rejected on cost -- module docstring's
+    PLANE_PROMOTE/DEMOTE note -- so PLANE_DEMOTE on an authored net was
+    accepted immediately and permanently). This pins the fix: the locked
+    net must survive that same anneal, while an otherwise-identical
+    UNLOCKED promoted net remains exactly as demotable as it always was."""
+    ir = from_graph(_board(10, seed=77), stackup=DEFAULT_STACKUP)
+    ir.promote_plane(0, 1)  # locked, like an authored "GND -> In1.Cu"
+    ir.promote_plane(1, 2)  # unlocked, like an optimizer-derived assignment
+    optimize(
+        ir,
+        OptimizeConfig(iters=3000, seed=1, locked_plane_nets=frozenset({0})),
+    )
+    assert int(ir.net_plane_layer[0]) == 1, "the locked/authored net must survive"
+    assert int(ir.net_plane_layer[1]) == UNSET_LAYER, (
+        "the unlocked net must remain exactly as demotable as before -- a "
+        "blanket freeze would be as wrong as the original bug"
+    )
+
+
 def test_layer_assign_and_plane_promote_refresh_layer_count():
     ir = _seeded_ir(10, graph_seed=48, seed_rng_seed=49)
     engine = OptimizeEngine(ir, OptimizeConfig(seed=49))

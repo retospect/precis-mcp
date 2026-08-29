@@ -47,6 +47,11 @@ _LAYER_STYLE: dict[str, tuple[str, bool]] = {
     "B_Cu": ("#2f6fd0", True),
     "F_Mask": ("#7a2d8f", False),
     "B_Mask": ("#8f2d5e", False),
+    # Paste is the stencil, not the board — off by default because it sits
+    # exactly on top of the pads it opens and would otherwise read as a
+    # recolouring of F_Cu rather than as its own layer.
+    "F_Paste": ("#b0b6bd", False),
+    "B_Paste": ("#7d838a", False),
     "F_Silkscreen": ("#e8e8e8", True),
     "B_Silkscreen": ("#a8a8a8", False),
     "Edge_Cuts": ("#f0d000", True),
@@ -64,6 +69,8 @@ _STACK_ORDER = [
     "F_Cu",
     "B_Mask",
     "F_Mask",
+    "B_Paste",
+    "F_Paste",
     "B_Silkscreen",
     "F_Silkscreen",
     "PTH",

@@ -306,6 +306,43 @@ def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     return _assemble(f"Soldermask,{'Top' if side == 'top' else 'Bot'}", apertures, body)
 
 
+def solderpaste_gerber(model: dict[str, Any], side: str) -> str:
+    """Top/bottom solder paste — the **stencil**, not the board.
+
+    Two things make this different from the soldermask, and both are the
+    kind of detail that produces a plausible-looking file that assembles
+    wrong:
+
+    - **Through-hole pads get no aperture.** Paste printed over a plated
+      hole falls through it; THT parts are hand-soldered, wave-soldered or
+      paste-in-hole-dispensed, never stencil-printed from this layer. A pad
+      carrying a ``drill`` is skipped.
+    - **Vias get no aperture either** — same reason, and they are tented
+      anyway (see :func:`soldermask_gerber`).
+
+    Apertures are 1:1 with the pad. Real stencil houses shrink fine-pitch
+    apertures (typically 5-15% area reduction) to control solder volume,
+    but the correct reduction is a function of pad pitch, stencil
+    thickness and aperture aspect ratio — none of which this model
+    carries. A single global shrink constant would be a number tuned to
+    nothing, which is the defect this subsystem keeps producing; 1:1 is
+    the honest default and the reduction belongs with the stencil order.
+    """
+    layers: list[str] = model["layers"]
+    layer = layers[0] if side == "top" else layers[-1]
+    apertures = _ApertureTable()
+    body: list[str] = []
+    for pad in model.get("pads", []):
+        if pad.get("layer") != layer:
+            continue
+        if pad.get("drill"):
+            continue
+        _emit_flash(pad, apertures, body)
+    return _assemble(
+        f"SolderPaste,{'Top' if side == 'top' else 'Bot'}", apertures, body
+    )
+
+
 def silkscreen_gerber(model: dict[str, Any], side: str) -> str:
     apertures = _ApertureTable()
     body: list[str] = []
@@ -326,9 +363,9 @@ def outline_gerber(model: dict[str, Any]) -> str:
 
 
 def export_gerbers(model: dict[str, Any], *, name: str = "design") -> dict[str, str]:
-    """One file per copper layer + top/bottom soldermask + top/bottom
-    silkscreen + the board outline. See the module docstring for the model
-    shape."""
+    """One file per copper layer + top/bottom soldermask + top/bottom solder
+    paste + top/bottom silkscreen + the board outline. See the module
+    docstring for the model shape."""
     layers: list[str] = model["layers"]
     files = {
         f"{name}-{_layer_token(layer)}.gbr": copper_gerber(model, layer)
@@ -336,6 +373,8 @@ def export_gerbers(model: dict[str, Any], *, name: str = "design") -> dict[str, 
     }
     files[f"{name}-F_Mask.gbr"] = soldermask_gerber(model, "top")
     files[f"{name}-B_Mask.gbr"] = soldermask_gerber(model, "bottom")
+    files[f"{name}-F_Paste.gbr"] = solderpaste_gerber(model, "top")
+    files[f"{name}-B_Paste.gbr"] = solderpaste_gerber(model, "bottom")
     files[f"{name}-F_Silkscreen.gbr"] = silkscreen_gerber(model, "top")
     files[f"{name}-B_Silkscreen.gbr"] = silkscreen_gerber(model, "bottom")
     files[f"{name}-Edge_Cuts.gbr"] = outline_gerber(model)
@@ -454,5 +493,6 @@ __all__ = [
     "outline_gerber",
     "silkscreen_gerber",
     "soldermask_gerber",
+    "solderpaste_gerber",
     "zip_fab",
 ]

@@ -55,13 +55,16 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.pcb import cost as pcb_cost
 from precis.pcb import drc as pcb_drc
 from precis.pcb import export as pcb_export
 from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
 from precis.pcb import gerber as pcb_gerber
+from precis.pcb import ir as pcb_ir
 from precis.pcb import realize as pcb_realize
 from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
+from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
 from precis.pcb.capabilities import capability_for
 from precis.pcb.rules import NetRules, resolve_net_rules
@@ -690,12 +693,102 @@ class PcbHandler(Handler):
 
         Delegates to :func:`precis.pcb.realize.pads_for_ir` — pad geometry
         has exactly one definition, for the reasons that function's
-        docstring records.
+        docstring records. Real per-pin geometry where a part's footprint
+        is cached (:meth:`Store.pcb_footprints_for`, remapped onto refdes
+        via :func:`precis.pcb.session.footprints_by_refdes` — the join
+        ``PcbIR.instance_part_lcsc`` exists for); a package-family
+        synthesized bound (``synthesized=True``) everywhere else, same as
+        before. This is what makes ``view='gerber'``'s fallback (this
+        design has no ``board_pads`` output yet) and ``view='svg'
+        args={'level':'fab'}`` both describe the SAME board a fully-cached
+        design's real ``export_fab`` call would.
         """
         graph = self.store.pcb_graph(ref_id)
         if not graph.get("nets"):
             return []
-        return pcb_realize.pads_for_ir(pcb_session.build_ir(graph), layers)
+        ir = pcb_session.build_ir(graph)
+        footprints = pcb_session.footprints_by_refdes(
+            ir, self.store.pcb_footprints_for(ref_id)
+        )
+        return pcb_realize.pads_for_ir(ir, layers, footprints)
+
+    def _drc_geometry(
+        self, ref_id: int, layers: list[str]
+    ) -> tuple[list[dict[str, Any]], dict[str, float]]:
+        """DRC's pads (the same IR-sourced geometry :meth:`_drc_pads`
+        builds, off ONE ``build_ir`` call here rather than two independent
+        ones) plus each instance's real, pad-geometry-derived courtyard
+        keep-out radius, keyed by refdes.
+
+        **The radius is not computed here.**
+        :func:`precis.pcb.ir.instance_keepout_radius_mm` is the ONE
+        definition, shared with ``OptimizeEngine._keepout_r`` and
+        ``seed_placement``. A flat
+        :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` for EVERY
+        instance made ``courtyard_overlap`` structurally dormant: it is
+        smaller than any real part's derived keep-out, so placement always
+        separates parts further than the flat check would ever flag — a
+        TO-220's real several-millimetre courtyard was being checked
+        against nothing. The floor is passed in rather than baked into
+        ``ir.py`` because it is a cost-policy constant and ``ir.py`` sits
+        below ``cost.py`` in the import order."""
+        graph = self.store.pcb_graph(ref_id)
+        ir = pcb_session.build_ir(graph)
+        footprints = pcb_session.footprints_by_refdes(
+            ir, self.store.pcb_footprints_for(ref_id)
+        )
+        pads = (
+            pcb_realize.pads_for_ir(ir, layers, footprints) if graph.get("nets") else []
+        )
+        radii = pcb_ir.instance_keepout_radius_mm(
+            ir, min_radius_mm=pcb_cost.COURTYARD_MIN_SEPARATION_MM / 2.0
+        )
+        radius_by_refdes = {
+            str(ir.instance_refdes[i]): float(radii[i]) for i in range(ir.n_instances)
+        }
+        return pads, radius_by_refdes
+
+    def _drc_drills(self, ref_id: int) -> list[dict[str, Any]]:
+        """``model['drills']`` for :func:`precis.pcb.drc.
+        check_npth_clearance` — ``mounting_hole`` features, the mechanical
+        holes that check exists to protect (a screw hole is never a
+        soldered lead, so it is unplated by construction). Before this,
+        ``_render_drc`` never populated ``drills`` at all, so
+        ``check_npth_clearance`` — wired into ``run_geometric_drc`` and
+        reading ``model.get('drills')`` — was structurally incapable of
+        firing regardless of design content, on every board, every seed.
+
+        Field names match BOTH of ``model['drills']``'s existing consumers
+        verbatim — :func:`precis.pcb.drc.check_npth_clearance`'s own
+        ``{"x","y","dia_mm","plated"}`` reads and
+        :func:`precis.pcb.gerber.excellon_files` /
+        :func:`precis.pcb.padplace.place_footprint_pads`'s identical
+        shape for a through-hole component pad's drill — so this never
+        invents a third spelling.
+
+        **A through-hole component pad's own drill is NOT included here**:
+        DRC's pad source (:func:`precis.pcb.realize.pads_for_ir`, the IR
+        path this view deliberately uses so pads and connectivity share
+        ONE source — see :meth:`_render_drc`'s own comment) carries no
+        drill/through-hole concept at all yet. Reaching into
+        :mod:`precis.pcb.padplace`'s cached-footprint pad source instead
+        would reintroduce exactly the "one rule, two call sites, drifted"
+        pad-source split that comment already warns against — a distinct,
+        deferred gap that belongs in ``realize.py``, not patched around
+        here."""
+        out: list[dict[str, Any]] = []
+        for f in self.store.pcb_features_list(ref_id):
+            if str(f.get("ftype") or "") != "mounting_hole":
+                continue
+            geom = f.get("geom") or {}
+            dia = geom.get("diameter") or geom.get("d")
+            x, y = f.get("x"), f.get("y")
+            if dia is None or x is None or y is None:
+                continue
+            out.append(
+                {"x": float(x), "y": float(y), "dia_mm": float(dia), "plated": False}
+            )
+        return out
 
     def _render_export(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
         """Write a fab artifact (BOM / CPL / KiCad netlist / Specctra DSN /
@@ -778,10 +871,10 @@ class PcbHandler(Handler):
         drills, silkscreen}`` — copper straight off ``pcb_copper`` (the
         realizer's own output shape, see :mod:`precis.pcb.realize`), pads
         newly placed by :mod:`precis.pcb.padplace` off each instance's
-        pose + its cached footprint, and an EMPTY silkscreen (there is no
-        silkscreen table yet — explicitly out of scope, see the backlog
-        doc; a board with copper+pads+mask+drills+outline is still
-        manufacturable)."""
+        pose + its cached footprint, and a GENERATED silkscreen
+        (:mod:`precis.pcb.silk` — refdes labels, courtyard outlines, pin-1
+        ticks, built off the same IR and checked against these same pads
+        so nothing prints where a fab would scrape it off)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         design = self.store.pcb_load(ref_id)
@@ -812,6 +905,7 @@ class PcbHandler(Handler):
 
         footprints = self.store.pcb_footprints_for(ref_id)
         graph = self.store.pcb_graph(ref_id)
+        ir = pcb_session.build_ir(graph)
         pin_to_net = {
             (m["refdes"], m["pin"]): net["name"]
             for net in graph["nets"]
@@ -839,14 +933,50 @@ class PcbHandler(Handler):
                 + ("…" if len(missing) > 8 else "")
                 + " (fetch via precis.pcb.footprint first)"
             )
+            # `board_pads` (module docstring, verbatim) "contributes nothing"
+            # for an instance with no cached footprint — an honest gap for
+            # ITS own caller, but left as-is here that gap silently dropped
+            # the missing part's pads from the fab set ENTIRELY rather than
+            # marking them synthesized: a mixed design (the realistic case,
+            # some parts cached, some not) came out looking clean because
+            # export_fab's synthesized-pad check saw NOTHING to refuse, not
+            # because the board was real. Fill in exactly the missing
+            # refdes' pins from the SAME synthesized-or-real merge point
+            # `_drc_pads`/DRC already uses (`pads_for_ir` -> `pad_geometry`)
+            # so those pads carry `synthesized: True` and export_fab's
+            # refusal actually fires. `placed_pin_ids` replays
+            # `pads_for_ir`'s own "skip an unplaced pin" filter so the
+            # zip stays index-aligned without a second geometry pass.
+            footprints_by_refdes = pcb_session.footprints_by_refdes(ir, footprints)
+            ir_pads = pcb_realize.pads_for_ir(ir, layer_names, footprints_by_refdes)
+            placed_pin_ids = [
+                pid for pid in range(ir.n_pins) if pcb_ir.pin_point(ir, pid) is not None
+            ]
+            missing_set = set(missing)
+            pads = pads + [
+                pad
+                for pid, pad in zip(placed_pin_ids, ir_pads, strict=True)
+                if str(ir.instance_refdes[int(ir.pin_instance[pid])]) in missing_set
+            ]
         if not pads:
-            # The cache was empty, so board_pads produced nothing at all and
-            # the bundle used to ship with zero pad copper and header-only
-            # mask files — a well-formed, unsolderable board. Fall back to
-            # the SAME land patterns the router routed to, so the fab set
-            # describes the board the engine actually built, and let
-            # export_fab refuse to call it manufacturable.
+            # No placed instance contributed a pad at all (nothing above
+            # could have added one either — `missing` would itself be
+            # empty in that case). Kept as a last-resort safety net, same
+            # as before: fall back to the SAME land patterns the router
+            # routed to, so the fab set describes the board the engine
+            # actually built, and let export_fab refuse to call it
+            # manufacturable.
             pads = self._drc_pads(ref_id, layer_names)
+
+        instance_sides = {
+            str(i.get("refdes")): str(i.get("layer") or "top")
+            for i in design["instances"]
+        }
+        silk_result = pcb_silk.build_silk(ir, pads, instance_sides=instance_sides)
+        if silk_result.dropped:
+            warnings.extend(f"silk: {msg}" for msg in silk_result.dropped)
+        if silk_result.relocated:
+            warnings.extend(f"silk: {msg}" for msg in silk_result.relocated)
 
         model: dict[str, Any] = {
             "layers": layer_names,
@@ -854,7 +984,7 @@ class PcbHandler(Handler):
             "copper": copper,
             "pads": pads,
             "drills": drills,
-            "silkscreen": {"top": [], "bottom": []},
+            "silkscreen": silk_result.draws,
         }
         try:
             files = pcb_gerber.export_fab(model, name=slug)
@@ -1076,17 +1206,25 @@ class PcbHandler(Handler):
         # pad source is how this build's recurring defect works — one rule,
         # two call sites, drifted — and connectivity is precisely the check
         # that would be fooled by pads in the wrong place.
+        pads, courtyard_radius = self._drc_geometry(ref_id, layer_names)
         model = {
             "layers": layer_names,
             "copper": copper,
-            "pads": self._drc_pads(ref_id, layer_names),
+            "pads": pads,
+            "drills": self._drc_drills(ref_id),
         }
         courtyards = [
             (
                 i["refdes"],
                 float(i["x"]),
                 float(i["y"]),
-                pcb_drc.DEFAULT_COURTYARD_RADIUS_MM,
+                # The part's own derived keep-out radius (see
+                # :meth:`_drc_geometry`) — NOT the flat
+                # ``DEFAULT_COURTYARD_RADIUS_MM`` every instance used to
+                # share regardless of size. The fallback below is a safety
+                # net for a refdes the IR somehow didn't carry, not the
+                # normal path.
+                courtyard_radius.get(i["refdes"], pcb_drc.DEFAULT_COURTYARD_RADIUS_MM),
             )
             for i in design["instances"]
             if i["x"] is not None and i["y"] is not None
@@ -1200,6 +1338,11 @@ class PcbHandler(Handler):
             "layers": layer_names,
             "outline": self._outline_from_features(ref_id),
             "copper": self.store.pcb_copper_list(int(board["board_id"])),
+            # Mounting holes have no copper around them, so without this
+            # the board render simply omits every one of them — the figure
+            # looks clean rather than incomplete, which is the worst way
+            # for a render to be wrong.
+            "drills": self._drc_drills(ref_id),
         }
         raw_layers = args.get("layers")
         raw_include = args.get("include")
@@ -1225,7 +1368,9 @@ class PcbHandler(Handler):
 
         It is also the only view that shows pads, soldermask openings and
         drill hits, because those exist in the fab set and nowhere in the
-        copper table.
+        copper table — plus generated silk (:mod:`precis.pcb.silk`), the
+        SAME builder :meth:`_render_gerber` calls, so this preview matches
+        what a real export would carry.
         """
         design = self.store.pcb_load(ref_id)
         board = design["board"]
@@ -1235,11 +1380,20 @@ class PcbHandler(Handler):
                 "args={'components':[...],'nets':[...]}) to create the design."
             )
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
+        pads = self._drc_pads(ref_id, layer_names)
+        graph = self.store.pcb_graph(ref_id)
+        ir = pcb_session.build_ir(graph)
+        instance_sides = {
+            str(i.get("refdes")): str(i.get("layer") or "top")
+            for i in design["instances"]
+        }
+        silk_result = pcb_silk.build_silk(ir, pads, instance_sides=instance_sides)
         model: dict[str, Any] = {
             "layers": layer_names,
             "outline": self._outline_from_features(ref_id) or [],
             "copper": self.store.pcb_copper_list(int(board["board_id"])),
-            "pads": self._drc_pads(ref_id, layer_names),
+            "pads": pads,
+            "silkscreen": silk_result.draws,
         }
         # allow_synthesized, because this is a picture and not an order.
         # export_fab's refusal exists to stop a land-pattern BOUND reaching

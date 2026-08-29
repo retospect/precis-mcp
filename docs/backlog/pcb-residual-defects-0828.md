@@ -57,7 +57,13 @@ the topological invariant the IR exists to protect is not what any cost
 term reads. Decide deliberately: either the crossings term reads L2, or
 the docstring's claim about why L2 is stored explicitly needs weakening.
 
-## 3. SVG: drills are invisible
+## 3. SVG: drills are invisible — **FIXED 2026-08-29**
+
+`drills` is in `svg.DEFAULT_INCLUDE` and `render_board` draws bare holes
+on top of copper; the handler's `level='board'` model supplies them via
+`_drc_drills`. See `pcb-engine-plan.md` §"SVG drills". Original text kept
+below for the detection-method record.
+
 
 `svg.DEFAULT_INCLUDE` is `{outline, copper, pours, pads, vias, silk}` —
 **no `drills`**. The model carries a `drills` list and `render_board`
