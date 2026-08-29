@@ -1003,6 +1003,28 @@ class TestSearchTrustAxis:
         assert "reviewed" in out.body
         assert "1✓" in out.body
 
+    def test_tagline_never_reaches_the_agent_facing_payload(self, store) -> None:
+        """A hub tagline aids *human recall only* (``precis.workers.
+        hub_tagline`` §"Never a source"): it is web-render-only and must
+        never appear in the agent-facing search table or evidence view —
+        an agent handed the gloss will eventually quote the gloss. Pins
+        that ``_posture_cells`` / the evidence renderer keep picking
+        explicit fields even though ``HubOverviewRow`` now carries
+        ``tagline``. (``view='raw'`` is exempt by contract: it dumps the
+        whole row, meta included, for inspection.)"""
+        h = _make_handler(store)
+        hub_id = mint_hub(store, self._CLAIM)
+        store.update_ref(
+            hub_id, meta_patch={"tagline": "Amines boost capture", "tagline_by": "llm"}
+        )
+
+        out = h.search(q="Amine loading")
+        assert str(hub_id) in out.body
+        assert "Amines boost capture" not in out.body
+
+        evidence = h.get(id=hub_id, view="evidence")
+        assert "Amines boost capture" not in evidence.body
+
     def test_posture_read_failure_never_fakes_an_unsettled_answer(
         self, store, monkeypatch
     ) -> None:

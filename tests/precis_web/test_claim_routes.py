@@ -1048,3 +1048,132 @@ def test_claim_unacquirable_non_hub_head_errors(claim_client: TestClient) -> Non
     )
 
     assert r.status_code == 400
+
+
+# ── `tagline` render (precis.workers.hub_tagline) ──
+
+
+def test_claim_view_h1_shows_tagline_prefix_when_set(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    hub.live_store.update_ref(
+        hub_ref_id, meta_patch={"tagline": "Pd/C is Suzuki catalyst"}
+    )
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    h1_html = r.text[r.text.index("<h1") : r.text.index("</h1>")]
+    assert "Pd/C is Suzuki catalyst:" in h1_html
+    assert _CLAIM.sentence in h1_html
+
+
+def test_claim_view_h1_no_prefix_without_tagline(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """Absent tagline ⇒ exactly today's h1 rendering — no placeholder, no
+    stray colon prefix."""
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    h1_start = r.text.index("<h1")
+    h1_end = r.text.index("</h1>")
+    h1_html = r.text[h1_start:h1_end]
+    assert _CLAIM.sentence in h1_html
+    assert '<span class="text-sky-700">' not in h1_html
+
+
+# ── POST /claim/<head>/tagline — the human edit door ──
+
+
+def test_claim_tagline_set_writes_human_by(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/tagline",
+        data={"tagline": "  Pd/C is Suzuki catalyst  "},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/claim/{fi_handle}"
+    meta = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta
+    assert meta["tagline"] == "Pd/C is Suzuki catalyst"
+    assert meta["tagline_by"] == "human"
+
+
+def test_claim_tagline_empty_post_clears(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    hub.live_store.update_ref(
+        hub_ref_id,
+        meta_patch={"tagline": "Old tagline", "tagline_by": "llm"},
+    )
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/tagline",
+        data={"tagline": "   "},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    meta = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta or {}
+    assert meta.get("tagline") is None
+    assert meta.get("tagline_by") is None
+
+
+def test_claim_tagline_too_many_words_400s(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/tagline",
+        data={"tagline": "one two three four five six seven eight nine"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    meta = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta or {}
+    assert "tagline" not in meta
+
+
+def test_claim_tagline_too_long_400s(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/tagline",
+        data={"tagline": "x" * 65},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+
+
+def test_claim_tagline_multiline_400s(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/tagline",
+        data={"tagline": "line one\nline two"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+
+
+def test_claim_tagline_non_hub_head_errors(claim_client: TestClient) -> None:
+    r = claim_client.post(
+        "/claim/aaaaaa/tagline",
+        data={"tagline": "whatever"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400

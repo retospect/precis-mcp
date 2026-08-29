@@ -15,8 +15,15 @@
    and after htmx swaps. Reversal (2026-08-28, Reto): titles WERE kept
    plain text under the 2026-08-04 "Already decided" policy (679393c9),
    until a real hub (fi236297) rendered raw $math$ in its title — Reto
-   asked for math-processing on claim titles too, superseding that call. #}
-<h1 class="tex-scope text-lg font-semibold text-slate-800 leading-snug">{{ claim }}</h1>
+   asked for math-processing on claim titles too, superseding that call.
+   `tagline` (precis.workers.hub_tagline) is a 3-6 word human handle for
+   the hub, presentation metadata on `refs.meta` — never part of the claim
+   string/URI. Absent (`None`) → exactly the pre-tagline h1, no placeholder,
+   no layout shift. Present → styled as a visually-leading prefix, the full
+   AIDA sentence following. #}
+<h1 class="tex-scope text-lg font-semibold text-slate-800 leading-snug">
+  {% if tagline %}<span class="text-sky-700">{{ tagline }}:</span> {% endif %}{{ claim }}
+</h1>
 <p class="mt-1 text-xs text-slate-400">
   <span class="font-mono">{{ head }}</span>
   {% if status %}· status <span class="font-mono">{{ status }}</span>{% endif %}
@@ -24,6 +31,18 @@
   <a class="font-mono text-emerald-600 hover:underline" href="#review"
      title="publish state — jump to the review-and-sign section below">{{ np.state }}</a>
   {% endif %}
+  {# The human edit door (POST /claim/<head>/tagline) — tiny, unobtrusive,
+     prefilled with the current tagline (empty for "not set yet"). Empty
+     submit clears, handing the hub back to the hub_tagline pass. #}
+  · <details class="inline">
+    <summary class="inline cursor-pointer hover:text-slate-600" title="edit the tagline">tagline</summary>
+    <form method="post" action="/claim/{{ head }}/tagline" class="mt-1 flex items-center gap-1">
+      <input name="tagline" value="{{ tagline or '' }}" maxlength="64" autocomplete="off"
+             placeholder="3-6 word handle, e.g. Graphene is FET"
+             class="w-56 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700" />
+      <button type="submit" class="rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-slate-600 hover:bg-slate-100">save</button>
+    </form>
+  </details>
 </p>
 
 {# Hypothesis falsification prose (docs/backlog/

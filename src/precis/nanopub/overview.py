@@ -69,6 +69,12 @@ class HubOverviewRow:
     #: ``support`` in ``yes``/``partial``, or a human ``publish_signoff``.
     #: The subset of ``verified_count`` that actually backs the claim.
     supported_count: int = 0
+    #: 3-6 word human handle (precis.workers.hub_tagline), ``refs.meta
+    #: ->>'tagline'`` — presentation only, ``None`` when the ``hub_tagline``
+    #: worker pass hasn't reached this hub yet (or a human never set one).
+    #: Appended last (rather than kept alongside `title`) so a positional
+    #: constructor elsewhere in the tree keeps working unmodified.
+    tagline: str | None = None
 
     @property
     def drifted(self) -> bool:
@@ -305,7 +311,8 @@ def hub_rows(
                    d.since AS disputed_since,
                    COALESCE(w.n, 0) AS withheld_count,
                    COALESCE(w.v, 0) AS verified_count,
-                   COALESCE(w.s, 0) AS supported_count
+                   COALESCE(w.s, 0) AS supported_count,
+                   r.meta->>'tagline' AS tagline
               FROM refs r
               LEFT JOIN nanopub_publish p
                      ON p.claim_ref_id = r.ref_id AND p.state != ALL(%(terminal)s)
@@ -365,6 +372,7 @@ def hub_rows(
             withheld_count=int(r[10]),
             verified_count=int(r[11]),
             supported_count=int(r[12]),
+            tagline=r[13],
         )
         for r in rows
     ]

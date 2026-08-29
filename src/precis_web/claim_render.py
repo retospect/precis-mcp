@@ -763,6 +763,14 @@ def _render_one(
         "head": head,
         "hub_ref_id": ref_id,
         "claim": claim,
+        # 3-6 word human handle (precis.workers.hub_tagline), or `None` for
+        # a hub the `hub_tagline` worker pass hasn't reached / a human has
+        # never set — every render surface treats absence as "today's
+        # rendering, no placeholder". Read straight off `hub_ref.meta`
+        # (already fetched by BOTH the singular and bulk callers), so this
+        # adds no new query — the bulk==singular invariant
+        # (test_render_claims_evidence_matches_singular_calls) stays intact.
+        "tagline": (getattr(hub_ref, "meta", None) or {}).get("tagline"),
         "status": status,
         # `trust_overridden` — True iff an author declared a claim-level
         # (Ⓐ/✍) softener HERE, on this hub. `trust_note` is always threaded

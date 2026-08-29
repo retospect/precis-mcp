@@ -835,6 +835,28 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-taproot-help",
     ),
     ServiceSpec(
+        # precis.workers.hub_tagline: claim-and-lease backfill of a 3-6
+        # word human handle (`refs.meta.tagline`) on live taproot claim
+        # hubs missing one -- one SMALL-tier call per hub, code-validated
+        # before write. DB-only presentation metadata, never identity (the
+        # freeze ladder doesn't apply). Same shape as hub_refine just
+        # above: dark by default (§L: `service prio` controls it, no live
+        # PRECIS_HUB_TAGLINE_ENABLED read) / --only hub_tagline.
+        name="hub_tagline",
+        label="Taproot hub tagline",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_HUB_TAGLINE_ENABLED",
+        uses_model=True,
+        cost_sources=("hub_tagline",),
+        one_line=(
+            "Backfill a pithy 3-6 word tagline on claim hubs missing one "
+            "(refs.meta['tagline'])."
+        ),
+        doc_skill="precis-taproot-help",
+    ),
+    ServiceSpec(
         name="chase_trigger",
         label="Taproot chase trigger",
         category="discovery",

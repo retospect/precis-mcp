@@ -12,6 +12,12 @@
   {% if missing %}
   <p class="text-xs text-slate-500 italic">not a claim hub</p>
   {% else %}
+  {# `tagline` (precis.workers.hub_tagline): a bold one-line lead above
+     the full sentence when the hub has one set; absent → exactly the
+     pre-tagline render, no placeholder. #}
+  {% if tagline %}
+  <p class="text-sm font-bold text-slate-900 truncate">{{ tagline }}</p>
+  {% endif %}
   {# No line-clamp — this is a review surface, the full sentence should
      read in full rather than truncate. tex-scope: claim sentences may
      carry $…$/$$…$$ TeX (KaTeX render, base.html.j2) — matches the

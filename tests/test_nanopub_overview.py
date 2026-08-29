@@ -39,3 +39,26 @@ def test_hub_rows_includes_a_properly_minted_hub(store: Any) -> None:
     assert hub in ids
     row = next(r for r in rows if r.ref_id == hub)
     assert row.state is None
+
+
+# ── ``tagline`` (precis.workers.hub_tagline) — presentation metadata on
+# ``refs.meta``, threaded onto the overview row for the /nanopub forest. ──
+
+
+def test_hub_rows_tagline_none_when_unset(store: Any) -> None:
+    hub = mint_hub(store, CanonicalClaim(sentence="a taglineless hub claim", scope={}))
+
+    rows = hub_rows(store)
+
+    row = next(r for r in rows if r.ref_id == hub)
+    assert row.tagline is None
+
+
+def test_hub_rows_carries_tagline_from_meta(store: Any) -> None:
+    hub = mint_hub(store, CanonicalClaim(sentence="a tagline-bearing claim", scope={}))
+    store.update_ref(hub, meta_patch={"tagline": "Pd/C is Suzuki catalyst"})
+
+    rows = hub_rows(store)
+
+    row = next(r for r in rows if r.ref_id == hub)
+    assert row.tagline == "Pd/C is Suzuki catalyst"

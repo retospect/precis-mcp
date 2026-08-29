@@ -374,3 +374,37 @@ def test_render_claim_evidence_publish_state_from_live_row(hub: Hub) -> None:
     assert data is not None
     assert data["publish_state"] == "candidate"
     assert data["publish_at"] == row.updated_at
+
+
+# ---------------------------------------------------------------------------
+# ``tagline`` — the 3-6 word human handle (precis.workers.hub_tagline),
+# read straight off ``hub_ref.meta`` (already fetched by both the singular
+# and bulk callers — no new query added).
+# ---------------------------------------------------------------------------
+
+
+def test_render_claim_evidence_tagline_absent_by_default(hub: Hub) -> None:
+    """No ``meta.tagline`` set → ``tagline`` is ``None`` — the render
+    surfaces must treat this as exactly today's rendering."""
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    head = handle_registry.format_handle("finding", claim_hub)
+
+    data = render_claim_evidence(store, head)
+
+    assert data is not None
+    assert data["tagline"] is None
+
+
+def test_render_claim_evidence_tagline_carries_through(hub: Hub) -> None:
+    """A hub carrying ``meta.tagline`` surfaces it verbatim in the render
+    shape."""
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    store.update_ref(claim_hub, meta_patch={"tagline": "Pd/C is Suzuki catalyst"})
+    head = handle_registry.format_handle("finding", claim_hub)
+
+    data = render_claim_evidence(store, head)
+
+    assert data is not None
+    assert data["tagline"] == "Pd/C is Suzuki catalyst"

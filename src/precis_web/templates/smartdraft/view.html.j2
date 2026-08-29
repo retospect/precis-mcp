@@ -826,9 +826,13 @@
           {% for entry in claims_evidence %}
           {% set starred = (entry.originators + entry.corroborators) | selectattr('starred') | map(attribute='handle') | list %}
           {% set np_tip = 'nanopub: ' ~ (entry.publish_state or 'not started') ~ (' — since ' ~ entry.publish_at.strftime('%Y-%m-%d %H:%M') ~ 'Z' if entry.publish_at else '') %}
+          {# `tagline` (precis.workers.hub_tagline): the chip label when
+             the hub has a 3-6 word human handle set; absent → the old
+             80-char claim-sentence truncation. `title` stays the full
+             sentence either way — the hover always shows the whole claim. #}
           <a href="/claim/{{ entry.head }}" data-claim-head="{{ entry.head }}"
              class="max-w-[16rem] truncate rounded px-1.5 py-0.5 text-[11px] {{ np_chip.get(entry.publish_state, 'bg-violet-50 text-violet-700 hover:bg-violet-100') }}"
-             title="{{ entry.claim }}&#10;{{ np_tip }}">{{ entry.claim[:80] }}{% if entry.claim | length > 80 %}…{% endif %}{% if starred %} [{{ starred | join(', ') }}]{% endif %}</a>
+             title="{{ entry.claim }}&#10;{{ np_tip }}">{% if entry.tagline %}{{ entry.tagline }}{% else %}{{ entry.claim[:80] }}{% if entry.claim | length > 80 %}…{% endif %}{% endif %}{% if starred %} [{{ starred | join(', ') }}]{% endif %}</a>
           {% endfor %}
         </div>
       </div>

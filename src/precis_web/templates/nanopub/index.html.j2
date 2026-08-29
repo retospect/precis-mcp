@@ -131,7 +131,10 @@
         <a class="font-mono text-xs text-emerald-700 hover:underline shrink-0"
            data-pane="np-review" href="/nanopub/fi{{ n.row.ref_id }}"
            data-src="/claim/fi{{ n.row.ref_id }}">fi{{ n.row.ref_id }}</a>
-        <span class="np-title text-sm leading-snug" title="{{ n.row.title }}">{{ n.row.title }}</span>
+        {# `tagline` (precis.workers.hub_tagline): the visible np-title
+           text when the hub has a 3-6 word human handle set — full title
+           stays in `title=` (hover). Absent → exactly the old render. #}
+        <span class="np-title text-sm leading-snug" title="{{ n.row.title }}">{{ n.row.tagline or n.row.title }}</span>
         {% if n.row.trusty_uri %}
         <span class="font-mono text-xs text-slate-400 shrink-0"
               title="{{ n.row.trusty_uri }}">{{ n.row.trusty_uri.rsplit('/', 1)[-1][:14] }}…</span>

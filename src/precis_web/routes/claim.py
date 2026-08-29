@@ -20,6 +20,13 @@ so both paths render byte-identical pages.
 override write door (:mod:`precis.taproot.trust`'s only softener) — the
 twin of, but semantically distinct from, ``POST /papers/<id>/unacquirable``
 (a pure acquirability fact about the paper that never softens a claim).
+
+``POST /claim/<head>/tagline`` is the human edit door for the hub's
+3-6 word tagline (precis.workers.hub_tagline) — presentation metadata on
+``refs.meta``, never the claim string/URI/artifact bytes, so it's writable
+at any nanopub state. A human edit here sets ``tagline_by='human'`` so the
+``hub_tagline`` worker pass never overwrites it; an empty submit clears
+both keys, handing the hub back to the pass for regeneration.
 """
 
 from __future__ import annotations
@@ -258,4 +265,51 @@ async def claim_unacquirable(
         "at": datetime.now(UTC).isoformat(),
     }
     store.update_ref(hub_ref_id, meta_patch={"unacquirable_override": override})
+    return RedirectResponse(url=redirect, status_code=303)
+
+
+@router.post("/claim/{head}/tagline", response_model=None)
+async def claim_tagline(
+    request: Request,
+    head: str,
+    tagline: str = Form(""),
+) -> Response:
+    """Set / clear the hub's human-editable tagline
+    (``precis.workers.hub_tagline``) — a 3-6 word handle, presentation metadata on
+    ``refs.meta`` only (never the claim string/URI/bytes), so it's writable
+    at any nanopub state. A non-empty submit is trimmed and validated (≤ 8
+    words, ≤ 64 chars, single line — generous over the 3-6 word content
+    rule, since a human editing here is trusted more than the generator)
+    then written with ``tagline_by='human'`` so the ``hub_tagline`` worker
+    pass never clobbers it. An empty submit clears both keys, handing the
+    hub back to the pass for regeneration."""
+    store = get_store(request)
+    data = render_claim_evidence(store, head)
+    if data is None:
+        return _claim_error(request, "Tagline error", f"no claim hub for {head!r}", 400)
+    hub_ref_id = data["hub_ref_id"]
+    redirect = f"/claim/{head}"
+    t = (tagline or "").strip()
+    if not t:
+        store.update_ref(
+            hub_ref_id,
+            # `tagline_failures` clears too — "hand back to the pass" must
+            # hold even for a hub that burned its LLM retry cap before the
+            # human ever touched it.
+            meta_patch={"tagline": None, "tagline_by": None, "tagline_failures": None},
+        )
+        return RedirectResponse(url=redirect, status_code=303)
+    if "\n" in t or "\r" in t:
+        return _claim_error(
+            request, "Tagline error", "a tagline must be a single line", 400
+        )
+    if len(t) > 64:
+        return _claim_error(
+            request, "Tagline error", "a tagline must be at most 64 characters", 400
+        )
+    if len(t.split()) > 8:
+        return _claim_error(
+            request, "Tagline error", "a tagline must be at most 8 words", 400
+        )
+    store.update_ref(hub_ref_id, meta_patch={"tagline": t, "tagline_by": "human"})
     return RedirectResponse(url=redirect, status_code=303)

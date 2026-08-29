@@ -246,6 +246,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_bib_retag_pass": PassBand.DEFAULT,
     "_inbound_chase_pass": PassBand.BACKGROUND,
     "_hub_refine_pass": PassBand.BACKGROUND,
+    "_hub_tagline_pass": PassBand.BACKGROUND,
     "_chase_trigger_pass": PassBand.BACKGROUND,
     "_fetch_pass": PassBand.BACKGROUND,
     "_gp_fetch_pass": PassBand.BACKGROUND,
@@ -930,6 +931,28 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_hub_refine_pass)
+
+        # hub_tagline — LLM backfill of `refs.meta.tagline` (a 3-6 word
+        # human handle) on live taproot claim hubs missing one
+        # (precis.workers.hub_tagline). Claim-and-lease per hub, one
+        # SMALL-tier call, code-validated before write -- no embedder
+        # needed. Default-OFF, dark like every other taproot service (§L:
+        # `service prio` controls it, no PRECIS_HUB_TAGLINE_ENABLED live
+        # read) / --only hub_tagline.
+        if _register("hub_tagline"):
+            from precis.workers.hub_tagline import run_hub_tagline_pass
+            from precis.workers.runner import BatchResult as _HubTaglineBatchResult
+
+            def _hub_tagline_pass(batch_size: int) -> _HubTaglineBatchResult:
+                r = run_hub_tagline_pass(store, limit=batch_size)
+                return _HubTaglineBatchResult(
+                    handler="hub_tagline",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_hub_tagline_pass)
 
         # chase_trigger — incremental counterpart to hub_refine above
         # (transient-napping-parrot Phase 1): sweeps freshly-embedded
