@@ -690,6 +690,36 @@
   \end{columns}
 \end{frame}
 
+% ---------- 9d · pcb maker ----------
+\begin{frame}{PCB maker: the same recipe on electronics}
+  \citefield{src/precis/pcb/ --- eyes.py, drc.py, optimize.py \(\cdot\) handlers/datasheet.py}
+  \begin{itemize}\itemsep0.3ex
+    \item[\sdone] A circuit is already a graph: the board lives as a typed
+          netlist + placement IR the LLM reads as structure, never pixels
+          --- the CAD / slab pattern, applied to electronics
+    \item[\sdone] \textbf{Netlist checking} is where the LLM shines: it
+          walks the logical signal trace pin by pin and questions intent;
+          the \emph{eyes} (ratsnest, crossings, proximity) plus geometric
+          and per-net connectivity DRC give it exact, unit-tested answers
+          --- no LLM in that loop
+    \item[\sdone] \textbf{Datasheet reading}, the other strength: datasheets
+          ingest through the full paper pipeline (fisheye TOC, in-document
+          search), link \emph{datasheet-of} to their parts --- ``check
+          pin 7 against the datasheet'' is one call, and a datasheet can
+          ground evidence like a paper
+    \item[\sdone] Joint place+route: simulated-annealing placer +
+          occupancy-grid maze router down to \emph{zero} DRC violations
+          --- IPC-2221 track widths, plane pours, via shoving, silkscreen;
+          JLCPCB-native parts catalog
+    \item[\sdone] Export only at the edge: gerber fab bundle + BOM/CPL
+          from one view --- the design never leaves the relational graph
+          until fab
+    \item[\srough] Toward the first ordered board: reference boards route
+          clean; the topological place+route write-up is a living
+          pr\'ecis draft
+  \end{itemize}
+\end{frame}
+
 % ---------- 9b · corpus to manuscript ----------
 \begin{frame}{From corpus to manuscript}
   \citefield{src/precis/export/endnote.py}

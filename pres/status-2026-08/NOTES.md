@@ -23,7 +23,15 @@ Paper draft (Digital Discovery) is phase 2.
   status bullet flipped \srough→\sdone with live counts; taproot
   data-model nanobuds bullets flipped \sidea→\sdone (hearsay gate shipped
   in nanopub/gates.py); export slide gained the published-claim-artifacts
-  appendix bullet; scoreboard gained a nanopub \sdone line.
+  appendix bullet; scoreboard gained a nanopub \sdone line. Also in v26
+  (same day, Reto's ask): "PCB maker: the same recipe on electronics"
+  (p25, after "LLM hands on the model"; 47 frames now) — emphasis per Reto
+  on netlist checking + datasheet reading as the LLM strengths. Grounded:
+  eyes/DRC in src/precis/pcb/ (eyes.py, drc.py, connectivity), zero-DRC
+  place+route d16d47cf, IPC-2221 widths 690c811a, silkscreen/via-shoving +
+  2nd reference board 74390332, gerber bundle 88fb3d77, datasheet =
+  paper-pipeline evidence kind (handlers/datasheet.py). "First ordered
+  board" deliberately \srough — no fab order has been claimed/verified.
 
 ## Build
 
