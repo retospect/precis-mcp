@@ -1658,6 +1658,62 @@ async def send_remarkable_papers_route(request: Request, ident: str) -> Response
     )
 
 
+@router.post("/drafts/{ident}/remarkable-reading")
+async def send_remarkable_reading_route(request: Request, ident: str) -> Response:
+    """Start a ``remarkable_reading_send`` job — typeset each cited source
+    (papers/patents/datasheets) of the draft as a tablet-sized "reading
+    edition" (body chunks + a claims appendix + the original PDF when this
+    host holds a copy) and send each to the tablet. Runs on a worker;
+    progress + result land under the draft's project on the task page.
+    Redirects back to the reader.
+
+    Only meaningful when a reMarkable credential is configured — the button
+    is hidden otherwise — but we re-check here so a stale page can't enqueue
+    a job that would just fail. When someone is signed in, their own login
+    is threaded into the job so it resolves *their* paired device first
+    (see ``precis.export.remarkable``)."""
+    from precis.export.remarkable import remarkable_configured
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url="/drafts", status_code=303)
+    user = current_user(request)
+    login = user.login if user is not None else None
+    if not remarkable_configured(store, login=login):
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "reMarkable not configured",
+                "detail": "no reMarkable device credential is set — pair "
+                "your tablet at /account, or set the deployment-wide "
+                "REMARKABLE_RMAPI_CONFIG (or REMARKABLE_TOKEN) at /secrets.",
+                "status": 400,
+            },
+            status_code=400,
+        )
+    slug = str(ref.slug or ref.id)
+    params: dict[str, Any] = {"draft": slug}
+    if login:
+        params["user"] = login
+    return await redirect_or_error(
+        request,
+        "put",
+        {
+            "kind": "job",
+            "job_type": "remarkable_reading_send",
+            "parent_id": _job_parent(store, ref),
+            "params": params,
+            # Login-scoped: two users sending the same draft target
+            # different tablets, so they must not coalesce into one job.
+            "idem_key": f"remarkable_reading_send:{slug}:{login or 'shared'}",
+        },
+        redirect=f"/drafts/{ident}",
+        error_title="reMarkable send error",
+    )
+
+
 def _delete_confirm_ok(ref: Any, confirm: str) -> bool:
     """The type-the-name guard: the typed text must match the draft's title
     or slug (trimmed, case-insensitive). Deliberately strict — a delete must

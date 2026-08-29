@@ -808,6 +808,18 @@ of a held paper) or the export marks a stub + warns.
   (`/Precis/<slug>`); missing-on-host sources are reported, not fatal.
   Agent-startable: `put(kind='job', job_type='remarkable_papers_send',
   params={'draft': '<slug>'})`.
+- **Reading editions → reMarkable** — web's **reading → reMarkable** button
+  (same credential rules) typesets EACH cited source as its own tablet-sized
+  PDF: the source's body chunks in reading order (light formatting, RM2
+  geometry), then a claims appendix (every Taproot claim hub grounded in
+  this source, with its publish state), then the original PDF appended when
+  this host holds a copy. Body + claims come from the database, so a source
+  missing from this host's corpus still gets a reading edition — just
+  without part 3 (a note in the document says so); only a source with zero
+  body chunks and no local PDF is skipped. `params.source` restricts the
+  run to one cited source (slug). Agent-startable:
+  `put(kind='job', job_type='remarkable_reading_send',
+  params={'draft': '<slug>', 'source': '<optional slug>'})`.
 - **Freeze/snapshot** (release + backup) copies the draft's current
   chunks into an immutable `paper`-like ref (versioned, searchable,
   citable), linked `snapshot-of` the draft; the draft keeps evolving.

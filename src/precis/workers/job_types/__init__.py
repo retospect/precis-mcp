@@ -281,6 +281,13 @@ def _load_remarkable_papers_send() -> JobTypeSpec:
     return remarkable_papers_send.SPEC
 
 
+def _load_remarkable_reading_send() -> JobTypeSpec:
+    # Deterministic per-source reading-edition typeset + upload (plugin dispatch).
+    from precis.workers.job_types import remarkable_reading_send
+
+    return remarkable_reading_send.SPEC
+
+
 def _load_news_poll() -> JobTypeSpec:
     # Deterministic RSS ingestion pass (runs via plugin dispatch).
     from precis.workers.job_types import news_poll
@@ -600,6 +607,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "remarkable_papers_send":
         _REGISTRY["remarkable_papers_send"] = _load_remarkable_papers_send()
         return _REGISTRY["remarkable_papers_send"]
+    if name == "remarkable_reading_send":
+        _REGISTRY["remarkable_reading_send"] = _load_remarkable_reading_send()
+        return _REGISTRY["remarkable_reading_send"]
     if name == "news_poll":
         _REGISTRY["news_poll"] = _load_news_poll()
         return _REGISTRY["news_poll"]
@@ -679,6 +689,7 @@ def known_job_types() -> list[str]:
         "draft_refresh",
         "remarkable_send",
         "remarkable_papers_send",
+        "remarkable_reading_send",
         "news_poll",
         "briefing",
         "reading_brief",
