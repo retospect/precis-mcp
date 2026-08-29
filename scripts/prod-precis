@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# prod-precis — run the precis CLI against the LIVE precis_prod DB.
+#
+# Mirrors scripts/prod-psql's credential handling: the DSN is read from
+# ~/.secrets/pw/PRECIS_DATABASE_URL inside this process and exported to
+# the child only — it never appears on a command line or in output.
+#
+# ⚠ agent_rw is WRITE-capable and this is PRODUCTION. The `precis tools`
+# subcommands are the CLI mirror of the MCP seven-verb API (same
+# handlers, same gates); use those, not raw SQL.
+#
+# Usage:
+#   /tmp/prod-precis tools get --id fi237847
+#   /tmp/prod-precis tools edit --kind draft --id dc123 --find '…' --text '…'
+#   /tmp/prod-precis taproot mint --dry-run --spec spec.json
+set -euo pipefail
+# The stored DSN is container-oriented (host.docker.internal = the Mac's
+# autossh tunnel to caspar's pgbouncer); on the host that's 127.0.0.1.
+export PRECIS_DATABASE_URL="$(sed 's#@host.docker.internal:#@127.0.0.1:#' "$HOME/.secrets/pw/PRECIS_DATABASE_URL")"
+export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
+cd "$(dirname "$0")/.."
+exec uv run precis "$@"

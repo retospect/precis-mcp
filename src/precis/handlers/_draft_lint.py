@@ -17,9 +17,12 @@ these into its ``put``/``edit``/``get`` bodies.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from precis.utils import handle_registry
 
@@ -497,6 +500,236 @@ def newly_dangling(
     old_find = set(dangling_finding_tokens(store, old_text))
     find = [s for s in dangling_finding_tokens(store, new_text) if s not in old_find]
     return chunk, find
+
+
+# ── [fi] cite-fit audit — does the cited hub's claim support the prose? ──
+#
+# The pc-side lints above check *form*; this one checks the draft↔hub seam
+# the mint gates never see: a `[fi<id>]` cite whose hub asserts something
+# *adjacent* to the draft's sentence (hub: characterization, draft:
+# production scale — the fi236297/dc2445854 class). It needs an LLM
+# judgment per cite, so unlike every hint above it is NOT wired into the
+# synchronous write path — callers are explicit audit passes (sweeps, a
+# future hygiene/audit view), with `judge_fn` injected the same way the
+# taproot backfill cascade injects `dedup_judge`.
+
+#: An `[fi<id>]` cite grounds the prose since the previous cite (of any
+#: kind) or the chunk start — the backfill's "a claim is whatever a
+#: citation grounds" rule. The judged tail is capped: the grounded
+#: assertion sits adjacent to its cite, and an unbounded paragraph head
+#: only pads the judge's context.
+_FIT_SEGMENT_CAP = 800
+
+_FI_HANDLE_RE = re.compile(r"fi\d+$")
+
+FitVerdictKind = Literal["supports", "partial", "adjacent", "unrelated", "error"]
+
+
+class FitVerdict(TypedDict):
+    """One cite-fit judgment for a (segment, hub-claim) pair."""
+
+    verdict: FitVerdictKind
+    confidence: float
+    rationale: str
+
+
+FitJudgeFn = Callable[[str, str], FitVerdict]
+
+
+@dataclass(frozen=True)
+class FiCiteFit:
+    """One judged `[fi<id>]` cite: the hub's claim sentence vs the draft
+    segment the cite grounds."""
+
+    token: str  # "fi236297"
+    hub_ref_id: int
+    claim: str  # the hub's claim sentence (refs.title)
+    segment: str  # the draft prose this cite grounds (marker-stripped)
+    verdict: FitVerdict
+
+
+def fi_cite_segments(text: str) -> list[tuple[str, int, str]]:
+    """``(token, hub_ref_id, segment)`` for every ``[fi<id>]`` cite (bare
+    or pinned ``[fi<id>>pc<id>]``) in ``text``, in order.
+
+    Segmentation mirrors ``taproot/backfill.py::segment_cite_groups``'s
+    rules with `fi` as the anchor kind: each cite grounds the
+    marker-stripped prose since the previous cite token (of any kind) or
+    the chunk start; contiguous fi cites (whitespace-only gap —
+    ``[fi1][fi2]``) share one segment (one claim, several hubs); a prefix
+    cite (empty segment, no run to share) grounds nothing and is skipped.
+    """
+    from precis.utils.draft_markup import strip_markers
+    from precis.utils.mentions import DRAFT_MARKUP_PATTERN
+
+    out: list[tuple[str, int, str]] = []
+    prev_end = 0
+    run_segment: str | None = None  # live only across an unbroken fi run
+    for m in DRAFT_MARKUP_PATTERN.finditer(text or ""):
+        bare = m.groupdict().get("bare")
+        is_fi = bool(bare) and bool(_FI_HANDLE_RE.match(bare or ""))
+        if not is_fi:
+            prev_end = m.end()
+            run_segment = None
+            continue
+        assert bare is not None
+        span = strip_markers(text[prev_end : m.start()]).strip()
+        span = re.sub(r"^[\s.,;:!?)—–-]+", "", span)
+        prev_end = m.end()
+        if span:
+            run_segment = span[-_FIT_SEGMENT_CAP:]
+        elif run_segment is None:
+            continue  # prefix cite — grounds nothing
+        out.append((bare, int(bare[2:]), run_segment))
+    return out
+
+
+_FIT_JUDGE_SYS = (
+    "You are a strict citation auditor for a scientific draft. Reply with "
+    "ONLY the requested JSON object, no prose."
+)
+
+_FIT_JUDGE_PROMPT = """\
+A draft cites a claim hub as the supporting evidence for the assertion at
+the END of this segment (the prose immediately before the citation is what
+the cite grounds). Judge whether the HUB CLAIM supports that assertion —
+not whether the two share a topic or a source paper.
+
+- "supports": the hub claim states or directly entails the draft's assertion.
+- "partial": the same fact, but the hub is weaker, narrower, or hedged where
+  the draft is not (citation inflation).
+- "adjacent": same paper/topic, DIFFERENT assertion — the hub reports one
+  finding (e.g. a characterization) while the draft asserts another (e.g. a
+  production capability). The classic paper-proxy cite.
+- "unrelated": the hub claim has no bearing on the draft's assertion.
+
+DRAFT SEGMENT: {segment}
+
+HUB CLAIM: {claim}
+
+Respond with EXACTLY ONE JSON object, nothing else:
+{{
+  "verdict": "supports" | "partial" | "adjacent" | "unrelated",
+  "confidence": <float 0.0-1.0>,
+  "rationale": "<one sentence>"
+}}
+"""
+
+
+def _coerce_fit_verdict(data: object, *, default_rationale: str) -> FitVerdict:
+    """Normalize raw model JSON into a :class:`FitVerdict`. Bias-safe both
+    ways: a malformed/missing verdict degrades to ``"error"`` at confidence
+    0.0 — never a silent ``"supports"`` (a masked bad cite) and never a
+    false flag (an invented ``"adjacent"``)."""
+    verdict: FitVerdictKind = "error"
+    confidence = 0.0
+    rationale = default_rationale
+    if isinstance(data, dict):
+        raw = data.get("verdict")
+        if raw in ("supports", "partial", "adjacent", "unrelated"):
+            verdict = raw
+        raw_conf = data.get("confidence")
+        if isinstance(raw_conf, int | float) and not isinstance(raw_conf, bool):
+            confidence = max(0.0, min(1.0, float(raw_conf)))
+        raw_rat = data.get("rationale")
+        if isinstance(raw_rat, str) and raw_rat.strip():
+            rationale = raw_rat.strip()
+    return FitVerdict(verdict=verdict, confidence=confidence, rationale=rationale)
+
+
+def cite_fit_judge(segment: str, claim: str) -> FitVerdict:
+    """One bounded pairwise cite-fit judgment — MEDIUM tier, mirroring
+    ``taproot/canon.py::dedup_judge``'s dispatch + degrade discipline."""
+    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+
+    prompt = _FIT_JUDGE_PROMPT.format(segment=segment, claim=claim)
+    res = dispatch(
+        LlmRequest(
+            tier=Tier.MEDIUM,
+            messages=[
+                {"role": "system", "content": _FIT_JUDGE_SYS},
+                {"role": "user", "content": prompt},
+            ],
+            prompt=prompt,
+            source="draft:cite-fit",
+        )
+    )
+    if res.error:
+        log.warning("cite_fit_judge dispatch failed: %s", res.error)
+        return _coerce_fit_verdict(
+            None, default_rationale=f"dispatch error: {res.error}"
+        )
+    data = res.data
+    if data is None:
+        try:
+            data = json.loads(res.text or "")
+        except (json.JSONDecodeError, TypeError):
+            m = re.search(r"\{.*\}", res.text or "", re.DOTALL)
+            data = None
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    data = None
+    return _coerce_fit_verdict(data, default_rationale="unparseable model output")
+
+
+def fi_cite_fit_report(
+    store: Store, text: str, judge_fn: FitJudgeFn = cite_fit_judge
+) -> list[FiCiteFit]:
+    """Judge every ``[fi<id>]`` cite in ``text`` against the hub claim it
+    resolves to. Tokens that resolve to no live finding are skipped — the
+    dangling-reference lints own that failure. Duplicate (token, segment)
+    pairs are judged once."""
+    segs = fi_cite_segments(text)
+    if not segs:
+        return []
+    refs = store.fetch_refs_by_ids(sorted({hub_id for _, hub_id, _ in segs}))
+    out: list[FiCiteFit] = []
+    seen: set[tuple[str, str]] = set()
+    for token, hub_id, segment in segs:
+        ref = refs.get(hub_id)
+        if ref is None or getattr(ref, "kind", None) != "finding":
+            continue
+        claim = (ref.title or "").strip()
+        if not claim:
+            continue
+        key = (token, segment)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            FiCiteFit(
+                token=token,
+                hub_ref_id=hub_id,
+                claim=claim,
+                segment=segment,
+                verdict=judge_fn(segment, claim),
+            )
+        )
+    return out
+
+
+def fi_cite_fit_hint(rows: list[FiCiteFit]) -> str:
+    """Advisory ⚠ lines for the cite-fit failures in ``rows`` —
+    ``adjacent``/``unrelated`` verdicts only (``partial`` is a review-pass
+    concern, not a wrong cite; ``error`` is infrastructure, not evidence).
+    Empty when every judged cite fits."""
+    bad = [r for r in rows if r.verdict["verdict"] in ("adjacent", "unrelated")]
+    if not bad:
+        return ""
+    lines = []
+    for r in bad:
+        tail = r.segment[-160:]
+        lines.append(
+            f"\n\n⚠ cite-fit ({r.verdict['verdict']}): [{r.token}] — the hub "
+            f'claims "{r.claim}" but the prose it grounds asserts '
+            f'"…{tail}" ({r.verdict["rationale"]}). An adjacent hub is a '
+            "paper-proxy, not support: if the source paper backs the draft's "
+            "assertion, mint THAT claim (put(kind='finding', …, supporters=…)) "
+            "and cite it; otherwise re-ground or drop the cite."
+        )
+    return "".join(lines)
 
 
 def dangling_edit_hint(store: Store, new_text: str, old_text: str) -> str:
