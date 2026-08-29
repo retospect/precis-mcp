@@ -5,15 +5,22 @@
 # the precis-dft:cpu IMAGE, not the worker venv, so there is nothing to
 # pip-install here. See roles/dft/README.md.
 #
-# Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
-# this drops the EnvironmentFile drop-in it reads, then restarts it). Not part
-# of site.yml — run explicitly like the other worker plays:
+# Targeting is topology-driven (inventory/group_vars/all/topology.yml), like
+# 44-autocatpath / 46-alphafold: the role runs where `inventory_hostname in
+# precis_capabilities.dft`. (Was `hosts: inference` until the 2026-08-29 GPU-node
+# retirement emptied that group and dft moved to a `compute`-group twin.)
+#
+# Run order: AFTER the worker play for the target host (the worker unit must
+# exist; this drops the EnvironmentFile drop-in it reads, then restarts it).
+# Not part of site.yml — run explicitly like the other worker plays:
 #
 #   ansible-playbook playbooks/42-dft.yml
 #   # (re)build the image on the node too:
 #   ansible-playbook playbooks/42-dft.yml -e dft_build_image=true
 
-- name: Configure DFT compute on the GPU node
-  hosts: inference
+- name: Configure DFT compute (topology-driven)
+  hosts: all
+  become: true
   roles:
-    - dft
+    - role: dft
+      when: inventory_hostname in (precis_capabilities.dft | default([]))

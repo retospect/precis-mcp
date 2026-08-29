@@ -41,13 +41,14 @@
     mode: "0755"
   become: true
 
+# Existence only — ownership policy on the shared podcast dir belongs to
+# roles/precis_web (deploy:staff). Setting owner/group here made the two
+# roles flip the group on every alternating run, and the web role's chgrp
+# back then failed over NFS (seen 2026-08-29 on the gateway rehome).
 - name: Ensure the podcast dir exists (episodes land here)
   ansible.builtin.file:
     path: "{{ tts_podcast_dir }}"
     state: directory
-    owner: "{{ tts_worker_user }}"
-    group: "{{ tts_worker_user }}"
-    mode: "0755"
   become: true
 
 # ── (re)build the precis-tts image on the node ────────────────────────
