@@ -537,11 +537,10 @@ def search(
     search; `title=`/`author=` look up by byline.
 
     Claims (finding): `trust='verified'` = evidence-backed + unopposed;
-    `'signed'` = provenance, a separate axis, not a higher bar; also
+    `'signed'` = provenance (separate axis, not a higher bar); also
     `'disputed'`/`'any'`. `status=` is the chase lifecycle.
 
-    Discovery: `uncited=<draft>` drops sources that draft already cites —
-    surfacing what it hasn't grounded yet.
+    Discovery: `uncited=<draft>` drops sources that draft already cites.
 
     Full reference: get(kind='skill', id='precis-search-help').
     """

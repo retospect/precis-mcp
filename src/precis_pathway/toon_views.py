@@ -139,7 +139,7 @@ def _trust_evidence(rec: dict[str, Any]) -> str:
 
 
 def trust_toon(meta: dict[str, Any]) -> str:
-    """Per-step structured trust records (catpath ``trust_schema == 1``,
+    """Per-step structured trust records (catpath ``trust_schema`` 1-2,
     ``docs/backlog/per-step-trust-records.md`` upstream) as a TOON table
     grouped by step/state — the artifact answers "which step, which check,
     which evidence" directly, no prose regex. Record ids render VERBATIM
@@ -152,15 +152,17 @@ def trust_toon(meta: dict[str, Any]) -> str:
     """
     results = meta.get("results")
     results = results if isinstance(results, dict) else {}
-    if results.get("trust_schema") != 1:
+    schema = results.get("trust_schema")
+    if schema not in (1, 2):  # 2 (engine 0.20.0) is additive over 1
         return (
             "this pathway predates per-step trust records (its results carry "
-            "no trust_schema == 1) — re-run it against a current autocatpath "
-            "to get this view; try view='warnings' for the prose fallback."
+            "no trust_schema in 1-2) — re-run it against a current "
+            "autocatpath to get this view; try view='warnings' for the "
+            "prose fallback."
         )
     records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
     if not records:
-        return "trust_schema=1 but no trust records on this pathway."
+        return f"trust_schema={schema} but no trust records on this pathway."
 
     rows = [
         {

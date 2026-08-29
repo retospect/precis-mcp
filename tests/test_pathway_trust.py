@@ -178,6 +178,29 @@ def test_trust_view_no_trust_schema_gets_guidance_not_empty_table(
         assert str(rec["id"]) not in r.body
 
 
+def test_trust_view_schema2_without_records_says_so(
+    pathway_store: Store,
+) -> None:
+    """Schema 2 (catpath 0.20.0) passes the version gate; a results payload
+    that carries the schema but an empty ``trust`` list gets the explicit
+    no-records message (naming the schema it saw), never an empty table."""
+    h = _handler(pathway_store)
+    _seed(
+        pathway_store,
+        "trust-v2-empty",
+        {
+            "status": "ready",
+            "graph": _GRAPH,
+            "results": {**_RESULTS_LEGACY, "trust_schema": 2, "trust": []},
+        },
+    )
+
+    r = h.get(id="trust-v2-empty", view="trust")
+    assert "trust_schema=2" in r.body
+    assert "no trust records" in r.body
+    assert "predates" not in r.body
+
+
 def test_trust_view_no_graph_errors_cleanly(pathway_store: Store) -> None:
     """No computed graph → the same not-computed-yet guard as the other
     views, not a crash."""

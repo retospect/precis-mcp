@@ -144,6 +144,14 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
             "neb_schedule": "best_first",
             "neb_optimizer": "neb-ode",
             "neb_batched": True,
+            # k-start barriers (engine >= 0.20.0, trust schema 2): 3 seeded
+            # path inits per NEB, reporting the min over VALID paths — a
+            # valid path's barrier is an upper bound, so min-over-starts
+            # converges to the truth; the run-to-run ~1 eV path lottery
+            # becomes a recorded n_valid/n_at_min instead. NOT ignorable by
+            # older engines (strict Config), so this key rides the same ship
+            # that bumps the fleet's autocatpath floor to 0.20.0.
+            "neb_multistart": 3,
         },
     }
 
@@ -1731,7 +1739,9 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
 
     Version-gated on ``meta['results']['trust_schema']`` (catpath's structured
     per-step trust records, ``docs/backlog/per-step-trust-records.md``
-    upstream): ``== 1`` delegates to :func:`_pathway_quality_v1`, which
+    upstream): ``1`` or ``2`` (2 is additive: endpoint-identity / saddle /
+    multistart checks, same record shape) delegates to
+    :func:`_pathway_quality_v1`, which
     separates the barrier verdict from selectivity instead of collapsing both
     into one boolean, stitching ``barrier_low_confidence`` back in from this
     same top-level meta (the low-confidence flag isn't part of the trust-
@@ -1755,7 +1765,11 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     results = meta.get("results")
     results = results if isinstance(results, dict) else None
     schema = results.get("trust_schema") if results is not None else None
-    if schema == 1:
+    if schema in (1, 2):
+        # schema 2 (engine 0.20.0) is ADDITIVE over 1: same record shape and
+        # verdict vocabulary, new checks (endpoint_identity/agreement,
+        # saddle_verified, multistart) — the v1 reader is exactly right for
+        # both, and trust_summary (which it delegates to) is catpath's own.
         assert results is not None  # narrows for mypy: schema came from it
         out = _pathway_quality_v1(results)
         out["barrier_low_confidence"] = bool(meta.get("low_confidence"))
@@ -1779,7 +1793,7 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
         # path (above) and say why, since this function has no logger.
         out["barrier_trust_note"] = (
             f"pathway results carry trust_schema={schema!r}, newer than this "
-            "reader (understands only schema 1) — fell back to the regex "
+            "reader (understands schemas 1-2) — fell back to the regex "
             "warning path"
         )
     return out

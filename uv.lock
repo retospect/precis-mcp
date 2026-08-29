@@ -315,8 +315,8 @@ wheels = [
 
 [[package]]
 name = "autocatpath"
-version = "0.19.0"
-source = { git = "https://github.com/retospect/catpath?branch=main#7fefe9e8bcb53a7fc7eca9f2b66628e03f6222a0" }
+version = "0.20.0"
+source = { git = "https://github.com/retospect/catpath?branch=main#3e64844fe1210a68e5cb9da428c8874859c0b718" }
 dependencies = [
     { name = "ase" },
     { name = "matplotlib" },

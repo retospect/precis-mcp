@@ -3448,10 +3448,33 @@ class TestPathwayQualityTrustRecords:
         assert "selectivity_trusted" not in out
         assert "barrier_trust_note" not in out
 
+    def test_trust_schema_2_delegates_to_the_v1_reader(self) -> None:
+        """Schema 2 (engine 0.20.0) is additive over 1 — same record shape,
+        new checks (endpoint_identity/agreement, saddle_verified,
+        multistart) — so the v1 reader handles it verbatim."""
+        results = {
+            "trust_schema": 2,
+            "route_steps": ["R->M"],
+            "trust_summary": {
+                "barrier": {
+                    "available": False,
+                    "blocked_by": ["R->M#s0#saddle_verified"],
+                },
+                "selectivity": {"available": True, "blocked_by": []},
+            },
+            "trust": [
+                _trust_rec(step="R->M", verdict="fail", id="R->M#s0#saddle_verified"),
+            ],
+        }
+        out = compute_mod._pathway_quality({"results": results})
+        assert out["barrier_trusted"] is False
+        assert out["barrier_blocked_by"] == ["R->M#s0#saddle_verified"]
+        assert "barrier_trust_note" not in out
+
     def test_trust_schema_newer_than_understood_falls_back_with_note(self) -> None:
         meta = {
             "results": {
-                "trust_schema": 2,
+                "trust_schema": 3,
                 "trust_summary": {"barrier": {"available": True, "blocked_by": []}},
             },
             "warnings": [],
@@ -3462,7 +3485,7 @@ class TestPathwayQualityTrustRecords:
         assert out["barrier_trusted"] is True
         assert "selectivity_trusted" not in out
         assert "barrier_trust_note" in out
-        assert "trust_schema=2" in out["barrier_trust_note"]
+        assert "trust_schema=3" in out["barrier_trust_note"]
 
     def test_marginal_only_artifact_stays_trusted_with_count(self) -> None:
         """``marginal``/``severity: warn`` never untrust anything — surfaced
@@ -4187,6 +4210,8 @@ class TestTierConfigMapping:
         assert out["search"]["neb_schedule"] == "best_first"
         assert out["search"]["neb_optimizer"] == "neb-ode"
         assert out["search"]["neb_batched"] is True
+        # k-start min-over-valid barriers (engine 0.20.0, trust schema 2)
+        assert out["search"]["neb_multistart"] == 3
         # other search keys survive the overlay; no template pinned
         assert out["search"]["seeds"] == [0, 1, 2]
         assert "template" not in out
@@ -4403,6 +4428,7 @@ class TestDispatchAutocatpath:
                     "neb_schedule": "best_first",
                     "neb_optimizer": "neb-ode",
                     "neb_batched": True,
+                    "neb_multistart": 3,
                 },
             }
             assert (
@@ -4576,6 +4602,7 @@ class TestDispatchAutocatpath:
                 "neb_schedule": "best_first",
                 "neb_optimizer": "neb-ode",
                 "neb_batched": True,
+                "neb_multistart": 3,
             },
         }
         for _jid, jmeta in seed_jobs:

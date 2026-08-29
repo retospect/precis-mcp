@@ -319,14 +319,14 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
 # compute extra below (mirrors dft/dft-ml) so a gateway venv can serve
 # get(kind='pathway') without pulling torch. Kept out of `all` (heavy,
 # host-specific like the other dft-ml/cad/pcb extras).
-# >=0.19.0 is not on PyPI (release-gated): the lock resolves it from the
+# >=0.20.0 is not on PyPI (release-gated): the lock resolves it from the
 # private catpath repo via [tool.uv.sources] below (needs GitHub auth at
 # lock/sync time — keychain locally, the gh_token BuildKit secret in the
 # image build). Cluster venvs never touch that source: the constraints
 # export excludes autocatpath (--no-emit-package, deploy/playbooks/
 # 03-precis-constraints.yml) and the catalyst installs resolve it from the
 # host wheelhouse (deploy/roles/autocatpath, --find-links).
-catalyst = ["autocatpath>=0.19.0"]
+catalyst = ["autocatpath>=0.20.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in the shipped
@@ -335,9 +335,9 @@ catalyst = ["autocatpath>=0.19.0"]
 # GPU node). `cuequivariance-torch` makes the engine's `mlip.cueq: auto`
 # actually engage (same math, faster CUDA kernels) — upstream keeps its
 # `mace` extra lean, so the dep rides here; Linux-only (no macOS wheels).
-# Same 0.19.0-not-on-PyPI caveat as the `catalyst` floor above.
+# Same 0.20.0-not-on-PyPI caveat as the `catalyst` floor above.
 catalyst-gpu = [
-    "autocatpath[mace]>=0.19.0",
+    "autocatpath[mace]>=0.20.0",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
 # NOTE: [external] and [patent] were promoted into core (2026-08-16) —
