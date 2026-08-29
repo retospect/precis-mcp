@@ -2132,7 +2132,8 @@ def test_paper_replace_pdf_swaps_file_bypassing_ocr(client, runtime, tmp_path) -
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers/10"
+    # Replace-pdf lives on the Meta tab — the redirect keeps the user there.
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
     dest = tmp_path / "s" / "smith2024.pdf"
     assert dest.read_bytes() == good
     # pointer refreshed for the paper's sha ("abc") to the path we wrote.
@@ -2211,7 +2212,8 @@ def test_resolve_duplicate_keep_this_absorbs_owner_and_reapplies_edit(
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers/10"
+    # The resolver is reached from the Meta edit flow — land back on Meta.
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
     # Owner #11 absorbed into #10 and retired.
     assert (11, 10) in store.merges
     assert 11 in store.deleted_ref_ids
@@ -2231,7 +2233,7 @@ def test_resolve_duplicate_keep_other_absorbs_this(client, runtime) -> None:
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers/11"
+    assert resp.headers["location"] == "/papers/11?tab=Meta"
     assert (10, 11) in store.merges
     assert 10 in store.deleted_ref_ids
     # No metadata edit re-applied on this direction.

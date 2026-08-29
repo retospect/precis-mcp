@@ -1695,7 +1695,7 @@ async def replace_pdf(
     if sha:
         store.set_pdf_storage_path(sha, str(dest))
 
-    return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
+    return RedirectResponse(url=f"/papers/{ref_id}?tab=Meta", status_code=303)
 
 
 # ---- Edit + delete ----------------------------------------------------
@@ -2100,7 +2100,7 @@ async def resolve_duplicate(
             await asyncio.to_thread(store.merge_refs, ref_id, owner_id)
         except (NotFound, BadInput) as exc:
             return _paper_error(request, "Merge error", str(exc), 400)
-        return RedirectResponse(url=f"/papers/{owner_id}", status_code=303)
+        return RedirectResponse(url=f"/papers/{owner_id}?tab=Meta", status_code=303)
 
     # keep == 'this': absorb the owner here, then re-apply the pending edit.
     try:
@@ -2138,7 +2138,7 @@ async def resolve_duplicate(
         await await_dispatch(
             request, "tag", {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]}
         )
-    return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
+    return RedirectResponse(url=f"/papers/{ref_id}?tab=Meta", status_code=303)
 
 
 @router.post("/{ref_id}/untriage", response_model=None)
