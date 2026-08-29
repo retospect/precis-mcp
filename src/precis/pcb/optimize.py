@@ -123,6 +123,56 @@ fast any one call happens to be at a 30-component test board. Instead:
   calls this — provably cost-neutral for ``crossings`` specifically, not
   merely untested.
 
+- ``courtyard_overlap`` (gr267456: the spatial-exclusion gap — nothing in
+  ``cost.py`` gave the optimizer any signal against two components
+  physically overlapping) is maintained through a **uniform spatial
+  grid**, the standard collision-detection accelerant for this shape of
+  problem: ``_courtyard_grid`` buckets instance ids by
+  ``floor(x / cell), floor(y / cell)`` with ``cell ==
+  cost.COURTYARD_MIN_SEPARATION_MM`` (the SAME threshold the term itself
+  collides at) — choosing the cell size equal to the interaction radius
+  is what makes a 3x3-neighbourhood query (:meth:`OptimizeEngine.
+  _courtyard_candidates_near`) provably EXACT, not an approximation: any
+  two instances within that radius of each other must share a cell or be
+  in adjacent cells, since the radius can't span more than one full cell
+  width in either axis. :meth:`OptimizeEngine._refresh_courtyard` is the
+  bounded delta — mirrors :meth:`_recompute_seg_crossings`'s discard-then-
+  rebuild-fresh shape exactly (drop the moved instance's cached
+  partnerships, relocate it in the grid, retest only against its new
+  3x3 neighbourhood) — and, like that method, is correct regardless of
+  call order for a multi-instance move (SWAP): whichever instance is
+  refreshed second simply rediscovers the first's already-current
+  position. Only overlapping pairs are cached (a non-overlapping pair
+  contributes 0 to the margin max either way, so omitting it costs
+  nothing — same reasoning ``_seg_crossing_partners`` already relies on).
+- ``board_edge_clearance`` (gr267456 addendum) depends only on the ONE
+  moved instance's own position and the board's ``outline`` (never
+  another instance's), so its delta is trivially local — O(1) per moved
+  instance, no grid needed: :meth:`OptimizeEngine._refresh_board_edge`
+  just re-evaluates :func:`~precis.pcb.cost.board_edge_clearance_term`
+  for that one instance. The move generator gets the prevention half of
+  the same fix: when ``ir.outline`` exists, ``_placement_bounds`` (its
+  bounding box, via :func:`~precis.pcb.cost.outline_bbox` — the SAME
+  approximation the cost term uses, not a second one) replaces the
+  synthetic ``(0, board_side)`` square TRANSLATE otherwise clamps to, so
+  a part is never proposed outside the real board in the first place —
+  cheaper than relying on the margin penalty to walk it back in.
+  **Capped to ``board_side`` per axis** (anchored at the outline's own
+  min corner, not the synthetic square's origin) rather than used
+  uncapped: measured on the ESP32-C3 reference fixture, an uncapped
+  clamp against a genuinely oversized/placeholder outline (300x300mm
+  against a ~30mm natural component footprint) more than quadrupled
+  total DRC errors on the same run — this engine's cooling schedule
+  (``t0``/step size, both still derived from the SAME n-instance
+  ``board_side`` heuristic, not outline-aware) lets a component drift far
+  during the still-permissive early schedule with no realistic way back
+  once it hardens, a classic SA schedule-vs-search-domain mismatch, not a
+  defect in clamping itself (see :meth:`OptimizeEngine.__init__`'s own
+  note for the full measurement). Capping bounds how much LARGER than
+  today's calibration an authored outline can make the search domain,
+  while a real, comparably- (or more tightly-) sized outline still governs
+  and gets genuine prevention.
+
 **What is NOT claimed local, on purpose.** Aggregating the margin family
 (:func:`precis.pcb.cost.aggregate_margin`'s max) over the already-cached
 per-item penalties is a linear scan over however many margin entries exist
@@ -146,7 +196,7 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -157,23 +207,28 @@ from precis.pcb import pinswap
 from precis.pcb.cost import (
     _BY_NAME,
     _CRITICALITY_WEIGHT,
+    COURTYARD_MIN_SEPARATION_MM,
     CostConfig,
     Family,
     TermValue,
     board_area_term,
+    board_edge_clearance_term,
     coupling_candidates,
     coupling_pair_term,
+    courtyard_overlap_pair_term,
     evaluate_cost,
     gap_capacity_term,
     hardened_penalty,
     layer_count_term,
     loop_inductance_term,
+    outline_bbox,
 )
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import (
     UNSET_LAYER,
     Level,
     PcbIR,
+    instance_pad_radius,
     nearest_other_instance,
     segment_points,
 )
@@ -499,12 +554,30 @@ def seed_placement(
     pitch_mm: float = 8.0,
     force: bool = False,
 ) -> None:
-    """The constructive seed: connectivity clustering (above) then
-    "cluster drop" — clusters land on a coarse grid (bigger clusters
-    first), members scatter on a small local sub-grid with mild jitter
-    inside their cluster's cell. Adjacency-aware, unlike a uniform random
+    """The constructive seed: connectivity clustering (above), then
+    **shelf packing by each part's own size** — clusters are laid out in
+    order (biggest cluster first, so adjacency survives), each instance
+    taking exactly the room its land pattern needs, wrapping to a new
+    shelf at ``row_width``. Adjacency-aware, unlike a uniform random
     scatter: instances that share nets start out near each other, which
     is what makes the SA refiner's job tractable.
+
+    **Why not a fixed ``pitch_mm`` grid.** It was one, and the grid
+    spacing has to be sized for the LARGEST part or that part overlaps
+    its neighbours. On a typical board — one module and 28 passives —
+    that means every 0.6mm capacitor is allotted the same cell as an
+    18mm module: this fixture's 29 instances seeded across 148mm of board
+    for ~30mm of actual parts. That is not merely untidy. The router
+    grids the pad bounding box under a fixed cell budget, so a seed 5x too
+    large makes the routing grid 5x too coarse to resolve the 0.65mm pad
+    pitch it has to escape from, and the anneal cannot walk it back
+    inside a fixed iteration budget. ``pitch_mm`` is now the *minimum*
+    footprint an instance is allotted, not the spacing.
+
+    The packing is legal by construction under
+    :meth:`OptimizeEngine._placement_is_legal`: within a shelf, adjacent
+    centres are exactly ``r_i + r_j`` apart, and successive shelves are
+    separated by the taller shelf's full height.
 
     ``force=False`` (the default, "re-anneal from current state" — the
     LLM's lever per the backlog) only seeds instances with no position yet
@@ -516,18 +589,39 @@ def seed_placement(
     """
     clusters = _cluster_instances(ir, max_cluster_size=max_cluster_size)
     clusters.sort(key=len, reverse=True)
-    n_clusters = max(1, len(clusters))
-    cols = max(1, math.ceil(math.sqrt(n_clusters)))
-    cluster_pitch = pitch_mm * max(1, math.ceil(math.sqrt(max_cluster_size))) * 1.5
+    radii = np.maximum(
+        instance_pad_radius(ir) + _PAD_BREATHING_MM,
+        max(COURTYARD_MIN_SEPARATION_MM / 2.0, pitch_mm / 8.0),
+    )
+    order = [inst for members in clusters for inst in members]
+    # A square-ish shelf region: total footprint area, with slack for the
+    # wrap waste an unsorted (adjacency-ordered, not size-ordered) shelf
+    # pack leaves behind.
+    total_area = float(sum((2.0 * radii[i]) ** 2 for i in order))
+    row_width = max(2.0 * float(radii.max()), math.sqrt(total_area) * 1.2)
 
-    for ci, members in enumerate(clusters):
-        row, col = divmod(ci, cols)
-        cx, cy = col * cluster_pitch, row * cluster_pitch
-        local_cols = max(1, math.ceil(math.sqrt(len(members))))
-        for mi, inst in enumerate(members):
-            lrow, lcol = divmod(mi, local_cols)
-            x = cx + lcol * pitch_mm + rng.uniform(-0.1, 0.1) * pitch_mm
-            y = cy + lrow * pitch_mm + rng.uniform(-0.1, 0.1) * pitch_mm
+    # Shelves start one edge-margin in, not at the origin: a part seeded
+    # with its pads exactly on x=0 is already outside every legal centre
+    # range (:meth:`OptimizeEngine.bounds_for`), and a part that starts
+    # illegal can never be moved by SWAP.
+    shelf_x = _EDGE_MARGIN_MM
+    shelf_y = _EDGE_MARGIN_MM
+    shelf_h = 0.0
+    positions: dict[int, tuple[float, float]] = {}
+    for inst in order:
+        diameter = 2.0 * float(radii[inst])
+        if shelf_x > _EDGE_MARGIN_MM and shelf_x + diameter > row_width:
+            shelf_x, shelf_y, shelf_h = _EDGE_MARGIN_MM, shelf_y + shelf_h, 0.0
+        positions[inst] = (
+            shelf_x + radii[inst] + _SEED_EPSILON_MM,
+            shelf_y + radii[inst] + _SEED_EPSILON_MM,
+        )
+        shelf_x += diameter + _SEED_EPSILON_MM
+        shelf_h = max(shelf_h, diameter + _SEED_EPSILON_MM)
+
+    for members in clusters:
+        for inst in members:
+            x, y = positions[inst]
             rot: float | None = None
             if not bool(ir.inst_fixed_rot[inst]) and (
                 force or math.isnan(float(ir.inst_rot[inst]))
@@ -555,8 +649,42 @@ def seed_placement(
 MoveGeneratorFn = Callable[["OptimizeEngine", random.Random, float], "Move | None"]
 
 #: The margin cache key shape: a segment id (gap_capacity/loop_inductance),
-#: a sorted segment-id pair (coupling), or a net name (thermal_rise).
+#: a sorted segment-id pair (coupling's segment ids, or courtyard_overlap's
+#: INSTANCE ids), a net name (thermal_rise), a layer id (crossings), or a
+#: single instance id (board_edge_clearance).
 MarginKey = int | tuple[int, int] | str
+
+
+def _pair_key(a: int, b: int) -> tuple[int, int]:
+    """A sorted pair key, canonical regardless of argument order — the same
+    convention ``coupling``'s ``(sa, sb)`` cache key already uses, reused
+    here for ``courtyard_overlap``'s instance-id pairs."""
+    return (a, b) if a < b else (b, a)
+
+
+#: How far inside the board outline a component's OUTERMOST PAD must sit
+#: — the component centre must therefore stay this far in PLUS its own
+#: :attr:`OptimizeEngine._keepout_r`. A single centre-inset was tried and
+#: is wrong for the same reason a single courtyard radius is: a module
+#: whose pads reach 8.9mm from its centre, placed at a 2mm centre-inset,
+#: puts copper 6.9mm off the board. (That is not a hypothetical — it is
+#: the 2 residual ``board_edge_clearance`` errors that survived every
+#: other fix here.) A graded ``board_edge_clearance`` cost term already
+#: existed and was settled through regardless: a part hanging off the
+#: board is not a margin to trade, so this is a domain boundary.
+_EDGE_MARGIN_MM = 0.5
+
+#: Gap left around a part's outermost pad when deriving its placement
+#: keep-out. Two adjacent parts' pads end up at least twice this apart,
+#: which is where their escape routes have to fit — set it to zero and
+#: the placer will legally produce a board the router cannot escape.
+_PAD_BREATHING_MM = 0.6
+
+#: Slack added between shelf-packed seed positions so a placement that is
+#: exactly at the keep-out limit lands strictly inside it — the legality
+#: test is a strict ``<``, and float arithmetic on the boundary is not
+#: something to rely on.
+_SEED_EPSILON_MM = 1e-3
 
 
 class OptimizeEngine:
@@ -584,6 +712,68 @@ class OptimizeEngine:
         self._movable_xy = [i for i in range(n) if not bool(ir.inst_fixed_xy[i])]
         self._movable_rot = [i for i in range(n) if not bool(ir.inst_fixed_rot[i])]
         self.board_side = max(20.0, 6.0 * math.sqrt(max(n, 1)))
+        #: TRANSLATE's clamp bounds (module docstring's board_edge_
+        #: clearance section) — the real outline's bounding box when the
+        #: design has authored one (:func:`~precis.pcb.cost.outline_bbox`,
+        #: the SAME approximation the ``board_edge_clearance`` cost term
+        #: uses), else the synthetic origin-anchored square this engine
+        #: has always used, unchanged for a design with no outline.
+        #:
+        #: **Capped to ``board_side`` per axis, anchored at the outline's
+        #: own min corner (never at the synthetic square's origin).**
+        #: Measured on the ESP32-C3 reference fixture (2026-08-28, after
+        #: its outline was deliberately widened from 40x30mm to a 300x300mm
+        #: placeholder "so board size isn't a confound... shrunk later" --
+        #: see that fixture's own note): clamping TRANSLATE to the FULL,
+        #: uncapped 300x300 outline more than QUADRUPLED total DRC errors
+        #: on this same run (671 vs. 390) relative to capping it -- the
+        #: anneal's cooling schedule (``t0``/step size, both derived from
+        #: this SAME ``board_side``, module-docstring-documented as an
+        #: n-instance heuristic, not an outline-aware one) stays exactly
+        #: as "hot" and fast-cooling as it always has, so a component that
+        #: randomly drifts far during the still-permissive early schedule
+        #: has no realistic way to walk back within the fixed iteration
+        #: budget once the schedule hardens -- classic SA
+        #: schedule-vs-search-domain mismatch, not a defect in the clamp
+        #: mechanism itself. Capping means a genuinely oversized/placeholder
+        #: outline can never make the search domain LARGER than what this
+        #: engine's own schedule was calibrated for, while a real,
+        #: comparably- (or more tightly-) sized outline still governs and
+        #: gets real prevention. Re-tuning ``t0``/step size to scale with
+        #: the actual placement-bounds diagonal (rather than capping) is
+        #: the more complete fix and is flagged, not silently guessed at,
+        #: as its own follow-up.
+        #: **The domain must CONTAIN the seed.** Capping at ``board_side``
+        #: anchored on the outline's own corner did not: ``seed_placement``
+        #: drops clusters on an 8mm-pitch grid, which for this fixture's 29
+        #: instances spans ~108mm, while ``board_side`` is 32mm. Every
+        #: seeded part outside the cap was clamped into the corner by its
+        #: first TRANSLATE and SWAP could never move it at all (a swap
+        #: whose partner sits outside the bounds is rejected forever) —
+        #: the pile-up that produced the overlapping courtyards below.
+        #: The domain is therefore derived from the SEED's own extent
+        #: (adjacency-clustered, so it is a real answer, not a heuristic
+        #: square), padded, then clipped to the outline inset by
+        #: :data:`_EDGE_MARGIN_MM`.
+        #: Per-instance placement keep-out RADIUS: the part's own outermost
+        #: pad (:func:`~precis.pcb.ir.instance_pad_radius`) plus a pad-to-
+        #: pad breathing gap, floored at the nominal half-courtyard so a
+        #: pinless part (mounting hole, fiducial) still occupies space.
+        #: Two instances are legal when their centres are at least the SUM
+        #: of their radii apart — see :meth:`_placement_is_legal` for why
+        #: a single constant is not merely coarse but incorrect.
+        self._keepout_r = np.maximum(
+            instance_pad_radius(ir) + _PAD_BREATHING_MM,
+            COURTYARD_MIN_SEPARATION_MM / 2.0,
+        )
+        self._placement_bounds = self._derive_placement_bounds()
+        #: ``t0`` and TRANSLATE's step both scale off ``board_side``. It is
+        #: deliberately NOT re-derived from the (larger) placement bounds:
+        #: inflating it makes the anneal start hot enough to scatter a
+        #: compact seed across the whole domain, and the same fixed
+        #: iteration budget cannot walk that back. The domain is where
+        #: parts MAY go; ``board_side`` stays the scale at which they
+        #: actually move.
 
         # per-segment endpoint-instance arrays, for the vectorized
         # "newly closer than cached" gap-capacity check (module docstring).
@@ -605,10 +795,24 @@ class OptimizeEngine:
         self._seg_crossing_partners: dict[int, set[int]] = {}
         self._layer_crossing_count = [0] * ir.n_layers
 
+        # courtyard-overlap state: a uniform spatial grid, cell size ==
+        # `COURTYARD_MIN_SEPARATION_MM` (module docstring's courtyard_
+        # overlap section) -- `_courtyard_grid[(cx, cy)]` is which instance
+        # ids currently occupy that cell; `_inst_cell[inst]` is that
+        # instance's own current cell (so a move can find and vacate its
+        # OLD cell before relocating); `_courtyard_partners[inst]` is which
+        # OTHER instances `inst` currently, geometrically overlaps
+        # (symmetric, same shape as `_seg_crossing_partners`). Populated by
+        # `_init_courtyard_state`, maintained by `_refresh_courtyard`.
+        self._courtyard_grid: dict[tuple[int, int], set[int]] = {}
+        self._inst_cell: dict[int, tuple[int, int]] = {}
+        self._courtyard_partners: dict[int, set[int]] = {}
+
         # margin cache: (term_name, key) -> latest TermValue. `key` is a
         # segment id for gap_capacity/loop_inductance, a sorted segment-id
         # pair for coupling, a net name for thermal_rise, a layer id for
-        # crossings.
+        # crossings, a sorted instance-id pair for courtyard_overlap, or a
+        # single instance id for board_edge_clearance.
         self._margin: dict[tuple[str, MarginKey], TermValue] = {}
         self._loop_applicable: set[int] = set()
         self._coupling_candidates = coupling_candidates(ir, config.cost)
@@ -644,6 +848,7 @@ class OptimizeEngine:
 
         self._init_caches()
         self._init_crossing_state()
+        self._init_courtyard_state()
         self._seed_layers()
 
     # -- one-time initialization (the only "full board" pass) ------------
@@ -693,6 +898,9 @@ class OptimizeEngine:
             self._seg_via_count[s] = n
             via_usd_total += n * cfg.cost.via_usd
         self._money_static_by_name["via_count"] = via_usd_total
+
+        for i in range(ir.n_instances):
+            self._refresh_board_edge(i)
 
         self._refresh_board_area()
 
@@ -815,6 +1023,79 @@ class OptimizeEngine:
 
         for layer in touched_layers:
             self._refresh_crossings_term(layer)
+
+    # -- courtyard-overlap delta (grid-bucketed — module docstring) ------
+    def _courtyard_cell(self, inst: int) -> tuple[int, int]:
+        x = float(self.ir.inst_x[inst])
+        y = float(self.ir.inst_y[inst])
+        cell = COURTYARD_MIN_SEPARATION_MM
+        return (math.floor(x / cell), math.floor(y / cell))
+
+    def _courtyard_candidates_near(self, inst: int) -> set[int]:
+        """Every OTHER instance that could possibly be within
+        ``COURTYARD_MIN_SEPARATION_MM`` of ``inst`` — the 3x3 neighbourhood
+        of grid cells around ``inst``'s own cell, which is EXACT (not an
+        approximation) because the cell size equals the interaction radius
+        (module docstring's courtyard_overlap section)."""
+        cx, cy = self._courtyard_cell(inst)
+        out: set[int] = set()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                out |= self._courtyard_grid.get((cx + dx, cy + dy), set())
+        out.discard(inst)
+        return out
+
+    def _init_courtyard_state(self) -> None:
+        """One-time seed: refreshing every instance IN ORDER correctly
+        populates the grid AND every pair's partnership with no separate
+        O(n^2) pass needed — by the time instance ``k`` is refreshed,
+        every earlier instance is already in the grid, so ``k``'s own
+        neighbourhood query finds it (and, symmetrically, records the pair
+        on both sides) exactly once. The SAME method
+        :meth:`_refresh_courtyard` used for every later per-move delta."""
+        for i in range(self.ir.n_instances):
+            self._refresh_courtyard(i)
+
+    def _refresh_courtyard(self, inst: int) -> None:
+        """The bounded per-move courtyard-overlap delta: discard ``inst``'s
+        cached partnerships (O(old partner count)), relocate it in the
+        grid, then retest it against its (possibly new) 3x3-neighbourhood
+        candidates only — O(local density), never O(board). Mirrors
+        :meth:`_recompute_seg_crossings`'s discard-then-rebuild-fresh shape
+        (see that method's and the module docstring's courtyard_overlap
+        section) so it is correct regardless of call order for a multi-
+        instance move too."""
+        ir, cfg = self.ir, self.config
+        old_partners = self._courtyard_partners.get(inst, set())
+        for p in old_partners:
+            self._courtyard_partners.get(p, set()).discard(inst)
+            self._margin.pop(("courtyard_overlap", _pair_key(inst, p)), None)
+        self._courtyard_partners[inst] = set()
+
+        old_cell = self._inst_cell.get(inst)
+        if old_cell is not None:
+            self._courtyard_grid.get(old_cell, set()).discard(inst)
+        new_cell = self._courtyard_cell(inst)
+        self._courtyard_grid.setdefault(new_cell, set()).add(inst)
+        self._inst_cell[inst] = new_cell
+
+        for other in self._courtyard_candidates_near(inst):
+            t = courtyard_overlap_pair_term(ir, inst, other, self.level, cfg.cost)
+            if t.raw <= 0.0:
+                continue
+            key = _pair_key(inst, other)
+            self._margin[("courtyard_overlap", key)] = t
+            self._courtyard_partners[inst].add(other)
+            self._courtyard_partners.setdefault(other, set()).add(inst)
+
+    # -- board-edge-clearance delta (O(1) per instance) -------------------
+    def _refresh_board_edge(self, inst: int) -> None:
+        t = board_edge_clearance_term(self.ir, inst, self.level, self.config.cost)
+        key = ("board_edge_clearance", inst)
+        if t is None:
+            self._margin.pop(key, None)
+        else:
+            self._margin[key] = t
 
     def _seed_layers(self) -> None:
         """One-time seed (mirrors :func:`seed_placement`'s "seed then
@@ -957,11 +1238,110 @@ class OptimizeEngine:
             self.ir, self.level, self.config.cost
         ).raw
 
+    # -- hard placement constraints ------------------------------------
+    def _derive_placement_bounds(self) -> tuple[float, float, float, float]:
+        """The rectangle TRANSLATE/SWAP may put a component CENTRE in —
+        the seeded parts' own bounding box padded by ``board_side``,
+        clipped to the outline inset by :data:`_EDGE_MARGIN_MM`. Falls
+        back to the historical origin-anchored ``board_side`` square when
+        nothing is placed yet (no seed to derive from)."""
+        ir = self.ir
+        if ir.outline and len(ir.outline) >= 3:
+            ox0, oy0, ox1, oy1 = outline_bbox(ir.outline)
+            ox0, oy0 = ox0 + _EDGE_MARGIN_MM, oy0 + _EDGE_MARGIN_MM
+            ox1, oy1 = ox1 - _EDGE_MARGIN_MM, oy1 - _EDGE_MARGIN_MM
+        else:
+            ox0, oy0, ox1, oy1 = 0.0, 0.0, self.board_side, self.board_side
+        if ox1 <= ox0 or oy1 <= oy0:  # an outline smaller than its own margin
+            return (ox0, oy0, ox0 + self.board_side, oy0 + self.board_side)
+        placed = np.isfinite(ir.inst_x) & np.isfinite(ir.inst_y)
+        if not placed.any():
+            return (
+                ox0,
+                oy0,
+                min(ox1, ox0 + self.board_side),
+                min(oy1, oy0 + self.board_side),
+            )
+        pad = self.board_side
+        bx0 = max(ox0, float(ir.inst_x[placed].min()) - pad)
+        by0 = max(oy0, float(ir.inst_y[placed].min()) - pad)
+        bx1 = min(ox1, float(ir.inst_x[placed].max()) + pad)
+        by1 = min(oy1, float(ir.inst_y[placed].max()) + pad)
+        return (bx0, by0, max(bx1, bx0), max(by1, by0))
+
+    def bounds_for(self, inst: int) -> tuple[float, float, float, float]:
+        """Where instance ``inst``'s CENTRE may go: the board domain
+        shrunk by that instance's own keep-out radius, so its outermost
+        pad lands inside the domain rather than its centre. Degenerate
+        (a part wider than the board) collapses to the domain centre
+        rather than inverting."""
+        x0, y0, x1, y1 = self._placement_bounds
+        r = float(self._keepout_r[inst])
+        if x1 - x0 < 2 * r:
+            x0 = x1 = (x0 + x1) / 2.0
+        else:
+            x0, x1 = x0 + r, x1 - r
+        if y1 - y0 < 2 * r:
+            y0 = y1 = (y0 + y1) / 2.0
+        else:
+            y0, y1 = y0 + r, y1 - r
+        return (x0, y0, x1, y1)
+
+    def _placement_is_legal(
+        self, proposals: Sequence[tuple[int, float, float]]
+    ) -> bool:
+        """True iff every proposed ``(instance, x, y)`` sits inside
+        :attr:`_placement_bounds` and clears every other instance's
+        keep-out — including the other proposals in the same move (SWAP
+        moves two parts at once).
+
+        **The keep-out is per-instance, not a constant.** Two parts must
+        be at least ``r_i + r_j`` apart where ``r`` is
+        :attr:`_keepout_r` — the part's own land-pattern extent, floored
+        at the nominal courtyard. A fixed
+        :data:`~precis.pcb.cost.COURTYARD_MIN_SEPARATION_MM` (2.0mm) is
+        not conservative-but-imprecise here, it is *wrong*: a 14-pin
+        dual-row land pattern reaches 2.27mm from its own centre, so two
+        of them at the nominal 2.0mm have interleaved pads — copper of
+        different nets starting from the same coordinate. That was
+        measured as 4 residual clearance errors that survived an
+        occupancy-grid router which is otherwise incapable of producing
+        one.
+
+        Placement move generators call this and return ``None`` rather
+        than offering the annealer an illegal state. The graded
+        ``courtyard_overlap`` cost term stays: it steers the search away
+        from *tight* packing, this only forbids the categorical violation
+        it cannot price (a run with the term active still settled with 10
+        overlapping pairs — a penalty is a price, and the search paid it).
+        """
+        ir = self.ir
+        keepout = self._keepout_r
+        moving = [inst for inst, _, _ in proposals]
+        for i, (inst, x, y) in enumerate(proposals):
+            x0, y0, x1, y1 = self.bounds_for(inst)
+            if not (x0 <= x <= x1 and y0 <= y <= y1):
+                return False
+            dx, dy = ir.inst_x - x, ir.inst_y - y
+            d2 = dx * dx + dy * dy
+            d2[moving] = math.inf  # a part never collides with its own old slot
+            sep = keepout + keepout[inst]
+            if np.any(d2 < sep * sep):  # NaN (unplaced) compares False — correct
+                return False
+            for other, ox, oy in proposals[i + 1 :]:
+                sep_ij = keepout[inst] + keepout[other]
+                if (x - ox) ** 2 + (y - oy) ** 2 < sep_ij * sep_ij:
+                    return False
+        return True
+
     def _rescan_after_move(self, moved_inst: int) -> None:
         """Refresh every cached term a single instance's move can affect.
         Called once per moved instance (translate/rotate: once; swap:
         twice, sequentially — see :meth:`apply_move`)."""
         ir = self.ir
+        self._refresh_courtyard(moved_inst)
+        self._refresh_board_edge(moved_inst)
+
         direct = set(ir._segs_of_instance.get(moved_inst, ()))
         reassigned = {
             s
@@ -1224,11 +1604,22 @@ class OptimizeEngine:
             assert isinstance(key, int)
             x, y = self._midpoint(key)
             return self._cell_label(x, y)
+        if term_name == "board_edge_clearance":
+            assert isinstance(key, int)  # an instance id here, not a segment id
+            return self._cell_label(
+                float(self.ir.inst_x[key]), float(self.ir.inst_y[key])
+            )
         if term_name == "coupling":
             assert isinstance(key, tuple)
             sa, sb = key
             xa, ya = self._midpoint(sa)
             xb, yb = self._midpoint(sb)
+            return self._cell_label((xa + xb) / 2.0, (ya + yb) / 2.0)
+        if term_name == "courtyard_overlap":
+            assert isinstance(key, tuple)  # a sorted INSTANCE-id pair, not segments
+            ia, ib = key
+            xa, ya = float(self.ir.inst_x[ia]), float(self.ir.inst_y[ia])
+            xb, yb = float(self.ir.inst_x[ib]), float(self.ir.inst_y[ib])
             return self._cell_label((xa + xb) / 2.0, (ya + yb) / 2.0)
         if term_name == "crossings":
             # A layer, not a grid cell -- there is no single (x, y) home
@@ -1324,6 +1715,13 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return min(hi, max(lo, v))
 
 
+#: How many draws a placement generator makes before conceding that this
+#: iteration has no legal proposal (:meth:`OptimizeEngine._placement_is_
+#: legal`). One draw would silently disable TRANSLATE for parts in a
+#: crowded neighbourhood — the parts that most need to move.
+_LEGALIZE_TRIES = 8
+
+
 def _gen_translate(
     engine: OptimizeEngine, rng: random.Random, temp: float
 ) -> Move | None:
@@ -1337,9 +1735,16 @@ def _gen_translate(
         0.5, engine.config.translate_step_mm * (temp / max(engine.board_side, 1.0))
     )
     step = max(0.5, min(step, engine.config.translate_step_mm))
-    nx = _clamp(old[0] + rng.gauss(0, step), 0.0, engine.board_side)
-    ny = _clamp(old[1] + rng.gauss(0, step), 0.0, engine.board_side)
-    return Move(MoveKind.TRANSLATE, (inst,), (old,), ((nx, ny, old[2]),))
+    x0, y0, x1, y1 = engine.bounds_for(inst)
+    # Retry a few draws before giving up: a single rejected sample would
+    # make TRANSLATE effectively unavailable for a part in a crowded
+    # neighbourhood, which is exactly where it is most needed.
+    for _ in range(_LEGALIZE_TRIES):
+        nx = _clamp(old[0] + rng.gauss(0, step), x0, x1)
+        ny = _clamp(old[1] + rng.gauss(0, step), y0, y1)
+        if engine._placement_is_legal(((inst, nx, ny),)):
+            return Move(MoveKind.TRANSLATE, (inst,), (old,), ((nx, ny, old[2]),))
+    return None
 
 
 def _gen_rotate(engine: OptimizeEngine, rng: random.Random, temp: float) -> Move | None:
@@ -1363,6 +1768,14 @@ def _gen_swap(engine: OptimizeEngine, rng: random.Random, temp: float) -> Move |
     old_b = (float(ir.inst_x[ib]), float(ir.inst_y[ib]), float(ir.inst_rot[ib]))
     new_a = (old_b[0], old_b[1], old_a[2])
     new_b = (old_a[0], old_a[1], old_b[2])
+    # Both destinations are existing, already-legal slots, so this can
+    # only fail when one of them lies outside the placement bounds (a
+    # seeded part the domain doesn't cover) — worth checking rather than
+    # assuming, since accepting it would strand a part off-board.
+    if not engine._placement_is_legal(
+        ((ia, new_a[0], new_a[1]), (ib, new_b[0], new_b[1]))
+    ):
+        return None
     return Move(MoveKind.SWAP, (ia, ib), (old_a, old_b), (new_a, new_b))
 
 

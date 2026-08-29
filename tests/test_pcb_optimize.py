@@ -465,6 +465,170 @@ def test_delta_correctness_for_crossings_over_random_moves():
     )  # the interesting (non-zero) case was actually exercised
 
 
+# ── courtyard_overlap (gr267456) ────────────────────────────────────────
+def _courtyard_ir_with_positions():
+    """Two overlapping pairs (U0/U1 coincide-ish, U2/U3 coincide-ish) plus
+    the connectivity to give them all a segment — guarantees a real,
+    nonzero courtyard_overlap value exists from construction, the same
+    "exercise the interesting case" discipline the crossings test above
+    follows."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 0.4, "y": 0.0},
+            {"refdes": "U2", "x": 20.0, "y": 20.0},
+            {"refdes": "U3", "x": 20.4, "y": 20.0},
+        ],
+        "nets": [
+            {
+                "name": "N0",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U2", "pin": "1"},
+                ],
+            },
+            {
+                "name": "N1",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U1", "pin": "1"},
+                    {"refdes": "U3", "pin": "1"},
+                ],
+            },
+        ],
+    }
+    return from_graph(graph, stackup=DEFAULT_STACKUP)
+
+
+def test_delta_correctness_for_courtyard_overlap_over_random_moves():
+    ir = _courtyard_ir_with_positions()
+    cost_config = CostConfig()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=5, cost=cost_config))
+    move_rng = random.Random(6)
+    kinds = [MoveKind.TRANSLATE, MoveKind.ROTATE, MoveKind.SWAP]
+    saw_nonzero = False
+    for trial in range(200):
+        kind = kinds[move_rng.randrange(len(kinds))]
+        move = MOVE_GENERATORS[kind](engine, move_rng, 8.0)
+        if move is None:
+            continue
+        engine.apply_move(move)
+        if move_rng.random() < 0.5:
+            engine.undo_move(move)
+        if any(
+            name == "courtyard_overlap" and tv.raw > 0.0
+            for (name, _key), tv in engine._margin.items()
+        ):
+            saw_nonzero = True
+
+        full = evaluate_cost(ir, Level.L4, cost_config)
+        assert engine.money() == pytest.approx(full.money, rel=1e-9, abs=1e-9), trial
+        assert engine.risk() == pytest.approx(full.risk, rel=1e-9, abs=1e-9), trial
+        assert engine.total() == pytest.approx(full.total, rel=1e-9, abs=1e-9), (
+            f"trial {trial}: engine={engine.total()} full={full.total}"
+        )
+    assert saw_nonzero  # the interesting (overlapping) case was actually exercised
+
+
+def test_courtyard_overlap_translate_of_unrelated_instance_leaves_other_pairs_unchanged():
+    ir = _courtyard_ir_with_positions()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=7))
+    key01 = (0, 1)
+    before = engine._margin[("courtyard_overlap", key01)].raw
+    assert before > 0.0  # U0/U1 overlap from construction
+
+    # Move U2 (part of the OTHER overlapping pair, U2/U3) a few mm --
+    # still nowhere near U0/U1.
+    old = (float(ir.inst_x[2]), float(ir.inst_y[2]), float(ir.inst_rot[2]))
+    new = (old[0] + 3.0, old[1] - 2.0, old[2])
+    move = Move(MoveKind.TRANSLATE, (2,), (old,), (new,))
+    engine.apply_move(move)
+
+    after = engine._margin[("courtyard_overlap", key01)].raw
+    assert after == before
+
+
+# ── board_edge_clearance (gr267456 addendum) ────────────────────────────
+def test_delta_correctness_for_board_edge_clearance_over_random_moves():
+    ir = _seeded_ir(10, graph_seed=30, seed_rng_seed=31)
+    ir.outline = [(0.0, 0.0), (15.0, 0.0), (15.0, 15.0), (0.0, 15.0)]
+    cost_config = CostConfig()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=31, cost=cost_config))
+    # Start ONE instance genuinely off the board. No generated move can
+    # produce this state any more (`bounds_for` forbids it), so without
+    # authoring it directly the delta-correctness loop below would only
+    # ever compare zero against zero and `saw_nonzero` could never be
+    # satisfied -- the term would be untested while looking tested.
+    ir.move_instance(0, x=40.0, y=40.0)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=31, cost=cost_config))
+    move_rng = random.Random(32)
+    saw_nonzero = any(
+        name == "board_edge_clearance" and tv.raw > 0.0
+        for (name, _key), tv in engine._margin.items()
+    )
+    assert saw_nonzero, "authored off-board pose did not make the term fire"
+    for trial in range(150):
+        move = MOVE_GENERATORS[MoveKind.TRANSLATE](engine, move_rng, 8.0)
+        if move is None:
+            continue
+        engine.apply_move(move)
+        if move_rng.random() < 0.5:
+            engine.undo_move(move)
+        if any(
+            name == "board_edge_clearance" and tv.raw > 0.0
+            for (name, _key), tv in engine._margin.items()
+        ):
+            saw_nonzero = True
+
+        full = evaluate_cost(ir, Level.L4, cost_config)
+        assert engine.money() == pytest.approx(full.money, rel=1e-9, abs=1e-9), trial
+        assert engine.risk() == pytest.approx(full.risk, rel=1e-9, abs=1e-9), trial
+        assert engine.total() == pytest.approx(full.total, rel=1e-9, abs=1e-9), (
+            f"trial {trial}: engine={engine.total()} full={full.total}"
+        )
+    assert saw_nonzero
+
+
+def test_translate_move_stays_within_a_real_outline_once_one_exists():
+    ir = _seeded_ir(8, graph_seed=40, seed_rng_seed=41)
+    ir.outline = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=41))
+    # The domain is the outline inset by the copper-to-edge margin -- a
+    # part's CENTRE on the outline means its copper is off the board.
+    assert engine._placement_bounds == (0.5, 0.5, 19.5, 19.5)
+
+    move_rng = random.Random(42)
+    for _ in range(300):
+        move = MOVE_GENERATORS[MoveKind.TRANSLATE](engine, move_rng, 8.0)
+        if move is None:
+            continue
+        engine.apply_move(move)
+
+    # Every part's own PADS stay on the board, not merely its centre --
+    # `bounds_for` shrinks the domain per instance by that instance's own
+    # land-pattern extent, which is the whole point (a module whose pads
+    # reach 8.9mm from its centre is not contained by a centre-only
+    # bound). This is the assertion the centre-only version could not
+    # make, and the one the board_edge_clearance DRC rule actually cares
+    # about.
+    for i in range(ir.n_instances):
+        x, y = float(ir.inst_x[i]), float(ir.inst_y[i])
+        assert -1e-9 <= x <= 20.0 + 1e-9
+        assert -1e-9 <= y <= 20.0 + 1e-9
+        bx0, by0, bx1, by1 = engine.bounds_for(i)
+        assert bx0 - 1e-9 <= x <= bx1 + 1e-9
+        assert by0 - 1e-9 <= y <= by1 + 1e-9
+
+
+def test_translate_move_falls_back_to_synthetic_square_without_an_outline():
+    ir = _seeded_ir(6, graph_seed=43, seed_rng_seed=44)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=44))
+    assert engine._placement_bounds == (0.0, 0.0, engine.board_side, engine.board_side)
+
+
 # ── slice 7: pin swap ─────────────────────────────────────────────────
 def _pin_swap_ir_and_group():
     """Two nets whose airwires obviously cross under the CURRENT pin

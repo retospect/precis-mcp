@@ -251,7 +251,7 @@ def test_check_annular_ring_fires_on_a_real_realized_via():
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)  # In1.Cu -- a layer transition, forces vias
-    result = realize(ir, config=RealizeConfig(fab_caps=_CAP4))
+    result = realize(ir, config=RealizeConfig(fab_caps=_CAP4, router="tangent"))
     assert result.vias  # sanity: this task's realize.py change actually produced vias
     layers = [layer["name"] for layer in DEFAULT_STACKUP]
     model = to_gerber_model(
@@ -532,7 +532,9 @@ def _random_real_board_model(
     ir = from_graph({"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP)
     for seg_id in range(ir.n_segments):
         ir.set_layer(seg_id, rng.choice([0, 1, 2, 3]))
-    result = realize(ir, config=RealizeConfig(clearance_mm=0.15, fab_caps=_CAP4))
+    result = realize(
+        ir, config=RealizeConfig(clearance_mm=0.15, fab_caps=_CAP4, router="tangent")
+    )
     layers = [layer["name"] for layer in DEFAULT_STACKUP]
     outline = [[0.0, 0.0], [span, 0.0], [span, span], [0.0, span]]
     return to_gerber_model(result, ir, layers=layers, outline=outline)

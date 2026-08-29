@@ -22,7 +22,21 @@ evaluators, `pcb_place`/`pcb_route` job types and `op=` handler dispatch
 (slice 10). Slices 8+10 landed together in `0351be2f` on a clean full
 gate (15735 passed, 0 failed) after the sibling-congestion window closed.
 
-**Nothing is built-but-unshipped.** The worktree is level with main.
+**2026-08-28 late — the acceptance criterion is MET, and UNSHIPPED.** On
+the ESP32-C3 reference vehicle (`tests/fixtures/pcb/esp32c3_reference.json`,
+authored this day): **zero DRC errors, 61/61 connections routed, ~0.5s to
+realize.** 1063 → 612 → 234 → 0. The full account, including the four
+traps that each had to be got right and the design tension deliberately
+left open, is in `docs/backlog/pcb-engine-plan.md` §"2026-08-28 late: DRC
+to zero" — read that before touching the router. In one line: per-pin pad
+geometry, hard placement constraints replacing two graded cost terms the
+search was simply paying, and a new occupancy-grid maze router
+(`src/precis/pcb/maze.py`) that claims copper before drawing it.
+
+**Zero DRC is trivially achievable by routing nothing** — the router's
+first revision did exactly that, 58 of 61 unrouted, and read as a triumph.
+Every DRC number in the tests is asserted beside a routed count. Keep them
+paired.
 
 A post-ship review of `0351be2f` found three more defects, all fixed and
 shipped in `b50bbb87`: (1) `route_complete` was permanently unsatisfiable
@@ -33,12 +47,14 @@ Now such a net gets an explicit `realized` row carrying a *note* saying
 why, and the member-count rule lives once in `ir.net_member_counts()`
 instead of being duplicated in two components that drifted apart.
 (2) Every via DRC rule (`check_annular_ring`, the via halves of
-clearance/NPTH) is **unreachable in production** — the realizer emits
-only tracks, so no `ctype='via'` copper is ever persisted. The rules are
-correct and tested against synthetic models; they simply have no input
-yet. `view='drc'` now says so on both the clean and findings paths, so a
-clean DRC is not misread as "vias checked". Remove the caveat when
-`planes.py` lands via geometry. (3) `pcb_rip_route` / `pcb_copper_list`
+clearance/NPTH) was **unreachable in production** — the realizer emitted
+only tracks, so no `ctype='via'` copper was ever persisted, and the rules
+passed by never running. **Closed 2026-08-28**: both routers emit real via
+geometry (the maze router wherever its search changes layer, sized by the
+net's ampacity), `pcb_copper` carries `ctype='via'` rows with a layer
+SPAN, and `tests/workers/test_pcb_route.py` exercises the persistence
+shape through a via the router genuinely needed rather than a stipulated
+one. (3) `pcb_rip_route` / `pcb_copper_list`
 were missing the `retired_at IS NULL` filter their siblings all apply.
 
 Still open, filed not fixed: **`gr266041`** — `op=` idempotency coalesces
@@ -128,11 +144,62 @@ a bare `ssh` + `/opt/mcps/venv/bin/python`. That is *not* yet proof the
 vault is empty — `secrets.get_secret` reads env → **process-bound store**
 (`secrets.bind_store`, never bound in a bare `python -c`) → `~/.secrets/pw/<NAME>`
 file. A bare shell has no DSN (`load_config().database_url` is None), so
-the DB vault was never consulted at all. The corrected probe above needs
-the web service's `PRECIS_DATABASE_URL`; reading it from
-`~/Library/LaunchAgents/com.precis.web.plist` is permission-denied for the
-ssh user, and further filesystem inspection of `~/.secrets/pw` is
-classifier-blocked. **A human with that DSN must run it.**
+the DB vault was never consulted at all.
+
+**2026-08-28: the plist is NOT the blocker.** Re-verified that
+`~/Library/LaunchAgents/com.precis.web.plist` is unreadable to the ssh user
+(`PLIST_NOT_READABLE`) and `/opt/mcps/venv/bin/python` exists (`PY_OK`).
+But `scripts/prod-psql` shows the DSN can be built without it: it SSHes to
+`caspar` and runs psql against pgbouncer at `100.126.127.107:6432` as
+`agent_rw` on `precis_prod`, with the **password supplied by `.pgpass`**.
+So the probe should run with a password-free DSN —
+
+    PRECIS_DATABASE_URL="postgresql://agent_rw@100.126.127.107:6432/precis_prod"
+
+— which libpq/psycopg completes from `.pgpass`, so no secret ever appears
+in the command or the output. Substitute that for `<the web service's DSN>`
+above.
+
+**A human must still run it**: the agent-initiated external API call is
+classifier-blocked (re-confirmed 2026-08-28 across both an `ssh melchior`
+route and a local one). Routing it through a subagent would be permission
+laundering — don't. Hand the user the command with a `!` prefix.
+
+## RAN 2026-08-28 — the credentials blocker was never real
+
+Result: **`creds_resolve: True`**, then
+`VendorUnavailable jlcpcb: 5 attempts exhausted; last: HTTP 500`.
+
+**The vault resolves fine, locally, with the pgpass DSN above.** Every prior
+session's conclusion — "credentials do not resolve on melchior", "a human
+with the web service's `PRECIS_DATABASE_URL` must run it", the whole plist
+hunt — was **wrong**, and wrong for a reason worth remembering:
+
+**Bug 3 in this probe.** `Store(...)` takes a `ConnectionPool`, **not a DSN
+string**; the DSN constructor is `Store.connect(dsn)`. Passing the string
+raised `AttributeError: 'str' object has no attribute 'connection'` deep in
+the resolver, which `secrets` caught and reported as:
+
+    secrets: vault reveal unavailable (AttributeError: ...); falling back to
+    file/default. Is the migration applied and app.secret_key set?
+
+That message names the vault, the migration and `app.secret_key` — three
+plausible, innocent things — while the actual fault was a constructor
+argument two lines earlier. **A diagnostic that mis-attributes its own bug to
+its subject is worse than no diagnostic**: it sent three sessions after a
+permission-denied plist. This is the third bug in one ~15-line probe, and all
+three presented as a credentials failure (see the two above).
+
+**Where slice 9 actually stands.** The documented blocker was *403 API
+insufficient permissions until the Components scope is granted*. We did
+**not** get a 403 — and `jlc_api` never retries 401/403 (a 403 raises
+`JlcPermissionError`), so a scope failure could not have been hidden by the
+retry loop. Auth and signature are therefore fine. HTTP 500 five times is
+JLC's server, not our credentials. **The scope question is still unanswered**
+— re-run the probe when JLC is healthy. The enhanced probe at
+`/tmp/jlc_probe.py` walks the cause chain and prints the response body,
+which distinguishes "JLC is down" from "JLC 500s on a request shape it
+dislikes".
 
 ### Known-inert / partial — do NOT read as working
 - **`SIDE_FLIP` has no cost effect.** A straight-line crossing count at
@@ -154,15 +221,22 @@ classifier-blocked. **A human with that DSN must run it.**
   thickness is not stored), and all pads are assumed on stackup layer 0
   (no per-instance mount-side field), which overstates vias for two-sided
   assembly.
-- **⚠ The via house-defaults are mutually inconsistent** — `drill_mm`
-  0.25 with `via_diameter_mm` 0.40 gives a 0.075 mm annular ring, below
-  both the 0.18 mm `jlc_min` and the 0.30 mm house default sitting in the
-  same table. Every default-sized via therefore trips `check_annular_ring`.
-  Root cause: the `house_default = 1.5 × jlc_min` margin rule is applied
-  **per-field to fields that are geometrically coupled**
-  (`via_diameter >= drill + 2 × annular_ring`). Fix by *deriving* the
-  diameter rather than storing it independently, plus an invariant test —
-  not by hand-patching one number.
+- ~~⚠ The via house-defaults are mutually inconsistent~~ — **CLOSED
+  `4a9f78d5`** (verified 2026-08-28, this entry was stale).
+  `capabilities.py::_derive_via_diameter_mm` now derives the diameter as
+  `max(published floor, drill + 2 × annular_ring)` and applies it to both
+  the `jlc_min` and `house_default` tiers, so default vias no longer trip
+  `check_annular_ring`.
+- **⚠ Courtyard overlap is a hard DRC error that nothing optimises
+  against — `gr267456`.** `drc.check_courtyard_overlap` errors on ANY
+  overlap, and `_render_drc` synthesizes a 1.0 mm courtyard for every
+  placed instance, so any two parts within 2.0 mm centre-to-centre fail.
+  But `cost.TERMS` has no spatial-exclusion term and `optimize.py` has no
+  `overlap|keepout|min_dist` logic at all — `TRANSLATE` is an unconstrained
+  gaussian. ~5 expected overlap errors for 30 parts on the synthetic
+  board, and no lever to fix them. **This makes the acceptance criterion's
+  "zero DRC errors" unreachable by construction**, and promotes the
+  seed+spreading work (`pcb-engine-plan.md` S7) to a prerequisite.
 - **Layer *roles* are read from the stackup's `role` field**, not yet
   emergent as §Layer ROLE describes.
 - **Layer count is hard-guarded to 4** (`handlers/pcb.py:374`): place/route

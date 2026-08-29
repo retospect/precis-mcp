@@ -10,6 +10,23 @@ a component, reassigning a layer, or flipping a side happens through
 ``optimize.py``'s move classes, not here) — it only ever *reads* the
 sketch and writes L5-shaped output.
 
+**Two routers, and the default is the maze one.** ``RealizeConfig.router``
+selects between them and they promise opposite things:
+
+- ``'maze'`` (default, :mod:`precis.pcb.maze`) claims each route's
+  corridor on a shared occupancy grid before drawing it, so inter-net
+  ``clearance`` violations are structurally impossible. It chooses its
+  own layers and its own path — ``seg_layer`` is the sketch's preference,
+  not an instruction — and reports what it could not route in
+  :attr:`RealizeResult.unrouted`.
+- ``'tangent'`` is everything described below this paragraph: one
+  straight-or-hugging track per segment, on that segment's ``seg_layer``,
+  drawn unconditionally and blind to every other track. It is the right
+  primitive for a single-segment question (:func:`realize_segment` IS
+  exactly this) and the wrong one for a board — measured on the reference
+  fixture it drew 234 same-layer clearance violations that no later pass
+  can repair.
+
 **Geometry is arcs and tangent lines, NOT beziers** (backlog, verbatim):
 the shortest path around a single circular clearance obstacle is exactly
 straight tangents joined by a circular arc, computable in closed form —
@@ -44,9 +61,14 @@ gap whose strand usage exceeds its capacity produces a legible
 :class:`CongestionWarning` naming the blocking gap, the participants, and
 the clearance arithmetic (backlog acceptance criterion, verbatim).
 
-**Vias are emitted wherever a track's realized layer differs from its pad
-layer** (closing the master backlog's "no via geometry is realized" gap,
-2026-08-28) — see :func:`_vias_for_track` for the exact rule and
+**Vias.** Under ``'tangent'`` they are emitted wherever a track's realized
+layer differs from its pad layer (closing the master backlog's "no via
+geometry is realized" gap, 2026-08-28); under ``'maze'`` they appear
+wherever the search actually changed layer, gated on the STITCHED GROUP's
+full extent fitting in cleared space rather than the trace's — a 5A rail
+crossing layers through one via is a fuse, and planning for one via then
+stitching four puts three of them in somebody else's copper. Either way,
+see :func:`_vias_for_track` for the tangent rule and
 :class:`RealizedVia` for why it ALWAYS carries a layer SPAN (``layer_lo``/
 ``layer_hi``), never a scalar layer: a scalar via already made every via
 DRC rule silently blind on every layer once (backlog "Bugs this build
@@ -69,13 +91,15 @@ tracks against an already-realized result, replacing only those entries.
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis.pcb import maze
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist
-from precis.pcb.ir import UNSET_LAYER, PcbIR, nearest_other_instance
+from precis.pcb.ir import UNSET_LAYER, PcbIR, nearest_other_instance, pin_point
 from precis.pcb.rules import (
     PAD_LAYER,
     NetRules,
@@ -83,6 +107,7 @@ from precis.pcb.rules import (
     layer_is_outer,
     net_current_a_or_none,
     resolve_net_rules,
+    via_count_for_current,
 )
 
 #: Re-exported from :mod:`precis.pcb.rules` (the constant's new home) so
@@ -136,6 +161,26 @@ class RealizeConfig:
     #: current-derived width tier — see :mod:`precis.pcb.rules`.
     temp_rise_c: float = 10.0
     copper_oz: float = 1.0
+    #: Which router draws the copper.
+    #:
+    #: ``'maze'`` (the default) claims each route's corridor on a shared
+    #: occupancy grid (:mod:`precis.pcb.maze`), so two nets' copper can
+    #: never overlap — ``clearance`` DRC errors become structurally
+    #: impossible and the residual failure mode is an UNROUTED net
+    #: (``RealizeResult.unrouted``) instead of a shorted one.
+    #:
+    #: ``'tangent'`` is the original closed-form drawer: a straight line
+    #: per segment, optionally hugging one component courtyard, blind to
+    #: every other track. Kept because it is the right primitive for a
+    #: single-segment question (``realize_segment`` is still exactly this)
+    #: and because a caller that wants geometry without an occupancy grid
+    #: — a sketch preview, a cost probe — should not pay for one. It is
+    #: not a routing strategy: measured on the reference fixture it drew
+    #: 234 same-layer clearance violations that no later pass can repair.
+    router: str = "maze"
+    #: Cap on A* expansions per connection before that connection is
+    #: declared unrouted. See :data:`precis.pcb.maze.MAX_EXPANSIONS`.
+    max_expansions: int = maze.MAX_EXPANSIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +200,17 @@ def _instance_point(ir: PcbIR, inst: int) -> Point | None:
     if math.isnan(x) or math.isnan(y):
         return None
     return (x, y)
+
+
+def _pin_point(ir: PcbIR, pin_id: int) -> Point | None:
+    """A track endpoint: the PAD, not the part centre.
+
+    Using the instance centroid here meant every net leaving a part
+    started at the same coordinate, so tracks of different nets were
+    coincident before any routing ran — ~600 `clearance` findings at an
+    exact 0.000mm gap, which no routing algorithm can separate.
+    """
+    return pin_point(ir, pin_id)
 
 
 def _default_obstacles(ir: PcbIR, config: RealizeConfig) -> list[Obstacle]:
@@ -380,7 +436,7 @@ def realize_segment(
     no L3 position yet (nothing to draw)."""
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
     ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
-    start, end = _instance_point(ir, ia), _instance_point(ir, ib)
+    start, end = _pin_point(ir, a), _pin_point(ir, b)
     if start is None or end is None:
         return None
     net_id = int(ir.seg_net[seg_id])
@@ -538,6 +594,12 @@ class RealizeResult:
     tracks: tuple[RealizedTrack, ...]
     vias: tuple[RealizedVia, ...]
     warnings: tuple[CongestionWarning, ...]
+    #: Segment ids the maze router could not route without crossing
+    #: another net's copper. **This is the honest residue of a guaranteed-
+    #: clean router**: the tangent drawer never reports an unrouted
+    #: segment because it always draws something, even straight through
+    #: three other nets. Always empty for ``router='tangent'``.
+    unrouted: tuple[int, ...] = ()
 
 
 def _gap_usage(
@@ -569,6 +631,297 @@ def _gap_usage(
     return warnings
 
 
+# ── the maze router ───────────────────────────────────────────────────────
+
+
+def _signal_layers(ir: PcbIR) -> list[int]:
+    """Stackup indices that can carry a routed trace. Mirrors
+    :func:`precis.pcb.session.signal_layers` (four lines, duplicated
+    rather than imported: ``session.py`` is a store-facing module this
+    pure one has no other reason to depend on). Falls back to the pad
+    layer for a stackup that declares no roles at all, so a synthetic IR
+    still routes somewhere rather than nowhere."""
+    layers = [i for i, layer in enumerate(ir.stackup) if layer.get("role") == "signal"]
+    return layers or [PAD_LAYER]
+
+
+def _outline_clip(
+    ir: PcbIR, clearance_mm: float
+) -> tuple[float, float, float, float] | None:
+    """The board rectangle copper may occupy: the outline's bounding box
+    inset by the copper-to-edge clearance. ``None`` when the design has
+    authored no outline — there is then no board edge to respect, and
+    inventing one (a bounding box around the parts, say) would silently
+    constrain a design that never asked to be constrained.
+
+    A bounding box is an over-approximation for a non-rectangular
+    outline: copper can still land inside the bbox but outside a
+    concave/rounded board. That is the same approximation
+    ``cost.outline_bbox`` and the placer's own bounds already make, so it
+    is at least consistent; a true point-in-polygon clip belongs with
+    whatever first needs a non-rectangular board.
+    """
+    if not ir.outline or len(ir.outline) < 3:
+        return None
+    xs = [float(p[0]) for p in ir.outline]
+    ys = [float(p[1]) for p in ir.outline]
+    x0, y0 = min(xs) + clearance_mm, min(ys) + clearance_mm
+    x1, y1 = max(xs) - clearance_mm, max(ys) - clearance_mm
+    if x1 <= x0 or y1 <= y0:
+        return None  # an outline smaller than its own clearance — no clip
+    return (x0, y0, x1, y1)
+
+
+def _seg_span_mm(ir: PcbIR, seg_id: int) -> float:
+    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+    pa, pb = pin_point(ir, a), pin_point(ir, b)
+    if pa is None or pb is None:
+        return math.inf
+    return dist(pa, pb)
+
+
+def _realize_maze(
+    ir: PcbIR, ids: list[int], config: RealizeConfig
+) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
+    """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
+    maze` for why this cannot emit overlapping copper, and what it gives
+    up in exchange (unrouted segments, reported not hidden)."""
+    signal_layers = _signal_layers(ir)
+    pads: list[tuple[Point, int]] = []
+    for pid in range(ir.n_pins):
+        point = pin_point(ir, pid)
+        if point is not None:
+            pads.append((point, int(ir.pin_net[pid])))
+    if not pads:
+        return [], [], list(ids)
+
+    rules_by_net = {
+        n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
+    }
+    if not rules_by_net:
+        return [], [], list(ids)
+    clearance = max(
+        config.clearance_mm, max(r.clearance_mm for r in rules_by_net.values())
+    )
+    # The board-edge inset is a DIFFERENT figure from inter-net clearance
+    # (drc.check_board_edge_clearance reads board_edge_clearance_*_mm), and
+    # it applies to the copper's edge, so half the widest track has to come
+    # off it too. Take the house tier where the fab publishes one, so the
+    # result clears the advisory threshold and not merely the hard one.
+    edge_min = config.fab_caps.house_default.get(
+        "board_edge_clearance_vcut_mm"
+    ) or config.fab_caps.jlc_min.get("board_edge_clearance_vcut_mm")
+    widest = max(r.track_width_mm for r in rules_by_net.values())
+    edge_inset = max(clearance, float(edge_min or 0.0)) + widest / 2.0
+    spec = maze.grid_for(
+        [p for p, _ in pads],
+        n_layers=len(ir.stackup) or 1,
+        bounds=_outline_clip(ir, edge_inset),
+    )
+    grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+
+    # Pads are claimed on the PAD LAYER only — an SMD pad is copper on one
+    # layer, and blocking all four would make every inner layer unusable
+    # underneath exactly the fine-pitch parts that need the escape. (A
+    # through-hole pad does block every layer; the IR carries no
+    # SMD/THT distinction yet, so this picks the assumption that keeps
+    # inner layers routable rather than the one that silently doesn't.)
+    # Two passes: the core first, where two nets' pads collide the cell
+    # goes to NEITHER (maze.CONTESTED), then each pad's inner disk is
+    # re-asserted so its owner always has a cell to start a route from.
+    pad_core = grid.core_radius_mm(2.0 * maze.PAD_RADIUS_MM)
+    for point, net in pads:
+        grid.stamp_disk((PAD_LAYER,), point[0], point[1], pad_core, net, contest=True)
+    for point, net in pads:
+        grid.stamp_disk((PAD_LAYER,), point[0], point[1], maze.PAD_RADIUS_MM, net)
+
+    tracks: list[RealizedTrack] = []
+    vias: list[RealizedVia] = []
+    unrouted: list[int] = []
+
+    # Plane-served segments are dog-bone stubs, not searched routes — but
+    # they ARE copper, so they get realized (and claimed) first, before
+    # any route can be planned through where they sit.
+    plane_ids = [
+        s for s in ids if int(ir.net_plane_layer[int(ir.seg_net[s])]) != UNSET_LAYER
+    ]
+    route_ids = [s for s in ids if s not in set(plane_ids)]
+    for seg_id in plane_ids:
+        track = realize_segment(ir, seg_id, [], config)
+        if track is None:
+            continue
+        tracks.append(track)
+        stub = maze.RoutePath(
+            track.net_id,
+            tuple(
+                (float(p[0]), float(p[1]), track.layer)
+                for p in (
+                    track.segments[0]["start"],
+                    track.segments[-1]["end"],
+                )
+            ),
+            track.length_mm,
+        )
+        grid.stamp_path(stub, track.width_mm)
+
+    # Shortest-first. A short connection has the fewest alternative
+    # corridors, so letting a long one claim the board first strands it;
+    # this is a heuristic, not a guarantee, and the guarantee (no
+    # overlapping copper) does not depend on it.
+    for seg_id in sorted(route_ids, key=lambda s: _seg_span_mm(ir, s)):
+        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+        start, end = pin_point(ir, a), pin_point(ir, b)
+        if start is None or end is None:
+            continue  # no L3 position yet — nothing to draw, not a failure
+        net_id = int(ir.seg_net[seg_id])
+        rules = rules_by_net[net_id]
+        # How much room ONE layer change costs this net. A via group is
+        # sized by ampacity, not by geometry: a 5A rail cannot cross
+        # layers through a single via, and a router that plans for one
+        # and then stitches four has just put three of them through
+        # somebody else's copper. So the search is told the group's full
+        # extent up front and only changes layer where the whole group
+        # fits.
+        n_vias = (
+            via_count_for_current(
+                net_current_a_or_none(float(ir.net_current_a[net_id])),
+                rules.via_dia_mm,
+            )
+            if rules.via_dia_mm is not None
+            else 1
+        )
+        group_extent = (
+            None
+            if rules.via_dia_mm is None
+            else n_vias * rules.via_dia_mm + (n_vias - 1) * clearance
+        )
+        path = grid.route(
+            net_id,
+            start,
+            end,
+            layers=signal_layers,
+            width_mm=rules.track_width_mm,
+            via_dia_mm=group_extent,
+            pad_layer=PAD_LAYER,
+            max_expansions=config.max_expansions,
+        )
+        if path is None or len(path.points) < 2:
+            unrouted.append(seg_id)
+            continue
+        path = _snap_to_pads(path, start, end, spec.pitch)
+        grid.stamp_path(path, rules.track_width_mm)
+        via_r = (
+            grid.core_radius_mm(rules.via_dia_mm)
+            if rules.via_dia_mm is not None
+            else 0.0
+        )
+        for vx, vy, lo, hi in path.vias:
+            if rules.via_dia_mm is None or rules.via_drill_mm is None:
+                continue  # this fab publishes no via figures — don't invent any
+            # The stitched group, spread along x at the transition. The
+            # search already cleared a disk of the group's full extent
+            # there (`group_extent` above), so every member lands in
+            # cleared space rather than the first one landing legally and
+            # the rest wherever they fall.
+            pitch = rules.via_dia_mm + clearance
+            for k in range(n_vias):
+                gx = vx + (k - (n_vias - 1) / 2.0) * pitch
+                grid.stamp_disk(range(0, spec.n_layers), gx, vy, via_r, net_id)
+                vias.append(
+                    RealizedVia(
+                        seg_id=seg_id,
+                        net_id=net_id,
+                        x=gx,
+                        y=vy,
+                        dia_mm=rules.via_dia_mm,
+                        drill_mm=rules.via_drill_mm,
+                        layer_lo=lo,
+                        layer_hi=hi,
+                        endpoint="a",
+                    )
+                )
+        tracks.extend(_tracks_from_path(seg_id, net_id, path, rules.track_width_mm))
+    return tracks, vias, unrouted
+
+
+def _snap_to_pads(
+    path: maze.RoutePath, start: Point, end: Point, pitch: float
+) -> maze.RoutePath:
+    """Pull a routed path's ends onto the exact pad centres.
+
+    The search works in cells, so its endpoints are cell CENTRES — up to
+    half a cell diagonal from the pad they are supposed to land on.
+    Measured on the reference board: 120 of 162 track ends stopped
+    0.04-0.06mm short of their pad. That is inside a 0.2mm pad, so the
+    connection happens to be made — by luck, not by construction, and the
+    luck runs out as soon as pad geometry gets smaller than the routing
+    grid. A track that ends *near* its pad is not connected to it.
+
+    The far end is always the target pad, so it always snaps. The near end
+    only snaps when the path actually started at the source pad: with
+    attach-to-own-copper the path may begin on an existing trunk instead,
+    and dragging that end to a pad it never came from would draw copper
+    through whatever lies between.
+
+    The move is bounded by half a cell diagonal, which is inside the one
+    cell of slack :meth:`maze.OccupancyGrid.route` already adds to its
+    query dilation, so this cannot walk copper out of its cleared
+    corridor.
+    """
+    points = list(path.points)
+    limit = pitch * math.sqrt(2.0) / 2.0 + 1e-9
+    if dist((points[0][0], points[0][1]), start) <= limit:
+        points[0] = (start[0], start[1], points[0][2])
+    if dist((points[-1][0], points[-1][1]), end) <= limit:
+        points[-1] = (end[0], end[1], points[-1][2])
+    length = sum(
+        dist((a[0], a[1]), (b[0], b[1]))
+        for a, b in itertools.pairwise(points)
+        if a[2] == b[2]
+    )
+    return maze.RoutePath(path.net_id, tuple(points), length)
+
+
+def _tracks_from_path(
+    seg_id: int, net_id: int, path: maze.RoutePath, width_mm: float
+) -> list[RealizedTrack]:
+    """Split one routed path into per-layer :class:`RealizedTrack`\\ s —
+    that class carries a single ``layer``, so a route that changes layer
+    becomes several tracks sharing one ``seg_id`` (which is what a real
+    multi-layer net is)."""
+    out: list[RealizedTrack] = []
+    run: list[tuple[float, float]] = []
+    layer = path.points[0][2]
+    for x, y, this_layer in path.points:
+        if this_layer != layer:
+            out += _track_from_run(seg_id, net_id, layer, run, width_mm)
+            run = [(x, y)]
+            layer = this_layer
+        else:
+            run.append((x, y))
+    out += _track_from_run(seg_id, net_id, layer, run, width_mm)
+    return out
+
+
+def _track_from_run(
+    seg_id: int,
+    net_id: int,
+    layer: int,
+    run: list[tuple[float, float]],
+    width_mm: float,
+) -> list[RealizedTrack]:
+    if len(run) < 2:
+        return []
+    segments = [
+        {"shape": "line", "start": list(a), "end": list(b)}
+        for a, b in itertools.pairwise(run)
+    ]
+    length = sum(dist(a, b) for a, b in itertools.pairwise(run))
+    return [
+        RealizedTrack(seg_id, net_id, layer, tuple(segments), length, None, width_mm)
+    ]
+
+
 # ── the checkpoint entry point ────────────────────────────────────────────
 
 
@@ -582,10 +935,25 @@ def realize(
     """Realize every segment in ``seg_ids`` (default: the whole board) —
     the checkpoint call. Never touches the IR (module docstring); pure
     function of a snapshot in, geometry + vias + a legible congestion
-    digest out."""
+    digest out.
+
+    ``config.router`` picks the drawer: ``'maze'`` (default) routes on a
+    shared occupancy grid and can leave segments ``unrouted``;
+    ``'tangent'`` draws every segment unconditionally and can leave them
+    overlapping. See :attr:`RealizeConfig.router`."""
+    ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
+    if config.router == "maze":
+        tracks, vias, unrouted = _realize_maze(ir, ids, config)
+        warnings = _gap_usage(ir, ids, config)
+        return RealizeResult(
+            tuple(tracks), tuple(vias), tuple(warnings), tuple(unrouted)
+        )
+    if config.router != "tangent":
+        raise ValueError(
+            f"unknown router {config.router!r} — expected 'maze' or 'tangent'"
+        )
     if obstacles is None:
         obstacles = _default_obstacles(ir, config)
-    ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
     tracks = [
         t
         for t in (realize_segment(ir, s, obstacles, config) for s in ids)

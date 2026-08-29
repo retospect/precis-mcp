@@ -177,19 +177,63 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
     layer SPAN (never a scalar ``layer`` inside ``geom``) and a
     current-derived via count, once a net's route actually changes layer —
     the exact production gap this task closes (the master backlog: "no via
-    geometry is realized, so every via DRC rule never fires")."""
-    ref_id = _seed(store, "route-via", _DESIGN_HIGH_CURRENT)
+    geometry is realized, so every via DRC rule never fires").
+
+    **This used to force the layer change by pre-authoring a
+    ``layer_assign`` override, and no longer can.** The maze router
+    (``RealizeConfig.router='maze'``, the production default since
+    2026-08-28) chooses its own layers — ``seg_layer`` is the sketch's
+    preference, not an instruction to the router — so the only way to
+    make a via appear is to make one *necessary*. That is what the wall
+    of grounded parts below does: it seals the direct path on the pad
+    layer, leaving a via as the cheapest remaining route. Testing the
+    persistence shape through a genuinely-required via is a better test
+    than testing it through a stipulated one anyway.
+    """
+    design = {
+        "components": [
+            {
+                "refdes": "U1",
+                "label": "buck",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "U2",
+                "label": "load",
+                "x": 24.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+            # A picket fence of grounded pads straight across the gap, tight
+            # enough that no VBUS trace fits between any two of them.
+            *(
+                {
+                    "refdes": f"W{i}",
+                    "label": "wall",
+                    "x": 12.0,
+                    "y": -8.0 + i * 1.1,
+                    "pins": [{"name": "1"}],
+                }
+                for i in range(16)
+            ),
+        ],
+        "nets": [
+            {"name": "VBUS", "class": "power", "current": 5.0},
+            {"name": "GND", "class": "ground"},
+        ],
+        "connections": [
+            {"net": "VBUS", "refdes": "U1", "pin": "1"},
+            {"net": "VBUS", "refdes": "U2", "pin": "1"},
+            *({"net": "GND", "refdes": f"W{i}", "pin": "1"} for i in range(16)),
+        ],
+    }
+    ref_id = _seed(store, "route-via", design)
     board_id = store.pcb_ensure_board(ref_id)
-    # Pre-author a layer assignment onto an inner layer (In1.Cu, index 1)
-    # -- iters=1 below keeps the optimizer in its placement-only opening
-    # stage (LAYER_ASSIGN doesn't enter the move mix until 50% through the
-    # schedule -- see optimize.py's DEFAULT_SCHEDULE), so this override
-    # survives the run undisturbed.
-    store.pcb_routes_write(
-        ref_id,
-        board_id,
-        {"VBUS": {"layer_assign": [{"a": "U1.1", "b": "U2.1", "layer": 1}]}},
-    )
+    # iters=1: the parts are authored with explicit coordinates and the
+    # anneal must not move the wall out of the way before the router
+    # meets it.
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 1, "seed": 1})
     pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
     assert not ctx.failures
@@ -202,7 +246,9 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
     assert rows, "expected at least one realized via at the layer transition"
     for (geom,) in rows:
         assert "layer" not in geom  # never a scalar layer -- span only
-        assert geom["span"] == ["F.Cu", "In1.Cu"]
+        lo, hi = geom["span"]
+        assert lo != hi, "a via that spans one layer is not a via"
+        assert lo == "F.Cu"  # the pad layer it must leave from
         assert geom["dia_mm"] > 0
         assert geom["drill_mm"] > 0
     # VBUS carries a 5A annotation -- a single via cannot carry it, so more
@@ -246,6 +292,100 @@ def test_pcb_route_applies_authored_plane_assignment(store: Store) -> None:
             (board_id,),
         ).fetchall()
     assert rows and all(r[0] == "true" for r in rows)
+
+
+def test_pcb_route_persists_optimizer_derived_plane_promotion(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr267526: the anneal freely mutates ``net_plane_layer`` via
+    ``PLANE_PROMOTE``/``PLANE_DEMOTE`` moves, but nothing used to persist
+    the result — the job dropped it at exit and ``view='planes'`` reported
+    "no plane assignments yet" even after the search settled on a
+    promotion. Forces the settled decision deterministically (rather than
+    relying on the anneal happening to pick it, which is what
+    ``tests/test_pcb_reference_end_to_end.py`` measures over a real
+    board) so this test is about the write-back plumbing, not search
+    heuristics."""
+    real_optimize = pcb_route.optimize
+
+    def _force_promote(ir: Any, config: Any) -> Any:
+        result = real_optimize(ir, config)
+        net_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}["N1"]
+        ir.promote_plane(net_id, 1)  # In1.Cu — role 'plane' in DEFAULT_STACKUP
+        return result
+
+    monkeypatch.setattr(pcb_route, "optimize", _force_promote)
+
+    ref_id = _seed(store, "route-derived-plane", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    rows = store.pcb_planes_list(ref_id)
+    assert rows == [
+        {"layer": "In1.Cu", "net": "N1", "region_hint": None, "source": "derived"}
+    ]
+
+    handler = PcbHandler(hub=Hub(store=store))
+    view = handler.get(id="route-derived-plane", view="planes")
+    assert "derived" in view.body
+    assert "N1" in view.body
+
+
+def test_pcb_route_never_touches_an_authored_plane_assignment(store: Store) -> None:
+    """The one that matters most (gr267526): an authored ``op='plane_net'``
+    row is a human instruction and must survive a route run byte-for-byte
+    — never deleted, never silently replaced by whatever the anneal
+    happened to settle on for that net."""
+    ref_id = _seed(store, "route-authored-plane", _DESIGN)
+    plane_id = store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
+    assert plane_id
+
+    before = store.pcb_planes_list(ref_id)
+    assert before == [
+        {"layer": "In1.Cu", "net": "N1", "region_hint": None, "source": "authored"}
+    ]
+
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    after = store.pcb_planes_list(ref_id)
+    assert after == before  # untouched: same layer, same net, still 'authored'
+
+    handler = PcbHandler(hub=Hub(store=store))
+    view = handler.get(id="route-authored-plane", view="planes")
+    assert "authored" in view.body
+
+
+def test_pcb_route_replaces_derived_plane_rows_across_reruns(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second route run's derived write-back must REPLACE the first
+    run's derived rows, never accumulate duplicates alongside them
+    (``pcb_planes_replace_derived``'s own DELETE+INSERT discipline, same
+    as ``pcb_copper_replace``)."""
+    real_optimize = pcb_route.optimize
+
+    def _force_promote(ir: Any, config: Any) -> Any:
+        result = real_optimize(ir, config)
+        net_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}["N1"]
+        ir.promote_plane(net_id, 1)
+        return result
+
+    monkeypatch.setattr(pcb_route, "optimize", _force_promote)
+
+    ref_id = _seed(store, "route-derived-rerun", _DESIGN)
+    ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx1.failures
+    ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 2})
+    pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx2.failures
+
+    rows = store.pcb_planes_list(ref_id)
+    assert len(rows) == 1  # upsert-by-replace, not a second accumulated row
+    assert rows[0]["source"] == "derived"
 
 
 def test_pcb_route_is_rerunnable(store: Store) -> None:

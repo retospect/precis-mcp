@@ -79,9 +79,14 @@ High-impact, called out by name:
   dead-end flip side of the exact acquisition-mode feature this fix just
   opened the mint door for. Worth fixing in the same pass as any follow-up
   acquisition-mode work.
-- **`pcb.put(args=)`** / **`structure.put(args=)`** / **`structure.edit
-  (args=)`** — see "`args=` is not actually exempt" below; these are real
-  gaps, not the CLI-only door they look like at first glance.
+- ~~**`pcb.put(args=)`** / **`structure.put(args=)`**~~ — **CLOSED
+  2026-08-28** (`gr267461`). `tools/core.py::put` grew the top-level
+  `args:` tunnel, mirroring `get()`. This was not a long-tail nicety: every
+  pcb write op (`place`, `route`, `plane_net`, `pin_side`) travels through
+  `args`, so the entire pcb write surface was unreachable from the MCP tool
+  while looking fully wired. **`structure.edit(args=)` remains open** — no
+  verb needs it today, and it stays on the ledger rather than being
+  exempted so that wiring it is a deliberate act.
 - **`plan.put(belief=/status=)`** / **`plan.edit(belief=/cursor=/status=)`**
   — `precis-plan-help.md` documents `plan` as agent-facing (not purely
   internal planner state), so this is reachable-in-principle debt too.
@@ -126,7 +131,12 @@ in, but `put`/`edit` never grew the top-level tunnel to carry it). Fixing
 this is a small, structural, one-time change (add `args=` to `put()`/
 `edit()`'s signature + the `__extras__` forward, mirroring `get()`) that
 would clear three ledger entries at once — a good first pick for whoever
-takes this backlog item.
+takes this backlog item. **Done for `put` on 2026-08-28**; `edit` still has
+no tunnel. Note this was the THIRD time the same remedy was written down in
+`tools/core.py` (see the notes at `put`'s `finding` and `paper.edit` call
+sites, citing gr262482/gr250273) without anyone adding the parameter —
+`tests/test_tool_args_reachability.py` is the first mechanism that can
+actually fail when a handler declares `args=` and the tool cannot pass it.
 
 ## Bucket C — unclear (needs someone to check before triaging further)
 

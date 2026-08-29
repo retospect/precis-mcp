@@ -759,6 +759,21 @@ def put(
     link: str | None = None,
     unlink: str | None = None,
     rel: str | None = None,
+    # Typed extras for kinds whose write payload is nested and polymorphic
+    # rather than a flat field list — today ``pcb``, whose whole surface
+    # (netlist authoring plus every ``op=``) is addressed through this dict.
+    # Mirrors ``get``'s ``args=`` and rides the same ``__extras__`` channel;
+    # ``dispatch`` forwards it unflattened to any handler that declares an
+    # explicit ``args: dict`` parameter (``PcbHandler.put`` does).
+    #
+    # This is DECLARED, not tunnelled, so it appears in the advertised MCP
+    # schema — which is what the note below actually requires. gr267461: its
+    # absence made every ``put(kind='pcb', args={...})`` in
+    # ``precis-pcb-help`` raise ``unexpected keyword argument 'args'``, so
+    # the entire pcb write path was unreachable from MCP, ``precis tools``
+    # and ``precis eval`` alike, while handler-level tests kept passing by
+    # calling ``PcbHandler.put`` directly.
+    args: dict[str, Any] | None = None,
     # Kind-specific kwargs. Declared here (rather than tunnelled through
     # ``args=``) so the JSON Schema advertised over MCP matches what the
     # help skills document — strict-schema clients (Claude Desktop, etc.)
@@ -928,6 +943,15 @@ def put(
     err = _check_text_payload_size("put", text)
     if err is not None:
         return err
+    if args:
+        # Same guard get() applies: an args= key that shadows an explicit
+        # kwarg is silently ignored by the dispatcher, so reject it loudly
+        # rather than let the caller believe it took effect.
+        reserved_err = _check_reserved_args(
+            args, reserved=("kind", "id", "mode", "text", "tags", "link", "rel")
+        )
+        if reserved_err is not None:
+            return reserved_err
     return _dispatch(
         "put",
         {
@@ -935,6 +959,10 @@ def put(
             "id": id,
             "text": text,
             "mode": mode,
+            # Rides the same channel as get()'s args=; dispatch pops it and
+            # forwards it unflattened to handlers declaring `args: dict`.
+            # None is falsy there, so the no-args case is a clean no-op.
+            "__extras__": dict(args) if args else None,
             "tags": tags,
             "untags": untags,
             "link": link,

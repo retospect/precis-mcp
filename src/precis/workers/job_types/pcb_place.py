@@ -85,7 +85,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         return
 
-    ir = pcb_session.build_ir(graph)
+    outline = pcb_session.outline_from_features(ctx.store.pcb_features_list(pcb_ref_id))
+    ir = pcb_session.build_ir(graph, outline=outline)
     config = OptimizeConfig(iters=iters, seed=seed, schedule=_PLACE_ONLY_SCHEDULE)
     result = optimize(ir, config)
 

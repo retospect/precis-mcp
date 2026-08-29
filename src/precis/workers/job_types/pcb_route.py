@@ -137,26 +137,59 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         return
 
-    ir = pcb_session.build_ir(graph)
+    # The board outline, same as ``pcb_place`` already fetches it. This job
+    # used to call ``build_ir(graph)`` with no outline at all, so its anneal
+    # AND its realizer both ran against a board they could not see, while
+    # ``_render_drc`` checked their output against the real one — 2
+    # ``board_edge_clearance`` errors on a board that was otherwise clean,
+    # and the place job's outline-aware placement quietly re-annealed away
+    # here. One rule, two call sites, drifted: the same shape as every
+    # other defect this build has produced.
+    outline = pcb_session.outline_from_features(ctx.store.pcb_features_list(pcb_ref_id))
+    ir = pcb_session.build_ir(graph, outline=outline)
     routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
     pcb_session.apply_route_overrides(ir, routes_by_net)
 
-    # Re-apply authored plane assignments (op='plane_net' -> pcb_planes) —
+    # Re-apply BOTH authored (op='plane_net') and optimizer-derived
+    # (a prior pcb_route run's write-back, gr267526) plane assignments —
     # promote_plane() is L1 state the IR never persists on its own, so a
     # fresh build must re-derive it every run, same discipline as the
-    # topology/layer_assign re-application just above.
+    # topology/layer_assign re-application just above. A derived row is a
+    # reasonable warm start even though this run may move off it; an
+    # authored row is a standing instruction the optimizer is free to
+    # explore away from during search but whose PERSISTED value this job
+    # must never overwrite (see the write-back below).
     net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
     layer_name_to_idx = {
         str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
     }
+    authored_net_names: set[str] = set()
     for plane in ctx.store.pcb_planes_list(pcb_ref_id):
         net_id = net_name_to_id.get(plane["net"])
         layer_idx = layer_name_to_idx.get(plane["layer"])
         if net_id is not None and layer_idx is not None:
             ir.promote_plane(net_id, layer_idx)
+        if plane.get("source", "authored") != "derived":
+            authored_net_names.add(plane["net"])
 
     config = OptimizeConfig(iters=iters, seed=seed)
     result = optimize(ir, config)
+
+    # Write back the anneal's settled plane decisions (gr267526: this used
+    # to be dropped entirely — PLANE_PROMOTE/DEMOTE moves mutated
+    # net_plane_layer freely during search, but nothing ever persisted the
+    # result, so a promoted GND/VCC-class net reverted to a full-length
+    # trace the moment the job ended). Only nets NOT covered by an
+    # authored row are written — an authored net's persisted assignment
+    # must stay exactly what the human asked for, never what this run's
+    # search happened to leave it at.
+    derived_assignments = {
+        str(ir.net_name[n]): str(ir.stackup[int(ir.net_plane_layer[n])]["name"])
+        for n in range(ir.n_nets)
+        if int(ir.net_plane_layer[n]) != UNSET_LAYER
+        and str(ir.net_name[n]) not in authored_net_names
+    }
+    ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
 
     pose = pcb_session.positions(ir)
     ctx.store.pcb_set_pose(pcb_ref_id, pose)

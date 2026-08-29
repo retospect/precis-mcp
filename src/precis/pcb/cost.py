@@ -107,6 +107,30 @@ negatives) is the cheap entry point for catching *gross* errors; it does
 not discriminate near-optimal designs, which is where these numbers would
 actually need tuning. Say so here rather than dressing a guess as a
 derivation.
+
+**``courtyard_overlap`` and ``board_edge_clearance`` close a real gap
+(gr267456): nothing in this file used to give the optimizer a spatial-
+exclusion signal at all.** ``drc.py`` treats an overlapping courtyard pair
+or an edge-clearance violation as a categorical hard error — correct for
+a final check, useless as an optimizer signal (a binary term is a
+plateau, not a slope) — so both terms below report the SAME violation
+*gradedly*, as a fraction of the SAME physical threshold DRC checks
+against, imported rather than re-declared:
+:data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` for the former,
+:class:`precis.pcb.capabilities.CapabilityRow`'s
+``board_edge_clearance_vcut_mm`` field (already threaded through this
+module as :data:`CostConfig.fab_caps`, same as ``thermal_rise`` and
+``via_count`` use) for the latter. The ``drc.py`` import is a deliberate,
+one-directional ``cost.py -> drc.py`` edge: ``drc.py`` imports nothing
+from ``cost.py``/``optimize.py`` (no cycle), and only a plain float
+constant crosses the edge, never any of ``drc.py``'s shapely/STRtree
+machinery. Flagged here anyway because ``drc.py``'s own docstring frames
+itself as "the final check, not the main event", downstream of realized
+(L5) geometry — an always-on, L0-L4 module reaching into a downstream
+terminal-stage module for a constant is an unusual direction, and
+re-declaring the number instead (the "two components implementing one
+rule" defect this task exists to close, see ``docs/backlog/
+pcb-residual-defects-0828.md``) was judged the worse of the two options.
 """
 
 from __future__ import annotations
@@ -119,7 +143,14 @@ from typing import Any
 
 from precis.pcb import objectives as obj
 from precis.pcb.capabilities import CapabilityRow, capability_for
-from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, same_layer_crossing_count
+from precis.pcb.drc import DEFAULT_COURTYARD_RADIUS_MM
+from precis.pcb.ir import (
+    UNSET_LAYER,
+    Level,
+    PcbIR,
+    pin_point,
+    same_layer_crossing_count,
+)
 from precis.pcb.rules import (
     implied_via_count,
     ipc2221_capacity_a,
@@ -663,8 +694,12 @@ def loop_inductance_term(
         bound = True
     else:
         a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-        ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
-        xa, ya, xb, yb = ir.inst_x[ia], ir.inst_y[ia], ir.inst_x[ib], ir.inst_y[ib]
+        # PAD positions, not part centres: two nets leaving one part are
+        # not the same point, and pretending they are made `crossings`
+        # a measurement over a degenerate graph (ir.pin_point).
+        _pa, _pb = pin_point(ir, a), pin_point(ir, b)
+        xa, ya = _pa if _pa is not None else (math.nan, math.nan)
+        xb, yb = _pb if _pb is not None else (math.nan, math.nan)
         if math.isnan(xa) or math.isnan(xb):
             length_mm = config.min_loop_mm
             bound = True
@@ -776,8 +811,12 @@ def _wants_coupling(ir: PcbIR, seg_id: int, config: CostConfig) -> bool:
 def _segment_distance_mm(ir: PcbIR, sa: int, sb: int) -> float | None:
     def _mid(seg_id: int) -> tuple[float, float] | None:
         a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-        ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
-        xa, ya, xb, yb = ir.inst_x[ia], ir.inst_y[ia], ir.inst_x[ib], ir.inst_y[ib]
+        # PAD positions, not part centres: two nets leaving one part are
+        # not the same point, and pretending they are made `crossings`
+        # a measurement over a degenerate graph (ir.pin_point).
+        _pa, _pb = pin_point(ir, a), pin_point(ir, b)
+        xa, ya = _pa if _pa is not None else (math.nan, math.nan)
+        xb, yb = _pb if _pb is not None else (math.nan, math.nan)
         if math.isnan(xa) or math.isnan(xb):
             return None
         return (xa + xb) / 2.0, (ya + yb) / 2.0
@@ -994,6 +1033,237 @@ def _crossings(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     ]
 
 
+# ── courtyard overlap (gr267456) ─────────────────────────────────────────
+
+#: Two instances' courtyard circles first touch when their centre-to-
+#: centre distance drops to this — the SAME threshold ``drc.
+#: check_courtyard_overlap`` uses for its own two circles (each of radius
+#: :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM`), imported rather
+#: than re-declared (module docstring).
+COURTYARD_MIN_SEPARATION_MM = 2.0 * DEFAULT_COURTYARD_RADIUS_MM
+
+_COURTYARD_JUSTIFICATION = (
+    "two components' courtyards cannot physically overlap on a manufactured board -- "
+    "the same rule drc.check_courtyard_overlap enforces as a hard error, graded here "
+    "as overlap depth (fraction of the shared minimum separation) so the optimizer "
+    "has a slope to descend rather than a plateau"
+)
+
+
+def courtyard_overlap_pair_term(
+    ir: PcbIR, ia: int, ib: int, level: Level, config: CostConfig
+) -> TermValue:
+    """One instance PAIR's ``courtyard_overlap`` :class:`TermValue` — the
+    optimizer-visible, GRADED counterpart to ``drc.check_courtyard_
+    overlap``'s hard, binary "error". DRC treats any overlap as
+    categorical, but an optimizer needs a slope to descend, not a
+    plateau, so this reports how DEEPLY the two courtyards overlap, as a
+    fraction of :data:`COURTYARD_MIN_SEPARATION_MM` (the same threshold
+    DRC's two circles collide at) — 0.0 the instant the circles stop
+    touching, 1.0 at perfect coincidence, and (like every other fraction
+    in this module) unbounded above 1.0 has no meaning here since a
+    centre-to-centre distance can't go negative.
+
+    Before L3 (no committed position for either instance), two SPECIFIC
+    instances' eventual placement is exactly as unconstrained as
+    :func:`coupling_pair_term`'s own pre-placement case — they may land
+    adjacent or on opposite corners of the eventual board — so 0.0 is the
+    tightest LOWER-admissible bound (see :data:`CostConfig.
+    coupling_bound_k`'s docstring for the identical argument): this is
+    NOT the "undefined == zero" trap, because no risk is being hidden —
+    it is genuinely undetermined by a placement choice not yet made."""
+    refdes_a = str(ir.instance_refdes[ia])
+    refdes_b = str(ir.instance_refdes[ib])
+    region = f"{refdes_a}~{refdes_b}"
+    if level < Level.L3:
+        return TermValue(
+            "courtyard_overlap",
+            Family.MARGIN,
+            region,
+            0.0,
+            _COURTYARD_JUSTIFICATION,
+            is_bound=True,
+        )
+    # INSTANCE centroids, deliberately — a courtyard is the part's BODY,
+    # not its pads. This is the one geometric term that must NOT move to
+    # pin_point: pads sit inside the courtyard, so measuring body overlap
+    # from pad positions would understate it.
+    xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
+    xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
+    if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
+        return TermValue(
+            "courtyard_overlap",
+            Family.MARGIN,
+            region,
+            0.0,
+            _COURTYARD_JUSTIFICATION,
+            is_bound=True,
+        )
+    dist_mm = math.hypot(xa - xb, ya - yb)
+    overlap_mm = max(0.0, COURTYARD_MIN_SEPARATION_MM - dist_mm)
+    fraction = overlap_mm / COURTYARD_MIN_SEPARATION_MM
+    return TermValue(
+        "courtyard_overlap",
+        Family.MARGIN,
+        region,
+        fraction,
+        _COURTYARD_JUSTIFICATION,
+        is_bound=False,
+    )
+
+
+def _courtyard_overlap(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    """Every instance PAIR's ``courtyard_overlap`` value — genuinely
+    O(n_instances^2), same carve-out as ``coupling``'s own full double
+    loop (module docstring's "what is NOT claimed local" section):
+    :mod:`precis.pcb.optimize` never calls this full-board version per
+    move, it maintains its own grid-bucketed incremental cache instead
+    (see that module's docstring)."""
+    n = ir.n_instances
+    return [
+        courtyard_overlap_pair_term(ir, ia, ib, level, config)
+        for ia in range(n)
+        for ib in range(ia + 1, n)
+    ]
+
+
+# ── board-edge clearance (gr267456 addendum) ─────────────────────────────
+
+#: The SAME field ``drc.check_board_edge_clearance`` reads when the caller
+#: doesn't know the panel type yet (V-cut, the conservative tier — module
+#: docstring there: "when the caller doesn't know the panel type yet, use
+#: the V-cut figure"). This module has no panel-type concept at placement
+#: time either, so it always reads this one field — never the routed-edge
+#: field, and never a re-declared clearance figure of its own.
+_BOARD_EDGE_FIELD = "board_edge_clearance_vcut_mm"
+
+
+def outline_bbox(
+    outline: list[tuple[float, float]],
+) -> tuple[float, float, float, float]:
+    """The axis-aligned bounding box (``x0, y0, x1, y1``) of a polygon
+    ring — shared, not duplicated, between this module's
+    ``board_edge_clearance`` term and :mod:`precis.pcb.optimize`'s
+    TRANSLATE-move clamp (both approximate ``ir.outline`` the same way;
+    see :func:`board_edge_clearance_term`'s docstring)."""
+    xs = [p[0] for p in outline]
+    ys = [p[1] for p in outline]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _signed_inside_depth_mm(
+    x: float, y: float, bbox: tuple[float, float, float, float]
+) -> float:
+    """How far ``(x, y)`` sits inside ``bbox``'s nearest edge — POSITIVE
+    when inside (the distance to the closest of the four edges), NEGATIVE
+    when outside (the Euclidean distance back to the nearest point of the
+    rectangle, negated). A signed, single-number "clearance available"
+    that :func:`board_edge_clearance_term` compares directly against the
+    required clearance, so a part drifting further and further outside
+    the board keeps getting a worse (more negative) number rather than
+    plateauing the moment it crosses the edge."""
+    x0, y0, x1, y1 = bbox
+    dx_out = max(x0 - x, x - x1, 0.0)
+    dy_out = max(y0 - y, y - y1, 0.0)
+    if dx_out > 0.0 or dy_out > 0.0:
+        return -math.hypot(dx_out, dy_out)
+    return min(x - x0, x1 - x, y - y0, y1 - y)
+
+
+_BOARD_EDGE_JUSTIFICATION = (
+    "copper must clear the panel edge by the fab's own margin -- the same rule "
+    "drc.check_board_edge_clearance enforces as a hard/soft two-tier finding, "
+    "graded here as intrusion-or-overshoot depth (fraction of the required "
+    "clearance) so the optimizer has a slope to descend rather than a plateau"
+)
+
+
+def board_edge_clearance_term(
+    ir: PcbIR, inst_id: int, level: Level, config: CostConfig
+) -> TermValue | None:
+    """One instance's ``board_edge_clearance`` :class:`TermValue`, or
+    ``None`` when no board outline is known yet (``ir.outline`` is
+    ``None``/too short to bound anything, or the fab capability row
+    publishes no figure for this field at all) — the same "nothing to
+    check" rule ``drc.check_board_edge_clearance`` itself applies, not an
+    invented boundary or an invented clearance figure.
+
+    **Approximates the outline by its axis-aligned bounding box**
+    (:func:`outline_bbox`), not the exact polygon boundary ``drc.
+    check_board_edge_clearance`` measures against REALIZED copper — this
+    term only ever sees an instance CENTROID (no footprint/copper geometry
+    exists yet at L3), and every reference board this build targets is
+    rectangular, so the approximation is exact for the common case and
+    still a same-direction (never risk-hiding) proxy elsewhere. Mirrors
+    :mod:`precis.pcb.optimize`'s own TRANSLATE-clamp simplification — one
+    approximation of the outline, not two independently invented ones.
+
+    Reads the SAME two-tier clearance figure ``drc.check_board_edge_
+    clearance`` does — :data:`_BOARD_EDGE_FIELD` off the shared, already-
+    resolved :class:`~precis.pcb.capabilities.CapabilityRow`
+    (:data:`CostConfig.fab_caps`, the same row ``thermal_rise``/
+    ``via_count`` already use) — never a re-declared figure. Prefers the
+    house-default tier (the deliberate-margin target) as the term's
+    BUDGET, falling back to the JLC-min floor only when no house default
+    is published for this field.
+
+    Before L3 (no committed position), or for an instance with no
+    position yet, this is exactly :func:`courtyard_overlap_pair_term`'s
+    own pre-placement argument: 0.0 is the tightest LOWER-admissible
+    bound, not a hidden risk (no move has decided where relative to the
+    board edge this instance eventually lands)."""
+    if not ir.outline or len(ir.outline) < 3:
+        return None
+    required_mm = config.fab_caps.house_default.get(
+        _BOARD_EDGE_FIELD
+    ) or config.fab_caps.jlc_min.get(_BOARD_EDGE_FIELD)
+    if not required_mm:
+        return None
+    region = str(ir.instance_refdes[inst_id])
+    if level < Level.L3:
+        return TermValue(
+            "board_edge_clearance",
+            Family.MARGIN,
+            region,
+            0.0,
+            _BOARD_EDGE_JUSTIFICATION,
+            is_bound=True,
+        )
+    x, y = float(ir.inst_x[inst_id]), float(ir.inst_y[inst_id])
+    if math.isnan(x) or math.isnan(y):
+        return TermValue(
+            "board_edge_clearance",
+            Family.MARGIN,
+            region,
+            0.0,
+            _BOARD_EDGE_JUSTIFICATION,
+            is_bound=True,
+        )
+    bbox = outline_bbox(ir.outline)
+    depth_mm = _signed_inside_depth_mm(x, y, bbox)
+    violation_mm = max(0.0, required_mm - depth_mm)
+    fraction = violation_mm / required_mm
+    return TermValue(
+        "board_edge_clearance",
+        Family.MARGIN,
+        region,
+        fraction,
+        _BOARD_EDGE_JUSTIFICATION,
+        is_bound=False,
+    )
+
+
+def _board_edge_clearance(
+    ir: PcbIR, level: Level, config: CostConfig
+) -> list[TermValue]:
+    out: list[TermValue] = []
+    for i in range(ir.n_instances):
+        t = board_edge_clearance_term(ir, i, level, config)
+        if t is not None:
+            out.append(t)
+    return out
+
+
 TERMS: list[TermSpec] = [
     TermSpec(
         "board_area",
@@ -1067,6 +1337,22 @@ TERMS: list[TermSpec] = [
         "reroute -- the exact thing the layered ratsnest exists to make legible and resolvable",
         _crossings,
         direction=BoundDirection.UPPER,
+    ),
+    TermSpec(
+        "courtyard_overlap",
+        Family.MARGIN,
+        Criticality.CATASTROPHIC,
+        _COURTYARD_JUSTIFICATION,
+        _courtyard_overlap,
+        direction=BoundDirection.LOWER,
+    ),
+    TermSpec(
+        "board_edge_clearance",
+        Family.MARGIN,
+        Criticality.CATASTROPHIC,
+        _BOARD_EDGE_JUSTIFICATION,
+        _board_edge_clearance,
+        direction=BoundDirection.LOWER,
     ),
 ]
 

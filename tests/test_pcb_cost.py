@@ -203,6 +203,99 @@ def test_layer_count_zero_at_l0_is_a_true_bound_not_a_swallowed_signal():
     )  # "at least one layer" — bounded below by 1, never literally 0
 
 
+# ── courtyard_overlap (gr267456) ────────────────────────────────────────
+def _two_instance_graph(xa: float, ya: float, xb: float, yb: float) -> dict:
+    return {
+        "instances": [
+            {"refdes": "U0", "x": xa, "y": ya},
+            {"refdes": "U1", "x": xb, "y": yb},
+        ],
+        "nets": [
+            {
+                "name": "N0",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U1", "pin": "1"},
+                ],
+            }
+        ],
+    }
+
+
+def test_courtyard_overlap_scores_worse_when_instances_coincide():
+    """Two instances placed on top of each other score a strictly worse
+    cost than the same two separated — the direct, hand-built pin to
+    gr267456's "nothing prevents this" defect."""
+    ir_coincident = from_graph(_two_instance_graph(0.0, 0.0, 0.0, 0.0))
+    ir_separated = from_graph(_two_instance_graph(0.0, 0.0, 50.0, 0.0))
+    config = CostConfig()
+
+    coincident = evaluate_cost(ir_coincident, Level.L4, config)
+    separated = evaluate_cost(ir_separated, Level.L4, config)
+
+    assert coincident.total > separated.total
+    assert coincident.risk > separated.risk
+
+    (t,) = [t for t in coincident.terms if t.name == "courtyard_overlap"]
+    assert t.raw == pytest.approx(1.0)  # perfect coincidence: fully at budget
+    (t,) = [t for t in separated.terms if t.name == "courtyard_overlap"]
+    assert t.raw == pytest.approx(0.0)
+
+
+def test_courtyard_overlap_pair_term_direction_is_lower():
+    spec = _BY_NAME["courtyard_overlap"]
+    assert spec.direction is BoundDirection.LOWER
+
+
+def test_courtyard_overlap_pair_term_admissible_before_l3():
+    ir = from_graph(_two_instance_graph(0.0, 0.0, 0.0, 0.0))
+    from precis.pcb.cost import courtyard_overlap_pair_term
+
+    t = courtyard_overlap_pair_term(ir, 0, 1, Level.L1, CostConfig())
+    assert t.is_bound
+    assert t.raw == 0.0  # unconstrained pre-placement, same as coupling_bound_k
+
+
+# ── board_edge_clearance (gr267456 addendum) ────────────────────────────
+def test_board_edge_clearance_scores_worse_when_instance_is_outside_a_small_outline():
+    """A deliberately small outline + a part outside it — the direct case
+    that proves the term fires (unlike the reference run's 300x300 board,
+    where every part is trivially inside)."""
+    outline = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    graph = {"instances": [{"refdes": "U0", "x": 5.0, "y": 5.0}], "nets": []}
+    config = CostConfig()
+
+    ir_inside = from_graph(graph, outline=outline)
+    inside = evaluate_cost(ir_inside, Level.L4, config)
+
+    ir_outside = from_graph(graph, outline=outline)
+    ir_outside.inst_x[0] = 500.0
+    ir_outside.inst_y[0] = 500.0
+    outside = evaluate_cost(ir_outside, Level.L4, config)
+
+    assert outside.total > inside.total
+    assert outside.risk > inside.risk
+
+    (t,) = [t for t in inside.terms if t.name == "board_edge_clearance"]
+    assert t.raw == pytest.approx(0.0)
+    (t,) = [t for t in outside.terms if t.name == "board_edge_clearance"]
+    assert t.raw > 1.0  # well past the outline, not just past the budget
+
+
+def test_board_edge_clearance_absent_without_an_outline():
+    graph = {"instances": [{"refdes": "U0", "x": 5.0, "y": 5.0}], "nets": []}
+    ir = from_graph(graph)  # no outline authored
+    result = evaluate_cost(ir, Level.L4, CostConfig())
+    assert not [t for t in result.terms if t.name == "board_edge_clearance"]
+
+
+def test_board_edge_clearance_registered_term_direction_is_lower():
+    spec = _BY_NAME["board_edge_clearance"]
+    assert spec.direction is BoundDirection.LOWER
+
+
 # ── admissibility property test ──────────────────────────────────────
 def _random_state(rng: random.Random):
     """A random, well-formed (non-overlapping) IR — grid-placed, so
@@ -340,7 +433,27 @@ def test_admissibility_direction_holds_across_a_hardened_schedule_too():
 #: ``test_via_count_nonzero_through_the_real_production_path_not_seeded``).
 #: If a future term turns out to need an exception, name it here with its
 #: own reason; never widen this to a blanket skip.
-_NOT_MOVE_REACHABLE: dict[str, str] = {}
+_NOT_MOVE_REACHABLE: dict[str, str] = {
+    "courtyard_overlap": (
+        "Unreachable BY A GENERATED MOVE since 2026-08-28, deliberately: "
+        "OptimizeEngine._placement_is_legal now rejects any TRANSLATE/SWAP "
+        "proposal that overlaps two parts' keep-outs, so no move this test "
+        "can generate produces a nonzero value. The term is NOT dead — it "
+        "still scores states this engine did not author (a human-placed or "
+        "locked pose loaded from the store, a design hydrated with "
+        "overlapping instances), which is precisely the case where a "
+        "report matters and no move-time filter can help. What changed is "
+        "that the engine can no longer PURCHASE an overlap: a measured run "
+        "with this term active and no hard constraint settled with 10 "
+        "overlapping pairs, because a penalty is a price."
+    ),
+    "board_edge_clearance": (
+        "Same reason as courtyard_overlap: OptimizeEngine.bounds_for now "
+        "shrinks each instance's legal centre range by its OWN keep-out "
+        "radius, so no generated move can place a part's copper off the "
+        "board. Still scores externally-authored poses."
+    ),
+}
 
 
 def _reachability_board(rng: random.Random) -> dict:
@@ -448,10 +561,17 @@ def test_every_registered_term_is_move_reachable():
             scalar = _term_scalar(spec.estimate(ir, Level.L4, cfg), spec.family)
             values[spec.name].add(round(scalar, 9))
 
+    # A modest outline (module docstring's "board_edge_clearance" needs
+    # SOME state where an instance genuinely lands near/outside it) --
+    # comparable in scale to `seed_placement`'s own cluster pitch, so
+    # across 60 randomized trials + 20 moves each, some placements sit
+    # comfortably inside it and some spill outside/near its edge.
+    _reachability_outline = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]
+
     for trial in range(60):
         state_rng = random.Random(outer_rng.randrange(2**31))
         graph = _reachability_board(state_rng)
-        ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+        ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=_reachability_outline)
         seed_placement(ir, state_rng)
         # No `ir.add_via` seeding here (2026-08-28): that used to be the
         # only thing making `via_count` vary in this test, which is
@@ -489,6 +609,51 @@ def test_every_registered_term_is_move_reachable():
         "MoveKind -- measure-zero or dead (cost.py module docstring's "
         f"discrete-vs-continuous rule): {dead}"
     )
+
+
+def test_move_reachability_opt_outs_still_fire_on_an_externally_authored_pose():
+    """The two ``_NOT_MOVE_REACHABLE`` opt-outs claim their terms are
+    unreachable *by a generated move* but still score a pose the engine
+    did not author. That is a claim, and an unbacked claim is exactly how
+    a dead term survives a reachability test — so verify it, by building
+    the illegal pose directly instead of asking a move generator for one.
+
+    Without this, adding a name to ``_NOT_MOVE_REACHABLE`` would be
+    indistinguishable from deleting the term's only check.
+    """
+    graph = {
+        "instances": [{"refdes": "U0"}, {"refdes": "U1"}],
+        "nets": [
+            {
+                "name": "N",
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U1", "pin": "1"},
+                ],
+            }
+        ],
+    }
+    outline = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    # Coincident, and one of them far outside the board — a pose no
+    # TRANSLATE/SWAP this engine generates can reach any more.
+    ir.move_instance(0, x=10.0, y=10.0, rot=0.0)
+    ir.move_instance(1, x=10.0, y=10.0, rot=0.0)
+    cfg = CostConfig()
+    by_name = {spec.name: spec for spec in TERMS}
+
+    overlap = _term_scalar(
+        by_name["courtyard_overlap"].estimate(ir, Level.L4, cfg),
+        by_name["courtyard_overlap"].family,
+    )
+    assert overlap > 0.0, "courtyard_overlap silent on two coincident parts"
+
+    ir.move_instance(1, x=60.0, y=60.0, rot=0.0)
+    edge = _term_scalar(
+        by_name["board_edge_clearance"].estimate(ir, Level.L4, cfg),
+        by_name["board_edge_clearance"].family,
+    )
+    assert edge > 0.0, "board_edge_clearance silent on a part 40mm off the board"
 
 
 # ── crossings: registered margin term, GEOMETRICALLY backed since 2026-08-28
@@ -813,7 +978,7 @@ def test_via_count_matches_realized_vias_exactly():
     ir.set_layer(0, 1)  # a real layer transition, with a current annotation
     fab_caps = capability_for("4layer")
     cost_config = CostConfig(fab_caps=fab_caps, via_usd=0.02)
-    realize_config = RealizeConfig(fab_caps=fab_caps)
+    realize_config = RealizeConfig(fab_caps=fab_caps, router="tangent")
 
     (t,) = _via_count(ir, Level.L4, cost_config)
     result = realize(ir, config=realize_config)

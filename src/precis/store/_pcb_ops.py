@@ -1324,7 +1324,18 @@ class PcbMixin:
     def pcb_assign_plane(self, ref_id: int, layer_name: str, net_name: str) -> int:
         """Author a plane assignment (``pcb_planes``) — the inline "assign
         plane net" editor. Idempotent by (board, layer, net); returns the
-        plane_id, or 0 when ``net_name`` doesn't resolve on this design."""
+        plane_id, or 0 when ``net_name`` doesn't resolve on this design.
+
+        Always stamps ``meta.source = 'authored'`` (merged in on conflict,
+        never a bare overwrite of unrelated meta keys) — a human's explicit
+        ``op='plane_net'`` instruction, so it must never look like an
+        optimizer guess later. If a live *derived* row already occupies
+        this exact (board, layer, net) key (from a prior ``pcb_route``
+        run), this call promotes it to authored in place — an explicit
+        human instruction is allowed to claim a spot the optimizer merely
+        guessed at; see :meth:`pcb_planes_replace_derived`, which is the
+        one direction that must never happen (derived silently clobbering
+        authored)."""
         with self.tx() as conn:
             board_id = self._pcb_ensure_board(conn, ref_id)
             net = conn.execute(
@@ -1336,23 +1347,41 @@ class PcbMixin:
                 return 0
             row = conn.execute(
                 """
-                INSERT INTO pcb_planes (board_id, layer, net_id)
-                VALUES (%s, %s, %s)
+                INSERT INTO pcb_planes (board_id, layer, net_id, meta)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (board_id, layer, net_id) WHERE retired_at IS NULL
-                DO UPDATE SET meta = pcb_planes.meta
+                DO UPDATE SET meta = pcb_planes.meta || EXCLUDED.meta
                 RETURNING plane_id
                 """,
-                (board_id, layer_name, int(net[0])),
+                (board_id, layer_name, int(net[0]), Jsonb({"source": "authored"})),
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
     def pcb_planes_list(self, ref_id: int) -> list[dict[str, Any]]:
-        """Authored plane assignments — the ``view='planes'`` read."""
+        """Every live plane assignment for a design — both human-
+        ``authored`` (``op='plane_net'``) and optimizer-``derived``
+        (:meth:`pcb_planes_replace_derived`, the ``pcb_route`` job's
+        write-back, gr267526). Doubles as the ``view='planes'`` read and
+        the seed :mod:`precis.workers.job_types.pcb_route` warm-starts a
+        fresh anneal from — a prior run's derived guess is still a
+        reasonable starting point, so both provenances load, not just
+        authored ones.
+
+        ``source`` defaults to ``'authored'`` for a row with no
+        ``meta.source`` key (every row written before this change) — the
+        safe direction, since misreading an old row as ``'derived'``
+        would let a later :meth:`pcb_planes_replace_derived` silently
+        retire what was actually a human's instruction."""
         with self.pool.connection() as conn:
             return [
-                {"layer": r[0], "net": r[1], "region_hint": r[2]}
+                {
+                    "layer": r[0],
+                    "net": r[1],
+                    "region_hint": r[2],
+                    "source": r[3] or "authored",
+                }
                 for r in conn.execute(
-                    "SELECT pl.layer, n.name, pl.region_hint "
+                    "SELECT pl.layer, n.name, pl.region_hint, pl.meta->>'source' "
                     "FROM pcb_planes pl "
                     "JOIN pcb_boards b ON b.board_id = pl.board_id "
                     "JOIN pcb_nets n ON n.net_id = pl.net_id "
@@ -1361,6 +1390,61 @@ class PcbMixin:
                     (ref_id,),
                 ).fetchall()
             ]
+
+    def pcb_planes_replace_derived(
+        self, ref_id: int, board_id: int, assignments: dict[str, str]
+    ) -> int:
+        """Optimizer-derived plane write-back — the ``pcb_route`` job's
+        checkpoint for whatever :meth:`precis.pcb.ir.PcbIR.promote_plane`
+        state the anneal settled on (gr267526: previously dropped
+        entirely, so GND/VCC-class nets never got a plane and were
+        threaded as full-length traces instead).
+
+        Provenance-scoped **replace**: retires every existing
+        ``source='derived'`` row for this board, then inserts the new set
+        fresh — the same DELETE+INSERT cascade discipline
+        :meth:`pcb_copper_replace` already uses, so a re-run replaces
+        last run's guesses rather than accumulating duplicates. **Never
+        touches a ``source='authored'`` row** — the query that selects
+        what to retire filters on it, and the per-net insert is additionally
+        guarded by ``ON CONFLICT ... DO NOTHING`` so even a caller bug that
+        forgot to exclude an authored net can't clobber it; the caller
+        (:mod:`precis.workers.job_types.pcb_route`) is still expected to
+        exclude authored nets from ``assignments`` using
+        :meth:`pcb_planes_list`'s ``source`` field, since a net covered by
+        an authored row must show that authored decision, not silently
+        swallow a derived one alongside it.
+
+        ``assignments`` is ``{net_name: layer_name}``. Returns the number
+        of nets attempted (not necessarily inserted, if a name failed to
+        resolve or hit the conflict guard)."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE pcb_planes SET retired_at = now() "
+                "WHERE board_id = %s AND retired_at IS NULL "
+                "AND coalesce(meta->>'source', 'authored') = 'derived'",
+                (board_id,),
+            )
+            n = 0
+            for net_name, layer_name in assignments.items():
+                net = conn.execute(
+                    "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
+                    "AND retired_at IS NULL",
+                    (ref_id, net_name),
+                ).fetchone()
+                if net is None:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO pcb_planes (board_id, layer, net_id, meta)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (board_id, layer, net_id) WHERE retired_at IS NULL
+                    DO NOTHING
+                    """,
+                    (board_id, layer_name, int(net[0]), Jsonb({"source": "derived"})),
+                )
+                n += 1
+        return n
 
     def pcb_set_class_rules(self, ref_id: int, name: str, rules: dict[str, Any]) -> int:
         """Thin single-class wrapper around

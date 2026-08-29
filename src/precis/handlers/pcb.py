@@ -990,9 +990,14 @@ class PcbHandler(Handler):
         return Response(body=head + "\n" + "\n".join(f"- {w}" for w in warnings))
 
     def _render_planes(self, ref_id: int) -> Response:
-        """Authored plane assignments (``pcb_planes``, ``op='plane_net'``)
-        — which nets are plane-served on which layer, so the LLM can see
-        the fanout-vs-route split before running ``op='route'``."""
+        """Plane assignments (``pcb_planes``) — which nets are
+        plane-served on which layer, so the LLM can see the
+        fanout-vs-route split before running ``op='route'``. Shows
+        ``source`` so a reader can tell a human's explicit
+        ``op='plane_net'`` instruction (``authored``) apart from the
+        anneal's own settled decision (``derived``, written back by the
+        ``pcb_route`` job, gr267526) — an authored row is never touched
+        by a later route run; a derived one is replaced each run."""
         rows = self.store.pcb_planes_list(ref_id)
         if not rows:
             return Response(
@@ -1000,10 +1005,12 @@ class PcbHandler(Handler):
                 "id='slug', args={'op':'plane_net','layer':'In1.Cu',"
                 "'net':'GND'})"
             )
-        table_rows = [{"layer": r["layer"], "net": r["net"]} for r in rows]
+        table_rows = [
+            {"layer": r["layer"], "net": r["net"], "source": r["source"]} for r in rows
+        ]
         return Response(
             body=f"# planes — {len(rows)} assignment(s)\n"
-            + render_agent_table(table_rows, schema=["layer", "net"])
+            + render_agent_table(table_rows, schema=["layer", "net", "source"])
         )
 
     def _render_drc(self, ref_id: int) -> Response:

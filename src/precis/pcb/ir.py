@@ -52,6 +52,8 @@ from typing import Any
 
 import numpy as np
 
+from precis.pcb import landpattern
+
 #: Sentinel: a pin/segment/via with no net (unconnected / pure keepout).
 NO_NET: int = -1
 #: Sentinel: a segment/net with no layer assigned yet (L1 not yet decided).
@@ -111,6 +113,30 @@ class PcbIR:
     pin_instance: np.ndarray  # int32[n_pins]
     pin_label: np.ndarray  # object[n_pins] -> str (pad name; export label only)
     pin_net: np.ndarray  # int32[n_pins], NO_NET if unconnected
+    #: float64[n_pins] — the pin's pad offset from its instance centroid, in
+    #: FOOTPRINT-LOCAL mm (pre-rotation, pre-mirror). Use :func:`pin_point`
+    #: to place one in board space; do not add these to ``inst_x``/``inst_y``
+    #: directly or you silently drop rotation and side.
+    #:
+    #: Before this existed, EVERY pin of an instance resolved to the instance
+    #: centroid, so a 14-pin MCU emitted 14 tracks on 14 different nets all
+    #: starting at ONE coordinate. Measured effect: ~600 `clearance` DRC
+    #: errors at an exact 0.000mm gap (coincident before routing, so no
+    #: router could fix them), `crossings` computed on a degenerate graph,
+    #: and ROTATE / SIDE_FLIP / PIN_SWAP all provably cost-neutral for want
+    #: of sub-instance geometry.
+    #:
+    #: Populated from real ``part_footprints`` pads where cached, else
+    #: SYNTHESIZED by :mod:`precis.pcb.landpattern` — dimensionally sane for
+    #: the pin count, but not the real part. ``pin_offsets_synthesized``
+    #: says which, and must never be lost on the way to fabrication.
+    pin_dx: np.ndarray
+    pin_dy: np.ndarray
+    #: bool[n_pins] — True where the offset above is a synthesized estimate
+    #: rather than real cached pad geometry. Same discipline as
+    #: :attr:`precis.pcb.cost.TermValue.is_bound`: a bound must never be
+    #: silently reported as a measurement.
+    pin_offsets_synthesized: np.ndarray
     net_name: np.ndarray  # object[n_nets] -> str
     net_domain: np.ndarray  # object[n_nets] -> str ('electrical'|'fluidic'|'thermal')
     net_class: np.ndarray  # object[n_nets] -> str
@@ -167,6 +193,20 @@ class PcbIR:
 
     # ---- derived indices (not stored state; rebuilt at construction) -----
     _segs_of_instance: dict[int, list[int]] = field(default_factory=dict, repr=False)
+
+    #: The board's authored panel boundary — a polygon ring (``(x, y)``
+    #: pairs, mm), or ``None`` when no outline feature exists yet (a design
+    #: that hasn't authored one). Board-config data, same status as
+    #: ``stackup`` above (not part of the dirty-mask cascade -- nothing
+    #: mutates it via a move, only :func:`from_graph`/:func:`session.
+    #: build_ir` populate it once at hydration). ``precis.pcb.cost``'s
+    #: ``board_edge_clearance`` term and ``optimize.py``'s TRANSLATE-move
+    #: clamp both read this SAME field, so a design with an authored
+    #: outline gets one consistent boundary everywhere rather than each
+    #: consumer inventing its own board-scale guess (see gr267456 —
+    #: "two components implementing one rule" is the defect family this is
+    #: closing, not repeating).
+    outline: list[tuple[float, float]] | None = None
 
     # -- sizes --------------------------------------------------------
     @property
@@ -403,12 +443,23 @@ def _build_segments_index(
 
 
 def from_graph(
-    graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = None
+    graph: dict[str, Any],
+    *,
+    stackup: list[dict[str, Any]] | None = None,
+    outline: list[tuple[float, float]] | list[list[float]] | None = None,
 ) -> PcbIR:
     """Build an L0 :class:`PcbIR` from the plain-dict graph shape shared
     with :mod:`precis.pcb.eyes` (``{"instances":[...], "nets":[...],
     "unconnected":[...]}``) — no DB, so this stays independently
     unit-testable.
+
+    ``outline`` is the board's authored panel boundary (a polygon ring),
+    carried on the returned :class:`PcbIR` verbatim as ``(x, y)`` float
+    tuples — ``None`` (the default) when the caller has none yet, e.g. a
+    design that hasn't authored a board outline feature. Never derived
+    here from anything else (no "guess a rectangle from the parts"
+    fallback) — that guess belongs to a consumer that has decided it wants
+    one (see :attr:`PcbIR.outline`'s own docstring).
 
     **Segment decomposition is a star per net** (first member is the hub):
     a design *choice* the netlist records at L0, not something geometry
@@ -483,6 +534,29 @@ def from_graph(
     n_seg = len(seg_net)
     n_nets = len(net_name)
 
+    # Per-pin pad offsets. Grouped by instance so each part gets ONE
+    # coherent land pattern: assigning offsets pin-by-pin would let two
+    # pins of the same part draw from different package families and land
+    # on top of each other, which is the exact defect this fixes.
+    #
+    # Order within an instance is pin-creation order, which is netlist
+    # member order — the same order the author wrote. That is what makes a
+    # pin swap mean something: adjacency in the land pattern follows the
+    # author's pin numbering rather than an arbitrary permutation.
+    pin_dx = np.zeros(n_pins, dtype=np.float64)
+    pin_dy = np.zeros(n_pins, dtype=np.float64)
+    pin_synth = np.zeros(n_pins, dtype=bool)
+    _pins_of_inst: dict[int, list[int]] = {}
+    for pid, inst_id in enumerate(pin_instance):
+        _pins_of_inst.setdefault(int(inst_id), []).append(pid)
+    for inst_id, pids in _pins_of_inst.items():
+        label = str(instances[inst_id].get("label") or "")
+        offsets, synthesized = landpattern.offsets_for(len(pids), label=label)
+        for pid, (dx, dy) in zip(pids, offsets, strict=True):
+            pin_dx[pid] = dx
+            pin_dy[pid] = dy
+            pin_synth[pid] = synthesized
+
     # CSR slots are allocated by actual pin degree (every dart needs a
     # home), but the *order* within each pin's slot is plain segment-
     # creation order — arbitrary, not geometry-derived. That is the
@@ -510,6 +584,11 @@ def from_graph(
 
     ir = PcbIR(
         stackup=stackup,
+        outline=(
+            [(float(p[0]), float(p[1])) for p in outline]
+            if outline is not None
+            else None
+        ),
         instance_refdes=_obj_array([inst["refdes"] for inst in instances]),
         inst_extended_part=np.array(
             [bool(inst.get("extended_part")) for inst in instances], dtype=bool
@@ -517,6 +596,9 @@ def from_graph(
         pin_instance=np.array(pin_instance, dtype=np.int32),
         pin_label=_obj_array(pin_label),
         pin_net=np.array(pin_net, dtype=np.int32),
+        pin_dx=pin_dx,
+        pin_dy=pin_dy,
+        pin_offsets_synthesized=pin_synth,
         net_name=_obj_array(net_name),
         net_domain=_obj_array(net_domain),
         net_class=_obj_array(net_class),
@@ -939,6 +1021,61 @@ def segment_points(
     if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
         return None
     return (xa, ya), (xb, yb)
+
+
+def instance_pad_radius(ir: PcbIR) -> np.ndarray:
+    """Per-instance distance from the part centre to its outermost PAD —
+    i.e. how much room its land pattern actually occupies, derived from
+    ``pin_dx``/``pin_dy`` rather than assumed.
+
+    This exists because a single fixed courtyard radius is not merely
+    imprecise, it is *wrong by construction* for anything with more than
+    a few pins: :data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` is
+    1.0mm, but a 14-pin dual-row land pattern reaches 2.27mm. Two such
+    parts separated by the nominal 2.0mm centre-to-centre have physically
+    interleaved pads — different nets' copper starting from the same
+    coordinate, which no router can undo and which the fixed-radius
+    courtyard check cannot even see.
+
+    Rotation-invariant: the maximum is over a radius, so it holds for any
+    ``inst_rot``. A pinless instance (mounting hole, fiducial) gets 0.0 —
+    the caller is expected to floor this with whatever body radius it
+    believes in, since this function only knows about pads.
+    """
+    out = np.zeros(ir.n_instances, dtype=np.float64)
+    if ir.n_pins == 0:
+        return out
+    radii = np.hypot(ir.pin_dx, ir.pin_dy)
+    np.maximum.at(out, ir.pin_instance.astype(np.int64), radii)
+    return out
+
+
+def pin_point(ir: PcbIR, pin_id: int) -> tuple[float, float] | None:
+    """One pin's position in BOARD space, or ``None`` if unplaced.
+
+    The single place footprint-local pad offsets become board coordinates.
+    Every geometric consumer must go through here rather than reading
+    ``inst_x``/``inst_y`` for a pin — that shortcut is what put all of a
+    part's pins on one coordinate and made ~600 clearance errors
+    structurally unfixable by any router.
+
+    Mirror before rotate, rotation clockwise-from-north: the board frame's
+    convention, matching :mod:`precis.pcb.padplace` (which pinned the order
+    with a test after getting it wrong once). Delegates to
+    :func:`precis.pcb.landpattern.rotate_offset` so the transform has ONE
+    implementation — two copies of a rotation rule is how the export path
+    and the routing path silently disagree about where a pad is.
+    """
+    inst = int(ir.pin_instance[pin_id])
+    x, y = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+    if math.isnan(x) or math.isnan(y):
+        return None
+    dx, dy = float(ir.pin_dx[pin_id]), float(ir.pin_dy[pin_id])
+    if dx == 0.0 and dy == 0.0:
+        return (x, y)
+    rot = float(ir.inst_rot[inst])
+    rdx, rdy = landpattern.rotate_offset(dx, dy, 0.0 if math.isnan(rot) else rot)
+    return (x + rdx, y + rdy)
 
 
 def same_layer_crossing_count(ir: PcbIR, layer: int) -> int:

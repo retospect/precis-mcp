@@ -54,11 +54,38 @@ def sorted_graph(graph: dict[str, Any]) -> dict[str, Any]:
     return {**graph, "nets": nets}
 
 
-def build_ir(graph: dict[str, Any]) -> pcb_ir.PcbIR:
-    """Build a fresh L0(+L3) IR from a :meth:`Store.pcb_graph` payload."""
+def outline_from_features(features: list[dict[str, Any]]) -> list[list[float]] | None:
+    """The ``ftype='outline'`` feature's ``geom.path`` (a polygon ring of
+    ``[x, y]`` pairs), or ``None`` when the design hasn't authored one yet
+    — the same extraction :meth:`~precis.handlers.pcb.PcbHandler.
+    _outline_from_features` does off :meth:`Store.pcb_features_list`
+    (mirrored here, not imported: that handler owns the tool surface and
+    isn't this module's to reach into — see the module docstring's "never
+    imports optimize/cost/drc" boundary, which extends to not importing
+    the handler layer either). ``build_ir``'s own caller is responsible
+    for fetching ``features`` (this module has no store handle of its
+    own, by design)."""
+    for f in features:
+        geom = f.get("geom") or {}
+        if str(f.get("ftype") or "") == "outline" and isinstance(
+            geom.get("path"), list
+        ):
+            return [[float(p[0]), float(p[1])] for p in geom["path"]]
+    return None
+
+
+def build_ir(
+    graph: dict[str, Any], *, outline: list[list[float]] | None = None
+) -> pcb_ir.PcbIR:
+    """Build a fresh L0(+L3) IR from a :meth:`Store.pcb_graph` payload.
+    ``outline`` (see :func:`outline_from_features`) is optional — a caller
+    with no board-outline feature yet (or one that hasn't been updated to
+    fetch it) simply gets an IR whose ``outline`` is ``None``, same as
+    today; ``cost.py``'s ``board_edge_clearance`` term and ``optimize.
+    py``'s TRANSLATE clamp both already degrade cleanly for that case."""
     board = graph.get("board") or {}
     stackup = board.get("stackup")
-    return pcb_ir.from_graph(sorted_graph(graph), stackup=stackup)
+    return pcb_ir.from_graph(sorted_graph(graph), stackup=stackup, outline=outline)
 
 
 def signal_layers(ir: pcb_ir.PcbIR) -> list[int]:
@@ -175,6 +202,7 @@ __all__ = [
     "build_ir",
     "content_hash",
     "extract_sketch",
+    "outline_from_features",
     "positions",
     "segment_key",
     "signal_layers",

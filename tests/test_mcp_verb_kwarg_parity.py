@@ -125,9 +125,13 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         # -- put: paper acquire() conveniences -----------------------------
         ("paper", "put", "context_ref_id"),
         ("paper", "put", "verify"),
-        # -- put: the args= extras tunnel, never wired onto put/edit ------
-        ("pcb", "put", "args"),
-        ("structure", "put", "args"),
+        # -- edit: the args= extras tunnel, still unwired on edit ---------
+        # `put(args=)` was closed 2026-08-28 (gr267461): every pcb write
+        # op — place, route, plane_net, pin_side — travels through `args`,
+        # so the whole pcb write surface was unreachable from the MCP
+        # tool. `edit` still has no tunnel; it is a smaller hole (no verb
+        # currently needs it) but is left ON the ledger rather than
+        # exempted, so wiring it stays a deliberate act.
         ("structure", "edit", "args"),
         # -- put: in-process planner state ---------------------------------
         ("plan", "put", "belief"),

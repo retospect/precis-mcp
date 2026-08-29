@@ -38,6 +38,16 @@ from precis.pcb.rules import (
     via_count_for_current,
 )
 
+#: This module tests the TANGENT drawer's contract, so it says so rather
+#: than riding the default. Those contracts — one straight-or-hugging
+#: track per segment, on the segment's own ``seg_layer``, with vias
+#: wherever that layer isn't the pad layer — are specifically what the
+#: maze router (now the default) does NOT promise: it chooses its own
+#: layers and its own path, and reports what it could not route. Both are
+#: real and both need tests; the maze router's live in
+#: ``tests/test_pcb_maze.py``.
+_TANGENT = RealizeConfig(router="tangent")
+
 # ── the closed-form geometric primitive ──────────────────────────────────
 
 
@@ -177,7 +187,11 @@ def test_realize_output_round_trips_into_gerber_without_shape_errors():
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
     obstacles = [Obstacle(instance=2, center=(5.0, 0.0), radius=1.0)]
-    result = realize(ir, obstacles=obstacles, config=RealizeConfig(clearance_mm=0.1))
+    result = realize(
+        ir,
+        obstacles=obstacles,
+        config=RealizeConfig(clearance_mm=0.1, router="tangent"),
+    )
     assert result.tracks
     track = result.tracks[0]
     assert track.blocked_by == 2  # routed around the obstacle instance
@@ -215,7 +229,7 @@ def test_realize_dogbone_stub_for_plane_promoted_net():
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)  # In1.Cu, the GND plane layer
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     track = result.tracks[0]
     assert track.is_dogbone
     assert track.length_mm <= RealizeConfig().dogbone_stub_mm + 1e-9
@@ -244,7 +258,7 @@ def test_congestion_warning_when_gap_over_capacity():
         )
     graph = {"instances": instances, "nets": nets}
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    config = RealizeConfig(pitch_mm=0.3)
+    config = RealizeConfig(pitch_mm=0.3, router="tangent")
     # gap from U0 to its nearest OTHER instance (HUB) is 0.1mm -- floor(0.1/0.3) = 0 capacity
     result = realize(ir, config=config)
     assert result.warnings
@@ -274,7 +288,7 @@ def test_no_congestion_warning_when_gap_has_room():
         ],
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert not result.warnings
 
 
@@ -307,7 +321,7 @@ def _two_net_ir():
 
 def test_rip_net_leaves_other_nets_geometry_untouched():
     ir = _two_net_ir()
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert {t.net_id for t in result.tracks} == {0, 1}
     other_track_before = next(t for t in result.tracks if t.net_id == 1)
 
@@ -319,7 +333,7 @@ def test_rip_net_leaves_other_nets_geometry_untouched():
 
 def test_re_realize_segments_recomputes_only_named_segments():
     ir = _two_net_ir()
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     net_a_seg = next(t.seg_id for t in result.tracks if t.net_id == 0)
     net_b_track_before = next(t for t in result.tracks if t.net_id == 1)
 
@@ -369,7 +383,7 @@ def test_realize_derives_track_width_from_current_on_outer_layer():
     outer-layer IPC-2221 trace actually needs."""
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)  # F.Cu -- an outer layer
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     track = result.tracks[0]
     expected = ipc2221_track_width_mm(5.0, layer_is_outer=True)
     assert track.width_mm == pytest.approx(expected, rel=1e-6)
@@ -379,11 +393,11 @@ def test_realize_derives_track_width_from_current_on_outer_layer():
 def test_realize_inner_layer_gets_a_wider_track_than_outer_for_the_same_current():
     ir_outer = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir_outer.set_layer(0, 0)  # F.Cu
-    outer_width = realize(ir_outer).tracks[0].width_mm
+    outer_width = realize(ir_outer, config=_TANGENT).tracks[0].width_mm
 
     ir_inner = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir_inner.set_layer(0, 1)  # In1.Cu -- an internal layer
-    inner_width = realize(ir_inner).tracks[0].width_mm
+    inner_width = realize(ir_inner, config=_TANGENT).tracks[0].width_mm
 
     assert inner_width > outer_width
 
@@ -410,7 +424,7 @@ def test_realize_no_current_annotation_falls_back_to_fab_floor_width():
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
-    track = realize(ir).tracks[0]
+    track = realize(ir, config=_TANGENT).tracks[0]
     cap = capability_for("4layer")
     assert track.width_mm == pytest.approx(cap.house_default["trace_width_mm"])
 
@@ -418,7 +432,9 @@ def test_realize_no_current_annotation_falls_back_to_fab_floor_width():
 def test_realize_class_rule_override_beats_current_derivation():
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
-    config = RealizeConfig(class_rules={"power": {"track_width_mm": 0.8}})
+    config = RealizeConfig(
+        class_rules={"power": {"track_width_mm": 0.8}}, router="tangent"
+    )
     track = realize(ir, config=config).tracks[0]
     assert track.width_mm == pytest.approx(0.8)
 
@@ -428,7 +444,9 @@ def test_realize_fab_floor_clamps_a_too_small_class_override():
         _current_net_graph(0.0, net_class="signal"), stackup=DEFAULT_STACKUP
     )
     ir.set_layer(0, 0)
-    config = RealizeConfig(class_rules={"signal": {"track_width_mm": 0.001}})
+    config = RealizeConfig(
+        class_rules={"signal": {"track_width_mm": 0.001}}, router="tangent"
+    )
     track = realize(ir, config=config).tracks[0]
     cap = capability_for("4layer")
     jlc_min = cap.jlc_min["trace_width_mm"]
@@ -439,7 +457,7 @@ def test_realize_fab_floor_clamps_a_too_small_class_override():
 def test_to_gerber_model_uses_per_track_resolved_width_by_default():
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     model = to_gerber_model(
         result,
         ir,
@@ -475,7 +493,7 @@ def _two_pin_graph():
 def test_realize_no_via_when_track_stays_on_pad_layer():
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, PAD_LAYER)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert result.vias == ()
 
 
@@ -483,7 +501,7 @@ def test_realize_no_via_when_layer_is_unassigned():
     """A segment with no L1 layer assignment yet (UNSET_LAYER) has nothing
     to transition -- must not emit a via."""
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert result.vias == ()
 
 
@@ -492,7 +510,7 @@ def test_realize_no_via_for_a_dogbone_stub():
     planes.py's job (module docstring) -- not this task's scope."""
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)  # In1.Cu
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert result.tracks[0].is_dogbone
     assert result.vias == ()
 
@@ -502,7 +520,7 @@ def test_realize_emits_a_via_at_a_layer_transition():
     non-pad layer must get vias at BOTH its endpoints."""
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)  # In1.Cu -- not PAD_LAYER
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert result.vias
     endpoints = {v.endpoint for v in result.vias}
     assert endpoints == {"a", "b"}
@@ -518,7 +536,7 @@ def test_realize_via_span_covers_only_the_transitioned_layers():
     consequence, restated as a span-boundary check)."""
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)  # In1.Cu
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     layers = [layer["name"] for layer in DEFAULT_STACKUP]
     model = to_gerber_model(
         result,
@@ -537,7 +555,7 @@ def test_realize_via_span_covers_only_the_transitioned_layers():
 def test_realize_via_span_a_through_via_when_transitioning_to_the_far_outer_layer():
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 3)  # B.Cu -- the far outer layer, still != PAD_LAYER
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert result.vias
     for v in result.vias:
         assert v.layer_lo == 0
@@ -547,7 +565,7 @@ def test_realize_via_span_a_through_via_when_transitioning_to_the_far_outer_laye
 def test_realize_via_sized_via_the_shared_resolver():
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)
-    config = RealizeConfig(fab_caps=capability_for("4layer"))
+    config = RealizeConfig(fab_caps=capability_for("4layer"), router="tangent")
     result = realize(ir, config=config)
     assert result.vias
     expected_dia = config.fab_caps.house_default.get(
@@ -563,7 +581,7 @@ def test_realize_via_count_scales_with_net_current():
     stitched-group requirement."""
     ir = from_graph(_current_net_graph(5.0, net_class="power"), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)  # force a layer transition so vias are emitted
-    config = RealizeConfig(fab_caps=capability_for("4layer"))
+    config = RealizeConfig(fab_caps=capability_for("4layer"), router="tangent")
     result = realize(ir, config=config)
     assert result.vias
     dia = result.vias[0].dia_mm
@@ -579,7 +597,7 @@ def test_realize_via_count_scales_with_net_current():
 def test_realize_via_count_defaults_to_one_with_no_current_annotation():
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     per_endpoint = {"a": 0, "b": 0}
     for v in result.vias:
         per_endpoint[v.endpoint] += 1
@@ -589,7 +607,7 @@ def test_realize_via_count_defaults_to_one_with_no_current_annotation():
 def test_rip_net_removes_its_vias_too():
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert result.vias
     ripped = rip_net(ir, result, net_id=0)
     assert ripped.vias == ()
@@ -598,7 +616,7 @@ def test_rip_net_removes_its_vias_too():
 def test_re_realize_segments_recomputes_vias_for_the_replaced_segment():
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     assert result.vias
     ir.set_layer(0, PAD_LAYER)  # no longer a layer transition
     updated = re_realize_segments(ir, result, [0])
@@ -608,7 +626,7 @@ def test_re_realize_segments_recomputes_vias_for_the_replaced_segment():
 def test_to_gerber_model_explicit_override_still_wins_uniformly():
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
-    result = realize(ir)
+    result = realize(ir, config=_TANGENT)
     model = to_gerber_model(
         result,
         ir,
