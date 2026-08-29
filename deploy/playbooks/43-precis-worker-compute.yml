@@ -218,14 +218,20 @@
           --batch-size 1
           --idle-seconds {{ precis_worker_compute_idle_seconds | default(5) }}
         # The feature env (PRECIS_NODE, PRECIS_AUTOCATPATH_ENABLED /
-        # _ROUTE_NODE, PRECIS_DFT_*) comes from these drop-ins — the exact
-        # files roles/autocatpath + roles/dft render and the collapsed worker
-        # already sources, so no duplication / no drift. `-` (in the template)
+        # _ROUTE_NODE, PRECIS_DFT_*, PRECIS_FOLD_*, PRECIS_CHEM_*) comes from
+        # these drop-ins — the exact files roles/autocatpath + roles/dft +
+        # roles/alphafold + roles/aizynth render and the collapsed worker
+        # already sources, so no duplication / no drift. All four listed since
+        # the 2026-08-29 GPU-node retirement: on the `compute` twins this lane
+        # is the ONLY ssh_node claimant (the main worker is heartbeat-only),
+        # so fold/retrosynth env must reach it here. `-` (in the template)
         # keeps them optional: absent → the lane starts with no PRECIS_NODE and
         # simply claims nothing (safe no-op) rather than failing to boot.
         service_unit_env_files:
           - /etc/precis/autocatpath.env
           - /etc/precis/dft.env
+          - /etc/precis/alphafold.env
+          - /etc/precis/aizynth.env
         # Core daemon env. PRECIS_PROCESS / PRECIS_SOURCE are distinct from the
         # collapsed worker's `precis-worker` so this lane's worker_logs rows are
         # separately observable. HOME=/var/lib/precis is load-bearing: the
