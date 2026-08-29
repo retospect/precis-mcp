@@ -1534,6 +1534,7 @@ class TestTickSlicing:
             "prompt_chars",
             "resp_chars",
             "cost",
+            "rulings_minted",
         }
         log_ref = store.get_ref(kind="agentlog", id=first.state["agentlog_id"])
         assert log_ref is not None

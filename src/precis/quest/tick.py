@@ -173,7 +173,8 @@ def _render_tick_conclusion(outcome: QuestTickOutcome) -> str:
             f"sims={outcome.sims_dispatched} harvested={outcome.results_harvested} "
             f"searches={outcome.searches_run} papers_linked={outcome.papers_linked} "
             f"ledger_added={outcome.ledger_added} "
-            f"dialectic={outcome.dialectic_applied} graduated={outcome.graduated} "
+            f"dialectic={outcome.dialectic_applied} "
+            f"rulings={outcome.rulings_minted} graduated={outcome.graduated} "
             f"ruled_out={outcome.ruled_out}"
         ),
     ]
@@ -316,6 +317,12 @@ class QuestTickOutcome:
     # engagement standing as `ledger_added`: maintaining a hypothesis's
     # support/counter/experiment block is the model engaging, not a dry tick.
     dialectic_applied: int = 0
+    # Code-minted measurement rulings (:mod:`precis.quest.rulings`) — the
+    # pre-LLM pass that turns a trusted measurement matching a
+    # pre-registered experiment into a templated ruling finding. Counted as
+    # progress (it is externally-verifiable new knowledge), never as model
+    # engagement — no LLM was involved.
+    rulings_minted: int = 0
     # Cascade (rung 4c).
     escalated: bool = False
     mode: str = "local"  # "local" | "frontier-review"
@@ -1328,7 +1335,13 @@ means, what to do next). When new evidence bears on a hypothesis, emit a \
 `support` or `counter` op citing that evidence's handle inline; when a \
 hypothesis is resolved either way, emit `settle` with one linked sentence. \
 A block showing "experiment: (MISSING …)" owes a discriminating experiment \
-with pre-registered branch predictions — emit an `experiment` op for it.
+with pre-registered branch predictions — emit an `experiment` op for it. \
+Pre-register by citing the structure's `[st…]` handle inline: when a trusted \
+measurement lands on it, a code pass mints a **measurement ruling** that \
+appears as a `measured: [fi…]` line under the experiment (templated text — \
+no LLM authored it, so it is a verifiable anchor). Interpreting a ruling is \
+YOUR job: emit `support`/`counter` citing the ruling's `[fi…]` handle, or \
+`settle` the hypothesis, per the experiment's pre-registered branch.
 
 When you rule out or complete a *direction* that must never be revisited, pin \
 it to the ledger via `ledger_ops` (permanently preserved); `dossier_text` \
@@ -2210,6 +2223,22 @@ class _TickRun:
                 quest_id, "failed", 0, False, None, "quest not found"
             )
 
+        # Measurement-ruling pre-pass (quest-dossier-dialectic §Mechanism):
+        # code-minted, never LLM-authored — run before prompt assembly so a
+        # trusted measurement that landed since the last tick renders in
+        # THIS tick's dialectic view as a `measured:` line the model can
+        # interpret. Defensive: a ruling bug must not cost the tick.
+        try:
+            from precis.quest.rulings import mint_measurement_rulings
+
+            self.st["rulings_minted"] = mint_measurement_rulings(store, quest_id)
+        except Exception:
+            log.exception(
+                "run_quest_tick: measurement-ruling pass failed for quest %s",
+                quest_id,
+            )
+            self.st["rulings_minted"] = 0
+
         # Cascade: decide local vs. frontier review (unless the caller forces it).
         signal = cascade_mod.escalation_signal(store, quest_id)
         is_review = signal.escalate if self.review is None else self.review
@@ -2792,6 +2821,7 @@ class _TickRun:
         added = int(st.get("added") or 0)
         ledger_added = int(st.get("ledger_added") or 0)
         dialectic_applied = int(st.get("dialectic_applied") or 0)
+        rulings_minted = int(st.get("rulings_minted") or 0)
         harvested = int(st.get("harvested") or 0)
         papers_linked = int(st.get("papers_linked") or 0)
         created = int(st.get("created") or 0)
@@ -2832,6 +2862,7 @@ class _TickRun:
                 progress_evidence = (
                     bool(ledger_added)
                     or bool(dialectic_applied)
+                    or bool(rulings_minted)
                     or bool(harvested)
                     or bool(papers_linked)
                 )
@@ -2864,6 +2895,7 @@ class _TickRun:
             or ruled
             or graduated
             or papers_linked
+            or rulings_minted
         )
         reason = str(st.get("reason") or "")
         note = (
@@ -2920,6 +2952,7 @@ class _TickRun:
                 hypotheses_deduped=int(st.get("deduped") or 0),
                 ledger_added=ledger_added,
                 dialectic_applied=dialectic_applied,
+                rulings_minted=rulings_minted,
                 escalated=is_review,
                 mode="frontier-review" if is_review else "local",
             ),

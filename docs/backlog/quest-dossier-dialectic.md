@@ -224,9 +224,21 @@ narrative:
   handles become real `links` rows, evidence `supports`/`contradicts` →
   hypothesis finding (existing relation vocab, idempotent on the unique
   tuple) — the dialectic is a queryable graph, not a document shaped like
-  one. `tests` edges for experiment entries are DEFERRED to the
-  simulation-step deep-link slice above (needs the `tests`/`tested-by`
-  relation migration).
+  one.
+- **Measurement rulings (SHIPPED 2026-08-29)** — the agreed findings-from-
+  sims anchor, `quest/rulings.py::mint_measurement_rulings`, a code-only
+  pre-LLM tick pass: when a trusted measurement (structure
+  `meta.barrier_trusted`, catpath trust schema 1-2) lands on a structure an
+  experiment entry pre-registered (inline `[st…]` handle), it mints a
+  **templated ruling finding** (value, trust grade, handles — no LLM
+  authorship, no STATUS tag so it never enters the default search cohort)
+  plus the `tests` edge (migration 0142, measuring pathway → hypothesis).
+  The ruling renders as a `measured:` line under the experiment; the next
+  tick interprets via support/counter/settle citing its handle, per the
+  pre-registered branch. Sim rulings settle internal hypotheses only —
+  never nanopub evidence. Residual: matching is structure-level v1;
+  per-step (`pw<id>~src→tgt`) matching waits on experiments pre-registering
+  step selectors.
 - **Narrative shrinks to synthesis** — the prompt shows rendered blocks
   read-only (like the ledger) with upsert discipline: maintain via
   `dialectic_ops`, do not restate hypothesis content in `dossier_text`.

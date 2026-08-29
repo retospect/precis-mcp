@@ -1568,9 +1568,11 @@ _DIALECTIC_HYP_PINNED = "dialectic-hyp"
 _DIALECTIC_ENTRY_PINNED = "dialectic-entry"
 _DIALECTIC_ROLES: tuple[str, ...] = ("support", "counter", "experiment")
 #: Evidence-edge relation minted per role — the cited handle SUPPORTS /
-#: CONTRADICTS the hypothesis finding. `experiment` mints no edge yet: the
-#: `tests`/`tested-by` relation is deferred to the simulation-step deep-link
-#: slice (quest-dossier-dialectic §Mechanism).
+#: CONTRADICTS the hypothesis finding. `experiment` mints no edge at apply
+#: time: its `tests` edge (migration 0142, measurement → hypothesis) is
+#: minted later by the measurement-ruling pass
+#: (:func:`precis.quest.rulings.mint_measurement_rulings`) once a trusted
+#: measurement actually runs the pre-registration.
 _DIALECTIC_EDGE_RELATION: dict[str, str] = {
     "support": "supports",
     "counter": "contradicts",
@@ -1594,6 +1596,11 @@ class DialecticEntry:
     role: str
     text: str
     handle: str | None = None
+    #: Experiment entries only — measurement rulings already minted for this
+    #: pre-registration (``{key: ruling finding id}``, written by
+    #: :func:`precis.quest.rulings.mint_measurement_rulings`); the render
+    #: surfaces each as a ``measured:`` line and the pass skips minted keys.
+    rulings: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1664,8 +1671,16 @@ def _load_dialectic_blocks(store: Store, dossier_id: int) -> list[DialecticBlock
         elif pinned == _DIALECTIC_ENTRY_PINNED and c.parent_chunk_id in by_chunk_id:
             role = str(meta.get("role") or "")
             if role in _DIALECTIC_ROLES:
+                raw_rulings = meta.get("rulings")
                 by_chunk_id[c.parent_chunk_id].entries.append(
-                    DialecticEntry(role=role, text=c.text, handle=str(c.handle))
+                    DialecticEntry(
+                        role=role,
+                        text=c.text,
+                        handle=str(c.handle),
+                        rulings=dict(raw_rulings)
+                        if isinstance(raw_rulings, dict)
+                        else {},
+                    )
                 )
     return out
 
@@ -1711,6 +1726,21 @@ def _render_dialectic(store: Store, blocks: list[DialecticBlock]) -> str:
         for role in _DIALECTIC_ROLES:
             for e in by_role.get(role, []):
                 lines.append(f"  - {role}: {e.text}")
+                # Code-minted measurement rulings on this pre-registration
+                # (:func:`precis.quest.rulings.mint_measurement_rulings`) —
+                # the tick's cue to interpret: support/counter/settle citing
+                # the ruling's handle, per the pre-registered branch.
+                for fid in e.rulings.values():
+                    try:
+                        rid = int(fid)
+                    except (TypeError, ValueError):
+                        continue
+                    rref = store.get_ref(kind="finding", id=rid)
+                    rtitle = (
+                        str(getattr(rref, "title", "") or "").strip()
+                        or "(ruling missing)"
+                    )
+                    lines.append(f"  - measured: [fi{rid}] {rtitle}")
         if not by_role.get("experiment"):
             lines.append(
                 "  - experiment: (MISSING — every live hypothesis needs its "

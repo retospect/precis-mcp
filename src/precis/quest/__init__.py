@@ -10,7 +10,8 @@ element-price table → the ``atom_cost`` economic axis), `figures` (static matp
 pareto/profile renderers + frozen data snapshots for draft export; CLI
 ``precis quest figure``), `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
-`explore` (tried-set summary), `narrative_budget` (the growth-ratchet gate,
+`explore` (tried-set summary), `rulings` (code-minted measurement rulings),
+`narrative_budget` (the growth-ratchet gate,
 owner-agnostic — reusable by any rolling-context rewrite). The perpetual loop itself is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
 
@@ -61,7 +62,13 @@ Package-level invariants (each enforced where named):
   block per live hypothesis finding) is likewise op-mutated, never rewritten
   (``dossier.apply_dialectic_op`` via the tick's ``dialectic_ops`` key), and
   mints ``supports``/``contradicts`` evidence edges at apply time —
-  quest-dossier-dialectic §Mechanism.
+  quest-dossier-dialectic §Mechanism. Its sims→findings anchor is
+  ``rulings`` (``mint_measurement_rulings``, a code-only pre-LLM tick pass):
+  a trusted measurement matching an experiment entry's pre-registered
+  ``[st…]`` structure mints a templated **measurement-ruling finding** (no
+  LLM authorship, no STATUS tag — internal only, never nanopub evidence)
+  plus a ``tests`` edge (measuring pathway → hypothesis, migration 0142);
+  the next tick interprets it via support/counter/settle.
 - **Loop existence is reconciled, not allocated.** ``loop`` guarantees one
   live coordinator per active quest (idempotent re-mint, reboot-orphan reap,
   failed-rest *and* dry-rest backoff — a ``meta.rest_reason == "dry"``

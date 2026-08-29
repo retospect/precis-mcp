@@ -260,6 +260,16 @@ Relation = Literal[
     # `links_for(direction='both')`. Keep in sync with the `relations`
     # seed in 0115_patent_family_relation.sql.
     "same-family-as",
+    # Quest dialectic measurement ruling — migration 0142. `tests`
+    # (measurement pathway → hypothesis finding): the source computed
+    # pathway executed the target hypothesis's pre-registered
+    # discriminating experiment (minted by
+    # `quest/rulings.py::mint_measurement_rulings`, code-only). NOT an
+    # evidence edge — sim rulings settle internal hypotheses only, never
+    # nanopub evidence. Asymmetric, no inverse (the
+    # `refines`/`motivated-by` convention). Keep in sync with the
+    # `relations` seed in 0142_quest_tests_relation.sql.
+    "tests",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and
