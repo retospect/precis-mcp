@@ -764,13 +764,20 @@ class PcbMixin:
                     "height_mm": r[6],
                     "n_pins": int(r[7]),
                     "fixed": r[8],
+                    # `rot` was WRITE-ONLY: pcb_set_pose persisted it and no
+                    # reader ever selected it, so every IR rebuilt from this
+                    # graph came back with every part at 0 degrees. Placement
+                    # therefore handed routing a different board than the one
+                    # it had settled, and the DRC view could not reproduce a
+                    # single pin coordinate of the copper it was checking.
+                    "rot": r[9],
                 }
                 for r in conn.execute(
                     "SELECT i.refdes, i.x, i.y, i.layer, i.roles, c.label, "
                     "       c.height_mm, "
                     "       (SELECT count(*) FROM pcb_pins p "
                     "        WHERE p.component_id = i.component_id "
-                    "          AND p.retired_at IS NULL), i.fixed "
+                    "          AND p.retired_at IS NULL), i.fixed, i.rot "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "WHERE i.ref_id = %s AND i.retired_at IS NULL "

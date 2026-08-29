@@ -236,6 +236,28 @@ build was found by measuring, never by reading. Two standing obligations:
    it **true** — the prose was never wrong as a design statement, it asserted
    an invariant the code did not satisfy.
 
+3. **The user's competing explanation, ON THE BOOKS and untested
+   (2026-08-29).** The paper's causal story for the defect density is "a
+   fast LLM-built system produces silent defects". The user's is narrower:
+   *the first run against **the benchmark** — not the first run against any
+   board — is what drives it.* On that reading most of these bugs are
+   first-contact-with-a-real-artefact bugs (a constant that was tuned to
+   nothing, a rule wired at one of two call sites) and a *second* reference
+   board would surface far fewer, because the constants now derive from
+   geometry and the call sites have been reconciled. **This is falsifiable
+   and nobody has run it**: add a second, structurally different reference
+   design and count defects on ITS first run. Until that is measured, the
+   two explanations fit the same evidence and the paper should not assert
+   the general one.
+   My own reading, for whoever runs it: the residuals split. Wrong-constant
+   defects (courtyard radius, seed pitch, claim radius, `PAD_RADIUS_MM`)
+   should NOT recur — they were exposed by first contact and are now
+   derived. Missing-invariant defects (nothing asks whether a net's copper
+   is one connected component) and one-rule-two-components drift (outline,
+   pad geometry) should recur on board two, because neither the invariant
+   nor the shared function exists yet. If that split holds, both
+   explanations are partly right and the interesting number is the ratio.
+
 Why today's three findings mattered to the paper: they were found neither by
 review nor by a property test, but by checking a stated invariant against the
 code claiming it — which is now a third detection arm and the cheapest of the
@@ -353,7 +375,121 @@ them coherent again at a real cost in routability (it is what makes the
 here rather than silently reconciled; `tests/test_pcb_realize.py` is now
 explicitly the TANGENT drawer's contract and says why.
 
-### 2026-08-29: 32 track ends float in mid-air (OPEN, HIGH — silent short-circuit's twin)
+### 2026-08-29 late: connectivity, and the six defects it found
+
+**`precis/pcb/connectivity.py` is new and it is the check nothing else was
+making.** Every prior rule asks how CLOSE copper is; none asked whether a
+net's copper is one connected component. It is wired as
+`drc.check_connectivity` (severity `error`), alongside `drc.check_unrouted`
+— so "zero DRC errors" now subsumes both, and means something on its own.
+
+Union-find over the SAME primitive alphabet and gap arithmetic as `drc.py`'s
+O(n²) oracle (two notions of "touching" would be a defect generator of its
+own); a via barrel unions its own layers by assertion, not geometry; a pour
+unions by containment via `planes.point_in_pour` (ray casting, no shapely —
+this check must not be built on the engine it exists to catch).
+
+**Result on the reference board: seeds 1–5 all reach 0 DRC errors, 0
+unrouted, 0 disconnected nets.** Before: 1 seed clean, and only against a
+DRC that could not see either failure.
+
+Six defects, in the order they were found — every one silent, none caught
+by a type check or a crash:
+
+1. **`_snap_to_pads` dragged an ATTACHED head onto the source pad.** The
+   proximity proxy ("the head is near the pad") is true for every branch,
+   because the star decomposition puts the trunk right past the hub pin.
+   Fixed by having the router report `RoutePath.attached` — the caller
+   cannot infer it.
+2. **`OccupancyGrid._routed_cells` stored cell indices, not coordinates.**
+   A cell index answers "may this net start here" (clearance); it does not
+   answer "where is the copper" (connectivity). Now `net -> cell ->
+   coordinate`, and `route()` emits the trunk coordinate as the first point.
+3. **Nine nets promoted onto two plane layers.** `_gen_plane_promote`
+   picked any plane layer with no occupancy check. A plane is a sheet of
+   copper and two nets cannot both be it — a hard constraint, not a price.
+   `net_plane_layer` is per-net so it can represent the contradiction, and
+   every layer→net consumer silently kept the last writer.
+4. **Plane-promoted nets were pure floating copper.** Stubs, no drop via,
+   no pour — `planes.py` was "a later module" and the net was connected to
+   nothing. Now `planes.plane_pours` + `realize._plane_fanout`, which is
+   per PIN (the old per-segment version emitted the hub's stub once per
+   connection and gave leaf pins nothing) and asks the grid before claiming
+   (`OccupancyGrid.disk_is_free`) instead of stamping unconditionally.
+5. **`pcb_route` never read `rres.unrouted`.** The router reported "I could
+   not route 23 of these" and every one of those nets was still written
+   `'realized'`; a plane-promoted net took an unconditional `'realized'`
+   branch regardless. `route_complete` read green over a board with holes.
+6. **`inst_rot` was WRITE-ONLY.** `pcb_set_pose` persisted it, `pcb_graph`
+   never selected it, `ir.from_graph` hardcoded zeros. Placement's settled
+   rotations never reached routing, and no rebuilt IR could reproduce the
+   pin coordinates of its own copper — 10 of the reference board's nets
+   read "disconnected" from this alone. **This is the single highest-impact
+   fix in the batch and it is three lines.**
+
+Also: **rip-up and retry** (`RealizeConfig.route_passes`, default 12) —
+PathFinder's idea in its crudest form, history-based *ordering* rather than
+history-based *cost*, re-running the whole pass on a fresh grid with the
+previous failures moved to the front. Chosen because the occupancy grid has
+no incremental un-claim. The loop stops at the first fully-routed pass, so
+four of five seeds finish on pass 1 (~0.3s) and the fifth needs 12 (~4.8s).
+Raising `max_expansions` does not substitute: 400k leaves the same
+connection unrouted, because it is losing a corridor race, not running out
+of search.
+
+Pads are now in the model (`realize.pads_for_ir` — ONE definition, called
+by both `to_gerber_model` and the DRC handler) carrying `synthesized: True`,
+and `gerber.export_fab` **refuses** a model containing them
+(`SynthesizedPadError`) because `landpattern.py` says these are bounds that
+"must never be exported to fabrication".
+
+**Still open from this pass:**
+- **PIN_SWAP is not persisted.** `_apply_pin_swap` calls `ir.swap_pins`,
+  which genuinely mutates pin→net, and nothing writes it back — so the
+  stored netlist and the stored copper would describe different boards.
+  **Measured, not assumed: it never fires on this fixture** (3000
+  iterations, `_gen_pin_swap` returned `None` 91 times and produced 0
+  moves — no swappable groups), so it is dormant rather than fixed, and it
+  was NOT the cause of anything above. Either persist the assignment (it
+  is a netlist edit, so it belongs in `pcb_connections`) or take PIN_SWAP
+  out of the schedule until it can be.
+- **Plane promotion is now never chosen by the annealer on this fixture.**
+  Measured: 79 PLANE_PROMOTE moves proposed over 3000 iterations, all
+  rejected on cost. Before the one-net-per-layer fix nine nets ended up
+  promoted, which looked like the search liking planes and was mostly the
+  search stacking nets onto a layer that could only hold one. Zero is a
+  defensible answer here — SDA on a plane layer was always nonsense — but
+  a real 4-layer board wants GND and VCC3V3 on its planes, and the cost
+  model does not currently make that attractive. That is a cost-model gap,
+  not a router one. Consequence for coverage: the reference board no
+  longer exercises the pour path at all; `tests/workers/test_pcb_route.py`
+  covers it through an AUTHORED plane assignment, which is now the only
+  thing that does.
+- An unpourable plane (no board outline) is reported as `unrouted` rather
+  than naming its cause. Correct but not legible; "fail legibly" wants a
+  dedicated finding.
+
+**The acceptance fixture's board is 300×300mm and its parts occupy 44mm.**
+Noticed by rendering it (`view='svg' args={'level':'fab'}`) — the board is
+a speck in the corner of its own outline. 46× more area than the design
+needs makes "0 unrouted" a weaker claim than it reads as, because
+congestion is what a router is actually for.
+
+**Measured before assuming, and it survives**: re-running seeds 1–3 with
+the outline tightened to 60mm, 45mm and 35mm square (the last is *tighter*
+than the parts' own 44mm extent) gives 0 unrouted, 0 islands, 0 DRC errors
+at every size; only the runtime moves (0.4s–5.6s, and not monotonically —
+the hard seed changes as the board shrinks). So the oversized board is not
+what is producing the result. It is still worth fixing, because a fixture
+that cannot get harder cannot detect a router getting worse — but it is a
+*sensitivity* gap, not an inflated number.
+
+Related, and the honest place to put it: this is one axis of "is the
+benchmark easy?" ruled out. §Obligations item 3 records the user's
+competing explanation for the defect density and the experiment that would
+settle it, which is a SECOND reference design, not a resized one.
+
+### 2026-08-29: 32 track ends float in mid-air (FIXED — see above)
 
 Found by measuring the rendered board, not by reading code. On the seed-1
 reference board, after the pad-snap fix below, **32 track endpoints lie on
@@ -422,9 +558,39 @@ subsume `BASELINE_ROUTED_FANOUT2` rather than sit beside it. Keep both
 anyway; they fail with different messages, and the routed count is the one
 a human reads.
 
-### Viewer + geometry-quality direction (user, 2026-08-29)
+### Viewer + geometry-quality direction (user, 2026-08-29) — 1,2,3,5 DONE
 
-Requested after looking at the first rendered board. In the user's order:
+Shipped: layer-selector SVG rendered from the gerbers
+(`pcb/gerber_view.py`, `view='svg' args={'level':'fab'}`), copper pours
+(`pcb/planes.py`), per-layer preferred directions
+(`maze.preferred_directions`), and a straighten pass
+(`realize._straighten`). Item 4's **via shoving** is NOT done — the
+straighten pass treats a via as a fixed point, because moving one moves a
+hole.
+
+**Measured on the reference board, seeds 1–5** (all with 0 DRC errors, 0
+unrouted, 0 disconnected nets throughout — neither pass costs correctness):
+
+| | segments | copper | vias |
+|---|---|---|---|
+| baseline | 421 | 568mm | 24.4 |
+| + preferred directions | 307 (−27%) | 551mm | 29.8 (+22%) |
+| + straighten | 132 (−69%) | 536mm (−6%) | 29.8 |
+
+The via increase is the honest price of alternating H/V layers: crossing
+the grain now costs a layer change, which is the trade every VLSI router
+makes and the reason free space stops fragmenting into islands. If it ever
+looks too expensive, `maze.OFF_AXIS_PENALTY` is the dial and
+`RealizeConfig.preferred_directions=False` is the off switch.
+
+`_straighten` can only ever REMOVE copper: it drops an interior vertex
+only when the chord between its neighbours tests free on the same
+occupancy grid that proved the original path clear, at the same radius the
+search itself queries with (own half-width + a cell — NOT
+`core_radius_mm`, which already contains the other net's clearance and
+would double-count it).
+
+The original list, for the record:
 
 1. **An SVG with a layer selector**, doubling as the basis for a web
    viewer later.
@@ -458,7 +624,23 @@ Suggested order by value/cost: **5, then 4, then 3, then 2+1 together**
 (the viewer wants something worth viewing first) — but 2 is cheap and is
 the thing that makes the rest verifiable, so taking it early is defensible.
 
-### Fab output: generates, but is not manufacturable (measured 2026-08-29)
+### Fab output: pads now reach the gerbers (2026-08-29 late)
+
+The "no pads, header-only mask" defect below is closed. `realize.
+pads_for_ir` is the single pad source; `_render_gerber` falls back to it
+when the footprint cache is empty (it used to emit nothing and ship a
+well-formed unsolderable board), and `gerber.export_fab` **refuses** a
+model whose pads are synthesized (`SynthesizedPadError`) because
+`landpattern.py` says those are bounds that must never be fabricated.
+Round-tripped and measured on the reference board: F_Cu 99 flashes, F_Mask
+81 flashes with the correct `SOLDERMASK_EXPANSION_MM` swell, PTH 18 holes.
+
+Still genuinely missing: **silkscreen** (no table; refdes and part outlines
+absent) and real pad SIZES (`maze.PAD_RADIUS_MM` is still a constant, so
+every pad exports as a 0.4mm circle — which is exactly why the
+synthesized-pad refusal has to stay).
+
+### Fab output: the original diagnosis (2026-08-29 morning)
 
 `export_fab` runs on the routed board and produces a well-formed 10-file
 set (4 copper + 2 mask + 2 silk + edge cuts + PTH drill, 7 KB zipped).

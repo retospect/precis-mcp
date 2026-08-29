@@ -220,6 +220,28 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         for net_name in w.nets:
             congestion_fail.setdefault(net_name, []).append(detail)
 
+    # The router's own honest residue. `RealizeResult.unrouted` was not read
+    # here at all: a maze run could return "I could not route 23 of these"
+    # and every one of those nets was still written 'realized', so
+    # route_complete read green over a board with holes in it. The realizer
+    # reports it, the persister ignored it — one rule, two components, the
+    # recurring shape. Worse for a plane-promoted net, which took the
+    # unconditional 'realized' branch below whatever happened to it.
+    unrouted_fail: dict[str, list[dict[str, Any]]] = {}
+    for seg_id in rres.unrouted:
+        net_name = str(ir.net_name[int(ir.seg_net[seg_id])])
+        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+        unrouted_fail.setdefault(net_name, []).append(
+            {
+                "kind": "unrouted",
+                "segment": pcb_session.segment_key(ir, seg_id),
+                "message": (
+                    f"no route found from pin {a} to pin {b} without crossing "
+                    "another net's copper"
+                ),
+            }
+        )
+
     sketch = pcb_session.extract_sketch(ir)
     routed_nets = {int(t.net_id) for t in rres.tracks}
     member_counts = net_member_counts(ir)
@@ -246,7 +268,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 }
                 n_dangling += 1
             continue
-        problems = crossing_fail.get(net_name, []) + congestion_fail.get(net_name, [])
+        problems = (
+            crossing_fail.get(net_name, [])
+            + congestion_fail.get(net_name, [])
+            + unrouted_fail.get(net_name, [])
+        )
         if problems:
             status = "failed"
             n_failed += 1
@@ -322,6 +348,28 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                         stackup[hi]["name"] if hi < len(stackup) else "F.Cu",
                     ],
                 },
+            }
+        )
+    # Pours persist as copper too. They are the ONLY thing connecting a
+    # plane-promoted net, so a route run that writes tracks and vias but
+    # drops the pours leaves the DB describing a board whose planes are
+    # empty — and view='drc' reads the DB, not the RealizeResult, so it
+    # would report every promoted net as disconnected while the in-memory
+    # realize was clean. Two representations of one board, drifted.
+    for pour in rres.pours:
+        db_id = db_net_ids.get(str(pour.get("net", "")))
+        if db_id is None:
+            continue
+        geom = {"polygon": pour["polygon"]}
+        if pour.get("holes"):
+            geom["holes"] = pour["holes"]
+        copper_rows.append(
+            {
+                "ctype": "pour",
+                "layer": str(pour.get("layer", "")),
+                "net_id": db_id,
+                "route_id": None,
+                "geom": geom,
             }
         )
     ctx.store.pcb_copper_replace(int(board_id), copper_rows)

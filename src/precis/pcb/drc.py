@@ -930,6 +930,80 @@ def check_board_edge_clearance(
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
+def check_connectivity(model: dict[str, Any]) -> list[DrcFinding]:
+    """Every net's copper must be ONE connected component.
+
+    The rule that makes "zero DRC errors" mean something. Every other rule
+    here checks that copper is not too close, too thin, or too near an
+    edge — all of which a board with a severed net passes. See
+    :mod:`precis.pcb.connectivity` for the two shipped defects this catches
+    and why they were invisible to the rest of this module.
+    """
+    # Lazy, to break a genuine cycle rather than paper over one: the
+    # connectivity module deliberately reuses THIS module's primitive
+    # alphabet and gap arithmetic (two notions of "touching" between
+    # clearance and connectivity would be a defect generator of its own),
+    # so it imports drc and drc cannot import it at module scope. Same
+    # idiom, same reason, as handlers/_paper_search.py.
+    from precis.pcb.connectivity import net_islands
+
+    return [
+        DrcFinding(
+            rule="connectivity",
+            severity="error",
+            where=f"net {island.net}",
+            detail=(
+                f"net {island.net} copper is in {island.components} disconnected "
+                "pieces; a net's copper must be one connected component. "
+                "Witnesses (one point per piece): "
+                + "; ".join(
+                    f"({x:.3f},{y:.3f}) on {layer}"
+                    for x, y, layer in island.witnesses[:6]
+                )
+            ),
+            objects=({"net": island.net, "components": island.components},),
+        )
+        for island in net_islands(model)
+    ]
+
+
+def check_unrouted(
+    unrouted: list[dict[str, Any]] | None,
+) -> list[DrcFinding]:
+    """An unrouted connection is a DRC error, not a side channel.
+
+    It was reported only in ``RealizeResult.unrouted`` and a ``failed`` row
+    while ``view='drc'`` said zero errors — so "DRC clean" did not mean
+    "board is finished". That is the same trap as reaching zero errors by
+    routing nothing, relocated: the number a reader trusts stays silent
+    about the thing that matters.
+
+    Each entry needs a ``net``; ``from``/``to`` name the two endpoints when
+    the caller knows them (the realizer does — it works per connection) and
+    are omitted when it only knows the net (the DRC view reads per-net
+    ``pcb_routes`` status). The finding says which it got rather than
+    printing ``?`` for a fact nobody claimed to have.
+    """
+    out: list[DrcFinding] = []
+    for item in unrouted or []:
+        net = str(item.get("net", "?"))
+        a, b = item.get("from"), item.get("to")
+        what = f"connection {a} -> {b}" if a and b else "at least one connection"
+        note = f" ({item['note']})" if item.get("note") else ""
+        out.append(
+            DrcFinding(
+                rule="unrouted",
+                severity="error",
+                where=f"net {net}",
+                detail=(
+                    f"{what} on net {net} has no route{note}; the board is not finished"
+                ),
+                objects=(dict(item),),
+            )
+        )
+    return out
+
+
 def run_geometric_drc(
     model: dict[str, Any],
     *,
@@ -938,13 +1012,21 @@ def run_geometric_drc(
     courtyards: list[tuple[str, float, float, float]] | None = None,
     panel_type: str | None = None,
     net_rules: dict[str, NetRules] | None = None,
+    unrouted: list[dict[str, Any]] | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
     ``net_rules`` (net name -> resolved :class:`~precis.pcb.rules.NetRules`)
     threads the per-net clearance override into :func:`check_clearance`
     only — the other rules stay capability-only (module docstring: they
-    check the fab's own hard limits, not an authored class preference)."""
+    check the fab's own hard limits, not an authored class preference).
+
+    ``unrouted`` is the realizer's list of connections it could not route.
+    It is an argument rather than something derived from ``model`` because
+    a model cannot distinguish "not routed" from "not attempted" — absence
+    of copper is not evidence of failure, and guessing here would either
+    invent errors or hide them.
+    """
     findings: list[DrcFinding] = []
     findings += check_clearance(model, capability, net_rules=net_rules)
     findings += check_trace_width(model, capability)
@@ -953,6 +1035,8 @@ def run_geometric_drc(
     findings += check_board_edge_clearance(
         model, capability, outline=outline, panel_type=panel_type
     )
+    findings += check_connectivity(model)
+    findings += check_unrouted(unrouted)
     if courtyards:
         findings += check_courtyard_overlap(courtyards)
     return findings
@@ -964,9 +1048,11 @@ __all__ = [
     "check_annular_ring",
     "check_board_edge_clearance",
     "check_clearance",
+    "check_connectivity",
     "check_courtyard_overlap",
     "check_npth_clearance",
     "check_trace_width",
+    "check_unrouted",
     "clearance_pairs_indexed",
     "clearance_violations_naive",
     "process_for_stackup",

@@ -16,6 +16,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import session as pcb_session
 from precis.store import Store
 from precis.workers.auto_check_evaluators import route_complete
 from precis.workers.job_types import pcb_route
@@ -277,8 +278,34 @@ def test_pcb_route_applies_authored_plane_assignment(store: Store) -> None:
     """``op='plane_net'`` writes ``pcb_planes``; the route job must re-apply
     it onto the fresh IR every run (nothing else does — the IR is rebuilt
     from scratch each time) so the net's pins dog-bone fan out instead of
-    routing point-to-point."""
-    ref_id = _seed(store, "route-plane", _DESIGN)
+    routing point-to-point.
+
+    **A stub is not a connection.** This asserted only that every copper
+    row was a dogbone, which a board with no vias and no pour satisfies
+    perfectly — and that is exactly what the engine emitted: pads, stubs,
+    and a plane layer with nothing on it. The drop via and the pour are
+    the connection, so they are what this pins now.
+    """
+    ref_id = _seed(
+        store,
+        "route-plane",
+        # A pour needs a board to be poured onto. Without an authored
+        # outline it has no extent, and _outline_clip is right that
+        # inventing one would constrain a design that never asked to be —
+        # so the engine reports the net unrouted instead. That path has its
+        # own test below; this one is about the plane working.
+        {
+            **_DESIGN,
+            "features": [
+                {
+                    "ftype": "outline",
+                    "geom": {
+                        "path": [[-5.0, -5.0], [15.0, -5.0], [15.0, 10.0], [-5.0, 10.0]]
+                    },
+                }
+            ],
+        },
+    )
     plane_id = store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
     assert plane_id
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
@@ -288,10 +315,48 @@ def test_pcb_route_applies_authored_plane_assignment(store: Store) -> None:
     board_id = store.pcb_ensure_board(ref_id)
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT geom->>'is_dogbone' FROM pcb_copper WHERE board_id = %s",
+            "SELECT ctype, layer, geom->>'is_dogbone' FROM pcb_copper "
+            "WHERE board_id = %s",
             (board_id,),
         ).fetchall()
-    assert rows and all(r[0] == "true" for r in rows)
+    tracks = [r for r in rows if r[0] == "track"]
+    assert tracks and all(r[2] == "true" for r in tracks), (
+        "a plane-served net's traces are dog-bone stubs, not routed traces"
+    )
+    assert [r for r in rows if r[0] == "via"], (
+        "every stub needs a via down to the plane, or the pad reaches nothing"
+    )
+    pours = [r for r in rows if r[0] == "pour"]
+    assert pours and all(r[1] == "In1.Cu" for r in pours), (
+        "the plane layer must actually carry copper on the assigned layer"
+    )
+
+
+def test_plane_net_with_no_board_outline_is_reported_not_silently_stranded(
+    store: Store,
+) -> None:
+    """A pour has no extent without a board outline, so a net promoted to a
+    plane on an outline-less design cannot be connected. The engine must
+    SAY so: its segments come back unrouted and the net's route row is not
+    ``'realized'``.
+
+    The failure this pins is not "no pour" — it is a board that reports
+    itself finished while a whole net's pins reach a via that opens onto an
+    empty layer. Every geometric rule passes such a board comfortably,
+    because they all ask about proximity and it has no copper to be close
+    to anything.
+    """
+    ref_id = _seed(store, "route-plane-noboard", _DESIGN)
+    assert store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+
+    assert not ctx.failures
+    status = {r["name"]: r["status"] for r in store.pcb_route_status(ref_id)}
+    assert status.get("N1") != "realized", (
+        "a net whose plane was never poured is not routed, and saying it is "
+        "is the exact silence this rule exists to break"
+    )
 
 
 def test_pcb_route_persists_optimizer_derived_plane_promotion(
@@ -416,6 +481,38 @@ def test_pcb_route_dangling_net_does_not_block_route_complete(store: Store) -> N
     assert status_by_name["TP_NET"]["note"]  # names the reason, not a bare status
 
     assert route_complete.evaluate(store, {"pcb": ref_id}) is True
+
+
+def test_instance_rotation_survives_the_store_round_trip(store: Store) -> None:
+    """``rot`` was WRITE-ONLY: ``pcb_set_pose`` persisted it, ``pcb_graph``
+    never selected it, and ``ir.from_graph`` hardcoded ``inst_rot`` to
+    zeros. So every IR rebuilt from the store came back with every part at
+    0 degrees.
+
+    The consequence was not cosmetic and not local. Placement's settled
+    rotations never reached routing, and — because a pin's coordinate is
+    the instance pose composed with the land pattern — no rebuilt IR could
+    reproduce the pin coordinates of the copper it was looking at. The DRC
+    view, which rebuilds an IR to locate pads, therefore measured a board
+    whose parts had all been turned back to north: ten nets on the
+    reference board came back "disconnected" from that alone.
+
+    Nothing crashed and no rule fired, because rotation is not something
+    any geometric rule checks. It just quietly moves every pad.
+    """
+    ref_id = _seed(store, "route-rot", _DESIGN)
+    store.pcb_set_pose(ref_id, {"U1": (3.0, 4.0, 90.0), "R1": (9.0, 4.0, 270.0)})
+
+    graph = store.pcb_graph(ref_id)
+    by_refdes = {i["refdes"]: i for i in graph["instances"]}
+    assert by_refdes["U1"]["rot"] == 90.0
+    assert by_refdes["R1"]["rot"] == 270.0
+
+    ir = pcb_session.build_ir(graph)
+    rots = {
+        str(ir.instance_refdes[i]): float(ir.inst_rot[i]) for i in range(ir.n_instances)
+    }
+    assert rots == {"U1": 90.0, "R1": 270.0}
 
 
 def test_pcb_route_fails_legibly_on_no_nets(store: Store) -> None:

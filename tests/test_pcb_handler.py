@@ -249,16 +249,26 @@ def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
                 "net_id": net_ids["N1"],
                 "route_id": None,
                 "geom": {
+                    # Pad to pad. This used to stop at (1,0) — a 1mm stub
+                    # hanging off U1 that reached R1's pad not at all — and
+                    # the board still read "no findings", because every
+                    # rule then in the module asks how CLOSE copper is and
+                    # none asked whether a net's copper is one piece. A
+                    # board this test calls clean has to actually be clean.
                     "segments": [
-                        {"shape": "line", "start": [0.0, 0.0], "end": [1.0, 0.0]}
+                        {"shape": "line", "start": [0.0, 0.0], "end": [20.0, 0.0]}
                     ],
                     "width_mm": 0.5,
                 },
             },
         ],
     )
+    # ...and a routed board says it is routed. Copper in the table with no
+    # `pcb_routes` row is a half-finished design, which check_unrouted is
+    # right to flag; seeding both is what makes this a clean-board case.
+    pcb.store.pcb_routes_write(ref.id, board_id, {"N1": {"status": "realized"}})
     drc = pcb.get(id="drc-clean", view="drc")
-    assert "no findings" in drc.body
+    assert "no findings" in drc.body, drc.body
 
 
 def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):

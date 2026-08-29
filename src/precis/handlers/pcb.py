@@ -22,7 +22,7 @@ pixels. The verbs map onto the seven-verb surface:
   the connected instances); a net's members (``id='slug@SCL'``); the *eyes*
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
   'feasibility'|'route-status'|'congestion'|'planes'``); ``view='svg'`` — a
-  publication-quality vector figure (``args={'level':'board'|'sketch'}``,
+  publication-quality vector figure (``args={'level':'board'|'sketch'|'fab'}``,
   see :mod:`precis.pcb.svg`); or an *export*
   (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'|'gerber'`` writes a
   JLCPCB fab artifact — ``'gerber'`` is the full manufacturable bundle
@@ -57,8 +57,9 @@ from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import drc as pcb_drc
 from precis.pcb import export as pcb_export
-from precis.pcb import eyes, padplace, place, ratsnest
+from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
 from precis.pcb import gerber as pcb_gerber
+from precis.pcb import realize as pcb_realize
 from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
 from precis.pcb import svg as pcb_svg
@@ -138,7 +139,7 @@ class PcbHandler(Handler):
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
             "'congestion'|'planes'), a vector figure (view='svg', "
-            "args={'level':'board'|'sketch','layers':[...],'include':[...]}), "
+            "args={'level':'board'|'sketch'|'fab','layers':[...],'include':[...]}), "
             "or an export (view='bom'|'cpl'|'netlist'|"
             "'dsn'|'mechanical'|'gerber' writes a JLCPCB fab artifact -- "
             "'gerber' is the full manufacturable bundle (gerbers+Excellon, "
@@ -684,6 +685,18 @@ class PcbHandler(Handler):
                 return [[float(p[0]), float(p[1])] for p in geom["path"]]
         return None
 
+    def _drc_pads(self, ref_id: int, layers: list[str]) -> list[dict[str, Any]]:
+        """This design's pads, in :mod:`precis.pcb.gerber` model shape.
+
+        Delegates to :func:`precis.pcb.realize.pads_for_ir` — pad geometry
+        has exactly one definition, for the reasons that function's
+        docstring records.
+        """
+        graph = self.store.pcb_graph(ref_id)
+        if not graph.get("nets"):
+            return []
+        return pcb_realize.pads_for_ir(pcb_session.build_ir(graph), layers)
+
     def _render_export(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
         """Write a fab artifact (BOM / CPL / KiCad netlist / Specctra DSN /
         mechanical profile / the gerber bundle) off the IR. Pure — no binary
@@ -820,11 +833,20 @@ class PcbHandler(Handler):
         missing = sorted({i["refdes"] for i in placed} - has_pads)
         if missing:
             warnings.append(
-                f"{len(missing)} placed part(s) have no cached footprint — no "
-                f"pads/soldermask emitted for: {', '.join(missing[:8])}"
+                f"{len(missing)} placed part(s) have no cached footprint — pads "
+                "fall back to SYNTHESIZED land patterns (bounds, not the real "
+                f"part): {', '.join(missing[:8])}"
                 + ("…" if len(missing) > 8 else "")
                 + " (fetch via precis.pcb.footprint first)"
             )
+        if not pads:
+            # The cache was empty, so board_pads produced nothing at all and
+            # the bundle used to ship with zero pad copper and header-only
+            # mask files — a well-formed, unsolderable board. Fall back to
+            # the SAME land patterns the router routed to, so the fab set
+            # describes the board the engine actually built, and let
+            # export_fab refuse to call it manufacturable.
+            pads = self._drc_pads(ref_id, layer_names)
 
         model: dict[str, Any] = {
             "layers": layer_names,
@@ -834,7 +856,13 @@ class PcbHandler(Handler):
             "drills": drills,
             "silkscreen": {"top": [], "bottom": []},
         }
-        files = pcb_gerber.export_fab(model, name=slug)
+        try:
+            files = pcb_gerber.export_fab(model, name=slug)
+        except pcb_gerber.SynthesizedPadError as exc:
+            raise BadInput(
+                f"pcb: {exc} Use view='svg' args={{'level':'fab'}} to inspect "
+                "the board as gerbers without exporting it."
+            ) from exc
         blob = pcb_gerber.zip_fab(files)
 
         raw_dir = args.get("dir")
@@ -1042,9 +1070,16 @@ class PcbHandler(Handler):
             capability = capability_for(pcb_drc.process_for_stackup(stackup))
         except ValueError as exc:
             raise BadInput(f"pcb: {exc}") from exc
+        layer_names = [str(layer.get("name")) for layer in stackup]
+        # Pads come from the IR, which is the SAME source the router and the
+        # realizer use (precis.pcb.landpattern via ir.pin_point). A second
+        # pad source is how this build's recurring defect works — one rule,
+        # two call sites, drifted — and connectivity is precisely the check
+        # that would be fooled by pads in the wrong place.
         model = {
-            "layers": [str(layer.get("name")) for layer in stackup],
+            "layers": layer_names,
             "copper": copper,
+            "pads": self._drc_pads(ref_id, layer_names),
         }
         courtyards = [
             (
@@ -1076,6 +1111,11 @@ class PcbHandler(Handler):
             outline=self._outline_from_features(ref_id),
             courtyards=courtyards,
             net_rules=net_rules,
+            unrouted=[
+                {"net": r["name"], "note": r.get("note")}
+                for r in self.store.pcb_route_status(ref_id)
+                if r["status"] != "realized"
+            ],
         )
         run_id = uuid.uuid4().hex
         self.store.pcb_write_drc_findings(
@@ -1119,8 +1159,11 @@ class PcbHandler(Handler):
         ``pcb_routes.layer_assign`` says so). ``args.layers`` restricts a
         board render to a layer-name subset; ``args.include`` further
         restricts to a subset of :data:`precis.pcb.svg.DEFAULT_INCLUDE`.
-        Returns the raw SVG text — never written to disk (this is an
-        inline "eye", not an exporter)."""
+        ``args.level='fab'`` renders the board FROM ITS GERBERS with a
+        layer selector (:meth:`_render_fab_svg`) — the view that shows pads
+        and mask, and the only one that can be trusted about what a fab
+        will image. Returns the raw SVG text — never written to disk (this
+        is an inline "eye", not an exporter)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         level = str(args.get("level") or "board").strip().lower()
@@ -1137,10 +1180,12 @@ class PcbHandler(Handler):
             return Response(
                 body=pcb_svg.render_sketch(ir, title=f"{slug} — sketch (L3)")
             )
+        if level == "fab":
+            return self._render_fab_svg(ref_id, slug)
         if level != "board":
             raise BadInput(
                 f"view='svg' args.level={level!r} not recognized",
-                options=["board", "sketch"],
+                options=["board", "sketch", "fab"],
             )
 
         design = self.store.pcb_load(ref_id)
@@ -1165,6 +1210,45 @@ class PcbHandler(Handler):
             title=f"{slug} — board (L5)",
         )
         return Response(body=svg_text)
+
+    def _render_fab_svg(self, ref_id: int, slug: str) -> Response:
+        """``level='fab'`` — the board rendered FROM ITS GERBERS, with a
+        layer selector.
+
+        Not a prettier ``level='board'``. That one draws the model; this
+        one exports the fab set and reads it back, so what you are looking
+        at is what a fab's own reader will see. The difference is not
+        theoretical: ``svg.render_board`` applies a per-layer dash pattern
+        as a layer cue, which made continuous B.Cu copper look broken and
+        cost a session proving it was not. A view that is stylistically
+        different from the artefact cannot verify the artefact.
+
+        It is also the only view that shows pads, soldermask openings and
+        drill hits, because those exist in the fab set and nowhere in the
+        copper table.
+        """
+        design = self.store.pcb_load(ref_id)
+        board = design["board"]
+        if board is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        layer_names = [str(layer.get("name")) for layer in board["stackup"]]
+        model: dict[str, Any] = {
+            "layers": layer_names,
+            "outline": self._outline_from_features(ref_id) or [],
+            "copper": self.store.pcb_copper_list(int(board["board_id"])),
+            "pads": self._drc_pads(ref_id, layer_names),
+        }
+        # allow_synthesized, because this is a picture and not an order.
+        # export_fab's refusal exists to stop a land-pattern BOUND reaching
+        # a fab; looking at one is exactly how you notice it is a bound.
+        files = pcb_gerber.export_fab(model, name=slug, allow_synthesized=True)
+        try:
+            return Response(body=gerber_view.render_fab_svg(files, title=slug))
+        except gerber_view.UnsupportedGerber as exc:
+            raise BadInput(f"pcb: cannot render this fab set — {exc}") from exc
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:

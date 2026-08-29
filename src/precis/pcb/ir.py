@@ -615,7 +615,14 @@ def from_graph(
         rotation_darts=np.array(flat_darts, dtype=np.int32),
         inst_x=inst_x,
         inst_y=inst_y,
-        inst_rot=np.zeros(n_inst),
+        # An authored/persisted rotation, not always zero. Hardcoding zeros
+        # here silently discarded every rotation the optimizer had settled
+        # the moment an IR was rebuilt from the store — which is once per
+        # job, so placement's rotations never reached routing and no
+        # rebuilt IR could reproduce the pin coordinates of its own copper.
+        inst_rot=np.array(
+            [float(inst.get("rot") or 0.0) for inst in instances], dtype=float
+        ),
         inst_fixed_xy=np.array(
             [(inst.get("fixed") or "") in ("xy", "both") for inst in instances],
             dtype=bool,

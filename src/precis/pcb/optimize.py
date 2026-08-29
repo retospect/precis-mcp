@@ -1831,8 +1831,26 @@ def _gen_plane_promote(
     ]
     if not candidates:
         return None
+    # A plane layer carries ONE net. It is a sheet of copper, and two nets
+    # cannot both be it — this is a hard physical constraint, not a
+    # preference the annealer may pay for. Without the filter the search
+    # cheerfully promoted nine nets onto two plane layers, which reads as a
+    # legal state everywhere: `net_plane_layer` is per-net so it can
+    # represent the contradiction, and every consumer that maps layer->net
+    # silently keeps the last writer. Measured on seed 3 before this
+    # filter: VBUS, VCC3V3, SDA, SCL, EN, GPIO2, GPIO9, TXD and J1_P7 all
+    # promoted, two pours emitted, and every one of the other seven nets
+    # left as pads and stubs connected to nothing.
+    taken = {
+        int(ir.net_plane_layer[n])
+        for n in range(ir.n_nets)
+        if int(ir.net_plane_layer[n]) != UNSET_LAYER
+    }
+    free = [layer for layer in engine._plane_layers if layer not in taken]
+    if not free:
+        return None
     net = candidates[rng.randrange(len(candidates))]
-    layer = engine._plane_layers[rng.randrange(len(engine._plane_layers))]
+    layer = free[rng.randrange(len(free))]
     return Move(MoveKind.PLANE_PROMOTE, net=net, new_int=(layer,))
 
 

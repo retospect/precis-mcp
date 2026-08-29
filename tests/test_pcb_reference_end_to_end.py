@@ -174,11 +174,17 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     breakdown = collections.Counter(
         f"{f['rule']}" for f in findings if f["severity"] == "error"
     )
+    # Name the findings, don't just count them. A bare rule tally sends the
+    # reader back to reproduce the board before they can even start; the
+    # detail line is what the fix is actually made from.
+    detail = " | ".join(
+        str(f["detail"])[:160] for f in findings if f["severity"] == "error"
+    )[:900]
     assert drc_error_count <= BASELINE_DRC_ERRORS, (
         f"{drc_error_count} DRC errors (expected {BASELINE_DRC_ERRORS}): "
         f"{dict(breakdown)} -- inter-net clearance is enforced by the "
         "occupancy grid, so a clearance finding here means copper reached "
-        "the board without claiming its corridor first"
+        f"the board without claiming its corridor first\n{detail}"
     )
     assert routed_count >= BASELINE_ROUTED_FANOUT2, (
         f"routed {routed_count}/11 fanout>=2 nets, below the "

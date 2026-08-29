@@ -98,6 +98,54 @@ _STEPS: tuple[tuple[int, int, float], ...] = (
     (-1, -1, _SQRT2),
 )
 
+#: What a step costs when it disagrees with its layer's preferred
+#: direction. A multiplier on the step, not a veto: a hard constraint would
+#: strand every connection whose two pads are simply not aligned that way,
+#: and the point of preferred directions is to shape the *bulk* of the
+#: routing, not to forbid a turn.
+#:
+#: **Why have them at all.** Unstructured routing on every layer fragments
+#: the remaining free space into islands too small to route through and too
+#: awkward to pour — the standard VLSI reason for assigning each layer an
+#: axis. Traces that agree on a direction leave corridors between them;
+#: traces that wander leave slivers.
+OFF_AXIS_PENALTY = 1.6
+#: Diagonals are half-penalised on an H or V layer: they are the natural
+#: way to make progress toward a pad that is off-axis, and taxing them as
+#: hard as a full cross-grain run just produces staircases instead.
+DIAGONAL_PENALTY = 1.25
+
+#: Layer preference tokens accepted by :meth:`OccupancyGrid.route`.
+PREF_H = "h"
+PREF_V = "v"
+PREF_DIAG = "d"
+
+
+def _step_penalty(pref: str | None, dx: int, dy: int) -> float:
+    """Cost multiplier for one grid step on a layer with this preference."""
+    if pref is None:
+        return 1.0
+    diagonal = dx != 0 and dy != 0
+    if pref == PREF_DIAG:
+        return 1.0 if diagonal else OFF_AXIS_PENALTY
+    on_axis = (dy == 0) if pref == PREF_H else (dx == 0)
+    if on_axis:
+        return 1.0
+    return DIAGONAL_PENALTY if diagonal else OFF_AXIS_PENALTY
+
+
+def preferred_directions(layers: list[int]) -> dict[int, str]:
+    """Assign each routable layer an axis: H, V, H, V, ... by stackup order.
+
+    Alternating is the whole point — two adjacent layers sharing a
+    direction cannot hand off to each other, so a via between them buys
+    nothing. Three or more layers get a diagonal in third place, which
+    absorbs the connections that neither axis serves without forcing them
+    to staircase across an H or V layer.
+    """
+    cycle = (PREF_H, PREF_V, PREF_DIAG)
+    return {layer: cycle[i % len(cycle)] for i, layer in enumerate(sorted(layers))}
+
 
 @dataclass(frozen=True, slots=True)
 class GridSpec:
@@ -182,6 +230,15 @@ class RoutePath:
     net_id: int
     points: tuple[tuple[float, float, int], ...]
     length_mm: float
+    #: True when the search started on this net's OWN already-routed copper
+    #: (attach-to-own-copper) rather than at the ``start`` pad. The caller
+    #: cannot infer this from the geometry: on a star decomposition every
+    #: connection of a net shares one hub pin, so the trunk runs right past
+    #: that pad and "the head is near the pad" is true either way. A caller
+    #: that guesses will eventually drag a branch off its trunk and onto a
+    #: pad it never came from — severing the net at the exact point it
+    #: meant to join it.
+    attached: bool = False
 
     @property
     def vias(self) -> tuple[tuple[float, float, int, int], ...]:
@@ -237,15 +294,25 @@ class OccupancyGrid:
         self.clearance_mm = clearance_mm
         self._owner = np.full((spec.n_layers, spec.ny, spec.nx), FREE, dtype=np.int32)
         self._flat = self._owner.reshape(-1)
-        #: Flat cell indices on each net's ALREADY-ROUTED centrelines —
-        #: the legal attach points for that net's next connection. Kept
-        #: separate from ``_owner`` because ``_owner`` also holds the
-        #: static pad claims, and a pad is NOT an attach point: the
-        #: segment's own destination pad is already owned by its net, so
-        #: sourcing from "any cell this net owns" would let every
-        #: connection terminate instantly on its own goal and report a
-        #: fully-routed board with no copper on it.
-        self._routed_cells: dict[int, set[int]] = {}
+        #: Per net: flat cell index -> the EXACT centreline coordinate that
+        #: claimed it. These are the legal attach points for that net's next
+        #: connection. Kept separate from ``_owner`` because ``_owner`` also
+        #: holds the static pad claims, and a pad is NOT an attach point:
+        #: the segment's own destination pad is already owned by its net, so
+        #: sourcing from "any cell this net owns" would let every connection
+        #: terminate instantly on its own goal and report a fully-routed
+        #: board with no copper on it.
+        #:
+        #: **The value is the whole point.** A cell index alone answers "may
+        #: this net start here", which is a clearance question; it does not
+        #: answer "where is the copper", which is a connectivity one. A
+        #: branch starting from the cell CENTRE begins up to half a cell
+        #: diagonal off the trunk it means to join, and a 0.1mm branch can
+        #: miss a 0.1mm trunk entirely — the net is severed while DRC reads
+        #: clean and nothing is reported unrouted. Storing the coordinate
+        #: that actually claimed the cell lets :meth:`route` emit a first
+        #: point that lies ON the trunk.
+        self._routed_cells: dict[int, dict[int, tuple[float, float]]] = {}
 
     @property
     def owner(self) -> np.ndarray:
@@ -303,6 +370,38 @@ class OccupancyGrid:
             else:
                 window[inside] = net_id
 
+    def disk_is_free(
+        self, layers: Iterable[int], x: float, y: float, radius_mm: float, net_id: int
+    ) -> bool:
+        """Could ``net_id`` claim this disk without touching another net?
+
+        The query :meth:`stamp_disk` does not make. ``stamp_disk``
+        overwrites unconditionally, which is right for a pad (the pad IS
+        there) and wrong for anything the engine gets to *place* — a drop
+        via stamped without asking produced real overlapping copper, and
+        the occupancy grid's whole guarantee is that copper is claimed
+        before it is drawn. Callers that choose a position must ask first.
+        """
+        spec = self.spec
+        r_cells = math.ceil(radius_mm / spec.pitch)
+        cx, cy = spec.to_cell(x, y)
+        lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
+        lo_y, hi_y = max(0, cy - r_cells), min(spec.ny - 1, cy + r_cells)
+        if lo_x > hi_x or lo_y > hi_y:
+            return False
+        ix = np.arange(lo_x, hi_x + 1)
+        iy = np.arange(lo_y, hi_y + 1)
+        dx = spec.x0 + ix * spec.pitch - x
+        dy = spec.y0 + iy * spec.pitch - y
+        inside = (dy[:, None] ** 2 + dx[None, :] ** 2) <= radius_mm**2
+        for layer in layers:
+            if not (0 <= layer < spec.n_layers):
+                return False
+            window = self._owner[layer, lo_y : hi_y + 1, lo_x : hi_x + 1]
+            if bool(((window != FREE) & (window != net_id) & inside).any()):
+                return False
+        return True
+
     def stamp_path(self, path: RoutePath, width_mm: float) -> None:
         """Claim a routed path's corridor. Sampling every point of the
         (already collinear-merged) polyline is not enough — merged runs
@@ -312,14 +411,14 @@ class OccupancyGrid:
         step = self.spec.pitch / 2.0
         spec = self.spec
         plane = spec.nx * spec.ny
-        attach = self._routed_cells.setdefault(path.net_id, set())
+        attach = self._routed_cells.setdefault(path.net_id, {})
         for a, b in zip(path.points, path.points[1:], strict=False):
             if a[2] != b[2]:  # a via: claim it on every layer it spans
                 lo, hi = min(a[2], b[2]), max(a[2], b[2])
                 self.stamp_disk(range(lo, hi + 1), a[0], a[1], radius, path.net_id)
                 for layer in range(lo, hi + 1):
                     ix, iy = spec.to_cell(a[0], a[1])
-                    attach.add(layer * plane + iy * spec.nx + ix)
+                    attach[layer * plane + iy * spec.nx + ix] = (a[0], a[1])
                 continue
             seg_len = math.hypot(b[0] - a[0], b[1] - a[1])
             n = max(1, math.ceil(seg_len / step))
@@ -335,7 +434,7 @@ class OccupancyGrid:
                     path.net_id,
                 )
                 ix, iy = spec.to_cell(px, py)
-                attach.add(a[2] * plane + iy * spec.nx + ix)
+                attach[a[2] * plane + iy * spec.nx + ix] = (px, py)
 
     # -- the search ----------------------------------------------------
     def route(
@@ -351,6 +450,7 @@ class OccupancyGrid:
         attach: bool = True,
         via_cost_mm: float = VIA_COST_MM,
         max_expansions: int = MAX_EXPANSIONS,
+        layer_prefs: dict[int, str] | None = None,
     ) -> RoutePath | None:
         """Weighted-A* from ``start`` to ``goal`` for a trace of
         ``width_mm``, through cells this net's centreline may legally
@@ -430,11 +530,15 @@ class OccupancyGrid:
         came: dict[int, int] = {}
         closed: set[int] = set()
         heap: list[tuple[float, int]] = [(heuristic(sx, sy, start_layer), start_idx)]
+        # cell -> the exact copper coordinate that source represents, so the
+        # reconstructed path can BEGIN on the trunk instead of near it.
+        anchors: dict[int, tuple[float, float]] = {}
         if attach:
-            for src in self._routed_cells.get(net_id, ()):
+            for src, at in self._routed_cells.get(net_id, {}).items():
                 if src == goal_idx or src in g_score or not passable(src):
                     continue
                 g_score[src] = 0.0
+                anchors[src] = at
                 s_layer, s_rem = divmod(src, plane)
                 s_iy, s_ix = divmod(s_rem, spec.nx)
                 heapq.heappush(heap, (heuristic(s_ix, s_iy, s_layer), src))
@@ -446,13 +550,14 @@ class OccupancyGrid:
                 continue
             closed.add(cur)
             if cur == goal_idx:
-                return self._reconstruct(came, cur, net_id, g_score[cur])
+                return self._reconstruct(came, cur, net_id, g_score[cur], anchors)
             expansions += 1
             if expansions > max_expansions:
                 return None
             layer, rem = divmod(cur, plane)
             iy, ix = divmod(rem, spec.nx)
             base = g_score[cur]
+            pref = None if layer_prefs is None else layer_prefs.get(layer)
             for dx, dy, weight in _STEPS:
                 nxi, nyi = ix + dx, iy + dy
                 if not (0 <= nxi < spec.nx and 0 <= nyi < spec.ny):
@@ -460,7 +565,7 @@ class OccupancyGrid:
                 nidx = layer * plane + nyi * spec.nx + nxi
                 if nidx in closed or not passable(nidx):
                     continue
-                tentative = base + pitch * weight
+                tentative = base + pitch * weight * _step_penalty(pref, dx, dy)
                 if tentative < g_score.get(nidx, math.inf):
                     g_score[nidx] = tentative
                     came[nidx] = cur
@@ -487,7 +592,12 @@ class OccupancyGrid:
         return None
 
     def _reconstruct(
-        self, came: dict[int, int], goal: int, net_id: int, length: float
+        self,
+        came: dict[int, int],
+        goal: int,
+        net_id: int,
+        length: float,
+        anchors: dict[int, tuple[float, float]] | None = None,
     ) -> RoutePath:
         spec = self.spec
         plane = spec.nx * spec.ny
@@ -500,8 +610,20 @@ class OccupancyGrid:
             if cur not in came:
                 break
             cur = came[cur]
+        source = cur
         cells.reverse()
-        return RoutePath(net_id, _merge_collinear(cells, spec), length)
+        points = _merge_collinear(cells, spec)
+        # The path started on this net's own copper: begin it at the exact
+        # coordinate that copper occupies, not at the centre of the cell the
+        # coordinate happened to fall in. Half a cell diagonal is nothing
+        # next to a pad and everything next to a 0.1mm trunk. The move stays
+        # inside the one cell of slack the query dilation already carries,
+        # so it cannot walk the polyline out of its cleared corridor.
+        attached = bool(anchors) and source in (anchors or {})
+        if attached and points:
+            ax, ay = (anchors or {})[source]
+            points = ((ax, ay, points[0][2]), *points[1:])
+        return RoutePath(net_id, points, length, attached)
 
 
 def _merge_collinear(

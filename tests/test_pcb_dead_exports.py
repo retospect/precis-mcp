@@ -138,11 +138,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "incremental re-realize for edited segments; same unwired "
         "route-edit gap as rip_net"
     ),
-    "src/precis/pcb/realize.py::to_gerber_model": (
-        "this defect class's own flagship example (docs/backlog/"
-        "pcb-fab-output-unwired.md) -- handlers/pcb.py builds its fab "
-        "model dict by hand instead of calling this"
-    ),
     "src/precis/pcb/tiling.py::expansion_rate_from_objective": (
         "Slice 5's copper-tiling engine (module docstring) -- not yet "
         "invoked from realize.py's copper-generation path (docs/backlog/"

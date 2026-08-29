@@ -161,10 +161,31 @@ def _emit_stroke(
 
 def _emit_region(pour: dict[str, Any], body: list[str]) -> None:
     """``G36``/``G37`` polygon region for a copper pour/plane — filled by the
-    boundary trace, no aperture needed (a region's fill isn't a stroke)."""
+    boundary trace, no aperture needed (a region's fill isn't a stroke).
+
+    Holes are emitted as clear-polarity (``%LPC*%``) regions after the
+    solid one, which is the standard RS-274X idiom for a plane's antipads.
+    A pour that carries ``holes`` and images them as solid copper would
+    short every foreign via passing through the plane — so the hole list is
+    not optional decoration, it is the difference between a plane and a
+    short.
+    """
     poly = [(float(p[0]), float(p[1])) for p in pour["polygon"]]
     if not poly:
         return
+    _emit_region_ring(poly, body)
+    holes = pour.get("holes") or []
+    if not holes:
+        return
+    body.append("%LPC*%")
+    for hole in holes:
+        ring = [(float(p[0]), float(p[1])) for p in hole]
+        if ring:
+            _emit_region_ring(ring, body)
+    body.append("%LPD*%")
+
+
+def _emit_region_ring(poly: list[tuple[float, float]], body: list[str]) -> None:
     body.append("G36*")
     body.append("G01*")
     body.append(f"{_coord(*poly[0])}D02*")
@@ -369,8 +390,43 @@ def excellon_files(model: dict[str, Any], *, name: str = "design") -> dict[str, 
 # ─────────────────────────────────────────────────────────────────────
 # bundle
 # ─────────────────────────────────────────────────────────────────────
-def export_fab(model: dict[str, Any], *, name: str = "design") -> dict[str, str]:
-    """Gerbers + Excellon in one dict — the full JLCPCB-uploadable fab set."""
+class SynthesizedPadError(RuntimeError):
+    """A pad in the model is a synthesized BOUND, not a real footprint."""
+
+
+def export_fab(
+    model: dict[str, Any], *, name: str = "design", allow_synthesized: bool = False
+) -> dict[str, str]:
+    """Gerbers + Excellon in one dict — the full JLCPCB-uploadable fab set.
+
+    **Refuses a model containing synthesized pads.**
+    :mod:`precis.pcb.landpattern` synthesizes plausible pad offsets when no
+    real footprint is cached, and says in its own docstring that those are
+    bounds which "must never be exported to fabrication". They are in the
+    model because DRC and connectivity need pad geometry to mean anything;
+    this is the boundary where that stops being enough. A board built from
+    a dimensionally-plausible guess at a part solders to nothing, and the
+    failure is discovered by a human holding the assembled board — so it
+    fails here instead, loudly. ``allow_synthesized=True`` for a caller
+    that genuinely wants the preview (a viewer, a test) rather than a
+    board.
+    """
+    if not allow_synthesized:
+        bad = sorted(
+            {
+                str(p.get("net", "?"))
+                for p in model.get("pads", [])
+                if p.get("synthesized")
+            }
+        )
+        if bad:
+            raise SynthesizedPadError(
+                f"{len(bad)} net(s) carry synthesized pad geometry "
+                f"({', '.join(bad[:5])}{'...' if len(bad) > 5 else ''}) — these "
+                "are land-pattern BOUNDS, not the real footprint, and must not "
+                "be fabricated. Cache real footprints, or pass "
+                "allow_synthesized=True for a preview-only export."
+            )
     out = export_gerbers(model, name=name)
     out.update(excellon_files(model, name=name))
     return out
@@ -390,6 +446,7 @@ __all__ = [
     "DEFAULT_SILK_WIDTH_MM",
     "EDGE_CUT_WIDTH_MM",
     "SOLDERMASK_EXPANSION_MM",
+    "SynthesizedPadError",
     "copper_gerber",
     "excellon_files",
     "export_fab",
