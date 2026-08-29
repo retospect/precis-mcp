@@ -1122,6 +1122,10 @@
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="export in reMarkable mode (footnoted references) and send to the tablet">→ reMarkable</button>
           </form>
+          <form method="post" action="/drafts/{{ ident }}/remarkable-papers" class="inline">
+            <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+                    title="send every cited source PDF on this host to the tablet, into a per-draft folder">papers → reMarkable</button>
+          </form>
           {% endif %}
         </div>
       </div>
@@ -1650,7 +1654,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     // below), not a form post, since `/drafts/{ident}/review` now reads a
     // JSON body. Respect a cancelled confirm — the auto-author toggle's
     // @submit may already have preventDefault()'d when the user declined.
-    const inPlace = ['authors', 'workspace', 'authoring', 'export.pdf', 'remarkable'];
+    const inPlace = ['authors', 'workspace', 'authoring', 'export.pdf', 'remarkable', 'remarkable-papers'];
     if (f.closest('#sd-content') && inPlace.some((ep) => act === `/drafts/${IDENT}/${ep}`)) {
       if (e.defaultPrevented) return;
       e.preventDefault();

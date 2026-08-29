@@ -802,6 +802,12 @@ of a held paper) or the export marks a stub + warns.
   inline (a numbered bibliography still renders at the end).
   Destination = the `remarkable.target_folder` app_setting (default
   `/Precis`).
+- **Cited sources → reMarkable** — web's **papers → reMarkable** button
+  (same credential rules) sends every cited source PDF (paper / patent /
+  datasheet) held on the worker host, as-is, into a per-draft subfolder
+  (`/Precis/<slug>`); missing-on-host sources are reported, not fatal.
+  Agent-startable: `put(kind='job', job_type='remarkable_papers_send',
+  params={'draft': '<slug>'})`.
 - **Freeze/snapshot** (release + backup) copies the draft's current
   chunks into an immutable `paper`-like ref (versioned, searchable,
   citable), linked `snapshot-of` the draft; the draft keeps evolving.

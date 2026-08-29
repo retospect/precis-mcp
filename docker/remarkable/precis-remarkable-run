@@ -90,10 +90,14 @@ def main() -> int:
         shutil.copyfile(pdf, staged)
         env = {**os.environ, "RMAPI_CONFIG": str(cfg)}
         rmapi = os.environ.get("PRECIS_RMAPI_BIN", "rmapi")
-        # Best-effort create the destination folder (root always exists); an
-        # "already exists" failure is fine — the put is what matters.
+        # Best-effort create the destination folder (root always exists).
+        # rmapi's mkdir is NOT recursive, so a nested folder like
+        # "/Precis/173020" needs each ancestor created in turn; an "already
+        # exists" failure at any step is fine — the put is what matters.
         if folder not in ("", "/"):
-            _run([rmapi, "mkdir", folder], env, timeout_s)
+            parts = [p for p in folder.strip("/").split("/") if p]
+            for i in range(len(parts)):
+                _run([rmapi, "mkdir", "/" + "/".join(parts[: i + 1])], env, timeout_s)
         proc = _run([rmapi, "put", str(staged), folder], env, timeout_s)
 
     if proc is None:

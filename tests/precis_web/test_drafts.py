@@ -1433,6 +1433,67 @@ def test_remarkable_send_omits_user_param_when_signed_out(
     assert args["idem_key"] == "remarkable_send:nt:shared"
 
 
+def test_remarkable_papers_send_enqueues_the_right_job(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """The "papers → reMarkable" button starts a ``remarkable_papers_send``
+    job, not ``remarkable_send`` — no export/compile involved."""
+    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    r = draft_client.post("/drafts/nt/remarkable-papers", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "remarkable_papers_send"
+    assert args["params"]["draft"] == "nt"
+    assert "user" not in args["params"]
+    assert args["idem_key"] == "remarkable_papers_send:nt:shared"
+
+
+def test_remarkable_papers_send_400s_without_credential(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """No device credential → the route declines (the button is hidden, but a
+    stale page must not enqueue a doomed job)."""
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    r = draft_client.post("/drafts/nt/remarkable-papers", follow_redirects=False)
+    assert r.status_code == 400
+
+
+def test_remarkable_papers_send_threads_the_signed_in_login_into_job_params(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """A signed-in user's login rides the job, same as remarkable_send."""
+    from precis.users import WebUser
+
+    def _fake_user(request):
+        return WebUser(
+            id=1,
+            login="reto",
+            abbrev="rs",
+            full_name=None,
+            email=None,
+            disabled_at=None,
+            last_login_at=None,
+            created_at=None,
+            updated_at=None,
+        )
+
+    monkeypatch.setattr(drafts_mod, "current_user", _fake_user)
+    from precis import secrets as vault_mod
+
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    box = {"REMARKABLE_RMAPI_CONFIG:reto": "devicetoken: t\n"}
+    monkeypatch.setattr(vault_mod, "is_available", lambda n, *, store=None: n in box)
+
+    r = draft_client.post("/drafts/nt/remarkable-papers", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "remarkable_papers_send"
+    assert args["params"]["user"] == "reto"
+    assert args["idem_key"] == "remarkable_papers_send:nt:reto"
+
+
 # ── hand-driven working set: pen/eye marks + request-ws ──
 
 

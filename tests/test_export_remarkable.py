@@ -265,6 +265,50 @@ def test_send_pdf_uploads_via_stub(tmp_path, monkeypatch) -> None:
     assert "/Precis" in res.output
 
 
+def _stub_rmapi_logging(tmp_path: Path, log_path: Path) -> Path:
+    """A stub rmapi like :func:`_stub_rmapi` that additionally appends every
+    invocation's argv to ``log_path`` — needed because ``send_pdf`` only
+    keeps the *last* subprocess's stdout/stderr (the ``put``), discarding the
+    ``mkdir`` calls' own output."""
+    script = tmp_path / "rmapi"
+    script.write_text(
+        '#!/bin/sh\necho "rmapi $@" >> "'
+        + str(log_path)
+        + '"\necho "rmapi $@"\nexit 0\n',
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return script
+
+
+@_needs_posix_stub
+def test_send_pdf_creates_nested_folder_segment_by_segment(
+    tmp_path, monkeypatch
+) -> None:
+    """rmapi's mkdir is not recursive — a nested destination like
+    "/Precis/173020" must get one mkdir per ancestor, in order, before the
+    put."""
+    log_path = tmp_path / "argv.log"
+    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi_logging(tmp_path, log_path)))
+    res = rm.send_pdf(
+        _pdf(tmp_path), folder="/Precis/173020", display_name="Source", store=None
+    )
+    assert res.ok
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    mkdir_lines = [ln for ln in lines if ln.startswith("rmapi mkdir")]
+    assert "rmapi mkdir /Precis" in mkdir_lines
+    assert "rmapi mkdir /Precis/173020" in mkdir_lines
+    # "/Precis" is created before "/Precis/173020", and both before the put.
+    assert lines.index("rmapi mkdir /Precis") < lines.index(
+        "rmapi mkdir /Precis/173020"
+    )
+    assert any(ln.startswith("rmapi put") for ln in lines)
+    assert lines.index("rmapi mkdir /Precis/173020") < next(
+        i for i, ln in enumerate(lines) if ln.startswith("rmapi put")
+    )
+
+
 @_needs_posix_stub
 def test_send_pdf_rejects_unsafe_folder(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")

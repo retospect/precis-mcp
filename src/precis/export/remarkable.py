@@ -357,10 +357,18 @@ def send_pdf(
         staged = tmp / f"{name}.pdf"
         shutil.copyfile(pdf_path, staged)
         env = {**os.environ, "RMAPI_CONFIG": str(cfg)}
-        # Best-effort create the destination folder (root always exists);
-        # a "already exists" failure here is fine — the put is what matters.
+        # Best-effort create the destination folder (root always exists).
+        # rmapi's mkdir is NOT recursive, so a nested folder like
+        # "/Precis/173020" needs each ancestor created in turn; an "already
+        # exists" failure at any step is fine — the put is what matters.
         if folder not in ("", "/"):
-            _run([_rmapi_bin(), "mkdir", folder], env, timeout_s)
+            parts = [p for p in folder.strip("/").split("/") if p]
+            for i in range(len(parts)):
+                _run(
+                    [_rmapi_bin(), "mkdir", "/" + "/".join(parts[: i + 1])],
+                    env,
+                    timeout_s,
+                )
         proc = _run([_rmapi_bin(), "put", str(staged), folder], env, timeout_s)
 
     if proc is None:
