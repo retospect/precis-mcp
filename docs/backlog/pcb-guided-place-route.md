@@ -80,7 +80,7 @@ nothing is shorted. One definition, one implementation.
 - **DRC_FAIL** — all realized but DRC finds shorts/clearance violations →
   `False` + the findings. Persistent DRC_FAIL is *information* (board too
   small, too few layers), so the issues must be returned, not discarded.
-- **DONE** → `True`.
+- **DONE** → `True` (enum state name, not a done-marker — this design is unshipped).
 
 "Ought to be routed" resolves through the single `ir.net_member_counts()`
 rule. Implement as one `route_state()` in the pcb domain layer returning
