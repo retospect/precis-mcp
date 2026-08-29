@@ -46,10 +46,23 @@ confirmed cause.
    deliberately. Anything new that persists compute-derived numbers must go
    through `set_meta` or `_finite_json`.
 
-## Verify (batch 3)
+## Verify (batch 3) — completed 2026-08-29, fix confirmed (items above remain open)
 
-Re-dispatch the 50 tick-zero replicates (same idem keys `tick0-<st>-r<n>`,
-`requires={'gpu':1}`, `JobHandler.put`) after the fixes deploy. Expect
-`STATUS:succeeded` with `meta.partial` populated; any `min_dist_A` for
-single-atom states should read `null`. Then run the per-structure spread
-analysis (host as batch variable) that both dead batches were for.
+Batch 3 (jb266899–266948) + stragglers (jb269500–269508): 44/50 idem keys
+succeeded, every success persisted `meta.partial` with `min_dist_A: null`
+on single-atom states — the sanitizer + cleanup-after-persist behave
+exactly as predicted. Spread analysis (host as batch variable) can run on
+the 44.
+
+5. **st210770 is a pathological structure, not infra** — its six
+   `tick0-210770-r*` replicates have failed EVERY attempt across every
+   batch (22+ failures, 0 successes; wall-timeout + `infra:child-killed`
+   mix on spark/pollux/castor — hosts that completed st261823 seeds in the
+   same window). The seed job on this structure likely blows up the relax
+   (OOM on some hosts, runs-past-wall on others). Do NOT re-dispatch;
+   exclude from the spread analysis (its failure IS the data point);
+   inspect the structure (`st210770`) and reproduce one seed by hand on a
+   node to classify. (Checked: jb265186 was `tick0-210211-r3`, NOT a
+   210770 replicate — and that idem key SUCCEEDED in batch 3 (jb266921),
+   so item 1 stays classified as a one-off spark infra event, now
+   moot.)

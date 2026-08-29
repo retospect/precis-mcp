@@ -197,8 +197,53 @@ and are nulled by engine resets, so it needs `supersedes` /
 `invalidates`(TrustEvent→Measurement, fan-out 309 at the Aug-23 reset) and a
 reset-epoch stamp. `duplicate-of` edges for PBC translation twins.
 
+## Mechanism — `dialectic_ops` (Reto-approved 2026-08-29, in build)
+
+Tick 4 post-reset showed prompt-side structure cannot survive: the
+dossier-format contract *bans* block markdown (chunks render it literally),
+so any `###`-skeleton flattens on the first whole-rewrite by design. The fix
+is the ledger's own proven move — take the structure OUT of the rewritable
+narrative:
+
+- **Storage** (mirrors the pinned ledger, migration-free): one
+  `meta.pinned='dialectic'` container chunk per dossier; one child block per
+  live hypothesis (`meta.pinned='dialectic-hyp'`, `meta.hypothesis=<finding
+  ref id>` — statement/motivation/testable_by live on the finding, never
+  restated); entries as block children (`meta.pinned='dialectic-entry'`,
+  `meta.role=support|counter|experiment`). `read_narrative` /
+  `rewrite_dossier` already exclude any truthy `meta.pinned` — the model
+  structurally cannot flatten what it never rewrites.
+- **Ops** (new tick payload key, sibling of `ledger_ops`): `open`,
+  `support`/`counter` (one why-clause + evidence handles; near-dup-guarded),
+  `experiment` (upserted in place — ONE discriminating experiment per block,
+  with `predicts` pre-registered branch predictions), `settle` (collapses
+  the render to one linked sentence; entries kept as history). Ops address
+  blocks by **fi handle** — real stable ids, no ledger-style
+  quote-the-exact-text ambiguity.
+- **Edges minted at apply time**: each `support`/`counter` entry's inline
+  handles become real `links` rows, evidence `supports`/`contradicts` →
+  hypothesis finding (existing relation vocab, idempotent on the unique
+  tuple) — the dialectic is a queryable graph, not a document shaped like
+  one. `tests` edges for experiment entries are DEFERRED to the
+  simulation-step deep-link slice above (needs the `tests`/`tested-by`
+  relation migration).
+- **Narrative shrinks to synthesis** — the prompt shows rendered blocks
+  read-only (like the ledger) with upsert discipline: maintain via
+  `dialectic_ops`, do not restate hypothesis content in `dossier_text`.
+
+Composes with (does not replace) `dossier-present-tense-refinement.md`:
+that keystone makes the residual prose refinable; this makes the hypothesis
+network un-flattenable. Render half (web view for blocks) is a second
+slice.
+
 ## Open
 
+- Dialectic follow-ups (pre-ship review, 2026-08-29): (a) `_render_dialectic`
+  is 2-queries-per-block (`get_ref` + `tags_for`) where `_render_ledger` is
+  pure in-memory — batch when block counts grow; (b) `_resolve_hypothesis_id`
+  accepts ANY live finding, not just ones serving this quest — decide whether
+  to scope-check (strictness could break legit cross-quest cites); per-tick
+  op cap (16) and per-entry edge cap (8) are in.
 - Budgeted QE "electronic autopsy" job on frontier leaders (PDOS → d-band
   center, Löwdin charges, magmoms; `autocatpath/dft.py` already builds the
   calculator and seeds spins) — turns orbital/spin claims into citable

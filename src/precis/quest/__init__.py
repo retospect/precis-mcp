@@ -56,7 +56,12 @@ Package-level invariants (each enforced where named):
   ``narrative_budget.narrative_growth_gate`` (growth beyond 15%+50 words
   needs same-tick progress evidence; ~2500-word ceiling tripwire; one
   compress-retry then keep-previous + logbook entry). Word counts land in
-  logbook meta so thresholds are tuned from data.
+  logbook meta so thresholds are tuned from data. The per-hypothesis
+  **dialectic** (support / counter / discriminating experiment, one pinned
+  block per live hypothesis finding) is likewise op-mutated, never rewritten
+  (``dossier.apply_dialectic_op`` via the tick's ``dialectic_ops`` key), and
+  mints ``supports``/``contradicts`` evidence edges at apply time —
+  quest-dossier-dialectic §Mechanism.
 - **Loop existence is reconciled, not allocated.** ``loop`` guarantees one
   live coordinator per active quest (idempotent re-mint, reboot-orphan reap,
   failed-rest *and* dry-rest backoff — a ``meta.rest_reason == "dry"``

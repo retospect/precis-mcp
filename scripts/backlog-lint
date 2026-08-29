@@ -14,8 +14,9 @@ D="${1:-docs/backlog}"
 # Title-level done-markers: a heading, or a list item whose bold title / leading
 # clause carries DONE/RESOLVED/RETIRED/✅/[x]/"SHIPPED + …".
 MARK='(DONE|RESOLVED|RETIRED|✅|\[x\]|SHIPPED \+|— *SHIPPED)'
-# Exclude partially-open items — a shipped sub-part under still-open work.
-OPEN='(still (open|unverified|pending)|remain|NEXT =|Phase-2|un(shipped|deployed)|not deployed|NOT deployed|slices? .*remain|round-trip)'
+# Exclude partially-open items — a shipped sub-part under still-open work —
+# and definition bullets ("**DONE** → x" maps a state name, claims nothing).
+OPEN='(still (open|unverified|pending)|remain|NEXT =|Phase-2|un(shipped|deployed)|not deployed|NOT deployed|slices? .*remain|round-trip|\*\* *→)'
 
 hits="$(grep -rnE "^(#{1,6} .*${MARK}|- .*${MARK})" "$D" --include='*.md' 2>/dev/null | grep -v "$D/README.md" | grep -viE "$OPEN" || true)"
 n="$(printf '%s' "$hits" | grep -c . || true)"

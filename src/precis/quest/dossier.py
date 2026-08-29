@@ -89,6 +89,12 @@ string (the ``view='dossier'`` handler + history rely on it) — the ledger's
 contribution is the same rendered markdown, standing in for its now-several
 underlying chunks; only the tick *prompt* separates narrative from ledger
 (:func:`read_narrative`, :func:`read_ledger`).
+
+A third pinned family, the **dialectic blocks** (quest-dossier-dialectic
+§Mechanism), holds the per-hypothesis dialectic — support / counter /
+discriminating experiment, one block per live hypothesis finding — in the
+same op-mutated, never-rewritten shape as the ledger; see the "Dialectic
+blocks" section below (:func:`read_dialectic`, :func:`apply_dialectic_op`).
 """
 
 from __future__ import annotations
@@ -1096,10 +1102,16 @@ def read_dossier(store: Store, owner_id: int) -> tuple[int | None, str | None, s
     parts: list[str] = []
     for c in body:
         pinned = (c.meta or {}).get("pinned")
-        if pinned == _LEDGER_NODE_PINNED:
+        if pinned in (
+            _LEDGER_NODE_PINNED,
+            _DIALECTIC_HYP_PINNED,
+            _DIALECTIC_ENTRY_PINNED,
+        ):
             continue
         if pinned == "ledger":
             parts.append(_render_ledger(_load_ledger_nodes(store, did)))
+        elif pinned == _DIALECTIC_PINNED:
+            parts.append(_render_dialectic(store, _load_dialectic_blocks(store, did)))
         else:
             parts.append(c.text)
     text = "\n\n".join(parts)
@@ -1536,19 +1548,411 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
     return did
 
 
+# --- Dialectic blocks (quest-dossier-dialectic §Mechanism) -------------------
+#
+# The per-hypothesis dialectic lives OUTSIDE the rewritable narrative, in the
+# same pinned-chunk shape as the ledger: one `meta.pinned='dialectic'`
+# container per dossier; one child BLOCK chunk per live hypothesis
+# (`meta.pinned='dialectic-hyp'`, `meta.hypothesis=<finding ref id>` — the
+# statement/motivation/testable_by live on the finding ref, never restated);
+# ENTRY chunks as block children (`meta.pinned='dialectic-entry'`,
+# `meta.role=support|counter|experiment`). The model maintains blocks only
+# through `dialectic_ops` (:func:`apply_dialectic_op`) — it never rewrites
+# them, so the structure cannot flatten the way tick-4's ###-skeleton did.
+# `support`/`counter` entries mint real evidence edges (`supports` /
+# `contradicts` → the hypothesis finding) from their inline handles at apply
+# time, so the dialectic is a queryable graph, not a document shaped like one.
+
+_DIALECTIC_PINNED = "dialectic"
+_DIALECTIC_HYP_PINNED = "dialectic-hyp"
+_DIALECTIC_ENTRY_PINNED = "dialectic-entry"
+_DIALECTIC_ROLES: tuple[str, ...] = ("support", "counter", "experiment")
+#: Evidence-edge relation minted per role — the cited handle SUPPORTS /
+#: CONTRADICTS the hypothesis finding. `experiment` mints no edge yet: the
+#: `tests`/`tested-by` relation is deferred to the simulation-step deep-link
+#: slice (quest-dossier-dialectic §Mechanism).
+_DIALECTIC_EDGE_RELATION: dict[str, str] = {
+    "support": "supports",
+    "counter": "contradicts",
+}
+_DIALECTIC_SEED = ""
+#: An inline evidence handle in an entry's text, e.g. ``[fi263615]``,
+#: ``[st262842]``, ``[pc2837304]`` — two-letter code + decimal id, the
+#: universal handle grammar (:mod:`precis.utils.handle_registry`).
+_DIALECTIC_HANDLE_RE = re.compile(r"\[([a-z]{2}\d+)\]")
+#: Edge fan-out cap per support/counter entry (see
+#: :func:`_mint_evidence_edges`).
+_DIALECTIC_MAX_EDGES_PER_ENTRY = 8
+
+
+@dataclass
+class DialecticEntry:
+    """One dialectic entry — a support/counter why-clause or the block's
+    discriminating experiment. ``handle`` is the entry chunk's own ``dc``
+    handle (stable across ticks — entries are never whole-rewritten)."""
+
+    role: str
+    text: str
+    handle: str | None = None
+
+
+@dataclass
+class DialecticBlock:
+    """One live hypothesis's dialectic block. ``settled`` non-empty collapses
+    the render to that one linked sentence (entries are kept as history)."""
+
+    hypothesis_id: int
+    entries: list[DialecticEntry] = field(default_factory=list)
+    settled: str = ""
+    handle: str | None = None
+    chunk_id: int | None = None
+
+
+def _ensure_dialectic_chunk_for_ref(store: Store, dossier_id: int) -> str:
+    """The dialectic sibling of :func:`_ensure_ledger_chunk_for_ref` —
+    creates the ``meta.pinned='dialectic'`` container (appended at the END of
+    the doc, after the ledger, so :func:`rewrite_dossier`'s
+    insert-before-ledger placement keeps reading order stable:
+    narrative → ledger → dialectic) if absent, else returns its handle."""
+    chunks = store.drafts.reading_order(dossier_id)
+    found = _find_pinned_chunk(chunks, _DIALECTIC_PINNED)
+    if found is not None:
+        return str(found.handle)
+    created = store.drafts.add_chunks(
+        ref_id=dossier_id, chunk_kind="paragraph", text=_DIALECTIC_SEED, split=False
+    )
+    handle = str(created[0].handle)
+    store.drafts.patch_chunk_meta(handle, {"pinned": _DIALECTIC_PINNED})
+    return handle
+
+
+def ensure_dialectic_chunk(store: Store, owner_id: int) -> str:
+    """Return the handle of the owner's pinned dialectic container chunk,
+    creating dossier and container as needed (mirrors
+    :func:`ensure_ledger_chunk`'s lazy healing — a live owner grows its
+    dialectic on first access, migration-free)."""
+    did = ensure_dossier(store, owner_id)
+    return _ensure_dialectic_chunk_for_ref(store, did)
+
+
+def _load_dialectic_blocks(store: Store, dossier_id: int) -> list[DialecticBlock]:
+    """The dialectic forest, loaded from real chunks. Returns ``[]`` when the
+    dossier has no dialectic container yet. :meth:`DraftStore.reading_order`'s
+    DFS pre-order puts a block before its entries, so one pass builds it."""
+    chunks = store.drafts.reading_order(dossier_id)
+    container = _find_pinned_chunk(chunks, _DIALECTIC_PINNED)
+    if container is None:
+        return []
+    by_chunk_id: dict[int, DialecticBlock] = {}
+    out: list[DialecticBlock] = []
+    for c in chunks:
+        meta = c.meta or {}
+        pinned = meta.get("pinned")
+        if pinned == _DIALECTIC_HYP_PINNED and c.parent_chunk_id == container.chunk_id:
+            try:
+                hid = int(str(meta.get("hypothesis")))
+            except ValueError:
+                continue
+            block = DialecticBlock(
+                hypothesis_id=hid,
+                settled=str(meta.get("settled") or ""),
+                handle=str(c.handle),
+                chunk_id=c.chunk_id,
+            )
+            by_chunk_id[c.chunk_id] = block
+            out.append(block)
+        elif pinned == _DIALECTIC_ENTRY_PINNED and c.parent_chunk_id in by_chunk_id:
+            role = str(meta.get("role") or "")
+            if role in _DIALECTIC_ROLES:
+                by_chunk_id[c.parent_chunk_id].entries.append(
+                    DialecticEntry(role=role, text=c.text, handle=str(c.handle))
+                )
+    return out
+
+
+def _hypothesis_is_refuted(store: Store, finding_id: int) -> bool:
+    """True when the finding carries ``STATUS:refuted``. NOTE:
+    :class:`~precis.store.Tag`'s ``namespace`` is the tag-KIND discriminator
+    (``closed``/``flag``/``open``); the closed prefix lives in ``prefix`` —
+    filtering on ``namespace == "STATUS"`` silently never matches
+    (docs/backlog/quest-status-tag-prefix-misread.md)."""
+    try:
+        tags = store.tags_for(finding_id)
+    except Exception:
+        return False
+    return any(
+        str(getattr(t, "prefix", "") or "") == "STATUS"
+        and str(getattr(t, "value", "") or "") == "refuted"
+        for t in tags
+    )
+
+
+def _render_dialectic(store: Store, blocks: list[DialecticBlock]) -> str:
+    """Markdown projection of the dialectic forest for the tick prompt and
+    the whole-body dossier view — code-rendered (never model-authored), same
+    standing as :func:`_render_ledger`'s output."""
+    if not blocks:
+        return "(no dialectic blocks yet)"
+    lines: list[str] = []
+    for b in blocks:
+        ref = store.get_ref(kind="finding", id=b.hypothesis_id)
+        title = str(getattr(ref, "title", "") or "").strip() or "(finding missing)"
+        head = f"- [fi{b.hypothesis_id}] {title}"
+        if _hypothesis_is_refuted(store, b.hypothesis_id):
+            lines.append(head + " — REFUTED (do not re-propose)")
+            continue
+        if b.settled:
+            lines.append(head + f" — SETTLED: {b.settled}")
+            continue
+        lines.append(head)
+        by_role: dict[str, list[DialecticEntry]] = {}
+        for e in b.entries:
+            by_role.setdefault(e.role, []).append(e)
+        for role in _DIALECTIC_ROLES:
+            for e in by_role.get(role, []):
+                lines.append(f"  - {role}: {e.text}")
+        if not by_role.get("experiment"):
+            lines.append(
+                "  - experiment: (MISSING — every live hypothesis needs its "
+                "discriminating experiment; emit one via `dialectic_ops`)"
+            )
+    return "\n".join(lines)
+
+
+def read_dialectic(store: Store, owner_id: int) -> str:
+    """The dialectic blocks' markdown rendering — a thin on-the-fly
+    projection of the live chunks (never a stored blob), mirroring
+    :func:`read_ledger`. Heals a dossier with no dialectic container yet."""
+    ensure_dialectic_chunk(store, owner_id)
+    did = dossier_ref_id(store, owner_id)
+    assert did is not None  # ensure_dialectic_chunk just guaranteed a dossier
+    return _render_dialectic(store, _load_dialectic_blocks(store, did))
+
+
+def _resolve_hypothesis_id(store: Store, raw: object) -> int | None:
+    """``"fi263615"`` / ``"[fi263615]"`` / ``263615`` → the finding's ref id,
+    or ``None`` when the handle is malformed, isn't a finding, or doesn't
+    resolve to a live ref (degrade-don't-crash, the ledger-op contract)."""
+    from precis.utils import handle_registry
+
+    text = str(raw or "").strip().strip("[]")
+    if not text:
+        return None
+    if text.isdigit():
+        fid = int(text)
+    else:
+        parsed = handle_registry.parse(text)
+        if parsed is None:
+            return None
+        kind, is_chunk, fid = parsed
+        if kind != "finding" or is_chunk:
+            return None
+    ref = store.get_ref(kind="finding", id=fid)
+    return int(ref.id) if ref is not None else None
+
+
+def _chunk_owner_ref_id(store: Store, chunk_id: int) -> int | None:
+    """The ``ref_id`` a chunk handle's chunk belongs to (evidence handles in
+    entry text may be universal CHUNK handles, e.g. ``pc<id>``; the edge
+    targets the owning ref)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM chunks WHERE chunk_id = %s", (chunk_id,)
+        ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def _mint_evidence_edges(store: Store, hypothesis_id: int, role: str, text: str) -> int:
+    """Mint one ``supports``/``contradicts`` link per resolvable inline
+    handle in ``text`` → the hypothesis finding. Idempotent (``add_link``'s
+    unique-tuple no-op); a handle that doesn't resolve, points at the
+    hypothesis itself, or FK-fails is skipped, never a raise. Returns the
+    number of edges written (including re-writes of existing ones)."""
+    from precis.utils import handle_registry
+
+    relation = _DIALECTIC_EDGE_RELATION.get(role)
+    if relation is None:
+        return 0
+    minted = 0
+    # Cap per entry: each handle costs DB round-trips and writes into the
+    # corpus-wide links graph — a handle-stuffed model payload must not fan
+    # out unboundedly. A why-clause legitimately cites a few handles, not 8+.
+    handles = list(dict.fromkeys(_DIALECTIC_HANDLE_RE.findall(text)))[
+        :_DIALECTIC_MAX_EDGES_PER_ENTRY
+    ]
+    for h in handles:
+        parsed = handle_registry.parse(h)
+        if parsed is None:
+            continue
+        _kind, is_chunk, hid = parsed
+        ev_ref = _chunk_owner_ref_id(store, hid) if is_chunk else hid
+        if ev_ref is None or ev_ref == hypothesis_id:
+            continue
+        try:
+            store.add_link(
+                src_ref_id=ev_ref,
+                dst_ref_id=hypothesis_id,
+                relation=relation,
+                meta={"dialectic": role},
+            )
+        except Exception:
+            log.info(
+                "dialectic: evidence edge %s -%s-> fi%s not minted",
+                h,
+                relation,
+                hypothesis_id,
+            )
+            continue
+        minted += 1
+    return minted
+
+
+def _find_dialectic_block(
+    blocks: list[DialecticBlock], hypothesis_id: int
+) -> DialecticBlock | None:
+    for b in blocks:
+        if b.hypothesis_id == hypothesis_id:
+            return b
+    return None
+
+
+def _ensure_dialectic_block(
+    store: Store, dossier_id: int, container_handle: str, hypothesis_id: int
+) -> tuple[DialecticBlock, bool]:
+    """``(block, created)`` — the hypothesis's block, minted under the
+    container if absent. Idempotent on ``meta.hypothesis``."""
+    blocks = _load_dialectic_blocks(store, dossier_id)
+    found = _find_dialectic_block(blocks, hypothesis_id)
+    if found is not None:
+        return found, False
+    created = store.drafts.add_chunks(
+        ref_id=dossier_id,
+        chunk_kind="paragraph",
+        text=f"[fi{hypothesis_id}]",
+        at={"into": container_handle},
+        split=False,
+    )
+    chunk = created[0]
+    store.drafts.patch_chunk_meta(
+        chunk.handle,
+        {"pinned": _DIALECTIC_HYP_PINNED, "hypothesis": hypothesis_id},
+    )
+    block = DialecticBlock(
+        hypothesis_id=hypothesis_id,
+        handle=str(chunk.handle),
+        chunk_id=chunk.chunk_id,
+    )
+    return block, True
+
+
+def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
+    """Apply one ``dialectic_ops`` payload entry; return ``True`` iff it
+    changed something. Ops address blocks by the hypothesis's **fi handle**
+    (stable real ids — no ledger-style quote-the-exact-text ambiguity):
+
+    * ``open`` — ensure the block exists (idempotent). On a settled block,
+      re-opens it (clears the settle sentence).
+    * ``support`` / ``counter`` — append one why-clause entry; near-dup text
+      among the block's same-role entries is a no-op
+      (:func:`_is_near_dup`, the ledger's measure). Inline evidence handles
+      mint ``supports``/``contradicts`` edges → the hypothesis finding.
+    * ``experiment`` — upsert IN PLACE (one discriminating experiment per
+      block; ``predicts`` — the pre-registered branch predictions — is
+      folded into the text). Editing keeps the entry chunk's ``dc`` id.
+    * ``settle`` — collapse the block's render to ``text`` (one linked
+      sentence; entries kept as history). Optional ``ruling`` handle is
+      recorded on the block.
+
+    Every CONTRACT failure is a silent ``False`` (bad shape, unresolvable
+    hypothesis, blank text) — the ledger-op degrade-don't-crash convention.
+    A raw DB/store exception does propagate; the tick's ``dialectic_ops``
+    loop wraps each call (same as ``ledger_ops``) so a raise never crashes
+    the tick, and logs unapplied ops for diagnosability.
+    """
+    kind = str(op.get("op") or "").strip()
+    if kind not in {"open", "support", "counter", "experiment", "settle"}:
+        return False
+    hid = _resolve_hypothesis_id(store, op.get("hypothesis"))
+    if hid is None:
+        return False
+    container_handle = ensure_dialectic_chunk(store, owner_id)
+    did = dossier_ref_id(store, owner_id)
+    assert did is not None
+    block, created = _ensure_dialectic_block(store, did, container_handle, hid)
+
+    if kind == "open":
+        if block.settled:
+            assert block.handle is not None
+            store.drafts.patch_chunk_meta(block.handle, {"settled": ""})
+            return True
+        return created
+
+    text = _normalize_node_text(str(op.get("text") or ""))
+    if not text:
+        # A bare open-by-side-effect: the block now exists even though the
+        # entry op itself carried nothing usable.
+        return created
+
+    if kind == "settle":
+        assert block.handle is not None
+        ruling = str(op.get("ruling") or "").strip().strip("[]")
+        store.drafts.patch_chunk_meta(
+            block.handle, {"settled": text, "settled_ruling": ruling}
+        )
+        return True
+
+    if kind == "experiment":
+        predicts = _normalize_node_text(str(op.get("predicts") or ""))
+        if predicts:
+            text = f"{text} (predicts: {predicts})"
+        existing = next((e for e in block.entries if e.role == "experiment"), None)
+        if existing is not None:
+            if existing.text == text:
+                return False
+            assert existing.handle is not None
+            store.drafts.edit_text(
+                existing.handle, text, source={"reason": "quest-dialectic"}
+            )
+            return True
+    else:  # support / counter
+        same_role = [e.text for e in block.entries if e.role == kind]
+        if _is_near_dup(text, same_role) or text in same_role:
+            return False
+
+    assert block.handle is not None
+    created_chunks = store.drafts.add_chunks(
+        ref_id=did,
+        chunk_kind="paragraph",
+        text=text,
+        at={"into": block.handle},
+        split=False,
+    )
+    store.drafts.patch_chunk_meta(
+        created_chunks[0].handle,
+        {"pinned": _DIALECTIC_ENTRY_PINNED, "role": kind},
+    )
+    _mint_evidence_edges(store, hid, kind, text)
+    return True
+
+
 __all__ = [
     "AttemptNode",
     "DedupMerge",
+    "DialecticBlock",
+    "DialecticEntry",
     "add_attempt",
     "append_ledger_entry",
+    "apply_dialectic_op",
     "dedup_ledger",
     "dossier_ref_id",
+    "ensure_dialectic_chunk",
     "ensure_dossier",
     "ensure_ledger_chunk",
     "ledger_do_not_repropose",
     "ledger_open_nodes",
     "mark_attempt",
     "paper_ref_id",
+    "read_dialectic",
     "read_dossier",
     "read_ledger",
     "read_narrative",

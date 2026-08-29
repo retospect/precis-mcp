@@ -10,7 +10,11 @@ two things:
 * **logbook entries** — 1–4 dated observations / hypotheses / decisions
   reflecting one step of thinking, appended to the WORM logbook; and
 * a **rewritten dossier** — the living synthesis (current understanding, best
-  leads, what's ruled out, open questions), whole-replaced in place.
+  leads, what's ruled out, open questions), whole-replaced in place. The
+  per-hypothesis dialectic is NOT part of that rewrite: it lives in pinned
+  blocks the model maintains through ``dialectic_ops``
+  (:func:`precis.quest.dossier.apply_dialectic_op` — quest-dossier-dialectic
+  §Mechanism), so it cannot flatten with the prose.
 
 With ``compute=True`` (rung 4b) the tick also materialises the model's
 **proposals** into candidate `structure` servers, dispatches their relax sims
@@ -168,7 +172,8 @@ def _render_tick_conclusion(outcome: QuestTickOutcome) -> str:
             f"{outcome.dossier_rewritten} proposals={outcome.proposals} "
             f"sims={outcome.sims_dispatched} harvested={outcome.results_harvested} "
             f"searches={outcome.searches_run} papers_linked={outcome.papers_linked} "
-            f"ledger_added={outcome.ledger_added} graduated={outcome.graduated} "
+            f"ledger_added={outcome.ledger_added} "
+            f"dialectic={outcome.dialectic_applied} graduated={outcome.graduated} "
             f"ruled_out={outcome.ruled_out}"
         ),
     ]
@@ -307,6 +312,10 @@ class QuestTickOutcome:
     # (:mod:`precis.workers.job_types.quest_tick`): a tick that only pinned/
     # marked a ledger direction still counted as "the model engaged".
     ledger_added: int = 0
+    # Applied `dialectic_ops` (quest-dossier-dialectic §Mechanism) — same
+    # engagement standing as `ledger_added`: maintaining a hypothesis's
+    # support/counter/experiment block is the model engaging, not a dry tick.
+    dialectic_applied: int = 0
     # Cascade (rung 4c).
     escalated: bool = False
     mode: str = "local"  # "local" | "frontier-review"
@@ -1224,6 +1233,7 @@ def build_tick_prompt(
             f"{momentum.blocked_todo_servers} blocked"
         ),
         dossier=dossier_text or "(no dossier yet)",
+        dialectic=dossier_mod.read_dialectic(store, qid),
         ledger_constraints=_ledger_constraints(ledger_text),
         ledger_open=_ledger_open_summary(ledger_text),
         gaps="\n".join(gap_lines),
@@ -1254,6 +1264,9 @@ no evidence for.
 
 ## Current dossier (the living synthesis — you will rewrite it)
 {dossier}
+
+## Dialectic blocks (live hypotheses — maintain via `dialectic_ops`, do NOT restate in `dossier_text`)
+{dialectic}
 
 ## Ruled-out ledger (do NOT re-propose these directions)
 {ledger_constraints}
@@ -1304,6 +1317,18 @@ When the answer lies in the literature you don't yet hold (a `no-literature` or 
 a question-phrased query keeps missing — phrase it as one or two sentences \
 that could appear verbatim in the abstract of the paper you wish existed, NOT \
 as a question: retrieval matches documents, not questions (this is HyDE).
+
+**The dialectic lives in blocks, not prose.** Each live hypothesis's \
+argument state — its supports, its steelman counter, its ONE discriminating \
+experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
+section above and the field below), addressed by the hypothesis's `[fi…]` \
+handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
+their content — it is the synthesis layer only (what changed, what it \
+means, what to do next). When new evidence bears on a hypothesis, emit a \
+`support` or `counter` op citing that evidence's handle inline; when a \
+hypothesis is resolved either way, emit `settle` with one linked sentence. \
+A block showing "experiment: (MISSING …)" owes a discriminating experiment \
+with pre-registered branch predictions — emit an `experiment` op for it.
 
 When you rule out or complete a *direction* that must never be revisited, pin \
 it to the ledger via `ledger_ops` (permanently preserved); `dossier_text` \
@@ -1372,6 +1397,18 @@ strategy tried/killed/still open, not a single candidate material>",
       "parent": "<optional>", "status": "<optional, default open>"}},
     {{"op": "mark", "node": "<exact existing node text>", "status": \
 "<open|active|tried|ruled-out>", "parent": "<optional>"}}
+  ],
+  "dialectic_ops": [
+    {{"op": "open", "hypothesis": "fi<id>"}},
+    {{"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
+with its evidence handle(s) inline, e.g. … [pc123] or [ql456]>"}},
+    {{"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
+against it, evidence handles inline>"}},
+    {{"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
+discriminating experiment>", "predicts": "<pre-registered branch \
+predictions: what each outcome would mean>"}},
+    {{"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
+sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}}
   ],
   "proposals": [
     {{"name": "<candidate material>", "rationale": "<why test it>",
@@ -1463,6 +1500,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
     {
         "logbook",
         "ledger_ops",
+        "dialectic_ops",
         "dossier_text",
         "dossier_markdown",
         "proposals",
@@ -2405,6 +2443,39 @@ class _TickRun:
                     op,
                 )
 
+        # dialectic_ops (quest-dossier-dialectic §Mechanism) — maintain the
+        # pinned per-hypothesis dialectic blocks (support/counter/experiment/
+        # settle, addressed by fi handle). Same BEFORE-the-rewrite placement
+        # and degrade-don't-crash contract as ledger_ops: each op is a silent
+        # no-op on a bad shape or an unresolvable hypothesis, logged here so a
+        # persistently-malformed payload stays diagnosable.
+        # Capped per tick: unlike ledger nodes (quest-local markdown), these
+        # ops mint blocks/entries AND corpus-wide evidence edges — a looping
+        # payload must not fan out unboundedly. 16 is generous: a tick
+        # legitimately touches a few hypotheses, not dozens.
+        dialectic_applied = 0
+        for op in (payload.get("dialectic_ops") or [])[:16]:
+            if not isinstance(op, dict):
+                continue
+            try:
+                applied = dossier_mod.apply_dialectic_op(store, quest_id, op)
+            except Exception:
+                log.exception(
+                    "run_quest_tick: dialectic_ops entry raised for quest %s: %r",
+                    quest_id,
+                    op,
+                )
+                applied = False
+            if applied:
+                dialectic_applied += 1
+            else:
+                log.info(
+                    "run_quest_tick: dialectic_ops entry for quest %s not "
+                    "applied (bad shape / unresolvable hypothesis / dup): %r",
+                    quest_id,
+                    op,
+                )
+
         # Proposals — log each candidate as a hypothesis (WORM). The
         # materialise + dispatch half is the `compute` stage.
         proposals = _tick_proposals(payload)
@@ -2446,6 +2517,7 @@ class _TickRun:
                 "added": added,
                 "deduped": deduped,
                 "ledger_added": ledger_added,
+                "dialectic_applied": dialectic_applied,
                 "n_proposals": len(proposals),
             }
         )
@@ -2718,6 +2790,7 @@ class _TickRun:
         is_review = bool(st.get("is_review"))
         added = int(st.get("added") or 0)
         ledger_added = int(st.get("ledger_added") or 0)
+        dialectic_applied = int(st.get("dialectic_applied") or 0)
         harvested = int(st.get("harvested") or 0)
         papers_linked = int(st.get("papers_linked") or 0)
         created = int(st.get("created") or 0)
@@ -2756,7 +2829,10 @@ class _TickRun:
         if narrative_md:
             try:
                 progress_evidence = (
-                    bool(ledger_added) or bool(harvested) or bool(papers_linked)
+                    bool(ledger_added)
+                    or bool(dialectic_applied)
+                    or bool(harvested)
+                    or bool(papers_linked)
                 )
                 accepted_md = _apply_narrative_gate(
                     store,
@@ -2842,6 +2918,7 @@ class _TickRun:
                 papers_linked=papers_linked,
                 hypotheses_deduped=int(st.get("deduped") or 0),
                 ledger_added=ledger_added,
+                dialectic_applied=dialectic_applied,
                 escalated=is_review,
                 mode="frontier-review" if is_review else "local",
             ),
