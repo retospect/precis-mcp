@@ -1,0 +1,74 @@
+---
+# retire-node-precis-units.yml — take one named node off precis cluster duty:
+# stop, disable, and remove every precis unit on it. First used 2026-08-29 to
+# permanently retire the (Linux) GPU node from the fleet — the box is
+# dedicated to paper work now. The inventory side lives in the overlay (the
+# node out of every service group, every precis_capabilities entry emptied of
+# it), which stops future deploys from re-provisioning — but no play ever
+# STOPS units on a host that left its groups, so this one-off does the
+# teardown. Idempotent; safe to re-run.
+#
+# Removes every precis unit: the collapsed pool worker (20b), the compute
+# lane (43), the inbox watcher (28), the embedder (19a) + its watchdog timer
+# (41), and the feature drop-ins/env the dft/autocatpath/aizynth/tts roles
+# laid down. Leaves NON-precis services alone (ollama, llama-swap, apt-managed
+# monitoring, sshd, the NFS mount) — the node stays a managed base-OS host.
+#
+# The /opt/precis venv and /var/lib/precis data dirs are left on disk: inert
+# without units, cheap, and they make a deliberate future re-provision (a
+# fresh play run against restored group membership) a config change rather
+# than a rebuild.
+#
+#   ansible-playbook playbooks/retire-node-precis-units.yml -e retire_host=<node>
+#
+# Linux/systemd hosts only. NOT wired into site.yml / redeploy-precis.yml — a
+# one-off operator action, like the other retire-*.yml playbooks.
+
+- name: Retire a named node from precis cluster duty
+  # Target by hostname (-e retire_host=…), not group — the node has already
+  # left its service groups. An unset/unknown name matches no hosts → no-op.
+  hosts: "{{ retire_host | default('__unset__') }}"
+  become: true
+  tasks:
+    - name: Stop + disable every precis unit
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - precis-worker.service
+        - precis-worker-compute.service
+        - precis-watch.service
+        - precis-embedder-watchdog.timer
+        - precis-embedder-watchdog.service
+        - precis-embedder.service
+      # A unit already absent (re-run) is fine.
+      failed_when: false
+
+    - name: Remove the precis unit files + worker drop-in dir + feature env
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/precis-worker.service
+        - /etc/systemd/system/precis-worker-compute.service
+        - /etc/systemd/system/precis-watch.service
+        - /etc/systemd/system/precis-embedder-watchdog.timer
+        - /etc/systemd/system/precis-embedder-watchdog.service
+        - /etc/systemd/system/precis-embedder.service
+        - /etc/systemd/system/precis-worker.service.d
+        - /etc/precis
+
+    - name: Reload systemd so the removals take
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Clear failed-unit residue (a stopped-then-deleted unit lingers as not-found/failed)
+      ansible.builtin.command: systemctl reset-failed
+      changed_when: false
+
+    - name: Confirm zero precis units remain
+      ansible.builtin.shell: systemctl list-units --all 'precis-*' --no-legend | wc -l
+      register: retire_residual
+      changed_when: false
+      failed_when: (retire_residual.stdout | trim | int) != 0

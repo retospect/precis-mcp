@@ -312,10 +312,33 @@
           'PRECIS_FIX_REPO_DIR': precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'),
         } if (precis_fix_lane_enabled | default(false)) else {}
       ) if inventory_hostname in groups['gateway'] else {} }}
+    # ── tts render (darwin only, gated on topology.yml tts_render — the
+    # GPU-node-retirement rehome, 2026-08-29): launchd has no
+    # EnvironmentFile, so the same vars roles/tts's tts.env.j2 drops for the
+    # Linux systemd path are rendered straight into the plist here. Values
+    # mirror roles/tts/defaults (not in scope — role defaults only load when
+    # the role runs; same local-constants workaround as 20d's `_drain_*`).
+    # PRECIS_BRIEFING_AUDIO_ENABLED stays 0 (the standalone news-wire episode
+    # is retired — cast_audio's `_news_lead_in` covers it; see tts.env.j2).
+    # The colima docker bin + a $HOME-mounted scratch mirror roles/remarkable. ──
+    _l_b_tts_env: >-
+      {{ (
+        {
+          'PRECIS_BRIEFING_AUDIO_ENABLED': '0',
+          'PRECIS_CAST_AUDIO_ENABLED': '1',
+          'PRECIS_TTS_IMAGE': tts_image | default('precis-tts:latest'),
+          'PRECIS_TTS_CONTAINER_CMD': precis_worker_agent_container_bin | default('/opt/homebrew/bin/docker'),
+          'PRECIS_TTS_SCRATCH': '/Users/deploy/.cache/precis-tts-scratch',
+          'PRECIS_PODCAST_DIR': nas_root ~ '/podcast',
+          'PRECIS_BRIEFING_AUDIO_VOICE': tts_briefing_voice | default('af_heart'),
+          'PRECIS_BRIEFING_AUDIO_LANG': tts_briefing_lang | default('en-us'),
+        } if (os_family == 'darwin'
+              and inventory_hostname in (precis_capabilities.tts_render | default([]))) else {}
+      ) }}
     _l_b_env: >-
       {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
          | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env)
-         | combine(_l_b_fix_env) }}
+         | combine(_l_b_fix_env) | combine(_l_b_tts_env) }}
   # tasks: + import_role, NOT a `roles:` list — in a `roles:` entry,
   # `tasks_from:` is not a selector, it silently becomes a role VAR and the
   # role runs its FULL main.yml. That exact bug re-rendered the split

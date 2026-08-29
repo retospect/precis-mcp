@@ -1,17 +1,21 @@
 ---
-# 45-tts.yml — configure the Linux compute node to render the audio feed
+# 45-tts.yml — configure the tts_render node to render the audio feed
 # via the `precis-tts` container: Kokoro TTS + misaki (native cn/jp), models
-# baked. Wires the container runtime + worker env (systemd drop-in) so the
-# briefing_audio pass runs `docker run precis-tts` per episode. The TTS engine
+# baked. Wires the container runtime + worker env so the briefing_audio /
+# cast_audio passes run `docker run precis-tts` per episode. The TTS engine
 # lives in the IMAGE (this worker venv has no [tts] extra), so there is nothing
 # to pip-install. See roles/tts/README.md + precis-mcp/docker/tts/README.md.
 #
 # Targeting is topology-driven (inventory/group_vars/all/topology.yml): the role
 # runs where `inventory_hostname in precis_capabilities.tts_render`. Move audio
-# rendering to another Linux box by editing that one line.
+# rendering to another box by editing that one line. Works on Linux compute
+# nodes (system docker + systemd drop-in env) AND the macOS gateway (deploy's
+# colima docker; env rides 20b-precis-worker-collapsed.yml's `_l_b_tts_env`
+# plist combine instead of a drop-in) — the GPU-node-retirement rehome.
 #
-# Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
-# this drops the EnvironmentFile it reads, then restarts it). Imported by
+# Run order: AFTER the worker play for the target host (20 on Linux / 20b on
+# darwin — the worker unit must exist; on Linux this drops the EnvironmentFile
+# it reads, then restarts it; on darwin 20b itself renders the env). Imported by
 # redeploy-precis.yml with tts_precis_ref pinned to the deploy sha, so every
 # scripts/deploy rebuilds the image in lockstep with the venvs (layer-cached:
 # one pip install when the sha moved, full cache hit when it didn't). Standalone

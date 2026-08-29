@@ -36,8 +36,11 @@ differs.
   disk as per-host rollback, no longer imported. Profile is pass
   *ownership* only — the live on/off switch is the `service_config` row,
   not a plist env flag (see below).
-- **Compute-lane exception (GPU node).** The `inference` group host runs one
-  extra tiny worker alongside its collapsed unit:
+- **Compute-lane exception (GPU nodes).** Each `compute`-group host (the DGX
+  twins; the `inference` group is empty — its GPU node was permanently
+  retired from cluster duty 2026-08-29 via
+  `playbooks/retire-node-precis-units.yml`) runs
+  one extra tiny worker alongside its collapsed/heartbeat unit:
   `precis-worker-compute.service`, `--only job_ssh_node`, polling every few
   seconds (`playbooks/43-precis-worker-compute.yml`). The collapsed worker's
   `run_loop` is a strictly-serial round-robin, so a slow pass starves

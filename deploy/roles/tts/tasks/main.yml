@@ -1,31 +1,35 @@
 ---
-# tts — make the Linux compute node render the audio feed via the
+# tts — make the tts_render node (topology.yml) render the audio feed via the
 # `precis-tts` container. The precis-mcp worker (roles/precis_worker) runs the
-# `briefing_audio` pass, which — when PRECIS_TTS_IMAGE is set — shells out to
-# `docker run precis-tts` per episode, staging segments.json in a local scratch
-# dir and reading back out.m4a. Kokoro + misaki live in the IMAGE; the models are
-# baked in. Linux / compute node only (the macOS gateway needs none of this).
+# `briefing_audio`/`cast_audio` passes, which — when PRECIS_TTS_IMAGE is set —
+# shell out to `docker run precis-tts` per episode, staging segments.json in a
+# local scratch dir and reading back out.m4a. Kokoro + misaki live in the IMAGE;
+# the models are baked in.
+#
+# OS split (2026-08-29, the GPU node retired from cluster duty): on Linux
+# compute nodes the
+# runtime is system docker and the env reaches the worker via a systemd
+# drop-in EnvironmentFile; on the macOS gateway the runtime is deploy's colima
+# docker (mirrors roles/remarkable) and the env is rendered straight into the
+# collapsed worker's plist by 20b-precis-worker-collapsed.yml's `_l_b_tts_env`
+# (launchd has no EnvironmentFile) — this role then wires only dirs + image.
 # See roles/tts/README.md + precis-mcp/docker/tts/README.md.
-
-- name: tts runs the container on the Linux compute node only
-  ansible.builtin.assert:
-    that: os_family == "linux"
-    fail_msg: >-
-      The tts role runs the precis-tts container on the Linux compute node
-      (the GPU node). The macOS gateway needs nothing here. See roles/tts/README.md.
 
 - name: Ensure the container runtime is present
   ansible.builtin.command: "{{ tts_container_cmd }} --version"
   register: tts_runtime
   changed_when: false
   failed_when: tts_runtime.rc != 0
+  become: true
+  become_user: "{{ 'root' if os_family == 'linux' else tts_worker_user }}"
 
-- name: Allow the worker user to run docker without sudo (docker group)
+- name: Allow the worker user to run docker without sudo (docker group — Linux only)
   ansible.builtin.user:
     name: "{{ tts_worker_user }}"
     groups: docker
     append: true
   become: true
+  when: os_family == "linux"
   notify: restart precis-worker (tts)
 
 - name: Ensure the local scratch dir (container in/out staging)
@@ -47,15 +51,18 @@
   become: true
 
 # ── (re)build the precis-tts image on the node ────────────────────────
+# On darwin every step runs as the worker user (colima socket owner) — root's
+# docker CLI can't reach the per-user VM (mirrors roles/remarkable).
 - name: (Re)build the precis-tts image
   when: tts_build_image | bool
+  become: true
+  become_user: "{{ 'root' if os_family == 'linux' else tts_worker_user }}"
   block:
     - name: Ensure the build context dir on the node
       ansible.builtin.file:
-        path: /tmp/precis-tts-build
+        path: "{{ tts_build_dir }}"
         state: directory
         mode: "0755"
-      become: true
 
     - name: Copy the precis-tts build context to the node
       # copy (not synchronize) rides ansible's own ssh — the controller's
@@ -63,9 +70,8 @@
       # agent auth. The context is two small files (Dockerfile + shim).
       ansible.builtin.copy:
         src: "{{ tts_src_dir }}/"
-        dest: /tmp/precis-tts-build/
+        dest: "{{ tts_build_dir }}/"
         mode: preserve
-      become: true
 
     - name: Derive the base image from the Dockerfile (pre-pull stays in sync)
       # The FROM line is the single source of truth. A hardcoded var here
@@ -73,7 +79,7 @@
       # pre-pull warmed the wrong image and the build died at step 1 on the
       # flaky tts-host→Docker Hub TLS handshake, retry-less.
       ansible.builtin.command:
-        cmd: awk '/^FROM /{print $2; exit}' /tmp/precis-tts-build/Dockerfile
+        cmd: awk '/^FROM /{print $2; exit}' {{ tts_build_dir }}/Dockerfile
       register: tts_base_from
       changed_when: false
       failed_when: tts_base_from.stdout | trim | length == 0
@@ -82,7 +88,6 @@
       ansible.builtin.shell: >-
         {{ tts_container_cmd }} image inspect {{ tts_base_from.stdout | trim }} >/dev/null 2>&1
         || {{ tts_container_cmd }} pull {{ tts_base_from.stdout | trim }}
-      become: true
       register: tts_basepull
       retries: 8
       delay: 15
@@ -99,10 +104,9 @@
           -t {{ tts_image }}
           --build-arg PRECIS_REF={{ tts_precis_ref }}
           .
-        chdir: /tmp/precis-tts-build
+        chdir: "{{ tts_build_dir }}"
       environment:
         DOCKER_BUILDKIT: "0"
-      become: true
       register: tts_build
       retries: 3
       delay: 5
@@ -115,12 +119,15 @@
 - name: Assert the precis-tts image is present
   ansible.builtin.command: "{{ tts_container_cmd }} image inspect {{ tts_image }}"
   become: true
+  become_user: "{{ 'root' if os_family == 'linux' else tts_worker_user }}"
   register: tts_img
   changed_when: false
   failed_when: tts_img.rc != 0
   # Fails when the image is absent: (re)build with -e tts_build_image=true.
 
-# ── worker env (systemd drop-in — leaves the precis_worker unit untouched) ──
+# ── worker env — Linux only (systemd drop-in EnvironmentFile). On darwin the
+# same vars ride the collapsed worker plist via 20b's `_l_b_tts_env` combine
+# (gated on precis_capabilities.tts_render), so nothing to drop here. ──
 - name: Ensure the precis env dir
   ansible.builtin.file:
     path: /etc/precis
@@ -129,6 +136,7 @@
     group: root
     mode: "0755"
   become: true
+  when: os_family == "linux"
 
 - name: Drop the worker tts env file
   ansible.builtin.template:
@@ -138,6 +146,7 @@
     group: root
     mode: "0644"
   become: true
+  when: os_family == "linux"
   notify: restart precis-worker (tts)
 
 - name: Ensure the precis-worker systemd drop-in dir
@@ -148,6 +157,7 @@
     group: root
     mode: "0755"
   become: true
+  when: os_family == "linux"
 
 - name: Drop the precis-worker tts env drop-in (EnvironmentFile)
   ansible.builtin.template:
@@ -158,4 +168,5 @@
     group: root
     mode: "0644"
   become: true
+  when: os_family == "linux"
   notify: restart precis-worker (tts)

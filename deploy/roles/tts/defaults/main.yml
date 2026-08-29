@@ -1,6 +1,6 @@
 ---
-# tts role defaults — configure the Linux compute node to render the
-# audio feed (the news-briefing → podcast producer, and any future audio
+# tts role defaults — configure the tts_render node (topology.yml) to render
+# the audio feed (the news-briefing → podcast producer, and any future audio
 # producer) via the `precis-tts` container. Mirrors roles/aizynth: the TTS engine
 # (Kokoro + misaki) lives in the IMAGE, not the worker venv (which has no [tts]
 # extra), so this role wires only the container runtime + the worker env. The
@@ -9,15 +9,19 @@
 # Unlike aizynth, the Kokoro model files are BAKED into the image (self-contained,
 # ~330 MB), so there is no models-on-NAS download step.
 
-# The node this role targets (the GPU node). The briefing_audio pass runs on this node's
-# system worker and launches the container locally, so the /work bind paths line
-# up on the same box that staged them.
+# The node this role targets (per topology.yml tts_render). The briefing_audio /
+# cast_audio pass runs on this node's worker and launches the container locally,
+# so the /work bind paths line up on the same box that staged them.
 tts_node: "{{ inventory_hostname }}"
 
-# The precis-tts image (built on the node from precis-mcp/docker/tts). docker is
-# the GPU node's deployed runtime (same as roles/dft / roles/aizynth).
+# The precis-tts image (built on the node from precis-mcp/docker/tts). On Linux
+# docker is the compute node's deployed runtime (same as roles/dft /
+# roles/aizynth); on the macOS gateway it's the homebrew docker CLI talking to
+# deploy's colima VM (same as roles/remarkable / the container executor).
 tts_image: "precis-tts:latest"
-tts_container_cmd: docker
+tts_container_cmd: >-
+  {{ 'docker' if os_family == 'linux'
+     else (precis_worker_agent_container_bin | default('/opt/homebrew/bin/docker')) }}
 # (No tts_base_image var: the pre-pull task derives the base from the copied
 # Dockerfile's FROM line, so it can't drift out of sync with it.)
 # The precis-mcp ref installed INTO the image (the --build-arg). redeploy-precis.yml
@@ -27,7 +31,9 @@ tts_container_cmd: docker
 # will NOT pick up new code.
 tts_precis_ref: main
 
-# The worker runs as this user; it must be able to run the container.
+# The worker runs as this user; it must be able to run the container. On the
+# macOS gateway this user also owns the colima docker socket, so every docker
+# call there runs as it (root's docker CLI can't reach the per-user VM).
 tts_worker_user: deploy
 
 # (Re)build the image on the node (rsync docker/tts → docker build). Needed for
@@ -42,13 +48,24 @@ tts_build_image: true
 tts_src_dir: "{{ role_path }}/../../../docker/tts"
 
 # Where the produced episodes land — the shared NAS podcast dir as mounted on
-# this node (the gateway serves it at /podcast/feed.xml). Matches roles/precis_web.
-tts_podcast_dir: /nas/botshome/podcast
+# this node (the gateway serves it at /podcast/feed.xml). Matches
+# roles/precis_web's precis_web_podcast_dir ({{ nas_root }}/podcast); the
+# uniform /mnt/archive namespace (gr194012) makes it the same path on every OS.
+tts_podcast_dir: "{{ nas_root }}/podcast"
 
 # Local scratch the worker stages segments.json into + bind-mounts into the
 # container. Local (same node), owned by the worker user; not NFS (the container
-# runs on this box).
-tts_scratch_dir: /var/lib/precis/tts-scratch
+# runs on this box). On darwin it must live under the worker user's home —
+# colima only shares $HOME into the VM, so binds outside it mount empty.
+tts_scratch_dir: >-
+  {{ '/var/lib/precis/tts-scratch' if os_family == 'linux'
+     else '/Users/' ~ tts_worker_user ~ '/.cache/precis-tts-scratch' }}
+
+# Build staging on the node. /tmp on Linux (root builds); under the worker
+# user's home on darwin (the colima socket owner does the build).
+tts_build_dir: >-
+  {{ '/tmp/precis-tts-build' if os_family == 'linux'
+     else '/Users/' ~ tts_worker_user ~ '/.cache/precis-tts-build' }}
 
 # Defaults for the briefing narration (per-chunk meta still overrides).
 tts_briefing_voice: af_heart
