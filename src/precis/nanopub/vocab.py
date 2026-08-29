@@ -10,9 +10,10 @@ namespace we own for decades — never a rented platform URL. The
 verification dependency).
 
 Agent identities (spec "Agent strings"): the bot signs as
-``https://precis.retostamm.com/id/precis`` (that URI doubles as the
-out-of-band fingerprint page); the human attesting identity is an ORCID
-URI, pinned by the allowlist. Software provenance is structured triples
+``https://precis.retostamm.com/id/precis`` (a name we own, not a
+service — no self-hosted fingerprint page; decided 2026-08-29, key
+binding rides the registry + ORCID record instead); the human attesting
+identity is an ORCID URI, pinned by the allowlist. Software provenance is structured triples
 (name, version, deployed sha, LLM model ids), not a prose label.
 """
 

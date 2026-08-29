@@ -1405,6 +1405,31 @@ def test_figure_block_renders_structured_placeholder() -> None:
     assert "_page_" not in rendered
 
 
+def test_paper_read_strips_page_anchor_citation_links() -> None:
+    """Already-ingested chunks (pre the 2026-08 ingest fix) still carry
+    Marker's ``[11](#page-5-0)`` citation-link form; the agent-facing
+    read path must collapse it to ``[11]`` like every other surface.
+    The prose case matters most: ``_render_block_body`` early-returns
+    on blocks with no image marker, so the strip has to run before
+    that check.
+    """
+    from precis.handlers._paper_text import _render_block_body, _scrub_block_text
+
+    prose = "as shown previously [11](#page-5-0), the effect saturates"
+    for out in (
+        _render_block_body("smith2020effect", 3, prose),
+        _scrub_block_text(prose),
+    ):
+        assert "[11]" in out
+        assert "(#page-5-0)" not in out
+    # A legitimately-authored external link is untouched.
+    linked = "see [the dataset](https://example.org/data) for details"
+    assert _scrub_block_text(linked) == linked
+    # Idempotent.
+    once = _scrub_block_text(prose)
+    assert _scrub_block_text(once) == once
+
+
 def test_args_extras_unknown_key_rejected(runtime_with_store: PrecisRuntime) -> None:
     """``args={'depth': 3}`` against a kind that doesn't accept depth
     must raise rather than be silently swallowed by ``**_kw``.

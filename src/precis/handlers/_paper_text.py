@@ -8,7 +8,10 @@ the user:
   resolve to nothing the MCP serves — the LLM that quotes them is
   inventing a working link.
 * Marker / acatome-extract page-anchor spans
-  (``<span id="page-19-0"></span>``).
+  (``<span id="page-19-0"></span>``) and page-anchor citation links
+  (``[11](#page-5-0)`` → ``[11]``) — ingest strips the link form for
+  every post-2026-08 chunk, but already-ingested chunks still carry
+  it, so this read path scrubs it too.
 * Table grids that poison the RAKE keyword cell on search hits.
 
 Pure functions; no store, no I/O. Tests live in
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import re
 
+from precis.utils.mentions import strip_page_anchor_links
 from precis.utils.rake import keyword_summary
 
 # Markdown image markers like ``![](path/to.jpeg)``. The path
@@ -49,7 +53,8 @@ def _is_image_only_block(text: str) -> bool:
     has no readable content for the agent — the relative path resolves
     to nothing the MCP serves, and there's no caption text to quote.
     """
-    stripped = _PAGE_ANCHOR_RE.sub("", text)
+    stripped = strip_page_anchor_links(text)
+    stripped = _PAGE_ANCHOR_RE.sub("", stripped)
     stripped = _IMAGE_MARKER_RE.sub("", stripped)
     return stripped.strip() == ""
 
@@ -79,6 +84,7 @@ def _render_block_body(slug: str, pos: int, text: str) -> str:
     that's the same footgun the substitution exists to close.
     The MCP critic's April 2026 re-probe pinned this regression.
     """
+    text = strip_page_anchor_links(text)
     if not _IMAGE_MARKER_RE.search(text):
         return text
     cleaned = _PAGE_ANCHOR_RE.sub("", text)
@@ -152,7 +158,8 @@ def _scrub_block_text(text: str) -> str:
     """
     if not text:
         return text
-    cleaned = _PAGE_ANCHOR_RE.sub("", text)
+    cleaned = strip_page_anchor_links(text)
+    cleaned = _PAGE_ANCHOR_RE.sub("", cleaned)
     cleaned = _IMAGE_MARKER_RE.sub("[figure]", cleaned)
     return cleaned
 

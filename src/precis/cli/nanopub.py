@@ -11,7 +11,8 @@ Subcommands:
 
 * ``keygen ROLE``       — generate an RSA keypair (4096 default), store
   the private half straight into the vault, print public key +
-  fingerprint (for the out-of-band fingerprint page).
+  fingerprint (goes public via the ``intro`` nanopub, nothing
+  self-hosted).
 * ``status [FI]``       — publish rows by state / one hub's row.
 * ``approve FI``        — freeze-at-review: approve the hub's claim
   string with a grounding payload (JSON via ``--payload``/stdin); every

@@ -59,8 +59,9 @@ def generate_keypair(bits: int = GENERATE_KEY_BITS) -> tuple[str, str]:
     """A fresh RSA keypair as ``(private_b64der, public_b64der)``.
 
     Callers store the private half in the vault
-    (``precis secret set <name>``); the public half is republished at the
-    out-of-band fingerprint page. Never writes anywhere itself."""
+    (``precis secret set <name>``); the public half goes public via the
+    introduction nanopub (``precis nanopub intro`` — no self-hosted
+    fingerprint page, by decision). Never writes anywhere itself."""
     from Crypto.PublicKey import RSA
 
     if bits < MIN_KEY_BITS:

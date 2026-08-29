@@ -68,11 +68,12 @@ untaken. Two things want to exist first:
   (deferrable — rates agents, not claims); the out-of-band ORCID
   back-link (adding the trusty URI under 'Websites & social links') is
   still Reto's pending step, same as the first real registry POST above.
-- **Fingerprint page** — `https://precis.retostamm.com/id/precis` must
-  resolve to the public key fingerprints + validity windows, the only
-  independent binding a reader has (`signedBy` alone proves nothing).
-  Signing keys exist (`precis nanopub keygen` has run); publishing the
-  page is Reto's pending step.
+- **Fingerprint page — POSTPONED INDEFINITELY (Reto, 2026-08-29).** No
+  self-hosted external-facing trust serving: the independent binding a
+  reader has is the published introduction nanopub (registry + mirrors —
+  "the net") plus the ORCID record's back-link, both on infrastructure
+  we don't operate. `https://precis.retostamm.com/id/precis` stays a
+  name we own, not a service we must keep up for verification.
 
 ## Mirror pull
 

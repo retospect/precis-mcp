@@ -172,8 +172,9 @@ now sets both ON cluster-wide on the collapsed worker
 because the daily cadence lease is a fleet singleton with no
 eligibility check, so per-host enablement starves the pass). The
 initial ~87k mirror pull is still the manual door; signing keys exist
-(``precis nanopub keygen`` has run — attesting-fingerprint publication
-on ORCID is Reto's pending step), and publication requires an attesting
+(``precis nanopub keygen`` has run — the introduction nanopub's live
+POST + ORCID back-link are Reto's pending steps; no self-hosted
+fingerprint page, by decision), and publication requires an attesting
 allowlist entry — an empty allowlist means nothing is publishable.
 """
 

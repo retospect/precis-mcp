@@ -19,9 +19,8 @@ Same custody rules as every attesting-key surface (spec: Key custody):
 point of no return — introductions can be superseded, never deleted.
 
 On a live publish the trusty URI is recorded in the vault
-(:data:`INTRO_URI_SECRET`) so later surfaces (the out-of-band
-fingerprint page, provenance renderers) can find the current
-introduction without re-deriving it.
+(:data:`INTRO_URI_SECRET`) so later surfaces (provenance renderers)
+can find the current introduction without re-deriving it.
 """
 
 from __future__ import annotations
