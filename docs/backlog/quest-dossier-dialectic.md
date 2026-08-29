@@ -238,6 +238,16 @@ slice.
 
 ## Open
 
+- Dialectic mutation survivors (advisory pass on the 19573e15 ship — ride the
+  next quest-touching ship): assert `outcome.dialectic_applied == 0` on an
+  op-free tick (tick.py `dialectic_applied = 0` init); in the non-dict-op
+  test, put a VALID op after the garbage one (kills `continue`→`break`);
+  a two-block `_load_dialectic_blocks` test where the first block has garbage
+  meta.hypothesis (kills the loader's `continue`→`break`); a narrative-gate
+  test where dialectic_applied is the ONLY progress signal (tick.py
+  progress_evidence `or`). Cap-value mutants (16→17, 8→…) are accepted
+  unkillable. Per [[mutate_diff_false_survivor]]: re-verify each by applying
+  the mutation before chasing.
 - Dialectic follow-ups (pre-ship review, 2026-08-29): (a) `_render_dialectic`
   is 2-queries-per-block (`get_ref` + `tags_for`) where `_render_ledger` is
   pure in-memory — batch when block counts grow; (b) `_resolve_hypothesis_id`

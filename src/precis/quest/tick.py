@@ -1401,9 +1401,10 @@ strategy tried/killed/still open, not a single candidate material>",
   "dialectic_ops": [
     {{"op": "open", "hypothesis": "fi<id>"}},
     {{"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
-with its evidence handle(s) inline, e.g. … [pc123] or [ql456]>"}},
+with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
+one handle is REQUIRED — an unanchored support/counter is dropped>"}},
     {{"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
-against it, evidence handles inline>"}},
+against it, evidence handles inline — same anchor requirement>"}},
     {{"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
 discriminating experiment>", "predicts": "<pre-registered branch \
 predictions: what each outcome would mean>"}},

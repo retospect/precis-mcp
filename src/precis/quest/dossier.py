@@ -1807,6 +1807,21 @@ def _mint_evidence_edges(store: Store, hypothesis_id: int, role: str, text: str)
     return minted
 
 
+def _has_anchor_handle(text: str) -> bool:
+    """True when ``text`` carries at least one WELL-FORMED inline handle
+    (``[xx123]`` that :func:`handle_registry.parse` accepts). The
+    support/counter anchor gate: an unanchored argument can live in prose
+    but can never enter the dialectic record (operator ruling 2026-08-29 —
+    prose is never a primary source). Well-formed, not necessarily
+    edge-mintable: a ``[ql…]`` logbook anchor is legitimate evidence even
+    though it mints no ref edge."""
+    from precis.utils import handle_registry
+
+    return any(
+        handle_registry.parse(h) is not None for h in _DIALECTIC_HANDLE_RE.findall(text)
+    )
+
+
 def _find_dialectic_block(
     blocks: list[DialecticBlock], hypothesis_id: int
 ) -> DialecticBlock | None:
@@ -1852,8 +1867,10 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
 
     * ``open`` — ensure the block exists (idempotent). On a settled block,
       re-opens it (clears the settle sentence).
-    * ``support`` / ``counter`` — append one why-clause entry; near-dup text
-      among the block's same-role entries is a no-op
+    * ``support`` / ``counter`` — append one why-clause entry. MUST carry at
+      least one well-formed inline handle (:func:`_has_anchor_handle` — the
+      anchor gate: unanchored argument never enters the record); near-dup
+      text among the block's same-role entries is a no-op
       (:func:`_is_near_dup`, the ledger's measure). Inline evidence handles
       mint ``supports``/``contradicts`` edges → the hypothesis finding.
     * ``experiment`` — upsert IN PLACE (one discriminating experiment per
@@ -1915,6 +1932,8 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
             )
             return True
     else:  # support / counter
+        if not _has_anchor_handle(text):
+            return False
         same_role = [e.text for e in block.entries if e.role == kind]
         if _is_near_dup(text, same_role) or text in same_role:
             return False
