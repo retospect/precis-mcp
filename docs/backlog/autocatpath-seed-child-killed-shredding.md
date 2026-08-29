@@ -54,15 +54,22 @@ on single-atom states — the sanitizer + cleanup-after-persist behave
 exactly as predicted. Spread analysis (host as batch variable) can run on
 the 44.
 
-5. **st210770 is a pathological structure, not infra** — its six
-   `tick0-210770-r*` replicates have failed EVERY attempt across every
-   batch (22+ failures, 0 successes; wall-timeout + `infra:child-killed`
-   mix on spark/pollux/castor — hosts that completed st261823 seeds in the
-   same window). The seed job on this structure likely blows up the relax
-   (OOM on some hosts, runs-past-wall on others). Do NOT re-dispatch;
-   exclude from the spread analysis (its failure IS the data point);
-   inspect the structure (`st210770`) and reproduce one seed by hand on a
-   node to classify. (Checked: jb265186 was `tick0-210211-r3`, NOT a
-   210770 replicate — and that idem key SUCCEEDED in batch 3 (jb266921),
-   so item 1 stays classified as a one-off spark infra event, now
-   moot.)
+5. **st210770 is a pathological structure, not infra** — now **28/28
+   lifetime failures, 0 successes** after the straggler batch
+   (jb269500–269508, verified 2026-08-30): wall-timeouts on pollux/castor,
+   `infra:child-killed` on spark — hosts that completed st261823's full
+   replicate set in the same windows. The seed job on this structure blows
+   up the relax (OOM on some hosts, runs-past-wall on others). Do NOT
+   re-dispatch; exclude from the spread analysis (its failure IS the data
+   point); inspect the structure (`st210770`) and reproduce one seed by
+   hand on a node to classify. (Checked: jb265186 was `tick0-210211-r3`,
+   NOT a 210770 replicate — and that idem key SUCCEEDED in batch 3
+   (jb266921), so item 1 stays classified as a one-off spark infra event,
+   now moot.)
+6. **Spark `child-killed` mechanism identified, historical** — spark's
+   earlyoom runs with `--prefer '^(python[0-9.]*|precis|llama-server|…)'`,
+   so seed children there were preferential OOM-kill targets under memory
+   pressure. Can't recur: spark's retirement is verified enacted (zero
+   precis systemd units, out of every inventory service group, `inference`
+   group emptied as the resurrection guard, no job leases since 08-29
+   14:00). Record only — no action.

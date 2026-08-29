@@ -112,6 +112,8 @@ class TestMint:
         assert f"[fi{hyp}]" in body
         assert "no LLM authored it" in body
         assert "never nanopub evidence" in body
+        # No measuring pathway → no pw clause (and never a literal [pwNone]).
+        assert "measured by [pw" not in body
 
     def test_untrusted_or_barrierless_structure_never_mints(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -148,6 +150,14 @@ class TestMint:
             {"op": "settle", "hypothesis": f"fi{hyp}", "text": "resolved."},
         )
         assert mint_measurement_rulings(store, qid) == 0
+        # A settled block SKIPS — it never halts the scan for later live
+        # blocks (mutation survivor: continue -> break at the skip).
+        hyp2 = seed_ref(store, kind="finding")
+        st2 = _mk_structure(store, barrier=0.8, trusted=True)
+        _preregister(store, qid, hyp2, st2)
+        assert mint_measurement_rulings(store, qid) == 1
+        assert len(_ruling_ids(store, hyp2)) == 1
+        assert _ruling_ids(store, hyp) == []
 
     def test_sim_ruling_key_converges_when_bookmark_lost(self, store: Any) -> None:
         """The entry-meta bookmark is suspenders; ``sim_ruling_key`` is the
@@ -175,6 +185,18 @@ class TestMint:
             conn.commit()
         assert mint_measurement_rulings(store, qid) == 0  # converged, not re-minted
         assert len(_ruling_ids(store, hyp)) == 1
+        # Converge must RE-LINK the bookmark (a swallowed converge crash also
+        # yields 0 mints — the restored bookmark is what proves convergence).
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'rulings' FROM chunks "
+                "WHERE ref_id = %s AND meta->>'pinned' = 'dialectic-entry' "
+                "AND meta->>'role' = 'experiment'",
+                (did,),
+            ).fetchone()
+        assert row is not None and row[0], "bookmark not re-linked after converge"
+        (fid,) = _ruling_ids(store, hyp)
+        assert fid in {int(v) for v in row[0].values()}
 
     def test_measuring_pathway_gets_the_tests_edge(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -196,11 +218,31 @@ class TestMint:
         assert (row[1] or {}).get("ruling") == fid
         ref = store.get_ref(kind="finding", id=fid)
         assert (ref.meta or {}).get("pathway") == pw
+        # The body names the measuring pathway.
+        with store.pool.connection() as conn:
+            body_row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = 0", (fid,)
+            ).fetchone()
+        assert body_row is not None
+        assert f"measured by [pw{pw}]" in body_row[0]
 
 
 class TestDegradePaths:
     """The defensive arms — a bad handle, a vanished structure, a raising
     store call, or a broken pass must all skip/degrade, never crash."""
+
+    def test_experiment_structures_filters_and_keeps_scanning(self) -> None:
+        """An unparseable or non-structure handle is SKIPPED, never halts the
+        scan (mutation survivors: continue -> break, and -> or), and only
+        structure ref handles come through, deduped."""
+        from precis.quest.rulings import _experiment_structures
+
+        assert _experiment_structures("[zz9] then [fi7] then [st5] [st5]") == [5]
+
+    def test_no_dossier_is_a_no_op(self, store: Any) -> None:
+        # A quest id with no dossier (here: a nonexistent quest) mints
+        # nothing — the pass returns 0, not a phantom count.
+        assert mint_measurement_rulings(store, 999999999) == 0
 
     def test_unparseable_handle_and_missing_structure_are_skipped(
         self, store: Any
