@@ -536,8 +536,9 @@ def search(
     legs; `per_paper=` spreads across papers; `good=True` queues a deep
     search; `title=`/`author=` look up by byline.
 
-    Claims (finding): `trust='signed'/'verified'/'disputed'/'any'`
-    filters by publish-ladder height; `status=` is the chase lifecycle.
+    Claims (finding): `trust='verified'` = evidence-backed + unopposed;
+    `'signed'` = provenance, a separate axis, not a higher bar; also
+    `'disputed'`/`'any'`. `status=` is the chase lifecycle.
 
     Discovery: `uncited=<draft>` drops sources that draft already cites —
     surfacing what it hasn't grounded yet.

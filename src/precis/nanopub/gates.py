@@ -519,16 +519,26 @@ def check_claim_sentence(
     a subset of that advice becomes a hard mint gate, per
     ``_BLOCKING_LINT_CODES``.
 
-    Deliberately severe by design, not a bug: measured over the live
-    corpus (2026-08-19, 1,524 hubs), only 21 (1.4%) lint clean, and
-    ``no-epistemic-mode`` alone hits 1,419 — so this gate will block
-    almost every legacy hub at approve. That is exactly the point: approve
-    is where a reviewer authors the publishable sentence, and the
-    remediation doc's Phase-3 cost argument is that a hub gets its grammar
-    fixed *on demand* when someone actually wants to publish it, instead
-    of rewriting ~1,400 sentences speculatively. Do not loosen
-    ``_BLOCKING_LINT_CODES`` to make the corpus "pass" this gate — that
-    defeats the remediation's whole premise.
+    Deliberately severe by design, not a bug — but much less severe than
+    it was, and the trend is the point. Measured over the live corpus:
+
+    * 2026-08-19 (1,524 hubs): 21 clean (1.4%), ``no-epistemic-mode`` 1,419
+    * 2026-08-29 (1,552 hubs): 903 clean (58%), ``no-epistemic-mode`` 604
+
+    The ~800-hub swing was **the detector getting more accurate**, not the
+    corpus being rewritten: ``0a255c2d`` grew the epistemic-token and
+    evidence-verb vocabularies, ``fdade3d4`` stopped ``multi-assertion``
+    firing on Oxford-comma noun lists (gr245400), ``c8f549ba`` scoped the
+    set by artifact type. All three were false-positive fixes.
+
+    Keep that distinction sharp: fixing a detector's false positives is
+    not lowering the bar. Do **not** loosen ``_BLOCKING_LINT_CODES`` to
+    make the corpus "pass" this gate — that defeats the remediation's
+    whole premise. The remediation doc's Phase-3 cost argument (fix a
+    hub's grammar *on demand* at approve rather than rewriting ~1,400
+    sentences speculatively) was written against the 1.4% figure and is
+    worth re-deciding at 42% failing, wording-only, on an unfrozen corpus
+    — not re-quoting.
 
     Advisory-only codes (``two-denominator-solidus``, ``approx-spacing``,
     ``tilde-approximation``, every ``scope-*`` code) are intentionally

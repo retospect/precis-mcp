@@ -36,22 +36,69 @@ surface claim hubs in the default search stripped of the signal that
 tells you whether anything supports them, which is worse than not
 surfacing them.
 
-So this is a design question, not a flag flip. Sketch of the options:
+So this is a design question, not a flag flip.
 
-1. **Carry posture into `SearchHit`.** A nullable posture field on the
-   shared substrate, rendered only for kinds that populate it. Widest
-   blast radius, best outcome.
-2. **Union hubs into the fan-out as a distinct, clearly-labelled
-   block**, keeping the finding table shape — the fan-out already
-   renders per-kind sections, so a "Claims" block with its own columns
-   may fit without touching `SearchHit`.
-3. **Leave the flag and fix discoverability instead** — the wildcard
-   footer already names excluded kinds
-   (`_cross_kind_excluded_kinds`); make it say *why* an agent should
-   look at `finding` for settled claims. Cheapest, least effective.
+## Resolved 2026-08-29 — option 1, in the `retraction_status` mould
 
-Do not pick by guessing. Read how the fan-out renders per-kind sections
-first — option 2's viability turns entirely on that.
+**Option 2 is dead; its premise was wrong.** The fan-out does *not*
+render per-kind sections. `runtime/search.py::_dispatch_cross_kind`
+RRF-fuses every stream into a single TOON table
+(`search_merge.py::_render_toon_table`: `id | summary | remaining_words
+| links`) with one `_(per kind: …)_` count line above it. A separate
+"Claims" block would sit outside the merge and give the agent two
+rankings to reconcile, destroying the one comparison that matters —
+*is there a settled claim about this, or only raw passages?*
+
+**`SearchHit.retraction_status` is the working precedent for option 1**
+and answers this item's own blast-radius worry. Same shape: a per-hit
+signal only one kind populates, that must ride along and must not be
+silently lost. It adds no column — `_merge_rrf` applies a multiplicative
+penalty (`_RETRACTION_SCORE_FACTOR`) and `_render_toon_table` prefixes
+the *summary cell*. Its comment states the rule: a dedicated column
+"would render an empty cell on ~every row — pure token waste."
+
+Prod (2026-08-29, 1552 hubs) says which posture signal to carry:
+
+| | count |
+|---|---|
+| `unminted` / `candidate` / `signed` / `published` | 1413 / 135 / 3 / 1 |
+| hubs with ≥1 verdict | 1478 |
+| refuted | 48 |
+
+`state` is ~constant (91% "unminted") and `unminted` ≠ unverified — 1347
+of those 1413 carry verdicts. Putting `state` in a search row would
+actively mislead. The dense signal is **support counts**; the rare
+high-value one is **refuted**.
+
+The shape:
+
+1. `SearchHit.posture: str | None` — a pre-rendered terse token, `None`
+   for every non-finding hit.
+2. Render as a summary-cell prefix (`◆ 4✓ unopposed — <claim>`), not a
+   column. `state` stays out of the cross-kind row.
+3. Ranking gets a **positive** lever, not just a penalty: verified-and-
+   unopposed boosts modestly, refuted sinks, `disputed` stays near
+   neutral (a contested claim is what a drafting agent most needs to
+   see). Start conservative — with 1478 boostable hubs an aggressive
+   factor turns every wildcard search into a claim list.
+4. `FindingHandler.search_hits` override — it already inherits a working
+   one from `NumericRefHandler`, which is why the naive flag flip
+   "works" and returns posture-stripped rows. The override adds the
+   claim-hub filter and populates posture from one batched
+   `nanopub/overview.py::hub_rows(ref_ids=[…])` per page, mirroring the
+   `link_summary` pattern.
+5. Flip `supports_search_hits=True`.
+
+**All hubs enter, not just verified ones** — defaulting the stream to
+`trust='verified'` would hide the 74 unverified hubs and recreate the
+invisible layer this item exists to fix.
+
+Blast radius is small: no test pins `finding` in the excluded list, and
+the wildcard footer drops it automatically.
+
+Narrower than this item implies: `search(tags=[…])` *already* returns
+findings via `_dispatch_cross_kind_tags_only`'s numeric-ref kind list.
+Hubs are reachable by tag fan-out today, just not by query fan-out.
 
 ## Related
 

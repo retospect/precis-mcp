@@ -172,13 +172,26 @@ Read the `setup` column of every hit. If one matches, reuse its
 with `put(kind='memory', link='finding:<id>')`.
 
 ## How settled is this claim? — the `trust=` axis
-## Search only claims a human has signed
 ## Which of these claims can I lean on in a draft?
+## Is this claim evidence-backed, or just published?
 
 `status=` is the **chase lifecycle** (how far the citation chase got).
 It says nothing about whether anyone checked the claim. `trust=` is the
-second, orthogonal axis — how far up the publish ladder a claim hub
-actually climbed:
+second axis — but it is **not one ladder**, and reading it as one is the
+common mistake:
+
+- `'verified'` asks **did anything check this** — evidence edges with
+  affirmative verdicts and no live `contradicts`. This is the tier that
+  answers "can I lean on it".
+- `'signed'` asks **has this been frozen and attributed** — a publish
+  state (`nanopub/state.py::frozen_rung` calls the ladder what it is: an
+  immutability ladder, `signed`/`anchored` = frozen bytes). It is
+  provenance, *not* a higher evidence bar.
+
+Neither dominates the other. Measured 2026-08-29: `trust='signed'`
+matches **4** hubs; `trust='verified'` matches **~1478** of 1552. An
+unminted hub is one nobody has pushed through the publication pipeline —
+1347 of the 1413 unminted hubs carry verdicts. "Unminted" ≠ unvetted.
 
 | `trust=` | keeps a hit when |
 |---|---|
@@ -188,8 +201,9 @@ actually climbed:
 | `'any'` / omitted | no filter |
 
 ```python
-search(kind="finding", q="amine CO2 capacity", trust="signed")
+search(kind="finding", q="amine CO2 capacity", trust="verified")  # lean-on-able
 search(kind="finding", q="amine CO2 capacity", trust="disputed")  # what's opposed?
+search(kind="finding", q="amine CO2 capacity", trust="signed")    # rare: 4 hubs
 ```
 
 An ordinary chase finding has no publish posture and never will, so it
