@@ -47,8 +47,10 @@ call. The claim expires after :data:`_CLAIM_TTL_MIN` minutes (a crashed
 mid-batch pass doesn't strand it forever); ``meta.tagline_failures``
 additionally caps lifetime paid retries at :data:`_MAX_TAGLINE_FAILURES`.
 
-Per hub, ONE SMALL-tier call (:func:`propose_tagline`) proposes the
-tagline. **The model is not trusted**: :func:`_validate_tagline`
+Per hub, ONE BIG-tier call (:func:`propose_tagline`) proposes the
+tagline — BIG, not SMALL, by Reto's ruling (2026-08-29): a tagline is
+written once and read forever, so pay for compression quality up front
+rather than hand-fixing a blunt backfill later. **The model is not trusted**: :func:`_validate_tagline`
 re-checks it in code before any write — non-empty, single line, at most
 :data:`_MAX_WORDS` words and :data:`_MAX_CHARS` chars (after stripping
 surrounding quotes/backticks and any trailing ``:``/``.``), and not the
@@ -217,13 +219,13 @@ ProposeTaglineFn = Callable[[str, dict[str, Any]], "dict[str, Any] | None"]
 
 
 def propose_tagline(sentence: str, scope: dict[str, Any]) -> dict[str, Any] | None:
-    """One SMALL-tier tagline proposal. Returns the parsed JSON dict or
+    """One BIG-tier tagline proposal. Returns the parsed JSON dict or
     ``None`` on dispatch failure — the caller counts it as a failed
     attempt and moves on; a model that never ran is never a verdict."""
     prompt = _PROMPT_TAGLINE.format(
         sentence=sentence, scope_json=json.dumps(scope, sort_keys=True)
     )
-    res = dispatch(LlmRequest(tier=Tier.SMALL, prompt=prompt, source="hub_tagline"))
+    res = dispatch(LlmRequest(tier=Tier.BIG, prompt=prompt, source="hub_tagline"))
     if res.error:
         log.warning("hub_tagline: propose hook failed: %s", res.error)
         return None

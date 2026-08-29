@@ -283,7 +283,7 @@ class TestRunHubTaglinePass:
         assert _tagline(store, first) == ("Graphene is strong", "llm")
 
     def test_default_propose_fn_is_the_llm_hook(self) -> None:
-        # The pass's default seam is the module-level SMALL-tier hook (the
+        # The pass's default seam is the module-level BIG-tier hook (the
         # monkeypatch target); a rename would silently orphan the dispatch
         # wiring in cli/worker.py.
         from precis.workers.hub_tagline import propose_tagline
@@ -295,7 +295,7 @@ class TestRunHubTaglinePass:
 
 
 class TestProposeTagline:
-    def test_dispatches_a_small_tier_request(self, monkeypatch: Any) -> None:
+    def test_dispatches_a_big_tier_request(self, monkeypatch: Any) -> None:
         from precis.utils.llm.router import LlmResult, Tier
         from precis.workers import hub_tagline
 
@@ -317,7 +317,7 @@ class TestProposeTagline:
         result = hub_tagline.propose_tagline(_SENTENCE, {})
 
         assert result == {"tagline": "Graphene is strong"}
-        assert captured["req"].tier == Tier.SMALL
+        assert captured["req"].tier == Tier.BIG
         assert captured["req"].source == "hub_tagline"
         assert _SENTENCE in captured["req"].prompt
 
