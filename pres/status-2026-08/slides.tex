@@ -396,11 +396,12 @@
     \item[\srough] Attaching evidence is a reading act: an LLM verifier
           accepts a passage only if it actually supports the claim;
           rejections are remembered, never re-billed
-    \item[\sidea] Evidence must come from the \emph{meat} of the paper ---
+    \item[\sdone] Evidence must come from the \emph{meat} of the paper ---
           ``X was doped with Y and we measured Z'', not ``it is known
-          that\ldots''. The section categorizer will strike prior-work and
-          review sections from the pool of admissible sources
-    \item[\sidea] Found the hard way: a claim whose support traced back to a
+          that\ldots''. The hearsay gate now strikes references /
+          prior-work / background sections and quotes carrying citation
+          markers from the admissible pool (mint gate, next slides)
+    \item[\sdone] Found the hard way: a claim whose support traced back to a
           review paragraph --- whose own sources did not support it.
           A review paragraph cites \emph{elsewhere}; accepting one as
           evidence launders an unchecked claim into a verified one
@@ -444,8 +445,74 @@
     \item[\srough] Coverage watch --- ``did we cite all the relevant
           work?'': every newly embedded paragraph is probed against every
           claim; near-misses queue for evidence review
-    \item[\srough] Status, honestly: machinery shipped end-to-end,
-          producers still default-off in prod --- ramping deliberately
+    \item[\sdone] Status: producers live --- 1,552 canonical claim hubs,
+          2,059 evidence edges in prod, and the publication surface on top
+          (next two slides)
+  \end{itemize}
+\end{frame}
+
+% ---------- 7d · nanopublications ----------
+\begin{frame}{Nanopublications: claims signed to the world}
+  \citefield{src/precis/nanopub/ --- mint.py, keys.py, ots.py, registry.py}
+  \begin{itemize}
+    \item[\sdone] A claim hub that survives the gates becomes a
+          \emph{nanopublication}: one sentence + provenance + grounding
+          (DOI, PDF hash, verbatim quote) as a tiny signed artifact ---
+          verifiable \emph{offline} by a third party, no server of ours up
+    \item[\sdone] The ladder ratchets frozen-ness: candidate $\to$ reviewed
+          (string freezes) $\to$ signed (bytes freeze) $\to$ anchored
+          (OpenTimestamps, Bitcoin calendar) $\to$ published (public
+          forever) --- every rung before publish is reversible
+    \item[\sdone] Two keys, two meanings: the bot key is non-attesting;
+          the human attesting key loads only through an interactive door
+          and must match the signer's registered ORCID iD ---
+          ``signed'' means \emph{a person checked}
+    \item[\sdone] New contradicting evidence walks the ladder \emph{down}:
+          a reviewed or signed claim reopens to candidate; past the
+          anchor, a human must supersede or retract
+    \item[\sdone] Live since 2026-08-24: first claim published to the
+          public nanopub registry (w3id.org trusty URI, OTS-anchored);
+          3 more signed, 138 candidates queued behind the human doors
+    \item[\sdone] Mirror of everyone else: $\sim$89k published nanopubs
+          from the global registry cached + hash-verified locally, with a
+          concurrence alert when someone else asserts one of our sentences
+  \end{itemize}
+\end{frame}
+
+% ---------- 7e · the claim gates ----------
+\begin{frame}{The claim gates: what a sentence survives to go public}
+  \citefield{src/precis/nanopub/gates.py, preflight.py \(\cdot\) src/precis/taproot/}
+  \small
+  \begin{itemize}\itemsep0.25ex
+    \item[\sdone] \textbf{Admission}: only papers, patents, EDGAR filings
+          and datasheets ground evidence --- a draft or memory never can;
+          the passage must be asserting prose; an LLM verifier accepts it
+          only if it supports the claim; a dialectic argument without an
+          inline evidence handle never enters the record
+    \item[\sdone] \textbf{Placement}: a sub-confidence duplicate goes to
+          human review, never auto-merges (live eval: \emph{zero} false
+          merges); \emph{contradicts} is written only at high confidence
+          --- it blocks someone's publication
+    \item[\sdone] \textbf{Mint} --- mechanical validators, no LLM in the
+          path: verbatim quote in exactly one stored chunk $\cdot$ unique
+          search snip $\cdot$ DOI + PDF hash $\cdot$ hearsay struck
+          (reference / prior-work sections, quotes with citation markers,
+          review-titled sources, papers we don't hold) $\cdot$ quantity
+          bounds $\cdot$ fields contained in quotes $\cdot$ authoring
+          model named $\cdot$ live \emph{contradicts} blocks $\cdot$
+          drift (sentence re-hashed) $\cdot$ atoms sign before compounds
+    \item[\sdone] \textbf{Type discipline}: a claim without a quote is
+          blocked --- a hypothesis \emph{with} one is blocked too: it
+          carries motivation + a discriminating experiment
+          ($\geq$2 independent source papers), never evidence
+    \item[\sdone] \textbf{Publish preflight} --- no mute button: every
+          evidence edge machine-verified against the \emph{live} sentence
+          or human-signed-off interactively; trust allowlist --- a bot
+          signature alone publishes nothing; the POST is interactive +
+          live-flagged + zero blocking issues
+    \item[\sidea] Still judgment, not code: commensurability of a
+          compound's binding; adjudicating a reopened dispute; retraction
+          past the anchor
   \end{itemize}
 \end{frame}
 
@@ -640,6 +707,9 @@
           (original / own graph / third-party) + permission with expiry
           --- an uncleared figure \emph{fails the export}, like a bare
           cite fails review
+    \item[\sdone] A draft citing a signed claim gets a ``Published claim
+          artifacts'' appendix --- frozen sentence + trusty URI --- in
+          both exporters; unminted claims leave the export byte-identical
     \item[\sidea] Living outputs: this deck and the paper, regenerated as
           the corpus moves
   \end{itemize}
@@ -1105,6 +1175,8 @@
     \begin{column}{0.5\textwidth}
       \begin{itemize}\itemsep0.25ex
         \item[\sdone] Ingest + search + taproot
+        \item[\sdone] Nanopublications: gated mint $\to$ sign $\to$ OTS
+              $\to$ registry (first one public)
         \item[\sdone] Fisheye TOC / discovery layer
         \item[\sdone] autocatpath core (NEB, CHE, uncertainty)
         \item[\sdone] Pathway explorer + dossiers

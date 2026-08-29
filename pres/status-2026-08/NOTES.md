@@ -1,8 +1,8 @@
-# Status deck — working notes (v25, 2026-08-13)
+# Status deck — working notes (v26, 2026-08-29)
 
-Deck for Reto's boss, due Thursday 2026-08-13 (today). `slides.tex` = the
-deliverable (44 frames, compiles clean). Paper draft (Digital Discovery) is
-phase 2.
+Deck for Reto's boss (delivered 2026-08-13; now maintained as the living
+status deck). `slides.tex` = the deliverable (46 frames, compiles clean).
+Paper draft (Digital Discovery) is phase 2.
 
 - v20→v21: fisheye sample box replaced with a real prod drill (honesty ledger).
 - v21→v22: taproot split — "claims with receipts" (data model) + "trust at
@@ -17,6 +17,13 @@ phase 2.
   one-substrate slide.
 - v24→v25: dream example swapped me203573 → me205091 (in-realm + actionable);
   dream count 9,189 → 9,222; effort framing settled at FIVE months.
+- v25→v26 (2026-08-29): two new frames after the argument graph —
+  "Nanopublications: claims signed to the world" (p17) + "The claim gates:
+  what a sentence survives to go public" (p18, \small). Argument-graph
+  status bullet flipped \srough→\sdone with live counts; taproot
+  data-model nanobuds bullets flipped \sidea→\sdone (hearsay gate shipped
+  in nanopub/gates.py); export slide gained the published-claim-artifacts
+  appendix bullet; scoreboard gained a nanopub \sdone line.
 
 ## Build
 
@@ -129,15 +136,42 @@ route. Gotcha: gs numbers `-o check-%d.png` from 1 regardless of -dFirstPage.
 - Agent-facing paper-references list is \srough — no MCP view lists a paper's
   own references yet (web-only); paper view='bibliography' is the INVERSE
   direction. Backlog-worthy.
+- Nanopub numbers on p17, VERIFIED live against prod 2026-08-29 (read-only
+  prod-psql): 1,552 canonical claim hubs (strict predicate: TAPROOT:claim +
+  STATUS:canonical, deleted_at NULL) · 2,059 evidence edges
+  (establishes/corroborates/contradicts onto live findings) · 29 hypothesis
+  hubs · publish rows 138 candidate / 3 signed / 1 published / 6 artifacts ·
+  mirror 88,949 rows (88,577 trusty-verified). FIRST PUBLISHED NANOPUB is
+  real: fi211520 (AFM nanoindentation Young's modulus claim), published
+  2026-08-24 to the public registry (registry.petapico.org), trusty URI
+  https://w3id.org/np/RAtg6YcXNbGP-3Xc5l_9sE-ILEglIZIPKy9gzyaUCZDy8,
+  OTS-anchored. The 3 signed are fi236297/fi236369/fi236370.
+  ⚠ `src/precis/nanopub/__init__.py` docstring still says "no artifact has
+  been POSTed anywhere" — STALE, prod contradicts it; trust the DB.
+- Claim-gates slide (p18) sourced from a full code sweep 2026-08-29:
+  mint gates = nanopub/gates.py::run_mint_gates (~15 validators incl. the
+  5-arm primary-source/hearsay check + review-source arm added 08-27);
+  publish gates = nanopub/preflight.py (withheld-edge, trust allowlist,
+  dependency order, drift); admission = taproot EVIDENCE_SRC_KINDS +
+  grounding-prose gate + verifier; placement = canon.py 0.85 thresholds,
+  eval_canon zero-false-merge; dialectic anchor gate = quest/dossier.py
+  (shipped 2026-08-29). The \sidea "still judgment" bullet is deliberate:
+  commensurability gate is unmechanized (skill prose only), stage-8
+  adjudicate is absent, and `precis nanopub retract` is documented but NOT
+  implemented — don't flip it \sdone without code.
+  Known defect NOT on the slide (backlog'd, too fine-grained):
+  nanopub/evidence.py::load_bundle drops edgar/datasheet evidence, so a
+  contradicts edge from those kinds misses the mint gate
+  (docs/backlog/nanopub-bundle-drops-edgar-datasheet-evidence.md).
 
 ## Open ideas filed on slides as \sidea (candidates for docs/backlog/)
 
 - Fisheye: resolved cites as one-line summaries, not bare names.
 - Corpus-wide PDF injection scan.
-- **Evidence-section gating (nanobuds lesson)**: categorizer strikes
-  prior-work / review sections from the admissible-evidence pool; require a
-  results-section passage ("X doped with Y, measured Z"). Highest-value of
-  the three — it closed a real false-verification incident.
+- ~~Evidence-section gating (nanobuds lesson)~~ — BUILT since v25: the
+  hearsay arms of `nanopub/gates.py::check_primary_source` strike
+  reference/prior-work/background sections, citation-marker quotes and
+  review-titled sources. Slide bullets flipped \sdone in v26.
 
 ## Phase 2 — the paper (after Thursday)
 
