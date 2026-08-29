@@ -2383,6 +2383,11 @@ class DraftHandler(Handler):
         papers (docs/backlog/draft-doi-completeness-check.md), advisory
         only — see :meth:`_hygiene_doi_line`.
 
+        A sixth line — cited papers whose byline never came from
+        Crossref despite carrying a DOI, advisory only — see
+        :meth:`_hygiene_author_source_line`. Both share one batched
+        identifier/ref fetch done here.
+
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
         ``view='hygiene'`` for the rest. ``elide=False``
@@ -2443,9 +2448,18 @@ class DraftHandler(Handler):
                 "claim hub available; cite [pub_id] to use it."
             )
 
-        doi_line = self._hygiene_doi_line(cited_ref_ids)
-        if doi_line:
-            out.append(doi_line)
+        distinct_ids = sorted(set(cited_ref_ids))
+        if distinct_ids:
+            identifiers = self.store.identifiers_for_refs(distinct_ids)
+            refs_by_id = self.store.fetch_refs_by_ids(distinct_ids)
+            doi_line = self._hygiene_doi_line(distinct_ids, identifiers, refs_by_id)
+            if doi_line:
+                out.append(doi_line)
+            authors_line = self._hygiene_author_source_line(
+                distinct_ids, identifiers, refs_by_id, limit=limit
+            )
+            if authors_line:
+                out.append(authors_line)
 
         if not out:
             return []
@@ -2560,25 +2574,80 @@ class DraftHandler(Handler):
                 grounded += 1
         return grounded, len(cited_ref_ids)
 
-    def _hygiene_doi_line(self, cited_ref_ids: list[int]) -> str:
+    def _hygiene_doi_line(
+        self,
+        ref_ids: list[int],
+        identifiers: dict[int, dict[str, str]],
+        refs_by_id: dict[int, Any],
+    ) -> str:
         """One line: DOI completeness + validity over every *distinct*
         cited paper in the draft (docs/backlog/
         draft-doi-completeness-check.md) — advisory only, never affects
-        export. Reuses ``cited_ref_ids`` (already mined for the
-        taproot-hub scoreboard just above — no second token scan) and the
-        shared :func:`~precis.export.retraction.summarize_doi_completeness`
+        export. ``ref_ids`` is the deduped cite mine (one token scan in
+        :meth:`_hygiene_lines` feeds this, the taproot scoreboard and the
+        author-source line; ``identifiers``/``refs_by_id`` are that same
+        caller's batched lookups). Uses the shared
+        :func:`~precis.export.retraction.summarize_doi_completeness`
         classifier, so the wording can't drift from the citations-lifecycle
         view's own DOI line. Empty string when the draft cites no papers."""
         from precis.export.retraction import summarize_doi_completeness
 
-        ref_ids = sorted(set(cited_ref_ids))
         if not ref_ids:
             return ""
-        identifiers = self.store.identifiers_for_refs(ref_ids)
-        refs_by_id = self.store.fetch_refs_by_ids(ref_ids)
         line = summarize_doi_completeness(ref_ids, identifiers, refs_by_id)
         marker = "ℹ" if line.startswith("all ") else "⚠"
         return f"{marker} DOI: {line}."
+
+    def _hygiene_author_source_line(
+        self,
+        ref_ids: list[int],
+        identifiers: dict[int, dict[str, str]],
+        refs_by_id: dict[int, Any],
+        *,
+        limit: int | None,
+    ) -> str:
+        """One advisory line: cited papers that carry a DOI but whose
+        byline never came from Crossref (``meta.authors_source`` ≠
+        ``'crossref'`` — S2 prefill, the comma-split heuristic, or a raw
+        ingest wrote it, or it's still empty). Crossref is the canonical
+        author source (:mod:`precis.ingest.paper_meta_enrich`), so with a
+        DOI on file these bylines are repairable and, until repaired,
+        the likely cause of a bibliography's mixed initials/spacing —
+        the enrich pass drains its backlog newest-first, so an old
+        paper's turn effectively never comes without a nudge like this.
+        ``human_verified_at`` refs are exempt (a hand correction
+        outranks Crossref; enrich itself skips them too), as are
+        non-``paper`` kinds (patents don't go through Crossref).
+        Same shared batched lookups and elide-with-a-pointer convention
+        as :meth:`_hygiene_doi_line`. Empty string when nothing is stale.
+        """
+        stale: list[str] = []
+        for rid in ref_ids:
+            if not (identifiers.get(rid) or {}).get("doi"):
+                continue
+            ref = refs_by_id.get(rid)
+            if ref is None or getattr(ref, "kind", None) != "paper":
+                continue
+            if getattr(ref, "human_verified_at", None) is not None:
+                continue
+            if ((getattr(ref, "meta", None) or {}).get("authors_source")) == "crossref":
+                continue
+            stale.append(getattr(ref, "slug", None) or f"pa{rid}")
+        if not stale:
+            return ""
+        shown = ", ".join(stale if limit is None else stale[:limit])
+        tail = (
+            f" (+{len(stale) - limit} more — see "
+            "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+            if limit is not None and len(stale) > limit
+            else ""
+        )
+        return (
+            f"⚠ {len(stale)} cited paper(s) have a DOI but authors not yet "
+            f"Crossref-resolved: {shown}{tail}. Bylines may be inconsistent "
+            "(jammed/missing initials); the paper-meta enrich pass repairs "
+            "them from the DOI — no draft edit needed."
+        )
 
     def _work_lines(self, ref_id: int) -> list[str]:
         """Surface stuck / in-flight work on this draft (Fix A): the open

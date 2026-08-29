@@ -1360,6 +1360,84 @@ def test_hygiene_footer_all_clear_when_dois_validated(
     assert "⚠ DOI:" not in out
 
 
+def _cite_paper(draft: DraftHandler, hub: Hub, paper_id: int) -> None:
+    """Minimal draft ``nt`` citing ``[pa<paper_id>]`` once."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Background per [pa{paper_id}].",
+        at={"after": "¶" + th},
+    )
+
+
+def test_hygiene_footer_flags_non_crossref_authors(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A cited paper with a DOI whose byline didn't come from Crossref
+    (S2 prefill / heuristic / never resolved) gets an advisory Hygiene
+    line naming it — the stale-bibliography early warning."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="stale24",
+        title="Stale",
+        authors=[{"name": "A.K. Geim"}],
+        meta={"authors_source": "heuristic"},
+    )
+    hub.live_store.insert_ref_identifiers(paper.id, [("doi", "10.1/stale24", "manual")])
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt").body
+    assert "authors not yet Crossref-resolved" in out
+    assert "stale24" in out
+
+
+def test_hygiene_authors_line_silent_when_crossref_or_verified(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """No authors warning when the byline is Crossref-sourced; a
+    human-verified byline is exempt even without a Crossref stamp (a
+    hand correction outranks Crossref — enrich skips it too)."""
+    good = hub.live_store.insert_ref(
+        kind="paper",
+        slug="good24",
+        title="Good",
+        authors=[{"given": "A. K.", "family": "Geim"}],
+        meta={"authors_source": "crossref"},
+    )
+    hub.live_store.insert_ref_identifiers(good.id, [("doi", "10.1/good24", "manual")])
+    hand = hub.live_store.insert_ref(
+        kind="paper",
+        slug="hand24",
+        title="Hand-fixed",
+        authors=[{"name": "S. V. Morozov"}],
+    )
+    hub.live_store.insert_ref_identifiers(hand.id, [("doi", "10.1/hand24", "manual")])
+    hub.live_store.set_human_verified(hand.id, by="reto")
+    draft.put(id="nt", title="T", project=_proj(hub))
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Per [pa{good.id}] and [pa{hand.id}].",
+        at={"after": "¶" + th},
+    )
+
+    assert "authors not yet Crossref-resolved" not in draft.get(id="nt").body
+
+
+def test_hygiene_authors_line_needs_a_doi(draft: DraftHandler, hub: Hub) -> None:
+    """No DOI → nothing to resolve against, so no authors warning (the
+    DOI-completeness line already owns the missing-DOI complaint)."""
+    paper = hub.live_store.insert_ref(
+        kind="paper", slug="nodoi25", title="No DOI", authors=[{"name": "A.K. Geim"}]
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    assert "authors not yet Crossref-resolved" not in draft.get(id="nt").body
+
+
 def test_hygiene_view_returns_full_lists_unelided(
     draft: DraftHandler, hub: Hub
 ) -> None:
