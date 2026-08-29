@@ -600,18 +600,36 @@ def seed_placement(
     total_area = float(sum((2.0 * radii[i]) ** 2 for i in order))
     row_width = max(2.0 * float(radii.max()), math.sqrt(total_area) * 1.2)
 
-    # Shelves start one edge-margin in, not at the origin: a part seeded
-    # with its pads exactly on x=0 is already outside every legal centre
-    # range (:meth:`OptimizeEngine.bounds_for`), and a part that starts
-    # illegal can never be moved by SWAP.
-    shelf_x = _EDGE_MARGIN_MM
-    shelf_y = _EDGE_MARGIN_MM
+    # Pack inside the BOARD when there is one. The seed used to lay shelves
+    # from the origin with no idea where the board was, so on any outline
+    # narrower than its own natural row width it packed parts straight off
+    # the edge — and once a part is outside, ``bounds_for`` clamps every
+    # TRANSLATE that could rescue it while ``_placement_is_legal`` rejects
+    # the crowding that bringing it back would cause, so it stays outside
+    # for the whole anneal. Measured on a 20mm-square outline: 24 of 29
+    # parts placed off the board.
+    #
+    # Clamping the row width does NOT make an over-full board fit; parts
+    # then wrap down past the bottom edge instead of off the right one.
+    # That is the honest outcome and ``drc.check_outline_containment``
+    # reports it. The point here is to stop the seed from putting parts
+    # outside a board they would have fitted in.
+    origin_x = origin_y = _EDGE_MARGIN_MM
+    if ir.outline and len(ir.outline) >= 3:
+        ox0, oy0, ox1, oy1 = outline_bbox(ir.outline)
+        origin_x, origin_y = ox0 + _EDGE_MARGIN_MM, oy0 + _EDGE_MARGIN_MM
+        usable = (ox1 - _EDGE_MARGIN_MM) - origin_x
+        if usable > 2.0 * float(radii.max()):
+            row_width = min(row_width, usable)
+
+    shelf_x = origin_x
+    shelf_y = origin_y
     shelf_h = 0.0
     positions: dict[int, tuple[float, float]] = {}
     for inst in order:
         diameter = 2.0 * float(radii[inst])
-        if shelf_x > _EDGE_MARGIN_MM and shelf_x + diameter > row_width:
-            shelf_x, shelf_y, shelf_h = _EDGE_MARGIN_MM, shelf_y + shelf_h, 0.0
+        if shelf_x > origin_x and shelf_x + diameter > origin_x + row_width:
+            shelf_x, shelf_y, shelf_h = origin_x, shelf_y + shelf_h, 0.0
         positions[inst] = (
             shelf_x + radii[inst] + _SEED_EPSILON_MM,
             shelf_y + radii[inst] + _SEED_EPSILON_MM,

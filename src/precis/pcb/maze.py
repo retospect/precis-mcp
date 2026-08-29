@@ -30,12 +30,23 @@ routing net's own half-width, plus one cell for discretisation (a path is
 sampled at cell centres, and adjacent centres are up to ``pitch*sqrt(2)``
 apart). Same guarantee, evaluated with the widths actually involved.
 
-**What this is not.** There is no rip-up-and-retry and no negotiated
-congestion (PathFinder, Ebeling & McMurchie 1995) — nets are routed in
-one pass, shortest-first, and a net that finds no path is simply
-reported. Adding negotiation on top is a strict improvement to
-*routability* and changes nothing about the clearance guarantee, which is
-enforced by the occupancy grid rather than by the search order.
+**Rip-up and retry** is by re-ordering, and it lives in
+:func:`precis.pcb.realize._realize_maze` rather than here: the whole pass
+is re-run on a fresh grid with the previous attempt's failures moved to
+the front. This module stays a single deterministic pass over whatever
+order it is given. Nothing about the clearance guarantee depends on that
+order — the occupancy grid enforces it, not the search.
+
+**``layers=`` is a hard list, not a preference.** The search may only
+enter a layer in it, and that has one non-obvious consequence:
+:meth:`OccupancyGrid.stamp_path` registers a via's attach cells on every
+layer its barrel passes through (correct — that is where the copper is,
+and connectivity depends on it), so :meth:`OccupancyGrid.route` has to
+filter those sources back down to ``layers`` before using them. Without
+that filter a net owning a through via could start a later connection
+inside the barrel on an inner layer and run a trace along it; on the
+reference board three traces landed on a PLANE layer, which shorts to the
+plane the moment one is poured.
 """
 
 from __future__ import annotations
@@ -535,11 +546,25 @@ class OccupancyGrid:
         anchors: dict[int, tuple[float, float]] = {}
         if attach:
             for src, at in self._routed_cells.get(net_id, {}).items():
+                s_layer, s_rem = divmod(src, plane)
+                # **Only on layers this caller allows.** `stamp_path`
+                # registers a via's attach cells on every layer the barrel
+                # PASSES THROUGH, which is right — that is where the copper
+                # is, and connectivity depends on it. It is not a licence to
+                # route there. Without this filter a net that already owned
+                # a through via could start a later connection inside the
+                # barrel on an inner layer and run a trace along it: on the
+                # reference board, three traces and three vias landed on
+                # In1.Cu, a PLANE layer, which shorts to the plane the
+                # moment one is poured. Found by rendering the board, not by
+                # reading the code — nothing else was looking at which
+                # layers carried copper.
+                if s_layer not in layer_set:
+                    continue
                 if src == goal_idx or src in g_score or not passable(src):
                     continue
                 g_score[src] = 0.0
                 anchors[src] = at
-                s_layer, s_rem = divmod(src, plane)
                 s_iy, s_ix = divmod(s_rem, spec.nx)
                 heapq.heappush(heap, (heuristic(s_ix, s_iy, s_layer), src))
         expansions = 0

@@ -252,6 +252,41 @@ def test_tangent_router_still_available_and_never_reports_unrouted():
     assert result.unrouted == ()
 
 
+def test_routed_copper_only_ever_lands_on_a_signal_layer():
+    """The router may not put a trace on a PLANE layer, and nothing was
+    checking.
+
+    A via's barrel is copper on every layer it passes through, so
+    ``stamp_path`` registers attach cells on all of them — correct, and
+    connectivity depends on it. But ``route`` then used those cells as
+    multi-source starts without filtering them back down to the layers it
+    was actually given, so a net that already owned a through via could
+    begin a later connection *inside the barrel* on an inner layer and run
+    a trace along it. On the reference board that put three traces and
+    three vias on In1.Cu, which shorts to the plane the moment one is
+    poured.
+
+    It was found by rendering the board and noticing the wrong colour.
+    Every existing test asked whether copper overlapped, was reachable, or
+    was connected; none asked *which layer it was on*.
+    """
+    ir = from_graph(_ladder_graph(6), stackup=DEFAULT_STACKUP)
+    optimize(ir, OptimizeConfig(iters=800, seed=3))
+    result = realize(ir, config=RealizeConfig(router="maze"))
+    signal = {i for i, layer in enumerate(ir.stackup) if layer.get("role") == "signal"}
+    assert signal, "fixture must have signal layers for this to mean anything"
+    assert result.tracks, "a router that drew nothing satisfies this vacuously"
+
+    stray = [t for t in result.tracks if t.layer not in signal and not t.is_dogbone]
+    assert not stray, [(t.seg_id, t.layer, str(ir.net_name[t.net_id])) for t in stray]
+    # A via may SPAN a plane layer (that is what a through via does); its
+    # two ENDS are where copper is drawn, and those must be signal layers.
+    stray_vias = [
+        v for v in result.vias if v.layer_lo not in signal or v.layer_hi not in signal
+    ]
+    assert not stray_vias, [(v.seg_id, v.layer_lo, v.layer_hi) for v in stray_vias]
+
+
 def test_unknown_router_is_rejected_rather_than_silently_defaulted():
     ir = from_graph(_ladder_graph(2), stackup=DEFAULT_STACKUP)
     optimize(ir, OptimizeConfig(iters=50, seed=8))

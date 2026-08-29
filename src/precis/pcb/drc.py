@@ -927,6 +927,103 @@ def check_board_edge_clearance(
     return findings
 
 
+def check_outline_containment(
+    model: dict[str, Any],
+    *,
+    outline: list[list[float]] | None,
+    courtyards: list[tuple[str, float, float, float]] | None = None,
+) -> list[DrcFinding]:
+    """Copper, pads and parts must be ON the board.
+
+    **A different question from :func:`check_board_edge_clearance`, and the
+    reason that one cannot answer it.** Edge clearance measures
+    ``boundary.distance(geom)`` — the distance to the outline as a *line*.
+    That is unsigned, so it is symmetric about the edge: it fires on copper
+    1mm inside and copper 1mm outside alike, and stays silent on copper
+    20mm outside, because 20mm is not a small gap. The check is about
+    proximity to a boundary and says nothing about which side of it you are
+    on.
+
+    Measured on the reference design with the outline shrunk to a board the
+    parts cannot fit in: at 20mm square, 24 of 29 parts, 48 of 81 pads and
+    70 copper items lay outside the board and DRC reported 10 errors. At
+    2mm square — every pad outside, the whole design off the board — it
+    reported **nine**. The count went DOWN as the board got more absurd,
+    which is exactly what a proximity check does when the geometry walks
+    away from the boundary entirely.
+
+    There is no two-tier margin here and no capability field to read. A
+    fab images what is inside the profile; copper outside it is not
+    marginal, it does not exist on the delivered board. Severity is always
+    ``error``.
+    """
+    if not outline or len(outline) < 3:
+        return []
+    ring = [(float(p[0]), float(p[1])) for p in outline]
+    board = Polygon(ring)
+    if not board.is_valid:
+        board = board.buffer(0)
+    if board.is_empty:
+        return []
+
+    findings: list[DrcFinding] = []
+
+    def outside(geom: BaseGeometry, rule_where: str, obj: dict[str, Any]) -> None:
+        if board.covers(geom):
+            return
+        # How far out, and whether any of it is on the board at all — the
+        # two things a reader needs to tell "a pad hanging over the edge"
+        # from "this part was never placed on the board".
+        over = geom.difference(board)
+        wholly = not board.intersects(geom)
+        gap = board.distance(geom) if wholly else 0.0
+        detail = (
+            f"{rule_where} lies {'entirely' if wholly else 'partly'} outside "
+            "the board outline"
+        )
+        detail += (
+            f" — {gap:.3f}mm beyond the edge at the nearest point"
+            if wholly
+            else f" — {over.area:.4f}mm² of it overhangs"
+        )
+        findings.append(
+            DrcFinding(
+                rule="outline_containment",
+                severity="error",
+                where=rule_where,
+                detail=detail + "; a fab images only what is inside the profile",
+                objects=(obj,),
+                margin_mm=-gap if wholly else None,
+            )
+        )
+
+    for item in model.get("copper") or []:
+        geom = _copper_item_polygon(item)
+        if geom is None or geom.is_empty:
+            continue
+        net, layer, ctype = item.get("net"), item.get("layer"), item.get("ctype")
+        outside(
+            geom,
+            f"{ctype}[{net}] on {layer}",
+            {"net": net, "layer": layer, "ctype": ctype},
+        )
+
+    for pad in model.get("pads") or []:
+        w = float(pad.get("w", 0.0))
+        h = float(pad.get("h", w))
+        geom = Point(float(pad["x"]), float(pad["y"])).buffer(
+            max(w, h) / 2.0, quad_segs=_BUFFER_QUAD_SEGS
+        )
+        net, layer = pad.get("net"), pad.get("layer")
+        outside(geom, f"pad[{net}] on {layer}", {"net": net, "layer": layer})
+
+    for refdes, cx, cy, radius in courtyards or []:
+        geom = Point(cx, cy).buffer(radius, quad_segs=_BUFFER_QUAD_SEGS)
+        outside(geom, f"part {refdes}", {"refdes": refdes})
+
+    return findings
+
+
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
@@ -1035,6 +1132,7 @@ def run_geometric_drc(
     findings += check_board_edge_clearance(
         model, capability, outline=outline, panel_type=panel_type
     )
+    findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_connectivity(model)
     findings += check_unrouted(unrouted)
     if courtyards:
@@ -1051,6 +1149,7 @@ __all__ = [
     "check_connectivity",
     "check_courtyard_overlap",
     "check_npth_clearance",
+    "check_outline_containment",
     "check_trace_width",
     "check_unrouted",
     "clearance_pairs_indexed",

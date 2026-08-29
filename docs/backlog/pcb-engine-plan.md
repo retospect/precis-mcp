@@ -469,6 +469,57 @@ and `gerber.export_fab` **refuses** a model containing them
   than naming its cause. Correct but not legible; "fail legibly" wants a
   dedicated finding.
 
+### 2026-08-29 later: "we don't DRC out a board smaller than its parts"
+
+User's question, and they were right. Shrinking the reference outline and
+counting what leaves the board:
+
+| board | parts outside | pads outside | copper outside | DRC errors (before) |
+|---|---|---|---|---|
+| 20mm | 24/29 | 48/81 | 70 | **10** |
+| 10mm | 26/29 | 61/81 | 86 | 19 |
+| 2mm | 28/29 | **81/81** | 95 | **9** |
+
+The count went DOWN as the board got more absurd. `check_board_edge_
+clearance` measures `boundary.distance(geom)` — unsigned distance to the
+outline as a LINE — so it is symmetric about the edge and silent on
+anything far from it, on either side. Copper 20mm off the board is not
+*near* the edge. **Nothing anywhere asked whether copper was INSIDE the
+board.** Not for copper, not for pads, not for parts.
+
+Fixed by `drc.check_outline_containment` (copper + pads + courtyards,
+always `error`, no two-tier margin — a fab images what is inside the
+profile and copper outside it is not marginal, it does not exist). Same
+sweep after: 146 / 176 / 194, rising monotonically, and boards that fit
+still report 0.
+
+Second half: **`seed_placement` shelf-packed from the origin with no idea
+where the board was.** On any outline narrower than its natural row width
+it packed parts straight off the edge — and once a part is outside,
+`bounds_for` clamps every TRANSLATE that could rescue it while
+`_placement_is_legal` rejects the crowding that bringing it back would
+cause, so it stays outside for the whole anneal. Now anchored at the
+outline and wrapped to the board's width. A 20mm-wide board seeds 0 parts
+outside where it used to run out to 28mm. Genuinely over-full boards still
+overflow downward, which is honest and now reported.
+
+**And a third, found by LOOKING at the render:** three traces and three
+vias on In1.Cu, a **plane** layer. `stamp_path` registers a via's attach
+cells on every layer its barrel passes through (right — that is where the
+copper is, and connectivity needs it), and `route` used those as
+multi-source starts without filtering back to its `layers` argument. So a
+net owning a through via could start a later connection *inside the
+barrel* on an inner layer and run a trace along it. It shorts to the plane
+the moment one is poured. Every existing test asked whether copper
+overlapped, was reachable, or was connected; **none asked which layer it
+was on**. Now `tests/test_pcb_maze.py::test_routed_copper_only_ever_lands_
+on_a_signal_layer`.
+
+Note the pattern across all three: the viewer found the last one in
+minutes, and it is the one no existing check could have found, because
+every check was about relationships between pieces of copper rather than
+about where a piece of copper is.
+
 **The acceptance fixture's board is 300×300mm and its parts occupy 44mm.**
 Noticed by rendering it (`view='svg' args={'level':'fab'}`) — the board is
 a speck in the corner of its own outline. 46× more area than the design
@@ -476,13 +527,20 @@ needs makes "0 unrouted" a weaker claim than it reads as, because
 congestion is what a router is actually for.
 
 **Measured before assuming, and it survives**: re-running seeds 1–3 with
-the outline tightened to 60mm, 45mm and 35mm square (the last is *tighter*
-than the parts' own 44mm extent) gives 0 unrouted, 0 islands, 0 DRC errors
-at every size; only the runtime moves (0.4s–5.6s, and not monotonically —
-the hard seed changes as the board shrinks). So the oversized board is not
-what is producing the result. It is still worth fixing, because a fixture
-that cannot get harder cannot detect a router getting worse — but it is a
-*sensitivity* gap, not an inflated number.
+the outline tightened to 60mm, 45mm and 35mm square gives 0 unrouted, 0
+islands, 0 DRC errors at every size; only the runtime moves (0.4s–5.6s,
+and not monotonically — the hard seed changes as the board shrinks). So
+the oversized board is not what is producing the result. It is still worth
+fixing, because a fixture that cannot get harder cannot detect a router
+getting worse — but it is a *sensitivity* gap, not an inflated number.
+
+**Correction to how that was first reported.** It was written up as "35mm
+is tighter than the parts' own 44mm extent", which is wrong reasoning: the
+44mm figure is the extent the parts settle to on a 300mm board, and the
+annealer compacts when the board shrinks. At 35mm nothing is outside, so
+the test never exercised the failure direction at all — it was a pass
+generalised into a robustness claim without checking what a failure would
+even look like. Asking that question is what produced the section above.
 
 Related, and the honest place to put it: this is one axis of "is the
 benchmark easy?" ruled out. §Obligations item 3 records the user's

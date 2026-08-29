@@ -567,6 +567,91 @@ def test_clearance_oracle_matches_strtree_engine_on_real_realized_vias():
     assert total_vias > 20  # sanity: real vias were actually produced and exercised
 
 
+_BOARD = [[0.0, 0.0], [30.0, 0.0], [30.0, 20.0], [0.0, 20.0]]
+
+
+def _containment(model: dict[str, Any], courtyards: Any = None) -> Any:
+    return drc.check_outline_containment(model, outline=_BOARD, courtyards=courtyards)
+
+
+def test_copper_on_the_board_is_not_a_containment_finding() -> None:
+    model = {"layers": ["F.Cu"], "copper": [_track("N", "F.Cu", (5, 5), (25, 15))]}
+    assert _containment(model) == []
+
+
+def test_copper_off_the_board_is_an_error_edge_clearance_cannot_see() -> None:
+    """The bug this rule exists for, stated as a comparison.
+
+    ``check_board_edge_clearance`` measures ``boundary.distance(geom)`` —
+    unsigned distance to the outline as a LINE. It is therefore symmetric
+    about the edge and silent on anything far from it, on either side. A
+    track 20mm off the board is not near the edge, so that rule passes it.
+    """
+    model = {"layers": ["F.Cu"], "copper": [_track("N", "F.Cu", (50, 50), (60, 55))]}
+    assert drc.check_board_edge_clearance(model, _CAP4, outline=_BOARD) == []
+
+    found = _containment(model)
+    assert [f.rule for f in found] == ["outline_containment"]
+    assert found[0].severity == "error"
+    assert "entirely outside" in found[0].detail
+
+
+def test_finding_count_rises_as_more_of_the_design_leaves_the_board() -> None:
+    """The property that was inverted, and why it went unnoticed.
+
+    Measured on the reference design before this rule: at a 20mm-square
+    outline (24 of 29 parts off the board) DRC reported 10 errors; at 2mm
+    (every pad off the board) it reported NINE. Fewer errors for a more
+    broken board reads as "nearly fine" — the direction of the number was
+    wrong, not just its magnitude.
+    """
+    near = {"layers": ["F.Cu"], "copper": [_track("N", "F.Cu", (5, 5), (25, 15))]}
+    partly = {"layers": ["F.Cu"], "copper": [_track("N", "F.Cu", (25, 15), (35, 15))]}
+    wholly = {"layers": ["F.Cu"], "copper": [_track("N", "F.Cu", (50, 50), (60, 55))]}
+    assert [len(_containment(m)) for m in (near, partly, wholly)] == [0, 1, 1]
+    assert "partly outside" in _containment(partly)[0].detail
+    assert "entirely outside" in _containment(wholly)[0].detail
+
+
+def test_a_pad_off_the_board_is_reported() -> None:
+    """Pads matter most here: a pad off the board is a part that cannot be
+    soldered, and pads are not in ``copper`` at all."""
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [],
+        "pads": [
+            {"layer": "F.Cu", "net": "N", "shape": "circle", "x": 5, "y": 5, "w": 0.9},
+            {"layer": "F.Cu", "net": "N", "shape": "circle", "x": 40, "y": 5, "w": 0.9},
+        ],
+    }
+    found = _containment(model)
+    assert len(found) == 1
+    assert "pad[N]" in found[0].where
+
+
+def test_a_part_placed_off_the_board_is_reported() -> None:
+    """The placer's seed shelf-packs from the origin; on an outline
+    narrower than its natural row width it put parts straight off the edge,
+    and ``bounds_for`` then clamped every move that could have rescued
+    them. Nothing reported it."""
+    found = _containment(
+        {"layers": ["F.Cu"], "copper": []},
+        courtyards=[("U1", 5.0, 5.0, 1.0), ("U2", 45.0, 5.0, 1.0)],
+    )
+    assert [f.objects[0]["refdes"] for f in found] == ["U2"]
+
+
+def test_containment_is_silent_with_no_outline() -> None:
+    """No authored outline means no board edge to be outside of. Inventing
+    one would constrain a design that never asked to be — the same call
+    ``realize._outline_clip`` makes."""
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [_track("N", "F.Cu", (500, 500), (600, 550))],
+    }
+    assert drc.check_outline_containment(model, outline=None) == []
+
+
 def test_clearance_oracle_matches_on_dense_close_layout():
     """A denser, tighter-packed variant (smaller span, more items) — biases
     toward many near-touching / crossing segments, the geometry regime most
