@@ -463,6 +463,121 @@ class TestRoundTrip:
         assert "setup context" in body
 
 
+class TestFisheyeExtentLadder:
+    """``get(view=<extent>)`` (docs/backlog/claim-graph-neighborhood-read.md)
+    opens the ``kwd|summary|verbatim|fisheye|fisheye+1hop`` eye ladder on a
+    finding — including a claim hub's claim-graph neighborhood at
+    ``fisheye+1hop``, previously unreachable from the hub side at all
+    (the ring only fired when mined out of a citing draft chunk)."""
+
+    def test_fisheye_1hop_surfaces_the_claim_graph(self, store) -> None:
+        """Before this change ``SEMANTIC_RELATIONS`` excluded every claim
+        relation, so this assertion would have failed outright — the ring
+        rendered nothing of the hub's claim graph."""
+        from precis.taproot.hub import attach_evidence, link_claims
+
+        claim = CanonicalClaim(
+            sentence="Bilayer graphene opens a bandgap under a perpendicular field.",
+            scope={"material": "graphene"},
+        )
+        hub_id = mint_hub(store, claim)
+        supporter = _seed_paper(store, cite_key="est23a")
+        opponent = _seed_paper(store, cite_key="contra23a")
+        sharper = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Bilayer graphene opens a tunable bandgap of up to 250 meV.",
+                scope={"material": "graphene"},
+            ),
+        )
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=supporter,
+            role="establishes",
+            meta={"support": "yes", "verified_by": "test"},
+            set_by="system",
+        )
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=opponent,
+            role="contradicts",
+            meta={"support": "no", "verified_by": "test"},
+            set_by="system",
+        )
+        link_claims(
+            store,
+            from_hub_ref_id=sharper,
+            to_hub_ref_id=hub_id,
+            relation="refines",
+            set_by="system",
+        )
+
+        h = _make_handler(store)
+        out = h.get(id=hub_id, view="fisheye+1hop")
+
+        assert "— linked (1 hop) —" in out.body
+        assert "establishes:" in out.body
+        assert "contradicts:" in out.body
+        assert "refines:" in out.body
+
+    def test_fisheye_1hop_carries_the_posture_header(self, store) -> None:
+        from precis.taproot.hub import attach_evidence
+
+        claim = CanonicalClaim(
+            sentence="Bilayer graphene opens a bandgap under a perpendicular field.",
+            scope={"material": "graphene"},
+        )
+        hub_id = mint_hub(store, claim)
+        paper = _seed_paper(store, cite_key="post23a")
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=paper,
+            role="corroborates",
+            meta={"support": "yes", "verified_by": "test"},
+            set_by="system",
+        )
+
+        h = _make_handler(store)
+        out = h.get(id=hub_id, view="fisheye+1hop")
+
+        assert "◆ claim hub —" in out.body
+        assert "state:" in out.body
+        assert "support:" in out.body
+        # posture line precedes the rendered eye body
+        assert out.body.index("◆ claim hub") < out.body.index(claim.sentence)
+
+    def test_bad_view_falls_through_to_base_handler_unchanged(self, store) -> None:
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="t",
+            body="claim body",
+            scope={},
+            cited_in="miller23a",
+        )
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
+        with pytest.raises(Unsupported):
+            h.get(id=ref_id, view="not-a-real-view")
+
+    def test_non_hub_finding_eye_has_no_claim_hub_header(self, store) -> None:
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="t",
+            body="claim body",
+            scope={},
+            cited_in="miller23a",
+        )
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        out = h.get(id=ref_id, view="fisheye+1hop")
+
+        assert "◆ claim hub" not in out.body
+
+
 # ── get(id=<pub_id>) — reverse lookup (gr178763 item 1) ───────────────
 
 

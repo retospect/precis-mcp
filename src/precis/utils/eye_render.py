@@ -25,9 +25,13 @@ kind, so the ladder generalizes but its shape does not:
 - **Link kinds** (``memory`` / ``finding`` / …): the ref renders as its note
   (title → gist → body), and at ``fisheye+1hop`` it grows its **link
   neighborhood** — every ref linked to it, **either direction**, with its
-  **relation type**. Links are symmetric, so a note linked to a paper surfaces
-  when you fisheye the paper (via the doc eye's ring) and the paper surfaces
-  when you fisheye the note.
+  **relation type**, grouped by relation and capped per group. Links are
+  symmetric, so a note linked to a paper surfaces when you fisheye the paper
+  (via the doc eye's ring) and the paper surfaces when you fisheye the note.
+  For a claim hub the neighborhood now also includes its claim graph
+  (``RING_RELATIONS`` = ``SEMANTIC_RELATIONS`` + ``CLAIM_RELATIONS`` —
+  ``establishes``/``corroborates``/``contradicts``/``refines``/
+  ``conjunct-of``/``motivated-by``), not just plain notes/links.
 
 - **Skill eyes** (``sk:<slug>``): a skill is file-backed, not refs-backed, so
   it has no numeric pk for ``handle_registry.parse``'s decimal grammar
@@ -54,7 +58,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
-from precis.utils.refeye import SEMANTIC_RELATIONS
+from precis.utils.refeye import RING_RELATIONS
 from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
@@ -84,6 +88,11 @@ _DOC_KINDS: frozenset[str] = frozenset(
 _SUMMARY_CAP = 300
 _VERBATIM_CAP = 4000
 _NEIGHBOR_TITLE_CAP = 80
+#: Per-relation cap on the ``fisheye+1hop`` link neighborhood — a claim hub
+#: can carry dozens of evidence edges, so a flat uncapped dump per relation
+#: group is replaced by this cap plus a visible overflow line (project §6:
+#: no silent truncation).
+_NEIGHBOR_GROUP_CAP = 8
 _GLOSS_CAP = 140
 #: Keep the cluster map / label lists skimmable even on a huge doc; the
 #: clusterer already caps the top level, this bounds the collapsed labels.
@@ -339,16 +348,23 @@ def _render_note_eye(store: Store, handle: str, kind: str, ext: Extent) -> str:
 
 def _link_neighbors(store: Store, ref_id: int) -> str:
     """The ref's one-hop link neighborhood, grouped by relation type — the
-    ``fisheye+1hop`` layer for a non-tree eye. Follows meaning edges
-    (`SEMANTIC_RELATIONS`), **both directions** (``links_for`` matches either
-    endpoint, incl. chunk-level edges since they carry the ref id); the neighbor
-    is the *other* end of each edge."""
+    ``fisheye+1hop`` layer for a non-tree eye. Follows meaning edges +
+    claim-graph edges (`RING_RELATIONS`), **both directions** (``links_for``
+    matches either endpoint, incl. chunk-level edges since they carry the
+    ref id); the neighbor is the *other* end of each edge.
+
+    Grouped by relation (relations in sorted order) and capped at
+    `_NEIGHBOR_GROUP_CAP` live neighbours per group — a claim hub can carry
+    dozens of evidence edges, so this is graduated rather than a flat
+    uncapped dump. A truncated group ends with a visible ``… +N more``
+    line (project §6: no silent cap); the count is against *rendered*
+    (live, non-deleted) neighbours, not raw edges."""
     links = store.links_for(ref_id, direction="both")
-    edges: list[tuple[str, int]] = []
+    by_rel: dict[str, list[int]] = {}
     ids: set[int] = set()
     for link in links:
         rel = getattr(link, "relation", None)
-        if rel not in SEMANTIC_RELATIONS:
+        if rel not in RING_RELATIONS:
             continue
         other = (
             int(link.dst_ref_id)
@@ -357,19 +373,28 @@ def _link_neighbors(store: Store, ref_id: int) -> str:
         )
         if other == ref_id:
             continue
-        edges.append((str(rel), other))
+        by_rel.setdefault(str(rel), []).append(other)
         ids.add(other)
-    if not edges:
+    if not by_rel:
         return ""
     refs = store.fetch_refs_by_ids(list(ids))
-    lines = ["— linked (1 hop) —"]
-    for rel, oid in edges:
+
+    def _live(oid: int) -> bool:
         r = refs.get(oid)
-        if r is None or getattr(r, "deleted_at", None) is not None:
-            continue
-        oh = handle_registry.format_handle(getattr(r, "kind", "?"), oid)
-        title = " ".join((getattr(r, "title", None) or "").split())
-        if len(title) > _NEIGHBOR_TITLE_CAP:
-            title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
-        lines.append(f"  {rel}: {oh} — {title}" if title else f"  {rel}: {oh}")
-    return "\n".join(lines) if len(lines) > 1 else ""
+        return r is not None and getattr(r, "deleted_at", None) is None
+
+    lines = ["— linked (1 hop) —"]
+    rendered_any = False
+    for rel in sorted(by_rel):
+        live_ids = [oid for oid in by_rel[rel] if _live(oid)]
+        for oid in live_ids[:_NEIGHBOR_GROUP_CAP]:
+            r = refs[oid]
+            rendered_any = True
+            oh = handle_registry.format_handle(getattr(r, "kind", "?"), oid)
+            title = " ".join((getattr(r, "title", None) or "").split())
+            if len(title) > _NEIGHBOR_TITLE_CAP:
+                title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
+            lines.append(f"  {rel}: {oh} — {title}" if title else f"  {rel}: {oh}")
+        if len(live_ids) > _NEIGHBOR_GROUP_CAP:
+            lines.append(f"    … +{len(live_ids) - _NEIGHBOR_GROUP_CAP} more")
+    return "\n".join(lines) if rendered_any else ""

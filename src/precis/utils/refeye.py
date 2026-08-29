@@ -76,6 +76,43 @@ SEMANTIC_RELATIONS: frozenset[str] = frozenset(
     }
 )
 
+#: The Taproot layer's own edges (``taproot/hub.py``'s ``HUB_ROLES`` +
+#: ``CLAIM_LINK_RELATIONS`` + ``MOTIVATION_RELATION``). ``SEMANTIC_RELATIONS``
+#: excluded every one of them, so fisheyeing a claim hub surfaced *nothing*
+#: of its claim graph — see ``docs/backlog/claim-graph-neighborhood-read.md``.
+#: Kept a static literal by the same rule as ``_CITED_KINDS`` above, and
+#: pinned equal to the live union by ``tests/test_kind_totality.py``. Not for
+#: import-graph reasons — this module already reaches ``taproot.hub``
+#: transitively via ``taproot.seniority``, so deriving the union here would
+#: import cleanly. The point is the *gate*: deriving it means a relation
+#: added to ``HUB_ROLES`` silently starts appearing in agent-facing ring
+#: output. The pin turns that into a red test and a human call — which is
+#: what this set's one historical failure (a claim-graph blind spot nobody
+#: noticed) argues for. Widening is a decision, not a consequence.
+#:
+#: ``motivated-by`` is IN deliberately. It was proposed for exclusion on the
+#: grounds that a hypothesis's motivator is not evidence — true, but every
+#: ring line is labelled with its relation, so the reader can tell a
+#: motivator from a supporter. Silently dropping a relation is exactly how
+#: ``SEMANTIC_RELATIONS`` became a claim-graph blind spot in the first place.
+CLAIM_RELATIONS: frozenset[str] = frozenset(
+    {
+        "establishes",
+        "corroborates",
+        "contradicts",
+        "refines",
+        "conjunct-of",
+        "motivated-by",
+    }
+)
+
+#: What the ``fisheye+1hop`` link neighborhood (``eye_render.py::
+#: _link_neighbors``) follows. ``SEMANTIC_RELATIONS`` itself is left
+#: unchanged — ``render_reference_ring`` (below) keeps following the narrow
+#: set; its draft-side "Claims" group already handles hubs and must not
+#: double up.
+RING_RELATIONS: frozenset[str] = SEMANTIC_RELATIONS | CLAIM_RELATIONS
+
 #: Kind → ring group. Anything unlisted falls into "Notes" (memory / finding /
 #: gripe / conv / todo …) — the "noted on this" bucket.
 #:

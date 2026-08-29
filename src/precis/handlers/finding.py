@@ -97,11 +97,14 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert, Ref, Tag
 from precis.taproot import authoring, hub
+from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
 from precis.utils.ref_hybrid import fused_ref_hits
+from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
     from precis.nanopub.overview import HubOverviewRow
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -782,10 +785,19 @@ class FindingHandler(NumericRefHandler):
         payload through ``get``'s extras channel,
         ``args={'payload': {...}}``; omitted, it gates whatever is already
         frozen or parked on the hub.
+        ``view ∈ kwd|summary|verbatim|fisheye|fisheye+1hop`` (the
+        :class:`~precis.workers.working_set.Extent` ladder) renders the
+        finding as an eye (:func:`precis.utils.eye_render.render_eye`); at
+        ``fisheye+1hop`` a claim hub also grows its claim-graph
+        neighborhood one edge out (``establishes``/``corroborates``/
+        ``contradicts``/``refines``/``conjunct-of``/``motivated-by`` —
+        :data:`precis.utils.refeye.RING_RELATIONS`), and every extent
+        carries a leading claim-hub posture header (see
+        :func:`_hub_eye_header`).
         Every other view (bare get, ``links``/``log``/``raw``) falls
         through to the base
         :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
-        All three deliberately kept off ``_BASE_VIEWS`` — finding-specific,
+        All four deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
         id = self._resolve_pub_id_slug(id)
@@ -805,6 +817,17 @@ class FindingHandler(NumericRefHandler):
             return _finding_mint_preflight.render_mint_preflight(
                 self.store, ref, payload=payload
             )
+        extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
+        if view in extent_ladder:
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            from precis.utils.eye_render import render_eye
+
+            try:
+                body = render_eye(self.store, f"fi{int(ref.id)}", view)
+            except ValueError as e:
+                raise BadInput(str(e), next=f"view ∈ {'|'.join(extent_ladder)}") from e
+            return Response(body=_hub_eye_header(self.store, ref) + body)
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:
@@ -1626,6 +1649,30 @@ def _passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
     if trust == _TRUST_DISPUTED:
         return row.disputed
     return True
+
+
+def _hub_eye_header(store: Store, ref: Ref) -> str:
+    """The leading posture line an eye on a claim hub carries.
+
+    This is why the eye is legible — a hub's neighborhood without its
+    trust posture reads as settled fact regardless of whether anything
+    supports it. Reuses :func:`_posture_cells` (the same cells the
+    ``search`` table's ``state``/``support``/``flags`` columns render), so
+    the eye and the search table can never disagree.
+
+    Returns ``""`` for a non-hub finding — a plain chase-tree finding has
+    no publish posture to carry."""
+    if not is_claim_hub(store, int(ref.id)):
+        return ""
+    from precis.nanopub.overview import hub_rows
+
+    rows = hub_rows(store, ref_ids=[int(ref.id)])
+    row = rows[0] if rows else None
+    cells = _posture_cells(row)
+    parts = [f"{k}: {v}" for k, v in cells.items() if v]
+    if not parts:
+        return "◆ claim hub — no publish posture yet\n\n"
+    return "◆ claim hub — " + " · ".join(parts) + "\n\n"
 
 
 def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:

@@ -238,6 +238,7 @@ get(id="fi42", view="log")  # chase event history
 get(
     id="fi42", view="evidence"
 )  # taproot claim-hub evidence (originators/corroborators/contradicts)
+get(id="fi42", view="fisheye+1hop")  # the hub's claim-graph neighborhood
 ```
 
 ```text
@@ -278,6 +279,30 @@ needed. A hub mints `STATUS:canonical` (off the chase-status lifecycle,
 never `tracing`/`established`), and the default cohort unions hubs in by
 their `TAPROOT:claim` tag alongside `established` findings. Drill one with
 `view='evidence'` (above).
+
+### Read a hub as its neighborhood — the eye ladder
+
+`view=` also takes the focus ladder
+`kwd|summary|verbatim|fisheye|fisheye+1hop` (same vocabulary as a draft
+node — `precis-fisheye-help`). The rungs below `fisheye+1hop` render the
+hub as a note (title → gist → claim text); `fisheye+1hop` adds its
+**claim-graph neighborhood** one edge out, both directions, each line
+labelled with its relation: `establishes` / `corroborates` /
+`contradicts` evidence papers, the `refines` chain, `conjunct-of`
+atoms-or-compound, and `motivated-by`. Groups are capped — an overflow
+line names what it withheld rather than silently truncating.
+
+Every rung is prefixed with the hub's trust posture:
+
+```text
+◆ claim hub — state: reviewed · support: 3✓ 1✗ · flags: disputed
+```
+
+Read that line first. `support` is `affirmative✓ negative✗ withheld?`,
+and a hub whose evidence is merely *unjudged* is unverified, not
+supported — see the verdict semantics above. `view='evidence'` remains
+the way to see *which* papers carry which verdict; the eye is for seeing
+the claim's shape in the graph.
 
 `put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
 `wants=`) mints/converges a claim hub; `cited_in=` makes an ordinary

@@ -32,10 +32,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from precis.taproot.authoring import _SUPPORTER_KINDS
-from precis.taproot.hub import EVIDENCE_SRC_KINDS
+from precis.taproot.hub import (
+    CLAIM_LINK_RELATIONS,
+    EVIDENCE_SRC_KINDS,
+    HUB_ROLES,
+    MOTIVATION_RELATION,
+)
 from precis.utils import handle_registry, kind_facts
 from precis.utils.eye_render import _DOC_KINDS
-from precis.utils.refeye import _CITED_KINDS
+from precis.utils.refeye import _CITED_KINDS, CLAIM_RELATIONS
 from precis_web.item_view import _ARTIFACT_KIND_FALLBACK
 from precis_web.routes.preview import _NUMERIC_KIND_EXCEPTIONS, _NUMERIC_KINDS_FALLBACK
 
@@ -128,6 +133,21 @@ def test_refeye_cited_kinds_matches_corpus_role_derivation() -> None:
     read-only-spec downstream, e.g. in taproot)."""
     live = kind_facts.corpus_role_kinds(_specs(), "evidence", "spec")
     assert live == _CITED_KINDS
+
+
+def test_refeye_claim_relations_matches_taproot_hub_derivation() -> None:
+    """``precis.utils.refeye.CLAIM_RELATIONS`` == the live union of
+    ``taproot.hub.HUB_ROLES`` (paper→hub evidence roles),
+    ``taproot.hub.CLAIM_LINK_RELATIONS`` (hub→hub advisory links) and
+    ``taproot.hub.MOTIVATION_RELATION`` (hypothesis→motivator).
+
+    ``refeye.py`` holds it as a static literal on purpose (not an import
+    constraint — see that module's comment): this assertion is the gate.
+    A relation added to ``taproot.hub`` reddens *here* and forces a human
+    call on whether it belongs in agent-facing ring output, instead of
+    either silently widening the ring or silently falling out of it."""
+    live = HUB_ROLES | CLAIM_LINK_RELATIONS | {MOTIVATION_RELATION}
+    assert live == CLAIM_RELATIONS
 
 
 def test_artifact_kind_fallback_matches_live_role_derivation() -> None:

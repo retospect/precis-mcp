@@ -131,8 +131,16 @@ by kind — the ladder generalizes, the neighborhood shape does not:
 - **Link kinds** (`memory`, `finding`, and anything else not above) —
   the ref renders as its note (title → gist → body); `fisheye+1hop`
   grows the **link neighborhood** — every ref linked to it, either
-  direction, with its relation type. Links are symmetric: fisheye-ing
-  a paper surfaces a note linked to it, and vice versa.
+  direction, with its relation type, grouped by relation and capped per
+  group (an overflow line names what it withheld). Links are symmetric:
+  fisheye-ing a paper surfaces a note linked to it, and vice versa.
+  The neighborhood follows
+  `src/precis/utils/refeye.py::RING_RELATIONS` — the meaning edges
+  **plus** the Taproot claim graph (`establishes`, `corroborates`,
+  `contradicts`, `refines`, `conjunct-of`, `motivated-by`), so a claim
+  hub eye shows its evidence and its refines chain. A `finding` that is
+  a claim hub additionally leads with its trust posture — see
+  `precis-finding-help`.
 - **Skill eyes** (`sk:<slug>`) — file-backed, no corpus position, so
   there's no neighborhood to have: `kwd`/`none` collapse to a bookmark,
   anything richer is the verbatim skill body.
@@ -141,6 +149,7 @@ by kind — the ladder generalizes, the neighborhood shape does not:
 get(kind="paper", id="pa5", view="fisheye")  # cluster map (whole-doc handle)
 get(kind="paper", id="pc13234", view="fisheye")  # fisheye split (chunk handle)
 get(kind="memory", id="me9", view="fisheye+1hop")  # note + its link neighborhood
+get(kind="finding", id="fi42", view="fisheye+1hop")  # hub + its claim graph
 ```
 
 ## Read the same neighborhood in a browser

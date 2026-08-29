@@ -58,6 +58,49 @@ def test_memory_eye_1hop_shows_link_neighborhood_by_relation(hub: Hub) -> None:
     assert f"related-to: me{mem2.id} — Kinetics vs thermodynamics" in out
 
 
+def test_memory_eye_1hop_caps_a_relation_group_with_overflow_line(hub: Hub) -> None:
+    """A relation group over ``_NEIGHBOR_GROUP_CAP`` (8) is capped, not
+    dumped flat — the truncated tail surfaces as an explicit ``… +N more``
+    line rather than silently vanishing (project §6: no silent cap)."""
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Hub note")
+    others = [
+        store.insert_ref(kind="memory", slug=None, title=f"Related note {i}")
+        for i in range(10)
+    ]
+    for other in others:
+        store.add_link(src_ref_id=mem.id, dst_ref_id=other.id, relation="related-to")
+
+    h = handle_registry.format_handle("memory", mem.id)
+    out = render_eye(store, h, "fisheye+1hop")
+
+    assert out.count("related-to: me") == 8
+    assert "… +2 more" in out
+
+
+def test_memory_eye_1hop_counts_overflow_against_live_neighbours(hub: Hub) -> None:
+    """The cap and the ``+N more`` count are against *rendered* neighbours,
+    not raw edges. Nine edges of which two point at soft-deleted refs is
+    seven live neighbours — under the cap, so no overflow line at all.
+    Counting edges instead would render seven rows and claim two more."""
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Hub note")
+    others = [
+        store.insert_ref(kind="memory", slug=None, title=f"Related note {i}")
+        for i in range(9)
+    ]
+    for other in others:
+        store.add_link(src_ref_id=mem.id, dst_ref_id=other.id, relation="related-to")
+    for dead in others[:2]:
+        store.soft_delete_ref(dead.id)
+
+    h = handle_registry.format_handle("memory", mem.id)
+    out = render_eye(store, h, "fisheye+1hop")
+
+    assert out.count("related-to: me") == 7
+    assert "more" not in out
+
+
 def test_memory_eye_below_1hop_omits_the_link_neighborhood(hub: Hub) -> None:
     store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="A note")
