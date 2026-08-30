@@ -1,68 +1,47 @@
 """Inline ``kind:ref`` linkifier for prose surfaces.
 
-Scans rendered text for ``kind:slug`` / ``kind:#id`` / ``kind:N``
-patterns and replaces each match with an anchor that:
+Scans rendered text for ``kind:slug``/``kind:#id``/``kind:N`` and
+replaces each match with an anchor: hover (200ms grace) → htmx fetches a
+preview card from ``/preview/{kind}/{id}`` into a sibling popover;
+click → ``/r/{kind}/{id}`` redirects to the ref's canonical view (paper
+viewer, tasks dashboard focused, generic refs detail).
 
-* Hover (with a 200 ms grace delay) → htmx fetches a tiny preview card
-  from ``/preview/{kind}/{id}`` and renders it in a sibling popover.
-* Click → navigates to ``/r/{kind}/{id}`` which redirects to the
-  ref's canonical view (paper viewer, tasks dashboard with focus,
-  generic refs detail page).
+Input is **plain text**, HTML-escaped: callers pass raw store fields
+(todo title, memory/conv body, console output) that may legitimately
+contain ``<``/``>``/``&`` (e.g. planner placeholder syntax
+``q='<title or DOI>'``). Only the generated anchor markup is HTML;
+surrounding prose stays escaped so a literal ``<title>`` can't open a
+real ``<title>`` element (flips the tokenizer to RAWTEXT, swallowing
+the rest of the page incl. later ``<script>`` tags) or inject script
+(stored XSS) — see ``test_untrusted_html_is_escaped``.
 
-Input is treated as **plain text** and HTML-escaped: every caller
-passes a raw store field (a todo title, a memory/conv body, console
-output) that may legitimately contain ``<``, ``>``, or ``&`` — e.g. a
-planner prompt with placeholder syntax like ``q='<title or DOI>'`` or
-``text='<claim>'``. The only HTML this filter emits is the anchor
-markup it generates for each match; surrounding prose is escaped so a
-literal ``<title>`` in a title can never open a real ``<title>``
-element (which flips the tokenizer to RAWTEXT and swallows the rest of
-the page, silently killing every inline ``<script>`` after it) or
-inject script (stored XSS). See ``test_untrusted_html_is_escaped``.
+Pattern ``<kind>:<ref>``: ``kind`` lowercase ``[a-z][a-z0-9-]*``; ``ref``
+is a slug ``[A-Za-z][A-Za-z0-9_-]*`` (no internal slashes — reserved for
+path views, so LLM-emitted bare ``paper:slug~7`` falls through cleanly)
+or an explicit numeric ``#?[0-9]+`` (``memory:6184``/``memory:#6184``).
+Optional trailing ``~N`` (chunk address) rides into the anchor's URL
+fragment; popover ignores it (chunk-level previews are a follow-on).
 
-Pattern: ``<kind>:<ref>`` where
+``kind`` validated lazily: every match renders as an anchor regardless
+of registration; unknown kinds 404 on preview/redirect, popover renders
+an "unknown kind" stub. No per-render dependency on the live ``Hub``.
 
-* ``kind`` is a lowercase identifier ``[a-z][a-z0-9-]*``;
-* ``ref`` is one of:
-
-  - a slug: ``[A-Za-z][A-Za-z0-9_-]*`` (no internal slashes — those
-    are reserved for path views and we want the LLM-emitted bare
-    ``paper:slug~7`` form to fall through cleanly);
-  - an explicit numeric: ``#?[0-9]+`` (``memory:6184`` or
-    ``memory:#6184``).
-
-Optional trailing ``~N`` (chunk address) is captured into the anchor's
-URL fragment but the popover ignores it for now — chunk-level previews
-are a follow-on.
-
-The filter validates ``kind`` lazily — every match is rendered as an
-anchor regardless of whether the kind is registered. Unknown kinds 404
-on the preview / redirect route; the popover then renders an "unknown
-kind" stub. Cheap, no per-render dependency on the live ``Hub``.
-
-Claim rendering (R2): a caller may pass a ``claims`` side-channel — the
-frozenset of Taproot hub-cite heads in the render window — and a bracket
-cite whose head is in it renders as a filled violet ``◆`` claim anchor
-(:func:`_render_claim_hub`): click → ``/claim/<head>``, hover →
-``/preview/claim/<head>``. ``claims`` defaults to ``None`` (off) outside
-the smartdraft/paper readers, so every other surface renders unchanged.
-A sibling ``pending_claims`` map covers a head that resolves to a finding
-but isn't (yet) a hub — "claim in chase, not yet canonical" — rendering
-instead as a hollow, muted-violet ``◇`` linking straight to the finding.
-A second sibling ``refuted_claims`` map covers a head tagged
-``STATUS:refuted`` — the do-not-repropose ledger
-(docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") — rendering
-instead as a filled RED ``◆`` linking to the refuted finding itself; it
-wins over both the live and pending renderings when a head is (unusually)
-in more than one map. A third sibling ``hypothesis_claims`` frozenset
-covers a head whose hub carries ``refs.meta.artifact_type == 'hypothesis'``
-— a conjecture, not a finding
-(docs/backlog/hypothesis-cites-render-not-stored.md) — rendering instead
-as a distinct fuchsia ``◈`` linking to ``/claim/<head>`` (still a hub, so
-still ``/claim``); it loses only to ``refuted_claims`` (a refuted
-hypothesis is dead regardless of type). Nothing is ever stored in the cite
-itself — status is derived at render time from the DB, the same
-living-cite discipline ``STATUS:refuted`` already uses.
+Claim rendering (R2): an optional ``claims`` side-channel (frozenset of
+Taproot hub-cite heads in the render window) renders a matching bracket
+cite as a filled violet ``◆`` claim anchor (:func:`_render_claim_hub`,
+click → ``/claim/<head>``, hover → ``/preview/claim/<head>``); ``None``
+outside smartdraft/paper readers, so other surfaces render unchanged.
+Three sibling maps, precedence-ordered (a head can appear in only one in
+practice, but ``refuted`` wins if it doesn't): ``pending_claims`` — head
+resolves to a finding, not yet a hub — hollow muted-violet ``◇`` to the
+finding. ``refuted_claims`` — head tagged ``STATUS:refuted``
+(docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") — filled
+RED ``◆`` to the finding, wins over live/pending. ``hypothesis_claims`` —
+hub has ``refs.meta.artifact_type == 'hypothesis'``
+(docs/backlog/hypothesis-cites-render-not-stored.md) — fuchsia ``◈`` to
+``/claim/<head>``, loses only to ``refuted_claims``. Nothing is stored
+in the cite itself — status is derived at render time from the DB, same
+living-cite discipline as ``STATUS:refuted``.
 """
 
 from __future__ import annotations
@@ -288,56 +267,39 @@ def _anchor_html(
     target: str = "_blank",
     extra_attrs: str = "",
 ) -> str:
-    """The shared hover-preview anchor. An ``<a href>`` (so right-click /
-    open-in-new-tab work without JS) wrapped in an Alpine/htmx span that
-    eagerly fetches a popover card from ``preview_url`` on hover, then
-    shows it after a hover-intent delay. ``href``, ``preview_url`` and
-    ``label`` must already be HTML-safe.
-
-    ``target`` defaults to ``"_blank"`` (a fresh tab per click); a caller
-    passing a named window (e.g. ``"precis-paper"``)
-    gets one reused window across successive clicks instead. The actual
-    open is performed by ``base.html.j2``'s site-wide named-window click
-    handler via ``window.open(href, name)`` — Safari silently drops a
-    native ``<a target="name">`` navigation when no window by that name
-    exists yet (a dead click), while ``window.open`` both creates and
-    reuses it.
-    ``extra_attrs`` is spliced verbatim onto the ``<a>`` tag (already
-    HTML-safe, caller-built — e.g. ``data-claim-head="…"``) so a call site
-    can carry extra hooks for client-side JS without every anchor needing
-    to know about them.
-
-    Single source for every reference surface — ``kind:ref`` mentions AND
-    ``¶`` draft-chunk cross-refs — so hover-preview + click-navigate are
+    """Shared hover-preview anchor: ``<a href>`` (right-click/open-in-new-tab
+    work without JS) wrapped in an Alpine/htmx span that fetches a popover
+    card from ``preview_url`` on hover-intent delay. ``href``,
+    ``preview_url``, ``label`` must already be HTML-safe. Single source
+    for every reference surface (``kind:ref`` mentions AND ``¶``
+    draft-chunk cross-refs) so hover-preview + click-navigate stay
     identical across kinds.
 
-    The popover card is a ``<template x-teleport="body">`` (gripe 56806):
-    Alpine relocates its content to ``<body>`` at init, so it always
-    escapes whatever ``overflow:auto`` pane it was linkified into (a
-    clipping ancestor clips a ``position:absolute``/``fixed`` descendant
-    regardless of z-index — physical relocation is the only fix). The
-    teleported clone stays in the WRAPPER's reactive scope (Alpine tracks
-    ``x-show``/event listeners/``@click.outside`` against the originating
-    component, not the DOM location it's rendered at), so the existing
-    open/close state machine below still drives it unchanged. Because the
-    clone is a document-order-detached ``<body>`` child, ``hx-target``
-    can't use a DOM-adjacency selector any more — each anchor mints its
-    own popover id and targets it directly.
+    ``target`` defaults ``"_blank"`` (fresh tab per click); a named window
+    (e.g. ``"precis-paper"``) is reused across clicks — opened via
+    ``base.html.j2``'s site-wide handler calling ``window.open(href,
+    name)`` (Safari drops a native ``<a target="name">`` nav when that
+    window doesn't exist yet; ``window.open`` creates-or-reuses).
+    ``extra_attrs`` splices verbatim onto the ``<a>`` (HTML-safe,
+    caller-built, e.g. ``data-claim-head="…"``).
 
-    Cross-anchor coordination (only ≤1 popover open at a time; Escape /
-    an outside scroll closes it) used to be N *window*-scoped listeners —
-    ``@ref-popover-open.window`` / ``@keydown.escape.window`` /
-    ``@scroll.window.capture`` — one triple per anchor, so a citation-heavy
-    draft (thousands of refs) fired thousands of capture-phase handlers
-    on every scroll tick (gr171760). That coordination now lives in ONE
-    delegated ``window`` listener pair, installed once page-wide by
-    ``templates/base.html.j2`` as ``window.__refPopover`` (``open(el)`` /
-    ``release(el)``, tracking the single currently-open wrapper element
-    and reaching into its Alpine scope via ``Alpine.$data(el)``). Each
-    anchor only calls into that shared object — it attaches no window
-    listener of its own. ``@click.outside`` stays per-anchor (Alpine's own
-    ``outside`` directive, unrelated cost shape — one document click
-    listener either way, not one per scroll/keydown tick).
+    Popover card is ``<template x-teleport="body">`` (gripe 56806): Alpine
+    relocates it to ``<body>`` at init so it escapes any clipping
+    ``overflow:auto`` ancestor (physical relocation is the only fix for a
+    clipped ``position:absolute``/``fixed`` descendant). The clone stays
+    in the WRAPPER's reactive scope (Alpine tracks state against the
+    originating component, not DOM location); being ``<body>``-detached,
+    it can't use an ``hx-target`` DOM-adjacency selector, so each anchor
+    mints its own popover id and targets it directly.
+
+    Cross-anchor coordination (≤1 popover open; Escape/outside-scroll
+    closes it) is ONE delegated ``window`` listener pair
+    (``window.__refPopover.open/release``, installed once by
+    ``templates/base.html.j2``, reaching into the open wrapper's Alpine
+    scope via ``Alpine.$data(el)``) — replacing N per-anchor window
+    listeners that fired thousands of capture-phase handlers per scroll
+    tick on a citation-heavy draft (gr171760). ``@click.outside`` stays
+    per-anchor (Alpine's own directive; one document listener either way).
     """
     # ``whitespace-normal`` on the popover container resets the
     # ``white-space: pre-wrap`` it inherits from the parent ``<pre>``
@@ -982,74 +944,29 @@ def linkify_refs(
     refuted_claims: Mapping[str, int] | None = None,
     hypothesis_claims: frozenset[str] | None = None,
 ) -> Markup:
-    """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
+    """Replace ``kind:ref`` mentions in ``value`` with hover-preview
+    anchors. Escaping contract + claim-rendering precedence (``claims``/
+    ``pending_claims``/``refuted_claims``/``hypothesis_claims``): module
+    docstring above. Every ``*_claims``/``pending_claims`` param defaults
+    ``None`` (all non-reader call sites) = unchanged prior rendering.
 
-    ``value`` is treated as **plain text**: all of it is HTML-escaped
-    except for the anchor markup this filter generates per match. This
-    is the safe contract for every call site — they all pass raw store
-    fields (titles, bodies, console output), never trusted HTML — and
-    it closes the page-corruption / stored-XSS hole that a verbatim
-    passthrough opened (a literal ``<title>`` / ``<script>`` in a title
-    would otherwise render as a live element).
+    ``footnotes`` — optional ``{(kind, id, chunk): N}`` map (References-panel
+    numbering on memory detail pages): a present key appends a ``[N]``
+    superscript (→ ``#ref-N``) after the hover anchor, composed *inside*
+    the escaping pass so no raw ``<a>`` is ever spliced into the body.
 
-    ``footnotes`` — optional ``{(kind, id, chunk): N}`` map (the
-    References-panel numbering on memory detail pages). When a prefixed
-    ``kind:ref`` mention's key is present, a ``[N]`` superscript anchor
-    (linking to ``#ref-N``) is appended after its hover anchor. This is
-    composed *inside* the escaping pass so the marker HTML is the only
-    live markup — the body never has raw ``<a>`` spliced into it (which
-    the old pre-injection path did, and which the escaping rewrite would
-    otherwise neutralise).
+    ``local`` — draft reader's local-vs-external citation set
+    (:func:`_cite_style`): normalised ``pc``/``pa`` handles and ``§`` slugs
+    for a held paper. A compact cite not in the set renders amber ``↗``
+    instead of sky ``§``. ``None`` (non-draft) keeps uniform ``§``.
 
-    ``local`` — the draft reader's local-vs-external citation set (see
-    :func:`_cite_style`): the normalised ``pc``/``pa`` handles and ``§``
-    slugs whose paper we actually hold. A compact paper cite not in the set
-    renders as an amber ``↗`` external marker instead of the sky ``§``.
-    ``None`` (every non-draft call site) keeps the uniform ``§``.
+    ``callouts`` — draft reader's ``{normalised dc-handle: numeral}`` for
+    ``assign="render"`` registry parts: a ``[[dc…]]``/``[dc…]`` reference
+    renders as its numeral (e.g. ``105``) instead of ``¶``, still
+    hover-previewing the part.
 
-    ``callouts`` — the draft reader's ``{normalised dc-handle: numeral}`` map
-    for ``assign="render"`` registry parts: a bare ``[[dc…]]`` /
-    ``[dc…]`` reference to such a part renders as its **numeral** (e.g. ``105``)
-    instead of the ``¶`` sigil, still hover-previewing the part. ``None`` (every
-    non-part reference / call site) is unchanged.
-
-    ``claims`` — the reader's set of hub-cite heads (``fi123`` / a 6-char
-    pub_id) that resolve to a live ``TAPROOT:claim`` hub in this window. A
-    matching ``[head]`` / ``[head>…]`` / ``[head+…]`` cite renders as a violet
-    claim anchor (hover = claim + evidence, click = ``/claim``). A head not in
-    the set — or ``None`` (every non-reader call site) — keeps its prior
-    rendering, so this is a no-op until a reader opts in.
-
-    ``pending_claims`` — the sibling ``{head: ref_id}`` map for heads that
-    resolve to a finding but AREN'T (yet) a hub: "claim in chase, not yet
-    canonical". A matching cite renders as the hollow, muted-violet ``◇``
-    twin of the filled ``◆`` claim anchor, linking straight to the finding
-    (``/r/finding/<id>``) rather than a ``/claim`` page. ``None`` (every
-    non-reader call site) keeps prior rendering, same as ``claims``.
-
-    ``refuted_claims`` — the second sibling ``{head: ref_id}`` map for
-    heads tagged ``STATUS:refuted`` (the do-not-repropose ledger,
-    docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle"). A
-    matching cite renders as a filled RED ``◆``, linking straight to the
-    refuted finding, and wins over both ``claims`` and ``pending_claims``
-    when a head is (unusually) present in more than one map. ``None``
-    (every non-reader call site) keeps prior rendering, same as ``claims``.
-
-    ``hypothesis_claims`` — the fourth sibling set: hub-cite heads whose hub
-    carries ``refs.meta.artifact_type == 'hypothesis'`` — a conjecture
-    minted with motivation instead of evidence, never a stored handle
-    prefix (docs/backlog/hypothesis-cites-render-not-stored.md). A matching
-    cite renders as a distinct fuchsia ``◈``, linking to ``/claim/<head>``
-    like the plain ``claims`` branch (a hypothesis hub is still a hub) but
-    carrying ``title="hypothesis — motivation, not evidence"``. Loses to
-    ``refuted_claims`` (a refuted hypothesis is dead regardless of type);
-    :func:`~precis_web.claim_render.claim_cite_head_sets` already carves a
-    hypothesis head out of its ``hubs``/``claims`` set so the two never
-    actually collide. ``None`` (every non-reader call site) keeps prior
-    rendering, same as ``claims``.
-
-    Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
-    treats the result as already-safe HTML.
+    Returns :class:`markupsafe.Markup` so Jinja's autoescape treats it as
+    already-safe HTML.
     """
     if not value:
         return Markup("")

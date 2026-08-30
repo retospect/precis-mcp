@@ -1,28 +1,24 @@
-"""Quest graduation — the in-silico ceiling (slice 4e).
+"""Quest graduation — the in-silico ceiling.
 
-The autonomous loop only goes so far: a simulation is not the world. When a
-candidate on the Pareto frontier crosses the bar the quest has set for itself, it
-**graduates** — it stops being "keep optimising" and becomes "this one is worth a
-real-world experiment", a gap surfaced for a human / lab rather than something the
-loop pretends to close. Graduation is also a **deed** (a `milestone`): the honest
-medieval sense of progress toward the unreachable striving.
+A simulation is not the world: when a frontier candidate crosses the bar
+the quest set for itself, it **graduates** — "keep optimising" becomes
+"worth a real-world experiment", a gap surfaced for a human/lab. Graduation
+is also a **deed** (a `milestone`).
 
-The bar is explicit, not guessed — a quest declares it in ``meta.graduation``::
+The bar is explicit, declared in ``meta.graduation``::
 
     {"key": "energy", "sense": "min", "threshold": -15.0}
 
-A frontier candidate whose measure meets the threshold is tagged
-``needs-experiment`` (once) and logged as a `milestone`; the slice-3 gaps then
-surface it as a ``needs-experiment`` item. With no rule set, nothing graduates —
-so this ships dark until a quest opts in by declaring its ceiling.
+A frontier candidate meeting it is tagged ``needs-experiment`` (once) and
+logged as a `milestone`; slice-3 gaps then surface it. No rule ⇒ dark,
+nothing graduates.
 
-**Graduation is per-candidate, never terminal for the quest.** It tags and
-logs one crossing candidate — it never touches the quest's own STATUS, never
-appears in the coordinator's (:mod:`precis.workers.job_types.quest_tick`)
-rest condition, and the forced-experiment floor + explorer's-creed prompt
-block (:mod:`precis.quest.explore`, :func:`precis.quest.tick._explorers_creed`)
-both keep pushing after a graduation — the new floor is a *moving* champion,
-not a finish line.
+**Per-candidate, never terminal for the quest.** Never touches the quest's
+own STATUS or the coordinator's (:mod:`precis.workers.job_types.quest_tick`)
+rest condition; the forced-experiment floor + explorer's-creed prompt block
+(:mod:`precis.quest.explore`, :func:`precis.quest.tick._explorers_creed`)
+keep pushing after a graduation — the new floor is a *moving* champion, not
+a finish line.
 """
 
 from __future__ import annotations

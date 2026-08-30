@@ -1,27 +1,25 @@
 """Quest Pareto frontier — the non-dominated candidate materials.
 
-Slice 4b of the quest layer (``quest-layer`` (git-only) §Materials are
-`structure` servers). Every candidate a quest tries is a `structure` that
-``serves`` it, carrying its relax **measures** (energy, max force, …). "Do
-better" = push the **Pareto frontier** of those measures against the quest's
-objective vector (its rubric). This module is the read-time computation of that
-frontier: the non-dominated set is *the current best*, the dominated set is
-*explored-and-beaten*, the **provisional** set is *measured-but-unconfirmed*
-(an untrusted barrier, or a barrier with no converged relax yet — see
-:class:`ProvisionalCandidate`), and the un-evaluated set is *awaiting a sim*
-(never measured at all).
+Every candidate a quest tries is a `structure` that ``serves`` it, carrying
+relax **measures** (energy, max force, …). "Do better" = push the
+**Pareto frontier** of those measures against the quest's objective vector
+(rubric). Read-time computation of that frontier: non-dominated = *current
+best*, dominated = *explored-and-beaten*, **provisional** =
+*measured-but-unconfirmed* (untrusted barrier, or no converged relax yet —
+see :class:`ProvisionalCandidate`), un-evaluated = *awaiting a sim*.
 
 The objective vector (which measures, minimise or maximise) is the machine
-reading of the quest's prose rubric — an open question (docs, slice-4 Q3). For
-now it defaults to **minimise energy** and can be overridden per quest via
-``meta.rubric_objectives = [{"key": "energy", "sense": "min"}, …]``.
+reading of the quest's prose rubric — an open question. Defaults to
+**minimise energy**, overridable per quest via ``meta.rubric_objectives =
+[{"key": "energy", "sense": "min"}, …]``.
 
-A quest may additionally declare a **composite** objective — a weighted sum of
-other measures, human-set at seed time (the potential-lever rubric): ``meta.rubric_composite = {"key": "score", "weights": {"barrier":
-1.0, "U_L_abs": 0.5}}``. :func:`_apply_rubric_composite` computes it onto each
-candidate at frontier-assembly time (only when every weighted component is
-present — no partial sums) so ``rubric_objectives`` can reference the
-composite's ``key`` like any other measure.
+A quest may additionally declare a **composite** objective — a weighted sum
+of other measures, human-set at seed time: ``meta.rubric_composite =
+{"key": "score", "weights": {"barrier": 1.0, "U_L_abs": 0.5}}``.
+:func:`_apply_rubric_composite` computes it onto each candidate at
+frontier-assembly time (only when every weighted component is present, no
+partial sums), so ``rubric_objectives`` can reference the composite's
+``key`` like any other measure.
 """
 
 from __future__ import annotations
@@ -77,28 +75,25 @@ class Candidate:
 class ProvisionalCandidate:
     """A candidate with at least one measured-but-unconfirmed objective value.
 
-    Product decision (prod audit of quest 164903 — 26 "awaiting a sim"
-    candidates that had actually been measured): an untrusted barrier, or a
-    barrier harvested with no converged relax, must not render
-    indistinguishable from "never tried" — it becomes visible here, clearly
-    marked, without touching the strict trust semantics
+    An untrusted barrier, or one harvested with no converged relax, must
+    not render indistinguishable from "never tried" — surfaced here,
+    clearly marked, without touching the strict trust semantics
     :mod:`precis.quest.graduate` gates on (still reads
     ``candidate.flags['barrier_trusted'] is True`` unchanged).
 
-    Wraps the underlying :class:`Candidate` **unmodified** — ``candidate.
-    measures``/``candidate.flags`` are exactly what :func:`pareto_split` saw
-    (an untrusted barrier is still absent from ``candidate.measures``, still
-    excluded from any real ranking). ``measures`` here is a *separate* merged
-    view built only for provisional display/ranking: trusted values where
-    present, backfilled with the untrusted values :func:`_candidate_from_structure`
-    stashed onto ``flags[f"{key}_untrusted_value"]`` — ``untrusted_keys`` names
-    which of those came from that backfill rather than a trusted source.
-    ``reasons`` is a short human-readable list of why the candidate isn't
-    confirmed (derived from the same flags/warnings, no new trust logic).
-    ``on_frontier`` marks membership in the *provisional* Pareto frontier
-    (:func:`_provisional_split`) — a separate, non-authoritative split
-    computed over confirmed + provisional candidates on the same objectives;
-    the confirmed ``FrontierResult.frontier`` is unaffected either way.
+    Wraps the underlying :class:`Candidate` **unmodified** —
+    ``candidate.measures``/``.flags`` are exactly what :func:`pareto_split`
+    saw (an untrusted barrier stays absent from ``candidate.measures``,
+    excluded from real ranking). ``measures`` here is a *separate* merged
+    view for provisional display/ranking only: trusted values where
+    present, backfilled from ``flags[f"{key}_untrusted_value"]``
+    (stashed by :func:`_candidate_from_structure`) — ``untrusted_keys``
+    names which came from that backfill. ``reasons`` is a short
+    human-readable list of why it isn't confirmed (derived from the same
+    flags/warnings). ``on_frontier`` marks membership in the *provisional*
+    Pareto frontier (:func:`_provisional_split`) — a separate,
+    non-authoritative split over confirmed + provisional candidates; the
+    confirmed ``FrontierResult.frontier`` is unaffected either way.
     """
 
     candidate: Candidate
@@ -418,25 +413,23 @@ def _contour_underlay(
     """``(bands, lines)`` — an optunacy-style filled-contour underlay for the
     Pareto scatter, or ``([], [])`` when the field can't be built honestly.
 
-    ``pts`` are **trusted** data-space ``(x, y, z)`` triples (the caller
+    ``pts`` are **trusted** data-space ``(x, y, z)`` triples (caller
     excludes any point whose plotted or z measure is an untrusted
-    provisional backfill — a distrusted value must not warp the field even
-    when its marker is drawn). The z field is inverse-distance-weighted
-    (power :data:`_CONTOUR_IDW_POWER`, distances normalised per axis so a
-    wide-range x doesn't drown y) onto a
+    provisional backfill — mustn't warp the field even where its marker is
+    drawn). The z field is inverse-distance-weighted (power
+    :data:`_CONTOUR_IDW_POWER`, per-axis normalised distances) onto a
     :data:`_CONTOUR_GRID_NX`×:data:`_CONTOUR_GRID_NY` grid over the padded
-    axis range, then contoured by ``contourpy`` (matplotlib's own engine —
-    already a transitive dep; imported lazily so this module stays
-    matplotlib-free at import time). Levels come from the same 1/2/5
-    nice-step ladder as the axis ticks; band fills sample
+    axis range, contoured by ``contourpy`` (matplotlib's engine, lazily
+    imported so this module stays matplotlib-free at import time). Levels
+    use the same 1/2/5 nice-step ladder as axis ticks; band fills sample
     :func:`viridis_color` at each band's midpoint over the SAME z
-    normalisation the markers use, so background, marker fills and the
-    colorbar share one scale. Degenerate inputs — fewer than
-    :data:`_CONTOUR_MIN_POINTS` points, a flat z span, or a collapsed axis —
-    return ``([], [])`` rather than a fabricated field.
+    normalisation the markers use, so background/markers/colorbar share one
+    scale. Degenerate inputs (fewer than :data:`_CONTOUR_MIN_POINTS`
+    points, a flat z span, or a collapsed axis) return ``([], [])`` rather
+    than a fabricated field.
 
-    ``to_px`` maps data-space coordinate arrays to pixel space (the caller's
-    ``_cx``/``_cy`` projection, vectorised).
+    ``to_px`` maps data-space coordinate arrays to pixel space (the
+    caller's vectorised ``_cx``/``_cy`` projection).
     """
     if len(pts) < _CONTOUR_MIN_POINTS:
         return [], []
@@ -597,66 +590,52 @@ def build_frontier_scatter(
     """Extract + scale an (x, y) scatter over ``candidates``, or ``None``.
 
     Pure geometry: no store, no Jinja. A candidate is plottable only when
-    *both* axis measures are present (``_dominates``'s own "missing a measure
-    ⇒ not comparable" rule, mirrored here as "not comparable ⇒ not
-    plottable"); fewer than :data:`_SCATTER_MIN_POINTS` plottable candidates
-    (confirmed + provisional combined) returns ``None`` so the caller falls
-    back to the text-only frontier. An all-equal axis (every point shares one
-    x or y) would otherwise divide by zero scaling to the viewBox — guarded
-    by substituting a span of ``1.0`` so the points simply plot along a flat
-    line instead.
+    *both* axis measures are present (mirrors ``_dominates``'s "missing a
+    measure ⇒ not comparable" rule); fewer than :data:`_SCATTER_MIN_POINTS`
+    plottable candidates (confirmed + provisional) returns ``None`` (caller
+    falls back to the text-only frontier). An all-equal axis substitutes a
+    span of ``1.0`` (guards viewBox divide-by-zero) — points plot along a
+    flat line.
 
-    ``provisional`` (default empty — every pre-existing caller unaffected)
-    plots :class:`ProvisionalCandidate`'s merged (trusted + recovered-
-    untrusted) values alongside the confirmed points on the SAME shared axis
-    range, each stamped ``band='provisional'`` (vs. ``'confirmed'`` for the
-    rest) plus ``untrusted``/``on_frontier`` so the template can render them
-    visually distinct (hollow/dashed, a frontier star) without a second
-    geometry pass.
+    ``provisional`` (default empty) plots :class:`ProvisionalCandidate`'s
+    merged (trusted + recovered-untrusted) values alongside confirmed
+    points on the SAME axis range, stamped ``band='provisional'`` (vs.
+    ``'confirmed'``) plus ``untrusted``/``on_frontier`` so the template
+    renders them distinct (hollow/dashed, frontier star) in one geometry
+    pass.
 
-    ``frontier_ref_ids`` (optional) stamps ``on_frontier`` on the *confirmed*
-    points too, so the template's marker grammar — shape = frontier
-    membership (star/circle), fill = trust, colour = band — covers both
-    bands with one vocabulary.
+    ``frontier_ref_ids`` (optional) stamps ``on_frontier`` on confirmed
+    points too — the marker grammar (shape=frontier membership,
+    fill=trust, colour=band) then covers both bands with one vocabulary.
 
-    ``viewport`` (optional — ``{measure: (lo, hi)}``, read from
-    ``quest.meta.frontier_viewport`` by the caller) pins a wider axis range
-    than the current data alone would produce: when an entry names the
-    chosen ``x_measure``/``y_measure``, the plotted range becomes the union
-    of the data-derived range and the stored one (:func:`_union_viewport`)
-    — so the axis doesn't keep re-scaling tick-to-tick as new points land
-    inside a range a human already widened. A missing/malformed entry (not
-    a 2-tuple, non-numeric, ``lo > hi``, or no ``viewport`` at all) leaves
-    the data-derived range untouched.
+    ``viewport`` (optional, ``{measure: (lo, hi)}`` from
+    ``quest.meta.frontier_viewport``) unions the data-derived range with
+    the stored one for a named axis (:func:`_union_viewport`), so the axis
+    doesn't re-scale tick-to-tick inside a range a human already widened. A
+    malformed entry (not a 2-tuple, non-numeric, ``lo > hi``) leaves the
+    data-derived range untouched.
 
-    ``objectives`` (optional — the quest's full declared objective vector,
-    not just the two plotted axes) stamps each point's ``extra_measures``
-    (the OTHER declared objectives it carries a value for, each
-    ``{"key", "label", "value"}``) plus a ``rate_readout`` ($/rate,
-    :func:`_rate_readout` — ``None`` when not computable), so the template's
-    hover tooltip can show the full objective vector, not just the plotted
-    pair, without a second lookup. Default empty — every pre-existing
-    caller gets no extra fields, unchanged.
+    ``objectives`` (optional, the quest's full objective vector) stamps
+    each point's ``extra_measures`` (other declared objectives it has a
+    value for) plus a ``rate_readout`` ($/rate, :func:`_rate_readout`,
+    ``None`` if not computable) for the hover tooltip. Default empty: no
+    extra fields.
 
-    ``z_measure``/``z_label`` (optional — the quest hub's ``?fz=`` picker)
-    add a third, colour-mapped dimension (optunacy-style): every plottable
-    point (either band) that carries a numeric value for ``z_measure`` gets
-    ``point["z"]`` + ``point["color"]`` (:func:`viridis_color`, normalised
-    over the SAME min/max the axis-range logic above already uses — a
-    degenerate span substitutes ``1.0`` like the x/y axes do); a point with
-    no value for it gets neither key, so the template's fill-fallback logic
-    stays simple. ``None``/no plottable point carrying a value ⇒
-    ``FrontierScatter.z_key`` stays ``None`` and no point is stamped —
-    z-coloring is fully opt-in.
+    ``z_measure``/``z_label`` (optional, the quest hub's ``?fz=`` picker)
+    add a colour-mapped third dimension: any plottable point with a numeric
+    ``z_measure`` value gets ``point["z"]`` + ``point["color"]``
+    (:func:`viridis_color`, normalised over the same min/max as the axes,
+    degenerate span → ``1.0``); a point without one gets neither key.
+    ``FrontierScatter.z_key`` stays ``None`` (z-coloring fully opt-in) if no
+    plottable point carries a value.
 
-    ``contour`` (default on, only meaningful when z-coloring is active)
-    adds the optunacy-style filled-contour underlay
-    (:func:`_contour_underlay` — IDW-interpolated z field, Viridis bands +
-    iso-lines on the markers' own z scale). Interpolation inputs are the
-    trusted points only: a provisional point whose plotted x/y or z value
-    is an untrusted backfill still gets its (dashed) marker, but must not
-    warp the field. Too few trusted inputs, a flat z span, or
-    ``contour=False`` ⇒ ``contour_bands``/``contour_lines`` stay empty.
+    ``contour`` (default on, meaningful only with z-coloring) adds the
+    filled-contour underlay (:func:`_contour_underlay`: IDW-interpolated z
+    field, Viridis bands + iso-lines on the markers' own z scale) —
+    interpolated from TRUSTED points only (an untrusted-backfill
+    provisional point still gets its dashed marker but must not warp the
+    field). Too few trusted inputs, a flat z span, or ``contour=False`` ⇒
+    ``contour_bands``/``contour_lines`` stay empty.
     """
     plottable = [
         c
@@ -1053,15 +1032,15 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     formation-energy, selectivity, …). Two sources:
 
     1. every numeric field of the best converged ``struct_runs`` row — today
-       ``energy`` / ``max_force`` / ``max_disp`` / ``n_steps``, plus any future
-       run scalar, with no code change here;
+       ``energy``/``max_force``/``max_disp``/``n_steps``, plus any future run
+       scalar, no code change here;
     2. every numeric top-level key of ``structure.meta`` — the escape hatch a
        synthesis/harvest pass stamps computed measures onto. This is how the
        reaction **barrier** reaches the frontier: a autocatpath run over the
-       candidate is harvested onto the candidate's own ``meta`` (Slice 3), so
-       the frontier reads a plain scalar — no autocatpath import, no graph
-       recompute. Fill-only: a stamped measure never clobbers a real relax
-       measure of the same name.
+       candidate is harvested onto the candidate's own ``meta``, so the
+       frontier reads a plain scalar — no autocatpath import, no graph
+       recompute. Fill-only: never clobbers a real relax measure of the
+       same name.
 
     ``meta.params`` (the candidate's point in the quest param space, §7.8) rides
     along for a later optimizer advisor; it is not a measure.
@@ -1408,22 +1387,20 @@ def leaderboard(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Rows + TOON schema for the **by-total** design leaderboard (§7.3).
 
-    One row per candidate design: identity, the objective vector, its Pareto
-    ``band`` (``frontier`` / ``dominated`` / ``provisional`` / ``awaiting``),
-    and a graduation flag. Ordered frontier → dominated → provisional →
-    awaiting, and within each band sorted by the primary objective (best
-    first). A provisional row shows its merged measures with ``≈`` on each
-    unconfirmed value and its exclusion reasons in ``quality`` — measured but
-    not confirmed, never ranked against the confirmed bands. A ``$/rate``
-    column (:func:`_rate_readout` — ``atom_cost - log_tof``, log10 $ per
-    unit TOF) is computed HERE at read time whenever a candidate carries
-    both components — never stored — so "100x more active buys 100x less
-    catalyst" reads as one number without a spreadsheet; ``—`` when either
-    component is absent. Pure over a :class:`FrontierResult` so it is
-    trivially testable; the handler renders it via ``toon.dump``. This is
-    the striving's authoritative leaderboard — autocatpath's own
-    ``compare`` view is a compute-side diagnostic over sibling pathways,
-    not this.
+    One row per candidate design: identity, objective vector, its Pareto
+    ``band`` (``frontier``/``dominated``/``provisional``/``awaiting``), and
+    a graduation flag. Ordered frontier → dominated → provisional →
+    awaiting, sorted within each band by the primary objective (best
+    first). A provisional row shows merged measures with ``≈`` on each
+    unconfirmed value and its exclusion reasons in ``quality`` — measured
+    but not confirmed, never ranked against confirmed bands. A ``$/rate``
+    column (:func:`_rate_readout`: ``atom_cost - log_tof``, log10 $ per
+    unit TOF) is computed HERE at read time, never stored, whenever a
+    candidate carries both components (``—`` otherwise). Pure over a
+    :class:`FrontierResult`, trivially testable; the handler renders it via
+    ``toon.dump``. This is the striving's authoritative leaderboard —
+    autocatpath's own ``compare`` view is a compute-side diagnostic over
+    sibling pathways, not this.
     """
     obj_keys = [k for k, _ in fr.objectives]
     primary = fr.objectives[0] if fr.objectives else None
@@ -1570,18 +1547,18 @@ def _flag_geom_duplicates(
     """Flag a later-created candidate that shares its geometry hash with an
     earlier one — a proposer re-discovering the same material under a new
     name. Prefers the periodic-symmetry-invariant ``meta.geom_hash_c``
-    (:func:`precis.structure.canonical.geom_hash_c`, stamped at
-    candidate-creation time — :func:`precis.quest.compute._ensure_candidate_detail`)
-    over the legacy absolute-position ``meta.geom_hash``
-    (:func:`precis.quest.compute._geom_hash`) — a translation/rotation/mirror
-    twin of an earlier candidate now groups with it even though its raw
-    coordinates differ. A structure minted before the canonical hash existed
-    gets it lazily backfilled here (:func:`_lazy_geom_hash_c`), falling back
-    to the legacy hash only when the backfill itself fails.
-    **Non-exclusionary**: ``flags['duplicate_of']`` is display-only (the
-    earlier candidate's handle); the flagged candidate still ranks normally.
-    Mutates ``candidates`` in place (``Candidate.flags`` is a plain dict, so
-    this is safe on an otherwise-frozen dataclass).
+    (:func:`precis.structure.canonical.geom_hash_c`, stamped at candidate
+    creation — :func:`precis.quest.compute._ensure_candidate_detail`) over
+    the legacy absolute-position ``meta.geom_hash``
+    (:func:`precis.quest.compute._geom_hash`), so a translation/rotation/
+    mirror twin groups with the earlier candidate despite differing raw
+    coordinates. A structure minted before the canonical hash existed gets
+    it lazily backfilled here (:func:`_lazy_geom_hash_c`), falling back to
+    the legacy hash only if the backfill fails. **Non-exclusionary**:
+    ``flags['duplicate_of']`` is display-only (the earlier candidate's
+    handle); the flagged candidate still ranks normally. Mutates
+    ``candidates`` in place (``Candidate.flags`` is a plain dict on an
+    otherwise-frozen dataclass).
     """
     by_id = {c.ref_id: c for c in candidates}
     seen: dict[str, str] = {}  # hash -> first-seen handle
@@ -1608,22 +1585,22 @@ def _flag_energy_twins(
     candidates: Sequence[Candidate], structures: Sequence[Any]
 ) -> None:
     """Flag a later candidate whose relaxed energy lands within
-    :data:`_ENERGY_TWIN_EPS` of an earlier one of the SAME composition but a
-    DIFFERENT ``geom_hash_c`` — two nominally-distinct starting geometries
-    that converged to the same (or a symmetry-equivalent) minimum, a
-    degeneracy the geometry hash alone can't see (it only catches duplicates
-    at the *input* geometry, not post-relax convergence).
+    :data:`_ENERGY_TWIN_EPS` of an earlier one of the SAME composition but
+    a DIFFERENT ``geom_hash_c`` — two nominally-distinct starting
+    geometries that converged to the same (or symmetry-equivalent) minimum,
+    a degeneracy the geometry hash alone can't see (it only catches
+    duplicates at the *input* geometry, not post-relax convergence).
 
     Composition is never re-materialised here — no per-candidate scene load
-    in a loop. ``atom_cost`` (stamped on ``meta`` at candidate-creation time
-    from the composition, :func:`precis.quest.compute._stamp_atom_cost`) is
-    a pure function of element counts alone and already rides on every
-    :class:`Candidate` via ``measures`` — an exact ``atom_cost`` match is a
-    cheap, reliable composition proxy over data already loaded for the
-    frontier. (The composition dict itself isn't stamped anywhere
-    :func:`_candidate_from_structure` reads, so grouping on it directly would
-    need a fresh scene load per candidate — the thing this is built to
-    avoid; a candidate missing ``atom_cost`` is simply not grouped.)
+    in a loop. ``atom_cost`` (stamped on ``meta`` at candidate creation from
+    the composition, :func:`precis.quest.compute._stamp_atom_cost`) is a
+    pure function of element counts and already rides on every
+    :class:`Candidate` via ``measures`` — an exact match is a cheap,
+    reliable composition proxy over data already loaded for the frontier.
+    A candidate missing ``atom_cost`` is simply not grouped (the
+    composition dict itself isn't stamped anywhere
+    :func:`_candidate_from_structure` reads, so grouping on it directly
+    would need a fresh scene load per candidate).
 
     Display-only: sets ``flags['energy_twin_of']`` on the later candidate
     (the earlier one's handle); ranking/dominance/geom-dup flagging are

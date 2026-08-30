@@ -1,83 +1,57 @@
 """run_oa_fetch_pass — sibling worker that fetches OA PDFs.
 
-Closes the chase ↔ stub loop. The finding-chase worker creates
-stub paper refs (identifiers known, ``pdf_sha256 IS NULL``); this
-worker walks the stub backlog and asks **ten OA sources in
-cascade** whether an open-access copy exists:
+Closes the chase↔stub loop: chase creates stub refs (identifiers known,
+``pdf_sha256 IS NULL``); this worker cascades through **ten OA sources**
+per stub, by DOI/arXiv/S2 id unless noted. No gate listed = free, no key:
 
-1. **Publisher pattern** — deterministic DOI→PDF URL for publishers
-   with a known endpoint (Springer/BMC, PLOS, …). Free; no API.
-2. **Elsevier** — Article Retrieval API by DOI. Key-gated
-   (``PRECIS_ELSEVIER_API_KEY``); the only route for ScienceDirect.
-3. **Wiley** — TDM API by DOI. Token-gated
-   (``PRECIS_WILEY_TDM_TOKEN``); direct version-of-record PDF.
-4. **Unpaywall** — aggregator of 30+ OA sources, by DOI. Free;
-   TOS requires an email parameter.
-5. **Crossref** — publisher TDM full-text PDF links, by DOI. Free;
-   needs the polite ``mailto`` (= the Unpaywall email).
-6. **OpenAlex** — OA ``pdf_url`` locations, by DOI. Free; ``mailto``
-   optional. Different coverage to Unpaywall.
-7. **Europe PMC** — biomedical OA full-text PDF, DOI→PMCID. Free.
-8. **CORE** — green-OA repository copies, by DOI. Key-gated
-   (``PRECIS_CORE_API_KEY``); the net for paywalled-publisher papers.
-9. **arXiv** — direct PDF download by arXiv ID. Free; no key.
-10. **Semantic Scholar** — ``openAccessPdf`` field, by DOI / arXiv /
-    S2 id. Free; no key for low volume.
+1. **Publisher pattern** — deterministic DOI→PDF for known-endpoint
+   publishers (Springer/BMC, PLOS).
+2. **Elsevier** — Article Retrieval API; key-gated
+   (``PRECIS_ELSEVIER_API_KEY``), only route for ScienceDirect.
+3. **Wiley** — TDM API; token-gated (``PRECIS_WILEY_TDM_TOKEN``), direct
+   version-of-record PDF.
+4. **Unpaywall** — 30+-source aggregator; TOS needs an email param.
+5. **Crossref** — publisher TDM PDF links; needs polite ``mailto`` (=
+   the Unpaywall email).
+6. **OpenAlex** — OA ``pdf_url`` locations; ``mailto`` optional,
+   different coverage to Unpaywall.
+7. **Europe PMC** — biomedical OA full text, DOI→PMCID.
+8. **CORE** — green-OA repository copies; key-gated
+   (``PRECIS_CORE_API_KEY``), the net for paywalled publishers.
+9. **arXiv** — direct PDF by arXiv ID.
+10. **Semantic Scholar** — ``openAccessPdf`` field, low-volume no-key.
 
-The deterministic + key-gated legs run *first* because they sidestep
-the aggregators' common landing-page-as-OA miss on fresh DOIs;
-identifier-/credential-less legs are silent no-ops (return ``None``,
-no event). When a source yields a PDF the cascade stops; later
-sources only run when earlier ones returned ``no_oa_version`` or
-``fetch_failed``. Each attempt writes its own ``ref_events`` row
-(``source='fetcher:<leg>'``) so the audit trail shows what was tried
-and what worked.
+Deterministic/key-gated legs run first (sidestep aggregators' common
+landing-page-as-OA miss on fresh DOIs); identifier-less legs silently
+no-op. Cascade stops at the first PDF; later legs run only after
+``no_oa_version``/``fetch_failed``. Each attempt writes a ``ref_events``
+row (``source='fetcher:<leg>'``).
 
-When a PDF lands, it goes into the watch inbox →
-``precis watch`` triggers ``precis_add`` → C7's
-``register_aliases_and_maybe_upgrade`` promotes the stub →
-the chase resumes on the next pass.
+A landed PDF: watch inbox → ``precis watch`` → ``precis_add`` →
+``register_aliases_and_maybe_upgrade`` (promotes the stub) → chase
+resumes.
 
-This is a sibling worker (plain function), not a
-``WorkerHandler`` subclass — same pattern as
-``precis.workers.segment_toc`` and ``precis.workers.chase``.
+Sibling worker (plain function), not a ``WorkerHandler`` — same pattern
+as ``chase``/``segment_toc``.
 
-Event vocabulary (same shape across all three sources):
+Event vocabulary (shared across sources): ``fetch_ok`` (url+bytes+license
+payload), ``no_oa_version``, ``fetch_failed`` (URL but download failed),
+``rate_limited``, ``api_error``, ``invalid_identifier``,
+``identifier_missing``. ``precis stubs`` reads the latest event per stub
+for the backlog.
 
-- ``fetch_ok``       — PDF downloaded; payload carries url + bytes + license
-- ``no_oa_version``  — source confirmed no OA copy
-- ``fetch_failed``   — source returned a URL but download failed
-- ``rate_limited``   — 429 / equivalent throttle
-- ``api_error``      — 5xx / network / unexpected JSON
-- ``invalid_identifier`` — the identifier failed format validation
-- ``identifier_missing`` — the ref had no usable identifier for this source
+**Fetch-time retraction gate** (:func:`_apply_retraction_gate`) — a cheap
+DOI-only Crossref check (``ingest.provenance.check_doi``) ahead of the
+cascade: ``retracted`` hard-skips (stamps ``refs.retraction_status``,
+breadcrumbs, and — via ``store._stub_predicate.stub_predicate_sql`` —
+excludes the ref from every future claim/browse query, firing once);
+``corrected``/``expression_of_concern`` soft-flags (stamps status,
+breadcrumbs, continues the fetch) and re-checks each pass (writes only on
+a status change) to catch a later escalation.
 
-Ahead of the cascade, each claimed stub also runs a ``fetch-time
-retraction gate`` (see :func:`_apply_retraction_gate`): a cheap,
-DOI-only Crossref check, reusing ``precis.ingest.provenance.check_doi``,
-that stamps the paper's dominant provenance status before any download
-leg runs. It acts on all three statuses, differently:
-
-- ``retracted`` — hard-skip: stamp ``refs.retraction_status='retracted'``,
-  write a ``source='fetch_oa'``, ``event='retraction_skip'`` breadcrumb,
-  and never run the cascade. :func:`precis.store._stub_predicate.
-  stub_predicate_sql` then excludes the ref from every future claim query
-  and stub/chase-queue browse — so this fires at most once.
-- ``corrected`` / ``expression_of_concern`` — soft flag: stamp the status
-  (reader-banner only) and *continue* the fetch (we still want the PDF).
-  Emits an ``event='provenance_flag'`` breadcrumb. These stubs stay
-  fetch-eligible, so the gate re-checks each pass to catch a later
-  ``corrected → retracted`` upgrade; it only re-writes on an actual
-  status change, so an unchanged flag is a no-op.
-
-``precis stubs`` (CLI subcommand, Step 4) reads the latest event
-per stub to render the backlog.
-
-Pre-existing relative: ``scripts/_doilist.py`` (``doilist scan
---download``) is an *operator-facing* CLI that drives Unpaywall
-fetches from a curated ``dois_to_get.md`` file. Different starting
-point (file-driven, not stub-driven); different output (``downloads/``
-dir, no DB writes); both can coexist.
+Distinct from ``scripts/_doilist.py`` (``doilist scan --download``): an
+operator-facing, file-driven (``dois_to_get.md``) Unpaywall-only CLI, no
+DB writes — coexists.
 """
 
 from __future__ import annotations
@@ -1715,7 +1689,7 @@ def _download_first(
 
 
 def _oa_fetch_enabled() -> bool:
-    """Env gate for the OA fetcher. Default off.
+    """Dark switch for the OA fetcher. Default off.
 
     Tolerant to whitespace / case so a YAML quoting quirk or trailing
     newline doesn't silently disable the pass (same shape as

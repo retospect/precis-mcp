@@ -1,22 +1,24 @@
-"""Core dispatch: verb routing, kind/handler resolution, handler invocation.
+"""Core dispatch: verb routing, kind/handler resolution, handler
+invocation — the in-process MCP verb call (`runtime.dispatch`; not the
+`Hub` registration table in `precis/dispatch.py`, nor the dispatch
+worker).
 
-``DispatchMixin`` carries the main ``dispatch()`` / ``dispatch_with_status()``
-entry points, the single-kind ``kind=`` resolution chain (including the
-2-char handle-code expansion and the id-prefix / sigil / relative-handle
-inference helpers), and handler invocation (extras whitelist, required-kwarg
-check, default-tags policy). The cross-kind / source-search fan-out lives in
-:mod:`precis.runtime.search`; the angle spray + dreamable region in
-:mod:`precis.runtime.angle`; hint emission in :mod:`precis.runtime.hints`;
-error string rendering in :mod:`precis.runtime.error`. ``PrecisRuntime``
-(``precis.runtime.core``) composes all of them via multiple inheritance —
-every method below runs against the same ``self`` regardless of which file
-it's defined in.
+``DispatchMixin`` carries ``dispatch()``/``dispatch_with_status()``, the
+single-kind ``kind=`` resolution chain (2-char handle-code expansion,
+id-prefix/sigil/relative-handle inference), and handler invocation
+(extras whitelist, required-kwarg check, default-tags policy). Cross-kind/
+source-search fan-out lives in :mod:`precis.runtime.search`; angle
+spray+dreamable region in :mod:`precis.runtime.angle`; hint emission in
+:mod:`precis.runtime.hints`; error rendering in
+:mod:`precis.runtime.error`. ``PrecisRuntime`` (``precis.runtime.core``)
+composes all of them via multiple inheritance — every method runs
+against the same ``self`` regardless of defining file.
 
-``dispatch_with_status`` is also the single chokepoint every verb call
-passes through regardless of caller (MCP server, CLI, in-process agent
-tick) — so it's where the best-effort tool-call ledger write lives
-(:meth:`DispatchMixin._record_tool_call`, migration 0133, see
-:mod:`precis.tool_ledger` for the schema + mining queries).
+``dispatch_with_status`` is the single chokepoint every verb call passes
+through (MCP server, CLI, in-process agent tick), so it's where the
+best-effort tool-call ledger write lives
+(:meth:`DispatchMixin._record_tool_call`, migration 0133,
+:mod:`precis.tool_ledger`).
 """
 
 from __future__ import annotations
@@ -265,23 +267,20 @@ class DispatchMixin(RuntimeShape):
         """``search(uncited=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
 
-        Resolves ``uncited=<draft>`` into a merged ``args['exclude_ref_ids']``
-        BEFORE any of the search-shape interceptions in the core method
-        branch off, so every retrieval path (source-search, cross-kind
-        fan-out, single-kind) sees the same filter — and prepends the
-        "N already-cited sources excluded" note to whatever ``Response``
-        the core method returns, regardless of which of its many internal
-        early-return branches produced it. Kept as a thin wrapper (rather
-        than folded into the core method's branches) precisely because
-        there are so many early returns down there: one wrapping call here
-        guarantees the footer can never be forgotten on a future branch.
+        Resolves ``uncited=<draft>`` into a merged
+        ``args['exclude_ref_ids']`` BEFORE any search-shape interception
+        branches off, so every retrieval path sees the same filter — then
+        prepends the "N already-cited sources excluded" note to whatever
+        ``Response`` the core method returns, regardless of which
+        internal early-return branch produced it. Kept as a thin wrapper
+        (not folded into the core method) precisely because there are so
+        many early returns there: one wrapping call guarantees the
+        footer is never forgotten on a future branch.
 
-        The note is **prepended**, not appended: ``dispatch_with_status``
-        hands the body to :meth:`precis._pagination.PaginationCache.split`,
-        which keeps the largest *leading* run that fits the byte cap and
-        stashes the rest behind a ``more()`` cursor. A trailing note on a
-        result set big enough to paginate would strand the one signal that
-        the filter ran on a page the caller never reads.
+        The note is **prepended**, not appended: pagination keeps the
+        largest *leading* run that fits the byte cap, stashing the rest
+        behind ``more()`` — a trailing note on a paginated result would
+        strand the filter signal on a page the caller never reads.
         """
         uncited_note: str | None = None
         if verb == "search" and args.get("uncited") is not None:
@@ -333,26 +332,22 @@ class DispatchMixin(RuntimeShape):
         )
 
     def _resolve_uncited_exclude(self, args: dict[str, Any]) -> str:
-        """Resolve ``search(uncited=<draft>)`` into ``args['exclude_ref_ids']``.
+        """Resolve ``search(uncited=<draft>)`` into
+        ``args['exclude_ref_ids']``.
 
-        Pops the raw ``uncited=`` token and replaces it with a merged, sorted
-        ``list[int]`` under ``exclude_ref_ids`` — the exact channel
-        :meth:`_dispatch_source_search`, :meth:`_dispatch_cross_kind`, and
-        the plain single-kind path (``PaperHandler.search``/``search_hits``
-        and its cfp/datasheet siblings) all read, so the filter can't drift
-        between paths. The exclusion set is exactly
-        :func:`precis.backfill.candidates.draft_cited_ref_ids` — every
+        Pops the raw ``uncited=`` token, replaces it with a merged, sorted
+        ``list[int]`` under ``exclude_ref_ids`` — the exact channel every
+        retrieval path (source-search, cross-kind, single-kind) reads, so
+        the filter can't drift between paths. The exclusion set is
+        :func:`precis.backfill.candidates.draft_cited_ref_ids`: every
         source the draft directly cites, plus a cited claim hub's
-        evidence-**supporter** papers (originators + corroborators; a
-        contradicting paper is never "already cited for this point" and
-        keeps surfacing). Raises (via
-        :func:`~precis.backfill.candidates.resolve_draft_ref_id`) when
-        ``uncited=`` doesn't resolve to a live draft — this must never
-        silently degrade to an empty exclusion set, which would make every
-        hit look "new" while some are already cited.
+        evidence-**supporter** papers (originators+corroborators; a
+        contradicting paper keeps surfacing). Raises when ``uncited=``
+        doesn't resolve to a live draft — must never silently degrade to
+        an empty exclusion set, which would make every hit look "new".
 
         Returns the agent-facing note reporting how many refs were
-        excluded, so a caller can see the filter actually did something.
+        excluded.
         """
         from precis.backfill.candidates import draft_cited_ref_ids, resolve_draft_ref_id
         from precis.utils import handle_registry
@@ -892,31 +887,18 @@ class DispatchMixin(RuntimeShape):
     ) -> None:
         """Apply ``PRECIS_DEFAULT_TAGS`` policy at the dispatch boundary.
 
-        Behaviour matrix:
+        No-op if ``defaults`` is empty (env unset) or
+        ``handler.spec.note_like`` is False (ingested kinds, fetched
+        caches, generators don't accumulate session-context tags).
+        Verb ``put`` on a note-like kind: merges defaults into
+        ``args['tags']`` (caller's explicit-first ordering preserved, no
+        dupes) and emits an info hint. Verb ``tag``: emits a suggestion
+        hint for defaults missing from ``args.get('add')`` — **not**
+        mutated, since ``tag`` is the agent's explicit op and silent
+        mutation would surprise both agent and operator. Any other verb
+        (get/search/edit/delete/link): no-op.
 
-        - ``defaults`` empty (env unset): no-op for every verb.
-        - ``handler.spec.note_like`` False: no-op for every verb.
-          Ingested kinds (paper, patent), fetched caches (web,
-          wolfram, youtube), and generators (oracle, random,
-          skill) don't accumulate session-context tags.
-        - verb ``put`` on a note-like kind: merge defaults into
-          ``args['tags']`` (preserving caller's explicit-first
-          ordering) and emit an info hint listing the additions.
-          Existing tags are never duplicated.
-        - verb ``tag`` on a note-like kind: emit a suggestion hint
-          listing defaults missing from ``args.get('add')``. The
-          set is **not** mutated — ``tag`` is the agent's explicit
-          op, and silent mutation would surprise both the agent
-          and the operator. The hint surfaces the suggestion so
-          the agent can decide.
-        - Any other verb (get, search, edit, delete, link): no-op.
-          ``edit`` on note-like file kinds doesn't change tags via
-          its core surface, so default-tag interaction is moot
-          there. ``delete`` removes the ref entirely.
-
-        Mutates ``args`` in place when applicable (``put`` only).
-        Returns ``None``; observable effect is the merged ``tags``
-        and any emitted hint visible at end-of-request.
+        Mutates ``args`` in place (``put`` only); returns ``None``.
         """
         defaults = self.default_tags_resolved
         if not defaults:
@@ -1174,26 +1156,23 @@ class DispatchMixin(RuntimeShape):
     def _maybe_infer_kind_from_handle(self, args: dict[str, Any], ident: str) -> bool:
         """Universal-handle surface dispatch: route a universal handle.
 
-        If ``ident`` is a well-formed, resolvable record handle, set
-        ``args['kind']`` from its 2-char type code and rewrite
+        If ``ident`` is a well-formed, resolvable record handle, sets
+        ``args['kind']`` from its 2-char type code and rewrites
         ``args['id']`` to the per-kind public id (slug or ``str(ref_id)``)
-        — so the existing per-kind handler resolves it with no change. A
-        record handle may carry a trailing chunk/view selector
-        (``pa123~0..5``, ``pa123/toc``), which is reattached to the public
-        id so the per-kind handler parses it as it would on a slug.
+        so the existing handler resolves it unchanged. A trailing
+        chunk/view selector (``pa123~0..5``, ``pa123/toc``) is reattached
+        to the public id, parsed as on a slug.
 
-        A handle whose row is soft-deleted or never existed has nothing
-        for ``resolve_handle`` (a live-row DB lookup) to return, but the
-        handle still *parses*: see the syntactic fallback below, which
-        routes those cases to the per-kind handler instead of falling
-        through to bare-slug inference (gr192827 — a soft-deleted
-        gripe addressed by its own handle produced a misleading
-        "id must be an integer" ``BadInput`` instead of ``Gone``).
+        A soft-deleted/never-existed handle has nothing for
+        ``resolve_handle`` (a live-row lookup) to return, but still
+        *parses* — the syntactic fallback below routes those to the
+        per-kind handler instead of bare-slug inference (gr192827: a
+        soft-deleted gripe's own handle produced a misleading "id must be
+        an integer" instead of ``Gone``).
 
-        Returns ``True`` if it routed the handle, ``False`` otherwise
-        (non-handle, unknown/chunk handle, or an explicit ``kind=`` that
-        disagrees — left for normal validation to flag), so the caller
-        falls through to bare-slug inference untouched.
+        Returns ``True`` if routed, ``False`` otherwise (non-handle,
+        unknown/chunk handle, or a disagreeing explicit ``kind=``), so
+        the caller falls through to bare-slug inference untouched.
         """
         if self.store is None:
             return False
@@ -1237,33 +1216,23 @@ class DispatchMixin(RuntimeShape):
         """Syntactic fallback for a well-formed record handle whose row
         ``resolve_handle`` can't find (soft-deleted or never existed).
 
-        ``resolve_handle`` is a DB lookup — it needs a live row (or a
-        merge survivor) to return anything, so it comes back ``None``
-        for both a soft-deleted ref and a ref_id that never existed.
-        Without this fallback, both used to fall through to bare-slug
-        inference, landing on the numeric-ref handler's ``_coerce_id``
-        BadInput ("id must be an integer") instead of the accurate
-        ``Gone`` / ``NotFound`` the per-kind handler would raise given
-        the bare integer id (gr192827).
+        ``resolve_handle`` is a DB lookup, so it returns ``None`` for both
+        a soft-deleted ref and a never-existed ref_id. Without this
+        fallback both fell through to bare-slug inference, landing on
+        ``_coerce_id``'s "id must be an integer" instead of the accurate
+        ``Gone``/``NotFound`` the per-kind handler would raise given the
+        bare integer id (gr192827).
 
-        :func:`handle_registry.parse` needs no DB row — it decodes the
-        handle's 2-char code + decimal body straight from the string —
-        so it still yields ``(kind, is_chunk, pk)`` here. Routed only
-        for:
-
-        * non-chunk handles — a chunk handle has no per-kind chunk
-          selector to synthesize without the DB row (unchanged: falls
-          through, same as before this fallback existed).
-        * kinds whose ``KindSpec.is_numeric`` is ``True`` — the
-          per-kind public id IS ``str(ref_id)`` for these (memory,
-          todo, gripe, …), so ``str(pk)`` is always a valid ``id=``
-          the handler resolves the same way a live handle's
-          ``resolved.public_id`` would have. Slug-addressed kinds
-          (``is_numeric=False``, e.g. paper) are deliberately left
-          alone: their public id is a slug, not the pk, and there's no
-          live row here to read one from, so this fallback doesn't
-          attempt it — they keep falling through to bare-slug
-          inference (and its own reasonable NotFound).
+        :func:`handle_registry.parse` needs no DB row — decodes the
+        2-char code + decimal body from the string alone — so it still
+        yields ``(kind, is_chunk, pk)``. Routed only for non-chunk
+        handles (a chunk has no per-kind selector to synthesize without
+        the row) and kinds where ``KindSpec.is_numeric`` (memory, todo,
+        gripe, …), whose public id IS ``str(ref_id)``, so ``str(pk)``
+        works as ``id=`` the same way a live handle's ``public_id``
+        would. Slug-addressed kinds (e.g. paper) are left alone — no
+        live row means no slug to read — and keep falling through to
+        bare-slug inference.
         """
         parsed = handle_registry.parse(normalized)
         if parsed is None:
@@ -1282,36 +1251,21 @@ class DispatchMixin(RuntimeShape):
         return True
 
     def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
-        """D1: extract a self-identifying kind from ``id=`` into ``args['kind']``.
+        """D1: extract a self-identifying kind from ``id=`` into
+        ``args['kind']``.
 
-        Two grammars, both letting an agent address a ref without
-        spelling ``kind=``:
+        Two grammars: ``kind:identifier[~selector]`` colon prefix (same
+        grammar ``link=``/``unlink=`` use — ``id='paper:chung19~4'`` →
+        ``kind='paper', id='chung19~4'``; ``id='chung19~4'`` unchanged, no
+        colon) or a leading **address sigil**, which *is* the kind tag
+        (``id='¶YP377G'`` → ``kind='draft'``, sigil kept;
+        ``id='§chung19~4'`` → ``kind='paper'``, sigil stripped).
 
-        * ``kind:identifier[~selector]`` colon prefix (the canonical
-          handle grammar ``link=`` / ``unlink=`` already use)::
-
-            id='paper:chung19~4'   → kind='paper', id='chung19~4'
-            id='memory:158'        → kind='memory', id=158 (coerced by handler)
-            id='todo:42'           → kind='todo', id=42
-            id='chung19~4'         → unchanged (no colon, no extraction)
-
-        * a leading **address sigil** — the sigil *is* the kind tag::
-
-            id='¶YP377G'           → kind='draft', id='¶YP377G' (sigil kept)
-            id='§chung19~4'        → kind='paper', id='chung19~4' (sigil stripped)
-
-        Only fires when:
-          - ``id`` is a string containing exactly one ``:`` before any
-            ``/``, ``~``, or ``?`` (avoiding collision with URL-ish
-            paths a future kind might accept).
-          - The prefix is one of the live kinds in this build.
-          - If ``kind=`` is already set, it must match the prefix;
-            otherwise a clean ``BadInput`` fires (don't silently
-            override the caller's explicit choice).
-
-        Path views like ``id='/recent'`` are skipped (leading slash).
-        Anything not matching the recognition rules passes through
-        unchanged so existing callers stay unaffected.
+        Fires only when ``id`` is a string with exactly one ``:`` before
+        any ``/``/``~``/``?``, the prefix is a live kind, and any
+        already-set ``kind=`` matches the prefix (else ``BadInput``, never
+        silent override). Path views (``id='/recent'``) are skipped.
+        Anything else passes through unchanged.
         """
         ident = args.get("id")
         if not isinstance(ident, str):

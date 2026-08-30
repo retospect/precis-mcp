@@ -1,17 +1,26 @@
 """Layer-A mechanical mint validators — pure code, no LLM.
 
 The spec's gate checklist, mechanical subset (each docstring cites its
-entry). Every check lives in the cheapest layer that can catch it;
-failures auto-route (a hygiene defect points at its gripe/backlog item,
-a grounding defect back to decomposition) rather than asking a human —
-Layer C sees only survivors. Layer-B LLM verification (`qualify_claim`
-one-way fit, the cross-binding prompt) is deliberately NOT here: those
-are derived-queue worker jobs, and stacking more LLM review inside the
-mint path was explicitly rejected.
+entry): contradicts-edge; primary-source hearsay (:func:`check_primary_source`
+— unheld/awaiting/declared source, needs-acquisition body prose, review-title
+by genre); quote verbatim-containment; snip uniqueness; structured-field
+containment; schema lint (claim/compound/hypothesis shape,
+:func:`check_claim_sentence`); quantity-bound presence; llm-attribution;
+``pdf_sha256`` uniqueness; publish-row cardinality; drift
+(:func:`check_drift`); topo/mint-order (:func:`check_mint_order`).
 
-Ordering matters only for #1: the ``contradicts`` gate is SQL-cheap and
-runs first — a disputed hub is visible internally, unpublishable
-externally, and spending anything further on it would be waste.
+Every check lives in the cheapest layer that can catch it; failures
+auto-route (a hygiene defect points at its gripe/backlog item, a grounding
+defect back to decomposition) rather than asking a human — Layer C sees
+only survivors. Layer-B LLM verification (`qualify_claim` one-way fit, the
+cross-binding prompt) is deliberately NOT here: those are derived-queue
+worker jobs, and stacking more LLM review inside the mint path was
+explicitly rejected.
+
+Ordering matters only for #1: the ``contradicts`` gate
+(:func:`check_contradicts`) is SQL-cheap and runs first — a disputed hub is
+visible internally, unpublishable externally, and spending anything further
+on it would be waste.
 """
 
 from __future__ import annotations
@@ -373,7 +382,7 @@ def check_primary_source(
     (no passages) stay allowed: that IS the designed path while the paper
     hunt runs.
 
-    Four arms, any one blocks — three structural, one prose:
+    Five arms, any one blocks — four structural, one prose:
 
     * **derived** (:attr:`~precis.nanopub.evidence.HubBundle.unheld_sources`)
       — an evidence paper/patent with no live body chunk is one we know of
@@ -401,6 +410,11 @@ def check_primary_source(
       :attr:`~precis.nanopub.evidence.HubBundle.body` for this arm alone,
       so :func:`precis.nanopub.mint.approve` can read the PRE-reword body
       (the retitle door replaces ``finding_body`` with the new sentence).
+    * **review-source** (2026-08-27 audit — ~39/1,490 hubs) — a source we
+      DO hold, but whose title marks it a review/perspective, is
+      secondhand by genre (a shape the other arms can't see: derived
+      fires on UNHELD sources only). Escape: the hub's own sentence
+      declares a synthesis mode, making the review the primary.
 
     **Retiring the prose arm** needs one thing to be true: every live
     ``finding`` whose body matches
@@ -471,12 +485,7 @@ def check_primary_source(
                 "hanging",
             )
         )
-    # Fifth arm (2026-08-27 audit — ~39/1,490 hubs ground on review-titled
-    # papers): a source we DO hold, but whose title marks it a review/
-    # perspective —
-    # secondhand by genre, the shape the four arms above cannot see (the
-    # derived arm fires on UNHELD sources only). One escape: the hub's own
-    # sentence declares a synthesis mode, making the review the primary.
+    # review-source arm — see docstring.
     if not ev.SYNTHESIS_MODE.search(bundle.sentence):
         for src in bundle.sources:
             if ev.is_review_title(src.title):

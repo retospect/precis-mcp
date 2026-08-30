@@ -1,12 +1,12 @@
 """The fisheye neighborhood render.
 
 The extent ladder separates *how much of the target* from *how much of the
-surroundings* (§ C0). The content-only rungs render the node **alone** —
-``kwd`` a bookmark (under its ancestor path), ``summary`` its gloss,
-``verbatim`` its full text. The **neighborhood** appears only at the
-``fisheye`` rung: the verbatim center over a graduated forward-biased span of
-reading-order neighbours, under the **ancestor branch** (``section_path``) so
-it never floats free of its heading. ``fisheye+1hop`` adds the reference ring
+surroundings*. The content-only rungs render the node **alone** — ``kwd`` a
+bookmark (under its ancestor path), ``summary`` its gloss, ``verbatim`` its
+full text. The **neighborhood** appears only at the ``fisheye`` rung: the
+verbatim center over a graduated forward-biased span of reading-order
+neighbours, under the **ancestor branch** (``section_path``) so it never
+floats free of its heading. ``fisheye+1hop`` adds the reference ring
 (``utils.refeye``). It is pure **assembly of existing data** (``reading_order``
 + ``block_views``: ``chunk_summaries`` / ``chunks.keywords``) — no new storage.
 
@@ -34,15 +34,15 @@ from precis.workers.working_set import Extent
 if TYPE_CHECKING:
     from precis.store.store import Store
 
-#: Graduated forward-biased span for a ``fidelity`` eye (§6: "±5 full / ±10
-#: summary / ±15 kwd, forward-biased"). Measured over reading-order neighbours
-#: (not just siblings). Forward-biased: the backward reach is half the forward.
+#: Graduated forward-biased span for a fidelity eye: ±5 full / ±10 summary /
+#: ±15 kwd, measured over reading-order neighbours (not just siblings). The
+#: backward reach is half the forward reach.
 _FIDELITY_FULL = 5
 _FIDELITY_SUMMARY = 10
 _FIDELITY_KWD = 15
 
-#: One-line gloss cap (§6): a toc / ancestor / skirt line stays a bookmark, not
-#: a node's prose body. The verbatim body is what a ``full`` eye is for.
+#: One-line gloss cap: a toc/ancestor/skirt line stays a bookmark, not a
+#: node's prose body. The verbatim body is what a ``full`` eye is for.
 _GLOSS_CAP = 100
 
 
@@ -110,7 +110,7 @@ def render_fisheye(
     handle: str,
     extent: Extent | str | int = Extent.FULL,
 ) -> str:
-    """Assemble the fisheye neighborhood (§6) for ``handle`` in a
+    """Assemble the fisheye neighborhood for ``handle`` in a
     ``draft``/``plan``. Returns the rendered text; raises ``ValueError`` if the
     handle does not resolve to a live node.
 
@@ -130,7 +130,7 @@ def render_fisheye(
     views = store.drafts.block_views(target.ref_id)
     by_id = {c.chunk_id: c for c in chunks}
 
-    # Content-only rungs (§ C0): the node *alone* — ``summary`` is its gloss,
+    # Content-only rungs: the node *alone* — ``summary`` is its gloss,
     # ``verbatim`` its full text. No surroundings; the spatial ring is what the
     # ``fisheye`` rung is for.
     if ext is Extent.SUMMARY:
@@ -165,9 +165,9 @@ def render_fisheye(
 def _render_fidelity_span(
     chunks: Sequence[_Chunk], target: _Chunk, views: dict[str, dict[str, str]]
 ) -> list[str]:
-    """A graduated, forward-biased window over reading-order neighbours (§6):
-    the center full, fanning out to summary then keyword lines, reaching
-    further forward than back."""
+    """A graduated, forward-biased window over reading-order neighbours: the
+    center full, fanning out to summary then keyword lines, reaching further
+    forward than back."""
     pos = next((i for i, c in enumerate(chunks) if c.chunk_id == target.chunk_id), 0)
     out: list[str] = []
     # Backward reach is half the forward reach (forward-biased).

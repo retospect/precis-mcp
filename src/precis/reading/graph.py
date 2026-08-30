@@ -15,11 +15,11 @@ consume these edges in later slices. See docs/backlog/reading-prep-loop.md.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from precis.reading.concepts import normalize_name
+from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -35,24 +35,6 @@ _SYS = (
     "other), and which pairs are easily CONFUSED (contrasts). Use ONLY the exact "
     "concept names given — never invent one. Reply with ONLY the requested JSON."
 )
-
-
-def _extract_json(text: str) -> dict | None:
-    if not text:
-        return None
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            obj = json.loads(text[a : b + 1])
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            return None
-    return None
 
 
 def _load_cohort_concepts(
@@ -104,7 +86,7 @@ def infer_edges(
             {"role": "user", "content": _build_prompt(concepts)},
         ]
     )
-    data = _extract_json(getattr(out, "text", "") or "")
+    data = extract_json_object(getattr(out, "text", "") or "")
     if not data:
         return dict(zero)
 

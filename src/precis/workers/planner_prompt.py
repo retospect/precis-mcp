@@ -1728,45 +1728,6 @@ def _load_ref_body(store: Store, ref_id: int) -> str:
     return "\n\n".join(p for p in (title, chunk_text) if p)
 
 
-def _load_child_summaries(store: Store, ref_id: int) -> str:
-    """Concatenate every completed child's ``job_summary`` chunk text.
-
-    Walks the kind='todo' AND kind='job' children of ``ref_id``.
-    Todo children: their final state is their last `job_summary`
-    chunk (the planner's own output on its last tick). Job
-    children: their `job_summary` is the executor's terminal log.
-
-    Result is markdown-headed per child, ordered by ref_id ASC so
-    sibling order is stable across ticks (cache-friendly within
-    a single tick chain when nothing new lands).
-    """
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT c.ref_id, c.kind, c.title,
-                   string_agg(ch.text, E'\n' ORDER BY ch.ord) AS summary_text
-              FROM refs c
-              LEFT JOIN chunks ch ON ch.ref_id = c.ref_id
-                                  AND ch.meta->>'chunk_kind' = 'job_summary'
-             WHERE c.parent_id = %s
-               AND c.deleted_at IS NULL
-               AND c.kind IN ('todo', 'job')
-             GROUP BY c.ref_id, c.kind, c.title
-             ORDER BY c.ref_id
-            """,
-            (ref_id,),
-        ).fetchall()
-    parts: list[str] = []
-    for child_ref_id, kind, title, summary_text in rows:
-        if not summary_text:
-            continue
-        header = f"### child #{int(child_ref_id)} ({kind}) — {(title or '').splitlines()[0] if title else ''}"
-        parts.append(header)
-        parts.append(str(summary_text))
-        parts.append("")
-    return "\n".join(parts).strip()
-
-
 # ── module library ─────────────────────────────────────
 #
 # The planner's blocks expressed as assembler modules. Each builder is a

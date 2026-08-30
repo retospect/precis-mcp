@@ -1,59 +1,43 @@
 """The decentralized recurring-work trigger — one scheduler, no singleton.
 
-Slice 10 / §15i of ``docs/backlog/factory-console-and-scheduling.md``. Today
-recurring work has *two* triggers that overlap: the ``schedule`` pass (due
-recurring Watches — ``meta.schedule`` set) and a set of standalone launchd timers that each
-run ``precis <thing>`` on a cadence (``precis cron tick`` @60s,
-``precis worker --only watch_poll`` @1h, …). §15i's decision: "there ought to
-be only one scheduler", and its exactly-once guarantee belongs in Postgres,
-not in a designated node (a SPOF — down when a fire is due ⇒ missed fire).
+Design: ``docs/backlog/factory-console-and-scheduling.md`` §15i (Slice 10)
+— its exactly-once guarantee belongs in Postgres, not a designated node
+(a SPOF: down when a fire is due ⇒ missed fire).
 
-So this pass folds the thin-timer cadences into the worker itself,
-**decentralized**: every worker runs it each cycle, and claiming a due cadence
-is an atomic conditional advance on ``scheduler_leases`` (§5.2's
-reserve-at-claim, applied to time — :meth:`Store.claim_scheduler_lease`). Only
-one worker wins each due cadence; a down worker never drops a fire; a
-fleet-wide outage collapses to one catch-up fire on recovery.
+Folds every recurring-work timer into the worker rotation itself: every
+worker runs this pass each cycle, and claiming a due cadence is an atomic
+conditional advance on ``scheduler_leases`` (:meth:`Store.claim_scheduler_lease`).
+Only one worker wins each due cadence; a down worker never drops a fire; a
+fleet-wide outage collapses to one catch-up fire on recovery. Retires the
+standalone launchd thin-timers (``cron-tick``, ``watch-poll``, ``dream``,
+``anki-sync``, caspar's ``reconcile`` plist) it replaced.
 
-**Live in prod (§A).** The ``scheduler`` pass runs by default on both worker
-profiles (``registry.py``'s ``scheduler`` ``ServiceSpec``, ``_SYS + _AGT`` —
-the agent profile must run it too, or the host-pinned ``dream_agent`` /
-``anki_sync`` cadences below never get an eligible claimant). The standalone
-launchd thin-timers it replaces (``cron-tick``, ``watch-poll``, ``dream``,
-``anki-sync``, the caspar ``reconcile`` plist) are retired; every comment
-elsewhere calling this pass "DARK" is stale.
+Runs by default on both worker profiles (registry's ``scheduler``
+``ServiceSpec``, ``_SYS + _AGT``) — the agent profile must run it too, or
+host-pinned ``dream_agent``/``anki_sync`` cadences never get an eligible
+claimant.
 
-**Host affinity + local eligibility (§A).** Not every cadence is host-agnostic
-like ``cron_tick``/``watch_poll``. A cadence pinned via ``host_affinity`` is
-only *attempted* on that host — the claim call itself is skipped elsewhere, so
-the lease is never *advanced* by a host that can't do the work. A cadence's
-``eligible`` callable is a further, cheaper-than-the-claim local gate (env/file
-presence) checked *before* attempting the claim: an ineligible worker must
-never win the lease, or a host that merely happens to run first (e.g.
-melchior's *system*-profile worker, which lacks the OAuth/env the dream
-cadence needs) would burn the fire the truly-capable process needed. Both
-checks are short-circuits ahead of :meth:`Store.claim_scheduler_lease` — the
-claim (and its win) is skipped, but the row is still *seeded*
-(:meth:`Store.seed_scheduler_lease`, gr194430) unconditionally, before either
-gate: health_digest's cadence-staleness check (§D) iterates existing
-``scheduler_leases`` rows only, so a cadence whose ``eligible`` gate reads
-False on every host in the fleet (e.g. a deploy regression that drops the
-enable env everywhere) must still have a row to go stale and alarm on — a
-row that's never advanced, not a row that's absent.
+**Host affinity + local eligibility.** A cadence pinned via
+``host_affinity`` is only *attempted* on that host — elsewhere the claim
+call is skipped, so the lease is never advanced by a host that can't do
+the work. A cadence's ``eligible`` callable is a cheaper local gate
+(env/file presence) checked before the claim attempt, so an ineligible
+worker never wins the lease over the truly-capable one. Both are
+short-circuits ahead of :meth:`Store.claim_scheduler_lease` — but the row
+is still *seeded* (:meth:`Store.seed_scheduler_lease`) unconditionally
+first, so health_digest's cadence-staleness check (which iterates existing
+rows only) can still alarm on a cadence whose ``eligible`` gate reads
+False fleet-wide.
 
-*The affinity contract*: a pinned cadence stalls while its pinned host is
-down — that is the contract, not a bug. The lease's ``next_fire_at <=
-now()`` + advance-to-``now()+interval`` still gives catch-up-late-not-lost on
-recovery (one fire, no backlog burst) once the host returns. Law 6's
-no-stall-on-a-down-worker guarantee (docs/backlog/cluster-scheduling.md)
-applies to *unpinned* cadences only; §D's staleness alarms are the intended
-backstop for a pinned host that's down too long, not this lane.
+*Affinity contract*: a pinned cadence stalls while its pinned host is down
+— that's the contract, not a bug (unpinned cadences get the no-stall
+guarantee instead; a down-too-long pinned host is health_digest's alarm to
+catch). ``next_fire_at <= now()`` + advance-to-``now()+interval`` still
+gives catch-up-late-not-lost on recovery (one fire, no backlog burst).
 
-*Trigger is separate from execution* (§15i): today each cadence runs its work
-in-process on whichever worker won the lease — fine for the host-agnostic
-``cron_tick`` (a ``pg_notify`` asa_bot delivers) and network-only polls. A later
-refinement mints a capability-routed job instead of running inline; the lease
-mechanism is unchanged.
+*Trigger is separate from execution*: today each cadence runs its work
+in-process on whichever worker won the lease. A later refinement could
+mint a capability-routed job instead; the lease mechanism is unchanged.
 """
 
 from __future__ import annotations

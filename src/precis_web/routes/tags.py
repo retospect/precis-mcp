@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from precis.store._tags_ops import _escape_like
+from precis.store._tags_ops import escape_like
 from precis_web.deps import get_store, templates
 
 router = APIRouter(prefix="/tags", tags=["tags"])
@@ -69,7 +69,7 @@ def _list_tags(
          ORDER BY n DESC, t.namespace, t.value
          LIMIT %s OFFSET %s
     """
-    pattern = f"%{_escape_like(q.strip())}%"
+    pattern = f"%{escape_like(q.strip())}%"
     with store.pool.connection() as conn:  # type: ignore[attr-defined]
         rows = conn.execute(sql, (q.strip(), pattern, limit, offset)).fetchall()
     return [

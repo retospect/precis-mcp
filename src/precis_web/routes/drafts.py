@@ -1,69 +1,62 @@
-"""Drafts — shared library + backend endpoint host for the ``draft`` kind. The classic per-block virtual-scroll reader page this module
-used to serve is retired: ``/smartdraft/{ident}`` (``routes/smartdraft.py``)
-is the sole draft reader now, and imports several of this module's helpers
-(``_doc_state``, ``_review_status_by_chunk``, ``_ref_chips``,
-``_paper_pdf_missing``, ``_work_items``, …) plus reuses the hand-driven
-working-set + human-review endpoints below unchanged. ``GET /drafts/{ident}``
-and ``GET /draft/{ident}`` are kept as 307 redirects into smartdraft so
-every bookmark, quest link, and ``/c/<handle>`` deep-link still lands on the
-draft.
+"""Drafts — shared library + backend endpoint host for the ``draft`` kind.
 
-Tier-A surface (the document is *steered*, not hand-typed). Routes still
-served from here:
+``/smartdraft/{ident}`` (``routes/smartdraft.py``) is the sole draft
+reader; it imports this module's helpers (``_doc_state``,
+``_review_status_by_chunk``, ``_ref_chips``, ``_paper_pdf_missing``,
+``_work_items``, …) and reuses the working-set + human-review endpoints
+below unchanged. ``GET /drafts/{ident}`` / ``GET /draft/{ident}`` 307 into
+smartdraft so bookmarks/quest-links/``/c/<handle>`` deep-links still land.
 
-* ``GET /drafts`` — retired into Drive (nav restructure): redirects to the
-  ``kind=draft`` facet preset (``/drive?k=draft&submitted=1``), mirroring
-  ``routes/papers.py``'s WS1b retirement.
-* ``GET /drafts/{ident}`` / ``GET /draft/{ident}`` — 307 redirects into
+Tier-A surface (document is *steered*, not hand-typed). Routes served
+from here:
+
+* ``GET /drafts`` — 307 into the ``kind=draft`` Drive facet
+  (``/drive?k=draft&submitted=1``).
+* ``GET /drafts/{ident}`` / ``GET /draft/{ident}`` — 307 into
   ``/smartdraft/{ident}``.
-* ``POST /drafts/{ident}/marks`` / ``/request-ws`` — the hand-driven working
-  set (see ``precis_web.draft_eyes``): toggle pen/eye markers on
-  paragraphs and file a change request carrying the whole set
-  (``meta.working_set``) so the planner tick edits the pens grounded in the
-  eyes instead of a single anchor. (The classic reader's ``/around``
-  bulk-"expand around here into eyes" affordance retired with the page and is
-  not yet ported to smartdraft — see ``OPEN-ITEMS.md``.)
-* ``POST /drafts/{ident}/human-review`` — the ✓ gutter checkbox: records the
-  human reviewer's sign-off on one block (``edit(kind='draft',
-  review='human')``, migration 0086's ``chunk_review`` ledger).
-  ``POST /drafts/{ident}/review/retract`` un-reviews (deletes the ledger
-  row for a checker, default ``human``). Distinct from the per-heading
-  ``POST /drafts/{ident}/review`` "review ▾" menu (now driving
-  ``mint_review_fanout``, the incremental review fanout), which
-  files review-todos, not ledger rows. ``POST /drafts/{ident}/cites/convert``
-  dry-runs/applies the taproot living-cite backfill (item 5b).
-* ``POST /drafts/{ident}/title`` — header rename: converges ``refs.title``
-  AND the title heading chunk in one transaction (``store.drafts.set_draft_title``)
-  so the name in search results can't drift from the one in the document.
-* ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
-  typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
-* ``GET /c/{handle}`` — resolve a chunk handle → redirect to where it
-  lives: a draft chunk (``dc``/``¶``) into the smartdraft reader focused at
-  the chunk, a paper/other chunk (``pc``/``mc``/…) through the ``/r``
-  resolver at that chunk. The click target of every ``¶``/``§`` anchor.
+* ``POST /drafts/{ident}/marks`` / ``/request-ws`` — hand-driven working
+  set (``precis_web.draft_eyes``): toggle pen/eye markers on paragraphs,
+  file a change request carrying the whole set (``meta.working_set``) so
+  the planner tick edits pens grounded in eyes, not a single anchor.
+  Bulk "expand around here into eyes" (``/around``) not yet ported to
+  smartdraft — ``OPEN-ITEMS.md``.
+* ``POST /drafts/{ident}/human-review`` — ✓ gutter checkbox: sign-off on
+  one block (``edit(kind='draft', review='human')``, migration 0086
+  ``chunk_review`` ledger). ``POST .../review/retract`` deletes that
+  ledger row (default checker ``human``). Distinct from per-heading
+  ``POST /drafts/{ident}/review`` ("review ▾", drives
+  ``mint_review_fanout``): files review-todos, not ledger rows.
+  ``POST .../cites/convert`` dry-runs/applies the taproot living-cite
+  backfill.
+* ``POST /drafts/{ident}/title`` — renames ``refs.title`` AND the title
+  heading chunk in one transaction (``store.drafts.set_draft_title``) so
+  search-result name can't drift from the document's.
+* ``POST /drafts/{ident}/delete`` — soft-delete, gated on typing the
+  name; atomic (ref ``deleted_at`` + chunks retired), recoverable.
+* ``GET /c/{handle}`` — chunk handle → redirect: draft chunk
+  (``dc``/``¶``) into smartdraft focused there; paper/other chunk
+  (``pc``/``mc``/…) through the ``/r`` resolver. Click target of every
+  ``¶``/``§`` anchor.
 * ``GET /preview/chunk/{handle}`` — hover-popover quote for any chunk
-  handle (draft or paper/other), so a ``§`` paper-chunk citation hovers.
-* Direct-edit / structural routes (``/text``, ``/table``, ``/block…``,
+  handle (draft or paper/other); backs ``§`` citation hovers.
+* Direct-edit/structural routes (``/text``, ``/table``, ``/block…``,
   ``/validate-refs``, ``/ref-search``, ``/figure…``, ``/authors``,
   ``/workspace``, ``/authoring``, ``/fork``, exports) — shared by
-  smartdraft's ported editor UI.
-* ``GET /drafts/{ident}/export.docx`` / ``POST /drafts/{ident}/export.pdf``
-  — both gate on ``precis.export.retraction``: a ``retracted`` cite
-  hard-blocks (override: ``?ignore_retractions=1`` / form field), reading
-  stored state only (never a live Crossref check — see
-  ``_retraction_blocked_response``). ``GET
-  /drafts/{ident}/retraction-status`` (no-network read) and ``POST
-  /drafts/{ident}/retraction-check`` (the watch button — live re-check,
-  TTL-gated, ``force=1`` bypasses the TTL) back the export pane's
-  retraction UI; the shared walk is ``precis.export.retraction``. That
-  same walk also carries DOI completeness/validity (docs/backlog/
-  draft-doi-completeness-check.md) — missing/invalid/never-validated DOI
-  counts ride the same two routes' JSON, advisory only, never gating the
-  export.
+  smartdraft's editor UI.
+* ``GET .../export.docx`` / ``POST .../export.pdf`` — gate on
+  ``precis.export.retraction``: a ``retracted`` cite hard-blocks
+  (override ``?ignore_retractions=1``), reading stored state only, never
+  a live Crossref check (``_retraction_blocked_response``).
+  ``GET .../retraction-status`` (no-network read) and
+  ``POST .../retraction-check`` (live re-check, TTL-gated,
+  ``force=1`` bypasses) back the export pane; same shared walk. That walk
+  also carries DOI completeness/validity (docs/backlog/
+  draft-doi-completeness-check.md) on the same two routes' JSON —
+  advisory only, never export-gating.
 
-Rendering is **raw source** (Tier A); the resolution pass that computes
-§-numbers / resolves cross-refs is the export engine (Tier B), shared
-across HTML/LaTeX/Word targets. KaTeX renders ``$…$`` client-side.
+Rendering is **raw source** (Tier A); §-numbering/cross-ref resolution is
+the export engine (Tier B), shared across HTML/LaTeX/Word. KaTeX renders
+``$…$`` client-side.
 """
 
 from __future__ import annotations
@@ -415,29 +408,6 @@ def _ref_chips(
     return chips
 
 
-def _cite_candidates(text: str) -> tuple[set[str], set[str]]:
-    """Paper-citation tokens a block makes, split for the local-vs-external
-    existence check: ``handles`` (normalised ``pc``/``pa`` paper handles) and
-    ``slugs`` (``§slug`` / ``paper:slug`` cite_keys). Mirrors ``_ref_chips``
-    parsing so the colouring keys on exactly the tokens the linkifier
-    renders as compact ``§`` markers."""
-    handles: set[str] = set()
-    slugs: set[str] = set()
-    for ref in draft_markup.parse_references(text):
-        if ref.cls == draft_markup.CITE:
-            m = mentions.DRAFT_CITE_PATTERN.fullmatch(ref.target)
-            if m:
-                slugs.add(m.group("slug"))
-        elif ref.cls == draft_markup.AUTHORING:
-            parsed = handle_registry.parse(ref.target)
-            if parsed is not None and parsed[0] == "paper":
-                handles.add(handle_registry.normalize(ref.target))
-    for kind, ident, _chunk in mentions.extract_handles(text):
-        if kind == "paper":
-            slugs.add(ident.lstrip("#"))
-    return handles, slugs
-
-
 def provenance_state(text: str) -> str:
     """A paragraph's grounding provenance, for the smartdraft reader's
     per-paragraph colour marker: ``"sourced"`` (cites a corpus paper/patent,
@@ -572,32 +542,26 @@ def _review_status_by_chunk(store: Store, ref_id: int) -> dict[int, dict[str, An
     """Whole-draft human/checker review-ledger status (migration 0086),
     indexed by ``chunk_id``: ``{chunk_id: {checker: {approved_sha, verdict,
     at, dirty}, ...}}``. One call to ``Store.review_status_for_draft`` per
-    request — the read-side counterpart to the ``/human-review`` route's
-    write-through-the-``edit``-verb. Imported by ``routes/smartdraft.py``
-    to look up the focus block's review status.
+    request; read-side counterpart to ``/human-review``'s
+    write-through-``edit``. Imported by ``routes/smartdraft.py`` for the
+    focus block's review status.
 
-    A chunk **absent** from the map is one ``review_status_for_draft``
-    doesn't surface (retired / no ``content_sha`` / unordered) — not
-    reviewable, so the reader hides the ✓ gutter for it. A chunk **present**
-    with an empty per-checker dict is reviewable but never reviewed.
-    Threads every checker the ledger carries (not just ``'human'``) so a
-    future column (the other paper-writing-pipeline rung-3 checkers) can
-    render off the same payload; the reader template only reads ``'human'``
-    for now.
+    Chunk **absent** = not reviewable (``review_status_for_draft`` drops
+    retired/no-``content_sha``/unordered), reader hides its ✓ gutter.
+    Chunk **present** with empty per-checker dict = reviewable, never
+    reviewed. Carries every checker the ledger has, not just ``'human'``
+    (template currently only reads ``'human'``), so a future column reuses
+    this payload unchanged.
 
-    Each per-chunk dict also carries two RESERVED, non-checker keys
-    (the via-section rollup) — ``_section_chunk_id`` (the
-    nearest enclosing HEADING chunk id, ``None`` if none — the id a
-    paragraph's rollup uses to pull in its section's ``structure``/
-    ``adversarial`` state "via section") and ``_chunk_kind``. Leading
-    underscore so neither can ever collide with a real checker name
-    (``flow``/``cites``/``structure``/``adversarial``/``human``/``toc``)
-    and existing ``review.human``-style dotted template access is
-    unaffected.
+    Two RESERVED non-checker keys per chunk (leading underscore, can't
+    collide with a checker name — ``flow``/``cites``/``structure``/
+    ``adversarial``/``human``/``toc``): ``_section_chunk_id`` (nearest
+    enclosing HEADING chunk id, ``None`` if none — used to roll a
+    paragraph's ``structure``/``adversarial`` state up "via section") and
+    ``_chunk_kind``.
 
     Records are JSON-safe (``at`` ISO-stringified via :func:`_review_entry`)
-    because this map can be serialized (``tojson`` / ``JSONResponse``) — a
-    raw ``datetime`` would 500 the page."""
+    since this map serializes via ``tojson``/``JSONResponse``."""
     out: dict[int, dict[str, Any]] = {}
     for row in store.drafts.review_status_for_draft(ref_id):
         entry = out.setdefault(
@@ -814,8 +778,8 @@ def _section_styles_for(store: Store, ref: Any) -> list[tuple[str, str]]:
 def _chunk_addr(store: Store, handle: str) -> str | None:
     """Canonical ``dc<chunk_id>`` address for a posted draft-chunk handle.
 
-    The reader posts the bare ``chunks.handle`` (the draft editable-document model base-58
-    anchor, e.g. ``u9QG86``) — which ``get_draft_chunk`` resolves but
+    The reader posts the bare ``chunks.handle`` (the base-58 chunk anchor,
+    e.g. ``u9QG86``) — which ``get_draft_chunk`` resolves but
     ``edit(kind='draft')`` rejects (its guard only accepts the universal handles
     ``dc<chunk_id>`` / legacy ``¶<base58>`` form). Resolve the chunk and
     hand back the ``dc`` address so the per-heading style / list-kind
@@ -894,31 +858,25 @@ async def new_draft(
     seeds: str = Form(""),
     tags: str = Form(""),
 ) -> Response:
-    """Create a draft from the /drafts page. A draft is 1:1 with a
-    project, so this mints the owning strategic ``todo`` (carrying the
-    workspace + optional brief), then the draft under it, and lands on the
-    new draft's reader. ``slug`` is derived from the title when blank.
+    """Create a draft from the /drafts page. Draft is 1:1 with a project:
+    mints the owning strategic ``todo`` (workspace + optional brief), then
+    the draft under it, lands on the new reader. ``slug`` derives from
+    title when blank.
 
-    ``doctype`` (paper / patent / report / …) sets the document's style:
-    it is stored as ``meta.workspace.doc_type`` and its standing guidance
-    line becomes the project brief (the planner's ``## Project context``),
-    so the planner writes in the right register from the first tick.
+    ``doctype`` (paper/patent/report/…) → ``meta.workspace.doc_type``;
+    its guidance line becomes the project brief (planner's
+    ``## Project context``).
 
-    ``summary`` is the user's description of *what to write* — it becomes
-    the project todo's body (the ``## Body`` of every planner tick), i.e.
-    the planner's **initial prompt**, not just standing context.
-    ``meta.llm_tier='opus'`` is the dispatcher's auto-run signal, so the
-    planner starts on the description as soon as the next ``dispatch``
-    pass runs.
+    ``summary`` is the project todo's body (planner's ``## Body`` every
+    tick — the **initial prompt**, not just standing context).
+    ``meta.llm_tier='opus'`` arms the dispatcher's auto-run, so the
+    planner starts on next ``dispatch`` pass.
 
-    ``cfp`` (proposal doctype only) is the slug/id of a call-for-proposal
-    to attach via the ``has-requirement`` link — the planner then mirrors
-    the call's required sections + word limits (no fixed proposal
-    template). ``seeds`` (free text) + ``tags`` are the author's "things
-    to read" starting material: stored at
-    ``meta.workspace.extra['seeds']`` (cascades to the planner's
-    ``## Seed material`` block) and the tags also become ``topic:`` axis
-    tags on the project for later querying."""
+    ``cfp`` (proposal doctype only): slug/id of a call-for-proposal
+    attached via ``has-requirement`` — planner mirrors its required
+    sections/word limits. ``seeds`` (free text) + ``tags``: starting
+    material, stored at ``meta.workspace.extra['seeds']`` (→ planner's
+    ``## Seed material``); tags also become ``topic:`` axis tags."""
     title = title.strip()
     if not title:
         return RedirectResponse(url="/drafts", status_code=303)
@@ -1238,32 +1196,26 @@ def _safe_retraction_report(store: Store, ref: Any, **kw: Any) -> Any | None:
 
 @router.get("/drafts/{ident}/export.docx")
 async def export_docx_route(request: Request, ident: str) -> Response:
-    """Synchronous .docx export — renders the draft and streams it back as
-    a download. Toolchain-free (python-docx), so this "just works"; the
-    rendering runs off the event loop.
+    """Synchronous .docx export: renders the draft, streams it back.
+    Toolchain-free (python-docx); rendering runs off the event loop.
 
-    ``?citations=endnote`` emits native EndNote *Cite While You Write*
-    fields (``ADDIN EN.CITE`` + ``EN.REFLIST``) so EndNote recognizes and can
-    reformat the citations; the default (``plain``) is a numbered ``[n]`` +
-    References section that needs no add-in.
+    ``?citations=endnote`` emits EndNote *Cite While You Write* fields
+    (``ADDIN EN.CITE`` + ``EN.REFLIST``); default ``plain`` is a numbered
+    ``[n]`` + References section needing no add-in.
 
-    ``?sources=1`` returns a ``.zip`` instead — the ``.docx`` plus a
+    ``?sources=1`` returns a ``.zip`` instead: the ``.docx`` plus a
     ``sources/`` folder of every cited paper/datasheet PDF the host holds
-    (Word can't embed PDF pages inline the way the compiled-PDF path can),
-    with a ``manifest.txt`` listing anything that couldn't be located.
+    (Word can't inline-embed PDF pages the way compiled-PDF export can),
+    with a ``manifest.txt`` for anything not located.
 
-    ``?ignore_retractions=1`` overrides a retraction block (see
-    ``_retraction_blocked_response``). The gate itself only ever *reads*
-    stored retraction state (``check=False``, no network) — a download
-    click must never turn into a minute of Crossref latency; the
-    deliberate live re-check is the watch button
-    (``retraction_check_route``) the user presses and waits on on
-    purpose. See ``precis.export.retraction``'s module docstring for the
-    read/check split this mirrors. Taking the override — combined with
-    ``?sources=1`` — records which cite(s) were overridden in the sources
-    appendix's ``manifest.txt`` (``precis.export.sources.write_manifest``);
-    without ``?sources=1`` there's no appendix to record it in, so only the
-    server log line applies."""
+    ``?ignore_retractions=1`` overrides a retraction block
+    (``_retraction_blocked_response``). The gate only *reads* stored
+    retraction state (``check=False``, no network) — see
+    ``precis.export.retraction``'s docstring for the read/check split;
+    live re-check is the watch button (``retraction_check_route``).
+    Override + ``?sources=1`` records the overridden cite(s) in the
+    sources appendix manifest (``precis.export.sources.write_manifest``);
+    without ``?sources=1`` only the server log line records it."""
     from precis.export.docx import export_docx
 
     store = get_store(request)
@@ -1437,38 +1389,28 @@ async def retraction_status_route(request: Request, ident: str) -> Response:
 
 @router.post("/drafts/{ident}/retraction-check")
 async def retraction_check_route(request: Request, ident: str) -> Response:
-    """The retraction-watch button — trigger 2 of the demand-driven
-    retraction model (trigger 1 is ``precis.taproot.hub.attach_evidence``):
-    re-checks the draft's
-    cited papers through Crossref (TTL-gated, so a same-day re-press is
-    nearly free) and reports per-paper status. ``force=1`` ignores the
-    TTL — without it, pressing the button twice in one day is a silent
-    no-op and reads as broken.
+    """Retraction-watch button — trigger 2 of the demand-driven retraction
+    model (trigger 1: ``precis.taproot.hub.attach_evidence``). Re-checks
+    the draft's cited papers via Crossref (TTL-gated); ``force=1``
+    bypasses the TTL, else a same-day re-press is a silent no-op.
 
-    Same press also validates DOIs (docs/backlog/
-    draft-doi-completeness-check.md) — ``draft_retraction_report`` shares
-    the retraction check's own Crossref round-trip for the DOI-validity
-    signal wherever that check hits the network this press, and only
-    falls back to a dedicated ``check_refs_doi_validity`` call for cites
-    the retraction check skipped (still TTL-fresh) — never two GETs to
-    Crossref for the same DOI. Either way one wait refreshes both
-    signals; a previously never-validated DOI comes back stamped
-    ``valid``/``not_found`` in the same JSON payload.
+    Same press validates DOIs (docs/backlog/draft-doi-completeness-check.md):
+    ``draft_retraction_report`` reuses the retraction check's own Crossref
+    round-trip for DOI-validity where that check already hit the network,
+    falling back to ``check_refs_doi_validity`` only for TTL-fresh cites
+    it skipped — never two GETs for the same DOI. One wait refreshes both
+    signals; a never-validated DOI comes back stamped ``valid``/``not_found``.
 
-    Synchronous-with-a-cap for v1: the user
-    is deliberately waiting on this button, but a large draft is one
-    Crossref round-trip per uncached cite. So one press checks at most
-    ``_RETRACTION_CHECK_CAP`` cites, chosen by need
-    (``select_for_check``: never-checked first, then oldest stamp) —
-    a per-press budget, not a horizon, so pressing again continues
-    through the draft. The *report* still covers every cite: the pane's
-    "N of M never checked" prompt reads off it, and scoping the report to
-    the checked subset would make a half-walked draft look complete.
+    Per-press cap, not a horizon: checks at most ``_RETRACTION_CHECK_CAP``
+    cites (``select_for_check``: never-checked first, then oldest stamp);
+    repeat presses continue through the draft. The *report* covers every
+    cite regardless — the "N of M never checked" prompt reads off it, and
+    scoping to the checked subset would make a half-walked draft look
+    complete.
 
-    The whole walk — body render included — runs in one worker thread
-    under a wall-clock budget (``_RETRACTION_CHECK_BUDGET_S``), so
-    neither the event loop nor the request can be pinned by a slow
-    Crossref or a big draft."""
+    Whole walk (body render included) runs in one worker thread under
+    ``_RETRACTION_CHECK_BUDGET_S`` — a slow Crossref or big draft can't
+    pin the event loop or the request."""
     from precis.export.retraction import (
         cited_paper_refs,
         draft_retraction_report,
@@ -1990,23 +1932,18 @@ async def edit_marks(request: Request, ident: str) -> JSONResponse:
 
 @router.post("/drafts/{ident}/human-review")
 async def edit_human_review(request: Request, ident: str) -> JSONResponse:
-    """Record the human reviewer's sign-off on one draft block — the ✓
-    gutter checkbox (mirrors ``edit_marks``'s pen/eye toggle; distinct from
-    the automated per-heading ``POST /drafts/{ident}/review`` "review ▾"
-    menu, which files a *reviewer todo*, not a ledger row). Body ``{dc}``
-    (either the reader's base-58 handle or the ``dc<id>`` address —
-    resolved/validated via :func:`_chunk_addr`, like the table/text
-    editors). Writes through ``edit(kind='draft', review='human')`` so the
-    review ledger stays single-sourced with the MCP/CLI verb — this route
-    never calls ``Store.record_review`` directly — then returns the
-    chunk's fresh per-checker status (``Store.review_status_for_chunk``)
-    so the client re-syncs the button. Also carries a fresh ``rollup``
-    (``Store.review_rollup_for_draft``) so the toolbar badge can refresh
-    without a page reload.
+    """✓ gutter checkbox: records human sign-off on one block (distinct
+    from the automated ``POST /drafts/{ident}/review`` "review ▾" menu,
+    which files a reviewer todo, not a ledger row). Body ``{dc}`` (base-58
+    handle or ``dc<id>``, resolved via :func:`_chunk_addr`). Writes
+    through ``edit(kind='draft', review='human')`` — never calls
+    ``Store.record_review`` directly, keeping the ledger single-sourced
+    with the MCP/CLI verb. Returns fresh per-checker status
+    (``Store.review_status_for_chunk``) + ``rollup``
+    (``Store.review_rollup_for_draft``) for the client to re-sync.
 
-    This route only *sets* the human checkmark — un-review (retract) is
-    ``POST /drafts/{ident}/review/retract``,
-    a separate endpoint over ``Store.retract_review``."""
+    Only *sets* the checkmark; un-review is
+    ``POST /drafts/{ident}/review/retract`` (``Store.retract_review``)."""
     try:
         payload = await request.json()
     except Exception:
@@ -2503,31 +2440,23 @@ _LENS_ALIASES: dict[str, str] = {
 
 @router.post("/drafts/{ident}/review")
 async def review_block(request: Request, ident: str) -> JSONResponse:
-    """Run the incremental review fanout (``quest.review_fanout.
-    mint_review_fanout``) over a draft —
-    replacing this route's old ``structural``/``deep_review`` reviewer
-    vocabulary and its own per-heading todo-minting.
+    """Runs the incremental review fanout
+    (``quest.review_fanout.mint_review_fanout``) over a draft.
 
     Body ``{lens, dc?, only_dirty?}``:
 
-    - ``lens`` — one of ``flow`` | ``cites`` | ``structure`` | ``adversarial``
-      | ``toc`` | ``all`` (plus the accepted aliases ``structural`` →
-      ``structure``, ``deep_review`` → ``adversarial``). ``all`` mints
-      :data:`ALL_LENSES`, plus :data:`DOC_LENSES` when the scope is the
-      whole draft (``mint_review_fanout`` itself gates ``doc_lenses`` to
-      ``scope is None``, so passing them for a ``dc``-scoped call is a
-      harmless no-op). ``toc`` is document-altitude-only: mints ``doc_lenses
-      = ('toc',)`` and is rejected (400) when ``dc`` scopes it to a
-      chunk/subtree.
-    - ``dc`` — a block handle (chunk or heading) narrowing the scope to that
-      chunk or its subtree (``mint_review_fanout``'s own ``scope=``);
-      omitted → whole draft.
-    - ``only_dirty`` — pass-through to ``mint_review_fanout``. Defaults to
-      ``True`` for a whole-draft call (the cheap "run outstanding checks"
-      re-check loop) and ``False`` for a ``dc``-scoped call (an explicit
-      "run this paragraph/section" click always re-runs, rather than
-      silently no-op'ing on an already-approved pair); either default can be
-      overridden explicitly.
+    - ``lens`` — ``flow``|``cites``|``structure``|``adversarial``|``toc``|
+      ``all`` (aliases: ``structural``→``structure``,
+      ``deep_review``→``adversarial``). ``all`` mints :data:`ALL_LENSES`
+      plus :data:`DOC_LENSES` when scope is the whole draft
+      (``mint_review_fanout`` gates ``doc_lenses`` to ``scope is None``, so
+      passing them ``dc``-scoped is a no-op). ``toc`` is
+      document-altitude-only: 400 if ``dc`` scopes it to a chunk/subtree.
+    - ``dc`` — block handle (chunk or heading) narrowing scope to it/its
+      subtree (``mint_review_fanout``'s ``scope=``); omitted → whole draft.
+    - ``only_dirty`` — pass-through. Default ``True`` whole-draft
+      (re-check-outstanding loop), ``False`` when ``dc``-scoped (explicit
+      click always re-runs); either overridable.
 
     Returns the fanout's summary dict as JSON (``parent_id``, ``minted``,
     ``skipped``, ``unsettled_skipped``, ``author_minted``, ``chunks_seen``)

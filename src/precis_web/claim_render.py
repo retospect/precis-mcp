@@ -9,15 +9,14 @@ originator has been derived yet (`taproot/cite.py::finding_cite_keys` →
 from). The fuller evidence (un-starred corroborators / contradictors) is
 shown for context but does not print.
 
-A hub is cited by a **cite head** — either its 6-char ``[<pub_id>]`` or its
-``[fi<id>]`` finding handle (the two grammars the reference ring also
-mines, `utils/refeye.py`). :func:`render_claim_evidence` resolves a head to
-the hub's ref_id, then `derive_evidence` for the evidence (the same
-derivation `finding_cite_keys` calls internally — this module reuses the
-lower-level function directly so it can also thread the result into
-`claim_trust`, once, rather than re-deriving it). :func:`render_claims_evidence`
-is the plural twin — many cite heads' evidence in a handful of bulk queries
-regardless of hub count (OPEN-ITEMS.md "/smartdraft reader" perf fix).
+A hub is cited by a **cite head**: its 6-char ``[<pub_id>]`` or its
+``[fi<id>]`` finding handle (the two grammars `utils/refeye.py`'s
+reference ring also mines). :func:`render_claim_evidence` resolves a
+head to the hub's ref_id, then `derive_evidence` for the evidence (the
+same derivation `finding_cite_keys` calls internally — reused directly
+here to thread the result into `claim_trust` once, not re-derive it).
+:func:`render_claims_evidence` is the plural twin: many cite heads'
+evidence in a handful of bulk queries regardless of hub count.
 
 Consumers: the ``/claim/<head>`` page, the ``/preview/claim/<head>`` hover
 fragment, and the reader sidebars (singular for one hub; plural for a
@@ -171,45 +170,27 @@ def _hypothesis_ref_ids_bulk(store: Store, ref_ids: Iterable[int]) -> set[int]:
 def claim_cite_head_sets(
     store: Store, texts: Iterable[str]
 ) -> tuple[frozenset[str], dict[str, int], dict[str, int], frozenset[str]]:
-    """The cite heads in ``texts`` split into ``(hubs, pending, refuted,
-    hypothesis)`` from ONE resolution pass across the window: each distinct
-    head is resolved once (first to a ref_id, then the hub check runs as a
-    single bulk query over every distinct ref_id — :func:`~precis.taproot.
-    seniority.is_claim_hub_bulk` — rather than one ``is_claim_hub`` round
-    trip per head, OPEN-ITEMS.md's "/smartdraft reader" batch B). The
-    refuted check (:func:`_refuted_ref_ids_bulk`) and the hypothesis check
-    (:func:`_hypothesis_ref_ids_bulk`) are each a second/third bulk query
-    over the same resolved id set — still O(1) queries for the whole
-    window, not O(heads).
+    """Cite heads in ``texts`` split into ``(hubs, pending, refuted,
+    hypothesis)`` — feeds :func:`precis_web.linkify.linkify_refs`'s
+    ``claims``/``pending_claims``/``refuted_claims``/``hypothesis_claims``
+    (rendering semantics: that module's docstring). ONE resolution pass
+    across the window: each distinct head resolved once to a ref_id, then
+    hub/refuted/hypothesis checks each run as ONE bulk query over the
+    resolved id set (:func:`~precis.taproot.seniority.is_claim_hub_bulk`,
+    :func:`_refuted_ref_ids_bulk`, :func:`_hypothesis_ref_ids_bulk`) —
+    O(1) queries for the whole window, not O(heads).
 
-    ``hubs`` is the ``claims`` side-channel a reader threads into
-    :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
-    cite renders as a filled ``◆`` claim anchor. ``pending`` is its hollow-
-    ``◇`` twin: ``{head: ref_id}`` for heads that resolve but AREN'T a hub —
-    a claim still in the chase, not yet canonical. ``refuted`` is the red-◆
-    twin: ``{head: ref_id}`` for heads carrying ``STATUS:refuted`` — the
-    do-not-repropose ledger (docs/backlog/quest-dossier-dialectic.md
-    §"Refuted lifecycle"). ``hypothesis`` is the fourth twin: heads whose hub
-    carries ``refs.meta.artifact_type == 'hypothesis'`` — a conjecture, not
-    a finding (docs/backlog/hypothesis-cites-render-not-stored.md) — feeding
-    :func:`~precis_web.linkify.linkify_refs`'s ``hypothesis_claims``.
-
-    The four sets are mutually exclusive — precedence **refuted → hypothesis
-    → hubs → pending**: a refuted head is carved out of every other set here
-    (a refuted hypothesis is dead regardless of its type), and a hypothesis
-    head is carved out of ``hubs`` (it IS still a live claim hub by
-    construction — ``mint_hub`` tags ``TAPROOT:claim`` unconditionally — but
-    reported separately here so the anchor layer never has to re-derive
-    "hub AND hypothesis"). This is not left to the anchor layer's precedence
-    check alone (:func:`~precis_web.linkify._render_claim_hub` still checks
-    ``refuted_claims`` first, belt-and-suspenders, for callers that build
-    their own maps some other way). No extra kind lookup is needed to tell a
-    pending head apart from a non-finding cite: :func:`_resolve_head_ref_id`
-    only ever resolves to a ``finding`` ref (the ``fi`` handle code decodes
-    to that kind by construction, and :func:`~precis.utils.pub_id_lookup.
-    lookup_pub_id_finding` filters to it in SQL), so every resolved
-    head that's neither a hub nor refuted is, by construction, a pending
-    finding."""
+    Sets are mutually exclusive, precedence **refuted → hypothesis → hubs
+    → pending**: a refuted head is carved out of every other set (dead
+    regardless of type); a hypothesis head is carved out of ``hubs`` even
+    though ``mint_hub`` tags it ``TAPROOT:claim`` unconditionally (so a
+    live claim hub) — reported separately so the anchor layer doesn't
+    re-derive "hub AND hypothesis" (:func:`~precis_web.linkify._render_claim_hub`
+    still checks ``refuted_claims`` first too, belt-and-suspenders, for
+    callers building their own maps). No extra kind lookup needed for
+    pending vs. non-finding: :func:`_resolve_head_ref_id` only ever
+    resolves to a ``finding`` ref, so a resolved head that's neither hub
+    nor refuted is by construction a pending finding."""
     head_ref: dict[str, int] = {}
     for text in texts:
         for head in cite_heads_in(text):

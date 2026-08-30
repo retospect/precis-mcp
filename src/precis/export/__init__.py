@@ -1,4 +1,4 @@
-"""Document export engines (LaTeX → Tier-B). The draft editable-document model.
+"""Document export engines (LaTeX → Tier-B).
 
 End-matter sections (each vanishes byte-identically when empty): trust
 marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published

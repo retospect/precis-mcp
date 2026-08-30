@@ -41,8 +41,7 @@ detailed rationale):
 from __future__ import annotations
 
 import logging
-import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import psycopg
 
@@ -50,7 +49,12 @@ from precis import settings
 from precis.ingest.cards import ensure_abstract_card, rewrite_cards
 from precis.store import Store
 from precis.utils.authors import author_names
+from precis.workers import _throttle
 from precis.workers.runner import BatchResult
+
+#: Env var + default for the cadence throttle (see :func:`_throttle.due`).
+_REFRESH_ENV_VAR = "PRECIS_OPENALEX_ENRICH_REFRESH_HOURS"
+_DEFAULT_REFRESH_HOURS = 6.0
 
 log = logging.getLogger(__name__)
 
@@ -64,30 +68,9 @@ _STATE_KEY = "openalex_enrich:last_run"
 _DEFAULT_FETCH_LIMIT = 50
 
 
-def _refresh_hours() -> float:
-    """Minimum gap between passes.
-
-    ``PRECIS_OPENALEX_ENRICH_REFRESH_HOURS`` (default 6.0, floor 0.1).
-    """
-    raw = os.environ.get("PRECIS_OPENALEX_ENRICH_REFRESH_HOURS")
-    if not raw:
-        return 6.0
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return 6.0
-
-
 def _due(store: Store) -> bool:
     """True when the throttle window has elapsed since the last pass."""
-    last = store.get_setting(_STATE_KEY)
-    if not last:
-        return True
-    try:
-        last_ts = datetime.fromisoformat(last)
-    except ValueError:
-        return True
-    return datetime.now(UTC) - last_ts >= timedelta(hours=_refresh_hours())
+    return _throttle.due(store, _STATE_KEY, _REFRESH_ENV_VAR, _DEFAULT_REFRESH_HOURS)
 
 
 def _promote_openalex_abstracts(store: Store, *, limit: int | None) -> list[int]:

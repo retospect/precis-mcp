@@ -1374,7 +1374,7 @@ class PythonHandler(Handler):
                 f"args={{'entry': {entry!r}, 'max_events': 2000}})",
             )
 
-        # ── env gate ───────────────────────────────────────────────
+        # ── dark switch ────────────────────────────────────────────
         if os.environ.get(_RUNTRACE_GATE_ENV) != "1":
             raise BadInput(
                 f"runtrace is gated by {_RUNTRACE_GATE_ENV}=1 because it "

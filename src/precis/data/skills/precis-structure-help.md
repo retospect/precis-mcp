@@ -99,15 +99,15 @@ put(
 | `add_bond` | `i`, `j`, `order?`, `image?:[i,j,k]` | declare a bond (intent) |
 | `remove_bond` | `i`, `j` | drop a declared bond |
 | `constrain` | `atoms:[…]`, `kind` | `fixed-x|y|z|all` — freeze axes (use sparingly) |
-| `eye` | `name`, `atoms:[…]`, `reach?`, `for?` | drop/replace a named eye (§6.8) — see Eyes & measures |
-| `measure` | `kind`, `atoms:[…]`, `direction?`, `goal?`, `strength?`, `for?` | pin a measurement with an optional graded goal (§7) |
+| `eye` | `name`, `atoms:[…]`, `reach?`, `for?` | drop/replace a named eye — see Eyes & measures |
+| `measure` | `kind`, `atoms:[…]`, `direction?`, `goal?`, `strength?`, `for?` | pin a measurement with an optional graded goal |
 | `unmark` | `name` | retire an eye by name |
 | `remove_measure` | `kind`, `atoms:[…]` | retire a measure |
 | `relax` | `fidelity?`, `steps?`, `model?` | terminal op — see the ladder below |
 
 **Bonds are intent, not a DFT input.** Declare the bonds you mean; the
 geometry gets fixed by `relax`, and DFT consumes positions + cell (bonds are
-dropped on export, §8.1). Auto-detected bonds from geometry show up in
+dropped on export). Auto-detected bonds from geometry show up in
 probes tagged `inferred` — you always see the best picture of reality.
 
 ## Place an adsorbate on a real site, not a guessed z
@@ -153,7 +153,7 @@ get(
 )  # the TOC: formula · natoms · pbc · bonds · per-atom rows
 ```
 
-The TOC is the **one round-trip overview**: cell card, composition, pbc,
+The TOC is the **one round-trip overview**: cell summary, composition, pbc,
 bond count, fragment count, the last relax envelope (if any), and one row
 per atom (element · fractional position · coordination · fixed). A symmetry-
 reduced (Wyckoff-orbit) collapse is a later increment.
@@ -184,7 +184,7 @@ get(
 )  # the DRC gate: overlaps + over-valence + too-long bonds + fixes
 ```
 
-### Spatial — the CAD ray / plane, retargeted to atoms (§6.2)
+### Spatial — the CAD ray / plane, retargeted to atoms
 
 Geometry args are **Cartesian** (Å); accept a list `[x,y,z]` or a
 comma-string `"0,0,5"`.
@@ -203,7 +203,7 @@ get(..., view="bonds_through_plane", args={"point": [0, 0, 5], "normal": [0, 0, 
 get(..., view="bonds_in_sphere", args={"center": [4.2, 4.2, 6.0], "radius": 3.0})
 ```
 
-### Graph topology & diff (§6.1/§6.3/§6.5)
+### Graph topology & diff
 
 ```python
 get(
@@ -219,7 +219,7 @@ get(
 `fragments` answers "did this edit break the structure apart?"; `diff` is
 the single most insightful view of what a relax (or an edit) actually did.
 
-### Point of view — the embodiment readout (§6.6)
+### Point of view — the embodiment readout
 
 One uniform readout regardless of *what* you focus on — an atom or a
 fragment (a ring from `rings`, a molecule from `fragments`):
@@ -237,7 +237,7 @@ Returns **`i_am`** (atom/fragment) · **`i_include`** (the support) ·
 **`i_touch`** (everything within reach, nearest-first). `pov` is the
 *stateless* readout; an **eye** is the persisted, named form — see below.
 
-## Eyes & measures — persisted, re-evaluated markers (§6.8/§7)
+## Eyes & measures — persisted, re-evaluated markers
 
 Unlike a `pov` (recomputed each call), an **eye** or **measure** is *saved*
 on the design and **re-evaluated after every edit/relax**, so its value +
@@ -333,7 +333,7 @@ the design and **every run is recorded** (see `view='runs'`).
 | `ml` | ASE + MACE-MP-0 / CHGNet | `precis-mcp[dft-ml]` | cheap, physical pre-relax before any DFT |
 | `ff` · `xtb` · `dft-fast` · `dft-tight` | rented | (later) | progressively more correct |
 
-`emt` (ADR 0053 §8) is ours like `clean` and works out of the box (ASE +
+`emt` is ours like `clean` and works out of the box (ASE +
 spglib are core deps, not gated behind an extra); an element outside its
 closed set raises `Unsupported` with a "use fidelity='ml'" hint rather than
 a stray error. No variable-cell mode.
@@ -490,31 +490,11 @@ get(kind="structure", id="pd111", view="cif")  # CIF via ASE (core dep)
 POSCAR and extXYZ are pure (zero deps); CIF goes through ASE, a core dep —
 no extra needed.
 
-## Delete
+## Retire a design
 
 ```python
 delete(
     kind="structure", id="pd111"
 )  # soft-retire the whole design (atoms/bonds retired, recoverable)
 ```
-
-## Scope (v1)
-
-Cell (lengths/angles or explicit lattice) + per-axis PBC; atoms (any
-element) with fractional positions, `fixed` constraints, declared
-magmom/oxidation; a bond graph (order + provenance + periodic image).
-Ops: set_cell / add_atom / set_element / vacancy / displace / add_bond /
-remove_bond / constrain / relax. Probes: atom / neighborhood / bonds / find
-/ validate. Nav: line / plane / bonds_through_plane / bonds_in_sphere / path
-/ rings / fragments / diff / pov. Relax: `clean` (pure) + `emt` (torch-free,
-closed element set) + `ml` (MLIP-gated). Compute runs recorded with
-convergence curves. Export: POSCAR / extXYZ / CIF. **External-DB import**
-(ADR 0053): `catalysis-hub` on-demand hydrate is code-complete but dark (live
-API now credential-gated); the keyless path is `cathub_db.batch_import` over a
-local cathub `.db`. Open bulk-source adapters (OC20/AQCat25) are follow-ups. **Deferred (vision):**
-Wyckoff-orbit TOC, named adsorption sites, bulk-insert ops (add_layer /
-fill / add_chain), persisted named eyes + bookmark stack, electronic-field
-lenses (charge / ESP / spin / Fukui), voids/channels, MD/NEB trajectories
-with per-frame geometry, the cross-experiment ensemble cube, GPAW/DFT as a
-cluster job.
 ```

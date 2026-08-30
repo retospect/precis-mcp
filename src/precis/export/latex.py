@@ -1,28 +1,23 @@
 """LaTeX export for the ``draft`` kind — the Tier-B export path.
 
-A draft lives as ordered ``chunks`` in Postgres (the canonical, editable
-form). *Export* is a one-way resolution pass that renders those chunks
-into a compilable LaTeX project; the output is **disposable, not
-editable** (you re-export from the draft, you never hand-edit the .tex).
-That assumption is what lets us stamp machine labels on everything:
+A draft lives as ordered ``chunks`` in Postgres (canonical, editable).
+*Export* is a one-way resolution pass rendering those chunks into a
+compilable LaTeX project; the output is **disposable, not editable**
+(re-export from the draft, never hand-edit the .tex) — which is what
+lets every block carry a machine label: ``\\label{chunk:<handle>}``,
+with an intra-draft ``[¶h]`` cross-ref becoming ``\\cref{chunk:h}``;
+``[§slug~n]``/bare ``paper:slug~n`` citations become ``\\cite{slug}``
+with a generated ``refs.bib`` (DOI/arXiv included when known); every
+defined abbreviation becomes a ``\\newacronym`` with each surface
+occurrence a glossary call (first use expands, later uses abbreviate,
+with a page-number "where it occurs" list) — later uses also wrapped
+in a non-printing ``\\pdftooltip`` so hovering reveals the full term
+(the PDF analogue of the web reader's popup).
 
-* every block gets ``\\label{chunk:<handle>}``; an intra-draft ``[¶h]``
-  cross-ref becomes ``\\cref{chunk:h}`` — cross-references resolve
-  automatically;
-* ``[§slug~n]`` / bare ``paper:slug~n`` citations become ``\\cite{slug}``
-  and a ``refs.bib`` is generated from the cited paper refs (DOI/arXiv
-  included when the corpus knows them);
-* every defined abbreviation becomes a ``\\newacronym`` and each surface
-  occurrence becomes a glossary call — so first use expands to the full
-  term and every later use is the abbreviation, automatically, with the
-  page-number "where it occurs" list in the glossary. Later uses are also
-  wrapped in a non-printing ``\\pdftooltip`` so hovering the short reveals
-  the full term on screen (the PDF analogue of the web reader's popup).
-
-This module produces the *project files* (``main.tex`` + ``refs.bib`` +
-the copied ``preamble.tex``). Compiling them (latexmk + biber +
-makeglossaries) and the post-compile LLM repair loop are a separate
-increment; so is the Word/pandoc path.
+Produces the *project files* (``main.tex``+``refs.bib``+copied
+``preamble.tex``). Compiling them (latexmk+biber+makeglossaries) and
+the post-compile LLM repair loop are a separate increment; so is the
+Word/pandoc path.
 """
 
 from __future__ import annotations
@@ -336,42 +331,40 @@ def _wrap_cjk(s: str) -> str:
 
 def _encode_unicode(escaped: str) -> str:
     """Translate non-ASCII characters to LaTeX commands (``≈`` →
-    ``\\approx``, ``α`` → ``\\alpha``), leaving ASCII — including the
-    backslash escapes we just emitted — untouched (``non_ascii_only``).
-    Sub/superscript digits are transliterated first (pylatexenc has no
-    mapping and would pass them through verbatim). CJK runs (which pylatexenc
-    also keeps verbatim) are then wrapped in ``\\cjktext{…}`` so a CJK font
-    renders them instead of a missing-glyph rule. The single biggest
-    determinism lever: the engine never hits a "missing character" on
-    arbitrary scientific prose. Unknown glyphs are kept verbatim — under
-    lualatex (the export engine) that's a recoverable missing-glyph
-    warning, not a fatal error (the compile-repair loop is the backstop)."""
+    ``\\approx``, ``α`` → ``\\alpha``), leaving ASCII (incl. backslash
+    escapes just emitted) untouched (``non_ascii_only``). Sub/superscript
+    digits are transliterated first (pylatexenc has no mapping and would
+    pass them through verbatim). CJK runs (also kept verbatim by
+    pylatexenc) are wrapped in ``\\cjktext{…}`` for CJK-font rendering
+    instead of a missing-glyph rule — the single biggest determinism
+    lever against a "missing character" on arbitrary scientific prose.
+    Unknown glyphs stay verbatim — under lualatex that's a recoverable
+    warning, not a fatal error (the compile-repair loop is the
+    backstop)."""
     return _wrap_cjk(_U2L.unicode_to_latex(_normalize_subsup(escaped)))
 
 
 def _glsify(escaped: str, keymap: dict[str, str], seen: set[str] | None = None) -> str:
     """Replace whole-word occurrences of each known abbreviation short
     with a glossary call (longest-first, word-bounded). Runs on
-    already-escaped prose; shorts are alphanumerics so escaping never
-    touched them.
+    already-escaped prose; shorts are alphanumerics, untouched by
+    escaping.
 
-    A trailing plural ``s`` is absorbed and rendered with the plural form
-    — so a defined ``MOF`` term links *both* ``MOF`` and ``MOFs`` to the one
-    glossary entry, rather than leaving the plural un-linked. Longest-first
-    ordering means a literal short ``As`` still wins over treating ``A`` +
-    plural ``s``. (Irregular plurals still need the explicit form; ``s``
-    covers the overwhelming majority.)
+    A trailing plural ``s`` is absorbed and rendered with the plural
+    form, so a defined ``MOF`` links both ``MOF`` and ``MOFs`` to one
+    entry (longest-first ordering means a literal short ``As`` still
+    wins over ``A``+plural ``s``; irregular plurals need the explicit
+    form).
 
-    First-use vs. later-use split (``seen`` threads the set of already-seen
-    keys across the whole render, so document order == glossaries' first-use
-    order): the *first* occurrence renders as a plain ``\\gls`` / ``\\glspl``
-    so the glossaries package expands it inline (full term + short). Every
-    *later* occurrence renders as ``\\glstip`` / ``\\glspltip`` — the bare
-    short wrapped in a non-printing ``\\pdftooltip`` that reveals the full
-    term on hover (the PDF analogue of the web reader's abbreviation popup).
-    Only later uses are wrapped because a pdftooltip box can't break across a
-    line and the first-use expansion is multi-word. When ``seen`` is omitted
-    every occurrence renders plain (used by isolated unit tests)."""
+    ``seen`` threads already-seen keys across the whole render (so
+    document order == glossaries' first-use order): the *first*
+    occurrence renders plain ``\\gls``/``\\glspl`` (full term + short,
+    inline); every *later* occurrence renders ``\\glstip``/``\\glspltip``
+    — the bare short wrapped in a non-printing ``\\pdftooltip`` revealing
+    the full term on hover. Only later uses are wrapped since a
+    pdftooltip box can't break across a line and first-use expansion is
+    multi-word. ``seen`` omitted → every occurrence renders plain (unit
+    tests)."""
     if not keymap:
         return escaped
     shorts = sorted((s for s in keymap if s), key=len, reverse=True)
@@ -512,26 +505,23 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
 
 def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
     """A finding handle (``fi<id>``) → its bibliographic cite_key(s), via
-    the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`)
-    ``precis resolve`` also uses. A plain finding resolves to its primary
-    cite_key once the chase establishes it (so it merges with a direct
-    cite of that paper and ``build_bib`` renders a real entry), else its
-    ``pub_id`` placeholder. A Taproot claim hub (``TAPROOT:claim``) — a
-    "living citation" — resolves instead to its *currently derived*
-    ``establishes`` originator(s), falling back to corroborators, so the
-    same hub cite improves on the next export as the evidence graph
-    grows. Empty when the target doesn't resolve to a live finding, or a
-    hub has no resolvable evidence yet (in-flight).
+    the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`,
+    also used by ``precis resolve``). A plain finding resolves to its
+    primary cite_key once chase establishes it (merging with a direct
+    cite of that paper), else its ``pub_id`` placeholder. A Taproot claim
+    hub (``TAPROOT:claim``, a "living citation") instead resolves to its
+    *currently derived* ``establishes`` originator(s), falling back to
+    corroborators — the same hub cite improves on the next export as the
+    evidence graph grows. Empty when the target doesn't resolve to a
+    live finding, or a hub has no resolvable evidence yet.
 
-    ``pin`` (Taproot slice A2, Phase 2 — reaches the draft grammar via
+    ``pin`` (Taproot slice A2, Phase 2, via
     :data:`precis.utils.mentions.BARE_BRACKET_REF_PATTERN`'s optional
-    ``pin`` group) overrides or extends a HUB's derived cite_keys through
-    the ONE shared :func:`precis.taproot.cite.apply_pin` policy — the same
-    one ``precis resolve``'s base32-token pin uses, so a pin behaves
-    identically wherever an author writes it. A pin on a non-hub finding
-    is meaningless (the finding already resolves off its own
-    ``primary_cite_key`` — there's no derived-originator set to
-    override) and is dropped with a warning rather than erroring."""
+    group) overrides/extends a HUB's derived cite_keys through the ONE
+    shared :func:`precis.taproot.cite.apply_pin` policy (same as
+    ``precis resolve``'s base32-token pin, so behaviour is identical
+    wherever written). A pin on a non-hub finding is meaningless
+    (nothing to override) and is dropped with a warning, not an error."""
     if ctx.store is None:
         return ""
     parsed = handle_registry.parse(tgt)
@@ -715,19 +705,18 @@ def _cite(slug: str, ctx: _Ctx) -> str:
 
 
 def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
-    """Render a finding's resolved cite_key(s) (:func:`_render_finding_cite`)
-    — the multi-key case a Taproot claim hub with several derived
-    originators needs.
+    """Render a finding's resolved cite_key(s)
+    (:func:`_render_finding_cite`) — the multi-key case a Taproot claim
+    hub with several derived originators needs.
 
-    ``[]`` → no cite (unresolvable / in-flight — unchanged from before
-    hubs existed). Exactly ONE key stays on the existing single-cite
-    :func:`_cite` path byte-for-byte, so an ordinary finding and a
-    single-originator hub are zero-regression-risk. More than one key
-    registers every base key on ``ctx.cited`` (so :func:`build_bib` emits
-    each entry) and emits one combined ``\\cite{k1,k2}`` (biblatex accepts
-    the comma list) — except in patent/footnote mode, which has no
-    multi-key form, so those fall back to per-key :func:`_cite`
-    concatenation (hubs are rare there; correctness over polish)."""
+    ``[]`` → no cite (unresolvable/in-flight, unchanged from before hubs
+    existed). Exactly ONE key stays on the existing single-cite
+    :func:`_cite` path byte-for-byte (zero regression risk for an
+    ordinary finding). More than one key registers every base key on
+    ``ctx.cited`` (:func:`build_bib` emits each) and emits one combined
+    ``\\cite{k1,k2}`` — except patent/footnote mode, which has no
+    multi-key form and falls back to per-key :func:`_cite` concatenation
+    (hubs are rare there; correctness over polish)."""
     if not keys:
         return ""
     if len(keys) == 1:
@@ -1043,7 +1032,7 @@ _CITE_ENTRY_TYPES = (
 # Human labels for the ``meta.subtype`` sub-genre of a datasheet — surfaced in
 # the bibliography (``howpublished``) + the reader badge + the docx reference
 # line so a cited app-note reads as an app-note, not a bare "Datasheet".
-_DATASHEET_SUBTYPE_LABELS = {
+DATASHEET_SUBTYPE_LABELS = {
     "datasheet": "Datasheet",
     "app-note": "Application note",
     "errata": "Errata",
@@ -1056,7 +1045,7 @@ def datasheet_pub_label(meta: dict[str, Any] | None) -> str:
     ``"Datasheet"``). Shared by the LaTeX bib, the docx reference line, and
     the web reader badge so all three agree on the genre string."""
     sub = str((meta or {}).get("subtype") or "datasheet")
-    return _DATASHEET_SUBTYPE_LABELS.get(sub, "Datasheet")
+    return DATASHEET_SUBTYPE_LABELS.get(sub, "Datasheet")
 
 
 def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> str:
@@ -1178,21 +1167,21 @@ def build_source_appendix(
     *,
     retraction_override: list[Any] | None = None,
 ) -> str:
-    """A ``pdfpages`` appendix that inlines every cited source PDF the host
-    holds, one bookmarked entry each. Empty string when nothing is present
-    and no override was taken.
+    """A ``pdfpages`` appendix that inlines every cited source PDF the
+    host holds, one bookmarked entry each. Empty string when nothing is
+    present and no override was taken.
 
-    Each present source is preceded by an ``\\addcontentsline`` so it gets a
-    TOC / PDF-bookmark entry, then ``\\includepdf[pages=-]`` pulls in all its
-    pages. Missing sources become a ``% not bundled`` comment + a warning, so
-    the .tex records the gap without breaking the build.
+    Each present source gets an ``\\addcontentsline`` (TOC/PDF-bookmark
+    entry) then ``\\includepdf[pages=-]`` for all its pages. Missing
+    sources become a ``% not bundled`` comment + a warning, recording
+    the gap without breaking the build.
 
-    ``retraction_override`` — the ``CitedPaper``s (``precis.export.retraction``)
-    the export gate let through via ``ignore_retractions=1`` — adds a
-    "Retraction override" subsection naming each one, the trace the override
-    is supposed to leave in the compiled PDF. It forces the appendix to
-    render even when no PDFs are present, so the override is never silently
-    dropped alongside an empty source list.
+    ``retraction_override`` — the ``CitedPaper``s
+    (``precis.export.retraction``) the export gate let through via
+    ``ignore_retractions=1`` — adds a "Retraction override" subsection
+    naming each, the trace the override must leave in the compiled PDF.
+    Forces the appendix to render even with no PDFs present, so the
+    override is never silently dropped alongside an empty source list.
     """
     present = bundle.present
     override = list(retraction_override or [])
@@ -1337,29 +1326,27 @@ def assemble_document(
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
-    ``author_block`` is the pre-rendered ``\\author{}`` / ``\\affil{}``
-    lines from :func:`build_author_block` (already escaped). ``appendix`` is
-    an optional pre-rendered block (e.g. the ``pdfpages`` referenced-sources
-    appendix) placed after the bibliography.
+    ``author_block`` is the pre-rendered ``\\author{}``/``\\affil{}``
+    lines from :func:`build_author_block` (already escaped).
+    ``appendix`` is an optional pre-rendered block (e.g. the
+    ``pdfpages`` referenced-sources appendix) placed after the
+    bibliography.
 
-    ``doc_type='patent'`` suppresses the bibliography (``\\addbibresource`` /
-    ``\\printbibliography``) — a patent specification cites prior art in the
-    running text, not in a reference list.
+    ``doc_type='patent'`` suppresses the bibliography
+    (``\\addbibresource``/``\\printbibliography``) — a patent
+    specification cites prior art in the running text, not a reference
+    list. ``remarkable=True`` injects the reMarkable-2 page geometry
+    after the preamble.
 
-    ``remarkable=True`` injects the reMarkable-2 page geometry after the
-    preamble (send-to-tablet export).
+    ``unverified_section``/``published_section``/``data_package_section``
+    (:func:`build_unverified_claims_section`/
+    :func:`build_published_claims_section`/
+    :func:`build_data_package_section`) are optional pre-rendered blocks
+    placed in that order before the bibliography — each empty-means-absent
+    (AC 6: an all-clean draft's output is unchanged).
 
-    ``unverified_section`` (:func:`build_unverified_claims_section`) is an
-    optional pre-rendered "Unverified claims" block placed BEFORE the
-    bibliography — empty when the export marked nothing, so an all-clean
-    draft's output is unchanged (AC 6). ``published_section``
-    (:func:`build_published_claims_section`) sits right after it, same
-    empty-means-absent contract. ``data_package_section``
-    (:func:`build_data_package_section`) sits right after ``published_section``
-    and before the bibliography, same empty-means-absent contract.
-
-    ``extra_preamble`` is injected right after the checked-in preamble (the
-    same slot the reMarkable geometry uses) — :func:`export_draft` passes
+    ``extra_preamble`` injects right after the checked-in preamble (same
+    slot as the reMarkable geometry) — :func:`export_draft` passes
     ``\\usepackage{embedfile}`` here when the data-package section is
     non-empty, so a snapshot-free export never loads the package.
     """

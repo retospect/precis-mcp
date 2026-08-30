@@ -1,78 +1,59 @@
 """Quest loop reconciler — guarantee one live ``quest_tick`` loop per active quest.
 
-The old rung-4d autonomy (:mod:`precis.quest.allocator`) picked one active quest
-per worker pass and ran an **inline** ``run_quest_tick`` — a single scored step,
-not a loop. :mod:`precis.workers.job_types.quest_tick` replaced that shape: the
-tick is now a **coordinator campaign** that runs indefinitely, event-driven, and
-rests (``Done``) only after a bounded run of consecutive dry/failed slices —
-waiting to be re-armed by a fresh ``quest_tick`` job. The two designs collide if
-both run: the allocator's inline tick and a live coordinator loop for the same
-quest would double-drive it.
-
-This module is the replacement autonomy: not "which quest ticks next" but
-**"does every active quest have a live loop, and is a rested one re-armed?"** —
-a much simpler, idempotent reconciliation, run every worker pass.
+:mod:`precis.workers.job_types.quest_tick` is a **coordinator campaign**:
+runs indefinitely, event-driven, resting (``Done``) only after a bounded
+run of consecutive dry/failed slices, then waits to be re-armed by a fresh
+``quest_tick`` job. This module is that autonomy — every worker pass asks,
+per active quest, "does it have a live loop, and is a rested one
+re-armed?" — idempotent reconciliation, not scheduling.
+(:mod:`precis.quest.allocator`'s inline per-pass tick is a distinct,
+non-looping shape reserved for the manual ``precis quest run`` one-shot;
+running both against the same quest would double-drive it.)
 
 The mint is idempotent via ``idem_key=f"quest_tick:{quest_id}"``:
 ``JobHandler._lookup_idem`` blocks a re-mint against ANY non-terminal job
 (queued / running / waiting_time / waiting_children / …), so a sleeping
-coordinator between heartbeats is correctly left alone, while a coordinator
-that reached ``Done`` (terminal) no longer blocks — the next reconcile pass
-mints a fresh loop and the quest self-heals.
+coordinator between heartbeats is left alone, while one that reached ``Done``
+no longer blocks — the next pass mints a fresh loop.
 
 **Reboot self-heal (reap orphaned loops).** A coordinator slice that dies
-mid-run (node reboot, worker restart) leaves its job pinned at a *non-terminal*
-status (`running`, or a `waiting_*` park whose wake_runner also died) — nothing
-transitions it, so its `idem_key=quest_tick:<id>` keeps blocking a re-mint. The
-sweeper eventually fails such a job, but only after the ~1h stuck-job threshold
-on its own cadence, so recovery is slow (before this, a manual
-``tag(kind='job', …, add=['STATUS:cancelled'])`` was needed). ``reconcile_quest_
-loops`` now closes that gap itself: for each active quest it first cancels a
-*provably orphaned* loop — non-terminal, `meta.lease_until` non-null and expired
-**by a grace margin** (see below) — so ``ensure_quest_loop`` re-mints a fresh
-loop in the same pass. **Division of labor:** the reconciler owns
-quest-coordinator orphans (it has the quest context and runs every worker pass,
-so it reacts in ~15 min); the sweeper stays the general backstop for every other
-coordinator/`claude_inproc` orphan (and for a quest loop should the reconciler
-be disabled).
+mid-run (node reboot, worker restart) leaves its job pinned non-terminal
+(`running`, or a `waiting_*` park whose wake_runner also died), so its
+`idem_key` keeps blocking a re-mint until the sweeper's ~1h stuck-job
+threshold fires. ``reconcile_quest_loops`` closes that gap per-pass: it
+cancels a *provably orphaned* loop (non-terminal, `meta.lease_until`
+non-null and expired by a grace margin — see below) so
+``ensure_quest_loop`` re-mints in the same pass. **Division of labor:** this
+reconciler owns quest-coordinator orphans (reacts in ~15 min, one pass); the
+sweeper is the general backstop for every other coordinator/`claude_inproc`
+orphan (and for a quest loop if the reconciler is disabled).
 
-**Why a grace margin, not the bare ssh_node predicate.** The claim-side
-lease-steal (``claim_executor_jobs(reclaim_stale_running=True)``) treats
-`lease < now()` alone as safe because an ssh_node lease is ~1h — longer than any
-live dispatch. A *coordinator* lease is only 5 min
-(:mod:`precis.workers.executors.coordinator`'s ``_LEASE_MINUTES``), so a live
-but slow ``quest_tick`` slice (its `big`-tier review/propose LLM call under
-spark contention) can run well past that raw window. The coordinator now
-renews its own lease mid-slice (``_LeaseKeepalive``, gr204309) precisely to
-keep a live slice's lease fresh — but this reaper does not rely on that alone:
-it is only reaped once its lease is stale beyond
-``PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`` (default 600 s, longer than the keepalive's
-own renewal cadence) **AND** it shows no evidence of life — no ``chunks`` row
-written for it more recently than that same grace window (gr204309 — a lease
-that stopped renewing is not, on its own, proof of death; a slow-but-writing
-slice isn't either). Either signal alone (a fresh chunk, or a lease still
-inside grace) is enough to hold off. Reap terminalizes to ``STATUS:cancelled``
-— distinct from a real ``failed`` rest, so it never feeds the (out-of-scope,
-RC1) failed-loop re-mint question: this change only recovers *reboot* orphans,
-never a loop that a real error rested.
+**Grace margin, not the bare ssh_node predicate.** A *coordinator* lease is
+5 min (:mod:`precis.workers.executors.coordinator`'s ``_LEASE_MINUTES``,
+short vs. an ssh_node lease's ~1h), so a live but slow slice (`big`-tier
+review/propose LLM call under spark contention) can outrun the raw lease
+window even with the coordinator's own mid-slice renewal (``_LeaseKeepalive``,
+gr204309). A loop is reaped only once its lease is stale beyond
+``PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`` (default 600s) **AND** it has written no
+``chunks`` row more recently than that same grace window (gr204309) — either
+signal alone (a fresh chunk, or a lease still inside grace) holds off the
+reap. Reap terminalizes to ``STATUS:cancelled``, distinct from a real
+``failed`` rest — it recovers only *reboot* orphans, never a loop a real
+error rested (RC1, out of scope here).
 
-**Teardown is no longer purely passive (RC2).** A quest that goes
-`dormant`/`abandoned` stops being re-minted here; this reconciler still does
-NOT cancel its current loop. But :mod:`precis.workers.job_types.quest_tick`'s
-``_dispatch`` now checks the quest's own liveness at the top of every
-slice — the same ``active_quest_ids`` notion this module uses — and
-self-rests (``Done(success=True)``) the moment the quest is non-active, so
-an *awaiting* loop also winds down on its next heartbeat rather than only
-once its dry-tick budget exhausts.
+**Teardown is not purely passive (RC2).** A `dormant`/`abandoned` quest
+stops being re-minted here, but this reconciler does not cancel its current
+loop directly; :mod:`precis.workers.job_types.quest_tick`'s ``_dispatch``
+checks the quest's own liveness (the same ``active_quest_ids`` notion) at
+the top of every slice and self-rests (``Done(success=True)``) the moment
+the quest is non-active, so an *awaiting* loop also winds down on its next
+heartbeat rather than only once its dry-tick budget exhausts.
 
-**Cooldown symmetry + escalation (gr170252).** A loop that rests via
-``quest_tick``'s ``_max_dry_ticks`` budget is ``STATUS:succeeded`` — the tick
-ran fine, it just found nothing new to dispatch — so before this fix the
-``_failed_rest_cooldown_active`` "succeeded → re-mint immediately" exemption
-re-armed it on the very next pass: mint → 3 dry ticks → rest → immediate
-re-mint → repeat, spinning forever (the allocator's 12-tick
-``cool_stalled`` backstop never fires because the loop keeps minting).
-Two fixes, both reading state ``quest_tick`` now stamps:
+**Cooldown symmetry + escalation (gr170252).** A dry-budget rest
+(``quest_tick``'s ``_max_dry_ticks``) is ``STATUS:succeeded`` — so the
+generic "succeeded → re-mint immediately" exemption would spin it forever
+(mint → dry ticks → rest → immediate re-mint). Two counters, both stamped by
+``quest_tick``, fix it:
 
 1. :func:`_dry_rest_cooldown_active` is :func:`_failed_rest_cooldown_active`'s
    sibling: it reads the same ``quest_tick:<id>`` job history, but keys off
@@ -80,48 +61,36 @@ Two fixes, both reading state ``quest_tick`` now stamps:
    ``STATUS:failed``, applying the identical ``BASE * 2^(n-1)`` escalating
    window. A genuinely productive rest or a punt rest never sets
    ``rest_reason``, so those still re-mint immediately.
-2. A ``consecutive_dry_rests`` counter lives on the *quest* ref itself
-   (``quest_tick``'s ``_register_dry_rest`` / ``_reset_dry_rest_counter``),
-   incremented on each dry rest and reset to 0 by any frontier improvement or
-   any non-dry rest. Once it reaches ``PRECIS_QUEST_DRY_REST_ESCALATE``
-   (default 3) an operator alert has already fired
-   (``quest:dry-rest/<quest_id>``) and :func:`_dry_rest_escalation_active`
-   makes this reconciler hold the quest out of re-minting for a long,
-   fixed cooldown (``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S``, default
-   24 h) since its most recent dry rest — **not forever**. A permanent skip
-   would be unrecoverable by construction: every counter-reset path (frontier
-   improvement, a non-dry rest) lives inside ``quest_tick``'s own tick, and no
-   tick can run again once re-minting stops for good. The long cooldown
-   instead lets the quest keep ticking at a low (~daily) cadence; an eventual
-   tick that sees frontier improvement or a non-dry rest resets the counter
-   through the existing reset paths, ending escalation naturally.
+2. A ``consecutive_dry_rests`` counter on the *quest* ref
+   (``quest_tick``'s ``_register_dry_rest``/``_reset_dry_rest_counter``),
+   incremented per dry rest, reset by any frontier improvement or non-dry
+   rest. At ``PRECIS_QUEST_DRY_REST_ESCALATE`` (default 3) an operator alert
+   fires (``quest:dry-rest/<quest_id>``) and
+   :func:`_dry_rest_escalation_active` holds the quest out of re-minting for
+   ``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S`` (default 24h) since the
+   last dry rest — not forever: the quest still ticks at low (~daily)
+   cadence, and any tick that resets the counter ends escalation.
 
 **Orphaned pathway stubs.** A `pathway` ref is minted ``meta.status =
 "computing"`` at :func:`~precis.quest.compute.dispatch_autocatpath` dispatch
-and only ever moves forward from there — to ``"ready"`` (the aggregate job's
-write-back) or ``"superseded"`` (a content-key change re-dispatch). Nothing
-ever moves it to ``"failed"``, so a pathway whose whole job tree dies (the
-seed/aggregate jobs get swept/cancelled/infra-failed and nothing
-re-dispatches) sits at ``"computing"`` forever — a stub the frontier never
-ranks and the web pathway page renders blank (prod: 168 such stubs against 99
-``"ready"`` ones before this fix). Each reconcile pass now runs
-:func:`_reconcile_orphaned_pathways` per active quest — for every candidate
-whose ``pathway`` is still ``"computing"``, :func:`_pathway_job_tree_state`
-walks the ``dispatch_autocatpath`` todo/job tree (``T_agg`` + its per-seed
-children) and classifies it: any live job/todo leaves it alone; a genuine
-``STATUS:failed`` job with no infra-class open tag stamps the pathway
-``"failed"`` outright (no compute worth re-running); a tree that's ALL
-terminal via ``cancelled`` / an infra-tagged ``failed`` / a todo that never
-even got a job minted (all "wrongfully killed", not a real verdict) gets a
-bounded re-dispatch instead (idempotent, capped at
-:data:`_MAX_PATHWAY_REDISPATCH_PER_PASS` re-dispatches per quest per pass so
-a systemic outage can't re-mint the whole corpus in one pass). A separate,
-NOT quest-scoped catch-all (:func:`_reconcile_stale_computing_pathways`) ages
-out any ``"computing"`` pathway older than a week with no live job anywhere
-in its tree, regardless of whether its quest is even still active — the
-backstop that drains the historical backlog. Neither step ever re-dispatches
-without the quest's own ``reaction_config``; a config-less quest's orphans
-are simply left for the catch-all.
+and only ever moves forward — to ``"ready"`` (aggregate job write-back) or
+``"superseded"`` (content-key re-dispatch); nothing moves it to
+``"failed"``, so a pathway whose whole job tree dies sits `"computing"`
+forever (unranked by the frontier, blank on the web pathway page). Each pass
+runs :func:`_reconcile_orphaned_pathways` per active quest:
+:func:`_pathway_job_tree_state` walks the ``dispatch_autocatpath`` todo/job
+tree (``T_agg`` + per-seed children) and classifies it — any live job/todo
+leaves it alone; a genuine ``STATUS:failed`` job with no infra-class open
+tag stamps the pathway ``"failed"`` (no compute worth re-running); an
+all-terminal tree via ``cancelled``/infra-tagged-``failed``/never-minted
+(all "wrongfully killed", not a real verdict) gets a bounded re-dispatch
+instead, capped at :data:`_MAX_PATHWAY_REDISPATCH_PER_PASS` per quest per
+pass. A separate, NOT quest-scoped catch-all
+(:func:`_reconcile_stale_computing_pathways`) ages out any `"computing"`
+pathway older than a week with no live job anywhere in its tree, active
+quest or not. Neither step re-dispatches without the quest's own
+``reaction_config`` — a config-less quest's orphans are left for the
+catch-all.
 """
 
 from __future__ import annotations
@@ -140,6 +109,7 @@ from precis.quest.compute import (
     dispatch_autocatpath,
 )
 from precis.quest.tick import quest_loop_enabled
+from precis.utils.env import env_int
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -239,17 +209,6 @@ def _orphan_grace_s() -> int:
         return max(0, int(raw))
     except ValueError:
         return _DEFAULT_ORPHAN_GRACE_S
-
-
-def _env_int(name: str, default: int) -> int:
-    """A non-negative int env override, else ``default`` (bad value → default)."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return default
 
 
 def _failed_rest_cooldown_active(
@@ -993,11 +952,11 @@ def reconcile_quest_loops(
 
     cooled = cool_stalled(store)
     grace_s = _orphan_grace_s()
-    base_s = _env_int(_FAIL_BACKOFF_BASE_ENV, _DEFAULT_FAIL_BACKOFF_BASE_S)
-    max_s = _env_int(_FAIL_BACKOFF_MAX_ENV, _DEFAULT_FAIL_BACKOFF_MAX_S)
-    dry_threshold = _env_int(_DRY_REST_ESCALATE_ENV, _DEFAULT_DRY_REST_ESCALATE)
-    escalate_cooldown_s = _env_int(
-        _DRY_REST_ESCALATE_COOLDOWN_ENV, _DRY_REST_ESCALATED_COOLDOWN_S
+    base_s = env_int(_FAIL_BACKOFF_BASE_ENV, _DEFAULT_FAIL_BACKOFF_BASE_S, lo=0)
+    max_s = env_int(_FAIL_BACKOFF_MAX_ENV, _DEFAULT_FAIL_BACKOFF_MAX_S, lo=0)
+    dry_threshold = env_int(_DRY_REST_ESCALATE_ENV, _DEFAULT_DRY_REST_ESCALATE, lo=0)
+    escalate_cooldown_s = env_int(
+        _DRY_REST_ESCALATE_COOLDOWN_ENV, _DRY_REST_ESCALATED_COOLDOWN_S, lo=0
     )
     escalated = reaped = backoff = ensured = minted = 0
     pathways_failed = pathways_redispatched = 0

@@ -206,9 +206,9 @@ other). Model each distinct body as its own **component** (`hub`, `rim`,
 - `⚠ 2 disconnected bodies: hub+spoke | rim` — two islands that should be one.
 
 After any edit that moves or resizes a body, re-check connectivity: a spoke
-nudged 0.1 mm too short silently disconnects the rim. (Note: connectivity
-is at the **component** level — a stray *instance* inside one component is
-not yet caught; keep distinct bodies as distinct components.)
+nudged 0.1 mm too short silently disconnects the rim. Connectivity is at
+the **component** level — a stray *instance* inside one component isn't
+caught; keep distinct bodies as distinct components.
 
 > **Tip — need a number, exactly?** Don't eyeball arithmetic. The
 > `calc` kind is a local sympy engine: `get(kind='calc', q='2+3*4')`
@@ -294,7 +294,7 @@ landing page). It mirrors the DFT editor (`/structure`):
   `[cad-step]`.
 - Create a new design straight from Drive's **+ New** dropdown.
 
-## Delete
+## Retire a design
 
 ```python
 delete(kind="cad", id="flange")  # soft-retire the whole design (recoverable)

@@ -150,7 +150,7 @@ class JobHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
-        # failed job by clearing the parent todo's failure-bubble so the
+        # failed job by clearing the parent todo's failure bubble so the
         # dispatch worker re-mints a fresh attempt. ``model='sonnet'``
         # additionally swaps the parent's ``meta.llm_tier`` first, which
         # is what the next tick dispatches with; ``select={...}`` does the
@@ -308,7 +308,7 @@ class JobHandler(NumericRefHandler):
         # subject (:data:`JOB_PARENT_KINDS`), or a coordinator job
         # (the intent-vs-compute job lanes extension — see
         # :data:`_JOB_PARENT_KINDS_WITH_COORDINATOR`); the returned kind
-        # is what the failure-bubble later branches on. Same
+        # is what the failure bubble later branches on. Same
         # NotFound/BadInput shape as the todo-tree guard for missing /
         # soft-deleted parents.
         _, parent_kind = todo_guards.check_job_parent_exists(
@@ -547,7 +547,7 @@ class JobHandler(NumericRefHandler):
             )
         )
 
-    # ── tag override: failure-bubble to parent todo ──────────────
+    # ── tag override: failure bubble to parent todo ──────────────
 
     def tag(  # type: ignore[override]
         self,

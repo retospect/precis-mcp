@@ -355,4 +355,65 @@ class BufferedDBLogHandler(logging.Handler):
             pass
 
 
-__all__ = ["BufferedDBLogHandler", "_pass_from_logger", "_resolve_host_name"]
+def attach(
+    dsn: str,
+    *,
+    process: str | None = None,
+    level: int | str | None = None,
+    require_dsn: bool = False,
+) -> None:
+    """Attach :class:`BufferedDBLogHandler` to the root logger, best-effort.
+
+    Shared by ``precis.cli.worker``, ``asa_bot``, and ``asa_slack`` so their
+    lines land in the same ``worker_logs`` table. A failure to construct the
+    handler (bad DSN, missing migration 0015, network) never raises — the
+    process's file/stdout handler keeps catching everything regardless.
+    Skips silently if a ``BufferedDBLogHandler`` is already attached
+    (repeated ``run()`` calls in tests / signal-driven restarts).
+
+    Args:
+        dsn: postgres DSN, same shape ``Store.connect`` accepts.
+        process: sets ``PRECIS_PROCESS`` via ``os.environ.setdefault`` so
+            rows carry the right process tag even if the launcher didn't
+            set it. ``None`` (worker's launchd plist always sets it) skips.
+        level: root logger level. An ``int`` is used directly; a ``str``
+            (e.g. read from ``PRECIS_LOG_LEVEL``) is resolved via
+            ``getattr(logging, name.upper())``, falling back to INFO on an
+            unrecognised name. ``None`` also defaults to INFO.
+        require_dsn: when True, a falsy ``dsn`` skips attaching with an
+            informational log line instead of handing an empty DSN to
+            ``BufferedDBLogHandler`` (asa_bot/asa_slack may start before
+            ``PRECIS_DATABASE_URL`` is configured; the worker always has
+            a real DSN so it leaves this False).
+    """
+    try:
+        if process:
+            os.environ.setdefault("PRECIS_PROCESS", process)
+        root = logging.getLogger()
+        for existing in list(root.handlers):
+            if isinstance(existing, BufferedDBLogHandler):
+                return
+        if require_dsn and not dsn:
+            log.info("PRECIS_DATABASE_URL unset; skipping DB log handler")
+            return
+        handler = BufferedDBLogHandler(dsn)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        root.addHandler(handler)
+        if isinstance(level, str):
+            try:
+                root.setLevel(getattr(logging, level.upper()))
+            except AttributeError:
+                root.setLevel(logging.INFO)
+        elif isinstance(level, int):
+            root.setLevel(level)
+        else:
+            root.setLevel(logging.INFO)
+    except Exception:
+        log.exception(
+            "failed to attach BufferedDBLogHandler — continuing without DB logs"
+        )
+
+
+__all__ = ["BufferedDBLogHandler", "_pass_from_logger", "_resolve_host_name", "attach"]

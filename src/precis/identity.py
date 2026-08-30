@@ -90,8 +90,46 @@ class CiteKeyOverflow(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def _ascii_fold(text: str) -> str:
-    """NFKD-decompose, drop combining marks, drop non-ASCII bytes."""
+# Letters that are NOT NFKD-decomposable but have well-established ASCII
+# replacements in citation keys / slugs. NFKD alone would silently drop
+# these, producing folds like ``nrskov`` (Nørskov) rather than ``norskov``.
+# Canonical home for this table — was duplicated in
+# ``precis.ingest.literature`` before consolidation.
+_ASCII_FALLBACKS = str.maketrans(
+    {
+        "ø": "o",
+        "Ø": "O",
+        "æ": "ae",
+        "Æ": "AE",
+        "œ": "oe",
+        "Œ": "OE",
+        "ß": "ss",
+        "ł": "l",
+        "Ł": "L",
+        "ð": "d",
+        "Ð": "D",
+        "þ": "th",
+        "Þ": "Th",
+    }
+)
+
+
+def _ascii_fold(text: str, *, fallbacks: bool = False) -> str:
+    """NFKD-decompose, drop combining marks, drop non-ASCII bytes.
+
+    ``fallbacks=True`` first maps the Scandinavian / Eastern-European
+    letters NFKD does not decompose (``ø``, ``æ``, ``ß``, ``ł`` etc.) via
+    :data:`_ASCII_FALLBACKS`, so e.g. "Nørskov" folds to ``norskov``
+    instead of ``nrskov``. Default is ``False`` and MUST stay that way
+    for :func:`_surname_from_string` (feeds :func:`make_cite_key`, a
+    pinned persistent identifier — see module stability promise) and for
+    ``precis.utils.slug``'s callers (persistent slugs): changing their
+    fold would make future mints diverge from already-stored identifiers
+    for the same input. Only new callers should opt into
+    ``fallbacks=True``.
+    """
+    if fallbacks:
+        text = text.translate(_ASCII_FALLBACKS)
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
 
 

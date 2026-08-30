@@ -1,88 +1,66 @@
-"""Whole-draft taproot backfill — a draft chunk's legacy paper citations →
-claim-hub cites, through the **same** canonicalizer cascade the forward chase
-bridge uses.
+"""Whole-draft taproot backfill — a draft chunk's legacy paper citations ->
+claim-hub cites, through the **same** canonicalizer cascade the forward
+chase bridge uses.
 
-Two citation forms are backfilled, from the two grammars in the draft prose:
+Two citation forms, from the two grammars in draft prose:
 
-* **``[pc<id>]``** (paper-**chunk**) — the legacy grounded cite. Runs the full
-  cascade and rewrites ``[pc]`` → ``[fi<hub>]`` (the original arm).
-* **``[pa<id>]``** (whole-**paper**) — the ``[pa]`` arm
-  (the shipped taproot-draft-pa-arm proposal, git history). A ``[pa]`` cite
-  is one of two
-  states, classified by the cited paper's body-block count:
-  - **stub** (0 blocks, un-fetched) — **skipped** ("fetch first"): an evidence
-    edge would be ungroundable, and citing an unread paper as evidence is
-    never minted. Routes via fetch, then re-ground.
-  - **fetched** (>0 blocks) — the honest grounding is a specific passage, so
-    the *default* is a ``[pa]``→``[pc]`` **re-ground**: a ``LocateFn`` (lexical
-    pick + Tier.MEDIUM confirm, the arm's one LLM call) picks the supporting
-    passage and the ``[pa<id>]`` run rewrites to ``[pc<chunk>]``, which the
-    existing ``[pc]`` path then promotes (two-step). Only under an explicit
-    ``ref_level=True`` override does a fetched ``[pa]`` instead promote
-    **ref-level** (whole-paper, ``ungrounded`` per ``seed_claim_hub``'s counter)
-    and rewrite ``[pa]`` → ``[fi<hub>]`` — for whole-paper claims with no single
-    grounding passage.
+* **``[pc<id>]``** (paper-chunk, the legacy grounded cite) — runs the full
+  cascade and rewrites ``[pc]`` -> ``[fi<hub>]``.
+* **``[pa<id>]``** (whole-paper) — classified by the cited paper's
+  body-block count. **stub** (0 blocks) is **skipped** ("fetch first" —
+  citing an unread paper as evidence is never minted); routes via fetch,
+  then re-ground. **fetched** (>0 blocks) defaults to a ``[pa]``->``[pc]``
+  **re-ground**: a ``LocateFn`` (lexical pick + Tier.MEDIUM confirm) picks
+  the supporting passage, then the existing ``[pc]`` path promotes it
+  (two-step). ``ref_level=True`` instead promotes **ref-level**
+  (``ungrounded`` per ``seed_claim_hub``'s counter) and rewrites ``[pa]``
+  -> ``[fi<hub>]`` directly, for whole-paper claims with no single
+  grounding passage.
 
-**Grounding prose is a precondition, both arms** (gripe 245842). An evidence
-edge grounded on a paper's title/author front-matter block says "this paper
-exists", not "this passage supports the claim" — a vacuous "bibliography-stub"
-hub. A title block is short and dense with exactly the citing span's topic
-words, so it *wins* :func:`_default_locate`'s unigram overlap; filtering it out
-of the candidate pool (:func:`_read_paper_chunks`) is what stops the ``[pa]``
-arm re-grounding there, and :func:`_ungroundable_handles` re-checks the ``[pc]``
-arm, whose handle names its chunk outright. Both degrade to a **skip** that
-leaves the prose untouched (``reground-nomatch`` / ``ungroundable``), never to a
-wrong grounding. The test is prose-presence, not ``ord``: an abstract is often
-``ord`` 0-2 and grounds fine, and a numeric table grounds a numeric claim.
+**Grounding prose is a precondition, both arms** (gripe 245842): a title/
+author front-matter block says "this paper exists", not "this passage
+supports the claim" — and it *wins* naive lexical overlap on citing-span
+topic words. :func:`_read_paper_chunks` filters it from the ``[pa]``
+candidate pool; :func:`_ungroundable_handles` re-checks the ``[pc]`` arm.
+Both degrade to a **skip** (``reground-nomatch``/``ungroundable``), never
+a wrong grounding — the test is prose-presence, not ``ord`` (an abstract
+grounds fine; a numeric table grounds a numeric claim).
 
-Motivation. Most claims in the corpus were first written with raw
-``[pc<id>]`` / ``[pa<id>]`` paper citations, before taproot claim hubs existed.
-This module walks a draft chunk's existing paper cites and, for each, runs
-``extract_claim → block → dedup_judge → place → apply_extraction`` (mirroring
-:func:`precis.workers.chase._taproot_bridge`) so a claim **converges onto an
-existing hub** rather than minting a near-duplicate — the whole point of
-routing through the cascade instead of :func:`precis.taproot.authoring.seed_claim_hub`'s
-``pub_id``-only (byte-identical) convergence. It then (on write) rewrites the
-prose ``[pc<id>]`` → ``[fi<hub>]``.
+Motivation: most corpus claims were first written as raw ``[pc]``/``[pa]``
+cites before taproot hubs existed. This module walks a draft chunk's
+existing cites and runs ``extract_claim -> block -> dedup_judge -> place
+-> apply_extraction`` per cite group (mirrors
+:func:`precis.workers.chase._taproot_bridge`) so a claim **converges onto
+an existing hub** rather than minting a near-duplicate, then rewrites the
+prose to ``[fi<hub>]``.
 
-Two deliberate design choices, both answering "is per-sentence enough?":
+Two deliberate design choices:
 
-* **Cite-group anchored, not per-sentence.** The ``[pc<id>]`` markers already
-  partition the prose into grounded spans — a better, *deterministic*
-  segmenter than a sentence splitter, and it matches the definition "a claim
-  is whatever a citation grounds." A single sentence can bundle two
-  independently-cited claims; a claim can span two sentences. The cite is the
-  anchor. Contiguous bare pc-cites (``[pc1][pc2]``) grounding one span
-  collapse to **one** hub with two evidence edges → a single ``[fi<hub>]``
-  cite (backfill dedups redundant citations for free).
-* **On-demand, dry-run-first, one chunk at a time.** This is NOT a corpus
-  sweep. A corpus-wide converging pass belongs to a worker (reconcile with
-  the hub-refine pass), gated by a quality bar and the cascade's tuned
-  merge threshold — not a one-shot CLI blast over 194 chunks. The per-chunk
-  human-in-the-loop *is* the safety gate; :func:`plan_chunk` (dry-run)
+* **Cite-group anchored, not per-sentence** — ``[pc<id>]`` markers already
+  partition prose into grounded spans (a claim is whatever a citation
+  grounds; one sentence can bundle two cited claims, or a claim can span
+  two sentences). Contiguous bare pc-cites grounding one span collapse to
+  **one** hub with two evidence edges (free dedup).
+* **On-demand, dry-run-first, one chunk at a time** — NOT a corpus sweep
+  (a corpus-wide pass belongs to a worker, gated by a quality bar); the
+  per-chunk human-in-the-loop is the safety gate. :func:`plan_chunk`
   writes nothing.
 
-The extract / block / judge functions are injected (defaulting to the real
-:mod:`precis.taproot.canon` ones) so the segmenter + orchestration are
-unit-testable with deterministic fakes and no LLM/embedder — mirroring how
-:func:`precis.taproot.canon.place` takes a ``merge_confirm_fn``.
+``extract``/``block``/``judge`` functions are injected (default: the real
+:mod:`precis.taproot.canon` ones) — unit-testable with deterministic
+fakes, mirroring :func:`precis.taproot.canon.place`'s ``merge_confirm_fn``.
 
-**Decomposition (docs/backlog/taproot-atomic-claims.md).** ``extract_fn``
-returns a :class:`~precis.taproot.canon.ClaimExtraction` — zero or more
-AIDA-atomic claims plus an optional bundling ``compound``. Per group, the
-cascade tail (``block`` → ``dedup_judge`` → ``place``) runs once per atom
-*and*, when present, once for the compound (:func:`_run_cascade`); the
-resulting ``(claim, Placement)`` pairs are handed to
-:func:`precis.taproot.hub.apply_extraction` (the write door), which mints/
-converges each atom, mints/converges the compound with **no** evidence edge,
-links ``atom --conjunct-of--> compound``, and folds ``not_claims`` into the
-compound's audit memo. The prose collapse always targets the compound when
-one exists (``[fi<compound_hub>]``); an already-atomic extraction has no
-compound (step-1 invariant) and targets its lone atom instead — the "one
-cite-group, one ``[fi<hub>]``" rewrite invariant holds either way. Supporter
-papers beyond the first (``plan.supporters[1:]``) attach ``corroborates`` to
-**every** atom hub, never the compound (step 3) — the cited passage asserts
-all conjuncts, and the edges are LLM-free, so supporters × atoms is cheap.
+**Decomposition** (docs/backlog/taproot-atomic-claims.md): ``extract_fn``
+returns a :class:`~precis.taproot.canon.ClaimExtraction`. Per group, the
+cascade tail runs once per atom and, when present, once for the compound
+(:func:`_run_cascade`); the pairs go to
+:func:`precis.taproot.hub.apply_extraction` (mints/converges each atom
+and the compound with **no** evidence edge, links ``conjunct-of``, folds
+``not_claims`` into the compound's memo). The prose collapse always
+targets the compound when one exists, else the lone atom — "one
+cite-group, one ``[fi<hub>]``" holds either way. Supporter papers beyond
+the first attach ``corroborates`` to **every** atom, never the compound
+(the cited passage asserts all conjuncts; LLM-free, so cheap).
 """
 
 from __future__ import annotations
@@ -416,21 +394,18 @@ def _iter_bare_cites(text: str) -> list[PcCite]:
 def segment_cite_groups(text: str) -> list[CiteGroup]:
     """Partition ``text`` into grounded cite-groups.
 
-    Each bare paper cite (``[pc<id>]`` or ``[pa<id>]``) grounds the prose since
-    the previous cite (of any kind) or the chunk start — "what this citation
-    newly asserts", so this assumes the citation-follows-claim style (a prefix
-    cite ``[pc1] claim`` grounds the empty span before it → no-claim → left
-    as-is, never misattributed). Contiguous bare cites of the **same kind** —
-    nothing but whitespace between them (``[pc1][pc2]`` / ``[pc1] [pc2]``) —
-    share one span (multiple papers, one claim) and collapse to one group.
+    Each bare paper cite (``[pc<id>]``/``[pa<id>]``) grounds the prose
+    since the previous cite (any kind) or the chunk start — assumes the
+    citation-follows-claim style (a prefix cite grounds the empty span
+    before it -> no-claim -> left as-is). Contiguous bare cites of the
+    **same kind**, whitespace-only between them, share one span (multiple
+    papers, one claim) and collapse to one group.
 
-    A cite that is neither a bare pc nor a bare pa (``[fi…]``, ``[¶…]``,
-    ``[§…]``, a pinned cite) is a hard boundary: it is not an anchor, but it
-    **breaks contiguity**, so an anchor right after one (``…fact[fi9][pc2]``)
-    starts its OWN group rather than folding back across it. A **kind switch**
-    breaks contiguity the same way: a ``[pa]`` immediately after a ``[pc]``
-    (``[pc1][pa2]``) never folds into the pc-run — a whole-paper cite and a
-    passage cite are routed differently, so they are always separate groups.
+    A cite that's neither a bare pc nor pa (``[fi…]``, ``[¶…]``, ``[§…]``,
+    a pinned cite) is a hard boundary: not an anchor, but it **breaks
+    contiguity**, so an anchor right after one starts its own group. A
+    **kind switch** breaks contiguity the same way — a whole-paper cite
+    and a passage cite are always routed to separate groups.
     """
     # All markers (any kind) give the span boundaries; only bare pc/pa cites
     # are anchors. Walk markers in order; an anchor folds into the current
@@ -617,21 +592,21 @@ def _plan_pa_group(
 ) -> GroupPlan:
     """Route a whole-paper ``[pa]`` cite-group by its cited paper(s)' state.
 
-    * **All stubs** (0 body blocks) — ``stub-fetch-first``: an evidence edge
-      would be ungroundable and we never cite an un-fetched paper as evidence.
-      No write; the ``[pa]`` prose is left for a later fetch → re-ground.
-    * **Mixed** (a contiguous same-kind run with some stub, some fetched, e.g.
-      ``[pa_stub][pa_fetched]``) — also ``stub-fetch-first``, **no write.** The
-      prose collapse rewrites the *whole* contiguous run to one ``[fi<hub>]``,
-      so promoting only the fetched supporters would silently **erase** the
-      stub's token (draft chunks are append-only — irreversible). Fetch the
-      stub(s) first; then the whole run is cleanly promotable/re-groundable.
-    * **All fetched, default mode** — ``reground`` / ``reground-nomatch``: the
-      honest grounding is a specific passage, so :func:`_plan_reground` locates
-      it and rewrites ``[pa]``→``[pc]`` (no hub). This is the arm's default.
-    * **All fetched, ``ref_level=True``** — the explicit whole-paper override:
-      run the cascade over all (fetched) supporters and mint a ref-level
-      (``ungrounded``) evidence edge, rewriting ``[pa]`` → ``[fi<hub>]``. For
+    * **All stubs** (0 body blocks) — ``stub-fetch-first``: an evidence
+      edge would be ungroundable; no write, left for a later fetch ->
+      re-ground.
+    * **Mixed** (a contiguous run with some stub, some fetched) — also
+      ``stub-fetch-first``, no write: the prose collapse rewrites the
+      *whole* contiguous run to one ``[fi<hub>]``, so promoting only the
+      fetched supporters would silently erase the stub's token (not
+      recoverable) — fetch the stub(s) first, then the whole run is
+      cleanly promotable/re-groundable.
+    * **All fetched, default mode** — ``reground``/``reground-nomatch``:
+      :func:`_plan_reground` locates the passage and rewrites ``[pa]``->
+      ``[pc]`` (no hub). The arm's default.
+    * **All fetched, ``ref_level=True``** — the explicit whole-paper
+      override: cascade over all supporters, mint a ref-level
+      (``ungrounded``) evidence edge, rewrite ``[pa]``->``[fi<hub>]``. For
       whole-paper claims with no single grounding passage.
     """
     fetched = [
@@ -795,18 +770,16 @@ def plan_chunk(
     """Plan the backfill of one draft chunk — writes **nothing**.
 
     For each paper cite-group: resolve its supporter papers, then route by
-    kind. A ``[pc]`` group extracts the claim (an empty
-    :class:`~precis.taproot.canon.ClaimExtraction` → ``no-claim``, prose left
-    as-is) and runs the canonicalizer cascade (``block`` ANN over existing
-    hubs → ``dedup_judge`` → ``place``) once per atom and, if the extraction
-    decomposed, once for the compound, to decide whether each **converges
-    onto an existing hub** (``attach``) or would mint a ``new`` one. A
-    ``[pa]`` group classifies by block-count: stub → ``stub-fetch-first``,
-    fetched → ``reground`` (locate the passage, rewrite ``[pa]``→``[pc]``;
-    ``reground-nomatch`` if none found) unless ``ref_level`` promotes it
-    whole-paper. This is what the CLI ``--dry-run`` reports; it is LLM- and
-    embedder-bearing (inherent — neither convergence nor the grounding passage
-    can be known without the ANN + judge/locate).
+    kind. A ``[pc]`` group extracts the claim (empty extraction ->
+    ``no-claim``, prose left as-is) and runs the canonicalizer cascade
+    (``block`` -> ``dedup_judge`` -> ``place``) once per atom, and once for
+    the compound if the extraction decomposed, to decide **attach** vs
+    mint ``new``. A ``[pa]`` group classifies by block-count: stub ->
+    ``stub-fetch-first``, fetched -> ``reground`` (locate the passage,
+    rewrite ``[pa]``->``[pc]``; ``reground-nomatch`` if none found) unless
+    ``ref_level`` promotes it whole-paper. LLM- and embedder-bearing —
+    inherent, since neither convergence nor the grounding passage can be
+    known without the ANN + judge/locate.
     """
     text, draft_ref_id = _read_draft_chunk(store, chunk_id)
     plans = [
@@ -873,32 +846,24 @@ def _record_reground_citations(
 ) -> int:
     """Persist the claim-passage binding a re-ground already proved.
 
-    :func:`_default_locate` runs a Tier.MEDIUM confirm that the group's span is
-    supported by the chosen chunk, and then the plan keeps only the ``chunk_id``
-    — the proposition and the judgement are dropped, leaving the rewritten
-    ``[pc]`` a bare pointer at a paragraph. ``kind='citation'``
-    ([[precis-citation-help]]'s optional verification record) is exactly that
-    missing rung, so mint one per located supporter: the claim is the cite-group
-    span ("a claim is whatever a citation grounds"), the source is the located
-    passage.
+    :func:`_default_locate`'s Tier.MEDIUM confirm proves the group's span
+    is supported by the chosen chunk, but the plan keeps only
+    ``chunk_id`` — the rewritten ``[pc]`` becomes a bare pointer. Mint one
+    ``kind='citation'`` record per located supporter to hold that missing
+    rung: claim = the cite-group span, source = the located passage.
 
-    No ``verifier_confidence`` is recorded — the locate returns a decision, not
-    a score, and inventing one would misrepresent it. ``source_quote`` is the
-    whole located chunk, not a pinpointed excerpt: this arm's locate confirms a
-    *passage*, and narrowing to verbatim words is
-    :mod:`precis.taproot.reground`'s job (its ``GroundedRecord`` validates a
-    quote for uniqueness), not something to fake here.
+    No ``verifier_confidence`` — locate returns a decision, not a score.
+    ``source_quote`` is the whole located chunk, not a pinpointed excerpt
+    — narrowing to verbatim words is :mod:`precis.taproot.reground`'s job.
 
-    Marked with the lowercase **open** tag ``origin:draft-backfill``, mirroring
-    the ``meta.origin`` fingerprint this module already stamps on evidence
-    edges. Deliberately *not* the closed ``ORIGIN:`` axis: that vocabulary
-    means "where the content came from" (``wikipedia``) and its members are
-    fenced out of default search, which would hide these records from the
-    readers that most need them.
+    Tagged (open) ``origin:draft-backfill``, mirroring the ``meta.origin``
+    fingerprint on evidence edges — not the closed ``ORIGIN:`` axis
+    (provenance vocabulary fenced out of default search, which would hide
+    these records from readers who need them).
 
-    Best-effort and isolated: an audit record is never a precondition for the
-    prose rewrite, so a failure is noted on the plan and the batch continues.
-    Returns the number of records minted.
+    Best-effort and isolated: an audit record is never a precondition for
+    the prose rewrite — a failure is noted on the plan, the batch
+    continues. Returns the number of records minted.
     """
     from precis.quest.citation_mint import mint_citation
 
@@ -940,50 +905,40 @@ def apply_chunk(
 ) -> ChunkBackfill:
     """Apply the backfill: mint/converge each claim hub through the cascade,
     attach its supporter papers as evidence, then rewrite the chunk prose
-    ``[pc…]``/``[pa…]`` → ``[fi<hub>]`` via the draft edit door.
+    ``[pc…]``/``[pa…]`` -> ``[fi<hub>]`` via the draft edit door.
 
-    ``ref_level`` (the ``[pa]`` arm's whole-paper override) is threaded to
-    :func:`_plan_group`: without it a fetched ``[pa]`` group is **re-grounded**
-    — :data:`locate_fn` picks the supporting passage and the ``[pa<id>]`` run is
-    rewritten ``[pa]``→``[pc<chunk>]`` (no hub; the existing ``[pc]`` path
-    promotes it on a later run). With ``ref_level`` the fetched ``[pa]`` is
-    instead promoted to a ref-level (``ungrounded``) hub edge and its token
-    rewritten to ``[fi<hub>]``. A stub ``[pa]`` is always skipped regardless.
+    ``ref_level`` (threaded to :func:`_plan_group`) selects the ``[pa]``
+    arm's whole-paper override: without it a fetched ``[pa]`` group is
+    **re-grounded** (``locate_fn`` picks the passage, rewrites to
+    ``[pc<chunk>]``, no hub yet); with it the fetched ``[pa]`` promotes
+    directly to a ref-level (``ungrounded``) hub edge as ``[fi<hub>]``. A
+    stub ``[pa]`` is always skipped.
 
-    The prose rewrite goes through ``draft_handler.edit``, i.e.
-    :meth:`precis.store._draft_ops.DraftOps.edit_text` — an **in-place**
-    ``UPDATE`` that bumps ``content_sha`` and logs an ``edited`` event with
-    ``prev_text``. Draft chunks are updated in place *on purpose*: the handle
-    (and every ``[dc<id>]`` reference to it) survives, which a DELETE+INSERT
-    would break. The sha bump is what re-derives the embedding — the worker's
-    staleness check re-claims any chunk whose ``chunk_embeddings.content_sha``
-    no longer matches. (The append-only rule is about *paper* body chunks,
-    whose ``content_sha`` is ``NULL`` and never refreshed.) A group that maps
-    to no hub (no-claim / needs_review / unresolved) leaves its ``[pc…]``
+    The prose rewrite goes through ``draft_handler.edit``
+    (:meth:`precis.store._draft_ops.DraftOps.edit_text`) — an **in-place**
+    UPDATE, deliberately: draft chunks aren't append-only body chunks, so
+    the handle (and every ``[dc<id>]`` reference) survives an edit, and the
+    ``content_sha`` bump re-derives the embedding via the worker's
+    staleness check. A group mapping to no hub leaves its ``[pc…]``
     untouched.
 
-    Idempotent: a re-run re-derives the same claims, the cascade converges
-    onto the hubs the first run minted (``attach``), evidence edges are
-    skipped-if-present, and the prose already reads ``[fi…]`` so there are no
-    pc-cites left to rewrite → a no-op second pass.
+    Idempotent: a re-run converges onto the hubs the first run minted
+    (``attach``), evidence edges skip-if-present, and the prose already
+    reads ``[fi…]`` — a no-op second pass.
 
-    Attribution: evidence edges carry ``meta.origin='draft-backfill'`` — the
-    fingerprint that separates a backfill edge from the chase pilot's
-    (``set_by='chase'``) and lets it be queried apart from the hand-mint
-    on-ramp, with which it shares the registered ``set_by='agent'`` actor
-    (``backfill`` is not a seeded actor; ``meta.origin`` carries the
-    distinction instead), while all three fill the same claim graph.
+    Attribution: evidence edges carry ``meta.origin='draft-backfill'`` —
+    the fingerprint separating a backfill edge from chase's
+    (``set_by='chase'``) and hand-mint's, though all three share the
+    ``set_by='agent'`` actor and fill the same claim graph.
 
-    **Decomposition.** Each group's writes go through
-    :func:`precis.taproot.hub.apply_extraction` (not a single
-    ``apply_placement`` call): every atom mints/converges + attaches the
-    primary supporter as evidence (``needs_review`` files a todo and
-    contributes no hub); the compound (if any) mints/converges with **no**
-    evidence edge and gets the ``not_claims`` audit memo; every successfully
-    placed atom is ``conjunct-of``-linked to the compound. Remaining
-    supporters (``plan.supporters[1:]``) then attach ``corroborates`` to
-    **every** atom hub (never the compound). The prose rewrite target is the
-    compound hub when one landed, else the lone atom hub.
+    **Decomposition**: each group's writes go through
+    :func:`precis.taproot.hub.apply_extraction`, not a single
+    ``apply_placement`` — atoms mint/converge + attach the primary
+    supporter; the compound (if any) mints with **no** evidence edge plus
+    the ``not_claims`` memo; placed atoms link ``conjunct-of`` to the
+    compound. Remaining supporters attach ``corroborates`` to **every**
+    atom, never the compound. The prose rewrite targets the compound when
+    one landed, else the lone atom.
     """
     from precis.taproot.hub import _DEFAULT_ROLE, apply_extraction, attach_evidence
 

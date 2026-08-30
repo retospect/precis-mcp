@@ -10,9 +10,7 @@ ASCII, variable length, self-delimiting (letters = type, digits = id).
 no handle column, no minting, no backfill, no migration.
 :func:`format_handle` formats; ``Store.resolve_handle`` decodes the
 prefix to a table + kind and does a primary-key lookup, validating the
-prefix against the row's kind (typo guard). This replaced a zoo of
-per-kind address forms (cite_key, ``pub_id``, ``slug~pos``, bare
-numeric ids) with one grammar an agent can recognise on sight.
+prefix against the row's kind (typo guard).
 
 Three kinds are *file-backed* (``skill`` → ``sk``, ``python`` → ``py``,
 ``md`` → ``mi``) and

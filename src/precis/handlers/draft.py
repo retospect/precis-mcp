@@ -67,7 +67,7 @@ from precis.workers.working_set import Extent
 log = logging.getLogger(__name__)
 
 # A bare draft chunk address: the universal handle ``dc<chunk_id>``
-# or the legacy the draft editable-document model ``¶<base58>``. Relative navigation (``^`` / ``+N`` /
+# or the legacy ``¶<base58>`` form. Relative navigation (``^`` / ``+N`` /
 # ``-lo..hi``) is parsed separately via ``handle_registry.parse_relative``.
 _CHUNK_ADDR = re.compile(r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))$")
 
@@ -2652,7 +2652,7 @@ class DraftHandler(Handler):
     def _work_lines(self, ref_id: int) -> list[str]:
         """Surface stuck / in-flight work on this draft (Fix A): the open
         todos in the draft's project subtree that are blocked by a
-        failure-bubble or have a live/failed child job. Without this a
+        failure bubble or have a live/failed child job. Without this a
         failed enrichment job parks the parent silently and never
         registers when you look at the draft itself."""
         try:

@@ -30,13 +30,13 @@ candidates and is a no-op.
 from __future__ import annotations
 
 import logging
-import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import psycopg
 
 from precis import settings
 from precis.store import Store
+from precis.workers import _throttle
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -46,35 +46,17 @@ log = logging.getLogger(__name__)
 _LOCK_KEY = 0x70_6D_65_74_61_65_6E_72 - 2**63  # "pmetaenr", mapped signed
 #: app_state key holding the ISO-8601 timestamp of the last completed pass.
 _STATE_KEY = "paper_meta_enrich:last_run"
+#: Env var + default for the cadence throttle (see :func:`_throttle.due`).
+_REFRESH_ENV_VAR = "PRECIS_PAPER_META_ENRICH_REFRESH_HOURS"
+_DEFAULT_REFRESH_HOURS = 6.0
 
 #: Batch size when the caller doesn't pass a ``limit``.
 _DEFAULT_BATCH_LIMIT = 50
 
 
-def _refresh_hours() -> float:
-    """Minimum gap between passes.
-
-    ``PRECIS_PAPER_META_ENRICH_REFRESH_HOURS`` (default 6.0, floor 0.1).
-    """
-    raw = os.environ.get("PRECIS_PAPER_META_ENRICH_REFRESH_HOURS")
-    if not raw:
-        return 6.0
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return 6.0
-
-
 def _due(store: Store) -> bool:
     """True when the throttle window has elapsed since the last pass."""
-    last = store.get_setting(_STATE_KEY)
-    if not last:
-        return True
-    try:
-        last_ts = datetime.fromisoformat(last)
-    except ValueError:
-        return True
-    return datetime.now(UTC) - last_ts >= timedelta(hours=_refresh_hours())
+    return _throttle.due(store, _STATE_KEY, _REFRESH_ENV_VAR, _DEFAULT_REFRESH_HOURS)
 
 
 def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:

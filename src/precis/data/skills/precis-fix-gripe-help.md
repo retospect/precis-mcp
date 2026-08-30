@@ -94,31 +94,6 @@ tag(kind="gripe", id=42, add=["repo:my-other-project"])
 put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
 ```
 
-## What the fix worker actually does
-
-1. Reads the gripe body + current `gripe_comment` thread.
-2. Clones the source repo to `$PRECIS_FIX_WORK_DIR/clones/
-   gripe_<id>` and checks out a fresh `gripe_<id>` branch.
-   Independent `.git`; the source repo's `main` is untouched.
-3. Runs the fix agent through the `call_claude_agent` chokepoint
-   (§H cycle a) with `cwd` = the clone dir, an isolated env (no
-   DB creds; `--bare` + `ANTHROPIC_API_KEY`), and — whenever the
-   host can run the §13 container — inside that container,
-   network-isolated (`egress:api-only`: reaches only the
-   Anthropic API) with ONLY the clone bind-mounted in. The agent
-   commits inside the clone; it never has the source repo mounted
-   and has no push credentials or network route to it — it
-   physically cannot push.
-4. On success: commits land on the branch, and the worker itself
-   (trusted, host-side — never the agent, never inside the
-   sandbox) pushes `gripe_<id>` to `origin`, posts a
-   `gripe_comment` with the SHA and fetch instructions, tags
-   gripe `STATUS:in_review`, removes the clone.
-5. On failure: posts a comment with the stderr tail, rolls the
-   gripe back to `STATUS:open`, **keeps the clone dir** so a
-   human can `cd` into it and inspect what the agent left
-   behind.
-
 ## How do I check whether my gripe-fix is done?
 ## Has the fix worker finished yet?
 

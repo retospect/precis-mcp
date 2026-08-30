@@ -12,7 +12,6 @@ applies-to: orchestrating multi-pass paper review before submission
 invokes-personas:
   - precis-adversarial-reviewer
   - precis-citation-reviewer
-last-updated: 2026-06-05
 ---
 
 # precis-polish-paper — polish a paper before submission

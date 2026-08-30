@@ -1,42 +1,33 @@
-"""Demotion — what a claim's publish posture does when the evidence turns.
+"""Demotion — what a claim's publish posture does when evidence turns.
 
-The ratchet (:mod:`precis.taproot`, "Two structural cautions"): every
-stage of the claim lifecycle promotes and almost nothing demotes, so a
-hub accumulates support and never re-opens when contradicting evidence
-lands later. The backward edges have always been *legal*
-(``state.TRANSITIONS`` allows ``reviewed``/``signed`` → ``candidate``,
-and ``store.nanopub_reopen`` is the write) — they were only ever walked
-by a drift/edit reopen. Nothing walked them because evidence arrived.
-This module is the policy that does, keyed on **the freeze line**:
+Taproot's ratchet (:mod:`precis.taproot`, "Two structural cautions"): every
+lifecycle stage promotes, almost nothing demotes, so a hub never re-opens
+when contradicting evidence lands later — even though the backward edges
+were always *legal* (``state.TRANSITIONS`` allows ``reviewed``/``signed`` ->
+``candidate``, write is ``store.nanopub_reopen``), just never walked because
+evidence arrived. This module is that policy, keyed on **the freeze line**:
 
-* **below it** (no publish row / ``candidate``) — nothing is frozen and
-  the publish gates already block on a live ``contradicts`` edge, so
-  there is nothing to undo: ``none``.
-* **at it** (``reviewed``, ``signed``) — the claim string, or the
-  artifact pointer, is frozen but nothing has left the building. Flip
-  back to ``candidate``: the frozen fields are discarded, the
-  append-only artifact row stays, and the hub must earn its approval
-  again against the new evidence. ``reopen``.
-* **above it** (``anchored``, ``published``) — an anchor is irreversible
-  and a published claim is public forever; a third party holds the
-  trusty URI and the AIDA sentence. Editing here is not demotion, it is
-  rewriting history someone else may have cited. The only honest move is
-  a *new artifact* — supersede or retract — and that is a human door
-  (``precis nanopub publish``, ``retract``). So this raises an alert and
-  changes no state: ``supersede-required``.
+* **below it** (no row / ``candidate``) — nothing frozen, publish gates
+  already block a live ``contradicts`` edge: ``none``.
+* **at it** (``reviewed``, ``signed``) — string or artifact pointer
+  frozen, nothing shipped. Flip to ``candidate``: frozen fields
+  discarded, append-only artifact row stays, hub re-earns approval:
+  ``reopen``.
+* **above it** (``anchored``, ``published``) — irreversible/public
+  forever; editing here rewrites history someone may have cited. Only
+  honest move is a new artifact (supersede/retract, human door via
+  ``precis nanopub publish``/``retract``): raises an alert, changes no
+  state: ``supersede-required``.
 
-Terminal rows (``superseded``/``retracted``/``rejected``) are already
-settled and read as ``none``.
+Terminal rows (``superseded``/``retracted``/``rejected``) read as ``none``.
 
-**Additive, like every other writer on this path.** A demotion never
-removes an edge, never edits the claim, and never touches the artifact
-bytes — it moves one publish row down one rung and says so. The
-scale caution applies here more than anywhere: a bad judge that
-promotes wrongly is a nuisance, a bad judge wired to a demoter can
-un-approve the corpus at machine speed. So the *only* caller is a
-freshly written ``contradicts`` edge — a verdict a judge already
-committed to the graph — never a bare suspicion, and the frozen rungs
-are never demoted automatically at all.
+**Additive, like every writer on this path**: never removes an edge,
+edits the claim, or touches artifact bytes — moves one publish row down
+one rung and says so. Scale caution applies harder here than elsewhere (a
+bad judge wired to a demoter can un-approve the corpus at machine speed,
+not just promote it wrongly), so the *only* caller is a freshly committed
+``contradicts`` edge, never a bare suspicion — frozen rungs are never
+demoted automatically at all.
 """
 
 from __future__ import annotations

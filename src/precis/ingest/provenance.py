@@ -1,28 +1,22 @@
-"""Provenance / retraction monitoring against Crossref.
+"""Provenance / retraction monitoring against Crossref + Retraction
+Watch.
 
-Public surface:
+Public surface: :func:`check_doi` (single), :func:`check_dois` (batch,
+threaded), :func:`check_ref_retraction`/:func:`check_ref_doi_validity`
+(TTL-gated per-ref checks).
 
-    check_doi(doi, *, store, mailto=None) -> ProvenanceResult
+Fetches Crossref ``/works/{doi}``, merges the local Retraction Watch
+cache (``_lookup_rw_cache``), classifies any notice by severity, and
+for each retraction/expression-of-concern: auto-ingests the notice as a
+paper ref *when the parent is in the local store* (else informational
+only, no writes); writes a ``retracted-by``/``corrected-by``/
+``concern-raised-by`` link; sets ``refs.retraction_status`` +
+``STATUS:retracted``/``:concern``/``:corrected``; touches
+``refs.retraction_checked_at`` for the TTL gate. ``transitive=True``
+shallow-walks cited DOIs one hop.
 
-Fetches Crossref ``/works/{doi}``, classifies any ``message.update-to``
-entries by severity, and for each retraction or expression-of-concern
-notice:
-
-- auto-ingests the notice as a paper ref *when the parent paper is
-  in the local store* (otherwise the result is informational only —
-  no writes)
-- writes a ``retracted-by`` / ``corrected-by`` / ``concern-raised-by``
-  link from the parent paper to the notice
-- sets ``refs.retraction_status`` on the parent + applies
-  ``STATUS:retracted`` / ``:concern`` / ``:corrected`` tag
-- touches ``refs.retraction_checked_at`` so the TTL gate in later
-  phases can skip recently-checked refs
-
-Out of scope for Phase 1 (see plan):
-- batch DOI input (Phase 2)
-- Retraction Watch reason codes (Phase 3)
-- transitive cite-walk (Phase 4)
-- fuzzy DOI resolution (Phase 5)
+Fuzzy DOI auto-resolution is a rejected design (a wrong auto-match is
+worse than a manual miss) — see the "Rejected: fuzzy DOI" plan section.
 
 DOI canonicalisation matches ``store/_identifiers_ops.py``: lowercase,
 URL and ``doi:`` prefixes stripped.
@@ -517,26 +511,18 @@ def verify_against_crossref(
     crossref_msg: dict[str, Any],
     bib_entry: BibEntry,
 ) -> MetadataVerification:
-    """Produce a per-field ``MetadataVerification`` between supplied and Crossref.
+    """Produce a per-field ``MetadataVerification`` between supplied and
+    Crossref. The caller (``check_doi``) decides whether to run this —
+    fires only when a BibEntry accompanied the DOI. Missing fields on
+    either side skip that field (``unchecked``/``None``), never flagged.
 
-    The caller (``check_doi``) decides whether to run this — it only
-    fires when the kind API received a BibEntry alongside the DOI.
-    Missing fields on the supplied side cause that field to be skipped
-    (``unchecked`` / ``None``), not flagged. Missing fields on the
-    Crossref side (rare but happens for thin records) likewise skip.
-
-    Scoring choices:
-
-    - **Title**: token-set Jaccard under both normalised forms
-      (NFKD-strip and German-phonetic). Best of the two scores wins.
-      The added/removed token lists are computed from the NFKD form
-      only — phonetic-form diffs would be confusing in the report.
-    - **First author**: exact match on a normalised single-token
-      surname (no Jaccard — too few tokens for it to be meaningful).
-    - **Year**: ±1 tolerance covers online-first vs print publication
-      drift; anything beyond is a mismatch.
-    - **Journal / pages**: surfaced in the report for display but not
-      part of the structural comparison.
+    Scoring: **title** — token-set Jaccard under both normalised forms
+    (NFKD-strip and German-phonetic), best score wins (added/removed
+    token lists computed from the NFKD form only, to avoid confusing
+    phonetic-form diffs); **first author** — exact match on a normalised
+    single-token surname (no Jaccard, too few tokens); **year** — ±1
+    tolerance for online-first vs print drift; **journal/pages** —
+    displayed but not part of the structural comparison.
     """
     cr_title = _extract_title(crossref_msg)
     cr_authors_list = _extract_authors(crossref_msg)
@@ -1105,33 +1091,27 @@ def check_doi(
 ) -> ProvenanceResult:
     """Run a single-DOI provenance check.
 
-    ``store`` is optional: when ``None`` (or when the DOI isn't in the
-    store), the result is informational only — no rows are written.
-    When the parent paper *is* in the store, we write through:
-    notice refs are created for 🔴/🟠 notices, links are attached, the
-    ``refs.retraction_*`` columns are updated, and a closed-namespace
-    ``STATUS:*`` tag is applied.
+    ``store`` optional: ``None`` (or the DOI isn't in the store) makes
+    the result informational only — no rows written. When the parent
+    paper *is* in the store, writes through: notice refs created for
+    🔴/🟠 notices, links attached, ``refs.retraction_*`` updated, a
+    closed-namespace ``STATUS:*`` tag applied.
 
-    ``bib_entry`` is the Phase 2.5 metadata-verification hook. When
-    supplied, the function compares the caller's bibliographic claim
-    against the Crossref record and populates
-    ``ProvenanceResult.verification`` with per-field results. When
-    ``None``, verification is skipped and the result.verification
-    stays ``None`` (no extra cost).
+    ``bib_entry`` is the Phase 2.5 metadata-verification hook: when
+    supplied, compares the caller's bibliographic claim against the
+    Crossref record into ``ProvenanceResult.verification``; ``None``
+    skips verification (no extra cost).
 
-    ``transitive=True`` enables Phase 4 cite-walking: each cited DOI
-    found in ``message.reference`` is shallow-checked against
-    Crossref (depth 1 only, no recursion). Cited papers with a
-    severity ≥ 🟠 notice are surfaced in
+    ``transitive=True`` enables Phase 4 cite-walking: each cited DOI in
+    ``message.reference`` is shallow-checked against Crossref (depth 1,
+    no recursion); severity ≥ 🟠 cited papers surface in
     ``result.cited_findings``. ``_cite_cache`` is a per-batch dedup
-    cache; callers running multiple parent checks share one cache to
-    avoid re-fetching the same cited DOI.
+    cache shared across multiple parent checks to avoid re-fetching a
+    cited DOI.
 
-    Failure modes:
-    - DOI doesn't match the format → ``status='malformed'``
-    - Crossref returns no record → ``status='unknown'``
-    - Network / transport error → ``status='check_failed'`` with the
-      error string in ``.error``
+    Failure modes: malformed DOI → ``status='malformed'``; no Crossref
+    record → ``'unknown'``; network/transport error → ``'check_failed'``
+    with the error string in ``.error``.
     """
     canonical = validate_doi(doi)
     if canonical is None:
@@ -1283,32 +1263,18 @@ _BULLET_RE = re.compile(r"^\s*[-*+]\s+")
 
 
 def parse_doi_list(raw: str) -> list[str]:
-    """Split a batch input string into candidate DOI tokens.
+    """Split a batch input string into candidate DOI tokens. Accepts
+    comma-separated (``"10.x/a,10.x/b"``, the canonical ``q='...'``
+    form), whitespace-separated, newline-separated (the ``--refs
+    preflight.txt`` CLI form), or mixed separators. Strips empty/
+    whitespace-only entries, ``#`` comment lines, leading list markers
+    (``- ``/``* ``/``+ ``), and per-token surrounding whitespace.
 
-    Accepts any of:
-
-    - ``"10.x/a,10.x/b,10.x/c"`` — comma-separated (the canonical
-      ``q='...'`` form for the kind API)
-    - whitespace-separated tokens
-    - newline-separated tokens (the ``--refs preflight.txt`` form on
-      the CLI)
-    - mixed separators
-
-    Strips:
-    - empty / whitespace-only entries
-    - lines starting with ``#`` (comments)
-    - leading list markers (``- ``, ``* ``, ``+ ``)
-    - surrounding whitespace on each token
-
-    Does **not** validate DOI shape — that's ``validate_doi``'s job
-    inside ``check_doi``. The split is deliberately permissive so the
-    report can show ``status='malformed'`` for tokens that look DOI-ish
-    but aren't, alongside the rest of the batch.
-
-    Order is preserved (callers may want to render results in input
-    order); duplicates are kept too — the user may have a real reason
-    to check a DOI twice in one batch, and de-dup is cheap to do
-    on the caller side if wanted.
+    Does **not** validate DOI shape (``validate_doi``'s job inside
+    ``check_doi``) — deliberately permissive so the report can show
+    ``status='malformed'`` for DOI-ish-but-invalid tokens alongside the
+    rest of the batch. Order preserved; duplicates kept (de-dup is
+    cheap on the caller side if wanted).
     """
     tokens: list[str] = []
     for raw_line in raw.splitlines() if "\n" in raw else [raw]:
@@ -1347,27 +1313,21 @@ def check_dois(
     transitive: bool = False,
     suggest_candidates: bool = False,
 ) -> list[ProvenanceResult]:
-    """Run ``check_doi`` over a batch of DOIs concurrently.
-
-    Returns results in the same order as the input — order matters for
-    the preflight report (the user can map each line to a bib entry).
-    Concurrency comes from a thread pool, not asyncio, because the
-    underlying ``habanero`` client is synchronous and switching to
-    asyncio would require dragging ``httpx`` in. With the default
-    ``max_workers=8`` a 250-DOI batch finishes in ~30s warm / ~90s cold
+    """Run ``check_doi`` over a batch of DOIs concurrently. Returns
+    results in input order (so the preflight report can map each line
+    to a bib entry). Concurrency via a thread pool, not asyncio — the
+    underlying ``habanero`` client is synchronous. Default
+    ``max_workers=8`` finishes a 250-DOI batch in ~30s warm/~90s cold
     against the Crossref polite pool.
 
-    ``bib_entries`` is the Phase 2.5 metadata-verify hook. When
-    supplied, it must have the same length as ``dois`` (positional
-    pairing — entry[i] verifies dois[i]). When ``None``, no
-    verification runs. Mismatched lengths raise ``ValueError`` because
-    the alternative — silently dropping entries or DOIs — would mask
-    a caller bug into a meaningless report.
+    ``bib_entries`` is the Phase 2.5 metadata-verify hook: must match
+    ``dois``' length (positional pairing) or ``None`` (no verification).
+    Mismatched lengths raise ``ValueError`` — silently dropping entries
+    would mask a caller bug into a meaningless report.
 
     Failure isolation: any per-DOI exception surfaces as
-    ``status='check_failed'`` on that result (already true for the
-    single-DOI path), so a single transport hiccup doesn't kill the
-    batch. The caller never sees an exception.
+    ``status='check_failed'`` on that result, so one transport hiccup
+    doesn't kill the batch — the caller never sees an exception.
     """
     inputs = list(dois)
     if not inputs:
@@ -1507,24 +1467,20 @@ def check_ref_retraction(
     ttl_days: int = RETRACTION_TTL_DAYS,
     mailto: str | None = None,
 ) -> RetractionCheck:
-    """Check one ref for retraction, skipping refs checked within the TTL.
+    """Check one ref for retraction, skipping refs checked within the
+    TTL. Wraps :func:`check_doi` (folds in Crossref + the local
+    Retraction Watch cache, write-throughs any notices) with the
+    freshness gate and clean-stamp making repeated calls cheap: inside
+    TTL and not ``force`` → ``fresh``, no network; notices found →
+    ``checked`` (status write-through already done by ``check_doi``);
+    clean → ``checked`` and moves ``retraction_checked_at`` forward via
+    :meth:`Store.touch_retraction_checked` so the next call
+    short-circuits (without this, "clean" is indistinguishable from
+    "never looked" and every trigger re-fetches forever).
 
-    Wraps :func:`check_doi` (which folds in both Crossref and the local
-    Retraction Watch cache, and write-throughs any notices it finds) with
-    the freshness gate and the clean-stamp that make repeated calls cheap:
-
-    * inside the TTL and not ``force`` → ``fresh``, no network at all;
-    * upstream answered with notices → ``checked``, status write-through
-      already done by ``check_doi``;
-    * upstream answered clean → ``checked``, and we move
-      ``retraction_checked_at`` forward via
-      :meth:`Store.touch_retraction_checked` so the next call
-      short-circuits. Without this stamp "clean" is indistinguishable
-      from "never looked" and every trigger re-fetches forever.
-
-    A ref with no DOI, or one where Crossref *and* the RW cache both came
-    up empty, is reported honestly (``no_doi`` / ``unchecked``) and is
-    **not** stamped — pretending we checked would poison the TTL.
+    A ref with no DOI, or where Crossref *and* the RW cache both came up
+    empty, reports honestly (``no_doi``/``unchecked``) and is **not**
+    stamped — pretending we checked would poison the TTL.
     """
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if ref is None:
@@ -1709,17 +1665,14 @@ def check_ref_doi_validity(
     mailto: str | None = None,
 ) -> DoiValidationCheck:
     """Validate one ref's DOI against Crossref, TTL-gated exactly like
-    :func:`check_ref_retraction` (see that function + this section's
-    module comment for the shared rationale).
-
-    * inside the TTL and not ``force`` → ``fresh``, no network;
-    * upstream answered → ``checked``, stamped via
-      :meth:`Store.set_doi_validation` either way (``'valid'`` or
-      ``'not_found'`` — unlike retraction there is no second source whose
-      knowledge a clean read could clobber, so both outcomes are written);
-    * a ref with no DOI, or one Crossref couldn't be asked about, is
-      reported honestly (``no_doi`` / ``unchecked``) and **not** stamped —
-      stamping here would poison the TTL on an answer we never got.
+    :func:`check_ref_retraction`: inside TTL and not ``force`` →
+    ``fresh``, no network; upstream answered → ``checked``, stamped via
+    :meth:`Store.set_doi_validation` either way (``'valid'``/
+    ``'not_found'`` — unlike retraction there's no second source a clean
+    read could clobber, so both outcomes write); a ref with no DOI, or
+    one Crossref couldn't be asked about, reports honestly
+    (``no_doi``/``unchecked``) and is **not** stamped — that would
+    poison the TTL on an answer we never got.
     """
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if ref is None:

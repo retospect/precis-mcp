@@ -56,7 +56,6 @@ is a deliberate, node-targeted batch.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections import Counter
@@ -67,6 +66,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from precis.store.types import Tag
+from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -101,22 +101,6 @@ def _max_concurrency() -> int:
 
 def _load_axis(axis_id: str) -> dict:
     return yaml.safe_load((_AXES_DIR / f"{axis_id}.yaml").read_text(encoding="utf-8"))
-
-
-def _extract_json(text: str) -> dict | None:
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            return json.loads(text[a : b + 1])
-        except Exception:
-            return None
-    return None
 
 
 def _render_examples(axis: dict) -> str:
@@ -181,7 +165,7 @@ def _classify_one(client: Any, axis: dict, row: dict) -> str | None:
             exc,
         )
         return None
-    return (_extract_json(out.text) or {}).get("value")
+    return (extract_json_object(out.text) or {}).get("value")
 
 
 def _classify_row(

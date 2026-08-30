@@ -10,18 +10,17 @@ It mirrors :func:`autocatpath.pipeline.write_outputs` — same graph, same
 *in memory* and skips the matplotlib PNG rendering (deferred to a later
 slice), so it stays cheap and has no render-backend dependency.
 
-Slice 0 runs the whole pipeline inline on the EMT backend. §B-1 (gr180096,
-the spark wedge fix) fans ``run()``'s ``(model, seed)`` loop body out across
-the precis compute lane: :func:`run_seed_partial` runs ONE unit
-(``autocatpath.pipeline.run_one_seed``, built for exactly this — see its
-module docstring), :func:`aggregate_seed_partials` combines N of them
-(``autocatpath.pipeline.aggregate_partials``, pure numpy) back into the same
-artifact shape :func:`run_pathway` returns. ``quest.compute.
-dispatch_autocatpath`` mints the per-seed jobs; the ``autocatpath_seed`` /
-``autocatpath_aggregate`` job_types (``precis_pathway.seed_job`` /
-``.aggregate_job``) call these two functions. Heavy backends still move to
-the precis compute lane the same way (see
-``docs/backlog/autocatpath-integration.md`` in precis-mcp).
+Slice 0 runs the whole pipeline inline on the EMT backend. §B-1 fans
+``run()``'s ``(model, seed)`` loop body out across the precis compute
+lane: :func:`run_seed_partial` runs ONE unit
+(``autocatpath.pipeline.run_one_seed``), :func:`aggregate_seed_partials`
+combines N of them (``autocatpath.pipeline.aggregate_partials``, pure
+numpy) back into :func:`run_pathway`'s artifact shape.
+``quest.compute.dispatch_autocatpath`` mints the per-seed jobs; the
+``autocatpath_seed``/``autocatpath_aggregate`` job_types
+(``precis_pathway.seed_job``/``.aggregate_job``) call these two
+functions. Heavy backends move to the compute lane the same way
+(``docs/backlog/autocatpath-integration.md`` in precis-mcp).
 """
 
 from __future__ import annotations
@@ -666,49 +665,42 @@ _TERMINAL_REAP_WAIT_S = 1.0
 def _reap_zombie(pid: int, *, wait_s: float = 0.0) -> bool:
     """``os.waitpid(pid, WNOHANG)`` reap, optionally spun up to ``wait_s``.
 
-    :func:`submit_seed_partial_detached` discards its ``Popen`` object right
-    after spawning (the whole point of "detached" — nothing keeps tracking
-    it), so nothing else ever calls ``.wait()``/``.poll()`` on that PID once
-    the child exits. Without an explicit reap here, the child sits
-    ``<defunct>`` in the ORIGINAL submitting process's process table
-    forever — for the succeeding-job path that's every job the fan-out
-    runs, not a rare failure case, so this is called on EVERY terminal
-    branch of :func:`poll_seed_partial_detached`, not just the crash one.
+    :func:`submit_seed_partial_detached` discards its ``Popen`` right after
+    spawning — nothing else ever calls ``.wait()``/``.poll()`` on that PID.
+    Without an explicit reap, the child sits ``<defunct>`` in the
+    submitting process's table forever — the common succeeding-job case,
+    not a rare failure — so this runs on EVERY terminal branch of
+    :func:`poll_seed_partial_detached`, not just the crash one.
 
-    ``wait_s`` bounds a short retry spin — never an unbounded block:
+    ``wait_s`` bounds a short retry spin, never an unbounded block:
 
-    * The **liveness** probe (:func:`_process_alive`) uses the ``0.0``
-      default: a single ``WNOHANG`` probe that must never stall on a
-      still-running child, so a not-yet-a-zombie reads as "not reaped" and
-      falls through to the ``kill(pid, 0)`` probe.
-    * The **terminal** branch of :func:`poll_seed_partial_detached` passes a
-      small ``wait_s``. There a fully-parsed ``result.json`` envelope proves
-      the child has finished its work and is exiting — it writes the envelope
-      (``os.replace``) as its LAST act before ``return``
-      (:func:`_subprocess_main`). A plain ``WNOHANG`` reap loses the race
-      whenever the poll observes the freshly-written envelope before the
-      child has become a reapable zombie, no-ops, and leaks the very
-      ``<defunct>`` the reap exists to prevent (the common succeeding-job
-      case, since the envelope is visible first). Spinning ``WNOHANG`` for a
-      bounded ``wait_s`` reaps it deterministically in the normal case.
+    * **liveness** probe (:func:`_process_alive`) uses default ``0.0``: a
+      single WNOHANG probe that must never stall on a still-running
+      child; not-yet-a-zombie reads as "not reaped", falls through to
+      ``kill(pid, 0)``.
+    * **terminal** branch of :func:`poll_seed_partial_detached` passes a
+      small ``wait_s``: a parsed ``result.json`` envelope (written via
+      ``os.replace`` as the child's LAST act, :func:`_subprocess_main`)
+      proves it's exiting, but is visible before the child is actually a
+      reapable zombie — a plain WNOHANG would lose that race and leak the
+      ``<defunct>``. Spinning WNOHANG for bounded ``wait_s`` reaps it
+      deterministically.
 
-    ``wait_s`` is deliberately a SHORT cap, not a full ``os.waitpid(pid, 0)``:
-    a MACE/CUDA child can pathologically hang in driver/interpreter teardown
-    AFTER writing its envelope (the gr191351 "spins in ``libcuda`` for hours"
-    class, cf. :func:`run_seed_partial_subprocess`), and this runs inside the
-    single-threaded ``run_ssh_node_pass`` poll loop whose own wall-clock
-    deadline check fires BEFORE ``poll()`` — so an unbounded wait here would
-    freeze that worker generation un-killably. On timeout we give up and
-    leave the zombie: one leaked ``<defunct>`` in the rare hang case (reaped
-    when the worker recycles) is strictly better than a frozen loop, and the
-    common case no longer leaks at all.
+    ``wait_s`` is a SHORT cap, not full ``os.waitpid(pid, 0)``: a
+    MACE/CUDA child can pathologically hang in driver/interpreter
+    teardown AFTER writing its envelope (gr191351's "spins in ``libcuda``
+    for hours" class, cf. :func:`run_seed_partial_subprocess`), and this
+    runs inside the single-threaded ``run_ssh_node_pass`` poll loop whose
+    own deadline check fires BEFORE ``poll()`` — an unbounded wait here
+    would freeze that worker generation un-killably. On timeout: leave
+    the zombie (reaped when the worker recycles) — one leaked
+    ``<defunct>`` beats a frozen loop.
 
-    Returns ``True`` if THIS call reaped an already-exited child,
-    ``False`` otherwise (still running when the spin gave up, or
-    ``ChildProcessError``/ECHILD — not our child, e.g. this poll runs in a
-    worker generation that restarted since submit, or it was already reaped
-    by an earlier call — silently ignored either way: an orphaned zombie is
-    reparented to init/a subreaper and reaped there instead)."""
+    Returns ``True`` if THIS call reaped the child, ``False`` if still
+    running when the spin gave up, or ``ChildProcessError``/ECHILD (not
+    our child — a restarted worker generation, or already reaped; either
+    way an orphaned zombie reparents to init/a subreaper and gets reaped
+    there)."""
     import os
     import time
 

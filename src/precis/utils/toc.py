@@ -694,17 +694,6 @@ def _token_is_numericky(token: str) -> bool:
     )
 
 
-def _heading_for_row(h2: str, fallback_keywords: list[str]) -> str:
-    """Pick the column value for a heading row. Use the H2 verbatim
-    unless it's stupid, in which case fall back to the first 2 RAKE
-    keywords."""
-    if h2 and not _is_stupid_h2(h2):
-        return h2
-    if fallback_keywords:
-        return ", ".join(fallback_keywords[:2])
-    return h2  # whatever generic / empty value we had
-
-
 def _handle_for(slug: str, start: int, end: int) -> str:
     """Render the agent-pasteable handle for a segment.
 

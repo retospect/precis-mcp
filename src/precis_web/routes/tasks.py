@@ -19,20 +19,17 @@ The move route is a thin shell over the reserved virtual relation
 guards stay single-sourced in the handler — the web layer never
 touches ``parent_id`` directly.
 
-**Time.** Three timestamps reach a row, and only three exist:
-``refs.created_at`` (minted), the ``ref_tags.created_at`` of the row's
-single ``STATUS:*`` tag (``status_since`` — entered its current state,
-so *started* for a running job and *finished* for a terminal one), and
-``meta.started_at`` (the claim instant, stamped by
-``workers/executors/_common.py``). There is no transition history to
-read: STATUS is written with ``replace_prefix=True``, which deletes
-the prior tag rather than expiring it, so a finished job's "running"
-timestamp is gone and ``meta.started_at`` is the only thing that can
-tell its queue wait from its run time. Jobs claimed before that stamp
-shipped show a fused ``queued+ran`` span instead of a split, and say
-so. ``_stuck_job`` reuses ``workers/sweeper.py``'s stuck condition and
-its ``PRECIS_STUCK_JOB_HOURS`` threshold — see that function for the
-one condition it deliberately does not copy, and why.
+**Time.** Only three timestamps reach a row: ``refs.created_at``
+(minted), the row's single ``STATUS:*`` tag's ``ref_tags.created_at``
+(``status_since`` — entered current state: *started* if running,
+*finished* if terminal), and ``meta.started_at`` (claim instant,
+stamped by ``workers/executors/_common.py``). No transition history:
+STATUS writes with ``replace_prefix=True`` (deletes the prior tag rather
+than expiring it), so ``meta.started_at`` is the only queue-wait-vs-run-time
+split available; jobs claimed before that stamp shipped show a fused
+``queued+ran`` span. ``_stuck_job`` reuses ``workers/sweeper.py``'s stuck
+condition and ``PRECIS_STUCK_JOB_HOURS`` — see that function for the one
+condition it deliberately doesn't copy.
 """
 
 from __future__ import annotations
@@ -817,31 +814,24 @@ def _reason_from_event(event_text: str, *, limit: int = 200) -> str:
 
 
 def _stuck_job(status: str, status_since: Any, lease_until: str | None) -> bool:
-    """True when a job looks dead: running, past the stuck threshold,
-    with no live lease.
+    """True when a job looks dead: running, past the stuck threshold, no
+    live lease.
 
-    The same three-part test ``workers/sweeper.py``'s stuck-job phase
-    uses — current STATUS is ``running``, the ``ref_tags`` row that
-    wrote it is older than ``PRECIS_STUCK_JOB_HOURS``, and
-    ``meta.lease_until`` is null or past — reading the threshold
-    through the sweeper's own ``_stuck_job_hours`` so the two can't
-    drift when the env var is retuned.
+    Same three-part test as ``workers/sweeper.py``'s stuck-job phase:
+    STATUS ``running``, the ``ref_tags`` row that wrote it older than
+    ``PRECIS_STUCK_JOB_HOURS``, ``meta.lease_until`` null or past —
+    threshold read through the sweeper's own ``_stuck_job_hours`` so the
+    two can't drift.
 
-    It does NOT copy the sweeper's fourth condition, which excludes
-    ``_LEASE_OWNING_EXECUTORS`` (``ssh_node`` / ``claude_inproc`` /
-    ``claude_docker``). That exclusion is about *which mechanism*
-    recovers the row, not about whether it's dead: those executors are
-    reclaimed at claim time by the expiry / epoch arms in
-    ``executors/_common.py`` instead of by the wall-clock sweep. Both
-    kinds are equally dead to an operator reading this page, and
-    copying the exclusion would hide exactly the case this exists for
-    — the ``plan_tick`` job that sat ``STATUS:running`` for 35h
-    (gr191124) ran on a lease-owning executor, and rendered here
-    identically to one that started 20 seconds ago.
+    Deliberately does NOT copy the sweeper's fourth condition (exclude
+    ``_LEASE_OWNING_EXECUTORS``: ``ssh_node``/``claude_inproc``/
+    ``claude_docker``) — that's about *which mechanism* recovers the row
+    (expiry/epoch arms in ``executors/_common.py`` vs. the wall-clock
+    sweep), not whether it's dead. Both kinds are equally dead to an
+    operator reading this page.
 
-    So the badge means "this is dead and something will recover it",
-    not "the sweeper specifically will" — the UI copy says it that way.
-    """
+    Badge means "dead, something will recover it", not "the sweeper
+    specifically will"."""
     if status != "running":
         return False
     if _lease_active(lease_until):

@@ -36,8 +36,8 @@ search(kind="paper", q="Faradaic efficiency CO2 reduction", scope="<slug>")
 search(kind="paper", q="<claim or key phrase>", scope="<slug>", page=2)
 ```
 
-Hybrid lexical + semantic, restricted to that paper's blocks. Each hit
-is a chunk handle `pc<chunk_id>` — that's your anchor. Rare tokens
+Restricted to that paper's blocks (mechanics: `precis-search-help`).
+Each hit is a chunk handle `pc<chunk_id>` — that's your anchor. Rare tokens
 (a compound name, a number, a DOI) rank high, so quote the most
 distinctive phrase from the claim. No paper in mind yet? Drop `scope=`
 to search the whole corpus, or see [[precis-paper-help]].

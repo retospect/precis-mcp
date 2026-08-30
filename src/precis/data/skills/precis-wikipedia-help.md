@@ -95,11 +95,11 @@ search(kind="wikipedia", q="retrieval augmented generation")
 search(kind="wikipedia", q="dopamine receptor", page_size=20)
 ```
 
-Hybrid lexical + semantic over the bodies of articles already in the
-cache. Each hit row carries the universal chunk **handle** — paste it
-straight into `get` to drill in. `search` does not crawl — only fetched
-articles are searchable. To pull a *new* article, use `get` (which runs
-the live search + extract).
+Over the bodies of articles already in the cache — search mechanics in
+`precis-search-help`. Each hit row carries the universal chunk
+**handle** — paste it straight into `get` to drill in. `search` does
+not crawl — only fetched articles are searchable. To pull a *new*
+article, use `get` (which runs the live search + extract).
 
 ## Keep / annotate an article
 

@@ -73,7 +73,6 @@ block there + ``workers/registry.py``'s ``"axis"`` ``ServiceSpec``.
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -81,6 +80,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from precis.store.types import Tag
+from precis.utils.llm.json_reply import extract_json_object
 from precis.workers import ref_lease
 
 if TYPE_CHECKING:
@@ -126,24 +126,6 @@ _SYS = (
 
 def _load_axis(axis_id: str) -> dict[str, Any]:
     return yaml.safe_load((_AXES_DIR / f"{axis_id}.yaml").read_text(encoding="utf-8"))
-
-
-def _extract_json(text: str) -> dict[str, Any] | None:
-    if not text:
-        return None
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            parsed = json.loads(text[a : b + 1])
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-    return None
 
 
 def _render_examples(axis: dict[str, Any]) -> str:
@@ -230,7 +212,7 @@ def _classify_one(dispatch: Any, axis: dict[str, Any], prompt: str) -> str | Non
         )
     except Exception:
         return None
-    parsed = _extract_json(out.text)
+    parsed = extract_json_object(out.text)
     if parsed is None:
         return None
     val = parsed.get("value")

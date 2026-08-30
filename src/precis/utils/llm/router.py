@@ -1,48 +1,34 @@
-"""The LLM routing seam — one place where model selection, transport
-choice, and result normalization live.
-
-Before this module, model selection was scattered across ~a-dozen
-independent ``os.environ.get(...)`` reads, three different transports
-(``claude_agent`` multi-turn agent, ``claude_p`` one-shot JSON judge,
-the local ``LlmClient`` completion) each with its own result
-shape, and three rogue subprocess sites. This module is the **seam**
-that a follow-up unit (4b) folds those call sites through; it does not
-rewire them itself.
+"""The LLM routing **seam**: the one place model selection, transport choice,
+and result normalization live.
 
 Four pieces:
 
-* :func:`resolve_model` — the single tier→model table. Resolution is a
-  web-set ``app_settings`` override (the ``/factory`` live switch,
-  :mod:`precis.utils.llm.live_config`) → the *existing* env var → the
-  compiled default, so a caller with no override row resolves byte-for-byte
-  to the model it uses today. :func:`resolve_backend`
-  layers the same DB tier over ``PRECIS_LLM_BACKEND``.
-* :func:`select_transport` — the pure (tier, tools) → transport choice.
-* :class:`LlmProvider` + the adapter classes + :func:`dispatch` — the
-  **port**. Every backend implements one narrow ``run(req, *, model)``
-  method returning a normalized :class:`LlmResult`; :func:`dispatch`
-  just resolves the model, picks the provider from a
-  :data:`Transport`-keyed registry, and calls it. This is the seam that
-  makes the router *switchable*: a new backend (an OpenAI-compatible OSS
-  model, a failover ladder) is a new provider class + a registry row,
-  with **zero caller changes** — the LLM-independence goal. Each adapter
-  *wraps* the existing helper; it never reimplements it.
-* :class:`LlmResult` + the ``result_from_*`` adapters — one normalized
-  result shape unifying the JSON-block / stream-json result-event /
-  OpenAI-choices outputs.
+* :func:`resolve_model` — the tier→model table. Resolution order: a web-set
+  ``app_settings`` override (the ``/factory`` live switch,
+  :mod:`precis.utils.llm.live_config`) → env var → compiled default; no
+  override row resolves byte-for-byte to the model in use today.
+  :func:`resolve_backend` layers the same DB tier over ``PRECIS_LLM_BACKEND``.
+* :func:`select_transport` — pure ``(tier, tools) → transport``.
+* :class:`LlmProvider` + the adapter classes + :func:`dispatch` — the port.
+  Every backend implements ``run(req, *, model) -> LlmResult``; ``dispatch``
+  resolves the model, looks up the provider in the :data:`Transport`-keyed
+  registry, and calls it. A new backend is a new provider class + a registry
+  row — zero caller changes. Each adapter wraps its existing helper rather
+  than reimplementing it.
+* :class:`LlmResult` + the ``result_from_*`` adapters — one normalized shape
+  unifying the JSON-block / stream-json result-event / OpenAI-choices
+  outputs.
 
-The :class:`Tier` vocabulary aligns with the prompt-assembler
-:class:`~precis.utils.prompt.model.Profile`: a ``HELPER`` (tool-less,
-one-shot, structured) profile rides the ``MEDIUM`` / ``SMALL`` tiers on
-the ``claude_p`` / local transports; an ``AGENT`` (tools, multi-turn)
-profile rides ``BIG`` / ``FRONTIER`` on the ``claude_agent`` transport
-(and, when the backend routes there, a served OSS model on ``BIG``).
+:class:`Tier` aligns with :class:`~precis.utils.prompt.model.Profile`: a
+``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
+``claude_p``/local; an ``AGENT`` (tools, multi-turn) profile rides
+``BIG``/``FRONTIER`` on ``claude_agent`` (or a served OSS model on ``BIG``
+when the backend routes there).
 
-**OSS tool-calling lands on** :data:`Transport.OPENAI_TOOLS` — an
-open-source model driving the precis verbs over the OpenAI ``tools=``
-wire (:class:`OpenAIToolsProvider`), the in-process litellm tool loop rebuilt behind
-the provider port. It serves a served local model on the ``BIG`` tier
-and, when ``PRECIS_LLM_BACKEND=openai``, the tool-using cloud tiers.
+:data:`Transport.OPENAI_TOOLS` is an OSS model driving the precis verbs over
+the OpenAI ``tools=`` wire (:class:`OpenAIToolsProvider`), in-process. It
+serves a local model on ``BIG`` and, under ``PRECIS_LLM_BACKEND=openai``,
+the tool-using cloud tiers.
 """
 
 from __future__ import annotations
@@ -79,26 +65,21 @@ log = logging.getLogger(__name__)
 class Tier(StrEnum):
     """Capability tier — *what* the task needs, not *which* model.
 
-    A tier bundles a capability level with a tool-use expectation, and
-    maps onto both a concrete model (via :func:`resolve_model`) and a
-    transport (via :func:`select_transport`). Capability tiers + placement chains Phase C retired the
-    original five location-coupled members (``local-small``/``local-big``/
-    ``cloud-small``/``cloud-mid``/``cloud-super``) in favor of these four
-    pure-capability tiers — every call site now routes on *what a task
-    needs*, not on where it happens to run.
+    Bundles a capability level with a tool-use expectation; maps onto a
+    concrete model (:func:`resolve_model`) and a transport
+    (:func:`select_transport`). Every call site routes on task need, never
+    on where it happens to run.
 
-    * ``FRONTIER`` — the trusted-answer tier: heavy reasoning + tools
-      (opus-class). The structural / deep reviewers, fix-gripe,
-      ``llm_tier='opus'`` ticks, the dream pass, and the generic
+    * ``FRONTIER`` — heavy reasoning + tools (opus-class): structural/deep
+      reviewers, fix-gripe, ``llm_tier='opus'`` ticks, dream, the generic
       ``claude_agent`` default.
-    * ``BIG`` — the general agentic workhorse (sonnet-class) — planner,
-      tex-fix, weave. Also the tools-capable rung a served OSS model runs
-      on (a local ``qwen-heavy``-class model when the backend routes it
-      there).
-    * ``MEDIUM`` — one-shot JSON judge / cheap triage (haiku-class) — the
+    * ``BIG`` — general agentic workhorse (sonnet-class): planner, tex-fix,
+      weave; also the tools-capable rung a served OSS model (local
+      ``qwen-heavy``-class) runs on when the backend routes there.
+    * ``MEDIUM`` — one-shot JSON judge / cheap triage (haiku-class): the
       chase-verifier shape.
-    * ``SMALL`` — the categorizer / classifier rung (the ``summarizer``
-      alias) — per-chunk gloss, inject-scan. Tool-less by construction.
+    * ``SMALL`` — categorizer/classifier rung (``summarizer`` alias):
+      per-chunk gloss, inject-scan. Tool-less by construction.
     """
 
     FRONTIER = "frontier"
@@ -107,13 +88,11 @@ class Tier(StrEnum):
     SMALL = "small"
 
 
-#: Capability tiers + placement chains Phase C retired these five location-coupled tier strings from the
-#: enum. A *stored* value written before this ship (a quest's
-#: ``meta.loop.tier``, an already-baked ``quest_tick`` job's
-#: ``meta.params.tier``, a route-log ``llm_call_log.tier`` row, …) can still
-#: carry one — mapped here onto its capability-tier analogue so
-#: :func:`tier_from_str` degrades instead of raising. New code should never
-#: write these.
+#: Retired location-coupled tier strings, mapped onto their capability-tier
+#: analogue so a stored value (a quest's ``meta.loop.tier``, a baked
+#: ``quest_tick`` job's ``meta.params.tier``, a route-log ``llm_call_log.tier``
+#: row) still resolves via :func:`tier_from_str` instead of raising. Never
+#: write these from new code.
 _LEGACY_TIER_ALIASES: dict[str, Tier] = {
     "cloud-super": Tier.FRONTIER,
     "cloud-mid": Tier.BIG,
@@ -124,14 +103,11 @@ _LEGACY_TIER_ALIASES: dict[str, Tier] = {
 
 
 def tier_from_str(value: str, *, default: Tier = Tier.MEDIUM) -> Tier:
-    """Resolve ``value`` to a :class:`Tier` — a live capability-tier string,
-    or one of the five retired legacy strings (see
-    :data:`_LEGACY_TIER_ALIASES`) — without ever raising. Anything else
-    unrecognized (a typo, a future/unknown value) logs and falls back to
-    ``default`` (``MEDIUM``) rather than crash-looping the caller. Callers
-    resolving a **stored** tier value (as opposed to a fresh CLI/API argument,
-    where a typo raising immediately is the right, loud failure) should use
-    this instead of a bare ``Tier(value)``.
+    """Resolve ``value`` to a :class:`Tier`: a live tier string, a retired
+    alias (:data:`_LEGACY_TIER_ALIASES`), or ``default`` — never raises,
+    logging on an unrecognized value. Use this for a **stored** tier value;
+    a fresh CLI/API argument should raise on a typo via a bare ``Tier(value)``
+    instead.
     """
     try:
         return Tier(value)
@@ -154,21 +130,16 @@ class Transport(StrEnum):
     * ``CLAUDE_P`` — :func:`precis.utils.claude_p.call_claude_p`
       (one-shot, no tools, last-JSON-block parse).
     * ``LOCAL`` — the loopback ``LlmClient`` (OpenAI
-      ``/v1/chat/completions``, tool-less local completion). Was named
-      ``LITELLM`` for the now-retired central litellm ``:4000`` proxy this
-      used to front (migration 0107 renamed the enum + backfilled the
-      ``llm_call_log`` history); the wire it denotes is the
-      served_by-direct/loopback OpenAI-compat path, not a proxy.
-    * ``OPENAI_COMPAT`` — the same OpenAI ``/v1/chat/completions`` wire
-      pointed at a *hosted* OSS backend (OpenRouter / DeepInfra / a
-      remote vLLM), authed with a vault-resolved key. Tool-less (the
-      one-shot / completion path); tool-using calls go to ``OPENAI_TOOLS``.
+      ``/v1/chat/completions``, tool-less local completion) — a
+      served_by-direct/loopback path, not a proxy.
+    * ``OPENAI_COMPAT`` — the same wire pointed at a *hosted* OSS backend
+      (OpenRouter / DeepInfra / a remote vLLM), authed with a vault-resolved
+      key. Tool-less; tool-using calls go to ``OPENAI_TOOLS``.
     * ``OPENAI_TOOLS`` — an OSS model driving the precis verbs over the
       OpenAI ``tools=`` wire, in-process (:mod:`precis.utils.llm.openai_tools`
       + :mod:`precis.utils.llm.precis_tools`). Serves both a served local
-      model backing the ``BIG`` tier and the ``OPENAI`` backend's tool-using
-      cloud calls — same wire, different base url. Implements the in-process litellm tool
-      loop that was prototyped-then-reversed onto ``claude``.
+      model backing ``BIG`` and the ``OPENAI`` backend's tool-using cloud
+      calls — same wire, different base url.
     """
 
     CLAUDE_AGENT = "claude_agent"
@@ -181,30 +152,26 @@ class Transport(StrEnum):
     def carries_tools(self) -> bool:
         """Can a call on this wire actually invoke a precis verb?
 
-        Only two transports advertise tools: ``CLAUDE_AGENT`` (MCP over
-        ``claude -p --mcp-config``) and ``OPENAI_TOOLS`` (the in-process
-        ``tools=`` loop). The other three are completion wires — they accept
-        a ``tools_needed=True`` request without complaint and return prose.
-
-        This is the invariant :func:`select_transport` is written around,
-        named so the operator-override path (:func:`resolve_chain`) can
-        enforce the same thing instead of re-deriving it.
+        Only ``CLAUDE_AGENT`` (MCP over ``claude -p --mcp-config``) and
+        ``OPENAI_TOOLS`` (the in-process ``tools=`` loop). The other three
+        are completion wires: they accept ``tools_needed=True`` without
+        complaint and return prose. :func:`select_transport` is built on
+        this invariant; :func:`resolve_chain`'s operator-override path
+        enforces it too.
         """
         return self in (Transport.CLAUDE_AGENT, Transport.OPENAI_TOOLS)
 
 
 class Backend(StrEnum):
-    """Which vendor family a cloud request is routed to — the switch that
-    delivers LLM independence.
+    """Vendor family a cloud request routes to. Resolved once per
+    :func:`dispatch` from ``PRECIS_LLM_BACKEND`` (:func:`resolve_backend`)
+    and passed to :func:`select_transport`.
 
-    Resolved once per :func:`dispatch` from ``PRECIS_LLM_BACKEND`` (see
-    :func:`resolve_backend`) and passed into :func:`select_transport`.
-    Default ``ANTHROPIC`` keeps the ``claude -p`` transports, so the
-    OpenAI-compatible path **ships dark** — it engages only when a
-    deployment opts in *and* points ``PRECIS_LLM_BASE_URL`` at a backend.
-    ``OPENAI`` routes tool-less cloud calls to :data:`Transport.OPENAI_COMPAT`
-    and tool-using cloud calls to :data:`Transport.OPENAI_TOOLS` (the
-    in-process ``tools=`` loop).
+    Default ``ANTHROPIC`` keeps the ``claude -p`` transports; the
+    OpenAI-compatible path ships dark, engaging only when a deployment sets
+    the backend *and* ``PRECIS_LLM_BASE_URL``. ``OPENAI`` routes tool-less
+    calls to :data:`Transport.OPENAI_COMPAT` and tool-using calls to
+    :data:`Transport.OPENAI_TOOLS`.
     """
 
     ANTHROPIC = "anthropic"
@@ -213,18 +180,11 @@ class Backend(StrEnum):
 
 # ── the tier → model table (the ONE consolidation point) ───────────────
 #
-# Each row is ``tier: (env_var, default)``. The cloud triad (FRONTIER/BIG/
-# MEDIUM) is the *pinned* set from ``plan_tick._model_alias`` —
-# ``PRECIS_MODEL_{OPUS,SONNET,HAIKU}`` — which is the most deliberate of the
-# scattered reads (it pins a model *id* so ``llm_tier='opus'`` binds to one
-# generation as the CLI default drifts). The FRONTIER default is
-# ``claude-opus-4-8`` — the consolidation point for the whole cloud reasoning
-# tier (dream, tex-fix, reviewers, fix-gripe, the generic ``claude_agent``
-# default all resolve through here). 4-7 and 4-8 are the same price, so there
-# is no cost reason to stay on 4-7 and the reasoning/agentic work is exactly
-# where the stronger model earns its keep. ``claude_p``'s legacy suffix-less
-# ``claude-haiku-4-5`` default is folded onto the dated pin here (same
-# family).
+# Each row is ``tier: (env_var, default)``. The cloud triad
+# (FRONTIER/BIG/MEDIUM) pins a model *id* via ``PRECIS_MODEL_{OPUS,SONNET,
+# HAIKU}`` so ``llm_tier='opus'`` binds to one generation regardless of the
+# CLI's own default. Every cloud-reasoning caller (dream, tex-fix, reviewers,
+# fix-gripe, the generic ``claude_agent`` default) resolves through here.
 _TIER_MODEL: dict[Tier, tuple[str, str]] = {
     Tier.FRONTIER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
     Tier.BIG: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
@@ -239,48 +199,38 @@ _TIER_MODEL: dict[Tier, tuple[str, str]] = {
 # at dispatch (mirrors the TodoView totality assert in handlers/todo.py).
 assert set(_TIER_MODEL) == set(Tier), "resolve_model: tier table is not total"
 
-#: The tiers that route to a *claude* transport under the ANTHROPIC backend —
-#: the only ones an OSS model override is incoherent for (see resolve_model's
-#: Part-3 coherence check). ``SMALL`` is never claude-bound (it always routes
-#: to the local/hosted-OSS split via :func:`select_transport`), so it is not
-#: here.
+#: Tiers that route to a *claude* transport under the ANTHROPIC backend — the
+#: only ones an OSS model override is incoherent for (:func:`resolve_model`'s
+#: coherence check). ``SMALL`` always routes local/hosted-OSS
+#: (:func:`select_transport`), so it is excluded.
 _CLOUD_TIERS: frozenset[Tier] = frozenset({Tier.FRONTIER, Tier.BIG, Tier.MEDIUM})
 
 
 def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
-    """The concrete model id for ``tier`` — the ONE place model
-    selection lives.
+    """The concrete model id for ``tier`` — the ONE place model selection
+    lives.
 
-    Resolution order: a web-set ``app_settings`` override (the ``/factory``
-    live switch, :func:`precis.utils.llm.live_config.model_override`) → the
-    env var → the compiled default in :data:`_TIER_MODEL`. With no override
-    row (or no store bound) the DB tier is a no-op, so a caller resolves
-    byte-for-byte to the model it uses today.
+    Resolution order: a web-set ``app_settings`` override
+    (:func:`precis.utils.llm.live_config.model_override`) → env var →
+    compiled default in :data:`_TIER_MODEL`. No override row (or no store
+    bound) ⇒ no-op, byte-for-byte the model in use today.
 
-    ``backend`` (default ``None`` — no coherence check, today's behavior for
-    every caller that doesn't pass it) is the *effective*, already-demoted
-    backend a dispatch call is about to run on
-    (``glm-fleet-flip-safety`` (git-only) Part 3). When it is
-    :data:`Backend.ANTHROPIC` and the ``app_settings`` override resolves to a
-    non-claude slug (heuristic: doesn't start with ``"claude"``), the override
-    is incoherent with the claude transport it would land on — drop it and
-    fall through to the env var / compiled default instead. This is what
-    keeps a half-applied flip (backend demoted to ``ANTHROPIC`` for a missing
-    ``PRECIS_LLM_BASE_URL``, but an OSS ``app_settings`` model override still
-    set) from handing an OSS model id to a claude transport — the ``dream``
-    ``api_error`` class. :func:`dispatch` passes its post-demotion
-    ``backend`` here; every other caller (claude-only helpers that never see
-    an OSS override) leaves it ``None`` and is unaffected.
+    ``backend`` (default ``None`` ⇒ no coherence check) is the *effective*,
+    already-demoted backend the dispatch call is about to run on. When it is
+    :data:`Backend.ANTHROPIC` and the override resolves to a non-claude slug
+    (doesn't start with ``"claude"``), it's incoherent with the claude
+    transport it would land on — drop it, fall through to env var/default.
+    This stops a half-applied backend demotion (``PRECIS_LLM_BASE_URL``
+    missing, but an OSS model override still set) from handing an OSS model
+    id to a claude transport. :func:`dispatch` passes its post-demotion
+    ``backend``; every other caller leaves it ``None`` and is unaffected.
     """
     from precis.utils.llm import live_config
 
     override = live_config.model_override(tier)
-    # The coherence drop applies ONLY to the cloud tiers: they are the ones
-    # that route to a claude transport under ANTHROPIC, so an OSS override
-    # there is incoherent. SMALL (→LOCAL/OPENAI_COMPAT) never touches a
-    # claude transport, so its (always-non-claude) override is legitimate and
-    # must be honored — dropping it would silently ignore a live
-    # `llm.model.small` row (incl. the one Part 1's remap reads).
+    # The coherence drop applies only to the cloud tiers, the ones that route
+    # to a claude transport under ANTHROPIC. SMALL never touches a claude
+    # transport, so its (always-non-claude) override is always honored.
     claude_bound = backend is Backend.ANTHROPIC and tier in _CLOUD_TIERS
     if override and not (claude_bound and not override.startswith("claude")):
         return override
@@ -288,18 +238,14 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     return os.environ.get(env_var, default)
 
 
-#: Per-tier ``(thinking, temperature)`` default — capability tiers + placement chains gen-param
-#: passthrough (:attr:`LlmRequest.thinking` / :attr:`LlmRequest.temperature`).
-#: ``SMALL`` (the categorizer/classifier rung) gets thinking
-#: **off** + temperature **0.0**: a per-chunk gloss/inject-scan must not spend
-#: reasoning tokens on a one-line judgment, must answer deterministically, and
-#: — the fix this table exists for — must not degrade to an empty completion
-#: when the tier's model is a local *thinking-only* model (leaving thinking on
-#: there burns the whole budget on the reasoning trace with nothing left for
-#: the answer). Every other tier gets thinking **on** + temperature **None**
-#: (the provider's own default, sent as no field at all) — today's implicit
-#: behaviour for the bigger/agentic tiers, made explicit here rather than
-#: changed.
+#: Per-tier ``(thinking, temperature)`` default, applied by :func:`dispatch`
+#: when :attr:`LlmRequest.thinking`/``.temperature`` are left ``None``.
+#: ``SMALL`` gets thinking **off** + temperature **0.0**: a per-chunk
+#: gloss/inject-scan must answer deterministically and must not burn its
+#: whole budget on a reasoning trace when the tier's model is local
+#: *thinking-only* (leaving thinking on there yields an empty completion).
+#: Every other tier gets thinking **on** + temperature **None** (the
+#: provider's own default — omitted from the wire).
 _TIER_GEN_DEFAULTS: dict[Tier, tuple[bool, float | None]] = {
     Tier.SMALL: (False, 0.0),
     Tier.MEDIUM: (True, None),
@@ -323,19 +269,13 @@ def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
 
 # ── planner model aliases (the meta.llm_tier dropdown vocab) ───────────
 #
-# ``meta.llm_tier`` on a todo names a *capability tier*, not a
-# vendor model: the dispatcher synthesizes ``plan_tick``'s ``model`` param
-# from it and the tick resolves the concrete model via :func:`resolve_model`.
-# This is the ONE ordered source the dispatcher (plan_tick), the closed-vocab
-# guards, and the web model-pickers key on, so the tier map and the dropdown
-# never drift. ``local`` is the cluster's served OSS tier (``qwen-heavy`` +
-# tools), reachable now that LLM routing seam's ``OPENAI_TOOLS`` loop drives the verbs
-# in-process — a planner tick runs on it just like the cloud tiers.
-#
-# ``local`` now pins ``BIG`` directly (the location-coupled
-# ``LOCAL_BIG`` tier is retired) — a served OSS model still backs it when the
-# backend/chain routes there (:func:`select_transport` / a served_by slot);
-# the legacy {opus, sonnet, haiku} aliases are otherwise unchanged.
+# ``meta.llm_tier`` on a todo names a *capability tier*, not a vendor model:
+# the dispatcher synthesizes ``plan_tick``'s ``model`` param from it and the
+# tick resolves the concrete model via :func:`resolve_model`. This is the ONE
+# ordered source the dispatcher, the closed-vocab guards, and the web
+# model-pickers key on, so the tier map and the dropdown never drift.
+# ``local`` pins ``BIG`` directly — a served OSS model backs it when the
+# backend/chain routes there (:func:`select_transport` / a served_by slot).
 PLANNER_TIER_BY_ALIAS: dict[str, Tier] = {
     "opus": Tier.FRONTIER,
     "sonnet": Tier.BIG,
@@ -394,26 +334,22 @@ def _catalog_card_meta(model: str) -> dict[str, Any] | None:
 
 def planner_model_choices() -> list[dict[str, Any]]:
     """THE model-picker source — one row per ``(alias, tier)`` in
-    :data:`PLANNER_TIER_BY_ALIAS`, reflecting what the tier *actually* routes
+    :data:`PLANNER_TIER_BY_ALIAS`, reflecting what the tier actually routes
     to right now.
 
-    ``model`` is rung 0 of the LIVE placement chain (:func:`resolve_chain`) —
-    the same resolver :func:`dispatch` walks — not the bare
-    :func:`resolve_model` tier default, so an operator ``llm.chain.<tier>``
-    override (e.g. the BIG-routes-local-first chain) shows up here
-    instead of a stale cloud label. ``tools_needed`` is ``True`` for every
-    tier but ``SMALL``: FRONTIER/BIG/MEDIUM feed planner ticks (tool-using
-    agentic dispatch), so the picker must mirror the chain a tool-needing call
-    walks, not the tool-less one. ``placement`` (``"local"``/``"cloud"``) and
-    ``fallbacks`` (the ordered, de-duped rest of the chain) describe that same
-    chain; ``size``/``context`` are best-effort ``llm`` catalog-card meta
-    (:func:`_catalog_card_meta`) — ``None`` when no card exists or no store is
-    bound, never a hard failure.
+    ``model`` is rung 0 of the live chain (:func:`resolve_chain`, the same
+    resolver :func:`dispatch` walks), not the bare :func:`resolve_model`
+    default — an operator ``llm.chain.<tier>`` override shows up here.
+    ``tools_needed`` is ``True`` for every tier but ``SMALL`` (the tool-using
+    planner-tick tiers must mirror the chain a tool-needing call walks).
+    ``placement``/``fallbacks`` describe that chain; ``size``/``context`` are
+    best-effort catalog-card meta (:func:`_catalog_card_meta`), ``None`` when
+    absent.
 
-    A per-alias resolution error degrades that row to a bare
+    A per-alias resolution error degrades that row to
     ``{alias, tier, model, placement: None, fallbacks: [], size: None,
-    context: None}`` shape rather than raising, so one bad tier can't blank
-    the whole dropdown.
+    context: None}`` rather than raising, so one bad tier can't blank the
+    whole dropdown.
     """
     try:
         backend = resolve_backend()
@@ -495,33 +431,24 @@ def planner_model_choices() -> list[dict[str, Any]]:
 
 def rung_knobs(rung: Rung) -> dict[str, Any]:
     """Static per-transport honesty table for the structured-selection UI's
-    knob greying — which gen-param controls (`temperature` / `thinking` /
-    `effort`) a rung's transport actually forwards to the wire, mirroring what
-    each provider adapter genuinely does with :class:`LlmRequest`'s fields
-    rather than accepting-and-ignoring one silently.
+    knob greying: which gen-param controls (`temperature`/`thinking`/`effort`)
+    ``rung``'s transport actually forwards to the wire.
 
     Returns ``{"temperature": bool, "temp_max": float | None, "thinking":
     bool, "effort": bool}``. Per transport:
 
-    * ``CLAUDE_AGENT`` / ``CLAUDE_P`` — none of the three: the claude
-      transports have no such knobs at all (see :attr:`LlmRequest.thinking`'s
-      docstring — Anthropic's extended-thinking budget is a separate, unrelated
-      knob these fields do not touch).
-    * ``LOCAL`` — ``temperature`` (max ``2.0``, the OpenAI-compat wire's
-      range); ``thinking`` is deliberately **not** forwarded (see the NOTE in
-      :func:`_dispatch_local` — no confirmed backend-specific key for the
-      deployed llama.cpp/llama-swap build); ``effort`` unsupported (no
-      OpenRouter-style ``reasoning.effort`` on a bare local completion call).
-    * ``OPENAI_COMPAT`` — ``temperature`` (max ``2.0``), ``thinking`` (the
-      capability tiers + placement chains toggle, honored via :func:`openrouter_routing`'s
-      ``reasoning.enabled``), ``effort`` (``reasoning.effort``, same
-      function) — the OpenRouter-fronted completion wire honors all three.
-    * ``OPENAI_TOOLS`` — ``temperature`` (max ``2.0``); ``thinking`` only when
-      ``PRECIS_LLM_BASE_URL`` is set — :func:`run_oss_tool_loop` applies the
-      no-thinking directive only for a genuinely *hosted* call, never a
-      direct local llama-swap endpoint (no confirmed key there either, same
-      caveat as ``LOCAL``); ``effort`` is never forwarded on this transport
-      (:func:`run_oss_tool_loop` takes no ``effort`` parameter).
+    * ``CLAUDE_AGENT`` / ``CLAUDE_P`` — none: the claude transports have no
+      such knobs (Anthropic's extended-thinking budget is a separate,
+      unrelated knob these fields don't touch).
+    * ``LOCAL`` — ``temperature`` (max ``2.0``); ``thinking`` not forwarded
+      (no confirmed llama.cpp/llama-swap key, see :func:`_dispatch_local`);
+      no ``effort`` (bare local completion has no such wire field).
+    * ``OPENAI_COMPAT`` — all three (:func:`openrouter_routing`'s
+      ``reasoning.enabled``/``reasoning.effort``).
+    * ``OPENAI_TOOLS`` — ``temperature``; ``thinking`` only when
+      ``PRECIS_LLM_BASE_URL`` is set (:func:`run_oss_tool_loop` applies the
+      no-thinking directive only to a hosted call, same caveat as ``LOCAL``
+      for a direct llama-swap endpoint); no ``effort`` (unsupported param).
     """
     if rung.transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
         return {
@@ -588,28 +515,24 @@ def resolve_selection(
     reasoning: str | None = None,
     temperature: float | None = None,
 ) -> dict[str, Any]:
-    """Preview what :func:`dispatch` **would** pick for a structured
-    ``(alias, placement, reasoning, temperature)`` selection, without making a
-    call — the ``/factory`` picker's live preview row. Never raises; every
+    """Preview what :func:`dispatch` would pick for a structured
+    ``(alias, placement, reasoning, temperature)`` selection, without making
+    a call — the ``/factory`` picker's live preview row. Never raises; every
     failure degrades to an ``error``-carrying row of the same shape.
 
     Resolution mirrors :func:`planner_model_choices` (alias → tier →
-    :func:`resolve_chain`) with :func:`_apply_placement` layered in, same as
-    :func:`dispatch`. Return keys are always present:
-    ``alias, tier, model, transport, placement_effective, fallbacks, knobs,
-    size, context, warnings, error, temp_default`` — ``error`` is ``None`` on
-    success. ``temp_default`` is the sampling temperature :func:`dispatch`
+    :func:`resolve_chain`) with :func:`_apply_placement` layered in. Return
+    keys are always present: ``alias, tier, model, transport,
+    placement_effective, fallbacks, knobs, size, context, warnings, error,
+    temp_default``. ``temp_default`` is the temperature :func:`dispatch`
     would apply when the caller leaves ``temperature`` unset: ``None`` when
-    the resolved rung ignores temperature (:func:`rung_knobs`) or the
-    provider's own default otherwise applies; else the catalog card's
-    ``gen_defaults.temperature`` override when present and in ``[0, 2]``;
-    else the tier's :func:`_tier_gen_defaults` temperature.
+    the rung ignores temperature (:func:`rung_knobs`); else the catalog
+    card's ``gen_defaults.temperature`` when present and in ``[0, 2]``; else
+    the tier's :func:`_tier_gen_defaults` value.
 
-    ``warnings`` are honesty notes computed against the resolved rung's
-    :func:`rung_knobs` — e.g. a ``temperature`` given to a route that ignores
-    it, or a ``reasoning`` level set where the route only supports on/off (or
-    ignores the setting altogether). These are advisory only; resolution
-    itself never fails because of them.
+    ``warnings`` are advisory honesty notes against :func:`rung_knobs` (e.g.
+    a ``temperature`` given to a route that ignores it) — they never fail
+    resolution.
     """
     degraded: dict[str, Any] = {
         "alias": alias,
@@ -792,16 +715,15 @@ def llm_select_from_payload(
 
 
 def resolve_backend() -> Backend:
-    """The cloud backend family for this process — the LLM-independence switch.
+    """The cloud backend family for this process.
 
-    Resolution order: a web-set ``app_settings`` override (the ``/factory``
-    live toggle, :func:`precis.utils.llm.live_config.backend_override`) →
-    ``PRECIS_LLM_BACKEND`` (default ``anthropic``). An unknown value at either
-    tier degrades to ``anthropic`` so a typo can't dark a deployment. The
-    OpenAI-compatible path additionally needs ``PRECIS_LLM_BASE_URL`` set
-    (checked at dispatch); with the backend on but no base url, cloud calls
-    fall back to ``claude`` rather than hit a phantom endpoint. With no override
-    row the DB tier is a no-op — byte-identical to the env-only read.
+    Resolution order: a web-set ``app_settings`` override
+    (:func:`precis.utils.llm.live_config.backend_override`) →
+    ``PRECIS_LLM_BACKEND`` (default ``anthropic``). An unknown value at
+    either tier degrades to ``anthropic``. The OpenAI-compatible path also
+    needs ``PRECIS_LLM_BASE_URL`` (checked at dispatch); with the backend on
+    but no base url, cloud calls fall back to ``claude`` rather than hit a
+    phantom endpoint. No override row ⇒ byte-identical to the env-only read.
     """
     from precis.utils.llm import live_config
 
@@ -815,24 +737,19 @@ def resolve_backend() -> Backend:
 def select_transport(
     tier: Tier, *, tools_needed: bool, backend: Backend = Backend.ANTHROPIC
 ) -> Transport:
-    """Pick the transport for ``(tier, tools_needed, backend)`` — a pure function.
+    """Pick the transport for ``(tier, tools_needed, backend)`` — pure.
 
-    ``SMALL`` is tool-less by construction and routes to the local/hosted-OSS
-    split regardless of ``tools_needed``: under ``ANTHROPIC`` (the default) it
-    takes the loopback local completion wire (:data:`Transport.LOCAL`); under
-    ``OPENAI`` it takes :data:`Transport.OPENAI_COMPAT` (a hosted OSS backend —
-    OpenRouter — with no local hardware fallback of its own). This is the
-    OpenRouter-bypass hosted-small gap-fill.
+    ``SMALL`` is tool-less by construction and routes local/hosted-OSS
+    regardless of ``tools_needed``: :data:`Transport.LOCAL` under
+    ``ANTHROPIC``, :data:`Transport.OPENAI_COMPAT` under ``OPENAI`` (no local
+    hardware fallback of its own).
 
-    ``MEDIUM`` / ``BIG`` / ``FRONTIER`` split on ``tools_needed``, which
-    mirrors the ``AGENT`` vs ``HELPER`` :class:`~precis.utils.prompt.model.Profile`
-    split: tools ⇒ ``claude_agent`` (AGENT), no tools ⇒ ``claude_p`` (HELPER).
-    ``backend`` (default ``ANTHROPIC``, so existing callers are unchanged)
-    routes cloud work to the OSS path when ``OPENAI``: tool-less →
-    :data:`Transport.OPENAI_COMPAT`, tool-using → :data:`Transport.OPENAI_TOOLS`
-    (the in-process ``tools=`` loop, also how a served local model backs
-    ``BIG`` under an ``OPENAI_TOOLS``-carrying chain rung). Under ``ANTHROPIC``
-    both stay on the ``claude`` transports.
+    ``MEDIUM``/``BIG``/``FRONTIER`` split on ``tools_needed``, mirroring the
+    ``AGENT``/``HELPER`` :class:`~precis.utils.prompt.model.Profile` split:
+    tools ⇒ ``claude_agent``, no tools ⇒ ``claude_p``. ``backend=OPENAI``
+    routes cloud work to OSS instead: tool-less → ``OPENAI_COMPAT``,
+    tool-using → ``OPENAI_TOOLS`` (also how a served local model backs
+    ``BIG``). Under ``ANTHROPIC`` both stay on the ``claude`` transports.
     """
     if tier is Tier.SMALL:
         return Transport.OPENAI_COMPAT if backend is Backend.OPENAI else Transport.LOCAL
@@ -876,51 +793,37 @@ class _HasText(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class LlmResult:
-    """One normalized outcome across all three transports.
+    """One normalized outcome across every transport.
 
-    * ``text`` — the assistant's final text. For ``claude_p`` this is the
-      raw stdout (the JSON block lives inside it); for ``claude_agent``
-      it is the stream-json result text; for the local transport it is
-      the OpenAI choice content.
-    * ``cost_usd`` — best-effort USD cost (``None`` when the transport
-      doesn't report one, e.g. the loopback local transport).
-    * ``turns_used`` — agent turn count (``None`` for the one-shot
-      transports).
-    * ``duration_s`` — agent wall-clock (``None`` for the one-shot /
-      local transports); read by dream + review telemetry.
-    * ``data`` — the parsed JSON dict for the ``claude_p`` judge path
-      (``None`` otherwise). Preserves the ``ClaudePResult.data`` a judge
-      caller reads without re-parsing ``text``.
-    * ``model`` / ``tier`` — what actually ran, for attribution.
+    * ``text`` — final text: ``claude_p``'s raw stdout (JSON embedded),
+      ``claude_agent``'s stream-json result text, or the local transport's
+      OpenAI choice content.
+    * ``cost_usd`` — best-effort USD cost (``None`` when unreported, e.g.
+      loopback local).
+    * ``turns_used`` — agent turn count (``None`` for one-shot transports).
+    * ``duration_s`` — agent wall-clock (``None`` for one-shot/local); read
+      by dream + review telemetry.
+    * ``data`` — parsed JSON dict for the ``claude_p`` judge path (``None``
+      otherwise), so the caller skips re-parsing ``text``.
+    * ``model``/``tier`` — what actually ran, for attribution.
     * ``error`` — ``None`` on success; a message on a caught transport
-      failure (see :func:`dispatch`).
-    * ``paused`` — ``True`` when ``error`` is a *window-scoped breaker trip*
-      (the daily/hourly dollar cap or the claude-OAuth quota snapshot), not a
-      genuine transport failure. A pinned pass reads this to **skip** (a no-op
-      that clears when the window rolls off) instead of recording a failure and
-      re-attempting every cycle — the spin that flooded the FAILED-PASSES panel
-      with 100k+ structural "failures" while the budget was capped.
-    * ``interrupted`` — ``True`` when ``error`` is a *signal-termination* of the
-      subprocess (exit ≥ 128 = 128 + signum: SIGTERM→143, SIGINT→130, SIGKILL→
-      137). The worker was told to stop mid-call (a launchd/deploy bounce or a
-      jetsam cull), so the ``claude -p`` child died with the worker — this is
-      **not** a dispatch/config failure and must not be recorded as one. Same
-      skip-not-fail treatment as ``paused``: the call simply didn't run, and the
-      next tick re-attempts for free. (Without it, every worker bounce mid-review
-      wrote a false 5h ``review-fail`` cooldown marker.)
-    * ``timed_out`` — ``True`` when ``error`` is a *wall-clock timeout* (the
-      streamed hard ceiling / idle timeout, or a one-shot transport's socket
-      cap). A strict refinement of ``paused``: a timeout is always also a
-      ``paused`` unavailability, but not the reverse (a 429, a connection
-      failure, a worker drain). Callers that merely back off don't need the
-      split; a caller holding a bounded give-up budget does, because the two
-      retry differently — a capped window or a drain clears by itself, whereas
-      re-sending an identical prompt to an identical rung that just exhausted
-      its wall clock exhausts it again, deterministically, forever (2026-08-13:
-      all 10 of the ``quest_tick`` BIG chain's 900s-ceiling trips in 7 days were
-      the same cloud rung, none recovered on retry). Read by
-      :func:`~precis.quest.tick.run_quest_tick` to stamp
-      :attr:`~precis.quest.tick.QuestTickOutcome.pause_kind`.
+      failure (:func:`dispatch`).
+    * ``paused`` — ``True`` for a window-scoped breaker trip (dollar cap or
+      claude-OAuth quota), not a genuine failure — a pinned pass **skips**
+      (clears when the window rolls off) instead of recording a failure and
+      spinning every cycle.
+    * ``interrupted`` — ``True`` for a signal-terminated subprocess (exit ≥
+      128 = 128 + signum: SIGTERM→143, SIGINT→130, SIGKILL→137) — a worker
+      bounce/jetsam cull, not a dispatch/config failure. Same skip-not-fail
+      treatment as ``paused``.
+    * ``timed_out`` — ``True`` for a wall-clock timeout (streamed hard
+      ceiling/idle timeout, or a one-shot socket cap). A strict refinement of
+      ``paused`` (every timeout is a paused unavailability; a 429, connection
+      failure, or drain isn't a timeout). A bounded give-up budget needs the
+      split: a capped window or drain clears itself, but resending an
+      identical prompt to an exhausted rung exhausts it again,
+      deterministically. Read by :func:`~precis.quest.tick.run_quest_tick`
+      to stamp :attr:`~precis.quest.tick.QuestTickOutcome.pause_kind`.
     """
 
     text: str
@@ -934,48 +837,43 @@ class LlmResult:
     paused: bool = False
     interrupted: bool = False
     timed_out: bool = False
-    #: OpenAI ``usage.total_tokens`` for the local / openai-compat transports
-    #: (``None`` for the claude transports, which report cost not tokens). Kept
-    #: so a direct-``LlmClient`` pass folded through :class:`DispatchClient`
-    #: still gets the token count it recorded for accounting.
+    #: OpenAI ``usage.total_tokens`` for the local/openai-compat transports
+    #: (``None`` for claude, which reports cost not tokens). Kept so a
+    #: direct-``LlmClient`` pass folded through :class:`DispatchClient` still
+    #: gets its token count for accounting.
     total_tokens: int | None = None
-    #: Count of ``tool_use`` blocks in the ``claude_agent`` stream-json stream
-    #: (``None`` for one-shot transports and any run without a stream to count).
-    #: The review seam's empty-result assertion reads this as *definitive*
-    #: evidence the pass acted: a ``0`` here (not ``None``) is one leg of the
-    #: silent-empty conjunction.
+    #: Count of ``tool_use`` blocks in a ``claude_agent`` stream (``None`` for
+    #: one-shot transports / no stream to count). The review seam's
+    #: empty-result assertion reads a ``0`` here as definitive evidence the
+    #: pass acted — one leg of the silent-empty conjunction.
     tool_calls: int | None = None
-    #: The complete raw stdout of a ``claude_agent`` stream-json run (every turn
-    #: + tool call/result), preserved so a caller that stores a debuggable
-    #: transcript or parses the terminal reason itself (the planner tick) can.
-    #: ``None`` for the non-agent transports, where ``text`` carries the answer.
+    #: Complete raw stdout of a ``claude_agent`` stream-json run (every turn +
+    #: tool call/result), for a caller that stores a debuggable transcript or
+    #: parses the terminal reason itself (the planner tick). ``None`` for
+    #: non-agent transports.
     raw_text: str | None = None
-    #: How a ``claude_agent`` run terminated *abnormally* — ``'max_turns'``, a
-    #: ``'budget'``-class reason, or another ``error_*`` subtype — ``None`` on a
-    #: clean run. Lets a caller map a recovered exhaustion onto a resumable
+    #: How a ``claude_agent`` run terminated abnormally — ``'max_turns'``, a
+    #: ``'budget'``-class reason, another ``error_*`` subtype, or ``None`` on
+    #: a clean run — so a caller maps a recovered exhaustion onto a resumable
     #: outcome without re-parsing the stream. ``None`` for non-agent transports.
     terminal_reason: str | None = None
-    #: The OSS ``tools=`` loop's raw ``stop_reason`` (``'stop'`` — model
-    #: answered · ``'max_turns'`` — turn ceiling · ``'error'`` — transport
-    #: failure), threaded through so the planner tick can tell a clean answer
-    #: from a resumable exhaustion (mirroring how the claude path reads
-    #: ``terminal_reason``). ``None`` for the non-OSS transports.
+    #: The OSS ``tools=`` loop's raw ``stop_reason`` (``'stop'``/``'max_turns'``/
+    #: ``'error'``), mirroring ``terminal_reason`` for the claude lane so the
+    #: planner tick can tell a clean answer from a resumable exhaustion.
+    #: ``None`` for non-OSS transports.
     stop_reason: str | None = None
-    #: Token telemetry from a ``claude_agent`` stream-json run's trailing
-    #: ``result`` event (:func:`~precis.utils.claude_agent.AgentResult`'s
-    #: matching fields — already a cumulative total for the whole run, not a
-    #: per-turn delta). ``None`` for the non-agent transports and for any
-    #: ``claude_agent`` run without a stream to read (mirrors ``tool_calls``'
-    #: never-a-false-zero discipline).
+    #: Token telemetry from a ``claude_agent`` run's trailing ``result`` event
+    #: (:func:`~precis.utils.claude_agent.AgentResult`'s matching fields —
+    #: cumulative for the whole run, not a per-turn delta). ``None`` for
+    #: non-agent transports and any agent run without a stream to read.
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
-    #: ``'local'`` / ``'cloud'`` for the rung that ACTUALLY ran, classified by
-    #: :func:`_rung_is_cloud`. Stamped from the *winning* rung, not rung 0 —
-    #: a local primary that fell back to a cloud rung really did spend money,
-    #: and recording it as local would hide that from the cost caps. ``None``
-    #: only when no rung was resolved (an early error return).
+    #: ``'local'``/``'cloud'`` for the rung that ACTUALLY ran
+    #: (:func:`_rung_is_cloud`), stamped from the winning rung not rung 0 — a
+    #: local primary that fell back to cloud really did spend money.
+    #: ``None`` only when no rung was resolved (an early error return).
     placement: str | None = None
 
 
@@ -1001,18 +899,15 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
 def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a :class:`~precis.utils.claude_p.ClaudePResult`.
 
-    ``text`` is the assistant's reply with the metering envelope stripped;
-    ``data`` carries the parsed JSON dict so a judge caller reads
-    ``LlmResult.data`` exactly as it read ``ClaudePResult.data``.
-
-    The ``or res.raw_stdout`` fallback is what keeps this identical to the
-    pre-metering behaviour for a legacy 3-field ``ClaudePResult`` (test fakes)
-    and for any stdout that wasn't an envelope. Without it, turning on
-    ``--output-format json`` would have quietly redefined ``LlmResult.text``
-    as the metadata envelope for every ``claude_p`` caller — including the
-    ``res.data or _parse_json_object(res.text)`` fallbacks in
-    :mod:`precis.taproot.canon` and :mod:`precis.utils.llm.requirement`, which
-    would then parse the envelope's own keys as if they were the judge's answer.
+    ``text`` is the assistant's reply with the metering envelope stripped
+    (falls back to ``res.raw_stdout`` for a legacy 3-field ``ClaudePResult``
+    or any stdout that wasn't an envelope — otherwise ``LlmResult.text``
+    would silently become the metadata envelope, which
+    :mod:`precis.taproot.canon` / :mod:`precis.utils.llm.requirement`'s
+    ``res.data or _parse_json_object(res.text)`` fallbacks would then parse
+    as if it were the judge's answer). ``data`` carries the parsed JSON dict
+    so a judge caller reads ``LlmResult.data`` exactly as it read
+    ``ClaudePResult.data``.
     """
     return LlmResult(
         text=res.text or res.raw_stdout,
@@ -1031,27 +926,21 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
 def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a local ``LlmClient.complete`` result (OpenAI choices).
 
-    Cost: prefer a provider-returned dollar figure (``res.cost_usd`` — set from
-    OpenRouter's ``usage.cost``); otherwise price the token split via the
-    per-model table in :mod:`precis.budget.pricing` (``None`` for a local /
-    unknown model, which the cost bands read as free). Either way the OSS /
-    OpenRouter spend shows up in the tote instead of vanishing.
+    Cost: prefer ``res.cost_usd`` (OpenRouter's ``usage.cost``); else price
+    the token split via :mod:`precis.budget.pricing` (``None`` for an
+    unpriced model, read as free by the cost bands).
 
-    Data: the ``claude_p`` judges (chase verify, good_search triage, figure)
-    route through ``dispatch`` and read ``LlmResult.data``. So parse the
-    trailing JSON block out of the text here too — the same
-    :func:`~precis.utils.claude_p._parse_last_json_block` the claude path uses —
-    so an OSS judge reaches parity instead of silently degrading to its
-    fallback (gripe 159758).
+    Data: parses the trailing JSON block out of ``text``
+    (:func:`~precis.utils.claude_p._parse_last_json_block`, same as the
+    claude path) so an OSS judge (chase verify, good_search triage, figure)
+    reads ``LlmResult.data`` at parity instead of degrading to a fallback.
 
-    Tokens: ``prompt_tokens``/``completion_tokens`` (the same OpenAI
-    ``usage`` split the cost estimate above prices) map straight onto
-    :attr:`LlmResult.input_tokens`/``output_tokens``. No cache split is set —
-    a local/OpenRouter completion's ``usage`` block carries no cache-read/
-    -write breakdown, so inventing one would be a silent fabrication rather
-    than an honest ``None``.
+    Tokens: ``prompt_tokens``/``completion_tokens`` map onto
+    :attr:`LlmResult.input_tokens`/``output_tokens``; no cache split (a
+    local/OpenRouter ``usage`` block carries none — an honest ``None``, not
+    a fabricated value).
 
-    All fields are read leniently (``getattr``) so a bare ``.text`` fake still
+    All fields read leniently (``getattr``), so a bare ``.text`` fake still
     normalizes.
     """
     from precis.budget.pricing import cost_from_tokens
@@ -1098,153 +987,119 @@ class LlmRequest:
     model: str | None = None
     max_usd: float | None = None
     timeout_s: float | None = None
-    #: Stream the completion over SSE (honoured by the ``OPENAI_TOOLS``
-    #: transport; ignored elsewhere). Streaming changes the timeout semantics:
-    #: ``timeout_s`` becomes the *hard wall ceiling* per turn while a separate
-    #: idle timeout (:func:`_stream_idle_timeout_s`) detects a dead connection
-    #: — so a model actively emitting reasoning keeps its connection instead
-    #: of being cut mid-thought by a blind socket cap, and on any abort the
-    #: partial output is preserved (``StreamTimeout`` → ``LlmResult.text``)
-    #: rather than lost. Default ``False`` = the blocking POST, byte-identical
-    #: to before this knob existed.
+    #: Stream the completion over SSE (``OPENAI_TOOLS`` only). When set,
+    #: ``timeout_s`` becomes the hard wall ceiling per turn while a separate
+    #: idle timeout (:func:`_stream_idle_timeout_s`) detects a dead
+    #: connection, so an actively-reasoning model isn't cut by a blind socket
+    #: cap; an abort preserves partial output (``StreamTimeout`` →
+    #: ``LlmResult.text``). Default ``False`` = the blocking POST.
     stream: bool = False
-    #: Completion-length cap. For the local / openai-compat transports this is
-    #: the ``max_tokens`` field of the underlying ``LlmConfig`` — a real,
-    #: generation-time stop; ``OPENAI_TOOLS`` puts it on each turn's wire
-    #: payload for the same effect (reachable since 2026-08-13 — see
-    #: :func:`run_oss_tool_loop`). ``None`` keeps ``LlmConfig.from_env``'s default
-    #: (220) — the summarizer's short-gloss cap. A pass with a longer
-    #: structured payload pins its own (e.g. paper_glossary needs 2000, else
-    #: the JSON truncates); this is the knob that lets a direct-``LlmClient``
-    #: caller fold through ``dispatch`` without silently shrinking its budget.
-    #: ``claude_agent`` (the ``claude`` CLI) has no completion-length flag at
-    #: all — only ``--max-turns`` (turn count) and ``--max-budget-usd``
-    #: (dollar cost), neither of which bounds a single response's length —
-    #: so :class:`ClaudeAgentProvider` treats a set ``max_tokens`` as a
-    #: **best-effort post-hoc truncation** of the final text (see
-    #: :func:`_truncate_to_max_tokens`), not a real stop: the full (costly)
-    #: response is still generated. A caller that needs a hard generation-time
-    #: cap must use a local/openai-compat tier instead. ``None`` (the default)
-    #: leaves ``claude_agent`` output untruncated, as before this knob existed.
+    #: Completion-length cap. Local/openai-compat: the ``LlmConfig.max_tokens``
+    #: field, a real generation-time stop (``None`` keeps its default, 220 —
+    #: the summarizer's short-gloss cap; a longer structured payload, e.g.
+    #: paper_glossary, pins its own or the JSON truncates). ``OPENAI_TOOLS``:
+    #: same effect via the per-turn wire payload (:func:`run_oss_tool_loop`).
+    #: ``claude_agent`` (the ``claude`` CLI) has no completion-length flag —
+    #: only ``--max-turns``/``--max-budget-usd``, neither of which bounds one
+    #: response — so :class:`ClaudeAgentProvider` treats a set ``max_tokens``
+    #: as **best-effort post-hoc truncation** (:func:`_truncate_to_max_tokens`):
+    #: the full response still generates and is billed. A caller needing a
+    #: real generation-time cap must use a local/openai-compat tier.
     max_tokens: int | None = None
-    #: Reasoning + sampling passthrough (gen-param knobs). ``None`` on
-    #: either ⇒ :func:`dispatch` resolves the tier default (:func:`_tier_gen_defaults`):
-    #: ``SMALL`` (a categorizer/classifier — per-chunk gloss,
-    #: inject-scan) wants thinking **off** + temperature **0.0**, so it never
-    #: burns reasoning tokens on a one-line judgment and stays deterministic —
-    #: this is also what makes the tier runnable on a local *thinking-only*
-    #: model (thinking left on would otherwise degrade the completion to a
-    #: reasoning trace with an empty/truncated final answer). Every other tier
-    #: (``MEDIUM``/``BIG``/``FRONTIER``) wants thinking **on** + temperature
-    #: **None** (the provider's own default — the field is omitted from the
-    #: wire rather than pinned).
-    #: An explicit non-``None`` value set here always wins over the tier
-    #: default. No-op on the claude transports (``claude_agent``/``claude_p``
-    #: have no such knobs — Anthropic's extended-thinking budget is a separate,
-    #: unrelated knob this does not touch).
+    #: Reasoning + sampling passthrough. ``None`` on either ⇒ :func:`dispatch`
+    #: resolves the tier default (:func:`_tier_gen_defaults`): ``SMALL`` gets
+    #: thinking **off** + temperature **0.0** (deterministic, and required for
+    #: a local thinking-only model — thinking left on there yields an empty
+    #: completion); every other tier gets thinking **on** + temperature
+    #: **None** (provider default, field omitted from the wire). An explicit
+    #: value here always wins. No-op on the claude transports (no such knobs
+    #: — Anthropic's extended-thinking budget is unrelated).
     thinking: bool | None = None
     temperature: float | None = None
-    #: A booked OpenRouter variant (a ``meta.endpoints`` dict — provider / quant /
-    #: window) + reasoning effort, pinned onto the ``openai_compat`` wire so the
-    #: call reproducibly hits *that* provider×quant instead of OpenRouter load-
-    #: balancing the ~28 (gripe 162624). ``None`` ⇒ today's behaviour (slug only).
-    #: A ``select_offering`` caller threads ``Selection.endpoint`` here.
+    #: A booked OpenRouter variant (``meta.endpoints``: provider/quant/window)
+    #: + reasoning effort, pinned onto the ``openai_compat`` wire so the call
+    #: reproducibly hits that provider×quant instead of OpenRouter
+    #: load-balancing. ``None`` ⇒ slug only. A ``select_offering`` caller
+    #: threads ``Selection.endpoint`` here.
     endpoint: dict[str, Any] | None = None
     effort: str | None = None
-    #: Strict rung filter on the resolved chain — ``'local'`` / ``'cloud'`` keep
-    #: only the matching rungs (classified by :func:`_rung_is_cloud`); any other
-    #: value (unknown string or ``None``) leaves the chain unchanged, walked as
-    #: configured. This is **strict**, unlike :func:`_apply_cloud_throttle`'s
-    #: fallback-to-paused behavior: a placement filter that empties an
-    #: otherwise-nonempty chain is an *error* result (the caller asked for a
-    #: rung that doesn't exist), not a silent degrade.
+    #: Strict rung filter on the resolved chain — ``'local'``/``'cloud'`` keep
+    #: only matching rungs (:func:`_rung_is_cloud`); any other value is a
+    #: no-op. Unlike :func:`_apply_cloud_throttle`'s fallback-to-paused
+    #: behavior, this is **strict**: emptying an otherwise-nonempty chain is
+    #: an *error* result, not a silent degrade.
     placement: str | None = None
-    #: Direct local-serving base URL (llama-swap's OpenAI endpoint), threaded in
-    #: by :func:`dispatch` when a reserved :class:`~precis.utils.llm.local_serving.LocalSlot`
-    #: declares an ``endpoint`` — the LOCAL transport routes here instead of the
-    #: litellm proxy (the Phase-2 flip). ``None`` ⇒ the ``LlmConfig.from_env`` URL.
+    #: Direct local-serving base URL (llama-swap's OpenAI endpoint), threaded
+    #: by :func:`dispatch` when a reserved
+    #: :class:`~precis.utils.llm.local_serving.LocalSlot` declares an
+    #: ``endpoint`` — the LOCAL transport routes here instead of the default.
+    #: ``None`` ⇒ the ``LlmConfig.from_env`` URL.
     local_url: str | None = None
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
-    #: categorical feature the route-log keys on and the future per-source
-    #: switchover knob. Free-form; empty when a caller hasn't set one yet.
+    #: categorical feature the route-log keys on. Free-form; empty if unset.
     source: str = ""
-    #: The ref this call is *for* (a quest / paper / todo id), stamped onto
-    #: ``llm_call_log.ref_id`` so spend/wall-clock is attributable to an entity,
-    #: not just a ``source`` pass. ``None`` ⇒ pass-level attribution only. Cannot
-    #: be back-filled — a row logged without it is permanently un-attributable, so
-    #: an inproc pass that has a natural ref should set it (gr162130).
+    #: The ref this call is *for* (a quest/paper/todo id), stamped onto
+    #: ``llm_call_log.ref_id`` for entity-level attribution. ``None`` ⇒
+    #: pass-level only. Cannot be back-filled — an inproc pass with a natural
+    #: ref should set it.
     ref_id: int | None = None
-    #: Whether to write this call to the route-log at all. Default ``True``.
-    #: ``False`` = no row (a caller that wants zero footprint).
+    #: Write this call to the route-log at all. ``False`` = no row.
     log_call: bool = True
-    #: Whether to store the full request/response *text* (the ``llm_blob`` replay
-    #: material) alongside the metadata row. Default ``True``. A high-volume
-    #: *mechanical* batch pass (per-chunk summarize / classify) sets this ``False``
-    #: for a **lite** row — metadata (chars / cost / duration / ref_id) is kept
-    #: (~660 B/row, cheap + mineable), but the ~18 KB unique-per-call blob it would
-    #: never replay is skipped. Ignored when ``log_call`` is ``False``.
+    #: Store the full request/response text (the ``llm_blob`` replay
+    #: material) alongside the metadata row. A high-volume mechanical batch
+    #: pass (per-chunk summarize/classify) sets ``False`` for a **lite** row:
+    #: metadata (chars/cost/duration/ref_id, ~660 B/row) is kept, the
+    #: per-call blob is not. Ignored when ``log_call`` is ``False``.
     log_blobs: bool = True
     # claude_agent pass-through knobs (ignored by the other transports).
     system_prompt: str | Path | None = None
     mcp_config: str | Path | None = None
     max_turns: int = 20
-    #: ``stream-json``, not ``text`` — this is where ``cost_usd`` comes from.
-    #: ``claude -p`` reports ``total_cost_usd`` / ``num_turns`` / ``usage`` only
-    #: in the trailing stream-json ``result`` event; on the text path
-    #: ``AgentResult`` falls back to a stderr regex for ``Cost: $N.NN`` that
-    #: modern Claude Code no longer prints, so cost lands ``NULL``. That was a
-    #: silent per-call-site opt-in: the passes that happened to pass
-    #: ``output_format="stream-json"`` (dream, review, plan_tick) billed
-    #: visibly, and the ones that didn't (briefing 815 calls, meditation,
-    #: card_forge, reading_brief) logged >1000 Claude calls at NULL cost —
-    #: invisible to ``PRECIS_DAILY_COST_CEILING``, which sums this column.
-    #: Defaulting it here makes cost the default and text the opt-out.
-    #: Safe for the other transports (they ignore it, per the comment above)
-    #: and for callers reading ``LlmResult.text``: the stream-json path lifts
-    #: the result event's ``result`` field into ``final_text``, so ``text``
-    #: stays the assistant's answer and only ``raw_text`` (the audit blob)
-    #: changes shape.
+    #: ``claude -p`` reports ``total_cost_usd``/``num_turns``/``usage`` only in
+    #: the trailing stream-json ``result`` event — the text path has no cost
+    #: source (the stderr ``Cost: $N.NN`` regex fallback no longer matches
+    #: modern Claude Code output). Defaulting this to ``stream-json`` makes
+    #: cost the default and ``text`` the opt-out; the other transports ignore
+    #: it, and callers reading ``LlmResult.text`` are unaffected (the
+    #: stream-json path lifts the result event into ``final_text``, changing
+    #: only ``raw_text``'s shape).
     output_format: str = "stream-json"
     disallowed_tools: tuple[str, ...] = field(default_factory=tuple)
     #: ``(store, ref_id, source)`` for a ``ref_events`` audit row on success
-    #: (the CAD / structure / follow-up paths use it). ``store`` is typed
-    #: loosely to keep this module free of the DB import chain.
+    #: (CAD/structure/follow-up paths). ``store`` is typed loosely to keep
+    #: this module free of the DB import chain.
     log_event: tuple[Any, int, str] | None = None
     # Extra CLI flags forwarded to the claude_* transports.
     extra_args: tuple[str, ...] = field(default_factory=tuple)
     #: Extra env vars overlaid onto the ``claude_agent`` subprocess env (the
-    #: planner tick's runtime back-doors: ``PRECIS_CURRENT_TODO`` / ``_MODEL`` /
-    #: ``PRECIS_WORKSPACE`` / the agentlog id / ``PRECIS_KINDS_DISABLED``). The
-    #: spawned MCP server inherits them. Ignored by the other transports (the
+    #: planner tick's runtime back-doors: ``PRECIS_CURRENT_TODO``/``_MODEL``/
+    #: ``PRECIS_WORKSPACE``/the agentlog id/``PRECIS_KINDS_DISABLED``). The
+    #: spawned MCP server inherits them; ignored by the other transports (the
     #: in-process loop carries context in a ContextVar, not env). ``None`` ⇒
     #: inherit the worker env unchanged.
     env_overlay: dict[str, str] | None = None
     #: Working directory for the ``claude_agent`` subprocess — a CLAUDE.md-free
-    #: neutral cwd so ``claude -p`` discovers no ambient project persona. Ignored by the other transports. ``None`` ⇒ the worker's cwd.
+    #: neutral cwd so ``claude -p`` discovers no ambient project persona.
+    #: Ignored by other transports. ``None`` ⇒ the worker's cwd.
     cwd: str | Path | None = None
     #: Real-time progress callback, awaited once per parsed ``stream-json``
     #: event as a ``claude_agent`` run streams (asa_bot's Discord "thinking…"
-    #: updates, Phase 3 of the router-migration plan). Only
-    #: :func:`dispatch_async` honors this — the sync :func:`dispatch` ignores
-    #: it entirely (there is no streaming path on the blocking transport).
-    #: ``None`` ⇒ no callback, and :func:`dispatch_async` degrades to calling
-    #: the sync :func:`dispatch` for every transport (today's behavior).
+    #: updates). Only :func:`dispatch_async` honors this; the sync
+    #: :func:`dispatch` has no streaming path and ignores it. ``None`` ⇒ no
+    #: callback, and :func:`dispatch_async` delegates to sync ``dispatch``.
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
 
 class LlmProvider(Protocol):
     """One narrow port every backend implements.
 
-    A provider takes a resolved ``model`` id and an :class:`LlmRequest`
-    and returns a normalized :class:`LlmResult`, folding transport
-    failures into :attr:`LlmResult.error` rather than raising (a
-    programming error — an unwired path — still raises). The registry in
-    :data:`_PROVIDERS` maps each :class:`Transport` to one implementation;
-    :func:`dispatch` is the only caller. Adding a backend (OpenAI-
-    compatible OSS, a :class:`Transport`-composing failover ladder) is a
-    new class implementing this method plus a registry row — no caller,
-    :func:`dispatch`, or :class:`Tier` change. That is the switchability
-    the LLM-independence goal wants.
+    Takes a resolved ``model`` id and an :class:`LlmRequest`, returns a
+    normalized :class:`LlmResult` — folds transport failures into
+    :attr:`LlmResult.error` rather than raising (a programming error, an
+    unwired path, still raises). :data:`_PROVIDERS` maps each
+    :class:`Transport` to one implementation; :func:`dispatch` is the only
+    caller. Adding a backend is a new class + a registry row — no caller,
+    ``dispatch``, or :class:`Tier` change.
     """
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult: ...
@@ -1258,18 +1113,14 @@ _APPROX_TOKENS_PER_WORD = 1.4
 
 
 def _truncate_to_max_tokens(text: str, max_tokens: int) -> str:
-    """Best-effort post-hoc length cap for ``claude_agent``.
+    """Best-effort post-hoc length cap for ``claude_agent`` (see
+    :attr:`LlmRequest.max_tokens` — the CLI has no generation-time stop, so
+    the model still runs to completion and is billed regardless).
 
-    The ``claude`` CLI has no completion-length flag (only ``--max-turns`` /
-    ``--max-budget-usd``, neither of which bounds one response), so a caller
-    that pins :attr:`LlmRequest.max_tokens` on a ``claude_agent`` call can't
-    get a real generation-time stop — the model still runs to completion (and
-    is still billed for it). This restores the *output-length* guarantee a
-    duration-targeted pass needs (a nidra/brief that must fit its spoken-time
-    budget) by cutting the text back down after the fact, snapping to the
-    last paragraph break at/before the word budget so the cut isn't a
-    mid-sentence guillotine (falls back to a sentence break, then a hard word
-    cut, if there's no paragraph break early enough).
+    Restores the output-length guarantee a duration-targeted pass needs (a
+    nidra/brief that must fit its spoken-time budget) by cutting the text
+    back after the fact: snaps to the last paragraph break at/before the
+    word budget (falls back to a sentence break, then a hard word cut).
     """
     budget_words = max(1, int(max_tokens / _APPROX_TOKENS_PER_WORD))
     positions = list(re.finditer(r"\S+", text))
@@ -1372,17 +1223,15 @@ class LocalProvider:
 
 
 class OpenAICompatProvider:
-    """A *hosted* OpenAI-compatible OSS backend — OpenRouter / DeepInfra /
-    a remote vLLM — over the same ``/v1/chat/completions`` wire as the
-    loopback proxy, but at ``PRECIS_LLM_BASE_URL`` and authed with a
-    vault-resolved key (:func:`_provider_api_key`, keyed off that url's
-    host — see gripe 159988).
+    """A *hosted* OpenAI-compatible OSS backend — OpenRouter / DeepInfra / a
+    remote vLLM — over the same ``/v1/chat/completions`` wire as the loopback
+    proxy, but at ``PRECIS_LLM_BASE_URL`` and authed with a vault-resolved
+    key (:func:`_provider_api_key`, keyed off that url's host).
 
-    Tool-less (the one-shot / completion / JSON-judge path) — the
-    summarize/classify/judge calls. Tool-using calls take
-    :class:`OpenAIToolsProvider`. Model ids come from the same
-    ``resolve_model`` table, so a deployment points ``PRECIS_MODEL_*`` at
-    OSS ids (e.g. ``PRECIS_MODEL_OPUS=deepseek-ai/DeepSeek-V3``).
+    Tool-less (summarize/classify/judge calls); tool-using calls take
+    :class:`OpenAIToolsProvider`. Model ids come from ``resolve_model``'s
+    table, so a deployment points ``PRECIS_MODEL_*`` at OSS ids (e.g.
+    ``PRECIS_MODEL_OPUS=deepseek-ai/DeepSeek-V3``).
     """
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
@@ -1392,13 +1241,12 @@ class OpenAICompatProvider:
 class OpenAIToolsProvider:
     """An OSS model driving the precis verbs over the OpenAI ``tools=`` wire.
 
-    The in-process tool loop, rebuilt behind the provider port:
     :func:`~precis.utils.llm.openai_tools.run_tool_loop` drives a hosted or
     local OSS backend (``PRECIS_LLM_BASE_URL``, vault key) through a
     tool-calling conversation, executing each call in-process via
     ``runtime.dispatch`` — no MCP socket round-trip. Serves both a served
-    local model backing the ``BIG`` tier and the ``OPENAI`` backend's
-    tool-using cloud calls.
+    local model backing ``BIG`` and the ``OPENAI`` backend's tool-using
+    cloud calls.
     """
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
@@ -1422,15 +1270,12 @@ assert set(_PROVIDERS) == set(Transport), "dispatch: provider registry is not to
 
 
 def provider_for(transport: Transport, *, bare: bool = False) -> LlmProvider:
-    """The provider bound to ``transport`` — the registry accessor a
-    future config layer overrides to reroute a transport.
+    """The provider bound to ``transport`` — the registry accessor.
 
     ``bare=True`` (a rung's API-key opt-in) can't come from the shared
-    registry, because the registry holds one stateless singleton per
-    transport and flipping auth on it would leak onto every other caller of
-    that transport. Build a per-rung instance instead; only the two claude
-    transports carry the flag, so anything else ignores it and keeps the
-    singleton.
+    registry: it holds one stateless singleton per transport, and flipping
+    auth on it would leak onto every other caller. Build a per-rung instance
+    instead; only the two claude transports carry the flag.
     """
     if not bare:
         return _PROVIDERS[transport]
@@ -1456,15 +1301,14 @@ class Rung:
 
     ``model=None`` uses the ``model`` :meth:`FailoverProvider.run` was given
     (the primary, tier-resolved one); a fallback rung pins its own — e.g. the
-    claude safety net pins the tier's compiled-in claude id so a PRECIS_MODEL_*
-    override pointing at an OSS id doesn't leak onto ``claude -p``.
+    claude safety net pins the tier's compiled-in claude id so a
+    ``PRECIS_MODEL_*`` override pointing at an OSS id doesn't leak onto
+    ``claude -p``.
 
     ``bare`` opts this rung into **API-key** auth (``ANTHROPIC_API_KEY``,
     billed per token) instead of the Max subscription's OAuth token. Only
-    the two claude transports honor it; it is inert elsewhere. Default
-    ``False`` everywhere, including both default ladders — moving spend onto
-    the key is always an explicit per-rung decision, never a side effect of
-    a chain edit that forgot the field.
+    the two claude transports honor it. Default ``False`` everywhere —
+    moving spend onto the key is always an explicit per-rung decision.
     """
 
     transport: Transport
@@ -1489,10 +1333,10 @@ class FailoverProvider:
 
     * **transport down / hard error** — a rung sets ``res.error`` → fall through.
     * **quality / verdict** — ``accept(res)`` returns ``False`` → fall through
-      (the seam for a judge-gated escalate; unused by the default ladder).
+      (a seam for a judge-gated escalate; unused by the default ladder).
 
-    Cost / turn ceilings live *inside* the underlying providers (``max_usd`` /
-    ``max_turns``), so they bound each rung rather than the ladder.
+    Cost/turn ceilings (``max_usd``/``max_turns``) live inside each provider,
+    bounding a rung rather than the ladder.
     """
 
     def __init__(self, rungs: list[Rung], *, accept: AcceptFn | None = None) -> None:
@@ -1561,14 +1405,12 @@ def _failover_enabled() -> bool:
 
 
 def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
-    """The default OSS→claude ladder: the backend's primary transport, then the
-    claude equivalent as a safety net (only when the primary is an OSS
-    transport — a claude/local primary has nothing to fall back to).
+    """The default OSS→claude ladder: the backend's primary transport, then
+    the claude equivalent as a safety net (only when the primary is OSS — a
+    claude/local primary has nothing to fall back to).
 
-    ``SMALL`` is the one exception: per the decided OpenRouter roster
-    cascade ("small" skips Anthropic
-    entirely, low-stakes/high-volume dispatch traffic), its ladder stops at
-    the OSS rung with no claude fallback, however this call resolves.
+    ``SMALL`` never falls back to claude (low-stakes/high-volume dispatch
+    traffic stays on the OSS rung regardless of this call's resolution).
     """
     primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
     if primary in (Transport.OPENAI_TOOLS, Transport.OPENAI_COMPAT):
@@ -1583,18 +1425,12 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
 
 
 def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
-    """The rung list for a tier with **no operator chain override** — the
-    behaviour-preserving default under capability tiers + placement chains Phase B's always-on chain.
+    """The rung list for a tier with **no operator chain override**.
 
-    The built-in OSS→claude safety-net ladder (:func:`_failover_ladder`) is
-    opt-in via ``PRECIS_LLM_FAILOVER``. Without it a tier resolves to a
-    **single rung** — its primary transport — which is exactly the pre-Phase-B
-    non-failover dispatch path (``select_transport`` → one provider,
-    byte-for-byte). With the flag on it resolves to the full auto-failover
-    ladder, exactly as before. So making the chain the always-on resolution
-    path (Phase B) doesn't change a no-override tier's routing: only an
-    operator-written ``llm.chain.<tier>`` row does, and that is now read
-    regardless of the flag (:func:`resolve_chain`).
+    ``PRECIS_LLM_FAILOVER`` is the dark switch for the built-in OSS→claude
+    safety-net ladder (:func:`_failover_ladder`). Off (default): a tier
+    resolves to a single rung, its primary transport
+    (``select_transport`` → one provider). On: the full auto-failover ladder.
     """
     if _failover_enabled():
         return _failover_ladder(tier, tools_needed=tools_needed, backend=backend)
@@ -1603,51 +1439,29 @@ def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[
 
 
 def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
-    """The rung list :func:`dispatch` / :func:`dispatch_async` actually walk —
-    an operator-owned ``app_settings`` chain override layered in
-    front of the compiled default (:func:`_default_chain`).
+    """The rung list :func:`dispatch` / :func:`dispatch_async` actually walk:
+    an operator-owned ``app_settings`` chain override layered in front of the
+    compiled default (:func:`_default_chain`).
 
-    **capability tiers + placement chains Phase B — the chain is the always-on resolution path.** An
-    ``llm.chain.<tier>`` override is honoured *regardless of*
-    ``PRECIS_LLM_FAILOVER``, so the operator chain editor's rows are actually
-    read (Phase A wired this call inside ``if _failover_enabled():``, which
-    left a set chain inert unless the legacy flag was on). With no override
-    (today's steady state, and every non-chain test), this returns
-    :func:`_default_chain` — a single primary rung, or the built-in
-    auto-failover ladder when the flag is on — so a no-override tier routes
-    byte-for-byte as it does today.
+    An ``llm.chain.<tier>`` override is honoured regardless of
+    ``PRECIS_LLM_FAILOVER``. No override ⇒ :func:`_default_chain`.
 
-    A configured override is a list of rung dicts (``{"placement":
-    "cloud"|"local", "model": <str>, "transport": <str>, "bare": <bool>}``,
-    ``bare`` optional and defaulting to ``False`` — see :class:`Rung`;
-    a non-boolean value degrades the whole chain like any other malformed
-    field, because silently coercing ``"true"`` would decide a billing
-    question on a typo),
-    :func:`~precis.utils.llm.live_config.chain_override`) mapped onto
-    :class:`Rung` in order, with ``placement`` carried through as the label.
-    Any malformed rung — an unrecognized ``transport`` string, a
-    missing/non-string ``model``, a non-object entry — degrades the *whole*
-    chain back to :func:`_default_chain` (never a partial or best-effort
-    chain), logged once so a typo'd override is visible without darking the
-    tier.
+    A configured override
+    (:func:`~precis.utils.llm.live_config.chain_override`) is a list of rung
+    dicts (``{"placement": "cloud"|"local", "model": <str>, "transport":
+    <str>, "bare": <bool>}``, ``bare`` optional default ``False`` — see
+    :class:`Rung`) mapped onto :class:`Rung` in order, ``placement`` carried
+    through as the label. Any malformed rung degrades the *whole* chain back
+    to :func:`_default_chain` — never partial — logged once.
 
-    **A tool-using call skips rungs whose transport can't carry tools.** A
-    chain is written per *tier*, but a tier serves both agentic and
-    completion traffic, so a completion rung (``openai_compat`` / ``local`` /
-    ``claude_p``) is legitimate in the chain and wrong only for *this* call —
-    which makes it a per-call filter, not a write-time rejection. Unfiltered
-    it is silent and expensive: an agentic call on a completion wire gets no
-    verbs, reasons from the prompt alone, writes what it *would* have called
-    as prose, and exits clean, so the run bills in full and looks successful
-    while changing nothing. Prod ran that way for days —
-    ``llm.chain.medium = [openai_compat/glm-4.7]`` sent every MEDIUM-tier
-    planner tick to a wire with no tools, and the ticks re-minted forever
-    because nothing they were supposed to record ever got recorded. If the
-    filter empties the chain we fall back to :func:`_default_chain`, whose
-    :func:`select_transport` is correct by construction — louder and pricier
-    than the operator asked for, but a tool-using call that cannot use tools
-    is pure waste. An operator who wants OSS on agentic work says so with an
-    explicit ``openai_tools`` rung.
+    **A tool-using call skips rungs whose transport can't carry tools**
+    (:attr:`Transport.carries_tools`). A chain is written per *tier*, but a
+    tier serves both agentic and completion traffic, so a completion rung is
+    legitimate in the chain and wrong only for *this* call — a per-call
+    filter. Unfiltered, an agentic call on a completion wire gets no verbs,
+    answers from the prompt alone, and bills in full while changing nothing.
+    An emptied filter falls back to :func:`_default_chain`; an operator who
+    wants OSS on agentic work says so with an explicit ``openai_tools`` rung.
     """
     from precis.utils.llm import live_config
 
@@ -1714,15 +1528,13 @@ def planner_rung0_model(model_alias: str, job_type: str | None = None) -> str | 
     """The concrete model id a planner tick for ``model_alias`` will drive on
     rung 0, when that rung is an OSS model-carrying transport — else ``None``.
 
-    Mirrors ``plan_tick._select_planner_transport``'s resolution (tier alias →
-    operations override → resolved placement chain → rung 0) so the affinity
-    decision agrees with the harness the tick will actually run. Returns
-    ``rung0.model`` only for a ``LOCAL`` / ``OPENAI_TOOLS`` rung that pins a
-    concrete model (the served-OSS case, a candidate ``llm:<model>`` slot); a
-    ``claude`` cloud rung (no local serving) or a model-less rung yields
-    ``None``. The caller decides whether that model is actually *served* (an
-    advertised slot) before gating a job on it — this function only says which
-    model the tick would use, not where it lives.
+    Mirrors ``plan_tick._select_planner_transport``'s resolution (alias →
+    operations override → chain → rung 0) so the affinity decision agrees
+    with the harness the tick will actually run. Returns ``rung0.model`` only
+    for a ``LOCAL``/``OPENAI_TOOLS`` rung pinning a concrete model (the
+    served-OSS case); a claude cloud rung or a model-less rung yields
+    ``None``. The caller still decides whether that model is actually
+    *served* before gating a job on it.
     """
     from precis.utils.llm import operations
 
@@ -1741,25 +1553,23 @@ def planner_rung0_model(model_alias: str, job_type: str | None = None) -> str | 
 
 
 def _placement_of(rung: Rung) -> str:
-    """``'cloud'`` / ``'local'`` for one rung — the string form of
+    """``'cloud'``/``'local'`` for one rung — the string form of
     :func:`_rung_is_cloud`, recorded on :attr:`LlmResult.placement` and
-    ``llm_call_log.placement`` so the cost caps can tell spend from utilisation.
-
-    One classifier, two consumers: the capability tiers + placement chains cloud-throttle prunes on
-    ``_rung_is_cloud`` and the planner's dollar caps exclude on this. A second,
-    independent notion of "is this local" is exactly how the caps drifted before.
+    ``llm_call_log.placement`` so the cost caps can tell spend from
+    utilisation. One classifier, two consumers: the cloud-throttle prunes on
+    ``_rung_is_cloud`` and the dollar caps exclude on this string.
     """
     return "cloud" if _rung_is_cloud(rung) else "local"
 
 
 def _rung_is_cloud(rung: Rung) -> bool:
     """Classify a chain rung as cloud (hits a cloud API) vs local, for the
-    capability tiers + placement chains throttle's cloud-rung pruning.
+    cloud-throttle's rung pruning.
 
     An operator chain rung carries an explicit ``placement`` label
-    (``"cloud"`` / ``"local"``, written by the chain editor) — authoritative
-    when present. A default-chain rung (``_failover_ladder`` / ``_default_chain``
-    labels: ``"primary"`` / ``"oss"`` / ``"claude-fallback"``, or an operator
+    (``"cloud"``/``"local"``, written by the chain editor) — authoritative
+    when present. A default-chain rung (``_failover_ladder``/``_default_chain``
+    labels: ``"primary"``/``"oss"``/``"claude-fallback"``, or an operator
     rung with no ``placement`` → ``"chain"``) is classified by transport:
 
     * ``CLAUDE_AGENT`` / ``CLAUDE_P`` → always Anthropic **cloud**.
@@ -1789,14 +1599,11 @@ def _fallback_placement(transport: Transport) -> str:
     somehow arrived unset.
 
     Every current call site already stamps ``placement`` before reaching
-    ``_record_dispatch`` (``FailoverProvider.run`` per rung, or the
-    ``if result.placement is None`` fill in ``dispatch``/``dispatch_async``
-    below), so this branch is not known to fire today. It mirrors
-    :func:`_rung_is_cloud`'s label-less, transport-only classification (no
-    ``Rung`` — with its possible operator ``placement`` label — is available
-    at the recording chokepoint, only the transport that ran) so a *future*
-    call site that forgets to stamp placement still logs a best-effort value
-    instead of quietly reopening the migration-0112 NULL-placement gap.
+    ``_record_dispatch``, so this branch is not known to fire today. Mirrors
+    :func:`_rung_is_cloud`'s transport-only classification (no ``Rung`` — with
+    its possible operator ``placement`` label — is available at the
+    recording chokepoint) so a future call site that forgets to stamp
+    placement still logs a best-effort value instead of a silent NULL.
     """
     if transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
         return "cloud"
@@ -1807,26 +1614,20 @@ def _fallback_placement(transport: Transport) -> str:
 
 def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
     """Prune cloud rungs from ``chain`` when the operator has disabled cloud
-    (``llm.cloud_enabled = false``) — a no-op returning ``chain``
-    unchanged while cloud is on (the default), so dispatch stays byte-identical
-    until an operator flips the dial.
+    (``llm.cloud_enabled = false``) — a no-op while cloud is on (the default).
 
-    When cloud is off, only the local rungs survive. A tier whose chain has a
-    local rung keeps flowing on it; a tier left with **no** rung prunes to an
-    **empty** list, which :func:`dispatch` turns into a ``paused`` result
-    (skip-not-fail: the call queues and resumes when cloud is re-enabled, never
-    silently degraded to a weaker local model — the §5 contract).
+    Off: only local rungs survive. A tier with a local rung keeps flowing on
+    it; a tier left with **no** rung prunes to **empty**, which
+    :func:`dispatch` turns into a ``paused`` result — the call queues and
+    resumes when cloud is re-enabled, never silently degraded to a weaker
+    local model.
 
-    **Which tiers survive a throttle depends on their chain, not just their
-    name.** ``FRONTIER`` is cloud-only by construction (no local mirror), so it
-    always pauses. Today (default ``ANTHROPIC`` backend, no operator chain
-    written) only ``SMALL`` has a standing local rung (``LOCAL``, via
-    :func:`select_transport`); ``BIG`` / ``MEDIUM`` resolve to a single cloud
-    rung and so *also* pause under throttle **until an operator chain gives
-    them a `placement: "local"` rung** (the Phase-3 roster / chain editor). The
-    §5 "``BIG`` / ``MEDIUM`` / ``SMALL`` drop to local" story is the target
-    state once those chains exist; the pruning mechanism here is correct for
-    it, but doesn't manufacture a local rung a chain doesn't have.
+    Which tiers survive depends on their chain, not their name: ``FRONTIER``
+    is cloud-only by construction, so it always pauses. Under the default
+    backend with no operator chain, only ``SMALL`` has a standing local rung
+    (:func:`select_transport`) — ``BIG``/``MEDIUM`` also pause under throttle
+    until an operator chain gives them a ``placement: "local"`` rung; this
+    function doesn't manufacture one a chain doesn't have.
     """
     from precis.utils.llm import live_config
 
@@ -1836,28 +1637,26 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
 
 
 def _skip_unserved_local_rung(chain: list[Rung], model: str) -> list[Rung]:
-    """Drop a leading loopback ``LOCAL`` rung that has no live endpoint on this
+    """Drop a leading loopback ``LOCAL`` rung with no live endpoint on this
     host, returning the tail so :func:`dispatch` advances straight to the
     fallback instead of dispatching a guaranteed ``ECONNREFUSED``.
 
     A ``Transport.LOCAL`` rung 0 routes through ``_dispatch_local`` → the
-    ``PRECIS_SUMMARIZE_LLM_URL`` default ``http://127.0.0.1:4000/v1`` (the
-    retired litellm proxy) *unless* a reserved ``served_by`` slot pins a real
-    llama-swap endpoint. On a host that doesn't serve the model, no slot is
-    reserved, so the call hits the dead ``:4000`` and fails over — logging a WARN
-    every time (the non-serving-host failover storm). Detect that up front with a
-    read-only served-set test and prune the rung.
+    ``PRECIS_SUMMARIZE_LLM_URL`` default loopback url *unless* a reserved
+    ``served_by`` slot pins a real llama-swap endpoint. On a host that
+    doesn't serve the model, no slot is reserved, so the call hits the dead
+    default and fails over on every call. Detect that up front and prune.
 
-    Left **unchanged** (returns ``chain``) when any guard fails, so the pruning
-    can only ever skip a rung that was certain to fail:
-      * fewer than 2 rungs — a rung-0-only chain must surface its own error (and
-        a strict ``placement='local'`` pin that filtered down to one local rung
-        must not silently escape to cloud);
-      * rung 0 isn't ``Transport.LOCAL`` (a cloud/tools rung has its own wire);
-      * ``PRECIS_SUMMARIZE_LLM_URL`` is set — an operator pointed the loopback at
-        a real endpoint, so it isn't the dead default;
-      * the model *is* served on this host — its reserved slot will pin a live
-        endpoint (the melchior path), so the rung works.
+    Left **unchanged** when any guard fails, so pruning only ever skips a
+    rung certain to fail:
+      * fewer than 2 rungs — a rung-0-only chain must surface its own error
+        (a strict ``placement='local'`` pin down to one local rung must not
+        silently escape to cloud);
+      * rung 0 isn't ``Transport.LOCAL``;
+      * ``PRECIS_SUMMARIZE_LLM_URL`` is set (points the loopback at a real
+        endpoint);
+      * the model *is* served on this host (its reserved slot pins a live
+        endpoint, so the rung works).
     """
     if len(chain) < 2:
         return chain
@@ -1883,17 +1682,13 @@ def _skip_unserved_local_rung(chain: list[Rung], model: str) -> list[Rung]:
 def _apply_placement(chain: list[Rung], placement: str | None) -> list[Rung]:
     """Strict local/cloud rung filter for :attr:`LlmRequest.placement` (the
     structured-selection UI's "run this here" pin) — classified by
-    :func:`_rung_is_cloud`, the same local/cloud call the cloud throttle above
-    uses.
+    :func:`_rung_is_cloud`, same as the cloud throttle.
 
-    ``None`` or any value other than ``"local"``/``"cloud"`` is a no-op,
-    returning ``chain`` unchanged (walked as configured — today's behavior for
-    every caller that doesn't set ``placement``). Unlike
-    :func:`_apply_cloud_throttle`, an emptied-by-this-filter chain is **not**
-    handled here — it is the caller's job (:func:`dispatch` /
-    :func:`dispatch_async`) to turn that into an explicit error result rather
-    than a silent paused/degrade, since the caller asked for a specific rung
-    that the chain doesn't have.
+    ``None`` or any value other than ``"local"``/``"cloud"`` is a no-op.
+    Unlike :func:`_apply_cloud_throttle`, an emptied chain is **not** handled
+    here — it's the caller's job (:func:`dispatch`/:func:`dispatch_async`) to
+    turn that into an explicit error, since the caller asked for a rung the
+    chain doesn't have.
     """
     if placement == "local":
         return [rung for rung in chain if not _rung_is_cloud(rung)]
@@ -1902,17 +1697,13 @@ def _apply_placement(chain: list[Rung], placement: str | None) -> list[Rung]:
     return chain
 
 
-#: ``SMALL`` (categorizer) model ids that only mean something on the
-#: local loopback (the ``summarizer`` alias and the ``rake-lemma`` name it
-#: resolves to) — POSTing either to a hosted OSS backend (OpenRouter et al.)
-#: 400s, since the hosted side has never heard of them. See
-#: :func:`_hosted_small_remap`. Deliberately scoped to the ``SMALL``-only
-#: aliases: a served local model backing ``BIG`` is NOT here — it always
-#: routes ``OPENAI_TOOLS`` regardless of the backend flag, so remapping it
-#: would fire even under the default ``ANTHROPIC`` (breaking byte-identity)
-#: and silently downgrade a big call to a *small* hosted model. ``BIG``'s
-#: hosted fallback is the Phase-2 per-tier failover chain's job, not this
-#: small-model remap.
+#: ``SMALL`` (categorizer) model ids that only mean something on the local
+#: loopback (the ``summarizer`` alias and the ``rake-lemma`` name it resolves
+#: to) — POSTing either to a hosted OSS backend 400s, since the hosted side
+#: has never heard of them. See :func:`_hosted_small_remap`. Deliberately
+#: scoped to ``SMALL``-only aliases: a served local model backing ``BIG`` is
+#: NOT here — it always routes ``OPENAI_TOOLS`` regardless of backend, so
+#: remapping it would silently downgrade a big call to a small hosted model.
 _LOCAL_ONLY_MODEL_ALIASES = frozenset({"summarizer", "rake-lemma"})
 
 
@@ -1938,19 +1729,17 @@ def _hosted_small_remap(
 ) -> str:
     """Transparently remap a local-only model alias onto a real hosted small
     model when the call is actually headed to a hosted OSS backend
-    (``glm-fleet-flip-safety`` (git-only) Part 1 — the 395-error class:
-    ``classify``/``summarize`` pin ``model="summarizer"``, which means nothing
-    to OpenRouter).
+    (``classify``/``summarize`` pin ``model="summarizer"``, which means
+    nothing to OpenRouter).
 
-    A no-op unless *all* of: the transport is a hosted-OSS one
-    (:data:`Transport.OPENAI_COMPAT` / :data:`Transport.OPENAI_TOOLS`),
-    ``PRECIS_LLM_BASE_URL`` is set (so there is a hosted endpoint to remap
-    onto at all), the call is not already pinned to a local ``served_by``
-    slot (``has_local_slot`` — that slot's own model name is already correct
-    for its endpoint), and ``model`` is one of :data:`_LOCAL_ONLY_MODEL_ALIASES`.
-    Under the default ``ANTHROPIC`` backend ``SMALL`` resolves to
-    :data:`Transport.LOCAL`, not a hosted-OSS transport, so this is
-    byte-identical to today whenever the flip is off.
+    A no-op unless *all* of: the transport is hosted-OSS
+    (:data:`Transport.OPENAI_COMPAT`/:data:`Transport.OPENAI_TOOLS`),
+    ``PRECIS_LLM_BASE_URL`` is set, the call isn't already pinned to a local
+    ``served_by`` slot (``has_local_slot`` — that slot's own model name is
+    already correct), and ``model`` is one of
+    :data:`_LOCAL_ONLY_MODEL_ALIASES`. Under the default ``ANTHROPIC``
+    backend ``SMALL`` resolves to :data:`Transport.LOCAL`, so this is a no-op
+    whenever the OSS flip is off.
     """
     if has_local_slot:
         return model
@@ -1968,26 +1757,24 @@ def dispatch(req: LlmRequest) -> LlmResult:
     :class:`LlmResult`.
 
     Resolve the backend + model, pick the transport (pure), look up the
-    provider, and delegate. Each provider *wraps* the existing helper —
-    never reimplements it — and folds a caught
-    :class:`~precis.utils._claude_subprocess.ClaudeProcessError` (or a
-    local-transport ``RuntimeError``) into :attr:`LlmResult.error` rather
-    than raising, so every dispatch path returns one shape. A programming
+    provider, and delegate. Each provider wraps its existing helper and
+    folds a caught :class:`~precis.utils._claude_subprocess.ClaudeProcessError`
+    (or a local-transport ``RuntimeError``) into :attr:`LlmResult.error`
+    rather than raising, so every path returns one shape. A programming
     error (an unwired local-tools path) still raises.
 
-    The ``OPENAI`` backend needs ``PRECIS_LLM_BASE_URL``; with the backend
-    on but no base url set, cloud calls fall back to ``claude`` rather than
-    POST to a phantom endpoint — the ships-dark safety net.
+    The ``OPENAI`` backend needs ``PRECIS_LLM_BASE_URL``; on but with no base
+    url, cloud calls fall back to ``claude`` rather than POST to a phantom
+    endpoint.
 
-    Routing walks a per-tier **chain** (:func:`resolve_chain`, capability tiers + placement chains
-    Phase B — always-on): an operator ``llm.chain.<tier>`` override, else the
-    default (a single primary rung, or — with ``PRECIS_LLM_FAILOVER`` on — the
-    built-in OSS→claude auto-failover ladder). A multi-rung chain is wrapped in
-    a :class:`FailoverProvider` that falls through on error, so a flipped
-    backend degrades to its next rung instead of failing. The ladder also
-    covers a *saturated local slot*: a ``paused`` local-serving result retries
-    rung 0 against the hosted OSS endpoint (skipping the busy local hardware)
-    before falling to the next rung.
+    Routing walks a per-tier chain (:func:`resolve_chain`, always-on): an
+    operator ``llm.chain.<tier>`` override, else the default (a single
+    primary rung, or — with ``PRECIS_LLM_FAILOVER`` on — the built-in
+    OSS→claude auto-failover ladder). A multi-rung chain is wrapped in
+    :class:`FailoverProvider`, falling through on error. The ladder also
+    covers a *saturated local slot*: a ``paused`` local-serving result
+    retries rung 0 against the hosted OSS endpoint before falling to the
+    next rung.
     """
 
     backend = resolve_backend()
@@ -2009,13 +1796,10 @@ def dispatch(req: LlmRequest) -> LlmResult:
         model = _op_model or resolve_model(req.tier, backend=backend)
     else:
         model = req.model or resolve_model(req.tier, backend=backend)
-    # Capability tiers + placement chains gen-param passthrough: resolve the tier's (thinking, temperature)
-    # default (_tier_gen_defaults) unless the caller already pinned one
-    # explicitly. Reassigning `req` itself here (rather than threading two
-    # extra locals through the rest of this function) means every downstream
-    # copy — the FailoverProvider ladder's rungs, the slot/endpoint `replace`s
-    # below, the route-log record — already carries the resolved values with
-    # no per-transport re-derivation of tier logic.
+    # Gen-param passthrough: resolve the tier's (thinking, temperature)
+    # default (_tier_gen_defaults) unless the caller already pinned one.
+    # Reassigning `req` here (vs. threading two extra locals) means every
+    # downstream copy already carries the resolved values.
     _default_thinking, _default_temperature = _tier_gen_defaults(req.tier)
     req = _replace(
         req,
@@ -2027,11 +1811,8 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # Resolve the transport *before* the breaker, so the gate can key on the
     # resource actually spent: the claude-OAuth transports draw subscription
     # quota (gated on the snapshot), everything else paid spends real dollars.
-    # the chain is the always-on resolution path, so an
-    # operator ``llm.chain.<tier>`` override is honoured regardless of
-    # PRECIS_LLM_FAILOVER (the editor's rows are actually read). With no
-    # override this collapses to today's path (single primary rung, or the
-    # built-in auto-failover ladder when the flag is on — see _default_chain).
+    # resolve_chain honours an operator override regardless of
+    # PRECIS_LLM_FAILOVER; with no override see _default_chain.
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
     # Structured placement filter (strict — unlike the cloud throttle below,
     # an emptied nonempty chain here is an *error* result, not a silent
@@ -2070,24 +1851,21 @@ def dispatch(req: LlmRequest) -> LlmResult:
             ),
             paused=True,
         )
-    # Serving-aware prune: a loopback ``LOCAL`` rung 0 on a host that does NOT
-    # serve the model would fall to the retired ``:4000`` default and ECONNREFUSE
-    # on every call (the ~8000 WARN/24h "llm-failover: rung 0 … failed" storm on
-    # non-serving hosts), then fail over to the next rung anyway. Drop it up front
-    # — before the breaker/transport gates below, so they see the rung that will
-    # actually run — and advance straight to the fallback. A served host keeps its
-    # rung 0 (``acquire`` pins a live llama-swap endpoint later); a real
-    # ``PRECIS_SUMMARIZE_LLM_URL`` override or a rung-0-only chain is left alone.
+    # Serving-aware prune: a loopback LOCAL rung 0 on a host that doesn't
+    # serve the model would ECONNREFUSE on every call, then fail over
+    # anyway — drop it up front (before the breaker/transport gates below,
+    # so they see the rung that will actually run) and advance to the
+    # fallback. A served host keeps its rung 0 (`acquire` pins a live
+    # endpoint later); a real URL override or a rung-0-only chain is left
+    # alone.
     ladder = _skip_unserved_local_rung(ladder, model)
     transport = ladder[0].transport
-    # Wrap in the FailoverProvider only when there's genuinely a ladder to walk:
-    # the failover flag is on (preserves the pre-Phase-B flag-on wrapping
-    # exactly), the chain has >1 rung, or a single rung pins its own model (an
-    # operator single-rung chain — resolve_chain's parser always sets a rung
-    # model, so this catches every operator override). A bare single primary
-    # rung (model=None, flag off) routes straight to its provider — byte-for-
-    # byte the old non-failover path, and it keeps the saturated-slot escape
-    # below gated on a real ladder.
+    # Wrap in FailoverProvider only when there's genuinely a ladder to walk:
+    # the failover flag is on, the chain has >1 rung, or a single rung pins
+    # its own model (an operator override — resolve_chain always pins a rung
+    # model). A bare single primary rung (model=None, flag off) routes
+    # straight to its provider, which keeps the saturated-slot escape below
+    # gated on a real ladder.
     if _failover_enabled() or len(ladder) > 1 or ladder[0].model is not None:
         provider: LlmProvider = FailoverProvider(ladder)
     else:
@@ -2144,51 +1922,32 @@ def dispatch(req: LlmRequest) -> LlmResult:
             tier=req.tier,
             error=refusal,
         )
-    # Local serving slot (slice 7 / §6): if this host declares ``served_by`` for
-    # the model, hold one of its local slots for the call's duration so
-    # concurrent local calls can't exceed the declared ``max_parallel``. Ships
-    # dark — a model not served on this host (every model until ``served_by`` is
-    # populated) returns ``None`` and dispatch is byte-identical to today. A
-    # ``paused`` outcome (served here but all slots busy) folds into the same
-    # paused-result shape as the breaker, so a pinned pass backs off, not spins.
+    # Local serving slot: if this host declares `served_by` for the model,
+    # hold one of its local slots for the call's duration so concurrent local
+    # calls can't exceed `max_parallel`. Dark: a model with no `served_by`
+    # returns None and dispatch is unaffected. A `paused` outcome (all slots
+    # busy) folds into the same paused shape as the breaker.
     from precis.utils.llm import local_serving as _local
 
     # Acquire the slot under the model rung 0 will *actually* dispatch — the
-    # chain rung's pinned served id (the capacity-valve `qwen3.5-9b-q4_k_m`),
-    # NOT the pre-chain tier/source model (`summarizer`). ``FailoverProvider``
-    # runs rung 0 as ``rung.model or model`` (see its ``run``), so the served
-    # model, not the alias, is what hits the wire — but ``resource_slots`` /
-    # ``served_by`` are keyed on that served id, so acquiring under the tier
-    # alias always missed the slot (capacity-valve blocker 2) → no endpoint →
-    # ``_dispatch_local`` fell to the default loopback wire and failed over to
-    # cloud, so SMALL never served local despite a resident 9B. ``ladder[0]``
-    # is the effective rung 0 after the placement/throttle filters above. Falls
-    # back to ``model`` when the rung pins nothing (no operator chain, a bare
-    # auto-failover ladder rung), so the dark path stays byte-identical.
+    # chain rung's pinned served id, NOT the pre-chain tier/source model
+    # (`summarizer`). `FailoverProvider` runs rung 0 as `rung.model or
+    # model`, and `resource_slots`/`served_by` are keyed on the served id, so
+    # acquiring under the tier alias always misses the slot. `ladder[0]` is
+    # the effective rung 0 after the placement/throttle filters above; falls
+    # back to `model` when the rung pins nothing.
     serve_model = ladder[0].model or model
     slot = _local.acquire(serve_model)
     if slot is not None and slot.paused:
-        # Local capacity is saturated, not down — a different case from a
-        # transport error, and the FailoverProvider ladder built above already
-        # has a rung for exactly this: retrying `req` unmodified (no
-        # `local_url` override) sends rung 0 to the *hosted* OSS endpoint
-        # (`PRECIS_LLM_BASE_URL`, e.g. OpenRouter) instead of the busy local
-        # slot, falling through to the claude rung only if that also fails.
-        # The saturated-local-slot hosted escape — gated on the
-        # PRECIS_LLM_FAILOVER flag OR an operator chain (both produce a
-        # FailoverProvider here) rather than a new one. But this
-        # escape only exists when rung 0's transport is one of the two that
-        # read `PRECIS_LLM_BASE_URL` when `local_url` is unset (OPENAI_TOOLS /
-        # OPENAI_COMPAT) — ``Transport.LOCAL`` (e.g. SMALL under the
-        # default ANTHROPIC backend) has no hosted mode at all and would just
-        # re-hit the same saturated loopback wire, so that case (like
-        # failover-off, or a primary with no fallback rung) stays
-        # byte-identical to the old behavior: return the paused result
-        # immediately so a pinned pass backs off instead of spinning.
-        # A strict `placement='local'` pin forbids this escape entirely: the
-        # hosted retry IS a cloud endpoint, so a placement-pinned call must
-        # take the paused backoff below instead of silently leaving local
-        # hardware.
+        # Local capacity is saturated, not down. Retrying `req` unmodified
+        # (no `local_url` override) sends rung 0 to the *hosted* OSS endpoint
+        # instead of the busy local slot, falling through to claude only if
+        # that also fails too — but only when rung 0's transport is one of
+        # the two that read `PRECIS_LLM_BASE_URL` when `local_url` is unset
+        # (OPENAI_TOOLS/OPENAI_COMPAT); `Transport.LOCAL` has no hosted mode
+        # and would just re-hit the same saturated wire, so that case returns
+        # the paused result immediately. A strict `placement='local'` pin
+        # forbids this escape entirely (the hosted retry IS a cloud endpoint).
         if (
             req.placement != "local"
             and isinstance(provider, FailoverProvider)
@@ -2204,10 +1963,9 @@ def dispatch(req: LlmRequest) -> LlmResult:
                 "(capacity backoff, not a transport error)",
                 model,
             )
-            # No local slot is in play here by construction (the local host
-            # is saturated, that's why we're escaping to the hosted rung) —
-            # so a local-only alias (`summarizer` et al.) still needs the
-            # Part 1 remap before it hits the hosted endpoint.
+            # No local slot is in play by construction (that's why we're
+            # escaping to the hosted rung), so a local-only alias
+            # (`summarizer` et al.) still needs the hosted remap.
             saturated_model = _hosted_small_remap(
                 model, transport, has_local_slot=False
             )
@@ -2229,20 +1987,19 @@ def dispatch(req: LlmRequest) -> LlmResult:
             error=f"all local serving slots for {model} are busy — backing off",
             paused=True,
         )
-    # A reserved slot that declares a direct ``endpoint`` (llama-swap) routes the
-    # local transport there instead of the litellm proxy, using the server-side
-    # model name — the Phase-2 litellm-retirement flip. No endpoint ⇒ req + model
-    # unchanged (today's behavior). Both local transports read ``local_url``:
-    # LOCAL (tool-less, ``_dispatch_local``) and OPENAI_TOOLS (a served local
-    # model backing ``BIG``, tools, ``run_oss_tool_loop``).
+    # A reserved slot that declares a direct `endpoint` (llama-swap) routes
+    # the local transport there instead of the default, using the
+    # server-side model name. No endpoint ⇒ req + model unchanged. Both
+    # local transports read `local_url`: LOCAL (`_dispatch_local`) and
+    # OPENAI_TOOLS (a served local model backing `BIG`, `run_oss_tool_loop`).
     call_req = req
     call_model = model
     if slot is not None and slot.reserved and slot.endpoint:
         call_req = _replace(req, local_url=slot.endpoint)
         call_model = slot.served_model or model
-    # Part 1 hosted-small remap: only when this call is NOT pinned to a local
-    # `served_by` slot (`call_req.local_url` unset above means no slot — or a
-    # slot with no direct endpoint — is in play).
+    # Hosted-small remap only when this call is NOT pinned to a local
+    # `served_by` slot (`call_req.local_url` unset means no slot — or a slot
+    # with no direct endpoint — is in play).
     call_model = _hosted_small_remap(
         call_model, transport, has_local_slot=call_req.local_url is not None
     )
@@ -2311,36 +2068,28 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
 
 async def dispatch_async(req: LlmRequest) -> LlmResult:
     """Async twin of :func:`dispatch`, for a caller that needs the real-time
-    ``on_event`` stream (asa_bot's Discord bridge, Phase 3 of the
-    router-migration plan — the LLM routing seam follow-up).
+    ``on_event`` stream (asa_bot's Discord bridge).
 
-    Mirrors :func:`dispatch`'s gate sequence — backend fallback, transport
-    resolution, the budget breaker, window admission, the local-serving slot —
-    inline and synchronously (all fast in-memory/DB checks, not blocking I/O
-    of consequence, exactly as the sync function treats them). When the
-    resolved transport is :data:`Transport.CLAUDE_AGENT` **and**
-    ``req.on_event`` is set, this awaits :func:`_dispatch_claude_agent_async`
-    (which calls :func:`~precis.utils.claude_agent.call_claude_agent_async`)
-    instead of the sync :class:`ClaudeAgentProvider`. For any other transport,
-    or when ``on_event`` is unset, it delegates straight to the existing sync
-    :func:`dispatch` — safe to call a sync function from an async one here,
-    since ``dispatch``'s own I/O is either fast (the gate checks) or itself
-    already calls the sync ``call_claude_agent`` (no event loop to block).
+    Mirrors :func:`dispatch`'s gate sequence (backend fallback, transport
+    resolution, budget breaker, window admission, local-serving slot) inline
+    and synchronously — all fast in-memory/DB checks. When the resolved
+    transport is :data:`Transport.CLAUDE_AGENT` **and** ``req.on_event`` is
+    set, awaits :func:`_dispatch_claude_agent_async` instead of the sync
+    :class:`ClaudeAgentProvider`; otherwise delegates straight to sync
+    :func:`dispatch` (safe to call from async here since ``dispatch``'s I/O
+    is either fast or itself calls the sync ``call_claude_agent``, no event
+    loop to block).
 
-    Logs via the same :func:`_record_dispatch` call the sync path uses, so
-    ``llm_call_log`` gets an entry on both branches. The breaker-pause /
-    admission-refusal / all-slots-busy early-outs are **not** logged here
-    either — same as :func:`dispatch`, which only records a call once a
-    provider actually ran.
+    Logs via the same :func:`_record_dispatch` call as the sync path; the
+    breaker-pause/admission-refusal/all-slots-busy early-outs are not logged
+    (same as :func:`dispatch` — only a call that actually ran is recorded).
 
-    Note: this checks only the primary rung's transport to decide whether to
-    stream — it does not wrap the streaming call in the sync path's
-    :class:`FailoverProvider` ladder, so a streaming caller trades the
-    multi-rung safety net for real-time progress on that one call. Ships dark:
-    a streaming ``on_event`` caller (asa_bot) sits on the cloud claude tiers,
-    where :func:`resolve_chain` returns a single ``[Rung(primary)]`` anyway (no
-    chain override configured, nothing to fail over to), so this is a no-op
-    distinction until an OSS tier ever streams.
+    Checks only the primary rung's transport to decide whether to stream —
+    does not wrap the streaming call in :class:`FailoverProvider`, so a
+    streaming caller trades the multi-rung safety net for real-time
+    progress on that one call. A no-op distinction today: a streaming
+    caller sits on the cloud claude tiers, where :func:`resolve_chain`
+    returns a single rung anyway.
     """
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
@@ -2468,16 +2217,14 @@ class DispatchError(RuntimeError):
     """Raised by :meth:`DispatchClient.complete` on a dispatch error or a
     breaker/admission pause — a distinct subclass (not a bare ``RuntimeError``)
     so a caller's retry policy can tell "the router refused/failed this call"
-    apart from an unrelated ``RuntimeError`` it might raise for its own reasons
-    (e.g. a malformed-response parse failure), without the two collapsing into
-    one undifferentiable type.
+    apart from an unrelated ``RuntimeError`` (e.g. a malformed-response parse
+    failure).
 
-    ``paused`` mirrors :attr:`LlmResult.paused` — ``True`` for a breaker trip
-    or an all-local-slots-busy backoff (an expected, self-clearing condition
-    under contention), ``False`` for a genuine transport/provider failure. A
-    caller can use it to skip the per-item ERROR traceback for the former
-    (see ``llm_summarize._complete``'s empty-summary handling for the same
-    pattern) without resorting to message-string sniffing."""
+    ``paused`` mirrors :attr:`LlmResult.paused`: ``True`` for a breaker trip
+    or an all-local-slots-busy backoff (expected, self-clearing), ``False``
+    for a genuine transport/provider failure — lets a caller skip the
+    per-item ERROR traceback for the former without message-string sniffing.
+    """
 
     def __init__(self, message: str, *, paused: bool = False) -> None:
         super().__init__(message)
@@ -2489,45 +2236,38 @@ class DispatchClient:
     """A ``.complete(messages)``-shaped adapter that routes a completion
     through :func:`dispatch` instead of holding its own local ``LlmClient``.
 
-    Drop-in for the summarize / classify / glossary passes' ``client=`` seam:
+    Drop-in for the summarize/classify/glossary passes' ``client=`` seam:
     the same ``complete(messages, *, extra_body=None) -> LlmResult`` contract
-    (``.text`` + ``.total_tokens``), but every call folds through the router — so
-    it gains the budget breaker gate, the ``served_by`` reroute (local tiers) /
-    ``claude_agent`` transport (cloud tiers), and the route-log.
+    (``.text`` + ``.total_tokens``), but every call gains the budget breaker
+    gate, the ``served_by``/``claude_agent`` reroute, and the route-log.
 
-    **The local tier** (the default, ``SMALL``): behaviour-preserving until
-    ``served_by`` is seeded — with no slot the model resolves to today's
-    ``summarizer`` alias on the ``LlmConfig.from_env`` proxy URL, byte-identical
-    to the raw client.
+    **Local tier** (default ``SMALL``): with no ``served_by`` slot the model
+    resolves to the ``summarizer`` alias on the default proxy URL,
+    byte-identical to the raw client.
 
-    **Cloud tiers** (``FRONTIER`` / ``BIG``): ``messages`` is split into
-    a ``system_prompt`` (the ``system``-role turn(s), joined) and a ``prompt``
-    (everything else, joined) — the shape ``claude_agent`` / ``claude_p`` need,
-    since those transports read ``LlmRequest.prompt`` / ``.system_prompt``, not
-    ``.messages`` (that field only feeds the local/openai-compat transports).
-    Set ``tools_needed=True`` to land on ``claude_agent`` (free-text final
-    answer + system prompt honored, no tools advertised when ``mcp_config`` is
-    left ``None`` — the established "text-only agent wrapper" idiom used by
-    ``precis_web.ask.generate_answer`` / ``figure.turn`` / ``mermaid.turn``);
-    the tool-less default (``False``) lands on ``claude_p``, which demands a
-    parseable trailing JSON block and drops the system prompt entirely — wrong
-    for a free-text compose call.
+    **Cloud tiers** (``FRONTIER``/``BIG``): ``messages`` splits into a
+    ``system_prompt`` (joined ``system``-role turns) and a ``prompt``
+    (everything else) — the shape ``claude_agent``/``claude_p`` need (they
+    read ``LlmRequest.prompt``/``.system_prompt``, not ``.messages``).
+    ``tools_needed=True`` lands on ``claude_agent`` (free-text answer, system
+    prompt honored, no tools advertised when ``mcp_config`` is ``None`` — the
+    "text-only agent wrapper" idiom used by ``precis_web.ask.generate_answer``
+    / ``figure.turn`` / ``mermaid.turn``); the tool-less default lands on
+    ``claude_p``, which demands a parseable trailing JSON block and drops the
+    system prompt — wrong for a free-text compose call.
 
-    Raises :class:`DispatchError` (a ``RuntimeError`` subclass) on a dispatch
-    error / breaker-pause so the pass marks the item failed and retries —
-    exactly as the raw ``LlmClient.complete`` raised on a transport error (the
-    passes' ``except`` blocks count it failed). Local tiers are free, so the
-    breaker never trips them; the only pause is all-slots-busy, which correctly
-    backs a batch off.
+    Raises :class:`DispatchError` on a dispatch error/breaker-pause, exactly
+    as the raw ``LlmClient.complete`` raised on a transport error. Local
+    tiers are free (the breaker never trips them); the only pause is
+    all-slots-busy.
     """
 
     tier: Tier = Tier.SMALL
     model: str | None = None
     max_tokens: int | None = None
-    #: Capability tiers + placement chains gen-param passthrough (see :attr:`LlmRequest.thinking` /
-    #: ``.temperature``) — ``None`` (the default) leaves the tier's own
-    #: default in force, so a bare ``DispatchClient`` (``tier=SMALL``) gets
-    #: thinking-off/temperature-0 with zero caller change.
+    #: Gen-param passthrough (see :attr:`LlmRequest.thinking`/``.temperature``)
+    #: — ``None`` leaves the tier's own default in force, so a bare
+    #: ``DispatchClient`` (``tier=SMALL``) gets thinking-off/temperature-0.
     thinking: bool | None = None
     temperature: float | None = None
     source: str = ""
@@ -2594,10 +2334,6 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
     ``errored = false`` — ``max_turns`` is a *resumable* exhaustion, not a
     failure, which is right for the executor but leaves the ledger unable to
     tell "did 60 turns of work" from "spun 60 times and produced nothing".
-    Prod ran 5 such ticks in 3h on 2026-08-07 (``turns_used = 60``,
-    ``response_chars`` 0–3, 256–618s each), one todo exhausting twice, and
-    nothing anywhere objected. The only tell was ``turns_used >= 60 AND
-    response_chars < 10``, which is a heuristic nobody alerts on.
 
     ``exhausted`` is the derived flag worth querying: it folds the OSS loop's
     ``stop_reason`` and the claude lane's ``terminal_reason`` into one boolean
@@ -2706,23 +2442,21 @@ def _record_dispatch(
 
 def _is_unavailability(exc: BaseException) -> bool:
     """Classify a caught transport exception: unavailability (skip-and-retry,
-    :attr:`LlmResult.paused`) vs. a genuine semantic failure (:attr:`LlmResult.error`
-    only) that will never succeed on retry — capability tiers + placement chains "Failure & congestion
-    semantics" ("a todo that can't run right now waits and retries; it does not
-    park").
+    :attr:`LlmResult.paused`) vs. a genuine semantic failure
+    (:attr:`LlmResult.error` only) that will never succeed on retry — a todo
+    that can't run right now waits and retries; it does not park.
 
-    * **Unavailability → True**: a request timeout (``socket.timeout`` /
+    * **Unavailability → True**: a request timeout (``socket.timeout``/
       ``TimeoutError``), a connection failure (``urllib.error.URLError`` that
       is *not* an ``HTTPError``, ``ConnectionError``, any other ``OSError``),
-      or an HTTP 5xx / 429 rate-limit (``urllib.error.HTTPError``).
+      or an HTTP 5xx/429 rate-limit (``urllib.error.HTTPError``).
     * **Semantic → False**: an HTTP 4xx other than 429 — a malformed/
       unauthorized request that will fail identically on every retry.
 
     ``HTTPError`` is checked first since it subclasses ``URLError`` subclasses
-    ``OSError`` — a bare ``isinstance(exc, OSError)`` would otherwise catch it
-    before its status code is inspected. Anything not covered above (e.g. a
-    plain ``RuntimeError`` from a malformed response body) is *not* classified
-    as unavailability — today's behavior (stays ``error``), since it isn't a
+    ``OSError`` — a bare ``isinstance(exc, OSError)`` would catch it before
+    its status code is inspected. Anything else (e.g. a plain
+    ``RuntimeError`` from a malformed response body) stays ``error`` — not a
     known transient signal.
     """
     if isinstance(exc, HTTPError):
@@ -2730,13 +2464,11 @@ def _is_unavailability(exc: BaseException) -> bool:
     return isinstance(exc, OSError)
 
 
-#: Local-transport timeout cap for a SMALL-tier judge call. A classify /
-#: summarize / triage judge returns in ~1s against a healthy loopback wire;
-#: capping far below the 120s ``LlmConfig`` default means a stuck / flapping
-#: wire fails FAST so the ``FailoverProvider`` falls over to the hosted rung,
-#: instead of a batch (N chunks × 2 calls × 120s) blocking past the worker's
-#: watchdog and stranding the pass with zero progress (the 2026-07-26 classify
-#: stall: a transient local-wire flap hung SMALL work → no failover, no tags).
+#: Local-transport timeout cap for a SMALL-tier judge call. A classify/
+#: summarize/triage judge returns in ~1s against a healthy loopback wire;
+#: capping far below the 120s ``LlmConfig`` default means a stuck/flapping
+#: wire fails FAST so ``FailoverProvider`` falls over to the hosted rung,
+#: instead of a batch blocking past the worker's watchdog with zero progress.
 _SMALL_LOCAL_TIMEOUT_S = 30.0
 
 
@@ -2753,41 +2485,29 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     from precis.workers.llm_summarize import LlmClient, LlmConfig
 
     cfg = replace(LlmConfig.from_env(), model=model, enabled=True)
-    # A local-serving slot may pin a direct endpoint (llama-swap) — route there
-    # instead of the default loopback URL (the Phase-2 litellm-retirement flip;
-    # dark until a card declares served_by.endpoint). Mirrors the per-call url
+    # A local-serving slot may pin a direct endpoint (llama-swap) — route
+    # there instead of the default loopback URL. Mirrors the per-call url
     # override the openai_compat path already uses.
     if req.local_url:
         cfg = replace(cfg, url=req.local_url)
     # A caller-pinned completion cap (paper_glossary=2000, …) wins over the
-    # env default so a migrated direct-``LlmClient`` pass keeps its budget.
+    # env default so a migrated direct-`LlmClient` pass keeps its budget.
     if req.max_tokens is not None:
         cfg = replace(cfg, max_tokens=req.max_tokens)
-    # Capability tiers + placement chains gen-param passthrough: unlike `max_tokens` above, `None` here
-    # is a meaningful *resolved* value (the MEDIUM/BIG/FRONTIER-tier default —
-    # "omit temperature, let the provider pick"), not "caller didn't ask to
-    # override" — `dispatch` always resolves `req.temperature` to a concrete
-    # tier default before calling this, so the override is unconditional.
-    # (Only a test that calls this function directly, bypassing `dispatch`,
-    # sees the unresolved field default of `None` here — no production caller
-    # does; see the docstring above.)
+    # Unlike `max_tokens` above, `None` here is a meaningful *resolved* value
+    # (the MEDIUM/BIG/FRONTIER-tier default: omit temperature, let the
+    # provider pick) — `dispatch` always resolves `req.temperature` before
+    # calling this, so the override is unconditional.
     cfg = replace(cfg, temperature=req.temperature)
-    # NOTE — no-thinking directive intentionally NOT applied here. Disabling
+    # NOTE — no-thinking directive intentionally NOT applied here: disabling
     # a Qwen/GLM model's chain-of-thought over the OpenAI wire needs a
-    # backend-specific key (candidates: `chat_template_kwargs:
-    # {"enable_thinking": false}`, `reasoning: {"enabled": false}`, or an
-    # inline `/nothink` directive) and this repo has no confirmed answer for
-    # which one the deployed llama.cpp/llama-swap build (built off a rolling
-    # `master` pin, deploy/roles/llamacpp/defaults/main.yml) honors — see
-    # the router param-passthrough task write-up. `req.thinking=False` is
-    # resolved (SMALL tier default) but deliberately unused here rather than
-    # guessed; temperature=0.0 alone is applied. Revisit once the deployed
-    # llama-server version's behavior is verified live.
+    # backend-specific key this repo has no confirmed answer for on the
+    # deployed llama.cpp/llama-swap build. `req.thinking=False` (SMALL tier
+    # default) is resolved but deliberately unused; only temperature=0.0
+    # is applied.
     # Fail fast on a stuck/flapping loopback wire so the failover ladder can
-    # fall over to the hosted rung. An explicit ``req.timeout_s`` wins; else a
-    # SMALL-tier judge gets the tight cap (see ``_SMALL_LOCAL_TIMEOUT_S``) — a
-    # 120s-per-call default let a transient local-wire flap hang whole SMALL
-    # batches with no failover (the 2026-07-26 classify stall).
+    # fall over to the hosted rung. An explicit `req.timeout_s` wins; else a
+    # SMALL-tier judge gets the tight cap (`_SMALL_LOCAL_TIMEOUT_S`).
     if req.timeout_s is not None:
         cfg = replace(cfg, timeout=req.timeout_s)
     elif req.tier is Tier.SMALL:
@@ -2819,29 +2539,26 @@ def openrouter_routing(
     effort: str | None = None,
     thinking: bool | None = None,
 ) -> dict[str, Any]:
-    """Translate a booked ``meta.endpoints`` variant → the OpenRouter request-body
-    block that pins it (gripe 162624), composed with the capability tiers + placement chains gen-param
+    """Translate a booked ``meta.endpoints`` variant → the OpenRouter
+    request-body block that pins it, composed with the gen-param
     ``reasoning`` toggle.
 
     Emits ``provider:{order:[<slug>], quantizations:[<quant>],
-    allow_fallbacks:false, require_parameters:true}`` so OpenRouter routes to
-    *exactly* that provider×quant (no load-balancing across the ~28 endpoints).
-    The provider slug comes from the endpoint's OpenRouter ``tag``
-    (``deepinfra/fp4`` → ``deepinfra``, the routing key), falling back to a
-    lower-cased ``provider`` name. A ``quant`` of ``unknown`` is omitted
-    (nothing to pin).
+    allow_fallbacks:false, require_parameters:true}`` so OpenRouter routes
+    to *exactly* that provider×quant (no load-balancing). The provider slug
+    comes from the endpoint's OpenRouter ``tag`` (``deepinfra/fp4`` →
+    ``deepinfra``), falling back to a lower-cased ``provider`` name. A
+    ``quant`` of ``unknown`` is omitted.
 
-    ``reasoning`` is built from both ``effort`` and ``thinking``: an ``effort``
-    sets ``reasoning.effort``; ``thinking=False`` additionally (or solely) sets
-    ``reasoning.enabled: false`` — OpenRouter's documented switch to turn
-    reasoning off entirely — so a ``SMALL``-tier dispatch (thinking off by
-    tier default) disables it on the hosted backend without touching the
-    ``effort`` a caller may have booked. ``thinking`` of ``True``/``None``
-    never clobbers a set ``effort`` (the "on" case is today's behaviour: pass
-    ``effort`` through unchanged, or nothing at all).
+    ``reasoning`` is built from both ``effort`` and ``thinking``: ``effort``
+    sets ``reasoning.effort``; ``thinking=False`` additionally (or solely)
+    sets ``reasoning.enabled: false`` (OpenRouter's switch to turn reasoning
+    off entirely) so a ``SMALL``-tier dispatch disables it without touching a
+    booked ``effort``. ``thinking`` of ``True``/``None`` never clobbers a set
+    ``effort``.
 
-    Returns ``{}`` when there is nothing to pin/toggle — the caller then posts
-    the bare slug with no ``reasoning`` block, today's behaviour.
+    Returns ``{}`` when there is nothing to pin/toggle — the caller posts the
+    bare slug with no ``reasoning`` block.
     """
     body: dict[str, Any] = {}
     provider: dict[str, Any] = {}
@@ -2874,12 +2591,10 @@ def openrouter_routing(
 
 
 #: Vault secret name per OSS provider host, keyed by ``PRECIS_LLM_BASE_URL``'s
-#: hostname — so switching provider is a *single* env edit
-#: (``PRECIS_LLM_BASE_URL``) instead of also re-copying the matching key into
-#: ``PRECIS_LLM_API_KEY`` (gripe 159988). An unlisted host (self-hosted vLLM,
-#: a proxy) falls back to the generic ``PRECIS_LLM_API_KEY``, as does a listed
-#: host whose provider-specific secret isn't set — so an existing deployment
-#: that only sets ``PRECIS_LLM_API_KEY`` keeps working unchanged.
+#: hostname — so switching provider is a single env edit instead of also
+#: re-copying the matching key into ``PRECIS_LLM_API_KEY``. An unlisted host
+#: (self-hosted vLLM, a proxy), or a listed host with no matching secret set,
+#: falls back to the generic ``PRECIS_LLM_API_KEY``.
 _PROVIDER_KEY_BY_HOST: dict[str, str] = {
     "openrouter.ai": "OPENROUTER_API_KEY",
     "deepinfra.com": "DEEPINFRA_API_KEY",
@@ -2910,14 +2625,10 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     """Drive a hosted OpenAI-compatible OSS backend (the ``OPENAI`` backend).
 
     Same OpenAI ``/v1/chat/completions`` client as :func:`_dispatch_local`,
-    but pointed at ``PRECIS_LLM_BASE_URL`` and authed with a vault-resolved
-    key chosen by :func:`_provider_api_key` from that url's host (falling
-    back to ``PRECIS_LLM_API_KEY`` — env-override-wins, so a key in the
-    environment still works during transition). When the request carries
-    a booked ``endpoint`` (gripe 162624), the OpenRouter ``provider:{}`` /
-    ``reasoning:{}`` pin is merged into the body so the call hits that exact
-    provider×quant. Imports the summarizer client lazily to keep this module
-    out of the worker/DB import chain.
+    pointed at ``PRECIS_LLM_BASE_URL`` and authed with a vault-resolved key
+    (:func:`_provider_api_key`). When the request carries a booked
+    ``endpoint``, the OpenRouter ``provider:{}``/``reasoning:{}`` pin merges
+    into the body so the call hits that exact provider×quant.
     """
     from dataclasses import replace
 
@@ -2934,22 +2645,18 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     )
     if req.max_tokens is not None:
         cfg = replace(cfg, max_tokens=req.max_tokens)
-    # Capability tiers + placement chains gen-param passthrough — see the matching comment in
-    # _dispatch_local (`None` is a meaningful resolved value here, not
-    # "unset", so the override is unconditional). Unlike the local path, the
-    # hosted OpenRouter wire's no-thinking directive IS confirmed (its
-    # documented `reasoning.enabled` switch — see openrouter_routing), so
-    # it's applied below via extra_body.
+    # `None` is a meaningful resolved value here, not "unset" (see the
+    # matching comment in _dispatch_local). Unlike the local path, the
+    # hosted OpenRouter wire's no-thinking directive IS confirmed
+    # (`reasoning.enabled`, see openrouter_routing), applied via extra_body.
     cfg = replace(cfg, temperature=req.temperature)
     messages = req.messages or [{"role": "user", "content": req.prompt}]
-    # SMALL-tier judges (classify / summarize / triage) never want a reasoning
-    # trace — a reasoning-capable model (glm-4.7-flash) left thinking spends its
-    # whole max_tokens on reasoning and returns empty content (the silent None
-    # that burned ~10k classify chunks). `thinking` (False by the SMALL tier
-    # default) drives `reasoning.enabled: false` without clobbering a booked
-    # `effort`. Resolve the tier default here too when unresolved — so a SMALL
-    # judge pins reasoning off self-contained, even on a path that reaches this
-    # transport without dispatch's top-level resolution.
+    # SMALL-tier judges never want a reasoning trace — a reasoning-capable
+    # model left thinking on spends its whole max_tokens on reasoning and
+    # returns empty content. `thinking` (False by the SMALL tier default)
+    # drives `reasoning.enabled: false` without clobbering a booked `effort`.
+    # Resolved here too so a SMALL judge pins reasoning off self-contained,
+    # even reaching this transport outside dispatch's top-level resolution.
     thinking = (
         req.thinking if req.thinking is not None else _tier_gen_defaults(req.tier)[0]
     )
@@ -2957,8 +2664,8 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     client = LlmClient(cfg)
     try:
         # Only pass extra_body when there is something to send, so the bare
-        # path is the byte-identical call it was before (gripe 162624 ships
-        # dark); the reasoning-off pin above makes it non-empty for SMALL.
+        # path stays unchanged; the reasoning-off pin above makes it
+        # non-empty for SMALL.
         res = (
             client.complete(messages, extra_body=extra_body)
             if extra_body
@@ -3035,46 +2742,30 @@ def run_oss_tool_loop(
     :class:`~precis.utils.llm.openai_tools.AgentLoopResult`.
 
     Extracted from :func:`_dispatch_openai_tools` so a caller that needs the
-    loop's ``stop_reason`` verbatim — the planner tick, which must tell a clean
-    answer (``stop``) from a ``max_turns`` cutoff (resumable, not failed) —
-    reuses the exact client-build + verb-wiring instead of the collapsed
-    :class:`LlmResult`. Builds the client from ``PRECIS_LLM_BASE_URL`` + the
-    vault key chosen by :func:`_provider_api_key` from that url's host, UNLESS
-    ``local_url`` is given — a local-serving slot's pinned llama-swap endpoint
-    — in which case it routes there directly with an authless dummy key (a
-    loopback model has no auth; the vault key is for the hosted OSS backend).
-    This is what makes a served local model backing the ``BIG`` tier dispatch
-    to a per-host local endpoint, mirroring :func:`_dispatch_local`'s
-    ``local_url`` override.
-    Runs the precis verbs in-process via ``runtime.dispatch`` unless
-    ``tool_less``. May raise ``RuntimeError`` / ``OSError`` if the executor /
-    tools can't be built (an unavailable runtime); the loop itself folds a
-    transport failure into ``AgentLoopResult.error`` (``stop_reason='error'``)
-    rather than raising. Imports the loop + bridge lazily so the router stays
-    DB-free.
+    loop's ``stop_reason`` verbatim (the planner tick, telling a clean answer
+    from a resumable ``max_turns`` cutoff) reuses the exact client-build +
+    verb-wiring instead of the collapsed :class:`LlmResult`. Builds the
+    client from ``PRECIS_LLM_BASE_URL`` + the vault key
+    (:func:`_provider_api_key`), UNLESS ``local_url`` is given (a
+    local-serving slot's pinned llama-swap endpoint), in which case it routes
+    there directly with an authless dummy key. Runs the precis verbs
+    in-process via ``runtime.dispatch`` unless ``tool_less``. May raise
+    ``RuntimeError``/``OSError`` if the executor/tools can't be built; the
+    loop itself folds a transport failure into
+    ``AgentLoopResult.error``/``stop_reason='error'``.
 
-    ``temperature``/``thinking`` are the capability tiers + placement chains gen-param passthrough
-    (:attr:`LlmRequest.temperature` / :attr:`.thinking`, already tier-resolved
-    by :func:`dispatch`). ``temperature`` threads straight onto the client —
-    ``None`` (the ``MEDIUM``/``BIG``/``FRONTIER`` tier default)
-    means the field is omitted from the wire entirely (the provider's own
-    default), a deliberate change from this loop's previous unconditional
-    ``temperature: 0`` for every call. The no-thinking directive is only
-    applied when this is genuinely a *hosted* OSS call (``local_url`` unset)
-    — :func:`openrouter_routing`'s confirmed ``reasoning.enabled`` toggle; a
-    direct local llama-swap endpoint gets no such directive (see the matching
-    NOTE in :func:`_dispatch_local` — the key llama.cpp/llama-swap itself
-    honors for this is unconfirmed).
+    ``temperature``/``thinking`` are the gen-param passthrough
+    (:attr:`LlmRequest.temperature`/``.thinking``, tier-resolved by
+    :func:`dispatch`). ``temperature=None`` (the ``MEDIUM``/``BIG``/
+    ``FRONTIER`` default) omits the field from the wire. The no-thinking
+    directive applies only for a genuinely *hosted* OSS call (``local_url``
+    unset) via :func:`openrouter_routing`'s ``reasoning.enabled`` toggle; a
+    direct local llama-swap endpoint gets none (unconfirmed key, see the
+    matching NOTE in :func:`_dispatch_local`).
 
-    ``max_tokens`` is :attr:`LlmRequest.max_tokens` threaded onto the client's
-    per-turn wire payload — a real generation-time stop on this transport,
-    unlike the ``claude_agent`` path's post-hoc truncation. It was structurally
-    unreachable here until 2026-08-13 (the parameter simply didn't exist, so
-    ``ToolChatClient._max_tokens`` was always ``None``), which is why a verbose
-    rung could generate 33k chars unbounded until the streamed wall ceiling
-    killed the whole turn. ``None`` (the default) omits the field from the wire
-    entirely — byte-identical to the payload sent before this knob existed; no
-    caller gets a cap it didn't ask for.
+    ``max_tokens`` threads onto the client's per-turn wire payload — a real
+    generation-time stop on this transport, unlike ``claude_agent``'s
+    post-hoc truncation. ``None`` omits the field entirely.
     """
     from precis.liveness import drain_requested
     from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
@@ -3083,11 +2774,9 @@ def run_oss_tool_loop(
     if local_url:
         base_url = local_url
         api_key = "dummy"
-        # llama-server's prompt cache served CORRUPTED KV state for the
-        # ~20k-char quest-tick prompts (2026-08-12: deepseek answered as if
-        # the user "just typed 'thinking'", hallucinating a different
-        # conversation; the same prompt replayed with cache_prompt=false
-        # read correctly). Bypass the cache per-request — a llama.cpp
+        # llama-server's prompt cache can serve corrupted KV state for a long
+        # prompt (the model answers as if replaying a different
+        # conversation). Bypass the cache per-request — a llama.cpp
         # extension, only ever sent to the pinned local endpoint.
         extra_body: dict[str, Any] | None = {"cache_prompt": False}
     else:
@@ -3126,16 +2815,14 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
 
     Thin wrapper over :func:`run_oss_tool_loop` that collapses the raw
     :class:`~precis.utils.llm.openai_tools.AgentLoopResult` into the normalized
-    :class:`LlmResult`. The loop already folds transport errors into its result;
-    the outer guard catches a failure to *build* the executor / tools (e.g. an
-    unavailable runtime).
+    :class:`LlmResult`. The loop already folds transport errors into its
+    result; the outer guard catches a failure to *build* the executor/tools.
 
-    A *tool-less* agent call (``req.mcp_config is None`` — cad_propose /
-    cad_discuss / structure_propose route here with ``tools_needed=True`` only
-    to get the agent wrapper's output shape, not tools) runs with an empty
-    tools list, so it stays a plain completion loop and can't call precis verbs
-    on the OSS backend — matching the claude path, where ``mcp_config=None``
-    means no tools advertised (gripe 159759).
+    A *tool-less* agent call (``req.mcp_config is None`` — cad_propose/
+    cad_discuss/structure_propose route here with ``tools_needed=True`` only
+    for the agent wrapper's output shape) runs with an empty tools list, so it
+    stays a plain completion loop and can't call precis verbs — matching the
+    claude path, where ``mcp_config=None`` means no tools advertised.
     """
     try:
         result = run_oss_tool_loop(
@@ -3149,9 +2836,6 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             temperature=req.temperature,
             thinking=req.thinking,
             stream=req.stream,
-            # A caller-pinned completion cap reaches the wire here (it already
-            # did on the LOCAL / OPENAI_COMPAT transports) — ``None`` leaves the
-            # payload exactly as before, so nothing gains a default cap.
             max_tokens=req.max_tokens,
         )
     except (RuntimeError, OSError) as exc:
@@ -3162,27 +2846,21 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             model=model,
             tier=req.tier,
             error=str(exc),
-            # Same unavailability-vs-semantic split as `_dispatch_local` above
-            # — a failure to *build* the executor/tools rarely trips this, but
-            # it shares the exception classes, so classify it the same way.
+            # Same unavailability-vs-semantic split as `_dispatch_local` —
+            # a failure to *build* the executor/tools shares its exceptions.
             paused=_is_unavailability(exc),
-            # A failure to *build* the executor/tools is a transport error to a
-            # stop_reason reader (the planner tick), same as an in-loop one.
             stop_reason="error",
         )
-    # Cost: prefer the loop's own summed ``usage.cost`` (OpenRouter); otherwise
-    # price the accumulated token split via the catalog, exactly as
-    # ``result_from_openai`` does for the tool-less openai_compat transport —
-    # so the budget breaker isn't blind to openai_tools spend either
-    # (``glm-fleet-flip-safety`` (git-only) Part 2).
+    # Cost: prefer the loop's own summed usage.cost (OpenRouter); otherwise
+    # price the accumulated token split via the catalog, as
+    # `result_from_openai` does for openai_compat.
     cost = result.cost_usd
     if cost is None and result.total_tokens is not None:
         from precis.budget.pricing import cost_from_tokens
 
-        # No prompt/completion split survives the loop's accumulation (only a
-        # running ``total_tokens``) — price the whole total at the pricier
-        # output rate, a deliberately conservative (never-under) estimate for
-        # a breaker whose job is to not miss real spend.
+        # No prompt/completion split survives the loop's accumulation — price
+        # the whole total at the pricier output rate, a conservative
+        # (never-under) estimate for a breaker that must not miss real spend.
         cost = cost_from_tokens(
             model, prompt_tokens=None, completion_tokens=result.total_tokens
         )
@@ -3193,23 +2871,12 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         model=model,
         tier=req.tier,
         error=result.error,
-        # The in-loop transport-error classification (`_is_unavailability`,
-        # applied where the exception was actually caught — inside
-        # `run_tool_loop`) rides through so an unavailability rides the same
-        # skip-and-retry path as the breaker / local-slot pauses.
         paused=result.paused,
-        # …and its wall-clock-timeout refinement, so a caller with a bounded
-        # give-up budget can tell "wait for the window" from "this rung ran out
-        # of clock and will again" without reading the error string.
         timed_out=result.timed_out,
-        # Thread the definitive tool-call count so the review seam's
-        # empty-result assertion works on this (local/OSS) backend too —
-        # otherwise a silent-empty pass routed through OPENAI_TOOLS keeps
-        # tool_calls=None and the guard can never trip (the anchor demands
-        # a definitive 0). `tool_calls_made` is the loop's own count.
+        # `tool_calls_made` is the loop's own definitive count, needed so the
+        # review seam's empty-result assertion (which demands a real 0, not
+        # None) works on this backend too.
         tool_calls=result.tool_calls_made,
-        # The loop's stop_reason rides through so the planner tick can tell a
-        # clean answer ('stop') from a resumable exhaustion ('max_turns').
         stop_reason=result.stop_reason,
     )
 
@@ -3235,14 +2902,12 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         tier=tier,
         error=str(exc),
         interrupted=rc is not None and rc >= 128,
-        # A wall-clock timeout is a transient unavailability → paused (retry),
-        # so a claude-only rung (e.g. FRONTIER) waits rather than parking the
-        # todo. A non-timeout ClaudeProcessError (non-zero exit /
-        # missing binary) stays a semantic error, as before.
+        # A wall-clock timeout is a transient unavailability → paused
+        # (retry); a non-timeout ClaudeProcessError (non-zero exit, missing
+        # binary) stays a semantic error.
         paused=getattr(exc, "timed_out", False),
-        # Same signal, kept unmerged with ``paused`` so a bounded-budget caller
-        # sees *why* it paused — this transport's pause is only ever a timeout
-        # today, but that is a property of the wrapper, not a guarantee.
+        # Kept unmerged with `paused` so a bounded-budget caller sees *why*
+        # it paused.
         timed_out=getattr(exc, "timed_out", False),
     )
 

@@ -1,100 +1,73 @@
 """Dossier — the living research synthesis a *process* owns.
 
-Slice 4a of the quest layer (``quest-layer`` (git-only) §Two memories),
-generalized per dossier-owned-by-process:
-a dossier belongs to a **process, never an artifact**. A quest is the process
-that owns one today, but the owner is now **any ref** (``owner_id``) — a
-standing topic review or a paper-writing pipeline can own a dossier by the same
-rule, and a "paper" is just a render/export of a process's dossier. The owner
-coupling lived entirely in this module's Python (the ``dossier-of`` /
-``has-dossier`` relation is already owner-agnostic — migration 0067, no kind
-constraint), so widening it is migration-free.
+Dossier-owned-by-process (quest layer slice 4a): a dossier belongs to a
+**process, never an artifact** — ``owner_id`` is any ref (a quest today, but
+also a standing topic review or a paper-writing pipeline); a "paper" is a
+render/export of a process's dossier. The ``dossier-of``/``has-dossier``
+relation carries no kind constraint (migration 0067) — widening the owner
+set is migration-free, the coupling lives only in this module's Python.
 
-An owning process keeps *two* records: the append-only ``quest_log`` LOGBOOK
-(episodic — what happened, when, immutable; :mod:`precis.quest.logbook`) and the
-DOSSIER — a ``draft`` the owner holds via ``dossier-of`` (semantic — the current
-understanding, best leads, what's ruled out, open questions), **rewritten every
-research cycle**. The dossier doubles as the autonomous loop's *rolling
-context*: each tick reads the compact dossier rather than replaying the whole
-logbook, so context stays bounded.
+An owning process keeps *two* records: the append-only ``quest_log``
+LOGBOOK (episodic, immutable; :mod:`precis.quest.logbook`) and the DOSSIER —
+a ``draft`` held via ``dossier-of`` (semantic: current understanding, best
+leads, ruled-out, open questions), **rewritten every research cycle** and
+doubling as the loop's *rolling context* (each tick reads the compact
+dossier, not the whole logbook — context stays bounded).
 
-Dossier-owned-by-process splits the dossier body into a **narrative** — the
-whole-rewritten prose synthesis — and a **pinned ledger**. The narrative is
-stored as **many small paragraph-level chunks, one thought each** (the
-narrative-chunking decision: "otherwise it's semantic mush", keep it
-unpinned and dynamic — see what emerges), not one big blob: every rewrite
-(:func:`rewrite_dossier`) retires the WHOLE existing unpinned set and
-inserts a fresh chunk per paragraph — delete + re-insert, never an
-in-place ``edit_text``, so the per-chunk embedding/summary cascade re-runs
-on each thought individually rather than once over the whole prose. There is
-no longer one stable narrative handle across ticks (:func:`read_narrative`
-joins whatever unpinned chunks currently exist, in reading order, back into
-one document for a reader/prompt). The narrative is also — since the
-attempt-tree ledger (dossier-hygiene design — quest package docstring) — held to a
-code-enforced growth ratchet, not a fixed cap: a rewrite may only outgrow the
-previous narrative by more than ~15%+50 words when the tick shows visible
-progress, see :mod:`precis.quest.narrative_budget` and ``tick.py``'s
-``_apply_narrative_gate``. The **pinned ledger** is the *strategic* attempt
-tree, one node per tried/abandoned/open *direction* (a whole direction, not a
-single ruled-out structure — that per-candidate ledger already lives on
-``structure`` tags, see ``tick.py``'s ``_ruled_out_handles``), children as
-refinements/variants of their parent, each carrying a status (``open`` /
-``active`` / ``tried`` / ``ruled-out``) — so the loop can't silently lose its
-own trail on a rewrite that drops a rule-out from the free prose (the
-autocatpath dead-3-days spin), and so a whole abandoned branch (try a, then
-b, then c-with-x and c-with-y) reads as a subtree, not an ambiguous flat
-list.
+The dossier body splits into a **narrative** (whole-rewritten prose) and a
+**pinned ledger**. The narrative is **many small paragraph-level chunks,
+one thought each**, unpinned: every :func:`rewrite_dossier` retires the
+WHOLE existing unpinned set and inserts a fresh chunk per paragraph
+(delete+reinsert, never in-place ``edit_text``, so per-chunk
+embedding/summary recomputes per thought) — there is no stable narrative
+chunk handle across ticks; :func:`read_narrative` joins whatever unpinned
+chunks exist, in reading order, into one document. Growth is a
+code-enforced ratchet, not a fixed cap: a rewrite may outgrow the previous
+narrative by more than ~15%+50 words only with same-tick progress evidence
+— :mod:`precis.quest.narrative_budget`, ``tick.py``'s
+``_apply_narrative_gate``.
 
-The ledger's storage is **real chunks, not a markdown blob**: a container
-chunk (``meta.pinned='ledger'``, set via ``patch_chunk_meta`` — the
-persona-threads plan-marker precedent, no new chunk_kind, no migration) holds
-no content of its own; each tree node is its own CHILD chunk
-(``parent_chunk_id`` nesting, :meth:`DraftStore.reading_order`'s DFS order = tree
-order), stamped ``meta.pinned='ledger-node'`` (so the narrative-body filters
-in :func:`rewrite_dossier`/:func:`read_narrative` — which already exclude
-ANY truthy ``meta.pinned`` — keep every node out of the rewritable prose for
-free) and carrying its status as a closed-axis chunk tag
-(``ATTEMPT:<status>``, :data:`precis.store.types._CLOSED_VOCAB`'s
-``"ATTEMPT"`` entry). This replaced an earlier design (one ``## Attempts``
-markdown blob in the container chunk, model-authored bullets parsed back with
-a hand-rolled indentation grammar): it rendered as literal markdown in the
-smartdraft web view, and a node's only identity was its exact text — an
-op that didn't match dropped silently. :func:`add_attempt` /
-:func:`mark_attempt` are the only mutators (:func:`append_ledger_entry` is
-the pre-tree three-section entry point, kept for its existing callers — it
-now adds a depth-0 tree node under the mapped status); every OTHER read of
-the ledger still goes through :class:`AttemptNode` — the in-memory forest is
-unchanged by the storage move, so the tree semantics below are unaffected.
-Ruling out a node is a *stored*, per-node fact only — an open/active
-descendant's own stored status is never overwritten; a ruled-out ancestor's
-shadow over it, and the collapse of a subtree that is entirely
-tried/ruled-out to one summary line, are both **rendering-level**
-(:func:`ledger_do_not_repropose`). A legacy three-section OR single-blob
-markdown ledger (pre-real-chunks, or the older ``## Tried`` / ``## Ruled
-out`` / ``## Open`` shape) still reads correctly: :func:`_parse_ledger`
-remains the legacy reader, and a dossier whose container chunk still holds
-that markdown is converted in place — node chunks + tags materialized, then
-the container blanked — lazily on first access (see
-:func:`_migrate_legacy_ledger`), migration-free, and ordered so a crash
-mid-conversion leaves the legacy text intact (never destroy the one copy
-before the replacement durably exists — this loss already happened in prod,
-dossier 202546, Aug 2026). :func:`read_ledger` and :func:`ledger_do_not_repropose`
-still hand back / accept markdown text respectively (the tick *prompt*'s
-shape, :mod:`precis.quest.tick`, is unchanged) — :func:`read_ledger`
-re-renders the live forest via :func:`_render_ledger` rather than reading a
-stored blob, and :func:`ledger_do_not_repropose` accepts either the forest
-directly or (a thin back-compat shim) that same markdown text, so no caller
-needed to change. :func:`read_dossier` still joins the whole body into one
-string (the ``view='dossier'`` handler + history rely on it) — the ledger's
-contribution is the same rendered markdown, standing in for its now-several
-underlying chunks; only the tick *prompt* separates narrative from ledger
-(:func:`read_narrative`, :func:`read_ledger`).
+The **pinned ledger** is the *strategic* attempt tree: one node per
+tried/abandoned/open *direction* (a whole direction, not a single ruled-out
+structure — that per-candidate ledger lives on ``structure`` tags,
+``tick.py``'s ``_ruled_out_handles``), children as refinements/variants,
+each carrying a status (``open``/``active``/``tried``/``ruled-out``) — so a
+rewrite can't silently drop a rule-out from free prose, and a whole
+abandoned branch reads as a subtree, not an ambiguous flat list.
+
+Storage is **real chunks, not a markdown blob**: a container chunk
+(``meta.pinned='ledger'``, no content) holds each tree node as its own
+CHILD chunk (``parent_chunk_id`` nesting; :meth:`DraftStore.reading_order`'s
+DFS order = tree order), stamped ``meta.pinned='ledger-node'`` (excluded
+from rewritable prose by the same truthy-``pinned`` filter in
+:func:`rewrite_dossier`/:func:`read_narrative`) with status as a closed-axis
+chunk tag (``ATTEMPT:<status>``, :data:`precis.store.types._CLOSED_VOCAB`).
+:func:`add_attempt`/:func:`mark_attempt` are the only mutators
+(:func:`append_ledger_entry` is the legacy pre-tree entry point, kept for
+existing callers — adds a depth-0 node under the mapped status); every other
+read goes through :class:`AttemptNode`, the in-memory forest, unaffected by
+the storage move. Ruling out a node is a *stored*, per-node fact only — an
+open/active descendant's status is never overwritten by an ancestor's
+rule-out; the ancestor's shadow over it, and collapsing an
+all-tried/ruled-out subtree to one summary line, are both **rendering-level**
+(:func:`ledger_do_not_repropose`). A legacy markdown ledger (single-blob or
+the older ``## Tried``/``## Ruled out``/``## Open`` three-section shape)
+still reads via :func:`_parse_ledger`, and converts lazily in place on first
+access (:func:`_migrate_legacy_ledger`) — ordered so a crash mid-conversion
+leaves the legacy text intact (never destroy the source before the
+replacement durably exists). :func:`read_ledger` re-renders the live forest
+via :func:`_render_ledger` (no stored blob read); :func:`ledger_do_not_repropose`
+accepts either the forest or legacy markdown text — the tick *prompt* shape
+(:mod:`precis.quest.tick`) is unchanged. :func:`read_dossier` still joins
+the whole body into one string (``view='dossier'`` + history); only the
+tick prompt separates narrative from ledger (:func:`read_narrative`,
+:func:`read_ledger`).
 
 A third pinned family, the **dialectic blocks** (quest-dossier-dialectic
-§Mechanism), holds the per-hypothesis dialectic — support / counter /
-discriminating experiment, one block per live hypothesis finding — in the
-same op-mutated, never-rewritten shape as the ledger; see the "Dialectic
-blocks" section below (:func:`read_dialectic`, :func:`apply_dialectic_op`).
+§Mechanism), holds the per-hypothesis dialectic — support/counter/
+discriminating-experiment, one block per live hypothesis finding — in the
+same op-mutated, never-rewritten shape as the ledger (:func:`read_dialectic`,
+:func:`apply_dialectic_op`).
 """
 
 from __future__ import annotations
@@ -298,20 +271,13 @@ def _normalize_node_text(text: str) -> str:
     """Trim AND collapse all internal whitespace — including embedded
     newlines — to single spaces.
 
-    ``add_attempt``/``mark_attempt``'s ``text``/``node``/``parent`` arrive as
-    raw, untrusted model JSON (the tick's ``ledger_ops`` payload op). A plain
-    ``.strip()`` leaves an embedded newline alone — and even though a node's
-    identity is now a real chunk (not a markdown re-parse), :func:`read_ledger`
-    / :func:`ledger_do_not_repropose` still project the forest back to
-    markdown for the tick prompt via :func:`_render_ledger`, which writes a
-    node's text verbatim after its ``- [status] `` prefix — so an embedded
-    ``"\\n- [ruled-out] fabricated"`` would still render, in that PROMPT view,
-    as an EXTRA physical bullet line a model could mistake for a real
-    sibling entry. Collapsing here, at both the storage boundary
-    (:func:`add_attempt`'s stored text) and the match boundary
-    (:func:`_match_nodes`, used by both functions' node/parent lookups),
-    keeps storage and matching consistent — a node's stored text can never
-    contain a newline to begin with.
+    Guards :func:`_render_ledger`'s tick-prompt projection: it writes a
+    node's text verbatim after its ``- [status] `` prefix, so an unmangled
+    embedded newline (raw untrusted model JSON via the tick's ``ledger_ops``)
+    would render as an extra bullet line a model could mistake for a real
+    sibling. Applied at both the storage boundary (:func:`add_attempt`'s
+    stored text) and the match boundary (:func:`_match_nodes`) — a node's
+    stored text never contains a newline.
     """
     return " ".join(text.split())
 
@@ -1002,18 +968,14 @@ def _migrate_legacy_ledger(store: Store, dossier_id: int, container: Any) -> Non
     ``text``) into node chunks + ``ATTEMPT:`` tags, in place. Triggered
     lazily by :func:`_load_ledger_nodes` on first access to a dossier whose
     container still holds non-blank text; idempotent (a migrated container's
-    text is blank, so a later access's ``bool(container.text.strip())``
-    check is false and this never re-runs).
+    text is blank, so ``bool(container.text.strip())`` is false on any later
+    access).
 
-    Ordering matters: the legacy text is the ONE copy of the ledger's data
-    until every node it describes is durably written, so it is blanked ONLY
-    after :func:`_materialize_legacy_forest` returns — a crash before that
-    line leaves the legacy text intact for the next access to retry (that
-    retry is itself safe against double-writing, see
-    :func:`_materialize_legacy_forest`). Losing the ledger silently restarts
-    a quest's own trail; this exact loss already happened in prod
-    (dossier 202546, Aug 2026 — see the ``read_narrative`` docstring for the
-    sibling incident that motivated ``body[0]``-only reads).
+    Ordering invariant: the legacy text is blanked ONLY after
+    :func:`_materialize_legacy_forest` returns — a crash before that line
+    leaves the legacy text intact for the next access to retry (retry-safe
+    against double-writing, see that function). Never destroy the source
+    before the replacement durably exists.
     """
     forest = _parse_ledger(container.text)
     if forest:
@@ -1131,17 +1093,11 @@ def read_narrative(store: Store, owner_id: int) -> str:
     has no dossier, or has no narrative chunks yet.
 
     **Symmetric with :func:`rewrite_dossier` by contract**: the write side
-    now replaces the WHOLE unpinned set every rewrite (retire-all +
-    insert-fresh, the narrative-chunking design — module docstring), so the
-    read side joining every live unpinned chunk, in reading order, is always
-    exactly what the last rewrite wrote — never a mix of fresh and stranded
-    chunks. (An earlier version of this function took only ``body[0]``,
-    guarding against a single-narrative-chunk invariant that a generic
-    draft-hygiene todo once broke in prod, quest 202469 / dossier 202546, Aug
-    2026, by refragmenting the one blob into 13 chunks that
-    ``rewrite_dossier`` only half-updated. Retiring the whole set on every
-    rewrite removes that failure mode by construction: any externally
-    introduced chunk is gone by the next tick regardless.)
+    replaces the WHOLE unpinned set every rewrite (retire-all + insert-fresh
+    — module docstring), so joining every live unpinned chunk here, in
+    reading order, is always exactly what the last rewrite wrote — never a
+    mix of fresh and stranded chunks, even one externally introduced between
+    ticks (retiring the whole set each rewrite removes it by construction).
     """
     did = dossier_ref_id(store, owner_id)
     if did is None:
@@ -1158,17 +1114,13 @@ def read_narrative(store: Store, owner_id: int) -> str:
 def read_ledger(store: Store, owner_id: int) -> str:
     """The pinned ledger's markdown rendering (:func:`_render_ledger` over
     :func:`_load_ledger_nodes`) — a thin, on-the-fly re-projection of the
-    live forest, not a stored blob. The ledger's actual storage is real
-    chunks (see the module docstring); this function exists so callers that
-    want the tick-prompt markdown shape (:mod:`precis.quest.tick`) don't need
-    to change, and so most of this module's own tests (substring/format
-    assertions against the rendered ledger) keep working unchanged across
-    the storage move.
+    live forest (storage is real chunks; see module docstring), preserving
+    the tick-prompt markdown shape (:mod:`precis.quest.tick`).
 
     Heals a pre-A dossier with no ledger yet (:func:`ensure_ledger_chunk`)
-    and migrates a legacy markdown ledger in place on first access (see
-    :func:`_load_ledger_nodes`), so this always returns a well-formed (if
-    empty) rendering for any live owner, migration-free.
+    and migrates a legacy markdown ledger on first access (see
+    :func:`_load_ledger_nodes`) — always returns a well-formed (if empty)
+    rendering, migration-free.
     """
     ensure_ledger_chunk(store, owner_id)
     did = dossier_ref_id(store, owner_id)
@@ -1217,50 +1169,34 @@ def add_attempt(
     """Add one node to the pinned attempt tree; return ``True`` iff a NEW
     node chunk was created.
 
-    A blank ``text`` is a no-op. ``status`` is clamped to ``"open"`` when it
-    isn't one of :data:`_STATUSES`.
+    Blank ``text`` is a no-op. ``status`` clamps to ``"open"`` when not one
+    of :data:`_STATUSES`.
 
-    **Dedup-before-insert (dossier-hygiene design).** Before minting a node,
-    the WHOLE ledger (every branch, not just ``parent``'s siblings) is
-    scanned for a near-duplicate of ``text`` (:func:`_find_near_dup_node` —
-    token-Jaccard, the same measure :mod:`precis.quest.tick` uses to dedup
-    hypotheses; a prod dossier had ~8 near-copies of one direction, rephrased
-    each tick because the old dedup only looked at byte-identical siblings).
-    A hit UPSERTS instead of appending — no new chunk either way:
+    **Dedup-before-insert.** The WHOLE ledger (every branch, not just
+    ``parent``'s siblings) is scanned for a near-dup of ``text``
+    (:func:`_find_near_dup_node` — token-Jaccard, the measure
+    :mod:`precis.quest.tick` also uses for hypothesis dedup). A hit UPSERTS,
+    never appends: same status → no-op; different status → advances the
+    match to the incoming status only if further along :data:`_STATUS_RANK`
+    (``open < active < tried < ruled-out``, via :func:`_set_node_status`) —
+    never regresses. A match ignores the requested ``parent`` (reused where
+    it already lives, never re-parented). A node with no significant tokens
+    (:func:`_sig_tokens`, e.g. `"c"`) never near-dup-matches, so same-named
+    leaves in different branches stay distinct via ``parent=``
+    disambiguation (:func:`_match_nodes`).
 
-    * same status as the match → pure no-op, nothing changes.
-    * a different status → the match's status ADVANCES to the incoming one
-      when it's further along :data:`_STATUS_RANK` (``open < active < tried
-      < ruled-out``), applied via :func:`_set_node_status` (the same
-      tag-replace :func:`mark_attempt` uses). A status BEHIND the match's
-      own is never applied — this never regresses a direction the ledger
-      already has further along.
-
-    A near-dup match ignores the requested ``parent`` — the match is
-    reused wherever it already lives in the tree, never re-parented. A
-    node with no significant tokens (:func:`_sig_tokens` — e.g. a short
-    label like ``"c"``) never near-dup-matches anything, so two same-named
-    leaves in different branches (the ``parent=``-disambiguated case,
-    :func:`_match_nodes`) stay distinct exactly as before.
-
-    Only once no near-dup is found does the OLD narrower guard still apply
-    — an exact byte-identical text+status repeat among ``parent``'s
-    siblings specifically is a no-op too (a safety net for a short label
-    with no significant tokens, which the near-dup scan above would never
-    catch): ``parent`` (optional) is the exact text of an existing node the
-    new one becomes a child of — matched trimmed + case-insensitive
-    (:func:`_match_nodes`); zero or >1 matches is a no-op
-    (ambiguous/unmatched, never a guess). ``parent=None`` adds a new root
-    (depth-0) node, as a child of the ledger CONTAINER chunk.
+    Absent a near-dup, the narrower guard still applies: exact
+    byte-identical text+status among ``parent``'s siblings is also a no-op.
+    ``parent`` (optional) is the exact text of an existing node the new one
+    joins as a child — matched trimmed + case-insensitive
+    (:func:`_match_nodes`); zero or >1 matches is a no-op (never a guess).
+    ``parent=None`` adds a root (depth-0) node under the ledger CONTAINER
+    chunk.
 
     ``text`` is whitespace-normalized (:func:`_normalize_node_text`) before
-    storage or comparison — an embedded newline (raw, untrusted model JSON
-    via the tick's ``ledger_ops``) would otherwise render, in the
-    tick-prompt markdown view, as an extra physical bullet line a model
-    could mistake for a fabricated sibling. Creates at most one new chunk
-    (:func:`_write_node_chunk`) — no whole-ledger rewrite, unlike the
-    pre-real-chunks design. Heals a pre-A dossier lacking a ledger chunk on
-    the way in.
+    storage or comparison. Creates at most one new chunk
+    (:func:`_write_node_chunk`) — no whole-ledger rewrite. Heals a
+    pre-real-chunks dossier lacking a ledger chunk on the way in.
     """
     stripped_text = _normalize_node_text(text)
     if not stripped_text:

@@ -503,14 +503,13 @@ def seed_placement(
     total_area = float(sum((2.0 * radii[i]) ** 2 for i in order))
     row_width = max(2.0 * float(radii.max()), math.sqrt(total_area) * 1.2)
 
-    # Pack inside the BOARD when there is one. The seed used to lay shelves
-    # from the origin with no idea where the board was, so on any outline
-    # narrower than its own natural row width it packed parts straight off
-    # the edge — and once a part is outside, ``bounds_for`` clamps every
-    # TRANSLATE that could rescue it while ``_placement_is_legal`` rejects
-    # the crowding that bringing it back would cause, so it stays outside
-    # for the whole anneal. Measured on a 20mm-square outline: 24 of 29
-    # parts placed off the board.
+    # Pack inside the BOARD when there is one, anchored at the outline's
+    # own min corner rather than a synthetic origin: on any outline
+    # narrower than the shelf's natural row width, packing from the
+    # origin puts parts straight off the edge — and once a part is
+    # outside, ``bounds_for`` clamps every TRANSLATE that could rescue it
+    # while ``_placement_is_legal`` rejects the crowding that bringing it
+    # back would cause, so it stays outside for the whole anneal.
     #
     # Clamping the row width does NOT make an over-full board fit; parts
     # then wrap down past the bottom edge instead of off the right one.
@@ -636,13 +635,9 @@ class OptimizeEngine:
         #:
         #: **Capped to ``board_side`` per axis, anchored at the outline's
         #: own min corner (never at the synthetic square's origin).**
-        #: Measured on the ESP32-C3 reference fixture (2026-08-28, after
-        #: its outline was deliberately widened from 40x30mm to a 300x300mm
-        #: placeholder "so board size isn't a confound... shrunk later" --
-        #: see that fixture's own note): clamping TRANSLATE to the FULL,
-        #: uncapped 300x300 outline more than QUADRUPLED total DRC errors
-        #: on this same run (671 vs. 390) relative to capping it -- the
-        #: anneal's cooling schedule (``t0``/step size, both derived from
+        #: Clamping TRANSLATE to an oversized/placeholder outline instead
+        #: of capping to ``board_side`` inflates DRC errors: the anneal's
+        #: cooling schedule (``t0``/step size, both derived from
         #: this SAME ``board_side``, module-docstring-documented as an
         #: n-instance heuristic, not an outline-aware one) stays exactly
         #: as "hot" and fast-cooling as it always has, so a component that
@@ -659,13 +654,13 @@ class OptimizeEngine:
         #: the more complete fix and is flagged, not silently guessed at,
         #: as its own follow-up.
         #: **The domain must CONTAIN the seed.** Capping at ``board_side``
-        #: anchored on the outline's own corner did not: ``seed_placement``
-        #: drops clusters on an 8mm-pitch grid, which for this fixture's 29
-        #: instances spans ~108mm, while ``board_side`` is 32mm. Every
-        #: seeded part outside the cap was clamped into the corner by its
-        #: first TRANSLATE and SWAP could never move it at all (a swap
-        #: whose partner sits outside the bounds is rejected forever) —
-        #: the pile-up that produced the overlapping courtyards below.
+        #: anchored on the outline's own corner is not sufficient by
+        #: itself: ``seed_placement`` drops clusters on a fixed-pitch
+        #: grid that can span well past ``board_side`` for a dense
+        #: design. A seeded part outside the cap gets clamped into the
+        #: corner by its first TRANSLATE, and SWAP can never move it at
+        #: all (a swap whose partner sits outside the bounds is rejected
+        #: forever) — a pile-up that produces overlapping courtyards.
         #: The domain is therefore derived from the SEED's own extent
         #: (adjacency-clustered, so it is a real answer, not a heuristic
         #: square), padded, then clipped to the outline inset by
@@ -702,7 +697,7 @@ class OptimizeEngine:
         self._seg_nearest_instance = np.full(ir.n_segments, -1, dtype=np.int64)
 
         # crossings state: GEOMETRIC (module docstring's crossings-term
-        # section, revised 2026-08-28) -- `_segments_by_layer[layer]` is the
+        # section) -- `_segments_by_layer[layer]` is the
         # segment-membership index a bounded recount needs to enumerate
         # "the rest of that layer"; `_seg_crossing_partners[seg_id]` is the
         # set of OTHER same-layer segments `seg_id` currently, geometrically
@@ -1454,20 +1449,16 @@ class OptimizeEngine:
             frac = it / max(1, cfg.iters)
             stage = _stage_index(cfg.schedule, frac)
             if stage != active_stage:
-                # **Reheat at every schedule-stage boundary** — found on
-                # contact while measuring slice-7 throughput (2026-08-28):
-                # without this, a global exponential cool from `t0` over
-                # the WHOLE `iters` budget is already near-zero (e.g.
-                # ~1e-22 x t0 by 50% of a 20k-iteration run at the
-                # default `cooling=0.995`) by the time a LATER stage's
-                # move kind first becomes eligible. A newly-introduced
-                # kind whose delta isn't exactly zero (LAYER_ASSIGN's
-                # `layer_count` money step, PLANE_PROMOTE's) then can
-                # NEVER pay its one-time entry cost and is silently
-                # frozen out for the rest of the run — measured directly:
-                # zero LAYER_ASSIGN/PLANE_PROMOTE acceptances over a full
-                # anneal despite thousands of proposals, before this fix.
-                # Reheating to `t0` at each boundary gives every stage's
+                # **Reheat at every schedule-stage boundary.** Without
+                # this, a global exponential cool from `t0` over the WHOLE
+                # `iters` budget is already near-zero (e.g. ~1e-22 x t0 by
+                # 50% of a 20k-iteration run at the default
+                # `cooling=0.995`) by the time a LATER stage's move kind
+                # first becomes eligible. A newly-introduced kind whose
+                # delta isn't exactly zero (LAYER_ASSIGN's `layer_count`
+                # money step, PLANE_PROMOTE's) then can NEVER pay its
+                # one-time entry cost and is silently frozen out for the
+                # rest of the run. Reheating to `t0` at each boundary gives every stage's
                 # newly-eligible move kinds the same fair, explorable
                 # temperature budget the FIRST stage got, while cooling
                 # still proceeds *within* a stage exactly as before — the
@@ -1764,13 +1755,12 @@ def _gen_plane_promote(
     # A plane layer carries ONE net. It is a sheet of copper, and two nets
     # cannot both be it — this is a hard physical constraint, not a
     # preference the annealer may pay for. Without the filter the search
-    # cheerfully promoted nine nets onto two plane layers, which reads as a
-    # legal state everywhere: `net_plane_layer` is per-net so it can
-    # represent the contradiction, and every consumer that maps layer->net
-    # silently keeps the last writer. Measured on seed 3 before this
-    # filter: VBUS, VCC3V3, SDA, SCL, EN, GPIO2, GPIO9, TXD and J1_P7 all
-    # promoted, two pours emitted, and every one of the other seven nets
-    # left as pads and stubs connected to nothing.
+    # cheerfully promoted several nets onto the same handful of plane
+    # layers, which reads as a legal state everywhere: `net_plane_layer`
+    # is per-net so it can represent the contradiction, and every
+    # consumer that maps layer->net silently keeps the last writer,
+    # leaving every other promoted net's pads and stubs connected to
+    # nothing.
     taken = {
         int(ir.net_plane_layer[n])
         for n in range(ir.n_nets)

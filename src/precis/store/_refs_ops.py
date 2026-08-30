@@ -1,35 +1,28 @@
 """Ref-level CRUD + lexical search. Mixin on :class:`precis.store.Store`.
 
-Ref is the hub row in the v2 schema: one row per paper / memory / todo /
-conversation / oracle / .... All domain mixins ultimately touch
-a ref_id; this module owns the ref rows themselves plus the title-level
-lexical search that powers ``search(kind=..., q=...)`` for slug-addressed
-kinds.
+Ref is the hub row in the v2 schema: one row per paper/memory/todo/
+conversation/oracle/.... All domain mixins ultimately touch a ref_id;
+this module owns the ref rows plus the title-level lexical search
+powering ``search(kind=..., q=...)`` for slug-addressed kinds.
 
 v2 schema notes:
 
-- ``refs.id`` was renamed to ``refs.ref_id``; ``_REFS_COLS`` aliases
-  it back to ``id`` so callers' tuple shape stays stable.
-- ``refs.slug`` was removed; slugs live in ``ref_identifiers`` with
-  ``id_kind='cite_key'`` (slug-as-identifier). ``insert_ref`` writes the
-  identifier row when ``slug is not None``; ``get_ref`` /
-  ``fetch_ref_ids_by_slugs`` JOIN through ``ref_identifiers`` for
-  slug lookups.
-- ``refs.corpus_id`` is gone (no corpus table in v2).
-- ``refs.title_tsv`` is gone — ``search_refs_lexical`` /
-  ``count_refs_lexical`` compute the tsv inline. The v2-recommended
-  path for title search is ``chunks.tsv`` on the ``card_title`` chunk;
-  this fallback stays here so callers that don't go through chunks
-  still work, and Phase 3 will switch to the card-chunk variant.
+- ``refs.id`` renamed to ``refs.ref_id``; ``_REFS_COLS`` aliases it back
+  to ``id`` so callers' tuple shape stays stable.
+- ``refs.slug`` removed; slugs live in ``ref_identifiers`` with
+  ``id_kind='cite_key'``. ``insert_ref`` writes the identifier row when
+  ``slug is not None``; ``get_ref``/``fetch_ref_ids_by_slugs`` JOIN
+  through ``ref_identifiers`` for slug lookups.
+- ``refs.corpus_id`` gone (no corpus table in v2).
+- ``refs.title_tsv`` gone — ``search_refs_lexical``/``count_refs_lexical``
+  compute the tsv inline; Phase 3 will switch to ``chunks.tsv`` on the
+  ``card_title`` chunk.
 
-The mixin assumes the concrete Store provides:
-
-* ``self.pool``               — psycopg_pool.ConnectionPool
-* ``self._validate_slug_for_kind(kind, slug, conn=...)`` — schema rule
-
-Mypy-side: both are declared as class-level annotations so the
-mixin type-checks in isolation; at runtime they're resolved by
-MRO against the concrete ``Store``.
+Assumes the concrete Store provides ``self.pool``
+(psycopg_pool.ConnectionPool) and
+``self._validate_slug_for_kind(kind, slug, conn=...)`` — declared as
+class-level annotations so the mixin type-checks in isolation; resolved
+at runtime by MRO against the concrete ``Store``.
 """
 
 from __future__ import annotations
@@ -119,26 +112,19 @@ class RefsMixin:
         prio: int | None = None,
         conn: Connection | None = None,
     ) -> Ref:
-        """Insert a ref. Slug rules:
+        """Insert a ref. Slug rules: slug kinds (paper/book/oracle/conv/
+        skill) require a slug; numeric kinds (todo/memory/gripe/anki)
+        require ``None``. Enforced at app layer (the DB ``CHECK`` can't
+        subquery the ``kinds`` reference table).
 
-        - Slug kinds (paper/book/oracle/conv/skill): slug required.
-        - Numeric kinds (todo/memory/gripe/anki): slug must be None.
+        ``authors``/``year`` are first-class ``refs`` columns; pass them
+        here so bibtex/RIS/EndNote renderers see them — stashing in
+        ``meta`` instead leaves the columns NULL.
 
-        Enforced at app layer (the DB ``CHECK`` can't subquery the
-        ``kinds`` reference table).
-
-        ``authors`` / ``year`` are first-class ``refs`` columns in
-        the v2 schema; pass them here so renderers that read
-        ``Ref.authors`` / ``Ref.year`` (bibtex, RIS, EndNote) see
-        them. Stashing them in ``meta`` instead leaves the columns
-        NULL and the renderer with nothing to show — which was the
-        pre-fix shape and the cause of ~30 test_paper failures.
-
-        v2 inserts in two steps inside the same connection: first the
-        ``refs`` row, then (when ``slug is not None``) a row in
-        ``ref_identifiers`` with ``id_kind='cite_key'``. Both rows
-        commit together — callers pass a shared ``conn`` if they need
-        the pair to participate in an outer transaction.
+        Two-step insert in the same connection: the ``refs`` row, then
+        (when ``slug is not None``) a ``ref_identifiers`` row
+        (``id_kind='cite_key'``). Pass a shared ``conn`` for both to join
+        an outer transaction.
         """
         self._validate_slug_for_kind(kind, slug, conn=conn)
 
@@ -247,15 +233,15 @@ class RefsMixin:
         """Resolve a universal handle to its ref or chunk.
 
         The handle is computed, not stored: its 2-char type code selects a
-        table + kind and the decimal body is the row's primary key. A record
-        code (``me5``) does a ``refs`` PK lookup; a chunk code (``pc10``) a
-        ``chunks`` PK lookup (``chunk_id`` / ``chunk_ord`` set). The decoded
-        kind is validated against the row's actual kind (a typo guard, e.g.
-        ``td5`` must really be a todo). Returns ``None`` for anything that is
-        not a well-formed, live, kind-matching handle, so the caller falls
-        through to legacy id resolution untouched — including the file-backed
-        (``sk``/``py``) and other-table (``tg``) codes, the legacy the draft editable-document model
-        draft ``¶`` chunk handles, plain slugs, and bare numerics.
+        table + kind, the decimal body is the row's PK. A record code
+        (``me5``) does a ``refs`` PK lookup; a chunk code (``pc10``) a
+        ``chunks`` PK lookup (``chunk_id``/``chunk_ord`` set). The decoded
+        kind is validated against the row's actual kind (a typo guard,
+        e.g. ``td5`` must really be a todo). Returns ``None`` for anything
+        not a well-formed, live, kind-matching handle — the caller falls
+        through to legacy id resolution untouched (file-backed
+        ``sk``/``py``, other-table ``tg``, legacy draft ``¶`` chunk
+        handles, plain slugs, bare numerics).
         """
         parsed = handle_registry.parse(handle)
         if parsed is None:
@@ -416,36 +402,27 @@ class RefsMixin:
         """Idempotently find-or-mint a stub paper ref by identifier-collapse.
 
         A *stub* is a ``paper`` ref with no body and ``pdf_sha256 IS
-        NULL``, so the ``fetch_oa`` worker auto-claims it on a later
-        pass when it carries a DOI/arXiv/S2 id. Returns ``(ref_id,
-        created)``.
+        NULL``, so ``fetch_oa`` auto-claims it once it carries a
+        DOI/arXiv/S2 id. Returns ``(ref_id, created)``.
 
-        ``identifiers`` is a list of ``(id_kind, id_value)`` pairs
-        (e.g. ``[("doi", "10.1/x"), ("arxiv", "2401.00001")]``). The
-        method probes ``ref_identifiers`` for any of them first — a hit
-        short-circuits to the existing ref (``created=False``), so
-        re-acquiring an already-held or already-wanted paper is a no-op.
-        On a miss (or when no identifiers are supplied), it mints a
-        ``paper`` ref with a freshly-minted ``cite_key`` slug and
-        ``meta.set_by=<set_by>``, registers every identifier, and
-        returns ``created=True``.
+        ``identifiers`` is ``[(id_kind, id_value), ...]``. Probes
+        ``ref_identifiers`` for any of them first — a hit short-circuits
+        to the existing ref (``created=False``), making re-acquire a
+        no-op. On a miss (or none supplied), mints a ``paper`` ref with a
+        fresh ``cite_key`` slug + ``meta.set_by=<set_by>``, registers
+        every identifier, returns ``created=True``.
 
-        ``s2_meta`` (keyword-only): the mint-time S2 metadata patch — see
-        :func:`~precis.ingest.semantic_scholar.s2_stub_meta` — merged
-        into the initial ``refs.meta`` ONLY when this call mints a NEW
-        ref (``set_by`` wins any key collision, though there is none in
-        practice). A collapse hit onto an EXISTING ref never gets this
-        patch — this is a mint-time convenience, not a retroactive patch
-        path; an existing stub still gets caught by ``stub_rank``'s own
-        enrich pass. Stamping ``s2_meta`` at mint means the freshly-minted
-        stub already carries ``meta.s2_enriched_at``, so ``stub_rank``'s
-        ``_claim_enrich_candidates`` skips it and it's immediately
-        eligible for embedding.
+        ``s2_meta``: the mint-time S2 metadata patch
+        (:func:`~precis.ingest.semantic_scholar.s2_stub_meta`), merged
+        into ``refs.meta`` ONLY on a NEW mint — never retroactive onto a
+        collapse hit (an existing stub is caught by ``stub_rank``'s own
+        enrich pass instead). Stamping it at mint means the stub already
+        carries ``meta.s2_enriched_at``, so ``stub_rank`` skips
+        re-enriching it and it's immediately embedding-eligible.
 
-        Mirrors the chase worker's stub path
-        (``workers/chase._resolve_or_create_stub``) but takes explicit
-        identifier pairs so the gated dream ``acquire`` tool can reuse
-        it (docs/backlog/dreaming.md, §Acquire).
+        Mirrors ``workers/chase._resolve_or_create_stub`` but takes
+        explicit identifier pairs so the gated dream ``acquire`` tool can
+        reuse it (docs/backlog/dreaming.md, §Acquire).
         """
         from precis.identity import make_cite_key, normalize_doi
 
@@ -544,24 +521,22 @@ class RefsMixin:
     def pin_stub_for_fetch(
         self, ref_id: int, *, conn: Connection | None = None
     ) -> bool:
-        """Explicit-request fast lane: put one stub at the head of the fetch queue.
+        """Explicit-request fast lane: put one stub at the head of the
+        fetch queue.
 
-        An *explicit* acquire ("I want this paper") shouldn't wait for
-        ``stub_rank``'s enrich→embed→rank cycle to assign a prio — an
-        unranked (NULL-prio) stub sorts behind every ranked one in
-        ``fetch_oa``'s claim order, so a hand-requested paper could sit
-        behind the whole quest-ranked backlog for hours. This pins
-        ``prio = 1`` with ``meta.prio_by = 'acquire'`` (a provenance
-        ``stub_rank``'s never-clobber guard respects, so the pin survives
-        re-ranks) and stamps ``meta.oa_requeued.at = now()`` — the claim
-        query's backoff bypass (``claim_stubs_to_fetch``) treats a stamp
-        newer than the last fetch attempt as "retry immediately once", so
-        re-acquiring a stub that's deep in exponential backoff still
-        fetches on the next pass.
+        An explicit acquire shouldn't wait for ``stub_rank``'s
+        enrich→embed→rank cycle to assign a prio (an unranked stub sorts
+        behind every ranked one in ``fetch_oa``'s claim order). Pins
+        ``prio=1`` with ``meta.prio_by='acquire'`` (``stub_rank``'s
+        never-clobber guard respects this, so it survives re-ranks) and
+        stamps ``meta.oa_requeued.at=now()`` — ``claim_stubs_to_fetch``'s
+        backoff bypass treats a stamp newer than the last attempt as
+        "retry immediately once", so a stub deep in backoff still fetches
+        next pass.
 
-        Auto-discovered stubs (chase / watch / orcid / draft-import /
-        finding-acquire) deliberately do NOT get this — they flow through
-        ``stub_rank``'s relevance prio. No-ops (returns ``False``) unless
+        Auto-discovered stubs (chase/watch/orcid/draft-import/
+        finding-acquire) deliberately skip this, flowing through
+        ``stub_rank``'s relevance prio instead. No-ops (``False``) unless
         the ref is a live paper stub (``pdf_sha256 IS NULL``).
         """
 
@@ -600,61 +575,41 @@ class RefsMixin:
         """The "papers we still need to get" backlog.
 
         A *stub* is a ``paper`` ref with an external identifier
-        (DOI / arXiv / S2 by default) registered but ``pdf_sha256 IS
-        NULL`` — the chase worker and the dream ``acquire`` tool both
-        mint these so the ``fetch_oa`` worker can auto-grab an OA PDF
-        later. This method surfaces them joined with the latest
-        ``fetcher:%`` attempt per ref, returning one dict per stub with
-        a one-line ``state`` summary an operator (or agent) can scan.
+        (DOI/arXiv/S2 by default) but ``pdf_sha256 IS NULL`` — chase and
+        the dream ``acquire`` tool mint these for ``fetch_oa`` to
+        auto-grab. Joins the latest ``fetcher:%`` attempt per ref, one
+        dict per stub with a one-line ``state`` summary.
 
-        Each row also carries provenance an operator wants when
-        triaging the backlog: ``created_at`` (when the stub was first
-        requested), ``requested_by`` (``meta.set_by`` — the subsystem
-        that minted it: ``dream`` / ``chase`` / ``system`` /
-        ``tex-import``), and ``attempts`` (how many distinct autofetch
-        *passes* have run — one fetch pass writes one ``fetcher:%``
-        event *per cascade leg*, so raw event count over-reports;
-        collapsing to distinct minute-buckets recovers the pass count).
-        ``llm_label`` / ``llm_reason`` surface the ``stub_rank`` pass's
-        Tier-2 LLM band judgment (``meta.llm_label`` /
-        ``meta.llm_reason`` — see ``workers/stub_rank.py``), empty
-        strings when the stub hasn't been through that step (unranked,
-        outside the uncertain band, or the LLM step is disabled).
+        Provenance per row: ``created_at`` (first requested),
+        ``requested_by`` (``meta.set_by`` — ``dream``/``chase``/
+        ``system``/``tex-import``), ``attempts`` (distinct autofetch
+        *passes* — one pass writes one ``fetcher:%`` event per cascade
+        leg, so events are collapsed to minute-buckets to recover pass
+        count). ``llm_label``/``llm_reason`` surface ``stub_rank``'s
+        Tier-2 LLM band judgment (``meta.llm_label``/``meta.llm_reason``),
+        empty when the stub hasn't been through that step.
 
-        ``id_kinds`` narrows the eligible external-identifier kinds
-        (default ``('doi', 'arxiv', 's2')``, matching every prior
-        caller's behavior); validated against the fixed whitelist in
-        :func:`precis.store._stub_predicate.stub_predicate_sql` so it
-        can't become a SQL-injection seam.
+        ``id_kinds`` narrows eligible external-identifier kinds (default
+        ``('doi','arxiv','s2')``), validated against the fixed whitelist
+        in :func:`precis.store._stub_predicate.stub_predicate_sql`
+        (SQL-injection guard).
 
-        ``sort`` picks the ordering within the non-deprioritized bucket —
-        in both modes, ``prio`` (the ``stub_rank`` pass's 1=hottest ..
-        10=coldest ranking, ``NULL`` = unranked) sorts first, ascending
-        with unranked stubs last; ties fall back to:
+        ``sort`` orders the non-deprioritized bucket: ``prio``
+        (``stub_rank``'s 1=hottest..10=coldest, ``NULL``=unranked) sorts
+        first ascending, unranked last; ties break by
+        ``'oldest-request'`` (default: ``created_at ASC, ref_id ASC``) or
+        ``'last-tried'`` (latest fetcher-attempt ASC NULLS FIRST, then
+        ``ref_id`` — powers the DOI-only never-tried chase queue).
 
-        - ``'oldest-request'`` (default) — ``created_at ASC, ref_id
-          ASC``, so the longest-waiting stubs — the ones most overdue
-          for manual intervention — sort to the top. Unchanged from
-          this method's original (pre-``sort=``) behavior.
-        - ``'last-tried'`` — latest fetcher-attempt timestamp ASC with
-          ``NULLS FIRST`` (never-attempted stubs on top), then
-          ``ref_id`` as a stable tie-break. Powers the "DOI-only,
-          never-tried first" chase queue (``view='chase-queue'``).
+        In both modes, stubs marked unreachable via **both**
+        ``OPEN:cant-get-uol``+``OPEN:cant-get-scholar``, or flagged
+        ``OPEN:is-book``, sink to the back — nothing more to auto-try.
 
-        In both modes, stubs the operator has marked unreachable via
-        **both** manual routes (``OPEN:cant-get-uol`` **and**
-        ``OPEN:cant-get-scholar``), or flagged a book
-        (``OPEN:is-book``), sink to the back of the list as the
-        outermost ``ORDER BY`` term — nothing more to auto-try there,
-        so they shouldn't crowd out still-gettable stubs.
-
-        Shared by ``precis stubs`` (CLI) and ``search(view='stubs'
-        | 'chase-queue')`` (MCP) so all render from one query
-        (the stub surfaces; see ``store/_stub_predicate.py``).
-
-        ``awaiting=True`` restricts to rows the fetcher would actually
-        try on its next pass: never attempted, or attempted >24h ago
-        and not yet ``fetch_ok``.
+        Shared by ``precis stubs`` (CLI) and ``search(view='stubs'|
+        'chase-queue')`` (MCP) off one query
+        (``store/_stub_predicate.py``). ``awaiting=True`` restricts to
+        rows the fetcher would try next pass: never attempted, or
+        attempted >24h ago and not yet ``fetch_ok``.
         """
         tiebreak_sql = {
             "oldest-request": "s.created_at ASC, s.ref_id ASC",
@@ -820,32 +775,27 @@ class RefsMixin:
         front of the ``fetch_oa`` queue.
 
         Selects the same universe ``stub_backlog(id_kinds=id_kinds,
-        sort='last-tried')`` would surface at the top — stubs with no
-        ``fetcher:%`` attempt yet, oldest-request-first among those — and
-        stamps each with ``meta.oa_requeued`` plus a ``ref_events`` row
-        (``source='paper_reconcile'``, ``event='oa_requeued'``), mirroring
-        :func:`precis.ingest.paper_hygiene.requeue_stranded_fetches`'s
-        stamping pattern. ``fetch_oa``'s claim query orders
+        sort='last-tried')`` surfaces at the top (no ``fetcher:%`` attempt
+        yet, oldest-request-first), stamps each with ``meta.oa_requeued``
+        + a ``ref_events`` row (``source='paper_reconcile'``,
+        ``event='oa_requeued'``), mirroring
+        :func:`precis.ingest.paper_hygiene.requeue_stranded_fetches`.
+        ``fetch_oa``'s claim query orders
         ``jsonb_exists(r.meta, 'oa_requeued') DESC`` right after ``prio``,
-        so a stamped stub jumps ahead of everything in its prio band
-        (for never-ranked stubs: ahead of the whole unranked backlog).
-        For the harder "front of the entire queue" guarantee an explicit
-        acquire needs, see :meth:`pin_stub_for_fetch`.
+        so a stamped stub jumps ahead within its prio band. For the
+        harder "front of the entire queue" guarantee, see
+        :meth:`pin_stub_for_fetch`.
 
-        ``ref_ids`` narrows selection to that set — the single-paper
-        sibling of the batch "Fetch next N" button
-        (``POST /papers/{ref_id}/fetch-ref``, the Sources/Cited per-row Fetch):
-        pass a one-element list right after minting/reusing a stub so it
-        jumps the queue immediately instead of waiting its unstamped turn.
-        ``id_kinds`` defaults to DOI-only (the batch caller's long-standing
-        behaviour); the single-ref caller widens it to include ``arxiv`` /
-        ``s2`` since a per-row Fetch may only carry an S2 id.
+        ``ref_ids`` narrows selection — the single-paper sibling of the
+        batch button (``POST /papers/{ref_id}/fetch-ref``): pass a
+        one-element list right after minting/reusing a stub so it jumps
+        the queue immediately. ``id_kinds`` defaults to DOI-only (batch
+        behaviour); the single-ref caller widens to ``arxiv``/``s2`` since
+        a per-row Fetch may only carry an S2 id.
 
-        Already-stamped stubs (``r.meta ? 'oa_requeued'``) are excluded
-        from selection, and the per-ref stamp only applies if the flag
-        is still absent at write time — idempotent, so re-clicking
-        "Fetch next N" (or two overlapping requests) can't double-stamp
-        or double-count. Returns the number of stubs newly stamped.
+        Already-stamped stubs are excluded from selection, and the write
+        only applies if the flag is still absent — idempotent against
+        re-clicks/overlapping requests. Returns the count newly stamped.
         """
         extra_clause = " AND r.ref_id = ANY(%s)" if ref_ids is not None else ""
         params: list[Any] = [limit] if ref_ids is None else [ref_ids, limit]
@@ -968,29 +918,15 @@ class RefsMixin:
         return _row_to_ref(row) if row is not None else None
 
     def find_paper_slug_by_doi(self, doi: str) -> str | None:
-        """Look up a paper's slug (cite_key) by its DOI.
-
-        Used by the paper ``get`` entry point so callers can address a
-        paper by its DOI (``10.1111/jnc.13915``) in addition to its
-        minted slug — a convenience for agents that have a bibliography
-        full of DOIs from an external source and haven't yet learned
-        the local slug naming convention.
-
-        Delegates to the generic ``ref_identifiers`` index. arXiv DOIs
-        (the ``10.48550/arXiv.X`` form) automatically resolve through
-        the ``arxiv`` scheme path because
-        :func:`detect_identifier_scheme` recognises that prefix and
-        translates the DOI to the bare arXiv id used as the canonical
-        alias value.
-
-        For non-DOI identifier lookup (bare arXiv id, S2 paperId,
-        PubMed, OpenAlex, pdf_hash) callers should use
+        """Look up a paper's slug (cite_key) by its DOI — lets the paper
+        ``get`` entry point address a paper by DOI in addition to its
+        minted slug. Delegates to the generic ``ref_identifiers`` index.
+        arXiv DOIs (``10.48550/arXiv.X``) resolve through the ``arxiv``
+        scheme path (:func:`detect_identifier_scheme` translates to the
+        bare arXiv id). For non-DOI lookup (arXiv id, S2 paperId, PubMed,
+        OpenAlex, pdf_hash), use
         :meth:`IdentifiersMixin.find_paper_ref_by_identifier` directly.
-
-        Returns ``None`` when no live paper carries this DOI; the
-        caller decides whether that's an error (agent-facing) or a
-        fall-through (internal dedupe already has its own path).
-        """
+        ``None`` when no live paper carries this DOI."""
         ref_id = self.find_paper_ref_by_identifier(doi)  # type: ignore[attr-defined]
         if ref_id is None:
             return None
@@ -1046,24 +982,12 @@ class RefsMixin:
         *,
         include_deleted: bool = True,
     ) -> dict[int, Ref]:
-        """Bulk-fetch refs by id, returning ``{id: Ref}``.
-
-        Used by callers that have a set of ``ref_id`` integers and
-        need the full :class:`Ref` row for each — most commonly the
-        link-endpoint resolver in :class:`NumericRefHandler`, which
-        used to reach into ``self.store.pool`` with its own raw
-        ``SELECT`` (a handler/schema layering break flagged by the
-        MCP critic).
-
-        ``include_deleted`` defaults to ``True`` because the primary
-        caller (link rendering) wants to show a soft-deleted endpoint
-        with a deletion marker rather than silently dropping the row.
-        Pass ``False`` to filter tombstones out.
-
-        Missing ids are simply absent from the returned dict — the
-        caller decides whether that's an error or an ``<unknown>``
-        placeholder.
-        """
+        """Bulk-fetch refs by id, ``{id: Ref}``. Used by callers needing
+        the full :class:`Ref` for a set of ids — most commonly
+        :class:`NumericRefHandler`'s link-endpoint resolver.
+        ``include_deleted`` defaults ``True`` (link rendering wants to
+        show a soft-deleted endpoint with a deletion marker); pass
+        ``False`` to filter tombstones. Missing ids are simply absent."""
         ids = list(ref_ids)
         if not ids:
             return {}
@@ -1100,14 +1024,11 @@ class RefsMixin:
                 c.execute(sql, (prio, ref_id))
 
     def find_ref_by_meta(self, *, kind: str, key: str, value: str) -> Ref | None:
-        """Newest live ref of ``kind`` whose ``meta->>key`` equals ``value``.
-
-        A narrow lookup by a scalar ``meta`` field — the ``llm`` catalog
-        resolves a model slug (``get(kind='llm', id='claude-opus-4-8')``) to its
-        card this way (``key='model_id'``), robust to tag-charset limits that a
-        ``model:<slug>`` tag would hit for hosted-OSS ids (slashes, case). Returns
-        ``None`` when nothing matches.
-        """
+        """Newest live ref of ``kind`` whose ``meta->>key`` equals
+        ``value``. A narrow scalar-``meta`` lookup — the ``llm`` catalog
+        resolves a model slug this way (``key='model_id'``), robust to
+        tag-charset limits a ``model:<slug>`` tag would hit (slashes,
+        case). ``None`` when nothing matches."""
         sql = (
             f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
             "WHERE r.kind = %s AND r.deleted_at IS NULL "
@@ -1126,15 +1047,11 @@ class RefsMixin:
         conn: Connection | None = None,
     ) -> None:
         """Re-point ``refs.parent_id`` (the todo-tree move operation).
-
-        ``new_parent_id=None`` detaches the ref to a root. The
-        self-referencing FK (migration 0013, ``ON DELETE SET NULL``)
-        permits any target the row exists for; the cycle/depth/level
-        guards that make a move *safe* live in
-        :mod:`precis.handlers._todo_guards` and run at the handler
-        boundary before this is called. This method is the bare
-        column write so the guards stay the single source of truth.
-        """
+        ``new_parent_id=None`` detaches to a root. The self-referencing
+        FK (migration 0013, ``ON DELETE SET NULL``) permits any existing
+        target; cycle/depth/level guards making a move *safe* live in
+        :mod:`precis.handlers._todo_guards` and run before this is
+        called — this is the bare column write."""
         sql = (
             "UPDATE refs SET parent_id = %s, updated_at = now() "
             "WHERE ref_id = %s AND deleted_at IS NULL"
@@ -1186,17 +1103,12 @@ class RefsMixin:
         return [int(r[0]) for r in rows]
 
     def locked_ref_ids(self, ref_ids: list[int]) -> set[int]:
-        """Return the subset of ``ref_ids`` currently row-locked.
-
-        Used by the web Tasks tab to flag "locked right now" nodes —
-        e.g. a ``kind='job'`` ref a worker holds ``FOR UPDATE`` during
-        its claim window. Implemented as a ``SELECT … FOR UPDATE SKIP
-        LOCKED`` diff: rows another transaction holds are *skipped*, so
-        the ids we fail to re-select are exactly the locked ones. We
-        ``rollback()`` immediately so the brief locks we take on the
-        free rows are released before returning — this is a read-only
-        probe, never a real claim.
-        """
+        """Subset of ``ref_ids`` currently row-locked. Used by the web
+        Tasks tab to flag "locked right now" nodes (e.g. a ``job`` ref a
+        worker holds ``FOR UPDATE``). Implemented as a ``SELECT … FOR
+        UPDATE SKIP LOCKED`` diff: locked rows are skipped, so the ids
+        we fail to re-select are exactly the locked ones. Rolls back
+        immediately — a read-only probe, never a real claim."""
         if not ref_ids:
             return set()
         with self.pool.connection() as conn:
@@ -1264,22 +1176,17 @@ class RefsMixin:
         conn: Connection | None = None,
     ) -> Ref:
         """Patch a paper's first-class metadata columns + merge ``meta``.
+        COALESCE semantics: ``None`` leaves a column untouched.
+        ``meta_patch`` is a top-level merge (``meta || patch``) for
+        ``abstract`` and other meta-resident fields. ``authors`` is
+        stored verbatim as JSONB — canonicalise first
+        (:func:`precis.utils.authors.normalize_authors`) so the column
+        converges on ``{given, family}``/``{name}``.
 
-        COALESCE semantics: a ``None`` argument leaves that column
-        untouched; pass an explicit value to overwrite. ``meta_patch``
-        is a top-level merge (``meta || patch``) used for ``abstract``
-        and other meta-resident fields. ``authors`` is stored verbatim
-        as JSONB — canonicalise *before* calling (see
-        :func:`precis.utils.authors.normalize_authors`) so the column
-        converges on the canonical ``{given, family}`` / ``{name}``
-        shape.
-
-        Unlike :meth:`update_ref` (title + meta only), this is the sole
-        write path for the ``year`` / ``authors`` columns, which were
-        otherwise set only at ingest. Logs a ``metadata_edited``
-        ref_event carrying the changed keys so the edit is auditable /
-        recoverable via ``view='log'``.
-        """
+        Unlike :meth:`update_ref` (title+meta only), this is the sole
+        write path for ``year``/``authors``, otherwise set only at
+        ingest. Logs a ``metadata_edited`` ref_event with the changed
+        keys for ``view='log'`` auditability."""
         changed: list[str] = []
         if title is not None:
             changed.append("title")
@@ -1341,24 +1248,17 @@ class RefsMixin:
         conn: Connection | None = None,
         propagate_to_findings: bool = True,
     ) -> int:
-        """Set the retraction columns on a ref + touch retraction_checked_at.
+        """Set the retraction columns on a ref + touch
+        ``retraction_checked_at``. ``status`` is ``'retracted'``/
+        ``'corrected'``/``'expression_of_concern'`` (CHECK constraint,
+        ``0001_initial.sql``) or ``None`` when clean — still touches
+        ``retraction_checked_at`` so the TTL gate works (caller:
+        ``ingest/provenance.py``).
 
-        ``status`` is one of ``'retracted'``, ``'corrected'``,
-        ``'expression_of_concern'`` (per the CHECK constraint in
-        ``0001_initial.sql``) or ``None`` when the paper is clean —
-        in which case we still touch ``retraction_checked_at`` so the
-        TTL gate works. See ``ingest/provenance.py`` for the caller;
-        the ``refs.retraction_*`` columns predate the kind (0001).
-
-        Returns the number of findings whose chain was re-graded
-        as a side effect (0 when ``status`` is None or no finding
-        cites this ref).
-
-        ``propagate_to_findings`` (default True) triggers the
-        chase re-grading sweep — see
-        :meth:`_propagate_retraction_to_findings`. Set False on
-        bulk retraction backfills that have their own propagation
-        path; the default keeps findings honest by default.
+        Returns the number of findings re-graded as a side effect (0 if
+        ``status`` is None or none cite this ref). ``propagate_to_findings``
+        (default True) triggers :meth:`_propagate_retraction_to_findings`;
+        set False on bulk backfills with their own propagation path.
         """
         sql = (
             "UPDATE refs SET "
@@ -1389,19 +1289,15 @@ class RefsMixin:
     def touch_retraction_checked(
         self, ref_id: int, *, conn: Connection | None = None
     ) -> None:
-        """Record that we asked upstream about ``ref_id`` and it came back clean.
-
-        Deliberately narrower than :meth:`set_retraction_status` with
-        ``status=None``, which *rewrites* the status columns and so would
-        silently clear a flag some other source already found: Crossref
-        knows nothing about a Retraction-Watch-only notice, so a
-        Crossref-clean read must never un-retract a paper. This moves
-        ``retraction_checked_at`` forward and nothing else, which is all
-        the TTL gate in ``ingest/provenance.py`` needs.
-
-        ``updated_at`` is deliberately left alone — "we looked again and
-        nothing had changed" is not a change to the ref.
-        """
+        """Record that we asked upstream about ``ref_id`` and it came
+        back clean. Narrower than :meth:`set_retraction_status` with
+        ``status=None``, which *rewrites* the status columns and would
+        silently clear a flag some other source found — Crossref knows
+        nothing of a Retraction-Watch-only notice, so a Crossref-clean
+        read must never un-retract. Moves only ``retraction_checked_at``
+        forward, all the TTL gate in ``ingest/provenance.py`` needs.
+        ``updated_at`` untouched — "looked again, nothing changed" isn't
+        a ref change."""
         sql = (
             "UPDATE refs SET retraction_checked_at = now() "
             "WHERE ref_id = %s AND deleted_at IS NULL"
@@ -1434,16 +1330,12 @@ class RefsMixin:
         self, ref_id: int, *, status: str, conn: Connection | None = None
     ) -> None:
         """Stamp ``doi_status``/``doi_validated_at`` after a network DOI
-        validity check (:func:`precis.ingest.provenance.check_ref_doi_validity`).
-
-        ``status`` is ``'valid'`` or ``'not_found'`` (the
-        ``refs_doi_status_check`` constraint, migration 0132). Unlike
-        :meth:`set_retraction_status`, there is no second source (no
-        Retraction-Watch equivalent) whose knowledge a clean Crossref read
-        could clobber — a resolves/doesn't-resolve answer is the whole
-        picture — so status and timestamp are always written together,
-        with no separate "touch only" variant.
-        """
+        check (:func:`precis.ingest.provenance.check_ref_doi_validity`).
+        ``status`` is ``'valid'``/``'not_found'`` (``refs_doi_status_check``,
+        migration 0132). Unlike :meth:`set_retraction_status`, there's no
+        second source to clobber — resolves/doesn't-resolve is the whole
+        picture — so status+timestamp always write together, no separate
+        "touch only" variant."""
         sql = (
             "UPDATE refs SET doi_status = %s, doi_validated_at = now() "
             "WHERE ref_id = %s AND deleted_at IS NULL"
@@ -1463,24 +1355,17 @@ class RefsMixin:
     ) -> int:
         """Re-grade every finding whose chain cites the retracted ref.
 
-        When a paper goes retracted, any finding that walked through
-        it has a tainted citation chain — the previously-resolved
-        primary_cite_key was reached via a now-untrustworthy hop.
-        We restore those findings to ``STATUS:tracing`` so the chase
-        worker re-walks the chain on the next pass, clear the
-        ``human_verified_at`` stamp (a prior human review can't
-        cover a chain that's since shifted), and append a
-        ``retraction_caveat`` entry to ``meta`` so the next reader
-        sees what changed.
+        A finding that walked through a now-retracted paper has a
+        tainted citation chain, so this restores it to ``STATUS:tracing``
+        (chase re-walks next pass), clears ``human_verified_at`` (a prior
+        review can't cover a shifted chain), and appends a
+        ``retraction_caveat`` to ``meta``.
 
-        Findings are matched by membership in ``meta.chain`` —
-        every hop the chase added carries the visited ``ref_id``.
-        Soft-deleted findings are skipped.
-
-        Returns the number of findings re-graded. An emitted
-        ``ref_events`` row (``source='retraction_propagation'``)
-        per affected finding makes the trail auditable from
-        ``view='log'``.
+        Matched by membership in ``meta.chain`` (every chase hop carries
+        its visited ``ref_id``); soft-deleted findings skipped. Returns
+        the count re-graded; emits a ``ref_events`` row
+        (``source='retraction_propagation'``) per finding for
+        ``view='log'`` auditability.
         """
         # ``meta @> '{"chain": [{"ref_id": N}]}'::jsonb`` would be
         # ideal but pg's JSON containment doesn't match nested
@@ -1572,20 +1457,13 @@ class RefsMixin:
         note: str | None = None,
         conn: Connection | None = None,
     ) -> None:
-        """Stamp ``human_verified_at`` / ``_by`` / ``_note`` on a ref.
-
-        Sets ``human_verified_at = now()`` and records the verifier
-        identity + optional note. Idempotent on re-stamp (refreshes
-        the timestamp and overwrites note).
-
-        Used by ``precis verify <pub_id>`` to mark a finding's chain
-        as human-checked; ``precis resolve --strict-verified`` gates
-        substitution on this column being non-NULL.
-
-        The schema reserves these columns on every ref (not just
-        findings) — papers, memories, etc. can carry verification
-        too — but the only writer today is the finding-verify path.
-        """
+        """Stamp ``human_verified_at``/``_by``/``_note`` on a ref. Sets
+        ``human_verified_at=now()`` + verifier identity + optional note.
+        Idempotent on re-stamp. Used by ``precis verify <pub_id>`` to
+        mark a finding's chain human-checked; ``precis resolve
+        --strict-verified`` gates substitution on this being non-NULL.
+        Reserved on every ref kind, but the only writer today is the
+        finding-verify path."""
         sql = (
             "UPDATE refs SET "
             "  human_verified_at   = now(), "
@@ -1641,18 +1519,13 @@ class RefsMixin:
         conn: Connection | None = None,
     ) -> str | None:
         """In-place rewrite of a numeric-ref kind's body (``refs.title``).
-
-        Updates the body, bumps ``updated_at``, and writes a
-        ``body_replaced`` row to ``ref_events`` with the old body as
-        payload — so ``view='log'`` surfaces the rewrite history.
-        Returns the old text (for callers that want to render a diff
-        or re-embed the survivor's card chunk).
-
-        Distinct from ``supersede``: same id stays, links stay attached,
-        no consolidation. The "polish a thought" verb. Broad-pass
-        finding #5 — agents had no way to fix wording without
-        delete + re-put, which breaks every inbound edge.
-        """
+        Updates, bumps ``updated_at``, writes a ``body_replaced``
+        ``ref_events`` row with the old body (so ``view='log'`` shows the
+        rewrite history). Returns the old text (diff/re-embed callers).
+        Distinct from ``supersede``: same id, links stay attached, no
+        consolidation — the "polish a thought" verb, letting agents fix
+        wording without a delete+re-put that would break every inbound
+        edge."""
 
         def _do(c: Connection) -> str | None:
             row = c.execute(
@@ -1714,16 +1587,12 @@ class RefsMixin:
         *,
         conn: Connection | None = None,
     ) -> bool:
-        """Undo a soft-delete by clearing ``deleted_at`` — the inverse of
-        :meth:`soft_delete_ref`.
-
-        Returns ``True`` when a soft-deleted row was restored, ``False`` when
-        the ref is absent or already live (idempotent — a double-undelete is
-        a no-op, not an error). The ``WHERE deleted_at IS NOT NULL`` guard
-        means only a currently-deleted ref is touched; the ref's body chunks
-        and links were never removed by the soft-delete, so clearing the flag
-        brings the whole ref back.
-        """
+        """Undo a soft-delete by clearing ``deleted_at`` — inverse of
+        :meth:`soft_delete_ref`. Returns ``True`` if a soft-deleted row
+        was restored, ``False`` if absent or already live (idempotent).
+        The ``WHERE deleted_at IS NOT NULL`` guard touches only a
+        currently-deleted ref; body chunks/links were never removed by
+        the soft-delete, so clearing the flag brings the whole ref back."""
         sql = (
             "UPDATE refs SET deleted_at = NULL, updated_at = now() "
             "WHERE ref_id = %s AND deleted_at IS NOT NULL"
@@ -1737,20 +1606,18 @@ class RefsMixin:
 
     def soft_delete_todo_subtree(self, ref_id: int) -> int:
         """Soft-delete a todo and every live ``kind='todo'`` descendant.
-
         Cascading form of :meth:`soft_delete_ref` for the scheduling
-        tree. A live child left under a deleted parent is *stranded
-        debris*: the nursery orphan walk requires a live parent chain,
-        so it evades the orphan detector while still surfacing as a
-        stuck-doable leaf forever (2026-08-11 prod wipe found 401 such
-        rows). Non-todo children (``job`` execution records, review
-        ``finding`` rows) keep their own lifecycles and are left alone.
+        tree — a live child left under a deleted parent is *stranded
+        debris* (the nursery orphan walk needs a live parent chain, so it
+        evades detection while surfacing as a stuck-doable leaf forever;
+        2026-08-11 prod wipe found 401 such rows). Non-todo children
+        (``job``, review ``finding``) keep their own lifecycles, left
+        alone.
 
-        Returns the number of *descendants* deleted (excluding the
-        root); raises ``NotFound`` when the root todo is missing or
-        already deleted — descendants of an already-deleted root are
-        still swept first, so a retry after a half-failure converges.
-        """
+        Returns descendants deleted (excluding root); raises
+        ``NotFound`` when the root is missing/already deleted —
+        descendants of an already-deleted root are swept first, so a
+        retry after a half-failure converges."""
         sql = (
             "WITH RECURSIVE sub AS ("
             "  SELECT r.ref_id FROM refs r"
@@ -1776,20 +1643,14 @@ class RefsMixin:
         auto_refresh_days: int | None = None,
         conn: Connection | None = None,
     ) -> None:
-        """Mark a ref as freshly relevant (migration 0011 / Model A).
-
-        Bumps ``refreshed_at = now()`` so the decay weight returns to
-        1.0 for the configured ``auto_refresh_days`` window. When
-        ``auto_refresh_days`` is also passed, the ref's window is
-        updated alongside — so ``touch(ref, auto_refresh_days=90)``
-        both refreshes and extends.
-
-        Raises :class:`NotFound` if the ref is missing or soft-deleted.
-        Calling ``touch`` on a ref that has ``auto_refresh_days IS NULL``
-        and you don't pass the kwarg leaves the ref durable and just
-        bumps ``refreshed_at`` (harmless; effectively a no-op for
-        ranking since durable refs ignore the timestamp).
-        """
+        """Mark a ref as freshly relevant (migration 0011/Model A). Bumps
+        ``refreshed_at=now()`` so the decay weight returns to 1.0 for the
+        ``auto_refresh_days`` window; passing ``auto_refresh_days`` also
+        updates that window (``touch(ref, auto_refresh_days=90)``
+        refreshes and extends). Raises :class:`NotFound` if the ref is
+        missing/soft-deleted. On a durable ref (``auto_refresh_days IS
+        NULL``) with no kwarg, this is harmless — durable refs ignore the
+        timestamp for ranking."""
         if auto_refresh_days is not None:
             sql = (
                 "UPDATE refs SET refreshed_at = now(), "
@@ -1834,12 +1695,11 @@ class RefsMixin:
 
     def kind_for_slug(self, slug: str) -> str | None:
         """The kind of the **unique** live ref whose ``cite_key`` is
-        ``slug`` — or ``None`` when no ref matches, or more than one kind
+        ``slug``, or ``None`` when no ref matches or more than one kind
         does. Used by the dispatcher to self-identify a slug-addressed id
-        (``get(id='wu22c~312')`` → the paper that owns ``wu22c``) without a
-        ``kind=``. Returning ``None`` on ambiguity means an ambiguous slug
-        is never silently mis-routed — the caller falls back to the normal
-        missing-kind error. One indexed lookup on ``ref_identifiers``."""
+        (``get(id='wu22c~312')``) without a ``kind=`` — ``None`` on
+        ambiguity means an ambiguous slug is never silently mis-routed.
+        One indexed lookup on ``ref_identifiers``."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT r.kind FROM ref_identifiers ri "
@@ -1851,23 +1711,13 @@ class RefsMixin:
         return str(rows[0][0]) if len(rows) == 1 else None
 
     def most_recent_kind(self, *, kinds: list[str] | None = None) -> str | None:
-        """Return the kind of the most recently updated live ref.
-
-        ``kinds=`` restricts the lookup to a whitelist (typically the
-        kinds whose handlers support ``search``); ``None`` means "any
-        kind". Returns ``None`` when the corpus is empty (or no live
-        ref matches the whitelist).
-
-        Used by the runtime dispatcher to default ``kind=`` for
-        ``search()`` calls that omit it. Picking the most recently
-        touched kind biases the default toward what the agent has
-        been working with — the right behaviour when a 7B caller
-        forgets the kwarg ("forgetting kind= is a real risk for
-        small models", per the MCP critic's deferred suggestion).
-
-        Cheap: a single indexed query against ``refs.updated_at``.
-        Returns the kind string from the highest-updated row.
-        """
+        """The kind of the most recently updated live ref. ``kinds=``
+        restricts to a whitelist (``None`` = any); ``None`` returned if
+        the corpus/whitelist match is empty. Used by the runtime
+        dispatcher to default ``kind=`` for a ``search()`` call that
+        omits it — biases toward what the agent's been working with (a
+        7B caller forgetting ``kind=`` is a real risk). One indexed
+        query against ``refs.updated_at``."""
         clauses = ["deleted_at IS NULL"]
         params: list[Any] = []
         if kinds is not None:
@@ -1932,19 +1782,13 @@ class RefsMixin:
         offset: int = 0,
     ) -> list[Ref]:
         """Paginated list of live refs, filter by kind/provider/tags.
-
-        ``order_by`` is one of :attr:`_LIST_ORDER_BY`'s keys
-        (default ``updated_desc``); an unknown key falls back to
-        ``updated_desc`` rather than erroring, so a stale client
-        bookmark can't 500 the list.
-
-        ``has_pdf`` / ``has_chunks`` are tri-state presence filters
-        (``None`` = don't filter). ``has_pdf`` keys off
-        ``refs.pdf_sha256``; ``has_chunks`` off the existence of any
-        body chunk (``ord >= 0``). Both back the Papers tab's "only
-        ingested / only with PDF" toggles. ``has_schedule`` filters on
-        ``meta ? 'schedule'`` — the §M facet normalization's "recurring"
-        predicate (replaces the old ``level:recurring`` tag).
+        ``order_by`` is one of :attr:`_LIST_ORDER_BY`'s keys (default
+        ``updated_desc``); an unknown key falls back rather than erroring
+        (a stale client bookmark can't 500). ``has_pdf``/``has_chunks``
+        are tri-state presence filters (``None``=don't filter) keying off
+        ``refs.pdf_sha256``/body-chunk existence — back the Papers tab's
+        ingested/PDF toggles. ``has_schedule`` filters on
+        ``meta ? 'schedule'`` (replaces the old ``level:recurring`` tag).
         """
         # Aliased as ``r`` so the tag-filter helper can reference
         # ``r.ref_id`` uniformly across all store query shapes.
@@ -2009,33 +1853,24 @@ class RefsMixin:
         ref_ids: list[int] | None,
         deleted: bool,
     ) -> tuple[list[str], list[Any]]:
-        """The shared WHERE clause + params for the ``/drive`` browse — one
-        builder feeding both :meth:`recent_refs` (the page) and
-        :meth:`count_recent_refs` (its exact total), so the list and its
-        "of N" denominator can never filter differently.
+        """Shared WHERE clause + params for the ``/drive`` browse — one
+        builder feeds both :meth:`recent_refs` (page) and
+        :meth:`count_recent_refs` (exact total) so they can't filter
+        differently.
 
-        ``has_external_id`` filters on the presence of a fetchable external
-        identifier (the shared :func:`fetchable_id_exists_sql` test over
-        :data:`STUB_ID_KINDS` — doi/arxiv/s2) — ``True`` keeps only refs that
-        carry one. It's what makes the
-        ``/drive`` "Stubs (to get)" queue (``has_pdf=False`` +
-        ``has_external_id=True``) match the canonical stub definition shared by
-        :meth:`stub_backlog` (MCP ``search(view='stubs')`` / ``precis stubs``):
-        a PDF-less paper with no DOI/arXiv/S2 isn't fetchable, so it isn't a
-        stub and shouldn't crowd the download queue (its row carries no
-        download link at all).
+        ``has_external_id`` filters on a fetchable external id
+        (:func:`fetchable_id_exists_sql` over :data:`STUB_ID_KINDS` —
+        doi/arxiv/s2): ``True`` keeps only refs carrying one, matching
+        :meth:`stub_backlog`'s stub definition (a PDF-less paper with no
+        DOI/arXiv/S2 isn't fetchable, so it shouldn't crowd the download
+        queue).
 
-        ``has_schedule`` filters on ``meta ? 'schedule'`` — the §M facet
-        normalization's "recurring" predicate (replaces the old
-        ``level:recurring`` tag; the ``/drive`` "Schedules" preset uses
-        this instead of a tag filter now that the tag is retired).
-        ``unfiled_only`` keeps only refs with no folder (``parent_id IS
-        NULL``) — the default top-level view, so a filed artifact drops out
-        of the main list and lives only inside its folder (still findable via
-        search, which ignores folders). It is mutually exclusive with
-        ``parent_id`` (``parent_id`` wins if both are set); a source kind
-        never carries a parent, so ``unfiled_only`` only ever hides filed
-        *artifacts*.
+        ``has_schedule`` filters on ``meta ? 'schedule'`` (replaces the
+        old ``level:recurring`` tag). ``unfiled_only`` keeps refs with no
+        folder (``parent_id IS NULL`` — the default top-level view;
+        mutually exclusive with ``parent_id``, which wins if both set; a
+        source kind never carries a parent, so this only ever hides filed
+        *artifacts*).
         """
         clauses = [
             "r.kind = ANY(%s)",
@@ -2095,50 +1930,38 @@ class RefsMixin:
         limit: int = 30,
         offset: int = 0,
     ) -> list[Ref]:
-        """Most-recently-*edited* refs across a *set* of kinds, newest first.
-        Backs the ``/drive`` default "recent things" browse (the no-query
-        landing); ordered by ``updated_at`` (not ``created_at``) so an edited
-        artifact — a re-worked draft — bubbles back to the top. ``updated_at``
-        bumps on genuine content changes (body/title/move/meta edits), *not*
-        on tag/flag writes or background embedding/summary fills, so the order
-        tracks real edits without churn. ``tags`` narrows it to refs carrying
-        all of them (the tag-filter chips with no search query).
-        ``has_pdf=False`` keeps only stubs (``pdf_sha256 IS NULL`` — the
-        "papers to get" filter); ``True`` keeps only those with a PDF.
-        ``has_external_id=True`` further keeps only refs carrying a fetchable
-        identifier (DOI / arXiv / S2) — the ``/drive`` "Stubs (to get)" queue
-        pairs it with ``has_pdf=False`` so id-less (non-fetchable) papers don't
-        crowd the download queue, matching :meth:`stub_backlog`'s definition.
-        ``has_chunks`` filters on the presence of at least one body chunk
-        (``ord >= 0``) — ``True`` keeps only ingested refs, ``False`` only
-        chunk-less ones (the "chunked"/"unchunked" state facet). ``parent_id``
-        narrows to one folder's *direct* children (the ``/drive`` folder facet
-        — same non-recursive semantics as the folder-tree sidebar).
-        ``unfiled_only`` keeps only refs with no folder (the default top-level
-        view — a filed artifact drops out of the main list; mutually exclusive
-        with ``parent_id``). ``ref_ids`` restricts to an explicit id allow-list
-        (the ``/drive?cited_by=<draft>`` scope — a draft's papers-to-fetch
-        set): ``None`` means no restriction, an **empty list** means restrict
-        to nothing (returns ``[]``, so a draft with an empty worklist shows an
-        empty queue rather than the whole corpus). ``deleted=True`` flips the
-        polarity to soft-deleted refs only (the "show deleted" toggle — a
-        lightweight trash view; no undelete surface yet, just visibility).
-        ``oldest=True`` reverses the order to least-recently-edited first (the
-        ``sort=oldest`` facet). ``untried=True`` overrides ``oldest`` with the
-        Drive downloads queue's ``sort=untried`` order: never-manually-opened
-        refs first (freshest-added within that group), then previously-opened
-        refs oldest-attempt-first — a ``LEFT JOIN`` against the last
-        ``ref_events`` row per ref with ``source='manual:open'`` (written by
-        ``POST /downloads/mark-tried``, ``routes/drive.py``'s "Open all
-        downloads" button). ``downloadable_first=True`` prepends a ranking
-        term (applied under any sort) that floats rows carrying a *hand-
-        downloadable* id — DOI/arXiv, the ones item_view renders a LibKey/arXiv
-        PDF link for — ahead of the rest; the "Stubs (to get)" queue sets it so
-        S2-only stubs (fetchable by the OA worker but with no clickable PDF)
-        sink to the tail instead of burying openable rows under a fresh S2-heavy
-        import. It reorders only — the row set (and ``count_recent_refs``) is
-        unchanged. Kinds with no rows simply don't appear; an empty
-        ``kinds`` returns nothing. ``offset`` pages past the first window.
+        """Most-recently-*edited* refs across a *set* of kinds, newest
+        first. Backs the ``/drive`` no-query landing; ordered by
+        ``updated_at`` (not ``created_at``) so a re-worked artifact
+        bubbles up — ``updated_at`` bumps only on genuine content
+        changes (body/title/move/meta), not tag/flag writes or
+        background embed/summary fills.
+
+        ``tags`` narrows to refs carrying all of them. ``has_pdf=False``
+        keeps stubs (``pdf_sha256 IS NULL``); ``True`` keeps only refs
+        with a PDF. ``has_external_id=True`` further keeps refs with a
+        fetchable id (DOI/arXiv/S2) — paired with ``has_pdf=False`` for
+        the "Stubs (to get)" queue, matching :meth:`stub_backlog`'s
+        definition. ``has_chunks`` filters on ≥1 body chunk (chunked
+        vs unchunked facet). ``parent_id`` narrows to one folder's
+        *direct* children; ``unfiled_only`` keeps refs with no folder
+        (default top-level view, mutually exclusive with ``parent_id``).
+
+        ``ref_ids`` restricts to an explicit allow-list (the
+        ``/drive?cited_by=<draft>`` scope): ``None``=no restriction,
+        **empty list**=restrict to nothing (``[]``, not the whole
+        corpus). ``deleted=True`` flips to soft-deleted-only (trash
+        view, no undelete surface). ``oldest=True`` reverses order.
+        ``untried=True`` overrides ``oldest`` with the downloads queue's
+        order: never-manually-opened first, then oldest-attempt-first —
+        a ``LEFT JOIN`` on the last ``source='manual:open'``
+        ``ref_events`` row (written by "Open all downloads").
+        ``downloadable_first=True`` floats rows with a hand-downloadable
+        id (DOI/arXiv) ahead of the rest under any sort, so S2-only
+        stubs (fetchable but no clickable PDF) sink to the tail —
+        reorders only, row set (and :meth:`count_recent_refs`) unchanged.
+        Empty ``kinds`` returns nothing; ``offset`` pages past the first
+        window.
         """
         if not kinds or (ref_ids is not None and not ref_ids):
             return []
@@ -2213,10 +2036,9 @@ class RefsMixin:
         deleted: bool = False,
     ) -> int:
         """Exact total for the ``/drive`` no-query browse — the "of N"
-        denominator + last-page target for the pager. Applies the identical
-        filter set as :meth:`recent_refs` (same ``_recent_refs_where``
-        builder), so the count and the page it denominates never diverge. An
-        empty ``kinds``, or an empty ``ref_ids`` allow-list, counts zero."""
+        denominator, via the same ``_recent_refs_where`` filter as
+        :meth:`recent_refs` so count and page never diverge. Empty
+        ``kinds`` or ``ref_ids`` counts zero."""
         if not kinds or (ref_ids is not None and not ref_ids):
             return 0
         clauses, params = self._recent_refs_where(
@@ -2304,20 +2126,13 @@ class RefsMixin:
         exclude_ref_ids: list[int] | None = None,
     ) -> list[tuple[int, float]]:
         """Refs of ``kind`` whose *title* is trigram-similar to ``q``.
-
         Backs the search title-introducer: Postgres FTS strips a query
-        like ``attention is all you need`` down to ``'attent' & 'need'``
-        (stop-words gone), so the exact-title paper's short card loses on
-        ``ts_rank`` to every content-dense body that mentions those words
-        and never reaches the first page. A trigram match on the raw
-        title catches the case the lexical leg drops. Returns
-        ``(ref_id, similarity)`` pairs above ``min_similarity``, best
-        first; the high default bar means only a near-title query fires
-        it (no false promotion on an ordinary keyword search).
-
-        ``pg_trgm`` is enabled in the baseline schema (GIN trigram
-        indexes already back the slug/title lookups).
-        """
+        like "attention is all you need" to ``'attent' & 'need'``, so the
+        exact-title paper loses ``ts_rank`` to content-dense bodies
+        mentioning those words — a trigram match on the raw title
+        catches what the lexical leg drops. Returns ``(ref_id,
+        similarity)`` above ``min_similarity``, best first; the high
+        default bar means only a near-title query fires it."""
         clauses = [
             "r.deleted_at IS NULL",
             "r.kind = %s",
@@ -2348,21 +2163,13 @@ class RefsMixin:
         exclude_ref_ids: list[int] | None = None,
     ) -> list[int]:
         """Paper-level title lookup — ``search(kind='paper', title=…)``.
-
-        Fuses two title matchers so both an exact/near-exact title and a
-        partial-title query land the paper's own *record* (not a body
-        block of some other paper that merely repeats the words):
-
-        * ``pg_trgm similarity(r.title, q) >= 0.3`` — catches the whole
-          raw title regardless of FTS stop-word stripping (the failure
-          mode that buries a title query on the block path).
-        * ``to_tsvector('english', r.title) @@ websearch_to_tsquery`` —
-          catches a partial title / a few distinctive words.
-
-        Held papers (``pdf_sha256 IS NOT NULL``) sort first so a held
-        copy outranks an authorless request stub of the same title, then
-        by descending title similarity. Returns ``ref_id`` in rank order.
-        """
+        Fuses two matchers so an exact/near-exact or partial title lands
+        the paper's own *record*, not a body block that merely repeats
+        the words: ``pg_trgm similarity(r.title, q) >= 0.3`` (whole raw
+        title, immune to FTS stop-word stripping) OR
+        ``to_tsvector('english', r.title) @@ websearch_to_tsquery``
+        (partial title). Held papers (``pdf_sha256 IS NOT NULL``) sort
+        first, then by similarity. Returns ``ref_id`` in rank order."""
         clauses = [
             "r.deleted_at IS NULL",
             # Defensive: a superseded ref is normally soft-deleted (caught
@@ -2403,16 +2210,12 @@ class RefsMixin:
         exclude_ref_ids: list[int] | None = None,
     ) -> list[int]:
         """Paper-level author lookup — ``search(kind='paper', author=…)``.
-
-        Matches against the structured ``refs.authors`` jsonb byline
-        (``[{"name": …}, …]``) — the source of truth — rather than the
-        diluted combined card the block path relies on (which is why bare
-        author search there surfaces other papers' bibliography lines, not
-        the paper itself). A name matches on either a substring (``Vaswani``
-        inside ``Ashish Vaswani``) or a ``pg_trgm`` fuzzy hit; the paper's
-        score is its best-matching author. Held papers sort first, then by
-        descending best-name similarity. Returns ``ref_id`` in rank order.
-        """
+        Matches the structured ``refs.authors`` jsonb byline (source of
+        truth) rather than the diluted combined card the block path uses
+        (which surfaces other papers' bibliography lines instead). A name
+        matches by substring or ``pg_trgm`` fuzzy hit; a paper scores on
+        its best-matching author. Held papers sort first, then by
+        similarity. Returns ``ref_id`` in rank order."""
         clauses = [
             "r.deleted_at IS NULL",
             # Defensive superseded-duplicate exclusion (see
@@ -2450,25 +2253,14 @@ class RefsMixin:
         kind: str | None = None,
         tags: list[str] | None = None,
     ) -> int:
-        """Count refs matching the lexical filter (no LIMIT).
-
-        Companion to :meth:`search_refs_lexical` for pagination
-        headers. The MCP critic asked for a "you're seeing N of K"
-        readout in search responses; this gives handlers the K
-        with the same WHERE clause the search uses, so the two
-        numbers can't drift.
-
-        Tag-filter parameters are validated by the handler layer
-        via :meth:`Tag.parse_strict`; this method takes the
-        already-canonical strings and forwards them straight to
-        :func:`build_tag_filter`.
-
-        v2: ``refs.title_tsv`` was dropped; compute it inline via
-        ``to_tsvector('english', r.title)``. Slower than a precomputed
-        column but functionally identical; Phase 3 plans to switch to
-        ``chunks.tsv`` on the ``card_title`` chunk for the optimised
-        path.
-        """
+        """Count refs matching the lexical filter (no LIMIT). Companion
+        to :meth:`search_refs_lexical` for the "N of K" pagination
+        readout — same WHERE clause, so the two numbers can't drift.
+        Tag-filter params are pre-validated by the handler layer
+        (:meth:`Tag.parse_strict`) before reaching :func:`build_tag_filter`.
+        v2: ``refs.title_tsv`` dropped; computes the tsv inline via
+        ``to_tsvector('english', r.title)`` (slower, functionally
+        identical; Phase 3 switches to ``chunks.tsv``)."""
         clauses = [
             "r.deleted_at IS NULL",
             "to_tsvector('english', r.title) @@ qq.qq",
@@ -2499,26 +2291,22 @@ class RefsMixin:
         tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[tuple[Ref, float]]:
-        """Lexical search over ``refs.title``.
-
-        Returns ``(ref, rank)`` sorted by rank desc. Semantic + RRF
-        fusion happen at the block level; title-level stays
+        """Lexical search over ``refs.title``. Returns ``(ref, rank)``
+        desc. Semantic+RRF fusion happens at the block level; this stays
         lexical-only.
 
-        This is a **leg**, not a search. ``websearch_to_tsquery`` ANDs every
-        stemmed term, so one word the title lacks returns nothing, and there
-        is no semantic recall here by construction. Ref-level callers should
-        go through :func:`precis.utils.ref_hybrid.fused_ref_hits`, which fuses
-        this with a hybrid block leg and a notation-canonicalized leg. Call
-        this directly only when you want exactly the deterministic title-AND
-        (and note it stays the *only* signal for chunk-less kinds like
-        ``todo``, which is why the fused path keeps it rather than replacing
-        it).
+        A **leg**, not a search: ``websearch_to_tsquery`` ANDs every
+        stemmed term (one missing word returns nothing), no semantic
+        recall by construction. Ref-level callers should go through
+        :func:`precis.utils.ref_hybrid.fused_ref_hits`, which fuses this
+        with a hybrid block leg + notation-canonicalized leg. Call
+        directly only for the deterministic title-AND — it's the *only*
+        signal for chunk-less kinds like ``todo``, so the fused path
+        keeps rather than replaces it.
 
-        v2: ``refs.title_tsv`` was dropped; compute it inline via
-        ``to_tsvector('english', r.title)``. Phase 3 will switch this
-        to the precomputed ``chunks.tsv`` on the ``card_title`` chunk
-        for the indexed-lookup path.
+        v2: ``refs.title_tsv`` dropped; computes inline via
+        ``to_tsvector('english', r.title)`` (Phase 3 switches to
+        ``chunks.tsv``).
         """
         clauses = [
             "r.deleted_at IS NULL",

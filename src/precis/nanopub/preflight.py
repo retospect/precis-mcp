@@ -1,48 +1,38 @@
-"""Publish preflight — the checking step that runs before any registry
-POST, and stands alone for the review surface (spec: Publish-time gates).
+"""Publish preflight — the check run before every registry POST, standalone
+for the review surface (spec: Publish-time gates).
 
-Distinct from the mint gates (:mod:`precis.nanopub.gates`): those decide
-whether a claim may become an artifact; this decides whether an existing
-artifact may leave the building. Everything before the POST is
-reversible, so the preflight's job is to be *loud*, not clever:
+Distinct from the mint gates (:mod:`precis.nanopub.gates`): those gate
+becoming an artifact; this gates an existing artifact leaving the building.
+Everything before the POST is reversible, so this job is to be *loud*, not
+clever:
 
 * **Withheld-edge enumeration** — an inbound evidence edge blocks
-  publication when it is not literally signed off by a human
-  (``links.meta['publish_signoff']``, written only through
-  :func:`signoff_edge`'s interactive door) AND it either carries no
-  ``links.meta['support']`` verdict at all (edges are born withheld;
-  every writer stamps ``support`` only alongside a real verification —
-  ``support_reason`` + ``verified_by`` + ``verified_at`` +
-  ``verified_claim_sha``), or carries a verdict whose
-  ``verified_claim_sha`` no longer matches the live hub sentence's
-  ``claim_sha`` — a **stale** verdict: the claim was edited after
-  verification, so what was checked is not what would publish. An edge
-  with ``support`` but no ``verified_claim_sha`` at all stays released:
-  legacy stamps predate the sha and remain valid until the operational
-  re-verify pass (``precis taproot verify-edges``) reaches them —
-  invalidation is forward-only on purpose, so shipping the sha did not
-  instantly block every pending publish. There is no mute button:
-  unverified evidence can neither slip out nor be silently ignored.
-* **Trust gate** — the artifact's (signer, key fingerprint) must have an
-  open-window row in ``nanopub_trust_allowlist``, and publication
-  additionally requires the entry be **attesting** — a bot signature
-  alone publishes nothing. Validity-window-vs-signature-time and the
-  allowlist-as-published-artifact are deferred (spec, Publish-time gates
-  #3/#4).
+  publication unless human-signed-off (``links.meta['publish_signoff']``,
+  via :func:`signoff_edge`'s interactive door only) AND it either carries
+  no ``links.meta['support']`` verdict (edges are born withheld; a verdict
+  is stamped only with ``support_reason``+``verified_by``+``verified_at``+
+  ``verified_claim_sha``), or a **stale** one whose ``verified_claim_sha``
+  no longer matches the live ``claim_sha`` (claim edited post-verify). A
+  ``support`` stamp with no ``verified_claim_sha`` is legacy-valid until
+  the re-verify pass (``precis taproot verify-edges``) reaches it —
+  invalidation is forward-only, so shipping the sha column didn't block
+  every pending publish at once. No mute button.
+* **Trust gate** — the (signer, key fingerprint) needs an open-window
+  ``nanopub_trust_allowlist`` row, and it must be **attesting** — a bot
+  signature alone publishes nothing. Validity-window-vs-signature-time and
+  allowlist-as-published-artifact are deferred (spec #3/#4).
 * **State/identity checks** — state must be ``anchored`` (a terminal
-  post-publish state — ``published``/``superseded``/``retracted`` —
-  yields a non-blocking note instead: the POST is behind us, but drift
-  and trust keep running as post-publish health signals); live title
-  must still hash to the frozen ``claim_sha``; a compound's dependency
-  codes must be unchanged and every dependency already ``published``
-  (publish order follows mint order: atoms → compounds → citers);
-  a hanging claim (``grounding.hanging``) is mintable but never
-  publishable; an unresolved ``contradicts`` edge blocks here exactly as
-  it does at mint.
+  post-publish state yields a non-blocking note instead — drift/trust keep
+  running as post-publish health signals); live title must still hash to
+  the frozen ``claim_sha``; a compound's dependency codes must be
+  unchanged and every dependency already ``published`` (atoms → compounds
+  → citers); a hanging claim (``grounding.hanging``) is mintable, never
+  publishable; an unresolved ``contradicts`` edge blocks exactly as at
+  mint.
 
-Not mechanized (recorded, not checked): canonicalizer-settledness —
-"publish after the canonicalizer settles a hub, not during" is a
-quiet-window operational rule, not a row predicate.
+Not mechanized: canonicalizer-settledness ("publish after the
+canonicalizer settles a hub, not during") is a quiet-window operational
+rule, not a row predicate.
 """
 
 from __future__ import annotations

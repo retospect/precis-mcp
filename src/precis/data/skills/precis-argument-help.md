@@ -217,7 +217,7 @@ carrying an unaddressed caveat + every open lemma-vs-lemma
 `contradicts`), see `precis stats --argument` (a CLI report, exhaustive
 by SQL construction — not an LLM scan).
 
-## Caveats
+## State where a claim breaks
 
 A caveat is the *negative/limiting* complement to `finding.scope` — not
 "holds under N2 ambient" (positive setup) but "only validated for n <

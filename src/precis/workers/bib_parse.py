@@ -50,7 +50,6 @@ matched-but-not-held paper.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -64,6 +63,7 @@ if TYPE_CHECKING:
 from precis.liveness import drain_sleep
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
 from precis.utils.db_retry import retry_locked
+from precis.utils.llm.json_reply import extract_json_object
 from precis.workers import ref_lease
 
 log = logging.getLogger(__name__)
@@ -239,25 +239,6 @@ def _extract_acs_fields(raw_text: str) -> dict[str, Any] | None:
     }
 
 
-def _extract_json(text: str) -> dict[str, Any] | None:
-    """Tolerant JSON extraction — whole string first, then first ``{``..``}``."""
-    if not text:
-        return None
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            obj = json.loads(text[a : b + 1])
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            return None
-    return None
-
-
 def _clean_str(v: Any) -> str | None:
     if v is None:
         return None
@@ -285,7 +266,7 @@ def _build_llm_parse_prompt(batch: list[tuple[int, str]]) -> str:
 
 
 def _parse_llm_response(text: str) -> dict[int, dict[str, Any]]:
-    data = _extract_json(text)
+    data = extract_json_object(text)
     out: dict[int, dict[str, Any]] = {}
     raw_entries = (data or {}).get("entries")
     entries_list: list[Any] = raw_entries if isinstance(raw_entries, list) else []
@@ -505,7 +486,7 @@ def _adjudicate_candidates(
     except Exception:
         log.warning("bib_parse: crossref adjudication call failed", exc_info=True)
         return None
-    data = _extract_json(getattr(out, "text", "") or "")
+    data = extract_json_object(getattr(out, "text", "") or "")
     pick = (data or {}).get("pick")
     return pick if pick in ("a", "b") else None
 

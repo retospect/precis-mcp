@@ -11,10 +11,10 @@ moves backward: an anchor is irreversible (but discloses nothing), and
 everything after publication is a new artifact (supersede/retract),
 never an edit.
 
-This module is pure policy; the CAS write is
+Pure policy; the CAS write is
 ``store.nanopub_transition(row_id, to_state=…, expect=…)`` — callers
-check :func:`check_transition` first, and the CAS's ``expect`` list
-keeps a racing writer honest.
+check :func:`check_transition` first, and the CAS's ``expect`` list keeps
+a racing writer honest.
 """
 
 from __future__ import annotations

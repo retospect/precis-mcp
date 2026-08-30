@@ -1,58 +1,47 @@
-"""Failure-bubble: tag the parent todo when a job fails.
+"""Failure bubble: tag the parent todo when a job fails.
 
 Slice-5 of ``docs/backlog/todo-tree-plan.md``: a child job hitting
-``STATUS:failed`` flips a flag on its parent todo so the parent
-shows up in the nursery digest's "stuck-doable" / "stale-claim"
-detectors. The parent's owner (asa or human) then decides what to
-do — re-dispatch (clear the flag, the dispatch worker re-mints),
-switch executor, ask the user, give up.
+``STATUS:failed`` flips a flag on its parent todo so the parent shows up
+in the nursery digest's "stuck-doable"/"stale-claim" detectors. The
+parent's owner (asa or human) decides what to do — re-dispatch (clear the
+flag, the dispatch worker re-mints), switch executor, ask the user, give
+up.
 
-The bubble is a single open tag ``child-failed:<job_id>`` so:
+The bubble is a single open tag ``child-failed:<job_id>``: the operator
+sees which child failed without reading meta, nursery detection is a flat
+``WHERE t.value LIKE 'child-failed:%'``, clearing is an ordinary
+``tag(remove=…)``. Idempotent: re-applying the same tag is a no-op.
 
-* the operator can see *which* child failed without reading meta;
-* the nursery detection is a simple ``WHERE t.value LIKE
-  'child-failed:%'``;
-* clearing the flag is an ordinary ``tag(remove=…)`` call.
-
-Idempotent: re-applying the same tag is a no-op.
-
-**Infra-class bounded auto-retry** (2026-07-30, the 07-26→30 agent-lane
-stall — 11 planner parents latched on a lease-expiry sweep and needed
-manual tag removal). ``child-failed:<job_id>`` is written for two
+**Infra-class bounded auto-retry.** ``child-failed:<job_id>`` covers two
 indistinguishable causes: a genuine content-class task error, and an
 infra-class lease-expiry orphan sweep (``sweeper.py``'s
 ``_transition_to_failed``, which stamps ``swept:claim-orphaned`` on the
-child *before* calling this function). The former needs a human/planner
-decision; the latter almost always self-heals on a fresh attempt — the
-worker that died mid-task, not the task, was the problem. So: an
-infra-class failure is *not* latched immediately. Instead a bounded,
-windowed per-parent counter (:func:`_bump_orphan_retry_count`, modelled
-on ``workers/planner_guardrails.py``'s ``bump_tick_count``) tracks how
-many infra failures have landed in the trailing window; under the cap
-the parent is left unlatched (no ``child-failed:`` tag at all) so it
-falls straight back into ``_candidate_parent_ids`` and the dispatcher
-mints a fresh child next sweep. At/over the cap it latches exactly like
-a content failure, plus ``halt:orphan-retry-cap`` for visibility — a
-persistently-orphaned coordinator (dead executor, not a transient sweep)
-stops spinning instead of retrying forever. The content path is
-byte-identical to before: every consumer of ``child-failed:<job_id>``
-(the exclusion registry, ``_detect_child_failed_parked``, …) is
-untouched.
+child first). The former needs a human/planner decision; the latter
+almost always self-heals on a fresh attempt (the worker died mid-task,
+not the task), so it is *not* latched immediately: a bounded, windowed
+per-parent counter (:func:`_bump_orphan_retry_count`, modelled on
+``workers/planner_guardrails.py``'s ``bump_tick_count``) tracks infra
+failures in the trailing window; under the cap the parent stays unlatched
+(no ``child-failed:`` tag) and falls back into ``_candidate_parent_ids``
+for a fresh child next sweep. At/over the cap it latches like a content
+failure, plus ``halt:orphan-retry-cap`` for visibility, so a
+persistently-orphaned coordinator stops spinning instead of retrying
+forever. Every consumer of ``child-failed:<job_id>`` (the exclusion
+registry, ``_detect_child_failed_parked``, …) is unaffected either way.
 
-**Subprocess-death misclassification (2026-08-10, autocatpath-recovery,
-docs/backlog/parked-leaf-recovery.md).** A child's process dying by
-signal (SIGKILL/OOM) or exiting without producing its expected result
-file used to land as a bare content-class failure — the compute never
-actually ran, but the bubble had no way to tell that apart from a
-genuine task error. The generic subprocess-exit layer
+**Subprocess-death misclassification** (``docs/backlog/
+parked-leaf-recovery.md``): a child process dying by signal (SIGKILL/OOM)
+or exiting with no result file used to land as a bare content-class
+failure — the compute never ran, but the bubble couldn't tell that apart
+from a genuine task error. The generic subprocess-exit layer
 (``executors/_common.record_failure``'s ``open_tag=`` parameter, wired
-from ``precis_pathway.seed_job``) now stamps
-``infra:child-killed`` on the job before it's marked failed, and that
-value joins :data:`INFRA_FAILURE_TAGS` — so a subprocess death gets the
-same bounded auto-retry as a lease-expiry orphan instead of latching
-immediately. See :mod:`precis.workers.sweeper`'s ``unpark`` phase for the
-complementary autonomous recovery once a bubble DOES latch (bounded,
-cool-down-gated, terminal past ``UNPARK_CAP``).
+from ``precis_pathway.seed_job``) now stamps ``infra:child-killed`` on
+the job before it's marked failed; that value joins
+:data:`INFRA_FAILURE_TAGS`, so a subprocess death gets the same bounded
+auto-retry as a lease-expiry orphan instead of latching immediately. See
+:mod:`precis.workers.sweeper`'s ``unpark`` phase for the complementary
+autonomous recovery once a bubble does latch (bounded, cool-down-gated,
+terminal past ``UNPARK_CAP``).
 """
 
 from __future__ import annotations

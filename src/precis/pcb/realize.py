@@ -94,8 +94,8 @@ from precis.pcb.rules import (
 
 #: Re-exported from :mod:`precis.pcb.rules` (the constant's new home) so
 #: every existing ``from precis.pcb.realize import PAD_LAYER`` call site
-#: keeps working. Moved there (2026-08-28, alongside :func:`precis.pcb.
-#: rules.implied_via_count`) because :mod:`precis.pcb.cost`'s ``via_count``
+#: keeps working. Moved there, alongside :func:`precis.pcb.
+#: rules.implied_via_count`, because :mod:`precis.pcb.cost`'s ``via_count``
 #: term needs the SAME "did this segment change layer" test this module's
 #: :func:`_vias_for_track` applies, and ``cost.py`` has no existing import
 #: relationship with ``realize.py`` to piggyback on — ``rules.py`` is the
@@ -539,9 +539,8 @@ def _vias_for_track(
     unassigned (``UNSET_LAYER``) or already-pad-layer track has nothing to
     transition — both return no vias. Both checks, PLUS the via COUNT
     itself, are delegated to :func:`precis.pcb.rules.implied_via_count`
-    (2026-08-28) rather than re-derived here — that function is the exact
-    same predicate this docstring used to describe standalone, hoisted out
-    so :mod:`precis.pcb.cost`'s ``via_count`` MONEY term can share it and
+    rather than re-derived here — that function is the same predicate,
+    hoisted out so :mod:`precis.pcb.cost`'s ``via_count`` MONEY term can share it and
     the two can never drift apart again (see that function's own docstring
     for the defect this closes: an optimizer that paid nothing for a via
     while this function quietly emitted real ones).
@@ -2165,9 +2164,9 @@ def pads_for_ir(
 
     **Size is now real where a real footprint is supplied** (``footprints``,
     threaded to :func:`pad_geometry`) rather than every pad reserving the
-    same hardcoded disc regardless of package (2026-08-29 — see
-    :attr:`precis.pcb.ir.PcbIR.pin_w`'s own docstring for the measured
-    defect this closes). ``synthesized`` rides on each pad because
+    same hardcoded disc regardless of package (see
+    :attr:`precis.pcb.ir.PcbIR.pin_w`'s own docstring for the defect this
+    closes). ``synthesized`` rides on each pad because
     :mod:`precis.pcb.landpattern`'s own docstring is explicit that a
     synthesized pattern is a dimensionally-plausible BOUND and "must never
     be exported to fabrication". They are in the model because
@@ -2185,8 +2184,7 @@ def pads_for_ir(
         if point is None:
             continue
         geom = geoms[pid]
-        # LATENT DEFECT, found while testing (2026-08-29, alongside the
-        # sibling NO_NET/FREE collision in `_realize_maze`): NO_NET is -1,
+        # NO_NET must never index `net_name`: NO_NET is -1,
         # and `ir.net_name[-1]` is not an error in Python/numpy -- it
         # WRAPS to the LAST real net, silently mislabelling every
         # unconnected (test-point/NC/mounting-hole) pin's exported pad as

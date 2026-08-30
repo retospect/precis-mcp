@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from precis.store._tags_ops import _escape_like
+from precis.store._tags_ops import escape_like
 from precis.store.types import Tag
 from precis.utils.embed_query import embed_query
 from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS
@@ -762,7 +762,7 @@ async def tag_suggest(request: Request, ident: str, q: str = "") -> JSONResponse
                 "JOIN chunk_tags ct ON ct.tag_id = t.tag_id "
                 "JOIN chunks c ON c.chunk_id = ct.chunk_id "
                 "WHERE c.ref_id = %s AND t.value ILIKE %s ORDER BY t.value LIMIT 10",
-                (ref.id, f"%{_escape_like(query)}%"),
+                (ref.id, f"%{escape_like(query)}%"),
             ).fetchall()
     except Exception:
         return JSONResponse({"tags": []})

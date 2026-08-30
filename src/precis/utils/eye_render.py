@@ -5,14 +5,14 @@ kind, so the ladder generalizes but its shape does not:
   :func:`precis.utils.fisheye.render_fisheye` span + reference ring.
 - **Doc kinds** (``paper`` / ``patent`` / ``web`` / ``datasheet`` / ``cfp``): a
   long ingested document with no heading tree, so its structure *is* the
-  per-chunk KeyBERT clustering (F20). The eye renders that dynamic
+  per-chunk KeyBERT clustering. The eye renders that dynamic
   **keyword-cluster TOC** around the eyeball — similar chunks grouped for
   separate exploration:
 
   * A **whole-doc eye** (``pa5``) is the cluster *map*: one row per cluster,
     keyed by its lead **chunk handle** ``pc<id>`` + keyword label — a skimmable
-    shape you drill by placing an eye on a ``pc`` handle. Per §6 a whole-doc
-    eye never spills verbatim text; reading real text is always a deliberate
+    shape you drill by placing an eye on a ``pc`` handle. A whole-doc eye
+    never spills verbatim text; reading real text is always a deliberate
     drill to a chunk eye.
   * A **chunk eye** (``pc13234``) is a fisheye *within* its cluster: the chunks
     before it and after it as gloss lines (each its own ``pc`` handle to drill),
@@ -68,7 +68,7 @@ if TYPE_CHECKING:
 _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 
 #: Long ingested documents whose structure is per-chunk KeyBERT clustering
-#: (F20) rather than a heading tree — routed to the keyword-cluster fisheye.
+#: rather than a heading tree — routed to the keyword-cluster fisheye.
 #:
 #: NOT a pure ``KindSpec.corpus_role`` derivation (kept hand-maintained on
 #: purpose, pinned by ``tests/test_kind_totality.py``): ``web`` carries no
@@ -90,8 +90,8 @@ _VERBATIM_CAP = 4000
 _NEIGHBOR_TITLE_CAP = 80
 #: Per-relation cap on the ``fisheye+1hop`` link neighborhood — a claim hub
 #: can carry dozens of evidence edges, so a flat uncapped dump per relation
-#: group is replaced by this cap plus a visible overflow line (project §6:
-#: no silent truncation).
+#: group is replaced by this cap plus a visible overflow line (no silent
+#: truncation).
 _NEIGHBOR_GROUP_CAP = 8
 _GLOSS_CAP = 140
 #: Keep the cluster map / label lists skimmable even on a huge doc; the
@@ -212,8 +212,8 @@ def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
 
 
 def _cluster_map(kind: str, clusters: list[tuple[list[Any], list[str]]]) -> str:
-    """A whole-doc eye: the cluster map — one label row per cluster (§6, "TOC
-    map, no verbatim text"). Drill any cluster by focusing its ``pc`` handle."""
+    """A whole-doc eye: the cluster map — one label row per cluster, no
+    verbatim text. Drill any cluster by focusing its ``pc`` handle."""
     shown = clusters[:_MAP_CLUSTER_CAP]
     lines = [f"— {len(clusters)} clusters (focus a pc handle to open one) —"]
     lines.extend(_cluster_label(kind, bucket, kws) for bucket, kws in shown)
@@ -357,8 +357,8 @@ def _link_neighbors(store: Store, ref_id: int) -> str:
     `_NEIGHBOR_GROUP_CAP` live neighbours per group — a claim hub can carry
     dozens of evidence edges, so this is graduated rather than a flat
     uncapped dump. A truncated group ends with a visible ``… +N more``
-    line (project §6: no silent cap); the count is against *rendered*
-    (live, non-deleted) neighbours, not raw edges."""
+    line (no silent cap); the count is against *rendered* (live,
+    non-deleted) neighbours, not raw edges."""
     links = store.links_for(ref_id, direction="both")
     by_rel: dict[str, list[int]] = {}
     ids: set[int] = set()

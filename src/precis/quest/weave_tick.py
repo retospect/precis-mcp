@@ -35,7 +35,6 @@ for the next one — no state is lost, only deferred.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.dossier import dossier_ref_id
@@ -45,6 +44,7 @@ from precis.quest.residual_cluster import cluster_residual
 from precis.quest.weave import weave_section
 from precis.quest.weave_review import mint_weave_reviews
 from precis.utils import handle_registry
+from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
     from precis.store.protocols import RefMetaStore
@@ -101,29 +101,8 @@ def _dossier_topics(store: Store, did: int) -> list[str]:
 
 
 def _extract_title_json(text: str) -> dict[str, Any] | None:
-    """Parse ``text`` as a JSON object, tolerating surrounding prose.
-
-    Mirrors ``precis.quest.weave._extract_json_object`` / ``precis.quest.
-    claims._extract_json``'s tolerant parse-or-``None`` shape (a JSON
-    *object* payload here, ``{"title": ...}``) — kept as its own copy
-    rather than reaching into another module's private helper, same
-    call each of those two modules already made about each other.
-    """
-    if not text:
-        return None
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            parsed = json.loads(text[a : b + 1])
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-    return None
+    """Parse the ``{"title": ...}`` reply — `utils.llm.json_reply` does the work."""
+    return extract_json_object(text)
 
 
 def _judge_section_title(

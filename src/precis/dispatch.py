@@ -393,17 +393,6 @@ class Hub:
         """
         return self.hints.request()
 
-    def get_conn_pool(self) -> Any:
-        """Return the underlying ``psycopg_pool.ConnectionPool``, or ``None``.
-
-        Provided so handlers that need raw SQL (cache primitives,
-        bespoke queries) can reach the pool without hard-coding
-        ``self.store.pool``. Returns ``None`` on stateless builds.
-        Mostly future-facing; today's handlers use the higher-level
-        ``Store`` API directly.
-        """
-        return None if self.store is None else self.store.pool
-
 
 # ---------------------------------------------------------------------------
 # Boot helpers

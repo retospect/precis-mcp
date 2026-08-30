@@ -721,7 +721,7 @@ class TestRC2SelfRest:
             deleted_at=None, meta={}
         )
         ctx.store.tags_for = lambda ref_id: [
-            SimpleNamespace(namespace="STATUS", value="dormant")
+            SimpleNamespace(namespace="closed", prefix="STATUS", value="dormant")
         ]
         out = qt._dispatch(ctx, qt.SPEC)
         assert isinstance(out, Done)
@@ -748,7 +748,7 @@ class TestRC2SelfRest:
             deleted_at=None, meta={}
         )
         ctx.store.tags_for = lambda ref_id: [
-            SimpleNamespace(namespace="STATUS", value="abandoned")
+            SimpleNamespace(namespace="closed", prefix="STATUS", value="abandoned")
         ]
         out = qt._dispatch(ctx, qt.SPEC)
         assert isinstance(out, Done)

@@ -1,61 +1,23 @@
 """Taproot Phase 2 — the single write door for claim hubs + evidence edges.
 
 Build ticket: ``docs/backlog/taproot-phase2-hub-node.md``; governance:
-Taproot evidence relations; design: ``docs/backlog/taproot.md`` §"The core model".
+taproot evidence relations; design: ``docs/backlog/taproot.md`` §"The core
+model".
 
-**Single write path (open #16).** Every hub-finding and every
-``establishes``/``corroborates``/``contradicts`` evidence edge is written
-through this module. A raw ``INSERT`` / ``store.add_link`` for these
-relations elsewhere bypasses the vocabulary + ``TAPROOT:claim`` guards below
-and is a defect — the exact silent-junk-edge error taproot exists to prevent.
+**Single write path.** Every hub-finding and every
+``establishes``/``corroborates``/``contradicts`` edge is written through
+this module — a raw ``INSERT``/``store.add_link`` for these relations
+elsewhere bypasses the ``TAPROOT:claim`` guards and is a defect.
 
-Six functions:
+Six write functions, each documented on its own: :func:`mint_hub`,
+:func:`attach_evidence`, :func:`apply_placement`, :func:`link_claims`,
+:func:`apply_extraction`, :func:`merge_hubs`. Plus the reground-era removal
+door — :func:`remove_evidence` / :func:`reattach_as_contradicts`, logged via
+:func:`append_reground_log` and guarded by :class:`WouldStrandHub`.
 
-1. :func:`mint_hub` — create a ``TAPROOT:claim`` ``finding`` hub for a
-   paper-grounded claim (open #15: only paper-sourced claims become hubs).
-2. :func:`attach_evidence` — write one ``paper --role--> hub`` edge, ``role``
-   in :data:`HUB_ROLES`, guarding the target is actually a claim hub, is
-   NOT a **compound** hub (docs/backlog/taproot-atomic-claims.md step 3 —
-   evidence attaches only to atoms), and the source is an evidence-source
-   ref (:data:`EVIDENCE_SRC_KINDS` backstop). Also the single choke point
-   for the deterministic prophetic-example caveat (patent-evidence-parity
-   phase 4): a patent source whose grounding chunk carries
-   ``PATENT_EXAMPLE:prophetic`` (``data/axes/patent_example.yaml``) gets
-   :data:`PROPHETIC_EXAMPLE_CAVEAT` appended to ``meta.caveats`` here,
-   mechanically — never via the verify LLM prompt, which is unchanged.
-3. :func:`apply_placement` — bridge a :class:`~precis.taproot.canon.Placement`
-   (the canonicalizer's verdict) to the writes above; a ``needs_review``
-   placement files a ``kind='todo'`` (via an injected ``todo_fn``) and never
-   auto-attaches (open #16); an ``attach`` onto a compound hub downgrades to
-   the same ``needs_review`` path rather than raising.
-4. :func:`link_claims` — the claim->claim advisory ``refines``/``conjunct-of``
-   edges (:data:`CLAIM_LINK_RELATIONS`, migrations 0100/0126): link-don't-merge,
-   carries no evidence flow.
-5. :func:`apply_extraction` — the decomposition-aware orchestrator over a
-   full :class:`~precis.taproot.canon.ClaimExtraction`: atoms through
-   :func:`apply_placement`, the compound minted/converged with no evidence
-   edge, ``conjunct-of`` links between them, and the not-a-claim audit memo
-   (step 8) on the compound's ``meta``.
-6. :func:`merge_hubs` — collapse one already-minted hub (the "loser")
-   into another ("winner"): repoint every evidence/claim-link edge, dedup
-   against edges the winner already holds, drop self-loops, and retire the
-   loser. The merge door (docs/backlog/claim-hub-merge-door.md) none of
-   the above provide — :func:`apply_placement` only prevents a *second*
-   hub being minted for the same claim, it can't collapse two that both
-   already exist.
-
-Plus, since reground (``docs/backlog/taproot-reground.md``), a matching
-**removal** door — :func:`remove_evidence` / :func:`reattach_as_contradicts`,
-with :func:`append_reground_log`'s ``meta.reground_log`` audit trail and
-the :class:`WouldStrandHub` guard. ``links`` has no ``deleted_at``, so
-dropping an edge is a hard delete: the log is the only record it ever
-happened, and the strand guard is what keeps a half-applied prune plan
-from silently emptying a hub.
-
-Callers that populate the edges: ``workers/chase.py::_taproot_bridge`` (the
-forward bridge, supplies the verdict ``meta``), ``workers/hub_refine.py``,
-and the authoring/backfill doors (:mod:`precis.taproot.authoring` /
-:mod:`precis.taproot.backfill`).
+Callers: ``workers/chase.py::_taproot_bridge`` (forward bridge),
+``workers/hub_refine.py``, :mod:`precis.taproot.authoring` /
+:mod:`precis.taproot.backfill`.
 """
 
 from __future__ import annotations
@@ -146,20 +108,14 @@ EVIDENCE_SRC_KINDS: frozenset[str] = frozenset(
 
 
 class TitleRoundTripError(RuntimeError):
-    """Raised when a just-written ``refs.title`` doesn't read back byte-for-
-    byte equal to the sentence the write door intended to persist.
+    """Raised when a just-written ``refs.title`` doesn't read back
+    byte-for-byte equal to the sentence the write door intended to persist
+    (failure mode: ``docs/backlog/hub-title-200-truncation-via-stale-mcp.md``).
 
-    The failure mode ``docs/backlog/hub-title-200-truncation-via-stale-mcp.md``
-    shipped silently for three weeks: a stale MCP build was serving a
-    handler from before a title-length-cap removal, so every hub it minted
-    got a ``refs.title`` cut at exactly 200 characters mid-word while the
-    ``finding_body`` chunk stayed full-length — nothing asserted the two
-    matched, so the divergence was invisible until a human spotted it.
-    :func:`_assert_title_round_trip` closes that gap at both real write
-    doors (:func:`mint_hub`, :func:`refine_claim_sentence`): raised inside
-    the write's own transaction/savepoint, so it rolls the write back
-    rather than leaving a truncated title committed — a failed mint is
-    always better than a silently truncated one.
+    Raised by :func:`_assert_title_round_trip` inside the write's own
+    transaction/savepoint at both real write doors (:func:`mint_hub`,
+    :func:`refine_claim_sentence`) — a failed mint always beats a silently
+    truncated one.
     """
 
 
@@ -185,29 +141,18 @@ def _grounding_chunk_ord(
 ) -> int | None:
     """Resolve an evidence edge's grounding chunk to its ``ord``, or ``None``.
 
-    Taproot's ``meta.source_handle`` (a ``pc<chunk_id>`` universal handle,
-    the "grounded at this passage" pointer the chase verdict / authoring
-    spec carries) names the *specific paper chunk* that supports the claim.
-    Storing it only in ``meta`` left the edge itself ref-level, so the link
-    graph — and every reader built on it (the ``fi`` link table, the
-    citation tree) — could only ever cite the whole paper (``pa<id>``), not
-    the passage (``pc<id>``). Returning the chunk's ``ord`` here lets
-    :func:`attach_evidence` pass ``src_pos`` to ``store.add_link``, which
-    materialises ``src_chunk_id`` so the edge renders ``pc<id>`` and two
-    distinct passages of the same paper become two edges ("the set of
-    chunks that support this point"), not one collapsed ref-level edge.
+    ``meta.source_handle`` names the specific paper chunk that supports the
+    claim — a ``pc<chunk_id>`` universal handle, or the chase's per-hop
+    ``slug~ord`` form. Returning the chunk's ``ord`` lets
+    :func:`attach_evidence` materialise ``src_chunk_id`` so the edge renders
+    ``pc<id>`` and two passages of one paper become two edges, instead of
+    one collapsed ref-level (``pa<id>``) edge.
 
-    Two ``source_handle`` forms are recognised — the ``pc<chunk_id>``
-    universal handle (the authoring / mint spec form) and the ``slug~ord``
-    pointer the chase writes per hop
-    (:func:`~precis.workers.chase._evidence_edge_meta`).
-
-    Best-effort and defensive: a missing / unresolvable ``source_handle``,
-    one that isn't a chunk, one whose chunk belongs to a *different* paper
-    than this edge's source (a spec/verdict bug), or an ``ord`` with no
-    live chunk yields ``None`` — the edge stays ref-level rather than
-    grounding at the wrong paper or handing ``add_link`` a non-existent
-    ``(ref, ord)`` (which would raise and fail the write).
+    Best-effort and defensive: a missing/unresolvable handle, one resolving
+    to a *different* paper than this edge's source, or an ``ord`` with no
+    live body chunk (``ord >= 0``, not retired) all yield ``None`` — the
+    edge stays ref-level rather than grounding at the wrong paper or handing
+    ``add_link`` a nonexistent ``(ref, ord)``.
     """
     if not meta:
         return None
@@ -323,27 +268,16 @@ def _is_claim_hub(ref_id: int, *, conn: Any) -> bool:
 
 def _is_compound_hub(ref_id: int, *, conn: Any) -> bool:
     """True iff ``ref_id`` carries a live inbound ``conjunct-of`` edge from a
-    live ``finding`` — i.e. it is a **compound** claim hub with atomic
-    conjuncts linked to it, rather than an atom or a plain (undecomposed)
-    claim hub (docs/backlog/taproot-atomic-claims.md).
+    live ``finding`` — i.e. it is a **compound** claim hub, not an atom or a
+    plain undecomposed hub (docs/backlog/taproot-atomic-claims.md).
 
-    Deliberately the literal predicate — ``links l JOIN refs a ON
-    a.ref_id = l.src_ref_id WHERE l.dst_ref_id = %s AND l.relation =
-    'conjunct-of' AND a.kind = 'finding' AND a.deleted_at IS NULL`` — with
-    **no** ``TAPROOT:claim`` tag join on the source. This is a deliberate
-    seam, not an oversight: :mod:`precis.taproot.seniority`'s mirror of this
-    predicate (``conjunct_atoms_bulk``) *does* re-check the tag (that
-    module's idiom — ``_is_claim_hub`` always checks tags), while
-    :mod:`precis.workers.hub_refine`'s copies (``_claim_hubs_due_for_refine``'s
-    ``NOT EXISTS`` filter, ``_is_compound_hub``) omit it, same as here. Both
-    are correct: :func:`link_claims` (the single write door for
-    ``conjunct-of`` edges) already guards **both** endpoints are live
-    ``TAPROOT:claim`` findings at write time, so a live inbound
-    ``conjunct-of`` edge can only ever originate from a claim hub — the tag
-    re-check downstream is redundant, not wrong, and each module keeps its
-    own copy of the predicate rather than sharing a connection-agnostic
-    helper (the ``seniority._is_claim_hub``-mirrors-``hub._is_claim_hub``
-    precedent this build follows throughout).
+    Deliberately no ``TAPROOT:claim`` tag join on the source:
+    :func:`link_claims` (the only writer of ``conjunct-of``) already guards
+    both endpoints are live claim hubs at write time, so a re-check here is
+    redundant. :mod:`precis.taproot.seniority` (``conjunct_atoms_bulk``) and
+    :mod:`precis.workers.hub_refine` each keep their own literal copy of this
+    predicate rather than sharing a connection-agnostic helper — deliberate,
+    not an oversight.
     """
     row = conn.execute(
         """
@@ -380,63 +314,35 @@ def mint_hub(
 ) -> int:
     """Create a new ``TAPROOT:claim`` ``finding`` hub. Returns its ref_id.
 
-    Only paper-grounded claims become hubs (open #15); the caller
-    (:func:`apply_placement`, driven by the canonicalizer over a paper chunk)
-    supplies that provenance — this primitive just writes the hub.
+    Only paper-grounded claims become hubs (open #15) — the caller
+    (:func:`apply_placement`) supplies that provenance; this primitive just
+    writes it. The hub is a ``finding``: ``claim.sentence`` -> ``title`` and
+    a ``finding_body`` chunk at ``ord=0`` (the chunk :func:`canon.block`
+    ANN-retrieves over for dedup); ``claim.scope`` -> ``meta.scope``; tagged
+    ``STATUS:canonical`` + ``TAPROOT:claim``. System-writer path — the
+    agent-facing door is ``FindingHandler.put``; taproot dedups upstream via
+    canonicalization, so this write is direct. The title write is asserted
+    round-trip inside the same savepoint (:class:`TitleRoundTripError`).
 
-    The hub is a ``finding`` (reuse, not a new kind — the argument graph precedent):
-    ``claim.sentence`` → ``title`` (list-view scannability) *and* a
-    ``finding_body`` chunk at ``ord=0`` (so it embeds + full-text-searches,
-    and is the chunk :func:`canon.block` ANN-retrieves over for dedup);
-    ``claim.scope`` → ``meta.scope``; ``STATUS:canonical``;
-    ``TAPROOT:claim``. This is taproot's *system-writer* path — the agent-facing
-    door is ``FindingHandler.put`` (pub_id dedup + a frontier ``derived-from``);
-    taproot dedups upstream via canonicalization, so the hub write is direct.
-
-    The freshly-written ``refs.title`` is read back and asserted equal to
-    ``claim.sentence.strip()`` inside the same savepoint
-    (:func:`_assert_title_round_trip`) — see :class:`TitleRoundTripError`.
-
-    Citability (slice F): the hub also gets a ``pub_id`` written
-    to ``ref_identifiers`` — the same 6-char ``[a-z2-7]`` handle
-    ``FindingHandler.put`` mints — so agent draft prose can cite it as
-    ``[ab12c3]`` and ``precis resolve`` / ``refeye.resolve_link_targets``
-    (which already mine ``ref_identifiers(id_kind='pub_id')``) pick it up
-    for free. Seeded via :func:`make_taproot_hub_paper_id` — content-derived
-    off ``claim.sentence`` + ``claim.scope`` (a hub has no citing occasion
-    to anchor :func:`make_finding_paper_id`'s ``initial_cite_pub_id``) — so
-    the pub_id is deterministic per canonicalized claim.
+    Citability (slice F): also writes a 6-char ``pub_id`` to
+    ``ref_identifiers``, deterministic per ``(claim.sentence, claim.scope)``
+    via :func:`make_taproot_hub_paper_id`, so draft prose can cite
+    ``[<pub_id>]`` like any other ref.
 
     **Converge-to-attach on a pub_id collision.** A freshly minted hub's
-    ``finding_body`` chunk lands in *this* transaction, but its embedding is
-    written async (the derived queue — ``embed:bge-m3`` runs later), so
-    :func:`~precis.taproot.canon.block` can return zero candidates for a
-    claim whose hub was just minted but not yet embedded. Two findings
-    asserting the identical claim (successive
-    chase passes, or concurrent workers) can then both resolve
-    ``place() == "new"`` and both call this function for the *same*
-    deterministic ``pub_id``. Because that's the identity contract
-    (same claim content -> same pub_id), the collision means the other
-    caller's hub already *is* the hub for this claim — so this looks the
-    pub_id up first (attach path, no write) and, if a second caller still
-    races past that check, catches the ``ref_identifiers`` PK
-    ``UniqueViolation`` on insert, rolls back only its own partial
-    ref/chunk/tags write (a savepoint — never the caller's surrounding
-    transaction), and resolves to the winner's ref_id. Either way the
-    caller always gets back a real hub ref_id to attach evidence to,
-    never a raised exception or a dropped edge.
+    embedding lands async, so two callers racing on the identical claim
+    (e.g. concurrent chase passes) can both resolve ``place() == "new"``
+    for the same deterministic pub_id. This looks the pub_id up first
+    (attach, no write); a second caller that still races past that check
+    catches the ``UniqueViolation`` on insert, rolls back only its own
+    savepoint, and resolves to the winner's ref_id — the caller always
+    gets back a real hub ref_id, never a dropped edge.
 
-    ``extra_meta`` (step 8, docs/backlog/taproot-atomic-claims.md) merges
-    additional top-level ``meta`` keys into the hub at insert time — one
-    write, no follow-up ``update_ref`` — used by
-    :func:`apply_extraction` to seed a freshly-minted compound hub's
-    :data:`_NOT_CLAIMS_META_KEY` memo. Applied **only** on an actual insert
-    (the ``_mint`` path below); the converge-to-existing branches (a
-    pub_id already resolved, or a raced ``UniqueViolation``) return the
-    existing hub untouched — merging into an *existing* hub's meta
-    non-destructively is a distinct operation (see the module's
-    ``_merge_not_claims_memo`` helper, used on the ``attach`` side of
-    :func:`apply_extraction`), not this parameter's job.
+    ``extra_meta`` merges additional ``meta`` keys at insert time (used by
+    :func:`apply_extraction` to seed a compound hub's not-claims memo);
+    applied only on an actual insert — a converge-to-existing branch returns
+    the existing hub untouched (:func:`_merge_not_claims_memo` handles the
+    non-destructive merge case on the ``attach`` side).
     """
     paper_id = make_taproot_hub_paper_id(claim.sentence, claim.scope)
     pub_id = make_pub_id(paper_id)
@@ -550,80 +456,46 @@ def refine_claim_sentence(
     conn: Any = None,
 ) -> dict[str, Any]:
     """Reword a ``TAPROOT:claim`` hub's claim sentence in place. Returns a
-    summary dict (see below).
+    summary dict.
 
-    The claim sentence lives in three places (:func:`mint_hub`): ``refs.title``
-    (full length — a claim sentence carries all its meaning; it is exactly as
-    long as it needs to be), the ``finding_body`` chunk at ``ord=0``, and
-    implicitly in the content-derived ``pub_id``. This is the retitle door
-    that keeps all three in sync when a hub's wording needs fixing (e.g. a
-    claim-quality rubric flags a dangling demonstrative) — there is otherwise
-    no way to reword a hub short of deleting and re-minting it, which would
-    orphan every evidence edge already attached.
+    The claim sentence lives in three places (:func:`mint_hub`):
+    ``refs.title``, the ``finding_body`` chunk (``ord=0``), and implicitly
+    the content-derived ``pub_id``. This is the only door that keeps all
+    three in sync — the alternative (delete + re-mint) would orphan every
+    evidence edge already attached.
 
-    Writes, all inside one transaction:
+    Writes, one transaction:
 
-    1. ``refs.title = sentence.strip()`` (never truncated); ``meta.scope`` is replaced
-       (not merged) when ``scope`` is given, else the hub's existing scope
-       is kept. Read back and asserted equal to the intended title inside
-       this same transaction (:func:`_assert_title_round_trip`) — see
-       :class:`TitleRoundTripError`.
-    2. The ``finding_body`` chunk (``ord=0``) is replaced via DELETE+INSERT
-       (:meth:`~precis.store.Store.replace_body_chunk`) — never an in-place
-       text UPDATE, so the embedding/summary cascade re-runs on the new
-       wording (repo convention: ``chunks`` is append-only except for the
-       DELETE+INSERT re-emit path).
-    3. Every card variant (``ord < 0``) is deleted, and nothing re-emits one.
-       No pass in this codebase derives a hub's ``card_combined``:
-       :func:`mint_hub` never emits one, the handler create door's
-       ``emits_card`` branch is off for ``finding``, and the single pass that
-       DELETE+INSERTs a finding's ``card_combined``
-       (``workers/chase.py::_snapshot_chain``) runs only at chain termination
-       for a ``STATUS:tracing`` finding, never for a ``STATUS:canonical`` hub.
-       That is a closed gap rather than an open one: since 2026-08-19
-       :func:`~precis.taproot.canon.block` ANN-retrieves over the
-       ``finding_body`` chunk replaced in step 2, so the dedup index tracks
-       the new wording by construction. Deleting is still the right branch —
-       a stale card must never keep matching the OLD wording anywhere.
-    4. The ``pub_id`` is recomputed from ``(new sentence, effective scope)``
-       via :func:`~precis.identity.make_taproot_hub_paper_id` /
-       :func:`~precis.identity.make_pub_id`. If it differs from the hub's
-       existing pub_id(s), the new one is INSERTed as an additional
-       ``ref_identifiers`` row (``id_kind='pub_id'``) and the OLD row is
-       **kept** as an alias — draft prose that already cites the old
-       ``[<pub_id>]`` handle must keep resolving. If the new pub_id already
-       belongs to a *different* live ref, that's a dedup/merge candidate —
-       raised as a :class:`ValueError` rather than silently merged (the
-       caller decides).
+    1. ``refs.title = sentence.strip()`` (never truncated, round-trip
+       asserted — :class:`TitleRoundTripError`); ``meta.scope`` is replaced
+       (not merged) when ``scope`` is given, else kept.
+    2. ``finding_body`` (``ord=0``) is replaced via DELETE+INSERT
+       (:meth:`~precis.store.Store.replace_body_chunk`), so the
+       embed/summary cascade re-runs on the new wording.
+    3. Every card variant (``ord < 0``) is deleted and nothing re-emits
+       one — no pass in this codebase derives a hub's ``card_combined``;
+       deleting prevents a stale card matching the OLD wording anywhere.
+    4. ``pub_id`` is recomputed from ``(new sentence, effective scope)``.
+       If it changed, the new value is INSERTed as an additional
+       ``ref_identifiers`` row and the OLD one **kept** as an alias — a
+       draft already citing the old ``[<pub_id>]`` must keep resolving. If
+       the new pub_id already belongs to a *different* live ref, raises
+       :class:`ValueError` rather than silently merging.
 
-    Args:
-        hub_ref_id: The claim hub's ref_id. Must be a live ``TAPROOT:claim``
-            ``finding``.
-        sentence: The new claim sentence. Required non-empty.
-        scope: When given, replaces ``meta.scope`` wholesale and feeds the
-            new pub_id derivation. ``None`` (default) keeps the hub's
-            existing scope.
-        set_by: Audit actor for the chunk-replace event.
-        conn: An open transaction to fold this write into (mirrors every
-            other function in this module); ``None`` opens its own
-            ``store.tx()``.
+    ``scope=None`` keeps the hub's existing scope; ``conn`` folds the write
+    into a caller's open transaction (default: own ``store.tx()``).
 
     Returns:
         ``{"hub_ref_id", "old_title", "new_title", "pub_id",
-        "pub_id_alias_kept", "notation"}`` — ``pub_id`` is the (possibly
-        unchanged) current pub_id after the write; ``pub_id_alias_kept`` is
-        True iff a new pub_id row was inserted (the old one stays live as an
-        alias). ``notation`` is
+        "pub_id_alias_kept", "notation"}`` — ``pub_id_alias_kept`` is True
+        iff a new pub_id row was inserted; ``notation`` is
         :func:`~precis.taproot.notation.lint_notation`'s advisory warnings
-        for the new ``sentence`` — never raises, never blocks the reword,
-        never rewrites the sentence.
+        for the new sentence (never blocks, never rewrites).
 
     Raises:
-        ValueError: ``hub_ref_id`` isn't a live ``TAPROOT:claim`` hub,
-            ``sentence`` is empty/whitespace, or the new pub_id already
-            belongs to a different ref (names that ref_id).
-        TitleRoundTripError: the written ``refs.title`` didn't read back
-            equal to the intended sentence (rolls the transaction back).
+        ValueError: not a live ``TAPROOT:claim`` hub, empty ``sentence``, or
+            the new pub_id belongs to a different ref.
+        TitleRoundTripError: the written title didn't read back equal.
     """
     stripped = sentence.strip() if sentence else ""
     if not stripped:
@@ -752,42 +624,32 @@ def attach_evidence(
 ) -> None:
     """Write one ``paper --role--> hub`` evidence edge.
 
-    ``role`` must be one of :data:`HUB_ROLES` *and* a registered relation
-    (checked via :func:`validate_relation` — the friendly pre-flight for the
-    ``links_relation_fkey`` FK). ``hub_ref_id`` must be a ``TAPROOT:claim``
-    finding — never attach evidence to a ``TAPROOT:review`` note or a non-finding
-    (that is what the classifier + this guard exist to prevent). The edge is
-    directed **paper → hub**; the hub reads its evidence via
-    ``links_for(direction='in', relation=role)``. ``meta`` carries the chase
-    verdict (``support``/``support_reason``/``caveats``/``char_offset``/
-    ``source_handle``), populated in Phase 3.
+    ``role`` must be one of :data:`HUB_ROLES` and a registered relation
+    (:func:`validate_relation`). ``hub_ref_id`` must be a ``TAPROOT:claim``
+    finding, NOT a **compound** hub (raises otherwise); the source must be
+    an evidence-source ref (:data:`EVIDENCE_SRC_KINDS`). Directed **paper
+    -> hub**; the hub reads evidence via ``links_for(direction='in',
+    relation=role)``. ``meta`` carries the chase verdict
+    (``support``/``support_reason``/``caveats``/``char_offset``/
+    ``source_handle``). Also the single mechanical choke point for the
+    prophetic-example caveat: a patent source whose grounding chunk
+    carries ``PATENT_EXAMPLE:prophetic`` gets
+    :data:`PROPHETIC_EXAMPLE_CAVEAT` appended to ``meta.caveats`` here,
+    never via the verify LLM prompt.
 
-    **Trigger 1 of the demand-driven retraction model** (trigger 2 is
-    the draft's watch button, ``precis.export.retraction``): a paper
-    entering the claim graph is the moment its integrity starts to
-    matter, so a
-    ``paper`` source (a patent has no DOI to check) gets checked via
-    :func:`precis.ingest.provenance.check_ref_retraction`. The check is
-    TTL-gated (30 days), so a chase pass re-attaching over an
-    already-checked paper set costs no network, and any failure is
-    swallowed and logged — it must never fail or roll back the edge,
-    which is the durable thing here.
+    **Trigger 1 of the demand-driven retraction model** (trigger 2:
+    ``precis.export.retraction``'s draft watch button): a ``paper`` source
+    gets checked via :func:`precis.ingest.provenance.check_ref_retraction`,
+    TTL-gated (30 days); a failure is swallowed and logged, never rolls
+    back the edge.
 
-    **The check never runs inside an open transaction.** It does a
-    Crossref HTTP round-trip *and* opens its own connections; holding a
-    pgbouncer'd Postgres transaction across that risks pool-exhaustion
-    deadlock under load. So:
-
-    * ``conn=None`` — we own the write, and the check runs after our
-      ``store.tx()`` commits.
-    * ``conn=<caller's>`` — the caller's transaction is still open when
-      we return, so we cannot check here. Pass ``pending_checks=[]`` and
-      drain it with :func:`run_retraction_checks` after committing.
-      Without that list the check is silently skipped, which is why
-      every worker call site threads one through.
-
-    ``check_retraction=False`` is the opt-out for bulk/backfill callers
-    and tests that must not touch the network.
+    **Never runs inside an open transaction** (a Crossref round-trip risks
+    pool-exhaustion deadlock under a held pgbouncer transaction):
+    ``conn=None`` checks after the write's own ``store.tx()`` commits;
+    ``conn=<caller's>`` requires ``pending_checks=[]``, drained via
+    :func:`run_retraction_checks` after the caller commits.
+    ``check_retraction=False`` opts out for bulk/backfill callers and
+    network-free tests.
     """
     if role not in HUB_ROLES:
         raise BadInput(
@@ -1019,15 +881,13 @@ def append_reground_log(
     """Append ``entries`` to ``meta.reground_log``, truncating to the
     newest :data:`REGROUND_LOG_MAX`.
 
-    A read-modify-write on ``meta`` (``store.update_ref``'s ``meta_patch``
-    is a *top-level* ``meta || patch`` merge, so the list has to be rebuilt
-    whole). Same lost-update exposure as ``hub_refine``'s
-    ``taproot_rejected`` memo under two concurrent passes on one hub — the
-    unresolved "conflict-safe memo write" open item in
-    ``docs/backlog/taproot-reground.md``; run reground on one host, as the
-    enablement runbook already requires. A vanished hub is a silent no-op
-    rather than a raise: the log is an audit nicety, never worth failing a
-    removal that already happened.
+    Read-modify-write on ``meta`` (``update_ref``'s ``meta_patch`` merges
+    only top-level, so the list is rebuilt whole) — same lost-update
+    exposure as ``hub_refine``'s ``taproot_rejected`` memo under concurrent
+    passes on one hub (unresolved, docs/backlog/taproot-reground.md; run
+    reground on one host per the enablement runbook). A vanished hub is a
+    silent no-op, not a raise — the log is an audit nicety, never worth
+    failing a removal that already happened.
     """
     if not entries:
         return
@@ -1059,15 +919,12 @@ class WouldStrandHub(BadInput):
     claim hub to **zero** live evidence edges and the caller did not pass
     ``allow_last=True``.
 
-    The failure this exists to prevent is on the record: the manual
-    123-hub pass over draft 173020 ran add-first as a *prompt instruction*
-    only, and under partial failure (adds blocked, paired prunes not) two
-    hubs were pruned to zero live edges before a human caught it
-    (docs/backlog/taproot-reground.md). A hub SHOULD be allowed to reach
-    zero — that is how "questionable" is expressed (emergent
-    ``unverified`` via ``.trust``) — but only as a deliberate, authorized
-    RETIRE, never as the accidental residue of a half-applied plan. So
-    the door refuses by default and the caller has to say so out loud.
+    A hub SHOULD be allowed to reach zero (that's how "questionable" is
+    expressed — emergent ``unverified`` via ``.trust``), but only as a
+    deliberate, authorized RETIRE, never the accidental residue of a
+    half-applied add-first prune plan (docs/backlog/taproot-reground.md —
+    two hubs really were pruned to zero this way before a human caught it).
+    The door refuses by default; the caller has to say so out loud.
     """
 
 
@@ -1091,46 +948,32 @@ def remove_evidence(
 
     The removal counterpart of :func:`attach_evidence`, and the only
     sanctioned way to drop a :data:`HUB_ROLES` edge. Guards, in order:
+    ``role`` in :data:`HUB_ROLES`; ``hub_ref_id`` a live ``TAPROOT:claim``
+    finding; unless ``allow_last=True``, the hub must still carry ≥1 live
+    edge after removal, else :class:`WouldStrandHub` raises **inside the
+    transaction**.
 
-    * ``role`` must be one of :data:`HUB_ROLES`;
-    * ``hub_ref_id`` must be a live ``TAPROOT:claim`` finding (same guard
-      attach applies — a caller pointing at a review note or a non-finding
-      is a bug either way);
-    * unless ``allow_last=True``, the hub must still carry at least one
-      live evidence edge *after* this removal, else
-      :class:`WouldStrandHub` is raised **inside the transaction**, so a
-      caller sharing its ``conn`` rolls the whole attempt back rather than
-      landing a stranded hub.
+    Caveat: the strand guard reads live edges with a plain ``SELECT``
+    (:func:`live_evidence_handles`), no row lock — two concurrent removals
+    of *different* edges on the same hub can each pass the check and both
+    commit, stranding the hub. Covered by the same one-host enablement
+    rule as :func:`append_reground_log`'s meta races
+    (``docs/runbooks/taproot-chase-enablement.md``), not fixed here.
 
-      Caveat: this strand guard reads live edges with a plain
-      ``SELECT`` (:func:`live_evidence_handles`), not ``SELECT ... FOR
-      UPDATE`` — it takes no row lock. Two concurrent removals of
-      *different* edges on the same hub can each observe the other's
-      edge as still live, each pass the ``<=1`` check, and both commit,
-      stranding the hub. Covered by the same documented one-host
-      enablement rule as the ``meta`` read-modify-write races
-      (:func:`append_reground_log`'s docstring,
-      ``docs/runbooks/taproot-chase-enablement.md``) — not a bug this
-      function fixes on its own.
+    Then a chunk-id-exact ``DELETE`` (``dst_chunk_id IS NULL`` — every
+    :data:`HUB_ROLES` edge lands on the hub itself, never a chunk of it).
+    Deliberately not ``store.remove_link``: that door resolves its
+    endpoint from an ``ord``, and a stale/renumbered/retired grounding
+    chunk would silently match nothing; ``links`` also carries no
+    retraction-ripple hook for these relations
+    (``store._argument_ops.RETRACTION_RELATIONS``), so going direct
+    bypasses nothing.
 
-    Then a chunk-id-exact ``DELETE``, scoped to ``dst_chunk_id IS NULL``
-    — every :data:`HUB_ROLES` evidence edge lands on the hub itself
-    (never a specific chunk of it) by convention, and this predicate
-    enforces that convention at the hard-delete door rather than trusting
-    every caller upstream to have kept to it. Deliberately not
-    ``store.remove_link``: that door resolves its endpoint from an
-    ``ord``, and a stale/renumbered/retired grounding chunk (seen for
-    real — fi191322's ``source_handle`` in the pilot) would silently match
-    nothing. ``links`` carries no retraction-ripple hook for
-    ``establishes``/``corroborates``/``contradicts``
-    (``store._argument_ops.RETRACTION_RELATIONS``), so nothing is bypassed
-    by going direct.
-
-    ``log=True`` appends a :func:`reground_log_entry` to
-    :data:`META_REGROUND_LOG` — on by default, because a hard delete that
-    records nothing is exactly the un-auditable removal this door exists
-    to prevent. Only a caller that writes its own richer entry (the
-    contradicts re-attach below) passes ``log=False``.
+    ``log=True`` (default) appends a :func:`reground_log_entry` to
+    :data:`META_REGROUND_LOG` — a hard delete that records nothing is
+    exactly the un-auditable removal this door exists to prevent; only a
+    caller writing its own richer entry (the contradicts re-attach below)
+    passes ``log=False``.
     """
     if role not in HUB_ROLES:
         raise BadInput(
@@ -1215,25 +1058,21 @@ def reattach_as_contradicts(
     """Convert one evidence edge from ``from_role`` to ``contradicts``.
     Returns ``True`` when the ``contradicts`` edge is committed.
 
-    The contradictor path (taproot evidence relations, ADR 0073): a
-    passage carrying *primary content that runs counter to the claim* is
-    the most informative edge a hub can hold — it must never be
-    plain-dropped by the prune stage. So this door **adds first**: the
-    ``contradicts`` edge goes in through :func:`attach_evidence`, is read
-    back from ``links`` (never trusting the write's return —
-    docs/backlog/taproot-reground.md), and only a confirmed re-attach
-    releases the removal of the old edge. If the read-back misses, the
-    old edge stays and ``False`` comes back for the caller to flag.
+    The contradictor path (taproot evidence relations, ADR 0073): a passage
+    with primary content running counter to the claim is the most
+    informative edge a hub can hold — it must never be plain-dropped by the
+    prune stage. This door **adds first**: the ``contradicts`` edge goes in
+    through :func:`attach_evidence` and is read back from ``links`` (never
+    trusting the write's return); only a confirmed re-attach releases the
+    old edge's removal. A missed read-back leaves the old edge and returns
+    ``False``.
 
-    Both halves run in ONE transaction on purpose: unlike the applier's
-    cross-transaction add→prune pairing (where the add commits with the
-    enrichment pass and the prune follows later), these two writes are
-    two faces of one decision — rolling them back together can never
-    strand the hub, whereas committing the removal without the re-attach
-    can. ``allow_last=True`` on the removal is therefore safe *and*
-    necessary: the replacement is already in the same transaction, so the
-    strand guard would otherwise refuse a hub whose only edge is the one
-    being converted.
+    Both halves run in ONE transaction — unlike the applier's
+    cross-transaction add->prune pairing, these two writes are two faces of
+    one decision: rolling them back together can never strand the hub,
+    whereas committing the removal without the re-attach can.
+    ``allow_last=True`` on the removal is therefore safe and necessary: the
+    replacement is already in the same transaction.
     """
 
     def _do(c: Any) -> bool:
@@ -1316,23 +1155,17 @@ def link_claims(
     ``True`` if a new edge was written, ``False`` if it already existed.
 
     ``relation`` must be one of :data:`CLAIM_LINK_RELATIONS` (``refines``,
-    ``conjunct-of``) *and* a registered relation (checked via
-    :func:`validate_relation` — the friendly pre-flight for the
-    ``links_relation_fkey`` FK). **Both**
-    endpoints must be live ``TAPROOT:claim`` findings — a claim-link joins two
-    claim hubs (never a paper, a review note, or a non-finding), and the two
-    must differ (a hub can't link to itself).
+    ``conjunct-of``) and a registered relation (:func:`validate_relation`).
+    **Both** endpoints must be live ``TAPROOT:claim`` findings, and differ
+    (a hub can't link to itself).
 
-    This is the single write door for claim→claim links, the sibling of
-    :func:`attach_evidence` for paper→hub evidence edges (open #16).
-    Unlike evidence, a claim-link carries **no evidence flow** — the hubs keep
-    their own paper→hub edges. The fisheye Claims ring
-    (:mod:`precis.utils.refeye`) surfaces only ``refines`` today
-    (``derive_refines``); ``conjunct-of`` edges are not yet rendered there —
-    backlog item ``docs/backlog/fisheye-conjunct-of-surfacing.md``. Idempotent:
-    an identical
-    ``(from, to, relation)`` edge already present is a no-op returning
-    ``False``, so a re-run of the same authoring step writes nothing.
+    The single write door for claim->claim links, sibling of
+    :func:`attach_evidence` for paper->hub edges. Unlike evidence, a
+    claim-link carries **no evidence flow** — hubs keep their own
+    paper->hub edges. The fisheye Claims ring (:mod:`precis.utils.refeye`)
+    surfaces only ``refines`` today; ``conjunct-of`` isn't rendered there
+    yet (``docs/backlog/fisheye-conjunct-of-surfacing.md``). Idempotent: an
+    identical ``(from, to, relation)`` edge is a no-op returning ``False``.
     """
     if relation not in CLAIM_LINK_RELATIONS:
         raise BadInput(
@@ -1417,24 +1250,22 @@ def attach_motivation(
     """Write one ``hub --motivated-by--> artifact`` edge. Returns ``True`` if
     a new edge was written, ``False`` if it already existed.
 
-    The graph form of a ``hypothesis`` nanopub's provenance: the artifact
-    emits ``prov:wasDerivedFrom`` + ``precis:motivatedBy`` pointing at what
-    provoked the conjecture (:func:`precis.nanopub.assemble._provenance`,
-    hypothesis branch), and this edge points the same way — hub → motivator,
-    the derived-node-to-source direction :func:`link_claims` established.
+    The graph form of a ``hypothesis`` nanopub's provenance — mirrors
+    ``prov:wasDerivedFrom``/``precis:motivatedBy``
+    (:func:`precis.nanopub.assemble._provenance`), hub -> motivator.
 
-    This is the third taproot write door, beside :func:`attach_evidence`
-    (paper→hub support) and :func:`link_claims` (hub↔hub advisory). Keeping
-    motivation out of :data:`HUB_ROLES` is load-bearing rather than tidy:
-    :mod:`precis.workers.hub_refine` widens a claim by searching for evidence
-    that supports it, and aiming that at a conjecture makes a confirmation
-    engine of it (``docs/backlog/claim-review-mechanism.md``). A motivator is
-    what prompted the guess, never support for it.
+    Third taproot write door, beside :func:`attach_evidence` (paper->hub
+    support) and :func:`link_claims` (hub<->hub advisory). Keeping
+    motivation out of :data:`HUB_ROLES` is load-bearing: ``hub_refine``
+    widens a claim by searching for supporting evidence, and aiming that at
+    a conjecture makes a confirmation engine of it
+    (``docs/backlog/claim-review-mechanism.md``) — a motivator prompted the
+    guess, never supports it.
 
-    ``meta['source_handle']`` (a ``pc<id>`` handle) grounds the edge at the
-    specific passage, materialised as ``dst_chunk_id`` — the motivator is on
-    the *destination* side here, the mirror of an evidence edge's ``src_pos``.
-    Idempotent on ``(hub, motivator, relation)``.
+    ``meta['source_handle']`` grounds the edge at a specific passage,
+    materialised as ``dst_chunk_id`` (motivator on the *destination* side —
+    mirrors an evidence edge's ``src_pos``). Idempotent on ``(hub,
+    motivator, relation)``.
     """
     if hub_ref_id == motivator_ref_id:
         raise BadInput(
@@ -1817,81 +1648,31 @@ def merge_hubs(
 ) -> MergePlan:
     """Collapse ``loser_ref_id`` into ``winner_ref_id`` -- the merge door
     (docs/backlog/claim-hub-merge-door.md) neither :func:`apply_placement`
-    (dedups only against a hub that doesn't exist yet) nor
-    :func:`refine_claim_sentence` / :func:`link_claims` (link-don't-merge,
-    move no evidence) provide: two hubs that both already exist, one of
-    which must absorb the other's evidence graph and stop existing.
+    nor :func:`refine_claim_sentence`/:func:`link_claims` provide (both
+    only dedup/link, never absorb one existing hub into another).
 
-    The winner's own ``refs.title`` / ``meta.scope`` / ``pub_id`` are never
-    touched (requirement 10) -- rewording a hub for lint compliance is
-    :func:`refine_claim_sentence`'s separate job; folding the two together
-    would mean a failed reword takes the merge with it.
+    One transaction (``dry_run=False``): repoint/dedup/drop-self-loop every
+    live ``links`` row on the loser (:func:`_build_merge_plan`), record the
+    collapse via ``loser --{MERGE_COLLAPSE_RELATION}--> winner``
+    (:func:`link_claims`), soft-delete the loser. The winner's
+    ``title``/``scope``/``pub_id`` are never touched. ``links`` has no
+    ``deleted_at``, so every drop is a **hard** DELETE -- ``dry_run=True``
+    runs the identical plan and returns it without ever opening a write.
 
-    Mechanics, all inside one transaction (requirement 9) when
-    ``dry_run=False``:
+    **Refusal**: either side past ``'candidate'`` in ``nanopub_publish``
+    blocks the merge (visible in a dry run's ``plan.can_merge``; a real
+    run raises :class:`BadInput`). **Idempotent**: an already-soft-deleted
+    loser with the collapse-record edge already in place short-circuits to
+    ``plan.already_merged=True``; one without it is a caller mistake and
+    raises. **Known gap**: the loser's own ``'candidate'``-state
+    ``nanopub_publish`` rows aren't migrated onto the winner.
 
-    1. Every live ``links`` row touching the loser (either direction, any
-       relation) is either repointed onto the winner, dropped as
-       redundant (the winner already holds the identical edge --
-       full endpoint match, so two chunk-grounded ``cites`` from
-       *different* loser chunks both survive), or dropped as a self-loop
-       (the loser and winner were directly linked). See :func:`_build_merge_plan`.
-    2. The collapse is recorded via a fresh
-       ``loser --{MERGE_COLLAPSE_RELATION}--> winner`` link (written
-       while the loser is still live, through :func:`link_claims` -- the
-       existing single write door for hub<->hub links, not a raw INSERT).
-    3. The loser is soft-deleted (``refs.deleted_at``).
-
-    ``links`` has no ``deleted_at`` -- every drop above is a **hard**
-    DELETE with no undo (requirement 4). ``dry_run=True`` is therefore the
-    only safety net: it runs the exact same planning logic
-    (:func:`_build_merge_plan`) and returns the resulting :class:`MergePlan`
-    **without ever opening a write transaction**, so there is nothing to
-    roll back to get a truthful preview.
-
-    **Refusal** (requirement 5): if either side has a ``nanopub_publish``
-    row past ``'candidate'``, the merge changes an identity a
-    signed/published artifact already froze. A *dry* run still computes
-    and returns the check result (``plan.can_merge`` / ``plan.block_reason``)
-    rather than raising -- "someone has to be able to read that and catch
-    a mistake before it happens" (the spec's own words) requires the
-    refusal to be visible in the printed plan, not just at write time. A
-    *real* run (``dry_run=False``) raises :class:`BadInput` naming which
-    side and what state before writing anything.
-
-    **Idempotent** (requirement 7): a loser that is already soft-deleted
-    *and* already carries the collapse-record edge to this exact winner
-    short-circuits to ``plan.already_merged=True`` with no further reads
-    or writes -- neither an error nor a second attempt to move edges that
-    have already moved. A soft-deleted loser with NO such record (deleted
-    for some unrelated reason, or merged into a *different* winner) is a
-    caller mistake, not idempotency, and raises.
-
-    **Known gap**: the loser's own ``nanopub_publish`` row(s) in state
-    ``'candidate'`` (if any -- allowed, since ``'candidate'`` never blocks
-    a merge) are left pointing at the now-deleted ``claim_ref_id``. Nothing
-    here migrates or retargets them onto the winner -- whether a candidate
-    publish attempt should follow its hub into the winner, or simply lapse,
-    is a product decision this build doesn't make; flagged, not solved.
-
-    Args:
-        loser_ref_id: The hub being retired. Absorbed into ``winner_ref_id``.
-        winner_ref_id: The hub that survives, unchanged (requirement 10).
-        set_by: Audit actor for the edge writes.
-        dry_run: Compute and return the plan; write nothing.
-        conn: An open transaction to fold this write into; ``None`` opens
-            its own (``store.tx()`` for a real run, a plain read connection
-            for ``dry_run=True`` -- see above).
-
-    Returns:
-        The computed :class:`MergePlan` -- identical shape for a dry run
-        (nothing applied) and a real run (exactly what was applied).
+    Returns the :class:`MergePlan` (same shape for dry vs real run).
 
     Raises:
-        BadInput: same ``ref_id`` on both sides; a ref that doesn't exist;
-            a live ref that isn't a claim hub; a soft-deleted loser with no
-            recorded merge into this winner; or (real run only) either
-            side past ``candidate`` in ``nanopub_publish``.
+        BadInput: same ``ref_id`` on both sides; a nonexistent or non-hub
+            ref; a soft-deleted loser with no recorded merge into this
+            winner; or (real run) either side past ``candidate``.
     """
     if loser_ref_id == winner_ref_id:
         raise BadInput(
@@ -2029,33 +1810,25 @@ def apply_placement(
     * ``needs_review`` — file a ``kind='todo'`` via ``todo_fn`` and attach
       **nothing** (open #16: a risky merge is never auto-applied).
 
-    **Compound downgrade** (docs/backlog/taproot-atomic-claims.md step 2):
-    an ``attach`` placement whose ``hub_ref_id`` is a **compound** hub (has
-    ≥1 live inbound ``conjunct-of`` edge, :func:`_is_compound_hub`) is
-    downgraded to the ``needs_review`` path instead of attaching — evidence
-    must never land on a compound (step 3's own hard guard in
-    :func:`attach_evidence` would raise), and letting that raise happen
-    inside a caller's savepoint (e.g. the chase bridge's per-finding
-    transaction) would drop the evidence with only a log line rather than
-    filing a todo a human can act on.
+    **Compound downgrade**: an ``attach`` placement whose hub is a
+    **compound** (:func:`_is_compound_hub`) downgrades to ``needs_review``
+    instead of attaching — evidence must never land on a compound
+    (:func:`attach_evidence`'s own guard would raise), and letting that
+    raise inside a caller's savepoint would drop the evidence with only a
+    log line instead of filing a todo a human can act on.
 
-    Returns the hub ref_id it attached to / minted, or ``None`` for
-    ``needs_review`` (including the compound downgrade above). ``role`` is
-    the evidence role for the paper edge (default :data:`_DEFAULT_ROLE`);
-    originator promotion is derived later.
+    Returns the hub ref_id attached to/minted, or ``None`` for
+    ``needs_review`` (including the compound downgrade). ``role`` is the
+    evidence role for the paper edge; originator promotion is derived
+    later.
 
-    ``conn`` (Phase 3 W1) lets a caller that already holds an open
-    transaction (chase's per-finding ``conn``) fold the hub mint + evidence
-    attach into it, so the write commits atomically with whatever else the
-    caller is doing in the same transaction. ``None`` (default) preserves
-    the original behaviour: ``attach`` writes standalone via
-    :func:`attach_evidence`'s own ``store.tx()``, and ``new``/
-    ``new_contradicts`` open one shared ``store.tx()`` for the mint +
-    attach (+ optional contradicts link) pair. ``needs_review`` is the one
-    exception: ``conn`` is never passed to ``todo_fn`` — filing the review
-    todo is an intentionally separate, self-committing side-effect (there
-    is no hub/edge write on this path to keep atomic with it), not part of
-    the evidence write ``conn`` exists to bundle.
+    ``conn`` (Phase 3 W1) lets a caller with an already-open transaction
+    (chase's per-finding ``conn``) fold the mint + attach into it. ``None``
+    (default): ``attach`` writes standalone via :func:`attach_evidence`'s
+    own ``store.tx()``; ``new``/``new_contradicts`` open one shared
+    ``store.tx()`` for the mint + attach (+ contradicts link). Exception:
+    ``needs_review`` never passes ``conn`` to ``todo_fn`` — filing the
+    review todo is an intentionally separate, self-committing side-effect.
     """
     action = placement.action
 
@@ -2247,31 +2020,21 @@ def apply_extraction(
     """Persist a full :class:`~precis.taproot.canon.ClaimExtraction` through
     the write door — the decomposition-aware orchestrator on top of
     :func:`apply_placement` (docs/backlog/taproot-atomic-claims.md step 2).
+    Canon (LLM/ANN) stays out of this module: writes only, over
+    already-judged ``(claim, placement)`` pairs.
 
-    Canon (LLM/ANN) stays out of this module: the caller has already run
-    ``block`` -> ``dedup_judge`` -> ``place`` per atom and for the compound,
-    and hands in the resulting ``(claim, placement)`` pairs — this function
-    only writes.
-
-    1. Each ``atoms`` pair -> :func:`apply_placement` exactly as for a
-       single claim (mint/attach + evidence edge; ``needs_review`` files a
-       todo and contributes no hub id to
+    1. Each ``atoms`` pair -> :func:`apply_placement` as for a single claim
+       (``needs_review`` contributes no id to
        :attr:`ExtractionOutcome.atom_hub_ids`).
-    2. ``compound`` (if given) -> mint-or-converge with **no** evidence
-       edge (step 3) via :func:`_apply_compound_placement`, which also
-       writes/merges the ``not_claims`` audit memo (step 8) onto the
-       compound hub.
-    3. Every atom hub that was actually placed gets a
-       ``link_claims(atom, compound, relation="conjunct-of")`` — the single
-       write door, idempotent, so a re-run of the same extraction converges
-       rather than duplicating edges.
+    2. ``compound`` (if given) -> mint-or-converge with **no** evidence edge
+       via :func:`_apply_compound_placement`, which also writes/merges the
+       ``not_claims`` audit memo onto the compound hub.
+    3. Every placed atom hub gets ``link_claims(atom, compound,
+       relation="conjunct-of")``.
 
-    Idempotency falls out of the primitives it calls: :func:`mint_hub`'s
-    content-derived pub_id converges re-runs, :func:`link_claims` no-ops on
-    an existing edge, and :func:`_merge_not_claims_memo` is sha-keyed and
-    existing-wins. ``conn``/``pending_checks``/``todo_fn``/``set_by`` all
-    thread through to :func:`apply_placement` and the compound path
-    unchanged from their single-claim meaning.
+    Idempotency falls out of the primitives: :func:`mint_hub`'s pub_id
+    converges re-runs, :func:`link_claims` no-ops on an existing edge, and
+    :func:`_merge_not_claims_memo` is sha-keyed and existing-wins.
     """
     atom_hub_ids: list[int] = []
     for atom_claim, atom_placement in atoms:

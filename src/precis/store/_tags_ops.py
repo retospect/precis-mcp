@@ -79,7 +79,7 @@ def _row_to_tag(namespace: str, value: str) -> Tag:
     return Tag.closed(namespace, value)
 
 
-def _escape_like(text: str) -> str:
+def escape_like(text: str) -> str:
     """Escape ``\\ % _`` in ``text`` so it's safe to embed in an ILIKE
     pattern (wrapped in caller-supplied ``%`` wildcards) without a
     user-supplied ``%``/``_`` acting like a pattern metacharacter.
@@ -703,7 +703,7 @@ class TagsMixin:
         offset = (page - 1) * page_size
         # ``%`` is the wildcard; escape any literal % / _ in q so a
         # user-supplied string doesn't behave like a pattern.
-        needle = _escape_like(q.strip())
+        needle = escape_like(q.strip())
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT t.namespace, t.value, "

@@ -31,7 +31,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
-from precis.export.latex import _DATASHEET_SUBTYPE_LABELS, datasheet_pub_label
+from precis.export.latex import DATASHEET_SUBTYPE_LABELS, datasheet_pub_label
 from precis_web.deps import await_dispatch, get_store, templates
 from precis_web.routes.papers import _render_detail, _resolve_paper
 
@@ -49,7 +49,7 @@ def _ds_panel_ctx(ref: Any) -> dict[str, Any]:
             "part_lcsc": str(meta.get("part_lcsc") or ""),
         },
         # (value, label) options for the sub-type <select>, default first.
-        "ds_subtypes": list(_DATASHEET_SUBTYPE_LABELS.items()),
+        "ds_subtypes": list(DATASHEET_SUBTYPE_LABELS.items()),
     }
 
 

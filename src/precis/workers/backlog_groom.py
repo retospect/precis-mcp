@@ -45,13 +45,13 @@ classifier.
 from __future__ import annotations
 
 import logging
-import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import psycopg
 
 from precis.store import Store
 from precis.store.types import Tag
+from precis.workers import _throttle
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -61,6 +61,9 @@ log = logging.getLogger(__name__)
 _LOCK_KEY = 0x62_6B_6C_67_67_72_00_01 - 2**63
 #: app_state key holding the ISO-8601 timestamp of the last completed pass.
 _STATE_KEY = "backlog_groom:last_run"
+#: Env var + default for the cadence throttle (see :func:`_throttle.due`).
+_REFRESH_ENV_VAR = "PRECIS_BACKLOG_GROOM_REFRESH_HOURS"
+_DEFAULT_REFRESH_HOURS = 6.0
 
 #: Meta marker on the strategic root the groomer hangs its todos under.
 _ROOT_MARKER = "backlog_groom_root"
@@ -73,30 +76,9 @@ _JOB_TYPE = "fix_gripe"
 _OPT_OUT_TAG = "no-groom"
 
 
-def _refresh_hours() -> float:
-    """Minimum gap between grooming passes.
-
-    ``PRECIS_BACKLOG_GROOM_REFRESH_HOURS`` (default 6.0, floor 0.1).
-    """
-    raw = os.environ.get("PRECIS_BACKLOG_GROOM_REFRESH_HOURS")
-    if not raw:
-        return 6.0
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return 6.0
-
-
 def _due(store: Store) -> bool:
     """True when the throttle window has elapsed since the last pass."""
-    last = store.get_setting(_STATE_KEY)
-    if not last:
-        return True
-    try:
-        last_ts = datetime.fromisoformat(last)
-    except ValueError:
-        return True
-    return datetime.now(UTC) - last_ts >= timedelta(hours=_refresh_hours())
+    return _throttle.due(store, _STATE_KEY, _REFRESH_ENV_VAR, _DEFAULT_REFRESH_HOURS)
 
 
 def _groomed_gripe_ids(store: Store) -> set[int]:

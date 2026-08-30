@@ -122,9 +122,8 @@ Field notes:
   4-layer rigid FR-4 stackup `F.Cu`/`In1.Cu(GND)`/`In2.Cu`/`B.Cu`) on first
   `put` — the netlist≠board hedge for future multi-board work; v1 is one
   board per design.
-- **`nets[].domain`** — `'electrical'` (default) `|'fluidic'|'thermal'`.
-  v1 **rejects** any net with a non-electrical domain: schema-reserved for
-  later microfluidic/thermal co-design, not yet routed.
+- **`nets[].domain`** — only `'electrical'` (the default) is accepted
+  today; any other value is rejected.
 
 ## Read it as a graph — `get`
 
@@ -190,7 +189,8 @@ Placement and routing run as **enqueued worker jobs** — never inline in this
 call (a real board is minutes of compute, not milliseconds). `put` returns a
 job id immediately; see **[[precis-route-help]]** for the full `op=` surface
 (`place`/`route`, plus the inline edits `move`/`rip`/`pin_side`/`plane_net`/
-`class_rules`), the congestion/planes read views, and what's still inert.
+`class_rules`), the congestion/planes read views, and what's still inert
+(including its inert move classes `SIDE_FLIP`/`PIN_SWAP`).
 
 ```python
 put(kind="pcb", id="s", args={"op": "place", "iters": 2000, "seed": 0})
@@ -260,13 +260,13 @@ search(kind="pcb", q="esp32 board", mode="semantic")
 Each design carries one embeddable card (parts + net names), so search lands
 on intent. `pcb` joins the cross-kind fan-out `search(kind='*', q='…')`.
 
-## Delete
+## Retire a design
 
 ```python
 delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverable)
 ```
 
-## Canonical end-to-end (the v1 loop)
+## Canonical end-to-end
 
 1. **Pick parts** — `search(kind='part', q='…')` for each function; prefer
    Basic + high-turnover ([[precis-part-select-help]]).
@@ -283,14 +283,3 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
 7. **Export & order** — `view='bom'` + `view='cpl'` to order at JLCPCB;
    `view='mechanical'` for the enclosure; `view='route'` (Freerouting) stays
    available as a demoted escape hatch.
-
-## Scope (v1)
-
-In: batch netlist authoring, graph traversal, the eyes (crossings / ratsnest /
-DRC-lite / proximity / trace / measures / feasibility), in-house topological
-place+route as enqueued worker jobs ([[precis-route-help]]), BOM/CPL/netlist/
-DSN/mechanical export, the Freerouting round-trip (demoted escape hatch),
-JLCPCB-assemblable part selection with turnover ranking. **Deferred**: real
-routed-length / length-matching measures, full 3-D enclosure models,
-datasheet table extraction. See [[precis-route-help]] for the place/route
-engine's own inert-move-class caveats (`SIDE_FLIP`, `PIN_SWAP`).

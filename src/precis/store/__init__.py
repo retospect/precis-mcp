@@ -1,7 +1,7 @@
-"""Async postgres-backed store for precis V2.
+"""Postgres-backed store for precis V2 (psycopg3, sync).
 
 Public surface:
-    Store              — high-level store handle, owns the asyncpg pool
+    Store              — high-level store handle, owns the psycopg pool
     Migrator           — forward-only migration runner
 
     Ref, Block, Link, Tag, CacheEntry, BlockInsert  — frozen row types

@@ -1,46 +1,32 @@
 """LLM chunk-summarization worker pass.
 
-Writes a model-authored two-part summary — a *very brief* gist plus a
-sentence or two of *additional detail* — into ``chunk_summaries`` under
-``summarizer = 'llm-v1'``. This is a distinct artifact from the lexical
-``rake-lemma`` keyword row (also in ``chunk_summaries``) and from the
-per-chunk KeyBERT keywords on ``chunks.keywords`` (F20). Registered by
-migration ``0025_register_llm_summarizer.sql``.
+Writes a two-part summary — brief gist + a sentence or two of detail —
+into ``chunk_summaries`` under ``summarizer = 'llm-v1'``; distinct from the
+lexical ``rake-lemma`` row (same table) and per-chunk KeyBERT keywords
+(``chunks.keywords``). Registered by migration
+``0025_register_llm_summarizer.sql``.
 
-Why a standalone pass and not a :class:`~precis.workers.base.WorkerHandler`
--------------------------------------------------------------------------
-``WorkerHandler.process`` must be pure (no DB, no I/O). In-context
-summarization needs both: DB JOINs for the document header + section
-path + keywords + numerics, and an outbound LLM call. So this follows
-the ``chunk_keywords`` ref-pass shape (own claim query, own writes,
-returns ``{claimed, ok, failed}``) rather than the handler base.
+**Not a WorkerHandler**: ``WorkerHandler.process`` must be pure (no DB/I/O),
+but this needs DB JOINs (header + section path + keywords + numerics) plus
+an outbound LLM call — so it follows the ``chunk_keywords`` ref-pass shape
+(own claim query, own writes, returns ``{claimed, ok, failed}``).
 
-Transport
----------
-A tiny stdlib ``urllib`` OpenAI ``/v1/chat/completions`` client,
-identical in shape to ``RemoteEmbedder``. It points at the
-cluster's litellm proxy (the ``summarizer`` alias → Qwen3-Next-80B-A3B
-on llama.cpp). The :class:`Transport` seam (re-exported from
-``utils/llm/openai_tools.HttpTransport``, the one canonical HTTP-POST
-seam every OpenAI-shaped client in this codebase shares) keeps the pass
-offline-testable — tests inject a fake that returns canned completions.
+**Transport**: a tiny stdlib ``urllib`` OpenAI ``/v1/chat/completions``
+client (shape of ``RemoteEmbedder``), pointed at the cluster's litellm
+proxy (``summarizer`` alias → Qwen3-Next-80B-A3B on llama.cpp), via the
+shared :class:`Transport` seam (``utils/llm/openai_tools.HttpTransport``)
+— tests inject a fake for offline runs.
 
-Default-off
------------
-The pass runs only via ``precis worker --only llm_summarize`` or
-``PRECIS_SUMMARIZE_LLM=1`` — never in the default system/agent profile.
-A 1M-chunk backfill is a deliberate, node-targeted batch, not something
-every system worker should pick up.
+**Default-off**: only via ``precis worker --only llm_summarize`` or
+``PRECIS_SUMMARIZE_LLM=1`` — a 1M-chunk backfill is a deliberate,
+node-targeted batch, not a default system/agent-profile pass.
 
-Prefix-cache discipline
------------------------
-llama.cpp reuses the KV cache of the longest matching prompt *prefix*.
-So the stable content (system instructions + the document header card)
-is the FIRST message and is byte-identical across every chunk of a
-document; the per-chunk specifics go LAST. Claims are ordered
-``ref_id, ord`` and the doc card is cached per ref, so consecutive
-chunks of one document reuse the cached prefix and only the short tail
-is re-evaluated. NOTE: pin the litellm ``summarizer`` alias to a single
+**Prefix-cache discipline**: llama.cpp reuses the KV cache of the longest
+matching prompt *prefix*, so stable content (system instructions + the doc
+header card) is the FIRST message, byte-identical across a document's
+chunks; per-chunk specifics go LAST. Chunks are claimed ordered
+``ref_id, ord`` with the doc card cached per ref, so consecutive chunks
+reuse the prefix. Pin the litellm ``summarizer`` alias to a single
 backend — least-busy routing across nodes destroys this locality.
 """
 

@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.env import env_int
 from precis.workers.runner import BatchResult
 
 if TYPE_CHECKING:
@@ -113,22 +114,9 @@ _DEFAULT_SMALL_DRAIN_CONCURRENCY = 16
 _DEFAULT_SMALL_TARGET_NODE = "melchior"
 
 
-def _env_int(name: str, default: int, *, floor: int = 1) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return max(floor, int(raw))
-    except ValueError:
-        log.warning(
-            "materialize: %s=%r is not an int; using default %d", name, raw, default
-        )
-        return default
-
-
 def _small_band() -> tuple[int, int]:
-    low = _env_int(_SMALL_BAND_LOW_ENV, _DEFAULT_BAND_LOW, floor=0)
-    high = _env_int(_SMALL_BAND_HIGH_ENV, _DEFAULT_BAND_HIGH, floor=1)
+    low = env_int(_SMALL_BAND_LOW_ENV, _DEFAULT_BAND_LOW, lo=0)
+    high = env_int(_SMALL_BAND_HIGH_ENV, _DEFAULT_BAND_HIGH, lo=1)
     return (min(low, high), high)
 
 
@@ -138,7 +126,7 @@ def _small_drain_limit() -> int:
     "how many jobs does the backlog need" math read this, so raising
     ``PRECIS_SMALL_DRAIN_LIMIT`` can't desync them (a fixed ``src.batch_limit``
     would over-mint ~limit/500× no-op jobs)."""
-    return _env_int(_SMALL_DRAIN_LIMIT_ENV, _DEFAULT_SMALL_DRAIN_LIMIT)
+    return env_int(_SMALL_DRAIN_LIMIT_ENV, _DEFAULT_SMALL_DRAIN_LIMIT, lo=1)
 
 
 def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
@@ -150,8 +138,8 @@ def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
         params: dict[str, Any] = {
             "pass": pass_name,
             "limit": _small_drain_limit(),
-            "concurrency": _env_int(
-                _SMALL_DRAIN_CONCURRENCY_ENV, _DEFAULT_SMALL_DRAIN_CONCURRENCY
+            "concurrency": env_int(
+                _SMALL_DRAIN_CONCURRENCY_ENV, _DEFAULT_SMALL_DRAIN_CONCURRENCY, lo=1
             ),
         }
         target = os.environ.get(_SMALL_TARGET_NODE_ENV, _DEFAULT_SMALL_TARGET_NODE)
@@ -402,7 +390,7 @@ def _mint_jobs(store: Store, src: _BacklogSource, n: int) -> int:
     fire across processes; only a crash-and-retry of the SAME Python call
     ever deduped.) Parentless by design (system-minted background
     maintenance — no owning todo/build-subject exists); the executors'
-    failure-bubble already no-ops for a parentless job (see
+    failure bubble already no-ops for a parentless job (see
     ``claude_inproc``'s "orphan jobs (legacy, no parent_id) just no-op").
 
     Residual: two processes racing the check-then-insert for the SAME

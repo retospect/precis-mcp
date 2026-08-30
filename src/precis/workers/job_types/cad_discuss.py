@@ -99,13 +99,13 @@ def _design_facts(store: Store, cad_ref_id: int) -> tuple[str, str]:
     source = spec_to_source(scene_spec)
     lines: list[str] = []
     try:
-        from precis.cad.bulk import _expr_aabb
+        from precis.cad.bulk import expr_aabb
         from precis.cad.bulk import volume as cad_volume
         from precis.cad.relate import connectivity as cad_connectivity
 
         design = build_design(scene_spec)
         lines.append(_CONVENTION)
-        lo, hi = _expr_aabb(design, design.whole())
+        lo, hi = expr_aabb(design, design.whole())
         lines.append(
             f"Bounding box (mm): {hi[0] - lo[0]:.3g} × {hi[1] - lo[1]:.3g} × "
             f"{hi[2] - lo[2]:.3g}"

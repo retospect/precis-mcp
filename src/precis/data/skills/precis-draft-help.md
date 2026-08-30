@@ -67,7 +67,7 @@ call)
 | `title=` | rename (both `refs.title` and the heading, atomically) |
 | `scaffold=` | append a document class's section skeleton |
 | `word_target=` | a heading's word budget `{'min':…,'max':…}`; `{}` clears |
-| `style=` | stamp a heading with a section-style skill (ADR 0037) |
+| `style=` | stamp a heading with a section-style skill |
 | `not_abbrev=` | silence the undefined-abbreviation hint for given tokens |
 | `origin=` / `permission=` | a figure's provenance + clearance paper-trail |
 
@@ -109,13 +109,6 @@ whole byline (not additive).
 **`put`** creates: a new draft, a chunk (`at=` places it —
 `{'first'\|'last': True}`, `{'into': 'dc<id>'}`, `{'before'\|'after':
 'dc<id>'}`), or a fork — see *Create a draft*, below.
-
-## Finding the rest of this skill
-
-The sections below are worked examples and edge cases for each row above
-— figures, tables, citations, export, writing style, and more. Fetch
-`get(kind='skill', id='precis-draft-help/toc')` for the section list,
-then `get(kind='skill', id='precis-draft-help~N')` for one section.
 
 ## Search a draft — lexical, semantic, regex
 
@@ -246,7 +239,7 @@ so scaffold once, early.
 
 ```python
 edit(id="dc<heading>", word_target={"min": 200, "max": 400})  # {} clears
-edit(id="dc<heading>", style="<section-style skill>")  # ADR 0037
+edit(id="dc<heading>", style="<section-style skill>")
 ```
 
 `word_target=` bounds are non-negative ints, `min <= max`, either bound
@@ -324,10 +317,9 @@ claims cannot disagree. A malformed temperature trips a
 
 ## Figures & images
 
-A **figure** is a chunk whose caption is `text` and whose image bytes
-are stored separately (never in `text`). Add one with
-`chunk_kind='figure'`, caption as `text`, image **base64** in `image=`,
-and an `origin=`:
+A **figure** is a chunk whose caption is `text` and whose image bytes are
+stored separately (never in `text`): `chunk_kind='figure'`, image
+**base64** in `image=`, plus `origin=`:
 
 ```python
 put(
@@ -339,57 +331,27 @@ put(
     origin="original",
     at={"after": "dc12"},
 )  # our own diagram/schematic
-
-put(
-    kind="draft",
-    id="nanotrans",
-    chunk_kind="figure",
-    text="Fig 3 (after Smith 2019).",
-    image="<base64>",
-    origin="third_party",
-    permission={
-        "publisher": "Springer Nature",
-        "permission_id": "SNCSC-2026-0451",
-        "status": "granted",
-        "granted_at": "2026-06-18",
-        "source_paper": "smith19",
-    },
-)  # reused from another paper — REQUIRES the publisher paper-trail;
-# also accepts requested_at, scope, required_credit; status ∈ requested|granted|denied
 ```
 
 `origin` ∈ `{original, own_graph, third_party}` drives a **clearance
-gate**: a `third_party` figure clears only with a **granted, unexpired**
-`permission` (uncleared → warning banner in the reader, **export
-fails**). `mime=` is sniffed when omitted; permission lives in
-`meta.figure.permission`, shown as an origin chip + ✓/✗ badge (hover for
-the paper-trail, click to edit); image served at
-`/drafts/blob/<handle>`. Web reader's **"＋ figure"** uploads a file
-directly, revealing the permission form inline for `third_party`.
-Programmatic: `edit(kind='draft', id='dc<id>', origin='third_party',
-permission={…})` — caption/image bytes stay put.
+gate**: a `third_party` figure needs a **granted, unexpired**
+`permission={'publisher', 'permission_id', 'status', 'granted_at',
+'source_paper'}` (also accepts `requested_at`/`scope`/`required_credit`;
+`status` ∈ `requested|granted|denied`) or **export fails**. `mime=` is
+sniffed when omitted. Set clearance later with `edit(kind='draft',
+id='dc<id>', origin='third_party', permission={…})` — caption/image
+bytes stay put. The caption **is** the figure's `text`, so it edits like
+any other prose: `edit(kind='draft', id='dc<id>', text='…')`.
 
-The caption **is** the figure chunk's `text`, so it edits like any other
-prose: `edit(kind='draft', id='dc<id>', text='…')`, or **"✎ edit
-caption"** on a focused figure in `/smartdraft` (same inline editor a
-paragraph gets, minus the Enter-split / Backspace-merge keys — that
-chunk also carries the image). Blob and `meta.figure` are untouched.
+A figure's **medium** is separate from `origin`: a static **blob**
+(`image=` above), a data-driven **graph** (`own_graph` + a render recipe,
+below), or an editable SVG canvas (`has-figure` edge). Clearance is
+medium-aware — no blob and no canvas = **uncleared**. On export a raster
+blob embeds directly; an SVG (blob or canvas) rasterises to PNG.
 
-A figure's **medium** (how the pixels are produced) is separate from
-`origin`: a static **blob** (`image=` above), a data-driven **graph**
-(`own_graph` + a render recipe, below), or an **editable SVG canvas**
-(`has-figure` edge). A no-image figure in the web reader renders a
-**"create drawing"** placeholder; clicking it mints a canvas seeded from
-the caption, opens the `/figure` editor; a canvas-backed figure renders
-inline with **"✎ open in /figure"**. Clearance is medium-aware — no
-blob and no canvas = **uncleared**. **Export**: a raster blob embeds
-directly; an SVG (blob or canvas) rasterises to PNG, carried by
-`\includegraphics` (LaTeX) and `add_picture` (docx); an image-less,
-canvas-less figure is caught by the clearance gate first.
-
-**Graph** (`origin='own_graph'`, e.g. a plot generated from data): give
-it **`render=`** (the Python that draws it) instead of `image=`, and
-**`plots=[dc<id>]`** (the data/table chunks it reads):
+**Graph** (`origin='own_graph'`): give it **`render=`** (the Python that
+draws it) instead of `image=`, and **`plots=[dc<id>]`** (the data/table
+chunks it reads):
 
 ```python
 put(
@@ -407,13 +369,12 @@ put(
 )
 ```
 
-The render code runs **sandboxed, out-of-band** (never at `put` time):
-it receives `data={'tables': [...]}` and `out` (the PNG path); an
-unsaved matplotlib figure auto-saves. The image is **deferred** — a
-placeholder until the render lands, then refreshes automatically
+The render code runs **sandboxed, out-of-band** (never at `put` time): it
+receives `data={'tables': [...]}` and `out` (the PNG path). The image is
+**deferred** — a placeholder until the render lands, then refreshes
 whenever the plotted data changes (the `plots` edge is the one reactive
-recompute). A graph is otherwise the same `figure` kind as an uploaded
-image — clearance, caption, blob serving, export all apply identically.
+recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
+caption, export all apply identically.
 
 ## Data / table chunks
 
@@ -446,15 +407,13 @@ naming the table's actual dimensions; a zero-match find-replace is
 refused too (chunk untouched); only one of `table=`/`cell=`/`find=`/`sub=`
 per edit.
 
-A LaTeX-imported table flagged `needs-table-review` has no stored grid, and
-these doors used to refuse it outright even though `get()` rendered it fine.
-They now recover the grid by re-parsing the chunk's own raw LaTeX — the same
-path the read side uses — and clear the stale flag once a grid is stored, so
-such a chunk is editable (and citable) like any other. Cells recovered this
-way stay **strings**: raw LaTeX carries no type information. A chunk whose
-`tabular` genuinely isn't in its text still refuses with "no stored data" —
-that refusal is real, and hand-typing a `table=` grid to defeat it risks
-mangling live content.
+A LaTeX-imported table flagged `needs-table-review` recovers its grid by
+re-parsing the chunk's own raw LaTeX and clears the flag once a grid is
+stored, so it's editable (and citable) like any other — cells recovered
+this way stay **strings** (raw LaTeX carries no type information). A
+chunk whose `tabular` genuinely isn't in its text refuses with "no stored
+data"; don't hand-type a `table=` grid to defeat that, it risks mangling
+live content.
 
 For a cell holding raw LaTeX (`$\sim$` and friends), prefer `cell=`/
 `text=`/find-replace over the whole `table=` **dict**: a value nested in
@@ -718,10 +677,8 @@ already-cited closure, applied to a hand-typed search. See
 **Some drafts are machine-owned and refuse your edits.** A draft linked
 `dossier-of` (a quest's dossier, [[precis-quest-help]]) or `paper-of` is
 written by the process that owns it; `put`/`edit`/`delete` on one raises
-`Unsupported`. Read it freely — the refusal exists because a hygiene pass
-once restructured a live dossier and silently stranded most of it, leaving
-the owning loop reading weeks-old prose. If such a draft looks wrong, the
-fix belongs in the process that writes it, not in the document.
+`Unsupported`. Read it freely — if such a draft looks wrong, the fix
+belongs in the process that writes it, not in the document.
 
 ## Writing well, and steering rather than hand-editing
 
@@ -771,59 +728,48 @@ precis draft remarkable <slug> [--folder /Precis] [--dry-run]
 put(kind='job', job_type='draft_export', parent_id=<project-todo-id>, params={'draft': '<slug>'})
 ```
 
-All exports are a one-way resolution pass; output is disposable
-(re-export, never hand-edit). Resolves automatically: each block gets
-`\label{chunk:<handle>}`, `[dc<id>]` cross-refs become `\cref{chunk:h}`;
-each `[pc<id>]`/`[fi<id>]` citation resolves to its paper and becomes
-`\cite{}`, `refs.bib` carrying one entry per cited paper (DOI/arXiv when
-known); every defined abbreviation becomes a `\newacronym`, first use
-full and later `\gls{…}`, with a page-number list in the glossary;
-`[me<id>]`/cross-draft `[dc<id>]` links render to nothing (provenance
-only). The byline becomes an `authblk` block under `\maketitle` (ROR
-hyperlinked; no authors → a legacy default). You never write `\cite{}`
+Exports are one-way and disposable (re-export, never hand-edit). Resolves
+automatically: each block gets `\label{chunk:<handle>}`, `[dc<id>]`
+cross-refs become `\cref{chunk:h}`; each `[pc<id>]`/`[fi<id>]` citation
+resolves to its paper and becomes `\cite{}`, `refs.bib` carrying one
+entry per cited paper (DOI/arXiv when known); every defined abbreviation
+becomes a `\newacronym`, first use full and later `\gls{…}`, with a
+page-number list in the glossary; `[me<id>]`/cross-draft `[dc<id>]` links
+render to nothing (provenance only). The byline becomes an `authblk`
+block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[pc<id>]` → a chunk
 of a held paper) or the export marks a stub + warns.
 
 - **PDF** — deterministic but slow, so it runs as a **job**
-  (`put(kind='job', ...)` above), streaming progress and landing the
-  path in `job_summary`/`meta.pdf` (web: **export PDF** button). The
-  web reader's **PDF** link also compiles on demand, cached by the
-  draft's version token; no TeX toolchain → a friendly error instead.
-- **Word/.docx** — toolchain-free, **synchronous**: the web reader's
-  **export .docx** link downloads immediately, with render-time
+  (`put(kind='job', ...)` above), landing the path in
+  `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
+- **Word/.docx** — toolchain-free and **synchronous**, with render-time
   acronym first-use expansion + an auto acronyms list.
-- **reMarkable** — web's **→ reMarkable** button (needs a device
-  credential: the signed-in user's own pairing from `/account`, else
-  the deployment-wide vault secret `REMARKABLE_RMAPI_CONFIG` — never
-  `app_settings`) uploads a reMarkable-mode PDF: RM2 page geometry
-  (wide pen margin), and every citation renders as a numbered
-  `\footnote` — human cite + bibliography number + the referenced
-  chunk excerpt — instead of a bare `\cite`, so you read the source
-  inline (a numbered bibliography still renders at the end).
-  Destination = the `remarkable.target_folder` app_setting (default
-  `/Precis`).
-- **Cited sources → reMarkable** — web's **papers → reMarkable** button
-  (same credential rules) sends every cited source PDF (paper / patent /
-  datasheet) held on the worker host, as-is, into a per-draft subfolder
+- **reMarkable** (`precis draft remarkable`, needs a device credential —
+  the signed-in user's own `/account` pairing, else the deployment-wide
+  vault secret `REMARKABLE_RMAPI_CONFIG`) uploads a reMarkable-mode PDF:
+  RM2 page geometry, and every citation renders as a numbered `\footnote`
+  — cite + bibliography number + the referenced chunk excerpt — instead
+  of a bare `\cite`, so you read the source inline. Destination =
+  `remarkable.target_folder` app_setting (default `/Precis`).
+- **Cited sources → reMarkable**
+  (`put(kind='job', job_type='remarkable_papers_send',
+  params={'draft': '<slug>'})`) sends every cited source PDF (paper /
+  patent / datasheet) held on the worker host into a per-draft subfolder
   (`/Precis/<slug>`); missing-on-host sources are reported, not fatal.
-  Agent-startable: `put(kind='job', job_type='remarkable_papers_send',
-  params={'draft': '<slug>'})`.
-- **Reading editions → reMarkable** — web's **reading → reMarkable** button
-  (same credential rules) typesets EACH cited source as its own tablet-sized
-  PDF: the source's body chunks in reading order (light formatting, RM2
-  geometry), then a claims appendix (every Taproot claim hub grounded in
-  this source, with its publish state), then the original PDF appended when
-  this host holds a copy. Body + claims come from the database, so a source
-  missing from this host's corpus still gets a reading edition — just
-  without part 3 (a note in the document says so); only a source with zero
-  body chunks and no local PDF is skipped. `params.source` restricts the
-  run to one cited source (slug). Agent-startable:
-  `put(kind='job', job_type='remarkable_reading_send',
-  params={'draft': '<slug>', 'source': '<optional slug>'})`.
+- **Reading editions → reMarkable**
+  (`put(kind='job', job_type='remarkable_reading_send',
+  params={'draft': '<slug>', 'source': '<optional slug>'})`) typesets
+  each cited source as its own tablet-sized PDF: the source's body
+  chunks in reading order, then a claims appendix (every Taproot claim
+  hub grounded in that source), then the original PDF when this host
+  holds a copy. A source missing from this host's corpus still gets a
+  reading edition without the appended PDF; only a source with zero body
+  chunks and no local PDF is skipped. `params.source` restricts the run
+  to one cited source (slug).
 - **Freeze/snapshot** (release + backup) copies the draft's current
   chunks into an immutable `paper`-like ref (versioned, searchable,
   citable), linked `snapshot-of` the draft; the draft keeps evolving.
-  (Operational verb TBD.)
 
 ## See also
 

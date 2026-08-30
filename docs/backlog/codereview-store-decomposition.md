@@ -50,6 +50,17 @@ pins the inverse. Test-double recipe held (12 class fakes shimmed
 renamed).
 
 REMAINING (one domain per ship):
+- **DraftStore delegation blocks finish** — Both transitional delegation
+  block chains documented in `store/_draft_ops.py`'s module docstring
+  (DraftStore out of the Store mixin stack; DraftReviewStore out of
+  _draft_ops) are still present: three names reach the same method
+  (`store.X`, `store.drafts.X`, `store.drafts.review.X`) and nothing
+  forces the migration to finish. 3,737 LOC in the file. Follow the
+  finished carve pattern (drafts + blocks): all src call sites migrated
+  (verified), flat delegations on `Store` **and** `DraftStore` deleted
+  once call sites are confirmed off old names, `tests/test_store_drafts_facade.py`
+  parity checks held. (Related: see `codereview-handler-size-cleanups.md`
+  for the review-surface call-site migration residual.)
 - **Refs full pass — LESSER PRIORITY (Reto, 2026-08-15).** Design pass
   first (carve vs bless the flat names permanently — see measurement
   above; the design pass is cheap, ~150–400k tokens). If "carve": the

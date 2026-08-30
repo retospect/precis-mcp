@@ -1,38 +1,38 @@
-"""The reference ring — the ``fisheye+1hop`` extent (refeye slice).
+"""The reference ring — the ``fisheye+1hop`` extent.
 
-Where the spatial fisheye (``utils.fisheye``) walks the *reading-order* graph —
-"what is physically near this node" — the reference ring walks the **reference
-graph**: "what does this section *point at*, one edge out." Focus a section at
-``fisheye+1hop`` and everything it references instant-appears around it:
+Where the spatial fisheye (``utils.fisheye``) walks the *reading-order*
+graph — "what is physically near this node" — the reference ring walks the
+**reference graph**: "what does this section *point at*, one edge out."
+Focus a section at ``fisheye+1hop`` and everything it references
+instant-appears around it:
 
-- **Cited** — papers / datasheets / patents the section cites
-  (``[§slug~N]`` / ``paper:slug`` mined from the body).
-- **Cross-refs** — other draft/plan chunks it links (``[[dc41]]`` / ``[¶h]``).
+- **Cited** — papers/datasheets/patents the section cites
+  (``[§slug~N]``/``paper:slug`` mined from the body).
+- **Cross-refs** — other draft/plan chunks it links (``[[dc41]]``/``[¶h]``).
 - **Notes** — memories and notes **linked to** the section (inbound
-  ``related-to`` / ``see-also`` edges materialised by the mentions autolinker,
+  ``related-to``/``see-also`` edges materialised by the mentions autolinker,
   ``utils.mentions``) — the "things noted on this."
-- **Claims** (Taproot slice R1) — a cited ``[pub_id]`` (content-hash) or
-  ``[fi<id>]`` (kind+serial handle — the preferred form) that resolves to
-  a live ``TAPROOT:claim`` hub explodes into its evidence: derived
-  ``establishes`` originators (marked, with the grounding chunk pointer
-  when the chase has populated one) plus a one-line corroborator/
-  contradictor summary, via :func:`precis.taproot.seniority.derive_evidence`.
-  Each cited hub also surfaces its advisory ``refines`` neighbours
-  (migration 0100) — ``↰ refined by`` (a sharper version of this claim
-  exists) and ``↳ refines`` (what this hub sharpens) — via
-  :func:`precis.taproot.seniority.derive_refines`; link-only, no evidence
+- **Claims** — a cited ``[pub_id]`` (content-hash) or ``[fi<id>]``
+  (kind+serial handle, the preferred form) that resolves to a live
+  ``TAPROOT:claim`` hub explodes into its evidence: derived ``establishes``
+  originators (marked, with the grounding chunk pointer when the chase has
+  populated one) plus a one-line corroborator/contradictor summary, via
+  :func:`precis.taproot.seniority.derive_evidence`. Each cited hub also
+  surfaces its advisory ``refines`` neighbours — ``↰ refined by`` (a sharper
+  version of this claim exists) and ``↳ refines`` (what this hub sharpens) —
+  via :func:`precis.taproot.seniority.derive_refines`; link-only, no evidence
   flows across it. Either cite form that resolves to a non-hub finding (or
   nothing) is left alone — this only mines placeholders that name a claim hub.
 
-It follows **edges only** (deterministic, zero false positives). A memory that
-is merely *about* the section but was never linked is a similarity hit —
-that is ``search``'s job, a separate ``+recall`` rung, not a hop.
+It follows **edges only** (deterministic, zero false positives). A memory
+that is merely *about* the section but was never linked is a similarity
+hit — that is ``search``'s job, a separate ``+recall`` rung, not a hop.
 
-Pure **read-time assembly** over existing primitives (``extract_handles`` /
+Pure **read-time assembly** over existing primitives (``extract_handles``/
 ``resolve_link_targets`` for outbound, ``links_for`` for inbound) — no new
-storage, no authoring-time edge. Ships dark until the render-loop wires
-``Extent.HOP1`` in. The ring is rendered by *kind* (a paper is not a tree
-node), capped per group with a visible overflow line — no silent truncation.
+storage, no authoring-time edge. The ring is rendered by *kind* (a paper is
+not a tree node), capped per group with a visible overflow line — no
+silent truncation.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ _CITED_KINDS: frozenset[str] = frozenset(
 )
 _XREF_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 
-#: Max entries rendered per group before the overflow line (§6: no silent cap).
+#: Max entries rendered per group before the overflow line (no silent cap).
 _RING_CAP = 8
 
 
@@ -190,7 +190,7 @@ def _group_for(kind: str) -> str:
 def _evidence_line(edge: EvidenceEdge, *, marked: bool, pinned: bool = False) -> str:
     """One originator/corroborator line: ``📌 ★ pa<id> — <title> (<year>) —
     grounding: <handle>`` (each prefix marker only when applicable). ``📌``
-    (Taproot slice A2) flags a paper the author pinned via ``[<pub_id>>…]``
+    flags a paper the author pinned via ``[<pub_id>>…]``
     / ``[<pub_id>+…]``."""
     handle = handle_registry.format_handle("paper", edge.paper_ref_id)
     title = " ".join((edge.title or "").split())
@@ -216,7 +216,7 @@ def _claim_link_line(prefix: str, cr: Any) -> str:
 
 def _claim_links_lines(links: ClaimLinks, *, cap: int) -> list[str]:
     """Advisory ``refines`` / ``refined by`` lines for a cited hub, capped
-    (§6: no silent cap). ``refined by`` (a sharper version exists) is listed
+    (no silent cap). ``refined by`` (a sharper version exists) is listed
     first — it's the "you may want the newer wording" nudge; ``refines``
     (what this hub sharpens) second. Empty when the hub has no claim-links."""
     lines: list[str] = []
@@ -245,12 +245,12 @@ def _claim_block(
     falsification: dict[str, str] | None = None,
 ) -> str:
     """The Claims explosion for one cited hub — the claim line plus its
-    derived evidence, capped like the rest of the ring (§6: no silent
+    derived evidence, capped like the rest of the ring (no silent
     cap). Falls back to corroborators "as best-available" (mirroring
     ``precis resolve``'s :func:`~precis.cli.resolve._hub_evidence_cite_keys`
     policy) when no originator has been derived yet.
 
-    ``pin`` — an author's pin (Taproot slice A2: ``(op, pinned_paper_ref_ids)``
+    ``pin`` — an author's pin (``(op, pinned_paper_ref_ids)``
     mined from the citing ``[<pub_id>>…]`` / ``[<pub_id>+…]`` token) — marks
     the pinned papers ``📌`` wherever they already appear below, surfaces a
     pinned paper that isn't part of the derived evidence at all (still
@@ -380,8 +380,8 @@ def _mine_claim_hub_ids(
 ) -> list[tuple[int, str | None, list[str]]]:
     """First-seen-ordered ``(hub_ref_id, pin_op, pin_handles)`` cited via a
     content-hash ``[pub_id]`` or a finding handle ``[fi<id>]`` (either
-    optionally pinned, Taproot slice A2: ``[…>…]`` / ``[…+…]``) in
-    ``span`` (Taproot slice R1) — the ring's ``resolve_link_targets`` walk
+    optionally pinned: ``[…>…]``/``[…+…]``) in
+    ``span`` — the ring's ``resolve_link_targets`` walk
     doesn't mine either placeholder grammar, so both are mined here
     separately. A cite that resolves to nothing, or to a non-hub finding,
     is skipped — left to the existing (currently: invisible) behaviour.
@@ -447,7 +447,7 @@ def _mine_claim_hub_ids(
 
 
 def _resolve_pin_paper_ref_ids(store: Store, handles: list[str]) -> list[int]:
-    """Resolve pin handles (Taproot slice A2) to paper ref_ids for the
+    """Resolve pin handles to paper ref_ids for the
     ring's render-only marking — a ``pc<id>`` (passage) handle resolves to
     its parent paper, same as the shared
     :func:`~precis.taproot.cite.resolve_pin_handle`. Best-effort: an
@@ -532,7 +532,7 @@ def render_reference_ring(
     *,
     cap: int = _RING_CAP,
 ) -> str:
-    """Assemble the reference ring for the section rooted at ``target`` (§6).
+    """Assemble the reference ring for the section rooted at ``target``.
 
     ``chunks`` is the whole ref's ``reading_order``. Returns the rendered ring
     (grouped Cited / Cross-refs / Notes / Claims, capped with an overflow
@@ -579,7 +579,7 @@ def collect_ring(
         inbound.add(int(link.src_ref_id))
 
     # ── claims: [pub_id] cites that resolve to a live TAPROOT:claim hub ───
-    # (Taproot slice R1) — a separate mining pass, since resolve_link_targets
+    # — a separate mining pass, since resolve_link_targets
     # doesn't mine this placeholder grammar.
     claim_hub_ids = _mine_claim_hub_ids(store, span, exclude_ref_id=draft_ref)
 
@@ -621,7 +621,7 @@ def render_ring_groups(
     header: str = "— referenced (1 hop) —",
 ) -> str:
     """Render collected ring groups — capped per group with a visible overflow
-    line (§6: no silent cap). ``— no references —`` when every group is empty."""
+    line (no silent cap). ``— no references —`` when every group is empty."""
     lines: list[str] = [header]
     any_rendered = False
     for name, entries in groups.items():
@@ -631,7 +631,7 @@ def render_ring_groups(
         lines.append(f"{name}:")
         if name == "Claims":
             # Each entry is a pre-rendered multi-line evidence block
-            # (Taproot slice R1), not a flat label — citation order, not
+            # , not a flat label — citation order, not
             # alphabetical, and only the first line gets the bullet.
             for _rid, block in entries[:cap]:
                 block_lines = block.split("\n")

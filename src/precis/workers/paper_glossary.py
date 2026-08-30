@@ -33,7 +33,6 @@ the paper from re-claim for a cooldown window instead of every sweep
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +40,7 @@ from psycopg.types.json import Jsonb
 
 from precis.reading.term_quality import non_concept_reason
 from precis.utils.abbreviations import find_acronyms
+from precis.utils.llm.json_reply import extract_json_object
 from precis.workers import ref_lease
 
 if TYPE_CHECKING:
@@ -112,23 +112,10 @@ def _build_prompt(
     return "\n".join(lines)
 
 
-def _extract_json(text: str) -> dict | None:
-    """Tolerant JSON extraction — whole string first, then first ``{``..``}``."""
-    if not text:
-        return None
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            obj = json.loads(text[a : b + 1])
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            return None
-    return None
+#: Kept as a module-level alias (not just an inline call) — a direct-import
+#: test (``tests/test_paper_glossary.py``) exercises the tolerant-parse
+#: contract by name.
+_extract_json = extract_json_object
 
 
 def _clean_clusters(data: dict | None) -> list[dict]:
@@ -329,7 +316,7 @@ def run_paper_glossary_pass(
                     {"role": "user", "content": prompt},
                 ]
             )
-            data = _extract_json(getattr(out, "text", "") or "")
+            data = extract_json_object(getattr(out, "text", "") or "")
             if data is None:
                 # Model produced nothing PARSEABLE — a real failure; leave
                 # unclaimed for a retry (braked by the lease above).

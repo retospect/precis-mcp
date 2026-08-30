@@ -20,11 +20,9 @@ Multiple values per `(material, property)` is a feature: the handbook shows
 the spread across sources/conditions, and nobody picks a canonical number
 at write time.
 
-**v1 is canonical-units-only.** There is no `pint`, no unit conversion, no
-`units=` read param, no off-sample estimate/interpolation, and no `model`
-value-type — those are deferred follow-ons. Every property declares one
-canonical unit; a write in any other unit is rejected, naming the
-canonical one.
+**Canonical-units-only.** There is no unit conversion and no `units=` read
+param. Every property declares one canonical unit; a write in any other
+unit is rejected, naming the canonical one.
 
 ## Two writes share one `put`
 
@@ -78,12 +76,12 @@ property; `maturity=` is `commercial | lab | speculative` (default `lab`)
 Every property has one canonical unit (or none, for a dimensionless /
 categorical / boolean / text property). `unit=` on a value write **must
 match it exactly**, or the write is rejected naming the canonical unit —
-there is no conversion in v1:
+there is no conversion:
 
 ```python
 put(kind="material", id="6061-t6", property="density", value=0.0975, unit="lb/in3")
 # [error:BadInput] unit='lb/in3' is not density's canonical unit ('kg/m3') -
-# v1 is canonical-unit-only, no conversion
+# canonical-unit-only, no conversion
 ```
 
 Convert on your side before writing (or store the value under a
@@ -93,8 +91,9 @@ somewhere — the canonical field is what `search`'s range filter reads).
 ## The property registry — core and proposed
 
 `get(kind='material', view='properties')` lists every property: its
-canonical unit, dimension, value-type, and tier (`core` — curated, stable
-contract — or `proposed` — grown at runtime). The seeded `core` set covers
+canonical unit, dimension, value-type, and registry tier (`core` —
+curated, stable contract — or `proposed` — grown at runtime). The seeded
+`core` set covers
 density, yield/ultimate tensile strength, Young's/shear modulus, Poisson's
 ratio, elongation at break, Vickers hardness, thermal conductivity,
 specific heat, thermal expansion, melting point, max service temperature
@@ -223,16 +222,11 @@ matches exactly as you'd expect. Omit either bound to leave that side
 open. A plain `q=` search matches the material entity's name, aliases, and
 `material_class`.
 
-## What's deliberately not here (v1)
+## Multiple sources, and derived properties
 
-- **Unit conversion** — a `pint` helper, convert-on-write, `units=` on
-  read. Store and read in the canonical unit; convert on your side.
-- **Off-sample estimates / interpolation** — every sample is its own row;
-  computing a value *between* samples (or evaluating a published model) is
-  a follow-on, not this store.
-- **Canonical-value selection** — when sources disagree, `get` shows all of
-  them; picking which one to trust is a read-side/human call.
-- **Derived properties** (`cost_per_volume` from `cost_per_mass` × `density`,
-  insulation R-value from `thermal_conductivity` × thickness) — compute
-  these at read time from what's stored; never store a derived number as
-  if it were sourced.
+Every sample is its own row — there's no interpolation between samples or
+evaluation of a published model. When sources disagree, `get` shows all of
+them; picking which one to trust is a read-side/human call. Compute a
+derived property (`cost_per_volume` from `cost_per_mass` × `density`,
+insulation R-value from `thermal_conductivity` × thickness) at read time
+from what's stored; never store a derived number as if it were sourced.

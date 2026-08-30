@@ -49,6 +49,7 @@ from urllib.parse import urlparse
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._skill_common import SkillFrontmatter, parse_frontmatter
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
 from precis.skill_index import FileCorpusIndex, SearchHit
@@ -2192,29 +2193,6 @@ def _load_skill(slug: str) -> str | None:
         return text
 
 
-def _parse_frontmatter(text: str) -> dict[str, str]:
-    """Extract the YAML-style front-matter as a flat dict of strings.
-
-    We don't pull in PyYAML for this — the front-matter we use is
-    strictly key:value pairs. Lists and nested dicts aren't supported,
-    which is fine because the only fields we read here are scalars
-    (``status``, ``applies-to``, ``title``).
-    """
-    if not text.startswith("---"):
-        return {}
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}
-    out: dict[str, str] = {}
-    for line in text[3:end].splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        out[key.strip().lower()] = val.strip().strip("\"'")
-    return out
-
-
 #: Match ``kind='X'`` (or ``kind="X"``) inside the front-matter
 #: ``applies-to:`` line. Power-user skills like ``precis-patent-power``
 #: don't follow the ``precis-<kind>-help`` naming pattern but their
@@ -2237,7 +2215,7 @@ _NON_KIND_SLUG_STEMS = frozenset(
 )
 
 
-def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
+def _kinds_referenced_by_skill(slug: str, fm: SkillFrontmatter) -> list[str]:
     """Return every kind the skill claims to apply to.
 
     Two sources, in priority order:
@@ -2252,7 +2230,7 @@ def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
     ``precis-tags``, …) that don't reference any specific kind.
     """
     kinds: list[str] = []
-    applies = fm.get("applies-to") or fm.get("applies_to") or ""
+    applies = fm.applies_to or ""
     if applies:
         kinds.extend(_APPLIES_TO_KIND_RE.findall(applies))
     # Slug-derived fallback, only when front-matter didn't name any
@@ -2307,8 +2285,8 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
     if text is None:
         return None  # caller handles 'not found'
 
-    fm = _parse_frontmatter(text)
-    status = fm.get("status", "active").lower()
+    fm = parse_frontmatter(text)
+    status = (fm.status or "active").lower()
     if status in ("planned", "aspirational"):
         return (
             f"this skill is marked status: {status} - its examples "

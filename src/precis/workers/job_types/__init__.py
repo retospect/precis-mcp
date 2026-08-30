@@ -390,7 +390,7 @@ def _load_diagnose_gripe() -> JobTypeSpec:
     # gripe_comment (see precis.workers.job_types.diagnose_gripe) — never fixes,
     # branches, pushes, or flips STATUS. Runs via plugin dispatch under
     # claude_inproc. Registers unconditionally (like sandbox_run): the
-    # scan pass that mints these jobs (diagnose_scan) is the dark gate,
+    # scan pass that mints these jobs (diagnose_scan) is the dark switch,
     # not the job_type itself, so put/dispatch validation works even on
     # a host where the scan is off.
     from precis.workers.job_types import diagnose_gripe

@@ -102,8 +102,8 @@ search(kind="orcid", q="spintronics group leader")
 search(kind="orcid", q="single-molecule magnetism PI")
 ```
 
-Hybrid lexical + semantic over the embedded author cards — finds the
-people in your corpus by topic, not just by name.
+Runs over the embedded author cards — finds people in your corpus by
+topic, not just by name. Search mechanics: `precis-search-help`.
 
 ## Classify / cross-link
 
@@ -137,4 +137,5 @@ blocks the rest of the surface).
 get(kind="skill", id="precis-author-discovery-help")  # the BFS recipe
 get(kind="skill", id="precis-overview")  # verbs and kinds
 get(kind="skill", id="precis-stubs-help")  # the stub → fetch pipeline
+get(kind="skill", id="precis-search-help")  # search mechanics
 ```

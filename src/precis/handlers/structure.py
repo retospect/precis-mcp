@@ -1713,7 +1713,7 @@ class StructureHandler(Handler):
         """Link the requesting todo to the just-minted job and arm its wait.
 
         Writes ``requester --requested--> job`` (the edge the
-        ``derived_job_succeeded`` evaluator + the failure-bubble follow), then
+        ``derived_job_succeeded`` evaluator + the failure bubble follow), then
         injects that evaluator as the todo's ``auto_check`` when it has none —
         mirroring how ``dispatch`` arms ``child_job_succeeded`` for the intent
         lane. A todo that already carries a deliberate auto_check is left

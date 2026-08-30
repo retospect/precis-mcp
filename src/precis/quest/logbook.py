@@ -1,16 +1,15 @@
 """Quest logbook vocabulary + the shared append path.
 
 The logbook is the quest's append-only, WORM, dated ledger — ``quest_log``
-chunks hanging off the quest ref (the ``gripe`` body+comment pattern, migration
-0065). Lightly-typed entries carry ``entry_type`` + ``by`` (+ optional ``cost``
-and/or ``chars``) in ``chunk.meta``. A ``milestone`` is a deed; a ``cost``
-entry feeds the tote — metered in ``chars`` (gr162594: ``cost_usd`` is null
-for the free/quota-bound quest-tick lane, so char count is the unit that's
-actually always populated).
+chunks off the quest ref (migration 0065, the ``gripe`` body+comment
+pattern). Entries carry ``entry_type``+``by`` (+ optional ``cost``/
+``chars``) in ``chunk.meta``. A ``milestone`` is a deed; a ``cost`` entry
+feeds the tote, metered in ``chars`` (gr162594: ``cost_usd`` is null on the
+free/quota-bound quest-tick lane).
 
-Both the :class:`~precis.handlers.quest.QuestHandler` (the ``put(id=N, text=…,
-entry=…)`` idiom) and the autonomous ``quest_tick`` (slice 4) write through
-:func:`append_entry`, so there is exactly one insert path and one vocabulary.
+:class:`~precis.handlers.quest.QuestHandler` and the autonomous
+``quest_tick`` both write through :func:`append_entry` — one insert path,
+one vocabulary.
 """
 
 from __future__ import annotations
@@ -50,10 +49,8 @@ DEFAULT_BY = "human"
 
 #: ``by`` stamp for a system-measured fact (a converged relax, a harvested
 #: autocatpath barrier, a ruled-out verdict) — never the model's own "agent"
-#: attribution. This is what makes a measured result distinguishable from
-#: model narration in the logbook (gripes 171148/171149: a model-fabricated
-#: "result" entry was indistinguishable from a real measurement, so the loop
-#: believed a hallucinated barrier and stopped proposing candidates).
+#: attribution, so a measured result can't read as indistinguishable from
+#: model narration (gr171148/171149).
 MEASURED_BY = "system"
 
 
@@ -70,15 +67,15 @@ def append_entry(
 ) -> int:
     """Append one logbook entry; return its 1-based entry number.
 
-    The caller is responsible for validating ``entry_type`` / ``by`` against
-    :data:`ENTRY_TYPES` / :data:`BY_VALUES` when it wants to *reject* bad input
-    (the handler does, to surface a typo). This function is permissive — it
-    stamps whatever it is given — so the autonomous tick can clamp-and-proceed
-    rather than raise. ``extra_meta`` merges additional structured facts onto
-    the entry's ``meta`` (e.g. the narrative growth-ratchet gate's word
-    counts + reason, the dossier-hygiene design) so they're minable later
-    without parsing ``text`` — it never overwrites the keys this function
-    itself stamps (``chunk_kind``/``entry_type``/``by``/``cost``/``chars``).
+    Validating ``entry_type``/``by`` against :data:`ENTRY_TYPES`/
+    :data:`BY_VALUES` is the caller's job (the handler does, to surface a
+    typo); this function is permissive — stamps whatever it's given, so the
+    autonomous tick can clamp-and-proceed rather than raise. ``extra_meta``
+    merges additional structured facts onto the entry's ``meta`` (e.g. the
+    narrative growth-ratchet gate's word counts + reason) so they're
+    minable later without parsing ``text`` — never overwrites the keys this
+    function itself stamps (``chunk_kind``/``entry_type``/``by``/``cost``/
+    ``chars``).
     """
     entry_meta: dict[str, Any] = {
         "chunk_kind": LOG_KIND,

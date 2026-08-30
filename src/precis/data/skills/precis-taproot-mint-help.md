@@ -56,25 +56,24 @@ inert mass in the graph, not just badly worded. Something was minting
 reading-list entries as claims; this test is what stops it at the door.
 
 **Enforcement asymmetry.** Notation/sentence lint *advises* at mint —
-flags, never blocks or rewrites. At approve
-(`nanopub/gates.py::run_mint_gates`) it *blocks* on the admissibility and
-grammar codes above plus every deterministically-fixable notation code,
+flags, never blocks or rewrites. At approve it *blocks* on the
+admissibility and grammar codes above plus every
+deterministically-fixable notation code,
 including `past-passive` (tense with no result — `precis-nanopub-help`'s
 claim-sentence grammar); judgment-only codes (`two-denominator-solidus`,
 `approx-spacing`, `tilde-approximation`, `past-tense`, `present-perfect`,
 `formula-ascii-subscript`, `scope-*`) stay advisory even at approve —
 nothing mechanical can resolve them. The line is *measured*, not
 assumed: a code earns blocking status by dry-running over the whole
-corpus at a zero false-positive rate
-(`docs/conventions/corpus-normalization.md`). `hyphen-numeric-range` and
+corpus at a zero false-positive rate. `hyphen-numeric-range` and
 `ascii-x-multiplier` cleared that bar and block; `formula-ascii-subscript`
 did not (~23% nomenclature collisions) and stays advisory forever.
 Authoring stays frictionless; nothing ungoverned reaches *publishable*,
 but a hub can sit `candidate` indefinitely with an advisory flag
 unresolved.
 
-**The blocking set is scoped by artifact type** (`gates.py::
-_ARTIFACT_LINT_EXEMPTIONS`) — a scope, not a loosening. A `hypothesis`
+**The blocking set is scoped by artifact type** — a scope, not a
+loosening. A `hypothesis`
 does not face `no-epistemic-mode`/`no-evidence-verb`: that pair asks how
 a finding was established and a conjecture was established by nothing
 yet, so its mode lives in the type plus the mandatory `testable_by`.
@@ -138,9 +137,9 @@ source paragraph. The bar is therefore stricter than for an inline citation.
     underlying fact (the specific properties or values being compared),
     not the practice. If the passage states only the practice, don't mint.
 - **One atomic claim per hub — don't hand-bundle.** `conjunct-of` (atom →
-  compound) is written only by the automated decomposition
-  (`taproot/hub.py::apply_extraction`, run through `taproot_backfill`) — not
-  hand-authored. Hand-minting from a passage that bundles several atomic
+  compound) is written only by the automated decomposition pass, run
+  through `taproot_backfill` — not hand-authored. Hand-minting from a
+  passage that bundles several atomic
   claims? Mint each as its own hub with its own grounded supporter,
   rather than one bundled sentence.
 - **Ground on the primary, not the proxy.** If the grounding passage
@@ -259,38 +258,18 @@ rather than marking sound work disputed.
 
 ## Notation canon
 
-Claim sentences are hashed to derive `pub_id`
-(`identity.py::normalize_text_for_hash` → NFKD-fold, lowercase,
-whitespace-collapse), so notation is **load-bearing, not cosmetic** — two
-spellings of one quantity mint two hubs for the same claim. Quotes are
-the exception: verbatim, **never** normalized — the canon governs the
-authored sentence only.
+Claim sentences are hashed to derive `pub_id`, so spelling is
+**load-bearing, not cosmetic** — two spellings of one quantity mint two
+hubs for the same claim. Full rules (UTF-8 unit forms, forgiven/
+not-forgiven lists, the carve-outs that outrank everything else):
+[[precis-notation-canon]].
 
-**Canon v3.1 in one line: the ASCII→UTF-8 unit rules only fire with a
-numeral next to the unit** (`50 micrometres` → `50 µm`, but
-`micron-scale` stays spelled out; `Zn2+-sensing` must not become
-`Zn2±sensing`). The conditions are per-row in the fallback table —
-don't reconstruct them from memory: [[precis-notation-canon]], which
-also carries the forgiven/not-forgiven lists and the three carve-outs
-(quote-containment, never-convert-the-unit, nomenclature-isn't-notation)
-that outrank everything else.
-
-**`scope` values fork hubs — free text there is not cosmetic either.**
-`pub_id` hashes the sentence *plus* the `scope` object, so an identical
-sentence under paraphrased scope values is two claims to the identity
-layer, not one claim with metadata drift. Both live exact-sentence
-duplicate pairs in the corpus are this failure, not a wording
-difference: `fi191179`/`fi191260` (`scope.method` `"engineered into
-printed"` vs `"engineered into printed touch sensors"`) and
-`fi191192`/`fi191262` (`scope.quantity`, same content, different prose
-framing). Neither encodes a real regime distinction. **A scope value is
-a short controlled term naming the regime — never a paraphrase or
-restatement of the sentence.** `lint_scope`'s `scope-free-text` warning
-now fires at mint on both the MCP and CLI doors (advisory, per the
-enforcement asymmetry above); 156 of 1,525 hubs currently trip it. Scope
-*keys* are moving to a frequency-ordered registry
-(`docs/backlog/scope-key-vocabulary-registry.md`); the value rule is
-already in force.
+**`scope` values fork hubs too.** `pub_id` hashes the sentence *plus*
+the `scope` object, so an identical sentence under paraphrased scope
+values mints two hubs, not one claim with metadata drift. A scope value
+is a short controlled term naming the regime — never a paraphrase or
+restatement of the sentence; a `scope-free-text` lint warns (advisory)
+when one reads like prose instead.
 
 ## Mint a claim hub from a claim I've already sourced
 
@@ -298,9 +277,9 @@ already in force.
 `wants=`) mints/converges a claim **hub**; `cited_in=` files an ordinary
 chase-target finding; `wants=`+`provenance=` mints an acquisition-mode
 finding (both non-hub modes: [[precis-finding-help]]) — mixing modes
-errors. Both modes route through the same single write door
-(`taproot/hub.py`, via `seed_claim_hub`), so a hub is still only ever
-paper-sourced — mint **requires paper supporters**, and a draft's own
+errors. Both modes route through the same single write door, so a hub
+is still only ever paper-sourced — mint **requires paper supporters**,
+and a draft's own
 novel assertion (no `supporters`, no `cited_in`) errors rather than
 silently becoming a thin-air hub:
 
@@ -413,8 +392,8 @@ edit(
 )
 ```
 
-Retitles the hub in place (`src/precis/taproot/hub.py::refine_claim_sentence`):
-`refs.title` updates (full length, never truncated), the `finding_body`
+Retitles the hub in place: `refs.title` updates (full length, never
+truncated), the `finding_body`
 chunk is DELETE+INSERT re-emitted (embedding/summary cascade re-runs —
 this is also the chunk hub dedup retrieves over, so the reword is
 picked up automatically), stale card variants (`ord < 0`) drop, and a new

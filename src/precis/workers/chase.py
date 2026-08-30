@@ -1,35 +1,32 @@
 """run_finding_chase_pass — sibling worker that advances finding chains.
 
-Ref-level workers are sibling functions, not
-``WorkerHandler`` subclasses. This module follows the same shape as
-``precis.workers.segment_toc``:
+Ref-level worker (sibling function, not a ``WorkerHandler``) — same shape
+as ``precis.workers.segment_toc``:
 
-- ``claim_tracing_findings`` — derived-queue claim over ``refs`` +
+- ``claim_tracing_findings`` — derived-queue claim over ``refs``/
   ``ref_tags`` for ``STATUS:tracing`` findings.
-- ``advance_finding`` — one chase hop per call (frontier → next ref
-  + ``derived-from`` link + ``meta.chain`` append, or terminal
-  decision + chain-snapshot pass).
-- ``run_finding_chase_pass`` — runner-side entry point; returns
-  observability tuple ``{claimed, ok, failed}``.
+- ``advance_finding`` — one hop per call (frontier → next ref +
+  ``derived-from`` link + ``meta.chain`` append, or terminal decision +
+  chain-snapshot).
+- ``run_finding_chase_pass`` — runner entry point, returns
+  ``{claimed, ok, failed}``.
 
-The worker is **deterministic by default** (regex + S2 + chain
-membership). With ``with_llm=True`` (or env ``PRECIS_CHASE_LLM=1``)
-three :mod:`precis.utils.claude_p` hooks light up:
+**Deterministic by default** (regex + S2 + chain membership). With
+``with_llm=True``/``PRECIS_CHASE_LLM=1``, three :mod:`precis.utils.claude_p`
+hooks light up: ``_disambiguate_candidates`` (multi-cite chunks),
+``_locate_chunk_in_target`` (confirms the ANN's chunk pick),
+``_verify_support_with_caveats`` (records support/caveats/cited-others on
+the chain entry). Cost: ~$0.05-$0.10/established finding (3 hops x
+~$0.01 Haiku calls); deterministic path is free.
 
-- ``_disambiguate_candidates`` resolves multi-cite chunks.
-- ``_locate_chunk_in_target`` confirms the ANN's chunk pick.
-- ``_verify_support_with_caveats`` reads the target chunk + claim
-  and records support / caveats / cited-others on the chain entry.
+Walks ``links``/``chunks`` directly — never creates ``kind='citation'``
+records (user/verifier-subagent authored only), never auto-spawns sibling
+findings for caveat-referenced cites.
 
-Path B-ii: the chase walks ``links`` + ``chunks`` directly. It
-does **not** create ``kind='citation'`` records (those stay
-strictly user / verifier-subagent authored). Auto-spawning
-sibling findings for caveat-referenced cites is also out — the
-user spawns them by hand when a qualification matters.
-
-Cost: ``--with-llm`` costs ~$0.05–$0.10 per established finding
-(3 hops × ~$0.01 verifier calls under Haiku). Deterministic
-default costs zero.
+``taproot_enabled`` (Phase-3 W1 forward bridge, :func:`_taproot_bridge`)
+mints/attaches a taproot claim hub off a terminal ``establishes``
+verdict — the third of the glossary's three chase passes
+(``docs/glossary.md`` "fetch / chase").
 """
 
 from __future__ import annotations

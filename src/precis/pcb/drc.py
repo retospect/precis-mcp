@@ -620,24 +620,19 @@ def clearance_violations_naive(
     the two agree on both WHICH pairs violate and the gap number itself,
     over many randomized track/via-only layouts.
 
-    **Bug found on contact 2026-08-28, fixed here**: this used to compare
-    only each GROUP's FIRST primitive's ``.layer`` to decide "do these two
-    items share a layer at all" (correct for a track, whose every
-    sub-primitive is on the same single layer, or a single-layer via — the
-    only shapes the pre-existing synthetic test fixtures ever exercised).
-    A real multi-layer via (:mod:`precis.pcb.realize`'s own
+    **Checks every (sub-primitive, sub-primitive) pair for a SHARED
+    layer directly**, taking the minimum gap over only those pairs that
+    share one, rather than gating the whole group pair on one
+    primitive's layer. Comparing only each GROUP's FIRST primitive's
+    ``.layer`` is not enough to decide "do these two items share a layer
+    at all": that's correct for a track (every sub-primitive on the same
+    single layer) or a single-layer via, but a real multi-layer via
+    (:mod:`precis.pcb.realize`'s own
     :class:`~precis.pcb.realize.RealizedVia`, e.g. a blind via spanning
     F.Cu..In1.Cu) breaks that shortcut: two vias with only a PARTIALLY
     overlapping span (say F.Cu..In1.Cu and In1.Cu..B.Cu) can have first
-    primitives on different layers, so the old check silently skipped the
-    pair even though they DO share In1.Cu and DO clash there. Found by
-    this exact randomized-real-via property test disagreeing with
-    :func:`clearance_pairs_indexed` (which already checked every layer a
-    via spans, per-layer STRtree) — the oracle doing its job on itself.
-    Fixed by checking every (sub-primitive, sub-primitive) pair for a
-    SHARED layer directly, taking the minimum gap over only those pairs
-    that share one, rather than gating the whole group pair on one
-    primitive's layer."""
+    primitives on different layers even though they DO share In1.Cu and
+    DO clash there."""
     prims = _copper_primitives(model)
     by_group: dict[int, list[_Prim]] = {}
     for p in prims:

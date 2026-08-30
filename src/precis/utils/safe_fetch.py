@@ -1,12 +1,11 @@
 """SSRF guard for outbound HTTP fetches.
 
-Both the ``web`` kind (``handlers/web.py``) and the OA cascade
-(``workers/fetch_oa.py``) pull URLs that ultimately originate from
-agent-supplied input (a ``put(kind='web', id=URL)``, a DOI handed to
-``add``, an Unpaywall ``url_for_pdf`` chosen by the publisher). Each
-previously used ``httpx.Client(follow_redirects=True)`` with only a
-shape check on the URL — letting an attacker (or a benign publisher
-mis-config) redirect us to a private/loopback/link-local address.
+Any URL that ultimately originates from agent-supplied input (a
+``put(kind='web', id=URL)``, a DOI handed to ``add``, an Unpaywall
+``url_for_pdf`` chosen by the publisher) must not be fetched with
+``follow_redirects=True`` and a bare shape check — that lets an attacker
+(or a benign publisher mis-config) redirect the fetch to a
+private/loopback/link-local address.
 
 This module centralises the guard:
 
@@ -31,18 +30,17 @@ This module centralises the guard:
   stream mode (no body read on intermediate hops).
 
 **Resolve-once-at-connect, dial-the-validated-IP (no DNS-rebinding
-TOCTOU).** An early design validated the *hostname* and then let httpx
-re-resolve it at connect time — a time-of-check/time-of-use window where
-an attacker controlling DNS for their own domain could answer the
-validation lookup with a public IP and the connect-time lookup (moments
-later, 0-TTL) with ``127.0.0.1`` / ``169.254.169.254`` / an internal
-service IP. A second design closed that window by rewriting the outbound
-request URL to the validated IP literal — but that collapsed httpcore's
+TOCTOU).** Two designs are load-bearing NOT to regress to: validating the
+hostname then letting httpx re-resolve at connect time opens a
+time-of-check/time-of-use window (an attacker's own DNS answers the
+validation lookup with a public IP and the connect-time lookup, moments
+later on a 0-TTL record, with a blocked internal IP); rewriting the
+outbound URL to the validated IP literal instead collapses httpcore's
 connection-pool key from ``(scheme, host, port)`` to ``(scheme, IP,
-port)``, letting two distinct hostnames that share one public IP reuse a
-TLS connection cert-verified for the wrong name (gr180122).
+port)``, letting two distinct hostnames sharing one public IP reuse a TLS
+connection cert-verified for the wrong name (gr180122).
 
-We now pin at the **connection layer** instead: a custom httpcore
+Pin at the **connection layer** instead: a custom httpcore
 :class:`SyncBackend` (:func:`pinning_transport`) resolves-and-classifies
 the host inside ``connect_tcp`` and dials the single validated IP, while
 the request URL keeps its **hostname**. So there is still exactly one DNS
@@ -211,10 +209,10 @@ def resolve_pinned_ip(url: str) -> str | None:
 
     Standalone pre-check: enforces the http(s) scheme + present host, then
     resolves-and-classifies the host once via :func:`_classify_and_pin_host`.
-    Returns the validated IP (or ``None`` for an IP-literal host). Kept for
-    callers that want to validate a URL *without* issuing a request — the
-    send path (:func:`safe_get`/:func:`safe_stream`) does not call this;
-    it pins at connect via the backend so there is no second resolution.
+    Returns the validated IP (or ``None`` for an IP-literal host). For a
+    caller that wants to validate a URL *without* issuing a request — the
+    send path (:func:`safe_get`/:func:`safe_stream`) pins at connect via the
+    backend instead, so there is no second resolution.
 
     Raises:
         SsrfBlocked: scheme is not http(s), the URL has no host, the

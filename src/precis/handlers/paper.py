@@ -367,48 +367,41 @@ class PaperHandler(Handler):
     ) -> Response:
         """Queue a missing paper for fetch — the shared stub-mint impl.
 
-        The agent-facing spelling is ``put(kind='paper', …)`` (see
+        Agent-facing spelling is ``put(kind='paper', …)`` (see
         :meth:`put`); this method does the work. A dream (or anyone)
         notices the corpus keeps citing a paper it doesn't hold and mints
         a **stub** so the existing fetch pipeline takes over
-        (docs/backlog/dreaming.md, §Acquire). It does the minimum and
-        gets out of the way: it **never ingests inline** — no download,
-        no Marker, in the dream turn.
+        (``docs/backlog/dreaming.md`` §Acquire) — never ingests inline, no
+        download, no Marker, in the dream turn.
 
-        1. Resolve the ``identifier`` (``doi:`` / ``arxiv:`` / ``s2:`` or
-           a bare DOI / arXiv id) and best-effort enrich via S2.
+        1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:`` or a bare
+           DOI/arXiv id) and best-effort enrich via S2.
         2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
            a hit on an already-held or already-wanted paper short-circuits
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
         3. Link it from ``context_ref_id`` (provenance) when supplied.
 
-        Downstream is automatic and needs no wiring here: an explicit
-        acquire is a "fetch NOW" signal, so the stub (fresh or
-        re-requested) is pinned to the head of the ``fetch_oa`` queue
-        (``Store.pin_stub_for_fetch``: ``prio=1`` /
-        ``meta.prio_by='acquire'`` + an ``oa_requeued`` stamp that lifts
-        a backed-off stub for one immediate retry) and claimed on the
+        Downstream is automatic: an explicit acquire is a "fetch NOW"
+        signal, so the stub is pinned to the head of the ``fetch_oa``
+        queue (``Store.pin_stub_for_fetch``: ``prio=1``/
+        ``meta.prio_by='acquire'`` + an ``oa_requeued`` stamp that lifts a
+        backed-off stub for one immediate retry) and claimed on the
         worker's next pass; auto-discovered stubs instead earn their
-        place via ``stub_rank``. No OA copy anywhere → the stub waits on
-        the ``precis stubs`` required-papers backlog. Minting is additive
-        and reversible (soft-delete), so a runaway dream can at worst
-        enqueue stubs — never blow a budget on downloads.
-
-        Reachable from the MCP surface via ``put(kind='paper', …)`` (the
-        agent-facing spelling — see :meth:`put`); this method is the
-        shared implementation. The legacy in-process dream loop's gated
-        ``acquire`` tool (``PRECIS_DREAM_ACQUIRE``) was retired when the
-        dreamers were consolidated onto the ``claude -p`` + MCP
+        place via ``stub_rank``. No OA copy → the stub waits on the
+        ``precis stubs`` required-papers backlog. Minting is additive and
+        reversible (soft-delete) — a runaway dream can at worst enqueue
+        stubs, never blow a budget on downloads. The legacy in-process
+        dream loop's gated ``acquire`` tool (``PRECIS_DREAM_ACQUIRE``)
+        retired when the dreamers consolidated onto ``claude -p`` + MCP
         ``dream_agent``.
 
-        ``verify`` (default ``True``): when set, an unrecognised
-        identifier (Semantic Scholar returns no metadata) is rejected
-        with :class:`BadInput` so a hallucinated DOI / arXiv ID never
-        lands on the "Papers we need" backlog. Pass ``verify=False``
-        when minting a known-real preprint that S2 hasn't indexed yet,
-        or when the resolver is unreachable. Resolver outages mint with
-        ``meta.acquire_unverified=True`` so the operator can re-check
-        on a later pass.
+        ``verify`` (default ``True``): an unrecognised identifier (S2
+        returns no metadata) is rejected with :class:`BadInput` so a
+        hallucinated DOI/arXiv ID never lands on the "Papers we need"
+        backlog. Pass ``verify=False`` for a known-real preprint S2
+        hasn't indexed, or when the resolver is unreachable — resolver
+        outages mint with ``meta.acquire_unverified=True`` for a later
+        re-check.
         """
         has_identifier = bool(identifier and identifier.strip())
         has_title = bool(title and title.strip())
@@ -1828,7 +1821,7 @@ class PaperHandler(Handler):
             # exist — outbound ("this chunk cites …", src_pos) and inbound
             # ("this chunk is cited by …", dst_pos) are two small sections,
             # not one table, since a chunk can carry both at once. Gated
-            # behind the same dark flag as the inbound chase that produces
+            # behind the same dark switch as the inbound chase that produces
             # the data (nothing to show until it's on).
             from precis.workers.inbound_chase import inbound_chase_enabled
 

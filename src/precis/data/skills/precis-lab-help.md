@@ -18,8 +18,9 @@ precis's answer to a chemistry/biology **agent** (ChemCrow, ADR 0056 slice 6) is
 atom graph), and `paper` (the grounded literature) — and the seven verbs already
 drive them. This skill is the **composition layer**: the canonical recipes that
 chain those verbs into a research loop, for an interactive agent *or* an
-autonomous planner tick (`plan_tick`) working a `meta.llm_tier`-set todo. Augmentation, not
-foundation — read the per-kind skills for depth.
+autonomous planner tick (`plan_tick`) working a todo with a `meta.llm_tier`
+(model tier) set. Augmentation, not foundation — read the per-kind skills
+for depth.
 
 Each recipe is a **toolpath**: the minimal verb sequence for one goal. All the
 heavy compute (a plan, a fold, a relax) runs **off the request path** on the

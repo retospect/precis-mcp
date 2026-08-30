@@ -140,8 +140,8 @@ search(kind="tex", q="kcat", scope="chapters--intro")  # one file
 search(q="activation energy")  # cross-kind
 ```
 
-Hybrid lexical + semantic. Each hit row carries the block's `xc<id>`
-**handle**; order is the relevance signal.
+Each hit row carries the block's `xc<id>` **handle**; order is the
+relevance signal. Search mechanics: `precis-search-help`.
 
 ## Edit literal LaTeX source
 
@@ -221,4 +221,5 @@ get(kind="skill", id="precis-edit-help")  # find-replace + insert grammar
 get(kind="skill", id="precis-plaintext-help")  # block grammar tex extends
 get(kind="skill", id="precis-paper-help")  # citation-graph navigation
 get(kind="skill", id="precis-markdown-help")  # .md block grammar for prose notes
+get(kind="skill", id="precis-search-help")  # search mechanics
 ```

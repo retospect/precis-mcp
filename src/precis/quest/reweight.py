@@ -1,21 +1,20 @@
 """Quest reweighting — priority as a field flowing down the `serves` DAG.
 
-Slice 2 of the quest layer (``quest-layer`` (git-only)). A quest's **striving
-weight** flows *down* the `serves` edges into the three places work + knowledge
-are actually chosen — rotation, reading, acquisition. Aggregation on overlap is
-**max** (a node serving two quests inherits the stronger pull), with light decay
-per hop up the quest→quest ladder. Only **active** quests exert pull — a
-dormant / abandoned striving stops steering.
+A quest's **striving weight** flows *down* the `serves` edges into the
+three places work + knowledge get chosen — rotation, reading, acquisition.
+Overlap aggregates by **max** (a node serving two quests inherits the
+stronger pull), with light decay per hop up the quest→quest ladder. Only
+**active** quests pull.
 
-The whole thing is a **no-op until quests + `serves` edges exist**: with no
-active quests, :func:`active_quest_weights` returns ``{}`` and every reweighted
-ordering collapses to its original form. So the callers can wire this in on the
-hot path safely — it changes nothing until a project/paper/concept is actually
-linked to an active quest. That is the "reweight, don't mint" contract.
+**No-op until quests + `serves` edges exist**: with none active,
+:func:`active_quest_weights` returns ``{}`` and every reweighted ordering
+collapses to its original form — safe to wire into a hot path, since it
+changes nothing until a project/paper/concept links to an active quest
+("reweight, don't mint").
 
-Priority is read from the canonical ``refs.prio`` column (1..10, **lower =
-hotter**, the same scale the todo tree rotates on), inverted + normalised into a
-weight in (0, 1] by :func:`base_weight`.
+Priority reads from the canonical ``refs.prio`` column (1..10, **lower =
+hotter**, same scale the todo tree rotates on), inverted + normalised into
+a weight in (0, 1] by :func:`base_weight`.
 """
 
 from __future__ import annotations

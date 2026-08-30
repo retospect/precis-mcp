@@ -1,5 +1,11 @@
 """FindingHandler — chain head over a citation chase to a primary source.
 
+First layer of one domain (:mod:`precis.taproot` = the claim graph built on
+findings, :mod:`precis.nanopub` = the publish pipeline that freezes an
+approved hub into a signed artifact); this module owns the kind surface
+only — verbs, the trust axis, the chase lifecycle. Hub/evidence-edge
+mechanics and publish mechanics are not restated here.
+
 A `finding` is the **synthesised endpoint** of a citation chase: the
 claim text + its setup context + the chain of `derived-from` links
 from the agent's initial citation down to the primary source. It is
@@ -21,9 +27,9 @@ This handler owns the **write door** for findings:
   ``view='nanopub'`` (:mod:`._finding_nanopub`) and
   ``view='mint-preflight'`` (:mod:`._finding_mint_preflight`, the real
   mint gates run read-only) are the finding-specific views.
-- ``search(q, status=...)`` filters by status (default
+- ``search(q, status=..., trust=...)`` filters by status (default
   ``STATUS:established``) and falls through to the base full-text
-  + ANN hybrid.
+  + ANN hybrid; see :meth:`FindingHandler.search`.
 - ``cite(...)`` is **explicitly not supported** — findings are
   internal certainty records; they never appear in ``\\cite{}``.
   The chase-time placeholder is the finding's ``pub_id`` which
@@ -112,21 +118,20 @@ _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
 _DERIVED_FROM = "derived-from"
 _AWAITS_EVIDENCE = "awaits-evidence"
-# A taproot claim hub (``taproot/hub.py::mint_hub``) is a ``finding`` ref
-# tagged this closed value. Hubs are stamped ``STATUS:canonical`` — off the
-# chase-status lifecycle (a hub is a canonicalized claim node, not an
-# in-flight chase), so they don't pollute the ``tracing`` cohort and
-# ``chase.py::claim_tracing_findings`` never re-claims them. Because the
-# default (no explicit ``status=``) search cohort below unions on this
-# *tag* rather than a status, a minted hub is visible without the
-# ``status='*'`` workaround regardless of the hub's status value.
+# A ``finding`` ref tagged this value is a taproot claim hub (hub mechanics:
+# ``taproot/__init__.py``). Hubs carry ``STATUS:canonical``, off the chase
+# lifecycle, so ``chase.py::claim_tracing_findings`` never re-claims them.
+# The default (no explicit ``status=``) search cohort below unions on this
+# *tag*, so a minted hub is visible regardless of its status value, without
+# the ``status='*'`` workaround.
 _TAPROOT_CLAIM_TAG = "TAPROOT:claim"
 
 # ── the trust axis ────────────────────────────────────────────────────
 # Orthogonal to ``STATUS:`` — that is the *chase lifecycle* (how far the
 # citation chase got), which says nothing about whether anyone checked the
 # claim. ``trust=`` is the epistemic axis: how far up the publish ladder
-# (``precis.nanopub.state``) a claim hub has actually climbed.
+# a claim hub has actually climbed (state machine: ``nanopub/__init__.py``,
+# ``nanopub/state.py``).
 _TRUST_SIGNED = "signed"
 _TRUST_VERIFIED = "verified"
 _TRUST_DISPUTED = "disputed"
@@ -946,7 +951,7 @@ class FindingHandler(NumericRefHandler):
     def _apply_trust(
         self, refs: list[Ref], *, trust: str | None, page_size: int
     ) -> list[Ref]:
-        """Cull an over-fetched pool to the requested trust tier, then trim.
+        """Cull an over-fetched pool to the requested trust axis, then trim.
 
         Order is untouched: relevance stays the ranking signal, exactly as
         ``precis-search-help`` promises. ``trust=`` removes rows, it never
@@ -974,80 +979,57 @@ class FindingHandler(NumericRefHandler):
     ) -> Response:
         """Hybrid search across findings with a status-axis default.
 
-        Fuses a ``refs.title`` lexical leg with a hybrid (lexical + semantic)
-        leg over the ``finding_body`` chunk, plus a notation-canonicalized
-        leg — see :mod:`precis.utils.ref_hybrid`. Before that fusion this was
-        title-lexical only, which ANDed every query term and had no semantic
-        recall at all, so a paraphrase of an existing claim found nothing.
-        ``mode='lexical'``/``'verbatim'`` skip the embed.
+        Fuses ``refs.title`` lexical + hybrid (lexical+semantic) over
+        ``finding_body`` + a notation-canonicalized leg
+        (:mod:`precis.utils.ref_hybrid`). ``mode='lexical'``/``'verbatim'``
+        skip the embed.
 
-        ``status=`` is a finding-specific shorthand for filtering by
-        the ``STATUS:`` closed-vocab tag. Pass ``status='acquiring'`` /
-        ``'tracing'`` / ``'multi_candidate'`` / ``'dead_chain'`` to
-        inspect each cohort, or ``status='*'`` to see all findings
-        regardless.
-
-        The shorthand desugars to ``tags=['STATUS:<value>']`` and
-        unions with any explicit ``tags=`` the caller passed, so
-        ``search(status='tracing', tags=['topic-co2'])`` works as
-        expected.
-
+        ``status=`` filters on the ``STATUS:`` closed-vocab tag
+        (``'acquiring'``/``'tracing'``/``'multi_candidate'``/
+        ``'dead_chain'``, ``'*'`` = all); desugars to
+        ``tags=['STATUS:<value>']``, unioned with any explicit ``tags=``.
         ``status='refuted'`` reaches the do-not-repropose ledger
-        (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") —
-        a terminal, tag-applied status for a rejected hypothesis, retracts-
-        linked to the negative-ruling finding that superseded it. It's
-        fenced out of the default cohort (and every cross-kind search) at
-        the store layer (``store/_tag_filter.py::refuted_fence``), same as
-        the ``DREAM:speculative`` / ``ORIGIN:wikipedia`` fences — the
-        ``STATUS:refuted`` tag desugar IS the opt-in that lifts it.
-        ``status='*'`` does NOT add that tag, so it still skips the fence's
-        opt-in: a refuted finding can surface there via the title-lexical
-        leg (unfenced) but not the semantic/lexical block leg.
+        (``docs/backlog/quest-dossier-dialectic.md`` §Refuted lifecycle) —
+        fenced out of the default cohort and every cross-kind search
+        (``store/_tag_filter.py::refuted_fence``), same as
+        ``DREAM:speculative``/``ORIGIN:wikipedia``; the ``STATUS:refuted``
+        desugar is the opt-in that lifts the fence. ``status='*'`` does
+        NOT add that tag, so a refuted finding can still surface only via
+        the unfenced title-lexical leg.
 
-        **Default cohort (no explicit ``status=``):** ``STATUS:established``
-        findings **plus** taproot claim hubs (``TAPROOT:claim`` — minted by
-        ``taproot/hub.py::mint_hub`` with ``STATUS:canonical``, off the
-        chase-status lifecycle). This is the natural "what evidence do
-        we have for X?" shape — the agent rarely wants in-flight rows mixed
-        in, but a claim hub is a first-class answer even before its chain
-        resolves. The union keys off the ``TAPROOT:claim`` *tag*, so it holds
-        whatever status a hub carries. An *explicit* ``status=`` (including
-        ``status='established'``) is an exact single-status filter and does
-        NOT include hubs unless asked for directly (``status='canonical'`` or
-        ``status='*'``).
+        **Default cohort (no ``status=``):** ``STATUS:established``
+        findings plus taproot claim hubs (``TAPROOT:claim``, keyed off the
+        tag regardless of the hub's own status — hub mechanics:
+        ``taproot/__init__.py``). An explicit ``status=`` (including
+        ``'established'``) is an exact filter and excludes hubs unless
+        asked for directly.
 
-        ``trust=`` is the **second, orthogonal axis**: not how far the
-        chase got (that's ``status=``) but how far up the publish ladder
-        the claim itself climbed.
+        ``trust=`` is the orthogonal trust axis: not chase progress
+        (``status=``) but how far up the publish ladder the claim climbed
+        (state machine: ``nanopub/__init__.py``, ``nanopub/state.py``).
 
         =================== ====================================================
         ``trust=``          keeps a hit when
         =================== ====================================================
-        ``'signed'``        its publish row is ``signed``/``anchored``/
+        ``'signed'``        publish row is ``signed``/``anchored``/
                             ``published`` — a human attesting key stands
                             behind it
-        ``'verified'``      it holds at least one edge whose verdict is
-                            *affirmative* (never merely present — a
-                            ``corroborates`` edge can be verified ``no``)
-                            and no live ``contradicts`` edge
-        ``'disputed'``      it holds a live ``contradicts`` edge — the
-                            inspection cohort, deliberately reachable
+        ``'verified'``      >=1 edge with an *affirmative* verdict (never
+                            merely present — a ``corroborates`` edge can
+                            verify ``no``) and no live ``contradicts`` edge
+        ``'disputed'``      a live ``contradicts`` edge — the inspection
+                            cohort, deliberately reachable
         ``'any'`` / omitted no filter
         =================== ====================================================
 
-        A hit with no publish posture at all (an ordinary
-        ``STATUS:established`` chase finding) fails every tier but
-        ``'any'``: "give me settled claims" must not answer with rows that
-        were never on the ladder. The filter runs after retrieval, so the
-        retrieval leg over-fetches (:data:`_TRUST_POOL_FACTOR`) and the
-        page can still come back short — which is the honest answer when
-        little is settled, not a bug to pad around. Ordering is *not*
-        touched: relevance remains the ranking signal.
+        A hit with no publish posture fails every tier but ``'any'``.
+        Filter runs post-retrieval (over-fetch: :data:`_TRUST_POOL_FACTOR`)
+        so the page can come back short when little is settled; ordering
+        (relevance) is untouched.
 
-        Renders results as a TOON table (``id | title | setup |
-        primary``, plus ``state | support | flags`` once any hit is a
-        claim hub) so the agent gets a scannable list — the begat
-        chain detail lives behind ``get(kind='finding', id=N)``.
+        Renders a TOON table (``id | title | setup | primary``, plus
+        ``state | support | flags`` once any hit is a claim hub);
+        ``get(kind='finding', id=N)`` for the full begat chain.
         """
         base_tags: list[str] = list(tags) if tags else []
         resolved_trust = (trust or "").strip().lower() or None

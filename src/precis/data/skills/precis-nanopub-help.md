@@ -40,11 +40,14 @@ stays authoritative; the nanopub is the frozen published form.
   `contradicts` edge, the hub's posture follows the evidence: a
   `reviewed` or `signed` hub is reopened to `candidate` (the frozen
   string/artifact pointer is discarded; the append-only artifact row
-  stays) and has to be approved again against the new evidence. Past the
-  anchor nothing reopens — an anchored/published artifact's bytes are
-  frozen and a third party holds the trusty URI — so an alert is raised
-  for a human to supersede or retract instead. A state you read earlier
-  is not a promise about now; re-read before acting on it.
+  stays) and has to be approved again against the new evidence. Editing
+  the hub's title has the same reopening effect — never edit a
+  `reviewed`-or-later hub to "fix" its wording; propose the change
+  instead. Past the anchor nothing reopens — an anchored/published
+  artifact's bytes are frozen and a third party holds the trusty URI —
+  so an alert is raised for a human to supersede or retract instead. A
+  state you read earlier is not a promise about now; re-read before
+  acting on it.
 - `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
   **real** mint gates read-only and get the violation list back. Pass a
   candidate envelope as `args={'payload': {...}}`; omit it and whatever
@@ -52,7 +55,11 @@ stays authoritative; the nanopub is the frozen published form.
   this instead of reimplementing the gates locally — a hand-rolled
   mirror rots silently the moment a gate changes.
 - **Propose a hypothesis** — see the section below. The one artifact
-  type an agent can originate.
+  type an agent can originate; minting, signing, anchoring, sign-off,
+  and publishing stay human/CLI-only (`precis nanopub
+  approve/sign/signoff/anchor/publish`, or the `/nanopub` web surface)
+  — an attesting signature ties to the signer's own ORCID iD, so there
+  is no way to attest as the machine.
 
 ## Hypothesis — the artifact type an agent can originate
 
@@ -134,24 +141,6 @@ mints the hub, attaches the motivation edges, and parks the prepared
 envelope so the human's approve form comes pre-filled. Confirm with
 `view='mint-preflight'`, which runs the full gates (not just the
 sentence) against what you parked.
-
-## What an agent must NOT do
-
-- **Minting, signing, anchoring, sign-off and publishing are not agent
-  verbs.** `precis nanopub approve/sign/signoff/anchor/publish` is run
-  by a person (the `/nanopub` web surface is the same interactive
-  door); the attesting key is invocable only from those surfaces. An
-  attesting signature is attributed to the signing human's own ORCID iD
-  (their `/account` field) and is refused when that is empty or is not
-  the identity the key is registered to — there is no way to attest as
-  the machine. A bot signature alone never publishes anything:
-  publication requires an **attesting** entry in the trust allowlist,
-  and the registry POST (`publish --live`) is the one irreversible
-  step — CLI-only, never automated.
-- Never edit a hub that shows `reviewed` or later state to "fix" its
-  wording — the approved string is frozen; an edit flips the row back
-  for re-review (pre-publication) or forces a public supersede
-  (post-publication). Propose the change instead.
 
 ## Mint gates (why a claim you drafted may not mint)
 
@@ -339,17 +328,6 @@ sentence, shaped **general → specific**: `[epistemic mode + method] +
   note the divergence for the sign review — don't stretch a quote to
   rescue the hub's phrasing.
 
-## Door behavior under batch load (ops notes)
-
-- **Pace approve batches.** Rapid back-to-back approve POSTs have hung
-  the web process (all routes wedge until restart). Serialize
-  submissions and sleep ~6 s between POSTs; a batch of N takes ~6·N s
-  by design.
-- **A 502 is not reliably a no-write.** `evidence/add` has landed its
-  write behind a 502 (verify before retrying, or you duplicate the
-  edge); `approve` fails closed — its gates run before any write — so
-  a 502 there is safe to retry.
-
 ## Publish-time gates (past mint — why a signed claim may not publish)
 
 Distinct from mint gates; enumerated by `precis nanopub preflight` and
@@ -392,27 +370,12 @@ which is *not* deliberate (`attach_evidence` accepts those kinds). Both
 surface in the overview's `disputed` bucket and hold at human review instead.
 Treat any non-paper/patent dispute as needing a person, not as blocked.
 
-`docs/backlog/disputes-edge-nonblocking-disagreement.md` **proposes** —
-not yet built — splitting that into a free, non-blocking `disputes`
-edge ("these two claims appear to conflict; someone should look") and
-keeping `contradicts` as the adjudicated, blocking outcome. A
-`disputes` edge would resolve into exactly one of five verdicts, only
-the last blocking:
+A suspected conflict that isn't a clean same-system, same-conditions
+disagreement — a possible duplicate, a scope mismatch, a unit error —
+has no free non-blocking way to be filed today. Raise it to a human
+rather than either staying silent or firing `contradicts` on a hunch.
 
-- `same-claim` → attach evidence to the survivor, retire the duplicate
-- `refines` → typed `refines` edge
-- `scope-mismatch` → different regime; annotate scope on both, no edge
-  — the expected majority
-- `unit-error` → one side is arithmetically wrong; retract it
-- `genuine-conflict` → `contradicts`, plus a hunt for a third
-  adjudicating source
-
-None of this exists in code yet — no `disputes` relation, no non-blocking
-render. Until it ships, a suspected conflict has no free way to be
-filed; raise it to a human rather than either staying silent or firing
-`contradicts` on a hunch.
-
-## Triage lane (small-model-safe: classify and file, never fix)
+## Triage a gate refusal (small-model-safe: classify and file, never fix)
 
 Gate refusals are machine-precise; classifying them needs no judgment.
 For an unminted hub, read the review page / preflight refusals and file
@@ -432,7 +395,7 @@ per class — do not mutate the hub, its edges, or its sources:
   point at the chunk, don't rewrite the quote yourself.
 
 Quote-trimming, claim restructuring (atom vs compound), and every
-approve/sign/signoff click stay above this lane.
+approve/sign/signoff click stay out of scope for this triage.
 
 ## Registry mirror (read-only sidecar)
 

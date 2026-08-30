@@ -15,7 +15,7 @@ milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 owner-agnostic — reusable by any rolling-context rewrite). The perpetual loop itself is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
 
-Package-level invariants (each enforced where named):
+Package-level invariants (detail lives on the named module):
 
 - **The discovery agent owns all chemistry.** ``catalyst_seed.PARAM_SPACE``
   is coverage-count + buildability only, never a chemistry menu; code never
@@ -70,27 +70,21 @@ Package-level invariants (each enforced where named):
   plus a ``tests`` edge (measuring pathway → hypothesis, migration 0142);
   the next tick interprets it via support/counter/settle.
 - **Loop existence is reconciled, not allocated.** ``loop`` guarantees one
-  live coordinator per active quest (idempotent re-mint, reboot-orphan reap,
-  failed-rest *and* dry-rest backoff — a ``meta.rest_reason == "dry"``
-  success rest cools on the same exponential window, and once the quest's
-  ``consecutive_dry_rests`` counter reaches its threshold the reconciler
-  skips it for an escalation window + raises an operator alert,
-  auto-recovering (gr170252, see ``loop.py``'s module docstring); ``allocator``
-  backs only the manual ``precis quest run`` one-shot.
-- **Human-set knobs the LLM may not tune**: ``meta.rubric_composite`` and
-  ``meta.tier_ladder`` (screening→neb→verify) are written at seed time only.
+  live coordinator per active quest (idempotent re-mint, reboot-orphan
+  reap, failed/dry-rest backoff + escalation; see :mod:`precis.quest.loop`);
+  ``allocator`` backs only the manual ``precis quest run`` one-shot.
+- **Human-set knobs the LLM may not tune**: ``meta.rubric_composite``,
+  ``meta.tier_ladder`` (screening→neb→verify) — seed time only.
 - **Engine deploys re-score.** The autocatpath content key folds an
-  engine-version token so new engine results never dedupe onto stale jobs;
-  ``compute.redispatch_candidates`` / ``reset_compute`` are the CLIs.
+  engine-version token, so new results never dedupe onto stale jobs;
+  ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.
 - **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``
-  (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps materialise/dispatch per
-  tick; the coordinator's per-quest backpressure holds the next tick until
-  that proposal's sims land. Extra proposals stay ``hypothesis`` leads.
-- **The bad energies are part of the score** (catpath >= 0.6.0 engine
-  scorecard): ``selectivity_margin`` (max), ``poison_margin`` (max),
-  ``trap_margin`` (harvested diagnostic) ride the barrier's harvest + trust
-  gate (``compute._AUTOCATPATH_SELECTIVITY_KEYS``); the default rubric ranks
-  on barrier/energy/selectivity_margin/poison_margin, and
-  ``reaction_config.poisons`` must screen at least one species or
-  ``poison_margin`` is an objective nothing produces (empty-frontier trap).
+  (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps dispatch/tick; extras
+  stay ``hypothesis`` leads until the in-flight one's sims land.
+- **Bad energies are part of the score** (catpath >= 0.6.0 scorecard):
+  ``selectivity_margin``/``poison_margin`` (max), ``trap_margin``
+  (diagnostic) ride the barrier's trust gate; the default rubric ranks on
+  barrier/energy/selectivity_margin/poison_margin, so
+  ``reaction_config.poisons`` must screen ≥1 species or ``poison_margin``
+  is an empty-frontier trap.
 """

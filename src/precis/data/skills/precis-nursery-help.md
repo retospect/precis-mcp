@@ -14,22 +14,16 @@ status: active
 
 # precis-nursery-help — tree-incoherence detectors → alerts
 
-The nursery is the first of three review tiers in
-`docs/backlog/todo-tree-plan.md` (Slice 3). It walks the todo tree
-(and the worker fleet) every pass, surfaces local incoherence via
-SQL-only detectors, and raises a `kind='alert'` per condition (see
-`precis-alert-help`). No LLM call. The only proactive push is a
-one-shot Discord ping on a *new* `critical` condition (a thrashing or
-dead worker), delivered as a `kind='message'` to the Discord channel in
-`PRECIS_OPS_ALERT_TARGET` (a channel target `discord/<guild>/<channel>`,
-*not* a webhook URL) — the same asa_bot channel as the daily news
-briefing — unset by default, so the push merges dark and everything
-else stays pull-only. It
-used to write a `kind='memory'` digest tagged `tier:nursery`
-— that conflated ops telemetry with reflective *thought*, polluted the
-memory namespace, and (because the spin-loop finding set churns every
-second) spun on itself writing thousands of near-dup memories a day.
-Alerts dedup per *condition* instead.
+The nursery is the first of three review tiers (nursery / structural /
+deep). It walks the todo tree (and the worker fleet) every pass,
+surfaces local incoherence via SQL-only detectors, and raises a
+`kind='alert'` per condition (see `precis-alert-help`), deduped per
+*condition* rather than as a rolling digest. No LLM call. The only
+proactive push is a one-shot Discord ping on a *new* `critical`
+condition (a thrashing or dead worker), delivered as a `kind='message'`
+to the Discord channel in `PRECIS_OPS_ALERT_TARGET` (a channel target
+`discord/<guild>/<channel>`, *not* a webhook URL) — unset by default, so
+the push merges dark and everything else stays pull-only.
 
 ## Detector catalogue
 
@@ -44,15 +38,15 @@ Alerts dedup per *condition* instead.
 | `plan-tick-spin` | a planner parent mints >threshold `plan_tick` jobs in 24 h without converging | 16 / 24 h |
 | `quest-loop-failing` | a quest's `quest_tick` loop rests `STATUS:failed` >threshold times in 24 h (RC1 backoff throttles but can't fix a persistent break) | 3 / 24 h |
 | `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
-| `dead-worker` | the continuous daemon (`precis-worker` — one per host since the 2026-08-04 `--profile all` consolidation) silent >threshold while its host is alive | 10 min · **critical** |
+| `dead-worker` | the continuous per-host daemon silent >threshold while its host is alive | 10 min · **critical** |
 | `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
-| `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent `worker_logs` activity (gr186752 — the complement of `dead-worker`'s `host_alive` gate: a dead single-writer host takes its own heartbeat down with it, so `dead-worker` self-suppresses for it; `host-dark` is the one alert that case still needs) | 10 min · **critical** |
+| `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
 
-`orphan` enforces the strategic invariant (knob #6 in the plan).
-`stale-claim` catches workers that died mid-task — the claim's age
-is read from `ref_tags.created_at` on the open tag row.
-`stalled-recurring` surfaces the Slice-4 collision-skip pile-up: a
+`orphan` enforces the strategic invariant: every open todo must trace to
+a `rotation_root` ancestor. `stale-claim` catches workers that died
+mid-task — the claim's age is read from `ref_tags.created_at` on the
+open tag row. `stalled-recurring` surfaces a collision-skip pile-up: a
 spawned child stuck open will silently prevent further ticks.
 `spin-loop` is the only cross-kind detector — it scans `ref_events`
 rather than the todo tree, catching a background worker that
@@ -63,27 +57,19 @@ loops are also surfaced on the web Status page's "Background health"
 panel for pull-style monitoring.
 
 The three **worker-health** detectors watch daemon liveness / work
-flow, not the todo graph; together with `orphaned-coordinator` and the
-host-level `nas-denied` / `host-dark` (NAS unreadable / heartbeat itself
-dark, from a host's launchd context) they make up the `critical`
-categories (a new one fires the one-shot Discord ping). `nas-denied` reads
-`host_heartbeat` (the reporter probes `/opt/nas` from its own launchd
-context each tick). `worker-restart` and `dead-worker` read `worker_logs`;
-`dispatch-stall` reads the job queue. `host-dark` also reads
-`host_heartbeat`, but the opposite way `dead-worker` gates on it: since
-§A/§L the heartbeat pass runs *inside* the very worker process it reports
-on, so a dead single-writer host's `host_heartbeat` goes stale right along
-with it — `dead-worker`'s `host_alive` gate then self-suppresses (one dead
-host must not fan out into an alert per daemon it ran), and `host-dark` is
-the deliberate complement that still raises exactly one critical for that
-case. `dispatch-stall` is the planner-SPOF guard: minting runs on
-every node, but a `plan_tick` can only *execute* on melchior's
-agent-profile worker, so if that executor dies / 401s / never starts,
-jobs pile up `STATUS:queued` with no failure bubble and the planner
-goes silently dark. The "nothing running with a live lease" gate is
-what separates a dead executor from a healthy-but-backlogged one, and
-being symptom-level it also catches an agent worker that never
-started (which has no log rows for `dead-worker` to age). These raise
+flow, not the todo graph; together with `orphaned-coordinator`,
+`nas-denied`, and `host-dark` (NAS unreadable / heartbeat itself dark)
+they make up the `critical` categories (a new one fires the one-shot
+Discord ping). `host-dark` is the deliberate complement to `dead-worker`:
+a dead single-writer host's own heartbeat goes stale right along with
+it, so `dead-worker`'s gate self-suppresses (one dead host must not fan
+out into an alert per daemon it ran) and `host-dark` raises exactly one
+critical for that case instead. `dispatch-stall` is the planner
+single-point-of-failure guard: a `plan_tick` can only *execute* on one
+designated agent host, so if that executor dies, 401s, or never starts,
+jobs pile up `STATUS:queued` with no failure bubble and the planner goes
+silently dark — the "nothing running with a live lease" gate catches
+this even when the executor never started at all. These raise
 non-ref-scoped alerts (`ref_id=None` + an explicit `fingerprint_key`).
 
 Recurring subtrees (children of a root carrying `meta.schedule`) are
@@ -143,9 +129,7 @@ The pass is in the default `precis worker` rotation alongside
 precis worker --only nursery --once
 ```
 
-In production, hourly via the `precis_nursery` Ansible role on
-melchior. See `cluster/roles/precis_nursery/README.md` for the
-multi-host story.
+In production it runs hourly across the fleet.
 
 ## Surfacing
 
@@ -160,8 +144,7 @@ alert rows). An operator preamble can read the open set via
 
 * Not a structural review — leaf-level pattern matching only.
   Branches missing outcome lines, sibling contradictions, the
-  decomposition budget — those are the structural tier (every
-  6h, opus call, future Slice 3 pass-2).
+  decomposition budget — those are the structural tier (every 6h).
 * Not a deep review — no archive moves, no prune recommendations.
   That's the weekly deep tier.
 * Not a worker dispatcher — the nursery describes; asa-bot
@@ -170,9 +153,9 @@ alert rows). An operator preamble can read the open set via
 ## Related skills
 
 * `precis-health-digest-help` — the slow-rot, non-paging digest sibling
-  tier (§D) — outcome checks, cadence staleness, registry coherence
+  tier — outcome checks, cadence staleness, registry coherence
 * `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)
 * `precis-tasks-help` — the tree shape + level gradient
-* `precis-decomposition-help` — the GTD interrogation (Slice 2)
+* `precis-decomposition-help` — the GTD interrogation
 * `precis-recurring-help` — `meta.schedule` + the Watches umbrella
 * `precis-auto-tasks-help` — `meta.auto_check` leaves

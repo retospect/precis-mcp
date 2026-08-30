@@ -31,14 +31,14 @@ llm_reconcile``), and an empty catalog makes it a single cheap ``app_state`` rea
 from __future__ import annotations
 
 import logging
-import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
 
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Store
+from precis.workers import _throttle
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -48,6 +48,9 @@ log = logging.getLogger(__name__)
 _LOCK_KEY = 0x6C_6C_6D_72_65_63_00_01 - 2**63  # "llmrec\x00\x01", mapped signed
 #: app_state key holding the ISO-8601 timestamp of the last completed pass.
 _STATE_KEY = "llm_reconcile:last_run"
+#: Env var + default for the cadence throttle (see :func:`_throttle.due`).
+_REFRESH_ENV_VAR = "PRECIS_LLM_RECONCILE_REFRESH_HOURS"
+_DEFAULT_REFRESH_HOURS = 24.0
 #: Alert source for the drift / dead-endpoint findings (deduped per fingerprint).
 _ALERT_SOURCE = "llm_reconcile:drift"
 
@@ -69,30 +72,9 @@ _STRUCTURED_PARAMS: frozenset[str] = frozenset(
 _PROXY_TRANSPORTS: frozenset[str] = frozenset({"local", "openai_compat"})
 
 
-def _refresh_hours() -> float:
-    """Minimum gap between reconcile passes.
-
-    ``PRECIS_LLM_RECONCILE_REFRESH_HOURS`` (default 24.0, floor 0.1).
-    """
-    raw = os.environ.get("PRECIS_LLM_RECONCILE_REFRESH_HOURS")
-    if not raw:
-        return 24.0
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return 24.0
-
-
 def _due(store: Store) -> bool:
     """True when the throttle window has elapsed since the last pass."""
-    last = store.get_setting(_STATE_KEY)
-    if not last:
-        return True
-    try:
-        last_ts = datetime.fromisoformat(last)
-    except ValueError:
-        return True
-    return datetime.now(UTC) - last_ts >= timedelta(hours=_refresh_hours())
+    return _throttle.due(store, _STATE_KEY, _REFRESH_ENV_VAR, _DEFAULT_REFRESH_HOURS)
 
 
 def _norm_model_key(s: str) -> str:

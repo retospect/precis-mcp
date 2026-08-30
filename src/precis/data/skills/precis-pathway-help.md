@@ -116,8 +116,8 @@ computed** — no new relax/NEB, closed-form optima, no search.
 
 ## Fidelity tiers (screening → neb → verify)
 
-`meta.results` also carries `screening: true` (relax-only run — **no barriers
-by design**, spans are thermodynamic) and `template: parked|coadsorbed`.
+`meta.results` also carries `screening: true` (relax-only run — **no
+barriers**, spans are thermodynamic) and `template: parked|coadsorbed`.
 Pathways and candidates carry `meta.tier`; a verify (coadsorbed) pathway
 `refines`-links its parked sibling. A candidate's canonical `barrier` comes
 from the highest-fidelity trusted run; a superseded parked value is kept as
@@ -221,7 +221,7 @@ Today's config knobs are the search space you explore:
 More levers (dopants, facets, pH/potential) arrive as autocatpath grows; the calls
 above don't change — only what you can put in the config.
 
-## Gotchas
+## Avoid the traps that waste a run
 
 - **Quote chemical labels.** `substrate: NO` parses as `false` in YAML — write `"NO"`.
 - **EMT is not physics.** It exercises the pipeline; barriers are qualitative.

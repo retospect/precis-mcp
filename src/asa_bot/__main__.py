@@ -57,41 +57,16 @@ def main() -> None:
 
 
 def _attach_db_log_handler(dsn: str) -> None:
-    """Attach precis-mcp's BufferedDBLogHandler to asa-bot's logging.
+    """Attach precis-mcp's BufferedDBLogHandler, tagged ``asa-bot``.
 
-    Best-effort: a failing handler attach (missing migration 0015,
-    bad DSN, network) shouldn't kill the bot. The file handler
-    keeps catching everything regardless.
-
-    ``PRECIS_PROCESS=asa-bot`` should be set in the LaunchDaemon
-    plist's EnvironmentVariables so every row carries the right
-    process tag; if it isn't, we set it here as a fallback so the
-    operator sees ``asa-bot`` in ``precis logs --process`` instead
-    of NULL.
+    ``PRECIS_PROCESS=asa-bot`` should be set in the LaunchDaemon plist's
+    EnvironmentVariables so every row carries the right process tag; if
+    it isn't, ``attach()`` sets it as a fallback. Delegates to
+    :func:`precis.utils.db_log_handler.attach`.
     """
-    import os
+    from precis.utils.db_log_handler import attach
 
-    try:
-        from precis.utils.db_log_handler import BufferedDBLogHandler
-
-        os.environ.setdefault("PRECIS_PROCESS", "asa-bot")
-        root = logging.getLogger()
-        for existing in list(root.handlers):
-            if isinstance(existing, BufferedDBLogHandler):
-                return
-        if not dsn:
-            log.info("PRECIS_DATABASE_URL unset; skipping DB log handler")
-            return
-        handler = BufferedDBLogHandler(dsn)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-        )
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "failed to attach BufferedDBLogHandler — continuing without DB logs"
-        )
+    attach(dsn, process="asa-bot", require_dsn=True)
 
 
 if __name__ == "__main__":

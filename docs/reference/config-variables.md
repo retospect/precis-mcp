@@ -19,7 +19,7 @@ daemon's env carries: [`deploy/README.md`](../../deploy/README.md).
 
 ---
 
-## 1. Feature toggles (ship-dark gates)
+## 1. Feature toggles (dark switches)
 
 The high-value switches — each gates a whole pass/kind.
 

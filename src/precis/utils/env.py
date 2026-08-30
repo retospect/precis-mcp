@@ -31,6 +31,52 @@ def env_flag(var: str, *, default: bool = False) -> bool:
     return env_truthy(raw)
 
 
+def env_int(
+    name: str, default: int, *, lo: int | None = None, hi: int | None = None
+) -> int:
+    """``name`` as an int, clamped to ``[lo, hi]`` (either bound optional).
+
+    Unset -> ``default`` (itself clamped to ``[lo, hi]`` if given). Set but
+    not int-parseable -> ``default``, unclamped — a malformed override falls
+    back whole, it isn't partially salvaged.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        n = default
+    else:
+        try:
+            n = int(raw)
+        except ValueError:
+            return default
+    if lo is not None:
+        n = max(lo, n)
+    if hi is not None:
+        n = min(hi, n)
+    return n
+
+
+def env_float(
+    name: str, default: float, *, lo: float | None = None, hi: float | None = None
+) -> float:
+    """``name`` as a float, clamped to ``[lo, hi]`` (either bound optional).
+
+    Same unset/bad-value handling as :func:`env_int`.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        n = default
+    else:
+        try:
+            n = float(raw)
+        except ValueError:
+            return default
+    if lo is not None:
+        n = max(lo, n)
+    if hi is not None:
+        n = min(hi, n)
+    return n
+
+
 def env_csv_set(var: str) -> frozenset[str]:
     """``var``'s comma-separated value as a set of stripped, non-empty tokens.
 
@@ -42,4 +88,4 @@ def env_csv_set(var: str) -> frozenset[str]:
     return frozenset(tok.strip() for tok in raw.split(",") if tok.strip())
 
 
-__all__ = ["env_csv_set", "env_flag", "env_truthy"]
+__all__ = ["env_csv_set", "env_flag", "env_float", "env_int", "env_truthy"]

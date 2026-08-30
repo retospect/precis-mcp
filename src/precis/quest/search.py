@@ -42,7 +42,6 @@ configured.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -52,6 +51,7 @@ from precis.quest.gaps import _handle, _live_servers
 from precis.quest.logbook import append_entry
 from precis.quest.tagging import quest_tag_value
 from precis.store.types import Tag
+from precis.utils.env import env_int
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -59,17 +59,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _env_int(name: str, default: int, *, lo: int = 1, hi: int = 100) -> int:
-    try:
-        n = int(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
-    return max(lo, min(hi, n))
-
-
 #: Cap the queries honoured per tick (a weak proposer can't flood acquisition).
 #: A day at the library beats weeks in the lab — lean hard into lit-search.
-MAX_QUERIES = _env_int("PRECIS_QUEST_MAX_QUERIES", 10)
+MAX_QUERIES = env_int("PRECIS_QUEST_MAX_QUERIES", 10, lo=1, hi=100)
 #: How many top hits to link per query.
 MAX_LINK_PER_QUERY = 3
 
@@ -78,7 +70,7 @@ def _acquire_per_query() -> int:
     """How many S2 results per query the acquiring search will try to acquire
     (default 4, clamped 1..10) — a knob on acquisition volume without a
     redeploy."""
-    return _env_int("PRECIS_QUEST_ACQUIRE_PER_QUERY", 4, lo=1, hi=10)
+    return env_int("PRECIS_QUEST_ACQUIRE_PER_QUERY", 4, lo=1, hi=10)
 
 
 #: (store, query, exclude_ref_ids) -> ranked paper ref_ids (best first).

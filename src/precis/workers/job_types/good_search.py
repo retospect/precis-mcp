@@ -54,10 +54,10 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.env import env_int
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
 
@@ -83,48 +83,40 @@ _LEG_CAP = 8
 _CANDIDATE_TEXT_CAP = 700
 
 
-def _env_int(name: str, default: int, *, lo: int = 1, hi: int = 10_000) -> int:
-    try:
-        n = int(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
-    return max(lo, min(hi, n))
-
-
 def _heartbeat_s() -> int:
     """Seconds between liveness wakes while children run (default 180)."""
-    return _env_int("PRECIS_GOOD_SEARCH_HEARTBEAT_S", 180, lo=1, hi=3600)
+    return env_int("PRECIS_GOOD_SEARCH_HEARTBEAT_S", 180, lo=1, hi=3600)
 
 
 def _deadline_s() -> int:
     """Campaign wall-clock budget (default 20 min)."""
-    return _env_int("PRECIS_GOOD_SEARCH_DEADLINE_S", 1200, lo=10, hi=86_400)
+    return env_int("PRECIS_GOOD_SEARCH_DEADLINE_S", 1200, lo=10, hi=86_400)
 
 
 def _max_slices() -> int:
     """Slice-count cap — the second liveness guard (default 30)."""
-    return _env_int("PRECIS_GOOD_SEARCH_MAX_SLICES", 30, lo=2, hi=1000)
+    return env_int("PRECIS_GOOD_SEARCH_MAX_SLICES", 30, lo=2, hi=1000)
 
 
 def _pool_size() -> int:
     """Fusion candidate-pool size (default 100)."""
-    return _env_int("PRECIS_GOOD_SEARCH_POOL", 100, lo=1, hi=1000)
+    return env_int("PRECIS_GOOD_SEARCH_POOL", 100, lo=1, hi=1000)
 
 
 def _triage_batch() -> int:
     """Candidates per triage child (default 30)."""
-    return _env_int("PRECIS_GOOD_SEARCH_TRIAGE_BATCH", 30, lo=1, hi=200)
+    return env_int("PRECIS_GOOD_SEARCH_TRIAGE_BATCH", 30, lo=1, hi=200)
 
 
 def _default_max_children() -> int:
     """Fan-out ceiling when ``params.max_children`` is unset (thin
     slice default 4 — melchior's agent worker is the one queue)."""
-    return _env_int("PRECIS_GOOD_SEARCH_MAX_CHILDREN", 4, lo=1, hi=64)
+    return env_int("PRECIS_GOOD_SEARCH_MAX_CHILDREN", 4, lo=1, hi=64)
 
 
 def _per_paper_cap() -> int:
     """Breadth knob on the fusion pool (default 3 chunks per paper)."""
-    return _env_int("PRECIS_GOOD_SEARCH_PER_PAPER", 3, lo=1, hi=50)
+    return env_int("PRECIS_GOOD_SEARCH_PER_PAPER", 3, lo=1, hi=50)
 
 
 # ── good_search (coordinator campaign) ─────────────────────────────

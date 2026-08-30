@@ -1,146 +1,81 @@
 """Taproot atomic-claims migration — Phase 2 (apply), the quiet-window
 write pass over ``docs/backlog/taproot-atomic-claims.md``'s Strategy.
 :mod:`precis.taproot.migrate` (Phase 0/1) is strictly read-only; this
-module is the one place that pass's dry-run outcomes actually turn into
-writes, one hub per transaction, resumable.
+module is the one place that pass's dry-run outcomes turn into writes —
+one hub per transaction, resumable, via :func:`apply_dry_run` (per-verdict
+routing: its own docstring).
 
-**Quiet window (an operator step, not code).** Before running
-``precis taproot-migrate apply``, pause the derived-queue workers that
-touch hubs (``hub_refine``, ``chase_trigger``) so nothing refines/
-re-embeds a hub mid-repoint, and avoid 02:00-03:30 UTC (nightly backup +
-caspar's daily reboot) — see ``docs/backlog/taproot-atomic-claims.md``
-§"Quiet window definition". :func:`apply_dry_run` itself has no opinion
-about *when* it runs; it only assumes nothing else is mutating the same
-hubs concurrently.
+**Quiet window (an operator step, not code)**: pause ``hub_refine``/
+``chase_trigger`` and avoid 02:00-03:30 UTC (nightly backup + caspar's
+reboot) before ``precis taproot-migrate apply``
+(``docs/backlog/taproot-atomic-claims.md`` §"Quiet window definition").
+:func:`apply_dry_run` has no opinion on *when*; it only assumes nothing
+else mutates the same hubs concurrently.
 
-:func:`apply_dry_run` consumes the parsed JSONL rows
-:func:`precis.taproot.migrate.dump_outcomes_jsonl` writes (one
-``json.loads``'d dict per hub outcome) and, per hub, in one transaction:
+**Split verdict: the original hub becomes the compound** (minting a *new*
+compound would never converge with the legacy hub's own ``pub_id``,
+duplicating it forever). Each atom runs the same ``block -> dedup_judge ->
+place`` cascade :mod:`precis.taproot.backfill` uses, mints/converges with
+**no** evidence edge at placement time, and links
+``atom --conjunct-of--> original hub``. A hub's paper provenance re-points
+in two different ways:
 
-* ``verdict == "pass-through"`` — stamp ``meta.taproot_decomposed_at``
-  only. No structural writes; an already-atomic hub needed no split.
-* ``verdict == "split"`` — the **original hub becomes the compound**
-  (docs/backlog/taproot-atomic-claims.md's phase-2 wrinkle: minting a
-  *new* compound hub would never converge with the legacy hub's own
-  ``pub_id``, duplicating it forever). Each atom runs the same
-  ``block -> dedup_judge -> place`` cascade
-  :mod:`precis.taproot.backfill` uses, is minted/converged with **no**
-  evidence edge at placement time (mirroring
-  :func:`precis.taproot.hub.apply_extraction`'s compound-side
-  no-evidence mint — evidence is a separate, verified re-point, never a
-  placement-time blanket copy), and is linked
-  ``atom --conjunct-of--> original hub``.
+* **Inbound evidence** (:data:`~precis.taproot.hub.HUB_ROLES`) — every
+  live edge is re-pointed via the **add-first invariant**
+  (``docs/backlog/taproot-reground-add-first-invariant.md``): verify each
+  atom against the edge's grounding passage, add-and-read-back-confirm
+  before ever pruning, never prune with zero confirmed replacement adds.
+  A *verified*, per-atom re-point, never a blanket copy.
+* **Outbound lineage** (``hub --derived-from--> paper``) — copied to
+  *every* placed atom, unconditionally: ``derived-from`` asserts
+  derivation ("descends from"), not evidential support for a specific
+  sentence, so there is nothing per-atom to verify against. The original
+  hub keeps its own links too (:attr:`ApplyReport.lineage_copied`).
 
-  A hub's paper provenance can be carried in two shapes, and the split
-  path treats them differently by design:
+A hub can carry either shape, both, or neither; an atom that ends the
+transaction with no paper reference of its own (every evidence edge
+failed verification, no lineage to fall back on) is counted in
+:attr:`ApplyReport.atoms_unreferenced` — a visible gap, not fatal.
 
-  * **Inbound evidence** (``paper --{establishes,corroborates,
-    contradicts}--> hub``, :data:`~precis.taproot.hub.HUB_ROLES`) —
-    every live edge on the original hub is re-pointed via the
-    **add-first invariant**
-    (``docs/backlog/taproot-reground-add-first-invariant.md``, in
-    deterministic code, not a prompt): verify each atom against the
-    edge's grounding passage, add-and-read-back-confirm before ever
-    pruning, and never prune an edge with zero confirmed replacement
-    adds. This is a *verified*, per-atom re-point — never a
-    placement-time blanket copy.
-  * **Outbound lineage** (``hub --derived-from--> paper``) — every live
-    lineage link on the original hub is copied to *every* placed atom,
-    unconditionally. This IS a blanket copy, deliberately: ``derived-
-    from`` asserts derivation lineage ("this hub's text descends from
-    that paper"), not evidential support for a specific sentence, so
-    there is nothing per-atom to verify against — an atom split out of
-    a hub is just as much a descendant of that hub's source paper as
-    the hub itself was. The original hub keeps its own ``derived-from``
-    links too (it stays alive as the compound). Counted in
-    :attr:`ApplyReport.lineage_copied`.
+**Never re-uses :func:`precis.taproot.hub.apply_placement`** for the atom
+placement itself, despite reusing everything else that module offers:
+``apply_placement`` *always* writes an evidence edge to the paper it's
+given (no "mint but don't attach" mode) — backwards from this migration's
+need, where the atom's hub must exist *before* the re-point step can ask
+which existing edge to verify against. :func:`_place_atom` is the
+structural-only analogue; evidence attach happens later, once
+verification has named which atom earns which edge.
 
-  A hub can carry either shape, both, or neither; when a hub carries
-  provenance (either shape) but a given atom ends the transaction with
-  no direct paper reference of its own (possible when every evidence
-  edge failed verification for that atom and the hub had no lineage
-  link to fall back on), that atom is counted in
-  :attr:`ApplyReport.atoms_unreferenced` — a visible gap, not a fatal
-  one.
-* ``verdict == "no-claim"`` — never stamped (still needs a human look):
-  filed ``needs_review`` if the hub carries evidence (a real edge that
-  would otherwise go unaccounted for), else just counted
-  (:attr:`ApplyReport.no_claim_unevidenced` — an un-evidenced non-claim
-  is comparatively low-stakes, Reto reviews the batch).
-* ``verdict in ("lossy", "nested", "error")`` — never stamped, never
-  written; counted (:attr:`ApplyReport.skipped_verdict`) so a re-run of
-  Phase 1 with a sharper extractor/escalation can pick these back up.
+**Two network-bearing stages never share a transaction with a write**:
+the placement cascade (LLM) and ``extract_verify_fn`` (LLM) both run
+*before* :func:`apply_dry_run` opens its one ``store.tx()`` per hub — same
+pool-exhaustion-deadlock reasoning as
+:func:`~precis.taproot.hub.attach_evidence`'s retraction check.
 
-**Never re-uses :func:`precis.taproot.hub.apply_placement` for the atom
-placement itself** despite reusing everything else that module offers
-(:func:`~precis.taproot.hub.mint_hub`, :func:`~precis.taproot.hub.
-link_claims`, :func:`~precis.taproot.hub.attach_evidence`):
-``apply_placement``'s ``attach``/``new``/``new_contradicts`` branches
-*always* write an evidence edge to the ``paper_ref_id`` they're given
-(there is no "mint but don't attach" mode in its signature) — exactly
-backwards from this migration's need, where the atom's hub must exist
-*before* the re-point step can even ask "which of the hub's existing
-edges does this atom verify against?". :func:`_place_atom` is the
-structural-only analogue (mirrors
-:func:`~precis.taproot.hub._apply_compound_placement`'s
-mint-without-evidence shape, which is private to ``hub.py`` and not
-reusable from here) — write door reuse for evidence attach happens later,
-once verification has actually named which atom earns which edge.
+**Atom re-grounding** (``docs/backlog/taproot-atom-regrounding.md``, "no
+source, no atom"): :mod:`precis.taproot.reground`'s CLI stage runs
+*before* apply and writes an optional ``row["grounding"]`` key (this
+module never imports :mod:`precis.taproot.reground` — one-directional,
+see :func:`_parse_grounding`). When present:
 
-**Two network-bearing stages never share a transaction with a write.**
-:func:`~precis.taproot.canon.dedup_judge`/``merge_confirm`` (the
-placement cascade) and ``extract_verify_fn`` (the evidence re-point
-check) are LLM dispatches; :func:`~precis.taproot.canon.block` and the
-grounding-passage lookup are read-only DB round trips. All of that runs
-*before* :func:`apply_dry_run` opens the one ``store.tx()`` per hub —
-holding a pgbouncer'd transaction across a network round trip risks
-pool-exhaustion deadlock under load, the same reasoning
-:func:`~precis.taproot.hub.attach_evidence`'s docstring gives for its own
-retraction check.
-
-**Atom re-grounding (``docs/backlog/taproot-atom-regrounding.md``,
-"no source, no atom").** :mod:`precis.taproot.reground`'s CLI stage runs
-*before* apply and writes an optional ``row["grounding"]`` key onto a
-dry-run row: per-atom :class:`~precis.taproot.reground.GroundedRecord`\\ s
-or a named ungrounded reason. This module never imports
-:mod:`precis.taproot.reground` (one-directional — see :func:`_parse_grounding`);
-it only reads the plain dict back, so a row with no ``"grounding"`` key
-(a plain, un-regrounded dry-run row) behaves exactly as before this
-feature existed. When present:
-
-* An atom marked ungrounded (``"no-passage"``/``"hearsay-only"``/
-  ``"verify-rejected"``) on a hub that HAS candidate source papers
-  (``grounding["paper_ref_ids"]`` non-empty) is **withheld** —
-  :func:`_withheld_atoms` — never runs the placement cascade, mints no
-  hub, gets no ``conjunct-of`` link, and is counted in
-  :attr:`ApplyReport.atoms_withheld_ungrounded` (+ the reasons breakdown,
-  :attr:`ApplyReport.atoms_withheld_reasons`) rather than silently placed.
-* A hanging hub (``grounding["paper_ref_ids"]`` empty, or no ``"grounding"``
-  key at all) keeps today's behavior unchanged — atoms may place hanging
-  (lineage-only); re-grounding never ran, so there is nothing to withhold
-  against.
-* **``grounding["error"]`` is a distinct third shape from "present" and
-  "missing"** — the CLI stage's sentinel for a hub re-grounding itself
-  raised on (a dead dispatch, a malformed row). Missing key means "never
-  regrounded, place as before"; the error sentinel means "regrounding was
-  attempted and failed" and must never quietly fall back to that same
-  permissive default — :func:`_withheld_atoms` withholds **every** atom
-  on the row (reason ``"reground-error"``), regardless of
-  ``paper_ref_ids``.
-* **Every atom withheld (either shape above) is a partial failure, not a
-  zero-child split** — mirrors the ``len(atoms) < 2`` malformed-extraction
-  guard: no stamp, so ``skipped_already_stamped`` never locks the hub out
-  of a future retry, plus (unlike that guard) a needs_review filing, since
-  a hub re-grounding rejected outright deserves a human look.
-* A grounded atom places exactly as it always has, **plus** its evidence
-  edge's ``meta.source_handle`` is upgraded to the grounded record's own
-  chunk anchor when the edge being re-pointed shares that record's paper
-  (:func:`_grounded_chunk_anchors`) — never a blanket copy of the quote/
-  bound itself: **quote/snip storage in the DB is deliberately out of
-  scope** (an open design call with the nanopub-mint session,
-  ``claim-publication-nanopub-ots.md``) — a grounding record's quote lives
-  only in the CLI's regrounded JSONL run artifact, never a DB column this
-  module writes.
+* An atom marked ungrounded on a hub WITH candidate source papers is
+  **withheld** (:func:`_withheld_atoms`) — no placement, no hub, no
+  ``conjunct-of`` link; counted in
+  :attr:`ApplyReport.atoms_withheld_ungrounded`/``atoms_withheld_reasons``.
+* A hanging hub (no candidate papers, or no ``"grounding"`` key at all)
+  keeps today's behavior — atoms may place hanging (lineage-only).
+* ``grounding["error"]`` (regrounding itself raised) is a **third**
+  shape, distinct from present/missing: withholds *every* atom on the
+  row (``"reground-error"``), never falls back to the permissive
+  missing-key default.
+* Every withheld atom is a partial failure, not a zero-child split — no
+  stamp (so a retry isn't locked out) plus a needs_review filing.
+* A grounded atom's evidence edge's ``meta.source_handle`` is upgraded to
+  the grounded record's own chunk anchor when the re-pointed edge shares
+  that record's paper (:func:`_grounded_chunk_anchors`) — quote/snip
+  storage stays out of the DB (open design call,
+  ``claim-publication-nanopub-ots.md``); a grounding record's quote lives
+  only in the CLI's JSONL run artifact.
 """
 
 from __future__ import annotations
@@ -347,13 +282,11 @@ class _EvidenceEdge:
 def _fetch_evidence_edges(store: Store, hub_ref_id: int) -> list[_EvidenceEdge]:
     """Every live evidence edge landing on ``hub_ref_id`` — module-local
     copy of :func:`precis.taproot.seniority._fetch_evidence_rows`'s query
-    shape (private there), extended to also project the edge's chunk
-    ``ord`` (needed to call :func:`~precis.taproot.hub.attach_evidence`/
-    :meth:`~precis.store.Store.remove_link`, both of which take a
-    ``pos``/``ord``, not a raw ``chunk_id``). The ``p.kind = ANY(EVIDENCE_SRC_KINDS)``
-    join excludes a hub<->hub ``contradicts`` link (the same slug a
-    ``new_contradicts`` placement writes) the same way
-    ``_fetch_evidence_rows`` does — a ``finding`` source is never in
+    shape, extended to also project the edge's chunk ``ord`` (needed by
+    :func:`~precis.taproot.hub.attach_evidence`/
+    :meth:`~precis.store.Store.remove_link`, which take a ``pos``/``ord``,
+    not a raw ``chunk_id``). Excludes a hub<->hub ``contradicts`` link the
+    same way: a ``finding`` source is never in
     :data:`~precis.taproot.hub.EVIDENCE_SRC_KINDS`.
     """
     with store.pool.connection() as conn:
@@ -388,21 +321,16 @@ def _fetch_evidence_edges(store: Store, hub_ref_id: int) -> list[_EvidenceEdge]:
 
 def _passage_text(store: Store, edge: _EvidenceEdge) -> str | None:
     """Best-effort grounding-passage text for one evidence edge — the
-    read-side mirror of :func:`precis.taproot.hub._grounding_chunk_ord`
-    (private there; duplicated per this module's copy-the-small-predicate
-    precedent), returning the chunk's *text* rather than its ``ord`` since
-    ``extract_verify_fn`` needs a passage to argue against, not a pointer.
+    read-side mirror of :func:`precis.taproot.hub._grounding_chunk_ord`,
+    returning the chunk's *text* (``extract_verify_fn`` needs a passage to
+    argue against, not a pointer).
 
-    Two grounding forms, mirroring the write side: (1) ``links.src_chunk_id``
-    already resolved at write time (the draft-backfill arm's storage), or
-    (2) ``meta['source_handle']`` — a ``pc<chunk_id>`` universal handle or a
-    ``slug~ord`` chase pointer — when ``src_chunk_id`` is unset (a
-    ref-level link carrying only a meta pointer). ``None`` when neither
-    resolves to a live body chunk of this edge's own paper — the caller
-    then verifies against ``""``, which ``extract_verify_fn``'s own
-    contract already treats as unsupported (a safe degrade: nothing can
-    verify against no passage, so the edge is correctly kept +
-    needs_review rather than guessed at).
+    Two grounding forms: ``links.src_chunk_id`` already resolved at write
+    time, or ``meta['source_handle']`` (a ``pc<chunk_id>`` handle or
+    ``slug~ord`` chase pointer) when unset. ``None`` when neither resolves
+    to a live body chunk of this edge's own paper — the caller then
+    verifies against ``""``, which ``extract_verify_fn`` already treats as
+    unsupported (safe degrade: kept + needs_review, never guessed at).
     """
     if edge.src_chunk_id is not None:
         with store.pool.connection() as conn:
@@ -578,22 +506,12 @@ def _parse_atoms(extraction: dict[str, Any] | None) -> list[CanonicalClaim]:
 
 def _parse_grounding(row: dict[str, Any]) -> dict[str, Any] | None:
     """The optional ``"grounding"`` key a *regrounded* JSONL row carries —
-    :mod:`precis.taproot.reground`'s CLI stage writes
-    ``{"paper_ref_ids": [...], "atoms": [{"grounded": bool, "records": [...],
-    "reason": str|None}, ...]}`` alongside the original dry-run row, OR —
-    when re-grounding itself raised for this hub (a dead dispatch, a
-    malformed row) — the error-sentinel shape ``{"error": "<message>"}``
-    (see :func:`_withheld_atoms`, which treats it as "withhold everything,
-    never a pass-through"). Read back here as a plain dict — this module
-    never imports :mod:`precis.taproot.reground` itself (one-directional
-    dependency, see that module's docstring) — so a plain (un-regrounded)
-    dry-run row, which carries no ``"grounding"`` key at all, degrades to
-    exactly today's behavior: nothing withheld, no chunk-anchor upgrade.
-    **Missing key and the error sentinel are deliberately NOT the same
-    thing**: a row the CLI never touched (no key) is "never regrounded",
-    safe to place as before; a row the CLI DID touch but couldn't verify
-    (the sentinel) must never silently degrade to that same safe default —
-    that would place exactly the atoms the check failed on, fully ungated.
+    the shape :mod:`precis.taproot.reground`'s CLI stage writes, or the
+    ``{"error": "<message>"}`` sentinel when re-grounding itself raised
+    (module docstring's "Atom re-grounding" section covers both shapes and
+    the missing-key-vs-error distinction). Read back as a plain dict —
+    this module never imports :mod:`precis.taproot.reground`
+    (one-directional).
     """
     grounding = row.get("grounding")
     return grounding if isinstance(grounding, dict) else None
@@ -603,22 +521,14 @@ def _withheld_atoms(
     atoms: list[CanonicalClaim], grounding: dict[str, Any] | None
 ) -> dict[int, str]:
     """``atom index -> withholding reason`` for every atom this hub's
-    ``grounding`` marks ungrounded, on a hub that HAS candidate source
-    papers (``docs/backlog/taproot-atom-regrounding.md``'s apply-
-    integration rule: no-passage/verify-rejected/hearsay-only on a
-    papered hub withholds; a hanging hub's atoms are never withheld).
+    ``grounding`` marks ungrounded, on a hub WITH candidate source papers
+    (module docstring's atom-regrounding rules; a hanging hub's atoms are
+    never withheld).
 
-    A ``grounding["error"]`` sentinel (re-grounding raised for this hub —
-    :func:`_parse_grounding`) withholds **every** atom unconditionally,
-    reason ``"reground-error"`` — regardless of ``paper_ref_ids`` (we have
-    no idea whether this hub is papered or hanging; the check that would
-    tell us never completed), and regardless of anything an ``"atoms"``
-    key might still carry (an error sentinel never carries one, but this
-    is checked first defensively either way).
-
-    Otherwise empty when ``grounding`` is absent, or the hub is hanging
-    (``grounding["paper_ref_ids"]`` empty) — a hanging hub's atoms place
-    exactly as they did before re-grounding existed.
+    A ``grounding["error"]`` sentinel (:func:`_parse_grounding`) withholds
+    **every** atom unconditionally (``"reground-error"``), regardless of
+    ``paper_ref_ids``. Otherwise empty when ``grounding`` is absent or the
+    hub is hanging.
     """
     if not grounding:
         return {}
@@ -701,27 +611,19 @@ def _place_atom(
 ) -> int | None:
     """Mint-or-converge one atom hub with **no** evidence edge — the atom
     counterpart of :func:`precis.taproot.hub._apply_compound_placement`'s
-    mint-without-evidence shape (private to ``hub.py``, not reusable from
-    here; the not-a-claim memo that function also writes has no analogue
-    here — an atom is a groundable fact, not a compound's audit trail).
-    Evidence is attached entirely by the separate re-point step in
-    :func:`apply_dry_run`, never at placement time (module docstring).
+    mint-without-evidence shape. Evidence is attached entirely by the
+    separate re-point step in :func:`apply_dry_run`, never at placement
+    time.
 
     * ``"attach"`` onto a hub that turns out to be a **compound**
-      (``block``/``dedup_judge`` converged this atom onto an existing
-      bundling hub rather than one of its atoms) downgrades to
-      needs_review — mirrors
+      downgrades to needs_review (mirrors
       :func:`~precis.taproot.hub.apply_placement`'s own compound
-      downgrade; an atom must never itself become one of a compound's
-      *evidence* holders without first being one of its ``conjunct-of``
-      atoms, and this module never establishes that relationship for a
-      converge target it didn't itself place.
+      downgrade) — an atom must never become one of a compound's evidence
+      holders without first being one of its ``conjunct-of`` atoms.
     * ``"new"``/``"new_contradicts"`` mints via
-      :func:`~precis.taproot.hub.mint_hub` (no ``paper_ref_id`` — nothing
-      to attach); ``new_contradicts`` additionally links the fresh atom
-      hub ``contradicts`` its opposite-claim candidate, replicating
-      :func:`~precis.taproot.hub._mint_for_placement`'s hub<->hub link
-      (private there).
+      :func:`~precis.taproot.hub.mint_hub` (no ``paper_ref_id``);
+      ``new_contradicts`` also links the fresh hub ``contradicts`` its
+      opposite-claim candidate.
     * ``"needs_review"`` files the review and mints nothing.
 
     Returns the atom's hub ref_id, or ``None`` on any needs_review path.
@@ -804,12 +706,10 @@ def apply_dry_run(
        broke somewhere upstream), not a silent no-op.
 
     ``extract_verify_fn``/``block_fn``/``judge_fn``/``merge_confirm_fn``
-    default to the real (LLM-dispatching / DB-backed) implementations;
-    every one is injectable for a fully offline test. ``now_fn`` is the
-    stamp's clock (injectable — never call ``datetime.now`` inline in the
-    per-hub loop). ``embedder`` is threaded to ``block_fn`` unchanged
-    (``None`` is a legal degrade for a faked ``block_fn`` that ignores it,
-    same convention as :mod:`precis.taproot.backfill`).
+    default to the real implementations; each is injectable for a fully
+    offline test. ``now_fn`` is the stamp's clock (injectable). ``embedder``
+    threads to ``block_fn`` unchanged (``None`` is a legal degrade for a
+    faked ``block_fn``, same convention as :mod:`precis.taproot.backfill`).
     """
 
     def _needs_review(hub_ref_id: int, reason: str, detail: dict[str, Any]) -> None:

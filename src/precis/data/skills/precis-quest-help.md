@@ -50,6 +50,9 @@ The **first line** is the striving statement; anything after a blank line
 is criteria / rubric. Both embed (a quest *is a vector*). A quest is born
 `STATUS:active`.
 
+A striving is never a procedure — "how to evaluate a paper" is a
+rubric/how-to and belongs in a `skill`, not a quest.
+
 ## Lifecycle — never `done`
 
 A quest has **no achieved state**. It moves along a perpetual lifecycle:
@@ -66,7 +69,7 @@ measure. Progress is a **ledger of deeds**, not a percentage.
 Tagging a quest `active` is also the affordance that **starts its
 autonomous loop**: a reconciler pass ensures every active quest has one
 live `quest_tick` coordinator loop and re-arms it if it rests (gated on
-`PRECIS_QUEST_LOOP_ENABLED`, see Roadmap below). Moving to `dormant` /
+`PRECIS_QUEST_LOOP_ENABLED`, dark by default). Moving to `dormant` /
 `abandoned` just stops new loops from being minted — the current one
 winds down on its own.
 
@@ -80,7 +83,7 @@ tag(kind="quest", id=7, add=["PRIO:urgent"])  # prio 1 → weight 1.0
 put(kind="quest", text="…", tags=["PRIO:high"])  # at birth → prio 3 → 0.8
 ```
 
-Only **active** quests exert pull. From slice 2 this weight flows *down*
+Only **active** quests exert pull. This weight flows *down*
 the `serves` DAG (max-aggregation on overlap, light decay per quest→quest
 ladder hop) into three places work is chosen: the todo **rotation** (a
 project serving a hot quest surfaces sooner in the doable view), paper
@@ -109,7 +112,9 @@ never appears at all (gripe 161912).
 
 A quest may serve a grander quest — a **DAG of strivings** above the
 ordinary tree of deeds. One concept can serve several quests (m2m); the
-shared spine floats up as the highest-value work.
+shared spine floats up as the highest-value work. A concept and a quest
+stay distinct graphs even when linked — a concept is something you
+*know*, a quest is something you *strive* toward.
 
 **Sub-quest vs. achievable goal — the rule of thumb:** open-ended
 *"the best / a … "* → a **quest** (it can never be finished); a
@@ -149,7 +154,7 @@ The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
 get(kind="quest", id=7)  # statement + tote + logbook TAIL (last 10 entries)
 get(kind="quest", id=7, view="tree")  # rollup: servers + deed ledger + health + gaps
 get(kind="quest", id=7, view="gaps")  # just this quest's exploration queue
-get(kind="quest", id=7, view="dossier")  # the living research synthesis (slice 4)
+get(kind="quest", id=7, view="dossier")  # the living research synthesis
 get(kind="quest", id=7, view="frontier")  # Pareto frontier of candidate materials
 get(kind="quest", id=7, view="leaderboard")  # ranked servers by deeds contributed
 get(kind="quest", id=7, view="logbook")  # the FULL lab notebook, every entry
@@ -169,8 +174,8 @@ with thousands); `view='logbook'` is the complete append-only notebook;
 `view='log'` is the raw ref-events ledger, a different (generic) thing.
 
 `view='tree'` is the map: it walks who serves the quest (grouped by
-kind), recurses into sub-quests, prints the deed ledger + tote, and — from
-slice 3 — a **health** line and a **gaps** list at the foot.
+kind), recurses into sub-quests, prints the deed ledger + tote, and ends
+with a **health** line and a **gaps** list at the foot.
 
 All of the above is also visible on the web: `/refs/quest/<id>` is a
 dedicated hub dashboard (header + momentum/tote, dossier + logbook tail,
@@ -178,7 +183,7 @@ frontier/gaps panels, servers-lite) rather than the generic ref-detail
 render — a human can read a quest's state without calling `get(view=…)`
 by hand.
 
-## Health + gaps — the exploration queue (slice 3)
+## Health + gaps — the exploration queue
 
 A quest is measured by *striving*, not finishing, so the tree rollup ends
 with two read-time, mechanical reads (no `% done`):
@@ -193,13 +198,14 @@ with two read-time, mechanical reads (no `% done`):
   serves it), **no-literature** (work under way with no `paper`
   grounding), **low-mastery** (a served `concept` you don't understand
   yet), **open-hypothesis** (a `hypothesis` logbook entry with no later
-  `result`/`dead-end`). Gaps *are* where to look next.
+  `result`/`dead-end`), **needs-experiment** (a graduated candidate
+  waiting on a real-world experiment). Gaps *are* where to look next.
 
 `view='gaps'` focuses one quest; `id='/gaps'` rolls the queue up across
 every active quest, hottest first. All degrade to empty until quests +
 servers exist.
 
-## The dossier + a research tick (slice 4a)
+## The dossier + a research tick
 
 A quest keeps *two* records. The **logbook** is episodic (what happened,
 when — WORM). The **dossier** is semantic: a `draft` the quest owns
@@ -267,7 +273,7 @@ precis quest dossier 7         # print the dossier
 precis quest frontier 7        # the Pareto frontier of candidate materials
 ```
 
-**Compute (slice 4b).** With `--compute`, each proposal that carries a
+**Compute.** With `--compute`, each proposal that carries a
 concrete atomistic `structure` (a periodic cell + atoms) becomes a
 `structure` that `serves` the quest (the graph *is* the memory of
 explored space), content-addressed so re-proposing a material is a cache
@@ -288,15 +294,18 @@ resistance — needs `reaction_config.poisons`, e.g. `["CO"]`)), shown by
 **provisional** candidates (measured but unconfirmed — an untrusted
 barrier or a missing relax; values shown with their exclusion reason and
 Pareto-ranked separately), and **awaiting a sim** (no measurement at
-all). The loop dispatches **one proposal per tick**
+all). A `★` marks a graduated candidate (earned the `needs-experiment`
+milestone); `★ would lead` on a provisional row means it would top the
+frontier if its measurement were trusted. The loop dispatches **one
+proposal per tick**
 (`PRECIS_QUEST_MAX_PROPOSALS`, default 1) and waits for its sims before
 the next.
 
-The autonomous *scheduling* of ticks (a perpetual per-quest coordinator loop,
-not a single step) is a later rung — see Roadmap below. Dark by default:
-nothing mints a loop automatically, and compute is off unless you pass
-`--compute` (`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the
-manual CLI runs regardless).
+The autonomous *scheduling* of ticks (a perpetual per-quest coordinator
+loop, not a single step) is dark by default: nothing mints a loop
+automatically, and compute is off unless you pass `--compute`
+(`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the manual CLI
+runs regardless).
 
 ## Trust a barrier before you rank on it
 
@@ -328,49 +337,3 @@ this edit") is a genuine veto — fix the edit, don't resubmit it.
 as a `result` logbook entry can sit unpropagated for a day before it shows
 on the frontier. The frontier is authoritative but late; read the logbook
 tail before concluding a quest has stalled.
-
-## What this is *not*
-
-- **Not a todo.** A todo is completable and has a parent tree; a quest is
-  perpetual and sits *above* the todo tree via `serves`.
-- **Not a concept.** Achieve vs. know. A concept can *serve* a quest
-  (`concept --serves--> quest`) but they're distinct graphs.
-- **Not a memory.** A memory is the stateless baseline node; a quest adds
-  a lifecycle, the serves-DAG, and the logbook.
-- **Not a skill.** A quest is a striving, not a procedure — "how to
-  evaluate a paper" is a rubric/how-to, filed as a **`skill`**, not a quest.
-- **Not a paper-specific finding.** A best-practice result or evaluation
-  tied to one paper is a **`finding`** (citation-linked, kind='finding'),
-  not a quest — a quest is generic and never paper-specific.
-
-## Roadmap (what's live vs. coming)
-
-Slices 1–3 + rungs **4a–4d** are **live**: the kind + `serves` + logbook +
-tree rollup (slice 1); **reweighting** (slice 2); **gaps + health** (slice 3,
-`view='gaps'`, `id='/gaps'`); the **research tick + dossier** (slice 4a); the
-**compute dispatch + Pareto frontier** (slice 4b, `precis quest tick --compute`,
-`view='frontier'`); the **local↔frontier cascade** (slice 4c) — a tick runs
-cheap+local and *escalates to a frontier review* on a signal; and the
-**allocator** (slice 4d) — `precis quest run` picks the highest-scoring active
-quest by an EWMA bandit (priority × momentum × promise + exploration) under a
-weekly budget, ticks it once, and cools cold quests to `dormant` (manual /
-CLI-only now — see below); and **graduation** (slice 4e) — a candidate that
-crosses the quest's declared ceiling (`meta.graduation = {key, sense,
-threshold}`) is tagged `needs-experiment`, logged as a `milestone` deed, and
-surfaced as a `needs-experiment` gap (★ in `view='frontier'`) — the in-silico
-ceiling, a call to a human/lab.
-
-The **background** autonomy is no longer the allocator picking one quest per
-pass — it's a **reconciler** (`precis.quest.loop`) that runs every agent-worker
-cycle and ensures each active quest has one live `quest_tick` **coordinator
-loop** (not a single scored step): the loop harvests finished sims,
-reviews+proposes via the local model, dispatches the next batch, and yields
-until they land — self-paced by sim completion, not a timer. A loop that rests
-(a bounded run of dry/unproductive slices) is re-armed after a short cooldown;
-consecutive dry rests escalate to a ~daily retry cadence plus a
-`quest:dry-rest/<id>` alert, self-healing on frontier improvement or a
-non-dry rest (thresholds/cooldowns env-tunable, see `precis.quest.loop`). Runs on the melchior agent worker **only when
-`PRECIS_QUEST_LOOP_ENABLED` is set** (dark by default); `precis quest run
---force` still runs one manual allocator tick by hand, independent of the
-loop. The quest layer is complete. Design of record:
-`quest-layer` (git-only).

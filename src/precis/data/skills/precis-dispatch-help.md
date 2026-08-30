@@ -13,7 +13,7 @@ status: active
 
 # precis-dispatch-help — the intent → execution bridge
 
-Slice 5 wires the todo tree (intent) to the job substrate
+Wires the todo tree (intent) to the job substrate
 (execution) via three pieces:
 
 * **`meta.executor`** + **`meta.job_type`** on a `kind='todo'` ref —
@@ -98,9 +98,8 @@ executor, and flips status to succeeded / failed.
 ## What gets rejected at dispatch time?
 
 The dispatcher logs the rejection and moves on; the todo stays
-open. The operator notices via worker logs (and, after the
-post-Slice-5 logging upgrade, will see structured entries with
-the rejection reason).
+open. The operator notices via worker logs, which carry structured
+entries with the rejection reason.
 
 | Cause | Log line |
 |---|---|
@@ -112,8 +111,8 @@ the rejection reason).
 
 ## Toolpath — failed job, decide next move
 
-A failed job tags the parent todo `child-failed:<job_id>` (Slice
-5 failure-bubble). The doable view excludes parents with that
+A failed job tags the parent todo `child-failed:<job_id>` (the
+failure bubble). The doable view excludes parents with that
 tag, so they don't keep getting re-picked. asa-bot reads
 `view='attention'` (see `precis-tasks-help`), sees the stuck
 parent, decides:
@@ -173,8 +172,8 @@ subset at submit.
 Executors today: `claude_inproc` (offline `claude -p`, provides
 `{claude_bin, git, clones_dir, claude_config_mount}`), `ssh_node`
 (remote GPU-node compute), and `coordinator` (yield/resume phase
-machines — empty PROVIDES by design; the job_type's `dispatch` does
-the work in slices and parks at `STATUS:waiting_*` between them).
+machines — empty PROVIDES; the job_type's `dispatch` does the work in
+slices and parks at `STATUS:waiting_*` between them).
 Job_types pair with a compatible executor at submit; see the table
 in `precis-job-help`.
 

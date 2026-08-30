@@ -1,28 +1,24 @@
-"""Shared outbound-HTTP seam.
+"""Shared outbound-HTTP seam — the single boundary every network-reaching
+kind (``web``, ``news``, ``wikipedia``, ``semanticscholar``, ``math``,
+``perplexity``, ``youtube``, the ORCID ingest client, …) routes through.
 
-Every kind that reaches the network (``web``, ``news``, ``wikipedia``,
-``semanticscholar``, ``math``/Wolfram, ``perplexity``, ``youtube``, the
-ORCID ingest client, …) previously open-coded the same three things:
+:func:`http_client` centralises three things that were previously
+open-coded per call site:
 
-1. ``httpx = require_optional("httpx")`` — the lazy import gate, with
-   the install hint spelled out by hand each time.
-2. A ``User-Agent`` header (variously ``"precis-mcp/1.0"`` or absent).
-3. ``follow_redirects=`` — a *security-relevant* default. The SSRF guard
-   in :mod:`precis.utils.safe_fetch` only works when the client does
-   **not** auto-follow redirects (``safe_get`` walks the chain itself,
-   revalidating each hop). A client that silently defaulted to
-   ``follow_redirects=True`` would let an agent-supplied URL redirect
-   into a private/loopback/metadata address.
+1. ``httpx = require_optional("httpx")`` — the lazy import gate + install
+   hint.
+2. A ``User-Agent`` header.
+3. ``follow_redirects=`` — security-relevant: :mod:`precis.utils.safe_fetch`'s
+   SSRF guard only works when the client does **not** auto-follow redirects
+   (``safe_get`` walks the chain itself, revalidating each hop). A client
+   that defaulted to ``follow_redirects=True`` would let an agent-supplied
+   URL redirect into a private/loopback/metadata address.
 
-:func:`http_client` centralises all three so the install hint, the UA,
-and the safe redirect default live in exactly one place. Bespoke
-per-kind error messages and ``next=`` hints stay at the call site —
-they are deliberately tuned per kind (and asserted in tests), not
-duplication.
+Bespoke per-kind error messages and ``next=`` hints stay at the call site —
+deliberately tuned per kind, not duplication.
 
-This module does **not** import ``httpx`` at module load — although the
-dep is core since the 2026-08-16 extras promotion, the lazy import via
-:func:`require_httpx` keeps module import cheap and degrades a broken
+This module does **not** import ``httpx`` at module load — the lazy import
+via :func:`require_httpx` keeps module import cheap and degrades a broken
 venv into a typed, actionable error instead of an ImportError.
 """
 
@@ -106,18 +102,14 @@ def external_retry(
     """Shared tenacity retry decorator for outbound external-API calls
     (S2, Crossref, ...): exponential backoff, five attempts, reraise.
 
-    Equivalent to the ``wait_exponential(min=1, max=60)`` /
-    ``stop_after_attempt(5)`` / ``reraise=True`` decorator that used to be
-    hand-copied at every retried call site — with two drain hooks added so
-    a backoff sleep can't outlive the worker's SIGTERM drain budget
-    (gr204611: a single 60s backoff sleep must not outlive the 60s drain
-    window and get the worker SIGKILLed mid-retry, which is what mints the
-    orphaned claims the reaper exists to clean up). The sleep wakes early
-    on drain via :func:`precis.liveness.drain_sleep`, and the retry
+    Two drain hooks are added so a backoff sleep can't outlive the worker's
+    SIGTERM drain budget (a sleep that outlives the drain window gets the
+    worker SIGKILLed mid-retry, minting an orphaned claim). The sleep wakes
+    early on drain via :func:`precis.liveness.drain_sleep`, and the retry
     predicate refuses the *next* attempt once draining — with
-    ``reraise=True`` the in-flight exception then propagates exactly as if
-    the retry budget had been exhausted, so callers' existing failure
-    handling is unchanged.
+    ``reraise=True`` the in-flight exception then propagates as if the
+    retry budget had been exhausted, so callers' failure handling is
+    unchanged.
     """
     import tenacity
 

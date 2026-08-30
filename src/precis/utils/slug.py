@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-import unicodedata
 from collections.abc import Callable
+
+from precis.identity import _ascii_fold
 
 # Stopwords skipped when picking the first content word from a title.
 # Kept small and conservative — anything ambiguous (e.g. ``via``) is
@@ -48,11 +49,6 @@ _STOPWORDS: frozenset[str] = frozenset(
 
 _SURNAME_MAX = 30
 _KEYWORD_MAX = 20
-
-
-def _ascii_fold(text: str) -> str:
-    """Strip diacritics and drop non-ASCII bytes."""
-    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
 
 
 def _first_author(authors: list[str]) -> str:

@@ -87,10 +87,9 @@ call is also an entity or value write — pass it alongside a `title=`/
 `category=` entity put, alongside a `spec=` value put, or on its own. It
 must resolve to a `material` ref (rejected, naming the resolved kind,
 otherwise) and creates a `made-of` link, visible on `get(id=...)`. This is
-the one composition edge v1 ships — it records the substance a component
-is made of; nothing yet *computes* the component's intensive properties
-(density, modulus, ...) from the linked material — that's a deferred
-follow-on (see below).
+the one composition edge the store ships — it records the substance a component
+is made of; nothing *computes* the component's intensive properties
+(density, modulus, ...) from the linked material at read time.
 
 ### 4. contains — the assembly tree (BOM)
 
@@ -121,7 +120,8 @@ an enclosure *contains* the bracket — different edges, different meaning).
 A component with no `contains` children is automatically a **leaf** — this
 is the PCB-leaf boundary (ADR 0071): a PCBA is one line item here, its
 internals stay in the `pcb`/`part` subsystem, and the rollup below never
-descends into it.
+descends into it. There is no `realized_by` → `part` binding yet — a leaf
+component doesn't link to a catalog C-number.
 
 ```python
 get(kind="component", id="enclosure", view="tree")
@@ -139,15 +139,17 @@ one combined row), plus **rollup totals**:
 get(kind="component", id="enclosure", view="bom")
 ```
 
-Totals are `unit_cost total: Σ(path-qty × current unit_cost)` and `mass
+The rollup is naive quantity math — `qty=` × the leaf's current spec value,
+no per-unit reconciliation (e.g. a per-metre wire cost against a piece
+`qty=`). Totals are `unit_cost total: Σ(path-qty × current unit_cost)` and `mass
 total: Σ(path-qty × current mass)`, each with a coverage note —
 `unit_cost: N of M leaves` — so a `0` total from "nothing priced" reads
 differently from a genuine zero. "Current" value, when a leaf carries
 several rows for the same spec (normal for `unit_cost`, price-break-dated),
 means the single most-recent one (`as_of` then `created_at`, descending) —
 the rollup never sums or averages multiple rows for one leaf.
-Price-break-aware costing (`conditions.qty_break`) is out of scope for v1;
-it always uses the latest single `unit_cost`.
+Price-break-aware costing (`conditions.qty_break`) isn't applied — the
+rollup always uses the latest single `unit_cost`.
 
 Add `spec=<spec_id>` for the **consistency query** — "does every part in
 this assembly agree on spec S?":
@@ -163,15 +165,15 @@ An unregistered `spec=` is rejected with `BadInput` naming it; a spec no
 leaf records reads `coating: not recorded on any of N leaves` — never a
 false "uniform". This answers the motivating "are the washer *and* the
 screw both galvanized?" question directly; it's a **uniformity summary**
-(distinct values + counts), not a pass/fail against a target — an explicit
-comparator (`min=8.8` → violator list) is a deferred fast-follow.
+(distinct values + counts), not a pass/fail against a target.
 
 ## The category registry — core and proposed
 
 `get(kind='component', view='categories')` lists every category and its
-tier. The seeded `core` set: `fastener`, `hose`, `pipe`, `profile`,
+registry tier (`core` — curated, stable — or `proposed` — grown at
+runtime). The seeded `core` set: `fastener`, `hose`, `pipe`, `profile`,
 `electronic`, `adhesive`, `seal`, `bearing`, `fitting`, `laminate`. It's
-**flat** in v1 — no parent/child taxonomy.
+**flat** — no parent/child taxonomy.
 
 ## The spec registry — universal, category-scoped, core and proposed
 
@@ -277,12 +279,12 @@ rejected. A band is numeric-only — `value_low=`/`value_high=` on a
 Every spec has one canonical unit (or none, for a dimensionless /
 categorical / boolean / text spec). `unit=` on a value write **must match
 it exactly**, or the write is rejected naming the canonical one — no
-conversion in v1:
+conversion:
 
 ```python
 put(kind="component", id="m6-a2-bolt", spec="thread_pitch", value=0.04, unit="in")
 # [error:BadInput] unit='in' is not thread_pitch's canonical unit ('mm') -
-# v1 is canonical-unit-only, no conversion
+# canonical-unit-only, no conversion
 ```
 
 ## Sourcing a value
@@ -342,29 +344,3 @@ components in that category (useful when a spec_id collision is
 theoretically possible across categories, or just to keep results
 on-topic). A plain `q=` search matches the component entity's name,
 aliases, mpn, manufacturer, and category.
-
-## What's deliberately not here (v1)
-
-- **Comparator / violator query** — `view='bom', spec=S` returns a
-  uniformity summary, not a pass/fail against a target (e.g. "is every
-  fastener grade ≥ 8.8?" → boolean + violator list). Deferred fast-follow
-  on the same tree walk.
-- **Price-break-aware rollup** — `unit_cost` totals use the single latest
-  value per leaf, ignoring `conditions.qty_break`. Ties into the deferred
-  unit-reconciliation follow-on.
-- **Quantity-unit reconciliation** — `qty=` is a dimensionless count of the
-  child's own `uom`; the rollup does naive `qty × spec` sums, it does not
-  reconcile a per-metre child against a per-each one.
-- **Laminate layer structure** — ordered layers and effective-property
-  computation from the stack. v1 admits a `laminate` category (record its
-  measured specs), but not the structured layer model.
-- **Effective-property inheritance** — computing a component's intensive
-  properties from its `made-of` material at read time. v1 records the
-  edge; it does not walk it to synthesize values.
-- **`realized_by → part` binding** — auto-linking a component to a
-  concrete JLCPCB C-number and pulling its live price/stock. `component`
-  stays independent of the catalog kind.
-- **Category taxonomy tree** — parent/child categories, inherited spec
-  sets. v1 categories are flat.
-- **Unit conversion** and **off-sample estimation** — same v1 trims as
-  `material`; convert on your side before writing.

@@ -32,13 +32,13 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers._skill_common import parse_frontmatter
 from precis.handlers.calc import CalcHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.paper import PaperHandler
 from precis.handlers.skill import (
     SkillHandler,
     _availability_gap,
-    _parse_frontmatter,
 )
 from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store, Tag
@@ -149,8 +149,8 @@ class TestSkillIndexFiltering:
         text = (
             resources.files("precis.data.skills") / "precis-files-help.md"
         ).read_text(encoding="utf-8")
-        fm = _parse_frontmatter(text)
-        assert fm.get("status") == "active"
+        fm = parse_frontmatter(text)
+        assert fm.status == "active"
         # The status banner inside the skill must still warn readers
         # that file kinds are gated on env vars — that's the honesty
         # clause. After the consolidation, ``PRECIS_ROOT`` gates the

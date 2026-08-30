@@ -20,7 +20,7 @@ Writing a proposal in precis joins three pieces you already have:
    to quote.
 2. **A proposal project** — a strategic `kind='todo'` whose
    `meta.workspace.brief` holds your **idea + personnel** (free text),
-   with `meta.llm_tier='opus'` so the planner drives it.
+   with `meta.llm_tier='opus'` (model tier) so the planner drives it.
 3. **The proposal draft** — a `kind='draft'` (one per project), the
    editable, chunk-native deliverable. You write **into** it.
 

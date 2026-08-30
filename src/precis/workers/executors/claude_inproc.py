@@ -1302,7 +1302,7 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
         else:
             _set_status(store, ref_id, _FAILED, conn=conn)
             _set_status(store, gripe_id, "open", conn=conn)
-            # Slice-5 failure-bubble: tag the parent todo if any.
+            # Slice-5 failure bubble: tag the parent todo if any.
             # Inside the same tx so the status + bubble commit
             # together; orphan jobs (legacy, no parent_id) just no-op.
             from precis.handlers._job_bubble import bubble_job_failure

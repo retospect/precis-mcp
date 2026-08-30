@@ -23,16 +23,17 @@ abstract composition for it.
 Model call shape mirrors ``workers/classify_topics.py`` exactly: an
 injectable ``client`` (``client.complete(messages) -> SimpleNamespace(text=...)``,
 same shape ``LlmClient`` exposes), a prompt builder, and the same
-robust ``_extract_json`` parse-or-``None`` approach. Which tier/model backs
+robust ``extract_json_array``/``extract_json_object`` parse-or-``None``
+approach (``precis.utils.llm.json_reply``). Which tier/model backs
 ``client`` is the weave-tick's concern (rung 6e), not this module's.
 """
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
+from precis.utils.llm.json_reply import extract_json_array
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -45,30 +46,6 @@ _SYS = (
 #: Cap the excerpt fed per chunk — a claim is a sentence, not a re-read of
 #: the whole paragraph; keeps the prompt small even for a long ``own`` chunk.
 _EXCERPT_CHARS = 800
-
-
-def _extract_json(text: str) -> list[Any] | None:
-    """Parse ``text`` as a JSON list, tolerating surrounding prose.
-
-    Mirrors ``workers/classify_topics.py``'s ``_extract_json``, but the
-    extractor's payload shape is a JSON *array* of claim objects (not a
-    JSON object), so this looks for ``[`` / ``]`` instead of ``{`` / ``}``.
-    """
-    if not text:
-        return None
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, list) else None
-    except Exception:
-        pass
-    a, b = text.find("["), text.rfind("]")
-    if 0 <= a < b:
-        try:
-            parsed = json.loads(text[a : b + 1])
-            return parsed if isinstance(parsed, list) else None
-        except Exception:
-            return None
-    return None
 
 
 def own_chunks(store: Store, paper_ref_id: int) -> list[dict[str, Any]]:
@@ -150,7 +127,7 @@ def extract_claims(
     except Exception:
         return []
 
-    parsed = _extract_json(out.text)
+    parsed = extract_json_array(out.text)
     if parsed is None:
         return []
 

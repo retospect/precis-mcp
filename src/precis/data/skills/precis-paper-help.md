@@ -59,14 +59,15 @@ search(
 )  # default 10, max 100
 ```
 
-Hybrid lexical + semantic. Each result is a chunk handle `pc<chunk_id>`
-(paste back into `get`/`link`); order is the relevance signal.
+Each result is a chunk handle `pc<chunk_id>` (paste back into
+`get`/`link`); order is the relevance signal. Mechanics (mode=, pagination,
+tags=): `precis-search-help`.
 
 When one phrasing isn't finding it, escalate (details in
 `precis-search-help` → Broad retrieval):
 
 ```python
-# Broad: fuse rephrasings + hypothetical-answer passages in one call (RRF)
+# Broad: fuse rephrasings + hypothetical-answer passages in one call
 search(kind="paper", q="…", queries=["…", "…"], answers=["…"], per_paper=1)
 # Deep: async triage campaign — returns a job handle, poll for the curated result
 search(kind="paper", q="…", good=True)  # → poll get(kind='job', id=…)
@@ -139,8 +140,7 @@ search(kind="paper", q="photocatalytic NOx reduction", page=2)
 search(kind="paper", q="photocatalytic NOx reduction", page=3, page_size=20)
 ```
 
-`page=1` is the default. Bump `page=` to walk results; `page_size=` sets
-the page size (default 10, max 100).
+Pagination mechanics (defaults, `page_size=` cap): `precis-search-help`.
 
 ## Filter papers by publication year
 ## Find recent papers / papers from a date range
@@ -185,7 +185,7 @@ dynamically by content at request time.
 `view='summaries'` is the flat, per-chunk companion to the clustered
 `view='toc'`: one row per body chunk — its `~ord` handle, its `llm-v1`
 gloss (often empty — the summariser is a deliberate trickle), and its
-KeyBERT keyword string. Use it to scan every chunk's gist at once (the
+extracted keyword string. Use it to scan every chunk's gist at once (the
 web reader's Semantic/Keyword sidebar reads the same data); fall back to
 the keyword column where a gloss hasn't been written yet.
 
@@ -356,22 +356,6 @@ get(
 citation gap: the held review's reference list almost always contains
 the primary source you're missing. (Cached 30 days; capped at 50 rows
 per hop.)
-
-## Parsed bibliography table (`paper_bib_entries`)
-
-A worker pass (`bib_parse`) parses every held paper's numbered
-bibliography (`- [126] ...`) into `paper_bib_entries` rows — one per
-marker, with `authors`/`journal`/`year`/`volume`/`first_page` extracted
-and a `doi` resolved where possible (local `s2_neighbors` DOI-exact
-match, else a Crossref bibliographic query; `held_ref_id` set when we
-hold the cited paper). `citation-bib-parse` (git-only) is the
-base slice that produces the table; it still has **no `get`/`search`
-MCP surface** — the web reader's paper **Sources tab** is the one
-consumer today (`citation-sources-tab.md`): a matched row's positional
-index is replaced by its real `[N]` bracket marker, and an entry S2
-doesn't carry is unioned in as its own row (verbatim `raw_text` line).
-Taproot in-prose citation-following (`citation-taproot-resolve.md`) is
-the remaining sibling slice.
 
 ## See also
 

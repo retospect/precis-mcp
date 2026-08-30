@@ -1,30 +1,23 @@
-"""``precis watch`` — directory watcher that auto-ingests PDFs.
+"""``precis watch`` — directory watcher that auto-ingests dropped PDFs
+(unrelated to the `level:recurring` todo **watch** — see glossary).
 
-Loops over a directory using ``watchdog``. For every PDF that
-arrives (new file event, or any of the existing files at startup
-when ``--backfill`` is on):
+Loops over a directory using ``watchdog``. For every PDF that arrives
+(new file event, or an existing file at startup with ``--backfill``):
+(1) wait for the file size to stabilise (debounce, avoids partially-
+written downloads); (2) call :func:`precis.ingest.add.precis_add` with
+a :class:`PdfInput`; (3) on success, move to
+``<corpus>/<letter>/<cite_key>.pdf`` (one-letter lower-case shard); (4)
+on failure, move to ``<watch_dir>/errors/<YYYYMMDD-HHMMSS>/`` with a
+sibling ``<filename>.error.txt`` traceback.
 
-1. Wait for the file size to stabilise (debounce — avoids
-   processing partially-written downloads).
-2. Call :func:`precis.ingest.add.precis_add` with a
-   :class:`PdfInput`.
-3. On success, move the PDF to
-   ``<corpus>/<letter>/<cite_key>.pdf`` (one-letter shard, lower-case).
-4. On failure, move the PDF to
-   ``<watch_dir>/errors/<YYYYMMDD-HHMMSS>/`` and write a sibling
-   ``<filename>.error.txt`` with the traceback.
+Every successful ingest appends a TSV line to ``<corpus>/ingest.log``
+("who added what when"). Idempotency hits (``inserted=False``) get
+``status=existed`` instead of ``inserted`` and move to
+``errors/duplicates/`` (already known, not useless).
 
-The result of every successful ingest is appended to
-``<corpus>/ingest.log`` as a TSV line so operators can grep through
-"who added what when". Idempotency hits (``inserted=False``) get a
-``status=existed`` column rather than ``inserted`` and the source
-PDF moves to ``errors/duplicates/`` (the file isn't useless — it's
-just already known).
-
-Note on the watchdog dependency: B5 pulls it in transitively via
-``acatome-extract[embeddings]``. B8's pyproject cleanup promotes
-``watchdog`` to a direct dep so the package keeps resolving after
-the acatome dep is dropped.
+``watchdog`` is a direct dep (pyproject cleanup promoted it off the
+transitive ``acatome-extract[embeddings]`` pull so resolution survives
+the acatome dep being dropped).
 """
 
 from __future__ import annotations
@@ -335,35 +328,31 @@ def watch(
     database_url: str | None = None,
     marker_timeout_s: float = 900.0,
 ) -> None:
-    """Run the watcher in the calling process; blocks until SIGINT/SIGTERM.
+    """Run the watcher in the calling process; blocks until
+    SIGINT/SIGTERM. Each PDF is processed exactly once —
+    ``_processing_lock`` in the handler coalesces duplicate FS events
+    for the same path.
 
-    Each PDF is processed exactly once thanks to ``_processing_lock``
-    in the handler — duplicate FS events for the same path are coalesced.
+    ``subprocess_batch_size > 0`` switches the startup backfill to spawn
+    ``precis _watch_batch_ingest`` subprocesses of N PDFs each, bounding
+    Marker/surya memory leaks per batch instead of accumulating in the
+    long-running watcher. ``database_url`` is plumbed to the subprocess
+    as ``--database-url`` so the child opens a fresh Store without
+    relying on env-var inheritance.
 
-    ``subprocess_batch_size > 0`` switches the startup backfill to
-    spawn ``precis _watch_batch_ingest`` subprocesses of N PDFs each.
-    Marker / surya memory leaks accumulate in the long-running watcher
-    process; isolating batches in subprocesses bounds the leak per
-    batch. ``database_url`` is plumbed into the subprocess as
-    ``--database-url`` so the child opens a fresh Store without
-    depending on env-var inheritance.
-
-    ``corpus_pres_dir`` is where ingested slide decks land. Default:
-    sibling of ``corpus_dir`` named ``corpus_pres``. The two roots
-    stay separate so an operator's ``ls corpus_pres/`` listing
-    stays useful even when the paper corpus grows into the
-    thousands.
+    ``corpus_pres_dir`` is where ingested slide decks land (default:
+    ``corpus_pres`` sibling of ``corpus_dir``) — kept separate so
+    ``ls corpus_pres/`` stays useful as the paper corpus grows.
 
     ``marker_timeout_s`` (P2-3) guards every PDF this process runs
-    Marker on *directly* — live watchdog events, and startup backfill
-    when ``subprocess_batch_size`` is 0 — by running Marker in a
-    spawned, killable child (see :func:`precis.ingest.marker.
-    extract_blocks_marker`). ``0`` disables the guard. When
-    ``subprocess_batch_size > 0``, individual PDFs inside a batch
-    child stay unguarded (re-paying Marker's ~15s model load per PDF
-    would defeat marker-leak mitigation's batching); instead the *parent* bounds
-    each batch subprocess's wall clock to
-    ``len(batch) * marker_timeout_s`` and kills+continues on expiry.
+    Marker on *directly* (live watchdog events, and startup backfill
+    when ``subprocess_batch_size`` is 0) by running Marker in a spawned,
+    killable child; ``0`` disables the guard. When
+    ``subprocess_batch_size > 0``, PDFs inside a batch child stay
+    unguarded (re-paying Marker's ~15s model load per PDF would defeat
+    batching) — instead the *parent* bounds each batch subprocess's
+    wall clock to ``len(batch) * marker_timeout_s`` and kills+continues
+    on expiry.
     """
     watch_dir = Path(watch_dir).resolve()
     corpus_dir = Path(corpus_dir).resolve()
@@ -812,43 +801,33 @@ def process_pdf(
     marker_timeout_s: float | None = None,
 ) -> Path | None:
     """Process one PDF end-to-end. Returns the post-move path on
-    success / dedup, ``None`` on error or when another host owns the
+    success/dedup, ``None`` on error or when another host owns the
     claim for this PDF's content.
 
-    ``marker_timeout_s`` (P2-3) is forwarded to :func:`precis_add` for
-    PDF ingests — ``None`` (the default; used by the batch-subprocess
-    child, ``run_batch``) preserves the original in-process, unguarded
-    Marker call. The live watchdog-event path (``_PdfHandler._enqueue``)
-    passes its configured guard through.
+    ``marker_timeout_s`` (P2-3) forwards to :func:`precis_add` — ``None``
+    (default; used by the batch-subprocess child, ``run_batch``)
+    preserves the original in-process, unguarded Marker call; the live
+    watchdog-event path passes its configured guard through.
 
-    Order of operations:
-
-    1. Wait for the file to settle (size stable across ``debounce`` s).
-       Returns ``None`` if the file disappears during the wait.
-    2. Route by path: ``inbox/presentations/`` files build a
-       :class:`PresInput`; ``inbox/books/`` and ``inbox/papers/``
-       (and the flat-inbox fallback) build :class:`PdfInput`.
-       Components under any ``tagging/`` segment become
-       ``topic:<slug>`` open tags; ``books/`` also gets the
-       ``subtype:book`` + ``topic:book`` sentinel pair.
-    3. Call :func:`precis_add`. It acquires a Postgres advisory-lock
-       claim keyed on ``pdf_sha256`` before running Marker. If the
-       claim is already held by another host, ``precis_add`` returns
-       ``None`` and we leave the file in place so the owning host
-       can finish.
-    4. On ``inserted=True`` move to corpus (``corpus_dir`` for paper,
-       ``corpus_pres_dir`` for pres) — *unless* ``result.fallback_empty_body``
-       (gr236139: the Marker→fitz fallback ran and yielded 0 body chunks on
-       a ≥1-page PDF), which routes to ``errors/`` instead and leaves the
-       sidecar unconsumed rather than reporting a silently-empty ingest as
-       a success. Any ``result.used_marker_fallback`` (empty body or not)
-       also raises a rate-limited ops alert — see
-       :func:`_check_marker_fallback`.
-    5. On ``inserted=False`` move to ``errors/duplicates``.
-    6. On exception write ``.error.txt`` next to the PDF in
-       ``errors/<ts>/`` and swallow — exceptions are contained
-       within process_pdf so the watcher loop survives a single
-       bad PDF.
+    Order: (1) wait for the file to settle (size stable across
+    ``debounce`` s), ``None`` if it disappears during the wait; (2)
+    route by path — ``inbox/presentations/`` builds a
+    :class:`PresInput`, ``inbox/books/``/``inbox/papers/``/flat-inbox
+    build :class:`PdfInput` (any ``tagging/`` segment becomes a
+    ``topic:<slug>`` open tag; ``books/`` also gets
+    ``subtype:book``+``topic:book``); (3) call :func:`precis_add`, which
+    acquires a Postgres advisory-lock claim keyed on ``pdf_sha256``
+    before running Marker — if another host already holds the claim,
+    returns ``None`` and leaves the file in place; (4) on
+    ``inserted=True`` move to corpus (``corpus_dir``/``corpus_pres_dir``)
+    — *unless* ``result.fallback_empty_body`` (gr236139: Marker→fitz
+    fallback yielded 0 body chunks on a ≥1-page PDF), which routes to
+    ``errors/`` instead and leaves the sidecar unconsumed; any
+    ``result.used_marker_fallback`` also raises a rate-limited ops alert
+    (:func:`_check_marker_fallback`); (5) on ``inserted=False`` move to
+    ``errors/duplicates``; (6) on exception write ``.error.txt`` next to
+    the PDF in ``errors/<ts>/`` and swallow — contained so the watcher
+    loop survives a single bad PDF.
     """
     if not _wait_stable(pdf, debounce=debounce):
         log.warning("precis watch: file disappeared before stable: %s", pdf)
@@ -1181,24 +1160,24 @@ def _untrack_pgid(pgid: int) -> None:
 
 
 def reap_tracked_process_groups(grace_s: float = 5.0) -> None:
-    """Force-reap every currently-tracked batch process group: TERM, wait
-    up to ``grace_s`` for a clean exit, then KILL any survivor.
+    """Force-reap every currently-tracked batch process group: TERM,
+    wait up to ``grace_s`` for a clean exit, then KILL any survivor.
 
-    ``_run_in_process_group``'s own ``finally`` already ``killpg``s a batch
-    (and its detached surya grandchild) once its ``proc.wait()`` returns —
-    but that only runs if this PARENT process lives long enough to reach it.
-    A deploy bounce (launchd/systemd ``bootout``/``stop``) sends SIGTERM and,
-    after its own grace window, escalates to SIGKILL — which this process
-    cannot catch or clean up after. If a batch (Marker OCR, potentially
-    minutes) is still in flight when that happens, the tracked-but-not-yet-
-    reaped pgid — including any detached surya server — is orphaned,
-    reparented to init, and leaks for good (gr171254). Calling this
-    EAGERLY from the SIGTERM/SIGINT handler (not waiting for the natural
-    ``proc.wait()`` completion) bounds shutdown to ``grace_s`` regardless of
-    how long the in-flight batch would otherwise take, so the process exits
-    (and every tracked child dies with it) well inside a typical deploy's
-    kill-grace window. Also registered via ``atexit`` as a belt-and-suspenders
-    sweep for any exit path that skips the signal handler.
+    ``_run_in_process_group``'s own ``finally`` already ``killpg``s a
+    batch (and its detached surya grandchild) once ``proc.wait()``
+    returns — but only if this PARENT process lives long enough to
+    reach it. A deploy bounce (launchd/systemd ``bootout``/``stop``)
+    sends SIGTERM then escalates to SIGKILL after its own grace window,
+    which this process can't catch or clean up after — if a batch
+    (Marker OCR, potentially minutes) is still in flight, the
+    tracked-but-not-yet-reaped pgid (incl. any detached surya server) is
+    orphaned, reparented to init, and leaks for good (gr171254). Calling
+    this EAGERLY from the SIGTERM/SIGINT handler (not waiting for the
+    natural ``proc.wait()``) bounds shutdown to ``grace_s`` regardless of
+    the in-flight batch's length, so every tracked child dies with the
+    process well inside a typical deploy's kill-grace window. Also
+    registered via ``atexit`` as a belt-and-suspenders sweep for any
+    exit path that skips the signal handler.
     """
     with _inflight_lock:
         pgids = list(_inflight_pgids)
@@ -1244,30 +1223,27 @@ def _run_in_process_group(
     cmd: list[str], env: dict[str, str], *, timeout_s: float | None = None
 ) -> int | None:
     """Spawn *cmd* in its own session/process group and reap the whole
-    group on every exit path, returning the child's exit code — or
+    group on every exit path, returning the child's exit code, or
     ``None`` if ``timeout_s`` elapsed and the group was killed instead
     of exiting naturally (P2-3 batch-level wall-clock guard).
 
-    marker-pdf 2.0 runs ``surya`` as a *detached* inference server. If
-    this batch subprocess is OOM-killed, that detached surya server is
-    reparented to init (ppid=1) and keeps holding ~19 GB of unified
-    memory — an unbounded leak that thrash-locks the host and breaks
-    Marker-leak mitigation's per-batch-reclaim assumption (root-caused on spark:
-    global kernel OOM + NVRM GPU-memory exhaustion). ``start_new_session
-    =True`` makes *cmd* (and any grandchildren it spawns, including a
-    detached surya) a new session/group leader, so the group id equals
-    its pid — a ``killpg`` on that id always reaps the whole tree,
-    orphaned surya included, on every exit path (clean, killed, or
-    crashed). The pgid is also TRACKED (gr171254) for the duration of the
-    wait, so a SIGTERM/atexit teardown that fires while this call is still
-    blocked in ``proc.wait()`` (on this thread or another shard's) can reap
-    it eagerly instead of leaving it for a ``finally`` that may never run
-    (see :func:`reap_tracked_process_groups`).
+    marker-pdf 2.0 runs ``surya`` as a *detached* inference server; if
+    this batch subprocess is OOM-killed, that server reparents to init
+    and keeps holding ~19 GB of unified memory — an unbounded leak that
+    thrash-locks the host (root-caused on spark: global kernel OOM +
+    NVRM GPU-memory exhaustion). ``start_new_session=True`` makes *cmd*
+    (and any grandchildren, including a detached surya) a new
+    session/group leader, so the group id equals its pid — a ``killpg``
+    on that id always reaps the whole tree on every exit path. The pgid
+    is also TRACKED (gr171254) for the wait's duration, so a
+    SIGTERM/atexit teardown firing mid-``proc.wait()`` can reap it
+    eagerly instead of relying on a ``finally`` that may never run
+    (:func:`reap_tracked_process_groups`).
 
-    ``timeout_s=None`` (the default) blocks forever, unchanged from the
-    original behavior. A wedged Marker/torch call inside the batch
-    child can't be interrupted any other way (P2-3) — PDF metadata write-back's lock-
-    file recovery handles the PDF that was in flight when this fires.
+    ``timeout_s=None`` (default) blocks forever — a wedged Marker/torch
+    call inside the batch child can't be interrupted any other way
+    (P2-3); PDF metadata write-back's lock-file recovery handles the PDF
+    in flight when this fires.
     """
     proc = subprocess.Popen(cmd, env=env, start_new_session=True)
     pgid = proc.pid  # stable identifier for the group even after the leader dies
@@ -1551,30 +1527,20 @@ class _Routing:
 def route_pdf(pdf: Path, watch_dir: Path) -> _Routing:
     """Decide kind + extra tags from a PDF's position under ``watch_dir``.
 
-    Layout convention:
+    Layout convention: ``inbox/papers/...``→:class:`PdfInput`;
+    ``inbox/books/...``→:class:`PdfInput`+``subtype:book``+``topic:book``;
+    ``inbox/cfp/...``→:class:`PdfInput` with ``as_kind="cfp"`` (same
+    Marker→chunks pipeline as a paper, stamped spec-role ``cfp``);
+    ``inbox/datasheets/...``→:class:`PdfInput` with
+    ``as_kind="datasheet"`` (evidence-role, read at
+    ``/datasheets/<slug>``); ``inbox/presentations/...``→:class:`PresInput`
+    (one chunk per slide, ``subtype:slides``); anywhere under a
+    ``tagging/`` segment, each remaining path component becomes a
+    ``topic:<kebab-slug>`` open tag; files flat in ``inbox/`` (no kind
+    dir, or unrecognized first segment) fall back to :class:`PdfInput`.
 
-    * ``inbox/papers/...`` → :class:`PdfInput`
-    * ``inbox/books/...``  → :class:`PdfInput` + ``subtype:book`` +
-      ``topic:book``
-    * ``inbox/cfp/...`` → :class:`PdfInput` with ``as_kind="cfp"`` (a
-      call-for-proposal / requirements doc — same Marker → chunks
-      pipeline as a paper, stamped the spec-role ``cfp`` kind)
-    * ``inbox/datasheets/...`` → :class:`PdfInput` with
-      ``as_kind="datasheet"`` (a component datasheet — same Marker →
-      chunks pipeline as a paper, stamped the evidence-role ``datasheet``
-      kind; read at ``/datasheets/<slug>``)
-    * ``inbox/presentations/...`` → :class:`PresInput` (one chunk
-      per slide, ``subtype:slides`` applied by the ingester)
-    * Anywhere under a ``tagging/`` segment: each remaining path
-      component becomes a ``topic:<kebab-slug>`` open tag.
-    * Files flat in ``inbox/`` (no kind dir, or unrecognized first
-      segment) fall back to :class:`PdfInput` so existing files
-      stay ingestable across the routing landing without
-      re-staging.
-
-    The routing is computed purely from the path — no FS reads,
-    no DB hits — so it's cheap to call from both the live event
-    handler and the subprocess batch path.
+    Computed purely from the path — no FS reads, no DB hits — so it's
+    cheap from both the live event handler and the subprocess batch path.
     """
     try:
         rel = pdf.resolve().relative_to(watch_dir.resolve())

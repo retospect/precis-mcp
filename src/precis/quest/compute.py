@@ -1,23 +1,24 @@
 """Quest compute dispatch — candidates become `structure` sims (slice 4b).
 
-The local grind of the autonomous loop: a tick proposes candidate materials,
-each becomes a `structure` that ``serves`` the quest (the graph *is* the memory
-of explored space), we dispatch its relax on the GPU node (the intent-vs-compute job lanes derived
-compute lane, content-addressed so a re-proposed candidate is a cache hit), and
-a later harvest reads the measures back into the logbook. Failed candidates stay
-linked and get a ``ruled-out:`` tag so the proposer never re-treads them; the
-converged ones feed the Pareto frontier (:mod:`precis.quest.frontier`).
+The local grind of the autonomous loop: a tick proposes candidate
+materials, each becomes a `structure` that ``serves`` the quest (the graph
+*is* the memory of explored space); its relax dispatches on the GPU node
+(derived compute lane, content-addressed so a re-proposed candidate is a
+cache hit); a later harvest reads measures back into the logbook. Failed
+candidates stay linked and get a ``ruled-out:`` tag so the proposer never
+re-treads them; converged ones feed the Pareto frontier
+(:mod:`precis.quest.frontier`).
 
 A candidate carries an atomistic **structure spec** (``{cell, ops}``) — the
-proposer's job (:mod:`precis.quest.tick`). A proposal with no structure spec is
-still recorded as a logbook `hypothesis`, but mints no sim (a weak proposer just
-produces no compute, which is *visible* rather than silently wrong).
+proposer's job (:mod:`precis.quest.tick`). A proposal with no structure
+spec is still recorded as a logbook `hypothesis` but mints no sim — a weak
+proposer produces no compute, visible rather than silently wrong.
 
 Compute dispatch is **off by default** (``compute=False`` on the tick); the
-manual ``precis quest tick --compute`` and the future autonomous dispatcher
-(``PRECIS_QUEST_LOOP_ENABLED``, rung 4d) turn it on. ``dispatch_relax`` is a
-thin, defensive wrapper (it degrades to a note on any error) and is the seam
-tests monkeypatch to avoid real compute.
+manual ``precis quest tick --compute`` and the autonomous coordinator loop
+(:mod:`precis.quest.loop`, gated ``PRECIS_QUEST_LOOP_ENABLED``) turn it on.
+``dispatch_relax`` is a thin, defensive wrapper (degrades to a note on any
+error) — the seam tests monkeypatch to avoid real compute.
 """
 
 from __future__ import annotations
@@ -80,50 +81,46 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
     """Overlay a ladder ``tier`` onto a catpath reaction config.
 
     * ``screening`` — relax-only ranking: ``search.screening=True`` +
-      ``template="parked"``. catpath's own ``results.json`` then carries no
-      barrier scalar at all (never special-cased here — the harvest side
-      just sees an empty/thermo-only summary and lets that flow, see
-      :func:`_autocatpath_measures_from_job`).
-    * ``neb`` — the straight-to-NEB refine tier, overlaid with autocatpath's
-      fast-screening NEB stack (three ``search`` knobs, each a *default* an
-      explicit caller key overrides; a caller-pinned ``neb_schedule`` suppresses
-      the whole overlay, preserving the "hand-tuned NEB config wins wholesale"
-      contract). ``template`` is left unset: catpath >= 0.10 resolves that to
-      ``"coadsorbed"`` for ammonia (fragment parking is explicit opt-in only),
-      so this tier already measures the full network — N2/N2O coupling and the
-      NH2OH branch included — and pinning it here would only churn the content
-      key:
+      ``template="parked"``. catpath's ``results.json`` then carries no
+      barrier scalar; the harvest side sees an empty/thermo-only summary and
+      lets that flow (:func:`_autocatpath_measures_from_job`).
+    * ``neb`` — straight-to-NEB, overlaid with autocatpath's fast-screening
+      NEB stack (three ``search`` knobs, each a *default* an explicit
+      caller key overrides; a caller-pinned ``neb_schedule`` suppresses the
+      whole overlay — hand-tuned NEB config wins wholesale). ``template`` is
+      left unset: catpath >= 0.10 resolves it to ``"coadsorbed"`` for
+      ammonia (fragment parking is opt-in only), so this tier already
+      measures the full network (N2/N2O coupling + NH2OH branch); pinning
+      it here would only churn the content key.
 
-      - ``neb_schedule="best_first"`` (0.7): relax every endpoint first, then
-        run NEBs frontier-first on the lowest-optimistic-span route and prune
-        any route whose optimistic span (a thermodynamic *lower bound* on its
-        true TS) can't come within ``neb_margin`` of the best refined span.
-        Pruning is provably safe — skips work, never hides a competitive route
-        — buying back the NEB cost of far-uphill side-product forks.
-      - ``neb_optimizer="neb-ode"`` (0.8): ASE's adaptive NEBOptimizer in place
-        of dense-Hessian BFGS — benchmarked HERE on Pd(111)+N* at ~5× fewer
-        MLIP evals for the same barrier in the screening regime (the per-seed
-        cost lever; docs/backlog/autocatpath-seed-wall-overruns.md).
+      - ``neb_schedule="best_first"`` (0.7): relax every endpoint first,
+        then NEB frontier-first on the lowest-optimistic-span route,
+        pruning any route whose optimistic span (a thermodynamic *lower
+        bound* on its true TS) can't reach within ``neb_margin`` of the
+        best refined span — provably safe (skips work, never hides a
+        competitive route).
+      - ``neb_optimizer="neb-ode"`` (0.8): ASE's adaptive NEBOptimizer vs.
+        dense-Hessian BFGS — ~5× fewer MLIP evals for the same barrier on
+        Pd(111)+N* in the screening regime
+        (docs/backlog/autocatpath-seed-wall-overruns.md).
       - ``neb_batched=True`` (0.9, MACE-dtype fix 0.9.1, tether-guard fix
-        0.11): one MLIP forward per step over all interior images instead of a
-        serial loop — GPU-utilisation on a batch-capable backend, physics-
-        identical with a runtime self-check that degrades to serial on any
-        mismatch. Composes with ``neb-ode`` on the single-band path (unlike the
-        inter-band ``neb_pool_size``, which the pipeline doesn't feed yet).
+        0.11): one MLIP forward per step over all interior images instead
+        of serial — physics-identical, runtime self-check degrades to
+        serial on any mismatch. Composes with ``neb-ode`` on the
+        single-band path (not with the inter-band ``neb_pool_size``, which
+        the pipeline doesn't feed yet).
 
-      Together these target the seed-wall overrun: fewer edges NEB'd
-      (best_first), fewer evals per edge (neb-ode), and each eval GPU-saturated
-      (batched).
-    * ``verify`` — the same NEB search over the same coadsorbed network
-      (``template="coadsorbed"`` pinned explicitly, version-proof) but left
-      exhaustive (no best_first overlay): the authoritative final pass
-      re-refines every step, removing best_first's honest-absence caveats on
-      the winning candidate. Verify differs from neb by search rigor only.
+      Together: fewer edges NEB'd (best_first), fewer evals/edge (neb-ode),
+      each eval GPU-saturated (batched) — the seed-wall-overrun fix.
+    * ``verify`` — same NEB search, same coadsorbed network
+      (``template="coadsorbed"`` pinned explicitly) but exhaustive (no
+      best_first overlay) — the authoritative final pass re-refines every
+      step, removing best_first's honest-absence caveats. Differs from
+      ``neb`` by search rigor only.
 
-    The overlay folds into :func:`_autocatpath_content_key` automatically
-    (the changed dict), so each tier of the same candidate+reaction content-
-    addresses onto its own job/pathway — no separate idem-key plumbing
-    needed.
+    The overlay folds into :func:`_autocatpath_content_key` automatically,
+    so each tier of the same candidate+reaction content-addresses onto its
+    own job/pathway.
     """
     if tier == _TIER_SCREENING:
         cfg = {**config, "search": {**(config.get("search") or {}), "screening": True}}
@@ -1009,26 +1006,24 @@ def _seed_todo_handled(store: Store, seed_todo_id: int) -> bool:
       but ``failed``/``cancelled`` — i.e. ``succeeded``, or still non-terminal
       (``queued``/``running``/…).
 
-    This is the exact dual of :mod:`precis.workers.auto_check_evaluators.
-    child_job_succeeded`'s own resolution predicate ("any child job
-    ``STATUS:succeeded`` and no live sibling todo"), deliberately: a seed
-    whose job just succeeded but whose auto_check pass hasn't yet flipped the
-    todo to ``done`` (auto_check runs one dispatch tick behind — see that
-    evaluator's guard 2) still reads as *handled* here via the job's own
-    STATUS, never re-minted out from under the pending flip.
+    Deliberate dual of :mod:`precis.workers.auto_check_evaluators.
+    child_job_succeeded`'s resolution predicate ("any child job
+    ``STATUS:succeeded`` and no live sibling todo"): a seed whose job just
+    succeeded but whose auto_check pass hasn't yet flipped the todo to
+    ``done`` (runs one dispatch tick behind, see that evaluator's guard 2)
+    still reads *handled* here via the job's own STATUS, never re-minted
+    out from under the pending flip.
 
-    Only a seed with **no** job at all (a todo minted by a prior dispatch that
-    crashed before ``jobs.put`` landed), or one whose only job(s) are
-    ``failed``/``cancelled``, comes back ``False`` — :func:`dispatch_autocatpath`'s
-    fan-out then falls through to :func:`_ensure_autocatpath_todo` (a
-    get-or-create — reuses this SAME todo, never mints a duplicate) and a
-    fresh ``jobs.put``. The re-mint is safe even if this predicate and the
-    idem-key check below ever raced: ``JobHandler._lookup_idem``
-    (``handlers/job.py``) independently treats terminal statuses as
-    non-blocking, so a fresh ``jobs.put`` with the same ``idem_key`` mints a
-    new job under the existing todo rather than either erroring or silently
-    no-op'ing — this predicate decides *whether* to call ``jobs.put``, idem
-    backstops what happens if it's called anyway.
+    Only a seed with **no** job (a todo minted by a prior dispatch that
+    crashed before ``jobs.put`` landed) or one whose only job(s) are
+    ``failed``/``cancelled`` returns ``False`` —
+    :func:`dispatch_autocatpath`'s fan-out then falls through to
+    :func:`_ensure_autocatpath_todo` (get-or-create, reuses this SAME todo)
+    and a fresh ``jobs.put``. Safe even on a race with the idem-key check:
+    ``JobHandler._lookup_idem`` (``handlers/job.py``) independently treats
+    terminal statuses as non-blocking, so a same-``idem_key`` ``jobs.put``
+    mints a new job under the existing todo either way — this predicate
+    decides *whether* to call ``jobs.put``, idem backstops the call itself.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -1069,30 +1064,25 @@ def dispatch_autocatpath(
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
 
-    ``tier`` (default ``"neb"`` — today's straight-to-NEB shape, byte-
-    identical to before the ladder existed) selects which rung of the
-    **screening → neb → verify** ladder this run is:
-    :func:`_apply_tier_config` overlays the tier onto ``config`` BEFORE the
-    device/route logic below, so the tier folds into the content-addressed
-    idem key automatically — a promotion (a fresh tier on an
-    already-dispatched candidate) is just another :func:`dispatch_autocatpath`
-    call, content-addressed onto its own job/pathway rather than clobbering
-    the prior tier's. The pathway ref this call ensures/reuses is stamped
-    ``meta.tier`` at creation (read back by :func:`_find_tier_pathway`, the
-    promotion-eligibility + `refines`-lineage seam). A re-dispatch of the
-    SAME (candidate, tier) under a changed config/geometry/engine mints a
-    new content-addressed pathway rather than reusing the old one — the
-    mint stamps any prior still-``"computing"`` pathway for that (candidate,
-    tier) ``meta.status = "superseded"`` / ``meta.superseded_by = <new id>``
-    in the same transaction, so it never sits unreachable forever
-    (gr197692). A ``"ready"`` prior tier result is never touched by this.
+    ``tier`` (default ``"neb"``, today's straight-to-NEB shape) selects the
+    rung of the **screening → neb → verify** ladder. :func:`_apply_tier_config`
+    overlays it onto ``config`` before the device/route logic, so it folds
+    into the content-addressed idem key — a promotion is just another call,
+    content-addressed onto its own job/pathway (never clobbers the prior
+    tier's). The pathway ref is stamped ``meta.tier`` at creation (read by
+    :func:`_find_tier_pathway`, the promotion-eligibility +
+    `refines`-lineage seam). A re-dispatch of the SAME (candidate, tier)
+    under changed config/geometry/engine mints a new content-addressed
+    pathway; the mint stamps any prior still-``"computing"`` pathway for
+    that pair ``meta.status = "superseded"``/``meta.superseded_by = <new
+    id>`` in the same transaction (gr197692, never unreachable forever). A
+    ``"ready"`` prior tier is untouched.
 
-    §B-1 (gr180096, the spark wedge fix): exports the candidate's (relaxed)
-    geometry as extxyz, ensures a `pathway` ref for the write-back, then
-    mints a **job tree** pinned on the candidate instead of one monolith
-    job — the whole network x N seeds x full NEB used to run as ONE
-    ~90-min in-process ``autocatpath_explore`` job that overran its lease
-    and was SIGTERM-deaf. Now:
+    §B-1 (gr180096): exports the candidate's relaxed geometry as extxyz,
+    ensures a `pathway` ref for the write-back, then mints a **job tree**
+    pinned on the candidate — replacing a former single ~90-min in-process
+    ``autocatpath_explore`` job (network x N seeds x full NEB) that overran
+    its lease and was SIGTERM-deaf:
 
     ```
     structure (candidate)
@@ -1106,49 +1096,40 @@ def dispatch_autocatpath(
               mints T_agg's own job (autocatpath_aggregate) under T_agg.
     ```
 
-    Each ``T_seed_*``'s own job is minted HERE, synchronously, content-
-    addressed on ``sha(run_config, slab_extxyz, seed, model_index,
-    autocatpath_version)`` (:func:`_autocatpath_seed_content_key` — the
-    version MUST be in the key, same standing fix as
-    :func:`_autocatpath_content_key`) — so a re-dispatch (retry) reuses any
-    seed todo that already exists rather than duplicating it, and a killed
-    seed only loses that seed's own compute. Reuse is **status-aware**
-    (:func:`_seed_todo_handled`), not blanket: a seed that's ``done``,
-    ``won't-do``, or already carries a succeeded/live job is left alone; one
-    whose only job(s) infra-failed (``failed``/``cancelled`` — a autocatpath
-    barrier crash is never a physical verdict, see :func:`_latest_autocatpath_job`'s
-    docstring) gets a fresh job minted under the SAME todo instead of wedging
-    the whole candidate behind a dead seed forever. This is the automatic,
-    bounded repair path :func:`_stuck_seed_failure` + ``harvest_measures``'s
-    seed-lane ladder rides.
+    Each ``T_seed_*`` job is minted HERE, synchronously, content-addressed
+    on ``sha(run_config, slab_extxyz, seed, model_index, autocatpath_version)``
+    (:func:`_autocatpath_seed_content_key` — version must be in the key,
+    same fix as :func:`_autocatpath_content_key`), so a re-dispatch reuses
+    any existing seed todo and a killed seed loses only its own compute.
+    Reuse is **status-aware** (:func:`_seed_todo_handled`): ``done``/
+    ``won't-do``/succeeded-or-live-job seeds are left alone; a seed whose
+    only job(s) infra-failed (``failed``/``cancelled`` — never a physical
+    verdict, see :func:`_latest_autocatpath_job`) gets a fresh job under the
+    SAME todo — the bounded repair path :func:`_stuck_seed_failure` and
+    ``harvest_measures``'s seed-lane ladder ride.
 
-    ``T_agg`` deliberately carries NO job of its own yet — its
-    ``meta.executor``/``job_type``/``params`` are set, but minting is left
-    to the **existing** dispatch worker, whose ordinary candidate query
-    already excludes a parent todo with a live (non-done) child todo. So
-    ``T_agg`` only becomes dispatchable once every seed todo under it
-    resolves via the **existing** ``child_job_succeeded`` auto_check
-    evaluator — no new coordinator, no bespoke wait/yield state machine.
-    The two-level nesting (seed job -> seed todo -> T_agg, not seed job ->
-    T_agg directly) is load-bearing: a bare seed job as T_agg's direct
-    child would satisfy ``child_job_succeeded`` on the FIRST seed's
-    success, not the aggregate's own (the gpu-priority seed-chunking
-    design). See ``docs/backlog/autocatpath-integration.md`` §3.8.
+    ``T_agg`` carries NO job of its own yet (``meta.executor``/``job_type``/
+    ``params`` set, minting left to the existing dispatch worker, which
+    already excludes a parent todo with a live child todo) — it becomes
+    dispatchable once every seed todo resolves via the existing
+    ``child_job_succeeded`` auto_check evaluator, no bespoke wait state
+    machine. The two-level nesting (seed job → seed todo → T_agg, not
+    direct) is load-bearing: a bare seed job as T_agg's direct child would
+    satisfy ``child_job_succeeded`` on the first seed's success, not the
+    aggregate's. See ``docs/backlog/autocatpath-integration.md`` §3.8.
 
-    The aggregate job (``precis_pathway.aggregate_job``) combines the seed
-    partials in-process (pure numpy, ``aggregate_partials`` — no ML deps)
-    and emits the SAME scalar ``barrier`` contract onto its own meta that
-    the legacy monolith did, so :func:`harvest_measures` needs only a
-    ``_fresh_autocatpath_jobs`` query update, not a harvest-logic change.
+    The aggregate job (``precis_pathway.aggregate_job``) combines seed
+    partials in-process (pure numpy, ``aggregate_partials``, no ML deps) and
+    emits the SAME scalar ``barrier`` contract as the legacy monolith, so
+    :func:`harvest_measures` needed only a ``_fresh_autocatpath_jobs`` query
+    update, not a harvest-logic change.
 
-    Precis-native (no autocatpath import — the `pathway` kind, if the plugin is
-    installed, is reached only through the store; the fan-out shape itself is
-    read off the plain config dict, see :func:`_autocatpath_mlip_specs` /
-    :func:`_autocatpath_search_seeds`) and **defensive**: degrades to a note
-    on any error (missing plugin, unloadable scene) and never raises, so a
-    compute hiccup can't fail the tick. The one exception is the gr172886
-    null-route guard below: on a real multi-node cluster with no GPU host
-    advertised in ``resource_slots``, this raises loudly rather than silently
+    Precis-native (no autocatpath import — the `pathway` kind is reached
+    only through the store; fan-out shape read off the plain config dict via
+    :func:`_autocatpath_mlip_specs`/:func:`_autocatpath_search_seeds`) and
+    **defensive**: degrades to a note on any error, never raises — except
+    the gr172886 null-route guard: a real multi-node cluster with no GPU
+    host advertised in ``resource_slots`` raises loudly rather than silently
     minting an unrouted junk-EMT job.
     """
     if "autocatpath_seed" in suspended_job_types():
@@ -1675,34 +1656,29 @@ _TWIN_BARRIER_TOL_EV = 0.5
 
 def _pathway_quality_v1(results: dict[str, Any]) -> dict[str, Any]:
     """Derive SEPARATE barrier/selectivity trust verdicts from catpath's
-    structured per-step trust records (``results['trust_schema'] == 1`` —
+    structured per-step trust records (``results['trust_schema'] == 1``,
     catpath ``docs/backlog/per-step-trust-records.md``), instead of regexing
     ``warnings`` prose.
 
     ``results`` is the pathway's own ``meta['results']`` (catpath's
-    ``results.json`` payload, stored verbatim by
-    :func:`precis_pathway.persist.pathway_meta`). This function TRUSTS
-    ``results['trust_summary']`` rather than re-deriving the fatal-fail scan
-    itself — that scan is catpath's (scoped to the reported route's
-    ``route_steps``/nodes) and re-deriving it here would be a second,
-    driftable copy of the same rule.
+    ``results.json``, stored verbatim by
+    :func:`precis_pathway.persist.pathway_meta`). TRUSTS
+    ``results['trust_summary']`` rather than re-deriving catpath's
+    route-scoped fatal-fail scan — a second copy would drift.
 
-    The barrier and selectivity verdicts are read out of SEPARATE
-    ``trust_summary`` entries on purpose: an off-route fork competitor can
-    legitimately leave ``selectivity`` unavailable (a branch fraction can't
-    be computed against an untrusted comparison) without the route's own
-    barrier being untrustworthy at all — the qu164903 collapse (192/192
-    candidates untrusted from ONE flagged off-route edge) this whole path
-    exists to fix. ``barrier_blocked_by``/``selectivity_blocked_by`` carry
-    the fatal-fail record ids / blocker dicts verbatim — they are citable
-    evidence handles, never rewritten here.
+    Barrier and selectivity verdicts read from SEPARATE ``trust_summary``
+    entries on purpose: an off-route fork competitor can legitimately leave
+    ``selectivity`` unavailable (branch fraction uncomputable vs. an
+    untrusted comparison) without the route's own barrier being
+    untrustworthy — fixes the qu164903 collapse (192/192 candidates
+    untrusted from one flagged off-route edge). ``barrier_blocked_by``/
+    ``selectivity_blocked_by`` carry the fatal-fail record ids/blocker
+    dicts verbatim — citable evidence handles, never rewritten here.
 
     ``marginal`` verdicts (and any ``severity: warn`` fail) never untrust
-    anything — ``trust_summary`` itself only ever counts ``severity: fatal``
-    fails scoped to the route, so nothing here re-litigates that; marginals
-    are surfaced as ``barrier_marginal_count`` for visibility only
-    (``relax_convergence: marginal`` is expected to be common and
-    uncalibrated on day one).
+    anything — ``trust_summary`` only counts ``severity: fatal`` fails
+    scoped to the route; marginals surface as ``barrier_marginal_count``
+    for visibility only.
     """
     trust_summary = results.get("trust_summary")
     trust_summary = trust_summary if isinstance(trust_summary, dict) else {}
@@ -1729,38 +1705,33 @@ def _pathway_quality_v1(results: dict[str, Any]) -> dict[str, Any]:
 def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     """Derive the trust verdict on a harvested barrier from its pathway's meta.
 
-    ``meta`` is the linked `pathway` ref's meta (``meta['warnings']`` — a list
-    of human-readable strings — and ``meta['low_confidence']``, a *separate*,
-    less informative flag: a single-seed quest run always sets it (autocatpath's
-    ``low_confidence = std>tol OR n<2``), so it rides along for visibility but
-    never gates trust on its own). Counts warnings mentioning a non-converged
-    NEB edge, a desorbed adsorbate, and a wrong-site (mis-bound) endpoint;
-    ``barrier_trusted`` is False iff any of those counts is nonzero.
+    ``meta`` is the linked `pathway` ref's meta: ``meta['warnings']`` (list
+    of human-readable strings) and ``meta['low_confidence']`` — a separate,
+    less informative flag (a single-seed run always sets it, autocatpath's
+    ``low_confidence = std>tol OR n<2``; rides along for visibility, never
+    gates trust alone). Counts warnings mentioning a non-converged NEB edge,
+    a desorbed adsorbate, a wrong-site (mis-bound) endpoint;
+    ``barrier_trusted`` is False iff any count is nonzero.
 
-    Version-gated on ``meta['results']['trust_schema']`` (catpath's structured
-    per-step trust records, ``docs/backlog/per-step-trust-records.md``
-    upstream): ``1`` or ``2`` (2 is additive: endpoint-identity / saddle /
-    multistart checks, same record shape) delegates to
-    :func:`_pathway_quality_v1`, which
-    separates the barrier verdict from selectivity instead of collapsing both
-    into one boolean, stitching ``barrier_low_confidence`` back in from this
-    same top-level meta (the low-confidence flag isn't part of the trust-
-    records contract). Absent (older catpath, no ``results`` or no
-    ``trust_schema`` key) falls through to the regex path below UNCHANGED —
-    prod may run pre-trust-records catpath for a while, so both paths must
-    keep working. Any OTHER value (newer than this reader understands) is
-    treated the same as absent — fall back, never guess — with a
-    ``barrier_trust_note`` explaining why (this is a pure function with no
-    logger to reach for).
+    Version-gated on ``meta['results']['trust_schema']`` (catpath's
+    structured per-step trust records, ``docs/backlog/per-step-trust-records.md``):
+    ``1`` or ``2`` (2 is additive — endpoint-identity/saddle/multistart
+    checks, same record shape) delegates to :func:`_pathway_quality_v1`,
+    which separates the barrier verdict from selectivity instead of
+    collapsing both into one boolean, stitching ``barrier_low_confidence``
+    back in from this top-level meta (not part of the trust-records
+    contract). Absent (older catpath) falls through to the regex path
+    below UNCHANGED — both paths must keep working while prod may run
+    pre-trust-records catpath. Any other schema value is treated as absent
+    (fall back, never guess), with a ``barrier_trust_note`` explaining why.
 
     The verdict lands on the candidate **structure** ref only:
-    :func:`harvest_measures` stamps these keys onto the structure's meta and
-    never back onto the ``pathway`` ref it read them from —
-    :func:`precis_pathway.persist.persist_result` writes just the raw compute
-    outputs (rate_Ea/low_confidence/span/…) there. Querying a ``pathway`` ref
-    for ``barrier_trusted`` therefore always reads absent/false, even when the
-    mirrored structure carries the correct verdict (gr194391 — this asymmetry
-    once drove a full false-alarm root-cause hunt).
+    :func:`harvest_measures` stamps these keys onto the structure's meta,
+    never back onto the ``pathway`` ref it read them from
+    (:func:`precis_pathway.persist.persist_result` writes only raw compute
+    outputs there) — querying a ``pathway`` ref for ``barrier_trusted``
+    always reads absent/false even when the mirrored structure carries the
+    verdict (gr194391).
     """
     results = meta.get("results")
     results = results if isinstance(results, dict) else None
@@ -2198,58 +2169,42 @@ def _stuck_seed_failure(
     """The fallback :func:`_latest_autocatpath_job` can't see: a candidate
     wedged behind a dead **seed**, with no aggregate lane even minted yet.
 
-    ``_latest_autocatpath_job`` only watches ``autocatpath_explore`` (legacy)
-    and ``autocatpath_aggregate`` jobs — but the aggregate never mints while
-    any per-seed todo under ``T_agg`` is still open (its own auto_check
-    gate, see :func:`dispatch_autocatpath`'s docstring), so a seed that
-    infra-failed and stays failed leaves the candidate with NO autocatpath
-    job of either watched shape at all — invisible to the retry ladder,
-    silently wedged forever (qu164903: 9 candidates lost this way). This
-    function is the seed-level fallback that makes that state visible.
+    ``_latest_autocatpath_job`` only watches ``autocatpath_explore``
+    (legacy) and ``autocatpath_aggregate`` jobs, but the aggregate never
+    mints while any per-seed todo under ``T_agg`` is open (its auto_check
+    gate, see :func:`dispatch_autocatpath`) — so a permanently-failed seed
+    leaves the candidate with no watched job at all, invisible to the retry
+    ladder (qu164903: 9 candidates lost this way). This is the seed-level
+    fallback that surfaces that state.
 
-    Returns ``("failed", newest_failed_seed_job_meta)`` iff — in one query —
-    the candidate is wedged:
+    Returns ``("failed", newest_failed_seed_job_meta)`` iff, in one query:
+    **no** ``autocatpath_aggregate`` job exists yet under any ``T_agg``
+    child of ``structure_ref_id`` (any status — one existing, even failed,
+    means :func:`_latest_autocatpath_job` is the truth instead) **and** at
+    least one still-open seed todo has a seed job ``STATUS`` of
+    ``failed``/``cancelled`` and **no** seed job with any other status —
+    i.e. :func:`_seed_todo_handled` ``== False``, restricted to seeds that
+    actually tried and failed (never "no job yet", which would false-fire
+    on a candidate mid-initial-dispatch).
 
-    * **no** ``autocatpath_aggregate`` job exists yet under any ``T_agg``
-      child of ``structure_ref_id`` (any status — an aggregate already
-      minted, even a failed one, means the wedge is gone and
-      :func:`_latest_autocatpath_job` is the truth instead); **and**
-    * at least one still-open seed todo (``kind='todo'``, not
-      ``done``/``won't-do``, a child of a ``T_agg`` child of the candidate)
-      has a seed job whose ``STATUS`` is ``failed``/``cancelled`` **and no**
-      seed job whose ``STATUS`` is anything else — i.e. it reads
-      :func:`_seed_todo_handled` ``== False`` from the SQL side, restricted
-      to seeds that have actually tried and failed (not merely "no job
-      yet" — a candidate mid-initial-dispatch, todo committed but
-      ``jobs.put`` not yet reached, must never false-fire this as a
-      "failure").
+    Returns ``None`` otherwise. The literal string ``"failed"`` covers both
+    underlying ``failed``/``cancelled`` — the caller (``harvest_measures``)
+    only branches on ``== "failed"``, and both are equally infra-repairable,
+    never a physical verdict (same reasoning as
+    :func:`_latest_autocatpath_job`).
 
-    Returns ``None`` otherwise (nothing wedged, or an aggregate already
-    exists so the ordinary ladder owns it). The literal status string
-    ``"failed"`` is returned regardless of whether the underlying seed job's
-    own STATUS is ``failed`` or ``cancelled`` — the caller
-    (``harvest_measures``) only branches on ``== "failed"``, and both seed
-    outcomes are equally infra-repairable, never a physical verdict (same
-    reasoning as :func:`_latest_autocatpath_job`'s own docstring).
-
-    **Known masking edge, intentionally accepted.** A candidate can carry
-    TWO+ independent ``T_agg`` trees (a config/tier change re-dispatches
-    under a fresh content key — see :func:`dispatch_autocatpath`'s
-    docstring). If an OLDER tree has a permanently-dead seed while a NEWER
-    tree's aggregate later SUCCEEDS, ``_latest_autocatpath_job`` (highest
-    ``ref_id`` across ALL trees) returns that newer succeeded job — a
-    non-``"failed"`` status short-circuits ``harvest_measures``'s outer
-    ``if`` before this function ever runs, via the ``or``'s short-circuit
-    (only invoked when ``_latest_autocatpath_job`` is ``None``, and never
-    consulted again once it isn't). So the old tree's stuck seed is never
-    repaired or gripe-filed — it becomes permanently invisible clutter
-    under the candidate. This is NOT a bug: the candidate has
-    forward-progressed via the newer tree, no compute or barrier signal is
-    lost, and the stale sub-tree is dormant (no live job, no lease held) —
-    just an orphaned todo subtree a human would need to notice manually
-    (e.g. via the nursery) to prune. Only a candidate stuck behind a dead
-    seed with NO surviving/successful tree at all is this function's
-    concern.
+    **Known masking edge, accepted.** A candidate can carry 2+ independent
+    ``T_agg`` trees (a config/tier change re-dispatches under a fresh
+    content key). If an OLDER tree has a permanently-dead seed while a
+    NEWER tree's aggregate later succeeds, ``_latest_autocatpath_job``
+    (highest ``ref_id`` across all trees) returns the newer succeeded job,
+    short-circuiting ``harvest_measures`` before this function runs (only
+    invoked when ``_latest_autocatpath_job`` is ``None``) — the old tree's
+    stuck seed is never repaired or gripe-filed, permanently invisible.
+    Not a bug: the candidate has forward-progressed, no signal is lost, and
+    the stale subtree is dormant (no live job/lease) — an orphaned subtree
+    a human prunes manually (e.g. via the nursery). This function's concern
+    is only a candidate stuck with NO surviving/successful tree at all.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -2524,92 +2479,66 @@ def harvest_measures(
 ) -> ComputeStep:
     """Read finished sims back into the logbook + rule out failures.
 
-    Every entry this function appends is a **system measurement** (a
-    converged relax, a harvested autocatpath barrier, a ruled-out verdict) — so
-    each is stamped ``by=MEASURED_BY`` ("system"), never the caller's ``by``
-    (the model's own "agent" attribution). That is what makes a real
-    measurement distinguishable from model narration in the logbook: gripes
-    171148/171149 diagnosed a model-fabricated "result" entry (a barrier the
-    model invented, not one autocatpath measured) reading as indistinguishable
-    ground truth, which made the loop believe the quest was solved and stop
-    proposing candidates. ``by`` is kept in the signature for call-site
-    compat (and used elsewhere in this module, e.g. dispatch notes are not
-    logbook entries) but is no longer used for these measured entries.
+    Every appended entry is a **system measurement**, stamped
+    ``by=MEASURED_BY`` ("system") regardless of the caller's ``by`` — a
+    model-fabricated "result" entry once read as indistinguishable ground
+    truth and stalled the loop (gr171148/171149). ``by`` stays in the
+    signature for call-site compat and other uses in this module (e.g.
+    dispatch notes, which aren't logbook entries).
 
-    For each candidate `structure` serving the quest:
+    Per candidate `structure` serving the quest:
 
-    * newly-converged **relax** runs become `result` logbook entries (energy + a
-      step-count cost proxy), tracked idempotently by ``meta.quest_harvested_upto``;
-    * completed **autocatpath** (`autocatpath_explore`) jobs contribute the rate-limiting
-      **barrier** (and span): lifted onto the candidate's own ``meta`` (where the
-      generalised frontier reads it), the evaluating pathway linked into the quest
-      graph, logged as a `result`, tracked by ``meta.quest_autocatpath_harvested_upto``;
-    * a candidate whose latest relax job **failed for a genuine
-      non-convergence reason** gets a one-shot ``ruled-out:relax-failed`` tag +
-      a `dead-end` entry so the proposer stops re-treading it.
-    * a candidate whose latest relax job failed with ``failure_class="infra"``
-      (container/executor died — not a physical verdict) does NOT rule out —
-      otherwise a container hiccup launders into "this material is unstable"
-      in the live dossier. Dossier-owned-by-process: when ``hub`` is given, the *first*
-      infra failure gets re-dispatched once (``meta.quest_infra_retries``
-      tracks it) so the candidate goes back to non-terminal and the loop
-      *awaits* it instead of drifting dry; a *second* infra failure files a
-      bounded gripe instead of retrying again, and stays retry-eligible in
-      neither sense (no third dispatch, never ruled out). ``hub=None``
-      (dry preview / callers that don't exercise this) preserves the
-      original note-only behaviour.
-    * a candidate whose latest **autocatpath** job failed gets the *same*
-      retry-once-then-gripe treatment on its own counter
-      (``meta.quest_autocatpath_infra_retries``), but **never** ruled out: a failed
-      autocatpath is always a crashed NEB (a compute/infra failure), never a
-      physical "no viable pathway" verdict, so — unlike relax non-convergence —
-      it carries no verdict on the material (barrier-lane mirror).
-      A failed legacy ``autocatpath_explore`` job (retired by the seed/aggregate
-      fan-out, 47332ad3 — nothing mints one anymore) instead gets a one-shot
-      **amnesty**: re-dispatched via the current path with the counter reset to
-      0, bypassing the ladder entirely, since the poison-fail defect that spent
-      it is fixed and the failure carries no signal against the current run
-      (gr191615).
-    * a candidate wedged behind a dead **seed** with no aggregate lane even
-      minted yet — invisible to the two bullets above, since neither an
-      ``autocatpath_explore`` nor an ``autocatpath_aggregate`` job exists in
-      that state (see :func:`_stuck_seed_failure`) — gets the *same*
-      retry-once-then-gripe shape, but on its OWN **windowed** counter
-      (``meta.quest_seed_infra_retries``, :func:`_seed_infra_retry_count` /
-      :func:`_bump_seed_infra_retry_count`, 6h window) rather than
-      ``quest_autocatpath_infra_retries`` — see
-      :data:`_SEED_INFRA_RETRY_WINDOW_HOURS` for why the two counters must
-      stay independent. The re-dispatch is a plain
-      :func:`dispatch_autocatpath` call, which re-mints every currently-stuck
-      seed under the candidate at once (status-aware fan-out,
-      :func:`_seed_todo_handled`) — this closes the qu164903 class of bug
-      (9 lost candidates: an infra-killed seed job used to stay
-      ``STATUS:failed`` forever, with nothing watching it).
-    * a candidate missing ``atom_cost`` (needs no sim — composition-derived,
-      slice B) gets it backfilled here from its own materialised geometry,
-      so a candidate created before this feature (or one whose creation-time
-      stamp failed) still picks it up on the next harvest.
+    * converged **relax** runs → `result` entries (energy + step-count cost
+      proxy), idempotent via ``meta.quest_harvested_upto``.
+    * completed **autocatpath** (`autocatpath_explore`) jobs → barrier (+span)
+      lifted onto the candidate's ``meta`` (frontier reads it), evaluating
+      pathway linked into the quest graph, logged as `result`, tracked via
+      ``meta.quest_autocatpath_harvested_upto``.
+    * latest relax job failed for **genuine non-convergence** → one-shot
+      ``ruled-out:relax-failed`` tag + `dead-end` entry.
+    * latest relax job failed with ``failure_class="infra"`` (container/
+      executor died, not a physical verdict) → never ruled out. With
+      ``hub`` given: first infra failure re-dispatched once
+      (``meta.quest_infra_retries``, candidate goes non-terminal, loop
+      awaits); second infra failure files a bounded gripe instead (no third
+      dispatch, never ruled out). ``hub=None`` preserves note-only behavior.
+    * latest **autocatpath** job failed → same retry-once-then-gripe, own
+      counter (``meta.quest_autocatpath_infra_retries``), **never** ruled
+      out (a crashed NEB is an infra failure, not a "no viable pathway"
+      verdict). A failed *legacy* ``autocatpath_explore`` job (retired by
+      the seed/aggregate fan-out, `47332ad3` — nothing mints one anymore)
+      instead gets one-shot **amnesty**: re-dispatched with the counter
+      reset to 0, bypassing the ladder (gr191615 — the poison-fail defect
+      that spent it is fixed, the failure carries no signal now).
+    * candidate wedged behind a dead **seed** with no aggregate lane minted
+      yet (invisible to the two bullets above — neither job kind exists;
+      see :func:`_stuck_seed_failure`) → same retry-once-then-gripe on its
+      OWN windowed counter (``meta.quest_seed_infra_retries``,
+      :func:`_seed_infra_retry_count`/:func:`_bump_seed_infra_retry_count`,
+      6h window — kept independent of ``quest_autocatpath_infra_retries``,
+      see :data:`_SEED_INFRA_RETRY_WINDOW_HOURS`). Re-dispatch is a plain
+      :func:`dispatch_autocatpath` call, re-minting every stuck seed under
+      the candidate at once (:func:`_seed_todo_handled`) — closes the
+      qu164903 bug class (an infra-killed seed job stuck ``STATUS:failed``
+      forever, unwatched).
+    * candidate missing ``atom_cost`` (composition-derived, needs no sim) →
+      backfilled from its materialised geometry.
 
-    Any fresh numeric measure this pass stamps (barrier lane + the
-    ``atom_cost`` backfill) also widens ``quest.meta.frontier_viewport``
-    (:func:`_ratchet_frontier_viewport`) so the frontier scatter's axes
-    cover it without a human having to notice and pin a wider range by hand.
+    Any fresh numeric measure (barrier lane + ``atom_cost`` backfill) widens
+    ``quest.meta.frontier_viewport`` (:func:`_ratchet_frontier_viewport`) so
+    the frontier scatter's axes auto-cover it.
 
-    Every freshly-landed barrier also runs three sanity guards (qu164903's
-    corner saga — a barrier pipeline once emitted 0.479 eV and 4.99 eV for
-    the SAME structure, narrated as chemistry): a magnitude beyond
-    :data:`_BARRIER_ABSURD_EV` auto-untrusts
-    (:func:`_flag_absurd_barrier`, overriding a clean
-    :func:`_pathway_quality` verdict but never un-flagging an already-untrusted
-    one); a barrier measured off a candidate whose latest converged relax
-    "converged" in 0 steps gets ``barrier_unrelaxed_geometry`` — a WARNING
-    only, the barrier still ranks — since an unrelaxed geometry is suspect but
-    not proven wrong; and two candidates sharing the same canonical
-    ``geom_hash_c`` (the same crystal under lattice symmetry) whose barriers
-    disagree by more than :data:`_TWIN_BARRIER_TOL_EV` at the same ladder
-    tier both get untrusted (:func:`_flag_barrier_twin_disagreement`) — that
-    disagreement is measurement irreproducibility, not two different
-    materials.
+    Every freshly-landed barrier runs three sanity guards (qu164903: a
+    barrier pipeline once emitted 0.479 eV and 4.99 eV for the SAME
+    structure): magnitude beyond :data:`_BARRIER_ABSURD_EV` auto-untrusts
+    (:func:`_flag_absurd_barrier`, overrides a clean :func:`_pathway_quality`
+    verdict, never un-flags an already-untrusted one); a barrier off a
+    candidate whose latest relax "converged" in 0 steps gets
+    ``barrier_unrelaxed_geometry`` (WARNING only, still ranks); two
+    candidates sharing ``geom_hash_c`` whose barriers disagree by more than
+    :data:`_TWIN_BARRIER_TOL_EV` at the same ladder tier both get untrusted
+    (:func:`_flag_barrier_twin_disagreement` — irreproducibility, not two
+    materials).
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -3094,9 +3023,8 @@ def promote_tiers(
 
     Returns one short note per promotion dispatched; never raises (a
     promotion bug must not cost an already-successful harvest/graduation
-    result — the caller, :func:`run_compute_step`, additionally wraps this
-    in its own try/except, matching the defensive convention the
-    frontier-tree regen in :mod:`precis.quest.tick` uses).
+    result — the caller, :func:`run_compute_step`, also wraps this in its
+    own try/except).
     """
     notes: list[str] = []
     try:

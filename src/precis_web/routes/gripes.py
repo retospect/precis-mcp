@@ -133,7 +133,10 @@ def _title_preview(text: str, *, limit: int = 100) -> str:
 def _status_of(tags: Any) -> str:
     """The live ``STATUS:`` tag value off a ``tags_for`` list, default ``open``."""
     for t in tags:
-        if getattr(t, "namespace", None) == "STATUS":
+        if (
+            getattr(t, "namespace", None) == "closed"
+            and getattr(t, "prefix", None) == "STATUS"
+        ):
             return str(getattr(t, "value", "open"))
     return "open"
 
@@ -141,7 +144,10 @@ def _status_of(tags: Any) -> str:
 def _prio_of(tags: Any) -> str | None:
     """The ``PRIO:`` tag value, if the gripe carries one."""
     for t in tags:
-        if getattr(t, "namespace", None) == "PRIO":
+        if (
+            getattr(t, "namespace", None) == "closed"
+            and getattr(t, "prefix", None) == "PRIO"
+        ):
             return str(getattr(t, "value", ""))
     return None
 

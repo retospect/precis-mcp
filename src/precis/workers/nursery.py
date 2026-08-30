@@ -1,142 +1,75 @@
-"""Nursery worker — Slice 3 of ``docs/backlog/todo-tree-plan.md``.
+"""Nursery worker — ``docs/backlog/todo-tree-plan.md`` Slice 3: SQL-only
+detectors over the todo tree + worker fleet, one ``kind='alert'`` per
+condition (:mod:`precis.alerts`) — no LLM call, despite the plan's stale
+"Nursery model = sonnet" decision; the rules are deterministic.
 
-Pattern-matches the todo tree (and the worker fleet) for local
-incoherence and raises a ``kind='alert'`` per condition through
-:mod:`precis.alerts`. The detectors are SQL-only — no LLM call, no
-opus / sonnet budget; Settled decision #5 in the plan ("Nursery model
-= sonnet") was written assuming an LLM tier, but the actual detection
-rules are deterministic pattern matches that don't need reasoning.
+Todo-tree detectors (each one SQL query → finding rows):
 
-Detector catalogue (each is one SQL query, returns a list of
-finding rows):
+* **orphans** — open todos with no ``meta.rotation_root`` ancestor; every
+  open leaf must root under some strategic.
+* **stale claims** — ``claimed-by:<x>`` held > ``STALE_CLAIM_HOURS=3``;
+  age from ``ref_tags.created_at`` (same source the ingest lock TTL uses).
+* **long waits** — ``waiting-for:*`` held > ``LONG_WAIT_DAYS=7``.
+* **stuck doable** — a dispatch candidate (``dispatch.py::_candidate_parent_ids``'s
+  signal: ``meta.executor``/``llm_tier``/``OPEN:executor:*``) with none of
+  the doable-exclusion tags
+  (:func:`precis.handlers._todo_views._doable_exclusion_clause`) and
+  ``created_at`` older than ``STUCK_DOABLE_HOURS=24``. Skip the candidacy
+  gate and every non-dispatchable leaf reads as stuck.
+* **stalled recurrings** — a recurring ref's (``meta.schedule``) latest
+  spawned child open longer than the schedule period.
+* **spin loops** — a ``(ref_id, source)`` emitting > ``SPIN_LOOP_EVENTS_24H``
+  ``ref_events``/24h — a derived-queue worker re-claiming the same ref
+  every pass.
+* **plan-tick spins** — a planner parent minting > ``PLAN_TICK_REMINT_24H``
+  ``plan_tick`` jobs/24h — succeeding each tick without converging.
+* **quest-loop failing** — a ``quest_tick`` coordinator resting
+  ``STATUS:failed`` > ``QUEST_LOOP_FAIL_24H`` times/24h despite the RC1
+  backoff — a persistent break failing at the ceiling cadence. Re-mint-spin
+  sibling of ``plan-tick-spin``.
+* **orphaned coordinator** (``critical``) — a coordinator's newest loop
+  rested ``STATUS:failed`` past the RC1 ceiling with nothing newer minted
+  since — the zero-retry silent-outage case ``quest-loop-failing``/
+  ``plan-tick-spin`` miss (both need a *repeated* re-mint to fire).
+* **child-failed parked** — an open ``child-failed:*`` tag
+  (:mod:`precis.handlers._job_bubble`) held > ``CHILD_FAILED_PARKED_HOURS=6``;
+  ``stuck-doable`` excludes tagged leaves, so this is the only surfacing
+  path once auto-decompose has had its one shot. **Excludes**
+  ``child-failed-final`` leaves (below).
+* **child-failed-final** — count of leaves that exhausted the sweeper's
+  ``unpark`` phase (:data:`precis.workers.sweeper.UNPARK_CAP`); ONE
+  aggregate finding, not per-leaf.
 
-* **orphans** — open todos that have no ``meta.rotation_root`` ancestor
-  (knob #6: strategic invariant; every open leaf must root under
-  *some* strategic).
-* **stale claims** — leaves carrying ``claimed-by:<x>`` for more
-  than ``STALE_CLAIM_HOURS=3`` without a status change. The
-  claim's age is read from ``ref_tags.created_at`` — the same
-  source the ingest advisory-lock claim TTL uses.
-* **long waits** — leaves carrying ``waiting-for:*`` for more than
-  ``LONG_WAIT_DAYS=7``.
-* **stuck doable** — open leaves that would actually be autonomous
-  dispatch *candidates* (``meta.executor`` / ``meta.llm_tier`` /
-  ``OPEN:executor:*`` — the same auto-run signal
-  ``dispatch.py::_candidate_parent_ids`` requires), carry none of
-  the shared doable-exclusion tags (gripe 168886's registry, see
-  :func:`precis.handlers._todo_views._doable_exclusion_clause`), and
-  are still sitting with ``created_at`` older than
-  ``STUCK_DOABLE_HOURS=24``. Both gates matter: without the
-  candidacy check, every non-dispatchable leaf (a human-authored
-  note, an ``OPEN:ephemeral`` autocatpath compute-lane internal with
-  no run signal of its own) reads as "stuck" when it was never
-  doable in the first place (gripe 204308 — a live firing was
-  ~100% such false positives). The rotation should have picked up
-  what's left; if it's still here, the doable filter is rejecting it
-  for a reason worth surfacing.
-* **stalled recurrings** — recurring refs (``meta.schedule`` set) whose
-  most recent spawned child has been open more than the schedule's
-  period. The Slice-4 collision-skip leaves the prior tick on the
-  queue; without nursery surfacing, the operator can't see why
-  ticks have stopped piling up.
-* **spin loops** — any ``(ref_id, source)`` emitting more than
-  ``SPIN_LOOP_EVENTS_24H`` ``ref_events`` in 24h (a derived-queue
-  worker re-claiming the same ref every pass).
-* **plan-tick spins** — a planner parent minting more than
-  ``PLAN_TICK_REMINT_24H`` ``plan_tick`` jobs in 24h (a coroutine that
-  "succeeds" every tick but never converges).
-* **quest-loop failing** — a quest whose ``quest_tick`` coordinator loop has
-  rested ``STATUS:failed`` more than ``QUEST_LOOP_FAIL_24H`` times in 24h
-  (RC1). The reconciler now backs the re-mint off on an escalating
-  cooldown, but a persistent break (bad config, dead endpoint) keeps failing at
-  the ceiling cadence — this surfaces it so a human fixes or abandons the quest
-  rather than letting it burn compute invisibly. The re-mint spin sibling of
-  ``plan-tick-spin``.
-* **orphaned coordinator** (``critical``) — an active quest / planner
-  coordinator whose newest loop rested ``STATUS:failed`` past the RC1
-  backoff ceiling with no newer loop minted since — the silent-outage
-  complement to ``quest-loop-failing`` / ``plan-tick-spin``, which both need
-  a *repeated* re-mint to fire and so miss "the reconciler stopped running
-  entirely" (one failed row, zero retries — the 2026-07-26→30 melchior
-  worker-agent outage).
-* **child-failed parked** — a todo carrying an open ``child-failed:*``
-  tag (the failure-bubble, see :mod:`precis.handlers._job_bubble`) for
-  more than ``CHILD_FAILED_PARKED_HOURS=6``. ``stuck-doable`` explicitly
-  *excludes* anything with an open tag, so a parent parked behind a
-  self-diagnosed "split me" failure was invisible on ``/alerts`` until
-  this detector (gripe 168886 tier 1) — the executor's auto-decompose
-  guardrail (tier 2) resolves most of these in one tick, so a parent
-  still parked past the threshold means auto-recovery already gave up
-  (a hard crash/infra error, or a repeat streak-exhaustion after the one
-  decompose attempt) and a human needs to look. **Excludes**
-  ``child-failed-final`` leaves (2026-08-10, parked-leaf-recovery, docs/
-  backlog/parked-leaf-recovery.md) — those have already exhausted the
-  sweeper's ``unpark`` phase's bounded autonomous retries
-  (:data:`precis.workers.sweeper.UNPARK_CAP`) and are reported instead by
-  **child-failed-final** below, one aggregate finding rather than N
-  per-leaf ones (repeated per-leaf noise for a condition only a human can
-  now resolve adds nothing).
-* **child-failed-final** — the count of leaves that hit the ``unpark``
-  phase's cap and will never be auto-retried again; ONE finding (not
-  per-leaf) with the count in its detail, so a growing terminal-park
-  backlog is visible without flooding ``/alerts``.
+Worker-health detectors (daemon liveness, not the todo graph) — all
+``critical``, a *new* one pages once via :func:`notify_critical_alert`:
 
-Worker-health detectors (daemon liveness / work flow, not the todo
-graph) — all ``critical``, so a *new* one pages once via
-:func:`notify_critical_alert`:
-
-* **worker-restart** — a ``(host, process)`` booting more than
-  ``WORKER_RESTART_STORM_1H`` times in 1h (a jetsam/OOM cull loop or a
-  deploy-bounce burst).
-* **dead-worker** — a continuous daemon silent longer than
-  ``DEAD_WORKER_SILENCE_MIN`` while its host is otherwise alive.
+* **worker-restart** — ``(host, process)`` booting > ``WORKER_RESTART_STORM_1H``
+  times/1h.
+* **dead-worker** — a continuous daemon silent > ``DEAD_WORKER_SILENCE_MIN``
+  while its host is otherwise alive.
 * **dispatch-stall** — ``claude_inproc`` jobs queued past
-  ``DISPATCH_STALL_MINUTES`` with nothing running: the single
-  agent-profile executor (melchior) stopped claiming, so the planner is
-  frozen cluster-wide (gripe 55748). Symptom-level, so it also catches an
-  agent worker that never started (no log rows for dead-worker to age).
-* **nas-denied** — a fresh ``host_heartbeat`` reporting the NAS unreadable
-  (EPERM) from the heartbeat's own launchd context — every launchd/cron
-  daemon on that host is locked out of ``/opt/nas``. Almost always a Full
-  Disk Access grant broken by a ``brew upgrade python`` cdhash change (see
-  OPEN-ITEMS "melchior daemon NAS lockout").
-* **host-dark** (gr186752, §D) — a host's freshest ``host_heartbeat`` row is
-  stale past ``HOST_DARK_SILENCE_MIN``, bounded to hosts with any
-  ``worker_logs`` activity in the last ``HOST_DARK_LOOKBACK_DAYS`` (so a
-  decommissioned host — ``host_heartbeat`` is a latest-snapshot-per-host
-  UPSERT whose row lingers forever — ages out instead of alarming forever).
-  The complement of ``dead-worker``'s ``host_alive`` gate: since §A/§L the
-  heartbeat pass runs *inside* the same per-host worker it reports on
-  (``workers/heartbeat.py``, self-throttled, system profile), so on a
-  single-worker host a dead worker takes the heartbeat down with it — the
-  host drops out of ``host_alive`` and ``dead-worker`` self-suppresses
-  (by design, to avoid N-fold noise per dead daemon) exactly when the whole
-  host is down. ``host-dark`` is the one alert that case still needs: any
-  *surviving* worker elsewhere in the fleet runs nursery too, so it reports
-  the dark host.
-* **embed-lane-stalled** — at least one ``embed_batch`` job sits
-  ``STATUS:queued`` while zero ``embed_batch`` jobs have transitioned to
-  ``STATUS:succeeded`` in the last :data:`EMBED_LANE_STALL_WINDOW_MIN`
-  minutes (``docs/backlog/embedder-wedge-hardening.md``). Motivated by the
-  2026-08-08→10 caspar incident: ``serve-embeddings`` startup wedged
-  dialing HuggingFace Hub for revision metadata (weights already cached),
-  the process stayed alive and its ``/readyz`` even looked plausible for
-  stretches, and the restart-based watchdog dutifully kept kicking it into
-  the same hang — ~2 days, ~5000 chunks unembedded, log-silent. Job
-  *outcomes* (``STATUS:*`` tags, never ``meta->>'last_status'``) are the
-  only truthful probe for this class of wedge; process/``/readyz`` checks
-  pass right through it.
+  ``DISPATCH_STALL_MINUTES`` with nothing running — symptom-level, so it
+  catches both a stalled and a never-started agent-profile executor,
+  freezing the planner cluster-wide either way.
+* **nas-denied** — a fresh ``host_heartbeat`` reports the NAS EPERM from
+  its own launchd context — that host's launchd/cron daemons are all
+  locked out of ``/opt/nas``.
+* **host-dark** — freshest ``host_heartbeat`` stale past
+  ``HOST_DARK_SILENCE_MIN``, bounded to hosts with recent ``worker_logs``
+  (``HOST_DARK_LOOKBACK_DAYS``, so a decommissioned host ages out). Since
+  heartbeat runs inside the per-host worker it reports on, a dead
+  single-worker host's own heartbeat dies too and ``dead-worker``
+  self-suppresses — a fleet-mate reports ``host-dark`` instead.
+* **embed-lane-stalled** — >= 1 ``embed_batch`` job ``STATUS:queued`` while
+  zero succeeded in :data:`EMBED_LANE_STALL_WINDOW_MIN`
+  (``docs/backlog/embedder-wedge-hardening.md``) — job *outcome* tags are
+  the only truthful probe; process/``/readyz`` checks pass through a wedge.
 
-Each finding becomes an ``alert`` under ``alert_source =
-nursery:<category>``, deduped on ``fingerprint = "<category>:<ref_id>"``
-(see :mod:`precis.alerts`). A repeat sighting bumps the alert's
-``seen_count``; a finding that disappears auto-resolves its alert on
-the next pass (``resolve_stale_alerts`` per source). This replaced the
-old per-minute ``kind='memory'`` digest, which conflated ops telemetry
-with reflective thought and — because the spin-loop finding set churns
-every second — spun on itself writing thousands of near-dup memories a
-day. Alerts dedup per *condition* instead, and are surfaced by the
-``/alerts`` web tab, not semantic search.
+Each finding → an ``alert`` under ``alert_source = nursery:<category>``,
+deduped on ``fingerprint = "<category>:<ref_id>"`` (:mod:`precis.alerts`);
+repeat sightings bump ``seen_count``, a disappeared finding auto-resolves
+via ``resolve_stale_alerts``. Surfaced by the ``/alerts`` web tab, not
+semantic search.
 """
 
 from __future__ import annotations
@@ -203,7 +136,7 @@ QUEST_LOOP_FAIL_24H = 3
 ORPHANED_COORDINATOR_STALE_HOURS = 6
 
 #: A todo carrying an open ``child-failed:<job_id>`` tag longer than this is
-#: parked behind a failure-bubble with nothing acting on it. ``stuck-doable``
+#: parked behind a failure bubble with nothing acting on it. ``stuck-doable``
 #: excludes anything with an open tag by construction, so without this
 #: detector such a parent is invisible on ``/alerts`` — the blind spot
 #: gripe 168886 was filed for. Short relative to ``STALE_CLAIM_HOURS`` /

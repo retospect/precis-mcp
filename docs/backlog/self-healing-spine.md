@@ -163,7 +163,7 @@ Condition = { probe (SQL), lane (fast|hourly), severity,
   - `llm_call_log` degradation (error-rate / latency / parse-failure per
     (model, transport, placement) — columns exist, nothing reads them as
     health);
-  - env-gated pass silently absent from a live rotation for N hours
+  - dark-switched pass silently absent from a live rotation for N hours
     (the quest_loop_reconcile scar);
   - rescue-critical pass cadence over budget (pass-loop starvation: one
     greedy pass starves every other pass on its host — 2026-08-12,

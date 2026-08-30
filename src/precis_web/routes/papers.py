@@ -1,31 +1,27 @@
 """Papers tab — read PDFs in-browser (list/triage folded into Drive, WS1b).
 
-The list (``/papers``) and triage-queue (``/papers/triage``) *browsing*
-folded into the unified Drive surface: both routes
-now just redirect to a Drive kind/tag preset (``/drive?k=paper…`` /
-``/drive?tag=needs-triage&k=paper…``) so old bookmarks keep working. The
-**reader** stays here in full: the detail page embeds the browser's native
-PDF viewer pointed at ``/papers/{id}/pdf``, which streams the file from
-``corpus_dir`` (the NFS mount on the cluster) using the ref's cite_key
-(``Ref.slug``) and the ``precis watch`` shard layout
-``<corpus_dir>/<letter>/<cite_key>.pdf`` — plus the metadata edit /
-triage-lookup / tag / delete affordances, none of which moved.
+``/papers`` and ``/papers/triage`` redirect to a Drive kind/tag preset
+(``/drive?k=paper…`` / ``/drive?tag=needs-triage&k=paper…``), keeping old
+bookmarks working. The **reader** stays here: detail page embeds the
+browser's native PDF viewer at ``/papers/{id}/pdf``, streaming from
+``corpus_dir`` (cluster NFS mount) via ref cite_key (``Ref.slug``) and
+the ``precis watch`` shard layout ``<corpus_dir>/<letter>/<cite_key>.pdf``
+— plus metadata edit/triage-lookup/tag/delete, unmoved.
 
-Chunk anchoring is phrase-first with a page fallback
-(``paper-viewer.js::findInPdf``): jump to the chunk's text when the PDF
-find matches, else to its page, marked visibly approximate (``~p.N``).
-Every chunk selector — ``?chunk=``, the Jump box, TOC clicks — funnels
-through the ONE resolver :func:`_cited_chunk` (bare ord, ``lo..hi`` range,
-or the compound ``pa<ref_id>~N[..M]`` handle).
+Chunk anchoring is phrase-first with page fallback
+(``paper-viewer.js::findInPdf``): jump to chunk text on PDF-find match,
+else to its page, marked ``~p.N``. Every chunk selector (``?chunk=``,
+Jump box, TOC clicks) funnels through the ONE resolver
+:func:`_cited_chunk` (bare ord, ``lo..hi`` range, or compound
+``pa<ref_id>~N[..M]`` handle).
 
 Sources/Cited tabs render S2's citation graph off ``s2_neighbors``
-(migration 0106; :func:`ensure_s2_neighbors` backfills an old paper
-on-demand at first view), merged against ``paper_bib_entries`` rows
-(``_BibEntryIndex``: held_ref_id → doi → s2_id); a non-held row's Fetch
-button mints the ref and jumps the ``fetch_oa`` queue via
-``Store.requeue_stubs_for_fetch``. The Meta tab carries the reviewed
-toggle (the first writer of ``refs.human_verified_at``), the client-side
-S2 triage prefill, and the backlinks panel (incoming ``links`` edges by
+(migration 0106; :func:`ensure_s2_neighbors` backfills on-demand at first
+view), merged against ``paper_bib_entries`` (``_BibEntryIndex``:
+held_ref_id → doi → s2_id); a non-held row's Fetch button mints the ref
+and queues it via ``Store.requeue_stubs_for_fetch``. Meta tab: reviewed
+toggle (first writer of ``refs.human_verified_at``), client-side S2
+triage prefill, backlinks panel (incoming ``links`` edges by
 ``dst_ref_id``).
 """
 
@@ -1306,40 +1302,32 @@ async def fetch_ref(
     direction: str = Form("sources"),
     return_to: str = Form(""),
 ) -> Response:
-    """Mint-or-reuse a fetchable stub for one Sources/Cited row — the
-    single-paper sibling of the batch ``/drive/requeue-stubs`` "Fetch next
-    N" button. ``doi=`` / ``s2_id=`` are whatever the row carries (its own
-    Fetch button only renders when it has one — see :func:`_refs_row`'s
-    ``can_fetch``); at least one is required here too.
+    """Mint-or-reuse a fetchable stub for one Sources/Cited row (the
+    single-paper sibling of batch ``/drive/requeue-stubs``). ``doi=``/
+    ``s2_id=`` are whatever the row carries (:func:`_refs_row`'s
+    ``can_fetch`` gates rendering the button); at least one required.
 
-    Dispatches ``put(kind='paper', identifier=…)`` — the same door
-    ``put(kind='paper', doi=…)`` uses from the MCP surface — so
-    vocabulary/tree-guard validation and the S2-enrich → ``upsert_stub_
-    paper`` idempotency stay single-sourced (``PaperHandler.acquire``).
-    ``Response.ref_id`` is in-process-only metadata (for a ``Hub.sibling``
-    caller); a dispatched web write reads the *store* back for the minted/
-    reused id via :meth:`Store.find_ref_by_identifier` rather than
-    scraping the ack string. ``verify=False``: the row's identifier
-    already came from a live S2 fetch, so the acquire path's own
-    hallucination guard would just be a redundant second S2 round-trip.
+    Dispatches ``put(kind='paper', identifier=…)`` — same door as MCP's
+    ``put(kind='paper', doi=…)`` — so vocabulary/tree-guard validation and
+    S2-enrich → ``upsert_stub_paper`` idempotency stay single-sourced
+    (``PaperHandler.acquire``). ``Response.ref_id`` is in-process-only;
+    a dispatched web write re-reads the minted/reused id via
+    :meth:`Store.find_ref_by_identifier`. ``verify=False``: identifier
+    already came from a live S2 fetch, so acquire's hallucination guard
+    would be a redundant round-trip.
 
-    On success: :meth:`Store.requeue_stubs_for_fetch` (scoped to the one
-    ref) jumps the ``fetch_oa`` queue, and
-    :meth:`Store.update_s2_neighbor_held` stamps this row (and its mirror
-    in the other direction, if any) so the tab shows it as held/queued
-    immediately — without waiting for the next ``citation_lens`` refresh.
+    On success: :meth:`Store.requeue_stubs_for_fetch` (scoped to this
+    ref) jumps the ``fetch_oa`` queue; :meth:`Store.update_s2_neighbor_held`
+    stamps this row (+ its mirror direction) held/queued immediately,
+    without waiting for the next ``citation_lens`` refresh.
 
-    htmx-aware (the ``flags.py`` pattern): an ``HX-Request`` gets the
-    re-rendered single row back (swapped via ``hx-target="closest
-    .refs-row"``); a plain form POST (no JS) 303-redirects to the tab.
+    htmx-aware (``flags.py`` pattern): ``HX-Request`` → re-rendered row
+    (``hx-target="closest .refs-row"``); plain form POST → 303 to the tab.
 
-    ``marker=``/``raw_text=`` (citation-sources-tab) round-trip a matched/
-    union row's bracket marker + verbatim citation line through the
-    swap — without them, a union row's whole display line (it has no
-    ``title``) would vanish into "(untitled)" on the reader's own Fetch
-    click, and a matched row would silently downgrade its ``[N]`` badge
-    back to the positional one.
-    """
+    ``marker=``/``raw_text=`` round-trip a matched/union row's bracket
+    marker + verbatim citation line through the swap — a union row has no
+    ``title`` and would otherwise render "(untitled)"; a matched row would
+    downgrade its ``[N]`` badge to positional."""
     store = get_store(request)
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
     if ref is None or ref.kind != "paper":

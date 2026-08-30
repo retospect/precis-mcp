@@ -88,10 +88,10 @@ search(kind="web", q="dopamine D1 D2", page_size=20)
 search(kind="web", q="RAG", page=2)
 ```
 
-Hybrid lexical + semantic over the bodies of pages already in the
-cache. Each hit row carries a chunk **handle** — paste it straight
-into `get` to drill in. Only fetched pages are searchable — `search`
-does not crawl.
+Over the bodies of pages already in the cache — search mechanics in
+`precis-search-help`. Each hit row carries a chunk **handle** — paste
+it straight into `get` to drill in. Only fetched pages are searchable
+— `search` does not crawl.
 
 ## Search across web pages and other kinds
 ## Cross-kind search including web

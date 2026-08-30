@@ -13,8 +13,9 @@ status: active
 
 # precis-llm-help — model choice as a queryable, learnable resource
 
-The `llm` kind is a **catalog** of the models precis can run: one card per
-model, carrying its context window, price, capability, and a ledger of how it has
+The `llm` kind is a **catalog** of the models precis can run: one catalog
+card per model (a model fact-sheet, not an embedding card), carrying its
+context window, price, capability, and a ledger of how it has
 actually performed on precis's own work. It exists so model choice is an
 *informed, window-safe, budget-aware* decision instead of a hardcoded constant.
 
@@ -83,15 +84,15 @@ default, so this is always safe.
 You express the requirement; the policy owns the pick. That keeps selection cheap
 and unbiased even with a smart model in the loop.
 
-## `meta.llm_tier` — tier vs. model
+## `meta.llm_tier` — model tier vs. model
 
 `meta.llm_tier` on a `kind='todo'` — `opus`, `sonnet`, `haiku`, or
-`local` — picks a **tier**, not a specific model. The dispatch worker
-reads that field off the todo and routes the planner tick to whichever
-model currently backs the tier (`local` runs the cluster's served
-open model, e.g. a Qwen build). This catalog is where you check what
-a tier resolves to today and how it has performed — the field is the
-router's input, a card here is the router's output.
+`local` — picks a **model tier**, not a specific model. The dispatch
+worker reads that field off the todo and routes the planner tick to
+whichever model currently backs the tier (`local` runs the cluster's
+served open model, e.g. a Qwen build). This catalog is where you check
+what a tier resolves to today and how it has performed — the field is
+the router's input, a card here is the router's output.
 
 An optional `meta.llm_select` dict rides alongside `llm_tier` for finer
 control: `{placement: 'local'|'cloud', thinking: bool, effort:

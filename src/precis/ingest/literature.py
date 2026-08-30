@@ -21,7 +21,6 @@ Removed 2026-06-05.
 from __future__ import annotations
 
 import json
-import unicodedata
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -135,44 +134,11 @@ def first_author_surname(authors: Any) -> str:
     return surname_from_name(_first_name_field(authors))
 
 
-# Letters that are NOT NFKD-decomposable but have well-established ASCII
-# replacements in citation keys. NFKD alone would silently drop these,
-# producing slugs like ``nrskov2009towards`` (Nørskov) or ``mller2024quantum``
-# (Müller-Plathe — never happens, but the same drop). We fold them
-# explicitly so surname-only slugs are stable across sources.
-_ASCII_FALLBACKS = str.maketrans(
-    {
-        "ø": "o",
-        "Ø": "O",
-        "æ": "ae",
-        "Æ": "AE",
-        "œ": "oe",
-        "Œ": "OE",
-        "ß": "ss",
-        "ł": "l",
-        "Ł": "L",
-        "ð": "d",
-        "Ð": "D",
-        "þ": "th",
-        "Þ": "Th",
-    }
-)
-
-
-def _ascii_fold(text: str) -> str:
-    """NFKD-normalise and drop non-ASCII characters.
-
-    Also folds Scandinavian / Eastern-European letters that NFKD does not
-    decompose (``ø``, ``æ``, ``ß``, ``ł`` etc.) to ASCII equivalents so the
-    citation key stays useful — without this, ``Nørskov`` would slug as
-    ``nrskov`` rather than ``norskov``.
-    """
-    return (
-        unicodedata.normalize("NFKD", text.translate(_ASCII_FALLBACKS))
-        .encode("ascii", "ignore")
-        .decode()
-    )
-
+# NOTE: this module's ``_ascii_fold``/``_ASCII_FALLBACKS`` pair (dead code —
+# no call sites) was consolidated into ``precis.identity._ascii_fold``,
+# which is now the canonical fold + fallback table (``fallbacks=True`` for
+# the Scandinavian/Eastern-European letters NFKD doesn't decompose, e.g.
+# "Nørskov" → ``norskov`` not ``nrskov``).
 
 # NOTE: ``make_slug`` was removed during B3a
 # (slug dropped; identifiers normalised into ref_identifiers).

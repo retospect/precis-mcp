@@ -221,7 +221,7 @@ class PreflightVerdict:
     reasons: list[PreflightReason] = field(default_factory=list)
 
 
-#: Ship-safe kill switch for both preflight seams (structure handler
+#: Ship-safe dark switch for both preflight seams (structure handler
 #: put/edit + quest.compute.dispatch_autocatpath) — default OFF so this lands
 #: dark; flip on deliberately once live-tested. Mirrors the existing
 #: ``PRECIS_*`` boolean-flag idiom (e.g.

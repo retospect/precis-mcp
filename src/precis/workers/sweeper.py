@@ -1,139 +1,61 @@
-"""Stuck-job sweeper — recovers cascades after orphaned claims.
+"""Stuck-job sweeper — recovers jobs orphaned by a dead claimer.
 
-A ``kind='job'`` ref that carries ``STATUS:running`` for longer than the
-configured threshold without any subsequent status change is treated as
-an orphan: its claimer (worker subprocess) is presumed dead and the
-parent todo's ``child_job_succeeded`` auto_check is silently stuck.
+A ``kind='job'`` row stuck ``STATUS:running`` past :data:`STUCK_JOB_HOURS`
+(env ``PRECIS_STUCK_JOB_HOURS``, default 1.0h, floor 0.1h — raise for
+legitimately long opus passes, whose planner guardrails already cap
+per-tick wall-clock/cost) with ``meta.lease_until`` null or expired is an
+orphan: its claimer is presumed dead, leaving the parent todo's
+``child_job_succeeded`` auto_check silently stuck. Same lease predicate
+:func:`claim_executor_jobs` (``executors/_common.py``) uses for reclaim,
+so a live lease is never swept out from under its worker.
 
-**Lease guard.** A running job may still carry a live ``meta.lease_until``
-— the executor writes one at claim time to cover the longest legitimate
-run (``claude_inproc`` sets 90 min for a ``plan_tick``, which can request
-a 60-min tick plus post-processing). A job whose lease has *not* yet
-expired is, by contract, still owned by a live worker: sweeping it is a
-false claim-orphaned that mints a spurious ``child-failed`` bubble and
-(under the ``claude_inproc`` executor) races the still-running subprocess.
-So the sweeper only fires when the lease is **absent or expired**, the
-same predicate the reclaim path uses (:func:`claim_executor_jobs` in
-``executors/_common.py``). The hours threshold then backstops lease-less
-legacy jobs and adds margin past a just-expired lease.
+**Exclusion.** ``ssh_node``/``claude_inproc``/``claude_docker`` opt into
+``reclaim_stale_running`` (boot-epoch + expiry self-heal, no external
+timeout needed) and :func:`_enumerate_orphans` excludes their rows.
+``coordinator`` does NOT opt in (no reclaim path of its own) — this
+wall-clock sweep is its only crash recovery. ``_reap_dead_node_orphans``
+is the narrower complement for ``ssh_node``: fires only when
+``meta.params.target_node`` is *provably dead* (no live executor left to
+race), terminalizing like the executor's own poison-guard
+(``STATUS:failed`` + ``meta.failure_class='infra'`` +
+``bubble_job_failure``), tagged ``reaped:dead-node-orphan`` — distinct
+from ``swept:claim-orphaned`` (below) and ``reaped:reboot-orphan``
+(``quest/loop.py``).
 
-**Retired for lease-owning executors (§H piece 6, compute-lane-lease-
-epoch.md — "lease is the single job-liveness authority").** ``ssh_node``,
-``claude_inproc`` and ``claude_docker`` all now opt into
-``reclaim_stale_running`` (§H pieces 1-3): a claim under any of those
-executors stamps a per-generation ``lease_boot_id`` and self-heals via
-BOTH the epoch arm (a same-node successor proves the holder replaced,
-reclaims in one pass) and the expiry arm (a same-generation hang, capped
-by ``meta.attempts``/:func:`claim_executor_jobs`'s poison guard) — no
-external wall-clock timeout is needed, and one racing against the
-executor's own lease-steal only risks stranding the barrier (see the
-dead-node-reap note below, unchanged). :func:`_enumerate_orphans`
-therefore excludes rows from all three, not just ``ssh_node`` as before —
-see its docstring. ``coordinator`` is the one exception: it does NOT opt
-into ``reclaim_stale_running`` (a crashed slice has no re-claim path of
-its own — see ``executors/coordinator.py``'s own note), so its rows still
-depend on this wall-clock sweep as their only crash recovery; the
-exclusion set is deliberately the three lease-owning executors, not
-"every row that happens to carry a lease".
+**Transition.** Per orphan: replace ``STATUS:running`` with
+``STATUS:failed`` (``STATUS:cancelled`` for
+:data:`_SWEEP_CANCEL_JOB_TYPES` — today ``quest_tick``, whose reconciler
+treats ``cancelled`` as re-mint-now vs. ``failed``'s escalating backoff;
+see :func:`_transition_to_failed`); tag ``OPEN:swept:claim-orphaned``;
+call ``bubble_job_failure`` explicitly (the handler isn't in scope here;
+skipped for the cancelled case — not a failure, the reconciler owns
+recovery); append a ``job-swept`` event. This wakes the failure-bubble
+cascade so the parent surfaces via nursery's child-failed detector.
 
-**Dead-node compute-lane reap (gr172886 part-b).** ``ssh_node`` jobs are
-excluded from the generic timeout sweep above (see the module note on
-:func:`_enumerate_orphans`) because that executor owns its own crash
-recovery — an external terminalize here would race, and could win, the
-executor's own lease-steal. :func:`_reap_dead_node_orphans` is a narrower,
-DISTINCT reap that only fires in the one case where there is no live
-executor left to race: the job's ``meta.params.target_node`` host is
-*provably dead* (see :func:`_enumerate_dead_node_orphans`), not merely
-lease-expired. It terminalizes exactly like the ssh_node poison-guard
-(``executors/ssh_node.py``'s ``_MAX_ATTEMPTS`` path): ``STATUS:failed`` +
-``meta.failure_class='infra'`` + ``bubble_job_failure`` — an infra death,
-never a physical rule-out — tagged ``reaped:dead-node-orphan`` (distinct
-from both ``swept:claim-orphaned`` above and ``reaped:reboot-orphan`` in
-``quest/loop.py``, so all three recovery paths stay legible in the tag
-history).
+**Container reap (best-effort, gr50905).** ``_kill_job_container`` fires
+in the same transition, but the three lease-owning executors are already
+excluded from it — dead code today except for a future non-lease-owning
+per-job-container executor; see its docstring for the one still-live
+path. ``_reap_stale_dft_containers`` is a separate, unconditional
+per-pass watchdog that force-removes any aged ``precis-job-*`` container
+regardless of DB-row state — the actual recovery for a stuck
+``struct_relax`` DFT container.
 
-The sweeper:
+**``unpark`` phase** (parked-leaf-recovery). Every live todo with an open
+``child-failed:*`` tag is a candidate: ``meta.unpark_attempts`` /
+``meta.last_parked_at`` drive an escalating cool-down (12h·2ᴺ —
+12/24/48h). Below :data:`UNPARK_CAP` (3), once cooled down, every open
+``child-failed:*``/``halt:orphan-retry-cap`` tag is stripped — the
+parent re-enters the dispatch candidate set exactly as a manual unpark
+would. At the cap, one ``child-failed-final`` tag latches and the leaf
+is never touched again by this phase (human-only from there; see
+``nursery._detect_child_failed_parked``'s aggregate finding). A manual
+tag removal does not reset ``unpark_attempts`` — only this phase
+advances it.
 
-1. Selects rows where the *current* ``STATUS:`` value is ``running``, the
-   ``ref_tags`` row that wrote that tag is older than
-   :data:`STUCK_JOB_HOURS`, **and** ``meta.lease_until`` is null or past.
-2. Replaces ``STATUS:running`` with the terminal status (via
-   ``replace_prefix=True`` on the STATUS namespace): ``STATUS:failed``
-   normally, ``STATUS:cancelled`` for perpetual-loop job types
-   (:data:`_SWEEP_CANCEL_JOB_TYPES`, today ``quest_tick``) — a
-   claim-orphaned quest loop died externally (deploy SIGKILL, host
-   loss), and quest-loop reconcile treats ``cancelled`` as re-mint-now
-   while ``failed`` triggers its escalating rest backoff (see
-   :func:`_transition_to_failed`'s docstring; 2026-08-12 incident).
-3. Adds an ``OPEN:swept:claim-orphaned`` tag so the failure isn't
-   mis-attributed to the executor.
-4. Calls ``bubble_job_failure`` to tag the parent todo
-   ``child-failed:<job_id>``. The bubble is normally fired from
-   ``JobHandler.tag(STATUS:failed)``; the sweeper writes the tag at
-   the store level (the handler isn't in scope here), so the bubble
-   is called explicitly. Skipped for the cancelled quest-loop case —
-   cancellation is not a failure and the reconciler owns the recovery.
-5. Appends a ``job-swept`` event so the audit trail is intact.
-6. **Active container reap (gripe 50905).** Failing the DB row does not by
-   itself stop whatever OS process/container the job launched. Two
-   best-effort hooks close that gap, for two different situations:
-   * ``_kill_job_container`` fires right here, in this same timeout
-     transition, for whatever job it's sweeping — but every lease-owning
-     executor (``ssh_node``, and since §H piece 6 also ``claude_inproc`` /
-     ``claude_docker``) is excluded from this transition entirely (see
-     :func:`_enumerate_orphans`), so in current practice this call is
-     defense-in-depth for a FUTURE non-lease-owning, container-per-job
-     executor, not any executor live today — ``claude_docker`` now reaps
-     its own container on every terminal path (including a wall-clock
-     deadline kill), and a ``struct_relax`` DFT relax (``ssh_node``) never
-     reaches this call site either; see :func:`_kill_job_container`'s
-     docstring for the one path that IS still live (the dead-node reap).
-   * ``_reap_stale_dft_containers`` is a separate, unconditional watchdog
-     run every pass on the DFT node: it force-removes any ``precis-job-*``
-     container past a safe age regardless of any job's DB-row state. Since
-     ``struct_relax`` never reaches the immediate-kill path above, this
-     watchdog is what actually recovers a stuck relax — e.g. the ~56h
-     ``gpaw-relax`` that held a GPU after its row was already swept.
-
-The transition is what wakes the cascade — the operator sees the
-stuck parent in the nursery's "child-failed" surfacing and can
-re-tick.
-
-**``unpark`` phase (2026-08-10, parked-leaf-recovery, docs/backlog/
-parked-leaf-recovery.md).** A ``child-failed:<job_id>`` bubble
-(``handlers/_job_bubble.py``) latches a parent todo and nothing else
-automated ever clears it — a human has to read the nursery alert and
-remove the tag. This phase is a bounded, cool-down-gated autonomous
-second look: every live (non-terminal) todo carrying an open
-``child-failed:*`` tag is a candidate. ``meta.unpark_attempts`` /
-``meta.last_parked_at`` drive an escalating cool-down (12h · 2ᴺ for
-attempt N — 12h, 24h, 48h): under :data:`UNPARK_CAP` (3), once the
-cool-down has elapsed, every open ``child-failed:*`` tag (plus
-``halt:orphan-retry-cap`` if present) is removed — the parent falls
-straight back into the dispatch candidate set and the dispatcher mints
-a fresh child, exactly as a human unpark does today — and
-``unpark_attempts`` bumps. At the cap the leaf gets one open
-``child-failed-final`` tag and is never touched again by this phase (a
-human remains the only unpark for those; see
-:func:`precis.workers.nursery._detect_child_failed_parked`'s aggregate
-finding for the ones stuck there). A manual human unpark (removing the
-tag by hand) resets nothing — ``unpark_attempts`` only ever advances via
-this phase.
-
-Configuration:
-
-* ``PRECIS_STUCK_JOB_HOURS`` — float, default ``1.0``. Set higher for
-  legitimately long opus passes; the planner-coroutine guardrails
-  already cap per-tick wall-clock and cost.
-
-Pass shape:
-
-* SQL-only, idempotent (already-failed jobs never re-claim).
-* Runs in the ``system`` worker profile alongside ``nursery`` and
-  ``dispatch`` so every cluster node contributes; per-row
-  ``FOR UPDATE OF r SKIP LOCKED`` dedups racing sweepers.
-* Cheap (one SELECT + N UPDATEs per pass); the default rotation can
-  run it every cycle without budget concern.
+Pass shape: SQL-only, idempotent, ``system`` profile; per-row
+``FOR UPDATE OF r SKIP LOCKED`` dedups racing sweepers; cheap enough to
+run every cycle.
 """
 
 from __future__ import annotations

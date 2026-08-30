@@ -1049,9 +1049,9 @@ def compute_region_density(ir: PcbIR, *, cell_mm: float = 5.0) -> None:
 
 
 # ── L3 geometric crossing count: the real `crossings` cost-term backing ──
-# (found on contact 2026-08-28 — see `same_layer_crossing_bound`'s
-# docstring for the forest proof of why the Euler bound above cannot back
-# this term). Uses plain L3 instance-centroid geometry, same fidelity as
+# (see `same_layer_crossing_bound`'s docstring for the forest proof of
+# why the Euler bound above cannot back this term). Uses plain L3
+# instance-centroid geometry, same fidelity as
 # `compute_gap_capacity`/`nearest_other_instance` above — no shapely, no
 # sub-instance pad offsets (those live only in pinswap.py's own local
 # geometry, not in the IR).

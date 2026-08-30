@@ -1,43 +1,41 @@
 """Smartdraft — the fisheye rail's LLM-free relevance engine.
 
-The whole surface is one primitive: **a prioritized list rendered at fidelity ∝
-priority, capped by a budget.** Priority is *eye-pressure* — how much a chunk
-wants to be noticed *relative to the current focus* — computed with **no LLM**,
-from signals we already store:
+One primitive: a prioritized list rendered at fidelity ∝ priority, capped
+by a budget. Priority is *eye-pressure* — how much a chunk wants
+noticing relative to the current focus — computed with no LLM, from:
 
 - **keyword overlap** (`chunks.keywords`, KeyBERT) — literal,
 - **reading proximity** (distance in reading order) — structural,
-- **status boost** — a pin / lock / pending need pokes through regardless of
-  topical relevance (so "what needs you" is never collapsed away).
+- **status boost** — pin/lock/pending need pokes through regardless of
+  topical relevance.
 
-Pressure is embedding-free on purpose: loading every vector + a python cosine
-blocked the page for seconds on a 10k-chunk draft. The **semantic** search
-signal comes from the HNSW index at query time (`semantic_ranks`), not a scan.
+Embedding-free on purpose: loading every vector + a python cosine
+blocked the page for seconds on a 10k-chunk draft. **Semantic** signal
+comes from the HNSW index at query time (`semantic_ranks`), not a scan.
 
-The focus is a chunk (the current para) *or* a query (search is just "focus =
-these keywords"). Rank once; three panes read the same ranking at three
-densities — the left TOC (whole map, thin, quiet runs collapsed), the middle
-(the top few, thick), the right (urgency-sorted). This module is the pure engine
-+ view-model; the route (`routes/smartdraft.py`) serializes it to HTML and the
-same ranking is what an MCP `focus` verb would serialize to text.
+Focus is a chunk (current para) or a query (search = "focus = these
+keywords"). Rank once; three panes read the same ranking at three
+densities — left TOC (whole map, thin, quiet runs collapsed), middle (top
+few, thick), right (urgency-sorted). Module is the pure engine +
+view-model; `routes/smartdraft.py` serializes it to HTML — same ranking
+an MCP `focus` verb would serialize to text.
 
-This is now the **sole** draft reader: the classic virtual-scroll `/drafts`
-reader was retired and every draft deep link 30x-redirects into `/smartdraft`
-(see the ``precis_web`` package docstring). `routes/drafts.py` remains only as the
-shared editing/export/figure/lifecycle backend this reader reuses.
-Full-document mode (relevance off) is the default and stays O(window), not
-O(N): ±`_FULLDOC_WINDOW` chunks render verbatim, the rest are inert `skel`
-placeholders lazily hydrated on scroll. :func:`focus_index` accepts both the
-universal ``dc<id>`` handle and the legacy base58 form.
+**Sole** draft reader: every draft deep link 30x-redirects into
+`/smartdraft` (see the `precis_web` package docstring); `routes/drafts.py`
+remains only as the shared editing/export/figure/lifecycle backend.
+Full-document mode (relevance off) is default, O(window) not O(N): ±
+`_FULLDOC_WINDOW` chunks render verbatim, rest are inert `skel`
+placeholders lazily hydrated on scroll. :func:`focus_index` accepts both
+the universal ``dc<id>`` handle and the legacy base58 form.
 
-Review status: the reader's per-chunk marks read the ``chunk_review``
-watermark ledger (migration 0086) via `routes/drafts.py::
-_review_status_by_chunk` — lens namespace ``flow``/``cites``/``structure``/
-``adversarial``/``toc`` (`precis.quest.review_fanout`) plus ``human`` as the
-fixed point. Fanout is incremental (only stale chunks re-mint) at prio 2,
-and a lens row is written back only by a clean, non-resumed tick that
-concluded ``verdict: done`` (`executors/claude_inproc.py`) — a false
-approval would hide an unreviewed section behind a green ✓.
+Review status: per-chunk marks read the ``chunk_review`` watermark ledger
+(migration 0086) via `routes/drafts.py::_review_status_by_chunk` — lens
+namespace ``flow``/``cites``/``structure``/``adversarial``/``toc``
+(`precis.quest.review_fanout`) plus ``human`` as fixed point. Fanout is
+incremental (stale chunks only) at prio 2; a lens row writes back only
+from a clean, non-resumed tick concluding ``verdict: done``
+(`executors/claude_inproc.py`) — else a false approval hides an
+unreviewed section behind a green ✓.
 """
 
 from __future__ import annotations
@@ -262,25 +260,23 @@ _NODE_TTL = 45.0
 
 
 def _cache_version(store: Store, ref_id: int) -> str | None:
-    """A cheap content token for a draft — ``digest:tags`` over its live chunks.
+    """Cheap content token for a draft: ``digest:tags`` over its live chunks.
 
-    The digest folds in every input :func:`_build_nodes_uncached` reads off the
-    chunk row itself: ``chunk_id`` (add / retire), ``pos`` and
-    ``parent_chunk_id`` (move, re-parent), and ``content_sha`` (text). Hashing
-    the *content* rather than counting rows is load-bearing — the live edit path
-    (``store.drafts.edit_text``) UPDATEs a chunk **in place**, so a token built from
-    ``count(*) + max(chunk_id)`` never moved on an edit and the reader served
-    stale text until the TTL fired. The ``chunk_tags`` count covers tag add /
-    remove.
+    Digest folds in every input :func:`_build_nodes_uncached` reads off
+    the chunk row: ``chunk_id`` (add/retire), ``pos``/``parent_chunk_id``
+    (move/re-parent), ``content_sha`` (text). Hashing content rather than
+    counting rows is load-bearing: ``store.drafts.edit_text`` UPDATEs a
+    chunk in place, so ``count(*) + max(chunk_id)`` wouldn't move on an
+    edit. ``chunk_tags`` count covers tag add/remove.
 
-    That makes the token self-invalidating for writes from *any* source (the
-    smartdraft route, the MCP ``edit``/``tag`` verbs, a worker), not just the
-    routes that call :func:`invalidate`. Derived data a worker rewrites without
-    touching the chunk row (summaries, keywords) is still the TTL's job.
+    Self-invalidating for writes from any source (smartdraft route, MCP
+    ``edit``/``tag`` verbs, a worker) — not just callers of
+    :func:`invalidate`. Derived data a worker rewrites without touching
+    the chunk row (summaries, keywords) is still the TTL's job.
 
-    One round-trip. Returns ``None`` if the store can't answer (a FakeStore in
-    tests, a pool-less handle) — the caller then skips the cache entirely,
-    preserving the pre-cache always-rebuild behaviour exactly."""
+    One round-trip. Returns ``None`` if the store can't answer (FakeStore
+    in tests, pool-less handle) — caller then skips the cache, preserving
+    pre-cache always-rebuild behaviour."""
     try:
         with store.pool.connection() as conn:
             row = conn.execute(

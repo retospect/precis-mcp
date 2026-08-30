@@ -31,14 +31,12 @@ get(
 ```
 
 `view=` is the door; `kwd` / `summary` / `verbatim` / `fisheye` /
-`fisheye+1hop` are the accepted values (the ladder is `Extent` in
-`src/precis/workers/working_set.py::Extent`). Anything else on a chunk
+`fisheye+1hop` are the accepted values. Anything else on a chunk
 address is an error, not a silent fall-back to the lone chunk.
 
 ## The extent ladder — how much to render
 
-Each rung **strictly contains** the previous one (`Extent` in
-`src/precis/workers/working_set.py::Extent`):
+Each rung **strictly contains** the previous one:
 
 | `view=` | Shows |
 |---|---|
@@ -56,9 +54,7 @@ this skill.
 
 For a tree kind (`draft`/`plan`), `fisheye` renders a **graduated,
 forward-biased span over reading-order neighbours** — not just
-siblings — centered on the focused node
-(`src/precis/utils/fisheye.py::render_fisheye`,
-`src/precis/utils/fisheye.py::_render_fidelity_span`):
+siblings — centered on the focused node:
 
 - **±5** neighbours render **full** (verbatim)
 - **±10** render as a **summary** line
@@ -74,9 +70,7 @@ always see which `§` you're inside, not just the paragraph.
 
 Where the spatial fisheye walks *reading order* ("what's physically
 near this"), `fisheye+1hop` adds the **reference ring** — what the
-section *points at*, one edge out
-(`src/precis/utils/refeye.py::render_reference_ring`,
-`src/precis/utils/refeye.py::SEMANTIC_RELATIONS`):
+section *points at*, one edge out:
 
 - **Cited** — papers / datasheets / patents the section cites
 - **Cross-refs** — other draft/plan chunks it links (`[[dc41]]`)
@@ -86,8 +80,7 @@ section *points at*, one edge out
   the section explodes into its evidence: the claim, its derived
   `establishes` originator(s) (★-marked, with the grounding chunk
   pointer when the chase has populated one), and a one-line
-  corroborator/contradictor summary — via
-  `src/precis/taproot/seniority.py::derive_evidence`, recomputed on
+  corroborator/contradictor summary, recomputed on
   every render. A handle naming an ordinary (non-hub) finding isn't
   mined into the ring. An authorial pin (Taproot slice A2 —
   `[fi<id>>pa5]` / `[fi<id>+pa5]`, same grammar the draft export
@@ -114,15 +107,12 @@ A memory that's merely *about* the section but was never linked is a
 
 ## Per-kind scope — the neighborhood shape depends on the kind
 
-`render_eye` (`src/precis/utils/eye_render.py::render_eye`) dispatches
-by kind — the ladder generalizes, the neighborhood shape does not:
+Rendering dispatches by kind — the ladder generalizes, the
+neighborhood shape does not:
 
-- **Tree kinds** (`draft`, `plan` —
-  `src/precis/utils/eye_render.py::_TREE_KINDS`) — the reading-order
-  span above.
-- **Doc kinds** (`paper`, `patent`, `web`, `datasheet`, `cfp` —
-  `src/precis/utils/eye_render.py::_DOC_KINDS`) — no heading tree, so
-  the "neighborhood" is the per-chunk KeyBERT keyword-cluster TOC
+- **Tree kinds** (`draft`, `plan`) — the reading-order span above.
+- **Doc kinds** (`paper`, `patent`, `web`, `datasheet`, `cfp`) — no
+  heading tree, so the "neighborhood" is the per-chunk keyword-cluster TOC
   (F20/ADR-0018) around the focused chunk: a whole-doc handle (`pa5`)
   renders the **cluster map** (one row per cluster); a chunk handle
   (`pc13234`) renders the **fisheye split within its cluster** —
@@ -134,8 +124,7 @@ by kind — the ladder generalizes, the neighborhood shape does not:
   direction, with its relation type, grouped by relation and capped per
   group (an overflow line names what it withheld). Links are symmetric:
   fisheye-ing a paper surfaces a note linked to it, and vice versa.
-  The neighborhood follows
-  `src/precis/utils/refeye.py::RING_RELATIONS` — the meaning edges
+  The neighborhood follows the meaning-edge vocabulary
   **plus** the Taproot claim graph (`establishes`, `corroborates`,
   `contradicts`, `refines`, `conjunct-of`, `motivated-by`), so a claim
   hub eye shows its evidence and its refines chain. A `finding` that is
@@ -154,9 +143,9 @@ get(kind="finding", id="fi42", view="fisheye+1hop")  # hub + its claim graph
 
 ## Read the same neighborhood in a browser
 
-The smartdraft web reader (`src/precis_web/routes/smartdraft.py::reader`)
-is the fisheye rendered as a three-pane page — left: TOC nav, middle:
-the focus + its neighborhood, right: relevance overlay:
+The smartdraft web reader is the fisheye rendered as a three-pane page
+— left: TOC nav, middle: the focus + its neighborhood, right: relevance
+overlay:
 
 ```
 /smartdraft/<draft-slug>?focus=dc<id>

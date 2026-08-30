@@ -29,7 +29,7 @@ kinds do not.
   outweighs the tidiness win; re-evaluate when the gripe count is
   small.
 - **Do NOT fold `job`** (ADR 0030: lease semantics + auto_check
-  failure-bubble are load-bearing) or `message` (side-effect output,
+  failure bubble are load-bearing) or `message` (side-effect output,
   not a workspace item).
 
 ## Explicitly NOT in scope

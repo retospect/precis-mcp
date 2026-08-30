@@ -31,13 +31,13 @@ Step 1) and falls back to the cite_key convention across every configured root
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from precis.corpus_layout import corpus_pdf_dest, rebase_onto_local
 from precis.store import Store
 from precis.store._pdf_ops import DuePdf
+from precis.workers import _throttle
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -48,6 +48,9 @@ log = logging.getLogger(__name__)
 #: every tick (the full ``pdfs ⋈ refs ⋈ pdf_locations`` scan was firing per-minute
 #: on every host — pure waste once the ledger is warm).
 _LAST_EMPTY_KEY_PREFIX = "corpus_reconcile:last_empty:"
+#: Env var + default for the refresh window (see :func:`_throttle.refresh_hours`).
+_REFRESH_ENV_VAR = "PRECIS_CORPUS_RECONCILE_REFRESH_HOURS"
+_DEFAULT_REFRESH_HOURS = 6.0
 
 
 def _refresh_hours() -> float:
@@ -57,13 +60,7 @@ def _refresh_hours() -> float:
     Deliberately far below the ledger TTL (default 7 days) so a live node
     keeps its rows comfortably fresh.
     """
-    raw = os.environ.get("PRECIS_CORPUS_RECONCILE_REFRESH_HOURS")
-    if not raw:
-        return 6.0
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return 6.0
+    return _throttle.refresh_hours(_REFRESH_ENV_VAR, _DEFAULT_REFRESH_HOURS)
 
 
 def _scan_throttled(store: Store, host: str) -> bool:

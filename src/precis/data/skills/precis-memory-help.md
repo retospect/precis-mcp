@@ -98,8 +98,8 @@ search(kind="memory", q="kwargs vs modes", tags=["topic:api-design"])
 search(kind="memory", tags=["project:precis-v2", "confidence-strong"])
 ```
 
-`q=` is hybrid lexical + semantic over memory text. `tags=` narrows
-to refs carrying every listed tag (AND). Omit `q=` to browse a
+`q=` runs over memory text (mechanics: `precis-search-help`). `tags=`
+narrows to refs carrying every listed tag (AND). Omit `q=` to browse a
 tag slice.
 
 ## Read a memory I have the id for
@@ -237,8 +237,8 @@ Use sparingly — every sticky memory eats prompt budget every turn.
 
 ## The argument graph — kind:lemma / kind:inference sub-kinds
 
-A memory can be a node in the reasoning shadow beside a draft (ADR
-0054): `tags=['kind:lemma']` for a derived/composite claim (no single
+A memory can be a node in the reasoning shadow beside a draft:
+`tags=['kind:lemma']` for a derived/composite claim (no single
 corpus source — a claim pinned to *one* source is a `finding` instead,
 see `precis-finding-help`), `tags=['kind:inference']` for a reasoning
 step that combines premises into a conclusion. An inference carries
@@ -270,7 +270,7 @@ Two closed UPPERCASE axes are accepted on memory, both **system-set**
 - `DREAM:` (`consolidated` / `speculative` / `acquire`) — written by
   the dreaming worker.
 - `STALE:` (`retracted-premise`) — written by the argument-graph
-  retraction-ripple hook (ADR 0054 §5) on a `kind:inference` memory
+  retraction-ripple hook on a `kind:inference` memory
   when it rests on a source that now carries a `retracts` /
   `raises-concern-about` edge. Derived, not toggled — recomputed on
   every retraction-edge add or remove.

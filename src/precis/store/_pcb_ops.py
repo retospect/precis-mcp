@@ -1,26 +1,22 @@
 """Store ops for the ``pcb`` kind.
 
-The design is a slug-addressed ``refs`` row (``kind='pcb'``) keeping **one**
-``card_combined`` chunk for intent-search; the graph lives in the dedicated
-``pcb_*`` tables (a normalized type/instance model):
+A design is a slug-addressed ``refs`` row (``kind='pcb'``) keeping
+**one** ``card_combined`` chunk for intent-search; the graph lives in
+normalized ``pcb_*`` tables: ``pcb_components`` (a component *type*,
+owns its pins), ``pcb_pins`` (pad+function+electrical tags),
+``pcb_instances`` (a placement/refdes), ``pcb_nets`` (a named, classed
+signal), ``pcb_netconns`` (the netlist triple net/instance/pin — a pin
+is on <=1 net; composite FKs force pin+instance to share a component).
 
-- ``pcb_components`` — a component *type* (owns its pins).
-- ``pcb_pins``       — pins of a type (pad + function name + electrical tags).
-- ``pcb_instances``  — a placement (refdes) of a component.
-- ``pcb_nets``       — a named, classed signal.
-- ``pcb_netconns``   — the netlist triple (net, instance, pin); a physical pin
-  is on <=1 net; composite FKs force the pin and the instance to share a
-  component.
+Authoring is **batch**: :meth:`pcb_apply` lays down
+components+pins+instances/nets/connections in one transaction,
+*re-runnable* (existing refdes/net names reused, not duplicated). Reads
+(:meth:`pcb_load`, :meth:`pcb_instance_neighbors`,
+:meth:`pcb_net_members`) back graph traversal; the derived layer
+(ratsnest/crossings) is computed by the handler, not stored.
 
-Authoring is **batch**: :meth:`pcb_apply` lays down components+pins+instances,
-nets, and connections for a design in one transaction and is *re-runnable*
-(existing refdes/net names are reused, not duplicated). Reads (:meth:`pcb_load`,
-:meth:`pcb_instance_neighbors`, :meth:`pcb_net_members`) back the graph-
-traversal surface; the derived layer (ratsnest/crossings) is computed by the
-handler, not stored.
-
-Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
-``self.insert_ref`` / ``self.get_ref``.
+Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
+``self.insert_ref``/``self.get_ref``.
 """
 
 from __future__ import annotations
@@ -67,23 +63,23 @@ class PcbMixin:
         meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
-        """Create-or-extend a design, batch. Returns ``(ref, created, counts)``.
+        """Create-or-extend a design, batch. Returns ``(ref, created,
+        counts)``.
 
-        Each *component* dict creates a component TYPE + its pins + **one**
-        instance (the 1:1 convenience): keys ``refdes`` (req),
-        ``label``, ``part``/``part_lcsc``, ``footprint``, ``courtyard``,
-        ``centroid``, ``height_mm``, ``x``, ``y``, ``rot``, ``layer``,
-        ``fixed``, ``roles``, ``note``, and ``pins`` (a list of
-        ``{name, pad?, tags?, description?, note?}``). A *net* dict: ``name``
-        (req), ``net_class``/``class``, ``est_current_a``/``current``,
-        ``width_mm``/``width``, ``note``. A *connection* dict: ``net`` (req),
-        ``refdes`` (req), ``pin`` (req, a pin name), ``note``. Re-runnable:
-        existing refdes / net names are reused.
+        Each *component* dict creates a component TYPE + pins + **one**
+        instance (1:1 convenience): keys ``refdes`` (req), ``label``,
+        ``part``/``part_lcsc``, ``footprint``, ``courtyard``, ``centroid``,
+        ``height_mm``, ``x``, ``y``, ``rot``, ``layer``, ``fixed``,
+        ``roles``, ``note``, ``pins`` (``[{name, pad?, tags?,
+        description?, note?}]``). A *net* dict: ``name`` (req),
+        ``net_class``/``class``, ``est_current_a``/``current``,
+        ``width_mm``/``width``, ``note``. A *connection* dict: ``net``
+        (req), ``refdes`` (req), ``pin`` (req), ``note``. Re-runnable:
+        existing refdes/net names reused.
 
-        Reuses ``conn`` when called inside an existing transaction (e.g. the
-        handler bundling the ``net_classes`` upsert so both writes commit or
-        roll back as one unit); opens its own otherwise (mirrors
-        :meth:`pcb_ensure_board`)."""
+        Reuses ``conn`` inside an existing transaction (e.g. bundling
+        the ``net_classes`` upsert so both commit/rollback as one unit);
+        opens its own otherwise (mirrors :meth:`pcb_ensure_board`)."""
         if conn is not None:
             return self._pcb_apply(
                 conn,
@@ -1041,16 +1037,13 @@ class PcbMixin:
     ) -> int:
         """Write new ``(x, y, rot)`` for instances by refdes — the joint
         placement+topology optimizer's write-back (``pcb_place``/
-        ``pcb_route`` jobs).
-
-        Same fixed-respecting discipline as :meth:`pcb_set_placement`, but
-        per-axis: a ``fixed='rot'`` instance still gets ``(x, y)`` written,
-        a ``fixed='xy'`` instance still gets rotation written, and
-        ``fixed='both'`` blocks everything. ``pcb_set_placement`` is left
-        untouched rather than folded into this — its only caller (the v1
-        autoplace/route-round-trip path) never writes rotation, so a
-        coarser blanket guard is the honest shape there. Returns the
-        number of instances that had at least one axis written."""
+        ``pcb_route`` jobs). Same fixed-respecting discipline as
+        :meth:`pcb_set_placement`, but per-axis: ``fixed='rot'`` still
+        gets ``(x, y)`` written, ``fixed='xy'`` still gets rotation,
+        ``fixed='both'`` blocks everything. :meth:`pcb_set_placement`
+        stays untouched — its only caller (v1 autoplace/route
+        round-trip) never writes rotation, so a coarser blanket guard is
+        honest there. Returns instances with ≥1 axis written."""
         moved = 0
         with self.tx() as conn:
             for refdes, (x, y, rot) in pose.items():
@@ -1236,16 +1229,14 @@ class PcbMixin:
 
     def pcb_copper_list(self, board_id: int) -> list[dict[str, Any]]:
         """Every derived copper row for a board, flattened into
-        :mod:`precis.pcb.drc`'s copper-model item shape (``{"ctype",
-        "layer", "net", ...geom fields}``) — the same flat ``ctype``/
-        ``layer``/``net``/``width_mm``/``segments`` convention
-        :mod:`precis.pcb.realize` and :mod:`precis.pcb.gerber` already
-        share, so ``view='drc'`` can hand this straight to
+        :mod:`precis.pcb.drc`'s item shape (``{"ctype", "layer", "net",
+        ...geom fields}``) — the flat convention
+        :mod:`precis.pcb.realize`/:mod:`precis.pcb.gerber` already share,
+        so ``view='drc'`` hands this straight to
         :func:`precis.pcb.drc.run_geometric_drc` with no reshaping.
-        ``net_id`` (the real FK ``pcb_copper.geom`` doesn't carry) is
-        resolved to its net NAME here via a join — geometric DRC findings
-        read by name, matching every other engine's "names are for
-        humans/export, not internal identity" discipline at this layer."""
+        ``net_id`` resolves to its net NAME via a join — DRC findings
+        read by name, matching this layer's "names for humans/export, not
+        internal identity" discipline."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT c.ctype, c.layer, n.name, c.geom "
@@ -1341,19 +1332,17 @@ class PcbMixin:
 
     def pcb_assign_plane(self, ref_id: int, layer_name: str, net_name: str) -> int:
         """Author a plane assignment (``pcb_planes``) — the inline "assign
-        plane net" editor. Idempotent by (board, layer, net); returns the
-        plane_id, or 0 when ``net_name`` doesn't resolve on this design.
+        plane net" editor. Idempotent by (board, layer, net); returns
+        plane_id, or 0 when ``net_name`` doesn't resolve.
 
-        Always stamps ``meta.source = 'authored'`` (merged in on conflict,
-        never a bare overwrite of unrelated meta keys) — a human's explicit
-        ``op='plane_net'`` instruction, so it must never look like an
-        optimizer guess later. If a live *derived* row already occupies
-        this exact (board, layer, net) key (from a prior ``pcb_route``
-        run), this call promotes it to authored in place — an explicit
-        human instruction is allowed to claim a spot the optimizer merely
-        guessed at; see :meth:`pcb_planes_replace_derived`, which is the
-        one direction that must never happen (derived silently clobbering
-        authored)."""
+        Always stamps ``meta.source = 'authored'`` (merged on conflict,
+        never overwriting unrelated meta keys) — a human's explicit
+        instruction must never later look like an optimizer guess. If a
+        live *derived* row already occupies this (board, layer, net) key,
+        promotes it to authored in place — a human claiming a spot the
+        optimizer merely guessed at. The reverse (derived silently
+        clobbering authored) must never happen — see
+        :meth:`pcb_planes_replace_derived`."""
         with self.tx() as conn:
             board_id = self._pcb_ensure_board(conn, ref_id)
             net = conn.execute(
@@ -1376,20 +1365,17 @@ class PcbMixin:
         return int(row[0]) if row is not None else 0
 
     def pcb_planes_list(self, ref_id: int) -> list[dict[str, Any]]:
-        """Every live plane assignment for a design — both human-
-        ``authored`` (``op='plane_net'``) and optimizer-``derived``
-        (:meth:`pcb_planes_replace_derived`, the ``pcb_route`` job's
-        write-back, gr267526). Doubles as the ``view='planes'`` read and
-        the seed :mod:`precis.workers.job_types.pcb_route` warm-starts a
-        fresh anneal from — a prior run's derived guess is still a
-        reasonable starting point, so both provenances load, not just
-        authored ones.
+        """Every live plane assignment for a design — human-``authored``
+        and optimizer-``derived`` (:meth:`pcb_planes_replace_derived`,
+        gr267526) both load. Doubles as the ``view='planes'`` read and the
+        seed :mod:`precis.workers.job_types.pcb_route` warm-starts a
+        fresh anneal from (a prior derived guess is still a reasonable
+        start).
 
-        ``source`` defaults to ``'authored'`` for a row with no
-        ``meta.source`` key (every row written before this change) — the
-        safe direction, since misreading an old row as ``'derived'``
-        would let a later :meth:`pcb_planes_replace_derived` silently
-        retire what was actually a human's instruction."""
+        ``source`` defaults ``'authored'`` for a row with no
+        ``meta.source`` (pre-this-change rows) — the safe direction,
+        since misreading a row as ``'derived'`` would let a later
+        replace silently retire a human's instruction."""
         with self.pool.connection() as conn:
             return [
                 {
@@ -1413,29 +1399,24 @@ class PcbMixin:
         self, ref_id: int, board_id: int, assignments: dict[str, str]
     ) -> int:
         """Optimizer-derived plane write-back — the ``pcb_route`` job's
-        checkpoint for whatever :meth:`precis.pcb.ir.PcbIR.promote_plane`
-        state the anneal settled on (gr267526: previously dropped
-        entirely, so GND/VCC-class nets never got a plane and were
-        threaded as full-length traces instead).
+        checkpoint for :meth:`precis.pcb.ir.PcbIR.promote_plane` state
+        (gr267526: previously dropped, so GND/VCC-class nets never got a
+        plane and threaded as full-length traces instead).
 
-        Provenance-scoped **replace**: retires every existing
-        ``source='derived'`` row for this board, then inserts the new set
-        fresh — the same DELETE+INSERT cascade discipline
-        :meth:`pcb_copper_replace` already uses, so a re-run replaces
-        last run's guesses rather than accumulating duplicates. **Never
-        touches a ``source='authored'`` row** — the query that selects
-        what to retire filters on it, and the per-net insert is additionally
-        guarded by ``ON CONFLICT ... DO NOTHING`` so even a caller bug that
-        forgot to exclude an authored net can't clobber it; the caller
-        (:mod:`precis.workers.job_types.pcb_route`) is still expected to
-        exclude authored nets from ``assignments`` using
-        :meth:`pcb_planes_list`'s ``source`` field, since a net covered by
-        an authored row must show that authored decision, not silently
-        swallow a derived one alongside it.
+        Provenance-scoped **replace** (same DELETE(retire)+INSERT cascade
+        as :meth:`pcb_copper_replace`): retires every existing
+        ``source='derived'`` row for this board, then inserts fresh, so a
+        re-run replaces rather than accumulates. **Never touches
+        ``source='authored'``** — the retire query filters on it, and the
+        insert is guarded by ``ON CONFLICT ... DO NOTHING`` as a second
+        line of defense; the caller
+        (:mod:`precis.workers.job_types.pcb_route`) must still exclude
+        authored nets from ``assignments`` via :meth:`pcb_planes_list`'s
+        ``source`` field, so an authored net's decision is never silently
+        shadowed by a derived one.
 
-        ``assignments`` is ``{net_name: layer_name}``. Returns the number
-        of nets attempted (not necessarily inserted, if a name failed to
-        resolve or hit the conflict guard)."""
+        ``assignments`` is ``{net_name: layer_name}``. Returns nets
+        attempted (not necessarily inserted)."""
         with self.tx() as conn:
             conn.execute(
                 "UPDATE pcb_planes SET retired_at = now() "
@@ -1467,19 +1448,17 @@ class PcbMixin:
     def pcb_pin_swaps_list(self, ref_id: int) -> list[dict[str, Any]]:
         """Every live pin<->net override for a design (docs/backlog/
         pcb-engine-plan.md "PIN_SWAP is not persisted") — both a future
-        human-``authored`` override (no authoring verb exists yet; the
-        ``source`` discipline is wired ahead of it, same shape as
+        human-``authored`` override (no authoring verb yet; ``source``
+        discipline wired ahead of it, same shape as
         :meth:`pcb_planes_list`) and optimizer-``derived`` rows
-        (:meth:`pcb_pin_swaps_replace_derived`, the ``pcb_route`` job's
-        write-back). ``pcb_netconns`` itself never changes — this is the
-        override layered on top, resolved by durable identity (refdes +
-        pin name, not the ephemeral IR-local pin int) so a caller can
-        re-apply it onto a freshly-built IR (:mod:`precis.pcb.session`).
+        (:meth:`pcb_pin_swaps_replace_derived`). ``pcb_netconns`` itself
+        never changes — this is the override layered on top, resolved by
+        durable identity (refdes+pin name, not the ephemeral IR-local pin
+        int) so a caller can re-apply it onto a freshly-built IR
+        (:mod:`precis.pcb.session`).
 
-        ``source`` defaults to ``'authored'`` for a row with no
-        ``meta.source`` key, the same safe direction
-        :meth:`pcb_planes_list` documents (misreading a row as
-        ``'derived'`` would let a later replace silently retire it)."""
+        ``source`` defaults ``'authored'`` for a row with no
+        ``meta.source``, same safe direction as :meth:`pcb_planes_list`."""
         with self.pool.connection() as conn:
             return [
                 {
@@ -1505,30 +1484,28 @@ class PcbMixin:
         self, ref_id: int, board_id: int, overrides: list[dict[str, Any]]
     ) -> int:
         """Optimizer-derived pin-swap write-back — the ``pcb_route`` job's
-        checkpoint for whatever :meth:`precis.pcb.ir.PcbIR.swap_pins` state
-        the anneal settled on (docs/backlog/pcb-engine-plan.md "PIN_SWAP is
-        not persisted": previously dropped entirely, so a swap the search
-        found genuinely beneficial reverted to ``pcb_netconns``'s original
-        wiring the moment the job ended, leaving the persisted netlist and
-        the persisted copper describe two different boards).
+        checkpoint for :meth:`precis.pcb.ir.PcbIR.swap_pins` state
+        (docs/backlog/pcb-engine-plan.md "PIN_SWAP is not persisted":
+        previously dropped, so a genuinely-beneficial swap reverted to
+        ``pcb_netconns``'s original wiring once the job ended, leaving
+        persisted netlist and persisted copper describing two different
+        boards).
 
-        Provenance-scoped **replace**, the same DELETE(retire)+INSERT
-        cascade discipline :meth:`pcb_planes_replace_derived` uses: retires
-        every existing ``source='derived'`` row for this board, then
-        inserts the new set fresh. **Never touches a ``source='authored'``
-        row** — the retire filters on it, and the per-pin insert is
-        additionally guarded by ``ON CONFLICT ... DO NOTHING`` on the live
-        physical-pin key, so even a caller bug that forgot to exclude an
-        authored pin can't clobber it; the caller
-        (:mod:`precis.workers.job_types.pcb_route`) is still expected to
-        exclude authored pins from ``overrides`` using
-        :meth:`pcb_pin_swaps_list`'s ``source`` field.
+        Provenance-scoped **replace**, same DELETE(retire)+INSERT cascade
+        as :meth:`pcb_planes_replace_derived`: retires every existing
+        ``source='derived'`` row, inserts fresh. **Never touches
+        ``source='authored'``** — the retire filters on it, and the
+        insert is guarded by ``ON CONFLICT ... DO NOTHING`` on the live
+        physical-pin key; the caller
+        (:mod:`precis.workers.job_types.pcb_route`) must still exclude
+        authored pins from ``overrides`` via :meth:`pcb_pin_swaps_list`'s
+        ``source`` field.
 
         ``overrides`` is ``[{"refdes", "pin", "net"}, ...]`` — the settled
-        net NAME each physical pin now carries. A ``(refdes, pin)`` or
-        ``net`` that doesn't resolve on this design is silently skipped
-        (the netlist changed under it), never an error. Returns the number
-        of overrides attempted (not necessarily inserted)."""
+        net name each pin now carries. An unresolvable ``(refdes, pin)``
+        or ``net`` is silently skipped (netlist changed under it), never
+        an error. Returns overrides attempted (not necessarily
+        inserted)."""
         with self.tx() as conn:
             conn.execute(
                 "UPDATE pcb_pin_swaps SET retired_at = now() "
@@ -1719,37 +1696,32 @@ class PcbMixin:
         min_fraction: float = 0.5,
         force: bool = False,
     ) -> dict[str, int]:
-        """Full-catalog reload via staging + atomic swap (0047's design —
-        see that migration's header comment) — the scale lever for the
-        whole ~300k-row jlcparts dump, as opposed to :meth:`parts_import`'s
-        per-row upsert (right-sized for an incremental API page, wrong for
-        a full reload). ``rows`` may be a one-shot generator; it is
-        consumed while loading the staging table, so a full dump never
-        needs to fit in memory as a list.
+        """Full-catalog reload via staging + atomic swap (0047's design,
+        see that migration's header) — the scale lever for the whole
+        ~300k-row jlcparts dump, vs :meth:`parts_import`'s per-row upsert
+        (right for an incremental API page, wrong for a full reload).
+        ``rows`` may be a one-shot generator, consumed while loading
+        staging, so a full dump never needs to fit in memory as a list.
 
-        Everything — the staging table's creation, every row load, the
-        ``part_availability`` turnover roll, and the swap itself — runs
-        inside ONE transaction (:meth:`tx`, commit-on-clean-exit /
-        rollback-on-exception): a raise anywhere during the load leaves
-        the live ``parts`` table (and its indexes/rows) completely
-        untouched — the swap (drop old, promote staging) is the LAST
-        thing this method does. ``part_footprints`` / ``part_availability``
-        are deliberately FK-free (0047) so they are never touched by the
-        swap and survive it unconditionally; this method still rolls
-        ``part_availability``'s turnover signal per row, exactly like
-        :meth:`parts_import`, so a bulk reload keeps that signal live too.
+        Everything — staging creation, every row load, the
+        ``part_availability`` turnover roll, and the swap — runs inside
+        ONE transaction: a raise anywhere leaves the live ``parts`` table
+        untouched, since the swap (drop old, promote staging) is the LAST
+        step. ``part_footprints``/``part_availability`` are deliberately
+        FK-free (0047), never touched by the swap, and survive it
+        unconditionally; this still rolls ``part_availability``'s
+        turnover signal per row like :meth:`parts_import`.
 
-        **Shrink guard (do not remove).** A staging table that loaded far
-        fewer rows than the live catalog is almost never a real catalog
-        that shrank — it is a truncated download, a dump whose upstream
-        column names drifted so every row failed normalization, or an API
-        walk that died early. Promoting it silently destroys the catalog,
-        and the transaction cannot save us because the empty load is a
-        perfectly *successful* one. So the swap refuses unless staging
-        holds at least ``min_fraction`` of the live row count, and refuses
-        an empty staging table outright. ``force=True`` overrides for the
-        genuinely-intended teardown; the CLI surfaces it as an explicit
-        flag so nobody trips it by accident.
+        **Shrink guard (do not remove).** Staging loading far fewer rows
+        than the live catalog is almost never a real shrink — it's a
+        truncated download, a drifted-schema normalization failure, or an
+        early-died API walk. Promoting it silently destroys the catalog,
+        and the transaction can't save us (the empty load is a
+        *successful* one). So the swap refuses unless staging holds ≥
+        ``min_fraction`` of the live row count, and refuses empty staging
+        outright. ``force=True`` overrides for a genuine teardown; the
+        CLI surfaces it as an explicit flag so nobody trips it by
+        accident.
 
         Returns ``{loaded, restocked}``.
         """

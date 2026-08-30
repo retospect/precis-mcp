@@ -45,7 +45,7 @@ def _annotation_is(annotation: str, type_name: str) -> bool:
     return non_none == [type_name]
 
 
-def _convert_value(value: str, param_info: dict[str, Any]) -> Any:
+def convert_value(value: str, param_info: dict[str, Any]) -> Any:
     """Convert CLI string value to the appropriate Python type."""
     if param_info["is_list"]:
         return _parse_list_value(value)
@@ -71,6 +71,12 @@ def _convert_value(value: str, param_info: dict[str, Any]) -> Any:
 
     # Default to string
     return value
+
+
+#: Back-compat alias — ``precis.cli.repl`` imports the underscored
+#: name directly; kept so that non-web caller doesn't need a
+#: coordinated migration alongside this promotion.
+_convert_value = convert_value
 
 
 def build_parser_for_tool(
@@ -116,14 +122,14 @@ def build_parser_for_tool(
                 cli_flag,
                 required=True,
                 help=help_text,
-                type=lambda v, _pi=param_info: _convert_value(v, _pi),
+                type=lambda v, _pi=param_info: convert_value(v, _pi),
             )
         else:
             parser.add_argument(
                 cli_flag,
                 default=param_info["default"],
                 help=f"{help_text} (default: {param_info['default']})",
-                type=lambda v, _pi=param_info: _convert_value(v, _pi),
+                type=lambda v, _pi=param_info: convert_value(v, _pi),
             )
 
     return parser

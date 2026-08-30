@@ -181,12 +181,11 @@ second axis — but it is **not one ladder**, and reading it as one is the
 common mistake:
 
 - `'verified'` asks **did anything check this** — evidence edges with
-  affirmative verdicts and no live `contradicts`. This is the tier that
-  answers "can I lean on it".
-- `'signed'` asks **has this been frozen and attributed** — a publish
-  state (`nanopub/state.py::frozen_rung` calls the ladder what it is: an
-  immutability ladder, `signed`/`anchored` = frozen bytes). It is
-  provenance, *not* a higher evidence bar.
+  affirmative verdicts and no live `contradicts`. This is the trust
+  tier that answers "can I lean on it".
+- `'signed'` asks **has this been frozen and attributed** — an
+  immutability ladder (`signed`/`anchored` = frozen bytes), not an
+  evidence tier. It is provenance, *not* a higher evidence bar.
 
 Neither dominates the other. Measured 2026-08-29: `trust='signed'`
 matches **4** hubs; `trust='verified'` matches **~1478** of 1552. An
@@ -207,7 +206,7 @@ search(kind="finding", q="amine CO2 capacity", trust="signed")    # rare: 4 hubs
 ```
 
 An ordinary chase finding has no publish posture and never will, so it
-fails every tier but `'any'` — "give me settled claims" never answers
+fails every trust tier but `'any'` — "give me settled claims" never answers
 with a row that was never on the ladder. The filter runs after
 retrieval, so a page can come back short; that is the honest answer
 when little is settled, not a reason to widen. Ordering is untouched —
@@ -321,54 +320,21 @@ the claim's shape in the graph.
 `put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
 `wants=`) mints/converges a claim hub; `cited_in=` makes an ordinary
 chase-target finding, as above; `wants=`+`provenance=` mints an
-acquisition-mode finding (above) — mixing modes errors. Hub mint still
-**requires paper supporters** (a draft's own novel
-assertion never becomes a thin-air hub); `link(kind='finding',
-rel='establishes'|'corroborates'|'contradicts', target=<pc/pa handle>)`
-attaches evidence to an existing hub. Full contract:
-`precis-taproot-mint-help` — the claim sentence must pass its admissibility
-rules and the notation canon (`precis-notation-canon`); both advise
-here at mint and **block** at approve. Evidence also accrues automatically via the
-chase's forward bridge, gated behind `PRECIS_TAPROOT_CHASE_ENABLED`
-(default-OFF — not yet run at corpus scale, so evidence is
-sparse/absent for now beyond what's agent-minted). Once minted, a hub is
-citable by its finding handle, `[fi<id>]` — the same handle you'd
-`get(id='fi42')` with. It also carries an internal content-hash
-`pub_id` (mint-time convergence key: identical claim text always hashes
-to the same `pub_id`, so concurrent mints collapse to one hub). **That
-convergence is byte-level, not semantic** — it is not dedup: two wordings
-of one claim mint two hubs, each with half the evidence, so
-`precis-taproot-mint-help` makes a semantic search mandatory before every
-mint. Both
-`[fi<id>]` and `[<pub_id>]` resolve to the same hub, but `fi<id>` is
-the form to cite. A bare pub_id also works as a get id —
-`get(kind='finding', id='ab12c3')` — handy when all you hold is the
-placeholder token from a citation.
+acquisition-mode finding (above) — mixing modes errors. A hub is
+citable by its finding handle, `[fi<id>]`, the same handle you'd
+`get(id='fi42')` with; a bare `pub_id` also works as a get id — handy
+when all you hold is the placeholder token from a citation. Full mint
+contract, the `pub_id`/dedup semantics, evidence attach, and the
+living-citation pin grammar (`[fi<id>>pa5,pc293]`, `[fi<id>+pa5]`):
+[[precis-taproot-mint-help]] and [[precis-taproot-help]].
 
-Both a draft cite and `precis resolve` treat a hub cite as a **living
-citation**: it expands to the hub's *current* derived `establishes`
-originator(s) (falling back to corroborators, then in-flight, if none
-are derived yet) rather than a stored `primary_cite_key` — so a
-later-discovered originator or a claim merge improves the output on
-the next render, with no re-cite needed. Multiple originators render
-as one multi-key cite: `\cite{a,b}` / `[a; b]`.
+## Use a finding's placeholder in a hand-maintained `.tex`/`.md` file
 
-**Pin it inline** to override the living default (Taproot slice A2, no
-storage — the pin lives in the token): `[fi<id>>pa5,pc293]` cites
-exactly those handles (replace); `[fi<id>+pa5]` cites the derived
-originators plus those (supplement, deduped). A `pc<id>` (paper-chunk)
-handle pins a passage but resolves to its parent paper's cite_key. A
-pin diverging from the current derivation prints a stderr advisory
-(`--strict-pins` turns that into a CI-gate exit 3).
-
-## Use a finding in your draft
-
-> **⚠ Outdated — needs rewrite.** This section describes the standalone
-> `precis resolve` CLI (hand-maintained `.tex`/`.md` files), which cites by
-> base32 `[<pub_id>]`. It does NOT cover citing inside a `kind='draft'`
-> document, where you cite a finding by its `[fi<id>]` handle instead (see
-> `precis-draft-help`). The two surfaces don't interoperate; this section
-> needs rewriting to say so.
+This is the standalone `precis resolve` CLI, for hand-maintained
+`.tex`/`.md` files — it cites by base32 `[<pub_id>]`. It does not apply
+inside a `kind='draft'` document, where you cite a finding by its
+`[fi<id>]` handle instead (see `precis-draft-help`); the two surfaces
+don't interoperate.
 
 Drop the pub_id in square brackets:
 
@@ -425,8 +391,8 @@ abstract on file backs THIS claim, full text unread) vs `'vouched'`
 (**✍**, the default when omitted) — either way it no longer folds the
 claim all the way to **clean**: no one read the full text.
 
-**Five trust states** (`taproot/trust.py`, read by the smartdraft badge +
-the exporters), least→most confident-that-something's-wrong:
+**Five trust states**, read by the smartdraft badge and the exporters,
+least→most confident-that-something's-wrong:
 `clean` (full text read, backs it) ‹ `abstract` (**Ⓐ** — the abstract
 backs it, full text unread) ‹ `vouched` (**✍** — source unobtainable,
 author vouches) ‹ `unverified` (**⚠** — not checked yet) ‹ `unsupported`
@@ -436,7 +402,7 @@ cites; `unsupported` is never softened by any override.
 **Declaring a source paper unacquirable is a fact, not a claim-backing
 assertion — it never yields Ⓐ/✍ by itself.** The *source paper's* **Meta
 tab** (`Can't get it`) writes a plain `{note, by, at}` fact ("I tried hard
-and could not obtain this; the metadata is correct"): `taproot.trust`
+and could not obtain this; the metadata is correct"): trust derivation
 reads it two ways — it *hardens* a clean `TAPROOT:claim` hub whose every
 print-visible grounding paper carries one down to `unverified` (never
 straight to Ⓐ/✍ — that would fabricate an assertion nobody made), and it
@@ -449,10 +415,9 @@ control on its `/claim/<head>` web page.
 ## The inbound counterpart — who cites *this* paper (dark, opt-in)
 
 Everything above is outbound: X cites Y, chase it down to Y's
-supporting chunk. `workers/inbound_chase.py` (dark by default — the
-`inbound_chase` service; flip with `precis service prio '*' inbound_chase
-<n>` or `/categorizers`)
-runs the other direction — once a paper has been read, it exhaustively
+supporting chunk. The inbound pass (dark by default; flip with `precis
+service prio '*' inbound_chase <n>` or `/categorizers`) runs the other
+direction — once a paper has been read, it exhaustively
 resolves every corpus-intersecting citer at chunk granularity, no
 todo/finding needed. Nothing to register from the agent side; read
 `view='links'` on the cited paper for the paper-level edges, or a

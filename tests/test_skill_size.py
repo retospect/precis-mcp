@@ -40,9 +40,10 @@ WARN_BYTES = 16 * 1024
 #: drift warning, so its shrink-back is visible too.
 _ALLOWLIST: dict[str, str] = {
     "precis-draft-help": (
-        "restructured 2026-08 (51KB → ~35KB); the residual ~2KB over-cap is "
-        "load-bearing contract facts, accepted — the pagination alt_hint + "
-        "/toc + ~N section access mitigate. Remove when ≤ 32KB."
+        "restructured 2026-08 (51KB -> 40KB -> ~36KB after a second prose "
+        "pass); the residual ~4.5KB over-cap is dense verb/arg contract "
+        "material (figures/tables/citations/export), accepted for now. "
+        "Remove when <= 32KB."
     ),
 }
 

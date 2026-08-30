@@ -27,7 +27,7 @@ will resolve it to `STATUS:done` on the next auto_check pass.
 
 Not cron. Not celery. Not a subprocess you wait on.
 
-## Slice-5 contract (the important bit)
+## The contract every job submit must satisfy
 
 * **Every new job must declare its parent todo.** `put(kind='job',
   parent_id=<todo_id>, ...)` is the only legal shape. The handler
@@ -89,7 +89,7 @@ the per-type recipe skills for invocation details.)
 ## Enqueue an offline run
 ## Kick off an agent task
 
-**Recommended (Slice 5): write the intent as a todo; the dispatch
+**Recommended: write the intent as a todo; the dispatch
 worker mints the job.**
 
 ```python
@@ -276,7 +276,7 @@ returns the in-flight job's id rather than queueing twice.
 
 Rejection reasons surfaced at `put` time, not later:
 
-- **Missing `parent_id`** — Slice-5 requires every new job to
+- **Missing `parent_id`** — every new job must
   declare its parent todo. The error names the canonical
   dispatch-from-todo pattern.
 - **Bad `parent_id`** — the integer doesn't address a live

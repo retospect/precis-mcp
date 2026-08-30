@@ -115,7 +115,7 @@ class ServiceSpec:
     #: (so the totality test knows to demand a wiring site). Daemons,
     #: serving endpoints, compute services, and job-types are False.
     ref_pass: bool = False
-    #: presence marks this a formerly-env-gated pass (always registers,
+    #: presence marks this a formerly dark-switched pass (always registers,
     #: no ``default_profiles`` needed — see ``_register``/``_should_register``
     #: in cli/worker.py). §L control cutover: the named ``PRECIS_*_ENABLED``
     #: var itself is retired as the LIVE gate — a ``service_config`` row is
@@ -537,7 +537,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # (workers/scheduler.py) — NOT `default_profiles`, mirroring
         # `health_digest`/`dream_agent`: registering into every rotation
         # would need its own duplicate throttle, which §A's lease
-        # machinery already is. The lease is fleet-wide and the env gate
+        # machinery already is. The lease is fleet-wide and the dark switch
         # is live on TWO hosts (gateway + inference), so one host's
         # wedged rotation (chase monopolizing the strictly-serial
         # `--profile all` loop) can no longer starve this reviewer — the
@@ -684,7 +684,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         enable_env="PRECIS_QUEST_LOOP_ENABLED",
         one_line=(
             "Ensures each active quest has one live quest_tick coordinator "
-            "loop, re-arming a rested one (agent profile, dark gate)."
+            "loop, re-arming a rested one (agent profile, dark switch)."
         ),
         doc_skill="precis-quest-help",
     ),

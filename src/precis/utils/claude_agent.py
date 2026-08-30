@@ -1,39 +1,21 @@
 """Project-wide wrapper around ``claude -p`` for **agentic** worker calls.
 
-Peer to :mod:`precis.utils.claude_p`. Where ``claude_p`` is the
-one-shot JSON-out shape used by the chase verifier (no tools, no
-system prompt, parse the last JSON block from stdout),
-``claude_agent`` is the multi-turn shape used by the dream pass and
-the Slice-3 reviewers (MCP tools enabled, optional system prompt,
-side effects on the precis DB are the output — the final stdout
-text is logged for audit but isn't the "result").
-
-Three currently-deployed call sites that this surface unifies:
-
-* :func:`precis.workers.dream_agent.run_dream_pass` (active) — has
-  ``--append-system-prompt $(cat SOUL.md)`` + ``--mcp-config`` +
-  ``--max-turns 20`` + ``--permission-mode bypassPermissions``. Fires from
-  the ``dream_agent`` scheduler-lease cadence (§A, host-pinned melchior);
-  the standalone bash wrapper it used to ride
-  (``cluster/roles/precis_dream/files/dream-pass.sh``) is retired.
-  Output disposition: agentic memory writes via the MCP precis
-  tools.
-* Slice-3 structural reviewer (Slice 3 of the todo-tree plan) — same
-  shape, different prompt, opus model, 6h cadence, output is
-  ``tier:structural`` memories.
-* Slice-3 deep reviewer — same shape, weekly cadence, output is
-  ``tier:deep`` memories + archive/prune recommendations.
+Peer to :mod:`precis.utils.claude_p`. Where ``claude_p`` is the one-shot
+JSON-out shape (no tools, no system prompt, parse the last JSON block from
+stdout), ``claude_agent`` is the multi-turn shape used by the dream pass and
+the structural/deep reviewers (MCP tools enabled, optional system prompt,
+side effects on the precis DB are the output — the final stdout text is
+logged for audit but isn't the "result").
 
 The wrapper adds: cost cap, wall-clock timeout, optional structured
 :func:`log_event` write to ``ref_events`` for per-host attribution,
-stub-friendly ``PRECIS_CLAUDE_BIN`` override (so tests don't need a
-real claude binary).
+stub-friendly ``PRECIS_CLAUDE_BIN`` override (so tests don't need a real
+claude binary).
 
-Auth: by default inherits the calling user's auth (OAuth via
-``~/.claude``, container-baked API key, whatever). Pass
-``bare=True`` to add ``--bare`` so claude reads ``ANTHROPIC_API_KEY``
-only — used by the ``fix_gripe`` job executor where OAuth state
-isn't reachable.
+Auth: by default inherits the calling user's auth (OAuth via ``~/.claude``,
+container-baked API key, whatever). Pass ``bare=True`` to add ``--bare`` so
+claude reads ``ANTHROPIC_API_KEY`` only — used by the ``fix_gripe`` job
+executor where OAuth state isn't reachable.
 
 Knobs (all overridable per call, project defaults via env):
 
@@ -114,18 +96,14 @@ class ClaudeAgentError(ClaudeProcessError):
 
 class ContainerRequiredError(RuntimeError):
     """Raised by :func:`call_claude_agent` when ``require_container=True`` but
-    the container path is unavailable — disabled, probe-failed, or an
-    infra failure that would otherwise fall back in-process.
+    the container path is unavailable — disabled, probe-failed, or an infra
+    failure that would otherwise fall back in-process.
 
-    fix_gripe (§H cycle a) is the first caller: its full-privilege,
-    verbatim-gripe-text agent is fail-closed on unsandboxed execution
-    (gr179498) — a *containerized* run needs no operator ack, but an
-    in-process fallback still does. Passing ``require_container=not
-    _unsandboxed_ack()`` makes the chokepoint itself the single source of
-    truth for that rule: refuse (this error) rather than silently running
-    unsandboxed when the ack is absent, at ANY point the container turns
-    out to be unavailable (pre-flight or mid-run infra failure) — not just
-    the pre-flight check a caller might make and then race past.
+    A fail-closed chokepoint for a caller (e.g. fix_gripe's full-privilege,
+    verbatim-gripe-text agent) that must never run unsandboxed without an
+    operator ack: refuse rather than silently falling back, at any point the
+    container turns out unavailable (pre-flight or mid-run), not just a
+    pre-flight check a caller might race past.
     """
 
 
@@ -152,10 +130,10 @@ class AgentResult:
     turns_used: int | None
     tool_calls: int | None = None
     #: The complete raw stdout stream (every stream-json event: turns + tool
-    #: call/result), preserved verbatim so a caller that stores a debuggable
-    #: transcript or parses the terminal reason itself — the planner tick — can.
-    #: ``final_text`` is the *lifted* answer; this is the whole stream. Empty on
-    #: the text/stub path where there is no stream to keep.
+    #: call/result), preserved verbatim for a caller (the planner tick) that
+    #: stores a debuggable transcript or parses the terminal reason itself.
+    #: ``final_text`` is the *lifted* answer; this is the whole stream. Empty
+    #: on the text/stub path where there is no stream to keep.
     raw_stdout: str = ""
     #: How the run terminated *abnormally* (``stream_terminal_reason``):
     #: ``'max_turns'`` / a ``'budget'``-class reason / another ``error_*``
@@ -164,16 +142,11 @@ class AgentResult:
     #: stream, since the wrapper swallows a recoverable non-zero exit.
     terminal_reason: str | None = None
     #: Token telemetry from the stream-json trailing ``result`` event's
-    #: ``usage`` dict (router Phase 1, tracking dispatch's LLM calls onto a
-    #: uniform cost/token ledger). Confirmed empirically (real ``claude -p
-    #: --output-format stream-json`` run, 2026-07-23): the trailing result
-    #: event's ``usage`` is already a **cumulative total across every
-    #: turn/iteration** of the run (its own ``usage.iterations`` breakdown
-    #: sums to the same top-level numbers) — same "only the final event
-    #: carries the totals" shape ``_last_result_event`` already documents for
-    #: ``total_cost_usd``/``num_turns``. So these are read from the ONE
-    #: trailing result event, not summed across every ``assistant`` event
-    #: (that would double-count against a total the CLI already aggregated).
+    #: ``usage`` dict. That event's ``usage`` is already a **cumulative
+    #: total across every turn** of the run (same "only the final event
+    #: carries the totals" shape ``_last_result_event`` documents for
+    #: ``total_cost_usd``/``num_turns``) — read from the ONE trailing event,
+    #: never summed across every ``assistant`` event (double-counting).
     #: ``None`` together, on the same text/stub path that leaves
     #: ``tool_calls`` ``None`` — never a false zero.
     input_tokens: int | None = None
@@ -208,97 +181,76 @@ def call_claude_agent(
     """Run an agentic ``claude -p`` session and return the audit result.
 
     Args:
-        prompt: Directive prompt. Unlike :func:`claude_p.call_claude_p`,
-            agentic prompts don't need a JSON-shape hint — the model's
-            output is captured raw and the actual "result" is whatever
-            tool calls it made (MCP precis writes, etc.).
-        model: Override the default model (env
-            ``PRECIS_CLAUDE_AGENT_MODEL`` or the router's FRONTIER
-            tier, opus-4.8).
-        system_prompt: Inject via ``--append-system-prompt``. Accepts
-            a literal string OR a :class:`Path` (read at call time).
-            Used by the dream pass to inject asa's SOUL.md.
-        mcp_config: Path to an MCP config JSON enabling tools like
-            the precis MCP server. ``None`` skips MCP entirely.
-        max_turns: Hard cap on agent turns. Default 20 mirrors the
-            existing dream-pass.sh.
-        timeout_s: Wall-clock timeout (env
-            ``PRECIS_CLAUDE_AGENT_TIMEOUT_S`` or 600).
-        max_usd: Per-call cost cap (env
-            ``PRECIS_CLAUDE_AGENT_MAX_USD`` or 2.00).
-        permission_mode: ``--permission-mode`` flag. Defaults to
+        prompt: Directive prompt. Unlike :func:`claude_p.call_claude_p`, no
+            JSON-shape hint needed — output is captured raw and the actual
+            "result" is whatever tool calls it made.
+        model: Override the default model (env ``PRECIS_CLAUDE_AGENT_MODEL``
+            or the router's FRONTIER tier).
+        system_prompt: Inject via ``--append-system-prompt``: a literal
+            string or a :class:`Path` (read at call time).
+        mcp_config: Path to an MCP config JSON enabling tools. ``None``
+            skips MCP entirely.
+        max_turns: Hard cap on agent turns.
+        timeout_s: Wall-clock timeout (env ``PRECIS_CLAUDE_AGENT_TIMEOUT_S``
+            or 600).
+        max_usd: Per-call cost cap (env ``PRECIS_CLAUDE_AGENT_MAX_USD`` or
+            2.00).
+        permission_mode: ``--permission-mode`` flag. Default
             ``bypassPermissions`` — worker passes have no TTY.
-        output_format: ``--output-format``. Default ``text`` matches
-            dream-pass.sh. Passes that want JSON-shaped audit output
-            can use ``json``.
-        bare: When True, add ``--bare`` to force API-key auth (no
-            OAuth / keychain / CLAUDE.md auto-discovery). Used by
-            in-container executors where OAuth isn't reachable.
+        output_format: ``--output-format``. Default ``text``; ``json`` for
+            JSON-shaped audit output.
+        bare: Add ``--bare`` to force API-key auth (no OAuth/keychain/
+            CLAUDE.md auto-discovery) — used where OAuth isn't reachable.
         disallowed_tools: Tuple passed to ``--disallowed-tools``.
-            Dream-pass disables ``WebFetch,WebSearch`` so dreams
-            don't fan out beyond corpus state.
-        envelope: Optional per-todo permission box (slice 8,
-            :class:`precis.workers.envelope.Envelope`). Its tier-1
-            deny list is merged into ``disallowed_tools`` and its DB
-            role is exported as ``PRECIS_MCP_DB_ROLE`` for the spawned
-            MCP server. ``None`` falls back to the executor-scoped
-            active envelope (:func:`~precis.workers.envelope.active_envelope`);
-            no envelope either way → today's behavior (dark).
+        envelope: Optional per-todo permission box
+            (:class:`precis.workers.envelope.Envelope`). Its tier-1 deny list
+            merges into ``disallowed_tools``; its DB role exports as
+            ``PRECIS_MCP_DB_ROLE`` for the spawned MCP server. ``None`` falls
+            back to the executor-scoped active envelope
+            (:func:`~precis.workers.envelope.active_envelope`).
         extra_args: Pass-through for niche flags. Use sparingly.
-        log_event: Optional ``(store, ref_id, source)`` triple. When
-            provided and the call succeeds, writes a ``ref_events``
-            row on ``ref_id`` with the source, event ``agent:done``,
-            and a payload carrying cost / model / duration_s.
-        env_overlay: Extra env vars overlaid onto the subprocess's
-            environment (applied over the ``os.environ`` copy, after the
-            OAuth bootstrap). The spawned MCP server inherits them — the
-            planner tick uses this to thread its runtime context
-            (``PRECIS_CURRENT_TODO`` / ``PRECIS_CURRENT_MODEL`` /
-            ``PRECIS_WORKSPACE`` / the agentlog id / ``PRECIS_KINDS_DISABLED``)
-            to the subprocess it can't hand an in-process ContextVar. ``None``
-            inherits the worker env unchanged. NOTE: applies to the in-process
-            subprocess only; the (dark) container path doesn't forward it yet.
+        log_event: Optional ``(store, ref_id, source)`` triple. On success,
+            writes a ``ref_events`` row on ``ref_id`` (event ``agent:done``,
+            payload carrying cost/model/duration_s).
+        env_overlay: Extra env vars overlaid onto the subprocess env, after
+            the OAuth bootstrap. The spawned MCP server inherits them — used
+            to thread runtime context a subprocess can't receive as an
+            in-process ContextVar (``PRECIS_CURRENT_TODO``/``_MODEL``/
+            ``PRECIS_WORKSPACE``/the agentlog id/``PRECIS_KINDS_DISABLED``).
+            Applies to the in-process subprocess only; the container path
+            doesn't forward it.
         cwd: Working directory for the subprocess (threaded to
-            :func:`run_claude`). The planner tick passes a CLAUDE.md-free
-            neutral cwd so ``claude -p`` discovers no ambient project persona. ``None`` inherits the caller's cwd.
+            :func:`run_claude`) — a CLAUDE.md-free neutral cwd avoids
+            discovering an ambient project persona. ``None`` inherits the
+            caller's cwd.
         env_base: When given, :func:`_prepare_agent_env` builds the
             subprocess env from a COPY of ``env_base`` instead of
-            ``os.environ`` — DB-isolated / restricted-env callers (fix_gripe's
-            ``_restricted_env``, §H cycle a) supply their own stripped env
-            rather than inheriting the worker's ambient one. The OAuth
-            bootstrap (reading ``~/.claude_oauth_token`` / the vault) is
-            skipped in this mode — the caller is expected to supply its own
-            auth (fix_gripe passes ``bare=True`` + ``ANTHROPIC_API_KEY``
-            already baked into ``env_base``). ``env_overlay`` still applies
-            last, on top of ``env_base``. ``None`` (default) is today's
-            behavior: build from ``os.environ``.
-        require_container: When True, the container path is REQUIRED — if
-            it's unavailable (``PRECIS_AGENT_CONTAINER`` off, the
-            verified-capability probe fails, or a containerized run dies at
-            the infra level) this raises :class:`ContainerRequiredError`
-            instead of silently falling back in-process. fix_gripe's ack gate
-            (gr179498) becomes ``require_container=not _unsandboxed_ack()``:
-            a containerized run needs no ack, but the moment the container
-            isn't available, the caller must have explicitly accepted running
-            unsandboxed — never a silent downgrade. Default False (today's
-            behavior: container-preferred, in-proc fallback always allowed).
-        mounts: Bind mounts (:class:`~precis.workers.executors.agent_container.Mount`)
-            threaded to the container path only (:func:`~precis.workers.executors.agent_container.containerize_claude_argv`)
-            — ignored on the in-process path (there's no container to mount
-            into). fix_gripe binds its git clone + the local-remote source
-            repo so the containerized agent can commit and push.
-        workdir: Container ``-w`` working directory, threaded the same way as
-            ``mounts`` — ignored in-process (``cwd`` already covers that
-            path). ``None`` leaves the image's default workdir.
+            ``os.environ`` — for a DB-isolated/restricted-env caller
+            supplying its own stripped env. The OAuth bootstrap is skipped
+            in this mode (the caller supplies its own auth, typically
+            ``bare=True`` + a baked ``ANTHROPIC_API_KEY``); ``env_overlay``
+            still applies on top. ``None`` builds from ``os.environ``.
+        require_container: When ``True``, the container path is REQUIRED —
+            if unavailable (disabled, capability probe fails, or a
+            containerized run dies at the infra level) raises
+            :class:`ContainerRequiredError` instead of silently falling
+            back in-process. Default ``False`` (container-preferred,
+            in-proc fallback always allowed).
+        mounts: Bind mounts
+            (:class:`~precis.workers.executors.agent_container.Mount`)
+            threaded to the container path only; ignored in-process.
+        workdir: Container ``-w`` working directory, threaded the same way
+            as ``mounts``; ignored in-process (``cwd`` covers that path).
+            ``None`` leaves the image's default workdir.
 
     Returns:
         :class:`AgentResult` with the raw stdout + telemetry.
 
     Raises:
-        ClaudeAgentError: subprocess exited non-zero, timed out, or
-            the binary was missing.
+        ClaudeAgentError: subprocess exited non-zero, timed out, or the
+            binary was missing.
         ContainerRequiredError: ``require_container=True`` and the container
-            path is unavailable (see ``require_container`` above).
+            path is unavailable.
     """
     binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
         prompt,
@@ -321,34 +273,29 @@ def call_claude_agent(
     cwd_str = str(cwd) if cwd is not None else None
 
     started = time.monotonic()
-    # ``stdin_devnull`` because Claude Code 2.1.x reads stdin in
-    # non-interactive ``-p`` mode and waits up to 3s for data before
-    # proceeding. When this helper is called from a CLI-spawned worker
-    # (precis worker --only dream_agent --once), the parent's stdin
-    # pipe behaviour can cause claude to read garbage / hang, ultimately
-    # producing the "Not logged in" silent-success or zero-MCP-call
-    # pattern observed 2026-06-17. Direct ``-p`` callers want no stdin.
-    # §13 container executor (PRECIS_AGENT_CONTAINER off by default on most
-    # hosts, LIVE on the inference node for structural/deep review passes): run
-    # the SAME claude -p in a throwaway container instead of in-process, isolated
-    # by the envelope's tier-2 DB role + tier-3 network. A foreground run whose
-    # stdout we capture exactly as the in-proc subprocess's, so the parsing below
-    # is unchanged. Off ⇒ byte-identical to today. plan_tick and fix_gripe are
-    # BOTH routed through this one chokepoint (plan_tick via router.dispatch →
-    # ClaudeAgentProvider; fix_gripe via env_base/mounts/require_container, §H
-    # cycle a) — neither has its own spawn seam left.
+    # ``stdin_devnull``: Claude Code reads stdin in non-interactive ``-p``
+    # mode and waits up to 3s for data before proceeding; a CLI-spawned
+    # worker's inherited stdin pipe can cause claude to read garbage/hang.
+    # Direct ``-p`` callers want no stdin.
+    #
+    # Container executor: run the SAME claude -p in a throwaway container
+    # instead of in-process, isolated by the envelope's DB role + network
+    # tier. A foreground run whose stdout is captured exactly as the
+    # in-proc subprocess's, so the parsing below is unchanged. Off ⇒
+    # byte-identical. plan_tick (via router.dispatch → ClaudeAgentProvider)
+    # and fix_gripe (via env_base/mounts/require_container) both route
+    # through this one chokepoint.
     run_argv = args
     run_binary = binary
     from precis.workers.executors import agent_container as _container
 
-    # Opt-in (``PRECIS_AGENT_CONTAINER``) is necessary but NOT sufficient: gate
-    # it behind the verified-capability probe (runtime live ∧ image resident ∧
-    # auth token resolvable ∧ not health-latched, §15d). An opted-in host that
-    # can't actually containerize runs in-process — byte-identical to today —
-    # instead of failing every agentic pass on a box it can't launch (the spark
-    # DSN retry-storm's failure mode, 2026-07-19). ``require_container`` (§H
-    # cycle a) flips that fallback into a hard refusal for a caller that can't
-    # tolerate running unsandboxed (fix_gripe's ack gate).
+    # Opt-in (``PRECIS_AGENT_CONTAINER``) is necessary but NOT sufficient:
+    # gate on the verified-capability probe (runtime live ∧ image resident ∧
+    # auth token resolvable ∧ not health-latched). An opted-in host that
+    # can't actually containerize runs in-process — byte-identical —
+    # instead of failing every agentic pass on a box it can't launch.
+    # ``require_container`` flips that fallback into a hard refusal for a
+    # caller that can't tolerate running unsandboxed.
     containerized = False
     container_enabled = _container.container_agent_enabled()
     container_ok = container_enabled and _container.container_capability_ok()
@@ -358,30 +305,25 @@ def call_claude_agent(
         from precis import secrets as _secrets
 
         # ``adopt_process_store`` scrubs ``PRECIS_DATABASE_URL`` from
-        # ``os.environ`` at worker boot precisely so host ``claude
-        # -p`` spawns don't inherit the DSN — so ``proc_env`` (a copy of the
-        # scrubbed environ) no longer carries it. The container is an isolation
-        # boundary that *does* need DB access: re-inject the captured DSN so the
-        # by-key ``--env PRECIS_DATABASE_URL`` carries it in (mirrors the OAuth
-        # re-injection above). Without this the container's entrypoint aborts
-        # "PRECIS_DATABASE_URL not set" and every agentic pass fails 1 — the
-        # spark review retry-storm (2026-07-19).
+        # ``os.environ`` at worker boot so host ``claude -p`` spawns don't
+        # inherit the DSN — ``proc_env`` no longer carries it. The container
+        # is an isolation boundary that *does* need DB access: re-inject the
+        # captured DSN so ``--env PRECIS_DATABASE_URL`` carries it in
+        # (mirrors the OAuth re-injection above); without this the
+        # container's entrypoint aborts "PRECIS_DATABASE_URL not set".
         #
-        # BUT: when the caller supplied ``env_base`` (a DB-isolated env —
-        # fix_gripe's ``_restricted_env``, §H cycle a) there is, by design, no
-        # DSN in ``proc_env`` to re-inject FROM, and the adopted-DSN fallback
-        # below must not paper over that isolation by pulling the ambient
-        # worker DSN back in. So the adopted-DSN fallback is only consulted
-        # when the caller did NOT ask for env isolation.
+        # When the caller supplied ``env_base`` (a DB-isolated env) there is,
+        # by design, no DSN in ``proc_env`` to re-inject FROM — the
+        # adopted-DSN fallback must not paper over that isolation, so it's
+        # only consulted when the caller did NOT ask for env isolation.
         _dsn = proc_env.get("PRECIS_DATABASE_URL")
         if _dsn is None and env_base is None:
             _dsn = _secrets.get_adopted_dsn()
         if _dsn:
-            # The worker DSN is password-free by design (§L — libpq fills the
-            # password from the host's PGPASSFILE), but no pgpass exists inside
-            # the container: complete the password on the host before the DSN
-            # crosses the boundary, or every in-container ``precis serve``/CLI
-            # call dies ``fe_sendauth`` (the 2026-08-15 plan_tick zombie loop).
+            # The worker DSN is password-free by design (libpq fills it from
+            # the host's PGPASSFILE), but no pgpass exists inside the
+            # container: complete the password on the host before the DSN
+            # crosses the boundary, or an in-container call dies fe_sendauth.
             _dsn = _secrets.complete_dsn_password(_dsn)
             proc_env["PRECIS_DATABASE_URL"] = _dsn
         from precis.workers import envelope as _envelope
@@ -419,14 +361,10 @@ def call_claude_agent(
             )
         # Run in-process rather than failing every pass.
 
-    # ``bootstrap_oauth=(env_base is None)``: an isolated-env caller
-    # (fix_gripe's ``env_base``, §H cycle a) built its own auth already —
-    # re-injecting the worker's real OAuth token from ~/.claude_oauth_token /
-    # the vault into that isolated env would defeat the isolation
-    # ``_prepare_agent_env`` deliberately skipped (a fix_gripe in-proc run,
-    # acked or infra-fallback, must NOT see the worker's live credential).
-    # ``env_base is None`` (today's default: build from os.environ) keeps
-    # bootstrapping as before.
+    # ``bootstrap_oauth=(env_base is None)``: an isolated-env caller built
+    # its own auth already — re-injecting the worker's real OAuth token
+    # into that isolated env would defeat the isolation
+    # ``_prepare_agent_env`` deliberately skipped.
     res: Any
     try:
         res = run_claude(
@@ -450,8 +388,8 @@ def call_claude_agent(
             # it here routes it to the fallback/refusal below, not the skip.)
             _container.trip_container_unhealthy()
             if require_container:
-                # This caller can't tolerate running unsandboxed (fix_gripe's
-                # ack gate) — refuse rather than silently degrade to in-proc.
+                # This caller can't tolerate running unsandboxed — refuse
+                # rather than silently degrade to in-proc.
                 log.warning(
                     "claude_agent: containerized run failed at the "
                     "container-infra level (rc=%s) and require_container=True "
@@ -522,32 +460,26 @@ async def call_claude_agent_async(
     """Streaming async twin of :func:`call_claude_agent`.
 
     Same keyword surface (see that function's docstring for every arg
-    except ``on_event``) — this is the path a real-time caller (asa_bot's
-    Discord bridge, Phase 3) uses instead of the blocking sync one. Argv
-    building and env/OAuth/envelope setup are shared with the sync path via
-    :func:`_resolve_agent_args` / :func:`_prepare_agent_env` (never
-    duplicated); only the subprocess execution differs, ported from
-    ``asa_bot.claude_invoke``'s proven ``asyncio.create_subprocess_exec`` +
-    incremental-readline approach (:func:`~precis.utils._claude_subprocess.run_claude_async`).
+    except ``on_event``) — used by a real-time caller (asa_bot's Discord
+    bridge) instead of the blocking sync one. Argv building and env/OAuth/
+    envelope setup are shared with the sync path via
+    :func:`_resolve_agent_args`/:func:`_prepare_agent_env`; only the
+    subprocess execution differs
+    (:func:`~precis.utils._claude_subprocess.run_claude_async`).
 
     ``on_event``, when given, is awaited once per parsed ``stream-json``
-    event, in arrival order, as the subprocess runs — e.g. to post live
-    "calling tool X" progress. Omitting it still returns a complete,
-    equivalent :class:`AgentResult` for the same inputs; the accumulated
-    stdout is post-processed with the exact same helpers
-    (:func:`_build_agent_result`) the sync path uses, so a caller can't tell
-    the two apart from the result shape.
+    event, in arrival order, as the subprocess runs (e.g. live "calling
+    tool X" progress). Omitting it still returns a complete, equivalent
+    :class:`AgentResult` via the same :func:`_build_agent_result`
+    post-processing the sync path uses.
 
-    Container-executor support (``PRECIS_AGENT_CONTAINER``) is deliberately
-    OUT OF SCOPE here — asa_bot (the only caller) never runs containerized —
-    so this always runs the in-process subprocess path, unlike the sync
-    function's container-or-in-proc branch.
+    Container-executor support is deliberately OUT OF SCOPE here — this
+    always runs the in-process subprocess path, unlike the sync function's
+    container-or-in-proc branch.
 
     Raises:
         ClaudeAgentError: subprocess exited non-zero, timed out, or the
-            binary was missing — same exception type and message shapes as
-            :func:`call_claude_agent` (see
-            :func:`~precis.utils._claude_subprocess.run_claude_async`).
+            binary was missing — same shape as :func:`call_claude_agent`.
     """
     binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
         prompt,
@@ -675,12 +607,8 @@ def _resolve_agent_args(
     ]
     if output_format == "stream-json" and "--verbose" not in extra_args:
         # ``claude -p`` (``--print``) rejects ``--output-format stream-json``
-        # unless ``--verbose`` is also passed ("When using --print,
-        # --output-format=stream-json requires --verbose"). Individual callers
-        # used to add this by hand via ``extra_args``; centralizing it here
-        # means the router/asa_bot streaming path — which builds no extra_args
-        # of its own — is correct too. Guarded so a caller that still passes
-        # ``--verbose`` explicitly doesn't get a duplicate flag.
+        # unless ``--verbose`` is also passed. Guarded so a caller that
+        # already passes ``--verbose`` explicitly doesn't get a duplicate.
         args.append("--verbose")
     if bare:
         # ``--bare`` strips OAuth / keychain / CLAUDE.md auto-discovery
@@ -696,13 +624,10 @@ def _resolve_agent_args(
         args.append("--strict-mcp-config")
     if system_prompt_text:
         args.extend(["--append-system-prompt", system_prompt_text])
-    # Per-todo envelope (slice 8): resolve the explicit arg, else the
-    # executor-scoped active envelope. Its tier-1 deny list is merged into
+    # Per-todo envelope: resolve the explicit arg, else the executor-scoped
+    # active envelope. Its tier-1 deny list is merged into
     # ``disallowed_tools`` below; its DB role is exported to the subprocess
-    # env in ``_prepare_agent_env``. Lazy import — this module is imported
-    # by the router, and ``precis.workers.envelope`` is stdlib-only so
-    # there's no cycle, but keeping it local matches the rest of this
-    # module's late imports.
+    # env in ``_prepare_agent_env``.
     from precis.workers import envelope as _envelope
 
     active_env = envelope if envelope is not None else _envelope.active_envelope()
@@ -713,20 +638,13 @@ def _resolve_agent_args(
                 effective_deny.append(tool)
 
     if effective_deny:
-        # ``claude -p`` declares ``--disallowed-tools <tools...>`` as
-        # a Commander.js *variadic* — it greedily consumes every
-        # subsequent positional as another tool name, including the
-        # prompt itself. The ``=VALUE`` form binds the first value
-        # but doesn't stop the variadic from eating the rest, so
-        # ``--disallowed-tools=WebFetch,WebSearch <prompt>`` parsed
-        # the prompt's words as additional deny rules and the binary
-        # exited 1 with "Permission deny rule 'DREAM' matches no
-        # known tool" (2026-06-17 dream incident).
-        #
-        # Workaround: pass the deny list via ``--settings`` JSON. The
-        # ``permissions.deny`` channel is Claude Code's supported
-        # per-project / per-call route, and ``--settings`` takes a
-        # single JSON string value so there's no variadic to fight.
+        # ``claude -p`` declares ``--disallowed-tools <tools...>`` as a
+        # Commander.js *variadic* — it greedily consumes every subsequent
+        # positional as another tool name, including the prompt itself
+        # (the ``=VALUE`` form binds the first value but doesn't stop the
+        # variadic eating the rest). Pass the deny list via ``--settings``
+        # JSON instead: Claude Code's supported ``permissions.deny`` route,
+        # taking a single JSON string with no variadic to fight.
         import json as _json
 
         settings_payload = {
@@ -735,14 +653,11 @@ def _resolve_agent_args(
         args.extend(["--settings", _json.dumps(settings_payload)])
     args.extend(extra_args)
     # ``--`` end-of-options sentinel, then the prompt as the sole trailing
-    # positional. The prompt is UNTRUSTED — asa_bot passes raw Discord
-    # messages straight through as ``LlmRequest.prompt`` — and claude's
-    # Commander.js CLI parses any argv token starting with ``-`` as an option,
-    # not the positional prompt. Without ``--``, a message beginning with a
-    # dash exits the binary 1 with "unknown option '<msg>'" (Tom Pepper's
-    # ``-- MARK --`` Discord turn, 2026-07-31). ``--`` forces every following
-    # token to be positional, so the prompt may begin with any dash sequence.
-    # MUST stay after ``extra_args`` and immediately precede the prompt.
+    # positional. The prompt is UNTRUSTED (e.g. raw Discord messages), and
+    # claude's Commander.js CLI parses any argv token starting with ``-`` as
+    # an option — without ``--``, a prompt beginning with a dash exits the
+    # binary 1 with "unknown option". MUST stay after ``extra_args`` and
+    # immediately precede the prompt.
     args.append("--")
     args.append(prompt)
 
@@ -770,32 +685,27 @@ def _prepare_agent_env(
     caller's env overlay.
 
     Shared by :func:`call_claude_agent` and :func:`call_claude_agent_async`
-    (the async twin never passes ``env_base`` — §H cycle a is a sync-only
-    caller — so it always takes the ``os.environ`` branch below).
+    (the async twin never passes ``env_base``, so it always takes the
+    ``os.environ`` branch below).
 
     ``env_base``, when given, replaces ``os.environ`` as the starting env —
-    an isolated-env caller (fix_gripe's ``_restricted_env``, §H cycle a)
-    supplies its own already-stripped env (no PG*/PRECIS_* creds) rather than
-    inheriting the worker's ambient one. The OAuth bootstrap
-    (``~/.claude_oauth_token`` / vault read) is skipped in that mode — the
-    caller is expected to have its own auth already in ``env_base``
-    (fix_gripe: ``bare=True`` + ``ANTHROPIC_API_KEY``), so there's nothing
-    for the bootstrap to usefully add, and reading the vault would be a
-    pointless network call on every isolated-env invocation.
+    an isolated-env caller supplies its own already-stripped env (no
+    PG*/PRECIS_* creds) rather than inheriting the worker's ambient one. The
+    OAuth bootstrap is skipped in that mode — the caller is expected to have
+    its own auth already in ``env_base`` (typically ``bare=True`` +
+    ``ANTHROPIC_API_KEY``).
     """
     # CLAUDE_CODE_OAUTH_TOKEN bootstrap. Interactive shells source
-    # ~/.zshrc / ~/.bash_profile which loads the long-lived token
-    # from ``~/.claude_oauth_token`` into the env. launchd-spawned
-    # daemons (dream, worker-agent) don't run any such hook, so
-    # ``claude -p`` falls back to the (expired) keychain credentials
-    # and silently exits "Not logged in" — appearing as a clean
-    # ``cost=$0 turns=None`` success in our logs (2026-06-17 dream
-    # incident). Load the file ourselves when the var is missing.
+    # ~/.zshrc / ~/.bash_profile which loads the long-lived token from
+    # ~/.claude_oauth_token into the env; launchd-spawned daemons don't run
+    # any such hook, so claude -p falls back to expired keychain
+    # credentials and silently exits "Not logged in" (a clean-looking
+    # cost=$0 turns=None success). Load the file ourselves when missing.
     proc_env = dict(env_base) if env_base is not None else dict(os.environ)
-    # Tier-2 (process-level) envelope enforcement: advertise the resolved
-    # Postgres role so the per-call ``precis serve`` the container executor
-    # spawns (§13) binds ``agent_ro`` for a read-only box. Harmless today —
-    # the current MCP config ignores it — so this ships dark ahead of §13.
+    # Process-level envelope enforcement: advertise the resolved Postgres
+    # role so a per-call `precis serve` the container executor spawns
+    # binds `agent_ro` for a read-only box. Harmless while the current MCP
+    # config ignores it — ships dark ahead of that consumer.
     if active_env is not None:
         from precis.workers import envelope as _envelope
 
@@ -839,12 +749,10 @@ def _build_agent_result(res: Any, *, duration_s: float) -> AgentResult:
         ClaudeAgentError: when the stdout carries the "Not logged in"
             silent-failure marker (see the guard below).
     """
-    # "Not logged in" guard. ``claude -p`` exits 0 with the message
-    # "Not logged in · Please run /login" on stdout when the OAuth
-    # state is bad — and ``call_claude_agent`` used to treat that as
-    # a clean success, reporting ``cost=$0 turns=None`` with no
-    # downstream signal. Detect it explicitly and raise so the
-    # operator sees the failure where it actually happened.
+    # "Not logged in" guard: claude -p exits 0 with "Not logged in · Please
+    # run /login" on stdout when the OAuth state is bad, which otherwise
+    # looks like a clean cost=$0 turns=None success. Detect and raise
+    # explicitly so the operator sees the failure where it happened.
     stdout_text = (res.stdout or "").strip()
     if "Not logged in" in stdout_text or "Please run /login" in stdout_text:
         raise ClaudeAgentError(
@@ -954,17 +862,15 @@ def _write_log_event(
 
 def _recover_exhaustion_or_raise(exc: ClaudeAgentError) -> Any:
     """A genuine ``ClaudeAgentError`` → either a recovered partial (resumable
-    ``--max-turns`` / ``--max-budget-usd`` exhaustion, whose full ``stream-json``
+    ``--max-turns``/``--max-budget-usd`` exhaustion, whose full ``stream-json``
     is on stdout with a partial answer in the trailing ``result`` event) or a
     re-raise enriched with the stream's terminal reason.
 
-    Factored out of :func:`call_claude_agent`'s run so the primary
-    (container-or-in-proc) run and the post-container-failure in-proc fallback
-    share one recovery. The planner already treats exhaustion as
-    resumable-not-failed (``plan_tick`` runs ``check=False`` and lifts the final
-    text regardless of exit code); the agentic wrapper must likewise not throw
-    that work away and surface a bare undiagnosable ``exited 1:`` to the
-    follow-up / dream / reviewer callers."""
+    Factored out so the primary (container-or-in-proc) run and the
+    post-container-failure in-proc fallback share one recovery path — an
+    exhaustion is resumable, not failed, and callers must not lose that work
+    behind a bare undiagnosable ``exited 1:``.
+    """
     reason = _recoverable_exhaustion(exc.stdout or "")
     if reason is None:
         # Genuine failure. The CLI's bare "exited N: " is undiagnosable when
@@ -999,15 +905,15 @@ def _run_inproc_fallback(
 ) -> Any:
     """Retry the SAME agentic call in-process after a container-infra failure.
 
-    Runs the ORIGINAL host argv (``args`` / ``binary`` — not the ``docker run``
-    wrapper), so a host whose container can't launch still completes the pass.
-    A ``ClaudeAgentError`` from the fallback is a real in-proc failure and goes
-    through the shared exhaustion-recovery / enrich path.
+    Runs the ORIGINAL host argv (``args``/``binary``, not the ``docker run``
+    wrapper), so a host whose container can't launch still completes the
+    pass. A ``ClaudeAgentError`` from the fallback is a real in-proc failure
+    and goes through the shared exhaustion-recovery/enrich path.
 
     ``bootstrap_oauth`` threads the same isolation decision the primary run
-    made (``env_base is None`` at the call_claude_agent call site) — a
-    fix_gripe fallback (env-isolated, ack'd to run unsandboxed) must not have
-    the worker's real OAuth token re-injected here either."""
+    made — an env-isolated caller's fallback must not have the worker's
+    real OAuth token re-injected here either.
+    """
     try:
         return run_claude(
             args,
@@ -1047,12 +953,12 @@ def _container_infra_failure(exc: ClaudeAgentError) -> bool:
     (image missing, daemon unreachable, socket perm, OOM) rather than a
     claude/model error inside it.
 
-    Exit 137 = the container was OOM/SIGKILLed (``docker run`` forwards the
-    container's exit code); other infra failures surface a known runtime
-    message. Deliberately narrow — a false positive costs only one in-proc
-    retry, but a false negative (mis-reading a model error as infra) would hide
-    a real failure behind a pointless retry — so we match specific signatures,
-    never any non-zero exit."""
+    Exit 137 = OOM/SIGKILLed (``docker run`` forwards the container's exit
+    code); other infra failures surface a known runtime message. Deliberately
+    narrow — a false positive costs only one in-proc retry, a false negative
+    would hide a real failure behind a pointless retry — so this matches
+    specific signatures, never any non-zero exit.
+    """
     rc = getattr(exc, "returncode", None)
     if rc == 137:  # container OOM / SIGKILL (128 + 9)
         return True
@@ -1116,14 +1022,14 @@ def stream_terminal_reason(stdout: str) -> str | None:
     """How an agent run ended, when it ended *abnormally*.
 
     Returns ``'max_turns'`` when the agent hit ``--max-turns`` — a
-    *resumable* exhaustion, not a real error: the run was cut off
-    mid-flight, and a fresh invocation continues with a new turn
-    budget. (The CLI surfaces this as a trailing ``result`` event with
+    *resumable* exhaustion, not a real error: the run was cut off mid-flight,
+    and a fresh invocation continues with a new turn budget. (The CLI
+    surfaces this as a trailing ``result`` event with
     ``subtype='error_max_turns'`` and/or ``terminal_reason='max_turns'``,
-    ``is_error=true``, exit 1.) Returns the raw ``error_*`` subtype for
-    other abnormal terminations, and ``None`` for a clean run, a
-    non-error terminal reason, or stdout with no result event (text /
-    stub output)."""
+    ``is_error=true``, exit 1.) Returns the raw ``error_*`` subtype for other
+    abnormal terminations, ``None`` for a clean run, a non-error terminal
+    reason, or stdout with no result event.
+    """
     ev = _last_result_event(stdout or "")
     if ev is None:
         return None
@@ -1150,12 +1056,9 @@ def _recoverable_exhaustion(stdout: str) -> str | None:
     the partial :class:`AgentResult` instead of discarding everything.
 
     Also recoverable: a non-zero exit whose result event reports the run
-    **completed** its turn (``terminal_reason='completed'``). The model
+    **completed** its turn (``terminal_reason='completed'``) — the model
     finished and produced an answer; the exit code is a process/teardown
-    artifact (seen on the web "ask & think" path — the CLI exits 1 after a
-    completed turn, which previously surfaced a bare "⚠️ thinking failed:
-    …exited 1: (terminal_reason=completed)" instead of the answer). Treat
-    it like an exhaustion and surface the final text.
+    artifact. Treat it like an exhaustion and surface the final text.
 
     Returns ``None`` for a genuine error (no result event, or an
     ``error_during_execution``-class subtype) so the caller re-raises.
@@ -1208,22 +1111,18 @@ def _last_assistant_text(stdout: str) -> str | None:
 def count_tool_use_events(stdout: str, *, name_prefix: str | None = None) -> int:
     """Count ``tool_use`` blocks across all assistant events in a stream.
 
-    Every MCP / built-in tool call the agent makes surfaces as a
-    ``tool_use`` content block inside an ``assistant`` message event. The
-    total is the review seam's positive evidence that the pass *did
-    something*: a stream-json run reporting zero tool calls AND no text
-    AND $0 cost did nothing, and the empty-result assertion raises on it
-    rather than logging a silent "$0 success". Only meaningful on the
-    stream-json path — the caller leaves ``tool_calls`` ``None`` on the
-    text/stderr path so a definitive zero is never confused with unknown.
+    Every MCP/built-in tool call surfaces as a ``tool_use`` content block
+    inside an ``assistant`` message event. The total is the review seam's
+    positive evidence the pass *did something*: a run reporting zero tool
+    calls, no text, and $0 cost did nothing, and the empty-result assertion
+    raises on it rather than logging a silent "$0 success". Only meaningful
+    on the stream-json path — the caller leaves ``tool_calls`` ``None`` on
+    the text/stderr path so a definitive zero is never confused with unknown.
 
     ``name_prefix`` narrows the count to tools whose name starts with it
-    (e.g. ``"mcp__precis__"`` to ask "did this pass touch precis at all?").
-    Scoping to genuine ``tool_use`` blocks is what makes that question
-    answerable: a bare substring search over the raw stream also matches
-    the *init* event's available-tools list and any prose naming the tool,
-    so a pass that failed **for want of** the tools would look like one
-    that used them.
+    (e.g. ``"mcp__precis__"``). Scoping to genuine ``tool_use`` blocks (not a
+    bare substring search) avoids false-matching the *init* event's
+    available-tools list or prose naming the tool.
     """
     import json as _json
 
@@ -1263,13 +1162,12 @@ def count_successful_tool_results(
 ) -> int:
     """Count tool calls that returned a NON-error result in a stream.
 
-    :func:`count_tool_use_events` counts *invocations* — which reads a run
-    whose every call errored as tool use. That hole let the 2026-08-15
-    plan_tick zombie loop mark 18 ticks "succeeded": the precis MCP server
-    registered, every verb died ``fe_sendauth`` (broken container DSN), and
-    invocation-counting saw calls > 0. Success needs the other half of the
-    wire: each ``tool_use`` block's id must come back in a ``tool_result``
-    block (inside a ``user`` event) whose ``is_error`` is not true.
+    :func:`count_tool_use_events` counts *invocations*, which reads a run
+    whose every call errored as tool use — invocation-counting alone can't
+    distinguish a run where every verb died (e.g. a broken DSN) from a real
+    success. Success needs the other half of the wire: each ``tool_use``
+    block's id must come back in a ``tool_result`` block (inside a ``user``
+    event) whose ``is_error`` is not true.
 
     ``name_prefix`` narrows to tools whose name starts with it, matching the
     invocation counter's contract. Only meaningful on the stream-json path.
@@ -1343,19 +1241,16 @@ def _last_result_event(stdout: str) -> dict[str, Any] | None:
 def _stream_usage(stdout: str) -> dict[str, int | None]:
     """Token telemetry from the trailing stream-json ``result`` event.
 
-    Reads ``usage.input_tokens`` / ``usage.output_tokens`` /
-    ``usage.cache_read_input_tokens`` / ``usage.cache_creation_input_tokens``
-    off the SAME trailing event ``_last_result_event`` already uses for
-    ``total_cost_usd`` / ``num_turns`` — confirmed empirically (a real
-    ``claude -p --output-format stream-json`` run) that this ``usage`` dict is
-    already a cumulative total across every turn of the run, not a
-    per-event/per-turn delta, so there is nothing to sum: taking any OTHER
-    event's usage (e.g. adding each ``assistant`` event's usage on top) would
-    double-count against a total the CLI already aggregated.
+    Reads ``usage.input_tokens``/``output_tokens``/
+    ``cache_read_input_tokens``/``cache_creation_input_tokens`` off the SAME
+    trailing event ``_last_result_event`` uses for ``total_cost_usd``/
+    ``num_turns`` — that ``usage`` dict is already a cumulative total across
+    every turn, not a per-turn delta, so summing any OTHER event's usage on
+    top would double-count.
 
     Returns all four keys ``None`` (never a false ``0``) when there is no
-    result event to parse — the text/stub path, the same condition that
-    already gates ``tool_calls`` to ``None``.
+    result event to parse — the text/stub path, same condition that gates
+    ``tool_calls`` to ``None``.
     """
     keys = (
         "input_tokens",

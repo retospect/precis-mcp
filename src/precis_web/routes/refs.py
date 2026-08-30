@@ -11,10 +11,9 @@ module and one pair of templates behind every tab.
 * Detail renders the handler's own ``get`` output read-only (through
   the in-process runtime, so the rendering can't drift from MCP).
 
-This surface is read-only by design — mutations stay on the verb-
-specific tabs (Tasks) or the Console. Slug kinds (conv / oracle /
-patent / pres) and numeric kinds (memory / gripe) are both addressed
-in the URL by their numeric ``ref_id``; the detail view resolves the
+Read-only: mutations stay on verb-specific tabs (Tasks) or the Console.
+Slug kinds (conv/oracle/patent/pres) and numeric kinds (memory/gripe) are
+both URL-addressed by numeric ``ref_id``; detail view resolves the
 canonical address (slug when present, else id) for the ``get`` call.
 
 Pathway explorer (``pathway_detail.html.j2``): a client-side energy
@@ -278,23 +277,17 @@ def _followup_discussions(store: Store, ref_id: int) -> list[dict[str, Any]]:
 
 
 def _job_actions(store: Store, ref: Any, tags: list[Any]) -> dict[str, Any]:
-    """Context for the job detail actions strip — retry, transcript, parent.
-
-    The ``/refs/job/{id}`` page is where an operator lands on a
-    ``closed:failed`` job (e.g. a swept ``claim-orphaned`` plan_tick).
-    They want to *unstick* it, not interrogate it. This gathers what the
-    template needs to offer the same affordances the ``/tasks`` dashboard
-    already has:
+    """Context for ``/refs/job/{id}``'s actions strip — retry, transcript,
+    parent — mirroring ``/tasks`` dashboard affordances:
 
     * **retry** — POST ``/tasks/{id}/retry`` clears the parent's
-      ``child-failed:`` bubble so ``dispatch`` re-mints a fresh attempt.
-      Only a ``failed`` / ``cancelled`` job is retryable (the handler
-      enforces this too; we gate the button to avoid a guaranteed error).
-    * **model swap** — offered only when the parent todo is an
-      ``LLM:*`` planner, so the re-minted tick can run on a different tier.
-    * **transcript** — a link to the readable ``stream-json`` turns, when
-      the job captured one.
-    * **parent** — the owning todo, so the intent is one click away.
+      ``child-failed:`` bubble so ``dispatch`` re-mints. Only
+      ``failed``/``cancelled`` retryable (handler-enforced; gated here too
+      to avoid a guaranteed error).
+    * **model swap** — only when parent todo is an ``LLM:*`` planner (the
+      re-minted tick can run on a different tier).
+    * **transcript** — link to readable ``stream-json`` turns, if captured.
+    * **parent** — the owning todo, one click away.
     """
     status: str | None = None
     for t in tags:
@@ -917,23 +910,20 @@ _PATHWAY_MAX_PATHS = 64
 def _pathway_paths(
     node_ids: list[str], links: list[dict[str, Any]], target: str | None
 ) -> list[list[str]]:
-    """Every root->leaf simple path over ``links`` (adjacency across ALL edge
-    kinds — reaction + supply), server-ordered so the client can draw one
-    coloured profile per path instead of squashing every branch onto one
-    shared x-axis (mirrors catpath's own ``viz.draw_profile``). A per-path
-    ``visited`` set makes the DFS cycle-safe, and enumeration stops at
-    ``_PATHWAY_MAX_PATHS`` — real catpath graphs are tree-shaped (~16 nodes,
-    a handful of paths), but a dense agent-authored DAG can go combinatorial
-    even at that size; states on un-enumerated paths still reach the state
-    list via the off-path append in ``_pathway_detail``.
+    """Every root->leaf simple path over ``links`` (adjacency across ALL
+    edge kinds — reaction + supply), server-ordered so the client draws
+    one coloured profile per path rather than squashing branches onto one
+    x-axis (mirrors catpath's ``viz.draw_profile``). Per-path ``visited``
+    set keeps DFS cycle-safe; enumeration caps at ``_PATHWAY_MAX_PATHS``
+    (real catpath graphs are tree-shaped, ~16 nodes, but a dense
+    agent-authored DAG can go combinatorial) — states on un-enumerated
+    paths still reach the state list via ``_pathway_detail``'s off-path
+    append.
 
-    Order: the path whose leaf id matches ``target`` (exact string match)
-    first, then the remainder by length descending, then lexicographically
-    by leaf id — the target's own pathway reads first, longest/most-complete
-    alternatives next. Falls back to one path over every node in array order
-    when the graph has no roots or no path reaches a leaf (cyclic/degenerate
-    — shouldn't happen for a reaction network, but never silently render
-    nothing)."""
+    Order: exact ``target``-leaf match first, then by length descending,
+    then lexicographic leaf id. Falls back to one path over all nodes in
+    array order when the graph has no roots or no path reaches a leaf
+    (cyclic/degenerate — shouldn't happen, never render nothing)."""
     node_id_set = set(node_ids)
     adjacency: dict[str, list[str]] = {nid: [] for nid in node_ids}
     indeg: dict[str, int] = dict.fromkeys(node_ids, 0)

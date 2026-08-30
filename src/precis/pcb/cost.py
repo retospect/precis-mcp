@@ -463,8 +463,8 @@ def _via_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     # here can't hide risk from a max-aggregation — it just doesn't add
     # to a sum yet, same as any other not-yet-decided money term).
     #
-    # **Derived from segment layer assignments, never `ir.n_vias`**
-    # (2026-08-28 fix). `ir.n_vias` only grows via `PcbIR.add_via`, which
+    # **Derived from segment layer assignments, never `ir.n_vias`.**
+    # `ir.n_vias` only grows via `PcbIR.add_via`, which
     # has ZERO production callers anywhere in this package -- nothing ever
     # created an IR via, so this term was structurally always zero,
     # letting the optimizer pay nothing for a layer change while
@@ -883,16 +883,14 @@ def crossings_term_for_layer(
     recompute exactly this term for the (at most two) layers a
     ``LAYER_ASSIGN`` move touches, never the whole board.
 
-    **Backed by** :func:`precis.pcb.ir.same_layer_crossing_count` (found
-    on contact 2026-08-28, replacing the Euler-bound backing this term
-    shipped with — see :func:`precis.pcb.ir.same_layer_crossing_bound`'s
-    docstring for the forest proof of why that bound is provably always
-    zero on a real, star-decomposed board and therefore cannot be a cost
-    signal at all): a sweep-line count of ACTUAL straight-line segment
+    **Backed by** :func:`precis.pcb.ir.same_layer_crossing_count` (see
+    :func:`precis.pcb.ir.same_layer_crossing_bound`'s docstring for the
+    forest proof of why an Euler-bound is provably always zero on a
+    real, star-decomposed board and therefore cannot be a cost signal at
+    all): a sweep-line count of ACTUAL straight-line segment
     intersections at L3, ``O(n log n + k)``.
 
-    **``BoundDirection.UPPER`` — the direction flip this fix required.**
-    The geometric count is an upper bound on eventually-REALIZED
+    **``BoundDirection.UPPER``.** The geometric count is an upper bound on eventually-REALIZED
     crossings (realize.py's router can sometimes route around a
     straight-line crossing), never a lower one — the opposite of every
     other registered term. Fidelity increases as ``level`` rises the same

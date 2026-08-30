@@ -1,124 +1,72 @@
 """``health_digest`` — the slow-rot liveness net.
 
-Design umbrella: ``docs/backlog/self-healing-spine.md`` (Layer 2). The
-``§`` letters below (§A/§D/§F/§L) cite the folded ``health-watchdog.md``
-design this module was built from — deleted into the spine doc; full
-text in git history.
+Design: ``docs/backlog/self-healing-spine.md`` Layer 2. Nursery owns the
+*critical* page-immediately lane; this pass owns the slower "quiet for
+suspiciously long" lane — info/warn only, pushed (not polled).
 
-A periodic, outcome-based digest that reaches out (push, not pull) so a
-scheduled producer never rots silently for days: nursery already owns the
-*critical*, page-immediately lane (dead workers, dispatch stalls, …); this
-pass owns the slower "hasn't this been quiet for suspiciously long" lane —
-info/warn only, no critical alerts here.
+**SQL-first, zero LLM** — deterministic queries + a pure-template body (an
+LLM-fleet outage is one of the things this must still report); no ``llm``
+import anywhere, enforced by ``tests/workers/test_health_digest.py``.
 
-**SQL-first, zero LLM.** Every check is a deterministic query, exactly like
-nursery — the watchdog must not depend on the subsystems it monitors (an
-LLM-fleet outage is one of the things it most needs to be able to report),
-and the digest body is a **pure template**. There is no ``llm`` import
-anywhere in this module — enforced by ``tests/workers/test_health_digest.py``.
+:func:`run_health_digest_pass`, per fire:
 
-One fire (:func:`run_health_digest_pass`) does four things:
-
-1. **Evaluate every check**, from three sources (:func:`_evaluate_checks`):
-
-   * **Curated Layer-1 outcome checks** (:data:`_FRESHNESS_CHECKS` +
-     the handful of bespoke functions below) — ~15 end-to-end outcomes the
-     factory exists to produce, budgets seeded from the design doc's
-     pulse-probe observations. The two checks with a natural backlog
-     concept (``chunks_embedded`` / ``chunks_keyworded``) are **idle-aware**:
-     an empty backlog is healthy no matter how long ago the last batch ran;
-     a non-empty, non-draining backlog past budget is not — the
-     idle-vs-stuck distinction the design doc calls "the master's
-     idle-vs-stuck criterion". They reuse
-     :func:`precis.health_checks.compute_backlog_counts` — the exact
-     computation ``/status`` renders, so there is one liveness truth, not
-     two. No curated cadence-freshness rows live here — see the next
-     bullet. ``chunks_classified`` (gr204385) is idle-aware on a different
-     axis — not a backlog, but a ``service_config`` gate: the ``classify``
-     PASS is default-OFF (its own module docstring), so a bare "last role3
-     tag" freshness probe alerts stale forever by construction on a fleet
-     where it's never been turned on — the watchdog paging on its own
-     defaults. :func:`_classify_gate_enabled` reuses
-     :func:`_resolve_enabled_somewhere` (the same registry ×
-     ``service_config`` predicate :func:`_layer2_checks` already uses for
-     this exact spec) to override that one check to a non-finding "disabled
-     by config" reading when the gate is off, leaving the 12h staleness
-     semantics untouched when it's on. This is also what lets the watchdog
-     auto-close its own gr204323 child once deployed — the finding was
-     never a real outage, just a check that could never observe a "yes".
+1. **Evaluate every check** (:func:`_evaluate_checks`), three sources:
+   * **Curated Layer-1 outcome checks** (:data:`_FRESHNESS_CHECKS` + bespoke
+     functions) — ~15 end-to-end outcomes with budgets. ``chunks_embedded``/
+     ``chunks_keyworded`` are **idle-aware** (empty backlog = healthy
+     regardless of last-run age; a non-draining one past budget isn't),
+     reusing :func:`precis.health_checks.compute_backlog_counts` — same
+     computation ``/status`` renders. ``chunks_classified`` is idle-aware on
+     the ``service_config`` gate instead: :func:`_classify_gate_enabled`
+     (via :func:`_resolve_enabled_somewhere`, shared with Layer-2) reads
+     "disabled by config" rather than stale-forever when the default-OFF
+     ``classify`` pass is off.
    * **Cadence staleness** (:func:`_cadence_staleness_checks`, derived) —
-     every ``scheduler_leases`` row where ``next_fire_at`` is overdue past
-     its own interval + a margin. Zero per-cadence config: a newly-added
-     cadence in ``workers/scheduler.py`` (including ``dream_agent`` /
-     ``anki_sync``) is watched automatically, against the *live*-resolved
-     interval — a curated Layer-1 row with its own fixed budget would
-     contradict this the moment an operator raises the interval (e.g.
-     dream's DB-overridable knob), so it is deliberately not duplicated
-     there. Plus (gr194430) a **never-seeded** half: a registry cadence
-     whose ``eligible`` gate short-circuits :func:`~precis.workers.scheduler.run_scheduler_pass`
-     *before* ``claim_scheduler_lease`` on every host never seeds a
-     ``scheduler_leases`` row at all, so it's invisible to the loop
-     above by construction — any :data:`CADENCES` entry outside the
-     ``materialize`` exemption with no lease row anywhere is flagged as
-     ``<name>/never-seeded``.
+     every ``scheduler_leases`` row overdue past its *live*-resolved
+     interval + margin; zero per-cadence config, so a new
+     ``workers/scheduler.py`` cadence is watched automatically. Plus
+     **never-seeded**: a registry cadence whose ``eligible`` gate
+     short-circuits :func:`~precis.workers.scheduler.run_scheduler_pass`
+     before ``claim_scheduler_lease`` never seeds a lease row — any
+     :data:`CADENCES` entry (outside the ``materialize`` exemption) with no
+     lease row anywhere flags ``<name>/never-seeded``.
    * **Layer-2 coherence** (:func:`_layer2_checks`, derived) — every
-     registered ``PASS`` + ``ref_pass`` :class:`~precis.workers.registry.ServiceSpec`
-     that resolves enabled (structural ``default_profiles``, or a live
-     ``service_config`` prio override — ``enable_env`` alone no longer
-     defaults a pass on, per §L) with zero ``worker_logs`` rows in 24h
-     reads "intended-on but silent". Derived straight from the
-     registry + ``service_config`` + ``worker_logs`` — a new pass needs
-     **zero** edits here (``tests/workers/test_health_digest.py`` proves it
-     by minting a fake spec).
-
+     registered ``PASS``/``ref_pass`` :class:`~precis.workers.registry.ServiceSpec`
+     resolving enabled (structural ``default_profiles`` or a live
+     ``service_config`` prio override) with zero ``worker_logs`` in 24h
+     reads "intended-on but silent". Derived from registry ×
+     ``service_config`` × ``worker_logs`` — a new pass needs zero edits here.
 2. **Findings → alerts** (:func:`_sync_alerts`) — each non-``ok`` check
-   raises a ``kind='alert'`` via :func:`precis.alerts.raise_alert` under
-   ``alert_source="watchdog:<group>"``, severity capped to info/warn
-   (nursery keeps the critical lane); :func:`precis.alerts.resolve_stale_alerts`
-   auto-closes whatever went fresh again, including a group that emitted
-   no checks at all this eval (an all-quiet finding-only source is swept
-   too, not just groups present in this pass's results).
-3. **Remediation router** (:func:`_route_findings`, §D Phase 2) — every
-   still-open ``watchdog:<group>`` alert older than its class's self-heal
-   budget gets exactly one condition-linked ``kind='gripe'``, filed once
-   (a ``watchdog-condition: <source>/<fingerprint>`` marker line at the top
-   of the body is the dedup key — scanned fresh every eval, not cached, so
-   it survives a restart between evals) and auto-closed the moment the
-   alert clears. Classes = the check's ``group``: ``cadence`` → transient
-   (6h — catch_up/self-heal gets first shot), ``coherence`` → config-drift
-   (24h), ``discovery`` → pipeline-stuck (12h; the embed check's finding
-   also carries the §F culprit diagnosis below), everything else → outcome
-   (24h at warn, never at info); the ``meta`` group (``alert_backlog_rot``)
-   never gripes — a gripe about gripe-rot would feed the very rot it
-   reports. A per-eval flood cap (3) bounds how many NEW gripes one pass
-   can file; over-cap findings log a WARNING and are picked up next eval.
-   No auto-restart / auto-fix here (later phase) — filing the gripe is the
-   whole act; ``backlog_groom`` already grooms gripes into dispatchable
-   ``fix_gripe`` todos, so the handoff rail already exists.
-4. **Embed-pipeline culprit diagnosis** (:func:`_diagnose_embed_pipeline`,
-   the §F coupling) — pure SQL, computed only when the ``embed`` backlog
-   check is stale: names the first stuck stage in the materializer →
-   ``embed_batch`` jobs → ``job_inproc`` slot-gated claim chain (is the
-   materializer even minting? are jobs claimable — an embedder slot
-   advertised? are claimed jobs actually succeeding?), falling back to "all
-   stages nominal — backlog may simply exceed drain rate" when none of the
-   above explains it. Feeds both the check's own detail line and the
-   router's pipeline-stuck gripe body.
-5. **Push policy** (:func:`_maybe_push`) — a templated digest to
+   raises ``kind='alert'`` under ``alert_source="watchdog:<group>"``, capped
+   info/warn (nursery keeps critical); ``resolve_stale_alerts`` auto-closes
+   whatever went fresh again, including a group with zero findings this eval.
+3. **Remediation router** (:func:`_route_findings`) — a still-open
+   ``watchdog:<group>`` alert older than its class's self-heal budget gets
+   one condition-linked ``kind='gripe'`` (dedup key: a
+   ``watchdog-condition: <source>/<fingerprint>`` marker line, re-scanned
+   every eval), auto-closed when the alert clears. Budgets by ``group``:
+   ``cadence``→6h, ``coherence``→24h, ``discovery``→12h,
+   else→24h-at-warn/never-at-info; ``meta`` (``alert_backlog_rot``) never
+   gripes. Flood-capped at 3 new gripes/eval, over-cap retried next eval.
+   No auto-restart/auto-fix — filing is the whole act;
+   ``backlog_groom`` grooms gripes into ``fix_gripe`` todos.
+4. **Embed-pipeline culprit diagnosis** (:func:`_diagnose_embed_pipeline`) —
+   pure SQL, only when the ``embed`` backlog check is stale: names the first
+   stuck stage in materializer → ``embed_batch`` jobs → ``job_inproc``
+   slot-gated claim chain, or "all stages nominal". Feeds the check's
+   detail line and the router's gripe body.
+5. **Push policy** (:func:`_maybe_push`) — templated digest to
    ``PRECIS_OPS_ALERT_TARGET`` (dark if unset) when the daily heartbeat is
-   due (``app_settings['health_digest:last_push']`` older than 24h) or the
-   finding set just degraded (a check that was ``ok`` last eval is not
-   ``ok`` now). An all-green daily push ("✅ all green") IS the internal
-   dead-man's proof that the watchdog itself is alive. A routed (gripe-filed)
-   finding renders louder (``⛳ gripe filed:`` prefix).
-6. **Dead-man ping** (:func:`_ping_deadman`) — after a successful eval,
-   GET ``PRECIS_DEADMAN_PING_URL`` (when set) via ``safe_fetch.safe_get``.
-   Covers the one failure mode nothing DB-mediated can: a total fleet/DB
-   outage. A private/loopback/LAN target is blocked by the SSRF guard
-   unless the operator opts in with ``PRECIS_DEADMAN_ALLOW_PRIVATE=1``
-   (:func:`_ping_deadman_private`) — the guard is built for
-   agent-supplied URLs, not this operator-set env constant. See
-   ``docs/runbooks/dead-mans-switch.md``.
+   due (``app_settings['health_digest:last_push']`` > 24h) or a check just
+   went ``ok``→not-``ok``. An all-green daily push is the dead-man's proof
+   the watchdog itself is alive; a routed finding gets a
+   ``⛳ gripe filed:`` prefix.
+6. **Dead-man ping** (:func:`_ping_deadman`) — GET
+   ``PRECIS_DEADMAN_PING_URL`` (when set, via ``safe_fetch.safe_get``) after
+   a successful eval — covers a total fleet/DB outage. SSRF-blocked for a
+   private/loopback/LAN target (the guard targets agent-supplied URLs, not
+   this operator-set constant) unless ``PRECIS_DEADMAN_ALLOW_PRIVATE=1``
+   (:func:`_ping_deadman_private`). See ``docs/runbooks/dead-mans-switch.md``.
 """
 
 from __future__ import annotations

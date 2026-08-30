@@ -16,10 +16,9 @@ status: active
 
 Built on top of `kind='todo'`. Every todo is a node; an optional
 `parent_id` wires it under another todo to form a tree. The tier is two
-boolean `meta` fields, not a tag (§M facet normalization) —
-`rotation_root` marks a strategic root, `worker_mintable=false` marks
-tactical, and the default (both unset) is an ordinary worker-mintable
-subtask:
+boolean `meta` fields, not a tag — `rotation_root` marks a strategic
+root, `worker_mintable=false` marks tactical, and the default (both
+unset) is an ordinary worker-mintable subtask:
 
 ```
 strategic root  (owner-only, meta.rotation_root=true)
@@ -166,7 +165,7 @@ get(kind="todo", id=42, view="tree")  # ASCII subtree under td42
 
 Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
 `⏸` waiting / paused / ask-user · `✓` done · `✗` won't-do ·
-`⚙` job (Slice 5: execution attempt under a todo parent).
+`⚙` job (execution attempt under a todo parent).
 
 ## Doable leaves — what to pull next
 
@@ -208,7 +207,7 @@ search(kind="todo", view="ask-user")  # parked-on-owner-reply leaves
 - `blocked-by` link — the wait target is another ref in the tree
   (`link(rel='blocked-by', target='todo:104')`).
 - `ask-user` — chatter renders these in her
-  preamble so the owner sees pending asks at a glance (Slice 2).
+  preamble so the owner sees pending asks at a glance.
 
 ## Walk-on-read ancestry
 
@@ -218,16 +217,14 @@ the agent a follow-up call to figure out why this leaf exists.
 
 ## Facet fields + tag vocabulary specific to the tree
 
-The level tier is `meta`, not a tag (§M facet normalization,
-migration 0102 — replaced the old `level:strategic`/`level:tactical`/
-`level:subtask`/`level:recurring` tags):
+The level tier is `meta`, not a tag:
 
 | `meta` field | Purpose | Who writes |
 |---|---|---|
 | `rotation_root=true` | Strategic root — the picks-7d rotation unit | owner only |
 | `worker_mintable=false` | Tactical (sub-strategic, non-root) tier | owner only |
 | *(both unset)* | Subtask — the worker-mintable default | anyone |
-| `schedule={...}` | Scheduled root (Slice 4) — presence IS "recurring" | owner only |
+| `schedule={...}` | Scheduled root — presence IS "recurring" | owner only |
 
 | Tag | Purpose | Who writes |
 |---|---|---|
@@ -235,7 +232,7 @@ migration 0102 — replaced the old `level:strategic`/`level:tactical`/
 | `claimed-by:<handle>` | Atomic claim marker | the claimer |
 | `waiting-for:<target>` | External wait | anyone |
 | `ask-user` / `ask-user:<question>` | Parked on a human's reply; bare = "any human", `ask-user:<text>` carries the question inline. Add `user:<who>` to address a specific person | anyone |
-| `child-failed:<job_id>` | Slice 5: a child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |
+| `child-failed:<job_id>` | A child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |
 | `halt` | Explicit "robot stay away" marker. Pulls the leaf out of `view='doable'` AND out of the dispatch worker's candidate query. Workers MAY add it (escalation: "I think this needs human eyes / I don't know how to proceed") but only the owner may remove it (the resume edge). Surfaces under `view='attention'` so halted leaves don't vanish. | anyone may add; owner only removes |
 
 Priority is set with the `prio=N` kwarg (1..10, lower = hotter).
@@ -246,35 +243,22 @@ The flat list surface (`/recent`, `/open`, `/done`, …) keeps
 working — see `precis-todo-help`. This skill adds the tree
 discipline on top.
 
-## Identity routing — who counts as worker
-
-The level gradient is gated by `PRECIS_SOURCE` (an env var set
-once per process):
-
-- unset / `cli` / `user` → **owner** (interactive operator)
-- starts with `web:` → **owner** (precis-web UI passes `web:owner`)
-- starts with `asa-` → **worker** (`asa-chatter`, `asa-worker`,
-  `asa-dreamer`)
-- anything else → **owner** (forward-compatible default)
-
-Worker authority is the constraint; the rest is unconstrained.
-
 ## See also
 
 ```python
 get(kind="skill", id="precis-todo-help")  # flat todo surface
 get(
     kind="skill", id="precis-decomposition-help"
-)  # GTD interrogation, split rule (Slice 2)
-get(kind="skill", id="precis-auto-tasks-help")  # meta.auto_check leaves (Slice 1b/5)
+)  # GTD interrogation, split rule
+get(kind="skill", id="precis-auto-tasks-help")  # meta.auto_check leaves
 get(
     kind="skill", id="precis-recurring-help"
-)  # meta.schedule + Watches umbrella (Slice 4)
+)  # meta.schedule + Watches umbrella
 get(
     kind="skill", id="precis-dispatch-help"
-)  # meta.executor + dispatch worker (Slice 5)
+)  # meta.executor + dispatch worker
 get(kind="skill", id="precis-job-help")  # the kind='job' substrate
-get(kind="skill", id="precis-nursery-help")  # hourly review digest tier (Slice 3)
+get(kind="skill", id="precis-nursery-help")  # hourly review digest tier
 get(kind="skill", id="precis-tags")  # STATUS / PRIO vocabulary
 get(kind="skill", id="precis-relations")  # blocked-by / blocks / note-for
 search(kind="skill", q="your goal")  # if none of the above fit

@@ -1002,7 +1002,7 @@ async def fetch_next_batch(
 
     Calls :func:`precis.workers.fetch_oa.run_oa_fetch_pass` directly via
     ``asyncio.to_thread`` (same shape as ``requeue_stubs`` above) rather
-    than minting a ``job`` row: the cascade is single-host env-gated
+    than minting a ``job`` row: the cascade is single-host dark-switch-gated
     (``PRECIS_OA_FETCH`` + ``PRECIS_WATCH_INBOX`` — see that function's
     docstring) to whichever node can write the shared watch inbox, which
     is deploy-known to be *this* web host — not an arbitrary

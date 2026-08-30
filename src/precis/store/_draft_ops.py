@@ -1,35 +1,22 @@
-"""Store ops for the editable `draft` kind.
+"""Store ops for the `draft` kind: create/add/read core (edit/move/retire alongside).
 
-Drafts use chunk columns the append-only ingest path never touches —
-`handle` (opaque anchor), `pos` (sibling-scoped fractional order),
-`parent_chunk_id` (adjacency-list hierarchy), `content_sha`,
-`retired_at` — so they get their own composed sub-store,
-:class:`DraftStore`, rather than overloading `insert_blocks`. Every
-structural write logs a `chunk_events` row.
+Drafts use chunk columns ingest never touches — `handle`, `pos`
+(fractional sibling order), `parent_chunk_id`, `content_sha`,
+`retired_at` — hence their own composed sub-store, :class:`DraftStore`
+(`store.drafts`), holding a :class:`~precis.store.core.StoreCore` ref
+rather than mixing into ``Store``. Every structural write logs a
+`chunk_events` row.
 
-:class:`DraftStore` is the first domain carved out of the flat
-``Store`` mixin stack (see
-``docs/backlog/codereview-store-decomposition.md``) — it holds its own
-:class:`~precis.store.core.StoreCore` reference instead of being mixed
-into ``Store``, and is reached at runtime as ``store.drafts``. The
-``Store`` facade still exposes every method here under its own flat
-name too (``store.get_draft_chunk(...)`` etc.) via a transitional
-delegation block in ``store.py`` — those delegations are deleted one
-by one as call sites migrate to ``store.drafts.*``.
-
-This module ships the create / add / read core; edit / move / retire
-land alongside as the handler grows.
-
-The chunk-review ledger surface (``record_review``, ``reviewable_chunks``,
-``review_status_for_draft``, etc.) is a further composed sub-store,
-:class:`~precis.store._draft_review_ops.DraftReviewStore` — reached at
-runtime as ``store.drafts.review`` — the first slice carved out of this
-module itself (see
-``docs/backlog/codereview-handler-size-cleanups.md``). This module still
-exposes every review method under its own flat name too
-(``store.drafts.record_review(...)`` etc.) via a transitional delegation
-block below; those delegations are deleted one by one as call sites
-migrate to ``store.drafts.review.*``.
+``Store`` carries no flat delegation for drafts — reached only as
+``store.drafts.*`` (the migration this module itself once needed is
+done; see ``docs/backlog/codereview-store-decomposition.md``). One level
+down, the same carve is mid-flight: the review ledger (``record_review``,
+``reviewable_chunks``, ...) is carved into
+:class:`~precis.store._draft_review_ops.DraftReviewStore`
+(``store.drafts.review``), and *this* module still exposes every review
+method flatly (``store.drafts.record_review(...)``) via a transitional
+delegation block below, deleted per call site as callers migrate to
+``store.drafts.review.*``.
 """
 
 from __future__ import annotations
@@ -118,17 +105,13 @@ def _remap_intra_draft_xrefs(
     id_map: dict[int, int],
     handle_to_new_id: dict[str, int],
 ) -> str:
-    """Rewrite in-prose intra-draft chunk cross-refs onto the copied chunks
-    for :meth:`fork_draft`. A ``[dc<id>]`` / ``[cap](dc<id>)`` cross-ref (and
-    the legacy ``[¶<base58>]`` anchor) is *document-internal*: it lives in the
-    chunk text, not the ``links`` table, so the fork's link remap never touches
-    it — copied verbatim it would point back at the SOURCE draft's chunks.
-    ``dc<id>`` is ``dc`` + ``chunk_id``, so ``id_map`` (old chunk_id → new) is
-    the handle remap; legacy ``¶`` anchors map via ``handle_to_new_id`` and are
-    normalised to the current ``[dc<id>]`` form. Only refs to a *source-draft*
-    chunk are rewritten — a cross-draft ``[dc<id>]`` names another draft's
-    (globally unique) chunk_id, absent from both maps, so it is left alone.
-    Returns the (possibly unchanged) text."""
+    """Rewrite in-prose intra-draft cross-refs (``[dc<id>]``, ``[cap](dc<id>)``,
+    legacy ``[¶<base58>]``) onto copied chunks, for :meth:`fork_draft`. These
+    are document-internal (chunk text, not ``links``), so the fork's link
+    remap can't reach them — copied verbatim they'd point at the source
+    draft. ``id_map`` (old chunk_id → new) remaps ``dc<id>``; legacy ``¶``
+    anchors remap via ``handle_to_new_id``, normalised to ``[dc<id>]``. A
+    cross-draft ``[dc<id>]`` (chunk_id absent from both maps) is left alone."""
 
     def _sub(m: re.Match[str]) -> str:
         bare = m.group("bare")
@@ -149,7 +132,7 @@ def _remap_intra_draft_xrefs(
 class DraftChunk:
     chunk_id: int
     ref_id: int
-    handle: str  # legacy the draft editable-document model base-58 anchor (internal key, retiring)
+    handle: str  # legacy base-58 anchor (internal key, retiring)
     chunk_kind: str
     text: str
     pos: str
@@ -179,10 +162,9 @@ class DraftChunk:
 
 @dataclass(frozen=True, slots=True)
 class TocEntry:
-    """A heading in the table of contents (the document skeleton),
-    enriched with its gist (llm summary) and keywords when present.
-    ``depth`` is relative to the TOC root; the §-number is computed by
-    the renderer from the depth sequence."""
+    """A TOC heading, enriched with its gist (llm summary) and keywords
+    when present. ``depth`` is relative to the TOC root; the §-number is
+    computed by the renderer from the depth sequence."""
 
     handle: str  # legacy base-58 anchor (internal)
     depth: int
@@ -204,9 +186,9 @@ class TocEntry:
 @dataclass(frozen=True, slots=True)
 class DraftWorkItem:
     """An open todo working on this draft (walked draft→project→subtree),
-    with the status of its child jobs and whether it is *blocked* by a
-    failure-bubble. Surfaces in the draft outline so a stuck enrichment
-    job is visible from the draft, not just buried in the task tree."""
+    with child-job status and whether a failure bubble *blocks* it.
+    Surfaces stuck enrichment work in the draft outline instead of
+    burying it in the task tree."""
 
     todo_id: int
     title: str
@@ -229,13 +211,9 @@ def _split_blocks(text: str) -> list[str]:
 
 class _AbbrevMixin:
     """Abbreviation detection + ignore-list ops, mixed into
-    :class:`DraftStore` below. Split out only to keep the abbrev
-    concern legible.
-
-    Private base of :class:`DraftStore` (not composed into ``Store``
-    directly), so ``self`` here is a ``DraftStore`` at runtime; the
-    stubs below are the standard mixin forward-declaration so mypy can
-    type-check this class in isolation."""
+    :class:`DraftStore` (split out for legibility). ``self`` is a
+    ``DraftStore`` at runtime; the stubs below are the mixin
+    forward-declaration so mypy type-checks this class standalone."""
 
     pool: Any
     tx: Any
@@ -252,17 +230,15 @@ class _AbbrevMixin:
 
     def ensure_registry_heading(self, ref_id: int, role: str) -> str:
         """``dc<chunk_id>`` handle of the draft's home heading for ``role``
-        (``glossary`` / ``parts`` / ``components``), which ``term`` leaves of
-        that registry file under.
+        (``glossary`` / ``parts`` / ``components``) — where ``term`` leaves
+        of that registry file.
 
-        The home is found **by ``meta.registry == role``** — a stable tag that
-        survives a heading rename and can't be duplicated by wording (the fix
-        for the two-cluster glossary bug, where a text-only match minted a
-        second "Glossary" whenever the heading was renamed/imported). Failing
-        that it **adopts** a legacy text-matched heading (stamping
-        ``meta.registry`` on it) rather than mint a duplicate, and only mints +
-        stamps a fresh heading as a last resort. A one-per-role reconcile then
-        folds any stragglers."""
+        Found **by ``meta.registry == role``**, a stable tag surviving a
+        heading rename (a text-only match would mint a second duplicate
+        heading on rename/import). Failing that, **adopts** a legacy
+        text-matched heading (stamps ``meta.registry``) rather than mint a
+        duplicate; mints + stamps fresh only as last resort. A
+        one-per-role reconcile then folds any stragglers."""
         from precis.draft import registry as _reg
 
         with self.pool.connection() as conn:
@@ -307,10 +283,10 @@ class _AbbrevMixin:
         return str(created[0].dc)  # dc handle, matching the lookup/adopt paths
 
     def _reconcile_registry_headings(self, ref_id: int, role: str) -> None:
-        """Invariant: at most one registry heading per role per draft. If several carry ``meta.registry == role``, keep the earliest-pos
-        one canonical, reparent every other role heading's children under it,
-        and retire the emptied duplicate. The belt is §6's placement-
-        independent projection; this is the suspenders."""
+        """Invariant: at most one registry heading per role per draft. If
+        several carry ``meta.registry == role``, keep the earliest-pos one
+        canonical, reparent every other's children under it, retire the
+        emptied duplicates."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT chunk_id, handle FROM chunks WHERE ref_id = %s "
@@ -341,9 +317,9 @@ class _AbbrevMixin:
 
     def parts_callout_map(self, ref_id: int, role: str = "parts") -> dict[str, int]:
         """``{normalized dc-handle: numeral}`` for an ``assign="render"``
-        registry. The numerals are **display labels derived from
-        reading-order position** — not stored — so inserting/reordering a leaf
-        renumbers the whole series. Empty for a non-render registry."""
+        registry. Numerals are **display labels derived from reading-order
+        position**, not stored — inserting/reordering a leaf renumbers the
+        whole series. Empty for a non-render registry."""
         from precis.draft import registry as _reg
 
         policy = _reg.policy_for(role)
@@ -361,11 +337,11 @@ class _AbbrevMixin:
         return norm
 
     def undefined_abbrevs(self, ref_id: int, text: str) -> list[str]:
-        """Acronym-shaped tokens in ``text`` that aren't yet defined for
-        this draft — i.e. not a ``term`` chunk's ``short``, not an inline
-        ``Long Form (ABBR)`` definition anywhere in the prose, and not on
-        the ``meta.abbrev_ignore`` list. The set the write-hint complains
-        about; opus then defines or marks not-an-abbrev."""
+        """Acronym-shaped tokens in ``text`` not yet defined for this draft —
+        no ``term`` chunk ``short``, no inline ``Long Form (ABBR)``
+        anywhere in the prose, not on ``meta.abbrev_ignore``. The
+        write-hint's complaint set; opus then defines or marks
+        not-an-abbrev."""
         from precis.utils.abbreviations import find as _sh_find
         from precis.utils.abbreviations import find_acronyms as _find_acronyms
 
@@ -398,11 +374,9 @@ class _AbbrevMixin:
 
     def defined_abbrevs(self, ref_id: int) -> dict[str, str]:
         """``{short: long}`` for every abbreviation **defined** in this
-        draft — explicit ``term`` chunks (``meta.short`` → chunk text) plus
-        inline ``Long Form (ABBR)`` first-uses found anywhere in the prose
-        (Schwartz-Hearst). Explicit terms win on a clash. Drives the
-        reader's recall highlight: every occurrence of a known ``short``
-        gets a hover-definition. Empty when nothing is defined yet."""
+        draft — explicit ``term`` chunks (``meta.short`` → text) plus inline
+        ``Long Form (ABBR)`` first-uses (Schwartz-Hearst). Explicit terms
+        win on a clash. Drives the reader's hover-definition highlight."""
         from precis.utils.abbreviations import find as _sh_find
 
         out: dict[str, str] = {}
@@ -429,16 +403,14 @@ class _AbbrevMixin:
         return out
 
     def defined_terms(self, ref_id: int) -> dict[str, Any]:
-        """Rich per-**surface** hover records for every registry ``term`` leaf
-        in this draft — the generalization of
-        :meth:`defined_abbrevs`. Returns ``{surface: TermEntry}`` where a leaf
-        is reachable under each of its string surfaces (``meta.short``, every
-        ``meta.surface_forms`` entry, ``meta.mpn``, and ``meta.abbrev``), all
-        mapping to the same record ``{definition, registry?, callout?, mpn?,
-        manufacturer?, url?, ordering?, abbrev?}``. Inline ``Long Form (ABBR)``
-        first-uses (Schwartz-Hearst) contribute bare ``{definition}`` records;
-        explicit ``term`` leaves win on a clash. Drives the reader's rich
-        ``.pa-pop`` hover."""
+        """Rich per-**surface** hover records for every registry ``term``
+        leaf — generalizes :meth:`defined_abbrevs`. ``{surface: TermEntry}``:
+        a leaf is reachable under each string surface (``meta.short``, every
+        ``meta.surface_forms``, ``meta.mpn``, ``meta.abbrev``), all mapping
+        to the same record ``{definition, registry?, callout?, mpn?,
+        manufacturer?, url?, ordering?, abbrev?}``. Inline ``Long Form
+        (ABBR)`` first-uses contribute bare ``{definition}``; explicit
+        ``term`` leaves win on a clash. Drives the reader's ``.pa-pop`` hover."""
         from precis.utils.abbreviations import find as _sh_find
 
         out: dict[str, dict[str, Any]] = {}
@@ -530,12 +502,11 @@ class _AbbrevMixin:
 
 
 class DraftStore(_AbbrevMixin):
-    """Composed sub-store for draft chunk ops — reached as
-    ``store.drafts``. Holds a reference to the shared
-    :class:`~precis.store.core.StoreCore` (pool/tx lifecycle) rather
-    than its own pool, and a back-reference to the host :class:`Store`
-    for the handful of ops that cross into the refs/links domains
-    (``insert_ref``, ``add_link``, ``resolve_handle``)."""
+    """Composed sub-store for draft chunk ops — ``store.drafts``. Holds
+    the shared :class:`~precis.store.core.StoreCore` (pool/tx lifecycle)
+    rather than its own pool, plus a back-reference to the host
+    :class:`Store` for ops crossing into refs/links (``insert_ref``,
+    ``add_link``, ``resolve_handle``)."""
 
     def __init__(self, core: StoreCore, *, host: Store) -> None:
         self._core = core
@@ -550,47 +521,34 @@ class DraftStore(_AbbrevMixin):
 
     @cached_property
     def review(self) -> DraftReviewStore:
-        """The chunk-review ledger domain, composed rather than mixed in —
-        same carve pattern :class:`DraftStore` itself uses off ``Store``
-        (see the module docstring). Cached so every access returns the
-        same :class:`DraftReviewStore` instance."""
+        """The chunk-review ledger domain — same carve pattern as
+        :class:`DraftStore` off ``Store`` (module docstring). Cached: every
+        access returns the same instance."""
         return DraftReviewStore(self._core, host=self)
 
     def _lock_sections(
         self, conn: psycopg.Connection, ref_id: int, *parents: int | None
     ) -> None:
-        """Serialize structural draft ops per (ref, section).
+        """Serialize structural draft ops per (ref, section) — a section is
+        identified by its parent heading chunk (``None`` = top level).
+        Acquires a ``pg_advisory_xact_lock`` per distinct section touched,
+        in sorted key order (deadlock-free against e.g. a racing A→B/B→A
+        move); held to transaction end. Call only from inside an open
+        ``self.tx()``.
 
-        A section is identified by its parent heading chunk (``None`` =
-        the draft's top level). Acquires a ``pg_advisory_xact_lock`` for
-        each distinct section touched, in sorted key order — so two ops
-        that each span the same pair of sections (e.g. a move A→B
-        racing a move B→A) can never deadlock. Held to the transaction's
-        end (auto-released on commit/rollback) — call this from inside
-        an already-open ``self.tx()`` block, never standalone.
-
-        Deliberately section-scoped, not a coarse per-ref lock: ops on
-        different sections of the same draft still parallelize (a
-        per-ref lock would over-serialize unrelated sections — the
-        masking risk gr176088's root-cause pass called out).
-
-        Key is a single bigint via
+        Deliberately section-scoped, not per-ref: unrelated sections of the
+        same draft still parallelize (gr176088). Key is a single bigint via
         ``hashtextextended('draft-section:<ref_id>:<parent_or_0>', 0)`` —
-        the single-bigint form avoids the ``(int4, int4)`` overload's
-        overflow hazard on chunk ids.
+        avoids the ``(int4, int4)`` overload's overflow hazard on chunk ids.
 
-        Known accepted gap (TOCTOU): the lock is taken *after* the
-        caller resolves which section(s) an op touches, so a concurrent
-        move landing between that resolution and this call can still
-        skew an adjacency pos-key — fractional keys tolerate that. The
-        guarantee this delivers is narrower and still the one that
-        matters: two *structural* writers targeting the same section
-        serialize against each other.
-
-        Also note: ``retire_chunk``'s ``mode='cascade'``/``'promote'``
-        only locks the chunk being retired and its immediate parent —
-        deeper descendant sections that the cascade also touches are
-        NOT locked.
+        Accepted gap (TOCTOU): the lock is taken *after* the caller
+        resolves which section(s) an op touches, so a concurrent move
+        landing in between can still skew an adjacency pos-key —
+        fractional keys tolerate that; the guarantee is narrower: two
+        *structural* writers targeting the same section serialize against
+        each other. ``retire_chunk``'s ``cascade``/``promote`` locks only
+        the retired chunk + its immediate parent, not deeper descendant
+        sections the cascade also touches.
         """
         for parent_key in sorted({p or 0 for p in parents}):
             conn.execute(
@@ -615,9 +573,9 @@ class DraftStore(_AbbrevMixin):
         kind: str = "draft",
     ) -> DraftChunk:
         """Insert one draft chunk: mint a unique handle (savepoint-retry),
-        assign an insertion-serial `ord`, set pos/parent/content_sha/meta,
-        and log a `created` event. ``meta`` carries e.g. a ``term``'s
-        ``{short, long, surface_forms}`` or a ``figure``'s provenance."""
+        assign insertion-serial `ord`, set pos/parent/content_sha/meta, log
+        a `created` event. ``meta`` e.g. a ``term``'s ``{short, long,
+        surface_forms}`` or a ``figure``'s provenance."""
         sha = content_sha(text)
         meta = dict(meta or {})
         last_exc: Exception | None = None
@@ -692,14 +650,11 @@ class DraftStore(_AbbrevMixin):
         return [chunk.chunk_id, *self.descendant_chunk_ids(chunk.chunk_id)]
 
     def descendant_chunk_ids(self, chunk_id: int) -> list[int]:
-        """Live descendant chunk ids of ``chunk_id`` (NOT including itself)
-        — the walk :meth:`draft_subtree_chunk_ids` uses internally,
-        exposed on its own for a caller that already holds the chunk
-        (e.g. it just fetched it via :meth:`get_draft_chunk` for its
-        ``ref_id``) and would otherwise pay a second, redundant
-        ``get_draft_chunk`` round trip just to re-derive what it already
-        has (the ``exclude=`` cite-closure resolver,
-        ``precis.handlers._exclude_closure``)."""
+        """Live descendant chunk ids of ``chunk_id`` (excluding itself) —
+        the walk :meth:`draft_subtree_chunk_ids` uses internally, exposed
+        standalone for a caller that already holds the chunk (skips a
+        redundant :meth:`get_draft_chunk` round trip; e.g. the ``exclude=``
+        cite-closure resolver, ``precis.handlers._exclude_closure``)."""
         with self.pool.connection() as conn:
             return self._descendant_ids(conn, chunk_id)
 
@@ -727,19 +682,6 @@ class DraftStore(_AbbrevMixin):
             ).fetchall()
         return {str(r[0]): (str(r[1] or ""), str(r[2] or "")) for r in rows}
 
-    def draft_handles_for(self, chunk_ids: list[int]) -> dict[int, str]:
-        """Map ``chunk_id → ¶-less handle`` for a set of draft chunks —
-        search hits carry ``chunk_id`` (``Block.id``) but not the draft
-        handle (which lives in ``chunks.handle``, not ``meta->>'slug'``)."""
-        if not chunk_ids:
-            return {}
-        with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT chunk_id, handle FROM chunks WHERE chunk_id = ANY(%s)",
-                (list(chunk_ids),),
-            ).fetchall()
-        return {int(r[0]): str(r[1]) for r in rows}
-
     def draft_chunk_meta(self, handle: str) -> dict[str, Any]:
         """The raw ``chunks.meta`` JSON for a draft chunk (``{}`` if none).
         Not on :class:`DraftChunk` — read it when re-deriving a table's
@@ -751,11 +693,10 @@ class DraftStore(_AbbrevMixin):
         return dict(row[0]) if row and row[0] else {}
 
     def soft_delete_draft(self, ref_id: int) -> int:
-        """Soft-delete a whole draft **atomically**: mark the draft ref
-        ``deleted_at`` and retire all its live chunks, in one transaction.
-        Recoverable (clear ``deleted_at`` + ``retired_at`` to restore).
-        Returns the number of chunks retired. Raises if the ref isn't a
-        live draft."""
+        """Soft-delete a whole draft **atomically**: mark the ref
+        ``deleted_at`` and retire all live chunks, one transaction.
+        Recoverable (clear ``deleted_at``+``retired_at`` to restore).
+        Returns chunks retired. Raises if the ref isn't a live draft."""
         with self.tx() as conn:
             rc = conn.execute(
                 "UPDATE refs SET deleted_at = now() "
@@ -773,12 +714,11 @@ class DraftStore(_AbbrevMixin):
 
     def universal_chunk(self, handle: str) -> dict[str, Any] | None:
         """Resolve ANY universal *chunk* handle (``pc123`` paper chunk,
-        ``lc..`` plaintext, ``mc..`` markdown, …) to its owning ref +
-        position + text — the cross-kind generalisation of
-        ``get_draft_chunk`` for the reader's hover-preview / click-through.
-        Returns ``{kind, ref_id, ord, chunk_kind, text}`` or ``None`` when
-        the handle isn't a chunk handle or the chunk doesn't exist (so a
-        dangling ``pc999`` degrades to a graceful 'missing' popover)."""
+        ``lc..`` plaintext, ``mc..`` markdown, …) to owning ref + position +
+        text — cross-kind generalisation of ``get_draft_chunk`` for the
+        reader's hover-preview/click-through. ``{kind, ref_id, ord,
+        chunk_kind, text}`` or ``None`` (not a chunk handle, or gone — a
+        dangling ``pc999`` degrades to a 'missing' popover)."""
         parsed = handle_registry.parse(handle.strip())
         if parsed is None or not parsed[1]:  # not a chunk handle
             return None
@@ -803,17 +743,12 @@ class DraftStore(_AbbrevMixin):
         }
 
     def universal_chunks(self, handles: Iterable[str]) -> dict[str, dict[str, Any]]:
-        """Bulk twin of :meth:`universal_chunk` — resolve many chunk
-        handles in one query instead of one per handle.
-
-        A claim hub's evidence rows each carry a ``source_handle``
-        grounding pointer; a page rendering many hubs at once (the
-        smartdraft reader's Claims rail — OPEN-ITEMS.md batch B) was
-        paying one query per DISTINCT grounding chunk across every hub.
-        Since the numeric id a handle decodes to IS the ``chunk_id``
-        regardless of kind code, one ``ANY(%s)`` query resolves them all;
-        a handle that isn't a well-formed chunk handle (or is the
-        ``cad`` kind, which lives outside ``chunks`` — see
+        """Bulk twin of :meth:`universal_chunk` — resolves many chunk
+        handles in one query instead of one per handle (the Claims-rail
+        renderer was paying one query per distinct grounding chunk across
+        every hub). The numeric id a handle decodes to IS the ``chunk_id``
+        regardless of kind code, so one ``ANY(%s)`` query resolves them
+        all; a malformed handle or ``cad`` (outside ``chunks`` — see
         :meth:`universal_chunk`) is simply absent from the result."""
         by_chunk_id: dict[int, list[str]] = {}
         for h in handles:
@@ -858,12 +793,11 @@ class DraftStore(_AbbrevMixin):
     def get_draft_chunk(self, handle: str, *, kind: str = "draft") -> DraftChunk | None:
         """A single live-or-retired draft/plan chunk by its address.
 
-        Accepts the universal handle (``dc<chunk_id>`` draft /
-        ``pe<chunk_id>`` plan — looked up by ``chunk_id``) or the legacy
-        The draft editable-document model ``¶<base58>`` / bare base-58 anchor (looked up by
-        ``chunks.handle``). ``kind`` sets the handle namespace of the returned
-        chunk (so a plan chunk renders ``pe<id>``) and, for a universal-handle
-        address, the code prefix that must match."""
+        Accepts the universal handle (``dc<chunk_id>`` draft / ``pe<chunk_id>``
+        plan — looked up by ``chunk_id``) or the legacy ``¶<base58>`` / bare
+        base-58 anchor (looked up by ``chunks.handle``). ``kind`` sets the
+        returned chunk's handle namespace (``pe<id>`` for a plan) and, for a
+        universal-handle address, the code prefix that must match."""
         parsed = handle_registry.parse(handle.strip())
         key: str | int
         if parsed is not None and parsed[0] == kind and parsed[1]:
@@ -896,17 +830,16 @@ class DraftStore(_AbbrevMixin):
     def draft_relative_chunk_ids(
         self, addr: str, *, kind: str = "draft"
     ) -> list[int] | None:
-        """Resolve a relative draft/plan handle to target chunk
-        id(s).
+        """Resolve a relative draft/plan handle to target chunk id(s).
 
-        ``dc<id>^N`` walks ``N`` ancestors (via ``parent_chunk_id``);
-        ``dc<id>+N`` / ``-N`` steps ``N`` siblings (ordered by ``pos`` under
-        the same parent); ``dc<id>-lo..hi`` is the signed sibling span (the
-        reading-context window). Returns the target ids (one for a
-        step/ancestor, the contiguous sibling run for a span), an **empty
-        list** when the target is out of range / past the root, or ``None``
-        when ``addr`` is not a relative handle of ``kind`` (so the caller can
-        try the absolute path). ``kind='plan'`` resolves ``pe<id>`` handles."""
+        ``dc<id>^N`` walks ``N`` ancestors (``parent_chunk_id``);
+        ``dc<id>+N``/``-N`` steps ``N`` siblings (ordered by ``pos`` under
+        the same parent); ``dc<id>-lo..hi`` is the signed sibling span
+        (reading-context window). Returns target ids (one for a
+        step/ancestor, the contiguous run for a span), **empty list** when
+        out of range/past the root, or ``None`` when ``addr`` isn't a
+        relative handle of ``kind`` (caller then tries the absolute path).
+        ``kind='plan'`` resolves ``pe<id>`` handles."""
         parsed = handle_registry.parse_relative(addr)
         if parsed is None:
             return None
@@ -987,19 +920,17 @@ class DraftStore(_AbbrevMixin):
         """All live chunks of a draft in DFS reading order (roots by pos,
         recurse into children by pos), with depth.
 
-        The order is built in Python from one **flat, indexed** fetch — not
-        a recursive SQL CTE. The CTE (``WITH RECURSIVE walk``) couldn't
-        index-seek its worktable join, so at each recursion level it
-        re-scanned every chunk of the ref: ≈O(N·depth), ~5.5s on a
-        9,700-chunk draft, and it dominated the reader's load time. A single
-        ``chunks_ref_id_idx`` scan + this DFS is milliseconds.
+        Built in Python from one **flat, indexed** fetch, not a recursive
+        SQL CTE — the CTE's worktable join couldn't index-seek, re-scanning
+        every chunk of the ref per recursion level (≈O(N·depth), ~5.5s on a
+        9,700-chunk draft). A single ``chunks_ref_id_idx`` scan + this DFS
+        is milliseconds.
 
         Ordering matches the old ``sort_path COLLATE "C"``: siblings sort by
-        ``pos`` (base-62 fractional keys; Python str compare is code-point =
-        byte order), and DFS pre-order puts a parent before its subtree and a
-        subtree before the next sibling. Chunks reachable only through a
-        retired/absent parent are excluded — same as the CTE, which could
-        only walk live chunks down from a NULL-parent root."""
+        ``pos`` (base-62 fractional keys, byte order), DFS pre-order puts a
+        parent before its subtree and a subtree before the next sibling.
+        Chunks reachable only through a retired/absent parent are excluded,
+        as the CTE also only walked live chunks from a NULL-parent root."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT chunk_id, handle, chunk_kind, text, pos, "
@@ -1045,15 +976,13 @@ class DraftStore(_AbbrevMixin):
     def chunk_ord_map(self, ref_id: int) -> dict[int, int]:
         """``chunk_id → ord`` for every live body chunk of ``ref_id``.
 
-        The link layer addresses a chunk endpoint by its ``ord``
+        The link layer addresses a chunk endpoint by ``ord``
         (``add_link(src_pos=…)`` translates ord→chunk_id), but
-        :class:`DraftChunk` (from :meth:`reading_order`) exposes only the
-        fractional ``pos`` string, not the int ``ord``. The draft
-        autolinker needs each source chunk's ``ord`` to write a
-        chunk-level ``cites`` edge (``dc<id>``-granular), so this returns
-        the mapping in one indexed scan rather than a per-chunk lookup.
-        Card variants (``ord < 0``) are excluded — only real body chunks
-        are link endpoints.
+        :class:`DraftChunk` exposes only the fractional ``pos`` string. The
+        draft autolinker needs each source chunk's ``ord`` to write a
+        chunk-level ``cites`` edge, so this returns the mapping in one
+        indexed scan. Card variants (``ord < 0``) are excluded — only real
+        body chunks are link endpoints.
         """
         with self.pool.connection() as conn:
             rows = conn.execute(
@@ -1067,12 +996,10 @@ class DraftStore(_AbbrevMixin):
         self, ref_id: int, handles: list[str]
     ) -> dict[str, list[dict[str, Any]]]:
         """Per-chunk graph connections — every ref linked *to or from* a
-        chunk (the other end of any ``links`` row whose src/dst chunk is
-        this one), grouped by handle. This is where ``derived-from``
-        provenance and dream-memories that reference a paragraph surface
-        in the reader. Each entry: ``{relation, direction, kind, ident,
-        title}`` (``ident`` = slug or numeric id; ``title`` is the terse
-        descriptor). Deduped per (handle, other-ref, relation)."""
+        chunk, grouped by handle (where ``derived-from`` provenance and
+        dream-memories referencing a paragraph surface in the reader). Each
+        entry: ``{relation, direction, kind, ident, title}`` (``ident`` =
+        slug or numeric id). Deduped per (handle, other-ref, relation)."""
         if not handles:
             return {}
         sql = """
@@ -1114,16 +1041,13 @@ class DraftStore(_AbbrevMixin):
         return out
 
     def ref_connections(self, ref_id: int) -> list[dict[str, Any]]:
-        """Whole-ref graph connections — the other end of every ``links`` row
-        anchored at the REF rather than a chunk (both endpoints NULL), in the
-        same ``{relation, direction, kind, ident, title}`` shape
-        :meth:`chunk_connections` returns, so both feed one chip renderer.
-
-        This is the document-level edge set the reader had no surface for: a
-        draft's owning project (``draft-of``), what it ``cites``, and — the
-        one that matters most — the inbound ``raises-concern-about`` edges,
-        i.e. findings filed *against* the document. Deduped per (other-ref,
-        relation, direction); newest last, as stored."""
+        """Whole-ref graph connections — the other end of every ``links``
+        row anchored at the REF (both chunk endpoints NULL), same
+        ``{relation, direction, kind, ident, title}`` shape as
+        :meth:`chunk_connections` (one chip renderer feeds off both): a
+        draft's project (``draft-of``), what it ``cites``, and inbound
+        ``raises-concern-about`` findings filed against it. Deduped per
+        (other-ref, relation, direction); newest last, as stored."""
         sql = """
             SELECT l.relation,
                    CASE WHEN l.src_ref_id = %(rid)s THEN 'out' ELSE 'in' END AS dir,
@@ -1164,21 +1088,18 @@ class DraftStore(_AbbrevMixin):
     def anchored_todos(self, handles: list[str]) -> dict[str, list[dict[str, Any]]]:
         """ALL change-request todos anchored at each chunk (``meta.anchor =
         '¶<handle>'`` or the newer bare ``dc<id>``), grouped by (bare)
-        handle — including **done / won't-do**, so a finished request hangs
-        around to click into (its ``plan_tick`` job's captured LLM
-        transcript is the debugging surface). Active requests sort first.
-        ``started`` (a job minted) + ``done`` + ``failed`` drive the
-        close-X: it shows on not-yet-started, done, or failed requests, and
-        is suppressed only while a request is actively running.
+        handle — including **done/won't-do**, so a finished request stays
+        clickable (its ``plan_tick`` job's LLM transcript is the debugging
+        surface). Active requests sort first. ``started``+``done``+``failed``
+        drive the close-X: shown on not-yet-started/done/failed, suppressed
+        only while actively running.
 
-        An anchored todo is **not a `links` row** (gripe 178766) — it is
-        the "flag it in the draft" mechanism, invisible to both the
-        fisheye ring and the classic reader's graph-connection surface
-        unless read back through this ``meta.anchor`` lookup. Shared by
-        the classic reader's change-request cards
-        (:func:`precis_web.routes.drafts._requests_by_handle`, now a thin
-        wrapper over this) and :func:`precis_web.draft_links.chunk_links`'s
-        ``flags`` — the one data path both draft readers assemble from."""
+        An anchored todo is **not a `links` row** (gripe 178766) — invisible
+        to the fisheye ring and the graph-connection surface unless read
+        back through ``meta.anchor``. Shared by
+        :func:`precis_web.routes.drafts._requests_by_handle` (thin wrapper)
+        and :func:`precis_web.draft_links.chunk_links`'s ``flags`` — the
+        one data path both draft readers assemble from."""
         if not handles:
             return {}
         # Match both the new bare ``dc<id>`` anchors and any legacy ``¶<handle>``
@@ -1300,11 +1221,10 @@ class DraftStore(_AbbrevMixin):
         set_by: str = "agent",
         conn: psycopg.Connection | None = None,
     ) -> None:
-        """Bind diagram element ``element`` (a stable source id) to ``target``
-        (a universal handle — a ``dc…`` draft chunk, ``pc…`` paper chunk, a
-        ``me…`` memory record, …). Idempotent: the element is merged into the
-        edge's ``meta.elements`` set, one link row per (source, target,
-        relation)."""
+        """Bind diagram element ``element`` (a stable source id) to
+        ``target`` (a universal handle — ``dc…`` draft chunk, ``pc…`` paper
+        chunk, ``me…`` memory, …). Idempotent: merged into the edge's
+        ``meta.elements`` set, one link row per (source, target, relation)."""
         element = element.strip()
         if not element:
             raise BadInput("an element id is required to bind")
@@ -1453,13 +1373,12 @@ class DraftStore(_AbbrevMixin):
         desired: list[dict[str, Any]],
         set_by: str = "agent",
     ) -> dict[str, int]:
-        """Reconcile the full binding set of a diagram source chunk to
-        ``desired`` — a list of ``{element, target, relation?}`` (the turn
-        loop's ``links`` array). Adds the missing, removes the absent;
-        unresolvable targets are skipped (a bad handle never fails the whole
-        turn). Returns ``{'added': n, 'removed': m}``. An empty ``desired``
-        clears all bindings; the caller leaves bindings untouched by not
-        calling this (e.g. when the turn omits ``links``)."""
+        """Reconcile a diagram source chunk's full binding set to
+        ``desired`` (``{element, target, relation?}`` list — the turn
+        loop's ``links`` array): adds missing, removes absent; unresolvable
+        targets are skipped, never failing the turn. Returns ``{'added':
+        n, 'removed': m}``. Empty ``desired`` clears all bindings; omit the
+        call entirely to leave bindings untouched."""
         have: set[tuple[str, str, str]] = {
             (b["element"], b["handle"], b["relation"])
             for b in self.element_bindings(node_chunk_id)
@@ -1500,16 +1419,13 @@ class DraftStore(_AbbrevMixin):
         return {"added": added, "removed": removed}
 
     def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:
-        """Citation tokens that resolve to a **live paper we hold** — the
-        draft reader's local-vs-external colouring signal.
-
-        ``handles`` are universal handles (``pc10`` a paper
-        *chunk*, ``pa42624`` a paper *record*); ``slugs`` are ``§slug`` /
-        ``paper:slug`` cite_keys. Returns the subset of tokens (the
-        normalised handle string, or the slug) that point at a live
-        ``kind='paper'`` ref — a citation grounded in a paper we have
-        ingested. Anything *not* returned is an **external reference**.
-        One connection; batched by target table."""
+        """Citation tokens resolving to a **live paper we hold** — the draft
+        reader's local-vs-external colouring signal. ``handles`` are
+        universal handles (``pc10`` chunk, ``pa42624`` record); ``slugs``
+        are ``§slug``/``paper:slug`` cite_keys. Returns the subset (handle
+        or slug) pointing at a live ``kind='paper'`` ref; anything not
+        returned is an **external reference**. One connection, batched by
+        target table."""
         chunk_pks: dict[int, str] = {}
         record_pks: dict[int, str] = {}
         for h in handles:
@@ -1579,17 +1495,14 @@ class DraftStore(_AbbrevMixin):
         self, ref_id: int, handles: list[str] | None = None
     ) -> dict[str, dict[str, str]]:
         """Per-block ``{handle: {summary, keywords}}`` for a draft.
-
-        ``summary`` is the ``llm-v1`` two-part summary (``chunk_summaries``);
-        ``keywords`` the comma-joined KeyBERT terms (``chunks.keywords``,
-        first 12). Either is ``''`` for a chunk the ``llm_summarize`` /
-        ``chunk_keywords`` workers haven't reached yet — callers fall back
+        ``summary`` = the ``llm-v1`` two-part summary (``chunk_summaries``);
+        ``keywords`` = comma-joined KeyBERT terms (``chunks.keywords``,
+        first 12); either is ``''`` before the ``llm_summarize``/
+        ``chunk_keywords`` workers reach the chunk — callers fall back
         (summary → keywords → truncated text). Shared by the web reader's
-        view slider and the handler's outline render.
-
-        ``handles`` scopes the result to just those blocks — the on-demand
-        row path loads one block at a time and must not re-scan the whole
-        (possibly massive) draft per row. ``None`` means the whole draft."""
+        view slider and the outline render. ``handles`` scopes the result
+        (the on-demand row path must not re-scan the whole draft per row);
+        ``None`` = whole draft."""
         where = "c.ref_id = %s AND c.retired_at IS NULL AND c.pos IS NOT NULL AND c.ord >= 0"
         params: tuple[Any, ...] = (ref_id,)
         if handles is not None:
@@ -1676,19 +1589,16 @@ class DraftStore(_AbbrevMixin):
     def _ghost_bracket(
         sibs: list[DraftChunk], tgt: DraftChunk, *, before: bool
     ) -> tuple[str | None, str | None]:
-        """(lo, hi) for inserting relative to a *retired* anchor (gripe 49153).
-
-        ``get_draft_chunk`` returns a chunk live-or-retired, but ``_children``
-        yields only live siblings (``retired_at IS NULL``), so a retired anchor
-        is absent from ``sibs`` and the plain ``next(...)`` index lookup raises
-        ``StopIteration``. A retired chunk keeps its ``pos`` though, so it still
-        names a valid slot: bracket the live siblings by position — ``before``
-        → (live-predecessor, ghost.pos]; else [ghost.pos, live-successor). Keeps
-        a stale handle working instead of a 500. Paired with the search-time
-        ``retired_at IS NULL`` filter that stops such handles being handed out
-        at all (so this path is only reached by a caller holding an old handle,
-        never a search-fed loop). Comparison matches ``_children``'s
-        ``ORDER BY pos COLLATE "C"`` — bytewise, == Python ``str`` order.
+        """(lo, hi) for inserting relative to a *retired* anchor (gripe
+        49153). ``get_draft_chunk`` returns live-or-retired, but
+        ``_children`` yields only live siblings, so a retired anchor is
+        absent from ``sibs`` and a plain index lookup would raise. A
+        retired chunk keeps its ``pos``, so it still names a valid slot:
+        bracket the live siblings by position — ``before`` → (live-pred,
+        ghost.pos]; else [ghost.pos, live-succ). Keeps a stale handle
+        working instead of a 500 (reachable only by a caller holding an
+        old handle — search never hands one out). Comparison matches
+        ``_children``'s ``ORDER BY pos COLLATE "C"`` (byte order).
         """
         if before:
             lo = max((s.pos for s in sibs if s.pos < tgt.pos), default=None)
@@ -1745,16 +1655,12 @@ class DraftStore(_AbbrevMixin):
     def draft_attached_work(
         self, draft_ref_id: int, *, limit: int = 20
     ) -> list[DraftWorkItem]:
-        """Open todos working on this draft, blocked-first, capped.
-
-        Walks ``draft → (draft-of) → project root → todo subtree`` and
-        returns the open todos that are *blocked* (carry an
-        ``OPEN:child-failed:*`` bubble) or have a non-succeeded child
-        job (running / queued / failed) — i.e. work that is stuck or in
-        flight. This is the edge the draft view follows so a failed
-        enrichment job registers on the draft, instead of silently
-        parking the task out of the rotation. Clean, fully-done work is
-        omitted (no signal to surface)."""
+        """Open todos working on this draft, blocked-first, capped. Walks
+        ``draft → (draft-of) → project root → todo subtree`` for open
+        todos that are *blocked* (``OPEN:child-failed:*`` bubble) or have
+        a non-succeeded child job (running/queued/failed) — so a failed
+        enrichment job registers on the draft instead of silently parking
+        out of rotation. Clean, fully-done work is omitted."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 """
@@ -1843,16 +1749,12 @@ class DraftStore(_AbbrevMixin):
 
     def resolve_ask_question(self, ref_id: int, tag_value: str) -> str:
         """Turn an ``ask-user`` tag *value* into the human question text.
-
-        ``tag_value`` is the part after ``ask-user:`` — either the literal
-        inline question (short asks), the empty string (the bare
-        "any human will do" marker), or a ``see-chunk-N`` redirect handle
-        for a question that overflowed the 80-char tag cap into a
-        ``tag_overflow`` chunk. For the redirect form we read chunk
-        ``ord = N`` on the todo and peel back the ``ask-user:`` prefix the
-        writer stored, so the draft view shows the real question instead of
-        the opaque "see chunk 0" slug. Returns "" for the bare marker or an
-        unresolvable handle."""
+        ``tag_value`` is the part after ``ask-user:`` — the literal inline
+        question, the empty string (bare "any human will do" marker), or a
+        ``see-chunk-N`` redirect for a question that overflowed the
+        80-char tag cap into a ``tag_overflow`` chunk (read back and its
+        ``ask-user:``/``halt:`` prefix peeled). Returns "" for the bare
+        marker or an unresolvable handle."""
         value = (tag_value or "").strip()
         m = _SEE_CHUNK_RE.match(value)
         if m is None:
@@ -1872,28 +1774,23 @@ class DraftStore(_AbbrevMixin):
         return text
 
     def job_fail_reason(self, job_ref_id: int, *, limit: int = 240) -> str | None:
-        """First line of a failed job's reason — *why* it died (API error,
-        timeout, …), so the draft view can say so instead of a bare
-        "failed". Prefers the ``job_summary`` chunk (captured stdout,
-        whitespace-collapsed); most plugin dispatchers only write that on
-        their SUCCESS tail, so a failed job usually has none — falls back
-        to the first line of the latest ``job_event`` chunk (the
-        ``record_failure`` diagnostic) in that case. Either way the result
-        is capped at ``limit`` chars. Returns ``None`` when the job has
-        neither chunk yet.
+        """First line of a failed job's reason — *why* it died — so the
+        draft view can say so instead of a bare "failed". Prefers the
+        ``job_summary`` chunk (captured stdout, whitespace-collapsed); most
+        dispatchers only write that on the SUCCESS tail, so a failed job
+        usually has none and falls back to the first line of the latest
+        ``job_event`` chunk (the ``record_failure`` diagnostic). Capped at
+        ``limit`` chars; ``None`` when neither chunk exists.
 
-        Mirrors (but doesn't import — this module is ``precis.store``,
-        which ``precis.handlers`` imports at module scope, so importing
-        back would be circular) the latest-``job_event`` query shape of
+        Mirrors, without importing (would be circular: ``precis.handlers``
+        imports ``precis.store`` at module scope), the query shape of
         ``handlers._todo_views._latest_job_event_reasons``.
 
-        Both chunk kinds are resolved in ONE round-trip, ordered so a
-        ``job_summary`` outranks any ``job_event``. Asking for the summary
-        and then falling back to a second query would double the query
-        count for the *common* case rather than a rare one — a failed job
-        almost never has a summary — and this runs per failed job inside
-        ``precis_web.routes.drafts._work_items``' loop, so the doubling
-        lands on a page-render hot path."""
+        Both kinds resolve in ONE round-trip (``job_summary`` outranking
+        ``job_event``) rather than query-then-fallback — this runs per
+        failed job inside ``precis_web.routes.drafts._work_items``'s loop,
+        a page-render hot path, and a failed job almost never has a
+        summary, so a second query would double the *common* case."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 # The CASE keeps each kind's ORIGINAL tie-break when a job
@@ -1930,12 +1827,11 @@ class DraftStore(_AbbrevMixin):
         kind: str = "draft",
         relation: str = "draft-of",
     ) -> tuple[Any, DraftChunk]:
-        """Create a draft (or ``kind='plan'``) ref bound 1:1 to
-        its project, born with a title `heading` chunk so it is never empty.
-        ``relation`` is the project-binding link (``draft-of`` for a draft,
-        ``plan-of`` for a plan) — each is 1:1 per project, so a project can own
-        both a draft and its plan without collision. Returns (ref,
-        title_chunk)."""
+        """Create a draft (or ``kind='plan'``) ref bound 1:1 to its
+        project, born with a title `heading` chunk so it is never empty.
+        ``relation`` is the project-binding link (``draft-of``/``plan-of``),
+        each 1:1 per project — so a project can own both without
+        collision. Returns ``(ref, title_chunk)``."""
         with self.tx() as conn:
             dup = conn.execute(
                 "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = %s",
@@ -1971,11 +1867,11 @@ class DraftStore(_AbbrevMixin):
     def draft_title_chunk_id(
         self, conn: psycopg.Connection, ref_id: int
     ) -> tuple[int, str] | None:
-        """The ``(chunk_id, text)`` of a draft's title heading — the live root
-        heading first in reading order, i.e. the chunk ``create_draft`` laid
-        down. ``None`` for a draft that has none (an imported one whose first
-        block isn't a root heading), which is not an error: the caller then
-        renames the ref alone."""
+        """The ``(chunk_id, text)`` of a draft's title heading — the live
+        root heading first in reading order, the chunk ``create_draft``
+        laid down. ``None`` for a draft that has none (imported, first
+        block not a root heading) — not an error; the caller renames the
+        ref alone."""
         row = conn.execute(
             """SELECT chunk_id, text FROM chunks
                 WHERE ref_id = %s AND chunk_kind = 'heading'
@@ -1989,20 +1885,19 @@ class DraftStore(_AbbrevMixin):
     def set_draft_title(
         self, ref_id: int, title: str, *, source: dict[str, Any] | None = None
     ) -> tuple[str, bool]:
-        """Rename a draft: ``refs.title`` **and** its title heading chunk, in
-        one transaction. Returns ``(old_title, heading_synced)``.
+        """Rename a draft: ``refs.title`` **and** its title heading chunk,
+        in one transaction. Returns ``(old_title, heading_synced)``.
 
-        The two have always been separately writable — the heading is an
-        ordinary editable chunk while ``refs.title`` had no write path at all
-        — so a draft could show one title in its own reader and another in
-        every search result, list, and link chip that reads the ref. Renaming
-        writes both so they converge, including from an already-diverged
-        state; that convergence is the point, so a heading whose text no
-        longer matches ``refs.title`` is still overwritten rather than
+        The two are separately writable (the heading is an ordinary
+        editable chunk; ``refs.title`` had no other write path), so a
+        draft could show one title in its reader and another in every
+        search result/list/link chip. Renaming always writes both,
+        converging even from an already-diverged state — a heading whose
+        text no longer matches ``refs.title`` is overwritten, not
         preserved.
 
-        The heading is edited in place (``chunk_id``/``handle`` survive, per
-        :meth:`edit_text`), so inbound anchors to it stay live and only the
+        The heading is edited in place (``chunk_id``/``handle`` survive,
+        per :meth:`edit_text`), so inbound anchors stay live and only
         derived data re-derives off the new ``content_sha``."""
         clean = (title or "").strip()
         if not clean:
@@ -2067,16 +1962,14 @@ class DraftStore(_AbbrevMixin):
         """Insert one copy of a source draft chunk for :meth:`fork_draft`.
 
         Preserves ``ord``/``pos``/``chunk_kind``/``text``/``section_path``/
-        ``content_sha``/``meta``/``keywords``/``retired_at`` verbatim from
-        the source row (so a retired source chunk copies as retired, and a
-        live one's ``content_sha`` still matches its text for the
-        embed/summarize workers to key off), but mints a FRESH handle
-        (never the source's — handles are globally unique) with the same
+        ``content_sha``/``meta``/``keywords``/``retired_at`` verbatim (a
+        retired source copies retired; a live one's ``content_sha`` still
+        matches its text for the embed/summarize workers), but mints a
+        FRESH handle (never the source's — globally unique), same
         savepoint-retry as :meth:`_insert_draft_chunk`. ``parent_chunk_id``
-        is left NULL here — the source's parent may not be forked yet
-        (chunk_id insertion order doesn't guarantee parent-before-child),
-        so :meth:`fork_draft` fixes up hierarchy in a second pass once
-        every chunk has a new id. Returns the new ``chunk_id``."""
+        is left NULL — insertion order doesn't guarantee parent-before-child
+        — so :meth:`fork_draft` fixes hierarchy in a second pass once every
+        chunk has a new id. Returns the new ``chunk_id``."""
         last_exc: Exception | None = None
         row = None
         for _ in range(_HANDLE_RETRIES):
@@ -2141,46 +2034,36 @@ class DraftStore(_AbbrevMixin):
         title: str | None = None,
     ) -> Any:
         """Deep-copy an entire draft into a NEW draft bound to
-        ``project_id``, leaving ``src_ref_id`` completely untouched.
-
-        Copies, in one transaction:
+        ``project_id``, leaving ``src_ref_id`` untouched. One transaction:
 
         1. the ``refs`` row (title/meta/authors/year) under ``new_slug``;
-        2. every chunk (live *and* retired) with its hierarchy intact —
-           a fresh handle per copy (never the source's), everything else
-           (``ord``/``pos``/``chunk_kind``/``text``/``content_sha``/
-           ``meta``/``keywords``/``section_path``/``retired_at``)
-           preserved verbatim;
-        3. the figure-blob (``chunk_blobs``) and tag (``chunk_tags``) side
-           tables keyed on the copied chunks. ``chunk_embeddings`` /
-           ``chunk_summaries`` are skipped (re-derived by the worker from
-           ``content_sha``) and ``chunk_review`` is skipped so the copy
-           starts fully unreviewed (paper-writing pipeline rung 3);
-        3b. in-prose intra-draft cross-refs (``[dc<id>]`` / ``[cap](dc<id>)``
-           / legacy ``[¶<base58>]``) rewritten onto the copied chunks — these
-           are document-internal (not graph edges), so step 4's link remap
-           can't reach them; copied verbatim they'd dangle back into the
-           source. ``content_sha`` (and the ``created`` ``chunk_events`` row)
-           are recomputed for each rewritten chunk. See
-           :func:`_remap_intra_draft_xrefs`;
-        4. every link touching ``src_ref_id`` in either direction
-           (INSERT-only — the source's edges are untouched, unlike
-           :meth:`~precis.store._links_ops.LinksMixin.migrate_links`,
-           which deletes them), with the ``src_ref_id``/chunk-scoped
-           endpoint remapped onto the new ref/chunks; a would-be
-           self-loop after remap is dropped rather than raising the
-           schema's ``links_check`` CHECK;
-        5. a ``copy-of`` provenance edge new→source (inverse ``has-copy``
-           mirrors at read time via ``links_for``, like ``draft-of`` /
-           ``has-draft`` — see ``migrations/0032_draft_relations.sql``);
-        6. the ``draft-of`` bind to ``project_id`` (1:1 — refuses if the
-           project already owns a draft, same invariant as
+        2. every chunk (live *and* retired), hierarchy intact — fresh
+           handle per copy, everything else (``ord``/``pos``/``chunk_kind``/
+           ``text``/``content_sha``/``meta``/``keywords``/``section_path``/
+           ``retired_at``) verbatim;
+        3. ``chunk_blobs``/``chunk_tags`` side tables keyed on the copies.
+           ``chunk_embeddings``/``chunk_summaries`` skipped (worker
+           re-derives from ``content_sha``); ``chunk_review`` skipped so
+           the copy starts fully unreviewed (pipeline rung 3);
+        3b. in-prose intra-draft cross-refs rewritten onto the copies (see
+           :func:`_remap_intra_draft_xrefs`) — document-internal, so step
+           4's link remap can't reach them and copied verbatim they'd
+           dangle into the source; ``content_sha``/``created`` event
+           recomputed per rewritten chunk;
+        4. every link touching ``src_ref_id`` either direction (INSERT-only
+           — source edges untouched, unlike
+           :meth:`~precis.store._links_ops.LinksMixin.migrate_links`, which
+           deletes them), endpoints remapped onto the new ref/chunks; a
+           would-be self-loop after remap is dropped rather than raising
+           the ``links_check`` CHECK;
+        5. a ``copy-of`` provenance edge new→source (mirrors ``draft-of``/
+           ``has-draft`` — ``migrations/0032_draft_relations.sql``);
+        6. the ``draft-of`` bind to ``project_id`` (1:1, same guard as
            :meth:`create_draft`).
 
-        Returns the new draft :class:`~precis.store.types.Ref`. Raises
+        Returns the new :class:`~precis.store.types.Ref`. Raises
         ``NotFound`` if ``src_ref_id`` isn't a live draft, ``ValueError``
-        if ``project_id`` already owns a draft (mirrors
-        :meth:`create_draft`'s guard)."""
+        if ``project_id`` already owns a draft."""
         with self.tx() as conn:
             dup = conn.execute(
                 "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = 'draft-of'",
@@ -2405,13 +2288,10 @@ class DraftStore(_AbbrevMixin):
         kind: str = "draft",
     ) -> list[DraftChunk]:
         """Add one or more chunks (a multi-paragraph `text` splits at blank
-        lines). Returns the created chunks in order. ``meta`` (e.g. a
-        ``term``'s ``{short, long}``) is stamped on each created chunk.
-        ``kind`` sets the returned chunks' handle namespace (``'plan'`` →
-        ``pe<id>``).
-
-        ``split=False`` inserts ``text`` verbatim as a single chunk — used
-        by chunks whose text is a derived projection that must not
+        lines), returned in order. ``meta`` (e.g. a ``term``'s ``{short,
+        long}``) is stamped on each. ``kind`` sets the handle namespace
+        (``'plan'`` → ``pe<id>``). ``split=False`` inserts ``text``
+        verbatim as one chunk — for a derived projection that must not
         fragment (a ``table``'s markdown render)."""
         blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
@@ -2444,14 +2324,12 @@ class DraftStore(_AbbrevMixin):
         at: dict[str, Any] | None = None,
         figure_meta: dict[str, Any] | None = None,
     ) -> DraftChunk:
-        """Add a single ``figure`` chunk: the caption is the
-        face (``text`` — embedded, searchable), the image bytes go to
-        ``chunk_blobs``, and ``meta.figure`` carries ``origin`` plus any
-        provenance (e.g. the third-party ``permission`` paper-trail).
-
-        Unlike :meth:`add_chunks` the caption is **not** split at blank
-        lines — a figure is one chunk. Both writes share one transaction,
-        so a figure never lands without its bytes."""
+        """Add a single ``figure`` chunk: caption is the face (``text`` —
+        embedded, searchable), image bytes go to ``chunk_blobs``,
+        ``meta.figure`` carries ``origin`` plus provenance (e.g. a
+        third-party ``permission`` paper-trail). Unlike :meth:`add_chunks`
+        the caption is **not** split at blank lines. Both writes share one
+        transaction — a figure never lands without its bytes."""
         sha = hashlib.sha256(image).hexdigest()
         width, height = _image_dims(image)
         fig = {"origin": origin, **(figure_meta or {})}
@@ -2494,13 +2372,12 @@ class DraftStore(_AbbrevMixin):
     def chunk_blob_version(self, chunk_id: int) -> str | None:
         """Cheap existence check *and* cache-busting discriminator for a
         chunk's blob — ``SELECT sha256`` only, never de-TOASTs ``bytes``.
-        ``None`` when there's no blob row (falsy, so a caller can still use
-        this as the old boolean ``has_chunk_blob`` did); otherwise the
-        blob's sha256, which the figure-source resolver appends
-        (truncated) to the reader's ``<img>`` URL so a "refresh"-swapped
-        blob busts the browser's 5-minute ``Cache-Control`` without a
-        second round-trip. The figure-source resolver calls this for every
-        figure at reader render time, so it must not pull megabytes."""
+        ``None`` when there's no blob row (falsy, usable as the old boolean
+        ``has_chunk_blob`` was); otherwise the sha256, which the
+        figure-source resolver appends (truncated) to the reader's
+        ``<img>`` URL so a "refresh"-swapped blob busts the browser's
+        5-minute ``Cache-Control``. Called per figure at render time, so
+        must not pull megabytes."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT sha256 FROM chunk_blobs WHERE chunk_id = %s",
@@ -2516,11 +2393,11 @@ class DraftStore(_AbbrevMixin):
         *,
         conn: psycopg.Connection | None = None,
     ) -> None:
-        """Insert or **replace** a chunk's blob (`chunk_blobs` row).
-
-        Unlike :meth:`add_figure` (insert-only, at figure creation), this is
-        the render path: a computed figure's image is a *regenerable* artifact, so re-rendering overwrites the bytes in place keyed on
-        ``chunk_id``. Re-derives ``sha256`` / ``size`` / dims from the bytes."""
+        """Insert or **replace** a chunk's blob (`chunk_blobs` row). Unlike
+        :meth:`add_figure` (insert-only, at creation), this is the render
+        path: a computed figure's image is *regenerable*, so re-rendering
+        overwrites bytes in place keyed on ``chunk_id``. Re-derives
+        ``sha256``/``size``/dims from the bytes."""
         sha = hashlib.sha256(image).hexdigest()
         width, height = _image_dims(image)
 
@@ -2543,14 +2420,12 @@ class DraftStore(_AbbrevMixin):
                 _do(c)
 
     def figure_render_bundle(self, figure_chunk_id: int) -> dict[str, Any] | None:
-        """Everything the render pass needs for a computed `figure`:
-        its render recipe (`meta.render`) and, in plotted order, the `meta.table`
-        payload + `content_sha` of each data chunk it `plots`.
-
-        Returns ``None`` when the chunk isn't a figure carrying a `meta.render`
-        recipe (i.e. a plain uploaded *image* figure, not a *graph*). The
-        returned ``input_shas`` (render src + each data sha) are the inputs to
-        the content-addressed invalidation key."""
+        """Everything the render pass needs for a computed `figure`: its
+        render recipe (`meta.render`) plus, in plotted order, the
+        `meta.table` payload + `content_sha` of each `plots` data chunk.
+        ``None`` when the chunk carries no `meta.render` recipe (a plain
+        uploaded *image*, not a *graph*). ``input_shas`` (render src + each
+        data sha) feed the content-addressed invalidation key."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT chunk_kind, meta FROM chunks WHERE chunk_id = %s",
@@ -2599,13 +2474,12 @@ class DraftStore(_AbbrevMixin):
     ) -> None:
         """Swap a figure chunk's ``meta.figure.data_package`` snapshot in
         place — the "refresh" path re-renders off the source ref
-        (:func:`precis.quest.figures.quest_pareto_figure` /
-        ``pathway_profile_figure``) and stamps the fresh numbers here so the
+        (:func:`precis.quest.figures.quest_pareto_figure`/
+        ``pathway_profile_figure``) and stamps fresh numbers here so the
         export data-package appendix keeps matching the plotted pixels.
-        Caption / origin / permission are untouched. Accepts an optional
-        ``conn`` (like :meth:`upsert_chunk_blob`) so the route can swap the
-        blob and the snapshot in one transaction. Logs an ``edited``
-        chunk_event (mirrors :meth:`set_figure_provenance`)."""
+        Caption/origin/permission untouched. Optional ``conn`` (like
+        :meth:`upsert_chunk_blob`) lets the route swap blob + snapshot in
+        one transaction. Logs an ``edited`` chunk_event."""
 
         def _do(c: psycopg.Connection) -> None:
             row = c.execute(
@@ -2642,10 +2516,10 @@ class DraftStore(_AbbrevMixin):
         *,
         conn: psycopg.Connection | None = None,
     ) -> None:
-        """Stamp a figure chunk's `meta.render` recipe (the graph code). Set at
-        creation of a computed figure and rewritten on a recipe edit; a rewrite
-        clears any prior `cached_key`, so the figure is stale until re-rendered.
-        Logs a `recipe` chunk_event (computed chunks — recipe history)."""
+        """Stamp a figure chunk's `meta.render` recipe (the graph code). Set
+        at creation, rewritten on edit; a rewrite clears any prior
+        `cached_key` so the figure is stale until re-rendered. Logs an
+        `edited` chunk_event (`reason: render-recipe`)."""
 
         def _do(c: psycopg.Connection) -> None:
             c.execute(
@@ -2666,10 +2540,10 @@ class DraftStore(_AbbrevMixin):
                 _do(c)
 
     def link_figure_plots(self, figure_chunk_id: int, data_chunk_ids: list[int]) -> int:
-        """Create the figure→data `plots` edges (chunk→chunk) for a computed
-        figure, by chunk_id. Resolves each chunk's `(ref_id, ord)` and routes
-        through :meth:`add_link` (dedup + validation). Returns the count.
-        All chunks must already exist (the caller validated the draft)."""
+        """Create the figure→data `plots` edges for a computed figure, by
+        chunk_id. Resolves each chunk's `(ref_id, ord)` and routes through
+        :meth:`add_link` (dedup + validation). Returns the count. All
+        chunks must already exist."""
         with self.tx() as conn:
             rows = conn.execute(
                 "SELECT chunk_id, ref_id, ord FROM chunks WHERE chunk_id = ANY(%s)",
@@ -2732,15 +2606,12 @@ class DraftStore(_AbbrevMixin):
         return int(row[0]) if row is not None else None
 
     def figure_owning_draft(self, canvas_ref_id: int) -> tuple[int, int] | None:
-        """The ``(draft_ref_id, anchor_chunk_id)`` that owns this figure canvas
-        via the reverse ``has-figure`` edge, or ``None``.
-
-        The inverse of :meth:`figure_canvas_ref`: given a ``kind='figure'``
-        canvas ref, find the live draft **chunk** whose caption drew it. Used by
-        the diagram-propose loop (``precis.diagram.doc_context``) to open the
-        owning document as Layer-1 context. Joins ``refs`` so a soft-deleted
-        draft reads as absent (a free-standing figure gets no document context).
-        """
+        """The ``(draft_ref_id, anchor_chunk_id)`` owning this figure canvas
+        via the reverse ``has-figure`` edge, or ``None``. Inverse of
+        :meth:`figure_canvas_ref`: given a ``kind='figure'`` canvas, find
+        the live draft **chunk** whose caption drew it — used by the
+        diagram-propose loop (``precis.diagram.doc_context``) for Layer-1
+        context. Joins ``refs`` so a soft-deleted draft reads as absent."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 """SELECT l.src_ref_id, l.src_chunk_id
@@ -2803,12 +2674,10 @@ class DraftStore(_AbbrevMixin):
         return self.get_draft_chunk(handle)
 
     def set_chunk_style(self, handle: str, style: str | None) -> DraftChunk | None:
-        """Set (or clear) a heading chunk's section style.
-
-        Writes ``meta.style`` (a skill slug) in place — metadata-only, so it
-        never touches ``text``/``content_sha`` and triggers no re-embed.
-        ``style`` falsy clears it. Logs an ``edited`` event. A style is a
-        *section* concern, so it is rejected on a non-heading chunk."""
+        """Set (or clear) a heading chunk's section style. Writes
+        ``meta.style`` (a skill slug) in place — metadata-only, no
+        re-embed. ``style`` falsy clears it. Logs an ``edited`` event. A
+        *section* concern, rejected on a non-heading chunk."""
         with self.tx() as conn:
             row = conn.execute(
                 "SELECT chunk_id, chunk_kind, meta, retired_at "
@@ -2846,10 +2715,9 @@ class DraftStore(_AbbrevMixin):
 
     def patch_chunk_meta(self, handle: str, patch: dict[str, Any]) -> None:
         """Shallow-merge ``patch`` into a chunk's ``meta`` in place — a key
-        mapped to ``None`` is **removed** (clear a marker), any other value
-        set. Metadata-only, so ``text``/``content_sha`` are untouched and no
-        re-embed fires. Logs an ``edited`` event. Used by the plan handler's
-        ``status``/``belief`` markers. No-op on an empty patch."""
+        mapped to ``None`` is **removed**, any other value set.
+        Metadata-only, no re-embed. Logs an ``edited`` event. Used by the
+        plan handler's ``status``/``belief`` markers. No-op on empty patch."""
         if not patch:
             return
         with self.tx() as conn:
@@ -2895,11 +2763,11 @@ class DraftStore(_AbbrevMixin):
     )
 
     def set_term_attrs(self, handle: str, attrs: dict[str, Any]) -> DraftChunk | None:
-        """Patch a ``term`` leaf's attribute bag / hover surfaces in place
-         — ``manufacturer``/``mpn``/``url``/``ordering`` and the
-        ``short``/``surface_forms`` surfaces. Metadata-only, so ``text`` and
-        the embedding are untouched. A key set to ``None`` clears it; unknown
-        keys are ignored. Rejected on a non-``term`` chunk."""
+        """Patch a ``term`` leaf's attribute bag/hover surfaces in place —
+        ``manufacturer``/``mpn``/``url``/``ordering``/``short``/
+        ``surface_forms``. Metadata-only, no re-embed. A key set to
+        ``None`` clears it; unknown keys ignored. Rejected on a
+        non-``term`` chunk."""
         patch = {k: v for k, v in (attrs or {}).items() if k in self._TERM_ATTR_KEYS}
         with self.tx() as conn:
             row = conn.execute(
@@ -2945,17 +2813,14 @@ class DraftStore(_AbbrevMixin):
         source: dict[str, Any] | None = None,
     ) -> DraftChunk | None:
         """Switch a ``ulist``/``olist`` container's kind, or dissolve it to
-        normal text (migration 0037).
-
-        ``kind`` in ``{'ulist','olist'}`` flips the container's kind in place
-        — metadata-only, so it never touches any ``text``/``content_sha`` and
-        triggers no re-embed (the container carries no prose; its ``item``
-        children do). ``kind='normal'`` **dissolves** the list: each direct
-        ``item`` child becomes a ``paragraph`` (its text is unchanged, so its
-        embedding/summary stay valid) and is spliced into the container's slot
-        (subtree follows), then the container is retired. Rejects a non-list
-        handle. Returns the container chunk for an in-place flip, ``None``
-        after a dissolve (the container no longer exists)."""
+        normal text (migration 0037). ``kind`` in ``{'ulist','olist'}``
+        flips it in place — metadata-only, no re-embed (the container
+        carries no prose; its ``item`` children do). ``kind='normal'``
+        **dissolves** the list: each direct ``item`` becomes a
+        ``paragraph`` (text unchanged, embedding/summary stay valid) and
+        splices into the container's slot (subtree follows), then the
+        container retires. Rejects a non-list handle. Returns the
+        container for an in-place flip, ``None`` after a dissolve."""
         if kind not in ("ulist", "olist", "normal"):
             raise BadInput(
                 f"list kind must be 'ulist', 'olist' or 'normal'; got {kind!r}"
@@ -3037,15 +2902,13 @@ class DraftStore(_AbbrevMixin):
     def set_word_target(
         self, handle: str, target: tuple[int, int] | None
     ) -> DraftChunk | None:
-        """Set (or clear) a heading section's word target (proposal writing).
-
-        Writes ``meta.word_target = {"min": lo, "max": hi}`` in place —
-        metadata-only, so it never touches ``text``/``content_sha`` and
-        triggers no re-embed. ``target`` falsy clears it. Logs an
-        ``edited`` event. A word target is a *section* concern, so it is
-        rejected on a non-heading chunk. The wordcount view
-        (:func:`precis.utils.wordcount.aggregate_word_counts`) reads this
-        back to render the over/under verdict."""
+        """Set (or clear) a heading section's word target (proposal
+        writing). Writes ``meta.word_target = {"min": lo, "max": hi}`` in
+        place — metadata-only, no re-embed. ``target`` falsy clears it.
+        Logs an ``edited`` event. A *section* concern, rejected on a
+        non-heading chunk. Read back by
+        :func:`precis.utils.wordcount.aggregate_word_counts` for the
+        over/under verdict."""
         with self.tx() as conn:
             row = conn.execute(
                 "SELECT chunk_id, chunk_kind, meta, retired_at "
@@ -3084,13 +2947,10 @@ class DraftStore(_AbbrevMixin):
 
     def section_style_for(self, handle: str) -> str | None:
         """The nearest enclosing heading's section style (``meta.style``),
-        or ``None``.
-
-        Walks ``parent_chunk_id`` from the chunk upward; the chunk itself
-        counts when it is a styled heading. The heading-styles + numbering lock: a section style
-        governs the chunks within its heading's subtree, so the editor
-        injects the *nearest* enclosing one when working on a chunk.
-        Accepts any handle form (``dc<id>`` / ``¶base58`` / bare)."""
+        or ``None``. Walks ``parent_chunk_id`` upward (the chunk itself
+        counts if a styled heading) — a style governs its heading's whole
+        subtree, so the editor injects the *nearest* enclosing one. Accepts
+        any handle form (``dc<id>``/``¶base58``/bare)."""
         start = self.get_draft_chunk(handle)
         if start is None:
             return None
@@ -3116,11 +2976,11 @@ class DraftStore(_AbbrevMixin):
     def scaffold_sections(
         self, ref_id: int, sections: list[tuple[str, str | None]]
     ) -> list[str]:
-        """Lay down a genre's standard sections on a draft:
-        append one ``heading`` per ``(title, style)`` at the top level — after
-        any existing top-level chunks (e.g. the auto-minted title) — with
-        ``meta.style`` set. Returns the new ``dc`` handles. Used by the
-        new-draft flow to scaffold from the picked ``doc_type``."""
+        """Lay down a genre's standard sections: append one ``heading`` per
+        ``(title, style)`` at the top level, after any existing top-level
+        chunks (e.g. the auto-minted title), with ``meta.style`` set.
+        Returns the new ``dc`` handles. Used by the new-draft flow to
+        scaffold from the picked ``doc_type``."""
         if not sections:
             return []
         with self.tx() as conn:
@@ -3207,24 +3067,23 @@ class DraftStore(_AbbrevMixin):
         meta_patch: dict[str, Any] | None = None,
         kind: str = "draft",
     ) -> DraftChunk | None:
-        """In-place text edit: bump `content_sha`, log an `edited` event with
-        `prev_text`. The handle (and references to it) survive; derived data
-        re-derives on the sha mismatch.
+        """In-place text edit: bump `content_sha`, log an `edited` event
+        with `prev_text`. The handle (and references to it) survive;
+        derived data re-derives on the sha mismatch.
 
-        ``handle`` must be the legacy the draft editable-document model base-58 anchor
-        (``DraftChunk.handle``, optionally ``¶``-prefixed) — it's looked up
-        via ``chunks.handle``. The universal ``.dc`` handle
-        (``dc42``/``pe42``) does NOT work here and raises ``NotFound``.
+        ``handle`` must be the legacy base-58 anchor (``DraftChunk.handle``,
+        optionally ``¶``-prefixed), looked up via ``chunks.handle`` — the
+        universal ``.dc`` handle (``dc42``/``pe42``) raises ``NotFound``
+        here.
 
         Optimistic concurrency: pass ``base_sha`` (the ``content_sha`` the
-        caller saw when it read the chunk) to fail the edit if the chunk
-        changed underneath it — so two agents editing the same chunk don't
-        silently clobber each other. Omit it for a force-overwrite.
+        caller saw on read) to fail the edit if the chunk changed
+        underneath it, so two agents editing the same chunk don't silently
+        clobber each other. Omit for a force-overwrite.
 
-        ``meta_patch`` shallow-merges into ``chunks.meta`` (``meta || patch``,
-        NULL-safe) in the same statement — used to update a ``table``'s
-        canonical ``meta.table`` alongside its re-derived markdown ``text``
-        atomically.
+        ``meta_patch`` shallow-merges into ``chunks.meta`` (NULL-safe) in
+        the same statement — updates a ``table``'s canonical ``meta.table``
+        alongside its re-derived markdown ``text`` atomically.
         """
         sha = content_sha(text)
         with self.tx() as conn:
@@ -3328,13 +3187,11 @@ class DraftStore(_AbbrevMixin):
 
     def authored_provenance(self, ref_id: int) -> dict[int, str]:
         """``{chunk_id: authored_by}`` for live body chunks of ``ref_id``
-        that carry a machine-authored stamp (grounded-authoring reviewer,
-        paper-writing pipeline rung 3d) — either a NEW chunk's
-        ``chunks.meta->>'authored_by'`` or the latest grounded EDIT's
-        ``chunk_events.source->>'authored_by'`` (``event_kind='edited'``).
-        The value is the raw stamp, e.g. ``'review:cites'``. Only stamped
-        chunks appear. Same live-chunk filter as :meth:`reviewable_chunks`
-        (non-NULL ``content_sha``, not retired)."""
+        carrying a machine-authored stamp (grounded-authoring reviewer,
+        pipeline rung 3d) — a NEW chunk's ``chunks.meta->>'authored_by'``
+        or the latest grounded EDIT's ``chunk_events.source->>'authored_by'``
+        (raw stamp, e.g. ``'review:cites'``). Only stamped chunks appear.
+        Same live-chunk filter as :meth:`reviewable_chunks`."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 """
@@ -3359,10 +3216,10 @@ class DraftStore(_AbbrevMixin):
 
     def draft_authoring_enabled(self, ref_id: int) -> bool:
         """Per-document auto-author toggle (rung 3e):
-        ``refs.meta.authoring_enabled`` for ``ref_id``, default ``False``.
-        When on, the grounded review lenses (``cites``/``structure``) EDIT
-        the draft instead of only filing findings (see
-        :func:`precis.quest.review_fanout.mint_review_fanout`)."""
+        ``refs.meta.authoring_enabled``, default ``False``. When on, the
+        grounded review lenses (``cites``/``structure``) EDIT the draft
+        instead of only filing findings
+        (:func:`precis.quest.review_fanout.mint_review_fanout`)."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
@@ -3465,10 +3322,9 @@ class DraftStore(_AbbrevMixin):
         kind: str = "draft",
     ) -> None:
         """Soft-delete (retire) a chunk. A chunk with live children needs
-        `mode='cascade'` (retire the subtree) or `'promote'` (lift the
-        children to the parent). Refuses to retire the last live chunk.
-        ``kind`` is accepted for symmetry with the other plan-facing ops
-        (retire returns nothing, so it does not affect the return handle)."""
+        `mode='cascade'` (retire the subtree) or `'promote'` (lift children
+        to the parent). Refuses to retire the last live chunk. ``kind`` is
+        accepted only for symmetry with the other plan-facing ops."""
         with self.tx() as conn:
             row = self._row(conn, handle)
             if row is None:
@@ -3546,28 +3402,22 @@ class DraftStore(_AbbrevMixin):
         source: dict[str, Any] | None = None,
     ) -> DraftChunk | None:
         """Backspace-merge: append ``text`` onto ``prev_handle`` and retire
-        ``handle`` — as ONE transaction, so the two halves can never split
-        (gr176088 part 2b). The former route did this as two separate store
-        calls (``retire_chunk`` then ``edit_text``); a concurrent edit to
+        ``handle`` — ONE transaction, so the two halves can never split
+        (gr176088 part 2b). The former route did this as two store calls
+        (``retire_chunk`` then ``edit_text``); a concurrent edit to
         ``prev_handle`` landing between them was silently lost, and an
-        optimistic guard on the edit alone can't fix that: retire-first
-        orphans the retire on a conflicting edit, edit-first defeats
-        ``retire_chunk``'s own childless guard (the "is this actually
-        mergeable" check). Doing both under one lock + one guard pass makes
-        either the whole merge lands, or nothing does.
+        optimistic guard on the edit alone can't fix that (retire-first
+        orphans the retire on a conflicting edit; edit-first defeats
+        ``retire_chunk``'s own childless guard). One lock + one guard pass
+        makes either the whole merge land, or nothing.
 
-        Guards, checked inside the transaction (any failure raises
-        ``BadInput``/``NotFound``/``Gone`` and rolls back — no partial
-        write):
-
-        - ``base_sha`` (if given) must match ``prev_handle``'s *current*
-          content_sha, re-checked here rather than trusted from the
-          caller's earlier read — mirrors :meth:`edit_text`'s optimistic
-          guard.
-        - ``handle`` must still be retireable as a leaf: no live children
-          (mirrors ``retire_chunk``'s own guard — a chunk with kids raises
-          rather than partial-merging a subtree) and not the draft's last
-          live chunk.
+        Guards, inside the transaction (any failure raises
+        ``BadInput``/``NotFound``/``Gone``, rolls back, no partial write):
+        ``base_sha`` (if given) must match ``prev_handle``'s *current*
+        content_sha, re-checked here not trusted from the caller's earlier
+        read (mirrors :meth:`edit_text`); ``handle`` must still be
+        retireable as a leaf (no live children, not the draft's last live
+        chunk).
 
         Returns the merged ``prev_handle`` chunk (post-append)."""
         with self.tx() as conn:

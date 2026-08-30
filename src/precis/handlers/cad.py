@@ -513,9 +513,9 @@ class CadHandler(Handler):
         shapes = ", ".join(sorted({n.config.split(":")[0] for n in spec.nodes}))
         dims = ""
         try:
-            from precis.cad.bulk import _expr_aabb
+            from precis.cad.bulk import expr_aabb
 
-            lo, hi = _expr_aabb(design, design.whole())
+            lo, hi = expr_aabb(design, design.whole())
             dims = (
                 f" Bbox {hi[0] - lo[0]:.3g}x{hi[1] - lo[1]:.3g}x{hi[2] - lo[2]:.3g} mm."
             )

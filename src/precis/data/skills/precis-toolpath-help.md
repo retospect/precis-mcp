@@ -61,12 +61,8 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Inspect a ref's link graph | `get(kind='todo', id=N, view='links')` | `precis-relations` |
 | Read a ref's event trail | `get(kind='todo', id=N, view='log')` | — |
 
-`view='raw'` / `view='links'` / `view='log'` work on the **numeric-ref
-kinds** (`todo`, `memory`, `gripe`, `finding`, `job`, `anki`,
-`citation`, `folder`, `alert`, `agentlog`, `message`).
-Slug/file/compute kinds (`paper`, `draft`, `cad`, `structure`, `pcb`,
-`tex`, `markdown`, `python`, `md`, …) each expose their own view set
-instead — a bad `view=` returns that kind's option list.
+Which kinds accept `view='raw'`/`'links'`/`'log'`, and which expose
+their own view set instead, is in `precis-overview`.
 
 ## Capture and edit
 
@@ -83,8 +79,8 @@ instead — a bad `view=` returns that kind's option list.
 | Connect two refs | `link(kind='todo', id=141, target='todo:158', rel='blocked-by')` | `precis-link-help`, `precis-relations` |
 | Page a long response | `more(cursor='...')` (from a `Next: more(...)` footer) | — |
 
-`STATUS:` / `PRIO:` / `SRC:` / `CACHE:` are closed UPPERCASE prefixes —
-adding a new value replaces the old within that prefix atomically.
+Closed-prefix (`STATUS:`/`PRIO:`/`SRC:`/`CACHE:`) replace-within-axis
+semantics live in `precis-tags`.
 
 ## Tool answers (no slugs, pass `q=`)
 
@@ -161,7 +157,8 @@ what you read. Plugin kinds (`route`/`protein`), on where the tool-pack is enabl
 ## See also
 
 ```python
-get(kind="skill", id="precis-overview")  # kinds table + address scheme
+get(kind="skill", id="precis-overview")  # kinds table + address scheme + view roster
+get(kind="skill", id="precis-tags")  # tag axis vocabulary
 get(kind="skill", id="precis-help")  # verb table from the live registry
 get(kind="skill", id="toc")  # every skill, one-line synopsis
 ```

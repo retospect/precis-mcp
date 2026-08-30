@@ -340,21 +340,19 @@ class SearchMixin(RuntimeShape):
 
         The source-search primitive (see
         :meth:`Store.search_chunks_across_kinds`). Resolves the kind set
-        (single / comma-list / wildcard / omitted → every cross-kind
-        kind; kinds with no embedded chunks contribute nothing), embeds
-        ``q`` once, runs the single store query, and renders the per-ref
-        hits — each stamped with its own ``ref.kind`` so handles/labels
-        stay correct — as one pre-ordered stream (RRF over a single
-        stream preserves the store's relevance-or-recency order).
+        (single/comma-list/wildcard/omitted → every cross-kind kind;
+        kinds with no embedded chunks contribute nothing), embeds ``q``
+        once, runs the single store query, renders per-ref hits (each
+        stamped with its own ``ref.kind``) as one pre-ordered stream.
 
-        ``args['exclude_ref_ids']`` (set by ``_dispatch_inner``'s
-        ``uncited=`` resolution) threads straight into
+        ``args['exclude_ref_ids']`` (``_dispatch_inner``'s ``uncited=``
+        resolution) threads straight into
         :meth:`~precis.store._blocks_ops.BlocksMixin.search_chunks_across_kinds`,
-        which applies it in the ONE underlying SQL query across every
-        requested kind — the only search path with no per-kind support gap
-        to work around (unlike :meth:`_dispatch_cross_kind`'s per-handler
-        fan-out), so this is the recommended route for
-        ``uncited=`` when the target kind set includes patent/edgar.
+        applied in the ONE underlying SQL query across every kind — the
+        only search path with no per-kind support gap (unlike
+        :meth:`_dispatch_cross_kind`'s per-handler fan-out), so this is
+        the recommended route for ``uncited=`` when the target kinds
+        include patent/edgar.
         """
         store = self.hub.store
         if store is None:
@@ -871,33 +869,27 @@ class SearchMixin(RuntimeShape):
         kind: str,
         base_kwargs: dict[str, Any],
     ) -> list[SearchHit] | None:
-        """Call ``handler.search_hits`` with progressive-degradation retries.
+        """Call ``handler.search_hits`` with progressive-degradation
+        retries. Handlers' ``search_hits`` signatures vary in which
+        optional kwargs they accept (``tags=``, ``exclude=``, …); rather
+        than introspect ahead of time, try the full kwargs set first and
+        drop unknown kwargs on ``TypeError``, most-recent-addition first
+        (``exclude``, then ``tags``). Any non-TypeError exception is
+        logged and degraded to ``None`` so one broken kind doesn't crash
+        the whole query.
 
-        Handlers' ``search_hits`` signatures vary in which optional
-        kwargs they accept (``tags=``, ``exclude=``, …). Rather than
-        introspect the signature ahead of time, we try the full
-        kwargs set first and drop unknown kwargs on ``TypeError``,
-        most-recent-addition first (``exclude``, then ``tags``). Any
-        non-TypeError exception is logged and degraded to ``None``
-        so one slow / broken kind doesn't crash the whole query.
-
-        ``exclude_ref_ids=`` (``search(uncited=...)``'s resolved closure) is
-        deliberately NOT in the drop list above: every registered handler's
-        ``search_hits`` today declares ``**_kw`` (accepts and silently
-        ignores an unknown kwarg rather than raising ``TypeError``), so this
-        never actually triggers the retry path — and dropping it here would
-        be the exact silent-degrade the feature must avoid. The caller
-        (``_dispatch_cross_kind``) instead pre-filters ``kinds`` to exclude
-        the two kinds known to ignore it (see
-        :data:`~precis.runtime._shared.UNCITED_UNSUPPORTED_KINDS`); for
-        every kind still in the fan-out, ignoring the kwarg is provably
-        harmless (ref_ids are globally unique, so it can never wrongly
-        match a hit from an unrelated kind) or is actually honoured (the
-        ``PaperHandler`` family). If a future handler ever *does* raise
-        ``TypeError`` on ``exclude_ref_ids=`` (e.g. a stricter signature
-        with no ``**_kw``), that's an even safer failure than a silent
-        drop: this method's final fallback returns ``None`` — no hits from
-        that kind at all — rather than proceeding without the filter.
+        ``exclude_ref_ids=`` is deliberately NOT in the drop list: every
+        handler's ``search_hits`` today declares ``**_kw`` (silently
+        ignores unknown kwargs), so this never triggers the retry path —
+        dropping it here would be the exact silent-degrade the feature
+        must avoid. The caller (``_dispatch_cross_kind``) instead
+        pre-filters ``kinds`` to exclude the two known to ignore it
+        (:data:`~precis.runtime._shared.UNCITED_UNSUPPORTED_KINDS`); for
+        every remaining kind, ignoring the kwarg is provably harmless
+        (globally-unique ref_ids) or actually honoured. If a future
+        handler ever *does* raise ``TypeError`` on it, the final fallback
+        returns ``None`` — no hits from that kind — rather than
+        proceeding without the filter.
         """
         # Try the full set first.
         try:
@@ -941,28 +933,22 @@ class SearchMixin(RuntimeShape):
     ) -> list[SearchHit]:
         """Drop hits whose refs don't carry every required tag.
 
-        Correctness backstop for cross-kind fan-out. The fan-out
-        passes ``tags=`` to each handler's ``search_hits``, but most
-        handlers' signatures take ``**_kw`` and silently ignore
-        unknown kwargs — so ``tags=['workspace']`` was effectively a
-        no-op for every kind except numeric refs. That made the
-        advertised ``search(tags=['workspace'])`` scope-to-workspace
-        filter return hits from kinds (``think``, ``websearch``,
-        …) that can't carry the tag at all.
+        Correctness backstop for cross-kind fan-out: it passes ``tags=``
+        to each handler's ``search_hits``, but most handlers'
+        signatures take ``**_kw`` and silently ignore unknown kwargs —
+        so ``tags=['workspace']`` was effectively a no-op for every kind
+        except numeric refs, letting kinds that can't carry the tag
+        (``think``, ``websearch``, …) leak into a scoped search.
 
-        This method runs after every stream is collected: for each
-        hit it resolves ``ref_id`` (looking up via ``slug`` when
-        needed), fetches the ref-level tag set, and keeps only hits
-        whose tags are a superset of the required ones. Comparison
-        is on the canonical string form (``__str__``) so a flag
-        ``workspace`` and an open tag ``workspace`` are treated as
-        equivalent matches — there's no practical reason the agent
-        should care about the namespace of the tag they're
-        filtering by.
+        Runs after every stream is collected: resolves ``ref_id`` (via
+        ``slug`` when needed), fetches the ref-level tag set, keeps only
+        hits whose tags superset the required ones. Compares on the
+        canonical string form so a flag ``workspace`` and an open tag
+        ``workspace`` match equivalently.
 
-        Cost: one extra ``tags_for`` DB hit per surviving hit.
-        Acceptable for this axis (tag filters are relatively rare
-        in cross-kind search; correctness dwarfs throughput).
+        Cost: one extra ``tags_for`` DB hit per surviving hit —
+        acceptable since tag filters are rare in cross-kind search and
+        correctness dwarfs throughput here.
         """
         if self.hub.store is None or not required_tag_strings:
             return hits

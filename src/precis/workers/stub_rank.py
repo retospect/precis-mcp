@@ -1,88 +1,56 @@
 """stub_rank — S2-enrich, embed, and anchor-similarity re-rank paper stubs.
 
-A paper *stub* (``kind='paper'``, ``pdf_sha256 IS NULL`` — see
-:mod:`precis.store._stub_predicate`) has no chunk body for ``embed:bge-m3``
-or ``chase``'s salience machinery to reach — it's title/abstract metadata
-only, waiting on ``fetch_oa`` (or a human) to land the PDF. With thousands
-of open stubs and only so much acquisition bandwidth, this pass answers
-"which stubs matter *now*" so ``fetch_oa``'s quest-reweighted claim query
-and the operator-facing backlog surfaces (``stub_backlog`` /
-``search(view='stubs')``) can float the relevant ones instead of draining
-newest-first.
+A paper *stub* (``kind='paper'``, ``pdf_sha256 IS NULL`` —
+:mod:`precis.store._stub_predicate`) is title/abstract-only, invisible to
+``embed:bge-m3``/``chase``'s chunk-level machinery, waiting on
+``fetch_oa``/a human for its PDF. With thousands of open stubs, this pass
+ranks "which matter now" so ``fetch_oa``'s claim query and the
+``stub_backlog``/``search(view='stubs')`` surfaces float relevant stubs
+instead of draining newest-first.
 
-Each pass run does four steps, in order:
+Four steps per run:
 
-1. **Enrich** (:func:`_run_enrich`) — batch-resolves up to
-   :func:`_enrich_batch_size` pending stubs against Semantic Scholar
-   (:func:`precis.ingest.semantic_scholar.get_papers_batch`), merging
-   ``abstract`` (only when the ref has none yet — never clobbers an
-   existing abstract from a richer source), ``s2_fields``, and
-   ``s2_citation_count`` into ``refs.meta``. A stub S2 can't resolve still
-   gets ``meta.s2_enriched_at`` stamped (+ ``s2_enrich_failed: true``) so
-   it isn't retried every pass forever — mirrors ``openalex_enrich``'s
-   miss-stamp convention.
+1. **Enrich** (:func:`_run_enrich`) — batch-resolves pending stubs
+   (up to :func:`_enrich_batch_size`) against Semantic Scholar, merging
+   ``abstract`` (only if absent — never clobbers a richer source),
+   ``s2_fields``, ``s2_citation_count`` into ``refs.meta``. An
+   unresolvable stub gets ``meta.s2_enriched_at``+``s2_enrich_failed`` so
+   it isn't retried forever (mirrors ``openalex_enrich``'s miss-stamp).
+2. **Embed** (:func:`_run_embed`) — enriched-but-unvectored stubs get
+   ``title + "\\n\\n" + abstract`` (title alone if no abstract) embedded
+   into ``ref_embeddings`` (parallel to ``chunk_embeddings``, keyed on
+   ``ref_id`` — a stub has no chunk).
+3. **Rank** (:func:`_run_rank`) — global recompute over every vectored
+   pending stub: score = best cosine match against weighted anchors
+   (every active quest's ``card_combined`` vector, weight 1.0; every
+   paper opened in the last :func:`_opened_days` days, anchored on its
+   own mean early-chunk vector, weight decaying by
+   :func:`_half_life_days` half-life since open). Percentile → CANON prio
+   (1=hottest..10=coldest); tag clamps then adjust (explicit-acquisition
+   floors at 3; obscure-discovery-poor-score sinks to 9). A ref already
+   prioritised by a human/quest (``prio IS NOT NULL AND
+   meta.prio_by != 'stub_rank'``) is untouched; no anchors → logged no-op.
+4. **LLM band** (:func:`_run_llm_band`) — the uncertain
+   :func:`_llm_band_lo`-:func:`_llm_band_hi` percentile middle (default
+   30-70th) is where the anchor-cosine score is least trustworthy. Each
+   still-unlabeled candidate in the band (capped by
+   :func:`_llm_batch_limit`) gets one SMALL-tier LLM call against active
+   quests' title+mission, labeled ``core``/``adjacent``/``explore``/``off``
+   + reason, stamped once into ``refs.meta`` (decision log: percentile,
+   model, timestamp, cost, tokens — queryable via ``llm_label IS NOT NULL``
+   for a future outcome join against acquisition/open events). The label
+   is one-time; step 3 applies it as a fixed prio delta (-2/0/+1/+2,
+   clamped 1..9 before tag overrides) on every subsequent re-rank without
+   re-calling the LLM. No mission-carrying quest, no ``band_client``, or a
+   zero batch cap → logged no-op.
 
-2. **Embed** (:func:`_run_embed`) — every enriched-but-unvectored stub
-   gets ``title + "\\n\\n" + abstract`` (title alone with no abstract)
-   embedded and written to :data:`ref_embeddings <precis.migrations.
-   0116_ref_embeddings>` (parallel to ``chunk_embeddings`` but keyed
-   straight to ``ref_id`` — a stub has no chunk to hang a vector off of).
-
-3. **Rank** (:func:`_run_rank`) — a *global* recompute over every pending
-   stub that now has a vector: each stub's score is the best cosine match
-   against a set of weighted anchor vectors —
-
-   * every **active quest**'s ``card_combined`` chunk vector, weight 1.0
-     (a quest's mission statement, reused verbatim — see
-     :meth:`~precis.store.Store.upsert_card_combined`);
-   * every paper opened in the last
-     :func:`_opened_days` days (``ref_events.source='manual:open'``),
-     anchored on the mean of its own first few chunk vectors, weight
-     decaying with an exponential half-life (:func:`_half_life_days`) off
-     the most recent open.
-
-   A stub's percentile rank among all scored stubs maps to CANON prio
-   (1=hottest..10=coldest, see ``store/types.py``); two tag-driven clamps
-   then adjust it (an explicit acquisition request floors the prio at 3;
-   an obscure citation-graph discovery with a poor score sinks to 9). A
-   ref a human or a quest has already prioritised
-   (``prio IS NOT NULL AND meta.prio_by != 'stub_rank'``) is never
-   touched. No anchors available (no active quests, nothing opened
-   recently) is a logged no-op — there's nothing to rank *against*.
-
-4. **LLM band** (:func:`_run_llm_band`) — the *uncertain middle* of the
-   percentile distribution (:func:`_llm_band_lo`..:func:`_llm_band_hi`,
-   default the 30th-70th percentile) is exactly where the anchor-cosine
-   score is least trustworthy: a stub scoring near the top or bottom is
-   already well-served by step (c)'s pure ranking, but the middle band is
-   where a cheap SMALL-tier LLM judgment against the user's *current*
-   interests (active quests' title + mission card) earns its cost. Each
-   still-unlabeled candidate in the band (up to :func:`_llm_batch_limit`
-   per pass — the cost guard) gets **one** LLM call, labeled
-   ``core``/``adjacent``/``explore``/``off`` with a one-line reason,
-   stamped once into ``refs.meta`` (``llm_label``, ``llm_reason``,
-   ``llm_band`` — the decision-log entry: percentile, model, timestamp,
-   cost, tokens). The label is a **one-time** classification — step (c)
-   then applies it as a fixed prio *delta* (``core`` -2 / ``adjacent`` 0 /
-   ``explore`` +1 / ``off`` +2, clamped to 1..9 before :func:`_clamp_prio`'s
-   tag-driven overrides run) on **every** subsequent re-rank, so the
-   adjustment survives recomputes without re-calling the LLM. No active
-   quest carries a mission card, or the pass is given no ``band_client`` /
-   a zero batch cap → the whole step is a logged no-op (nothing to judge
-   against, or the cost guard is fully closed). The decision log itself is
-   queryable with ``WHERE meta->>'llm_label' IS NOT NULL`` — every labeled
-   stub's features + label live in ``refs.meta``, ready for a future
-   outcome join against ``ref_events`` / ``pdf_sha256`` (did the label
-   predict what got acquired/opened).
-
-Registered as the ``stub_rank`` :class:`~precis.workers.registry.
-ServiceSpec` (system profile, alongside ``fetch``/``openalex_enrich`` —
-see ``workers/registry.py``); wired in ``cli/worker.py``'s ``_register``.
+Registered as the ``stub_rank`` :class:`~precis.workers.registry.ServiceSpec`
+(system profile, alongside ``fetch``/``openalex_enrich``); wired in
+``cli/worker.py``'s ``_register``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import Callable
@@ -96,6 +64,7 @@ from precis.embedder import Embedder
 from precis.ingest.semantic_scholar import get_papers_batch, s2_stub_meta
 from precis.store import Store
 from precis.store._stub_predicate import stub_predicate_sql
+from precis.utils.llm.json_reply import extract_json_object
 
 log = logging.getLogger(__name__)
 
@@ -779,25 +748,6 @@ _BAND_SYS = (
 )
 
 
-def _extract_json(text: str) -> dict[str, Any] | None:
-    """Parse a small JSON object out of an LLM reply — the whole string,
-    or (a model that wraps it in prose) the first ``{``..last ``}``
-    slice. Mirrors ``workers/classify.py``'s ``_extract_json``."""
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            return json.loads(text[a : b + 1])
-        except Exception:
-            return None
-    return None
-
-
 def _load_interest_profile(store: Store) -> str:
     """``- {quest title}: {card text}`` per active quest with a mission
     card, one line each, capped at :data:`_INTEREST_PROFILE_MAX_CHARS`
@@ -970,7 +920,7 @@ def _run_llm_band(
                     {"role": "user", "content": prompt},
                 ]
             )
-            parsed = _extract_json(result.text)
+            parsed = extract_json_object(result.text)
             label = parsed.get("label") if parsed else None
             if not isinstance(label, str) or label not in _VALID_LLM_LABELS:
                 raise ValueError(f"invalid/missing label: {label!r}")

@@ -8,7 +8,7 @@ by walking children. It finds it by the ``requested`` link instead
 
 Resolves to ``True`` when any job this todo ``requested`` has reached
 ``STATUS:succeeded``. Failure is *not* reported here — the
-failure-bubble (``handlers/_job_bubble.py``) tags the requester
+failure bubble (``handlers/_job_bubble.py``) tags the requester
 ``child-failed:<job_id>`` on a failed build, which the doable view
 excludes, exactly mirroring the intent-lane contract. A cache *hit*
 never reaches this evaluator: the structure handler returns the relaxed

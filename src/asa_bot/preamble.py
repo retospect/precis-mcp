@@ -17,15 +17,14 @@ parallel. Total wall-clock ~50ms over the tailnet.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from asa_bot.config import PreambleConfig
 from asa_bot.precis_client import PrecisClient
+from precis.utils.llm.json_reply import extract_json_object
 
 log = logging.getLogger(__name__)
 
@@ -463,7 +462,7 @@ def _render_last_turn_signal(blob: str, now: datetime) -> str:
     if not blob.strip() or "no turns" in blob.lower():
         return ""
     # The view='last-meta' renderer returns a fenced JSON block.
-    payload = _extract_json_block(blob)
+    payload = extract_json_object(blob)
     if not payload:
         return ""
     stop_reason = payload.get("stop_reason")
@@ -486,19 +485,6 @@ def _render_last_turn_signal(blob: str, now: datetime) -> str:
         if cache_read == 0:
             bits.append(f"cache: 0 read / {cache_create} created — cold")
     return "## Last turn\n\n" + "; ".join(bits)
-
-
-_JSON_BLOCK_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
-
-
-def _extract_json_block(blob: str) -> dict[str, Any] | None:
-    m = _JSON_BLOCK_RE.search(blob)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(1))
-    except (json.JSONDecodeError, ValueError):
-        return None
 
 
 async def _safe(coro: Any) -> str:

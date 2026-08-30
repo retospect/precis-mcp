@@ -1,43 +1,36 @@
 """Per-host liveness — the collection+upsert core behind ``precis heartbeat``.
 
-Refactored out of ``cli/heartbeat.py`` (§A) so the exact same collection
-logic backs BOTH the manual/cron-fired ``precis heartbeat`` CLI (still live —
-the launchd (Macs) / systemd-timer (spark) heartbeat timers on every node
-keep firing until §L retires them) AND a new ``heartbeat`` **worker pass**
-(registry ``category="health"``, ``default_profiles=_SYS`` — every node's
-system worker) that runs it once more per cycle.
+Backs both the manual/cron-fired ``precis heartbeat`` CLI (launchd/systemd
+timers still fire it on every node) and a ``heartbeat`` worker pass
+(registry ``category="health"``, ``default_profiles=_SYS``) that runs it
+once more per cycle.
 
-The pass is deliberately **NOT** on ``scheduler_leases`` (:mod:`precis.workers.
-scheduler`) — heartbeat is the liveness signal that lease/claim machinery
-(and every other health check) is judged by, so it must never depend on the
-claim machinery it would be used to judge. Instead it self-throttles with a
-plain in-process timestamp (module-level state, NOT a DB round-trip) to at
-most once per ``PRECIS_HEARTBEAT_INTERVAL_SECONDS`` (default 60) — a
-double-fire against the still-live launchd/systemd timer is a harmless
-idempotent UPSERT, so no coordination between the two triggers is needed.
+**Not on** ``scheduler_leases`` (:mod:`precis.workers.scheduler`) —
+heartbeat is the liveness signal the lease/claim machinery is judged by,
+so it must never depend on that machinery. Self-throttles instead with a
+plain in-process timestamp (module-level, not a DB round-trip) to at most
+once per ``PRECIS_HEARTBEAT_INTERVAL_SECONDS`` (default 60); a double-fire
+against the still-live launchd/systemd timer is a harmless idempotent
+UPSERT.
 
-Collects load average and a best-effort CPU temperature and UPSERTs one row
-into ``host_heartbeat`` (migration 0017). The web Status tab reads the table
-to show "which machines are alive and is any of them hot". Identity matches
-the DB log handler: ``host`` is ``PRECIS_HOST_NAME`` or
-``socket.gethostname()`` so heartbeat rows and ``worker_logs`` rows agree on
-the same host name.
+Collects load average and a best-effort CPU temperature, UPSERTs one row
+into ``host_heartbeat`` (migration 0017) — the web Status tab's "which
+machines are alive and is any hot" source. ``host`` is
+``PRECIS_HOST_NAME`` or ``socket.gethostname()``, matching the DB log
+handler's identity so heartbeat and ``worker_logs`` rows agree.
 
-Temperature is genuinely hard to read portably, so it is best-effort in
-priority order:
+Temperature is best-effort, priority order:
 
-1. ``PRECIS_TEMP_CMD`` — a shell command whose stdout's first float is parsed
-   as °C. The escape hatch for any sensor (IPMI, a custom script) without
-   baking platform logic here.
-2. Linux ``/sys/class/thermal/thermal_zone*/temp`` (millidegrees), max across
-   zones.
-3. macOS — read the SoC thermal sensors through IOKit's HID event system
-   (``ctypes``, unprivileged, no install); on the old Intel path fall back to
-   the ``osx-cpu-temp`` brew binary. Apple Silicon exposes no sensor files
-   and ``osx-cpu-temp`` reads Intel-only SMC keys (returns 0.0), so the IOKit
-   read is the only numeric source short of ``sudo powermetrics`` (which
-   itself gives only a qualitative thermal-pressure level on Apple Silicon).
-4. ``None`` — the host still reports load + liveness.
+1. ``PRECIS_TEMP_CMD`` — shell command, first float in stdout parsed as
+   °C (escape hatch for any sensor without baking platform logic here).
+2. Linux ``/sys/class/thermal/thermal_zone*/temp`` (millidegrees), max
+   across zones.
+3. macOS — SoC thermal sensors via IOKit's HID event system (``ctypes``,
+   unprivileged); old-Intel path falls back to the ``osx-cpu-temp`` brew
+   binary. Apple Silicon exposes no sensor files and ``osx-cpu-temp``
+   reads Intel-only SMC keys (returns 0.0), so IOKit is the only numeric
+   source short of ``sudo powermetrics`` (qualitative-only there).
+4. ``None`` — host still reports load + liveness.
 """
 
 from __future__ import annotations

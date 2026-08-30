@@ -34,7 +34,6 @@ docs/backlog/reading-prep-loop.md (§The three genuinely hard parts, decision 3)
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -50,6 +49,7 @@ from precis.reading.mastery import (
     LEECH_LAPSES,
     _env_float,
 )
+from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -152,24 +152,6 @@ class ForgeReport:
         if self.skipped:
             out.append(f"skipped {self.skipped} concept(s) (model gave no valid card)")
         return out
-
-
-def _extract_json(text: str) -> dict | None:
-    if not text:
-        return None
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            obj = json.loads(text[a : b + 1])
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            return None
-    return None
 
 
 def cloze_skill_preamble() -> str:
@@ -335,7 +317,7 @@ def mint_daily_cards(
                 {"role": "user", "content": "\n".join(lines)},
             ]
         )
-        data = _extract_json(getattr(out, "text", "") or "")
+        data = extract_json_object(getattr(out, "text", "") or "")
         cards = (data or {}).get("cards") or []
         skip_reason = str((data or {}).get("skip_reason") or "").strip()
         minted: list[int] = []
@@ -527,7 +509,7 @@ def rework_stale_cards(
                     {"role": "user", "content": "\n".join(lines)},
                 ]
             )
-            data = _extract_json(getattr(out, "text", "") or "") or {}
+            data = extract_json_object(getattr(out, "text", "") or "") or {}
             text = str(data.get("text") or "").strip()
             extra = str(data.get("back_extra") or "").strip()
             if extra:

@@ -104,7 +104,7 @@ class RenderResult:
     ``ok`` is True only when the child exited 0 and produced a PNG; ``png`` then
     holds the bytes. On failure ``error`` is a short tag — ``"timeout"``,
     ``"no-output"``, ``"oversize"``, or ``"exit:<n>"`` — and ``stderr`` carries
-    the child's traceback for the failure-bubble.
+    the child's traceback for the failure bubble.
     """
 
     ok: bool

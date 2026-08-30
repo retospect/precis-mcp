@@ -949,30 +949,26 @@ _PAPER_EVIDENCE_CANDIDATE_SQL = """
 def _backfill_grounding(store: Store, *, dry_run: bool) -> dict[str, Any]:
     """Upgrade ref-level taproot/draft citation edges to chunk-grounded.
 
-    Two independent passes, both idempotent (a live edge that's already
-    grounded, or one that stays unresolvable, is a no-op — never an
-    error) and both re-runnable (safe to invoke again after new drafts /
-    evidence edges land):
+    Two independent passes, both idempotent (an already-grounded or
+    still-unresolvable edge is a no-op, never an error) and re-runnable:
 
-    PART A — draft ``cites``/``related-to`` auto-mention edges. Re-running
-    the (already-fixed) draft autolinker
+    PART A — draft ``cites``/``related-to`` auto-mention edges.
+    Re-running the draft autolinker
     (:meth:`~precis.handlers.draft.DraftHandler.sync_draft_links`) over
-    every draft that still carries a ref-level auto-mention edge migrates
-    it to chunk-grounded — the resync drops the stale ref-level rows and
-    re-adds them at the citing chunk's ord.
+    every draft still carrying a ref-level auto-mention edge migrates it
+    to chunk-grounded (drops the stale ref-level rows, re-adds at the
+    citing chunk's ord).
 
-    PART B — paper/patent evidence edges (``corroborates`` / ``establishes``
-    / ``contradicts``) that carry a ``meta.source_handle`` but were never
-    grounded (written before the grounding fix, or via a path that didn't
-    thread ``src_pos``). Resolves the handle to its chunk via
+    PART B — paper/patent evidence edges (``corroborates``/
+    ``establishes``/``contradicts``) with a ``meta.source_handle`` but
+    never grounded (pre-fix, or a path that didn't thread ``src_pos``).
+    Resolves the handle to its chunk via
     :func:`precis.taproot.hub._grounding_chunk_ord` and sets
-    ``src_chunk_id`` directly with a bare ``UPDATE`` — there's no handler
-    write path for "re-ground an existing edge in place". A
-    ``UniqueViolation`` (a chunk-grounded edge for that exact tuple already
-    exists) is caught per-row and counted, never aborting the run.
+    ``src_chunk_id`` via a bare ``UPDATE`` (no handler write path exists
+    for "re-ground in place"). A ``UniqueViolation`` (already-grounded
+    for that tuple) is caught per-row and counted, never aborting.
 
-    ``dry_run=True`` writes nothing — every count below reports what WOULD
-    happen.
+    ``dry_run=True`` writes nothing — counts report what WOULD happen.
     """
     from psycopg.errors import UniqueViolation
 
@@ -1697,31 +1693,28 @@ def _run_lint_fix(
     set_by: str,
     results: list[dict[str, Any]],
 ) -> bool:
-    """Propose (``apply=False``) or write (``apply=True``) mechanically-safe
-    notation fixes. Appends one entry per hub to the caller-owned ``results``
-    and returns ``notation_available``.
+    """Propose (``apply=False``) or write (``apply=True``)
+    mechanically-safe notation fixes. Appends one entry per hub to the
+    caller-owned ``results`` and returns ``notation_available``.
 
-    ``results`` is a parameter rather than a return value **so a mid-batch
-    failure still reports what already committed.** Each
-    ``refine_claim_sentence`` call commits its own transaction, so a raise on
-    hub N leaves hubs 1..N-1 live-rewritten; returning the list would discard
-    that record and leave an operator diffing the cohort by hand. Same
-    discipline as :func:`_run_mint`.
+    ``results`` is a parameter, not a return value, **so a mid-batch
+    failure still reports what already committed** — each
+    ``refine_claim_sentence`` call commits its own transaction, so a
+    raise on hub N leaves hubs 1..N-1 live-rewritten; returning the list
+    would discard that record (same discipline as :func:`_run_mint`).
 
-    ``normalize_notation`` is imported defensively -- a sibling agent may
-    still be landing it in ``precis.taproot.notation`` -- so this degrades
-    to ``(``[]``, False)`` rather than an ``ImportError``/``AttributeError``
-    when it hasn't shipped yet.
+    ``normalize_notation`` is imported defensively (a sibling agent may
+    still be landing it), degrading to ``([], False)`` rather than
+    Import/AttributeError if unshipped.
 
     An ``apply=True`` write goes through
-    :func:`~precis.taproot.hub.refine_claim_sentence` -- the existing write
-    door that updates ``refs.title`` AND the ``ord=0`` body chunk inside
-    one transaction, so they cannot diverge -- which itself reads
-    ``refs.title`` back and asserts it equals the intended (stripped)
-    sentence exactly, raising
-    :class:`~precis.taproot.hub.TitleRoundTripError` (propagated to
-    :func:`_run_lint`) otherwise. No separate check is needed here -- the
-    write door owns the guarantee for every caller, not just this CLI.
+    :func:`~precis.taproot.hub.refine_claim_sentence` — the write door
+    that updates ``refs.title`` AND the ``ord=0`` body chunk in one
+    transaction so they can't diverge, and itself reads ``refs.title``
+    back to assert an exact match, raising
+    :class:`~precis.taproot.hub.TitleRoundTripError` otherwise. No
+    separate check needed here — the write door owns the guarantee for
+    every caller.
     """
     import importlib
 

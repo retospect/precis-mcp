@@ -38,7 +38,6 @@ up in the next tick's pending set (``unintegrated_papers``).
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any, cast
 
 from precis.errors import BadInput, NotFound
@@ -46,6 +45,7 @@ from precis.quest.citation_mint import mint_citation
 from precis.quest.claims import extract_claims, own_chunks
 from precis.store.types import Relation
 from precis.utils.eye_render import render_eye
+from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -67,31 +67,6 @@ _VALID_DISPOSITIONS: frozenset[str] = frozenset(
 #: disposition edge. The other two dispositions (``superseded-in`` /
 #: ``off-topic-for``) add only the edge — see the module docstring.
 _CITING_DISPOSITIONS: frozenset[str] = frozenset({"cited-in", "corroborates"})
-
-
-def _extract_json_object(text: str) -> dict[str, Any] | None:
-    """Parse ``text`` as a JSON *object*, tolerating surrounding prose.
-
-    Mirrors ``precis.quest.claims._extract_json`` / ``workers.classify_topics``'s
-    ``_extract_json``, but the weave's payload shape is an object
-    (``{"section_text": ..., "papers": [...]}``), not an array — this looks
-    for ``{`` / ``}`` instead of ``[`` / ``]``.
-    """
-    if not text:
-        return None
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            parsed = json.loads(text[a : b + 1])
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-    return None
 
 
 def _fallback_text(store: Store, paper_ref_id: int, ref: Any | None) -> str:
@@ -347,7 +322,7 @@ def weave_section(
                 {"role": "user", "content": prompt},
             ]
         )
-        parsed = _extract_json_object(out.text)
+        parsed = extract_json_object(out.text)
     except Exception:
         parsed = None
 

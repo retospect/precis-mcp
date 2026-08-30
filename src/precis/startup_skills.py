@@ -109,10 +109,8 @@ def resolve(
     would fail when the agent calls the kind, so we'd rather not
     teach unusable knowledge.
     """
-    from precis.handlers.skill import (
-        _kinds_referenced_by_skill,
-        _parse_frontmatter,
-    )
+    from precis.handlers._skill_common import parse_frontmatter
+    from precis.handlers.skill import _kinds_referenced_by_skill
 
     known_set = set(known())
     pinned: list[str] = []
@@ -140,7 +138,7 @@ def resolve(
             truncated.append(slug)
             continue
         if unavailable_kinds:
-            referenced = _kinds_referenced_by_skill(slug, _parse_frontmatter(body))
+            referenced = _kinds_referenced_by_skill(slug, parse_frontmatter(body))
             if any(k in unavailable_kinds for k in referenced):
                 kind_unavailable.append(slug)
                 continue

@@ -20,9 +20,8 @@ result to ``email_scan``; tests exercise it directly.
 
 from __future__ import annotations
 
-import json
-
 from precis.utils.inject_scan import TIER0_VERSION, Tier0Result, scan_tier0
+from precis.utils.llm.json_reply import extract_json_object
 
 #: Bump when the tier-1 prompt / verdict schema changes (re-scan trigger for
 #: the model rung, mirroring ``TIER0_VERSION``).
@@ -84,33 +83,14 @@ def parse_tier1_verdict(text: str) -> tuple[str | None, str]:
     unparseable / off-schema (the caller treats ``None`` as a scan failure and
     leaves the row pending for a retry — it never silently downgrades).
     """
-    obj = _extract_json(text)
-    if not isinstance(obj, dict):
+    obj = extract_json_object(text)
+    if obj is None:
         return None, ""
     verdict = str(obj.get("verdict", "")).strip().lower()
     reason = str(obj.get("reason", "")).strip()
     if verdict not in TIER1_VERDICTS:
         return None, reason
     return verdict, reason
-
-
-def _extract_json(text: str) -> dict | None:
-    """Best-effort JSON object out of a model reply (mirrors classify)."""
-    if not text:
-        return None
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            obj = json.loads(text[a : b + 1])
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            return None
-    return None
 
 
 __all__ = [

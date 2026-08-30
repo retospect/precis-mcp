@@ -252,7 +252,7 @@ class RouteHandler(Handler):
         """Link the requesting todo to the job + arm its wait.
 
         ``requester --requested--> job`` (the edge ``derived_job_succeeded`` +
-        the failure-bubble follow), then inject that evaluator as the todo's
+        the failure bubble follow), then inject that evaluator as the todo's
         ``auto_check`` when it has none. Idempotent. Copied from
         ``StructureHandler._wire_requester``.
         """

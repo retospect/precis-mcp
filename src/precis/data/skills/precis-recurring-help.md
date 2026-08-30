@@ -100,9 +100,8 @@ marked expired instead of firing.
 
 `meta.deliver = {'target': 'conv:discord/<g>/<c>/<t>'}` marks a
 recurring for **push** delivery instead of queue-mode spawning: a due
-tick fires a synthetic prompt at asa_bot via
-`pg_notify('precis.cron', {cron_id, payload, target})`, built from the
-recurring's own title/text. asa_bot drives a full Claude turn against
+tick fires a synthetic prompt at asa_bot, built from the recurring's own
+title/text. asa_bot drives a full Claude turn against
 it and posts the response to the target conversation — **no subtask
 lands in the doable queue** for a delivery-mode tick; the tick's
 action *is* the delivery.

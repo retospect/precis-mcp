@@ -14,7 +14,7 @@ status: active
 
 `health_digest` (`docs/backlog/self-healing-spine.md` Layer 2) is the
 slow-rot sibling of `nursery` (`precis-nursery-help`): nursery's `critical`
-lane pages the moment a worker/dispatch outage happens, but many outcomes
+severity class pages the moment a worker/dispatch outage happens, but many outcomes
 degrade over hours-to-days with nothing that urgent watching them (a
 discovery pass silently going dark, a cadence that stopped firing, a
 registered pass with zero activity). `health_digest` is the periodic,
@@ -53,7 +53,7 @@ In production it fires once an hour, wherever the cadence lease lands.
    when a paper landed past budget *newer* than the newest body chunk;
    quiet when no new paper is waiting (idle, not stuck). There is
    deliberately **no** curated row for `dream_agent` / `anki_sync` — a
-   fixed budget here would contradict the derived cadence-staleness lane
+   fixed budget here would contradict the derived cadence-staleness check
    below the moment an operator raises the live interval (dream's
    DB-overridable knob); cadence staleness is their only check, watching
    the resolved interval automatically.
@@ -77,7 +77,7 @@ In production it fires once an hour, wherever the cadence lease lands.
    quest_loop_reconcile), `pass-wedged` (fresh heartbeat + stale
    `meta.activity.since`), `llm-degraded` (per model/transport/placement
    error rate), `dead-generation-claims` (epoch-dead claims outliving the
-   claim reaper — the reclaim lane's own watchdog). Findings with a
+   claim reaper — the reclaim path's own watchdog). Findings with a
    whitelisted heal run through `workers/bounded_heal.py`
    (attempts/cooldown/cap-then-gripe); the only action is restart-once
    (`cap=1`), dark until `PRECIS_RESTART_ONCE_ENABLED=1`.
@@ -86,8 +86,8 @@ In production it fires once an hour, wherever the cadence lease lands.
 
 Each non-`ok` check raises a `kind='alert'` under
 `alert_source="watchdog:<group>"` (fingerprint = the check name), severity
-capped to `info`/`warn` — nursery keeps the `critical` lane, this pass never
-pages. `resolve_stale_alerts` auto-closes whatever goes fresh again, same
+capped to `info`/`warn` — nursery keeps the `critical` severity class, this
+pass never pages. `resolve_stale_alerts` auto-closes whatever goes fresh again, same
 dedup/lifecycle as nursery (see `precis-alert-help`).
 
 ## Remediation router (Phase 2)
@@ -144,7 +144,7 @@ a total fleet/DB outage. Dark by default. See
 
 ## Related skills
 
-* `precis-nursery-help` — the `critical`, page-now sibling tier (also
-  carries the `host-dark` detector, gr186752's fix, which `health_digest`'s
-  own `hosts_alive` check mirrors as a non-paging digest line)
+* `precis-nursery-help` — the `critical`, page-now sibling reviewer (also
+  carries the `host-dark` detector, which `health_digest`'s own
+  `hosts_alive` check mirrors as a non-paging digest line)
 * `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)

@@ -2,7 +2,7 @@
 
 Extracted from ``precis.handlers.python``'s original
 ``parse_python_roots`` so the ``python`` and ``md`` kinds — and any
-future in-memory, env-gated tree kind — share one parser instance
+future in-memory kind gated behind a dark switch — share one parser instance
 rather than drifting copies. See the :mod:`precis.md_index` package
 docstring for the ``md`` kind's design.
 

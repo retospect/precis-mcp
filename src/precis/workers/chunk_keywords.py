@@ -391,7 +391,7 @@ def write_chunk_keywords(
     # NULL and ``jsonb_set`` then returns NULL — nulling the *entire*
     # envelope (version included), which makes the claim query
     # (``keywords_meta->>'version' IS DISTINCT FROM …``) re-claim the row
-    # forever (a spin-loop). ``jsonb_build_object`` maps a NULL value to a
+    # forever (a spin loop). ``jsonb_build_object`` maps a NULL value to a
     # JSON ``null`` and the ``||`` merge preserves the rest of the envelope.
     conn.execute(
         """

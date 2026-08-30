@@ -49,7 +49,6 @@ docs/decisions/0060-topic-dossiers.md.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from collections import Counter
 from collections.abc import Iterable
@@ -59,6 +58,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from precis.store.types import Tag
+from precis.utils.llm.json_reply import extract_json_object
 from precis.workers import ref_lease
 
 if TYPE_CHECKING:
@@ -117,22 +117,10 @@ def topic_marker_value(enabled_slugs: Iterable[str]) -> str:
     return f"{CLASSIFY_TOPICS_VERSION}-{digest}"
 
 
-def _extract_json(text: str) -> dict[str, Any] | None:
-    if not text:
-        return None
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-    a, b = text.find("{"), text.rfind("}")
-    if 0 <= a < b:
-        try:
-            parsed = json.loads(text[a : b + 1])
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-    return None
+#: Kept as a module-level alias (not just an inline call) — a direct-import
+#: test (``tests/test_classify_topics.py``) exercises the tolerant-parse
+#: contract by name.
+_extract_json = extract_json_object
 
 
 def _tier0_candidates(topics: list[dict[str, Any]], haystack: str) -> list[str]:
@@ -225,7 +213,7 @@ def _classify_one(
         # greppable rather than invisible.
         log.warning("classify_topics dispatch failed for %r: %r", title[:80], exc)
         return None
-    parsed = _extract_json(out.text)
+    parsed = extract_json_object(out.text)
     if parsed is None:
         return None
     raw = parsed.get("topics")

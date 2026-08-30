@@ -32,7 +32,7 @@ class RenderOutcome:
     ``error`` is a short tag on failure — ``"not-a-graph"`` (no render
     recipe), ``"no-data"`` (no plotted tables), or the engine's own tag
     (``"timeout"`` / ``"exit:n"`` / ``"no-output"``); ``detail`` carries the
-    child stderr for the failure-bubble.
+    child stderr for the failure bubble.
     """
 
     ok: bool

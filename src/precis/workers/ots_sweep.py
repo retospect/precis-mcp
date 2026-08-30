@@ -18,7 +18,7 @@ One fire does, in order:
    run periodically rather than on demand — this cadence IS the period.
 
 DARK unless ``PRECIS_OTS_ENABLED=1`` (the cadence's ``eligible`` gate,
-same pattern as ``structural``'s env gate): steps 1–2 talk to the OTS
+same pattern as ``structural``'s dark switch): steps 1–2 talk to the OTS
 calendar — a 32-byte content-blind digest leaves the box, nothing else —
 and even that stays off until Reto turns it on. The audit half runs even
 when disabled IF proof rows already exist (auditing is free of network

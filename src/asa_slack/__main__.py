@@ -36,30 +36,10 @@ def main() -> None:
 def _attach_db_log_handler(dsn: str) -> None:
     """Attach precis-mcp's BufferedDBLogHandler — mirrors asa_bot's, tagged
     ``asa-slack`` so ``precis logs --process asa-slack`` filters cleanly.
-    Best-effort: a failing attach shouldn't kill the bot."""
-    import os
+    Delegates to :func:`precis.utils.db_log_handler.attach`."""
+    from precis.utils.db_log_handler import attach
 
-    try:
-        from precis.utils.db_log_handler import BufferedDBLogHandler
-
-        os.environ.setdefault("PRECIS_PROCESS", "asa-slack")
-        root = logging.getLogger()
-        for existing in list(root.handlers):
-            if isinstance(existing, BufferedDBLogHandler):
-                return
-        if not dsn:
-            log.info("PRECIS_DATABASE_URL unset; skipping DB log handler")
-            return
-        handler = BufferedDBLogHandler(dsn)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-        )
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "failed to attach BufferedDBLogHandler — continuing without DB logs"
-        )
+    attach(dsn, process="asa-slack", require_dsn=True)
 
 
 if __name__ == "__main__":

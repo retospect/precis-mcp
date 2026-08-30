@@ -196,23 +196,6 @@ def _status_of_many(store: Store, ref_ids: list[int]) -> dict[int, str]:
     return out
 
 
-def _open_tag_present(store: Store, ref_id: int, value: str) -> bool:
-    """True when ``ref_id`` carries the open tag ``value`` (e.g. ``halt``)."""
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT 1 FROM ref_tags rt
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE rt.ref_id = %s
-               AND t.namespace = 'OPEN'
-               AND t.value = %s
-             LIMIT 1
-            """,
-            (ref_id, value),
-        ).fetchone()
-    return row is not None
-
-
 def _level_label(*, rotation_root: bool, worker_mintable: bool, recurring: bool) -> str:
     """Synthesize the human-readable level string from the §M facets.
 

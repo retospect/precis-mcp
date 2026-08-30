@@ -6,16 +6,17 @@ context** rather than N independent fisheyes. The core is a per-chunk
 eye asks for it (a multi-focus fisheye). Overlapping neighborhoods collapse;
 shared reference-ring entries merge by ``ref_id``.
 
-**Gap closing** (§ discussion): a short run of undemanded chunks *between* two
-demanded ones is bridged — a one-chunk hole in a passage is probably relevant,
-so fill it rather than show a jarring break. Bridged chunks take the **lesser**
-of the two shoulders' extents (never richer than either side). A heading inside
-a gap is already demanded (an ancestor breadcrumb at ``kwd``), so it stays a
-heading and the section boundary shows itself — no special-casing needed.
-Longer gaps collapse to a visible ``⋯ N more ⋯`` marker (no silent omission).
+**Gap closing**: a short run of undemanded chunks *between* two demanded
+ones is bridged — a one-chunk hole in a passage is probably relevant, so
+fill it rather than show a jarring break. Bridged chunks take the **lesser**
+of the two shoulders' extents (never richer than either side). A heading
+inside a gap is already demanded (an ancestor breadcrumb at ``kwd``), so it
+stays a heading and the section boundary shows itself — no special-casing
+needed. Longer gaps collapse to a visible ``⋯ N more ⋯`` marker (no silent
+omission).
 
-Ships dark; the render-loop (phase B/C) will drive it. Single-sources the
-neighborhood bands + gloss helpers from :mod:`precis.utils.fisheye`.
+Single-sources the neighborhood bands + gloss helpers from
+:mod:`precis.utils.fisheye`.
 """
 
 from __future__ import annotations

@@ -1,71 +1,18 @@
 """Taproot atomic-claims migration runner — Phase 0 (score) + Phase 1
 (dry-run), both **strictly read-only**. Design: ``docs/backlog/
-taproot-atomic-claims.md`` §Strategy; the Phase-1 pilot findings that
-motivated the gates below: ``docs/backlog/
-taproot-migration-extraction-quality-gates.md``. Phase 2 (apply) and Phase
-3 (human review) are not built here.
+taproot-atomic-claims.md`` §Strategy; gate calibration notes:
+``docs/backlog/taproot-migration-extraction-quality-gates.md``. Phase 2
+(apply, :mod:`precis.taproot.apply_migrate`) and Phase 3 (human review)
+are not built here.
 
-**Phase 0 — :func:`score_hubs`.** A deterministic, pure-function
-compoundness score over every live claim hub's **claim sentence** — the
-``finding_body`` chunk at ``ord=0``, falling back to the hub's ``title``
-when that chunk is missing/empty (LEFT JOINed in :data:`_CANDIDATE_HUBS_SQL`;
-the same string :func:`dry_run` extracts, single source per the P0-1 fix —
-title-only scoring under-called ~19% of the population compound because
-short "topic" titles hide a compound body). No model, no ANN:
-:func:`score_sentence` counts conjunctions (" and " / " but " / " while ",
-word-bounded — never a false hit inside "band"), length, semicolons, comma
-count. The weighted sum buckets each hub into one of three cohorts
-(:data:`Cohort`) — likely-compound / uncertain / likely-atomic — cheap
-enough to re-run any time (``precis taproot-migrate score``), used to size
-and prioritize Phase 1.
+Phase 0: :func:`score_hubs`/:func:`score_sentence`. Phase 1:
+:func:`dry_run`/:func:`classify_extraction` — each function's own
+docstring carries its contract.
 
-**Phase 1 — :func:`dry_run`.** Runs the *first* stage of the canonicalizer
-cascade only — :func:`~precis.taproot.canon.extract_claim_strict` — over
-the top-scored hubs' claim sentences, i.e. :attr:`HubScore.sentence` from
-Phase 0 (never ``block``/``dedup_judge``/``place``: those decide
-convergence against *other* hubs, which is Phase 2's concern, not "does
-this sentence split"). Every outcome is run through
-:func:`classify_extraction` — the P0-2/P0-3 gates — before landing in a
-:class:`DryRunReport`; ``controls`` are a **uniform random sample**
-(:func:`random.Random`, seeded by ``control_seed`` — deterministic by
-default) over the likely-atomic cohort, not the score-sorted tail (P2-11:
-the tail correlates with short "topic" titles, which biased pilot controls
-toward non-claims). :func:`render_report` turns the result into a markdown
-table a human reviews; :func:`dump_outcomes_jsonl` persists every outcome
-(gate metadata included) so a review doesn't require re-running LLM calls
-(P0-4). **Zero writes through ``store`` itself** (no refs, links, meta, or
-chunk mutation) — only the real extractor's (and, if ``escalate_fn`` is
-set, the escalation extractor's) LLM dispatch touches the network, and
-when the process has bound a store to :mod:`precis.budget.meter` (the CLI
-does), that dispatch is budget-metered: it writes ``llm_call_log``
-telemetry + transient serving-slot rows, never claim data. A consecutive
-run of infra failures (dispatch errors, not semantic no-claims) aborts the
-run rather than reporting a full batch of misclassified ``no-claim``
-verdicts — see :func:`dry_run`.
-
-**Gates (P0-2/P0-3) — never stamp ``lossy``/``nested``/``junk_candidate``.**
-:func:`classify_extraction` degrades a would-be ``pass-through``/``split``
-into ``nested`` (a fake split: one atom's content is contained in another's,
-or an atom ≈ the compound — the containment/coverage gate runs *before*
-coverage) or ``lossy`` (the union of atoms + scope values + not-claims
-doesn't cover the original sentence's content words above a calibrated
-recall floor, or drops a number-bearing token verbatim — see the
-calibration notes on :data:`_LOSSY_RECALL_THRESHOLD_PASS_THROUGH` /
-:data:`_LOSSY_RECALL_THRESHOLD_SPLIT`). A ``no-claim`` verdict on a
-**non-control** hub (:attr:`DryRunOutcome.junk_candidate`) means the hub
-isn't a claim at all — Phase 2 must route it to junk-triage, never stamp
-``meta.taproot_decomposed_at`` on it (nor on ``lossy``/``nested``). P2-10's
-selective escalation (``escalate_fn``) re-runs exactly these three outcome
-shapes through a bigger extractor and records both results, rather than
-bumping every hub to BIG tier.
-
-Both phases exclude a hub that is already a **compound** (has a live
-inbound ``conjunct-of`` edge — see :func:`~precis.taproot.hub._is_compound_hub`,
-whose predicate this module's query mirrors) or already stamped
-``meta.taproot_decomposed_at`` (the Phase-2 idempotency marker this build
-doesn't write yet, but is checked here so a re-run of scoring after Phase 2
-starts landing stamps automatically shrinks the candidate pool) — nothing
-left to migrate on either hub shape.
+Both phases exclude a hub that is already a **compound**
+(:func:`~precis.taproot.hub._is_compound_hub`) or already stamped
+``meta.taproot_decomposed_at`` (the Phase-2 idempotency marker) — nothing
+left to migrate on either shape.
 """
 
 from __future__ import annotations
@@ -708,25 +655,22 @@ def classify_extraction(
     sentence: str, extraction: ClaimExtraction
 ) -> tuple[Verdict, dict[str, Any]]:
     """``extract_claim``'s outcome, gated (P0-2/P0-3) into migration-report
-    terms. Returns ``(verdict, gate_meta)`` — ``gate_meta`` carries whatever
-    the fired (or checked) gates computed (``recall``, ``missing_numbers``,
-    ``precision``, ``invented_numbers``, ``containment``,
-    ``missing_content``), for the report/JSONL to show its work. NO-CLAIM
-    skips every gate (nothing was kept to check coverage of, and nothing to
-    nest).
+    terms. Returns ``(verdict, gate_meta)`` — ``gate_meta`` carries
+    whatever the fired/checked gates computed (``recall``,
+    ``missing_numbers``, ``precision``, ``invented_numbers``,
+    ``containment``, ``missing_content``). NO-CLAIM skips every gate.
 
-    The coverage gate (P0-2) checks **both directions** (round 2): loss —
-    a dropped number or content-word recall below the shape's threshold —
-    and hallucination — an invented number, or content-word precision
-    below :data:`_HALLUCINATION_PRECISION_THRESHOLD` (the extraction added
-    material the sentence never said). A pass-through additionally fails on
-    an absolute missing-content-word count
-    (:data:`_LOSSY_MISSING_CONTENT_CAP_PASS_THROUGH`) — the recall ratio
-    alone has too little resolution on short sentences (fi176441).
+    The coverage gate (P0-2) checks **both directions**: loss (a dropped
+    number, or content-word recall below threshold) and hallucination (an
+    invented number, or content-word precision below
+    :data:`_HALLUCINATION_PRECISION_THRESHOLD`). A pass-through also fails
+    on an absolute missing-content-word count
+    (:data:`_LOSSY_MISSING_CONTENT_CAP_PASS_THROUGH`) — recall ratio alone
+    has too little resolution on short sentences.
 
-    Order: containment (`nested`) before coverage (`lossy`) — a nested
-    "split" is never a valid unit to run a coverage check against (its
-    "atoms" restate each other, not partition the sentence).
+    Order: containment (``nested``) before coverage (``lossy``) — a
+    nested "split"'s atoms restate each other rather than partitioning
+    the sentence, so it's never a valid unit for a coverage check.
     """
     if extraction.is_empty:
         return "no-claim", {}
@@ -857,49 +801,36 @@ def dry_run(
     extract_fn: ExtractFn = extract_claim_strict_medium,
     escalate_fn: ExtractFn | None = None,
 ) -> DryRunReport:
-    """Phase 1: run ``extract_fn`` over the top ``limit`` scored hubs
-    (optionally restricted to one ``cohort``), plus ``controls`` hubs drawn
-    as a **uniform random sample** (:class:`random.Random` seeded by
-    ``control_seed`` — deterministic by default, so a re-run against an
-    unchanged population picks the same controls) from the whole
-    likely-atomic cohort, excluding any hub already selected above (a
-    pass-through sanity check — an already-atomic hub should extract to
-    one atom, no compound). P2-11: earlier this sampled the score-sorted
-    tail, which correlates with short "topic" titles and biased pilot
-    controls toward non-claims — a uniform draw doesn't share that bias.
-    **Zero writes through ``store`` itself** — no ref/link/meta/chunk
-    mutation. The default ``extract_fn`` is the real
-    :func:`~precis.taproot.canon.extract_claim_strict_medium` (round 2 +
-    the 4-hub raw-response probe): SMALL collapses multi-clause sentences
-    to single truncated atoms, and the BIG chain's OSS models
-    intermittently break the JSON contract into silent NO-CLAIMs — both
-    are now opt-in (CLI ``--tier small`` / ``--tier big``), injectable
-    for tests; when the calling
-    process has bound a store to
-    :mod:`precis.budget.meter` (the CLI does this), its LLM dispatch is
-    budget-metered — it writes ``llm_call_log`` telemetry and transient
-    serving-slot rows, but never touches the claim tables (refs/chunks/
-    links/ref_tags).
+    """Phase 1: run ``extract_fn`` — never ``block``/``dedup_judge``/
+    ``place`` (those decide convergence against *other* hubs, Phase 2's
+    concern, not "does this sentence split") — over the top ``limit``
+    scored hubs (optionally restricted to one ``cohort``), plus
+    ``controls`` hubs drawn as a **uniform random sample**
+    (:class:`random.Random`, seeded by ``control_seed``, deterministic by
+    default) from the whole likely-atomic cohort, excluding any hub
+    already selected (a pass-through sanity check — an already-atomic hub
+    should extract to one atom, no compound); a uniform draw avoids the
+    score-sorted tail's bias toward short "topic"-title non-claims (P2-11).
 
-    Every outcome is gated through :func:`classify_extraction` (P0-2/P0-3).
-    When ``escalate_fn`` is given (P2-10), any outcome whose gated verdict
-    is ``lossy``/``nested``, or ``no-claim`` on a **non-control** hub
-    (:attr:`DryRunOutcome.junk_candidate`), is re-extracted with it — both
-    results are kept (:attr:`DryRunOutcome.escalated_extraction`/
-    ``escalated_verdict``), never just the escalated one, so a reviewer can
-    see what changed. Selective, not a blanket bump: only the outcome
-    shapes a stable-verdict pilot showed are the systematic error classes.
+    **Zero writes through ``store`` itself.** The default ``extract_fn``
+    is :func:`~precis.taproot.canon.extract_claim_strict_medium`;
+    SMALL/BIG are opt-in (CLI ``--tier``), injectable for tests. When the
+    caller has bound a store to :mod:`precis.budget.meter` (the CLI
+    does), LLM dispatch is budget-metered — writes ``llm_call_log``
+    telemetry only, never claim tables.
 
-    A per-hub dispatch/parse failure is caught (``verdict="error"``) rather
-    than aborting the whole run — one bad hub must not lose every other
-    outcome in a ~1.3k-hub pass. But :data:`_CONSECUTIVE_ERROR_LIMIT`
-    consecutive errors aborts the run outright (``RuntimeError``): that
-    many in a row is infra failure (a dead LLM endpoint), not sporadic
-    per-hub noise, and continuing would silently produce a full-size report
-    of misclassified NO-CLAIMs instead of a signal that the run never
-    really happened. An escalation failure is caught per-hub too
-    (:attr:`DryRunOutcome.escalation_error`) but never trips this breaker —
-    see :attr:`DryRunOutcome.escalation_error`'s docstring.
+    Every outcome is gated through :func:`classify_extraction`. When
+    ``escalate_fn`` is given (P2-10), any ``lossy``/``nested`` verdict, or
+    ``no-claim`` on a non-control hub, is re-extracted with it — both
+    results are kept (never just the escalated one), so a reviewer sees
+    what changed. Selective, not a blanket bump.
+
+    A per-hub dispatch/parse failure is caught (``verdict="error"``), but
+    :data:`_CONSECUTIVE_ERROR_LIMIT` consecutive errors aborts the run
+    (``RuntimeError``) — that many in a row is infra failure, not per-hub
+    noise, and continuing would silently produce a full report of
+    misclassified NO-CLAIMs. An escalation failure is caught per-hub and
+    never trips this breaker.
     """
     all_scores = score_hubs(store)
     pool = (

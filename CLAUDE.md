@@ -47,11 +47,12 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
 - **Forward-only migrations.** Never edit a sealed
   `src/precis/migrations/*.sql` — ship a new one. Baseline regen via
   `scripts/bump` / `precis db dump-schema`, never by hand.
-- **Don't mutate body chunks.** `chunks` is append-only for body rows
+- **Don't mutate body chunks.** `chunks` is append-only for corpus body rows
   (`ord >= 0`); "update" = DELETE + INSERT so the embedding/summary cascade
   re-runs — in-place UPDATE strands `chunk_embeddings`/`chunk_summaries`.
   Only `ord < 0` card variants DELETE/re-INSERT, via a registered synthesis
-  pass.
+  pass. Exception: *draft* chunks edit in place by design, via the draft-edit
+  store ops only (they log `chunk_events`, which drives the cascade).
 - **Session `precis` MCP targets PROD** (write-capable `agent_rw`). Writes
   are sanctioned but land in production: write deliberately, prefer reads for
   exploration, and do write-path *testing* on the dev DB (`scripts/dev`) —

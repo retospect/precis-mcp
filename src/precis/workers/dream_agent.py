@@ -40,7 +40,7 @@ Inputs (env):
   quest-seeded search. Default 0.5.
 
 Gating: ``PRECIS_DREAM_AGENT=1`` (env). The pass is explicit-only
-on the CLI (``--only dream_agent``) AND env-gated, mirroring the
+on the CLI (``--only dream_agent``) AND dark-switched, mirroring the
 existing dream worker's discipline.
 
 Cadence (§A): folded onto the decentralized ``scheduler`` worker pass

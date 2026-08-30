@@ -105,8 +105,7 @@ search(kind="patent", q="photocatalysis", page=2)
 search(kind="patent", q="photocatalysis", page=3, page_size=20)
 ```
 
-`page=1` is the default. `page_size=` sets page size (default 10,
-max 100).
+Pagination mechanics: `precis-search-help`.
 
 ## Find a passage in a patent I have
 ## Locate where a topic comes up in a specific patent

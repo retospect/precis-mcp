@@ -96,7 +96,7 @@ Relation = Literal[
     # `requested` → the derived job (DFT relax / route / compile) it waits
     # on; the job parents on its subject artifact, not the todo, so this
     # link is the only edge back to the intentful requester. The
-    # `derived_job_succeeded` evaluator + the failure-bubble both follow
+    # `derived_job_succeeded` evaluator + the failure bubble both follow
     # it. Keep in sync with the `relations` seed in 0046.
     "requested",
     "requested-by",

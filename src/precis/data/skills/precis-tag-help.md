@@ -49,45 +49,16 @@ Pair `add=` + `remove=` in one call to flip state cleanly. With
 closed UPPERCASE prefixes the explicit `remove=` is belt-and-braces
 — see the next section.
 
-## UPPERCASE prefixes replace within their axis
+## Which shape does my tag call need?
 
 ```python
-tag(kind="todo", id=158, add=["STATUS:done"])
-# implicitly removes any prior STATUS:* on this todo
+tag(kind="todo", id=158, add=["STATUS:done"])  # UPPERCASE — implicitly drops any prior STATUS:* on this ref
+tag(kind="paper", id="wang2020state", add=["topic:noxrr", "project:foo"])  # lowercase — accumulates freely
+tag(kind="memory", id=42, add=["pinned"])  # bare flag — on/off toggle
 ```
 
-Closed UPPERCASE prefixes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`)
-are single-valued per ref. Adding `STATUS:done` drops any existing
-`STATUS:*` automatically. You can still pass `remove=` for clarity;
-it won't double-remove.
-
-## Lowercase tags accumulate
-## Add a topic without disturbing others
-
-```python
-tag(
-    kind="paper",
-    id="wang2020state",
-    add=["topic:noxrr", "topic:photocatalysis", "project:foo"],
-)
-```
-
-Lowercase / open tags (`topic:x`, `cpc:B01J27/24`,
-`applicant:siemens-ag`, `2026-q2`) accumulate freely. Adding one
-does not displace another. Drop individually with `remove=`. The
-canonical separator for open prefixes is `:` (not `-`) — see
-`precis-tags` for the rationale.
-
-## Toggle a bare flag tag
-## Pin or unpin
-
-```python
-tag(kind="memory", id=42, add=["pinned"])
-tag(kind="memory", id=42, remove=["pinned"])
-```
-
-Bare lowercase flags (`pinned`, `draft`, `awaiting-fulltext`) are
-on/off. Add to set, remove to clear.
+Axis vocabulary (which prefixes exist, per-kind matrix, open-tag
+naming) is `precis-tags`; this is the verb-call shape only.
 
 ## Tag a ref at creation time
 

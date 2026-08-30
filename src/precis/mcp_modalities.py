@@ -41,12 +41,12 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp.prompts.base import Prompt
 
+from precis.handlers._skill_common import parse_frontmatter
 from precis.handlers.skill import (
     SkillHandler,
     _availability_gap,
     _list_skills,
     _load_skill,
-    _parse_frontmatter,
     _skill_title,
 )
 
@@ -115,10 +115,10 @@ def _skill_prompt_tags(
         base.add("synth")
         return base
     text = _load_skill(slug) or ""
-    fm = _parse_frontmatter(text)
-    tier = fm.get("tier", "1").strip() or "1"
+    fm = parse_frontmatter(text)
+    tier = (fm.tier or "1").strip() or "1"
     base.add(f"tier-{tier}")
-    floor = fm.get("floor", "").strip().lower()
+    floor = (fm.floor or "").strip().lower()
     if floor and floor != "any":
         base.add(f"floor-{floor}")
     # Kinds documented by the skill — same logic the gate uses.

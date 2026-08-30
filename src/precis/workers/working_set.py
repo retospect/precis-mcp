@@ -3,8 +3,10 @@
 A **thread** curates its own context by placing **eyes** on nodes. An eye is
 a point on two orthogonal axes (§6):
 
-- **extent** — *how much* to render: an ordinal ladder
-  ``none < toc < summary < full < fidelity``.
+- **extent** — *how much* to render: the ordinal ladder
+  ``kwd < summary < verbatim < fisheye < fisheye+1hop`` (model-facing
+  labels; the frozen enum identifiers ``TOC``/``FULL``/``FIDELITY`` map
+  onto them — see :class:`Extent`).
 - **persistence** — *how long* it survives the decay machinery:
   ``transient`` (dies at the next crunch) / ``normal`` (adaptive TTL) /
   ``pinned`` (never decays).
@@ -23,7 +25,7 @@ replayable, and the store-first reconstruction path when a turn is killed.
 **Scope note (phase-B foundation).** This module is the *data model +
 serialization* only — the pure, tested substrate both the render-loop (B) and
 the fisheye (C) build on. It deliberately does **not** yet implement the decay
-ladder (``full —warn→ toc —warn→ gone`` + bunched eviction, §6b) or the
+ladder (``verbatim —warn→ kwd —warn→ gone`` + bunched eviction, §6b) or the
 plan_tick loop wiring: those carry the eviction constants and the
 ``--max-turns 1`` render-loop semantics, and land with the fisheye slice.
 Nothing in the live path imports this yet, so it ships dark.

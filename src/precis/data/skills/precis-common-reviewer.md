@@ -9,7 +9,6 @@ answers:
 flavor: reference
 status: active
 applies-to: every reviewer persona under src/precis/data/skills/personas/
-last-updated: 2026-06-05
 ---
 
 # precis-common-reviewer — shared conventions for reviewer personas

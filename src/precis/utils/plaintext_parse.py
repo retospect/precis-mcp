@@ -12,7 +12,6 @@ Used by :class:`precis.handlers.plaintext.PlaintextHandler`.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from precis.utils.block_slug import mint_block_slug
@@ -114,19 +113,3 @@ _PLAINTEXT_EXTENSIONS: tuple[str, ...] = (".txt", ".log")
 def plaintext_extensions() -> tuple[str, ...]:
     """Extensions treated as plaintext by the handler + walker."""
     return _PLAINTEXT_EXTENSIONS
-
-
-_STRIP_EXT_RE = re.compile(r"\.(txt|log)$", re.IGNORECASE)
-
-
-def strip_plaintext_ext(rel_path: str) -> tuple[str, str]:
-    """Return ``(base_without_extension, extension)``.
-
-    ``notes/log-2026.txt`` → ``("notes/log-2026", ".txt")``.
-    Unrecognised extensions fall through with an empty ``extension``
-    string so the caller can reject them.
-    """
-    m = _STRIP_EXT_RE.search(rel_path)
-    if m is None:
-        return rel_path, ""
-    return rel_path[: m.start()], rel_path[m.start() :].lower()

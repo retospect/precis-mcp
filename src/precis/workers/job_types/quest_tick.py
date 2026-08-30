@@ -1,83 +1,57 @@
 """``quest_tick`` — a quest's perpetual research loop as a coordinator campaign.
 
-One coordinator job per quest drives the autonomous loop **indefinitely and
-event-driven** (no cron): each active slice
+One coordinator job per quest drives the loop indefinitely, event-driven (no
+cron): each slice (1) **harvests** finished sims (barriers → frontier), (2)
+runs **LLM review + propose** (routed to ``tier``) — rewrites the dossier,
+lit-searches, emits the next candidate batch, (3) **materialises +
+dispatches** those candidates' sims, (4) **yields** until they land, repeat.
+(1)-(3) ride ``run_quest_tick(compute=...)`` (same tick the manual CLI
+runs); the coordinator only owns scheduling — self-paced by sim completion,
+not a timer. ``meta.compute_lane == "off"`` ticks reason-only (no
+dispatch/search): the switch for lit-only quests or an unhealthy compute
+lane.
 
-1. **harvests** finished sims (barriers → the frontier),
-2. runs the **LLM review + propose** step (local model via the LLM routing seam router
-   at ``tier``) — which rewrites the dossier, does the **lit-search**, and emits
-   the next batch of candidate catalysts,
-3. **materialises + dispatches** those candidates' barrier/relax sims, then
-4. **yields** until the sims land — and the next slice harvests them and
-   proposes again.
+**One tick is several slices.** ``run_quest_tick`` is a resumable stage
+machine driven ``sliced=True`` through ``tick:llm``→``tick:apply``→
+``tick:search``→``tick:compute``→``tick:ladder`` (one slice/rung)→
+``tick:finish``→``await``, each making at most ONE LLM call. Checkpoint on
+``coordinator_state["tick"]`` (bulky payload/prompt on the tick's
+``agentlog`` row by id); a mid-tick boundary wakes immediately rather than
+on the heartbeat, so a node kill costs one stage, not the tick's LLM call.
+Only the FIRST slice runs the backpressure/starvation/weave-body gates
+below — a resume is mid-tick and would otherwise re-see sims the tick
+itself just dispatched.
 
-Both (1)-(3) ride ``run_quest_tick(compute=...)`` (the same tick the manual CLI
-runs); the coordinator only owns the *scheduling*: it waits on the in-flight sims
-and resumes when they are done. That makes the cadence **self-paced by sim
-completion**, not a timer. Compute is on by default; a quest with
-``meta.compute_lane == "off"`` ticks reason-only (no sim dispatch, no
-searches) — the operator switch for literature-only quests and for holding
-the compute lane while its infrastructure is unhealthy.
-
-**One tick is several slices.** ``run_quest_tick`` is itself a resumable stage
-machine (see that module's stage banner), and this coordinator drives it
-``sliced=True``: the phase grows sub-states ``tick:llm`` → ``tick:apply`` →
-``tick:search`` → ``tick:compute`` → ``tick:ladder`` (one slice per rung) →
-``tick:finish`` → ``await``, each of which makes at most ONE LLM call. The
-tick's own checkpoint rides ``coordinator_state["tick"]`` (small scalars; the
-bulky payload/prompt live on the tick's ``agentlog`` row, referenced by id), and
-a mid-tick boundary wakes immediately rather than on the heartbeat. So a slice
-killed by a node reboot / OOM / wall-clock costs one stage instead of re-running
-the primary LLM call — quest 164903 burned 53% of 24 h of tick time re-running
-one doomed cloud call before this, and during the 2026-08-10→16 deploy-bounce
-storm the monolithic tick could never finish inside the inter-restart window at
-all (gripe 210417). Only a tick's FIRST slice runs the backpressure /
-starvation / weave-body gates below — a resume is mid-tick, and re-testing the
-pending set there would see the sims the tick itself just dispatched.
-
-**Liveness + backpressure.** Like ``good_search``, the wait uses an ``at_time``
-heartbeat (not a bare ``children_done``) so a sim stuck at ``STATUS:queued``
-behind other spark work can't park the loop forever, and — the property the
-operator asked for — **no new batch is proposed while the previous one is still
-in flight** (per-quest backpressure), and a slice **defers** rather than piling
-on when spark's compute queue is already deep (starvation gate).
+**Liveness + backpressure.** Like ``good_search``, the wait uses an
+``at_time`` heartbeat (not bare ``children_done``) so a sim stuck
+``STATUS:queued`` can't park the loop forever. No new batch is proposed
+while the previous is in flight (per-quest backpressure); a slice defers
+when spark's compute queue is already deep (starvation gate).
 
 A slice that dispatches nothing on a successful tick backs off and retries
-rather than resting, mirroring the failed/paused budget
-(``_max_tick_failures()``) — but on one of two budgets, depending on whether
-the model *engaged*: a **genuine dry** tick (wrote to the logbook, rewrote
-the dossier, proposed a candidate, or pinned a ledger direction, but had
-nothing new to dispatch) is real evidence the space may be exhausted, so it
-gets the small ``_max_dry_ticks()`` budget; a **punt** (produced nothing
-substantive at all) isn't evidence of anything but a flaky slice, so it gets
-the larger, more-forgiving ``_max_punt_ticks()`` budget. Only after that many
-*consecutive* ticks of the same flavor does the loop reach ``Done`` and rest
-until a fresh coordinator job re-awakens it. RC2: it also self-rests
-immediately, on any phase, once the quest itself is no longer active (see
-``_dispatch``) — it no longer only winds down passively via the dry/punt
-budgets.
+rather than resting, on one of two budgets by whether the model *engaged*:
+a **genuine dry** tick (logbook write, dossier rewrite, proposed candidate,
+or pinned ledger direction, but nothing new to dispatch) gets the small
+``_max_dry_ticks()`` budget; a **punt** (nothing substantive) gets the
+larger ``_max_punt_ticks()``. Only after that many *consecutive*
+same-flavor ticks does the loop reach ``Done`` and rest until a fresh
+coordinator job re-awakens it — or self-rests immediately, any phase, once
+the quest is no longer active (``_dispatch``).
 
-**gr170252: dry-rest escalation.** A dry rest (``Done(success=True)`` via the
-``_max_dry_ticks`` budget) is a *successful* tick outcome — the model
-genuinely engaged, it just had nothing new to dispatch — so
-:mod:`precis.quest.loop`'s reconciler used to treat it exactly like a
-productive rest and re-mint the loop on its very next pass. That's the
-cooldown asymmetry behind the bug: mint → 3 dry ticks → rest(success) →
-immediate re-mint → repeat, spinning forever (bounded only by the allocator's
-12-tick ``cool_stalled`` backstop, which never fires because the loop keeps
-minting). The rest now stamps ``summary_meta["rest_reason"] = "dry"`` (which
-lands on the coordinator job's own ``meta`` via ``Done``'s normal persistence
-path), and bumps a ``consecutive_dry_rests`` counter on the *quest* ref
-itself (reset to 0 by any frontier improvement or any non-dry rest) — see
-``_register_dry_rest`` / ``_reset_dry_rest_counter``. ``reconcile_quest_loops``
-reads both: the job-side ``rest_reason`` drives the same escalating cooldown
-as a real failed rest, and once the quest-side counter reaches
-``PRECIS_QUEST_DRY_REST_ESCALATE`` (default 3) re-minting backs off to a
-long, fixed cooldown (``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S``, default
-24 h) and an operator alert is raised — the quest is genuinely stuck on
-missing input, not merely between heartbeats, but the loop still ticks at
-that slow cadence so a tick can observe recovery (frontier improvement or a
-non-dry rest) and reset the counter through the paths below.
+**Dry-rest escalation.** A dry rest is a *successful* ``Done(success=True)``,
+so :mod:`precis.quest.loop`'s reconciler would otherwise re-mint it next
+pass like a productive rest, spinning (mint → N dry ticks → rest →
+re-mint → repeat). The rest stamps ``summary_meta["rest_reason"] = "dry"``
+(persists onto the coordinator job's ``meta``) and bumps
+``consecutive_dry_rests`` on the *quest* ref (reset by any frontier
+improvement or non-dry rest; ``_register_dry_rest``/``_reset_dry_rest_counter``).
+``reconcile_quest_loops`` reads both: ``rest_reason`` drives the same
+escalating cooldown as a real failed rest; once the quest-side counter
+reaches ``PRECIS_QUEST_DRY_REST_ESCALATE`` (default 3), re-minting backs
+off to a fixed cooldown (``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S``,
+default 24h) and raises an alert — stuck on missing input, not merely
+between heartbeats — but still ticks at that slow cadence so a recovery
+can reset the counter.
 """
 
 from __future__ import annotations
@@ -89,6 +63,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.quest.allocator import active_quest_ids
 from precis.quest.weave_tick import QUEST_BODY_META_KEY, QUEST_BODY_WEAVE
+from precis.utils.env import env_int
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
 
@@ -145,27 +120,19 @@ _SIM_JOB_TYPES = (
 )
 
 
-def _env_int(name: str, default: int, *, lo: int = 1, hi: int = 100_000) -> int:
-    try:
-        n = int(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
-    return max(lo, min(hi, n))
-
-
 def _heartbeat_s() -> int:
     """Seconds between liveness wakes while a batch's sims run (default 300).
 
     5 min: fine-grained enough that the loop resumes shortly after ~15-20 min
     full-network sims land, coarse enough not to hammer the DB while waiting.
     """
-    return _env_int("PRECIS_QUEST_TICK_HEARTBEAT_S", 300, lo=30, hi=7200)
+    return env_int("PRECIS_QUEST_TICK_HEARTBEAT_S", 300, lo=30, hi=7200)
 
 
 def _max_queued_sims() -> int:
     """Starvation gate: defer a new batch when spark's compute queue already has
     at least this many non-terminal sims *across all quests* (default 6)."""
-    return _env_int("PRECIS_QUEST_TICK_MAX_QUEUED", 6, lo=1, hi=1000)
+    return env_int("PRECIS_QUEST_TICK_MAX_QUEUED", 6, lo=1, hi=1000)
 
 
 def _max_tick_failures() -> int:
@@ -183,7 +150,7 @@ def _max_tick_failures() -> int:
     retry never converged and this budget could never engage (see the rule
     written out in :func:`_phase_tick`).
     """
-    return _env_int("PRECIS_QUEST_TICK_MAX_FAILURES", 5, lo=1, hi=1000)
+    return env_int("PRECIS_QUEST_TICK_MAX_FAILURES", 5, lo=1, hi=1000)
 
 
 def _max_dry_ticks() -> int:
@@ -198,7 +165,7 @@ def _max_dry_ticks() -> int:
     after this many *consecutive* genuine-dry ticks does the loop go
     ``Done`` and wait to be re-armed by a fresh ``quest_tick`` job.
     """
-    return _env_int("PRECIS_QUEST_TICK_MAX_DRY", 3, lo=1, hi=1000)
+    return env_int("PRECIS_QUEST_TICK_MAX_DRY", 3, lo=1, hi=1000)
 
 
 def _max_punt_ticks() -> int:
@@ -212,7 +179,7 @@ def _max_punt_ticks() -> int:
     ``_max_dry_ticks``), so a punt gets a higher, more-forgiving ceiling
     before the loop rests.
     """
-    return _env_int("PRECIS_QUEST_TICK_MAX_PUNT", 8, lo=1, hi=1000)
+    return env_int("PRECIS_QUEST_TICK_MAX_PUNT", 8, lo=1, hi=1000)
 
 
 def _dry_rest_escalate_threshold() -> int:
@@ -225,7 +192,7 @@ def _dry_rest_escalate_threshold() -> int:
     whether ``reconcile_quest_loops`` stops re-minting the loop) — the same
     env var, so the two never disagree about the line.
     """
-    return _env_int("PRECIS_QUEST_DRY_REST_ESCALATE", 3)
+    return env_int("PRECIS_QUEST_DRY_REST_ESCALATE", 3, lo=1, hi=100_000)
 
 
 def _force_acquire_enabled() -> bool:
@@ -389,7 +356,10 @@ def _quest_status(store: Store, quest_id: int) -> str:
     if ref is None or getattr(ref, "deleted_at", None) is not None:
         return "deleted"
     for t in store.tags_for(quest_id):
-        if getattr(t, "namespace", None) == "STATUS":
+        if (
+            getattr(t, "namespace", None) == "closed"
+            and getattr(t, "prefix", None) == "STATUS"
+        ):
             return str(t.value)
     return "unknown"
 

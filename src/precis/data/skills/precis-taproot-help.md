@@ -149,29 +149,13 @@ the draft down to the underlying `[pc<id>]`; if it passes
 `TAPROOT:claim` tag
 (`tag(kind='finding', id='fi<id>', add=['TAPROOT:claim'])`).
 
-## Maturity — what's live vs dark
-
-| | |
-|---|---|
-| Hub mint / evidence attach (`src/precis/taproot/hub.py`) — `put(kind='finding', supporters=…)`, `link(kind='finding', rel='establishes'\|'corroborates'\|'contradicts')`, and CLI `precis taproot mint` | live |
-| Hub reword-in-place (`hub.py::refine_claim_sentence`) — `edit(kind='finding', title=…)` | live |
-| Seniority derivation (originator/corroborator split) | live |
-| Living-citation resolve + authorial pins (`precis resolve`) | live |
-| Fisheye reference-ring Claims explosion | live |
-| Claim→claim `refines` links — `link(kind='finding', rel='refines')` and CLI `precis taproot refine` | live (advisory-only, no evidence flow) |
-| Whole-draft/section/chunk `[pc<id>]`→`[fi<id>]` backfill — `put(kind='job', job_type='taproot_backfill')` (serial, checkpointed, melchior `claude_inproc` lane) and CLI `precis taproot backfill` | live (on-demand; LLM runs on the cluster worker, never the MCP) |
-| Atomic decomposition — `extract_claim` splits a span into atom hubs + an optional bundling **compound** hub, `conjunct-of`-linked via `taproot/hub.py::apply_extraction`; runs inside `taproot_backfill`, no separate door | live (compound hubs excluded from `hub_refine`'s due-set and `chase_trigger`'s embed/probe — those two touch atoms only) |
-| Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `params.ref_level`/`--ref-level` whole-paper promote) | live (slices 1+2; job + CLI) |
-| Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED` — a `chase`-pass sub-feature, not its own service) | dark, default-OFF |
-| Hub-refine pass (`workers/hub_refine.py`, `hub_refine` service) | dark, default-OFF |
-| Chase-trigger pass (`workers/chase_trigger.py`, `chase_trigger` service) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF |
-| `axis:taproot` `TAPROOT:claim`/`TAPROOT:review` classifier (`PRECIS_AXES_ENABLED`) | dark, default-OFF |
-
-All dark rows default off — evidence stays sparse until turned on to
-seed it. Everything with its own `service_config` service (`hub_refine`,
-`chase_trigger`, every `axis:<id>`) flips live via `precis service prio`
-/ `/categorizers`, no redeploy; the forward chase bridge is a
-`chase`-pass-internal env flag, unaffected.
+Evidence beyond what's agent-minted stays sparse for now — the
+forward-chase passes that auto-discover corroborators run dark by
+default; hub mint, evidence attach, reword-in-place, seniority
+derivation, living-citation resolve, and the fisheye Claims ring are
+all live today. See [[precis-taproot-mint-help]] for the write
+contracts and [[precis-taproot-backfill-help]] for bulk `[pc]`/`[pa]`
+conversion.
 
 ## See also
 

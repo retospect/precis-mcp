@@ -42,7 +42,7 @@ class BulkResult:
     sampled: bool = True
 
 
-def _expr_aabb(design: Design, expr: Expr) -> tuple[Vec3, Vec3]:
+def expr_aabb(design: Design, expr: Expr) -> tuple[Vec3, Vec3]:
     """Union AABB over every leaf reachable from ``expr`` (additive bound)."""
     los: list[Vec3] = []
     his: list[Vec3] = []
@@ -137,7 +137,7 @@ def volume(
     estimate against a coarser grid.
     """
     expr = design.components[component] if component else design.whole()
-    lo, hi = _expr_aabb(design, expr)
+    lo, hi = expr_aabb(design, expr)
     n = grid if grid is not None else _grid_for(samples)
 
     vol, centroid = _integrate(expr, design.instances, lo, hi, n)

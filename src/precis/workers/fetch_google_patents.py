@@ -773,7 +773,7 @@ def run_gp_fetch_pass(
 
 
 def _is_enabled() -> bool:
-    """Env gate. Default off. Tolerant to whitespace padding so a YAML
+    """Dark switch. Default off. Tolerant to whitespace padding so a YAML
     quoting quirk or trailing newline doesn't silently disable the pass."""
     return os.environ.get("PRECIS_GP_FETCH", "0").strip().lower() in (
         "1",

@@ -1,34 +1,26 @@
 """``precis_add()`` — single ingest entry point for the v2 schema.
 
-Public API for the ingest pipeline. Wires the three pipeline
-producers (``extract_paper`` / ``fetch_paper_by_doi`` /
-``fetch_paper_by_arxiv``) to the v2 INSERT cascade
-(:func:`precis.ingest.db_writer.write_paper`) with idempotency
-checks via :func:`precis.ingest.db_writer.probe_existing`.
+Public API for the ingest pipeline. Wires the three producers
+(``extract_paper``/``fetch_paper_by_doi``/``fetch_paper_by_arxiv``) to
+the v2 INSERT cascade (:func:`precis.ingest.db_writer.write_paper`)
+with idempotency checks via
+:func:`precis.ingest.db_writer.probe_existing`.
 
-Atomic: every successful ingest commits exactly one transaction.
-If the writer raises, the transaction rolls back and no rows
-land. Caller (CLI / watch / future MCP tool) just sees the
-exception.
+Atomic: one successful ingest commits exactly one transaction; a
+writer raise rolls it back with no rows landed.
 
-Idempotent on two layers:
+Idempotent on two layers: **fast path** — for :class:`PdfInput`, the
+cheap ``pdf_sha256`` is probed against ``ref_identifiers`` *before*
+Marker runs (a hit short-circuits, saving ~30-60s/PDF; the probe's
+short-lived connection is dropped before Marker, since extraction is
+minutes of inference and the pool is sized for short transactions);
+**slow path** — every identifier the pipeline assembled (paper_id,
+DOI, arXiv, S2, content_hash, …) is probed again post-extraction,
+catching "same paper, different bytes" the fast path misses.
 
-1. **Fast path** — for :class:`PdfInput`, the cheap ``pdf_sha256``
-   is computed from bytes and probed against ``ref_identifiers``
-   *before* Marker runs. A hit short-circuits without invoking
-   the pipeline at all (saves ~30–60 s/PDF on duplicates). The
-   probe uses its own short-lived connection, dropped before
-   Marker — extraction is minutes of model inference and the pool
-   is sized for many short transactions, not a few long ones.
-2. **Slow path** — every identifier the pipeline assembled
-   (paper_id, DOI, arXiv, S2, content_hash, …) is probed again
-   after extraction. Catches "same paper, different bytes" cases
-   that the fast path misses.
-
-In either case a hit yields ``IngestResult(inserted=False,
-ref_id=...)`` with identifiers re-fetched from ``ref_identifiers``
-(so the result reflects what's actually stored, not what the
-pipeline freshly computed).
+Either hit yields ``IngestResult(inserted=False, ref_id=...)`` with
+identifiers re-fetched from ``ref_identifiers`` (reflecting what's
+actually stored, not what the pipeline freshly computed).
 """
 
 from __future__ import annotations
@@ -219,26 +211,22 @@ class IngestResult:
 
 
 class MarkupTriggerSpent(Exception):
-    """A markup trigger failed to parse and never will — the trigger file
-    is *spent* and must be retired from the inbox, not retried.
+    """A markup trigger failed to parse and never will — the trigger
+    file is *spent*, must be retired from the inbox, not retried.
 
     Raised by :func:`_ingest_markup` after a
-    :class:`~precis.ingest.markup.MarkupParseError`, once the companion-PDF
-    OCR recovery (:func:`_recover_markup_parse_failure`, gr161905) has run.
-    It is deliberately distinct from ``precis_add`` returning ``None``:
+    :class:`~precis.ingest.markup.MarkupParseError`, once the
+    companion-PDF OCR recovery (:func:`_recover_markup_parse_failure`,
+    gr161905) has run. Distinct from ``precis_add`` returning ``None``
+    (**claim contention**, transient — the watcher leaves the file for
+    the owning host to finish): this is a **terminal parse failure** —
+    the same bytes fail identically every pass, so "leave it for retry"
+    would strand the ``.xml`` trigger + sidecar in the inbox forever and
+    re-scan on every backfill. The watcher catches this and moves the
+    spent trigger out instead; the paper's body, if recoverable, was
+    already folded from the companion PDF by the recovery step.
 
-    * ``None`` = **claim contention** (another host holds the advisory lock).
-      *Transient* — the watcher leaves the file in place so the owning host
-      finishes and clears the sidecar on its own success.
-    * ``MarkupTriggerSpent`` = **terminal parse failure**. The same bytes
-      fail identically every pass, so a "leave it for retry" would strand
-      the ``.xml`` trigger and its ``.precis-fetch.json`` sidecar in the
-      inbox forever (the inbox-litter leak) and re-scan them on every
-      backfill. The watcher catches this and moves the spent trigger out
-      of the inbox instead. The paper's body, if recoverable, was already
-      folded from the companion PDF inside the recovery step above.
-
-    Carries the source format for the watcher's log / error record.
+    Carries the source format for the watcher's log/error record.
     """
 
     def __init__(self, message: str, *, fmt: str = "") -> None:
@@ -262,32 +250,26 @@ def precis_add(
 ) -> IngestResult | None:
     """Ingest one paper into the v2 schema.
 
-    ``marker_timeout_s`` (P2-3) only affects :class:`PdfInput` — see
-    :func:`precis.ingest.pipeline.extract_paper`. ``None`` (the
-    default) preserves the original in-process, unguarded Marker call.
+    ``marker_timeout_s`` (P2-3) only affects :class:`PdfInput` (see
+    :func:`precis.ingest.pipeline.extract_paper`); ``None`` (default)
+    preserves the original in-process, unguarded Marker call.
 
-    Dispatches on the input type:
-
-    * :class:`PdfInput` — runs Marker + the metadata cascade via
-      :func:`precis.ingest.pipeline.extract_paper`. The cheap
-      ``pdf_sha256`` is probed against ``ref_identifiers`` *before*
-      Marker so re-ingesting a known file short-circuits without
-      paying for extraction.
-    * :class:`DoiInput` — CrossRef-only fetch via
-      :func:`precis.ingest.pipeline.fetch_paper_by_doi`.
-    * :class:`ArxivInput` — Semantic Scholar via
-      :func:`precis.ingest.pipeline.fetch_paper_by_arxiv`.
-    * :class:`PresInput` — local slide PDF → ``kind='pres'`` via
-      :func:`precis.ingest.pres.extract_pres`. Same ``pdf_sha256``
-      probe as :class:`PdfInput`; on hit, idempotent. ``subtype:slides``
-      and ``extra_tags`` applied post-commit.
+    Dispatches on input type: :class:`PdfInput` runs Marker + the
+    metadata cascade via :func:`precis.ingest.pipeline.extract_paper`
+    (``pdf_sha256`` probed against ``ref_identifiers`` *before* Marker
+    so a known file short-circuits); :class:`DoiInput` is a
+    CrossRef-only fetch (:func:`~precis.ingest.pipeline.fetch_paper_by_doi`);
+    :class:`ArxivInput` uses Semantic Scholar
+    (:func:`~precis.ingest.pipeline.fetch_paper_by_arxiv`);
+    :class:`PresInput` is a local slide PDF → ``kind='pres'``
+    (:func:`precis.ingest.pres.extract_pres`, same ``pdf_sha256`` probe,
+    ``subtype:slides``+``extra_tags`` applied post-commit).
 
     Returns ``None`` if another host already holds a
-    :class:`precis.ingest.claim.Claim` on this PDF's ``pdf_sha256``
-    — the caller should leave the file in place so the owning host
-    can complete the work. ``None`` is *never* returned for
-    metadata-only inputs (``DoiInput`` / ``ArxivInput``) since those
-    are cheap and don't need cross-host claim coordination.
+    :class:`precis.ingest.claim.Claim` on this PDF's ``pdf_sha256`` —
+    the caller should leave the file in place. Never ``None`` for
+    metadata-only inputs (``DoiInput``/``ArxivInput``), which are cheap
+    and need no cross-host claim coordination.
     """
     # Fast path: PDF inputs get a pre-Marker probe on pdf_sha256.
     # The hash is bytes-cheap (~1 ms/PDF); the probe is one round
@@ -436,7 +418,7 @@ def _ingest_pdf(
             # If this PDF de-duped against a DIFFERENT ref than the stub
             # it was fetched for, fold that orphan stub into the survivor
             # now so it stops re-qualifying for OA fetch forever (the
-            # zombie-stub spin-loop). No-op on a plain re-drop.
+            # zombie-stub spin loop). No-op on a plain re-drop.
             _reconcile_orphan_stub(
                 store,
                 survivor_ref_id=existing,
@@ -542,18 +524,18 @@ def _reconcile_orphan_stub(
     ``content_hash`` and the stub the fetch was *for* is never touched
     — it keeps ``pdf_sha256 IS NULL`` and re-qualifies for fetching
     forever (a zombie). The two refs can't be deduped by identifier:
-    the stub carries DOI/arXiv/S2 (from chase) while the survivor was
-    ingested from bytes and carries only content/pdf hashes.
+    the stub carries DOI/arXiv/S2 (from chase), the survivor only
+    content/pdf hashes (ingested from bytes).
 
     The filename's ``cite_key`` is the one reliable link back to the
-    stub. When it resolves to a *separate* live stub, fold it into the
-    survivor — migrate external identifiers + graph edges, record
-    provenance, soft-delete — mirroring
-    :meth:`precis.handlers.memory.MemoryHandler.supersede`'s merge.
+    stub — when it resolves to a *separate* live stub, folds it into
+    the survivor (migrate external identifiers + graph edges, record
+    provenance, soft-delete), mirroring
+    :meth:`precis.handlers.memory.MemoryHandler.supersede`.
 
     Returns the merged stub's ref_id, or ``None`` when there's nothing
-    to reconcile (the common case: a plain re-drop of an existing PDF,
-    or the survivor *is* the stub that just got upgraded in place).
+    to reconcile (a plain re-drop of an existing PDF, or the survivor
+    *is* the stub just upgraded in place).
     """
     stem = file_stem.strip().lower()
     if not stem:
@@ -896,21 +878,18 @@ def _recover_markup_parse_failure(input: MarkupInput, *, store: Store) -> None:
     """gr161905: markup parsing just failed — recover deterministically
     instead of racing the companion PDF against Marker across hosts.
 
-    The companion PDF (fetched alongside this markup trigger and tagged
-    ``printable_only`` so it never independently races to write a body —
-    see :func:`precis.workers.fetch_oa._run_cascade`) is the intended OCR
-    fallback. Two cases, both resolved *right now*, in this same process,
-    since we've just learned definitively that markup won't produce a body:
+    The companion PDF (fetched alongside this trigger, tagged
+    ``printable_only`` so it never independently races to write a body
+    — :func:`precis.workers.fetch_oa._run_cascade`) is the intended OCR
+    fallback. Two cases, resolved right now in this process, since we've
+    just learned markup won't produce a body: **still in the inbox** (no
+    watcher reached it) — clear ``printable_only`` so the next watcher
+    runs Marker normally (unraced, since ``has_body`` is still
+    ``False``); **already ingested** (attach-only printable,
+    ``pdf_sha256`` set, no body) — re-run the full PDF ingest on the
+    stored corpus copy synchronously.
 
-    * **Still in the inbox** (no watcher has reached it yet) — clear its
-      ``printable_only`` flag so the next watcher that processes it runs
-      Marker normally. ``has_body`` is still ``False`` (this markup never
-      wrote anything), so that's the correct, unraced fallback.
-    * **Already ingested** (moved out of the inbox — it landed as an
-      attach-only printable, ``pdf_sha256`` set, no body) — re-run the
-      full PDF ingest on the stored corpus copy synchronously, right here.
-
-    Best-effort throughout: any lookup failure just means the pre-fix
+    Best-effort throughout: any lookup failure means the pre-fix
     behavior (parse failure logs, ref stays claimable) — never raises.
     """
     if input.fold_ref_id is None:

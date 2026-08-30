@@ -1,77 +1,58 @@
 """Taproot atom re-grounding — "no source, no atom" (T1b prerequisite).
 
 Design: ``docs/backlog/taproot-atom-regrounding.md``. A ``split``-verdict
-hub's atoms (:mod:`precis.taproot.migrate`'s Phase 1 output) are extracted
-from the hub's claim sentence *alone* — the dry-run-49 dossier review
-caught extractor content present in no shown source (a benchmark value, a
-domain count neither paper's text actually states). This module is the
-pass that sits between that verdict and :func:`~precis.taproot.apply_migrate.
-apply_dry_run`'s placement: for each atom, find the hub's candidate source
-papers, rank each paper's body text for passages that might support the
-atom, and verify (LLM) whether one actually does — producing a grounding
-record (paper, chunk, verbatim quote, optional bound) or a named reason the
-atom stays ungrounded.
+hub's atoms (:mod:`precis.taproot.migrate` Phase 1) are extracted from the
+hub's claim sentence *alone* and can carry content no shown source
+states. This module sits between that verdict and
+:func:`~precis.taproot.apply_migrate.apply_dry_run`'s placement: per
+atom, find the hub's candidate source papers, rank passages, verify (LLM)
+support, producing a grounding record (paper, chunk, verbatim quote,
+optional bound) or a named ungrounded reason.
 
-**Pipeline, in order:**
+**Pipeline:**
 
-1. :func:`collect_source_papers` — a hub's candidate papers via *both*
-   provenance shapes :mod:`precis.taproot.apply_migrate`'s module docstring
-   describes (inbound evidence edges, outbound ``derived-from`` lineage).
-   Reuses that module's own read helpers (``_fetch_evidence_edges``/
-   ``_fetch_lineage_links``) rather than duplicating their SQL.
-2. :func:`candidate_passages` — pure, no DB/model: ranks one paper's body
-   chunks against one atom by normalized content-word overlap (reusing
-   :mod:`precis.taproot.migrate`'s gate tokenization/notation-folding, so
-   ``10^4`` and ``10⁴`` count as the same measurement), excluding any
-   chunk whose section sits in references/bibliography/related-work/
-   prior-art/background/state-of-the-art/literature-review (the hearsay
-   regex, ported from the dry-run-49 dossier's ``make_dossier.py``).
-   Embedding-similarity ranking is **out of scope** for this build — see
-   :func:`_embedding_similarity_hook`'s TODO.
+1. :func:`collect_source_papers` — a hub's candidate papers via both
+   provenance shapes :mod:`precis.taproot.apply_migrate` reads (inbound
+   evidence, outbound ``derived-from`` lineage); reuses that module's own
+   SQL helpers rather than duplicating them.
+2. :func:`candidate_passages` — pure, no DB/model: ranks a paper's body
+   chunks against one atom by normalized content-word overlap (shares
+   :mod:`precis.taproot.migrate`'s tokenization/notation-folding),
+   excluding hearsay sections (references/bibliography/related-work/
+   prior-art/background/state-of-the-art/literature-review).
+   Embedding-similarity ranking is out of scope
+   (:func:`_embedding_similarity_hook`'s TODO).
 3. :func:`verify_atoms` — the hub-level orchestrator: one LLM call per
    (hub, paper), batching every atom against that paper's top-``k``
-   candidate passages (union across atoms) in a single dispatch — bounding
-   cost the way the design doc's "Cost shape" section requires. Same
-   dispatch tier/retry posture as :func:`~precis.taproot.canon.
-   extract_claim_strict_medium` (MEDIUM tier, a format-flake guard that
-   retries once and then raises :class:`RegroundingUnavailable` — a dead
-   dispatch or a persistently unparseable reply is an infra failure, never
-   a silent "unsupported"). The real LLM call
-   (:func:`verify_atoms_batch`) is injectable via ``verify_batch_fn``, the
-   same pattern :mod:`precis.taproot.migrate`'s ``escalate_fn`` uses, so
-   tests never touch the network.
+   candidates in a single dispatch (bounds cost). Same MEDIUM-tier
+   format-flake-guard posture as
+   :func:`~precis.taproot.canon.extract_claim_strict_medium` — a dead
+   dispatch or persistently unparseable reply raises
+   :class:`RegroundingUnavailable`, never a silent "unsupported". The
+   real call (:func:`verify_atoms_batch`) is injectable via
+   ``verify_batch_fn``, so tests never touch the network.
 
-**Post-validation happens in code, not the prompt.** Every quote the model
-returns is re-checked here: after markup-stripping (:func:`_strip_markup` —
-``**bold**``, ``<sup>/<sub>``, markdown links) + whitespace-collapse + the
-same unicode/notation folding
-:func:`~precis.taproot.migrate._normalize_number_text` applies
-(:func:`_fold_quote_text`), the quote must (a) appear as a substring of the
-*claimed* chunk's text and (b) be unique across every non-hearsay body
-chunk of that paper. Either failure rejects that one support claim
-(:func:`_validate_quote`) — the atom may still be grounded by another
-passage or another paper; only when *nothing* survives does it end up
-ungrounded.
+**Post-validation happens in code, not the prompt.** Every quote the
+model returns is markup-stripped, whitespace-collapsed, and
+unicode/notation-folded (:func:`_fold_quote_text`), then must (a) appear
+verbatim in the *claimed* chunk and (b) be unique across every
+non-hearsay body chunk of that paper (:func:`_validate_quote`). Either
+failure rejects only that one support claim — the atom may still ground
+via another passage or paper.
 
-**Four ungrounded reasons**, distinguished so a human (or the doer-paper
-hunt) knows what to do next: ``"no-passage"`` (no candidate source paper
-had anything, hearsay or not), ``"hearsay-only"`` (the paper's only
-matching material sat in an excluded section — re-point candidate for the
-doer-paper hunt), ``"verify-rejected"`` (candidate passages existed and the
-LLM verified nothing actually supported the atom), ``"quote-validation-
-failed"`` (the model *did* claim support, but its quote never survived
-:func:`_validate_quote` — a flake/hallucination signal distinct from a
-clean rejection, per the dry-run-49 calibration findings,
-``docs/backlog/taproot-atom-regrounding.md`` §"Calibration findings").
+**Four ungrounded reasons**: ``"no-passage"`` (no candidate had
+anything), ``"hearsay-only"`` (matching material sat in an excluded
+section — a re-point candidate for the doer-paper hunt),
+``"verify-rejected"`` (candidates existed, LLM found none supporting),
+``"quote-validation-failed"`` (model claimed support but the quote never
+survived :func:`_validate_quote` — a flake/hallucination signal, distinct
+from a clean rejection).
 
-**Quote/snip storage is deliberately out of scope here** (open design call
-with the nanopub-mint session, ``claim-publication-nanopub-ots.md``) — a
-:class:`GroundedRecord`'s ``quote`` lives only in the CLI's regrounded
-JSONL run artifact and in :func:`~precis.taproot.apply_migrate.
-apply_dry_run`'s in-memory read of it; nothing here writes a quote/snip
-column to the DB. What *does* land in the DB (via ``apply_migrate``) is the
-evidence edge's chunk anchor (``meta.source_handle``) — the grounded
-passage's identity, not its text.
+**Quote/snip storage stays out of the DB** (open design call,
+``claim-publication-nanopub-ots.md``): a :class:`GroundedRecord`'s
+``quote`` lives only in the CLI's JSONL run artifact; what lands in the
+DB (via ``apply_migrate``) is the evidence edge's chunk anchor
+(``meta.source_handle``) — the passage's identity, not its text.
 """
 
 from __future__ import annotations
@@ -211,21 +192,16 @@ def _fetch_body_chunks(store: Store, paper_ref_id: int) -> list[PaperChunk]:
 
 def collect_source_papers(store: Store, hub_ref_id: int) -> list[int]:
     """A hub's candidate source papers — both provenance shapes
-    :mod:`precis.taproot.apply_migrate`'s module docstring describes:
-    inbound evidence edges (``establishes``/``corroborates``/
-    ``contradicts``, source kind in
-    :data:`~precis.taproot.hub.EVIDENCE_SRC_KINDS`, live/not-deleted) and
+    :mod:`precis.taproot.apply_migrate` reads: inbound evidence edges and
     outbound ``derived-from`` lineage. Sorted, deduped ``ref_id`` list —
-    empty means this hub is hanging (no structural paper provenance at
-    all), which :func:`verify_atoms`'s caller (and
-    :func:`~precis.taproot.apply_migrate.apply_dry_run`) both treat
-    specially: nothing to re-ground against, never a reason to withhold an
-    atom.
+    empty means the hub is hanging (no structural provenance), which
+    :func:`verify_atoms` and :func:`~precis.taproot.apply_migrate.
+    apply_dry_run` both treat specially: nothing to re-ground against,
+    never a reason to withhold an atom.
 
     Reuses :mod:`precis.taproot.apply_migrate`'s own read helpers
     (``_fetch_evidence_edges``/``_fetch_lineage_links``) rather than
-    duplicating their SQL — see that module's docstring for why each shape
-    is queried, and re-pointed, the way it is.
+    duplicating their SQL.
     """
     from precis.taproot.apply_migrate import _fetch_evidence_edges, _fetch_lineage_links
 
@@ -274,21 +250,18 @@ def candidate_passages(
     """The top-``k`` candidate passages for one atom out of one paper's
     body chunks — pure function, no DB/model call.
 
-    Excludes two kinds of chunk before ranking — both answering *this
-    passage cannot be evidence*: a hearsay ``section_path``
-    (:func:`is_hearsay_section` — the paper cites the work, it didn't do it)
-    and a chunk with no assertion at all
+    Excludes two chunk kinds before ranking, both answering *this passage
+    cannot be evidence*: a hearsay ``section_path``
+    (:func:`is_hearsay_section`) and a chunk with no assertion at all
     (:func:`~precis.taproot.grounding.has_grounding_prose` — a title/author
-    front-matter block, which the paper names itself in rather than asserting
-    anything, gripe 245842). Front matter is the more dangerous of the two
-    here precisely because it is short and dense with the atom's own topic
-    words, so it *wins* :func:`_overlap_score` against real body prose.
+    front-matter block, gripe 245842). Front matter is the more dangerous
+    of the two: short and dense with the atom's own topic words, so it
+    *wins* :func:`_overlap_score` against real body prose.
 
-    Ranks the rest by :func:`_overlap_score` descending (ties broken by
-    ``chunk_ord`` ascending, for determinism), keeping only chunks that score
-    above zero. ``chunks`` is expected to already be one paper's live body
-    chunks (``ord >= 0``, ``retired_at IS NULL`` — :func:`_fetch_body_chunks`'s
-    contract); this function does not re-check either condition.
+    Ranks the rest by :func:`_overlap_score` descending (ties by
+    ``chunk_ord`` ascending), keeping only chunks scoring above zero.
+    ``chunks`` is expected to already be one paper's live body chunks
+    (:func:`_fetch_body_chunks`'s contract) — not re-checked here.
     """
     scored = [
         (c, _overlap_score(atom_sentence, c.text))
@@ -487,26 +460,25 @@ def verify_atoms_batch(
     tier: Tier = Tier.MEDIUM,
 ) -> list[AtomVerifyResult]:
     """One (hub, paper) verify dispatch: every atom against every one of
-    ``passages`` (already the union of each atom's own
-    :func:`candidate_passages` top-``k`` for this paper), batched into a
-    single call at ``tier`` -- the design doc's cost-shape requirement
-    (one call per hub x paper, not per atom).
+    ``passages`` (the union of each atom's own :func:`candidate_passages`
+    top-``k`` for this paper), batched into a single call at ``tier`` --
+    one call per hub x paper, not per atom, per the design doc's cost
+    shape.
 
-    ``tier`` defaults to MEDIUM (the chase-verifier shape every migration
-    caller runs at); a caller that wants a cohort re-verified higher binds
-    it and passes the result as ``verify_atoms``' ``verify_batch_fn`` --
-    the per-call tier seam :mod:`precis.taproot.repair_evidence` uses to
-    re-audit edges whose original verdict anchored no passage.
+    ``tier`` defaults to MEDIUM; a caller wanting a cohort re-verified
+    higher binds it and passes the result as ``verify_atoms``'
+    ``verify_batch_fn`` -- the per-call tier seam
+    :mod:`precis.taproot.repair_evidence` uses to re-audit edges whose
+    original verdict anchored no passage.
 
     Same format-flake guard as
     :func:`~precis.taproot.canon.extract_claim_strict_medium`: a dispatch
     timeout raises :class:`RegroundingUnavailable` immediately (never
-    retried -- doubling a 300s stall helps nothing); any other dispatch
-    error is retried once after :data:`_FLAKE_RETRY_BACKOFF_S`; an
-    unparseable-or-wrong-shape reply (:func:`_parse_verify_payload`
-    returning ``None``) is retried once too. A repeat of either raises
-    :class:`RegroundingUnavailable` -- persistently broken output is an
-    infra-grade failure, never silently "nothing supported".
+    retried); any other dispatch error, or an unparseable/wrong-shape
+    reply (:func:`_parse_verify_payload` returning ``None``), is retried
+    once. A repeat of either raises :class:`RegroundingUnavailable` --
+    persistently broken output is infra-grade failure, never silently
+    "nothing supported".
     """
     if not atoms or not passages:
         return []
@@ -652,42 +624,29 @@ def verify_atoms(
     """Re-ground every atom of one ``split``-verdict hub against its
     candidate source papers -- the module's top-level entry point.
 
-    1. :func:`collect_source_papers` (``collect_papers_fn``) -- if empty,
-       this hub is hanging: every atom gets ``reason=None`` (nothing was
-       evaluated, never "ungrounded") and no LLM call is made at all.
-    2. Per candidate paper: fetch its live body chunks
-       (``fetch_body_chunks_fn``), rank each atom's :func:`candidate_passages`
-       against them, and if the union of any atom's candidates is non-empty,
-       one batched :func:`verify_atoms_batch` (``verify_batch_fn``) call
-       verifies every atom against that paper's union of candidate
-       passages. **Reply-level flake guard**: if that call comes back with
-       every atom unsupported despite non-empty candidate passages, it is
-       retried once (same atoms/passages) and the retry's results are used
-       instead -- a degraded reply wholesale-rejecting a hub's whole batch
-       (calibration findings, ``docs/backlog/taproot-atom-regrounding.md``)
-       is a flake, not a verdict; a consistent all-reject on the retry
-       stands.
-    3. Every returned ``supported`` verdict is post-validated
+    1. :func:`collect_source_papers` -- empty means the hub is hanging:
+       every atom gets ``reason=None`` (nothing evaluated, never
+       "ungrounded"), no LLM call.
+    2. Per candidate paper: fetch live body chunks, rank each atom's
+       :func:`candidate_passages`, and if any atom has candidates, one
+       batched :func:`verify_atoms_batch` call verifies every atom against
+       that paper's union of candidates. **Reply-level flake guard**: an
+       all-atoms-unsupported reply despite non-empty candidates is
+       retried once (same atoms/passages); a consistent all-reject on
+       retry stands.
+    3. Every ``supported`` verdict is post-validated
        (:func:`_validate_quote`) before becoming a :class:`GroundedRecord`
-       -- a quote that doesn't check out is simply not added; verification
-       against the *next* paper (or a later atom's own separate record on
-       this same paper) is unaffected.
-    4. An atom with zero :class:`GroundedRecord`\\ s across every paper gets
-       a reason: ``"no-passage"`` (no paper had anything, hearsay or not),
-       ``"hearsay-only"`` (some paper's only matching material sat in an
-       excluded section -- :func:`_hearsay_only_signal`),
-       ``"quote-validation-failed"`` (some ``supported=True`` verdict's
-       quote failed :func:`_validate_quote` or named an unknown
-       ``chunk_ord`` -- the model claimed support but its locator/quote
-       didn't check out), or ``"verify-rejected"`` (candidate passages
-       existed and were verified, but nothing survived and no
-       validation failure was seen either).
+       -- a bad quote is simply not added; other papers/atoms are
+       unaffected.
+    4. An atom with zero records across every paper gets one of the
+       module docstring's four reasons (:func:`_hearsay_only_signal`
+       decides ``"hearsay-only"``; a failed :func:`_validate_quote` or
+       unknown ``chunk_ord`` decides ``"quote-validation-failed"``).
 
-    Raises whatever ``verify_batch_fn`` raises (by default
-    :class:`RegroundingUnavailable` on a dead/persistently-malformed
-    dispatch) -- a caller processing many hubs should catch this per-hub,
-    the same isolation :func:`~precis.taproot.migrate.dry_run` gives its
-    own per-hub extraction failures.
+    Raises whatever ``verify_batch_fn`` raises (default
+    :class:`RegroundingUnavailable`) -- a caller processing many hubs
+    should catch this per-hub, same isolation as
+    :func:`~precis.taproot.migrate.dry_run`.
     """
     paper_ids = collect_papers_fn(store, hub_ref_id)
     if not paper_ids:

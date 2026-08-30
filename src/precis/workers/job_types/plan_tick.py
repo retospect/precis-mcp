@@ -1,41 +1,37 @@
 """``plan_tick`` job_type — one LLM tick of the planner coroutine.
 
 The dispatcher mints a ``plan_tick`` job under every ``meta.llm_tier``-set
-todo that has no live job and no live open children. The harness is rung 0
-of the effective tier's placement chain (:func:`_tick_transport`):
+todo with no live job and no live open children. The harness is rung 0 of
+the effective tier's placement chain (:func:`_tick_transport`):
 
 * a ``claude_agent`` rung runs the tick as a real ``claude -p`` agent (MCP
-  tools, OAuth Max subscription) *through the router*
-  (:func:`_run_claude_tick`) — ``bypassPermissions`` + env-back-door context;
+  tools, OAuth Max) through the router (:func:`_run_claude_tick`) —
+  ``bypassPermissions`` + env-back-door context;
 * an ``openai_tools`` rung drives the precis verbs in-process over the OSS
-  ``tools=`` loop (:func:`_run_oss_tick`), binding context in
-  a ContextVar. ``llm.chain.big`` is such a chain (local qwen3-235b → OSS
-  cloud), so steering this operation to BIG moves both the model *and* the
+  ``tools=`` loop (:func:`_run_oss_tick`), context bound in a ContextVar.
+  ``llm.chain.big`` (local qwen3-235b → OSS cloud) steers both model and
   harness onto local hardware.
 
 The effective tier comes from the operations registry
 (:mod:`precis.utils.llm.operations`), so an ``llm.op.plan_tick`` override
-retunes it live. Before 2026-08-07 the harness was chosen by
-``select_transport`` alone, which under the default ANTHROPIC backend always
-answered ``CLAUDE_AGENT`` — the global backend flip was the only lever, and
-it moved every call site at once.
+retunes it live — unlike ``select_transport`` alone, which under the
+default ANTHROPIC backend always answers ``CLAUDE_AGENT``.
 
-What the planner does during the tick is its own call (mint
-children, yield to user, halt, or finish). The runner doesn't
-interpret the output — it captures the final text as a
-``job_summary`` chunk under the job ref, and lets the dispatcher's
-next sweep notice whatever state the planner set.
+What the planner does during the tick (mint children, yield to user, halt,
+or finish) is its own call; the runner doesn't interpret the output — it
+captures the final text as a ``job_summary`` chunk under the job ref, and
+lets the dispatcher's next sweep notice whatever state the planner set.
 
-Closed vocab: ``meta.params`` carries ``model`` (one of
-``opus|sonnet|haiku``) plus an optional ``timeout_s`` and an optional
-``decompose`` bool. The model is synthesized from the parent's
-``meta.llm_tier`` at dispatch time; callers normally don't write
-``params`` directly. ``decompose=True`` is the one exception: it's set
-only by :func:`precis.workers.executors.claude_inproc._mint_auto_decompose`
-when a tick's resume-streak exceeds its cap (gripe 168886 tier 2) — same
-job_type, same transport, but the user prompt gets a forcing instruction
-(:data:`_DECOMPOSE_INSTRUCTION`) telling the planner to split the stuck
-leaf into subtasks instead of attempting it.
+Closed vocab: ``meta.params`` carries ``model`` (``opus``/``sonnet``/
+``haiku``), an optional ``timeout_s``, and an optional ``decompose`` bool.
+``model`` is synthesized from the parent's ``meta.llm_tier`` at dispatch —
+callers normally don't write ``params`` directly. ``decompose=True`` is
+the one exception: set only by
+:func:`precis.workers.executors.claude_inproc._mint_auto_decompose` when a
+tick's resume-streak exceeds its cap — same job_type, same transport, but
+the user prompt gets a forcing instruction (:data:`_DECOMPOSE_INSTRUCTION`)
+telling the planner to split the stuck leaf into subtasks instead of
+attempting it.
 """
 
 from __future__ import annotations

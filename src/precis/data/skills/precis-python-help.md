@@ -49,10 +49,10 @@ get(kind="python", id="precis")  # repo overview
 get(kind="python", id="precis/src/precis/cli.py")  # file outline
 get(kind="python", id="precis/src/precis/cli.py~L120")  # one line (Track A)
 get(kind="python", id="precis/src/precis/cli.py~L96-130")  # line range
-get(kind="python", id="precis/src/precis/dispatch.py~Hub")  # local symbol (Track B)
-get(kind="python", id="precis/src/precis/dispatch.py~Hub.register_ability")
+get(kind="python", id="precis/src/precis/service.py~Hub")  # local symbol (Track B)
+get(kind="python", id="precis/src/precis/service.py~Hub.register_ability")
 get(
-    kind="python", id="precis::precis.dispatch.Hub.register_ability"
+    kind="python", id="precis::precis.service.Hub.register_ability"
 )  # qualname shortcut
 ```
 
@@ -110,9 +110,9 @@ many edges traversable.
 ## I have a line number — what symbol is it in?
 
 ```python
-get(kind="python", id="precis/src/precis/dispatch.py~L444")
+get(kind="python", id="precis/src/precis/service.py~L444")
 # Response resolves L444 → boot (lines 444-612). Then:
-get(kind="python", id="precis::precis.dispatch.boot")
+get(kind="python", id="precis::precis.service.boot")
 ```
 
 ## Trace a boot path
@@ -155,7 +155,7 @@ Don't put reserved kwargs (`kind` / `id` / `view` / `q`) inside
 ## Who calls this symbol?
 
 ```python
-get(kind="python", id="precis::precis.dispatch.Hub.register_ability")
+get(kind="python", id="precis::precis.service.Hub.register_ability")
 # Default symbol view includes Called by: and Calls: sections.
 ```
 
@@ -165,7 +165,7 @@ get(kind="python", id="precis::precis.dispatch.Hub.register_ability")
 ```python
 edit(
     kind="python",
-    id="precis::precis.dispatch.Hub.handler_for",
+    id="precis::precis.service.Hub.handler_for",
     text='''    def handler_for(self, kind: str) -> Any | None:
         """Return the handler registered for ``kind``, or None."""
         return self.handlers.get(kind)''',
@@ -174,7 +174,7 @@ edit(
 ```
 
 ```text
-replaced precis.dispatch.Hub.handler_for (lines 204-206 → 204-206)
+replaced precis.service.Hub.handler_for (lines 204-206 → 204-206)
 ast.parse:           ok
 qualname preserved:  ok
 ruff:                no changes
@@ -190,7 +190,7 @@ follow-ups.
 ```python
 edit(
     kind="python",
-    id="precis/src/precis/dispatch.py~L204-206",
+    id="precis/src/precis/service.py~L204-206",
     text="        return self.handlers.get(kind)",
     mode="replace",
 )
@@ -198,7 +198,7 @@ edit(
 
 ```text
 replaced lines 204-206 → 204
-affects symbols: precis.dispatch.Hub.handler_for
+affects symbols: precis.service.Hub.handler_for
 ast.parse:       ok
 ruff:            1 change
   - 1 whitespace adjustment (format)
@@ -214,7 +214,7 @@ permalink convention). `L120-128` is 9 lines; `L120` is one.
 # Anchored rename within one symbol.
 edit(
     kind="python",
-    id="precis::precis.dispatch.boot",
+    id="precis::precis.service.boot",
     mode="find-replace",
     find="deprecated_call(",
     text="new_call(",
@@ -224,7 +224,7 @@ edit(
 # Disambiguate via surrounding context.
 edit(
     kind="python",
-    id="precis/src/precis/dispatch.py",
+    id="precis/src/precis/service.py",
     mode="find-replace",
     find="name",
     before="len(",
@@ -235,7 +235,7 @@ edit(
 # Insert adjacent to an anchor.
 edit(
     kind="python",
-    id="precis/src/precis/dispatch.py",
+    id="precis/src/precis/service.py",
     mode="insert",
     find="    return x + 1\n",
     where="after",
@@ -245,7 +245,7 @@ edit(
 # Span delete — text='' is the delete idiom.
 edit(
     kind="python",
-    id="precis::precis.dispatch.Hub.handler_for",
+    id="precis::precis.service.Hub.handler_for",
     mode="find-replace",
     find="    # TODO: revisit\n",
     text="",
@@ -282,7 +282,7 @@ class AuditHandler(Handler):
 # Append a top-level function.
 edit(
     kind="python",
-    id="precis/src/precis/dispatch.py",
+    id="precis/src/precis/service.py",
     text='''
 
 def registered_kinds(hub: Hub) -> list[str]:
@@ -300,11 +300,11 @@ bare file id to swap a whole file.
 ## Drop a symbol from a class
 
 ```python
-delete(kind="python", id="precis::precis.dispatch.Hub.deprecated")
+delete(kind="python", id="precis::precis.service.Hub.deprecated")
 ```
 
 ```text
-deleted precis.dispatch.Hub.deprecated (lines 145-152)
+deleted precis.service.Hub.deprecated (lines 145-152)
 ast.parse:           ok
 qualname removed:    ok
 ruff:                2 changes

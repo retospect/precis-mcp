@@ -1,37 +1,28 @@
 """Taproot Phase 1 — flat claim canonicalization (the gate).
 
-The Phase-1 canonicalizer gate. Design context: ``docs/backlog/taproot.md``
-§"The crux — canonicalization = flat claim dedup". Acceptance bar (decided):
-the fixture eval scores **zero over-merges** — bar = 0, no exceptions
+Design: ``docs/backlog/taproot.md`` §"The crux — canonicalization = flat
+claim dedup". Acceptance bar: the fixture eval scores **zero over-merges**
 (``tests/test_taproot_eval_canon.py``). Four functions, one cascade:
 
-1. :func:`extract_claim` — SMALL/local. A chunk of text -> a
-   :class:`ClaimExtraction`: zero or more AIDA-atomic claims, an optional
-   surviving ``compound`` (the bundling summary sentence, kept only when
-   decomposition actually split something), and the rejected conjuncts
-   (:class:`NotClaim`) that couldn't be grounded — the ``NO-CLAIM`` outcome
-   is an *empty* extraction (``ClaimExtraction.is_empty``), not ``None``.
-   :func:`extract_claim_strict_big` is the identical contract at BIG tier
-   — selective escalation of hubs SMALL got wrong (P2-10), not a blanket
-   bump.
-2. :func:`block` — no model. ANN over the existing ``TAPROOT:claim`` hub card
-   embeddings (bge-m3, same embedder as the rest of the card index) ->
-   the ``k`` nearest :class:`Candidate` hubs.
-3. :func:`dedup_judge` — MEDIUM. THE crux call — one bounded pairwise
-   judgment: ``same`` / ``different`` / ``contradicts``. This is what the
-   fixture (``tests/fixtures/taproot/``) grades; **bias hard toward
-   "different"** — over-merge (a false ``same``) is the dangerous error,
-   under-merge is safe and recoverable.
-4. :func:`place` — deterministic branching over the judged candidates, with
-   one conditional model call folded in: a low-confidence ``same`` is
-   re-checked by :func:`merge_confirm` (BIG) before it is trusted, and a
-   merge that still isn't confidently confirmed is **not** auto-applied —
-   it comes back as ``needs_review`` (design #16 of ``taproot.md``) so a
-   caller files a ``kind='todo'`` rather than risk fusing distinct claims.
+1. :func:`extract_claim` (SMALL) — a chunk -> :class:`ClaimExtraction`:
+   zero or more AIDA-atomic claims, an optional ``compound`` bundling
+   sentence, and rejected conjuncts (:class:`NotClaim`); NO-CLAIM is an
+   *empty* extraction, never ``None``. :func:`extract_claim_strict_big` is
+   the same contract at BIG tier (selective escalation, not a blanket
+   bump).
+2. :func:`block` — no model; ANN over ``TAPROOT:claim`` hub
+   ``finding_body`` embeddings -> the ``k`` nearest :class:`Candidate`
+   hubs.
+3. :func:`dedup_judge` (MEDIUM) — THE crux call: ``same``/``different``/
+   ``contradicts``, one bounded pairwise judgment, **biased hard toward
+   "different"** (over-merge is the dangerous error, under-merge is
+   recoverable).
+4. :func:`place` — deterministic branching; a low-confidence ``same`` is
+   re-checked by :func:`merge_confirm` (BIG); still-unconfirmed ->
+   ``needs_review``, never auto-applied.
 
-Every model call routes through :mod:`precis.utils.llm.router` —
-no hardcoded model, no direct subprocess/HTTP. Phase 1 persists nothing: no
-migration, no hub/edge writes — see ``taproot.md`` §"Target + blast radius".
+Every model call routes through :mod:`precis.utils.llm.router`. Phase 1
+persists nothing — no migration, no hub/edge writes.
 """
 
 from __future__ import annotations
@@ -84,36 +75,29 @@ CLAIM_HUB_PREDICATE_PARAMS: dict[str, str] = {
 
 def claim_hub_predicate_sql(*, ref_alias: str = "r") -> str:
     """The claim-hub definition, as a pair of ``AND``-ed ``EXISTS`` SQL
-    clauses over ``ref_alias.ref_id`` (default ``r``, the alias every call
-    site already uses for its ``refs`` row).
+    clauses over ``ref_alias.ref_id`` (default ``r``).
 
     :func:`~precis.taproot.hub.mint_hub` writes **both** ``TAPROOT:claim``
-    and ``STATUS:canonical`` on a hub, atomically, in one transaction, and
-    is the *only* writer of ``STATUS:canonical`` anywhere in this codebase.
-    A ``finding`` carrying ``TAPROOT:claim`` alone — without
-    ``STATUS:canonical`` — is not a hub: it is an ``axis_pass``-classified
-    chase-tree finding mid-lifecycle (``STATUS:established`` /
-    ``STATUS:dead_chain`` / ``STATUS:multi_candidate``, written by
-    ``workers/chase.py::_set_status``, which replaces every existing
-    ``STATUS:`` tag). This function **is** that definition — every reader
-    that needs "is this ref a claim hub" should call it rather than
-    reinvent the predicate (``docs/backlog/claim-hub-definition-divergence.md``:
-    three readers checked ``TAPROOT:claim`` alone and offered 280 chase
-    findings as claim hubs).
+    and ``STATUS:canonical`` atomically, and is the only writer of
+    ``STATUS:canonical`` anywhere. ``TAPROOT:claim`` alone (no
+    ``STATUS:canonical``) is a chase-tree finding mid-lifecycle
+    (``STATUS:established``/``dead_chain``/``multi_candidate``), not a
+    hub. This function **is** the definition — every reader needing "is
+    this a claim hub" should call it rather than reinvent the predicate
+    (three readers once didn't and offered 280 chase findings as hubs,
+    ``docs/backlog/claim-hub-definition-divergence.md``).
 
-    ``EXISTS`` rather than a join-and-filter on ``ref_tags``/``tags``: a
-    hub can carry at most one live tag per (namespace, value) pair, but an
-    ``EXISTS`` can't multiply the outer row count even if that invariant
-    were ever violated, where a ``JOIN`` silently could.
+    ``EXISTS`` rather than join-and-filter: a hub can carry at most one
+    live tag per (namespace, value), but ``EXISTS`` can't multiply the
+    outer row count even if that were ever violated, where a ``JOIN``
+    silently could.
 
-    Deliberately **no** ``rt.expires_at`` filter (:func:`block`, the hot
-    dedup path this predicate was first extracted from, doesn't filter it
-    either — see that function's own comment on the asymmetry with
-    ``workers/health_digest.py::_check_claim_hub_dedup_index``, which does
-    filter it but can't call this helper at all: that module asserts zero
-    ``llm`` imports, direct or transitive, and this module imports
-    :mod:`precis.utils.llm.router`, so it keeps its own literal copy of
-    both ``EXISTS`` clauses instead).
+    Deliberately no ``rt.expires_at`` filter — mirrors :func:`block`, the
+    hot dedup path this predicate was extracted from.
+    ``workers/health_digest.py::_check_claim_hub_dedup_index`` does filter
+    it but can't import this helper (that module asserts zero ``llm``
+    imports; this module imports :mod:`precis.utils.llm.router`), so it
+    keeps its own literal copy instead.
     """
     return f"""\
     EXISTS (
@@ -134,24 +118,18 @@ def not_hypothesis_predicate_sql(*, ref_alias: str = "r") -> str:
 
     A hypothesis hub carries ``TAPROOT:claim`` + ``STATUS:canonical`` like
     any other (:func:`~precis.taproot.hub.mint_hub` writes both
-    unconditionally), so the claim-hub predicate alone cannot tell the two
-    apart. It is not a defect in that predicate — for *reading* the corpus a
-    hypothesis is a claim hub. It matters for the passes that go looking for
-    supporting evidence.
-
-    ``hub_refine`` widens a claim by searching for evidence that supports
-    it. Pointed at a conjecture that is a confirmation engine, and
-    ``docs/backlog/claim-review-mechanism.md`` says so in as many words:
-    *"it will find support for whatever the claim already says, including
-    claims that are wrong."* A hypothesis is the worst possible input —
-    it is a guess, and the type exists precisely because nothing supports
-    it yet. Widening one manufactures the evidence its own gates refuse it.
+    unconditionally), so the claim-hub predicate alone can't tell the two
+    apart — for *reading* the corpus a hypothesis is a claim hub. It
+    matters for passes that go looking for supporting evidence: widening a
+    conjecture (``hub_refine``) is a confirmation engine
+    (``docs/backlog/claim-review-mechanism.md``) — it manufactures the
+    evidence a hypothesis's own gates refuse it.
 
     Reads ``refs.meta->>'artifact_type'``
-    (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE``) rather than the
-    ``hypothesis-proposed`` tag or ``nanopub_publish.artifact_type``: the tag
-    is dropped once a human triages, and the publish row only exists after
-    approve, but a hypothesis is one from the moment it is minted.
+    (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE``), not the
+    ``hypothesis-proposed`` tag (dropped once a human triages) or
+    ``nanopub_publish.artifact_type`` (exists only after approve) — a
+    hypothesis is one from the moment it's minted.
     """
     return (
         f"({ref_alias}.meta->>'artifact_type') IS DISTINCT FROM %(hypothesis_artifact)s"
@@ -268,25 +246,19 @@ def _coerce_extraction(
     output — the ``ClaimExtraction`` analogue of :func:`_coerce_verdict`.
 
     - Zero atoms -> NO-CLAIM: any compound the model still emitted is
-      dropped (nothing groundable survived to bundle).
-    - A lone atom with nothing rejected -> the compound is folded away
-      (never mint a degenerate 1-conjunct bundle); an already-atomic claim
-      has no compound.
+      dropped.
+    - A lone atom with nothing rejected -> compound folded away (never
+      mint a degenerate 1-conjunct bundle).
     - A compound is kept only when decomposition did something real:
-      ``len(atoms) >= 2`` (an actual split) or ``not_claims`` non-empty
-      (something was rejected out of the bundle).
-    - Two-plus atoms with **no** compound -> **synthesize** the compound
-      from ``source_sentence`` instead of discarding (P1-8:
-      ``docs/backlog/taproot-migration-extraction-quality-gates.md``). The
-      source sentence *is* the bundle by construction — the model asserted
-      a real split but missed the bundling-sentence field, a formatting
-      miss, not evidence the split itself was wrong (fi177585 lost a good
-      2-atom split this way). Only when the caller has no source text to
-      fall back on (empty ``source_sentence`` — shouldn't happen once a
-      caller passes it, kept as a bias-safe floor) does this still degrade
-      to NO-CLAIM: without a bundle, downstream (backfill's prose rewrite
-      targets the compound, else ``atoms[0]``) would silently cite only the
-      first atom.
+      ``len(atoms) >= 2`` or ``not_claims`` non-empty.
+    - Two-plus atoms with **no** compound -> **synthesize** it from
+      ``source_sentence`` rather than discard (P1-8,
+      ``docs/backlog/taproot-migration-extraction-quality-gates.md``): a
+      missing bundling-sentence field is a formatting miss, not evidence
+      the split was wrong (fi177585 lost a good 2-atom split this way).
+      Only an empty ``source_sentence`` (bias-safe floor) still degrades
+      to NO-CLAIM — without a bundle, downstream would silently cite only
+      the first atom.
     """
     atoms_t = tuple(atoms)
     not_claims_t = tuple(not_claims)
@@ -536,15 +508,14 @@ _SCOPE_VALUE_MAX_CHARS = 120
 
 
 def _valid_scope_value(key: str, value: str) -> bool:
-    """P1-9: constrain scope values so junk never reaches hub identity.
+    """P1-9: constrain scope values so junk never reaches hub identity
+    (``hub.mint_hub``/``make_taproot_hub_paper_id`` feed scope straight
+    into the identity key).
 
-    Drop empty or absurdly long values outright. ``quantity`` specifically
-    must contain at least one digit — fi176359's ``quantity: "rectangular
-    outline"`` / ``"pin count conventions"`` were prose descriptions, not
-    measures, and junk scope perturbs
-    ``hub.mint_hub``/``make_taproot_hub_paper_id``'s identity key. Never
-    raises — an invalid value is dropped, not a reason to fail the whole
-    extraction."""
+    Drop empty or absurdly long values outright. ``quantity`` must contain
+    at least one digit — fi176359's ``"rectangular outline"``/``"pin count
+    conventions"`` were prose, not measures. Never raises — a bad value is
+    dropped, not a reason to fail the whole extraction."""
     if not value or len(value) > _SCOPE_VALUE_MAX_CHARS:
         return False
     if key == "quantity" and not any(ch.isdigit() for ch in value):
@@ -603,20 +574,16 @@ def extract_claim(chunk_text: str) -> ClaimExtraction:
     """Extract the atomic claims (+ optional compound + rejected conjuncts)
     from ``chunk_text`` — a :class:`ClaimExtraction`.
 
-    SMALL/local tier — cheap, per-chunk. Returns the empty extraction
-    (``ClaimExtraction.is_empty``) when the chunk is pure-pointer / meta
-    (the ``NO-CLAIM`` outcome, taproot.md Axis A stage 0') — including on a
-    dispatch error or unparseable model output (fail safe: no claim rather
-    than a bad one). A caller that must distinguish a real NO-CLAIM from a
-    dead dispatch (infra failure) should use :func:`extract_claim_strict`
-    instead, which raises on the latter.
+    SMALL/local tier. Returns the empty extraction
+    (``ClaimExtraction.is_empty``) on a pure-pointer/meta chunk, a
+    dispatch error, or unparseable model output (fail safe: no claim
+    rather than a bad one). A caller needing to tell a real NO-CLAIM apart
+    from a dead dispatch should use :func:`extract_claim_strict`.
 
-    Parses the current ``{"claims": [...], "compound": ..., "not_claims":
-    [...]}`` contract; tolerates the legacy ``{"claim": ..., "material":
-    ...}`` single-object shape a SMALL-tier model may still regress to
-    (degrades to one atom, no compound/not_claims — same fail-safe posture
-    as the rest of this module). :func:`_coerce_extraction` enforces the
-    atoms/compound/not_claims invariants either way.
+    Parses ``{"claims": [...], "compound": ..., "not_claims": [...]}``;
+    tolerates the legacy ``{"claim": ..., "material": ...}`` single-object
+    shape a SMALL-tier model may regress to (degrades to one atom).
+    :func:`_coerce_extraction` enforces the invariants either way.
     """
     return _extract_claim_impl(chunk_text, strict=False)
 
@@ -625,27 +592,21 @@ def extract_claim_strict(chunk_text: str) -> ClaimExtraction:
     """Like :func:`extract_claim`, but raises :class:`ExtractionUnavailable`
     on a dispatch error instead of degrading to the empty extraction.
 
-    A dispatch error is infrastructure failure (the model never ran) —
-    conflating it with a semantic NO-CLAIM is exactly the failure mode that
-    produced the melchior dry-run's all-``no-claim`` garbage report when
-    every call ECONNREFUSED'd. Unparseable-but-successful model output
-    still degrades to the empty extraction here too: the model *did*
-    respond, so that really is a semantic no-claim, not an infra failure.
+    Conflating an infra failure with a semantic NO-CLAIM produced the
+    melchior dry-run's all-``no-claim`` garbage report when every call
+    ECONNREFUSED'd. Unparseable-but-successful output still degrades to
+    the empty extraction — the model *did* respond, so that is a genuine
+    no-claim.
     """
     return _extract_claim_impl(chunk_text, strict=True)
 
 
 def extract_claim_strict_big(chunk_text: str) -> ClaimExtraction:
     """Like :func:`extract_claim_strict`, but dispatches at :data:`Tier.BIG`
-    instead of :data:`Tier.SMALL` (P2-10, ``docs/backlog/
-    taproot-migration-extraction-quality-gates.md``).
-
-    Same prompt, same :func:`_coerce_extraction` contract — only the model
-    tier differs. For selective escalation of the extractions the SMALL
-    pass got wrong (``lossy``/``nested``/``no-claim`` verdicts) rather than
-    a blanket BIG-tier bump over the whole corpus; the caller (``taproot
-    migrate``'s escalation path) decides which hubs qualify, this function
-    just dispatches the same contract at higher capability.
+    (P2-10, ``docs/backlog/taproot-migration-extraction-quality-gates.md``)
+    — selective escalation of extractions SMALL got wrong
+    (``lossy``/``nested``/``no-claim``), not a blanket bump; the caller
+    (``taproot migrate``'s escalation path) decides which hubs qualify.
     """
     return _extract_claim_impl(chunk_text, strict=True, tier=Tier.BIG)
 
@@ -666,46 +627,29 @@ _FLAKE_RETRY_BACKOFF_S = 5.0
 def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
     """Like :func:`extract_claim_strict`, but dispatches at
     :data:`Tier.MEDIUM` with an additional format-flake guard on top of the
-    strict dispatch-error contract — routed through :func:`dispatch` (so it
-    is budget-metered and logs an ``llm_call_log`` row like every other
-    call in this module).
-
-    History: this was a deliberate ``call_claude_p`` bypass (the
-    ``fix_gripe`` pattern) pinned to haiku, because prod's
-    ``llm.chain.medium`` rung at the time pointed at an OSS model that
-    intermittently broke the JSON output contract (2026-08-14 4-hub A/B
-    probe, ``docs/backlog/taproot-migration-extraction-quality-gates.md``
-    Round 2). The 2026-08-15 chain cutover set ``llm.chain.medium`` to
-    ``claude-haiku-4-5-20251001`` via ``claude_p`` — the same model this
-    function used to pin to — dissolving the pin-vs-chain conflict that
-    justified the bypass, so it now dispatches through the normal ladder.
-    Model still steerable via the operator ``llm.chain.medium`` row
+    strict dispatch-error contract — routed through :func:`dispatch`
+    (budget-metered, logs ``llm_call_log`` like every other call in this
+    module). Model is steerable via the operator ``llm.chain.medium`` row
     (:func:`precis.utils.llm.router.resolve_model` at ``Tier.MEDIUM``), not
     ``PRECIS_MODEL_HAIKU``.
 
     Format-flake guard, two retryable shapes (each re-asked at most once):
 
-    * **Dispatch timeout** (``res.error`` set and ``res.timed_out``):
-      raises :class:`ExtractionUnavailable` immediately, never retried —
-      retrying a 240 s stall would double it for nothing.
+    * **Dispatch timeout**: raises :class:`ExtractionUnavailable`
+      immediately, never retried — retrying a 240s stall would double it
+      for nothing.
     * **Dispatch error, not a timeout**: retried once after
       :data:`_FLAKE_RETRY_BACKOFF_S`; a repeat raises
       :class:`ExtractionUnavailable`.
-    * **Unparseable reply** (``res.data`` isn't a dict and the raw text
-      doesn't parse as one): retried once; a repeat raises
-      :class:`ExtractionUnavailable` — a model persistently off-contract is
-      an infra-grade failure, never a NO-CLAIM.
-    * **Empty-empty JSON** (valid payload, no atoms AND no ``not_claims``,
-      on non-empty input): retried once; a repeat is accepted as a genuine
-      NO-CLAIM (pure-pointer passages legitimately produce it).
+    * **Unparseable reply**: retried once; a repeat raises
+      :class:`ExtractionUnavailable` — persistent off-contract output is
+      infra-grade failure, never a NO-CLAIM.
+    * **Empty-empty JSON** (no atoms and no ``not_claims`` on non-empty
+      input): retried once; a repeat is accepted as a genuine NO-CLAIM.
 
-    The guard lives only here, not in the per-chunk SMALL backfill path,
+    The guard lives only here, not the per-chunk SMALL backfill path,
     where genuine no-claim chunks are common and a blanket retry would
     double their cost.
-
-    Raises :class:`ExtractionUnavailable` when the dispatch itself fails
-    (transport down, timeout, dead endpoint, persistent format-flake) —
-    same strict contract as the other ``_strict`` variants.
     """
     text = (chunk_text or "").strip()
     if not text:
@@ -834,16 +778,13 @@ def _extraction_from_payload(data: dict[str, Any], excerpt: str) -> ClaimExtract
 def _log_assertion_arity_drift(
     raw_assertions: Any, atoms: list[CanonicalClaim], not_claims: list[NotClaim]
 ) -> None:
-    """P1-5 telemetry: the prompt now forces an enumerate-then-emit step —
-    the model lists ``assertions`` before emitting ``claims``/``not_claims``.
-    This is diagnostic only (never changes the extraction result — the
-    bias-safe posture of this module is to never fail an extraction on a
-    format nit): a mismatch between the enumerated count and
-    ``len(atoms) + len(not_claims)`` signals the model skipped emitting an
-    outcome for something it enumerated (or enumerated coarser/finer than
-    it emitted), an early warning for the exact recency-drop failure mode
-    P1-5 targets, without gating on a heuristic that doesn't know sentence
-    semantics."""
+    """P1-5 telemetry: the prompt forces an enumerate-then-emit step (the
+    model lists ``assertions`` before emitting ``claims``/``not_claims``).
+    Diagnostic only — never changes the extraction result. A mismatch
+    between the enumerated count and ``len(atoms) + len(not_claims)``
+    signals the model skipped (or mis-split) something it enumerated —
+    an early warning for the recency-drop failure mode P1-5 targets,
+    without gating on a heuristic that doesn't know sentence semantics."""
     if not isinstance(raw_assertions, list):
         return
     enumerated = len(raw_assertions)
@@ -892,49 +833,28 @@ def block(
     k: int = 10,
     embedder_name: str = "bge-m3",
 ) -> list[Candidate]:
-    """The ``k`` nearest existing ``TAPROOT:claim`` hubs to ``claim`` — no model.
+    """The ``k`` nearest existing ``TAPROOT:claim`` hubs to ``claim`` — no
+    model.
 
-    Embeds ``claim.sentence`` with ``embedder`` (an
-    :class:`~precis.embedder.Embedder`-shaped object — ``embed_one(text) ->
-    list[float]``) and ANN-retrieves over the ``TAPROOT:claim``-tagged
-    ``finding`` refs' ``finding_body`` (``ord=0``) embeddings. Empty when
-    no tagged hub exists yet (brand-new claim; also today's degrade, since
-    the classifier that writes ``TAPROOT:claim`` is a Phase-2 predecessor,
-    not built here — see the build ticket).
+    Embeds ``claim.sentence`` with ``embedder``
+    (:class:`~precis.embedder.Embedder`-shaped: ``embed_one(text) ->
+    list[float]``) and ANN-retrieves over ``TAPROOT:claim``-tagged
+    findings' ``finding_body`` (``ord=0``) embeddings. Empty when no
+    tagged hub exists yet.
 
-    **Why the body chunk and not ``card_combined`` (``ord=-1``).** This
-    retrieved over the card index until 2026-08-19, on the assumption —
-    stated in :func:`~precis.taproot.hub.mint_hub` — that an async
-    card-forge pass populated a fresh hub's card. No such pass exists:
-    :meth:`~precis.store.Store.blocks.upsert_card_combined` is reached
-    only from :class:`~precis.handlers._numeric_ref.NumericRefHandler`'s
-    create path behind ``emits_card``, which ``finding`` does not set, and
-    taproot's system writer never emitted one. Measured over prod on
-    2026-08-19, 187 of 1,524 ``TAPROOT:claim``-tagged findings carried a
-    card (12.3%) — and those 187 came from ``workers/chase.py::_snapshot_chain``,
-    whose text is a chain snapshot rather than the claim sentence. So the
-    dedup index was both mostly empty and, where populated, off-content.
-    (That 1,524 was the permissive ``TAPROOT:claim``-alone population —
-    :func:`claim_hub_predicate_sql` narrowed it to the strict count of
-    1,244 live hubs on 2026-08-20,
-    ``docs/backlog/claim-hub-definition-divergence.md``.)
-
-    The body chunk is the right index and needs no new machinery: every
-    hub has one (:func:`~precis.taproot.hub.mint_hub` writes it in the
-    same transaction as the ref), it holds exactly the claim sentence, and
+    **Body chunk, not ``card_combined``**: no pass in this codebase emits
+    a hub's card (``finding`` doesn't set ``emits_card``, and taproot's
+    system writer never emits one), so the card index would be mostly
+    empty and, where populated, off-content
+    (``docs/backlog/claim-hub-definition-divergence.md``). The body chunk
+    needs no new machinery — every hub has one, and
     :func:`~precis.taproot.hub.refine_claim_sentence` replaces it via
-    DELETE+INSERT so the embed cascade re-runs on every reword — the index
-    self-heals instead of drifting. A hub's ``card_combined`` would have
-    been a verbatim second copy of the sentence whose only distinguishing
-    property was that it could fall out of sync. Coverage went 12.3% →
-    100% on this switch alone; the standing invariant is watched by
+    DELETE+INSERT so the embed cascade re-runs on every reword
+    (self-healing, never drifting). Watched by
     ``workers/health_digest.py::_check_claim_hub_dedup_index``.
 
-    ``store`` / ``embedder`` are explicit, injected params (not resolved
-    from a global) so this stays trivially testable with a fake store/mock
-    embedder and carries no import-time DB/model dependency — the build
-    ticket's skeleton signature omits infra plumbing for brevity, not to
-    forbid it.
+    ``store``/``embedder`` are explicit, injected params — testable with a
+    fake store/mock embedder, no import-time DB/model dependency.
     """
     vector = embedder.embed_one(claim.sentence)
     # NB: :func:`claim_hub_predicate_sql` has no ``rt.expires_at`` filter,

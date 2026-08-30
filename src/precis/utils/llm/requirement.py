@@ -16,13 +16,12 @@ model is enough to classify a task) and parses a small JSON requirement.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from precis.llm_catalog import CAPABILITY_AXES
+from precis.utils.llm.json_reply import extract_json_object
 from precis.utils.llm.policy import Requirement, Selection, select_offering
 from precis.utils.llm.router import Tier
 
@@ -63,15 +62,11 @@ Judge = Callable[[str], dict[str, Any]]
 
 
 def _extract_json(text: str) -> dict[str, Any]:
-    """Tolerant: pull the first ``{...}`` block out of a model's reply."""
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not m:
-        return {}
-    try:
-        obj = json.loads(m.group(0))
-    except (ValueError, TypeError):
-        return {}
-    return obj if isinstance(obj, dict) else {}
+    """Tolerant JSON-object parse, defaulting to ``{}`` (not ``None``) so
+    callers here can always treat the result as a plain (possibly empty)
+    dict. Delegates the actual tolerant parse to the shared
+    :func:`~precis.utils.llm.json_reply.extract_json_object`."""
+    return extract_json_object(text) or {}
 
 
 def _default_judge(task: str) -> dict[str, Any]:

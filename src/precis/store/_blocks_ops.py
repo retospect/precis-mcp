@@ -1,36 +1,22 @@
 """Block-level CRUD against the v2 ``chunks`` table — the composed
-:class:`BlockStore` sub-store, reached as ``store.blocks`` (second
-domain carved out of the flat mixin stack; see
-``docs/backlog/codereview-store-decomposition.md``).
+:class:`BlockStore` sub-store, reached as ``store.blocks``.
 
-"Blocks" is the original (v1) name; v2 calls them ``chunks``. The
-public Python surface keeps the historical name to avoid churning
-~150 handler call sites:
+"Blocks" is the v1 name; v2 calls them ``chunks``. The public surface
+keeps the historical name to avoid churning ~150 handler call sites:
+``Block.id``→``chunks.chunk_id``, ``Block.pos``→``chunks.ord``,
+``Block.slug``→``chunks.meta->>'slug'``, ``Block.embedding``→LEFT JOIN
+``chunk_embeddings`` on the default embedder, ``Block.density``→LEFT
+JOIN ``chunk_tags``+``tags`` filtered ``namespace='DENSITY'``.
 
-- ``Block.id``           maps to ``chunks.chunk_id``
-- ``Block.pos``          maps to ``chunks.ord``
-- ``Block.slug``         comes from ``chunks.meta->>'slug'``
-- ``Block.embedding``    populated via LEFT JOIN ``chunk_embeddings``
-                         on the default embedder (see Phase 4)
-- ``Block.density``      populated via LEFT JOIN ``chunk_tags`` + ``tags``
-                         filtered on ``namespace='DENSITY'``
+Two v2-only columns: ``chunks.chunk_kind`` (required FK to
+``chunk_kinds.slug``; :meth:`insert_blocks` defaults ``'paragraph'``
+absent a hint — richer typing (cards/figures/equations) writes
+directly via ``precis.ingest.db_writer``, bypassing this mixin) and
+``chunks.section_path`` (TEXT[], from ``BlockInsert.meta['section_path']``
+or ``{}``).
 
-Two columns the v2 schema requires that v1 didn't have:
-
-- ``chunks.chunk_kind``  required FK to ``chunk_kinds.slug``;
-                         :meth:`insert_blocks` defaults to ``'paragraph'``
-                         when the BlockInsert payload doesn't carry a
-                         hint. v2 ingesters that want richer typing
-                         (cards, figures, equations) write directly via
-                         ``precis.ingest.db_writer`` rather than through
-                         this mixin.
-- ``chunks.section_path``  TEXT[]; populated from ``BlockInsert.meta
-                            ['section_path']`` when present, else ``{}``.
-
-Scope: insert / get / list / count / density+embedding update /
-random / blocks_missing_embeddings, plus the lexical / semantic /
-RRF-fused search paths.
-
+Scope: insert/get/list/count/density+embedding update/random/
+blocks_missing_embeddings, plus lexical/semantic/RRF-fused search.
 ``pool`` comes from the shared :class:`~precis.store.core.StoreCore`.
 """
 
@@ -150,16 +136,11 @@ def _coerce_year(value: int | str) -> int:
 def _year_range_clauses(year_from: int | None, year_to: int | None) -> list[str]:
     """Parameterless ``r.year`` range predicates for the paper
     publish-date filter (``search(kind='paper', after=…, before=…)``).
-
-    Bounds are interpolated as **integer literals**, not bind params, so
-    the clause is safe to splice into *both* CTEs of the fused query —
-    the discipline ``speculative_fence`` / ``wiki_fence`` already rely on
-    (a parameterised clause would need its params duplicated per CTE).
-    Each value is hard-coerced to an int in range first (see
-    :func:`_coerce_year`), so literal interpolation carries no injection
-    surface. Papers with ``year IS NULL`` fall out (NULL comparisons are
-    false); the handler surfaces that omission count separately.
-    """
+    Bounds interpolate as **integer literals**, not bind params, so the
+    clause splices safely into *both* CTEs of the fused query (same
+    discipline as ``speculative_fence``/``wiki_fence``); each value is
+    hard-coerced via :func:`_coerce_year` first, so no injection surface.
+    ``year IS NULL`` papers fall out (NULL comparisons are false)."""
     out: list[str] = []
     if year_from is not None:
         out.append(f"r.year >= {_coerce_year(year_from)}")
@@ -179,17 +160,13 @@ def _kind_date_where(
     created_from: datetime | None,
     created_to: datetime | None,
 ) -> tuple[list[str], list[Any]]:
-    """Kind-set + ``refs.created_at`` range predicates for cross-kind search.
-
-    ``kinds`` (a set → ``r.kind = ANY(%s)``) takes precedence over the
-    single ``kind`` (→ ``r.kind = %s``); pass one or neither. The
-    ``created_from`` / ``created_to`` bounds filter ``refs.created_at``
-    (the general cross-kind recency axis, distinct from the paper-only
-    ``r.year`` publish-date filter). Returns aligned ``(clauses, params)``
-    so a caller extends its clause list and bind-param list together.
-    Unlike :func:`_year_range_clauses` this uses bind params, so it is
-    for the single-leg methods, not the dual-CTE fused query.
-    """
+    """Kind-set + ``refs.created_at`` range predicates for cross-kind
+    search. ``kinds`` (``r.kind = ANY(%s)``) takes precedence over
+    single ``kind``; pass one or neither. ``created_from``/``created_to``
+    filter ``refs.created_at`` (general cross-kind recency, distinct
+    from paper-only ``r.year``). Returns aligned ``(clauses, params)`` —
+    uses bind params (unlike :func:`_year_range_clauses`), so it's for
+    single-leg methods, not the dual-CTE fused query."""
     clauses: list[str] = []
     params: list[Any] = []
     if kinds is not None:
@@ -211,12 +188,10 @@ def _chunk_scope_clauses(
     chunk_kinds: list[str] | None, chunk_ids: list[int] | None
 ) -> list[str]:
     """Parameterless chunk-level scoping clauses (draft headers-only /
-    subtree search). Like :func:`_year_range_clauses` the predicates are
-    literal, not bind params, so they splice safely into both CTEs of the
-    fused query. ``chunk_kinds`` values are validated against a strict
-    ``[a-z_]+`` shape and ``chunk_ids`` are int-coerced, so literal
-    interpolation has no injection surface.
-    """
+    subtree search). Like :func:`_year_range_clauses`, literal not bind
+    params, so they splice safely into both fused-query CTEs.
+    ``chunk_kinds`` are validated ``[a-z_]+``, ``chunk_ids`` int-coerced
+    — no injection surface."""
     import re
 
     out: list[str] = []
@@ -236,21 +211,14 @@ def _chunk_scope_clauses(
 
 
 def _ord_card_clause(card_kinds: tuple[str, ...] | None) -> str:
-    """The body-vs-card scope predicate for a search leg.
-
-    Search defaults to body chunks only (``c.ord >= 0``) — synthetic
-    cards (``ord < 0``) are ref-level introducers an agent searching
-    for *content* doesn't want in the hit list. When a caller opts in
-    via ``card_kinds`` (e.g. paper title search wanting the embedded
-    ``card_combined`` to be reachable), the listed card kinds are
-    unioned back in: ``(c.ord >= 0 OR c.chunk_kind IN ('card_combined'))``.
-
-    Returns a single literal (no bind params) so it splices safely into
-    both CTEs of the fused query — same double-splice contract as
-    :func:`_chunk_scope_clauses`. Card kinds are validated against the
-    strict ``card_[a-z_]+`` shape so the interpolation has no injection
-    surface.
-    """
+    """The body-vs-card scope predicate for a search leg. Search
+    defaults to body chunks only (``c.ord >= 0``) — synthetic cards
+    (``ord < 0``) are ref-level introducers, unwanted in a content hit
+    list. ``card_kinds`` opts specific card kinds back in (e.g. paper
+    title search wanting ``card_combined`` reachable):
+    ``(c.ord >= 0 OR c.chunk_kind IN (...))``. Literal (no bind params,
+    same double-splice contract as :func:`_chunk_scope_clauses`); values
+    validated ``card_[a-z_]+``."""
     if not card_kinds:
         return "c.ord >= 0"
     import re
@@ -421,29 +389,21 @@ class BlockStore:
         since: datetime | None = None,
         until: datetime | None = None,
     ) -> int:
-        """Count chunks matching the lexical filter (no LIMIT).
+        """Count chunks matching the lexical filter (no LIMIT). Companion
+        to :meth:`search_blocks_lexical` for the "N of K" header — same
+        WHERE clause (noise-floor guard, ``card_kinds`` opt-in) so the
+        header matches the search's exact universe.
 
-        Companion to :meth:`search_blocks_lexical` for pagination
-        headers. Same WHERE clause (including the noise-floor guard and
-        the ``card_kinds`` opt-in) so the "you're seeing N of K" header
-        reflects the exact universe the search would return at infinite
-        limit.
+        ``distinct_refs=True`` counts distinct *refs* with a match
+        (``COUNT(DISTINCT c.ref_id)``) instead of matching chunks — the
+        honest denominator for ref-grouped body-chunk search
+        (:meth:`NumericRefHandler._best_body_hits`), where one ref's many
+        chunks would otherwise over-state the result-row total.
 
-        ``distinct_refs=True`` counts distinct *refs* with a matching
-        chunk (``COUNT(DISTINCT c.ref_id)``) rather than matching chunks
-        — the honest denominator for ref-grouped body-chunk search
-        (:meth:`NumericRefHandler._best_body_hits`), where one ref can
-        contribute many chunks and a chunk-level count over-states the
-        result-row total.
-
-        ``kinds`` (a set → ``r.kind = ANY(%s)``) takes precedence over
-        the single ``kind`` (→ ``r.kind = %s``); pass one or neither.
-        ``since``/``until`` filter ``refs.created_at``, with ``until``
-        **exclusive** (``<``, not ``<=``). Together with
-        ``distinct_refs=True`` these also serve the ``/drive`` "showing
-        N of ~K" denominator (:meth:`NumericRefHandler._best_body_hits`'s
-        sibling use case, now folded into this one method rather than a
-        near-duplicate ``count_refs_matching_lexical``).
+        ``kinds`` takes precedence over single ``kind`` (pass one or
+        neither). ``since``/``until`` filter ``refs.created_at``, ``until``
+        **exclusive**. Also serves the ``/drive`` "showing N of ~K"
+        denominator.
         """
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
@@ -1063,34 +1023,30 @@ class BlockStore:
         per_paper: int | None = None,
         pool_per_leg: int = 80,
     ) -> list[tuple[Block, Ref, float]]:
-        """Multi-leg reciprocal-rank fusion for broad / high-recall retrieval.
+        """Multi-leg reciprocal-rank fusion for broad/high-recall
+        retrieval. Generalises :meth:`search_blocks_fused` (one lexical +
+        one semantic leg) to *N* legs: each ``q_texts`` entry runs a
+        lexical leg, each ``query_vecs`` entry a semantic leg, then
+        per-leg ranked lists are RRF-fused into one ordering. A chunk
+        surfacing across several query phrasings/HyDE answers accumulates
+        contributions and wins — robustness to formulation the
+        single-query path lacks.
 
-        Generalises :meth:`search_blocks_fused` (one lexical + one semantic
-        leg) to *N* legs: each entry of ``q_texts`` runs a lexical leg and
-        each entry of ``query_vecs`` runs a semantic leg, then the per-leg
-        ranked lists are reciprocal-rank-fused into one ordering. A chunk
-        that surfaces across several query phrasings / HyDE answer
-        embeddings accumulates contributions and wins — exactly the
-        robustness-to-formulation the single-query path lacks.
+        Fusion is application-level: every leg reuses the tested
+        single-leg SQL (:meth:`search_blocks_lexical`/
+        :meth:`search_blocks_semantic`) rather than a hand-rolled N-CTE
+        query. Each leg over-fetches a pool for the fusion to re-rank
+        before the outer ``offset``/``limit`` slice.
 
-        Fusion is application-level: every leg reuses the tested single-leg
-        SQL (:meth:`search_blocks_lexical` / :meth:`search_blocks_semantic`)
-        rather than a hand-rolled N-CTE query, so per-leg ranking semantics
-        stay identical to the proven path. Each leg over-fetches a pool of
-        candidates so the fusion has material to re-rank before the outer
-        ``offset`` / ``limit`` slice.
+        ``mode`` mirrors the single-path dispatcher (``'lexical'``:
+        ``q_texts`` legs only; ``'semantic'``: ``query_vecs`` only;
+        ``'hybrid'``/``None``: both — degrading to lexical-only with no
+        usable vectors, same contract as the single path).
 
-        ``mode`` mirrors the single-path dispatcher: ``'lexical'`` runs only
-        the ``q_texts`` legs, ``'semantic'`` only the ``query_vecs`` legs,
-        ``'hybrid'`` / ``None`` runs both. With no usable semantic vectors
-        (embedder down, or ``mode='lexical'``) it degrades to the lexical
-        legs alone — the same contract as the single path.
+        ``per_paper`` optionally caps hits per ref in the fused result
+        (diversity knob); ``None`` disables it.
 
-        ``per_paper`` optionally caps how many hits one ref may contribute
-        to the fused result, spreading coverage across more papers (the
-        breadth-triage / diversity knob). ``None`` disables the cap.
-
-        Returns ``(Block, Ref, fused_score)`` tuples, best first.
+        Returns ``(Block, Ref, fused_score)``, best first.
         """
         # Defensive hard ceiling on the fan-out. The MCP surface and the
         # paper handler both cap queries=/answers= at 8 each, but this
@@ -1229,26 +1185,18 @@ class BlockStore:
         exclude_ref_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
-
-        The source-search primitive behind the unified Drive
-        surface. Searches the ``chunks``
-        of a *set* of kinds at once (semantic + lexical, RRF-fused via
-        :meth:`search_blocks_multi`), collapses to one hit per ref — its
-        best-scoring chunk, the breadth / triage row — optionally bounds by
-        ``refs.created_at`` (``since`` / ``until``), and orders by relevance
-        (default), recency (``sort='recency'`` → newest matching ref first),
-        or age (``sort='oldest'`` → oldest matching ref first).
-        ``offset`` pages past the first window (Slice-3 pagination).
-        ``exclude_ref_ids`` drops those refs from every leg (threaded straight
-        into :meth:`search_blocks_multi`) — unlike the per-handler cross-kind
-        fan-out (``runtime._dispatch_cross_kind``), this primitive runs ONE
-        SQL query over every requested kind at once, so the exclusion applies
-        uniformly regardless of which kinds are in ``kinds`` (no per-handler
-        support gap to work around; see ``search(uncited=...)``).
-        Returns ``(Block, Ref, score)``, one per ref. Kinds with no
-        embedded chunks simply contribute nothing (the join filters them),
-        so an over-broad kind set is harmless.
-        """
+        The source-search primitive behind the unified Drive surface:
+        searches a *set* of kinds at once (semantic+lexical, RRF-fused
+        via :meth:`search_blocks_multi`), collapses to one hit per ref
+        (best-scoring chunk), optionally bounds by ``refs.created_at``
+        (``since``/``until``), orders by relevance (default),
+        ``sort='recency'`` (newest first), or ``'oldest'``. ``offset``
+        pages. ``exclude_ref_ids`` drops refs from every leg uniformly —
+        unlike per-handler cross-kind fan-out
+        (``runtime._dispatch_cross_kind``), this runs ONE SQL query over
+        every kind, so exclusion never has a per-handler gap. Returns
+        ``(Block, Ref, score)`` one per ref; kinds with no embedded
+        chunks just contribute nothing."""
         if not kinds:
             return []
         _sort = (sort or "relevance").strip().lower()
@@ -1322,25 +1270,25 @@ class BlockStore:
         card_kinds: tuple[str, ...] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
-        ranking strategies, so callers pick a mode instead of choosing a
-        function (the draft editable-document model-adjacent; the LLM-facing ``search(mode=…)``).
+        ranking strategies, so the LLM-facing ``search(mode=…)`` picks a
+        mode instead of a function.
 
-        ``year_from`` / ``year_to`` are inclusive ``refs.year`` bounds for
-        the paper publish-date filter; they thread into all three legs.
+        ``year_from``/``year_to`` are inclusive ``refs.year`` bounds for
+        the paper publish-date filter, threaded into all three legs.
 
-        * ``mode='lexical'`` — Postgres FTS only (``search_blocks_lexical``);
-          deterministic keyword / exact-phrase / identifier matching, and
-          the honest tool when the embedder is down.
+        * ``mode='lexical'`` — Postgres FTS only (``search_blocks_lexical``):
+          deterministic keyword/exact-phrase/identifier matching, the
+          honest tool when the embedder is down.
         * ``mode='semantic'`` — embedding cosine only
-          (``search_blocks_semantic``); degrades to lexical if no
-          ``query_vec`` (embedder unavailable).
-        * ``mode='hybrid'`` / ``None`` (default) — reciprocal-rank fusion
-          (``search_blocks_fused``), which itself falls back to lexical
-          when ``query_vec`` is None. Identical to the prior default.
+          (``search_blocks_semantic``); degrades to lexical without
+          ``query_vec``.
+        * ``mode='hybrid'``/``None`` (default) — RRF fusion
+          (``search_blocks_fused``), itself falling back to lexical
+          without ``query_vec``.
 
-        Result tuples are ``(Block, Ref, score)`` in every mode (score is
-        an RRF score, a cosine distance, or a lexical rank — all "more
-        relevant first" within a mode, never comparable across modes).
+        Result tuples are ``(Block, Ref, score)`` in every mode — score is
+        an RRF score, cosine distance, or lexical rank, "more relevant
+        first" within a mode, never comparable across modes.
         """
         m = (mode or "hybrid").strip().lower()
         if m == "verbatim":
@@ -1422,17 +1370,16 @@ class BlockStore:
         """Resolve a relative chunk handle to ``(kind, per-kind selector)``.
 
         Examples (flat ``ord``-based kinds — paper, plaintext, …):
-          ``pc<id>+1``    → the next chunk     → ``(kind, 'slug~<ord+1>')``
-          ``pc<id>-2``    → two chunks back    → ``(kind, 'slug~<ord-2>')``
-          ``pc<id>-2..3`` → a signed span      → ``(kind, 'slug~<lo>..<hi>')``
-          ``pc<id>^``     → no hierarchy (flat) → ``None``
+        ``pc<id>+1``→next chunk→``(kind,'slug~<ord+1>')``;
+        ``pc<id>-2``→two back→``(kind,'slug~<ord-2>')``;
+        ``pc<id>-2..3``→signed span→``(kind,'slug~<lo>..<hi>')``;
+        ``pc<id>^``→no hierarchy (flat)→``None``.
 
-        Returns ``None`` when ``handle`` carries no valid operator (use the
-        absolute path), the base chunk is missing, the operator is
-        unsupported for the kind, or the target falls outside the document.
-        Tree-structured kinds (``draft``) are resolved by the draft mixin —
-        this method returns ``None`` for them so the caller can route there.
-        """
+        ``None`` when ``handle`` has no valid operator, the base chunk is
+        missing, the operator is unsupported for the kind, or the target
+        falls outside the document. Tree-structured kinds (``draft``)
+        resolve via the draft mixin — this returns ``None`` for them so
+        the caller routes there."""
         parsed = handle_registry.parse_relative(handle)
         if parsed is None:
             return None
@@ -1496,24 +1443,15 @@ class BlockStore:
         replace: bool = False,
         conn: Connection | None = None,
     ) -> list[Block]:
-        """Bulk-insert chunks (body, ord>=0) for a ref.
+        """Bulk-insert chunks (body, ord>=0) for a ref. ``replace=True``
+        deletes existing chunks for ``ref_id`` first (re-ingest path).
+        Caller owns ``pos`` numbering — no reordering.
 
-        If ``replace=True``, deletes existing chunks for ``ref_id``
-        first (re-ingest path). Caller owns ``pos`` numbering — we
-        don't reorder.
-
-        v2 mapping per block:
-          - ``BlockInsert.pos``    → ``chunks.ord``
-          - ``BlockInsert.text``   → ``chunks.text``
-          - ``BlockInsert.slug``   → ``chunks.meta['slug']``
-          - ``BlockInsert.meta``   → ``chunks.meta`` (merged with slug)
-          - ``BlockInsert.embedding`` (if non-None) → row in
-                                                    ``chunk_embeddings``
-          - ``BlockInsert.density`` (if non-None)   → row in
-                                                    ``tags``+``chunk_tags``
-          - ``chunk_kind``         → defaults to ``'paragraph'``;
-                                     callers can override via
-                                     ``BlockInsert.meta['chunk_kind']``.
+        Mapping per block: ``pos``→``chunks.ord``, ``text``→``chunks.text``,
+        ``slug``→``chunks.meta['slug']``, ``meta``→``chunks.meta`` (merged
+        with slug), ``embedding`` (if set)→``chunk_embeddings`` row,
+        ``density`` (if set)→``tags``+``chunk_tags`` row, ``chunk_kind``
+        defaults ``'paragraph'`` (override via ``meta['chunk_kind']``).
         """
         if not blocks:
             return []
@@ -1610,20 +1548,18 @@ class BlockStore:
         conn: Connection | None = None,
     ) -> str | None:
         """Replace the single body chunk of ``chunk_kind`` for a ref.
+        Delete + re-insert, never an in-place UPDATE: a non-draft chunk's
+        ``content_sha`` is NULL, so an UPDATE would leave old
+        ``chunk_embeddings``/``chunk_summaries`` stale (the embed worker
+        keys on ``content_sha IS DISTINCT FROM``, unmoved by a text-only
+        UPDATE) — delete cascades the derived rows, the fresh insert
+        re-enters the embed+keyword queues. New chunk lands at the old
+        ord (or 0 if none existed).
 
-        Delete + re-insert (never an in-place text UPDATE): a non-draft
-        chunk carries a NULL ``content_sha``, so an UPDATE would leave the
-        old ``chunk_embeddings`` / ``chunk_summaries`` rows stale (the embed
-        worker keys on ``content_sha IS DISTINCT FROM``, which a text-only
-        UPDATE doesn't move). Delete cascades the derived rows and the fresh
-        insert re-enters the embed + keyword queues. The new chunk lands at
-        the old chunk's ord (or ord 0 if none existed), preserving position.
-
-        Writes a ``body_replaced`` ``ref_events`` row (old + new text) so
-        ``view='log'`` keeps surfacing the rewrite. Returns the previous
-        body text (for a word-count / diff render), or ``None`` if the ref
-        had no such chunk yet. Mirrors :meth:`replace_ref_text`, but for a
-        chunk-backed body (memory / todo) rather than ``refs.title``.
+        Writes a ``body_replaced`` ``ref_events`` row (old+new text) for
+        ``view='log'``. Returns the previous text, or ``None`` if absent.
+        Mirrors :meth:`replace_ref_text` for a chunk-backed body
+        (memory/todo) rather than ``refs.title``.
         """
 
         def _do(c: Connection) -> str | None:
@@ -1759,27 +1695,20 @@ class BlockStore:
     # ── salience (dreaming target selection) ───────────────────────
 
     def bump_salience(self, chunk_ids: list[int]) -> int:
-        """Record an external access for a result page (set-based).
-
-        One in-DB ``bump_salience(ids)`` call advances ``last_seen=now()``
-        and ``accesses += 1`` for the whole page in a single round-trip
+        """Record an external access for a result page (set-based). One
+        in-DB ``bump_salience(ids)`` call advances ``last_seen=now()`` +
+        ``accesses += 1`` for the whole page in one round-trip
         (docs/backlog/dreaming.md, §Access accounting). Metadata-only —
-        never touches ``chunks.text`` — so it's the one write permitted
-        on the search path (thresholds.md relaxed for metadata bumps).
-        SECURITY DEFINER since migration 0137, so it also works from a
-        read-only connection — a ``write:none`` envelope resolves to the
-        ``agent_ro`` role (``envelope.py::db_role``), and without that
-        every read verb's access accounting hard-fails under it.
+        never touches ``chunks.text`` — the one write permitted on the
+        search path. SECURITY DEFINER since migration 0137, so it also
+        works from a read-only connection (``write:none`` resolves to
+        ``agent_ro``; without this every read verb's access accounting
+        would hard-fail under it).
 
-        No-op when:
-
-        - ``chunk_ids`` is empty (nothing matched), or
-        - the call is inside :func:`as_dream_actor` — the dreamer's own
-          reads must not heat the region it is wandering into an echo
-          chamber.
-
-        Returns the number of chunk ids bumped (0 when suppressed).
-        """
+        No-op when ``chunk_ids`` is empty, or inside
+        :func:`as_dream_actor` (the dreamer's own reads must not heat the
+        region it's wandering into an echo chamber). Returns the count
+        bumped (0 when suppressed)."""
         if not chunk_ids or background_actor_active():
             return 0
         with self.pool.connection() as conn:
@@ -1912,36 +1841,28 @@ class BlockStore:
         boost_seconds: float = 0.0,
         embedded_only: bool = False,
     ) -> list[int]:
-        """Most-due salient chunks for ``actor``: ``argmax(last_seen - last_<actor>)``.
+        """Most-due salient chunks for ``actor``:
+        ``argmax(last_seen - last_<actor>)``. The shared
+        attention-selection primitive (docs/backlog/dreaming.md, §Target
+        selection; the watcher mirrors it) — knob-free, no decay, no
+        sampling. ``actor`` selects the rotation column via
+        :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError), restricted
+        to live refs of ``kinds``. Ties break on ``chunk_id`` for
+        deterministic selection. Returns up to ``limit`` ids, most-due
+        first (empty if none).
 
-        The shared attention-selection primitive (docs/backlog/dreaming.md,
-        §Target selection; the watcher mirrors it) — knob-free, no decay,
-        no sampling. ``actor`` selects the per-actor rotation column via
-        :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError). Restricted
-        to live refs of the target ``kinds``. Ties break on ``chunk_id`` so
-        selection is deterministic and in-process testable. Returns up to
-        ``limit`` chunk ids, most-due first (empty when the corpus has no
-        target chunks).
+        ``boost_kind``+``boost_seconds``: a chunk of ``boost_kind`` sorts
+        as if ``boost_seconds`` more overdue — **over-weights drafts** in
+        the dream rotation (what the operator is looking at) without
+        starving the rest (a long-overdue paper can still out-score a
+        freshly-dreamt draft). No boost preserves pure ``argmax``.
 
-        ``boost_kind`` + ``boost_seconds`` add a per-kind due-ness bias:
-        a chunk of ``boost_kind`` sorts as if it were ``boost_seconds``
-        more overdue than it literally is. Used to **over-weight drafts**
-        in the dream rotation (a draft is what the operator is actively
-        looking at, so a dream on it lands where it'll be seen) without
-        starving the rest of the corpus — a long-overdue paper can still
-        out-score a freshly-dreamt draft. Default (no boost) preserves the
-        pure ``argmax`` for every other actor.
-
-        ``embedded_only`` restricts the candidates to chunks that carry an
-        ``ok`` embedding under the default embedder. The dream seed needs
-        this: :meth:`dreamable_region` bails to an empty region when the
-        most-due seed has no vector, so on a **partially-embedded** corpus
-        (e.g. patents mid-backfill — gr48249) the pure argmax keeps landing
-        on an un-embedded seed and dreaming silently yields nothing even
-        though thousands of sibling chunks *are* embedded. Requiring an
-        embedded seed makes the region non-empty whenever any target chunk
-        is embedded. Off by default so attention/watch callers keep the
-        pure due-ness argmax.
+        ``embedded_only`` restricts to chunks with an ``ok`` embedding.
+        Needed for the dream seed: :meth:`dreamable_region` bails empty
+        when the most-due seed has no vector, so on a partially-embedded
+        corpus (patents mid-backfill, gr48249) pure argmax could land on
+        an un-embedded seed and dream nothing despite embedded siblings.
+        Off by default so attention/watch keep pure due-ness.
         """
         col = _ATTENTION_COLUMNS[actor]
         with self.pool.connection() as conn:
@@ -2016,29 +1937,22 @@ class BlockStore:
         n: int = 12,
     ) -> tuple[int | None, list[tuple[Block, Ref, float]]]:
         """The focus region: the salience seed + its ANN neighbourhood.
-
         Backs ``search(view='dreamable')`` (docs/backlog/dreaming.md,
         §view='dreamable'). Picks the most-due seed via
-        :meth:`select_dream_seed`, then returns the ``n`` nearest
-        embedded chunks to it (the seed included) over the target
-        ``kinds`` — a single cosine neighbourhood, **not** a
-        sub-clustered carve-up. Per the scoped cut there is no
-        HDBSCAN/GMM here; the plain ring *is* the region. Card chunks
-        (``ord=-1``) are included so a memory's only embedded chunk is
-        reachable.
+        :meth:`select_dream_seed`, returns the ``n`` nearest embedded
+        chunks (seed included) over ``kinds`` — a single cosine
+        neighbourhood, **not** a sub-clustered carve-up (no HDBSCAN/GMM;
+        the plain ring *is* the region). Card chunks (``ord=-1``)
+        included so a memory's only embedded chunk is reachable.
 
-        Returns ``(seed_chunk_id, [(block, ref, cosine)])`` ordered
-        nearest-first; ``(None, [])`` when no *embedded* target chunk
-        exists. The seed is chosen ``embedded_only`` (gr48249), so it
-        always carries a vector when non-``None`` — the ``(seed_id, [])``
-        branch below is a defensive guard, not the partial-corpus path it
-        used to be.
+        Returns ``(seed_chunk_id, [(block, ref, cosine)])`` nearest-first;
+        ``(None, [])`` when no embedded target chunk exists. The seed is
+        chosen ``embedded_only`` (gr48249), so it always carries a vector
+        when non-``None``.
 
-        Pure retrieval — stamping ``last_dreamt`` on the surfaced
-        chunks (the rotation) is the caller's job (the dream dispatch
-        path), so a plain store-level read stays side-effect-free and
-        testable.
-        """
+        Pure retrieval — stamping ``last_dreamt`` on surfaced chunks is
+        the caller's job (dream dispatch), keeping this store-level read
+        side-effect-free."""
         seed_id = self.select_dream_seed(kinds=kinds)
         if seed_id is None:
             return None, []
@@ -2146,21 +2060,19 @@ class BlockStore:
         rng: random.Random | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """``n`` diverse items at cosine ``angle`` from ``seed_vec``.
+        Draws ``n`` anchors at the requested cosine
+        (:func:`precis.utils.angle.angle_anchors`), ANN-snaps each to its
+        nearest not-yet-seen real chunk over ``kinds``, dedups. **Not a
+        cluster** — ``n`` points spread around the seed's cone, each
+        snapped to a real item (docs/backlog/dreaming.md, §The ``angle``
+        spray).
 
-        Draws ``n`` anchors at the requested cosine (see
-        :func:`precis.utils.angle.angle_anchors`), ANN-snaps each to its
-        nearest not-yet-seen real chunk over the target ``kinds``, and
-        dedups. The result is **not a cluster** — it's ``n`` points
-        spread around the seed's cone, each snapped to a real item
-        (docs/backlog/dreaming.md, §The ``angle`` spray).
-
-        Card chunks (``ord=-1``) are **included** as snap targets so a
-        memory's only embedded chunk is reachable — unlike the body-only
-        :meth:`search_blocks_semantic`. Returns ``(block, ref, cosine)``
-        where ``cosine = 1 - cosine_distance`` is the *realised*
-        similarity (anisotropy means it rarely equals ``angle`` exactly;
-        that's expected, not a bug). Empty when the seed is empty/zero.
-        """
+        Card chunks (``ord=-1``) are **included** as snap targets (unlike
+        body-only :meth:`search_blocks_semantic`) so a memory's only
+        embedded chunk is reachable. Returns ``(block, ref, cosine)``
+        where ``cosine=1-cosine_distance`` is the *realised* similarity
+        (anisotropy means it rarely equals ``angle`` exactly — expected).
+        Empty when the seed is empty/zero."""
         if not seed_vec:
             return []
         anchors = angle_anchors(seed_vec, angle, n, rng=rng)
@@ -2289,24 +2201,16 @@ class BlockStore:
         self, ref_id: int, *, pos_range: tuple[int, int] | None = None
     ) -> list[dict[str, Any]]:
         """Per-chunk gloss list for the paper reader's rapid-nav sidebar.
+        Body chunks (``ord >= 0``) in reading order as ``[{ord, page,
+        summary, keywords}]``: ``summary`` is the ``llm-v1`` gloss from
+        ``chunk_summaries`` (``''`` before the worker reaches it —
+        coverage is a deliberate trickle, caller falls back to
+        ``keywords``); ``keywords`` is comma-joined KeyBERT terms (first
+        12, ``''`` if unrun); ``page`` is ``page_first`` for the PDF jump.
 
-        Returns body chunks (``ord >= 0``) in reading order as
-        ``[{ord, page, summary, keywords}]``:
-
-        * ``summary`` — the ``llm-v1`` two-part gloss from
-          ``chunk_summaries`` (``''`` for a chunk the ``llm_summarize``
-          worker hasn't reached — its coverage is a deliberate trickle,
-          so most chunks are empty and the caller falls back to
-          ``keywords``).
-        * ``keywords`` — comma-joined KeyBERT terms (``chunks.keywords``,
-          first 12; ``''`` when the ``chunk_keywords`` worker hasn't run).
-        * ``page`` — ``page_first`` (``None`` when no page provenance),
-          for the PDF jump.
-
-        Mirrors the draft reader's :meth:`block_views`, but keyed by
-        ``ord`` (papers address chunks by ord, not handle) and carrying
-        the page. ``pos_range=(lo, hi)`` filters inclusively on ord.
-        """
+        Mirrors the draft reader's :meth:`block_views`, keyed by ``ord``
+        (papers address by ord, not handle) plus page. ``pos_range=(lo,
+        hi)`` filters inclusively."""
         clauses = ["c.ref_id = %s", "c.ord >= 0"]
         params: list[Any] = [ref_id]
         if pos_range is not None:
@@ -2440,27 +2344,18 @@ class BlockStore:
     def abstract_previews(
         self, ref_ids: list[int], *, max_chars: int = 900
     ) -> dict[int, str]:
-        """Best-effort abstract text per ref, drawn from leading chunks.
+        """Best-effort abstract text per ref, from leading chunks. Most
+        Marker-ingested papers carry no publisher abstract in
+        ``refs.meta['abstract']`` — the prose lives in the first body
+        chunks instead. Used by the web papers list hover card when the
+        meta abstract is absent.
 
-        Most Marker-ingested papers carry no publisher abstract in
-        ``refs.meta['abstract']`` — the abstract prose lives in the
-        first body chunks instead. This returns, per ref, the first
-        substantial leading paragraph (``len >= 200``), falling back to
-        the longest of the first few body chunks. Used by the web
-        papers list to populate the hover card when the meta abstract
-        is absent.
-
-        One batched query over the leading body chunks
-        (``0 <= ord < 8``, excluding bibliography blocks); selection
-        happens in Python so the heuristic stays legible. Preference
-        order per ref:
-
-        1. A chunk whose ``section_path`` or leading text marks it as
-           the abstract (``"abstract"``) — the publisher's actual
-           abstract, with any leading "Abstract" label stripped.
-        2. The first substantial leading paragraph (``len >= 200``).
-        3. The longest of the first few chunks.
-        """
+        One batched query over leading body chunks (``0 <= ord < 8``,
+        excluding bibliography); selection in Python for legibility.
+        Preference per ref: (1) a chunk whose ``section_path``/leading
+        text marks it abstract (label stripped); (2) first substantial
+        leading paragraph (``len >= 200``); (3) longest of the first few
+        chunks."""
         if not ref_ids:
             return {}
         sql = (

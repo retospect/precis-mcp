@@ -299,7 +299,7 @@ def _kind_is_numeric(kind: str, *, store: Store) -> bool:
     The "available options" list filters to kinds that actually
     have at least one live ref — the realistic link targets in
     this build. The ``kinds`` schema table also carries entries
-    for handler-less kinds (file kinds whose env-gated handler
+    for handler-less kinds (file kinds whose dark-switch-gated handler
     isn't loaded), and surfacing them led an agent into a
     contradiction loop where the link error advertised
     ``markdown`` but ``get(kind='markdown', ...)`` then errored

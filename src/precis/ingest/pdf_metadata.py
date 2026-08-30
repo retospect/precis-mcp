@@ -141,15 +141,6 @@ class PdfMetadata:
     verified: bool = False
     verify_warnings: list[str] = field(default_factory=list)
 
-    def get_citation_string(self) -> str:
-        """Build a citation-style string for Subject field."""
-        parts: list[str] = []
-        if self.journal:
-            parts.append(self.journal)
-        if self.year:
-            parts.append(str(self.year))
-        return ", ".join(parts)
-
 
 def _normalize_doi(doi: str) -> str:
     """Normalize DOI: strip prefix, whitespace, lowercase."""

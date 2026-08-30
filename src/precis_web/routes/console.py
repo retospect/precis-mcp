@@ -36,7 +36,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.format import render_agent_table
 from precis.tools import TOOL_REGISTRY, get_tool_names
-from precis.tools.cli_adapter import _convert_value
+from precis.tools.cli_adapter import convert_value
 from precis.utils.handle_registry import format_handle
 from precis.utils.search_header import format_search_headline
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
@@ -392,7 +392,7 @@ def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
         if key not in params:
             allowed = ", ".join(params.keys())
             raise ValueError(f"unknown arg {key!r} for {verb} (allowed: {allowed})")
-        payload[key] = _convert_value(raw, params[key])
+        payload[key] = convert_value(raw, params[key])
     return payload
 
 

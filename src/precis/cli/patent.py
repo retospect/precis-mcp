@@ -565,7 +565,7 @@ def run_gp_fetch_cli(args: argparse.Namespace) -> None:
 
     Unlike the OPS sweep this runner doesn't require any external
     credentials — patents.google.com serves the HTML page without
-    auth. It still respects the ``PRECIS_GP_FETCH`` env gate so an
+    auth. It still respects the ``PRECIS_GP_FETCH`` dark switch so an
     ad-hoc run on a host that's been excluded from the steady-state
     pass is an explicit opt-in.
     """

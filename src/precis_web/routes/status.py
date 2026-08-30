@@ -911,28 +911,20 @@ _SPIN_LOOP_EVENTS_24H = 200
 
 
 def _background_anomalies(store: Store) -> dict[str, list[dict[str, Any]]]:
-    """Background-worker health: spin loops + failed passes (24h).
-
-    Two cheap reads that turn the invisible failure modes of the
-    derived-queue workers into something the operator can see without
-    SSHing into the DB:
+    """Background-worker health: spin loops + failed passes (24h), surfaced
+    without SSHing into the DB.
 
     * ``spin_loops`` — any ``(ref_id, source)`` emitting more than
-      :data:`_SPIN_LOOP_EVENTS_24H` ``ref_events`` in 24h. A worker
-      re-claiming the same ref every pass (a broken retry window, a
-      no-op outcome that never clears the claim) shows up here long
-      before it would surface anywhere else.
-    * ``failed_passes`` — ``worker_logs`` rows with ``failed > 0`` in
-      24h, grouped by ``(host, handler)`` so the operator sees *which*
-      derived-queue handler is erroring rather than an opaque ``runner``
-      total. The ``schedule`` handler is excluded: its ``failed`` is a
-      *skipped-tick* counter, not errors (see the query comment). Distinct
-      from the existing "recent agent activity" panel, which only shows
-      *productive* passes; this one is specifically the failures.
+      :data:`_SPIN_LOOP_EVENTS_24H` ``ref_events`` in 24h (a worker
+      re-claiming the same ref every pass — broken retry window, a no-op
+      outcome that never clears the claim).
+    * ``failed_passes`` — ``worker_logs`` rows with ``failed > 0`` in 24h,
+      grouped by ``(host, handler)``. ``schedule`` excluded: its
+      ``failed`` counts skipped ticks, not errors (see query comment).
+      Distinct from "recent agent activity" (productive passes only).
 
-    Both degrade to an empty list on any schema surprise (the outer
-    ``_safe`` wrapper) so the panel can't 500 the page.
-    """
+    Both degrade to an empty list on schema surprise (outer ``_safe``
+    wrapper) rather than 500ing the page."""
     spin_loops: list[dict[str, Any]] = []
     failed_passes: list[dict[str, Any]] = []
     with _connect(store) as conn:

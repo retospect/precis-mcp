@@ -61,35 +61,21 @@ def _should_register(
 ) -> bool:
     """Whether ``name`` registers into ``ref_passes`` on this invocation.
 
-    §L control cutover: registration is now PURELY structural — it never
-    consults ``service_config`` — so it's a generalization of what used to
-    be a categorizer-only exception (the old ``_should_register_categorizer``,
-    covering only ``classify`` / ``classify_topics`` / ``axis:<id>``). Every
-    other named pass used to gate its *registration* on
-    ``_svc_resolver.enabled(...)`` at boot (the old ``_pass_enabled``): a
-    stale/absent ``service_config`` row at boot time could keep a pass out of
-    ``ref_passes`` forever, so a LATER live prio flip (in either direction)
-    had nothing to gate until the process restarted — see the module's THE
-    GAP note. Closing that gap means registration can never again depend on
-    the DB; the per-cycle ``pass_gate`` (consulted every cycle, TTL-cached)
-    is the ONE decision point for whether a registered pass actually *runs*.
+    §L control cutover: registration is now PURELY structural — never
+    consults ``service_config`` (see the module's THE GAP note: a
+    stale/absent row at boot used to keep a pass out of ``ref_passes``
+    until restart, so a later live prio flip had nothing to gate). The
+    per-cycle ``pass_gate`` (TTL-cached, consulted every cycle) is now
+    the ONE decision point for whether a registered pass actually *runs*.
 
-    ``only`` (``--only X``) still forces exactly one pass regardless of
-    profile membership. Otherwise a pass belonging to this worker's profile
-    rotation (``name in profile_passes`` — dispatch/nursery/heartbeat/…,
-    tied to ``--profile``, a restart-time choice, not a live flag) always
-    registers; so does a formerly-``PRECIS_*_ENABLED``-gated pass (the
-    registry's ``enable_env`` — classify/hub_refine/llm_summarize/…) and an
-    ``axis:<id>`` per-axis pseudo-service (no ``ServiceSpec`` of its own —
-    the spec is named ``axis``). A name with NO ``ServiceSpec`` at all — most
-    commonly a ``precis.ref_passes`` plugin factory's own pass name, which the
-    core registry has never heard of — also always registers: the plugin
-    factory already gated eligibility itself (returning ``None`` to opt out,
-    or a ``profiles`` set the caller checks separately), so this is just the
-    same "live service_config is the only on/off switch" contract extended
-    to it. A pass belonging to *this* registry with neither profile
-    membership nor ``enable_env`` (e.g. a system-only pass on an
-    agent-profile invocation) does not register.
+    ``only`` (``--only X``) forces exactly one pass regardless of
+    profile membership. Otherwise always-register cases: a pass in this
+    worker's profile rotation (``name in profile_passes`` — tied to
+    ``--profile``, restart-time); a formerly-``PRECIS_*_ENABLED``-gated
+    pass (registry's ``enable_env``); an ``axis:<id>`` pseudo-service; a
+    name with NO ``ServiceSpec`` at all (a plugin factory's own pass —
+    it already gated its own eligibility). A pass with neither profile
+    membership nor ``enable_env`` does not register.
     """
     if only is not None:
         return only == name
@@ -346,7 +332,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "dream_agent/structural/deep_review are NOT in either rotation — "
         "each is cadence-fired via the scheduler lease (workers/"
         "scheduler.py CADENCES: dream_agent + anki_sync host-pinned "
-        "melchior, structural + deep_review env-gated on any eligible "
+        "melchior, structural + deep_review dark-switched on any eligible "
         "host, gr192752) instead of the profile's per-cycle slot, so a "
         "wedged host can't starve them. job_claude_inproc/quota_check "
         "gate themselves via the PRECIS_LOAD_CEILING load-avg gate, so an "
@@ -607,7 +593,7 @@ def run(args: argparse.Namespace) -> None:
             before any ``service_config`` override.
 
             §L control cutover: ``PRECIS_*_ENABLED`` is retired as a default
-            source — a formerly-env-gated pass (registry ``enable_env`` set)
+            source — a formerly dark-switched pass (registry ``enable_env`` set)
             now defaults OFF absent an explicit row (seeded at deploy time
             from today's live flag state, see the seed task in
             ``deploy/roles/precis_worker*``); only profile-rotation
@@ -1960,7 +1946,7 @@ def run(args: argparse.Namespace) -> None:
             def _gp_fetch_pass(batch_size: int) -> _BatchResult:
                 # Cap at 1 per pass — patents.google.com is a third-
                 # party host and we want only one in-flight request at
-                # a time per host. Combined with the env-gate being
+                # a time per host. Combined with the dark switch being
                 # set on only one host (see precis_shared_env), this
                 # keeps the global rate at one request per pass cycle.
                 # The exponential backoff inside the pass handles HTTP
@@ -2458,18 +2444,17 @@ def _resolve_embedder(
 def _build_handlers(
     args: argparse.Namespace, store: Store | None = None
 ) -> list[WorkerHandler]:
-    """Materialise the handler list per ``--only`` / ``--profile`` flags.
+    """Materialise the handler list per ``--only``/``--profile`` flags.
 
-    Summarize belongs to the ``system`` profile by default; the ``agent``
-    profile is purely ref-pass driven (LLM reviewers + dream) and skips
-    the heavy embedder load when it doesn't need it. ``embed`` is
-    manual-only as of §F cycle b (the materializer → embed_batch →
-    job_inproc path is the standing drain of the embed queue in prod
-    now, see ``workers/registry.py`` + ``workers/materialize.py``) — it
-    only builds on an explicit ``--only embed`` (a one-off local drain,
-    or the documented rollback: ``PRECIS_MATERIALIZE_EMBED=0`` + ``precis
-    worker --only embed`` on any node). Honour ``--only`` as the override
-    for ad-hoc invocations generally.
+    Summarize belongs to the ``system`` profile by default; ``agent`` is
+    purely ref-pass driven (LLM reviewers + dream) and skips the heavy
+    embedder load when unneeded. ``embed`` is manual-only as of §F cycle
+    b (materializer→embed_batch→job_inproc is now the standing drain of
+    the embed queue in prod — ``workers/registry.py``/
+    ``workers/materialize.py``): it builds only on explicit ``--only
+    embed`` (a one-off local drain, or the rollback
+    ``PRECIS_MATERIALIZE_EMBED=0`` + ``precis worker --only embed``).
+    ``--only`` overrides for ad-hoc invocations generally.
     """
     handlers: list[WorkerHandler] = []
     profile = getattr(args, "profile", "system")
@@ -2504,23 +2489,21 @@ def _build_handlers(
 
 
 def _record_boot_event(store: Store, *, profile: str) -> None:
-    """Write a single ``worker: started`` row to ``worker_logs``.
+    """Write a single ``worker: started`` row to ``worker_logs`` — the
+    DB's only restart/boot signal (without it a launchd/jetsam relaunch
+    loop, the incident that orphaned plan_ticks for 1.5 days, was
+    invisible: the post-restart log stream looks like steady state). The
+    nursery's ``worker-restart`` detector counts these rows per
+    ``(host, process)``.
 
-    This is the DB's only restart/boot signal — there was none, so a
-    launchd/jetsam relaunch loop (the incident that orphaned plan_ticks
-    for 1.5 days) was invisible: the post-restart log stream looks like
-    steady state. The nursery's ``worker-restart`` detector counts these
-    rows per ``(host, process)``.
-
-    A **direct, synchronous INSERT** — deliberately NOT routed through the
-    buffered :class:`BufferedDBLogHandler` — because that handler can drop
-    the single startup record before its first successful flush (a
-    size-driven flush during the boot log burst can demote the batch to
-    the file channel before the DB connection warms; the boot line then
-    shows up in the file log but never in ``worker_logs``). Best-effort: a
-    failed insert must not block startup. A distinct human-readable line
-    also goes to the file/stdout channel (different message text, so it is
-    never double-counted even if it does reach the DB via the handler)."""
+    A **direct, synchronous INSERT**, deliberately NOT routed through
+    the buffered :class:`BufferedDBLogHandler` — that handler can drop
+    the single startup record before its first flush (a size-driven
+    flush during the boot log burst can demote the batch to the file
+    channel before the DB connection warms). Best-effort: a failed
+    insert must not block startup. A distinct human-readable line also
+    goes to file/stdout (different text, so never double-counted even
+    if it also reaches the DB via the handler)."""
     from precis.utils.db_log_handler import _resolve_host_name, _resolve_process_name
 
     log.info("worker: starting (profile=%s pid=%d)", profile, os.getpid())
@@ -2555,40 +2538,13 @@ def _record_boot_event(store: Store, *, profile: str) -> None:
 def _attach_db_log_handler(dsn: str) -> None:
     """Attach the BufferedDBLogHandler to the root logger.
 
-    Best-effort: a failure to construct the handler (bad DSN, table
-    missing, network) shouldn't kill the worker — the file handler
-    that systemd / launchd / docker piped stdout to keeps catching
-    everything regardless.
+    Elevates the root level to ``PRECIS_LOG_LEVEL`` (default INFO) so
+    worker pass summaries land in the table even though Python's default
+    root level is WARNING. Delegates to :func:`precis.utils.db_log_handler.attach`.
     """
-    try:
-        from precis.utils.db_log_handler import BufferedDBLogHandler
+    from precis.utils.db_log_handler import attach
 
-        root = logging.getLogger()
-        # Avoid double-attach when run() is called twice in the same
-        # process (tests, signal-driven restarts).
-        for existing in list(root.handlers):
-            if isinstance(existing, BufferedDBLogHandler):
-                return
-        handler = BufferedDBLogHandler(dsn)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-        )
-        root.addHandler(handler)
-        # If the root logger's effective level is WARNING (Python
-        # default), elevate to INFO so worker pass summaries land
-        # in the table. Operators who want quieter logs can override
-        # via PRECIS_LOG_LEVEL.
-        env_level = os.environ.get("PRECIS_LOG_LEVEL", "INFO").upper()
-        try:
-            root.setLevel(getattr(logging, env_level))
-        except AttributeError:
-            root.setLevel(logging.INFO)
-    except Exception:
-        # The worker still works without DB logging; surface via
-        # whatever handlers are already attached.
-        logging.getLogger(__name__).exception(
-            "failed to attach BufferedDBLogHandler — continuing without DB logs"
-        )
+    attach(dsn, level=os.environ.get("PRECIS_LOG_LEVEL", "INFO"))
 
 
 def _print_status(

@@ -52,7 +52,7 @@ own ADR-0048 `sandbox_run` design); kernel-exploit-grade isolation.
 in order. One env knob, `PRECIS_RENDER_JAIL` = `auto` (default) |
 `container` | `seatbelt` | `none`, pins or disables the choice;
 `RenderResult` gains a `jail: str` field naming what actually ran (so
-the figure failure-bubble and tests can assert on it).
+the figure failure bubble and tests can assert on it).
 
 ### Rung 1 — container (`--network=none`), Linux + any host with a runtime
 

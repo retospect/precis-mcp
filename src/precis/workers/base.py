@@ -133,7 +133,7 @@ class WorkerHandler(ABC):
     def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
         # A chunk needs work when it has no *current, non-failed* artifact row:
         # no row at all, or a row built against a stale content_sha (re-derive
-        # edited `draft` chunks, the draft editable-document model — papers leave content_sha NULL so
+        # edited `draft` chunks — drafts edit in place; papers leave content_sha NULL so
         # NULL IS DISTINCT FROM NULL never fires). `failed` rows are terminal
         # (a poison chunk must not loop) — they count as "done" until a manual
         # DELETE. The second NOT EXISTS skips chunks already

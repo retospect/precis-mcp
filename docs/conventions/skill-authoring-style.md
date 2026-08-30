@@ -314,9 +314,9 @@ Per the redesign doc (decision 3), H2s read naturally after "I want
 to …". Goal-statement, not nominalisation:
 
 - Good: `## Drill into a section of a paper I'm reading`
-- Bad: `## Drilling into sections` / `## Block-range views`
-
-The static gate rejects bare-verb H2s (`## Search`, `## Get`, …).
+- Bad: `## Drilling into sections` / `## Block-range views` / bare-verb
+  H2s (`## Search`, `## Get`, …). No static gate enforces this — it's
+  on the author.
 
 ### Alias-group H2s (multi-angle headings on one body)
 

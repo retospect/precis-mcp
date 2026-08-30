@@ -92,40 +92,15 @@ Tunables (env vars):
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from precis.utils.env import env_float, env_int
 
 if TYPE_CHECKING:
     from precis.store import Store
 
 log = logging.getLogger(__name__)
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        log.warning(
-            "planner_guardrails: %s=%r is not an int; using %d", name, raw, default
-        )
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        log.warning(
-            "planner_guardrails: %s=%r is not a float; using %f", name, raw, default
-        )
-        return default
 
 
 @dataclass(frozen=True)
@@ -188,7 +163,7 @@ def daily_budget(store: Store, *, ctx: RoundContext | None = None) -> DailyBudge
     """
     return DailyBudget(
         spent=_daily_cost(store, ctx),
-        ceiling=_env_float("PRECIS_DAILY_COST_CEILING", 20.0),
+        ceiling=env_float("PRECIS_DAILY_COST_CEILING", 20.0),
     )
 
 
@@ -203,9 +178,9 @@ def check_parent(
     expensive to compute, so they run last and benefit from the prior
     cheap rejections.
     """
-    max_ticks = _env_int("PRECIS_MAX_TICKS", 10)
-    max_todo_usd = _env_float("PRECIS_MAX_TODO_USD", 2.0)
-    max_tree_usd = _env_float("PRECIS_MAX_TREE_USD", 10.0)
+    max_ticks = env_int("PRECIS_MAX_TICKS", 10)
+    max_todo_usd = env_float("PRECIS_MAX_TODO_USD", 2.0)
+    max_tree_usd = env_float("PRECIS_MAX_TREE_USD", 10.0)
 
     tick_count = _read_tick_count(store, parent_ref_id)
     if tick_count >= max_ticks:

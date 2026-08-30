@@ -1,238 +1,165 @@
 """hub_refine — periodic, converging enrichment of existing taproot claim hubs.
 
-Stage 5 (*widen*) of the claim lifecycle in ``precis.taproot``'s package
-docstring; operational runbook ``docs/runbooks/taproot-chase-enablement.md``.
-Closes a gap the shipped taproot phases leave open: evidence attaches to a claim hub only as
-a side effect of chasing a *finding* (the forward bridge,
-``workers/chase.py``'s ``_taproot_bridge``) or when a human hands
-``precis taproot mint`` a supporter list. Neither ever looks at an
-**existing** hub and asks "what else in the corpus supports this claim?" —
-so a hub minted off a single draft cite sits at one corroborator forever,
-even when the primary source already sits un-attached in the same corpus.
+Stage 5 (*widen*) of the claim lifecycle (``precis.taproot`` package
+docstring; runbook ``docs/runbooks/taproot-chase-enablement.md``). Closes
+a gap the other taproot phases leave open: evidence attaches to a hub only
+as a side effect of chasing a *finding* (the forward bridge,
+``workers/chase.py``'s ``_taproot_bridge``) or a human's ``precis taproot
+mint`` supporter list — nothing looks at an *existing* hub and asks "what
+else in the corpus supports this claim?", so a hub minted off one draft
+cite sits at one corroborator forever even with the primary source
+sitting un-attached in the same corpus.
 
-This pass does exactly that, per hub, claimed off a **due-set** rather than
-a blind periodic rescan (the incremental-trigger design,
-``workers/chase_trigger.py``):
+Claimed off a **due-set**, never a blind periodic rescan
+(``workers/chase_trigger.py``'s incremental-trigger design):
 
-1. **Claim** — ``TAPROOT:claim`` / ``STATUS:canonical`` findings due for
-   refine (see :func:`_claim_hubs_due_for_refine` for the full predicate: a
-   ``TAPROOT_DUE`` tag from the trigger pass, never-refined, an edited
-   claim reopening it, or the long backstop), never-refined first, oldest
-   ``last_refined_at`` next, ``SKIP LOCKED``, ``LIMIT`` :func:`_hubs_per_pass`
-   — mirrors ``workers/inbound_chase.py``'s claim-query shape. A **compound**
-   claim hub (docs/backlog/taproot-atomic-claims.md — one carrying a live
-   inbound ``conjunct-of`` edge from a live finding, i.e. it decomposed into
-   atomic conjunct hubs) is excluded from this due-set entirely: its only
-   possible write here is a direct evidence attach, which
-   ``taproot.hub.attach_evidence`` now refuses (raises ``BadInput``) —
-   claiming it would just raise every pass, roll back the per-hub tx, and
-   grind the attempt-lease/backstop machinery forever without ever
-   converging. :func:`_is_compound_hub` mirrors this same predicate as a
-   defensive per-hub check inside :func:`_refine_one_hub`, for the race
-   window between claim and processing (see that function's docstring).
-   The predicate is deliberately re-derived here rather than imported —
-   same three-deliberate-copies precedent as ``seniority._is_claim_hub``
-   mirroring ``hub._is_claim_hub`` (docs/backlog/taproot-atomic-claims.md
-   "cross-task seam").
-2. **Discover** — TWO sources merged into one per-hub candidate list
-   (the shipped citation-taproot-resolve proposal, git history), citation
-   candidates first
-   so they win the shared per-source dedup slot:
-   (a) a semantic (embedding-ANN) search over paper **and patent** body
-       chunks for the claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``
-       (docs/backlog/patent-evidence-parity.md). Note: *not*
-       ``taproot.canon.block`` — that ANN is over hub *cards* (dedup against
-       other hubs); this needs paper/patent-*chunk* neighbours, the same
-       ``store.search_blocks`` engine ``PaperHandler.search`` drives (see
-       ``handlers/_paper_search.py``), run in ``mode='semantic'`` so
-       ``PRECIS_TAPROOT_REFINE_MIN_SIM`` (an optional cosine-distance floor)
-       means what its name says. The paper leg and the patent leg are two
-       separate ``store.search_blocks`` calls (the mode-dispatched wrapper
-       takes one ``kind=`` string, not a list) merged by score and
-       truncated back to ``topk`` — the per-hub bounded-spend guarantee
-       (below) doesn't grow just because a second kind feeds discovery.
-       **Grounding policy**: a patent's *claims*-section blocks
-       (``chunks.meta['patent_block'] == 'claim'``,
-       ``handlers/_patent_claims.py``) are legal scope, not empirical
-       support, and are dropped before they can ever become a candidate —
-       only description/abstract blocks are eligible. Citation-following
-       (below) stays paper-only; patent citation graphs aren't parsed.
-   (b) **citation-following** (:func:`_citation_candidates`): the hub's own
-       evidence grounding chunks → ``chunk_citations`` →
-       ``taproot.resolve_citation`` → the *held* cited paper → a
-       paper-scoped semantic search for its top passage. So a claim reading
-       "X is true [34]" is checked against what [34] actually *is*.
-3. **Filter** — drop a candidate source ref (paper or patent) already
-   carrying a ``corroborates`` edge on this hub (the idempotency precheck,
-   done *before* any LLM spend) or already recorded in the hub's rejection
-   memo (``meta['taproot_rejected']`` — a ``supports=no`` verdict from an
-   earlier pass, judged once, never re-verified). Both settled sets are ALSO
-   pushed into the semantic legs as ``exclude_ref_ids``, so a settled source
-   can't occupy one of the ``topk`` discovery slots — without that, a hub
-   whose nearest neighbours are all sources it already holds widens by
-   nothing, spending its whole budget re-offering its own evidence. The
-   precheck remains the authority (the citation leg is unfiltered, and
-   verdicts land mid-loop); the SQL exclusion is a budget guarantee.
+1. **Claim** (:func:`_claim_hubs_due_for_refine`) — ``TAPROOT:claim``/
+   ``STATUS:canonical`` findings due for refine (a ``TAPROOT_DUE`` tag,
+   never-refined, an edit reopening it, or the long backstop),
+   never-refined first then oldest ``last_refined_at``, ``SKIP LOCKED``,
+   capped at :func:`_hubs_per_pass`. A **compound** claim hub (a live
+   inbound ``conjunct-of`` edge — it decomposed into atoms,
+   docs/backlog/taproot-atomic-claims.md) is excluded entirely: its only
+   possible write is a direct evidence attach, which
+   ``taproot.hub.attach_evidence`` refuses (``BadInput``), so claiming it
+   would just raise every pass and never converge.
+   :func:`_is_compound_hub` re-checks the same predicate defensively
+   inside :func:`_refine_one_hub` for the claim/process race window.
+2. **Discover** — two sources merged into one candidate list, citation
+   candidates first (win the shared per-source dedup slot):
+   (a) semantic ANN over paper **and patent** body chunks for the claim
+   sentence, top-``PRECIS_TAPROOT_REFINE_TOPK`` — *not*
+   ``taproot.canon.block`` (that's hub-card dedup); this is the
+   ``store.search_blocks`` chunk-neighbour engine ``PaperHandler.search``
+   uses, ``mode='semantic'`` so ``PRECIS_TAPROOT_REFINE_MIN_SIM`` applies.
+   Paper and patent legs are separate calls merged by score and truncated
+   back to ``topk`` (a second kind doesn't grow the spend bound). Patent
+   *claims*-section blocks (legal scope, not empirical support) are
+   dropped before candidacy; citation-following stays paper-only.
+   (b) **citation-following** (:func:`_citation_candidates`) — the hub's
+   grounding chunks → ``chunk_citations`` → ``taproot.resolve_citation`` →
+   the held cited paper → a paper-scoped semantic search for its top
+   passage, so "X is true [34]" gets checked against what [34] says.
+3. **Filter** — drop a candidate already carrying a ``corroborates`` edge
+   on this hub, or already in the rejection memo (``meta['taproot_rejected']``
+   — a judged-once ``supports=no`` verdict, never re-verified), *before*
+   any LLM spend. Both sets also feed ``exclude_ref_ids`` into the
+   semantic legs, so a settled source can't occupy a ``topk`` slot (the
+   precheck is authoritative — this is a budget guarantee, since the
+   citation leg is unfiltered and verdicts land mid-loop).
 4. **Verify** — ``workers._chase_llm._verify_support_with_caveats`` per
-   surviving candidate. When the candidate source is a patent, the prompt
-   picks up patent-aware reading rules (background/prior-art recitations
-   attribute knowledge to *others*, not the patentee; a worked example may
-   be prophetic — US present-tense convention — which is a caveat, not a
-   disqualifier).
-5. **Write** — a ``yes``, or a ``partial`` whose caveats *scope* the
-   support rather than negate it (``contradicts=false``) → an evidence
-   edge via ``taproot.hub.attach_evidence`` (role ``corroborates``, meta
-   carrying ``support``/``caveats``/``source_handle``). A ``no`` — or a
-   ``partial`` flagged ``contradicts`` (the chunk runs counter to the
-   claim, or is merely on-topic without substantiating it) → append to
-   the rejection memo. Either way the candidate is judged once; the
-   ``contradicts`` gate keeps on-topic-but-non-supporting papers out of
-   the living cite without paying to re-verify them each pass.
-   **A ``contradicts`` verdict additionally writes the edge**
-   (:func:`_attach_contradicts`) — the same call ADR 0073 makes on the
-   reground path. Until 2026-08 this arm memoed it and wrote nothing, so
-   the one automated pass that could find contradicting evidence
-   discarded every find: the memo is a private note to the pass, not a
-   fact about the claim. The memo entry still lands (convergence — a
-   contradicting source must never re-enter discovery), and the new edge
-   queues the hub's **demotion** (:mod:`precis.nanopub.demote`), drained
-   after the transaction commits: a ``reviewed``/``signed`` hub reopens
-   to ``candidate``, an ``anchored``/``published`` one raises for a human
-   because its bytes are frozen. That queue is the only thing that makes
-   the lifecycle two-directional — everything else here promotes.
-6. **Stamp** — ``meta.last_refined_at`` and ``meta.last_refined_sha`` (the
-   claim sentence's :func:`taproot.canon.claim_sha` at refine time) are set
-   unconditionally (even an empty pass with zero new candidates), so the
-   claim query's ``never-refined`` / ``never-reopened`` conditions hold and
-   the hub naturally drains out of the due-set until something re-marks it
-   (a new near paper, a title edit, or the backstop). A **sha-reopen** — the
-   stored ``last_refined_sha`` no longer matches the live title — clears the
-   rejection memo *before* discovery: the claim itself changed, so an old
-   ``supports=no`` verdict on the previous wording may no longer hold.
+   surviving candidate; a patent source gets patent-aware reading rules
+   (background/prior-art recitations attribute knowledge to *others*; a
+   prophetic worked example is a caveat, not a disqualifier).
+5. **Write** — ``yes``, or a ``partial`` that scopes rather than negates
+   support (``contradicts=false``) → ``attach_evidence`` (role
+   ``corroborates``, meta carries ``support``/``caveats``/``source_handle``).
+   ``no``, or a ``contradicts``-flagged ``partial`` → append to the
+   rejection memo. A ``contradicts`` verdict **also writes the edge**
+   (:func:`_attach_contradicts`, same call ADR 0073 makes on the reground
+   path) and queues the hub's **demotion** (:mod:`precis.nanopub.demote`,
+   drained post-commit): a ``reviewed``/``signed`` hub reopens to
+   ``candidate``; ``anchored``/``published`` raises for a human. Demotion
+   is the only two-directional move here — everything else promotes.
+6. **Stamp** — ``meta.last_refined_at``/``last_refined_sha``
+   (:func:`taproot.canon.claim_sha` at refine time) set unconditionally,
+   even on an empty pass, so the due-set conditions hold and the hub
+   drains out until re-marked. A **sha-reopen** (stored sha ≠ live title)
+   clears the rejection memo before discovery — the claim changed, so an
+   old ``supports=no`` verdict may no longer hold.
 
-Alongside discovery, every per-hub run also **re-verifies the hub's own
-attached-but-unverified evidence** (:func:`_reverify_pinned_edges`): the
-step-3 skip-if-attached precheck means an already-attached edge never
-re-enters discovery, so an edge minted with no verdict (born withheld) or
-with a mint-time default stamp (``support`` and no ``verified_by``) would
-otherwise stay unverified forever. Corroborating verdicts are stamped with
-the full ``support``/``support_reason``/``caveats``/``verified_by``/
-``verified_at``/``verified_claim_sha`` shape (``taproot.verify_edges``'s
-stamp, fingerprinted ``'hub-refine'``); non-corroborating ones are memoed
-into ``meta.reground_seen`` (judged once per ``claim_sha``) and never
-stripped or pruned here — additive-only, capped at
-:data:`_REVERIFY_PER_PASS` verifier calls per hub per pass.
+Alongside discovery, every run also **re-verifies the hub's own
+attached-but-unverified evidence** (:func:`_reverify_pinned_edges`) — an
+edge minted with no verdict, or a mint-time default stamp, never
+re-enters step 3's discovery precheck, so without this it stays
+unverified forever. Corroborating verdicts get the full
+``support``/``caveats``/``verified_by``/``verified_at``/``verified_claim_sha``
+stamp (fingerprinted ``'hub-refine'``); non-corroborating ones are memoed
+into ``meta.reground_seen`` (judged once per ``claim_sha``, additive-only),
+capped at :data:`_REVERIFY_PER_PASS` calls/hub/pass.
 
-**Reopen gate vs. decomposition.** A compound hub never reaches step 6 (it's
-excluded upstream, see step 1), so a human rewording a compound hub's title
-costs nothing here and — critically — does NOT re-run decomposition: atoms
-vs. compound is decided once, at extraction time
-(``taproot.canon.extract_claim``), never inside this pass. A reworded
-compound just sits with a stale set of ``conjunct-of`` atoms until a
-separate, human-run migration pass revisits it (docs/backlog/
-taproot-atomic-claims.md's sequencing note) — this pass has no opinion on
-whether a compound's conjuncts still match its (possibly now-different)
-wording. Per-atom rewording is unaffected: an atom is an ordinary hub, so
-its own sha-reopen (item 3 above / :func:`_is_hub_due`) still clears its own
-rejection memo at the correct (atom) grain.
+**Reopen gate vs. decomposition.** A compound hub never reaches step 6
+(excluded at step 1), so retitling it costs nothing here and does NOT
+re-run decomposition — atoms-vs-compound is decided once, at extraction
+(``taproot.canon.extract_claim``). A reworded compound just sits with a
+stale ``conjunct-of`` set until a separate human-run migration revisits
+it. An atom is an ordinary hub — its own sha-reopen still clears its own
+memo at the atom grain.
 
-A raise anywhere in steps 2-5 (a per-candidate verify-LLM failure, a DB
-error in ``attach_evidence``, ...) means step 6 never runs and the whole
-per-hub transaction rolls back — so, absent a separate signal, the SAME due
-reason (most often "never refined") would hold forever and the hub
-re-verifies every candidate against the LLM again next sweep, unbounded
-(OPEN-ITEMS "Unbraked LLM-pass cluster"). :func:`_claim_hubs_due_for_refine`
-closes this: it writes a claim-time ``TAPROOT_REFINE_ATTEMPT`` lease
-(:data:`_ATTEMPT_NS`, TTL'd via ``ref_tags.expires_at``) for every locked
-hub in the SAME already-committed transaction as the ``TAPROOT_DUE`` pop —
-so the lease survives a later raise and brakes the hub from re-claim for
-:data:`ATTEMPT_COOLDOWN_MIN`. Step 6 clears the lease again on every
-completed run (success or a clean no-op), so a genuine re-trigger is never
-blocked by a stale lease left over from an earlier finished pass.
+A raise anywhere in steps 2-5 rolls back the whole per-hub transaction —
+step 6 never runs, so absent a separate signal the hub would re-verify
+every candidate against the LLM again next sweep, unbounded.
+:func:`_claim_hubs_due_for_refine` closes this: it writes a claim-time
+``TAPROOT_REFINE_ATTEMPT`` lease (:data:`_ATTEMPT_NS`, TTL'd) in the same
+transaction as the ``TAPROOT_DUE`` pop, braking re-claim for
+:data:`ATTEMPT_COOLDOWN_MIN` even across a raise. Step 6 clears the lease
+on every completed run (success or clean no-op).
 
-Never a periodic full re-scan: idempotent attach + pre-verify existence
-check + rejection memo + due-set claim query together bound the per-run LLM
-spend to (at most) ``HUBS_PER_PASS x (TOPK + grounded-cite count +
-REVERIFY_PER_PASS)`` calls —
-adding the patent leg to the semantic source doesn't grow this bound: the two
-kind-scoped legs are merged by score and truncated back to ``topk`` before
-Filter→Verify ever runs. The citation source adds at most one scoped verify
-per held paper the hub *already* grounds a citation against (a small, bounded
-set), and the shared per-source dedup means a source reached by both
-discover sources is still verified only once — in practice far less once
-memos fill in. See the build ticket's "Non-negotiable: it must converge" for
-the full rationale.
+Never a periodic full re-scan: idempotent attach + precheck + rejection
+memo + due-set claim together bound per-run spend to (at most)
+``HUBS_PER_PASS x (TOPK + grounded-cite count + REVERIFY_PER_PASS)`` LLM
+calls; the patent leg doesn't grow this (merged-then-truncated to
+``topk``), and shared per-source dedup means a source reached by both
+discover sources is verified once.
 
-Ship dark: this is a **service**, so the switch is a ``service_config`` prio
-row — ``precis service prio <host> hub_refine 1``, live, no redeploy. There is
-no env flag: since the §L cutover a ``ServiceSpec``'s ``enable_env`` is never
-read (``cli/worker.py::_should_register``), so setting
-``PRECIS_TAPROOT_REFINE_ENABLED`` does nothing. Enable on exactly **one host**
-— the rejection memo is a read-modify-write on ``meta``
-(``docs/runbooks/taproot-chase-enablement.md``).
+**Ship dark**: a service, gated by a ``service_config`` prio row
+(``precis service prio <host> hub_refine 1``, live, no redeploy — no env
+flag works post-§L). Enable on exactly **one host**: the rejection memo
+is a read-modify-write on ``meta``.
 
 **Reground** (``docs/backlog/taproot-reground.md``) grows this same pass
-from *additive-only enrichment* into a full *re-grounding* pass. It is
-deliberately **not** a second worker: there is exactly one mechanism that
-improves an existing claim hub, and it is this one. When
-:class:`RegroundConfig` is active the spine above gains five things, all
-on the same claim→discover→verify→write→stamp path:
+from additive-only enrichment into full re-grounding — deliberately not a
+second worker; this is the one mechanism that improves an existing hub.
+Active :class:`RegroundConfig` adds five things onto the same
+claim→discover→verify→write→stamp path:
 
-* **Fisheye + audit (stages 1-2).** Every current grounding chunk, with
-  its prev/next neighbours, goes to :func:`judge_edge_strict` — a judge
-  *strictly stricter* than the minter's ``_verify_support_with_caveats``,
-  which returns *yes* on a proxy because the sentence utters the claim.
-  Primary content → KEEP; asserts/defers/review-deferral/abstract-for-a-
-  measurement/title/byline/cover/bibliography → PRUNE; primary-against →
-  CONTRADICTS; **default KEEP on uncertainty**.
-* **Convergence guard.** ``meta.reground_seen`` memoes each edge's verdict
-  against the ``claim_sha``, so an edge is re-judged at most once per
-  claim wording — the same shape ``last_refined_sha`` already uses, and a
-  sha-reopen clears it along with the rejection memo. Reground converges;
-  it is not a periodic re-scan.
-* **Deeper re-discovery (stage 3).** The two existing discover sources at
-  a deeper top-k, plus — offered *first* — deeper passages inside papers
-  the hub already grounds on. That is the PRIMARY move: the pilot found 5
-  of 6 proxy prunes were same-paper depth corrections ("right paper,
-  wrong chunk"), which makes most reground actions low-risk. The
-  grounding-depth policy (:func:`claim_depth_policy`) lets a definition/
-  existence claim ground on an abstract but requires a body passage for a
-  measurement/mechanism one.
-* **Prune, add-first, in code.** Nothing is removed inside the per-hub
+* **Fisheye + audit** (stages 1-2) — every current grounding chunk, with
+  neighbours, goes to :func:`judge_edge_strict` — stricter than the
+  minter's verifier, which yes's a proxy for uttering the claim. Primary
+  content → KEEP; assert/defer/review-deferral/abstract-for-a-measurement/
+  title/byline/cover/bibliography → PRUNE; primary-against → CONTRADICTS;
+  default KEEP on uncertainty.
+* **Convergence guard** — ``meta.reground_seen`` memoes each edge's
+  verdict against ``claim_sha`` (re-judged at most once per wording,
+  cleared by a sha-reopen alongside the rejection memo). Reground
+  converges; it is not a periodic re-scan.
+* **Deeper re-discovery** (stage 3) — the two discover sources at a
+  deeper top-k, plus deeper passages inside already-grounding papers
+  offered *first* (the primary move: pilot found 5/6 proxy prunes were
+  same-paper depth corrections). :func:`claim_depth_policy` lets a
+  definition/existence claim ground on an abstract but requires a body
+  passage for a measurement/mechanism claim.
+* **Prune, add-first, in code** — nothing removed inside the per-hub
   transaction. Prunes are planned (:class:`RegroundPlan`) and applied by
-  :func:`apply_reground_plan` only after the adds commit and are read
-  back from ``links`` — with a paired-add requirement, a strand guard,
-  and partial-failure counts. A contradictor is re-attached as a
-  ``contradicts`` edge, never plain-dropped.
-* **External last resort + retire flagging (stages 5-6).** Both behind
-  their own additional gates; the retire stage additionally needs a
-  per-hub opt-in tag, and its draft-prose edit is deliberately stubbed at
-  a worklist flag (see :func:`_flag_retire`).
+  :func:`apply_reground_plan` only after adds commit and are read back
+  from ``links`` (paired-add requirement, strand guard, partial-failure
+  counts). A contradictor is re-attached as ``contradicts``, never
+  plain-dropped.
+* **External last resort + retire flagging** (stages 5-6) — each behind
+  its own gate; retire additionally needs a per-hub opt-in tag, and its
+  draft-prose edit is stubbed to a worklist flag (:func:`_flag_retire`).
 
-**The unattended reground service loop is dark.**
+**The unattended reground service loop is dark**:
 :meth:`RegroundConfig.from_env` returns ``None`` unless
-``PRECIS_TAPROOT_REGROUND`` is set — this gates only the periodic
-``hub_refine`` service pass picking reground up on its own due-set; it says
-nothing about the ``reground_claim`` job (``workers/job_types/
-reground_claim.py``), which is its own explicit, attended opt-in entry
-point and dispatches regardless of this env var (deliberate — a submitted
-job is already a human decision to run it). The prune sub-stage needs
-``PRECIS_TAPROOT_REGROUND_PRUNE`` on top of that, set to the literal
-:data:`PRUNE_INTERLOCK_TOKEN` rather than a boolean, because it **must not
-be enabled in prod until ``taproot.slice_refine_eval`` passes on the
-deployed strict rubric** (the spec's live blocker — over-prune is the
-dangerous direction, and a plain ``=1`` is exactly what gets flipped by
-muscle memory) — this interlock DOES gate both paths, service and job
-alike (:func:`prune_interlock_open`). Retire/regenerate has no env flag at all: it is reachable
-only through the ``reground_claim`` job's explicit param plus the hub tag.
+``PRECIS_TAPROOT_REGROUND`` — gating only ``hub_refine``'s own due-set
+pickup, not the ``reground_claim`` job (``workers/job_types/
+reground_claim.py``), an independent explicit-opt-in entry point that
+dispatches regardless (a submitted job is already a human decision). The
+prune sub-stage additionally needs ``PRECIS_TAPROOT_REGROUND_PRUNE`` set
+to the literal :data:`PRUNE_INTERLOCK_TOKEN`, not a boolean — it must not
+enable in prod until ``taproot.slice_refine_eval`` passes the deployed
+strict rubric (over-prune is the dangerous direction; a plain ``=1`` is
+what muscle memory flips). The interlock gates both paths
+(:func:`prune_interlock_open`). Retire/regenerate has no env flag at all
+— reachable only through the ``reground_claim`` job's explicit param plus
+the hub tag.
 
-Once claiming work, the pass always verifies with the
-LLM — there is no separate ``with_llm`` toggle here (unlike ``chase``): a
-hub-refine run that can't verify can't do anything, so reaching this pass
-at all already implies paying for it. The one hard dependency is the
-embedder (discovery needs a query vector); if none is wired the pass logs
-a warning and no-ops for the whole cycle (mirrors the forward bridge's own
-embedder-unavailable degrade, ``workers/chase.py``'s ``_taproot_bridge``).
+Once claiming work, the pass always verifies with the LLM — no separate
+``with_llm`` toggle (unlike ``chase``): a run that can't verify can't do
+anything, so reaching this pass already implies paying for it. The one
+hard dependency is the embedder (discovery needs a query vector); absent
+one, the pass logs a warning and no-ops the whole cycle (mirrors the
+forward bridge's own embedder-unavailable degrade).
 """
 
 from __future__ import annotations
@@ -522,26 +449,21 @@ def _claim_hubs_due_for_refine(
     Due-set claim query (see :func:`_is_hub_due`), never-refined first,
     oldest ``last_refined_at`` next, ``SKIP LOCKED``. The sha-reopen check
     isn't SQL-computable (:func:`taproot.canon.claim_sha` is Python-side
-    blake2b), so this scans the whole (small, ~1.2k) canonical claim-hub
-    set, computes due-ness in Python, then re-locks just the winning
-    ``limit`` ids with a second ``FOR UPDATE SKIP LOCKED`` — a concurrent
-    pass already holding one of those rows drops it from the returned set,
-    same concurrency-safety as the old single-query form.
+    blake2b), so this scans the whole (~1.2k) canonical claim-hub set,
+    computes due-ness in Python, then re-locks just the winning ``limit``
+    ids with a second ``FOR UPDATE SKIP LOCKED`` — a concurrent pass
+    already holding one of those rows drops it from the returned set.
 
-    Pops each claimed hub's ``TAPROOT_DUE`` tag in this same call (the
-    work-queue pop) — if a new chunk re-marks the hub mid-processing, it
-    simply re-triggers next pass. Also writes each locked hub's
-    :data:`_ATTEMPT_NS` claim-time lease here, in the same commit — see
-    that constant's docstring for why.
+    Pops each claimed hub's ``TAPROOT_DUE`` tag in this same call (a
+    re-mark mid-processing simply re-triggers next pass), and writes each
+    locked hub's :data:`_ATTEMPT_NS` claim-time lease in the same commit
+    (see that constant's docstring).
 
-    Excludes **compound** claim hubs (docs/backlog/taproot-atomic-claims.md):
-    a ``NOT EXISTS`` over an inbound live ``conjunct-of`` edge from a live
-    ``finding`` — the same predicate :func:`_is_compound_hub` checks per-hub,
-    deliberately re-derived here rather than shared (see the module
-    docstring's "cross-task seam" note). A compound hub's only possible
-    write is a direct evidence attach, which ``taproot.hub.attach_evidence``
-    now refuses — claiming one here would just raise every pass and never
-    converge.
+    Excludes **compound** claim hubs (module docstring step 1) via a
+    ``NOT EXISTS`` over an inbound live ``conjunct-of`` edge — the same
+    predicate :func:`_is_compound_hub` checks per-hub, deliberately
+    re-derived rather than shared (module docstring's "cross-task seam"
+    note).
     """
     rows = conn.execute(
         f"""
@@ -2046,34 +1968,31 @@ def apply_reground_plan(
 ) -> RegroundApplyResult:
     """Apply one hub's planned prunes — **after** its adds have committed.
 
-    The four deterministic requirements from
-    docs/backlog/taproot-reground.md §"Applier must enforce add-first in
-    code, not in a prompt", each implemented rather than prompted:
+    The four deterministic requirements from docs/backlog/taproot-reground.md
+    §"Applier must enforce add-first in code, not in a prompt":
 
-    1. **Read back** every add from ``links`` on a fresh connection. The
-       plan's ``adds`` are what ``attach_evidence`` was *asked* to write;
-       what counts is what is in the table. (The original damage happened
-       under exactly this gap: a permission classifier blocked the adds
-       and let the paired prunes through.)
+    1. **Read back** every add from ``links`` on a fresh connection — what
+       counts is what's in the table, not what the plan's ``adds`` asked
+       ``attach_evidence`` to write.
     2. **Prune only what has a confirmed replacement**, matched **1:1**
        (:func:`_pair_prunes_with_adds`): each replacement-requiring prune
-       claims one distinct confirmed add — its own source's, if there is
-       one (the depth correction), else a leftover (a cross-paper swap).
-       A prune with no add left to claim is **withheld and the hub
+       claims one distinct confirmed add — its own source's if there is
+       one (depth correction), else a leftover (cross-paper swap). A
+       prune with no add left to claim is **withheld and the hub
        flagged** — never silently skipped.
-    3. **Re-check ``count(live edges) > 0``.** Enforced twice: the plan
-       is simulated against read-back state before anything is deleted,
-       and ``taproot.hub.remove_evidence`` independently refuses its own
+    3. **Re-check ``count(live edges) > 0``** — twice: the plan is
+       simulated against read-back state before anything is deleted, and
+       ``taproot.hub.remove_evidence`` independently refuses its own
        last-edge removal inside the transaction.
     4. **Surface partial-failure counts** — :class:`RegroundApplyResult`
-       carries ``missing_adds`` / ``withheld`` / ``stranded_refused`` and
-       ``flags``, and the job glue puts them in the summary.
+       carries ``missing_adds``/``withheld``/``stranded_refused``/``flags``;
+       the job glue puts them in the summary.
 
     Each prune runs in its own transaction so one bad handle degrades one
-    edge, not the hub's whole plan. The contradicts conversions run first
-    (they are add-first *within* one transaction — see
-    ``taproot.hub.reattach_as_contradicts``), because a converted edge is
-    still a live edge and therefore changes the strand arithmetic below.
+    edge, not the hub's whole plan. Contradicts conversions run first
+    (add-first *within* one transaction,
+    ``taproot.hub.reattach_as_contradicts``) — a converted edge is still
+    live and changes the strand arithmetic below.
     """
     flags = list(plan.flags)
     log_entries = list(plan.log)
@@ -2661,38 +2580,28 @@ def _reverify_pinned_edges(
     seen: dict[str, Any],
     sha: str,
 ) -> bool:
-    """Certify THIS hub's attached-but-unverified evidence for the publish
-    gate — the "…unless unverified" arm the skip-if-attached precheck
-    needed: an already-attached edge never re-enters discovery, so without
-    this step no verifier could ever reach the mint-time debt.
+    """Certify this hub's attached-but-unverified evidence for the publish
+    gate — the module docstring's re-verify-pinned-edges step.
 
-    Two cohorts, both this hub's own pinned inbound ``establishes``/
-    ``corroborates`` edges (``taproot.verify_edges``'s selectors, hub-
-    scoped): **withheld** (``support`` absent, no ``publish_signoff``) and
-    **unverified-stamped** (``support`` present, no ``verified_by`` — the
-    born-released mint-time default). Each is re-read against the hub's
-    claim by the minter's own verifier
+    Two cohorts (``taproot.verify_edges``'s hub-scoped selectors):
+    **withheld** (no ``support``, no ``publish_signoff``) and
+    **unverified-stamped** (``support`` present, no ``verified_by`` —
+    mint-time default). Each is re-read by the minter's own verifier
     (:func:`~precis.workers._chase_llm._verify_support_with_caveats`):
 
-    * a corroborating verdict is stamped in the six-key shape
-      (:func:`_verified_stamp` over support/support_reason/caveats) on this
-      hub's own transaction — the stamp carries ``verified_by`` and drops
-      the edge out of both cohorts, so certification self-converges;
-    * a non-corroborating verdict is **not** stamped (and, deliberately,
-      not stripped — this step is additive-only: no prunes, no role
-      changes; stripping a born-released stamp stays ``precis taproot
-      verify-edges --unverified-stamped``'s door, and pruning stays
-      reground's). It is memoed into ``seen`` (``meta.reground_seen`` — one
-      judgment per edge per ``claim_sha``, cleared by the same sha-reopen)
-      so the step converges instead of re-spending the verifier every pass;
-    * a ``None`` verdict (LLM failure) is skipped without a memo — retried
-      next pass, never recorded as a judgment. A cohort row whose pinned
-      chunk has no live text is likewise skipped (repair-evidence
-      territory, mirroring verify-edges' chunk-missing status).
+    * corroborating → stamped in the six-key shape
+      (:func:`_verified_stamp`), dropping the edge from both cohorts
+      (self-converges).
+    * non-corroborating → NOT stamped and NOT stripped (stripping stays
+      ``precis taproot verify-edges --unverified-stamped``'s door,
+      pruning stays reground's) — memoed into ``seen`` (one judgment per
+      edge per ``claim_sha``).
+    * ``None`` (LLM failure), or a chunk with no live text → skipped, no
+      memo, retried next pass.
 
-    Verifier calls are capped at :data:`_REVERIFY_PER_PASS` per hub per
-    pass. Returns True when ``seen`` gained an entry, so the caller
-    persists the memo even when reground (its usual owner) is inactive.
+    Capped at :data:`_REVERIFY_PER_PASS` calls/hub/pass. Returns True when
+    ``seen`` gained an entry, so the caller persists the memo even when
+    reground (its usual owner) is inactive.
     """
     from psycopg.types.json import Jsonb
 
@@ -2761,57 +2670,30 @@ def _refine_one_hub(
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
-    **Two discover sources, one Filter→Verify→Write tail** (docs/backlog/
-    citation-taproot-resolve.md): the corpus-wide semantic ANN — now over
-    paper *and* patent body chunks (docs/backlog/patent-evidence-
-    parity.md) — and citation-following (:func:`_citation_
-    candidates`, paper-only). Both merge into a single per-hub candidate
-    list — **citation candidates first, so they win the slot** — deduped by
-    source ref via ONE loop-local ``seen_sources`` set, so a source surfaced
-    by both discover sources is verified exactly once. This keeps the
-    module's bounded-spend guarantee (the citation source adds at most one
-    scoped verify per held cited paper the hub already grounds against, so
-    the per-hub worst case grows only by the hub's own grounded-citation
-    count, not unboundedly; the patent leg merges into the same
-    already-bounded ``topk`` semantic slot rather than adding one of its
-    own — see :func:`_drop_patent_claim_blocks` for the grounding-policy
-    exclusion of patent legal-claim blocks).
+    Per-hub body of the module docstring's steps 2-6; see there for the
+    two-source discover, filter, verify, write, and stamp contracts. This
+    function's own specifics:
 
-    Always writes ``meta.last_refined_at`` + ``meta.last_refined_sha`` on
-    the way out (even when the hub's title is blank, or discovery/verify
-    finds nothing new) — that unconditional stamp is what makes the claim
-    query's due-set conditions (never-refined, sha-match) hold (see
-    :func:`_claim_hubs_due_for_refine`).
+    **Vanished ref** — ``info is None`` (ref deleted between claim and
+    processing): clears the attempt lease and returns; nothing to stamp.
 
-    A **sha-reopen** — the stored ``last_refined_sha`` no longer matches
-    the live title's :func:`taproot.canon.claim_sha` — clears the
-    rejection memo (and the citation-miss / unresolved-cite records)
-    *before* discovery/verify run: the claim wording changed, so an old
-    ``supports=no`` verdict may no longer hold.
+    **Defensive compound skip** — :func:`_claim_hubs_due_for_refine` already
+    excludes compound hubs from the due-set, but a concurrent decomposition
+    can mint the ``conjunct-of`` edge in the claim→process window.
+    :func:`_is_compound_hub` re-checks here: if true, stamps
+    ``last_refined_at``/``last_refined_sha`` and clears the attempt lease,
+    then returns before discovery/verify — ``attach_evidence``'s own
+    compound guard is never reached.
 
-    **Defensive compound skip.** :func:`_claim_hubs_due_for_refine` already
-    excludes compound hubs from the due-set, but a hub can *become*
-    compound in the narrow window between that claim and this function
-    running (a concurrent decomposition mints the ``conjunct-of`` edge).
-    :func:`_is_compound_hub` re-checks here and, if true, drains the hub
-    cleanly: it still stamps ``last_refined_at``/``last_refined_sha`` (this
-    ref is live, unlike the vanished-ref case below) and clears the
-    attempt lease, then returns before discovery/verify ever run — no
-    evidence attach is attempted, so ``taproot.hub.attach_evidence``'s
-    compound guard is never even reached.
-
-    **Reground** (``reground`` non-``None``, docs/backlog/taproot-
-    reground.md) grows this same function rather than forking a second
-    one: stage 1/2 (fisheye + strict audit) run before discovery, stage 3
-    adds same-paper deeper passages ahead of the existing two discover
-    sources and deepens their top-k, the ``attached`` pre-filter narrows
-    to a memo-gated re-verify (:func:`_candidate_settled`), and every
-    candidate is judged by the strict judge instead of the minter's
-    verifier. What it deliberately does NOT do here is remove anything:
-    prunes are accumulated into a :class:`RegroundPlan` appended to
-    ``plan_out`` and applied by :func:`apply_reground_plan` only after
-    this function's transaction has committed — that ordering IS the
-    add-first contract.
+    **Reground integration** (``reground`` non-``None``) — stages 1/2
+    (fisheye + strict audit) run before discovery; stage 3 adds same-paper
+    deeper passages ahead of the two discover sources and deepens their
+    top-k; the ``attached`` pre-filter narrows to a memo-gated re-verify
+    (:func:`_candidate_settled`); every candidate is judged by the strict
+    judge, not the minter's verifier. Nothing is removed here: prunes
+    accumulate into a :class:`RegroundPlan` appended to ``plan_out``,
+    applied by :func:`apply_reground_plan` only after this function's
+    transaction commits — that ordering is the add-first contract.
     """
     info = _fetch_hub_info(conn, hub_ref_id)
     if info is None:

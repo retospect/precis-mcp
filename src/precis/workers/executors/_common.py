@@ -1,19 +1,12 @@
 """Shared substrate for the job executors and the wake_runner.
 
-The two executors (:mod:`claude_inproc`, :mod:`coordinator`) and the
-:mod:`precis.workers.wake_runner` pass all speak the same closed
-``STATUS:*`` tag namespace, claim ``kind='job'`` rows with the same
-SQL shape, and manipulate job rows with the same handful of helpers.
-This module is the single home for that substrate so the three
-modules stop re-declaring the constants and reaching into each
-other's privates (the previous arrangement had ``coordinator`` and
-``wake_runner`` importing helpers straight out of ``claude_inproc``,
-and all three re-stating the STATUS values "to avoid a circular
-import" that module-level constants can't actually cause).
+``claude_inproc``, ``coordinator``, and :mod:`precis.workers.wake_runner`
+share one closed ``STATUS:*`` tag namespace, the same ``kind='job'`` claim
+SQL shape, and the same job-row helpers — this module is their single home.
 
-The executors import these under their existing ``_name`` aliases so
-the bare-name references in their bodies — and the tests that
-``monkeypatch.setattr(module, "_set_status", ...)`` — keep working.
+Executors import these under their existing ``_name`` aliases: bare-name
+references in their bodies, and tests' ``monkeypatch.setattr(module,
+"_set_status", ...)``, keep working unchanged.
 """
 
 from __future__ import annotations
@@ -1062,7 +1055,7 @@ def record_failure(
             set_meta(conn, ref_id, failure_class=failure_class)
         if gripe_rollback is not None:
             set_status(store, gripe_rollback, "open", conn=conn)
-        # Slice-5 failure-bubble.
+        # Slice-5 failure bubble.
         from precis.handlers._job_bubble import bubble_job_failure
 
         bubble_job_failure(store, ref_id, conn=conn)

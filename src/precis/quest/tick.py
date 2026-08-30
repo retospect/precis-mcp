@@ -1,39 +1,32 @@
 """quest_tick — one bounded step of a quest's autonomous research loop.
 
-Slice 4a of the quest layer (``quest-layer`` (git-only) §The autonomous
-research loop). This is the **skeleton** of the loop: a single, in-process,
-structured LLM step routed through the LLM routing seam (``dispatch(LlmRequest)``)
-that reads the quest's rolling context — its striving statement, the current
-dossier, the slice-3 gaps + momentum, and the recent logbook tail — and returns
-two things:
+A single, in-process, structured LLM step routed through the LLM routing
+seam (``dispatch(LlmRequest)``) that reads the quest's rolling context —
+striving statement, current dossier, slice-3 gaps + momentum, recent
+logbook tail — and returns:
 
-* **logbook entries** — 1–4 dated observations / hypotheses / decisions
-  reflecting one step of thinking, appended to the WORM logbook; and
-* a **rewritten dossier** — the living synthesis (current understanding, best
-  leads, what's ruled out, open questions), whole-replaced in place. The
-  per-hypothesis dialectic is NOT part of that rewrite: it lives in pinned
-  blocks the model maintains through ``dialectic_ops``
-  (:func:`precis.quest.dossier.apply_dialectic_op` — quest-dossier-dialectic
-  §Mechanism), so it cannot flatten with the prose.
+* **logbook entries** — 1-4 dated observations/hypotheses/decisions, one
+  step of thinking, appended to the WORM logbook;
+* a **rewritten dossier** — the living synthesis, whole-replaced in place.
+  The per-hypothesis dialectic is NOT part of that rewrite: it's op-mutated
+  separately via ``dialectic_ops``
+  (:func:`precis.quest.dossier.apply_dialectic_op`).
 
 With ``compute=True`` (rung 4b) the tick also materialises the model's
-**proposals** into candidate `structure` servers, dispatches their relax sims
-(the derived compute lane), and harvests finished results back into the logbook
-(:mod:`precis.quest.compute`); off by default so the tick stays a pure reasoning
-step unless a caller opts in. No autonomous scheduling yet (rung 4d — a
-dispatcher picks which quest ticks when a slot frees). So this rung is **dark**:
-nothing mints a tick automatically; it runs only from ``precis quest tick <id>``
-or an explicit caller. The ``PRECIS_QUEST_LOOP_ENABLED`` flag
-(:func:`quest_loop_enabled`) is defined here for the future autonomous
-dispatcher to gate on.
+**proposals** into candidate `structure` servers, dispatches their relax
+sims, and harvests results (:mod:`precis.quest.compute`) — off by default
+so the tick stays pure reasoning unless a caller opts in. The autonomous
+scheduler (rung 4d, :mod:`precis.quest.loop`) runs each active quest's
+ticks as a perpetual ``quest_tick`` coordinator campaign, gated on
+``PRECIS_QUEST_LOOP_ENABLED`` (:func:`quest_loop_enabled`);
+``precis quest tick <id>`` is the manual, gate-independent one-shot driver.
 
-The single model call is injectable (``dispatch_fn``) so the tick is
-deterministically unit-testable without a live model.
+The single model call is injectable (``dispatch_fn``) — deterministically
+unit-testable without a live model.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -55,6 +48,7 @@ from precis.quest.logbook import (
 )
 from precis.reading.cast_common import _TOKENS_PER_WORD
 from precis.utils import handle_registry
+from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
@@ -187,33 +181,26 @@ def _persist_job_transcript(
     store: Store, job_ref_id: int, outcome: QuestTickOutcome, res: Any
 ) -> None:
     """Persist this slice's outcome onto the owning ``quest_tick`` coordinator
-    job's ``refs.meta`` — the same ``transcript`` / ``transcript_raw`` keys a
+    job's ``refs.meta`` — the same ``transcript``/``transcript_raw`` keys
     ``plan_tick`` writes (:mod:`precis.workers.executors.claude_inproc`), so
     the confusion-mining SQL (``kind='job' AND meta ? 'transcript'``) and the
-    sweeper's retention GC (``workers.sweeper._gc_transcripts``) automatically
-    cover quest_tick without any bespoke query/GC path.
+    sweeper's retention GC (``workers.sweeper._gc_transcripts``) cover
+    quest_tick with no bespoke query/GC path.
 
-    ``transcript`` (condensed conclusion) is **appended** on every slice,
+    ``transcript`` (condensed conclusion) is **appended** every slice,
     success or failure — the coordinator job ref persists across every
-    ``Yield``/resume of one loop, so a wholesale overwrite would keep only
-    the *last* tick's digest and lose exactly the earlier-tick record this
-    exists to capture. Entries are separated by ``\\n---\\n``, newest last,
-    tail-preserved under :data:`_JOB_TRANSCRIPT_DIGEST_CAP`.
-    ``transcript_raw`` (the model's full raw output, capped, last-failure-
-    wins — raw dumps are too big to accumulate) is added when the slice
-    failed, OR — mirroring ``plan_tick``'s
-    own ``_precis_tools_used`` gate (``workers/job_types/plan_tick.py``) —
-    when it completed with zero precis tool calls on a transport that
-    surfaces ``raw_text`` (quest_tick's own structured-JSON dispatch never
-    does today, so this branch is dormant here, kept for parity if the
-    transport changes). A successful, tool-engaged tick's condensed digest
-    is enough; only the case that actually needs debugging gets the raw dump.
+    ``Yield``/resume, so overwriting would lose every tick but the last.
+    Entries separated by ``\\n---\\n``, newest last, tail-preserved under
+    :data:`_JOB_TRANSCRIPT_DIGEST_CAP`. ``transcript_raw`` (full raw model
+    output, capped, last-failure-wins) is added on failure, or — mirroring
+    ``plan_tick``'s ``_precis_tools_used`` gate — on a zero-tool-call
+    completion on a transport surfacing ``raw_text`` (dormant today:
+    quest_tick's structured-JSON dispatch never surfaces it, kept for parity
+    if the transport changes).
 
-    Slices don't get their own job ref (the coordinator's ``kind='job'`` ref
-    persists across every ``Yield``/resume of the loop), so this always
-    targets ``job_ref_id`` — matching wherever ``plan_tick`` would put a
-    per-slice transcript, since there is no finer-grained ref to write onto
-    here. Best-effort: a write failure must never abort the tick.
+    Slices don't get their own job ref, so this always targets
+    ``job_ref_id`` (the coordinator's persisting ref) — best-effort, a write
+    failure must never abort the tick.
     """
     from precis.workers.executors._common import set_meta
 
@@ -496,25 +483,22 @@ def _rank_papers_by_relevance(
 
     Cosine (descending, against the quest's own gist vector) breaks ties
     within tiers 1-2; ``papers``' incoming (serves-graph insertion) order
-    breaks ties within 3-4. Gaps/hypotheses have no cached vectors and this
-    is a prompt-building call, not a model call, so nothing here ever
-    embeds on the fly — a paper (or the quest itself) with no cached vector
+    breaks ties within 3-4. This is a prompt-building call, not a model
+    call — nothing here embeds on the fly; a paper with no cached vector
     just scores 0 / drops to the no-vector tiers.
 
-    When the quest itself has no gist vector yet (``seed_chunk_for_ref`` /
-    ``get_chunk_vector`` -> ``None`` — the ~2h demand-driven embedding blind
-    window), cosine is skipped entirely and papers degrade to two tiers,
-    held-body first then stubs — the same degrade-rather-than-guess posture
-    ``embed_query``'s lexical fallback uses.
+    When the quest itself has no gist vector yet (``seed_chunk_for_ref``/
+    ``get_chunk_vector`` -> ``None``, the ~2h demand-driven embedding blind
+    window), cosine is skipped and papers degrade to two tiers, held-body
+    first then stubs — same degrade-rather-than-guess posture as
+    ``embed_query``'s lexical fallback.
 
     Returns ``(ref, citable_handle)`` pairs, ranked — the handle is
     :func:`_paper_citable_handle`'s result, computed once here rather than
-    a second time by the renderer. ``budget_tokens`` isn't consulted for
-    the ordering itself (every paper costs the same to score); it's part of
-    this helper's signature so the budgeted-serving contract — rank, then
-    fill to budget — is documented on the ranking call, even though the
-    accumulate/cut loop lives in :func:`_served_papers_detail`, the
-    renderer.
+    again by the renderer. ``budget_tokens`` isn't consulted for ordering
+    (every paper costs the same to score); it documents the
+    rank-then-fill-to-budget contract on the ranking call — the
+    accumulate/cut loop itself lives in :func:`_served_papers_detail`.
     """
     del budget_tokens  # not consulted for ordering — see docstring
     seed_cid = store.blocks.seed_chunk_for_ref(quest_id)
@@ -813,20 +797,18 @@ _RATE_READOUT_NOTE = (
 def _axis_reading_notes(fr: Any) -> str:
     """The tick prompt's "Reading the axes" paragraph — derived from the
     quest's OWN current objective vector (``fr.objectives``), never a
-    hardcoded assumption (gripe 263257: the prior static text always named
-    `log_tof` the activity axis, even for a quest whose rubric had moved
-    entirely onto other axes — e.g. the electro span_at_Uopt/U_L/P_side set —
-    which would render a flatly false claim about what the frontier table
-    actually ranks on).
+    hardcoded assumption (gr263257: static text once always named `log_tof`
+    the activity axis, false for a quest whose rubric had moved onto other
+    axes, e.g. the electro span_at_Uopt/U_L/P_side set).
 
     One :data:`_AXIS_NOTES` one-liner per axis the quest currently
     declares, in declaration order; an axis with no known entry gets a
-    generic fallback rather than being silently dropped (a quest may declare
-    a composite or a not-yet-catalogued measure). `$/rate`'s explainer is
-    appended only when BOTH its components (``atom_cost``, ``log_tof``) are
-    declared. Empty when the quest declares no objectives at all (never
-    happens in practice — :func:`precis.quest.frontier._objectives_for`
-    always falls back to :data:`precis.quest.frontier.DEFAULT_OBJECTIVES`).
+    generic fallback rather than being silently dropped. `$/rate`'s
+    explainer is appended only when BOTH its components (``atom_cost``,
+    ``log_tof``) are declared. Empty only if the quest declares no
+    objectives (doesn't happen in practice —
+    :func:`precis.quest.frontier._objectives_for` falls back to
+    :data:`precis.quest.frontier.DEFAULT_OBJECTIVES`).
     """
     keys = [k for k, _ in fr.objectives]
     if not keys:
@@ -909,16 +891,15 @@ def _champion(
 def _explorers_creed(store: Store, quest_id: int, *, fr: Any | None = None) -> str:
     """The "relentless researcher" prompt block for a catalyst/reaction quest.
 
-    Code's job here is only the *guarantee the agent acts* (the commit
-    re-prompt + tier-escalation ladder in :func:`run_quest_tick`) — never the
-    chemistry itself. This block reframes the objective as a **moving**
-    champion (beat the current best; there is no fixed finish line) so a
-    graduated candidate (:mod:`precis.quest.graduate`) reads as a new floor to
-    beat, not a stop signal, and states the tried-set explicitly
-    (:func:`precis.quest.explore.tried_set_summary` — a pure DB-fact read, no
-    chemistry enumeration) so the model reasons from the live state instead of
-    guessing it. The untried composition itself is always the model's own
-    chemistry judgment call.
+    Code's job here is only *guaranteeing the agent acts* (the commit
+    re-prompt + tier-escalation ladder in :func:`run_quest_tick`) — never
+    the chemistry itself. Reframes the objective as a **moving** champion
+    (beat the current best, no fixed finish line) so a graduated candidate
+    (:mod:`precis.quest.graduate`) reads as a new floor, not a stop signal,
+    and states the tried-set explicitly (a pure DB-fact read,
+    :func:`precis.quest.explore.tried_set_summary`) so the model reasons
+    from live state rather than guessing it. The untried composition itself
+    is always the model's own chemistry judgment call.
 
     ``fr`` reuses an already-computed frontier (see :func:`_frontier_summary`)
     and is threaded into both :func:`_champion` and
@@ -1478,32 +1459,6 @@ def _resolve_tier(tier: Any) -> Any:
     return tier_from_str(str(tier))
 
 
-def _extract_json(text: str) -> dict[str, Any] | None:
-    """Best-effort parse: the last balanced ``{...}`` block in ``text``."""
-    if not text:
-        return None
-    depth = 0
-    start = -1
-    candidate: str | None = None
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start >= 0:
-                    candidate = text[start : i + 1]
-    if candidate is None:
-        return None
-    try:
-        obj = json.loads(candidate)
-    except (ValueError, TypeError):
-        return None
-    return obj if isinstance(obj, dict) else None
-
-
 #: Top-level keys a tick payload can carry — used to sanity-check the
 #: transport's pre-parsed ``.data`` before trusting it. A transport JSON
 #: extractor that mis-parses a nested response (the ≤2-deep-regex claude_p
@@ -1534,7 +1489,7 @@ def _payload_from_result(res: Any) -> dict[str, Any] | None:
     data = getattr(res, "data", None)
     if isinstance(data, dict) and data and (_PAYLOAD_KEYS & data.keys()):
         return data
-    return _extract_json(getattr(res, "text", "") or "")
+    return extract_json_object(getattr(res, "text", "") or "")
 
 
 #: The hypothesis-dedup Jaccard floor + its token-overlap primitives now
@@ -1613,24 +1568,22 @@ def _build_commit_prompt(
 ) -> str:
     """The "you must propose now" re-prompt the commit ladder fires.
 
-    The base context is the normal propose-mode prompt (:func:`build_tick_prompt`,
-    ``review=False`` — this never escalates to the frontier-review banner,
-    only the model *tier* escalates) plus a hard directive appended. No
-    chemistry menu, no enumeration — the agent picks the untried composition
-    using its own judgment; this only insists that it act.
+    Base context is the normal propose-mode prompt
+    (:func:`build_tick_prompt`, ``review=False`` — only the model *tier*
+    escalates, never to the frontier-review banner) plus a hard directive
+    appended. No chemistry menu: the agent picks the untried composition on
+    its own judgment; this only insists it act.
 
     ``base_prompt``, when given, is the primary tick's ALREADY-BUILT prompt
-    (``run_quest_tick`` only passes it when that tick itself ran with
-    ``review=False`` — i.e. it's byte-identical to what a fresh
-    ``build_tick_prompt(..., review=False)`` call would produce), so the
-    commit ladder skips rebuilding the whole context (another frontier +
-    live-candidate scan) from scratch. ``None`` (default, and every unit
-    test) builds it fresh. ``narrative_override`` (only meaningful on a fresh
-    rebuild — ``base_prompt is None``) is the primary tick's just-proposed
-    ``dossier_text``, threaded straight through to
-    :func:`build_tick_prompt` — the narrative write is deferred past this
-    ladder (:func:`run_quest_tick`), so without it a rebuild would show the
-    model last tick's persisted narrative instead of its own current one.
+    (``run_quest_tick`` passes it only when that tick itself ran
+    ``review=False``, so it's byte-identical to a fresh rebuild) — skips
+    redoing the frontier + live-candidate scan. ``None`` (default, every
+    unit test) builds fresh. ``narrative_override`` (meaningful only on a
+    fresh rebuild) is the primary tick's just-proposed ``dossier_text``,
+    threaded through to :func:`build_tick_prompt` — the narrative write is
+    deferred past this ladder (:func:`run_quest_tick`), so without it a
+    rebuild would show the model last tick's persisted narrative instead of
+    its own current one.
     """
     base = (
         base_prompt
@@ -3021,11 +2974,10 @@ def run_quest_tick(
     unless enough evidence / a stall triggers a **frontier review** at the senior
     tier; ``True``/``False`` overrides it. An explicit ``tier`` wins over both.
     ``job_ref_id`` is the owning ``quest_tick`` coordinator job's ref id, when
-    known (threaded onto the run-attribution ``agentlog`` — see below).
-    ``embedder`` (optional) powers a HyDE `searches` entry's corpus leg
-    (:func:`precis.quest.search.run_search_step` — dossier-hygiene design);
-    ``None`` degrades that leg to fused-lexical-only, same as the broad
-    `search()` verb with no embedder configured.
+    known (threaded onto the run-attribution ``agentlog``). ``embedder``
+    (optional) powers a HyDE `searches` entry's corpus leg
+    (:func:`precis.quest.search.run_search_step`); ``None`` degrades that leg
+    to fused-lexical-only, same as `search()` with no embedder configured.
 
     **Slicing.** By default this runs the whole tick — every stage in the
     banner above — in one call and returns its :class:`QuestTickOutcome`.

@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from precis.cad.bulk import _expr_aabb
+from precis.cad.bulk import expr_aabb
 from precis.cad.bulk import volume as cad_volume
 from precis.cad.dsl import DslError
 from precis.cad.dsl import parse as parse_shape
@@ -199,7 +199,7 @@ def _analysis(store: Store, ref_id: int, version: str) -> dict[str, Any]:
     analysis: dict[str, Any] = {"parts": spec.components, "warnings": []}
     try:
         design = build_design(spec)
-        lo, hi = _expr_aabb(design, design.whole())
+        lo, hi = expr_aabb(design, design.whole())
         analysis["bbox"] = [round(float(hi[i] - lo[i]), 3) for i in range(3)]
         try:
             vol = cad_volume(design)

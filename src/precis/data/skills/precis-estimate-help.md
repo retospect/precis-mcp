@@ -15,9 +15,10 @@ status: active
 # precis-estimate-help — the millisecond chemistry-workup panel
 
 `estimate` argues chemistry **fast and cheap**, in order to set up the slow
-stuff (MLIP relax, NEB, QE/VASP DFT) — not to replace it. Two tiers ship
-today: **composition** (pure element-property lookup, no geometry needed)
-and **structure** (a held `structure` design's own geometry).
+stuff (MLIP relax, NEB, QE/VASP DFT) — not to replace it. Two fidelity
+tiers ship today: **composition** (pure element-property lookup, no
+geometry needed) and **structure** (a held `structure` design's own
+geometry).
 
 ## Composition tier
 
@@ -54,7 +55,7 @@ get(kind="estimate", id="st245406", view="compare",
 `id=` is the structure's universal handle (`st<id>`, not its slug — the
 route through `handle_registry`). The panel:
 
-- **Geometry lint** — the tier-0 MLIP preflight (floating/detached atoms,
+- **Geometry lint** — the fidelity-tier-0 MLIP preflight (floating/detached atoms,
   clashes, vacuum/porosity) re-run over the (possibly what-if'd) geometry.
 - **Coordination / strain** — per dopant/adsorbate atom: site classification
   (top/bridge/hollow for a true adsorbate; `—` for a substitutional dopant),
@@ -95,13 +96,3 @@ mistakes a d-band heuristic (or a BEP prediction) for a measured barrier.
 Validate the semi-empirical layer against something the campaign already
 measured (e.g. does it get the Au-vs-Pt d-band ordering, or the d¹⁰ weak-
 interaction pattern, right?) before leaning on it in an argument.
-
-## What's coming (slice 3 — not built yet)
-
-- `view='shape' | 'orbitals' | 'spin' | 'kinetics' | 'card'` — depth views
-  (coordination-polyhedron naming, HOMO–LUMO/Wiberg bond orders via
-  tblite/GFN-xTB, per-site magmoms, microkinetics, an SVG orbital-diagram
-  card).
-
-Design of record: `docs/backlog/estimate-kind-ms-chemistry-workup.md`
-(git-only once slice 3 ships).

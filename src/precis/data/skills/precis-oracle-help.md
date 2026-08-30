@@ -113,13 +113,10 @@ search(kind="oracle", q="timely change", scope="iching")  # within one
 ```
 
 Searches entry **bodies**, not just tradition titles — a query for
-`impermanence` matches the hexagram / passage text itself. It runs
-hybrid lexical + semantic when an embedder is wired, and degrades to
-lexical-only (keyword match over the entry text) when the embedder is
-absent or down, so a content query reliably surfaces matching entries.
-Each result leads with the entry handle `or<id>~N` (the deterministic
-address); order is the relevance signal. To fetch the entry, call
-`get(id='or<id>~N')`.
+`impermanence` matches the hexagram / passage text itself (mechanics +
+degrade behavior: `precis-search-help`). Each result leads with the
+entry handle `or<id>~N` (the deterministic address); order is the
+relevance signal. To fetch the entry, call `get(id='or<id>~N')`.
 
 ## Cite an oracle entry in writing
 ## Quote a passage with provenance
