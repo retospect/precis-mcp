@@ -43,7 +43,7 @@ persisted `chunks.pos` TEXT column (draft-tree lexicographic ordering, via
 `DraftChunk.pos`) — do not confuse with `ChunkRow.ord`. Glossary block
 legacy note shrunk to just the prompt-assembly `Block` type.
 
-## Stage C — persisted low-blast migrations (one ship each or bundled)
+## Stage C — persisted low-blast migrations (LANDED c6c386a3, deployed 2026-08-30)
 
 - `email_scan.tier` (INT col) → `depth` — forward migration + code.
 - `claim_embeddings.claim_ref_id` → `hub_ref_id` — migration + code (its own
@@ -58,7 +58,7 @@ legacy note shrunk to just the prompt-assembly `Block` type.
 - wall_seconds cleanup: backfill in-flight job rows flat→nested, then remove
   the read-both shim.
 
-## Stage D — surface renames (agents/CLI/skills re-learn from shipped docs)
+## Stage D — surface renames (LANDED c6c386a3, deployed 2026-08-30)
 
 - Worker `dispatch` → `minter`: registry name, `precis worker --only minter`,
   service_config row UPDATE migration, skill `precis-dispatch-help`→
@@ -102,7 +102,7 @@ legacy note shrunk to just the prompt-assembly `Block` type.
   `precis_watch` deploy role/label/log filenames keep their names (only the
   invocation changed).
 
-## Stage E — task→todo + retire/soft-delete unification (largest)
+## Stage E — task→todo + retire/soft-delete unification (LANDED c6c386a3, deployed 2026-08-30)
 
 - task→todo: DECIDED (Reto 2026-08-30) — full rename. Web /tasks routes +
   tab label → todo, `precis-tasks-help`/`precis-auto-tasks-help` skill ids →
