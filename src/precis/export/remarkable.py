@@ -197,7 +197,12 @@ def register_device(code: str, *, timeout_s: float = 15.0) -> str:
     the reMarkable device-registration endpoint (a FIXED module constant,
     not agent-supplied input — this is not an SSRF surface, so a direct
     ``httpx`` call is used rather than ``safe_fetch``) with an empty bearer
-    token, exactly as ``rmapi``'s own registration does.
+    token, as ``rmapi``'s own registration does. The header value is
+    ``"Bearer"`` with **no** trailing space: ``rmapi`` (Go) sends
+    ``"Bearer "``, but h11 rejects a trailing-whitespace header value
+    outright (``LocalProtocolError: Illegal header value b'Bearer '``), and
+    a compliant server strips trailing OWS anyway — the two are identical
+    on the wire once parsed.
 
     The reMarkable sync protocol churns and this repo does not attempt to
     speak the rest of it — this one registration call is the only piece we
@@ -227,7 +232,7 @@ def register_device(code: str, *, timeout_s: float = 15.0) -> str:
                 "deviceDesc": "desktop-linux",
                 "deviceID": str(uuid.uuid4()),
             },
-            headers={"Authorization": "Bearer "},
+            headers={"Authorization": "Bearer"},
             timeout=timeout_s,
         )
     except httpx.HTTPError as exc:

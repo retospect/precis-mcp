@@ -9,10 +9,12 @@ checks the environment first).
 
 from __future__ import annotations
 
+import http.server
 import logging
 import stat
 import sys
 import textwrap
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -208,7 +210,8 @@ def test_register_device_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert body == "devicetoken: the-device-token\n"
     assert seen["url"] == "https://example.test/register"
     assert seen["json"]["code"] == "abc12def"  # lowercased
-    assert seen["headers"]["Authorization"] == "Bearer "
+    # No trailing space — h11 rejects that outright (see the regression test below).
+    assert seen["headers"]["Authorization"] == "Bearer"
 
 
 def test_register_device_rejected_code_raises_pairing_error(
@@ -234,6 +237,46 @@ def test_register_device_network_error_raises_pairing_error(
     monkeypatch.setattr(_httpx, "post", _boom)
     with pytest.raises(rm.PairingError, match="could not reach"):
         rm.register_device("aaaaaaaa")
+
+
+def test_register_device_over_a_real_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pairing POST must survive httpx's *real* transport.
+
+    Regression: the empty bearer header was sent as ``"Bearer "`` (what
+    rmapi's Go client sends). h11 refuses a trailing-whitespace header
+    value — ``LocalProtocolError: Illegal header value b'Bearer '`` — which
+    httpx raises as an ``HTTPError``, so every pairing attempt surfaced as
+    "could not reach the reMarkable pairing service". The other tests here
+    stub out ``httpx.post`` and so never exercise h11; this one drives a
+    loopback server through the whole stack.
+    """
+    seen: dict[str, Any] = {}
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            seen["auth"] = self.headers.get("Authorization")
+            seen["body"] = body
+            payload = b"the-device-token"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_a: Any) -> None:  # silence
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv(
+            "PRECIS_RMAPI_REGISTER_URL",
+            f"http://127.0.0.1:{srv.server_address[1]}/register",
+        )
+        assert rm.register_device("aaaaaaaa") == "devicetoken: the-device-token\n"
+    finally:
+        srv.shutdown()
+    assert seen["auth"] == "Bearer"
 
 
 def test_send_pdf_skips_without_binary(tmp_path, monkeypatch) -> None:
