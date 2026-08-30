@@ -1,5 +1,5 @@
 {
-  "_note": "JLCPCB fab-capability rules, versioned DATA per docs/backlog/pcb-guided-place-route.md 'Export + order' — two tiers per row (jlc_min = JLC's published process minimum, house_default = our margin above it) so a DRC digest can quote spent headroom instead of hiding a constant. 'source'/'retrieved' are per-row because these are third-party numbers that change. field_confidence carries, per field, the number's provenance and any caveat needed to use it safely — 'high'/'medium' were checked directly against a live JLCPCB page on 2026-08-27 (see 'source'); 'low'/'n/a' mark figures JLC does not publish for that process, where the value is deliberately null rather than an invented number. house_default margin rule (auditable, applied uniformly): house_default = max(1.5 x jlc_min, rounded up to the nearest 0.05mm; JLC's own published 'recommended' figure, where one exists) — except soldermask_dam_mm, whose house_default is set above the 2oz-copper figure (0.20mm) rather than the 1oz jlc_min, so a copper-weight change on the order doesn't silently violate it; and except via_diameter_mm (2026-08-28), which this flat rule must NOT be applied to at all — see its own paragraph below. board_edge_clearance is two figures, not one (routed-edge vs V-cut-edge minimums differ and neither is conservative for the other); when the panelization method isn't known yet, use the V-cut (board_edge_clearance_vcut_mm) figure as the safe default. npth_annular_ring_mm is JLC's non-plated-hole copper-clearance requirement (0.2mm of copper must be cleared around an NPTH for the sealing film) — previously misfiled as via_diameter_mm's 0.45mm figure; it is now its own field. It is NOT coupled to any other field this table stores (the NPTH hole diameter it's measured against is a per-design value, never a capability constant), unlike via_diameter_mm below. via_diameter_mm (2026-08-28 fix, gr-shaped defect: every default-sized via failed annular-ring DRC): diameter, drill and annular ring are geometrically coupled (diameter >= drill + 2 x annular_ring) — margining each of the three SEPARATELY under the flat 1.5x rule silently produced a house_default via whose ring (0.075mm) undercut even jlc_min's own ring (0.18mm). The value stored here for via_diameter_mm is JLC's published absolute-minimum finished-via-diameter FLOOR only (a real, independent, per-tier-identical constraint) — precis.pcb.capabilities.load_capabilities() derives the EFFECTIVE per-tier value as max(that floor, drill_mm + 2 x annular_ring_mm) at the SAME tier, so the geometry wins whenever it asks for more than the floor (which it does, at both tiers, once the ring is a real ring). Never read via_diameter_mm out of this raw file directly for that reason; go through load_capabilities(). Sources checked 2026-08-27: https://jlcpcb.com/capabilities/pcb-capabilities (primary FR-4 capability table); https://jlcpcb.com/help/article/jlc-aluminum-substrates-are-now-available (aluminum, page states 'last updated Aug 13, 2025'); https://jlcpcb.com/news/new-arrival-aluminum-pcb-boards (aluminum, published 2022-10-13).",
+  "_note": "JLCPCB fab-capability rules, versioned DATA per docs/backlog/pcb-guided-place-route.md 'Export + order' — two tiers per row (jlc_min = JLC's published process minimum, house_default = our margin above it) so a DRC digest can quote spent headroom instead of hiding a constant. 'source'/'retrieved' are per-row because these are third-party numbers that change. field_confidence carries, per field, the number's provenance and any caveat needed to use it safely — 'high'/'medium' were checked directly against a live JLCPCB page on 2026-08-27 (see 'source'); 'low'/'n/a' mark figures JLC does not publish for that process, where the value is deliberately null rather than an invented number. house_default margin rule (auditable, applied uniformly): house_default = max(1.5 x jlc_min, rounded up to the nearest 0.05mm; JLC's own published 'recommended' figure, where one exists) — except soldermask_dam_mm, whose house_default is set above the 2oz-copper figure (0.20mm) rather than the 1oz jlc_min, so a copper-weight change on the order doesn't silently violate it; and except via_diameter_mm (2026-08-28), which this flat rule must NOT be applied to at all — see its own paragraph below; and except soldermask_expansion_mm (2026-08-30), which is a DESIGN value rather than a minimum-to-exceed (it is the swell precis.pcb.gerber.soldermask_gerber actually draws the mask opening with), so both tiers carry JLC's applied 0.05mm default and margining it would simply enlarge every opening on the board. soldermask_expansion_mm and silk_to_mask_clearance_mm (2026-08-30) are the two looked-up terms of the silk-clearance chain precis.pcb.silk.silk_clearance_mm walks — pad copper edge + expansion = mask opening, + silk-to-mask = silk line edge, + drawn stroke/2 = silk centreline — which is what sizes a part's courtyard polygon; silk_to_mask_clearance_mm IS a real published minimum and is margined normally. board_edge_clearance is two figures, not one (routed-edge vs V-cut-edge minimums differ and neither is conservative for the other); when the panelization method isn't known yet, use the V-cut (board_edge_clearance_vcut_mm) figure as the safe default. npth_annular_ring_mm is JLC's non-plated-hole copper-clearance requirement (0.2mm of copper must be cleared around an NPTH for the sealing film) — previously misfiled as via_diameter_mm's 0.45mm figure; it is now its own field. It is NOT coupled to any other field this table stores (the NPTH hole diameter it's measured against is a per-design value, never a capability constant), unlike via_diameter_mm below. via_diameter_mm (2026-08-28 fix, gr-shaped defect: every default-sized via failed annular-ring DRC): diameter, drill and annular ring are geometrically coupled (diameter >= drill + 2 x annular_ring) — margining each of the three SEPARATELY under the flat 1.5x rule silently produced a house_default via whose ring (0.075mm) undercut even jlc_min's own ring (0.18mm). The value stored here for via_diameter_mm is JLC's published absolute-minimum finished-via-diameter FLOOR only (a real, independent, per-tier-identical constraint) — precis.pcb.capabilities.load_capabilities() derives the EFFECTIVE per-tier value as max(that floor, drill_mm + 2 x annular_ring_mm) at the SAME tier, so the geometry wins whenever it asks for more than the floor (which it does, at both tiers, once the ring is a real ring). Never read via_diameter_mm out of this raw file directly for that reason; go through load_capabilities(). Sources checked 2026-08-27: https://jlcpcb.com/capabilities/pcb-capabilities (primary FR-4 capability table); https://jlcpcb.com/help/article/jlc-aluminum-substrates-are-now-available (aluminum, page states 'last updated Aug 13, 2025'); https://jlcpcb.com/news/new-arrival-aluminum-pcb-boards (aluminum, published 2022-10-13).",
   "rows": [
     {
       "process": "2layer",
@@ -16,7 +16,9 @@
         "board_edge_clearance_routed_mm": 0.20,
         "board_edge_clearance_vcut_mm": 0.40,
         "soldermask_dam_mm": 0.10,
-        "silk_width_mm": 0.15
+        "silk_width_mm": 0.15,
+        "soldermask_expansion_mm": 0.05,
+        "silk_to_mask_clearance_mm": 0.15
       },
       "house_default": {
         "trace_width_mm": 0.15,
@@ -28,7 +30,9 @@
         "board_edge_clearance_routed_mm": 0.30,
         "board_edge_clearance_vcut_mm": 0.60,
         "soldermask_dam_mm": 0.25,
-        "silk_width_mm": 0.25
+        "silk_width_mm": 0.25,
+        "soldermask_expansion_mm": 0.05,
+        "silk_to_mask_clearance_mm": 0.25
       },
       "field_confidence": {
         "trace_width_mm": "high — verified against jlcpcb.com/capabilities/pcb-capabilities 2026-08-27: 1oz-copper 2-layer minimum trace width is 0.10mm",
@@ -40,7 +44,9 @@
         "board_edge_clearance_routed_mm": "high — routed-edge (mechanically-milled) copper-to-edge minimum is 0.20mm",
         "board_edge_clearance_vcut_mm": "high — V-cut-edge copper-to-edge minimum is 0.40mm, double the routed-edge figure; use this one as the conservative default when the panelization method is unknown",
         "soldermask_dam_mm": "high — 0.10mm minimum solder-mask dam applies at 1oz copper (this row's default weight); at 2oz copper the minimum is 0.20mm. jlc_min carries the 1oz figure; house_default (0.25mm) is set above the 2oz figure so a copper-weight change doesn't silently violate it",
-        "silk_width_mm": "high — minimum silkscreen line width is 0.15mm (minimum text height is 1.0mm, tracked separately as it isn't one of this table's fields)"
+        "silk_width_mm": "high — minimum silkscreen line width is 0.15mm (minimum text height is 1.0mm, tracked separately as it isn't one of this table's fields)",
+        "soldermask_expansion_mm": "medium — 0.05mm per side is JLC's applied default solder-mask expansion (what their CAM opens the mask by over the pad outline when the uploaded gerber does not define its own). NOT a minimum-to-exceed, so the flat 1.5x house_default rule is deliberately NOT applied: both tiers carry the same 0.05mm, exactly as via_diameter_mm's floor does and for the same class of reason (see this file's _note). This is the figure precis.pcb.gerber.soldermask_gerber writes the mask film with, so raising it enlarges every opening on the board — it is a design value, not headroom",
+        "silk_to_mask_clearance_mm": "medium — 0.15mm minimum silkscreen-to-solder-mask-opening clearance. Measured from the MASK OPENING edge, not the pad copper edge (the opening is already swelled by soldermask_expansion_mm), which is the whole reason the two are separate fields; house_default 0.25mm is the usual 1.5x-rounded-up margin above it"
       }
     },
     {
@@ -58,7 +64,9 @@
         "board_edge_clearance_routed_mm": 0.20,
         "board_edge_clearance_vcut_mm": 0.40,
         "soldermask_dam_mm": 0.10,
-        "silk_width_mm": 0.15
+        "silk_width_mm": 0.15,
+        "soldermask_expansion_mm": 0.05,
+        "silk_to_mask_clearance_mm": 0.15
       },
       "house_default": {
         "trace_width_mm": 0.15,
@@ -70,7 +78,9 @@
         "board_edge_clearance_routed_mm": 0.30,
         "board_edge_clearance_vcut_mm": 0.60,
         "soldermask_dam_mm": 0.25,
-        "silk_width_mm": 0.25
+        "silk_width_mm": 0.25,
+        "soldermask_expansion_mm": 0.05,
+        "silk_to_mask_clearance_mm": 0.25
       },
       "field_confidence": {
         "trace_width_mm": "high — verified 2026-08-27: JLC publishes one multilayer trace-width/spacing figure (0.09mm) that covers all layers of the stack — confirmed there is no separate inner-layer minimum, resolving the earlier 'may differ, not verified' open question. Caveat: inner copper is 0.5oz by default; if the order specifies 2oz inner copper, the multilayer minimum becomes 0.15mm (this row assumes the 0.5oz default and does not model the 2oz-inner case)",
@@ -82,7 +92,9 @@
         "board_edge_clearance_routed_mm": "high — same routed-edge figure as the 2-layer row (0.20mm); JLC's page does not vary this by layer count",
         "board_edge_clearance_vcut_mm": "high — same V-cut figure as the 2-layer row (0.40mm); use as the conservative default when panelization is unknown",
         "soldermask_dam_mm": "high — same 1oz/2oz split as the 2-layer row (0.10mm at 1oz, 0.20mm at 2oz); jlc_min assumes 1oz outer copper, house_default (0.25mm) clears the 2oz figure",
-        "silk_width_mm": "high — same 0.15mm minimum silkscreen line width as the 2-layer row"
+        "silk_width_mm": "high — same 0.15mm minimum silkscreen line width as the 2-layer row",
+        "soldermask_expansion_mm": "medium — same applied 0.05mm-per-side mask expansion as the 2-layer row; JLC's CAM default does not vary by layer count. Same not-independently-margined status (see the 2-layer row's own note)",
+        "silk_to_mask_clearance_mm": "medium — same 0.15mm silkscreen-to-mask-opening minimum as the 2-layer row; house_default 0.25mm"
       }
     },
     {
@@ -101,7 +113,9 @@
         "board_edge_clearance_routed_mm": null,
         "board_edge_clearance_vcut_mm": null,
         "soldermask_dam_mm": null,
-        "silk_width_mm": null
+        "silk_width_mm": null,
+        "soldermask_expansion_mm": null,
+        "silk_to_mask_clearance_mm": null
       },
       "house_default": {
         "trace_width_mm": 0.15,
@@ -113,7 +127,9 @@
         "board_edge_clearance_routed_mm": null,
         "board_edge_clearance_vcut_mm": null,
         "soldermask_dam_mm": null,
-        "silk_width_mm": null
+        "silk_width_mm": null,
+        "soldermask_expansion_mm": null,
+        "silk_to_mask_clearance_mm": null
       },
       "field_confidence": {
         "trace_width_mm": "high — verified 2026-08-27 against JLC's aluminum-substrate pages: minimum trace width is 0.10mm (corrected down from the previous 0.15mm, which overstated the minimum)",
@@ -125,7 +141,9 @@
         "board_edge_clearance_routed_mm": "low — JLC publishes no board-edge-clearance figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows",
         "board_edge_clearance_vcut_mm": "low — see board_edge_clearance_routed_mm note",
         "soldermask_dam_mm": "low — JLC publishes no solder-mask-dam figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows",
-        "silk_width_mm": "low — JLC publishes no silkscreen-width figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows"
+        "silk_width_mm": "low — JLC publishes no silkscreen-width figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows",
+        "soldermask_expansion_mm": "low — aluminum boards do carry soldermask (white or black, per process_notes), but JLC publishes no expansion figure for this process; null is deliberate, not carried over from the FR-4 rows. Consumers fall back to their own documented constant via capabilities.design_value",
+        "silk_to_mask_clearance_mm": "low — JLC publishes no silkscreen-to-mask clearance for aluminum boards; null is deliberate. Same design_value fallback as soldermask_expansion_mm"
       }
     }
   ]

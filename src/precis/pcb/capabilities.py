@@ -33,6 +33,18 @@ except ``soldermask_dam_mm``, whose default clears the 2oz-copper minimum
 rather than the 1oz ``jlc_min``, so a copper-weight change on the order
 doesn't silently violate it.
 
+``soldermask_expansion_mm`` and ``silk_to_mask_clearance_mm`` are the two
+terms of the silk-clearance chain (``pad copper edge + expansion = mask
+opening; + silk-to-mask = silk line edge; + drawn stroke/2 = centreline``)
+that :func:`precis.pcb.silk.silk_clearance_mm` walks to size a courtyard.
+Only the second is a *minimum to exceed*: ``soldermask_expansion_mm`` is a
+**design** value — the swell we draw the mask opening with, which
+:func:`precis.pcb.gerber.soldermask_gerber` writes — so, like
+``via_diameter_mm``, the flat 1.5x ``house_default`` rule must NOT be
+applied to it; both tiers carry JLC's own applied default. Margining it up
+would enlarge every mask opening on every board while pretending to be a
+safety margin.
+
 **``via_diameter_mm`` is DERIVED, not independently margined** (2026-08-28
 fix): a via's diameter, drill and annular ring are geometrically coupled
 (``diameter >= drill + 2 x annular_ring``) — applying the flat 1.5x-margin
@@ -70,6 +82,8 @@ FIELDS = (
     "board_edge_clearance_vcut_mm",
     "soldermask_dam_mm",
     "silk_width_mm",
+    "soldermask_expansion_mm",
+    "silk_to_mask_clearance_mm",
 )
 
 
@@ -152,6 +166,35 @@ def capability_for(process: str) -> CapabilityRow:
     return row
 
 
+def design_value(row: CapabilityRow | None, field: str, *, fallback: float) -> float:
+    """The figure a DESIGN should be built to for ``field``: this row's
+    ``house_default``, falling back to its ``jlc_min``, falling back to
+    ``fallback``.
+
+    **The tier is pinned here, once, rather than at each consumer.**
+    ``house_default`` is the tier by construction — it is what this table
+    means by "the number we design to", and :func:`headroom` exists to
+    say how much of the margin above ``jlc_min`` a design spends. A
+    consumer picking its own tier is how two call sites end up quoting
+    different clearances for the same board.
+
+    ``fallback`` is not a convenience default: a row may carry ``None``
+    for a field JLC publishes no figure for on that process (aluminum
+    carries several), and the module docstring's rule is that such a
+    value is deliberately absent, never a number borrowed from the FR-4
+    rows. A geometric chain still needs *some* length, so the caller
+    supplies its own documented constant and this function makes the
+    substitution explicit rather than letting a ``None`` propagate into
+    arithmetic. ``row=None`` (a stackup with no capability row at all)
+    takes the same path.
+    """
+    for tier in (row.house_default, row.jlc_min) if row is not None else ():
+        value = tier.get(field)
+        if value is not None:
+            return float(value)
+    return fallback
+
+
 def headroom(row: CapabilityRow, field: str, value_mm: float) -> float:
     """How much margin ``value_mm`` spends above JLC's published minimum for
     ``field`` — the quantity a DRC digest quotes ("2.5 mil of headroom")."""
@@ -165,6 +208,7 @@ __all__ = [
     "FIELDS",
     "CapabilityRow",
     "capability_for",
+    "design_value",
     "headroom",
     "load_capabilities",
 ]

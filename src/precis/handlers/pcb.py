@@ -68,7 +68,7 @@ from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
-from precis.pcb.capabilities import capability_for
+from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -758,13 +758,31 @@ class PcbHandler(Handler):
         (:func:`precis.workers.job_types.pcb_route._process_for_stackup`),
         so this can only return ``None`` when there is no pour to cut in
         the first place."""
-        try:
-            capability = capability_for(pcb_drc.process_for_stackup(stackup))
-        except ValueError:
+        capability = self._stackup_capability(stackup)
+        if capability is None:
             return None
         return resolve_net_rules(
             "", layer_is_outer=True, fab_caps=capability
         ).clearance_mm
+
+    def _stackup_capability(
+        self, stackup: list[dict[str, Any]]
+    ) -> CapabilityRow | None:
+        """This board's fab-capability row, or ``None`` for a layer count
+        :func:`precis.pcb.drc.process_for_stackup` has no row for.
+
+        The row, not one figure off it: :meth:`_board_furniture` needs it
+        whole (:func:`precis.pcb.silk.silk_clearance_mm` reads two fields,
+        the gerber model a third), and resolving it once here is what
+        stops the silk-clearance chain and the soldermask film being
+        derived from two different lookups. ``None`` rather than raising,
+        for exactly the reason :meth:`_furniture_clearance_mm` documents —
+        a board on an unsupported layer count still has to export and
+        preview."""
+        try:
+            return capability_for(pcb_drc.process_for_stackup(stackup))
+        except ValueError:
+            return None
 
     def _board_furniture(
         self,
@@ -778,6 +796,7 @@ class PcbHandler(Handler):
         layer_names: list[str],
         slug: str,
         clearance_mm: float | None,
+        capability: CapabilityRow | None = None,
         date: str | None = None,
     ) -> tuple[
         list[dict[str, Any]],
@@ -857,7 +876,11 @@ class PcbHandler(Handler):
                 "(both are placed relative to the board's bounding box)"
             )
             silk_only = pcb_silk.build_silk(
-                ir, pads, vias=vias, instance_sides=instance_sides
+                ir,
+                pads,
+                vias=vias,
+                instance_sides=instance_sides,
+                capability=capability,
             )
             warnings.extend(f"silk: {m}" for m in silk_only.dropped)
             warnings.extend(f"silk: {m}" for m in silk_only.relocated)
@@ -874,7 +897,9 @@ class PcbHandler(Handler):
         # and silently dropped the block from the rendered board — found by
         # rendering and looking, not by any test. `build_title_block`'s own
         # docstring says to place it first; this is that instruction.
-        title = pcb_silk.build_title_block(outline, pads, name=slug, date=date)
+        title = pcb_silk.build_title_block(
+            outline, pads, name=slug, date=date, capability=capability
+        )
         warnings.extend(f"title block: {m}" for m in title.dropped)
 
         # The serial-number patch sits against the title block, so it is
@@ -894,6 +919,7 @@ class PcbHandler(Handler):
                 if title.bbox is not None
                 else None
             ),
+            capability=capability,
         )
         warnings.extend(f"S/N patch: {m}" for m in sn.dropped)
 
@@ -971,7 +997,12 @@ class PcbHandler(Handler):
         reserved = {side: list(board_obstacles) for side in ("top", "bottom")}
 
         silk_result = pcb_silk.build_silk(
-            ir, pads, vias=vias, instance_sides=instance_sides, reserved=reserved
+            ir,
+            pads,
+            vias=vias,
+            instance_sides=instance_sides,
+            reserved=reserved,
+            capability=capability,
         )
         warnings.extend(f"silk: {m}" for m in silk_result.dropped)
         warnings.extend(f"silk: {m}" for m in silk_result.relocated)
@@ -1021,19 +1052,20 @@ class PcbHandler(Handler):
         **It is NOT the only courtyard in this subsystem, and this
         docstring claimed it was until 2026-08-29.** The courtyard actually
         DRAWN on the silkscreen comes from
-        :func:`precis.pcb.silk._courtyard_reach_mm`, which is a separate
-        formula: a SQUARE of half-extent ``instance_pad_radius + half_pad
-        + margin``, against this function's CIRCLE of radius
-        ``instance_pad_radius + PAD_BREATHING_MM`` floored at
-        ``COURTYARD_MIN_SEPARATION_MM / 2``. Different shape, different
-        size. So ``courtyard_overlap`` enforces one boundary while the
+        :func:`precis.pcb.ir.instance_courtyard_polygon`: the convex hull
+        of the part's own pad outlines, offset by the fab-derived
+        :func:`precis.pcb.silk.silk_clearance_mm`, against this function's
+        CIRCLE of radius ``instance_pad_radius + PAD_BREATHING_MM``
+        floored at ``COURTYARD_MIN_SEPARATION_MM / 2``. Different shape,
+        different size, and for an elongated part different by a factor of
+        several. So ``courtyard_overlap`` enforces one boundary while the
         board's silkscreen shows an assembler a different one — they are
         not required to agree (a placement-legality keep-out and a visual
         assembly aid are different questions), but nothing currently
         states the relationship or checks it, and a reader who believed
-        the old "ONE definition" claim would not go looking. Whether they
-        SHOULD be reconciled is tracked in
-        ``docs/backlog/pcb-engine-plan.md``.
+        the old "ONE definition" claim would not go looking. **Putting
+        this check on the same polygon is the open half of**
+        ``docs/backlog/pcb-courtyard-polygon.md`` (its item 4).
 
         A flat
         :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` for EVERY
@@ -1286,6 +1318,7 @@ class PcbHandler(Handler):
             for i in design["instances"]
         }
         vias = [c for c in copper if c.get("ctype") == "via"]
+        capability = self._stackup_capability(board["stackup"])
         pads, silk_draws, furniture_warnings, _silk_census, copper = (
             self._board_furniture(
                 ir,
@@ -1297,6 +1330,7 @@ class PcbHandler(Handler):
                 layer_names=layer_names,
                 slug=slug,
                 clearance_mm=self._furniture_clearance_mm(board["stackup"]),
+                capability=capability,
                 date=_export_date(),
             )
         )
@@ -1309,6 +1343,10 @@ class PcbHandler(Handler):
             "pads": pads,
             "drills": drills,
             "silkscreen": silk_draws,
+            # The SAME row the silk above was placed against — a mask film
+            # drawn with one expansion under silk cleared for another is two
+            # numbers for one physical edge (`soldermask_gerber`).
+            "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
         }
         try:
             files = pcb_gerber.export_fab(model, name=slug)
@@ -1588,6 +1626,7 @@ class PcbHandler(Handler):
                 clearance_mm=resolve_net_rules(
                     "", layer_is_outer=True, fab_caps=capability
                 ).clearance_mm,
+                capability=capability,
                 date=_export_date(),
             )
         )
@@ -1597,6 +1636,7 @@ class PcbHandler(Handler):
             "pads": pads,
             "drills": self._drc_drills(ref_id),
             "silkscreen": silk_draws,
+            "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
         }
         courtyards = [
             (
@@ -1776,6 +1816,7 @@ class PcbHandler(Handler):
         copper = self.store.pcb_copper_list(int(board["board_id"]))
         vias = [c for c in copper if c.get("ctype") == "via"]
         outline = self._outline_from_features(ref_id) or []
+        capability = self._stackup_capability(board["stackup"])
         pads, silk_draws, furniture_warnings, _silk_census, copper = (
             self._board_furniture(
                 ir,
@@ -1787,6 +1828,7 @@ class PcbHandler(Handler):
                 layer_names=layer_names,
                 slug=slug,
                 clearance_mm=self._furniture_clearance_mm(board["stackup"]),
+                capability=capability,
                 date=_export_date(),
             )
         )
@@ -1796,6 +1838,7 @@ class PcbHandler(Handler):
             "copper": copper,
             "pads": pads,
             "silkscreen": silk_draws,
+            "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
         }
         # allow_synthesized, because this is a picture and not an order.
         # export_fab's refusal exists to stop a land-pattern BOUND reaching

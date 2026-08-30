@@ -5,6 +5,7 @@ and the graph feasibility checks. No DB.
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
@@ -195,6 +196,92 @@ def test_instance_keepout_radius_mm_is_pad_radius_plus_breathing_floored():
     # own (much smaller) derived figure.
     floored = instance_keepout_radius_mm(ir, min_radius_mm=1000.0)
     assert (floored == 1000.0).all()
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_instance_courtyard_polygon_never_touches_its_own_pads(seed: int):
+    """**The structural property the whole hull-courtyard change exists
+    for**: ``hull(own pad outlines) + clearance`` cannot overlap those
+    pads, at any pad count, size, offset or aspect ratio. 18 of 22
+    courtyard drops on the reference board were exactly that self-tangent,
+    and the point of deriving the shape from the pads rather than from a
+    radius is that the class becomes unrepresentable, not rarer.
+
+    Fixtures are deliberately ASYMMETRIC — random per-pin offsets AND
+    independent w/h — because a symmetric footprint cannot distinguish a
+    correct courtyard from one with x and y swapped, or with a sign error
+    on one axis.
+
+    Checked at a nonzero stroke: the outline is INK, so the assertion is
+    that the drawn band clears the copper, not merely that two idealized
+    curves fail to intersect."""
+    import random
+
+    from precis.pcb.ir import instance_courtyard_polygon
+
+    rng = random.Random(seed)
+    clearance = 0.3
+    half_stroke = 0.075
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    inst = 0
+    pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
+    assert pins
+    for p in pins:
+        ir.pin_dx[p] = rng.uniform(-8.0, 8.0)
+        ir.pin_dy[p] = rng.uniform(-3.0, 3.0)
+        ir.pin_w[p] = rng.uniform(0.2, 2.5)
+        ir.pin_h[p] = rng.uniform(0.2, 1.2)
+
+    poly = instance_courtyard_polygon(ir, inst, clearance_mm=clearance, pins=pins)
+    assert len(poly) >= 4  # closed ring, not a degenerate stub
+
+    # Independent geometry: the courtyard's own edges vs each pad rect,
+    # by point-to-segment distance — not the builder's overlap predicate.
+    from precis.pcb.geom import dist_point_to_segment
+
+    for p in pins:
+        cx, cy = float(ir.pin_dx[p]), float(ir.pin_dy[p])
+        hw, hh = float(ir.pin_w[p]) / 2.0, float(ir.pin_h[p]) / 2.0
+        corners = [
+            (cx - hw, cy - hh),
+            (cx + hw, cy - hh),
+            (cx + hw, cy + hh),
+            (cx - hw, cy + hh),
+        ]
+        for a, b in itertools.pairwise(poly):
+            for corner in corners:
+                gap = dist_point_to_segment(corner, a, b)
+                assert gap > half_stroke, (
+                    f"seed {seed}: courtyard edge {a}->{b} runs {gap:.4f}mm from "
+                    f"pin {p}'s pad corner {corner} — inside the {half_stroke}mm "
+                    "half-stroke, so the drawn outline lands on its own copper"
+                )
+
+
+def test_instance_courtyard_polygon_grows_with_the_clearance_it_is_given():
+    """The offset is the caller's fab-derived chain, not a constant this
+    function keeps: a larger clearance must produce a strictly larger
+    polygon, or the chain is being ignored and a capability change would
+    move nothing."""
+    from shapely.geometry import Polygon  # type: ignore[import-untyped]
+
+    from precis.pcb.ir import instance_courtyard_polygon
+
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    tight = Polygon(instance_courtyard_polygon(ir, 0, clearance_mm=0.1))
+    loose = Polygon(instance_courtyard_polygon(ir, 0, clearance_mm=0.4))
+    assert loose.area > tight.area
+    assert loose.contains(tight)
+
+
+def test_instance_courtyard_polygon_is_empty_for_a_pinless_instance():
+    """A mounting hole or fiducial has no land pattern, so there is no
+    shape to derive — ``[]``, never an invented size. The caller supplies
+    whatever body it believes in (the function's own docstring)."""
+    from precis.pcb.ir import instance_courtyard_polygon
+
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    assert instance_courtyard_polygon(ir, 0, clearance_mm=0.3, pins=[]) == []
 
 
 def test_from_graph_leaves_l1_l2_l3_unset():

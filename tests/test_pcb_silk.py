@@ -11,26 +11,33 @@ gerber.py round-trip (real D01/D02, readable back via gerber_view).
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
 import pytest
 
 from precis.pcb import DEFAULT_STACKUP, gerber, gerber_view, realize, stroke_font
+from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.ir import from_graph
 from precis.pcb.planes import plane_pours, point_in_pour
 from precis.pcb.silk import (
-    COURTYARD_MARGIN_MM,
     FIDUCIAL_COPPER_DIA_MM,
     FIDUCIAL_MARGIN_MM,
     FIDUCIAL_MASK_DIA_MM,
     SN_LABEL,
     SN_LABEL_HEIGHT_MM,
+    _clip_polyline,
+    _mask_openings,
+    _near_obstacles,
+    _stroke_overlaps_any_pad,
     build_fiducials,
     build_silk,
     build_sn_patch,
     build_title_block,
     obstacle_from_bbox,
+    silk_clearance_mm,
+    soldermask_expansion_mm,
 )
 
 
@@ -510,22 +517,29 @@ def test_pin1_tick_is_skipped_when_its_own_courtyard_is_dropped():
 # ── courtyard margin: the boundary must clear the pad edge, not touch it ──
 def test_courtyard_clears_its_own_pad_at_the_old_bugs_exact_tangent_point():
     """Reproduces the C2 self-collision defect (task brief, 2026-08-29):
-    before :data:`COURTYARD_MARGIN_MM` existed, ``_courtyard_reach_mm``
-    was exactly ``instance_pad_radius + half_pad`` -- the boundary landed
-    ON the pad's own outer edge, zero clearance, so ANY nonzero
-    ``stroke_width_mm`` inked over that pad and the courtyard was
-    (wrongly) dropped as if a NEIGHBOUR had encroached on it, when it had
-    only ever touched its own copper.
+    the courtyard's boundary used to land ON the part's own outer pad
+    edge, zero clearance, so ANY nonzero ``stroke_width_mm`` inked over
+    that pad and the courtyard was (wrongly) dropped as if a NEIGHBOUR
+    had encroached on it, when it had only ever touched its own copper.
 
-    Pin A alone drives BOTH terms of the old formula at once -- it has
-    both the larger offset (``instance_pad_radius``) and the larger pad
-    (``half_pad``) -- so ``R + S`` (2.0 + 0.7) lands EXACTLY on pin A's
-    own pad edge at x=2.7, the precise shape that used to trip every
-    2-pad part on the reference board. Pin B is close-in, small, and
-    off-diagonal purely to break the fixture's symmetry: a square
-    courtyard around a symmetric pin pair cannot distinguish a correct
-    x/y or pin-index computation from a swapped one (this module's own
-    recent S/N label bug was exactly this class of blind spot)."""
+    Since 2026-08-30 that is UNREPRESENTABLE rather than merely fixed:
+    :func:`precis.pcb.ir.instance_courtyard_polygon` offsets the hull of
+    the part's own pads outward, so the boundary is at least the
+    clearance away from every one of them by construction (see
+    ``tests/test_pcb_ir.py`` for the property test over random
+    footprints). This test keeps the exact fixture the defect was found
+    on and asserts the outcome a human reads -- the census row -- rather
+    than the geometry, so it still fails if the builder drops the
+    courtyard for some new reason.
+
+    The old formula's two terms were the largest pin OFFSET and the
+    largest pad HALF-SIZE, taken from different pins and added; pin A
+    here drives both at once, so ``2.0 + 0.7`` landed exactly on pin A's
+    own pad edge at x=2.7. Pin B is close-in, small and off-diagonal
+    purely to break the fixture's symmetry: a courtyard around a
+    symmetric pin pair cannot distinguish a correct x/y or pin-index
+    computation from a swapped one (this module's own S/N label bug was
+    exactly this class of blind spot)."""
     ir = from_graph(_graph("C2", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
     # Pin A: far offset, wide pad -- the sole driver of both
     # `instance_pad_radius` (reach 2.0) and `half_pad` (0.7, from its own
@@ -550,41 +564,50 @@ def test_courtyard_clears_its_own_pad_at_the_old_bugs_exact_tangent_point():
     assert "outline" in {d["role"] for d in result.draws["top"] if d["refdes"] == "C2"}
 
 
-def test_courtyard_margin_still_drops_for_a_genuine_foreign_encroachment():
-    """The margin fix must not become "never drops" -- a large-enough
-    fudge could trivially satisfy the tangent test above while quietly
-    disabling the one property that makes a courtyard worth drawing at
-    all (task brief). This foreign pad is placed to overlap ONLY the
-    NEW, margined boundary -- it sits just outside the OLD (zero-margin)
-    reach and well inside the new one -- so the assertion below is
-    sensitive to the actual :data:`COURTYARD_MARGIN_MM` value, not just
-    to "is anything ever dropped": drop the margin back to 0.0 and this
-    same pad, which genuinely violates the IPC-7351 nominal clearance,
-    goes undetected again.
+def test_courtyard_margin_still_notices_a_genuine_foreign_encroachment():
+    """The clearance must not become "never notices" -- a large-enough
+    fudge could trivially satisfy the self-tangency test above while
+    quietly disabling the one property that makes a courtyard worth
+    drawing at all (task brief). This foreign pad straddles the boundary
+    the FAB CHAIN puts there and sits entirely outside the bare pad edge,
+    so the assertion is sensitive to the actual chain value, not just to
+    "is anything ever reported": collapse ``silk_clearance_mm`` to zero
+    and this same pad, which genuinely violates the fab's silk-to-mask
+    minimum, goes undetected again.
 
-    Instance A itself is built the SAME asymmetric way as the tangent
-    test above but with slack, not tangency -- pin A drives the reach
-    (offset 3.0) while pin B (offset 0.5, pad half 0.5) drives
-    ``half_pad`` -- so A's OWN pad sits well inside its own courtyard at
-    ANY margin from 0.0 up, and a drop here can only be explained by the
-    foreign pad, never by A's own copper (isolating the property this
-    test exists to check from the self-collision defect the other test
-    covers)."""
+    **The remedy is a break, not a drop** (2026-08-30): the outline is
+    clipped around the encroachment and the rest is still drawn, so the
+    census reads ``relocated`` with a reason naming what it met. That is
+    the outcome under test here -- ``placed`` with no reason would mean
+    the collision went unnoticed, which is the regression this guards.
+
+    Instance A is built asymmetrically on purpose -- pin A far out with a
+    tiny pad, pin B close in with a big one, so neither pin drives every
+    term and an x/y or pin-index swap is visible. Its own pads sit inside
+    its own courtyard at ANY clearance from 0.0 up (that is structural,
+    see the test above), so a finding here can only be explained by the
+    foreign pad."""
     ir = from_graph(_graph("A1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    ir.pin_dx[0], ir.pin_dy[0] = 3.0, 0.0  # drives instance_pad_radius (3.0)
+    ir.pin_dx[0], ir.pin_dy[0] = 3.0, 0.0  # the far pin, tiny pad
     ir.pin_w[0], ir.pin_h[0] = 0.1, 0.1
-    ir.pin_dx[1], ir.pin_dy[1] = 0.5, 0.0  # drives half_pad (0.5)
+    ir.pin_dx[1], ir.pin_dy[1] = 0.5, 0.0  # the near pin, big pad
     ir.pin_w[1], ir.pin_h[1] = 1.0, 1.0
-    reach_old = 3.0 + 0.5  # the pre-fix, zero-margin formula: 3.5
-    reach_new = reach_old + COURTYARD_MARGIN_MM  # 3.75
+    # The part's own copper ends at pin A's outer pad edge; the courtyard
+    # boundary sits one fab chain further out. Derived, not hardcoded: the
+    # chain is the thing under test, and a literal here would pass a
+    # courtyard that had quietly stopped tracking it.
+    pad_edge = 3.0 + 0.05
+    reach_new = pad_edge + silk_clearance_mm(
+        None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+    )
     own_pads = [
         {"shape": "rect", "x": 3.0, "y": 0.0, "w": 0.1, "h": 0.1, "net": "A"},
         {"shape": "rect", "x": 0.5, "y": 0.0, "w": 1.0, "h": 1.0, "net": "B"},
     ]
-    # A small foreign pad straddling the NEW boundary exactly (centred on
-    # reach_new) but with its near edge well past the OLD boundary plus
-    # the stroke's own half-width -- outside the old formula's reach
-    # entirely, inside the new one.
+    # A small foreign pad straddling that boundary exactly -- its near
+    # edge (mask opening included) still well past the bare pad edge plus
+    # the stroke's own half-width, so a zero-clearance courtyard would
+    # never have reached it.
     foreign_pad = {
         "shape": "rect",
         "x": reach_new,
@@ -593,13 +616,248 @@ def test_courtyard_margin_still_drops_for_a_genuine_foreign_encroachment():
         "h": 0.06,
         "net": "FOREIGN",
     }
+    assert (
+        reach_new - 0.03 - soldermask_expansion_mm(None)
+        > pad_edge + gerber.DEFAULT_SILK_WIDTH_MM / 2.0
+    ), "fixture no longer isolates the chain: the foreign pad reaches the bare pad edge"
     result = build_silk(ir, pads=[*own_pads, foreign_pad])
     courtyard_row = next(
         c for c in result.census if c.refdes == "A1" and c.kind == "courtyard"
     )
-    assert courtyard_row.outcome == "dropped"
+    assert courtyard_row.outcome == "relocated"
     assert courtyard_row.reason is not None
-    assert "A1" in " ".join(result.dropped)
+    assert "broken around" in courtyard_row.reason
+    assert "A1" in " ".join(result.relocated)
+    # And the ink that survived really does clear the encroachment --
+    # checked with this module's own segment/pad predicate against the
+    # pad's MASK OPENING, not the geometry the clipper happened to use.
+    kept = [d for d in result.draws["top"] if d["refdes"] == "A1"]
+    assert kept, "the whole outline was thrown away, not broken"
+    opening = _mask_openings([foreign_pad], None)
+    for draw in kept:
+        pts = [tuple(draw["segments"][0]["start"])] + [
+            tuple(s["end"]) for s in draw["segments"]
+        ]
+        assert not _stroke_overlaps_any_pad(pts, opening, gerber.DEFAULT_SILK_WIDTH_MM)
+
+
+# ── the clipper, directly ───────────────────────────────────────────────
+# `_clip_polyline` is the trickiest piece of this module: a sub-segment
+# walk, an accumulator flushed at obstacle boundaries, and a deliberate
+# full-stroke (not half) clearance. Reached only through `build_silk` it
+# is testable but not PINNED -- a refactor could reintroduce an off-by-one
+# or quietly halve the margin and every integration test would still pass
+# on geometry that happens not to exercise it. These talk to it directly.
+def _obstacle(x: float, y: float, w: float, h: float) -> dict[str, Any]:
+    return {"shape": "rect", "x": x, "y": y, "w": w, "h": h}
+
+
+def test_clip_polyline_returns_only_runs_that_are_actually_clear():
+    """The contract: every returned run clears every obstacle, checked
+    with the module's own segment/pad predicate rather than by trusting
+    the walk that produced it."""
+    line = [(0.0, 0.0), (10.0, 0.0)]
+    obstacles = [_obstacle(4.0, 0.0, 0.5, 0.5), _obstacle(7.0, 0.0, 0.5, 0.5)]
+    runs, kept, total = _clip_polyline(line, obstacles, 0.15)
+    assert len(runs) == 3  # before, between, after
+    for run in runs:
+        assert not _stroke_overlaps_any_pad(run, obstacles, 0.15)
+    assert total == pytest.approx(10.0)
+    assert 0.0 < kept < total
+
+
+def test_clip_polyline_keeps_a_run_across_a_vertex():
+    """A corner is not an obstacle. A run must carry through a bend in
+    the polyline, or every courtyard would come back as four separate
+    edges and the "N piece(s) drawn" count would be meaningless."""
+    corner = [(0.0, 0.0), (5.0, 0.0), (5.0, 5.0)]
+    runs, kept, total = _clip_polyline(corner, [], 0.15)
+    assert len(runs) == 1
+    assert kept == pytest.approx(total) == pytest.approx(10.0)
+    assert (5.0, 0.0) in [(round(x, 6), round(y, 6)) for x, y in runs[0]]
+
+
+def test_clip_polyline_discards_debris_but_still_counts_it_as_removed():
+    """A surviving sliver shorter than a few stroke widths reads as
+    debris, not as an outline, so it is dropped -- and its length must NOT
+    come back as "kept", or the caller's kept fraction would report ink
+    that was never drawn and a buried part would pass the drop floor."""
+    stroke = 0.15
+    # Obstacles either side of a 0.2mm gap -- far under the 4-stroke
+    # (0.6mm) minimum run, so nothing survives between them.
+    line = [(0.0, 0.0), (10.0, 0.0)]
+    obstacles = [_obstacle(4.0, 0.0, 1.0, 0.5), _obstacle(5.4, 0.0, 1.0, 0.5)]
+    runs, kept, total = _clip_polyline(line, obstacles, stroke)
+    assert all(_length(run) >= stroke * 4.0 for run in runs)
+    assert kept <= total
+    assert kept == pytest.approx(sum(_length(run) for run in runs))
+
+
+def test_clip_polyline_leaves_a_full_stroke_not_half_around_an_obstacle():
+    """Several obstacles here are other silk items, whose
+    ``obstacle_from_bbox`` box bounds their CENTRELINE -- their own ink
+    reaches half a stroke further out. A kept run deliberately ends as
+    close to the boundary as it legally can, so clipping at the usual
+    half width left neighbouring outlines exactly one half-stroke apart,
+    which :func:`_stroke_crosses_stroke` correctly calls a collision (it
+    did, on the four-part cluster fixture above). Pinned by measuring the
+    gap, not by reading the constant."""
+    stroke = 0.2
+    obstacle = _obstacle(5.0, 0.0, 1.0, 1.0)  # spans x in [4.5, 5.5]
+    runs, _kept, _total = _clip_polyline([(0.0, 0.0), (10.0, 0.0)], [obstacle], stroke)
+    assert len(runs) == 2
+    left_end = max(p[0] for p in runs[0])
+    assert 4.5 - left_end >= stroke - 1e-9, (
+        f"kept ink ends {4.5 - left_end:.4f}mm from the obstacle, under one "
+        f"{stroke}mm stroke -- a neighbouring stroke's own ink would reach it"
+    )
+
+
+def test_near_obstacles_never_excludes_one_the_exact_test_would_hit():
+    """The broad phase must only ever be conservative. An obstacle just
+    outside the polyline's own bbox is still reachable by a full-width,
+    square-capped segment box, so it has to survive the filter."""
+    stroke = 0.15
+    line = [(0.0, 0.0), (10.0, 0.0)]
+    # Just past the line's bbox in y, inside a full stroke's reach.
+    near = _obstacle(5.0, 0.1, 0.2, 0.2)
+    far = _obstacle(5.0, 50.0, 0.2, 0.2)
+    kept = _near_obstacles([near, far], line, 2.0 * stroke)
+    assert near in kept and far not in kept
+    assert _stroke_overlaps_any_pad(line, [near], 2.0 * stroke)
+
+
+def _length(run: list[tuple[float, float]]) -> float:
+    return sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in itertools.pairwise(run))
+
+
+def _row(**overrides: float | None) -> CapabilityRow:
+    """A capability row carrying only the fields this module reads, so a
+    test can move ONE of them and attribute the result to it. Built from
+    the real 4-layer row rather than invented, so a field renamed in the
+    JSON breaks here instead of silently falling back to a default."""
+    base = capability_for("4layer")
+    return CapabilityRow(
+        process=base.process,
+        label=base.label,
+        source=base.source,
+        retrieved=base.retrieved,
+        jlc_min=dict(base.jlc_min),
+        house_default={**base.house_default, **overrides},
+        field_confidence=dict(base.field_confidence),
+    )
+
+
+def test_silk_clearance_moves_with_each_capability_field_independently():
+    """Both new capability fields must be provably CONSUMED, not merely
+    declared (``docs/backlog/pcb-courtyard-polygon.md``'s acceptance
+    criteria). Each is moved on its own, so a chain that read only one of
+    them -- or that had quietly reverted to a constant -- fails here
+    rather than passing on the other's contribution."""
+    stroke = gerber.DEFAULT_SILK_WIDTH_MM
+    base = silk_clearance_mm(_row(), stroke_width_mm=stroke)
+    wider_mask = silk_clearance_mm(
+        _row(soldermask_expansion_mm=0.15), stroke_width_mm=stroke
+    )
+    wider_gap = silk_clearance_mm(
+        _row(silk_to_mask_clearance_mm=0.45), stroke_width_mm=stroke
+    )
+    assert wider_mask == pytest.approx(base + 0.10)
+    assert wider_gap == pytest.approx(base + 0.20)
+    # The chain is a SUM of three terms, one of which is the drawn stroke
+    # -- not the printability floor `silk_width_mm`, which is numerically
+    # coincident with it at house_default today and would swap unnoticed.
+    assert silk_clearance_mm(_row(), stroke_width_mm=0.4) == pytest.approx(
+        base + (0.4 - stroke) / 2.0
+    )
+    assert silk_clearance_mm(_row(silk_width_mm=1.0), stroke_width_mm=stroke) == base
+
+
+def test_a_null_capability_field_falls_back_to_this_modules_own_constant():
+    """A process JLC publishes no figure for carries ``None`` rather than
+    a number borrowed from the FR-4 rows (that JSON's own convention).
+    The chain still needs a length, so the substitution is explicit and
+    named -- never a crash, and never a silent zero, which would put
+    every courtyard back on its own copper."""
+    null_row = _row(soldermask_expansion_mm=None, silk_to_mask_clearance_mm=None)
+    assert silk_clearance_mm(null_row, stroke_width_mm=0.15) == pytest.approx(
+        silk_clearance_mm(None, stroke_width_mm=0.15)
+    )
+
+
+def test_silk_must_clear_the_mask_opening_not_merely_the_bare_copper():
+    """Item 6 of ``docs/backlog/pcb-courtyard-polygon.md``: every
+    clearance check in this module used to run against pad COPPER, which
+    is one expansion optimistic -- ink laid inside the mask opening but
+    outside the copper still prints on solderable metal.
+
+    The two rows below spend the SAME total chain (0.05 + 0.25 vs 0.00 +
+    0.30), so both put the courtyard boundary in exactly the same place
+    and the only difference is how far each pad's opening reaches past its
+    copper. A pad positioned in that gap is invisible to the row with no
+    expansion and a real collision to the row with one."""
+    stroke = gerber.DEFAULT_SILK_WIDTH_MM
+    with_mask = _row(soldermask_expansion_mm=0.05, silk_to_mask_clearance_mm=0.25)
+    no_mask = _row(soldermask_expansion_mm=0.0, silk_to_mask_clearance_mm=0.30)
+    assert silk_clearance_mm(with_mask, stroke_width_mm=stroke) == pytest.approx(
+        silk_clearance_mm(no_mask, stroke_width_mm=stroke)
+    )
+
+    ir = from_graph(_graph("U9", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    ir.pin_dx[0], ir.pin_dy[0] = -1.0, 0.0
+    ir.pin_dx[1], ir.pin_dy[1] = 1.0, 0.0
+    for p in (0, 1):
+        ir.pin_w[p], ir.pin_h[p] = 0.4, 0.4
+    own = [
+        {"shape": "rect", "x": -1.0, "y": 0.0, "w": 0.4, "h": 0.4, "net": "A"},
+        {"shape": "rect", "x": 1.0, "y": 0.0, "w": 0.4, "h": 0.4, "net": "B"},
+    ]
+    # The courtyard's top edge, and the band of ink around it.
+    top = 0.2 + silk_clearance_mm(with_mask, stroke_width_mm=stroke)
+    ink_top = top + stroke / 2.0
+    # Copper starting 0.01mm above the ink; its 0.05mm opening reaches
+    # 0.04mm INTO it.
+    foreign = {
+        "shape": "rect",
+        "x": 0.0,
+        "y": ink_top + 0.01 + 0.1,
+        "w": 0.3,
+        "h": 0.2,
+        "net": "FOREIGN",
+    }
+    outcome = {}
+    for name, row in (("with_mask", with_mask), ("no_mask", no_mask)):
+        result = build_silk(ir, pads=[*own, foreign], capability=row)
+        outcome[name] = next(
+            c.outcome
+            for c in result.census
+            if c.refdes == "U9" and c.kind == "courtyard"
+        )
+    assert outcome["no_mask"] == "placed", (
+        "fixture is wrong: the foreign pad's bare COPPER already collides, "
+        "so this proves nothing about the mask opening"
+    )
+    assert outcome["with_mask"] == "relocated", (
+        "silk was checked against copper, not the mask opening -- the "
+        f"under-check item 6 exists to fix (got {outcome})"
+    )
+
+
+def test_a_courtyard_with_too_little_left_still_drops_whole():
+    """Clipping must not become "always draws something". A part buried
+    under copper has no readable outline, and scattering the few
+    surviving millimetres across the board while reporting success is
+    worse than saying so: below
+    :data:`~precis.pcb.silk._COURTYARD_MIN_KEPT_FRACTION` of its own
+    perimeter the courtyard drops whole and ``check_silk_missing``
+    reports it."""
+    ir = from_graph(_graph("U7", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    blanket = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 20.0, "net": "FOREIGN"}]
+    result = build_silk(ir, pads=blanket)
+    row = next(c for c in result.census if c.refdes == "U7" and c.kind == "courtyard")
+    assert row.outcome == "dropped"
+    assert row.reason is not None and "too little to read" in row.reason
+    assert not [d for d in result.draws["top"] if d["role"] == "outline"]
 
 
 # ── gerber round-trip ──────────────────────────────────────────────────

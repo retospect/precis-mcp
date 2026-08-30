@@ -78,9 +78,10 @@ _MM_DECIMALS = 6
 _UNITS_PER_MM = 10**_MM_DECIMALS
 _FS = "%FSLAX46Y46*%"
 
-# JLC-typical soldermask swell per side over the pad outline; not vendor-
-# tunable per order in this writer, just a sane default (see capabilities.py
-# for the numbers that ARE meant to be looked up/verified).
+# JLC-typical soldermask swell per side over the pad outline — the
+# FALLBACK only: `soldermask_gerber` prefers this board's own
+# `model["soldermask_expansion_mm"]`, resolved off the fab-capability row
+# (`capabilities.FIELDS`), and uses this when the caller supplied none.
 SOLDERMASK_EXPANSION_MM = 0.05
 EDGE_CUT_WIDTH_MM = 0.1
 DEFAULT_SILK_WIDTH_MM = 0.15
@@ -371,16 +372,25 @@ def copper_gerber(model: dict[str, Any], layer: str) -> str:
 
 def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     """Top/bottom soldermask openings — pads on the corresponding outer
-    copper layer, each expanded by :data:`SOLDERMASK_EXPANSION_MM`. Vias are
-    assumed tented (no opening) — the common default; a tented-via override
-    is future work, not needed for slice 4."""
+    copper layer, each expanded by the board's own soldermask expansion.
+    Vias are assumed tented (no opening) — the common default; a
+    tented-via override is future work, not needed for slice 4.
+
+    The expansion comes from ``model["soldermask_expansion_mm"]`` when the
+    caller resolved one off this board's fab-capability row, falling back
+    to :data:`SOLDERMASK_EXPANSION_MM`. **That key is not decoration.**
+    :func:`precis.pcb.silk.silk_clearance_mm` derives every courtyard's
+    size by starting from this same swell, so a mask film drawn with one
+    expansion while silk was placed against another is two numbers for one
+    physical edge — the drift this key exists to prevent."""
     layers: list[str] = model["layers"]
     layer = layers[0] if side == "top" else layers[-1]
+    expansion = float(model.get("soldermask_expansion_mm", SOLDERMASK_EXPANSION_MM))
     apertures = _ApertureTable()
     body: list[str] = []
     for pad in model.get("pads", []):
         if pad.get("layer") == layer:
-            _emit_flash(_expand_pad(pad, SOLDERMASK_EXPANSION_MM), apertures, body)
+            _emit_flash(_expand_pad(pad, expansion), apertures, body)
     return _assemble(f"Soldermask,{'Top' if side == 'top' else 'Bot'}", apertures, body)
 
 

@@ -94,6 +94,23 @@ def test_pads_reach_the_copper_and_the_mask() -> None:
     )
 
 
+def test_the_mask_opening_follows_the_models_own_expansion() -> None:
+    """The mask film and :func:`precis.pcb.silk.silk_clearance_mm` start
+    from the SAME swell — the courtyard is placed one mask expansion plus
+    a silk-to-mask clearance off the copper, so a writer that ignored the
+    board's own figure and kept its module default would draw openings
+    that disagree with the silk cleared for them, with nothing able to
+    see the disagreement. Not the default value here, deliberately: an
+    assertion against the constant passes whether or not the key is
+    read."""
+    model = _model()
+    model["soldermask_expansion_mm"] = 0.2
+    assert gerber.SOLDERMASK_EXPANSION_MM != 0.2  # the test would be vacuous
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    mask = gerber_view.parse_gerber(files["t-F_Mask.gbr"])
+    assert mask.flashes[0].aperture.sizes[0] == pytest.approx(0.9 + 2 * 0.2)
+
+
 def test_a_via_is_flashed_on_both_spanned_layers() -> None:
     top = _art(_model(), "F_Cu")
     bottom = _art(_model(), "B_Cu")

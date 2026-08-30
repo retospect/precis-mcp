@@ -1725,61 +1725,39 @@ pad synthesized, all 57 drills are vias and there are zero component drills)
 — so courtyards, pad sizes and body outlines on that board are BOUNDS, not
 data, and `export_fab` already refuses to call it manufacturable.
 
-## FOUR courtyards, and the drawn one is not the checked one (2026-08-29)
+## The drawn courtyard is not the checked one (2026-08-29, half-closed)
 
 Root-causing the 53 `silk_missing` findings turned up something bigger than
-the bug it was chasing. This subsystem has **four** notions of a part's
-courtyard:
+the bug it was chasing: this subsystem had FIVE independently-computed
+notions of a part's courtyard, and the one drawn on the board was not the
+one enforced.
 
-1. `ir.instance_pad_radius` — centre to outermost **pin centre**, by its own
-   docstring "deliberately not widened by pad SIZE". The shared primitive.
-2. `ir.instance_keepout_radius_mm` = (1) + `PAD_BREATHING_MM` (0.6mm), a
-   CIRCLE. Used by `OptimizeEngine._keepout_r`, `seed_placement`, and
-   `_drc_geometry` — so this is what `courtyard_overlap` DRC enforces.
-3. `silk._courtyard_reach_mm` = (1) + `half_pad`, a SQUARE, historically
-   with **zero** margin. This is the courtyard actually DRAWN on the board.
-4. `drc.DEFAULT_COURTYARD_RADIUS_MM` = 1.0mm flat — the fallback, and the
-   base of `cost.COURTYARD_MIN_SEPARATION_MM`.
+**Half-closed 2026-08-30.** The drawn courtyard is now
+`ir.instance_courtyard_polygon` — the hull of the part's own pad outlines
+offset by the fab-derived `silk.silk_clearance_mm` — and the square
+`silk._courtyard_reach_mm` it replaced is gone. What remains is that the
+PLACER and `courtyard_overlap` DRC still reserve
+`ir.instance_keepout_radius_mm`, a CIRCLE, and the anneal still steers by
+a flat 2.0mm centre-distance term. That residue, the reconciliation
+decision, and the measured before/after now live in
+`docs/backlog/pcb-courtyard-polygon.md` — go there, not here.
 
-(2) and (3) are different shapes at different sizes, computed independently.
-**The silkscreen shows an assembler one keep-out boundary while DRC enforces
-another**, and nothing states the relationship or checks that it holds.
-`handlers/pcb.py::_drc_geometry` asserted (2) was "the ONE definition" until
-this was found — the same false-uniqueness claim corrected in `padplace.py`
-the same day, and the same consequence: a reader who believes it stops
-looking.
+Two findings from this investigation are worth keeping because they are
+traps, not status:
 
-They are not *required* to agree — a placement-legality keep-out and a
-visual assembly aid are genuinely different questions. But the divergence
-should be a stated, tested relationship rather than an accident. **Open
-decision for a human:** reconcile them (silk courtyard derived from the
-keepout radius, or vice versa), or keep both and add a rule asserting the
-drawn one never claims MORE room than the enforced one — the dangerous
-direction, since that is the one that misleads an assembler.
+**The drop predicate is CORRECT and must not be narrowed.** 18 of the 22
+courtyard drops were a part colliding with its OWN pad. Making the check
+ignore a part's own pads would have cleared 21 of 22 without moving a
+single line of silk — the fab would still print ink on copper, now
+invisible to DRC. The fix was to make the collision unrepresentable
+(derive the shape FROM those pads), not to stop looking.
 
-### The zero-margin defect this came from
-
-`_courtyard_reach_mm` = `instance_pad_radius + half_pad` puts the boundary
-**exactly on the pad's outer edge**, because (1) is a pin-CENTRE distance
-and adding half the pad back just reaches the edge again. `_segment_box`
-then inflates the drawn line by `stroke_width_mm / 2` (0.075mm at the
-0.15mm default pen), so a tangent box is *guaranteed* to overlap. Measured:
-22 of 29 parts lost their courtyard, **18 of them colliding with their own
-pad** (`self_count=18, foreign_count=1`); only `J1` had real neighbour
-crowding. Each dropped courtyard also drops that part's pin-1 tick
-(`build_silk`'s "a pin-1 tick never survives alone" rule), which is why the
-DRC count was 53 rather than 22.
-
-**The drop predicate is CORRECT and must not be touched.** Narrowing it to
-ignore a part's own pads would clear 21 of 22 drops without moving a single
-line of silk — the fab would still print ink on copper, now invisible to
-DRC. Recorded because it is the obvious-looking fix and it is a trap.
-
-Known to REMAIN after the margin fix, as separate causes: `D2`/`R2`/`U1`
-hit their own plane-fanout vias (`_courtyard_reach_mm` does not model vias
-at all), `J2` hits a fiducial's silk keep-out (`build_fiducials` has no
-knowledge of where a later courtyard will land), and `J1` is real crowding.
-The 9 `refdes` drops are a separate placement problem.
+**A tighter courtyard finds MORE vias, not fewer.** The oversized square
+was so large it *enclosed* a part's plane fan-out vias; an honest polygon
+passes through them instead. Shipping the polygon alone therefore made
+`silk_missing` worse (27 → 32) until outlines learned to break around an
+obstacle rather than drop whole. Anyone tightening a keep-out here should
+expect the same sign flip.
 
 ## OPEN from the 2026-08-29 fable review of the unshipped branch
 

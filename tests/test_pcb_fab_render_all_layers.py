@@ -91,16 +91,27 @@ _SEED = 1
 #:   second sheet to detour through and provably could not close it. Fixed
 #:   by the two-via/spare-layer jumper (``realize.py::_try_plane_jumper``),
 #:   which routes across a layer that is neither fragment's own.
-#: - ``silk_missing`` (61): courtyard outlines that cannot be drawn without
-#:   landing on a pad. Fixed structurally by
-#:   ``docs/backlog/pcb-courtyard-polygon.md``.
+#: - ``silk_missing`` (was 61, now 25). The courtyard half of that
+#:   population is GONE — zero courtyard drops on this board — and it went
+#:   two ways at once. A courtyard is now the hull of the part's own pads
+#:   offset by the fab chain (``ir.instance_courtyard_polygon``), so it
+#:   cannot land on its own pads at all; and an outline that meets someone
+#:   else's copper is BROKEN around it and drawn in pieces
+#:   (``silk._clip_polyline``) instead of thrown away whole, which is what
+#:   a fab would have trimmed it to anyway. What is left is two different
+#:   defects that happened to share a rule: 9 pin-1 ticks whose courtyard
+#:   corner is occupied by a plane fan-out via (a tick is too small to
+#:   break usefully — it needs a second marker convention, not a clip),
+#:   and 16 refdes labels with nowhere to go on a board deliberately
+#:   squeezed to 40mm for ~44mm of parts. Both tracked by
+#:   ``docs/backlog/pcb-courtyard-polygon.md``'s residue section.
 #:
 #: The assertion below permits EXACTLY these counts. A new rule, or more of
 #: any existing one, still fails — the waiver buys silence for known
 #: defects, never for new ones. **Lower each number as its item ships**; a
 #: stale allowance is indistinguishable from an unnoticed regression.
 KNOWN_OPEN_DRC_ERRORS = {
-    "silk_missing": 61,
+    "silk_missing": 25,
 }
 
 #: The films this board must produce with geometry on them. Listed

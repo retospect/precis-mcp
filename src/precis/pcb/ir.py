@@ -46,11 +46,15 @@ connectivity (:attr:`PcbIR.via_net` ``>= 0``); a keepout connects nothing
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
 import numpy as np
+from shapely.geometry import (  # type: ignore[import-untyped]
+    MultiPoint as _ShapelyMultiPoint,
+)
 
 from precis.pcb import landpattern
 
@@ -1271,6 +1275,97 @@ def instance_keepout_radius_mm(ir: PcbIR, *, min_radius_mm: float = 0.0) -> np.n
     the same reason :func:`instance_pad_radius` is: a 14-pin dual-row
     land pattern reaches 2.27mm from its own centre, a module 8.89mm."""
     return np.maximum(instance_pad_radius(ir) + PAD_BREATHING_MM, min_radius_mm)
+
+
+#: How far a mitred courtyard corner may run past the ideal rounded offset,
+#: as a multiple of the offset distance — Clipper's own ``MiterLimit``
+#: default, chosen deliberately over shapely's looser 5.0 (and SVG's
+#: ``stroke-miterlimit`` 4): a courtyard is a keep-out, so a corner spike
+#: nobody asked for costs real board area. It only binds on an ACUTE hull
+#: vertex — a 90-degree corner mitres at 1.41x, well under it — where an
+#: unlimited mitre would shoot arbitrarily far out as the vertex angle
+#: approaches zero. Past the limit the corner is bevelled instead, which
+#: is still a superset of the rounded offset, so the no-self-overlap
+#: guarantee below survives the clamp.
+COURTYARD_MITRE_LIMIT = 2.0
+
+
+def instance_courtyard_polygon(
+    ir: PcbIR,
+    inst: int,
+    *,
+    clearance_mm: float,
+    pins: Sequence[int] | None = None,
+) -> list[tuple[float, float]]:
+    """One instance's courtyard as a POLYGON in its own footprint-local
+    frame (unrotated, unmirrored, centred on the instance origin), closed
+    — first point repeated last. The caller places it.
+
+    The convex hull of the instance's own pad OUTLINES, offset outward by
+    ``clearance_mm``. Exact rather than conservative on the hull step:
+    this IR carries no per-pin rotation, so a pad is axis-aligned in the
+    footprint frame and its four corners are its exact extent (see
+    :func:`instance_pad_radius`'s docstring for the same property). A
+    round pad is covered by its bounding square, which over-covers by
+    ``(sqrt(2) - 1) * r`` at the diagonal — over-covering a courtyard is
+    always safe, under-covering is what ships a collision.
+
+    **A radius cannot stand in for this, and the error changes sign with
+    aspect ratio.** Measured against the drawn extent, current constants:
+    a 0402 wastes 1.3x on a circle, a 1x8 header 3.0x and a 1x20 edge
+    connector 8.0x, while a SOIC-8 and a TO-220 UNDER-reserve at 0.7x and
+    0.6x. No single radius fixes both ends: over-reservation spreads a
+    board around slivers, under-reservation collides the chunky parts.
+
+    **``hull(own pads) + clearance`` provably cannot overlap its own
+    pads.** Every pad lies inside the hull; the offset boundary is at
+    distance ``clearance_mm`` from the hull boundary (mitre only ever
+    pushes it further out, never in — see
+    :data:`COURTYARD_MITRE_LIMIT`), so every point of it clears every one
+    of this instance's own pads by at least that much. That is a
+    structural property, not a tuned constant: it is what makes a
+    self-tangent courtyard drop UNREPRESENTABLE rather than "fixed by a
+    good margin" — 18 of 22 courtyard drops on the reference board were
+    exactly that class.
+
+    ``clearance_mm`` is the fab-derived chain
+    (:func:`precis.pcb.silk.silk_clearance_mm`), not a convention: this
+    function deliberately takes it rather than deriving one, because the
+    chain's terms are looked-up per-process capability figures and
+    ``ir.py`` sits below :mod:`precis.pcb.capabilities` in the layering
+    (module docstring).
+
+    ``[]`` for a PINLESS instance (mounting hole, fiducial): there is no
+    land-pattern geometry to derive a shape from, and inventing a size
+    here would put a courtyard on the board that describes nothing. The
+    caller supplies whatever fallback body shape it believes in — the
+    same division of labour :func:`instance_keepout_radius_mm` draws with
+    its ``min_radius_mm`` floor.
+    """
+    if pins is None:
+        pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
+    corners: list[tuple[float, float]] = []
+    for pid in pins:
+        dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
+        hw, hh = float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0
+        corners += [
+            (dx - hw, dy - hh),
+            (dx + hw, dy - hh),
+            (dx + hw, dy + hh),
+            (dx - hw, dy + hh),
+        ]
+    if not corners:
+        return []
+    # `MultiPoint(...).convex_hull` rather than a hand-rolled hull: it is
+    # the same shapely already relied on for every other polygon question
+    # in this package, and it degrades correctly where a hull routine
+    # would need special-casing — a single zero-size pad hulls to a Point,
+    # a row of collinear ones to a LineString, and `buffer` turns each
+    # into a real area rather than raising on a degenerate ring.
+    shape = _ShapelyMultiPoint(corners).convex_hull.buffer(
+        clearance_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
+    )
+    return [(float(x), float(y)) for x, y in shape.exterior.coords]
 
 
 def pin_point(ir: PcbIR, pin_id: int) -> tuple[float, float] | None:

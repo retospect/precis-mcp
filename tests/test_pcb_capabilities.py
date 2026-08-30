@@ -17,6 +17,21 @@ def test_loads_both_tiers_for_every_row():
         assert set(caps.FIELDS) <= set(row.house_default)
 
 
+#: Fields the flat house_default margin rule deliberately does NOT apply
+#: to, each with the reason the JSON ``_note`` and
+#: :mod:`precis.pcb.capabilities`' own docstring record. These are not
+#: exempt from checking — :func:`test_not_margined_fields_are_equal_not_lower`
+#: below pins them to EQUALITY, which is a stricter statement than "at
+#: least 10% above", not a hole in the ladder.
+_NOT_MARGINED = {
+    # A DESIGN value, not a minimum to exceed: it is the swell
+    # `gerber.soldermask_gerber` actually draws each mask opening with, so
+    # margining it up would enlarge every opening on every board while
+    # calling itself safety. Both tiers carry JLC's applied default.
+    "soldermask_expansion_mm",
+}
+
+
 def test_house_default_has_genuine_margin_over_jlc_min():
     # The entire point of the two-tier structure: house_default sits
     # *comfortably above* JLC's published minimum, for every field of every
@@ -27,6 +42,8 @@ def test_house_default_has_genuine_margin_over_jlc_min():
     violations = []
     for row in caps.load_capabilities():
         for field in caps.FIELDS:
+            if field in _NOT_MARGINED:
+                continue
             lo = row.jlc_min.get(field)
             hi = row.house_default.get(field)
             if lo is None or hi is None:
@@ -34,6 +51,23 @@ def test_house_default_has_genuine_margin_over_jlc_min():
             if hi <= lo or hi < lo * 1.1:
                 violations.append((row.process, field, lo, hi))
     assert violations == []
+
+
+@pytest.mark.parametrize("field", sorted(_NOT_MARGINED))
+def test_not_margined_fields_are_equal_not_lower(field: str):
+    """A field off the margin ladder still has a shape to hold: the two
+    tiers must be the SAME number. "Not margined" is a statement about the
+    kind of quantity it is, and it must never become cover for a
+    house_default that quietly drifted BELOW what the fab publishes."""
+    for row in caps.load_capabilities():
+        lo, hi = row.jlc_min.get(field), row.house_default.get(field)
+        assert (lo is None) == (hi is None), (
+            f"{row.process}: {field} is published at one tier and null at "
+            "the other — a null is 'not applicable to this process', which "
+            "cannot be true of one tier only"
+        )
+        if lo is not None:
+            assert hi == lo, f"{row.process}: {field} {hi} != {lo}"
 
 
 def test_every_row_has_source_and_retrieved_date():

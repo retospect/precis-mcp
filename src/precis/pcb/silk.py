@@ -25,18 +25,24 @@ already applies to copper.
    mirrored (``mirror=True`` into :func:`precis.pcb.stroke_font.layout_text`)
    because ``B.Silkscreen`` is viewed through the board — "one orientation
    per side" is the rule, not "bottom silk reads from the top".
-2. a **courtyard/body outline** — a square sized from this instance's OWN
-   land-pattern reach: :func:`precis.pcb.ir.instance_pad_radius` (the pin
-   offsets) plus that instance's own widest resolved pad half-size
-   (``ir.pin_w``/``ir.pin_h`` — real per-pin pad SIZE, not the universal
-   0.2mm ``maze.PAD_RADIUS_MM`` keep-out every pin used to share
-   regardless of package before 2026-08-29, since deleted). Never a fixed
-   constant tuned to nothing —
-   see :attr:`precis.pcb.ir.PcbIR.pin_w`'s own docstring for exactly the
-   defect class ("every pad the same 0.4mm disc") this sidesteps.
-3. a **pin-1 marker** — a small corner tick cut at whichever courtyard
-   corner sits nearest pin 1's own land-pattern offset (or the first
-   declared pin, when no pin is literally named ``"1"``).
+2. a **courtyard/body outline** — the POLYGON
+   :func:`precis.pcb.ir.instance_courtyard_polygon` derives from this
+   instance's OWN pad outlines (their convex hull, offset outward), never
+   a fixed constant tuned to nothing and, since 2026-08-30, never a
+   square either: a square sized by a pin-offset RADIUS over-reserves a
+   1x20 edge connector 8-fold while UNDER-reserving a SOIC-8, and no
+   single radius fixes both (that function's own docstring carries the
+   measured table). See :attr:`precis.pcb.ir.PcbIR.pin_w`'s docstring for
+   the neighbouring defect class ("every pad the same 0.4mm disc") the
+   pad-size term sidesteps.
+   The offset is :func:`silk_clearance_mm`, walked down the fab chain
+   (mask expansion -> silk-to-mask clearance -> half the drawn stroke)
+   from this board's capability row — so the courtyard cannot overlap its
+   own pads by construction, rather than by a margin that happened to be
+   big enough.
+3. a **pin-1 marker** — a small tick cut at whichever courtyard VERTEX
+   sits nearest pin 1's own land-pattern offset (or the first declared
+   pin, when no pin is literally named ``"1"``).
 
 **Suppression, not silent loss.** Every drawn stroke — text, outline,
 tick alike — is checked against the passed-in ``pads`` (real flashed pad
@@ -44,7 +50,12 @@ geometry, e.g. :func:`precis.pcb.padplace.board_pads`'s output, or the
 synthesized-bound fallback :func:`precis.pcb.realize.pads_for_ir`) AND
 ``vias`` (realized copper's ``ctype == 'via'`` items — same "a fab scrapes
 silk off exposed copper" hazard a pad has, and just as silently lost if
-skipped) before it survives into the result. An overlapping outline/tick
+skipped) before it survives into the result. A pad is checked at its
+soldermask OPENING, not its copper outline (:func:`_mask_openings`): the
+opening is already swelled past the copper, and ink inside it still prints
+onto solderable metal — checking the copper alone left every clearance
+test in this module one expansion optimistic. A via has no opening (they
+are tented) so its bare annulus is the obstacle. An overlapping outline/tick
 segment is dropped outright (there is no sensible "relocate a courtyard
 box"); an overlapping refdes tries the candidate list first.
 :class:`SilkResult` carries a structured ``census`` (one
@@ -170,9 +181,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.pcb import stroke_font
+from precis.pcb.capabilities import CapabilityRow, design_value
 from precis.pcb.geom import dist_point_to_segment, point_in_polygon
-from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM
-from precis.pcb.ir import PcbIR, instance_pad_radius
+from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM, SOLDERMASK_EXPANSION_MM
+from precis.pcb.ir import PcbIR, instance_courtyard_polygon
 from precis.pcb.landpattern import rotate_offset
 
 Point = tuple[float, float]
@@ -186,7 +198,8 @@ DEFAULT_REFDES_HEIGHT_MM = 1.0
 
 #: Candidate refdes placements, tried in order, expressed as
 #: ``(dx_units, dy_units, h_align, v_align)`` in the INSTANCE's own local
-#: frame (dx/dy scaled by the courtyard reach + a gap before use) — so a
+#: frame (dx/dy scaled by the courtyard's reach IN THAT DIRECTION, plus a
+#: gap, before use — :func:`_courtyard_support_mm`) — so a
 #: relocated label moves with the part's own rotation/mirror, not with
 #: the board's absolute axes. The first candidate (centered on the part)
 #: is the common case; the rest walk around the courtyard's four sides.
@@ -345,6 +358,66 @@ def _pad_rect_polygon(pad: dict[str, Any]) -> list[Point]:
     ]
 
 
+def _mask_opening(pad: dict[str, Any], expansion_mm: float) -> dict[str, Any]:
+    """A pad widened to its soldermask OPENING — ``expansion_mm`` per
+    side, the same swell :func:`precis.pcb.gerber.soldermask_gerber`
+    writes the mask film with.
+
+    **This is the shape silk actually has to clear, and checking against
+    bare copper is an under-check.** Every clearance test in this module
+    used to run against the pad outline, leaving all of them
+    ``expansion_mm`` optimistic: silk laid inside the opening but outside
+    the copper still prints onto solderable metal, and a fab either
+    scrapes it or ships an unwettable pad.
+
+    A via is deliberately NOT put through this: vias are tented (that
+    same writer's own docstring), so a via has no mask opening at all and
+    its bare annulus is the real obstacle. ``w`` alone is widened where
+    the dict carries no ``h`` — :func:`_pad_rect_polygon` and
+    :func:`_box_overlaps_pad` both read ``h`` as defaulting to ``w``, so
+    that stays a square/circle rather than becoming an implicit
+    rectangle."""
+    if expansion_mm <= 0.0:
+        return pad
+    out = dict(pad)
+    out["w"] = float(pad["w"]) + 2.0 * expansion_mm
+    if "h" in pad:
+        out["h"] = float(pad["h"]) + 2.0 * expansion_mm
+    return out
+
+
+def soldermask_expansion_mm(capability: CapabilityRow | None) -> float:
+    """This board's soldermask swell per side, off its capability row.
+
+    Public, and read from BOTH ends of the same physical edge: the silk
+    side (:func:`_mask_openings`, :func:`silk_clearance_mm`) and the mask
+    film itself (``model["soldermask_expansion_mm"]``, which
+    :func:`precis.pcb.gerber.soldermask_gerber` draws the openings with).
+    A board whose mask was drawn at one expansion while its silk was
+    cleared for another has two numbers for one edge, and neither DRC nor
+    a render can see the disagreement — so there is one function."""
+    return design_value(
+        capability, "soldermask_expansion_mm", fallback=DEFAULT_SOLDERMASK_EXPANSION_MM
+    )
+
+
+def _mask_openings(
+    pads: list[dict[str, Any]], capability: CapabilityRow | None
+) -> list[dict[str, Any]]:
+    """Every pad widened to its mask opening, at this board's expansion —
+    the ONE seam each silk builder turns caller-supplied pad geometry into
+    the obstacle set it may check against. Three builders draw silk
+    (:func:`build_silk`, :func:`build_title_block`, :func:`build_sn_patch`)
+    and one rule applied at only some of them is this subsystem's own
+    named recurring defect.
+
+    :func:`build_fiducials` is deliberately NOT a caller: it places COPPER
+    dots, so the clearance it owes a pad is copper-to-copper — the mask
+    opening is the wrong question there, not merely a stricter one."""
+    expansion_mm = soldermask_expansion_mm(capability)
+    return [_mask_opening(pad, expansion_mm) for pad in pads]
+
+
 def _box_overlaps_pad(box: list[Point], pad: dict[str, Any]) -> bool:
     if str(pad.get("shape") or "circle") == "circle":
         cx, cy = float(pad["x"]), float(pad["y"])
@@ -373,15 +446,170 @@ def _segment_box(a: Point, b: Point, half_width: float) -> list[Point]:
     ]
 
 
-def _stroke_overlaps_any_pad(
+def _stroke_hits(
     points: list[Point], pads: list[dict[str, Any]], stroke_width_mm: float
-) -> bool:
+) -> dict[str, Any] | None:
+    """The FIRST obstacle this stroke lands on, or ``None`` if it is
+    clear. Returning the obstacle rather than a bool is what lets a drop
+    say WHAT it hit (:func:`_obstacle_label`); a census row reading
+    "overlaps a pad or via" sends its reader back to instrument a run
+    before they can begin, which is the same complaint
+    ``tests/test_pcb_fab_render_all_layers.py`` already records against a
+    DRC message that named a rule and a count."""
     half = stroke_width_mm / 2.0
     for a, b in itertools.pairwise(points):
         box = _segment_box(a, b, half)
-        if any(_box_overlaps_pad(box, pad) for pad in pads):
-            return True
-    return False
+        for pad in pads:
+            if _box_overlaps_pad(box, pad):
+                return pad
+    return None
+
+
+def _stroke_overlaps_any_pad(
+    points: list[Point], pads: list[dict[str, Any]], stroke_width_mm: float
+) -> bool:
+    return _stroke_hits(points, pads, stroke_width_mm) is not None
+
+
+#: How finely a courtyard edge is walked when clipping it around an
+#: obstacle (:func:`_clip_polyline`). This quantizes the GAP the clip
+#: leaves, not the outline's own accuracy — a kept run always ends on a
+#: sub-segment that cleared the obstacle with a full square cap, so a
+#: coarser step only ever removes more ink, never less.
+_CLIP_STEP_MM = 0.1
+
+#: The shortest surviving run worth drawing, as a multiple of the stroke
+#: width. Below this a "kept" piece is a dot, not a line: it reads as
+#: debris rather than as part of an outline, and a fab's own registration
+#: tolerance is the same order.
+_CLIP_MIN_RUN_STROKES = 4.0
+
+#: How much of a courtyard's own perimeter must survive clipping before
+#: the broken outline is still worth drawing. Below it the remains no
+#: longer read as a body outline and the courtyard is dropped whole — the
+#: honest outcome, and the one :func:`precis.pcb.drc.check_silk_missing`
+#: reports. Not zero: "draw whatever is left" would turn a genuinely
+#: buried part into scattered ink and report success.
+_COURTYARD_MIN_KEPT_FRACTION = 0.5
+
+
+def _clip_polyline(
+    points: list[Point], obstacles: list[dict[str, Any]], stroke_width_mm: float
+) -> tuple[list[list[Point]], float, float]:
+    """Break ``points`` into the maximal runs that clear every obstacle,
+    returning ``(runs, kept_mm, total_mm)``.
+
+    **Why break rather than drop.** A body outline that passes through one
+    fan-out via is not an unrenderable outline; it is an outline with a
+    gap in it, which is what every real silk generator emits and what a
+    fab would have trimmed to anyway. Dropping the whole ring instead
+    threw away the other 95% of a part's outline — and, via
+    :func:`build_silk`'s "a pin-1 tick never survives alone" rule, its
+    pin-1 marker with it. On the ESP32-C3 reference board that single
+    policy accounted for most of the ``silk_missing`` population once
+    courtyards became tight enough to pass NEAR a part's own vias instead
+    of enclosing them.
+
+    Runs carry across vertices, so a corner is not broken merely for
+    being a corner. Sub-segments are walked at :data:`_CLIP_STEP_MM` and
+    tested with the same square-capped :func:`_segment_box` every other
+    check here uses. Runs shorter than :data:`_CLIP_MIN_RUN_STROKES`
+    stroke widths are discarded as debris — their length still counts as
+    removed, so the caller's kept fraction stays honest.
+
+    **A FULL stroke width of ink is tested, not the usual half.** Every
+    other check here asks "does this stroke land on that obstacle", and a
+    half-width box answers it. Clipping asks something different: a kept
+    run deliberately ends as close to the obstacle as it legally can, so
+    the margin it leaves IS the clearance. Several of these obstacles are
+    other silk items, whose bounding box (:func:`obstacle_from_bbox`)
+    bounds their CENTRELINE — their own ink reaches half a stroke further
+    out. Half-width clipping therefore left neighbouring outlines running
+    one half-stroke apart, which :func:`_stroke_crosses_stroke` correctly
+    calls a collision. Testing a full width covers both halves."""
+    half = stroke_width_mm
+    min_run = stroke_width_mm * _CLIP_MIN_RUN_STROKES
+    runs: list[list[Point]] = []
+    current: list[Point] = []
+    kept = 0.0
+    total = 0.0
+
+    def flush() -> None:
+        nonlocal current
+        if len(current) >= 2:
+            length = sum(
+                math.hypot(q[0] - p[0], q[1] - p[1])
+                for p, q in itertools.pairwise(current)
+            )
+            if length >= min_run:
+                runs.append(current)
+                nonlocal kept
+                kept += length
+        current = []
+
+    for a, b in itertools.pairwise(points):
+        seg_len = math.hypot(b[0] - a[0], b[1] - a[1])
+        total += seg_len
+        n = max(1, math.ceil(seg_len / _CLIP_STEP_MM))
+        for i in range(n):
+            p = (a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n)
+            q = (
+                a[0] + (b[0] - a[0]) * (i + 1) / n,
+                a[1] + (b[1] - a[1]) * (i + 1) / n,
+            )
+            box = _segment_box(p, q, half)
+            if any(_box_overlaps_pad(box, pad) for pad in obstacles):
+                flush()
+                continue
+            if not current:
+                current = [p, q]
+            else:
+                current.append(q)
+    flush()
+    return runs, kept, total
+
+
+def _near_obstacles(
+    obstacles: list[dict[str, Any]], points: list[Point], margin_mm: float
+) -> list[dict[str, Any]]:
+    """The obstacles whose own bounding box comes within ``margin_mm`` of
+    ``points``' bounding box — a broad phase for :func:`_clip_polyline`,
+    which is otherwise every sub-segment against every obstacle on the
+    side. Conservative by construction (a bbox contains its shape), so it
+    can only ever admit an obstacle that a later exact test rejects,
+    never exclude one that would have hit."""
+    if not points:
+        return []
+    x0, y0, x1, y1 = _bbox(points)
+    x0, y0, x1, y1 = x0 - margin_mm, y0 - margin_mm, x1 + margin_mm, y1 + margin_mm
+    out = []
+    for pad in obstacles:
+        px, py = float(pad["x"]), float(pad["y"])
+        hw = float(pad["w"]) / 2.0
+        hh = float(pad.get("h", pad["w"])) / 2.0
+        if px + hw >= x0 and px - hw <= x1 and py + hh >= y0 and py - hh <= y1:
+            out.append(pad)
+    return out
+
+
+def _obstacle_label(pad: dict[str, Any]) -> str:
+    """One obstacle, named the way a human reads a board: a component pad
+    by refdes/pin, anything else by what it is and where. ``obstacle`` is
+    the marker this module stamps on the non-pad entries it synthesizes
+    (via annuli, and each committed silk item it folds back into the
+    shared list) — without it every one of them reads as an anonymous
+    rectangle and a courtyard dropped by its own part's fanout via is
+    indistinguishable from one dropped by a neighbour."""
+    where = f"({float(pad.get('x', 0.0)):.2f}, {float(pad.get('y', 0.0)):.2f})"
+    marker = str(pad.get("obstacle") or "")
+    if marker:
+        return f"{marker} at {where}"
+    refdes = str(pad.get("refdes") or "")
+    if refdes:
+        pin = str(pad.get("pin") or "")
+        return f"pad {refdes}.{pin} at {where}" if pin else f"pad {refdes} at {where}"
+    net = str(pad.get("net") or "")
+    return f"pad on net {net!r} at {where}" if net else f"pad at {where}"
 
 
 def _stroke_crosses_stroke(
@@ -415,7 +643,12 @@ def _via_pad(via: dict[str, Any]) -> dict[str, Any]:
     outer plated diameter (``dia_mm``), not the drill: the annulus is
     exposed copper end to end, and silk printed over the drilled centre
     fares no better than silk over the ring around it."""
-    return {"x": float(via["x"]), "y": float(via["y"]), "w": float(via["dia_mm"])}
+    return {
+        "x": float(via["x"]),
+        "y": float(via["y"]),
+        "w": float(via["dia_mm"]),
+        "obstacle": "via",
+    }
 
 
 def _via_reaches_side(span: Any, layer_names: list[str]) -> tuple[bool, bool]:
@@ -459,16 +692,22 @@ def _draw(
     }
 
 
-def _courtyard_box(ir: PcbIR, inst: int, reach_mm: float) -> list[Point]:
-    """The instance's own local-frame courtyard square, closed (first
-    point repeated last) — the caller rotates/mirrors/translates it."""
-    return [
-        (-reach_mm, -reach_mm),
-        (reach_mm, -reach_mm),
-        (reach_mm, reach_mm),
-        (-reach_mm, reach_mm),
-        (-reach_mm, -reach_mm),
-    ]
+def _courtyard_support_mm(courtyard: list[Point], du: float, dv: float) -> float:
+    """How far the courtyard polygon reaches from the instance origin
+    along ``(du, dv)`` — its support function in that direction.
+
+    This is what replaced a single scalar "reach" once the courtyard
+    stopped being a square: an elongated part reaches much further along
+    its own long axis than across it, and a label offset by the larger of
+    the two floats away in BOTH directions (which one radius forces) lands
+    a connector's refdes a centimetre off its own body. ``0.0`` for a
+    degenerate direction or an empty polygon, so a caller can add its gap
+    unconditionally."""
+    norm = math.hypot(du, dv)
+    if norm <= 0.0 or not courtyard:
+        return 0.0
+    ux, uy = du / norm, dv / norm
+    return max(x * ux + y * uy for x, y in courtyard)
 
 
 def _pin1_id(ir: PcbIR, inst: int, pins: list[int]) -> int:
@@ -478,69 +717,117 @@ def _pin1_id(ir: PcbIR, inst: int, pins: list[int]) -> int:
     return min(pins)
 
 
+#: How much of a courtyard EDGE each leg of the pin-1 tick runs back
+#: along. 0.15 of the full edge is the same proportion the square
+#: courtyard's ``reach * 0.3`` was — ``reach`` was a HALF-extent, and the
+#: distinction is not cosmetic: reading it as 0.3 of the whole edge
+#: doubles the tick, whose bounding box is then folded into the shared
+#: obstacle list and shoulders this part's own centred refdes label off
+#: its default spot (measured on the two-part fixture in
+#: ``tests/test_pcb_silk.py``, by 4 micrometres).
+_PIN1_TICK_EDGE_FRACTION = 0.15
+
+
+def _towards(frm: Point, to: Point, dist_mm: float) -> Point:
+    dx, dy = to[0] - frm[0], to[1] - frm[1]
+    length = math.hypot(dx, dy)
+    if length <= 1e-9:
+        return frm
+    return (frm[0] + dx / length * dist_mm, frm[1] + dy / length * dist_mm)
+
+
 def _pin1_tick(
-    ir: PcbIR, pin1: int, reach_mm: float, stroke_width_mm: float
+    ir: PcbIR, pin1: int, courtyard: list[Point], stroke_width_mm: float
 ) -> list[Point]:
-    """A small corner tick at whichever courtyard corner sits nearest
-    pin 1's own land-pattern offset — a two-segment ``L`` cutting that
-    corner, sized off the courtyard's own reach (never an invented mm
-    constant): proportional to it, floored so it stays visible on a
-    tiny part."""
+    """A small tick cutting whichever courtyard VERTEX sits nearest pin
+    1's own land-pattern offset — a two-segment ``L`` running back along
+    the two edges that meet there.
+
+    Sized off the courtyard's own geometry, never an invented mm constant:
+    :data:`_PIN1_TICK_EDGE_FRACTION` of the shorter of the two adjacent
+    edges, floored so it stays visible on a tiny part and capped at HALF
+    that edge so the two legs can never meet in the middle of a side and
+    read as a second outline. On the rectangle a square courtyard always
+    produced this is the same corner-cut ``L`` as before; on a real hull
+    it follows whatever shape the part's own pads make.
+
+    ``courtyard`` is the CLOSED local-frame polygon
+    (:func:`precis.pcb.ir.instance_courtyard_polygon`) — the repeated
+    final point is dropped here so a vertex is not considered twice."""
+    ring = courtyard[:-1] if len(courtyard) > 1 else list(courtyard)
+    if len(ring) < 3:
+        return []
     dx, dy = float(ir.pin_dx[pin1]), float(ir.pin_dy[pin1])
-    sx = -1.0 if dx < 0 else 1.0
-    sy = -1.0 if dy < 0 else 1.0
-    corner = (sx * reach_mm, sy * reach_mm)
-    tick_len = max(reach_mm * 0.3, stroke_width_mm * 4.0) if reach_mm > 0 else 0.0
+    k = min(
+        range(len(ring)), key=lambda i: math.hypot(ring[i][0] - dx, ring[i][1] - dy)
+    )
+    corner = ring[k]
+    before, after = ring[(k - 1) % len(ring)], ring[(k + 1) % len(ring)]
+    span = min(
+        math.hypot(before[0] - corner[0], before[1] - corner[1]),
+        math.hypot(after[0] - corner[0], after[1] - corner[1]),
+    )
+    tick_len = min(
+        max(span * _PIN1_TICK_EDGE_FRACTION, stroke_width_mm * 4.0), span / 2
+    )
     if tick_len <= 0:
         return []
-    a = (corner[0] - sx * tick_len, corner[1])
-    c = (corner[0], corner[1] - sy * tick_len)
-    return [a, corner, c]
+    return [
+        _towards(corner, before, tick_len),
+        corner,
+        _towards(corner, after, tick_len),
+    ]
 
 
-#: Clearance added on top of ``instance_pad_radius + half_pad`` when
-#: deriving a courtyard's reach — IPC-7351's NOMINAL courtyard-excess
-#: tier (that standard's Least/Nominal/Most tiers are 0.1/0.25/0.5mm,
-#: measured from the PAD EDGE outward, not from the pin centre). This is
-#: added ON TOP of the pad-edge reach ``instance_pad_radius + half_pad``
-#: already computes, never used to replace either term: without it, the
-#: courtyard boundary lands EXACTLY on the pad's own outer edge (zero
-#: margin), which a stroke of ANY nonzero width is then guaranteed to
-#: overlap, so the courtyard drops as if it collided with a NEIGHBOUR
-#: when it only ever touched its own pad (measured on the ESP32-C3
-#: reference board, 2026-08-29: 22/29 parts lost their courtyard, 18 of
-#: those 22 purely from this self-tangent, zero others). It must exceed
-#: half the silk pen width (0.075mm at :data:`DEFAULT_SILK_WIDTH_MM`'s
-#: 0.15mm) or the drawn line still lands on copper regardless of this
-#: margin's presence; 0.25mm clears that with room left over for real
-#: fab registration error, which the bare 0.075mm minimum would not.
-#:
-#: Deliberately NOT :data:`precis.pcb.ir.PAD_BREATHING_MM` (0.6mm), even
-#: though that constant solves the visually similar problem for
-#: :func:`precis.pcb.ir.instance_keepout_radius_mm`: placement legality
-#: (how close two parts' land patterns may legally sit, so the router has
-#: room to escape between them) and silk clearance (how far a drawn ink
-#: line must sit from a pad it must never touch) are different questions
-#: against different standards, and answered at different points in the
-#: pipeline — placement runs long before silk is drawn. Reusing 0.6mm
-#: here would inflate every courtyard well past the part's actual
-#: outline, not just past its pads. Do not unify these two constants.
-COURTYARD_MARGIN_MM = 0.25
+#: Null fallbacks for the two looked-up terms of :func:`silk_clearance_mm`
+#: — used ONLY where a process's capability row carries ``None`` for the
+#: field (aluminum does for both; see that JSON's own convention that an
+#: unpublished figure is deliberately absent rather than borrowed from the
+#: FR-4 rows) or where a board's stackup resolves to no capability row at
+#: all. JLC-typical numbers, stated here so the substitution is a named
+#: constant in one place instead of a literal inside the chain.
+DEFAULT_SOLDERMASK_EXPANSION_MM = SOLDERMASK_EXPANSION_MM
+DEFAULT_SILK_TO_MASK_CLEARANCE_MM = 0.15
 
 
-def _courtyard_reach_mm(ir: PcbIR, inst: int, pins: list[int]) -> float:
-    """This instance's courtyard half-extent, in mm — the real per-pin
-    reach (:func:`precis.pcb.ir.instance_pad_radius`, pin-CENTRE offset)
-    plus the instance's own widest resolved pad half-size
-    (``ir.pin_w``/``ir.pin_h``), plus :data:`COURTYARD_MARGIN_MM` — never
-    a fixed constant on its own. ``0.0`` for a pinless instance (mounting
-    hole, fiducial) — there is no land-pattern geometry to derive a box
-    from, so no courtyard is drawn for one, rather than inventing a
-    size."""
-    if not pins:
-        return 0.0
-    half_pad = max(max(float(ir.pin_w[p]), float(ir.pin_h[p])) for p in pins) / 2.0
-    return float(instance_pad_radius(ir)[inst]) + half_pad + COURTYARD_MARGIN_MM
+def silk_clearance_mm(
+    capability: CapabilityRow | None, *, stroke_width_mm: float
+) -> float:
+    """How far a silk CENTRELINE must sit from a pad's copper edge, walked
+    down the fab chain rather than asserted as a convention::
+
+        pad copper edge
+          + soldermask expansion    -> mask opening edge
+          + silk-to-mask clearance  -> silk line edge
+          + drawn stroke width / 2  -> silk CENTRELINE
+
+    Each term answers a different question and none substitutes for
+    another. The governing constraint is **fab printability** — silk must
+    clear the soldermask OPENING, which is already swelled past the copper
+    — not IPC-7351's assembly courtyard excess, which is what the flat
+    0.25mm constant this replaces was measuring (the right kind of number
+    for a different question).
+
+    The last term is the *drawn* stroke width, ``stroke_width_mm``, NOT
+    :data:`~precis.pcb.capabilities.FIELDS`' ``silk_width_mm``: that field
+    is the printability FLOOR (what the fab can hold), this is what the
+    pen actually lays down. They are numerically coincident at
+    ``house_default`` today and would silently swap without notice.
+
+    Tier is pinned by :func:`~precis.pcb.capabilities.design_value`
+    (``house_default``, then ``jlc_min``); a ``None`` figure or a ``None``
+    row falls back to this module's own constants. ~0.375mm at 4-layer
+    house-default numbers (0.05 + 0.25 + 0.075).
+    """
+    expansion = design_value(
+        capability, "soldermask_expansion_mm", fallback=DEFAULT_SOLDERMASK_EXPANSION_MM
+    )
+    silk_to_mask = design_value(
+        capability,
+        "silk_to_mask_clearance_mm",
+        fallback=DEFAULT_SILK_TO_MASK_CLEARANCE_MM,
+    )
+    return expansion + silk_to_mask + stroke_width_mm / 2.0
 
 
 def _place(
@@ -866,23 +1153,32 @@ class TitleBlockResult:
     dropped: tuple[str, ...] = ()
 
 
-def obstacle_from_bbox(bbox: list[Point]) -> dict[str, Any]:
+def obstacle_from_bbox(bbox: list[Point], *, label: str = "") -> dict[str, Any]:
     """A closed polygon's axis-aligned bounding rect, in the same
     ``{"shape":"rect","x","y","w","h"}`` obstacle shape this module's own
     pad-overlap checks already read — the one conversion between
     :class:`TitleBlockResult`'s corner-list ``bbox`` and
     :func:`build_silk`'s ``reserved`` obstacle list, so a caller never
-    hand-rolls this arithmetic at the call site."""
+    hand-rolls this arithmetic at the call site.
+
+    ``label`` names the thing for :func:`_obstacle_label`, so a drop
+    caused by it reads as "overlaps R3 courtyard silk at (…)" rather than
+    as an anonymous rectangle. Optional because the geometry is the
+    contract and a caller with nothing useful to say should say nothing
+    rather than invent a name."""
     xs = [p[0] for p in bbox]
     ys = [p[1] for p in bbox]
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    return {
+    out: dict[str, Any] = {
         "shape": "rect",
         "x": (x0 + x1) / 2.0,
         "y": (y0 + y1) / 2.0,
         "w": x1 - x0,
         "h": y1 - y0,
     }
+    if label:
+        out["obstacle"] = label
+    return out
 
 
 def build_title_block(
@@ -897,6 +1193,7 @@ def build_title_block(
     height_mm: float = TITLE_HEIGHT_MM,
     stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM,
     margin_mm: float = TITLE_MARGIN_MM,
+    capability: CapabilityRow | None = None,
 ) -> TitleBlockResult:
     """The board's name (required), revision and date (each OPTIONAL —
     only rendered when the caller actually has one), stacked in
@@ -954,7 +1251,7 @@ def build_title_block(
     poly = [(float(p[0]), float(p[1])) for p in outline]
     x0, y0, x1, y1 = _bbox(poly)
     mirror = side == "bottom"
-    obstacles = list(pads) + list(avoid or ())
+    obstacles = _mask_openings(pads, capability) + list(avoid or ())
     gap = height_mm + TITLE_LINE_GAP_MM
     for corner_name, x_at_max, y_at_max, h_align, v_align, stack_sign in _TITLE_CORNERS:
         # `stroke_font`'s mirror negates the LOCAL x coordinate about the
@@ -1188,6 +1485,7 @@ def build_sn_patch(
     label_height_mm: float = SN_LABEL_HEIGHT_MM,
     write_chars: int = SN_WRITE_SPACE_CHARS,
     knockout_width_mm: float | None = None,
+    capability: CapabilityRow | None = None,
 ) -> SnPatchResult:
     """A filled silk box with "S/N" knocked out of it -- a practical
     label patch (task brief, verbatim) an assembler writes a real serial
@@ -1230,7 +1528,7 @@ def build_sn_patch(
     poly = [(float(p[0]), float(p[1])) for p in outline]
     outline_bbox = _bbox(poly)
     mirror = side == "bottom"
-    obstacles = list(pads) + list(avoid or ())
+    obstacles = _mask_openings(pads, capability) + list(avoid or ())
 
     pad_mm = max(label_height_mm * SN_BOX_PADDING_MM_FACTOR, SN_BOX_PADDING_MIN_MM)
     label_w = stroke_font.text_width_mm(SN_LABEL, label_height_mm)
@@ -1314,6 +1612,7 @@ def build_silk(
     reserved: dict[str, list[dict[str, Any]]] | None = None,
     height_mm: float = DEFAULT_REFDES_HEIGHT_MM,
     stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM,
+    capability: CapabilityRow | None = None,
 ) -> SilkResult:
     """Build ``{"top": [...], "bottom": [...]}`` silk draws for every
     PLACED instance in ``ir`` — the one builder :mod:`precis.handlers.pcb`
@@ -1353,12 +1652,26 @@ def build_silk(
     NATURAL refdes order (:func:`_refdes_sort_key`), not ``ir``'s raw
     instance-array order — see the module docstring for why that's the
     deterministic, reproducible choice.
+
+    ``capability`` is this board's fab-capability row — the source of both
+    terms of :func:`silk_clearance_mm` (what sizes every courtyard) and of
+    the soldermask expansion each ``pads`` entry is widened by before any
+    clearance test runs (:func:`_mask_opening`). ``None`` falls back to
+    this module's own documented constants, so a caller that has no row
+    (a stackup with no published process) still gets a board rather than
+    a crash — see :func:`~precis.pcb.capabilities.design_value`.
     """
     sides = instance_sides or {}
     top: list[dict[str, Any]] = []
     bottom: list[dict[str, Any]] = []
     census: list[SilkPlacement] = []
     reserved_by_side = reserved or {}
+
+    # Both fab-derived, resolved ONCE: `clearance_mm` sets how far every
+    # courtyard sits off its own pads, and each pad becomes the mask
+    # OPENING every clearance test below actually runs against.
+    clearance_mm = silk_clearance_mm(capability, stroke_width_mm=stroke_width_mm)
+    pads = _mask_openings(pads, capability)
 
     layer_names = [str(layer.get("name") or i) for i, layer in enumerate(ir.stackup)]
     top_via_pads: list[dict[str, Any]] = []
@@ -1414,7 +1727,11 @@ def build_silk(
         side_obstacles = obstacles_by_side["bottom" if mirror else "top"]
 
         pins = pins_of_inst.get(inst, [])
-        courtyard_reach = _courtyard_reach_mm(ir, inst, pins)
+        # Empty for a pinless instance (mounting hole, fiducial) — no land
+        # pattern, so no courtyard, rather than an invented size.
+        box_local = instance_courtyard_polygon(
+            ir, inst, clearance_mm=clearance_mm, pins=pins
+        )
 
         # 1) courtyard/body outline -- checked against everything committed
         # so far (external pads/vias/reserved AND prior parts' own silk),
@@ -1423,32 +1740,67 @@ def build_silk(
         # that check must still see the pre-courtyard obstacle set.
         courtyard_kept = False
         courtyard_obstacle: dict[str, Any] | None = None
-        if courtyard_reach > 0:
-            box_local = _courtyard_box(ir, inst, courtyard_reach)
+        box_pts: list[Point] = []
+        if box_local:
             box_pts = _place(box_local, cx=cx, cy=cy, rot=rot, mirror=mirror)
-            if _stroke_overlaps_any_pad(box_pts, side_obstacles, stroke_width_mm):
+            hit = _stroke_hits(box_pts, side_obstacles, stroke_width_mm)
+            # A whole outline is not lost to one via. Break it around
+            # whatever it meets and keep the rest -- what a real silk
+            # generator emits, and what the fab would have trimmed to
+            # anyway (`_clip_polyline`). Only a courtyard with too little
+            # left to read as an outline still drops.
+            runs, kept_mm, total_mm = (
+                ([box_pts], 1.0, 1.0)
+                if hit is None
+                else _clip_polyline(
+                    box_pts,
+                    _near_obstacles(side_obstacles, box_pts, 2.0 * stroke_width_mm),
+                    stroke_width_mm,
+                )
+            )
+            if hit is not None and (
+                total_mm <= 0 or kept_mm / total_mm < _COURTYARD_MIN_KEPT_FRACTION
+            ):
                 census.append(
                     SilkPlacement(
                         refdes=refdes,
                         kind="courtyard",
                         side=side_name,
                         outcome="dropped",
-                        reason="courtyard outline overlaps a pad or via -- dropped",
+                        reason=(
+                            "courtyard outline overlaps "
+                            f"{_obstacle_label(hit)}, leaving too little to read "
+                            f"as an outline ({kept_mm:.2f} of {total_mm:.2f}mm) "
+                            "-- dropped"
+                        ),
                         stroke_width_mm=stroke_width_mm,
                     )
                 )
             else:
-                bucket.append(
-                    _draw(box_pts, stroke_width_mm, role="outline", refdes=refdes)
+                for run in runs:
+                    bucket.append(
+                        _draw(run, stroke_width_mm, role="outline", refdes=refdes)
+                    )
+                courtyard_obstacle = obstacle_from_bbox(
+                    box_pts, label=f"{refdes} courtyard silk"
                 )
-                courtyard_obstacle = obstacle_from_bbox(box_pts)
                 courtyard_kept = True
                 census.append(
                     SilkPlacement(
                         refdes=refdes,
                         kind="courtyard",
                         side=side_name,
-                        outcome="placed",
+                        outcome="placed" if hit is None else "relocated",
+                        reason=(
+                            None
+                            if hit is None
+                            else (
+                                "courtyard outline broken around "
+                                f"{_obstacle_label(hit)} and "
+                                f"{len(runs)} piece(s) drawn "
+                                f"({kept_mm:.2f} of {total_mm:.2f}mm kept)"
+                            )
+                        ),
                         stroke_width_mm=stroke_width_mm,
                     )
                 )
@@ -1462,7 +1814,7 @@ def build_silk(
         # touching its own courtyard's corner is the intended shape, not a
         # collision.
         tick_obstacle: dict[str, Any] | None = None
-        if pins and courtyard_reach > 0 and not courtyard_kept:
+        if pins and box_local and not courtyard_kept:
             census.append(
                 SilkPlacement(
                     refdes=refdes,
@@ -1478,17 +1830,21 @@ def build_silk(
             )
         elif pins:
             pin1 = _pin1_id(ir, inst, pins)
-            tick_local = _pin1_tick(ir, pin1, courtyard_reach, stroke_width_mm)
+            tick_local = _pin1_tick(ir, pin1, box_local, stroke_width_mm)
             if tick_local:
                 tick_pts = _place(tick_local, cx=cx, cy=cy, rot=rot, mirror=mirror)
-                if _stroke_overlaps_any_pad(tick_pts, side_obstacles, stroke_width_mm):
+                tick_hit = _stroke_hits(tick_pts, side_obstacles, stroke_width_mm)
+                if tick_hit is not None:
                     census.append(
                         SilkPlacement(
                             refdes=refdes,
                             kind="pin1",
                             side=side_name,
                             outcome="dropped",
-                            reason="pin-1 marker overlaps a pad or via -- dropped",
+                            reason=(
+                                "pin-1 marker overlaps "
+                                f"{_obstacle_label(tick_hit)} -- dropped"
+                            ),
                             stroke_width_mm=stroke_width_mm,
                         )
                     )
@@ -1496,7 +1852,9 @@ def build_silk(
                     bucket.append(
                         _draw(tick_pts, stroke_width_mm, role="pin1", refdes=refdes)
                     )
-                    tick_obstacle = obstacle_from_bbox(tick_pts)
+                    tick_obstacle = obstacle_from_bbox(
+                        tick_pts, label=f"{refdes} pin-1 silk"
+                    )
                     census.append(
                         SilkPlacement(
                             refdes=refdes,
@@ -1561,7 +1919,15 @@ def build_silk(
         gap = height_mm * 0.3
         placed_text = False
         for idx, (du, dv, h_align, v_align) in enumerate(_CANDIDATES):
-            off = courtyard_reach + gap if (du, dv) != (0.0, 0.0) else 0.0
+            # Directional, not one scalar radius: an elongated part reaches
+            # much further along its own long axis than across it, and the
+            # square courtyard this replaced pushed every label out by the
+            # larger of the two (see `_courtyard_support_mm`).
+            off = (
+                _courtyard_support_mm(box_local, du, dv) + gap
+                if (du, dv) != (0.0, 0.0)
+                else 0.0
+            )
             local_anchor = (du * off, dv * off)
             (ax, ay) = _place([local_anchor], cx=cx, cy=cy, rot=rot, mirror=mirror)[0]
             corners = stroke_font.text_bbox_corners(
@@ -1598,7 +1964,9 @@ def build_silk(
                 continue
             for pts in strokes:
                 bucket.append(_draw(pts, stroke_width_mm, role="refdes", refdes=refdes))
-            side_obstacles.append(obstacle_from_bbox(corners))
+            side_obstacles.append(
+                obstacle_from_bbox(corners, label=f"{refdes} refdes silk")
+            )
             placed_text = True
             if idx > 0:
                 census.append(
@@ -1681,4 +2049,6 @@ __all__ = [
     "build_sn_patch",
     "build_title_block",
     "obstacle_from_bbox",
+    "silk_clearance_mm",
+    "soldermask_expansion_mm",
 ]
