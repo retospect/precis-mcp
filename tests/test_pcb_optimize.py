@@ -297,9 +297,9 @@ def test_locked_plane_net_survives_a_full_anneal_unlocked_one_still_demotes():
         ir,
         OptimizeConfig(iters=3000, seed=1, locked_plane_nets=frozenset({0})),
     )
-    assert plane_layers_of(int(ir.net_plane_layers[0])) == [
-        1
-    ], "the locked/authored net must survive"
+    assert plane_layers_of(int(ir.net_plane_layers[0])) == [1], (
+        "the locked/authored net must survive"
+    )
     assert int(ir.net_plane_layers[1]) == 0, (
         "the unlocked net must remain exactly as demotable as before -- a "
         "blanket freeze would be as wrong as the original bug"

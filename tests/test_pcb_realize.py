@@ -1954,9 +1954,7 @@ def _gap_to_path(p: tuple[float, float], pts: list[tuple[float, float]]) -> floa
     return best
 
 
-def _sharp_corner_run(
-    interior_deg: float, leg: float
-) -> list[tuple[float, float]]:
+def _sharp_corner_run(interior_deg: float, leg: float) -> list[tuple[float, float]]:
     """A run whose interior angle at the middle vertex is `interior_deg`.
     Deliberately NOT 90/135 degrees: pure grid paths cannot reach the
     clamped regime, but `_straighten`/`_shove_vias`/`_snap_to_pads` all
@@ -1975,9 +1973,7 @@ def test_track_from_run_fillet_stays_inside_the_straight_track_envelope(
     which is the producer's math and would check nothing."""
     width = 0.25
     run = _sharp_corner_run(interior_deg, 4.0 * width)
-    tracks = _track_from_run(
-        1, 1, "F.Cu", list(run), width, fillet_radius_mm=1.5 * width
-    )
+    tracks = _track_from_run(1, 1, 0, list(run), width, fillet_radius_mm=1.5 * width)
     assert len(tracks) == 1
     arcs = [s for s in tracks[0].segments if s.get("shape") == "arc"]
     assert arcs, "fixture must actually produce a fillet"
@@ -1994,9 +1990,7 @@ def test_track_from_run_still_fillets_when_the_budget_is_not_binding():
     disabling the feature. A gentle, long-legged corner must still round."""
     width = 0.25
     run = _sharp_corner_run(150.0, 20.0)
-    tracks = _track_from_run(
-        1, 1, "F.Cu", list(run), width, fillet_radius_mm=1.5 * width
-    )
+    tracks = _track_from_run(1, 1, 0, list(run), width, fillet_radius_mm=1.5 * width)
     arcs = [s for s in tracks[0].segments if s.get("shape") == "arc"]
     assert len(arcs) == 1
     radius = math.hypot(

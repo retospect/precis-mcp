@@ -244,8 +244,7 @@ def test_a_pour_with_no_holes_still_renders_its_exterior():
     is one ring, and still fills."""
     model = dict(_MODEL)
     model["copper"] = [
-        {**c, "holes": []} if c.get("ctype") == "pour" else c
-        for c in _MODEL["copper"]
+        {**c, "holes": []} if c.get("ctype") == "pour" else c for c in _MODEL["copper"]
     ]
     text = svg.render_board(model, include={"pours"})
     assert 'fill="url(#pcb-hatch-1)"' in text

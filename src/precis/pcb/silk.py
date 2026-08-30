@@ -1088,8 +1088,10 @@ SN_WRITE_SPACE_CHARS = 8
 #: process choice (a hairline knockout does not reliably survive the
 #: silkscreen process and would fill back in), never a published fab
 #: figure. Deliberately NOT sourced from ``capabilities.py``'s
-#: ``silk_width_mm``, which has zero consumers today -- see that
-#: attribute's own docstring.
+#: ``silk_width_mm``: that field is the fab's printability FLOOR (what
+#: survives the process at all), which :func:`drc.check_silk_printability`
+#: now enforces as a floor. This factor is a legibility choice sitting
+#: above it -- the two answer different questions and must not collapse.
 SN_KNOCKOUT_WIDTH_FACTOR = 0.22
 
 #: Floor under the knockout stroke width, mm -- the same "proportional,

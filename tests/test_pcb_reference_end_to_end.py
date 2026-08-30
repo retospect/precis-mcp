@@ -18,8 +18,10 @@ tracks of realized copper. GND and VCC3V3 (the two highest-fanout nets)
 FAILED to route, despite neither being plane-promoted.
 
 **2026-08-28 late: the acceptance criterion is now MET and asserted.**
-Zero DRC errors, all 11 fanout>=2 nets realized. Three changes got it
-there, in this order of contribution:
+Zero DRC errors, all 11 fanout>=2 nets realized. (Dated record: the silk
+rules did not exist yet. Copper still holds at zero; silk carries its own
+ratchet, ``BASELINE_SILK_ERRORS``.) Three changes got it there, in this
+order of contribution:
 
 1. Per-pin pad geometry (``ir.pin_dx``/``pin_dy``). Every pin used to
    resolve to its instance's centroid, so a 14-pin part emitted 14 tracks
@@ -71,7 +73,8 @@ pytestmark = pytest.mark.slow
 FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "esp32c3_reference.json"
 
 #: The acceptance criterion, asserted (module docstring). All 11 nets with
-#: fanout >= 2 realized, zero DRC errors.
+#: fanout >= 2 realized, zero COPPER-class DRC errors (silk is counted
+#: separately against its own ratchet — see ``BASELINE_SILK_ERRORS``).
 #:
 #: A DRC count is only meaningful WITH its config — the same fixture at the
 #: same commit measured 630 under this test's seeded config and 1063 under
@@ -84,7 +87,30 @@ BASELINE_ROUTED_FANOUT2 = 11  # of 11 nets with fanout >= 2, realized
 #: nonzero value here is not "worse placement", it is a hole in the
 #: guarantee: some path reached the board without claiming its corridor.
 #: Do not raise this to accommodate a measurement. Find the leak.
+#:
+#: **Copper-class rules only** — see ``BASELINE_SILK_ERRORS``. The zero
+#: above earns its strictness from the occupancy-grid argument, which is a
+#: statement about copper and says nothing about silkscreen; folding silk
+#: into this count would trade a hard guarantee for a soft one.
 BASELINE_DRC_ERRORS = 0
+
+#: Silk IS a ratchet, and unlike the copper count above it is knowingly
+#: nonzero. ``silk_missing`` fires when a part's courtyard outline could not
+#: be drawn without landing on a pad, and every one of these is a real
+#: defect the fab would print as ink on copper — they are recorded, not
+#: forgiven.
+#:
+#: The count is nonzero because the RULE is newer than the fix: the rule
+#: made a pre-existing population of drops visible, it did not create them.
+#: The fix is specced in ``docs/backlog/pcb-courtyard-polygon.md`` — a
+#: courtyard derived from the hull of the part's own pads cannot overlap
+#: those pads, which makes most of this population unrepresentable rather
+#: than merely rarer.
+#:
+#: **This number may only go DOWN.** Raising it to accept a measurement is
+#: the failure mode; so is lowering it by making the checker quieter, which
+#: is why the routed-nets assertion below must be read alongside it.
+BASELINE_SILK_ERRORS = 27
 
 #: A fixed seed for run-to-run reproducibility of THIS test's own numbers
 #: (the optimizer is simulated annealing). Still asserting direction, not
@@ -180,11 +206,21 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     detail = " | ".join(
         str(f["detail"])[:160] for f in findings if f["severity"] == "error"
     )[:900]
-    assert drc_error_count <= BASELINE_DRC_ERRORS, (
-        f"{drc_error_count} DRC errors (expected {BASELINE_DRC_ERRORS}): "
-        f"{dict(breakdown)} -- inter-net clearance is enforced by the "
-        "occupancy grid, so a clearance finding here means copper reached "
-        f"the board without claiming its corridor first\n{detail}"
+    # Split by class before asserting: the two counts are held to different
+    # standards (hard zero vs. a downward-only ratchet), so summing them
+    # would let a silk drop mask a copper short.
+    silk_errors = sum(n for rule, n in breakdown.items() if rule.startswith("silk"))
+    copper_errors = drc_error_count - silk_errors
+    assert copper_errors <= BASELINE_DRC_ERRORS, (
+        f"{copper_errors} copper-class DRC errors (expected "
+        f"{BASELINE_DRC_ERRORS}): {dict(breakdown)} -- inter-net clearance is "
+        "enforced by the occupancy grid, so a clearance finding here means "
+        f"copper reached the board without claiming its corridor first\n{detail}"
+    )
+    assert silk_errors <= BASELINE_SILK_ERRORS, (
+        f"{silk_errors} silk DRC errors, above the {BASELINE_SILK_ERRORS} "
+        f"baseline: {dict(breakdown)} -- this ratchet only goes down; see "
+        f"docs/backlog/pcb-courtyard-polygon.md\n{detail}"
     )
     assert routed_count >= BASELINE_ROUTED_FANOUT2, (
         f"routed {routed_count}/11 fanout>=2 nets, below the "

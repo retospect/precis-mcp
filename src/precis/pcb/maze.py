@@ -634,9 +634,9 @@ class OccupancyGrid:
             # "claim before draw" discipline this module's own module
             # docstring describes, applied to the one shape (pads) that
             # was exempt from it.
-            via_blocked = (via_blocked | self._pad_keepout_mask(via_dia_mm / 2.0)).reshape(
-                -1
-            )
+            via_blocked = (
+                via_blocked | self._pad_keepout_mask(via_dia_mm / 2.0)
+            ).reshape(-1)
 
         def passable(idx: int) -> bool:
             return not blocked[idx]

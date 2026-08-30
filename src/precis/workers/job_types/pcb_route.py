@@ -287,9 +287,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         ir, ctx.store.pcb_footprints_for(pcb_ref_id)
     )
     rres = pcb_realize.realize(ir, config=realize_config, footprints=footprints)
-    plane_net_ids = {
-        n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0
-    }
+    plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}
     crossing_fail = _residual_crossings(ir, plane_net_ids)
     congestion_fail: dict[str, list[dict[str, Any]]] = {}
     for w in rres.warnings:

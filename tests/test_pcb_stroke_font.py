@@ -75,7 +75,7 @@ def test_every_glyph_except_space_has_at_least_one_stroke_and_a_sane_bbox():
 # that a left-right mirror OR a top-bottom flip would each independently
 # violate.
 def test_f_bars_both_extend_right_of_the_stem_and_upper_bar_is_longer():
-    """"F" is asymmetric in both axes: a mirror (left-right) would put both
+    """ "F" is asymmetric in both axes: a mirror (left-right) would put both
     bars on the WRONG side of the stem; a flip (top-bottom) would make the
     (shorter) lower bar the longer one. Neither transform error is visible
     to a bbox/point-count check -- both are visible here."""

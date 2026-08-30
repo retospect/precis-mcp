@@ -15,6 +15,7 @@ through ``gerber.py``'s own emission ``round()``.
 
 from __future__ import annotations
 
+import itertools
 import math
 import random
 
@@ -483,7 +484,7 @@ def _sample_arc(seg: dict, n: int = 64) -> list[Point]:
 
 def _dist_to_polyline(p: Point, pts: list[Point]) -> float:
     best = math.inf
-    for a, b in zip(pts, pts[1:]):
+    for a, b in itertools.pairwise(pts):
         vx, vy = b[0] - a[0], b[1] - a[1]
         L2 = vx * vx + vy * vy
         t = 0.0 if L2 == 0 else ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / L2

@@ -2769,7 +2769,11 @@ def _tracks_from_path(
     for x, y, this_layer in path.points:
         if this_layer != layer:
             out += _track_from_run(
-                seg_id, net_id, layer, run, width_mm,
+                seg_id,
+                net_id,
+                layer,
+                run,
+                width_mm,
                 fillet_radius_mm=fillet_radius_mm,
             )
             run = [(x, y)]
@@ -2831,9 +2835,7 @@ def _track_from_run(
     segments: list[dict[str, Any]]
     if fillet_radius_mm and fillet_radius_mm > 0.0 and len(run) > 2:
         budget = width_mm / 2.0
-        radius = min(
-            fillet_radius_mm, geom.max_radius_for_deviation(list(run), budget)
-        )
+        radius = min(fillet_radius_mm, geom.max_radius_for_deviation(list(run), budget))
         segments = geom.fillet_polyline(list(run), radius)
     else:
         segments = [

@@ -1379,7 +1379,7 @@ decap's placement constraint is proximity to the pin it decouples, which is
 a different (and stronger) relation than the net star it currently rides on.
 Do not ship the exclusion without answering this.
 
-### Viewer + geometry-quality direction (user, 2026-08-29) — 1,2,3,5 DONE
+### Viewer + geometry-quality direction (user, 2026-08-29) — 1,2,3,5 shipped, 4 open
 
 Shipped: layer-selector SVG rendered from the gerbers
 (`pcb/gerber_view.py`, `view='svg' args={'level':'fab'}`), copper pours
