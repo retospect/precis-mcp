@@ -1259,6 +1259,16 @@ def check_board_edge_clearance(
             continue
         severity, margin = result
         net, layer, ctype = item.get("net"), item.get("layer"), item.get("ctype")
+        # Carry the offending item's own coordinates when it has them.
+        # Without these the finding names a CLASS of object ("a via on
+        # VCC3V3") and not an object, and a board carries many of those --
+        # an investigation then cannot get from the finding to the geometry
+        # without instrumenting a run, which is how a 10um shortfall on this
+        # very rule sat unattributed. Tracks and pours have no single point
+        # and simply omit them.
+        obj: dict[str, Any] = {"net": net, "layer": layer, "ctype": ctype}
+        if item.get("x") is not None and item.get("y") is not None:
+            obj["x"], obj["y"] = float(item["x"]), float(item["y"])
         findings.append(
             DrcFinding(
                 rule="board_edge_clearance",
@@ -1267,7 +1277,7 @@ def check_board_edge_clearance(
                 detail=_margin_detail(
                     "board-edge clearance", gap, capability, field, severity, margin
                 ),
-                objects=({"net": net, "layer": layer, "ctype": ctype},),
+                objects=(obj,),
                 margin_mm=margin,
             )
         )

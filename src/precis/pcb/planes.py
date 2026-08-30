@@ -106,6 +106,31 @@ def _ring(coords: Any) -> list[list[float]]:
     return [[float(x), float(y)] for x, y in coords]
 
 
+def _pour_item(frag: Polygon, layer_name: str, net: str) -> dict[str, Any]:
+    """One ``ctype='pour'`` dict for a single polygon fragment — the
+    exterior ring plus any interior rings ``>= MIN_FRAGMENT_MM2``, exactly
+    the shape :func:`plane_pours` has always emitted. Both :func:`plane_pours`
+    (a fresh pour, cut against every foreign net's copper) and
+    :func:`cut_antipads` (an already-emitted pour, cut a second time against
+    a blocker) build their output dicts through this ONE function, so a
+    caller two ``ctype='pour'`` items apart in the pipeline can never
+    silently disagree on what ``polygon``/``holes`` mean."""
+    item: dict[str, Any] = {
+        "ctype": "pour",
+        "layer": layer_name,
+        "net": net,
+        "polygon": _ring(frag.exterior.coords),
+    }
+    holes = [
+        _ring(ring.coords)
+        for ring in frag.interiors
+        if Polygon(ring).area >= MIN_FRAGMENT_MM2
+    ]
+    if holes:
+        item["holes"] = holes
+    return item
+
+
 def plane_pours(
     *,
     outline: list[list[float]],
@@ -166,20 +191,110 @@ def plane_pours(
         for frag in _as_polygons(region):
             if frag.area < MIN_FRAGMENT_MM2:
                 continue
-            item = {
-                "ctype": "pour",
-                "layer": layer_name,
-                "net": net,
-                "polygon": _ring(frag.exterior.coords),
-            }
-            holes = [
-                _ring(ring.coords)
-                for ring in frag.interiors
-                if Polygon(ring).area >= MIN_FRAGMENT_MM2
-            ]
-            if holes:
-                item["holes"] = holes
-            out.append(item)
+            out.append(_pour_item(frag, layer_name, net))
+    return out
+
+
+def _blocker_layers(item: dict[str, Any]) -> list[str]:
+    """The layer name(s) one ``cut_antipads`` blocker occupies. A
+    ``ctype='via'`` blocker (the only shape :func:`precis.pcb.silk.
+    build_fiducials` ever mints into ``FiducialResult.plane_blockers``,
+    see that dataclass's own docstring) already carries a ``layers`` list
+    of real stackup NAMES, not indices — unlike the copper vias
+    :func:`plane_pours` reads off ``ir.stackup``, this list needs no
+    resolution through :func:`precis.pcb.drc._via_layer_names`, because
+    the caller that built it already knew which single layer the
+    fiducial's flash sits on. A track/pad-shaped blocker (not used today,
+    but ``_copper_item_polygon`` accepts the shape) falls back to its
+    singular ``layer`` key, so this stays a general "what layer(s) does
+    this obstacle occupy" reader rather than a via-only one."""
+    layers = item.get("layers")
+    if layers:
+        return [str(layer_name) for layer_name in layers]
+    layer = item.get("layer")
+    return [str(layer)] if layer else []
+
+
+def cut_antipads(
+    pours: list[dict[str, Any]],
+    blockers: list[dict[str, Any]],
+    *,
+    clearance_mm: float,
+) -> list[dict[str, Any]]:
+    """Punch a no-pour ring around each of ``blockers`` into ``pours`` —
+    the antipad :func:`plane_pours` itself cannot cut for a board-level
+    obstacle that does not exist yet when a plane is realized and
+    persisted (a fiducial, see :class:`precis.pcb.silk.FiducialResult`'s
+    own docstring for exactly why: fiducials are synthesised at RENDER
+    time, in :meth:`precis.handlers.pcb.PcbHandler._board_furniture`,
+    which runs after ``plane_pours`` has already run and its output has
+    already been written to ``pcb_copper`` at realize time). This is the
+    one place that knows how to subtract a keep-out from an already-built
+    pour dict, so a caller with this exact problem reaches for this
+    function rather than inlining shapely geometry a second time next to
+    :func:`plane_pours`'s own boolean-geometry code.
+
+    ``pours`` is ``plane_pours``'s own output shape (``ctype='pour'``,
+    ``polygon``/optional ``holes``) — this does NOT mutate the list or
+    any dict in it; it returns a NEW list, one entry per surviving
+    fragment, in the same emit shape (:func:`_pour_item`, shared with
+    ``plane_pours`` so the two never drift on what a pour dict means).
+    ``blockers`` is :class:`precis.pcb.silk.FiducialResult`'s own
+    ``plane_blockers`` shape today (a ``ctype='via'`` disc per fiducial,
+    already sized to ``mask_dia_mm`` — the swelled MASK opening, not the
+    bare copper disc, so the ring this cuts clears the whole opening a
+    pick-and-place camera looks through, not just the copper under it) —
+    ``clearance_mm`` is added on top of that disc exactly the way
+    ``plane_pours`` buffers every OTHER foreign-net obstacle by its own
+    ``clearance_mm`` before subtracting it, so a fiducial's antipad is
+    sized by the SAME rule as every other keep-out this module cuts, not
+    a second constant invented here (the caller resolves ``clearance_mm``
+    from :mod:`precis.pcb.capabilities`, same as ``plane_pours``'s own
+    callers do — see :func:`precis.pcb.rules.resolve_net_rules`).
+
+    Only a blocker on the SAME layer as a pour is ever cut into it — a
+    ``layers``/``layer`` mismatch (:func:`_blocker_layers`) leaves that
+    pour byte-for-byte untouched, returned as the identical dict object
+    rather than round-tripped through shapely, so a blocker fully outside
+    every pour changes nothing at all, not even float noise. A pour with
+    no matching blocker is likewise passed through unchanged. Existing
+    ``holes`` on an affected pour survive: the polygon this reads off a
+    pour dict already carries them as interior rings
+    (:func:`precis.pcb.drc._copper_item_polygon`'s own ``ctype='pour'``
+    handling), so subtracting a blocker's ring is one more difference
+    against a shape that already has holes in it, not a fresh one that
+    forgets them."""
+    if not pours or not blockers:
+        return list(pours)
+    rings_by_layer: dict[str, list[BaseGeometry]] = {}
+    for item in blockers:
+        poly = _copper_item_polygon(item)
+        if poly is None or poly.is_empty:
+            continue
+        ring = poly.buffer(abs(clearance_mm), quad_segs=_BUFFER_QUAD_SEGS)
+        for layer_name in _blocker_layers(item):
+            rings_by_layer.setdefault(layer_name, []).append(ring)
+
+    out: list[dict[str, Any]] = []
+    for pour in pours:
+        rings = rings_by_layer.get(str(pour.get("layer", "")))
+        if not rings:
+            out.append(pour)
+            continue
+        pour_poly = _copper_item_polygon(pour)
+        if pour_poly is None or pour_poly.is_empty:
+            out.append(pour)
+            continue
+        cut = unary_union(rings)
+        if not pour_poly.intersects(cut):
+            out.append(pour)
+            continue
+        layer_name = str(pour.get("layer", ""))
+        net = str(pour.get("net", ""))
+        for frag in _as_polygons(pour_poly.difference(cut)):
+            if frag.area < MIN_FRAGMENT_MM2:
+                continue
+            out.append(_pour_item(frag, layer_name, net))
     return out
 
 
@@ -216,4 +331,4 @@ def _in_ring(ring: list[list[float]], x: float, y: float) -> bool:
     return inside
 
 
-__all__ = ["MIN_FRAGMENT_MM2", "plane_pours", "point_in_pour"]
+__all__ = ["MIN_FRAGMENT_MM2", "cut_antipads", "plane_pours", "point_in_pour"]

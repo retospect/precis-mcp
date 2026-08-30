@@ -62,6 +62,7 @@ from precis.pcb import export as pcb_export
 from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import ir as pcb_ir
+from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
 from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
@@ -729,6 +730,42 @@ class PcbHandler(Handler):
                 return [[float(p[0]), float(p[1])] for p in geom["path"]]
         return None
 
+    def _furniture_clearance_mm(self, stackup: list[dict[str, Any]]) -> float | None:
+        """The clearance :meth:`_board_furniture` hands to
+        :func:`precis.pcb.planes.cut_antipads` for a fiducial's antipad
+        ring — resolved from :mod:`precis.pcb.capabilities` through
+        :func:`precis.pcb.rules.resolve_net_rules`, the SAME resolver
+        :meth:`_render_drc` already calls per-net a few lines down from
+        its own ``capability_for`` (comment there, verbatim: "an arbitrary
+        True is fine here; realize.py is the caller that resolves
+        per-layer"). No net-class override applies to a fiducial (it
+        carries no net), so this is the fab-floor figure
+        ``resolve_net_rules`` falls back to absent one — the SAME floor
+        :func:`precis.pcb.realize._pour_planes` folds into the
+        ``clearance_mm`` it hands ``plane_pours`` for every OTHER
+        antipad on the same pour. One number, one source, read the same
+        way by both the realize-time cut and this render-time one.
+
+        ``None`` for a stackup layer count :func:`precis.pcb.drc.
+        process_for_stackup` has no capability row for, rather than
+        raising: :meth:`_render_gerber`/:meth:`_render_fab_svg` (unlike
+        :meth:`_render_drc`) never called ``capability_for`` at all
+        before this ring existed, and a board that has not been routed
+        yet — so carries no pour, hence nothing for ``cut_antipads`` to
+        cut — must still export/preview cleanly on an unsupported layer
+        count exactly as it did before. Any board that DOES carry a pour
+        already passed this same ``capability_for`` call at REALIZE time
+        (:func:`precis.workers.job_types.pcb_route._process_for_stackup`),
+        so this can only return ``None`` when there is no pour to cut in
+        the first place."""
+        try:
+            capability = capability_for(pcb_drc.process_for_stackup(stackup))
+        except ValueError:
+            return None
+        return resolve_net_rules(
+            "", layer_is_outer=True, fab_caps=capability
+        ).clearance_mm
+
     def _board_furniture(
         self,
         ir: pcb_ir.PcbIR,
@@ -740,25 +777,42 @@ class PcbHandler(Handler):
         outline: list[list[float]] | list[tuple[float, float]] | None,
         layer_names: list[str],
         slug: str,
+        clearance_mm: float | None,
         date: str | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         dict[str, list[dict[str, Any]]],
         list[str],
         tuple[pcb_silk.SilkPlacement, ...],
+        list[dict[str, Any]],
     ]:
         """Fiducials, title block and silkscreen, assembled ONCE.
 
-        Returns ``(pads, silk_draws, warnings, census)`` — ``pads`` with
-        the fiducial flashes folded in (they are ordinary ``model["pads"]``
-        entries, so copper and the swelled mask opening fall out of the
-        existing pad pipeline untouched), and ``census`` (one
+        Returns ``(pads, silk_draws, warnings, census, copper)`` — ``pads``
+        with the fiducial flashes folded in (they are ordinary
+        ``model["pads"]`` entries, so copper and the swelled mask opening
+        fall out of the existing pad pipeline untouched), ``census`` (one
         :class:`~precis.pcb.silk.SilkPlacement` per per-instance courtyard/
         pin-1/refdes item :func:`~precis.pcb.silk.build_silk` considered)
         for a caller wiring ``view='drc'`` (:meth:`_render_drc`) — the
         structured record :func:`precis.pcb.drc.check_silk_missing`/
         :func:`~precis.pcb.drc.check_silk_printability` read, rather than
-        this function's own ``warnings`` prose.
+        this function's own ``warnings`` prose — and ``copper``, which is
+        the ``copper`` PARAMETER given back with any plane pour on the
+        fiducials' layer antipadded around the fiducial discs just placed
+        (:func:`precis.pcb.planes.cut_antipads`, called below once
+        :func:`~precis.pcb.silk.build_fiducials` has run). A caller MUST
+        use this returned ``copper``, not the one it passed in, for
+        everything downstream (the gerber/DRC/fab-SVG model's
+        ``"copper"`` key) — this function does not mutate the input list
+        in place, so keeping the old reference silently un-does the cut
+        this exists to make. ``clearance_mm`` is the caller's own
+        resolved figure (:meth:`_furniture_clearance_mm`) for that same
+        cut — ``None`` only when the board's stackup has no capability
+        row at all (an unsupported layer count), which reports as a
+        warning and leaves any pour on the fiducials' layer un-cut rather
+        than raising, since a board in that state carries no pour to cut
+        in the first place (that same docstring's own reasoning).
 
         **This exists because there are two render sites** —
         :meth:`_render_gerber` (the fab set a human orders from) and the
@@ -807,7 +861,7 @@ class PcbHandler(Handler):
             )
             warnings.extend(f"silk: {m}" for m in silk_only.dropped)
             warnings.extend(f"silk: {m}" for m in silk_only.relocated)
-            return pads, silk_only.draws, warnings, silk_only.census
+            return pads, silk_only.draws, warnings, silk_only.census, copper
 
         # **Title block FIRST, fiducials second.** Both want a corner of the
         # same bounding box, and only the fiducials can go somewhere else:
@@ -854,23 +908,56 @@ class PcbHandler(Handler):
         fid = pcb_silk.build_fiducials(outline, fid_obstacles, layer=fid_layer)
         warnings.extend(f"fiducial: {m}" for m in fid.dropped)
 
-        # `FiducialResult.plane_blockers` cannot be honoured from here:
-        # antipads are cut at REALIZE time by `planes.plane_pours`, and
-        # this runs at render time off already-realized copper. So a
-        # fiducial on a poured layer is flooded over, which destroys the
-        # optical contrast the target exists for. Nothing downstream
-        # would report that, so report it here — a defect that presents
-        # as a picture looking slightly wrong is one nobody attributes.
-        if any(
-            c.get("ctype") == "pour" and str(c.get("layer") or "") == fid_layer
-            for c in copper
-        ):
+        # `FiducialResult.plane_blockers` cut in HERE, at render time, off
+        # the already-realized+persisted pours — `planes.plane_pours` ran
+        # at REALIZE time, before these fiducials existed, so it could not
+        # have antipadded them (see that dataclass's own docstring for the
+        # timing gap). `cut_antipads` punches the same no-pour ring
+        # `plane_pours` would have, sized off the SAME `clearance_mm` this
+        # handler resolves from `capabilities.py` (the caller's own
+        # docstring), around each fiducial's MASK opening (the blocker
+        # discs are already sized to `mask_dia_mm`, not the bare copper).
+        # Non-pour copper (tracks/vias/pads) passes through untouched.
+        pour_items = [c for c in copper if c.get("ctype") == "pour"]
+        if fid.plane_blockers and pour_items and clearance_mm is None:
+            # No capability row for this stackup (see
+            # `_furniture_clearance_mm`'s own docstring) — a board that
+            # somehow carries a pour anyway (it should not: pouring one
+            # requires the same lookup to have already succeeded at
+            # realize time) is reported here rather than crashing a
+            # render that otherwise has nothing to do with this cut.
             warnings.append(
-                f"fiducial: {fid_layer} carries a copper pour, which floods the "
-                "fiducial targets — they need an antipad cut at realize time "
-                "(FiducialResult.plane_blockers), which this render-time path "
-                "cannot do"
+                f"fiducial: no fab capability row for this stackup — "
+                f"pour(s) on {fid_layer} left uncut around the fiducials"
             )
+        elif fid.plane_blockers and pour_items:
+            assert clearance_mm is not None  # narrowed by the branch above
+            cut_pours = pcb_planes.cut_antipads(
+                pour_items, fid.plane_blockers, clearance_mm=clearance_mm
+            )
+            copper = [c for c in copper if c.get("ctype") != "pour"] + cut_pours
+            # The cut is geometry, not a promise — verify the invariant it
+            # exists for (a fiducial's mask opening is clear of copper)
+            # rather than trusting it silently. The one way this can
+            # legitimately still fail: the antipad ring's own area falls
+            # under `MIN_FRAGMENT_MM2` (`cut_antipads` reuses the SAME
+            # noise floor `plane_pours` uses for a sliver fragment, shared
+            # via `_pour_item`), so the hole is filtered out as buffering
+            # noise and the pour re-solidifies over the fiducial — a real
+            # fiducial-mask-opening-vs-fab-noise-floor collision, not a
+            # timing gap this function can no longer close.
+            for fx, fy in fid.fiducials:
+                if any(
+                    str(p.get("layer") or "") == fid_layer
+                    and pcb_planes.point_in_pour(p, fx, fy)
+                    for p in cut_pours
+                ):
+                    warnings.append(
+                        f"fiducial: antipad ring at ({fx:.2f}, {fy:.2f}) on "
+                        f"{fid_layer} was too small to survive as a real hole "
+                        f"(< {pcb_planes.MIN_FRAGMENT_MM2}mm^2) — the pour "
+                        "still covers this fiducial"
+                    )
 
         pads = pads + fid.pads
 
@@ -892,7 +979,7 @@ class PcbHandler(Handler):
         draws = {side: list(items) for side, items in silk_result.draws.items()}
         draws.setdefault("top", []).extend(title.draws)
         draws.setdefault("top", []).extend(sn.draws)
-        return pads, draws, warnings, silk_result.census
+        return pads, draws, warnings, silk_result.census, copper
 
     def _drc_pads(self, ref_id: int, layers: list[str]) -> list[dict[str, Any]]:
         """This design's pads, in :mod:`precis.pcb.gerber` model shape.
@@ -1199,16 +1286,19 @@ class PcbHandler(Handler):
             for i in design["instances"]
         }
         vias = [c for c in copper if c.get("ctype") == "via"]
-        pads, silk_draws, furniture_warnings, _silk_census = self._board_furniture(
-            ir,
-            pads,
-            vias=vias,
-            instance_sides=instance_sides,
-            copper=copper,
-            outline=outline,
-            layer_names=layer_names,
-            slug=slug,
-            date=_export_date(),
+        pads, silk_draws, furniture_warnings, _silk_census, copper = (
+            self._board_furniture(
+                ir,
+                pads,
+                vias=vias,
+                instance_sides=instance_sides,
+                copper=copper,
+                outline=outline,
+                layer_names=layer_names,
+                slug=slug,
+                clearance_mm=self._furniture_clearance_mm(board["stackup"]),
+                date=_export_date(),
+            )
         )
         warnings.extend(furniture_warnings)
 
@@ -1480,16 +1570,26 @@ class PcbHandler(Handler):
         # `run_geometric_drc` has no structured rule for them yet; the
         # gerber/fab-SVG render paths still surface this same prose to a
         # human inspecting those artifacts.
-        pads, silk_draws, _furniture_warnings, silk_census = self._board_furniture(
-            ir,
-            pads,
-            vias=vias,
-            instance_sides=instance_sides,
-            copper=copper,
-            outline=outline,
-            layer_names=layer_names,
-            slug=slug,
-            date=_export_date(),
+        # `clearance_mm` reused straight off the `capability` row already
+        # resolved above rather than a second `capability_for` call — see
+        # `_furniture_clearance_mm`'s own docstring for why this is the
+        # SAME figure `plane_pours` itself used to cut this board's other
+        # antipads at realize time.
+        pads, silk_draws, _furniture_warnings, silk_census, copper = (
+            self._board_furniture(
+                ir,
+                pads,
+                vias=vias,
+                instance_sides=instance_sides,
+                copper=copper,
+                outline=outline,
+                layer_names=layer_names,
+                slug=slug,
+                clearance_mm=resolve_net_rules(
+                    "", layer_is_outer=True, fab_caps=capability
+                ).clearance_mm,
+                date=_export_date(),
+            )
         )
         model = {
             "layers": layer_names,
@@ -1676,16 +1776,19 @@ class PcbHandler(Handler):
         copper = self.store.pcb_copper_list(int(board["board_id"]))
         vias = [c for c in copper if c.get("ctype") == "via"]
         outline = self._outline_from_features(ref_id) or []
-        pads, silk_draws, furniture_warnings, _silk_census = self._board_furniture(
-            ir,
-            pads,
-            vias=vias,
-            instance_sides=instance_sides,
-            copper=copper,
-            outline=outline,
-            layer_names=layer_names,
-            slug=slug,
-            date=_export_date(),
+        pads, silk_draws, furniture_warnings, _silk_census, copper = (
+            self._board_furniture(
+                ir,
+                pads,
+                vias=vias,
+                instance_sides=instance_sides,
+                copper=copper,
+                outline=outline,
+                layer_names=layer_names,
+                slug=slug,
+                clearance_mm=self._furniture_clearance_mm(board["stackup"]),
+                date=_export_date(),
+            )
         )
         model: dict[str, Any] = {
             "layers": layer_names,

@@ -67,13 +67,16 @@ _SEED = 1
 #: (``docs/backlog/pcb-engine-plan.md``, "0.390 vs 0.400mm — 10um short";
 #: "GND in 3 pieces; VCC3V3 in 2").
 #:
-#: - ``clearance`` (2): a fiducial (net ``""``) flooded by a GND pour.
-#:   Fiducials are synthesised at RENDER time; pour antipads are cut at
-#:   REALIZE time; neither knows about the other, so the optical alignment
-#:   targets are buried under copper on the delivered gerber. A fiducial
-#:   MAY sit inside a flood — it just needs a no-pour ring around it, which
-#:   is the fix: an antipad, not relocation. Tracked as
-#:   ``docs/backlog/pcb-fiducial-vs-copper.md``.
+#: - ``clearance`` -- FIXED. A fiducial (net ``""``) used to come back
+#:   flooded by a GND pour: fiducials are synthesised at RENDER time, pour
+#:   antipads used to be cut only at REALIZE time, and neither pass knew
+#:   about the other, so the optical alignment targets shipped buried under
+#:   copper on the delivered gerber. The fix is exactly what a fiducial
+#:   inside a flood always needed — a no-pour ring, not relocation:
+#:   ``handlers/pcb.py::_board_furniture`` now cuts one straight into the
+#:   already-realized pour dicts via ``planes.cut_antipads`` immediately
+#:   after ``build_fiducials`` runs, sized off the same fab-capability
+#:   ``clearance_mm`` ``plane_pours`` itself uses.
 #: - ``board_edge_clearance`` (1): a VCC3V3 via 10um inside the 0.400mm
 #:   4-layer V-cut floor. Mechanism unattributed — the rule persists no
 #:   coordinates, so which via placed it is still open.
@@ -89,7 +92,6 @@ _SEED = 1
 #: defects, never for new ones. **Lower each number as its item ships**; a
 #: stale allowance is indistinguishable from an unnoticed regression.
 KNOWN_OPEN_DRC_ERRORS = {
-    "clearance": 2,
     "board_edge_clearance": 1,
     "connectivity": 2,
     "silk_missing": 61,

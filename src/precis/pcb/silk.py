@@ -666,13 +666,20 @@ class FiducialResult:
     has to be a blocker at all — an unlisted pad gets flooded straight
     over). Sized to ``mask_dia_mm``, not the bare copper disc, so the
     antipad clears the whole mask opening, not just the copper underneath
-    it. **This module cannot fold it in itself**: ``plane_pours`` runs at
-    REALIZE time (:func:`precis.pcb.realize._pour_planes`, before a pour
-    is ever written to ``pcb_copper``), while this module only ever runs
-    at render time, off already-realized copper — a caller that wants
-    fiducials excluded from an already-poured plane has to feed
-    ``plane_blockers`` into ``_pad_blockers``'s own output list at
-    realize time, not here.
+    it. **This module cannot fold it into ``plane_pours`` itself**:
+    ``plane_pours`` runs at REALIZE time (:func:`precis.pcb.realize.
+    _pour_planes`, before a pour is ever written to ``pcb_copper``), while
+    this module only ever runs at render time, off already-realized
+    copper — a fiducial does not exist yet when the plane it would need
+    to avoid is poured. That gap does NOT leave a plane-poured fiducial
+    flooded, though: :meth:`precis.handlers.pcb.PcbHandler.
+    _board_furniture` (the one caller of :func:`build_fiducials`) feeds
+    this same list straight into :func:`precis.pcb.planes.cut_antipads`
+    immediately afterward, which punches the ring into the ALREADY-BUILT
+    pour dicts instead — a second, render-time-shaped cut rather than the
+    realize-time one ``plane_pours`` would have done, landing in the
+    gerbers/DRC model/fab SVG identically because all three read the
+    pours ``cut_antipads`` returns, not the ones ``plane_pours`` wrote.
 
     ``silk_keepouts`` is ``pads``-shaped too (radius ``mask_dia_mm``, no
     ``net``/``layer``) but for THIS module's own obstacle checks — pass
