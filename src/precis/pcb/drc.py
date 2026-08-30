@@ -1,99 +1,81 @@
 """Geometric DRC on realized copper (L5) — pcb-guided-place-route Slice 8.
 
-**The DRC split, restated** (see ``ir.py``'s own module docstring for its
-half): the backlog's DRC section was re-cut 2026-08-27 into two engines at
-the IR level boundary. ``ir.py`` owns **graph feasibility** (L0-L4, no
-geometry, no shapely) and runs *inside* the optimizer's constraint set.
+**The DRC split** (see ``ir.py``'s module docstring for its half): two
+engines at the IR level boundary. ``ir.py`` owns **graph feasibility**
+(L0-L4, no geometry, no shapely), inside the optimizer's constraint set.
 This module owns **geometric DRC** (L5, on realized copper) — class-rule
 clearance, trace width, annular ring, courtyard overlap, board-edge
 clearance — the *final* check, not the main event. Both emit
-``pcb_drc_findings`` rows and share ``view='drc'`` (``handlers/pcb.py``);
+``pcb_drc_findings`` rows, share ``view='drc'`` (``handlers/pcb.py``);
 ``eyes.drc_lite`` is superseded and retired.
 
 **Input model**: the same copper-model dict :mod:`precis.pcb.realize`
-produces (:func:`precis.pcb.realize.to_gerber_model`) and
+produces (:func:`precis.pcb.realize.to_gerber_model`) that
 :mod:`precis.pcb.gerber` consumes — ``{"layers": [...], "outline": [...],
-"copper": [{"ctype": "track"|"via"|"pour", ...}]}`` (see that module's
-docstring for the exact per-``ctype`` shape). This module never invents a
-second geometry representation for the same board.
+"copper": [{"ctype": "track"|"via"|"pour", ...}]}`` (exact per-``ctype``
+shape: that module's docstring). Never a second geometry representation
+for the same board.
 
-**``realize.py`` now emits ``ctype='via'`` copper** (2026-08-28, closing
-the master backlog's "no via geometry is realized" gap) — wherever a
-track's routed layer differs from its pads' layer, always carrying
-``span``/``layers``, never a scalar ``layer`` (:class:`~precis.pcb.
-realize.RealizedVia`'s own docstring explains why that distinction is
-load-bearing here). :func:`check_annular_ring` and the via halves of
-:func:`check_clearance`/:func:`check_npth_clearance` — correct and covered
-by synthetic-model tests since this module was written — now have real
-production input to check, not just synthetic fixtures.
+``realize.py`` emits ``ctype='via'`` copper wherever a track's routed
+layer differs from its pads' layer, always carrying ``span``/``layers``,
+never a scalar ``layer`` (:class:`~precis.pcb.realize.RealizedVia`'s
+docstring: why that distinction is load-bearing here) — real input for
+:func:`check_annular_ring` and the via halves of
+:func:`check_clearance`/:func:`check_npth_clearance`.
 
-**Two-tier margin, not bare pass/fail** (backlog, verbatim: "report the
-margin"). Every rule reads BOTH tiers off :mod:`precis.pcb.capabilities` —
-``jlc_min`` (the fab's published, unmanufacturable-below floor) and
-``house_default`` (our deliberate margin above it) — and a finding fires
-in one of two severities: **error** when a value is below ``jlc_min``
-outright (unmanufacturable), **warn** when it clears ``jlc_min`` but still
-eats into the ``house_default`` margin. Either way the finding's
-``margin_mm`` and ``detail`` name the exact numbers ("JLC min 3.5 mil,
-house default 6, this trace spends 2.5 mil of headroom") — never a bare
-boolean. A ``None`` capability field (JLC publishes no figure for that
-process/field — see ``capabilities.py``) means the rule genuinely does not
-apply and is silently skipped, never treated as a violated zero.
+**Two-tier margin, not bare pass/fail.** Every rule reads both tiers off
+:mod:`precis.pcb.capabilities`: ``jlc_min`` (fab's published,
+unmanufacturable-below floor) and ``house_default`` (our margin above
+it). A finding fires **error** below ``jlc_min`` (unmanufacturable) or
+**warn** clearing ``jlc_min`` but eating ``house_default`` margin — either
+way ``margin_mm``/``detail`` name the exact numbers, never a bare boolean.
+A ``None`` capability field (JLC publishes none for that process/field)
+means the rule doesn't apply — silently skipped, never a violated zero.
 
-**The class-rule clearance rule reads BOTH the fab capability row AND a
+**Class-rule clearance reads both the fab capability row and a
 ``pcb_net_classes`` override, through ONE resolver.** ``trace_spacing_mm``
-is JLC's own name for copper-to-copper clearance, keyed by *process*
-(2-layer/4-layer/aluminum — the "class" in "class rule" here), mirroring
-the precedent already set by :func:`precis.pcb.escape.compute_gaps` — that
-stays the absolute floor no clearance may go below. A net whose class
-carries an authored ``pcb_net_classes.rules.clearance_mm`` (or whose
-current annotation implies a wider IPC-2221 trace, which in turn implies
-more copper-to-copper room is worth having) resolves through
-:func:`precis.pcb.rules.resolve_net_rules` — the SAME resolver
-:mod:`precis.pcb.realize` uses for track width and :mod:`precis.pcb.cost`
-uses for ``thermal_rise`` — and :func:`check_clearance`'s caller supplies
-the resolved :class:`~precis.pcb.rules.NetRules` per net name via
-``net_rules=``. Passing ``net_rules=None`` (the default) keeps today's
-capability-only behaviour for a caller that hasn't computed one yet.
+is JLC's name for copper-to-copper clearance, keyed by process
+(2-layer/4-layer/aluminum — the "class"), same precedent as
+:func:`precis.pcb.escape.compute_gaps`; that stays the absolute floor. A
+net whose class carries an authored ``pcb_net_classes.rules.clearance_mm``
+(or whose current annotation implies a wider IPC-2221 trace, hence more
+room) resolves through :func:`precis.pcb.rules.resolve_net_rules` — the
+SAME resolver :mod:`precis.pcb.realize` uses for track width and
+:mod:`precis.pcb.cost` uses for ``thermal_rise``. :func:`check_clearance`'s
+caller supplies the resolved :class:`~precis.pcb.rules.NetRules` per net
+name via ``net_rules=``; ``None`` (default) keeps capability-only
+behaviour.
 
-**Board-edge clearance is two fields, not one** — ``board_edge_clearance_
-routed_mm`` vs. ``..._vcut_mm``. When the caller doesn't know the panel
-type yet, :func:`check_board_edge_clearance` uses the V-cut figure (the
-conservative one, per ``capabilities.py``'s own guidance).
+**Board-edge clearance is two fields**: ``board_edge_clearance_routed_mm``
+vs. ``..._vcut_mm``. Unknown panel type → :func:`check_board_edge_clearance`
+uses the V-cut figure (the conservative one, per ``capabilities.py``).
 
-**The O(n^2) reference oracle — the highest-value code in this module.**
-:func:`clearance_violations_naive` computes every same-layer,
-different-net track/via pair's exact copper-to-copper gap using ONLY
-closed-form circle/segment math (no shapely, no spatial index, no shared
-code with the accelerated path below the primitive-flattening step) and is
-asserted equal to :func:`check_clearance`'s STRtree-accelerated engine over
-many randomized layouts (``tests/test_pcb_drc.py``). This build has
-already shipped four silent-but-fatal bugs that crashed nothing and failed
-no type check (an inverted hardening penalty, a schedule-mismatched
-acceptance test, a temperature decayed below eligibility, an estimator
-that was provably always zero) — a spatial-index bug that silently misses
-a neighbour is the same family, and produces a clean DRC pass on a shorted
-board. Pour polygons are checked by the accelerated engine only (not
-cross-validated by the dependency-free oracle, which is deliberately
-restricted to the circle/capsule primitives that make closed-form math
-possible) — a stated, not silent, gap in oracle coverage.
+**The O(n^2) reference oracle.** :func:`clearance_violations_naive`
+computes every same-layer, different-net track/via pair's exact
+copper-to-copper gap via closed-form circle/segment math only (no
+shapely, no spatial index, no code shared with the accelerated path) and
+is asserted equal to :func:`check_clearance`'s STRtree-accelerated engine
+over randomized layouts (``tests/test_pcb_drc.py``) — guards against a
+spatial-index bug that silently misses a neighbour and produces a clean
+DRC pass on a shorted board. Pour polygons are checked by the accelerated
+engine only — not cross-validated (the oracle is deliberately restricted
+to circle/capsule primitives for closed-form math) — a stated gap in
+oracle coverage.
 
-**A reference oracle only checks the inputs it's fed.** ``clearance_
-violations_naive`` was correct against every synthetic fixture it was
-ever tested with and still shipped a real bug (see its own docstring: it
-compared only each group's FIRST primitive when deciding two items shared
-a layer, so a multi-layer via with a partially-overlapping span could be
-silently skipped) — the fixtures never exercised that shape until real
-via geometry existed. Agreement with a synthetic-fixture oracle is not
-proof of correctness against production geometry; it's proof of
-agreement on the shapes tested.
+**A reference oracle only checks the inputs it's fed**: ``clearance_
+violations_naive`` was correct against every synthetic fixture and still
+shipped a real bug (its own docstring: compared only each group's FIRST
+primitive when deciding two items shared a layer, so a multi-layer via
+with a partially-overlapping span could be silently skipped). Agreement
+with a synthetic-fixture oracle proves agreement on the shapes tested,
+not correctness against production geometry.
 
-**STRtree, and why it's used only for the clearance rule.** Copper-to-copper
-clearance is the one genuinely O(n^2) rule (every different-net pair on a
-layer is a candidate); the others (trace width, annular ring, NPTH
-clearance, board-edge clearance) are O(n) or O(n . holes) per-item checks
-that don't need a spatial index. Courtyard overlap is also pairwise and
-uses the same STRtree machinery, at instance rather than copper-item scale.
+**STRtree is used only for the clearance rule**: copper-to-copper
+clearance is the one genuinely O(n^2) rule (every different-net pair per
+layer is a candidate); trace width, annular ring, NPTH clearance and
+board-edge clearance are O(n) or O(n·holes) per-item, no spatial index
+needed. Courtyard overlap is also pairwise and uses the same STRtree
+machinery, at instance rather than copper-item scale.
 """
 
 from __future__ import annotations
@@ -112,6 +94,8 @@ from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
 from shapely.strtree import STRtree  # type: ignore[import-untyped]
 
 from precis.pcb.capabilities import CapabilityRow
+from precis.pcb.geom import _orient, dist_point_to_segment
+from precis.pcb.geom import dist as _dist
 from precis.pcb.rules import NetRules
 
 Coord = tuple[float, float]
@@ -565,26 +549,6 @@ def _copper_primitives(model: dict[str, Any]) -> list[_Prim]:
     return prims
 
 
-def _dist(a: Coord, b: Coord) -> float:
-    return math.hypot(a[0] - b[0], a[1] - b[1])
-
-
-def _dist_point_to_segment(p: Coord, a: Coord, b: Coord) -> float:
-    ax, ay = a
-    bx, by = b
-    px, py = p
-    dx, dy = bx - ax, by - ay
-    length2 = dx * dx + dy * dy
-    if length2 < 1e-12:
-        return _dist(p, a)
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
-    return _dist(p, (ax + t * dx, ay + t * dy))
-
-
-def _orient(a: Coord, b: Coord, c: Coord) -> float:
-    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-
-
 def _on_segment(p: Coord, q: Coord, r: Coord, *, eps: float = 1e-9) -> bool:
     """``q`` assumed collinear with ``p``/``r``: is it between them?"""
     return (
@@ -628,17 +592,17 @@ def _capsule_capsule_gap(x: _Prim, y: _Prim) -> float:
         center = _dist(x.a, y.a)
     elif x.b is None:
         assert y.b is not None  # the first branch already excluded "both circles"
-        center = _dist_point_to_segment(x.a, y.a, y.b)
+        center = dist_point_to_segment(x.a, y.a, y.b)
     elif y.b is None:
-        center = _dist_point_to_segment(y.a, x.a, x.b)
+        center = dist_point_to_segment(y.a, x.a, x.b)
     elif _segments_intersect(x.a, x.b, y.a, y.b):
         center = 0.0
     else:
         center = min(
-            _dist_point_to_segment(x.a, y.a, y.b),
-            _dist_point_to_segment(x.b, y.a, y.b),
-            _dist_point_to_segment(y.a, x.a, x.b),
-            _dist_point_to_segment(y.b, x.a, x.b),
+            dist_point_to_segment(x.a, y.a, y.b),
+            dist_point_to_segment(x.b, y.a, y.b),
+            dist_point_to_segment(y.a, x.a, x.b),
+            dist_point_to_segment(y.b, x.a, x.b),
         )
     return max(0.0, center - x.r - y.r)
 
@@ -802,7 +766,7 @@ def check_npth_clearance(
             d = (
                 _dist(p.a, (hx, hy))
                 if p.b is None
-                else _dist_point_to_segment((hx, hy), p.a, p.b)
+                else dist_point_to_segment((hx, hy), p.a, p.b)
             )
             best = min(best, d - hr - p.r)
         if best is math.inf:

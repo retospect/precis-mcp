@@ -111,18 +111,13 @@ class PcbIR:
     )  # object[n_inst] -> str (opaque id = index; refdes is a late label)
     inst_extended_part: np.ndarray  # bool[n_inst] (JLC "Extended" part fee applies)
     #: object[n_inst] -> str | None — the catalog LCSC C-number
-    #: (``pcb_components.part_lcsc``), when the instance's type is a real
-    #: catalog part. This is the join key a caller with real footprint
-    #: data (:meth:`~precis.store.Store.pcb_footprints_for`, keyed by
-    #: C-number) needs to build the refdes-keyed ``footprints`` dict
-    #: :func:`precis.pcb.realize.pad_geometry` accepts — added 2026-08-29
-    #: because that dict's own docstring records the exact gap: the store
-    #: query already joins ``pcb_components`` and already has this column,
-    #: :meth:`Store.pcb_graph` just never selected it, so nothing built
-    #: from that graph had anywhere to carry it. ``None`` for an
-    #: instance with no linked catalog part (a mounting hole, a
-    #: hand-authored placeholder) — never an empty string, so a caller
-    #: can tell "no part" from "empty C-number" without a second sentinel.
+    #: (``pcb_components.part_lcsc``) when the instance is a real catalog
+    #: part; ``None`` for an unlinked instance (mounting hole,
+    #: hand-authored placeholder) — never an empty string, so a caller can
+    #: tell "no part" from "empty C-number". The join key a caller with
+    #: real footprint data (:meth:`~precis.store.Store.pcb_footprints_for`,
+    #: keyed by C-number) needs to build the refdes-keyed ``footprints``
+    #: dict :func:`precis.pcb.realize.pad_geometry` accepts.
     instance_part_lcsc: np.ndarray
     pin_instance: np.ndarray  # int32[n_pins]
     pin_label: np.ndarray  # object[n_pins] -> str (pad name; export label only)
@@ -132,34 +127,25 @@ class PcbIR:
     #: to place one in board space; do not add these to ``inst_x``/``inst_y``
     #: directly or you silently drop rotation and side.
     #:
-    #: Before this existed, EVERY pin of an instance resolved to the instance
-    #: centroid, so a 14-pin MCU emitted 14 tracks on 14 different nets all
-    #: starting at ONE coordinate. Measured effect: ~600 `clearance` DRC
-    #: errors at an exact 0.000mm gap (coincident before routing, so no
-    #: router could fix them), `crossings` computed on a degenerate graph,
-    #: and ROTATE / SIDE_FLIP / PIN_SWAP all provably cost-neutral for want
-    #: of sub-instance geometry.
-    #:
     #: **ALWAYS SYNTHESIZED today** by :mod:`precis.pcb.landpattern` —
     #: dimensionally sane for the pin count, but not the real part.
     #: :func:`from_graph` takes no ``footprints`` argument, so there is no
     #: path by which a cached pad's real offset can reach this array.
+    #: Without it every pin of an instance resolves to the instance
+    #: centroid: coincident tracks (spurious 0mm ``clearance`` errors no
+    #: router can fix), ``crossings`` computed on a degenerate graph, and
+    #: ROTATE/SIDE_FLIP/PIN_SWAP all provably cost-neutral for want of
+    #: sub-instance geometry.
     #:
-    #: This comment used to claim "populated from real ``part_footprints``
-    #: pads where cached", which was never true. Recording the correction
-    #: rather than quietly deleting it, because the false claim is exactly
-    #: what would stop someone noticing the gap: pad SIZE *is* now taken
-    #: from the real footprint (see ``pin_w``/``pin_h`` below and
-    #: :func:`precis.pcb.realize.pad_geometry`), so a cached part's pads
-    #: are reported at the right size and a **synthesized position**. The
-    #: fab export is unaffected — ``handlers/pcb.py::_render_gerber``
-    #: sources position and size together from
-    #: :func:`precis.pcb.padplace.board_pads`, bypassing the IR — but the
-    #: router, DRC and the ``level='fab'`` preview all read this array.
-    #:
-    #: Closing it means reconciling per-pin real offsets with netlist pin
-    #: identity through the L0 pin model; ``pin_offsets_synthesized`` says
-    #: which is which and must never be lost on the way to fabrication.
+    #: Pad SIZE (``pin_w``/``pin_h`` below) IS taken from the real
+    #: footprint when cached (:func:`precis.pcb.realize.pad_geometry`) —
+    #: this OFFSET is not; ``pin_offsets_synthesized`` records which is
+    #: which and must never be lost on the way to fabrication. Fab export
+    #: is unaffected (:func:`precis.pcb.padplace.board_pads` sources
+    #: position+size together, bypassing the IR) but the router, DRC and
+    #: the ``level='fab'`` preview all read this array. Closing the gap
+    #: means reconciling per-pin real offsets with netlist pin identity
+    #: through the L0 pin model.
     pin_dx: np.ndarray
     pin_dy: np.ndarray
     #: bool[n_pins] — True where the offset above is a synthesized estimate
@@ -169,19 +155,13 @@ class PcbIR:
     pin_offsets_synthesized: np.ndarray
     #: float64[n_pins] — this pin's own pad SIZE, footprint-local mm,
     #: independent of ``pin_dx``/``pin_dy`` above (a pad's extent is not
-    #: implied by its position). Added 2026-08-29: before this every pin
-    #: in the whole engine — the maze router's obstacle grid, DRC, the
-    #: pre-fab-parts gerber preview — read one hardcoded 0.2mm keep-out
-    #: radius (the since-deleted ``maze.PAD_RADIUS_MM``) regardless of
-    #: package, so a 0402
-    #: chip pad, a QFN thermal pad and a BGA ball all reserved the
-    #: identical 0.4mm disc. :func:`from_graph` fills this from
+    #: implied by its position). :func:`from_graph` fills this from
     #: :mod:`precis.pcb.landpattern`'s package-family synthesis
     #: (:func:`~precis.pcb.landpattern.sizes_for`) by default;
-    #: :func:`precis.pcb.realize.pad_geometry` is where a caller with real
-    #: cached ``part_footprints`` pad geometry overrides this per pin —
-    #: never a second parallel size store, so router/DRC/gerber-preview
-    #: cannot read three different numbers for one pad again.
+    #: :func:`precis.pcb.realize.pad_geometry` overrides per pin when real
+    #: cached ``part_footprints`` geometry exists — the ONE size store, so
+    #: router/DRC/gerber-preview never read conflicting numbers for one
+    #: pad.
     pin_w: np.ndarray
     pin_h: np.ndarray
     #: object[n_pins] -> str ('circle'|'rect') — real SMD pads are not
@@ -883,39 +863,29 @@ def _layer_graph(ir: PcbIR, layer: int) -> tuple[int, int, list[list[int]]]:
 
 
 def same_layer_crossing_bound(ir: PcbIR, layer: int, *, refine: bool = False) -> int:
-    """**DEMOTED (2026-08-28) to a pure FEASIBILITY predicate — this is
-    NOT the ``crossings`` cost-term backing any more; see
-    :func:`same_layer_crossing_count` for that.** This function answers
-    "is this layer's segment graph forced non-planar" (equivalently: can
-    it even in principle be drawn on one layer without a crossing) —
-    which is what it always actually computed, despite once being used as
-    a cost estimate for "how many crossings does the CURRENT layout have".
+    """**Feasibility predicate only — not the ``crossings`` cost-term
+    backing** (:func:`same_layer_crossing_count` is). Answers "is this
+    layer's segment graph forced non-planar" (could it in principle be
+    drawn on one layer without a crossing) via the classical Euler
+    planar-graph edge bound: a simple planar graph on V>=3 vertices has at
+    most 3V-6 edges, so ``E - (3V - 6)`` (when positive) can't all be
+    drawn without a crossing.
 
-    **Why it is provably unusable as a cost backing, found on contact
-    2026-08-28**: this is the classical Euler planar-graph edge bound —
-    a simple planar graph on V≥3 vertices has at most 3V-6 edges, so
-    ``E - (3V - 6)`` edges (when positive) cannot ALL be drawn without
-    some crossing. :func:`from_graph` star-decomposes every net (one hub
-    pin, spokes to the rest), and a real board's physical pin belongs to
-    exactly ONE net — so two different nets' segments never share a
-    vertex, which makes a layer's ENTIRE segment graph a vertex-disjoint
-    FOREST of per-net stars. A forest always satisfies ``E <= V-1 <=
-    3V-6``, so this bound evaluates to exactly zero on any board built the
-    normal way — not "usually small", PROVABLY zero, forever, regardless
-    of how badly the layout actually overlaps in 2D. A forest is planar
-    in the abstract (this function is honest about that) and can still be
-    DRAWN with arbitrarily many crossings — abstract planarity says
-    nothing about a particular embedding's geometry, which is exactly
-    what a layout's actual crossing count depends on. Kept, unmodified,
-    as the cheap, geometry-free "could this layer even in principle avoid
-    a crossing" check (:func:`per_layer_planar`) — a real, useful
-    question, just a different one from "does it currently cross".
+    Provably always zero on a real board: :func:`from_graph`
+    star-decomposes every net (one hub pin, spokes), and a pin belongs to
+    exactly one net, so a layer's entire segment graph is a
+    vertex-disjoint FOREST of per-net stars — a forest always satisfies
+    ``E <= V-1 <= 3V-6``. Abstract planarity says nothing about a
+    particular embedding's geometry (a forest can still be DRAWN with
+    arbitrarily many crossings), which is why this cannot back a "does it
+    currently cross" cost term. Kept as the cheap, geometry-free
+    feasibility check (:func:`per_layer_planar`).
 
-    ``refine=False`` (coarse/L1): one bound over the whole layer's graph —
+    ``refine=False`` (coarse/L1): one bound over the whole layer's graph,
     O(1) after counting V, E. ``refine=True`` (finer/L2): the same bound
-    computed **per connected component and summed**, which is provably
-    ≥ the coarse bound (components can't share crossings), so it is
-    tighter without changing the underlying formula.
+    per connected component, summed — provably >= the coarse bound
+    (components can't share crossings), tighter without changing the
+    formula.
     """
     v, e, components = _layer_graph(ir, layer)
     if not refine:
@@ -1113,57 +1083,34 @@ def segment_points(
 
 def instance_pad_radius(ir: PcbIR) -> np.ndarray:
     """Per-instance distance from the part centre to its outermost PIN —
-    i.e. how much room its land pattern occupies by pin OFFSET alone,
+    how much room its land pattern occupies by pin OFFSET alone,
     deliberately **not** widened by pad SIZE (``pin_w``/``pin_h``).
 
-    This exists because a single fixed courtyard radius is not merely
-    imprecise, it is *wrong by construction* for anything with more than
-    a few pins: :data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` is
-    1.0mm, but a 14-pin dual-row land pattern reaches 2.27mm. Two such
-    parts separated by the nominal 2.0mm centre-to-centre have physically
-    interleaved pads — different nets' copper starting from the same
-    coordinate, which no router can undo and which the fixed-radius
-    courtyard check cannot even see.
+    Needed because a fixed courtyard radius is wrong by construction for
+    anything with more than a few pins:
+    :data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` is 1.0mm, but a
+    14-pin dual-row land pattern reaches 2.27mm — two such parts at the
+    nominal 2.0mm centre-to-centre physically interleave pads.
 
-    **Measured 2026-08-29: folding pad SIZE into this bound regresses the
-    acceptance fixture, and stays regressed at the exact bound.** Offset
-    alone is the same defect as the fixed-radius one, at a finer grain —
-    a pin's centre can sit well inside a legal-looking separation while
-    its pad's own copper still reaches past it — so a pad-size-aware
-    version was tried twice: first a LOOSE bound
-    (``hypot(dx, dy) + hypot(w, h) / 2``, offset plus the pad's own
-    enclosing-circle radius), then the EXACT axis-aligned far-corner
-    distance (``hypot(abs(dx) + w/2, abs(dy) + h/2)`` — exact because
-    this IR has no per-pin rotation independent of ``inst_rot``, so every
-    pad is axis-aligned in its footprint-local frame). Both were measured
-    against ``tests/test_pcb_reference_end_to_end.py``'s ESP32-C3
-    fixture, seeds 1-5 (baseline: 0 DRC errors, 11/11 fanout>=2 nets
-    routed, on every seed):
+    **Deliberately offset-only, not pad-size-aware — do not widen without
+    first fixing router capacity.** A pad-size-aware bound (loose:
+    ``hypot(dx, dy) + hypot(w, h) / 2``; exact axis-aligned far-corner:
+    ``hypot(abs(dx) + w/2, abs(dy) + h/2)`` — exact because no per-pin
+    rotation is independent of ``inst_rot`` here) is measurably tighter,
+    but on ``tests/test_pcb_reference_end_to_end.py``'s ESP32-C3 fixture
+    it produces MORE unrouted nets on some seeds (zero DRC legality
+    findings either way — every regression is ``unrouted``, never a
+    placement-legality violation). The tighter keep-out exceeds what
+    :mod:`precis.pcb.maze`'s router can absorb at its current
+    iteration/schedule budget: a router CAPACITY limit, not a
+    placement-legality bug, and out of this function's scope to fix. See
+    :func:`instance_keepout_radius_mm` for the shared consumer-facing
+    keep-out formula this feeds.
 
-    - loose bound: 4/7/2/4/3 unrouted findings, 7/4/9/7/8 of 11 routed —
-      every seed regressed.
-    - exact bound: 2/0/0/4/0 unrouted findings, 9/11/11/7/11 of 11 routed
-      — 3 of 5 seeds fully recovered, but seeds 1 and 4 still regressed.
-
-    Zero DRC clearance/courtyard/connectivity findings in every run at
-    either bound — placement legality itself was never the problem, every
-    finding was ``unrouted``. The keep-out really is too loose today (the
-    exact bound is measurably tighter than the loose one and measurably
-    better), but tightening it correctly exceeds what
-    :mod:`precis.pcb.maze`'s router can absorb at the current
-    iteration/schedule budget on 2 of 5 seeds — a router CAPACITY limit,
-    not a placement-legality bug. Fixing that is out of this function's
-    scope (and this module may not edit the router), so this stays
-    offset-only until that capacity gap is closed; widening this without
-    it is a straight regression on a ratcheted acceptance test, not a
-    tuning question. See :func:`instance_keepout_radius_mm` for the
-    shared consumer-facing keep-out formula this feeds — unaffected by
-    which bound this function eventually uses.
-
-    Rotation-invariant: the maximum is over a radius, so it holds for any
-    ``inst_rot``. A pinless instance (mounting hole, fiducial) gets 0.0 —
-    the caller is expected to floor this with whatever body radius it
-    believes in, since this function only knows about pins.
+    Rotation-invariant (the max is over a radius, holds for any
+    ``inst_rot``). A pinless instance (mounting hole, fiducial) gets
+    0.0 — the caller floors this with whatever body radius it believes
+    in.
     """
     out = np.zeros(ir.n_instances, dtype=np.float64)
     if ir.n_pins == 0:

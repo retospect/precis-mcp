@@ -72,6 +72,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.pcb import stroke_font
+from precis.pcb.geom import dist_point_to_segment, point_in_polygon
 from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM
 from precis.pcb.ir import PcbIR, instance_pad_radius
 from precis.pcb.landpattern import rotate_offset
@@ -115,43 +116,16 @@ class SilkResult:
 # ─────────────────────────────────────────────────────────────────────
 # pure 2D overlap primitives — no shapely; a rotated text/outline box
 # against an axis-aligned circle/rect pad is exactly SAT + point-to-
-# polygon distance, both a few lines, and :mod:`precis.pcb.geom`'s own
-# "pure, no dependencies" discipline for this subsystem's cheap eyes.
+# polygon distance (both from :mod:`precis.pcb.geom`), both a few lines.
 # ─────────────────────────────────────────────────────────────────────
-def _point_in_polygon(p: Point, poly: list[Point]) -> bool:
-    x, y = p
-    inside = False
-    n = len(poly)
-    for i in range(n):
-        x1, y1 = poly[i]
-        x2, y2 = poly[(i + 1) % n]
-        if (y1 > y) != (y2 > y):
-            x_at_y = (x2 - x1) * (y - y1) / (y2 - y1) + x1
-            if x < x_at_y:
-                inside = not inside
-    return inside
-
-
-def _dist_point_to_segment(p: Point, a: Point, b: Point) -> float:
-    ax, ay = a
-    bx, by = b
-    px, py = p
-    dx, dy = bx - ax, by - ay
-    length2 = dx * dx + dy * dy
-    if length2 < 1e-12:
-        return math.hypot(px - ax, py - ay)
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-
-
 def _polygon_overlaps_circle(poly: list[Point], center: Point, radius: float) -> bool:
     if radius <= 0:
-        return _point_in_polygon(center, poly)
-    if _point_in_polygon(center, poly):
+        return point_in_polygon(center, poly)
+    if point_in_polygon(center, poly):
         return True
     n = len(poly)
     return any(
-        _dist_point_to_segment(center, poly[i], poly[(i + 1) % n]) <= radius
+        dist_point_to_segment(center, poly[i], poly[(i + 1) % n]) <= radius
         for i in range(n)
     )
 

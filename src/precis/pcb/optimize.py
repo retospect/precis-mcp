@@ -1,195 +1,95 @@
-"""The joint place+route optimizer — ONE engine over a shared
-(placement, sketch) state, per docs/backlog/pcb-guided-place-route.md
-§"Joint place+route optimizer". **Slice 6 ships the walking skeleton: the
-move set is restricted to placement (translate, rotate 90°, swap-pair).**
-Slice 7 turns on topology/layer/pin-swap moves *in this same engine* — the
-move-generator registry, the schedule-as-data shape, and the incremental
-cost-delta plumbing below are all written so that slice only adds registry
-entries, never restructures this module (backlog, verbatim: "not a second
-engine: 6 and 7 are one optimize.py shipped in two steps").
+"""Joint place+route optimizer: one engine, one (placement, sketch) state,
+per docs/backlog/pcb-guided-place-route.md §"Joint place+route optimizer".
+Slice 6 restricts the move set to placement (translate, rotate 90°,
+swap-pair); slice 7 adds topology/layer/pin-swap moves as new
+:data:`MOVE_GENERATORS` entries — the state, cost plumbing and SA loop
+below don't change shape for that.
 
-**Why place and route are one engine, not two stages** (backlog): the
-classic place-then-route split is a workaround for maze routing, where a
-route *is* geometry and any component move invalidates it. Under
-:mod:`precis.pcb.ir`'s rubber-band sketch, topology (L0-L2) is invariant to
-a small placement (L3) perturbation — a component move dirties L3/L4/L5
-and leaves L1/L2 untouched (see ``PcbIR.move_instance``). Slice 6 only
-*exercises* placement moves, but the state, the cost plumbing and the SA
-loop are the shared ones slice 7 extends, not a placement-only algorithm
-that would need rewriting.
+One engine, not place-then-route, because under :mod:`precis.pcb.ir`'s
+rubber-band sketch topology (L0-L2) is invariant to a placement (L3)
+perturbation — a move dirties L3/L4/L5 only (see ``PcbIR.move_instance``).
 
-**The hard locality constraint** (backlog, verbatim): "every cost term
-must decompose into local contributions with an efficient delta... a term
-requiring board-wide re-evaluation per move is disqualified however cheap
-it looks." This module never calls :func:`precis.pcb.cost.evaluate_cost`
-per move — that would silently violate the constraint regardless of how
-fast any one call happens to be at a 30-component test board. Instead:
+**Hard locality constraint**: every cost term must decompose into a
+bounded per-move delta; a term needing board-wide re-evaluation is
+disqualified regardless of cost. This module never calls
+:func:`precis.pcb.cost.evaluate_cost` per move. Per-term locality:
 
-- :mod:`precis.pcb.cost` was extended (behaviour-preserving refactor, same
-  tests, same numbers) to expose single-item evaluators alongside its
-  existing full-board loops: :func:`~precis.pcb.cost.gap_capacity_term`,
-  :func:`~precis.pcb.cost.loop_inductance_term`,
-  :func:`~precis.pcb.cost.coupling_pair_term` /
-  :func:`~precis.pcb.cost.coupling_candidates`, and
-  :func:`~precis.pcb.cost.board_area_term`. This engine calls those
-  per-item functions for exactly the segments/pairs a move can affect,
-  never re-deriving the whole board's terms.
-- ``layer_count``, ``via_count``, ``extended_part_fees`` and
-  ``thermal_rise`` are **provably invariant under a placement-only move**
-  (they read ``seg_layer``/``net_plane_layer``/``inst_extended_part``/
-  ``net_class`` — none of which a translate/rotate/swap touches), so they
-  are evaluated ONCE at construction and never touched again for the rest
-  of slice 6's restricted move set. Slice 7's layer/topology moves dirty
-  ``layer_count`` (:meth:`OptimizeEngine._refresh_layer_count`, a full
-  O(n_segments) rescan — the set of layers in use is a whole-board
-  aggregate, same carve-out as ``board_area``) and, since 2026-08-28,
-  ``via_count`` too (:meth:`OptimizeEngine._refresh_via_count_for_segment`
-  — via count is a per-segment SUM, not a set aggregate, so unlike
-  ``layer_count`` it gets a real O(1) bounded delta: see
-  :func:`precis.pcb.rules.implied_via_count`'s docstring for why a via
-  count only ever depends on its OWN segment's net/layer fields). Before
-  that fix ``via_count`` read ``ir.n_vias``, a field nothing in production
-  ever grew, so treating it as move-invariant was accidentally correct
-  (0 always) rather than a real locality argument — this is exactly the
-  kind of registry-entry addition the module docstring anticipated.
-- ``board_area`` is the one registered term that genuinely cannot
-  decompose locally — a bounding box is a whole-board aggregate by
-  definition, not an oversight of this engine. It is recomputed via
-  :func:`~precis.pcb.cost.board_area_term` (an O(n_instances) scan) after
-  every move rather than pretended away; O(n_instances), not
-  O(n_segments) or O(board geometry), is the honest cost this buys —
-  cheap in practice (board scale here is bounded by the fab's own part
-  count) but flagged here rather than silently declared compliant with
-  the locality rule, per this task's "if the spec is wrong on contact,
-  say so" instruction.
-- ``gap_capacity``'s per-segment "nearest other instance" search is
-  ``ir.py``'s own shipped algorithm (O(n_instances) per segment, no
-  spatial index yet — a documented future accelerant, not this slice's
-  job). What IS this engine's job is knowing *which* segments a move can
-  invalidate without re-running that search for every segment on the
-  board: :func:`precis.pcb.ir.nearest_other_instance` returns which
-  instance realized the minimum, cached here as ``_seg_nearest_instance``.
-  A moved instance ``M`` can only invalidate a segment ``s`` if (a) ``s``
-  is incident to ``M`` (its own search origin moved), (b) ``s``'s cached
-  nearest instance *was* ``M`` (the previous answer just moved and needs
-  re-confirming), or (c) ``M``'s new position is now closer to ``s`` than
-  ``s``'s cached distance (M "cuts in front" of whatever was nearest) —
-  checked via one vectorized numpy comparison over all segments'
-  endpoint-to-``M`` distance, not a re-derivation of anything expensive.
-  Only segments flagged by (a)-(c) get a real (bounded) re-search; this is
-  *exact*, not an approximation — see ``tests/test_pcb_optimize.py``'s
-  delta-correctness property test.
-- ``loop_inductance`` depends only on a segment's own two endpoints, never
-  another instance's position, so its delta is trivially local: recompute
-  only for segments incident to the moved instance(s).
-- ``coupling``'s *candidate list* (which segments are aggressor/victim
-  material at all) is position-independent — computed once
-  (:func:`~precis.pcb.cost.coupling_candidates`) and never touched again.
-  Only the *pairwise proximity* changes with placement, and only for pairs
-  naming a moved segment, so a move re-scores at most
-  ``|touched candidates| x |all candidates|`` pairs — bounded by the
-  candidate list's size ("dozens, not thousands" per the backlog), never
-  by segment count.
+- ``layer_count``, ``via_count``, ``extended_part_fees``,
+  ``thermal_rise``: invariant under slice-6 moves (read only
+  ``seg_layer``/``net_plane_layer``/``inst_extended_part``/``net_class``,
+  none touched by translate/rotate/swap) — evaluated once at
+  construction. Slice 7 dirties both: :meth:`OptimizeEngine.
+  _refresh_layer_count` (O(n_segments) full rescan — a whole-board
+  aggregate, same carve-out as ``board_area``); :meth:`OptimizeEngine.
+  _refresh_via_count_for_segment` (O(1) bounded per-segment delta — a via
+  count depends only on its own segment's net/layer, see
+  :func:`precis.pcb.rules.implied_via_count`).
+- ``board_area``: cannot decompose locally (a bbox is a whole-board
+  aggregate) — recomputed via :func:`~precis.pcb.cost.board_area_term`,
+  O(n_instances), every move. Flagged rather than silently claimed
+  compliant with the locality rule.
+- ``gap_capacity``: the nearest-other-instance search
+  (:func:`precis.pcb.ir.nearest_other_instance`) is O(n_instances) per
+  segment, no spatial index. ``_seg_nearest_instance`` caches the last
+  answer per segment; a moved instance ``M`` only invalidates segment
+  ``s`` if (a) ``s`` is incident to ``M``, (b) ``s``'s cached nearest
+  *was* ``M``, or (c) ``M``'s new position beats ``s``'s cached distance
+  (one vectorized numpy comparison over all segments). Only flagged
+  segments get a real re-search — exact, not approximate (see
+  ``tests/test_pcb_optimize.py``'s delta-correctness property test).
+- ``loop_inductance``: depends only on a segment's own endpoints —
+  recompute only segments incident to the moved instance(s).
+- ``coupling``: the candidate list
+  (:func:`~precis.pcb.cost.coupling_candidates`) is position-independent,
+  computed once; only pairwise proximity is re-scored, only for pairs
+  naming a moved segment — bounded by candidate-list size ("dozens, not
+  thousands"), never by segment count.
 - ``crossings`` (:func:`precis.pcb.cost.crossings_term_for_layer`, backed
-  since 2026-08-28 by :func:`precis.pcb.ir.same_layer_crossing_count`'s
-  geometric sweep-line count — the Euler-bound backing this engine used
-  to maintain via a per-layer running ``(V, E)`` pair was retired: it was
-  provably always zero on a real board (a star-decomposed segment graph
-  is a vertex-disjoint forest — see that function's own docstring for the
-  proof), so an ``(V, E)`` cache tracking it, however O(1) per move,
-  was maintaining an incremental delta for a quantity that could never
-  move. The GEOMETRIC count cannot be maintained the same way — a
-  vertex/edge tally has nothing to do with whether two segments' straight
-  lines happen to cross — so the incremental structure changed shape, not
-  just its backing formula:
-  ``_segments_by_layer`` (``{layer: {seg_id, ...}}``, the segment
-  membership index a geometric recount needs to enumerate "the rest of
-  that layer") plus ``_seg_crossing_partners`` (``{seg_id: {other_seg_id,
-  ...}}``, which OTHER same-layer segments ``seg_id`` currently crosses —
-  a symmetric adjacency cache) plus ``_layer_crossing_count`` (the
-  per-layer total, ``sum(len(partners)) / 2`` maintained as a running
-  int, never recomputed from the sets). :meth:`OptimizeEngine.
-  _recompute_seg_crossings` is the bounded delta: for ONE touched segment,
-  discard its cached partnerships (O(old partner count)), then retest it
-  against every OTHER segment CURRENTLY on its (possibly new) layer —
-  O(layer size), never O(board) — exactly the "recount intersections
-  involving the touched segments against the rest of that layer, not all
-  pairs" shape the fix's design called for. Called once per segment
-  incident to a moved instance (TRANSLATE/ROTATE/SWAP, inside
-  :meth:`_rescan_after_move` — geometry changed) and once for a
-  ``LAYER_ASSIGN`` move's single segment (layer membership changed).
-  SIDE_FLIP and PIN_SWAP never touch a segment's INSTANCE-centroid
-  endpoints (see those move kinds' own notes below), so neither ever
-  calls this — provably cost-neutral for ``crossings`` specifically, not
-  merely untested.
+  by :func:`precis.pcb.ir.same_layer_crossing_count`'s geometric
+  sweep-line count): ``_segments_by_layer`` (segment-membership index per
+  layer) + ``_seg_crossing_partners`` (symmetric same-layer-crossing
+  adjacency cache per segment) + ``_layer_crossing_count`` (running int,
+  ``sum(len(partners)) / 2``, never recomputed from scratch).
+  :meth:`OptimizeEngine._recompute_seg_crossings` is the bounded delta:
+  for one touched segment, discard its cached partnerships (O(old
+  partner count)), retest against every other currently-same-layer
+  segment (O(layer size), never O(board)). Called once per segment
+  incident to a moved instance for TRANSLATE/ROTATE/SWAP (inside
+  :meth:`_rescan_after_move`) and once for a ``LAYER_ASSIGN`` move's
+  segment. SIDE_FLIP and PIN_SWAP never move an instance centroid, so
+  neither calls this — provably cost-neutral for ``crossings``.
+- ``courtyard_overlap`` (gr267456): a uniform spatial grid
+  (``_courtyard_grid``) buckets instance ids by ``floor(x / cell),
+  floor(y / cell)`` with ``cell == cost.COURTYARD_MIN_SEPARATION_MM`` —
+  cell size equal to the interaction radius makes the 3x3-neighbourhood
+  query (:meth:`OptimizeEngine._courtyard_candidates_near`) exact.
+  :meth:`OptimizeEngine._refresh_courtyard` is the bounded delta (discard
+  cached partnerships, relocate in grid, retest 3x3 neighbourhood) —
+  call-order-independent for a multi-instance move (SWAP). Only
+  overlapping pairs are cached.
+- ``board_edge_clearance`` (gr267456): depends only on the moved instance
+  + ``ir.outline`` — O(1) delta, no grid: :meth:`OptimizeEngine.
+  _refresh_board_edge` re-evaluates
+  :func:`~precis.pcb.cost.board_edge_clearance_term` for that instance.
+  When ``ir.outline`` exists, ``_placement_bounds`` (via
+  :func:`~precis.pcb.cost.outline_bbox`, the same approximation the cost
+  term uses) replaces the synthetic ``(0, board_side)`` TRANSLATE clamp
+  square, capped to ``board_side`` per axis (anchored at the outline's
+  min corner) rather than uncapped: an uncapped clamp against an
+  oversized/placeholder outline more than quadrupled DRC errors on the
+  ESP32-C3 reference fixture, because the cooling schedule (still
+  ``board_side``-derived, not outline-aware) lets a component drift too
+  far to walk back once hardened.
 
-- ``courtyard_overlap`` (gr267456: the spatial-exclusion gap — nothing in
-  ``cost.py`` gave the optimizer any signal against two components
-  physically overlapping) is maintained through a **uniform spatial
-  grid**, the standard collision-detection accelerant for this shape of
-  problem: ``_courtyard_grid`` buckets instance ids by
-  ``floor(x / cell), floor(y / cell)`` with ``cell ==
-  cost.COURTYARD_MIN_SEPARATION_MM`` (the SAME threshold the term itself
-  collides at) — choosing the cell size equal to the interaction radius
-  is what makes a 3x3-neighbourhood query (:meth:`OptimizeEngine.
-  _courtyard_candidates_near`) provably EXACT, not an approximation: any
-  two instances within that radius of each other must share a cell or be
-  in adjacent cells, since the radius can't span more than one full cell
-  width in either axis. :meth:`OptimizeEngine._refresh_courtyard` is the
-  bounded delta — mirrors :meth:`_recompute_seg_crossings`'s discard-then-
-  rebuild-fresh shape exactly (drop the moved instance's cached
-  partnerships, relocate it in the grid, retest only against its new
-  3x3 neighbourhood) — and, like that method, is correct regardless of
-  call order for a multi-instance move (SWAP): whichever instance is
-  refreshed second simply rediscovers the first's already-current
-  position. Only overlapping pairs are cached (a non-overlapping pair
-  contributes 0 to the margin max either way, so omitting it costs
-  nothing — same reasoning ``_seg_crossing_partners`` already relies on).
-- ``board_edge_clearance`` (gr267456 addendum) depends only on the ONE
-  moved instance's own position and the board's ``outline`` (never
-  another instance's), so its delta is trivially local — O(1) per moved
-  instance, no grid needed: :meth:`OptimizeEngine._refresh_board_edge`
-  just re-evaluates :func:`~precis.pcb.cost.board_edge_clearance_term`
-  for that one instance. The move generator gets the prevention half of
-  the same fix: when ``ir.outline`` exists, ``_placement_bounds`` (its
-  bounding box, via :func:`~precis.pcb.cost.outline_bbox` — the SAME
-  approximation the cost term uses, not a second one) replaces the
-  synthetic ``(0, board_side)`` square TRANSLATE otherwise clamps to, so
-  a part is never proposed outside the real board in the first place —
-  cheaper than relying on the margin penalty to walk it back in.
-  **Capped to ``board_side`` per axis** (anchored at the outline's own
-  min corner, not the synthetic square's origin) rather than used
-  uncapped: measured on the ESP32-C3 reference fixture, an uncapped
-  clamp against a genuinely oversized/placeholder outline (300x300mm
-  against a ~30mm natural component footprint) more than quadrupled
-  total DRC errors on the same run — this engine's cooling schedule
-  (``t0``/step size, both still derived from the SAME n-instance
-  ``board_side`` heuristic, not outline-aware) lets a component drift far
-  during the still-permissive early schedule with no realistic way back
-  once it hardens, a classic SA schedule-vs-search-domain mismatch, not a
-  defect in clamping itself (see :meth:`OptimizeEngine.__init__`'s own
-  note for the full measurement). Capping bounds how much LARGER than
-  today's calibration an authored outline can make the search domain,
-  while a real, comparably- (or more tightly-) sized outline still governs
-  and gets genuine prevention.
+**Not claimed local**: :func:`precis.pcb.cost.aggregate_margin`'s max is a
+linear scan over cached per-item penalties, O(cached entries) not
+O(touched) — fine at this slice's scale (hundreds of entries); a
+lazy-deletion max-heap is the production-scale fix, not built.
 
-**What is NOT claimed local, on purpose.** Aggregating the margin family
-(:func:`precis.pcb.cost.aggregate_margin`'s max) over the already-cached
-per-item penalties is a linear scan over however many margin entries exist
-— cheap (these are floats already sitting in a dict, not a geometry
-re-derivation) but genuinely O(cached entries), not O(touched). At this
-slice's board scale (a few hundred entries) that is microseconds; a
-production-scale board would want an incrementally-maintained max
-structure (a lazy-deletion max-heap) instead of this linear scan — noted
-here as the natural next step rather than built now, since the *expensive*
-work (the physics above) is what the hard locality rule is actually
-protecting against.
-
-**Constraint hardening IS the schedule** (backlog, verbatim — the same
-mechanism as the cost function's convexity): this engine drives
-:func:`precis.pcb.cost.hardened_penalty`'s ``schedule`` parameter from 0
-(exploratory) to 1 (barrier) linearly over the anneal's iteration count.
-It does not invent a second hardening mechanism.
+**Constraint hardening is the schedule**: this engine drives
+:func:`precis.pcb.cost.hardened_penalty`'s ``schedule`` linearly 0
+(exploratory) → 1 (barrier) over the anneal's iteration count — no second
+hardening mechanism.
 """
 
 from __future__ import annotations
@@ -359,38 +259,22 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
     ),
 )
 
-#: **Known, expected characteristic, not a bug — and now narrower than it
-#: used to be.** No term registered in ``cost.py`` reads ``inst_rot``
-#: (component-centroid granularity — the same limitation ``place.py``
-#: documented: "rotation has no effect on the crossing metric until real
-#: pad offsets land"), so ROTATE stays cost-neutral under every
-#: currently-registered term: its ``total()`` delta is a true, provable
-#: zero, not an approximation rounding to zero. It is still exercised
-#: here (dirty cascade honoured, `fixed='rot'` respected) so the
-#: move-generator registry, the schedule, and the delta-correctness
-#: plumbing are already exactly the shape a future cost.py term (real
-#: per-pin footprint offsets for ROTATE, the same data
-#: :func:`precis.pcb.pinswap.offsets_from_pads` now wires through for
-#: PIN_SWAP) needs to land into.
+#: **ROTATE is cost-neutral, provably** — no term in ``cost.py`` reads
+#: ``inst_rot`` (component-centroid granularity, same limitation
+#: ``place.py`` documents), so its ``total()`` delta is a true zero. Still
+#: exercised (dirty cascade honoured, `fixed='rot'` respected) so the
+#: registry/schedule/delta plumbing is ready for a future per-pin-offset
+#: term (the data :func:`precis.pcb.pinswap.offsets_from_pads` already
+#: wires through for PIN_SWAP).
 #:
-#: **SIDE_FLIP is cost-neutral too, and still genuinely CANNOT be
-#: otherwise at this engine's fidelity — the reason changed on 2026-08-28
-#: when `crossings` moved from the Euler bound to a GEOMETRIC sweep-line
-#: count, but the conclusion didn't.** ``crossings`` is now backed by
-#: :func:`precis.pcb.ir.same_layer_crossing_count`, which reads segment
-#: endpoints at INSTANCE-centroid granularity (the same fidelity every
-#: other L3 term here uses — no sub-instance pad geometry exists in the
-#: IR yet). ``seg_side`` records WHICH SIDE of an obstacle a connection
-#: routes, a property the realizer's arcs/tangents would need but that
-#: never perturbs an instance's own (x, y) — so a straight-line count
-#: between component centroids is structurally blind to it, same as it
-#: is blind to `inst_rot`. A term that responded to a side flip would
-#: need real sub-instance geometry (the same missing ingredient ROTATE's
-#: note names) or realize.py's face tracing — both out of scope here.
-#: SIDE_FLIP remains exercised here (dirty cascade honoured) so the
-#: plumbing is ready the moment ``sketch.py``'s anchor vocabulary (still
-#: an explicitly open backlog item) gives a side choice real geometric
-#: meaning.
+#: **SIDE_FLIP is cost-neutral too**, for the same reason: ``crossings``
+#: (:func:`precis.pcb.ir.same_layer_crossing_count`) reads segment
+#: endpoints at INSTANCE-centroid granularity, and ``seg_side`` (which
+#: side of an obstacle a connection routes — needed by the realizer's
+#: arcs/tangents) never perturbs an instance's own (x, y). Blind until
+#: sub-instance geometry or realize.py's face tracing exists. Still
+#: exercised (dirty cascade honoured) for the same future-readiness
+#: reason.
 #:
 #: LAYER_ASSIGN and PLANE_PROMOTE/DEMOTE are NOT cost-neutral: LAYER_
 #: ASSIGN's ``layer_count`` money term AND ``crossings`` margin term
@@ -398,14 +282,12 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
 #: ``net_plane_layer``) AND ``gap_capacity`` (the plane-exclusion branch)
 #: respond to those moves — see :meth:`OptimizeEngine._refresh_layer_count`,
 #: :meth:`OptimizeEngine._recompute_seg_crossings` and
-#: :func:`precis.pcb.cost.gap_capacity_term`. PIN_SWAP is its own
-#: separate story: see :mod:`precis.pcb.pinswap`'s module docstring — its
-#: effect is real and measured by that module's own crossing evaluator
-#: (now over REAL per-pin geometry when the caller supplies footprint
-#: pads via :func:`precis.pcb.pinswap.offsets_from_pads`), but still
-#: invisible to ``total()`` (no term registered in ``cost.py`` reads pin
-#: identity or sub-instance pad position — pin swap's payoff lives
-#: entirely in pinswap.py's own linearized matching, not the registry).
+#: :func:`precis.pcb.cost.gap_capacity_term`. PIN_SWAP's effect is real
+#: but measured entirely by :mod:`precis.pcb.pinswap`'s own crossing
+#: evaluator (over real per-pin geometry via
+#: :func:`precis.pcb.pinswap.offsets_from_pads` when supplied), never by
+#: ``total()`` — no ``cost.py`` term reads pin identity or sub-instance
+#: pad position.
 
 
 @dataclass(frozen=True, slots=True)

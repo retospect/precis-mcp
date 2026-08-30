@@ -1,136 +1,82 @@
-"""ONE cost function, refined by level-dependent estimators, hardened by a
-schedule-dependent penalty shape. See docs/backlog/pcb-guided-place-route.md
-§"The cost function" — this module is written out in full because
-everything downstream (the joint optimizer, the digest, the LLM's
-between-round judgment) depends on it being right.
+"""ONE cost function (:func:`evaluate_cost`), refined by level-dependent
+estimators, hardened by a schedule-dependent penalty shape — see
+docs/backlog/pcb-guided-place-route.md §"The cost function".
 
-**Three things this file keeps deliberately separate** (conflating them is
-the single easiest way to make an optimizer thrash):
+**Three axes, kept separate** (conflating them thrashes the optimizer):
 
-- **the cost function** — :func:`evaluate_cost`, constant across levels
-  AND across the schedule; it never gets a different formula for "early"
-  vs "late" or "coarse" vs "fine".
-- **estimator fidelity** — each :class:`TermSpec.estimate` looks at more
-  of the IR as ``level`` increases (an L1 call may not touch L3
-  positions even though they exist on the object; an L4 call may). This
-  is the *only* thing ``level`` controls.
-- **constraint hardness** — :data:`CostConfig.schedule`, which sharpens
-  the margin penalty shape (:func:`hardened_penalty`) from exploratory
-  (quadratic) toward a barrier. This is the *only* thing ``schedule``
-  controls.
+- the cost function — constant across levels and the schedule.
+- estimator fidelity — each :class:`TermSpec.estimate` reads more of the
+  IR as ``level`` increases (an L1 call may skip L3 positions that exist
+  on the object; an L4 call may not) — the only thing ``level`` controls.
+- constraint hardness — :data:`CostConfig.schedule` sharpens
+  :func:`hardened_penalty` from quadratic (exploratory) toward a barrier
+  — the only thing ``schedule`` controls.
 
-**Admissibility is two-sided (revised 2026-08-28).** Every estimator must
-be optimistic in its OWN declared direction — never the reverse — but
-"optimistic" means different things for different terms, so each
-:class:`TermSpec` now carries an explicit :class:`BoundDirection`:
+**Admissibility is two-sided**: each :class:`TermSpec` declares a
+:class:`BoundDirection`. LOWER (default; every term but ``crossings``):
+may understate cost/overstate feasibility, never the reverse (A*
+admissibility, coarse ``raw`` <= fine ``raw``) — a bad-looking coarse
+state really is bad, safely prunable. UPPER (``crossings`` only, see its
+own docstring): may overstate cost, never understate (coarse ``raw`` >=
+fine ``raw``) — a good-looking (near-zero) coarse state really is good.
+Both sound; tested per-term, not one global inequality
+(``tests/test_pcb_cost.py``).
 
-- **LOWER** (the original rule, and every term registered before
-  ``crossings``): the estimate may understate cost or overstate
-  feasibility, never the reverse (A* admissibility). Payoff: a state that
-  looks bad at a coarse level really is bad and can be pruned without
-  discarding a good solution — coarse ``raw`` <= fine ``raw``.
-- **UPPER** (``crossings`` only, see that term's docstring): the estimate
-  may overstate cost, never understate it — coarse ``raw`` >= fine
-  ``raw``. Payoff mirrors LOWER exactly: a state that looks GOOD (a small
-  or zero upper bound) really is good, so driving it to zero is a real,
-  trustworthy guarantee, which is exactly what a LOWER bound cannot give
-  you (a LOWER bound of zero says nothing about the truth).
-
-Both directions are sound; what matters is that each term's direction is
-DECLARED and TESTED, not that every term points the same way. Tested as a
-property in ``tests/test_pcb_cost.py`` — generate random IR states,
-evaluate every registered term at a coarse and a fine level, and assert
-EACH term's own declared direction holds, per-term, not one global
-``coarse.total <= fine.total`` inequality (which stopped being true the
-moment ``crossings`` needed the opposite direction).
-
-**Discrete vs. continuous, and why every term must be move-reachable.**
-A cost term over a CONTINUOUS variable that rewards an exact coincidence
-(round to a 25 mm grid, an alignment match) is measure-zero: a continuous
-move reaches the rewarded state with probability zero, so the term never
-fires — indistinguishable from a working term by any other test. The
-original ``crossings`` estimator was the degenerate case of this same
-defect: the Euler-bound backing it shipped with was provably always zero
-on any real, star-decomposed board (a forest satisfies the bound
-unconditionally — see ``ir.same_layer_crossing_bound``'s docstring), so
-random states/moves alone could never have produced two distinct values
-either. A term over a DISCRETE variable (which side a label sits on, a
-small candidate set) has no such trap — a plain cost term is fine. Tested
-as a registry-driven property in ``tests/test_pcb_cost.py``: for every
-registered term, generate randomized IR states, apply every available
-``optimize.MoveKind``, and assert the term's own aggregate takes at least
-two distinct values across that exploration — a term that can't vary is
-either dead or measure-zero, and the registry (not a per-term test
-someone has to remember to write) is what demands the check.
+**Every term must be move-reachable.** A continuous-variable term
+rewarding an exact coincidence (grid round, alignment match) is
+measure-zero — a continuous move reaches it with probability zero, so it
+never fires, indistinguishable from dead code. (The old ``crossings``
+Euler-bound estimator was exactly this defect: a star-decomposed board is
+always a forest, so the bound was provably always zero — see
+``ir.same_layer_crossing_bound``'s docstring.) A discrete-variable term
+(side, small candidate set) has no such trap. Tested via a
+registry-driven property (``tests/test_pcb_cost.py``): apply every
+``optimize.MoveKind`` to randomized IR states and assert each registered
+term's aggregate takes >=2 distinct values.
 
 **Undefined != zero.** A term with nothing to measure yet at this level
-(gap capacity before L4) must still return a nonzero, *admissible* bound —
-never literally 0, which would tell the optimizer congestion is free and
-produce states that look excellent at L1 and are unroutable at L4. Every
-estimator below that has a coarse/fine split says explicitly, in its
-docstring, what the coarse bound assumes and why it's still ≤ the truth.
+(e.g. gap capacity before L4) must return a nonzero *admissible* bound,
+never literal 0 — 0 tells the optimizer congestion is free. Each such
+estimator's own docstring states its coarse assumption and why it still
+bounds the truth.
 
 **Two families, aggregated differently.** Money terms (board area, layer
-count, via count, part fees) normalize to USD and **sum** — money is
-fungible and additive. Margin terms (clearance, loop inductance,
-coupling, thermal rise, same-layer crossings) normalize to *fraction of
-that term's own budget* and aggregate by **max** (or a soft p-norm) — a
-sum would let 500 nets at
-5% of budget drown the one net actually at 99%, which is exactly the net
-that matters. See :func:`aggregate_margin`.
+count, via count, part fees) normalize to USD and **sum**. Margin terms
+(clearance, loop inductance, coupling, thermal rise, same-layer
+crossings) normalize to fraction-of-own-budget and aggregate by **max**
+(or a soft p-norm) via :func:`aggregate_margin` — summing would let 500
+nets at 5% drown the one net at 99%.
 
-**Convexity IS the hardening schedule — one mechanism, not two.**
+**Convexity is the hardening schedule** — one mechanism:
 :func:`hardened_penalty` is superlinear in budget fraction always
-(quadratic at ``schedule=0``, sharpening toward a steep barrier at
-``schedule=1``), so a state at 95% of every budget costs far more than
-one at 50%/40% even though both "sum to the same" under a naive linear
-model — the first has no room for manufacturing variance.
+(quadratic at ``schedule=0``, a steep barrier at ``schedule=1``), so 95%-
+of-budget costs far more than 50%/40% even though a linear model would
+sum them the same.
 
-**One dial.** :data:`CostConfig.risk_to_money` is the sole
-risk<->money exchange rate. Everything else a term needs derives from a
-small :class:`Criticality` enum (consequence of violation, not a
-per-term tuning knob) plus the term's own physical budget. Only relative
-weights matter; sweep the dial for a Pareto front rather than guessing
-a single "right" value (backlog, verbatim).
+**One dial**: :data:`CostConfig.risk_to_money` is the sole risk<->money
+exchange rate; everything else derives from a small :class:`Criticality`
+enum (consequence of violation, not a per-term knob) plus the term's own
+physical budget. Sweep the dial for a Pareto front rather than guessing
+one "right" value.
 
-**No wirelength term.** Deliberately absent — length enters through
-resistance, inductance and delay where those actually matter (see
-:mod:`precis.pcb.objectives`) and is correctly ignored where a net cares
-about none of them. Do not add one back; that is the commonest way a
-placer produces a tidy-looking, electrically mediocre board.
+**No wirelength term** — deliberately absent; length enters through
+resistance/inductance/delay where those matter
+(:mod:`precis.pcb.objectives`) and is correctly ignored elsewhere. Don't
+add one back.
 
-**Calibration is unvalidated.** Every dollar figure, every physical
-constant below is order-of-magnitude and explicitly not fit to real
-fabrication or bench data (backlog: "structure is sound, numbers are
-not"). The ranking harness (reference designs vs. deliberately perturbed
-negatives) is the cheap entry point for catching *gross* errors; it does
-not discriminate near-optimal designs, which is where these numbers would
-actually need tuning. Say so here rather than dressing a guess as a
-derivation.
+**Calibration is unvalidated** — every dollar figure and physical
+constant here is order-of-magnitude, not fit to real fab/bench data. The
+ranking harness (reference vs. perturbed-negative designs) catches gross
+errors only, not near-optimal tuning.
 
-**``courtyard_overlap`` and ``board_edge_clearance`` close a real gap
-(gr267456): nothing in this file used to give the optimizer a spatial-
-exclusion signal at all.** ``drc.py`` treats an overlapping courtyard pair
-or an edge-clearance violation as a categorical hard error — correct for
-a final check, useless as an optimizer signal (a binary term is a
-plateau, not a slope) — so both terms below report the SAME violation
-*gradedly*, as a fraction of the SAME physical threshold DRC checks
-against, imported rather than re-declared:
-:data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` for the former,
+**``courtyard_overlap``/``board_edge_clearance`` (gr267456)** report a
+graded fraction of the SAME physical threshold ``drc.py`` checks
+categorically, imported rather than re-declared:
+:data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` and
 :class:`precis.pcb.capabilities.CapabilityRow`'s
-``board_edge_clearance_vcut_mm`` field (already threaded through this
-module as :data:`CostConfig.fab_caps`, same as ``thermal_rise`` and
-``via_count`` use) for the latter. The ``drc.py`` import is a deliberate,
-one-directional ``cost.py -> drc.py`` edge: ``drc.py`` imports nothing
-from ``cost.py``/``optimize.py`` (no cycle), and only a plain float
-constant crosses the edge, never any of ``drc.py``'s shapely/STRtree
-machinery. Flagged here anyway because ``drc.py``'s own docstring frames
-itself as "the final check, not the main event", downstream of realized
-(L5) geometry — an always-on, L0-L4 module reaching into a downstream
-terminal-stage module for a constant is an unusual direction, and
-re-declaring the number instead (the "two components implementing one
-rule" defect this task exists to close, see ``docs/backlog/
-pcb-residual-defects-0828.md``) was judged the worse of the two options.
+``board_edge_clearance_vcut_mm`` (via :data:`CostConfig.fab_caps`). The
+``cost.py -> drc.py`` import is one-directional and constant-only (no
+cycle, no shapely/STRtree machinery crosses).
 """
 
 from __future__ import annotations

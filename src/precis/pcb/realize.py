@@ -1,92 +1,73 @@
 """Sketch → copper geometry — the realizer. See
 docs/backlog/pcb-guided-place-route.md §"Sketch + realize".
 
-**Runs at CHECKPOINTS, never in the inner loop.** Sketch (L0-L2, plus L3
-placement) is canonical; copper (L5) is derived and regenerable, the same
-discipline as chunks→embeddings — this module is the "regenerate" half. It
-is a pure function of a settled :class:`~precis.pcb.ir.PcbIR` snapshot
-(plus obstacle/config data); it never mutates the IR's L0-L3 state (moving
-a component, reassigning a layer, or flipping a side happens through
-``optimize.py``'s move classes, not here) — it only ever *reads* the
-sketch and writes L5-shaped output.
+**Runs at checkpoints, never in the inner loop.** Sketch (L0-L2, plus L3
+placement) is canonical; copper (L5) is derived and regenerable, same
+discipline as chunks→embeddings. A pure function of a settled
+:class:`~precis.pcb.ir.PcbIR` snapshot (plus obstacle/config data) — never
+mutates L0-L3 state (that's ``optimize.py``'s move classes) — only reads
+the sketch, writes L5-shaped output.
 
-**Two routers, and the default is the maze one.** ``RealizeConfig.router``
-selects between them and they promise opposite things:
+**Two routers**; ``RealizeConfig.router`` selects, opposite guarantees:
 
-- ``'maze'`` (default, :mod:`precis.pcb.maze`) claims each route's
+- ``'maze'`` (default, :mod:`precis.pcb.maze`): claims each route's
   corridor on a shared occupancy grid before drawing it, so inter-net
-  ``clearance`` violations are structurally impossible. It chooses its
-  own layers and its own path — ``seg_layer`` is the sketch's preference,
-  not an instruction — and reports what it could not route in
-  :attr:`RealizeResult.unrouted`.
-- ``'tangent'`` is everything described below this paragraph: one
-  straight-or-hugging track per segment, on that segment's ``seg_layer``,
-  drawn unconditionally and blind to every other track. It is the right
-  primitive for a single-segment question (:func:`realize_segment` IS
-  exactly this) and the wrong one for a board — measured on the reference
-  fixture it drew 234 same-layer clearance violations that no later pass
-  can repair.
+  ``clearance`` violations are structurally impossible. Chooses its own
+  layers/path (``seg_layer`` is a preference, not an instruction); reports
+  what it couldn't route in :attr:`RealizeResult.unrouted`.
+- ``'tangent'``: one straight-or-hugging track per segment on that
+  segment's ``seg_layer``, drawn unconditionally, blind to every other
+  track. Right for a single-segment question (:func:`realize_segment` IS
+  this); wrong for a board — 234 same-layer clearance violations on the
+  reference fixture, unrepairable by any later pass.
 
-**Geometry is arcs and tangent lines, NOT beziers** (backlog, verbatim):
-the shortest path around a single circular clearance obstacle is exactly
-straight tangents joined by a circular arc, computable in closed form —
-see :func:`tangent_arc_path`. Gerber has arcs natively (G02/G03) and no
-bezier primitive, so a bezier would just be flattened to polylines on
-export anyway; the exact tangent/arc form is simultaneously cheaper and
-more manufacturable.
+**Geometry is arcs and tangent lines, not beziers**: the shortest path
+around a single circular clearance obstacle is exactly straight tangents
+joined by a circular arc, closed-form (:func:`tangent_arc_path`). Gerber
+has native arcs (G02/G03), no bezier primitive — a bezier would just be
+flattened to polylines on export.
 
-**Output matches :mod:`precis.pcb.gerber`'s expected model shape exactly**
-— a track's ``segments`` entries are ``{"shape": "line"|"arc", "start":
-[x, y], "end": [x, y]}`` (arc adds ``"center": [x, y], "cw": bool}``), the
-same dict shape :func:`precis.pcb.gerber.copper_gerber` reads via
-``_emit_stroke``. This was verified by direct inspection of that
-function, not assumed — see :func:`to_gerber_model` and
-``tests/test_pcb_realize.py``'s round-trip test through
-:func:`precis.pcb.gerber.export_gerbers`.
+**Output matches :mod:`precis.pcb.gerber`'s model shape exactly**: a
+track's ``segments`` entries are ``{"shape": "line"|"arc", "start": [x,
+y], "end": [x, y]}`` (arc adds ``"center": [x, y], "cw": bool}``) — the
+dict shape :func:`precis.pcb.gerber.copper_gerber` reads via
+``_emit_stroke`` (see :func:`to_gerber_model`,
+``tests/test_pcb_realize.py``'s round-trip through
+:func:`precis.pcb.gerber.export_gerbers`).
 
 **Single-obstacle closed form only.** A segment blocked by more than one
-obstacle at once is a genuine multi-obstacle rubber-band problem this
-module does not attempt to solve in closed form (that is a harder,
-iterative shortest-path-in-a-polygon-forest problem, out of this slice's
-scope) — it realizes around the single nearest blocking obstacle and
-falls back to a straight line with the remaining obstacles reported as
-still-blocking, rather than silently emitting a geometrically wrong path.
-"Fail legibly" (backlog), applied to the realizer's own limits.
+obstacle at once (a multi-obstacle rubber-band problem) is out of scope —
+realizes around the single nearest blocking obstacle, falls back to a
+straight line, reports the rest as still-blocking rather than emitting a
+wrong path. "Fail legibly", applied to the realizer's own limits.
 
-**Per-gap capacity accounting moves INTO this module too** (as data, not
-just the optimizer's cheap estimate): every realized segment's binding
-gap — the same ``nearest_other_instance`` neighbourhood
-:mod:`precis.pcb.optimize` uses for its L4 estimate — is tallied, and a
-gap whose strand usage exceeds its capacity produces a legible
-:class:`CongestionWarning` naming the blocking gap, the participants, and
-the clearance arithmetic (backlog acceptance criterion, verbatim).
+**Per-gap capacity accounting lives here too**, as data not just the
+optimizer's estimate: every realized segment's binding gap (the same
+``nearest_other_instance`` neighbourhood :mod:`precis.pcb.optimize` uses
+for L4) is tallied; a gap whose strand usage exceeds capacity produces a
+:class:`CongestionWarning` naming the gap, participants, and clearance
+arithmetic.
 
-**Vias.** Under ``'tangent'`` they are emitted wherever a track's realized
-layer differs from its pad layer (closing the master backlog's "no via
-geometry is realized" gap, 2026-08-28); under ``'maze'`` they appear
-wherever the search actually changed layer, gated on the STITCHED GROUP's
-full extent fitting in cleared space rather than the trace's — a 5A rail
-crossing layers through one via is a fuse, and planning for one via then
-stitching four puts three of them in somebody else's copper. Either way,
-see :func:`_vias_for_track` for the tangent rule and
-:class:`RealizedVia` for why it ALWAYS carries a layer SPAN (``layer_lo``/
-``layer_hi``), never a scalar layer: a scalar via already made every via
-DRC rule silently blind on every layer once (backlog "Bugs this build
-produced" #5), and this module is precisely where that shape decision is
-made. Via COUNT scales with the net's current annotation
-(:func:`precis.pcb.rules.via_count_for_current`) rather than always
-emitting exactly one — a via array that can't carry its rail's current is
-the same silent-failure class as the missing geometry itself.
+**Vias.** Under ``'tangent'``, emitted wherever a track's realized layer
+differs from its pad layer. Under ``'maze'``, emitted wherever the search
+changed layer, gated on the STITCHED GROUP's full extent fitting in
+cleared space (not just the trace's) — a rail crossing layers through one
+via is a fuse; stitching four vias for a group planned around one puts
+three in somebody else's copper. See :func:`_vias_for_track` (tangent
+rule) and :class:`RealizedVia`, which always carries a layer SPAN
+(``layer_lo``/``layer_hi``), never a scalar — a scalar via makes every via
+DRC rule blind on every layer but one. Via COUNT scales with the net's
+current annotation (:func:`precis.pcb.rules.via_count_for_current`)
+rather than always emitting one — an array that can't carry its rail's
+current is the same silent-failure class as missing geometry.
 
-**Rip-up primitives**: :func:`rip_net` removes one net's tracks (and its
-warnings) from a result, leaving every other net's geometry
-byte-identical — the regenerate-in-place discipline copper needs.
-:func:`pin_topology` is a thin, documented delegate to
-:meth:`precis.pcb.ir.PcbIR.set_side` (pinning a topology choice IS a
-sketch edit, not a realizer concern) — kept here only because a caller
-mid-rip-up-loop reaches for it in the same breath.
-:func:`re_realize_segments` recomputes exactly the named segments'
-tracks against an already-realized result, replacing only those entries.
+**Rip-up primitives**: :func:`rip_net` removes one net's tracks (and
+warnings), leaving every other net's geometry byte-identical.
+:func:`pin_topology` delegates to :meth:`precis.pcb.ir.PcbIR.set_side`
+(pinning a topology choice is a sketch edit, not a realizer concern) —
+kept here for rip-up-loop callers' convenience.
+:func:`re_realize_segments` recomputes only the named segments' tracks
+against an already-realized result.
 """
 
 from __future__ import annotations
@@ -98,7 +79,7 @@ from typing import Any
 
 from precis.pcb import maze, padplace
 from precis.pcb.capabilities import CapabilityRow, capability_for
-from precis.pcb.geom import Point, dist
+from precis.pcb.geom import Point, dist, dist_point_to_segment
 from precis.pcb.ir import NO_NET, UNSET_LAYER, PcbIR, nearest_other_instance, pin_point
 from precis.pcb.planes import plane_pours
 from precis.pcb.rules import (
@@ -298,18 +279,6 @@ def _default_obstacles(ir: PcbIR, config: RealizeConfig) -> list[Obstacle]:
 # ── the closed-form geometric primitive ──────────────────────────────────
 
 
-def _dist_point_to_segment(p: Point, a: Point, b: Point) -> float:
-    ax, ay = a
-    bx, by = b
-    px, py = p
-    dx, dy = bx - ax, by - ay
-    length2 = dx * dx + dy * dy
-    if length2 < 1e-12:
-        return dist(p, a)
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
-    return dist(p, (ax + t * dx, ay + t * dy))
-
-
 def _tangent_points(p: Point, c: Point, r: float) -> tuple[Point, Point]:
     """The two points on circle ``(c, r)`` touched by a tangent line from
     external point ``p``. Raises if ``p`` is inside/on the circle — no
@@ -363,7 +332,7 @@ def tangent_arc_path(
     what the property test in ``tests/test_pcb_realize.py`` checks over
     many random obstacle placements: real clearance is honoured
     everywhere, not just at the one hand-computed fixture point)."""
-    if _dist_point_to_segment(center, start, end) >= radius - 1e-9:
+    if dist_point_to_segment(center, start, end) >= radius - 1e-9:
         return [{"shape": "line", "start": list(start), "end": list(end)}], dist(
             start, end
         )
@@ -418,11 +387,11 @@ def _blocking_obstacle(
         eff_r = o.radius + clearance_mm
         if dist(start, o.center) <= eff_r or dist(end, o.center) <= eff_r:
             continue
-        if _dist_point_to_segment(o.center, start, end) < eff_r:
+        if dist_point_to_segment(o.center, start, end) < eff_r:
             candidates.append(o)
     if not candidates:
         return None
-    return min(candidates, key=lambda o: _dist_point_to_segment(o.center, start, end))
+    return min(candidates, key=lambda o: dist_point_to_segment(o.center, start, end))
 
 
 # ── per-segment realization ──────────────────────────────────────────────

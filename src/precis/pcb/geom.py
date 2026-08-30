@@ -59,6 +59,34 @@ def segments_cross(
     return straddle_a and straddle_b
 
 
+def dist_point_to_segment(p: Point, a: Point, b: Point) -> float:
+    """Shortest distance from ``p`` to the closed segment ``(a, b)``."""
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy
+    if length2 < 1e-12:
+        return dist(p, a)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
+    return dist(p, (ax + t * dx, ay + t * dy))
+
+
+def point_in_polygon(p: Point, poly: list[Point]) -> bool:
+    """Ray-cast point-in-polygon test; ``poly`` vertices in order, any winding."""
+    x, y = p
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            x_at_y = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x < x_at_y:
+                inside = not inside
+    return inside
+
+
 def bbox(p1: Point, p2: Point) -> tuple[float, float, float, float]:
     """Axis-aligned bounding box (minx, miny, maxx, maxy) of a segment."""
     return (
