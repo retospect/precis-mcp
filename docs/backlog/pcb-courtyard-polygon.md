@@ -113,6 +113,17 @@ every courtyard on every board, so they deserve the same standard.
   phase there are only a handful of pairs left to test. Revisit only if
   profiling asks.
 - **OPEN — the graded cost term** (above).
+- **OPEN (2026-08-30) — a dropped courtyard still suppresses the pin-1
+  DOT.** `silk.build_silk`'s "a pin-1 tick never survives alone" guard was
+  written when the marker was a corner TICK, which is a cut of the
+  courtyard outline and so genuinely meaningless without it. The dot is
+  not: it sits OUTSIDE the courtyard beside pin 1's own land, so it still
+  points at real geometry when the outline is gone. The guard now
+  suppresses both, which costs a legible marker every time a courtyard
+  drops — 2 of the 3 remaining `silk_missing` findings on the 40mm fixture
+  were of exactly this shape before the ordering fix. Not widened on a
+  hunch: decide whether a lone dot reads as a pin-1 marker or as stray
+  ink, ideally by rendering one, before changing the rule.
 - **DECIDED (user, 2026-08-29): full arbitrary/convex shape, not a bigger
   circle.** Radii are not a source of truth.
 

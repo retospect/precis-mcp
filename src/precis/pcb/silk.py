@@ -40,15 +40,21 @@ already applies to copper.
    from this board's capability row — so the courtyard cannot overlap its
    own pads by construction, rather than by a margin that happened to be
    big enough.
-3. a **pin-1 marker** — a small tick cut at whichever courtyard VERTEX
-   sits nearest pin 1's own land-pattern offset (or the first declared
-   pin, when no pin is literally named ``"1"``). When that corner is
-   already taken — almost always by this part's own plane fan-out via,
-   which the router places long after silk had any say — the marker falls
-   back to the industry's other spelling, a **dot** beside pin 1
-   (:func:`_pin1_dot_candidates`). A tick marks a corner and so has
-   nowhere else to go; a dot does, which is the whole reason for keeping
-   both.
+3. a **pin-1 marker** — a **dot** beside pin 1
+   (:func:`_pin1_dot_candidates`), placed outside the courtyard next to
+   pin 1's own land-pattern offset (or the first declared pin, when no pin
+   is literally named ``"1"``).
+
+   The other spelling, a tick cut at the nearest courtyard VERTEX, is only
+   the fallback for when no dot placement is clear. It reads far worse
+   than its ubiquity suggests: the tick IS a cut of the courtyard outline,
+   so it prints along that outline rather than beside it — measured on the
+   40mm fixture, all 20 ticked parts sat 0.0000mm from their own courtyard
+   — and ink that coincides with the line it annotates conveys nothing.
+   Being inside the courtyard, it is also under the part once assembled.
+   :func:`precis.pcb.drc.check_silk_missing` scored all 20 as present
+   throughout, because it proves a draw EXISTS and cannot see that it is
+   invisible.
 
 **Suppression, not silent loss.** Every drawn stroke — text, outline,
 tick alike — is checked against the passed-in ``pads`` (real flashed pad
@@ -112,6 +118,18 @@ always win), the full sequence is one deterministic chain: reserved seed,
 then instances in natural-refdes order — never two independently-ordered
 passes.
 
+**Body outlines are exempt from that order.** Predictable is not the same
+as right, and one class of contest should never have been settled by
+refdes at all: a pin-1 dot or a refdes label committed early could land
+where a part processed LATER needed to draw its courtyard, and the later
+part lost the whole outline. Every instance's courtyard ring is therefore
+resolved BEFORE the loop (``courtyard_ring``), and both marks yield to all
+of them — so an outline outranks a label whichever way round the two parts
+happen to sort. An outline is the larger and far less relocatable mark;
+a dot has 8 directions and 3 distances still to try. Measured on the 40mm
+fixture when the dot became the primary marker: without this, R3 and U3
+each lost their entire courtyard to a neighbour's mark.
+
 **A pin-1 tick never survives alone (2026-08-29 decision).** The tick is
 a corner-cut of the courtyard outline — it has no meaning except as an
 annotation ON that outline. When the courtyard itself is dropped (global
@@ -123,6 +141,12 @@ AND its label). Deliberately tied together: a courtyard that survives is
 a prerequisite for even attempting its own tick, reported in ``dropped``
 same as any other suppression, never silently paired with a courtyard
 that isn't there.
+
+That reasoning is about the TICK, and it now also suppresses the dot,
+which may be too strong: a dot sits outside the courtyard beside pin 1's
+own land, so it still points at something real when the outline is gone.
+Left as-is rather than widened on a hunch — see
+``docs/backlog/pcb-courtyard-polygon.md``.
 
 **Provenance, for a future ingested-silk merge.** Every draw this module
 emits carries ``"source": "synthesized"`` (an extra key both
