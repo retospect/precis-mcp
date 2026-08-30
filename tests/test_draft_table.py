@@ -12,10 +12,15 @@ from precis.errors import BadInput
 from precis.export import latex
 from precis.handlers.draft import DraftHandler
 from precis.utils.table_data import (
+    _CAPTION_CMD_RE,
+    _blank_balanced_command,
+    _skip_colspec,
+    _tabular_env_span,
     col_letters_to_index,
     find_replace_cells,
     index_to_col_letters,
     infer_scalar,
+    locate_latex_cell,
     normalize_table,
     parse_cell_address,
     parse_markdown_table,
@@ -526,14 +531,17 @@ _RAW_TABULAR = (
 )
 
 
-def test_edit_table_recovers_grid_from_raw_latex_and_clears_flag(
+def test_edit_table_recovers_grid_from_raw_latex_and_patches_in_place(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """The read path (``table_payload``) always recovered these chunks, so
     ``get()`` rendered them while every write door refused — the read/write
     divergence of gripe 263197. The write path now recovers through the same
-    function, so a flagged chunk is editable without hand-reconstructing its
-    grid."""
+    function for ADDRESSING, so a flagged chunk is editable without
+    hand-reconstructing its grid — but (gripe 271129) the raw LaTeX is
+    patched IN PLACE rather than replaced with markdown re-derived from the
+    (lossy) parsed grid: ``meta.table`` is never written, and the flag is
+    left exactly as-is, because no canonical grid was actually persisted."""
     tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert not meta.get("table")  # precondition: no canonical data
@@ -542,24 +550,28 @@ def test_edit_table_recovers_grid_from_raw_latex_and_clears_flag(
     # A cell edit used to raise "this table chunk has no stored data".
     draft.edit(id=tc.dc, cell="A1", text="order")
 
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "order & \\textbf{Simple} & \\textbf{Combinatorial}" in chunk.text
+    assert "\\toprule" in chunk.text and "\\bottomrule" in chunk.text
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
-    assert meta["table"]["header"] == ["order", "Simple", "Combinatorial"]
-    # Cells recovered from LaTeX stay strings — the raw source has no type
-    # information, and coercing "2" to 2 would silently retype identifiers.
-    assert meta["table"]["rows"] == [["2", "2", "1"], ["3", "3", "4"]]
-    # the flag only meant "nothing recoverable at import" — now false
-    assert meta.get("flag") is None
+    assert not meta.get("table")  # never promoted to canonical
+    assert meta["flag"] == "needs-table-review"  # honest: still not canonical
 
 
-def test_edit_table_find_replace_works_on_flagged_latex_chunk(
+def test_edit_table_find_replace_patches_flagged_latex_chunk_in_place(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """Citation backfill reaches table chunks via ``find=`` — the door the
-    conversion waves actually need."""
+    conversion waves actually need. Patches the raw LaTeX in place (gripe
+    271129), not the parsed-then-re-derived markdown."""
     tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
     draft.edit(id=tc.dc, find="Combinatorial", text="Combinatorial [fi99]")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "\\textbf{Combinatorial [fi99]}" in chunk.text
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
-    assert meta["table"]["header"][2] == "Combinatorial [fi99]"
+    assert not meta.get("table")
 
 
 def test_edit_table_unrecoverable_chunk_still_refuses(
@@ -594,12 +606,318 @@ def test_edit_table_ragged_parse_falls_through_to_refusal(
 def test_edit_table_recovers_caption_from_raw_latex(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """A caption living only in the raw ``\\caption{}`` survives the first
-    edit — without this it silently vanished when the markdown was
-    re-derived from the recovered grid."""
+    """A caption living only in the raw ``\\caption{}`` survives a cell
+    edit — the in-place LaTeX patch (gripe 271129) never re-derives
+    markdown, so the caption's own ``\\caption{}`` command stays put in the
+    text verbatim (stronger than the old contract, which required a
+    separate recovery step and lost the raw command either way)."""
     raw = "{cc}\n\\caption{Yield thresholds}\n\\toprule\na & b \\\\\n1 & 2 \\\\\n"
     tc = _flagged_latex_chunk(draft, hub, raw)
     draft.edit(id=tc.dc, cell="A1", text="alpha")
     chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
-    assert chunk.text.startswith("**Yield thresholds**\n")
+    assert "\\caption{Yield thresholds}" in chunk.text
+    assert "alpha & b" in chunk.text
+
+
+# ── LaTeX in-place patching (gripe 271129) ─────────────────────────────
+#
+# The exact chunk that exposed the bug (dr42995 dc1506560): a full
+# \begin{tabular} wrapper with \label, booktabs rules, a \multicolumn
+# summary row, and \, thin spaces — every one of those used to vanish
+# (or, for \multicolumn, silently migrate to the wrong column) the moment
+# any cell/find/sub edit re-derived markdown from the parsed grid.
+
+_POC_ROLES_LATEX = (
+    "\\centering\n"
+    "\\caption{PoC circuit roles and their cassette chemistry (see "
+    "Section~\\ref{sec:por-summary} for the experimental protocol).}\n"
+    "\\label{tab:poc-roles}\n"
+    "\\small\n"
+    "\\begin{tabular}{llll}\n"
+    "\\toprule\n"
+    "\\textbf{Role} & \\textbf{$\\lambda$} & \\textbf{Cassette} & "
+    "\\textbf{Count} \\\\\n"
+    "\\midrule\n"
+    "$\\text{INPUT}_{\\lambda_A}$ & 365\\,nm (UV) & Diarylethene "
+    "photoswitch & 1 \\\\\n"
+    "$\\text{INPUT}_{\\lambda_B}$ & 450\\,nm (blue) & Azobenzene "
+    "photoswitch & 1 \\\\\n"
+    "XOR & --- & SWITCH (DAE + rotaxane + BODIPY) & 1 \\\\\n"
+    "OUTPUT & 520\\,nm (emission) & BODIPY reporter & 1 \\\\\n"
+    "BEACON & 650\\,nm (emission) & Porphyrin marker (always on) & 1 \\\\\n"
+    "\\midrule\n"
+    "\\multicolumn{3}{l}{\\textit{Total}} & \\textbf{5 boxels, 4 roles} \\\\\n"
+    "\\bottomrule\n"
+    "\\end{tabular}"
+)
+
+
+def test_edit_table_latex_label_survives_cell_edit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The exact edit from gripe 271129 (XOR -> NOR) leaves \\label{} —
+    and hence every \\ref{tab:poc-roles} elsewhere — intact. Before the
+    fix, any edit re-derived markdown from the parsed grid and
+    \\label{} was simply never carried through, dangling every cross-ref
+    (surfacing only as "Table ??" at LaTeX build time)."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(id=tc.dc, find="XOR", text="NOR")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "\\label{tab:poc-roles}" in chunk.text
+    assert "NOR & --- &" in chunk.text
+    assert "XOR" not in chunk.text
+
+
+def test_edit_table_latex_multicolumn_row_survives_unrelated_edit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The other half of the gripe's exact edit (SWITCH cassette rename)
+    leaves the untouched \\multicolumn summary row byte-for-byte intact.
+    Before the fix, the parsed grid flattened that row's value from
+    column 4 to column 2 the moment ANY cell in the table was edited."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(
+        id=tc.dc,
+        find="SWITCH (DAE + rotaxane + BODIPY)",
+        text="SWITCH (DAE + azobenzene + rotaxane + BODIPY)",
+    )
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert (
+        "\\multicolumn{3}{l}{\\textit{Total}} & \\textbf{5 boxels, 4 roles}"
+        in chunk.text
+    )
+    assert "SWITCH (DAE + azobenzene + rotaxane + BODIPY)" in chunk.text
+
+
+def test_edit_table_latex_thin_space_and_rules_survive_unrelated_edit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """\\, thin spaces (on cells the edit never touches) and the booktabs
+    rules survive an edit elsewhere in the table — both used to be
+    silently normalised away by the markdown re-derivation."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(id=tc.dc, find="XOR", text="NOR")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "365\\,nm (UV)" in chunk.text
+    assert "450\\,nm (blue)" in chunk.text
+    assert "\\toprule" in chunk.text
+    assert "\\midrule" in chunk.text
+    assert "\\bottomrule" in chunk.text
+
+
+def test_edit_table_latex_full_gripe_edit_end_to_end(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Both halves of the gripe's exact edit applied in sequence: the
+    chunk stays LaTeX-sourced throughout (meta.table never gets written —
+    promoting the lossy parsed grid to canonical would freeze its
+    multicolumn mis-mapping in as the new truth)."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(id=tc.dc, find="XOR", text="NOR")
+    draft.edit(
+        id=tc.dc,
+        find="SWITCH (DAE + rotaxane + BODIPY)",
+        text="SWITCH (DAE + azobenzene + rotaxane + BODIPY)",
+    )
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    text = chunk.text
+    assert "\\label{tab:poc-roles}" in text
+    assert "\\toprule" in text and "\\midrule" in text and "\\bottomrule" in text
+    assert "NOR & --- & SWITCH (DAE + azobenzene + rotaxane + BODIPY) & 1" in text
+    assert "\\multicolumn{3}{l}{\\textit{Total}} & \\textbf{5 boxels, 4 roles}" in text
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert not meta.get("table")  # never promoted — stays LaTeX-sourced
+
+
+def test_edit_table_latex_cell_address_patches_in_place(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``cell=`` addressing (not just ``find=``) also patches the raw LaTeX
+    in place — row 6 (1-based, header=row1) is the BEACON data row, col 1
+    is Role."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(id=tc.dc, cell={"row": 6, "col": 1}, text="BEACON2")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "BEACON2 & 650\\,nm (emission)" in chunk.text
+    assert "\\label{tab:poc-roles}" in chunk.text
+
+
+def test_edit_table_latex_cell_refuses_when_unlocatable_in_multicolumn_row(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The fallback guarantee this fix leans on: when the parsed-grid
+    address can't be mapped back to a real raw cell (the \\multicolumn
+    row only has 2 raw ``&``-delimited fields, not the parsed grid's 4),
+    the edit REFUSES — chunk left byte-for-byte untouched — rather than
+    silently patching the wrong text. Loud refusal, never silent damage."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="can't be safely located"):
+        draft.edit(id=tc.dc, cell={"row": 7, "col": 4}, text="oops")
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+# ── position-shadow addressing machinery (fallbacks, pure functions) ──
+
+
+def test_blank_balanced_command_unbalanced_brace_stops_blanking() -> None:
+    """When a \\caption{'s opening brace never finds a matching close
+    (``_find_balanced`` returns ``None``), the blanking loop bails out
+    rather than guessing a wrong span — the text comes back byte-for-byte
+    unchanged (nothing blanked), not partially/incorrectly blanked."""
+    text = "\\caption{never closes and the rest of the text is untouched"
+    out = _blank_balanced_command(text, _CAPTION_CMD_RE)
+    assert out == text
+
+
+def test_tabular_env_span_unmatched_begin_returns_rest_of_text() -> None:
+    """No matching ``\\end{tabular}`` anywhere after an inner
+    ``\\begin{tabular}`` — the span falls back to "everything after the
+    begin tag", not a crash or a truncated/incorrect span."""
+    text = "prefix\n\\begin{tabular}{ll}\nrest of body"
+    start, end = _tabular_env_span(text)
+    assert (start, end) == (text.index("{ll}"), len(text))
+
+
+def test_tabular_env_span_nested_env_depth_counted() -> None:
+    """A ``tabular`` nested inside another ``tabular`` of the same name is
+    depth-counted rather than matched to the FIRST ``\\end{tabular}`` seen
+    (which would truncate the span at the inner table's close) — the
+    returned span extends to the outer, matching close."""
+    text = (
+        "\\begin{tabular}{ll}\n"
+        "\\begin{tabular}{ll}\n"
+        "nested & cell \\\\\n"
+        "\\end{tabular}\n"
+        "outer1 & outer2 \\\\\n"
+        "\\end{tabular}"
+    )
+    start, end = _tabular_env_span(text)
+    assert start == text.index("{ll}")
+    # the OUTER close, not the inner one the depth counter skips past
+    assert end == text.rindex("\\end{tabular}")
+
+
+def test_skip_colspec_handles_leading_space_and_optional_pos_arg() -> None:
+    """Leading whitespace, then an optional ``[pos]`` alignment arg, then
+    whitespace again, then the ``{cols}`` group(s) — all skipped, landing
+    exactly at the first row content."""
+    text = "  [t]  {lcc}rows-start"
+    end = _skip_colspec(text, 0)
+    assert text[end:] == "rows-start"
+
+
+def test_skip_colspec_unbalanced_group_stops_at_open_brace() -> None:
+    """A colspec ``{`` that never closes (``_find_balanced`` returns
+    ``None``) can't be confirmed to end anywhere — the scan stops before
+    consuming it rather than guessing, leaving the index at the ``{``."""
+    text = "{lcc"  # no closing brace anywhere
+    end = _skip_colspec(text, 0)
+    assert end == 0
+
+
+def test_locate_latex_cell_row_out_of_range_returns_none() -> None:
+    tc_text = _POC_ROLES_LATEX
+    assert locate_latex_cell(tc_text, 999, 0) is None  # way past the last row
+    assert locate_latex_cell(tc_text, 0, 0) is None  # row1=0 -> negative index
+
+
+def test_locate_latex_cell_defensive_exception_guard_returns_none() -> None:
+    """A malformed ``row1`` blows up inside the addressing arithmetic
+    (``row1 - 1`` on a non-int) — the broad ``except Exception`` guard
+    still returns the same honest "can't locate" ``None`` rather than
+    letting an internal error escape to the caller."""
+    assert locate_latex_cell(_POC_ROLES_LATEX, cast(Any, "oops"), 0) is None
+
+
+def test_edit_table_latex_caption_regen_rejected_alongside_data_edit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """caption=/regen= riding along a cell=/find=/sub= edit on a
+    LaTeX-sourced chunk is refused rather than silently no-op'd — patching
+    meta.caption wouldn't be read back (the read path re-derives the
+    caption from \\caption{} in the text itself, not from meta)."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    with pytest.raises(BadInput, match="don't apply together"):
+        draft.edit(id=tc.dc, find="XOR", text="NOR", caption="New caption")
+
+
+# ── LaTeX in-place patching: refuse paths (_edit_latex_table_in_place) ──
+
+
+def test_edit_table_latex_cell_requires_text(draft: DraftHandler, hub: Hub) -> None:
+    """``cell=`` without ``text=`` on a LaTeX-sourced table chunk refuses —
+    same guard as the canonical-table path, but exercised through the
+    LaTeX in-place branch (``_edit_latex_table_in_place``, not
+    ``_edit_table``)."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="needs text="):
+        draft.edit(id=tc.dc, cell="A1")
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+def test_edit_table_latex_find_empty_string_rejected(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="non-empty string"):
+        draft.edit(id=tc.dc, find="")
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+def test_edit_table_latex_find_requires_text(draft: DraftHandler, hub: Hub) -> None:
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="requires text="):
+        draft.edit(id=tc.dc, find="XOR")
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+def test_edit_table_latex_sub_invalid_regex_rejected(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """An unparseable regex in ``sub=`` (unbalanced group) is re-raised as
+    ``BadInput`` rather than propagating the raw ``re.error`` — chunk left
+    untouched."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="invalid regex"):
+        draft.edit(id=tc.dc, sub={"find": "(unclosed", "replace": "x"})
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+def test_edit_table_latex_sub_no_match_refuses(draft: DraftHandler, hub: Hub) -> None:
+    """``sub=`` with a valid regex that matches nothing in the raw LaTeX
+    refuses (zero replacements) — the LaTeX-path sibling of the
+    canonical-table ``find=`` no-match refusal."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="no cell matches"):
+        draft.edit(id=tc.dc, sub={"find": "no-such-substring-zzz", "replace": "y"})
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text

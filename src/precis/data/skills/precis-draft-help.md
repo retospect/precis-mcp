@@ -408,12 +408,29 @@ refused too (chunk untouched); only one of `table=`/`cell=`/`find=`/`sub=`
 per edit.
 
 A LaTeX-imported table flagged `needs-table-review` recovers its grid by
-re-parsing the chunk's own raw LaTeX and clears the flag once a grid is
-stored, so it's editable (and citable) like any other — cells recovered
-this way stay **strings** (raw LaTeX carries no type information). A
-chunk whose `tabular` genuinely isn't in its text refuses with "no stored
-data"; don't hand-type a `table=` grid to defeat that, it risks mangling
-live content.
+re-parsing the chunk's own raw LaTeX, so it's editable (and citable) like any
+other — cells recovered this way stay **strings** (raw LaTeX carries no type
+information). A chunk whose `tabular` genuinely isn't in its text refuses with
+"no stored data"; don't hand-type a `table=` grid to defeat that, it risks
+mangling live content.
+
+For a LaTeX-sourced chunk the recovered grid **only addresses** the edit, it
+never re-serialises the chunk: `cell=`/`find=`/`sub=` patch the matched span
+*inside the raw LaTeX*, leaving the rest byte-for-byte intact — no grid is
+persisted and the flag stays put, since nothing canonical was stored. The grid
+is lossy (`{caption, header, rows}` and nothing else), so re-deriving markdown
+from it used to silently destroy `\label{}` (dangling every inbound `\ref`),
+flatten `\multicolumn` spans so a summary value migrated columns, and eat
+booktabs rules and `\,` thin spaces. Two consequences:
+
+- A `cell=` address that can't be safely mapped — typically inside a
+  `\multicolumn` span — **refuses**, chunk unchanged, rather than guessing.
+- `caption=`/`regen=` can't ride along with a `cell=`/`find=`/`sub=` edit on
+  such a chunk: caption is re-derived from `\caption{}` in the text, so patching
+  metadata wouldn't be read back. Passing both is a `BadInput`.
+
+`table=` is unchanged — a declared wholesale replacement, so it still re-derives
+from the grid you hand it.
 
 For a cell holding raw LaTeX (`$\sim$` and friends), prefer `cell=`/
 `text=`/find-replace over the whole `table=` **dict**: a value nested in

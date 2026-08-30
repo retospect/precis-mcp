@@ -696,6 +696,251 @@ def parse_latex_table(text: str) -> dict[str, Any] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# LaTeX in-place patching — the non-destructive sibling of the recovery above.
+#
+# A LaTeX-imported table chunk (no canonical ``meta.table``) is recovered for
+# READING by re-parsing the raw text every time (:func:`parse_latex_table`),
+# throwing the cleaned grid away afterwards. Editing used to persist that
+# cleaned grid as GFM markdown instead — losing ``\label{}`` (dangling
+# ``\ref``s elsewhere), flattening ``\multicolumn`` spans onto the wrong
+# column, and dropping booktabs rules / ``\,`` thin spaces (gripe 271129).
+#
+# The functions below patch the addressed cell (or every cell matching a
+# find/sub pattern) directly in the RAW LaTeX text instead. The parsed grid
+# still supplies the ADDRESSING (row/col -> which raw cell), it just stops
+# being the SERIALISATION — everything not touched by the edit, including
+# ``\label``/rules/spacing and every other row, is copied through verbatim.
+# ---------------------------------------------------------------------------
+
+
+_CAPTION_CMD_RE = re.compile(r"\\caption\*?\s*\{")
+_LABEL_CMD_RE = re.compile(r"\\label\s*\{")
+
+
+def _blank_balanced_command(text: str, pattern: re.Pattern[str]) -> str:
+    """Same-length sibling of :func:`_strip_one_arg_command`/
+    :func:`_extract_caption`: every match of ``pattern`` (expected to end in
+    an opening ``{``) through its balanced closing ``}`` is overwritten with
+    spaces, so `text`'s length — and every other character's absolute
+    position — is unchanged. Used only to keep the row/cell-boundary finder
+    below honest when a ``\\caption{}``/``\\label{}`` ends up embedded
+    inside a wrapper-less "captured tabular inner" (an importer shape
+    :func:`parse_latex_table` also accepts) — real positions in the caller's
+    original text stay valid indices into this blanked copy."""
+    out = list(text)
+    pos = 0
+    while True:
+        m = pattern.search(text, pos)
+        if not m:
+            break
+        end = _find_balanced(text, m.end() - 1)
+        if end is None:
+            break
+        for k in range(m.start(), end):
+            out[k] = " "
+        pos = end
+    return "".join(out)
+
+
+def _latex_position_shadow(text: str) -> str:
+    """A same-length copy of `text` with any ``\\caption{}``/``\\label{}``
+    blanked out — structural (row/cell span) lookups below run against this
+    shadow so a caption/label anywhere in the text can never leak into a
+    located cell's span; every surviving character sits at the SAME index
+    as in `text`, so spans found here slice `text` correctly."""
+    return _blank_balanced_command(
+        _blank_balanced_command(text, _CAPTION_CMD_RE), _LABEL_CMD_RE
+    )
+
+
+def _tabular_env_span(text: str) -> tuple[int, int]:
+    """Position-preserving sibling of :func:`_locate_tabular_body`: the
+    ``(start, end)`` span of the tabular body's interior within `text`
+    itself (``text[start:end]``, no slicing/offset bookkeeping needed by
+    the caller). Mirrors that function's own fallbacks exactly — no inner
+    ``\\begin{tabular…}`` → the whole string is the (bare-captured) body; an
+    unmatched ``\\begin`` → everything after it."""
+    m = _INNER_TABULAR_ENV_RE.search(text)
+    if not m:
+        return 0, len(text)
+    env = m.group(1)
+    begin_re = re.compile(r"\\begin\{" + re.escape(env) + r"\}")
+    end_re = re.compile(r"\\end\{" + re.escape(env) + r"\}")
+    depth = 1
+    pos = m.end()
+    while depth > 0:
+        nb = begin_re.search(text, pos)
+        ne = end_re.search(text, pos)
+        if ne is None:
+            return m.end(), len(text)
+        if nb is not None and nb.start() < ne.start():
+            depth += 1
+            pos = nb.end()
+        else:
+            depth -= 1
+            if depth == 0:
+                return m.end(), ne.start()
+            pos = ne.end()
+    return m.end(), len(text)  # pragma: no cover — loop always returns above
+
+
+def _skip_colspec(text: str, start: int) -> int:
+    """Position-preserving sibling of :func:`_strip_colspec`: the index in
+    `text` just past the colspec starting at `start` (an optional
+    ``[pos]`` then one-or-more balanced ``{...}`` groups)."""
+    i = start
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    if i < n and text[i] == "[":
+        j = text.find("]", i)
+        if j != -1:
+            i = j + 1
+            while i < n and text[i].isspace():
+                i += 1
+    while i < n and text[i] == "{":
+        end = _find_balanced(text, i)
+        if end is None:
+            break
+        i = end
+        while i < n and text[i].isspace():
+            i += 1
+    return i
+
+
+def _trim_row_leading_noise(text: str, start: int, end: int) -> int:
+    """Advance `start` past interleaved whitespace + rule-macro tokens
+    (``\\toprule``/``\\midrule``/…) at the front of a row's span. The
+    ``\\\\``-based row split folds a rule macro sitting between two row
+    separators into the FOLLOWING row's segment (it has no ``&``/``\\`` of
+    its own to delimit it) — without this trim it would leak into that
+    row's first cell."""
+    i = start
+    while i < end:
+        j = i
+        while j < end and text[j].isspace():
+            j += 1
+        m = _RULE_MACRO_RE.match(text, j, end)
+        if m:
+            i = m.end()
+            continue
+        return j
+    return end
+
+
+def _row_spans_abs(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """``(start, end)`` absolute spans of each non-blank row within
+    ``text[start:end]`` — the position-preserving sibling of the row split
+    + blank-row filter inside :func:`parse_latex_table` (split on the same
+    ``_ROW_SPLIT_RE`` separators; a row that's blank once a leading rule
+    macro is trimmed off contributes no row, mirroring that function's
+    post-strip ``if r`` filter)."""
+    bounds: list[tuple[int, int]] = []
+    pos = start
+    for m in _ROW_SPLIT_RE.finditer(text, start, end):
+        bounds.append((pos, m.start()))
+        pos = m.end()
+    bounds.append((pos, end))
+    spans: list[tuple[int, int]] = []
+    for s, e in bounds:
+        s2 = _trim_row_leading_noise(text, s, e)
+        if text[s2:e].strip():
+            spans.append((s2, e))
+    return spans
+
+
+def _split_row_cells_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Position-preserving sibling of :func:`_split_row_cells`: ``(start,
+    end)`` absolute spans of each ``&``-delimited raw cell within
+    ``text[start:end]`` (brace-depth aware, same as the string-returning
+    original)."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    i = start
+    cell_start = start
+    while i < end:
+        c = text[i]
+        if c == "\\" and i + 1 < end:
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif c == "&" and depth == 0:
+            spans.append((cell_start, i))
+            cell_start = i + 1
+        i += 1
+    spans.append((cell_start, end))
+    return spans
+
+
+def locate_latex_cell(text: str, row1: int, col0: int) -> tuple[int, int] | None:
+    """Locate the raw-text ``(start, end)`` span of one cell in raw LaTeX
+    ``tabular``-family `text`, addressed the same way as
+    :func:`parse_cell_address` (``row1=1`` is the header row; data rows are
+    ``2..``). Returns ``None`` — refuse, don't guess — when the table's
+    row/cell shape can't be confidently re-derived: an out-of-range row, or
+    a row whose raw ``&``-count is narrower than the requested column (a
+    ``\\multicolumn`` row, whose parsed-grid width is wider than its raw
+    cell count — the exact mismatch gripe 271129 exists to never paper
+    over)."""
+    try:
+        shadow = _latex_position_shadow(text)
+        env_start, env_end = _tabular_env_span(shadow)
+        rows_start = _skip_colspec(shadow, env_start)
+        row_spans = _row_spans_abs(shadow, rows_start, env_end)
+        row_idx = row1 - 1
+        if row_idx < 0 or row_idx >= len(row_spans):
+            return None
+        r_start, r_end = row_spans[row_idx]
+        cell_spans = _split_row_cells_spans(shadow, r_start, r_end)
+        if col0 < 0 or col0 >= len(cell_spans):
+            return None
+        return cell_spans[col0]
+    except Exception:
+        return None
+
+
+def patch_latex_cell(text: str, row1: int, col0: int, value: str) -> str | None:
+    """Return `text` with the addressed cell's raw content replaced by
+    `value` — the LaTeX sibling of :func:`set_cell`. The cell's own
+    surrounding whitespace is kept (so column alignment/spacing style is
+    otherwise undisturbed) but its content is fully overwritten, same
+    "set this field" semantics as the JSON-grid path (any macro/math
+    wrapping *on that one cell* is not preserved — only the OTHER cells,
+    the label, spans and rules are the guarantee here). Returns ``None``
+    (refuse, don't guess) when :func:`locate_latex_cell` can't confidently
+    locate the addressed cell."""
+    span = locate_latex_cell(text, row1, col0)
+    if span is None:
+        return None
+    start, end = span
+    raw = text[start:end]
+    lstripped = raw.lstrip()
+    lead = raw[: len(raw) - len(lstripped)]
+    trail = lstripped[len(lstripped.rstrip()) :]
+    return text[:start] + lead + value + trail + text[end:]
+
+
+def patch_latex_table_text(
+    text: str, pattern: re.Pattern[str], replacement: str
+) -> tuple[str, int]:
+    """Apply a find/sub substitution directly to the row/cell area of raw
+    LaTeX `text` — the LaTeX sibling of :func:`find_replace_cells`. The
+    caption/label/colspec (everything before the first data cell) are
+    never in scope, so they survive untouched even if `pattern` would
+    otherwise match inside them. Returns the patched text plus the
+    replacement count."""
+    shadow = _latex_position_shadow(text)
+    env_start, env_end = _tabular_env_span(shadow)
+    rows_start = _skip_colspec(shadow, env_start)
+    body = text[rows_start:env_end]
+    new_body, n = pattern.subn(replacement, body)
+    return text[:rows_start] + new_body + text[env_end:], n
+
+
 def table_payload(
     meta: dict[str, Any] | None, text: str | None
 ) -> dict[str, Any] | None:

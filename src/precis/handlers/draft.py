@@ -58,6 +58,10 @@ from precis.utils.embed_query import query_vec_for
 from precis.utils.table_data import (
     find_replace_cells,
     normalize_table,
+    parse_cell_address,
+    parse_markdown_table,
+    patch_latex_cell,
+    patch_latex_table_text,
     set_cell,
     table_payload,
     table_to_markdown,
@@ -2163,6 +2167,13 @@ class DraftHandler(Handler):
         # 251 flagged chunks (97%). The other 7 still hit `no_data_err`, so
         # the honest refusal survives where recovery genuinely fails.
         recovered_caption: str | None = None
+        # True iff `cur_table` above was recovered from raw LaTeX (not from
+        # canonical `meta.table`, nor from the derived-markdown fallback) —
+        # the source :func:`table_payload` reaches only via
+        # :func:`parse_latex_table`. Drives the in-place LaTeX patch below
+        # (gripe 271129): for THIS source, the parsed grid stays the
+        # addressing model but never becomes the serialisation.
+        is_latex_source = False
         if not cur_table:
             recovered = table_payload(cur, chunk.text)
             if recovered and recovered.get("header"):
@@ -2174,12 +2185,38 @@ class DraftHandler(Handler):
                         }
                     )
                     recovered_caption = recovered.get("caption") or None
+                    is_latex_source = parse_markdown_table(chunk.text or "") is None
                 except Exception:
                     cur_table = None  # ragged parse — fall through to refusal
         no_data_err = BadInput(
             "this table chunk has no stored data — pass table={header, rows}",
             next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
         )
+        if (
+            is_latex_source
+            and cur_table
+            and (cell is not None or find is not None or sub is not None)
+        ):
+            # Non-destructive path for a LaTeX-sourced chunk (gripe 271129):
+            # patch the raw LaTeX text in place instead of re-deriving
+            # markdown from the (lossy) parsed grid below — that
+            # re-derivation drops `\label{}` (dangling `\ref`s elsewhere),
+            # flattens `\multicolumn` spans onto the wrong column, and
+            # loses booktabs rules / `\,` thin spaces. `cur_table` above
+            # still supplies the row/col ADDRESSING for `cell=`; it never
+            # becomes the serialisation.
+            return self._edit_latex_table_in_place(
+                handle,
+                chunk,
+                cur_table=cur_table,
+                cell=cell,
+                find=find,
+                sub=sub,
+                text=text,
+                caption=caption,
+                regen=regen,
+                base_sha=base_sha,
+            )
         replace_count: int | None = None
         if table is not None:
             norm = normalize_table(table)
@@ -2273,6 +2310,124 @@ class DraftHandler(Handler):
         return Response(
             body=f"edited table {(c or chunk).dc} ({rows}×{cols}){extra}; "
             "markdown re-derived"
+        )
+
+    def _edit_latex_table_in_place(
+        self,
+        handle: str,
+        chunk: Any,
+        *,
+        cur_table: dict[str, Any],
+        cell: str | dict[str, Any] | None,
+        find: str | None,
+        sub: dict[str, Any] | str | None,
+        text: str | None,
+        caption: str | None,
+        regen: dict[str, Any] | None,
+        base_sha: str | None,
+    ) -> Response:
+        """``cell=``/``find=``/``sub=`` on a LaTeX-sourced table chunk
+        (gripe 271129) — patch the raw LaTeX `chunk.text` in place via
+        :func:`~precis.utils.table_data.patch_latex_cell`/
+        :func:`~precis.utils.table_data.patch_latex_table_text` instead of
+        re-deriving markdown from the parsed grid. ``meta.table`` is
+        deliberately never written here: the chunk stays LaTeX-sourced, so
+        the read path (:func:`~precis.utils.table_data.table_payload`)
+        keeps re-parsing the (now-patched) raw text — promoting the parsed
+        grid to canonical would freeze in its lossy corners (a
+        ``\\multicolumn`` row's value at the wrong column) as the
+        thereafter-authoritative data. The ``needs-table-review`` flag is
+        left exactly as-is for the same reason: no canonical grid was
+        actually persisted.
+
+        ``caption=``/``regen=`` don't apply here — see the refusal below —
+        since patching `meta` alone wouldn't be read back (the fallback
+        recovery path re-derives caption from `\\caption{}` in the text
+        itself, not from `meta.caption`)."""
+        if caption is not None or regen is not None:
+            selector = (
+                "cell" if cell is not None else "find" if find is not None else "sub"
+            )
+            raise BadInput(
+                "caption=/regen= don't apply together with a "
+                "cell=/find=/sub= edit on this LaTeX-sourced table chunk "
+                "— meta.table is never written here, so they wouldn't be "
+                "read back",
+                next=(
+                    f"edit(kind='draft', id={chunk.dc!r}, {selector}=…)  "
+                    "# then set caption=/regen= in a separate call, or "
+                    "pass table={…} to replace the whole chunk with "
+                    "canonical data"
+                ),
+            )
+        raw = chunk.text or ""
+        replace_count: int | None = None
+        if cell is not None:
+            if text is None:
+                raise BadInput(
+                    "cell= addresses one field and needs text= for its new value",
+                    next=f"edit(kind='draft', id={chunk.dc!r}, cell={cell!r}, "
+                    "text='…')",
+                )
+            row1, col0 = parse_cell_address(
+                cell,
+                n_rows=len(cur_table["rows"]),
+                n_cols=len(cur_table["header"]),
+            )
+            new_raw = patch_latex_cell(raw, row1, col0, str(text))
+            if new_raw is None:
+                raise BadInput(
+                    f"cell={cell!r} can't be safely located in {chunk.dc}'s "
+                    "raw LaTeX (it may fall inside a \\multicolumn span) — "
+                    "nothing changed.",
+                    next=(
+                        f"get(kind='draft', id={chunk.dc!r}) to inspect the "
+                        "raw text, or table={header,rows} to replace the "
+                        "whole chunk with canonical data"
+                    ),
+                )
+        else:
+            if find is not None:
+                if not find:
+                    raise BadInput(
+                        "find= must be a non-empty string (the exact cell "
+                        "text to locate)",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, "
+                        "find='old', text='new')",
+                    )
+                if text is None:
+                    raise BadInput(
+                        "find-replace requires text= (the replacement "
+                        "value; pass '' to blank the matched cell content)",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, "
+                        f"find={find!r}, text='')",
+                    )
+                pattern_src, replacement = re.escape(find), str(text)
+            else:
+                assert sub is not None
+                f, r, flags = self._parse_sub_expr(sub)
+                prefix = "".join(f"(?{c})" for c in flags if c in "is")
+                pattern_src, replacement = prefix + f, r
+            try:
+                rx = re.compile(pattern_src)
+            except re.error as exc:
+                raise BadInput(f"invalid regex {pattern_src!r}: {exc}") from exc
+            new_raw, replace_count = patch_latex_table_text(raw, rx, replacement)
+            if replace_count == 0:
+                shown = find if find is not None else pattern_src
+                raise BadInput(
+                    f"no cell matches /{shown}/ in {chunk.dc} — nothing "
+                    "replaced, the table was left unchanged.",
+                    next=f"get(kind='draft', id={chunk.dc!r})",
+                )
+        c = self.store.drafts.edit_text(handle, new_raw, base_sha=base_sha)
+        if c is not None:
+            self._attribute_touch([c.chunk_id])
+            self.sync_draft_links(c.ref_id)
+        extra = f" ({replace_count} replacement(s))" if replace_count else ""
+        return Response(
+            body=f"edited table {(c or chunk).dc}{extra}; patched the raw "
+            "LaTeX in place — label/rules/multicolumn spans/spacing untouched"
         )
 
     def _resolve_project(self, project: str | int) -> int:
