@@ -123,31 +123,57 @@ _SEED = 1
 #:      the industry's other spelling for exactly that situation. A tick
 #:      marks a corner and has nowhere else to go; a dot does.
 #:
-#: - ``silk_missing`` (0 -> 2, and the direction is the point). This board
-#:   reached zero on 2026-08-30 and lost it the same day, to a CORRECTNESS
-#:   fix rather than a regression: ``optimize._gen_rotate`` never checked
-#:   placement legality, which was right while a keep-out was a CIRCLE
-#:   (rotation-invariant — spinning a part could not bring it into a
-#:   neighbour) and wrong once it became a polygon. Nothing downstream
-#:   caught it either: no cost term reads ``inst_rot``, so the anneal
-#:   accepted every generated rotation unconditionally. Gating it removed
-#:   moves the search had been using to pack a board that is deliberately
-#:   too small — ~44mm of parts on 40mm — and the best placement it can
-#:   now reach leaves one part's courtyard crossing a plane fan-out via
-#:   (plus that part's pin-1 mark, which never survives its own courtyard).
-#:   That is the known courtyard-meets-via class, not a new defect.
+#: - ``silk_missing`` (0 -> 2 -> 1). It reached zero on 2026-08-30 and lost
+#:   it the same day to a CORRECTNESS fix rather than a regression:
+#:   ``optimize._gen_rotate`` never checked placement legality, which was
+#:   right while a keep-out was a CIRCLE (rotation-invariant — spinning a
+#:   part could not bring it into a neighbour) and wrong once it became a
+#:   polygon. Nothing downstream caught it either: no cost term reads
+#:   ``inst_rot``, so the anneal accepted every generated rotation
+#:   unconditionally. Gating it removed moves the search had been using to
+#:   pack a board that is deliberately too small — ~44mm of parts on 40mm.
 #:
-#: **This is the one entry that was raised rather than lowered, so it
-#: carries the burden of proof.** The alternative was to keep the zero by
-#: leaving illegal rotations unchecked, which would have meant a fixture
-#: asserting a clean board while the engine could silently produce an
-#: overlapping one. Nothing here may be raised again without that kind of
-#: reason written down.
+#:   **That was the one entry ever raised here rather than lowered**, and
+#:   it came back down the same day. The remaining 1 is R2's refdes label,
+#:   dropped because all 37 candidate spots are taken. On a board this
+#:   over-packed that is the honest answer rather than a defect: the label
+#:   has nowhere legal to print, and the census says exactly that.
+#:
+#:   Three more fixes retired the rest — all found by LOOKING at the
+#:   rendered board, none by the counter, which had been reporting success
+#:   over marks that were not on it:
+#:
+#:   5. A closed courtyard ring was clipped as an OPEN polyline
+#:      (``silk._clip_polyline``), so the arc spanning its seam vertex came
+#:      out as two runs. They abut exactly, so no count was ever wrong —
+#:      but each run draws as its own polyline, so a seam landing on a
+#:      corner lost the mitre join and showed a notch that no obstacle
+#:      explained, and a seam stub under the debris floor was deleted,
+#:      widening a real gap. Measured: 15 of 25 clipped outlines carried
+#:      one. The splice runs before the debris filter, which is the point.
+#:   6. **The pin-1 corner tick is a cut of the courtyard outline, so it
+#:      printed ON that outline** — measured 0.0000mm from it for all 20
+#:      ticked parts. A mark indistinguishable from the line it annotates
+#:      is not a mark, and being inside the courtyard it ends up under the
+#:      part once assembled. ``check_silk_missing`` passed every one of
+#:      them, because it proves a draw EXISTS and cannot see that it is
+#:      invisible. The dot beside pin 1 is now tried first for every part:
+#:      visible pin-1 marks on this board went 8 -> 27.
+#:   7. A pin-1 dot, and then a refdes label, could be committed onto a
+#:      spot that a part processed LATER needed for its own body outline —
+#:      the later part losing its whole courtyard on nothing more
+#:      principled than refdes order. Both now yield to every instance's
+#:      courtyard ring, resolved up front (``silk.build_silk``'s
+#:      ``courtyard_ring``), so precedence no longer depends on processing
+#:      order. This one alone took the tally 5 -> 3 -> 1.
+#:
+#: Nothing here may be raised again without the kind of reason written out
+#: for the rotation gate above.
 #:
 #: A new rule, or more of an existing one, still fails — a rule absent
 #: from this mapping is allowed zero.
 KNOWN_OPEN_DRC_ERRORS: dict[str, int] = {
-    "silk_missing": 2,
+    "silk_missing": 1,
 }
 
 #: The films this board must produce with geometry on them. Listed

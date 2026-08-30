@@ -15,6 +15,7 @@ import itertools
 import math
 import re
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -480,10 +481,18 @@ def test_a_dense_cluster_never_overlaps_silk_across_different_parts():
 def test_processing_order_is_natural_refdes_order_not_array_order():
     """``ir``'s instance array lists C14 before C1 -- natural-refdes-order
     processing (module docstring) must still let C1 claim the contested
-    spot first: C1's refdes label lands at its default (candidate 0,
-    centered) position, never relocated, while C14 -- processed after,
-    once C1's silk is already committed -- is the one that has to move
-    or drop."""
+    spot first: C1 keeps its body outline and its pin-1 mark, while C14 --
+    processed after, once C1's silk is already committed -- is the one
+    that has to give them up.
+
+    Stated as "who keeps their marks" rather than the older "C1's label
+    stays at candidate 0". That detail stopped holding when the pin-1 dot
+    became the primary marker: C1's own dot is real ink beside the part,
+    so C1's centred label now legitimately steps out to ring 1 to clear
+    it. The ordering claim -- the thing this test is named for -- is
+    untouched by that, and asserting it directly means a future change to
+    label candidates cannot make this test fail for a reason it never
+    cared about."""
     ir = from_graph(
         _multi(
             _graph("C14", 8, x=0.7, y=0.0),  # listed FIRST in the array
@@ -492,9 +501,16 @@ def test_processing_order_is_natural_refdes_order_not_array_order():
         stackup=DEFAULT_STACKUP,
     )
     result = build_silk(ir, pads=[])
-    messages = (*result.dropped, *result.relocated)
-    assert not any(msg.startswith("C1:") for msg in messages)
-    assert any(msg.startswith("C14:") for msg in messages)
+    outcome = {(row.refdes, row.kind): row.outcome for row in result.census}
+    # C1 sorts first, so it keeps both marks...
+    assert outcome[("C1", "courtyard")] == "placed"
+    assert outcome[("C1", "pin1")] == "placed"
+    # ...and C14, processed second against C1's committed silk, loses them.
+    assert outcome[("C14", "courtyard")] == "dropped"
+    assert outcome[("C14", "pin1")] == "dropped"
+    # Both labels still print somewhere -- neither part goes unlabelled.
+    assert outcome[("C1", "refdes")] in ("placed", "relocated")
+    assert outcome[("C14", "refdes")] in ("placed", "relocated")
 
 
 # ── pin-1 tick never survives its own courtyard being dropped ────────────
@@ -879,9 +895,18 @@ def test_silk_round_trips_through_gerber_and_parses_back():
     total_points = sum(len(s.points) for s in art.strokes)
     assert total_points > 4  # more than one trivial 2-point stroke
 
-    # every parsed stroke width matches the draw width we asked for
+    # Every parsed stroke width matches a width we actually asked for.
+    # Compared against the draws rather than against
+    # `DEFAULT_SILK_WIDTH_MM` alone: silk legitimately emits more than one
+    # width now (the pin-1 dot is a fat zero-length stroke at the dot's own
+    # diameter), and pinning the single default would assert a fiction the
+    # moment a second aperture is legitimately in play.
+    asked = sorted({float(d["width_mm"]) for d in result.draws["top"]})
+    assert gerber.DEFAULT_SILK_WIDTH_MM in asked
     for s in art.strokes:
-        assert s.width == pytest.approx(gerber.DEFAULT_SILK_WIDTH_MM)
+        assert any(s.width == pytest.approx(w) for w in asked), (
+            f"gerber came back with width {s.width}, which no draw asked for: {asked}"
+        )
 
 
 # ── refdes text reads from ONE side, at ANY part rotation ─────────────────
@@ -1579,18 +1604,19 @@ def _blocked_pin1_corner():
     return ir, via, corner
 
 
-def test_a_blocked_pin1_corner_falls_back_to_a_dot_beside_pin_1():
+def test_a_blocked_pin1_corner_still_gets_a_dot_beside_pin_1():
     """A corner tick has nowhere to go: shrinking it keeps the same
     blocked corner point, and sliding it to another vertex would mark the
-    wrong pin. The dot is the industry's other spelling for exactly this,
-    and unlike the tick it has somewhere to go -- so the marker survives
-    instead of the whole pin-1 identification being lost."""
+    wrong pin. The dot is the industry's other spelling, and unlike the
+    tick it has somewhere to go -- so an obstructed corner costs the board
+    nothing. It is now the marker tried FIRST (see
+    ``test_the_pin1_mark_is_a_dot_even_when_the_corner_tick_is_clear``),
+    which is why the census reads "placed" rather than "relocated": the
+    via took a corner nothing was going to use."""
     ir, via, corner = _blocked_pin1_corner()
     result = build_silk(ir, pads=[], vias=[via])
     row = next(c for c in result.census if c.refdes == "U4" and c.kind == "pin1")
-    assert row.outcome == "relocated"
-    assert row.reason is not None and "dot beside pin 1" in row.reason
-    assert "via" in row.reason  # names what took the corner
+    assert row.outcome == "placed"
 
     marks = [d for d in result.draws["top"] if d["role"] == "pin1"]
     assert len(marks) == 1
@@ -1692,18 +1718,52 @@ def test_the_pin1_dot_renders_as_a_visible_dot_in_the_fab_svg():
         )
 
 
-def test_the_pin1_dot_is_not_reached_when_the_corner_tick_is_clear():
-    """The dot is a FALLBACK. A part with an unobstructed corner must
-    still get the conventional two-segment tick, or this change would
-    have quietly replaced the marker convention on every board rather
-    than rescuing the blocked ones."""
+def test_the_pin1_mark_is_a_dot_even_when_the_corner_tick_is_clear():
+    """**A clear corner is not a reason to draw the tick.** The tick is a
+    corner-CUT of the courtyard, so it prints along that outline rather
+    than beside it -- measured on the 40mm fixture, all 20 ticked parts
+    sat 0.0000mm from their own courtyard, which is ink that adds nothing
+    a reader can distinguish from the outline it lies on. It is also
+    inside the courtyard, hence under the part once assembled. So the dot
+    is tried first for every part, not only for the obstructed ones, and
+    the tick survives solely as the last resort asserted by
+    ``test_the_corner_tick_is_the_last_resort_when_no_dot_fits``.
+
+    This inverts the policy this test originally pinned, deliberately:
+    ``check_silk_missing`` had been reporting all 20 of those parts as
+    successfully marked, because it proves a draw EXISTS and cannot see
+    that it is invisible."""
     ir, _via, _corner = _blocked_pin1_corner()
     result = build_silk(ir, pads=[], vias=[])
     row = next(c for c in result.census if c.refdes == "U4" and c.kind == "pin1")
     assert row.outcome == "placed"
-    tick = next(d for d in result.draws["top"] if d["role"] == "pin1")
-    assert len(tick["segments"]) == 2  # the L, not a dot
-    assert tick["width_mm"] == pytest.approx(0.15)
+    mark = next(d for d in result.draws["top"] if d["role"] == "pin1")
+    assert len(mark["segments"]) == 1  # the dot, not the L
+    assert mark["segments"][0]["start"] == mark["segments"][0]["end"]
+    assert mark["width_mm"] == pytest.approx(0.15 * 3.0)
+
+
+def test_the_corner_tick_is_the_last_resort_when_no_dot_fits():
+    """The tick is a poor mark but not a useless one, so it must still be
+    reachable: with every dot candidate blocked, a part gets the corner
+    tick rather than no pin-1 marker at all. Without this the inversion
+    above would have deleted the tick path outright while leaving its code
+    in place, which is the "tested but unreachable" failure this module's
+    own docstring warns about."""
+    ir, _via, _corner = _blocked_pin1_corner()
+    # Starved at the SOURCE rather than by geometry. Every dot candidate
+    # sits just outside the courtyard beside pin 1, so any pad big enough
+    # to cover them all also eats the courtyard -- and a dropped courtyard
+    # takes the pin-1 mark with it before the tick branch is ever reached,
+    # which is a different code path than the one under test here.
+    with mock.patch.object(silk, "_pin1_dot_candidates", return_value=[]):
+        result = build_silk(ir, pads=[], vias=[])
+    row = next(c for c in result.census if c.refdes == "U4" and c.kind == "pin1")
+    assert row.outcome == "relocated"
+    assert row.reason is not None and "fell back to the corner tick" in row.reason
+    mark = next(d for d in result.draws["top"] if d["role"] == "pin1")
+    assert len(mark["segments"]) == 2  # the L, not a dot
+    assert mark["width_mm"] == pytest.approx(0.15)
 
 
 def test_the_refdes_ladder_starts_centred_and_walks_outward_upward_first():

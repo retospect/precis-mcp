@@ -548,6 +548,16 @@ _CLIP_MIN_RUN_STROKES = 4.0
 _COURTYARD_MIN_KEPT_FRACTION = 0.5
 
 
+def _same_point(a: Point, b: Point) -> bool:
+    """Two points that came out of the SAME arithmetic, compared for
+    identity rather than proximity. Both callers below feed this endpoints
+    that were either copied from one another or computed by the identical
+    expression, so the tolerance guards float representation only — it is
+    deliberately far tighter than any geometric feature on a board, so it
+    can never mistake two genuinely distinct vertices for one."""
+    return math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9
+
+
 def _clip_polyline(
     points: list[Point], obstacles: list[dict[str, Any]], stroke_width_mm: float
 ) -> tuple[list[list[Point]], float, float]:
@@ -572,6 +582,21 @@ def _clip_polyline(
     stroke widths are discarded as debris — their length still counts as
     removed, so the caller's kept fraction stays honest.
 
+    **A closed ring is spliced across its own seam.** A courtyard arrives
+    as a ring whose first and last point coincide, but the walk above is
+    an OPEN one: the arc that happens to span that seam vertex comes out
+    as two runs, the first starting there and the last ending there. They
+    abut exactly, so nothing looks wrong in the numbers — but each run is
+    drawn as its own polyline, so a seam landing on a CORNER loses the
+    mitre join and shows a notch that no obstacle explains, and a seam
+    stub shorter than ``min_run`` is deleted as debris, silently widening
+    the neighbouring real gap. Measured on the 40mm fixture: 15 of 25
+    clipped outlines carried a phantom break of the first kind. Splicing
+    happens BEFORE the debris filter, which is the whole point — a stub
+    that is too short alone is not too short once rejoined to the run it
+    was always part of. Where the seam sits mid-gap there is nothing to
+    splice and the ring is left alone.
+
     **A FULL stroke width of ink is tested, not the usual half.** Every
     other check here asks "does this stroke land on that obstacle", and a
     half-width box answers it. Clipping asks something different: a kept
@@ -584,22 +609,14 @@ def _clip_polyline(
     calls a collision. Testing a full width covers both halves."""
     half = stroke_width_mm
     min_run = stroke_width_mm * _CLIP_MIN_RUN_STROKES
-    runs: list[list[Point]] = []
+    raw: list[list[Point]] = []
     current: list[Point] = []
-    kept = 0.0
     total = 0.0
 
     def flush() -> None:
         nonlocal current
         if len(current) >= 2:
-            length = sum(
-                math.hypot(q[0] - p[0], q[1] - p[1])
-                for p, q in itertools.pairwise(current)
-            )
-            if length >= min_run:
-                runs.append(current)
-                nonlocal kept
-                kept += length
+            raw.append(current)
         current = []
 
     for a, b in itertools.pairwise(points):
@@ -621,6 +638,30 @@ def _clip_polyline(
             else:
                 current.append(q)
     flush()
+
+    # Rejoin the arc that spans the ring's seam, before the debris filter
+    # below can delete either half of it (see the docstring). Guarded on
+    # the two halves actually REACHING the seam: if the walk was blocked
+    # there, the seam sits inside a genuine gap and there is nothing to
+    # rejoin.
+    if (
+        len(raw) >= 2
+        and _same_point(points[0], points[-1])
+        and _same_point(raw[0][0], points[0])
+        and _same_point(raw[-1][-1], points[-1])
+    ):
+        raw[0] = raw[-1] + raw[0][1:]
+        raw.pop()
+
+    runs: list[list[Point]] = []
+    kept = 0.0
+    for run in raw:
+        length = sum(
+            math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in itertools.pairwise(run)
+        )
+        if length >= min_run:
+            runs.append(run)
+            kept += length
     return runs, kept, total
 
 
@@ -1825,6 +1866,40 @@ def build_silk(
     ]
     order = sorted(placed, key=lambda i: _refdes_sort_key(str(ir.instance_refdes[i])))
 
+    # Every placed instance's courtyard ring, in world coordinates,
+    # resolved BEFORE the loop starts.
+    #
+    # A pin-1 dot joins the shared obstacle list the moment its own part is
+    # processed, so on a crowded board it can land exactly where a part
+    # processed LATER has to draw its body outline -- and the later part is
+    # the one that loses, by nothing more principled than refdes order.
+    # Measured on the 40mm fixture when the dot became the primary marker:
+    # R3 and U3 each lost their ENTIRE courtyard to a neighbour's dot, at
+    # 44% and 47% of perimeter kept against the 50% floor. Knowing all the
+    # rings up front lets the dot yield to them instead, which is the right
+    # precedence whichever order the parts happen to come in: an outline is
+    # the larger and far less relocatable mark, and a dot has seven other
+    # directions and three distances still to try.
+    courtyard_ring: dict[int, tuple[str, list[Point]]] = {}
+    for other in placed:
+        ring_local = instance_courtyard_polygon(
+            ir, other, clearance_mm=clearance_mm, pins=pins_of_inst.get(other, [])
+        )
+        if not ring_local:
+            continue
+        other_rot = float(ir.inst_rot[other])
+        other_side = _side_for(sides, str(ir.instance_refdes[other]))
+        courtyard_ring[other] = (
+            other_side,
+            _place(
+                ring_local,
+                cx=float(ir.inst_x[other]),
+                cy=float(ir.inst_y[other]),
+                rot=0.0 if math.isnan(other_rot) else other_rot,
+                mirror=other_side == "bottom",
+            ),
+        )
+
     for inst in order:
         cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
         refdes = str(ir.instance_refdes[inst])
@@ -1943,80 +2018,90 @@ def build_silk(
             )
         elif pins:
             pin1 = _pin1_id(ir, inst, pins)
-            tick_local = _pin1_tick(ir, pin1, box_local, stroke_width_mm)
-            if tick_local:
-                tick_pts = _place(tick_local, cx=cx, cy=cy, rot=rot, mirror=mirror)
-                tick_hit = _stroke_hits(tick_pts, side_obstacles, stroke_width_mm)
-                if tick_hit is not None:
-                    # The corner is taken -- almost always by this part's
-                    # own plane fan-out via, placed by the router long
-                    # after silk had any say. Fall back to the other
-                    # convention: a DOT beside pin 1, which unlike a
-                    # corner tick has somewhere else to go.
-                    dot_pts, dot_dia = None, stroke_width_mm
-                    for local_centre, dia in _pin1_dot_candidates(
-                        ir, pin1, stroke_width_mm, clearance_mm
-                    ):
-                        (dcx, dcy) = _place(
-                            [local_centre], cx=cx, cy=cy, rot=rot, mirror=mirror
-                        )[0]
-                        # A dot is a zero-length stroke at the dot's own
-                        # diameter -- the gerber writer's round cap makes
-                        # it a filled circle, so it needs no new primitive.
-                        candidate = [(dcx, dcy), (dcx, dcy)]
-                        if not _stroke_overlaps_any_pad(
-                            candidate, side_obstacles, dia
-                        ) and not (
-                            courtyard_kept
-                            and _stroke_crosses_stroke(candidate, box_pts, dia)
-                        ):
-                            dot_pts, dot_dia = candidate, dia
-                            break
-                    if dot_pts is None:
-                        census.append(
-                            SilkPlacement(
-                                refdes=refdes,
-                                kind="pin1",
-                                side=side_name,
-                                outcome="dropped",
-                                reason=(
-                                    "pin-1 marker overlaps "
-                                    f"{_obstacle_label(tick_hit)}, and no dot "
-                                    "beside pin 1 is clear either -- dropped"
-                                ),
-                                stroke_width_mm=stroke_width_mm,
-                            )
-                        )
-                    else:
-                        bucket.append(
-                            _draw(dot_pts, dot_dia, role="pin1", refdes=refdes)
-                        )
-                        # A circle, not `obstacle_from_bbox`: that helper
-                        # bounds a POLYGON, and a dot's polygon is a
-                        # single point -- it would fold in as a zero-area
-                        # rectangle that nothing could ever collide with.
-                        tick_obstacle = {
-                            "shape": "circle",
-                            "x": dot_pts[0][0],
-                            "y": dot_pts[0][1],
-                            "w": dot_dia,
-                            "obstacle": f"{refdes} pin-1 silk",
-                        }
-                        census.append(
-                            SilkPlacement(
-                                refdes=refdes,
-                                kind="pin1",
-                                side=side_name,
-                                outcome="relocated",
-                                reason=(
-                                    "pin-1 corner tick overlaps "
-                                    f"{_obstacle_label(tick_hit)}; marked with a "
-                                    "dot beside pin 1 instead"
-                                ),
-                                stroke_width_mm=dot_dia,
-                            )
-                        )
-                else:
+            # **A DOT beside pin 1 first, and the corner tick only as a
+            # fallback.** The tick is a corner-CUT of the courtyard
+            # outline, so it is drawn along that outline rather than near
+            # it: measured on the 40mm fixture, all 20 ticked parts had
+            # their tick 0.0000mm from their own courtyard. A mark that
+            # coincides exactly with the line it is meant to annotate adds
+            # no ink a reader can distinguish, which is why the rendered
+            # board appeared to have no pin-1 marker on those parts while
+            # `check_silk_missing` reported every one of them present --
+            # that rule proves a draw EXISTS, not that it is legible.
+            #
+            # The tick is also inside the courtyard, and a courtyard
+            # encloses the part body, so even printed correctly it ends up
+            # under the component once assembled. The dot sits outside,
+            # beside the pin it names; the eight parts that reached it by
+            # the old fallback path were the only visible pin-1 marks on
+            # the board.
+            dot_pts, dot_dia = None, stroke_width_mm
+            for local_centre, dia in _pin1_dot_candidates(
+                ir, pin1, stroke_width_mm, clearance_mm
+            ):
+                (dcx, dcy) = _place(
+                    [local_centre], cx=cx, cy=cy, rot=rot, mirror=mirror
+                )[0]
+                # A dot is a zero-length stroke at the dot's own diameter
+                # -- the gerber writer's round cap makes it a filled
+                # circle, so it needs no new primitive.
+                candidate = [(dcx, dcy), (dcx, dcy)]
+                if _stroke_overlaps_any_pad(candidate, side_obstacles, dia):
+                    continue
+                if courtyard_kept and _stroke_crosses_stroke(candidate, box_pts, dia):
+                    continue
+                # Yield to every OTHER part's body outline on this side,
+                # whether or not that part has been processed yet (see
+                # `courtyard_ring`).
+                if any(
+                    other != inst
+                    and other_side == side_name
+                    and _stroke_crosses_stroke(candidate, ring, dia)
+                    for other, (other_side, ring) in courtyard_ring.items()
+                ):
+                    continue
+                dot_pts, dot_dia = candidate, dia
+                break
+
+            if dot_pts is not None:
+                bucket.append(_draw(dot_pts, dot_dia, role="pin1", refdes=refdes))
+                # A circle, not `obstacle_from_bbox`: that helper bounds a
+                # POLYGON, and a dot's polygon is a single point -- it
+                # would fold in as a zero-area rectangle that nothing
+                # could ever collide with.
+                tick_obstacle = {
+                    "shape": "circle",
+                    "x": dot_pts[0][0],
+                    "y": dot_pts[0][1],
+                    "w": dot_dia,
+                    "obstacle": f"{refdes} pin-1 silk",
+                }
+                census.append(
+                    SilkPlacement(
+                        refdes=refdes,
+                        kind="pin1",
+                        side=side_name,
+                        outcome="placed",
+                        stroke_width_mm=dot_dia,
+                    )
+                )
+            else:
+                # Nowhere clear beside pin 1. The corner tick is a weak
+                # mark for the reasons above, but it still says WHICH
+                # corner to a reader who knows to look for it, and that
+                # beats dropping the marker entirely.
+                tick_local = _pin1_tick(ir, pin1, box_local, stroke_width_mm)
+                tick_pts = (
+                    _place(tick_local, cx=cx, cy=cy, rot=rot, mirror=mirror)
+                    if tick_local
+                    else []
+                )
+                tick_hit = (
+                    _stroke_hits(tick_pts, side_obstacles, stroke_width_mm)
+                    if tick_pts
+                    else None
+                )
+                if tick_pts and tick_hit is None:
                     bucket.append(
                         _draw(tick_pts, stroke_width_mm, role="pin1", refdes=refdes)
                     )
@@ -2028,7 +2113,31 @@ def build_silk(
                             refdes=refdes,
                             kind="pin1",
                             side=side_name,
-                            outcome="placed",
+                            outcome="relocated",
+                            reason=(
+                                "no dot beside pin 1 is clear -- fell back to "
+                                "the corner tick, which prints along the "
+                                "courtyard outline and reads weakly"
+                            ),
+                            stroke_width_mm=stroke_width_mm,
+                        )
+                    )
+                else:
+                    census.append(
+                        SilkPlacement(
+                            refdes=refdes,
+                            kind="pin1",
+                            side=side_name,
+                            outcome="dropped",
+                            reason=(
+                                "no dot beside pin 1 is clear, and the corner "
+                                + (
+                                    f"tick overlaps {_obstacle_label(tick_hit)}"
+                                    if tick_hit is not None
+                                    else "tick has no courtyard to cut"
+                                )
+                                + " -- dropped"
+                            ),
                             stroke_width_mm=stroke_width_mm,
                         )
                     )
@@ -2129,6 +2238,23 @@ def build_silk(
                 # the courtyard's hollow interior is legal (candidate 0 sits
                 # inside it on purpose), but a glyph still can't cross its
                 # own courtyard's border line -- see _stroke_crosses_stroke.
+                continue
+            # Yield to every OTHER part's body outline on this side, placed
+            # or not yet (`courtyard_ring`) -- the same precedence the pin-1
+            # dot follows, and for the same reason: a label committed early
+            # was otherwise free to sit across a later part's outline and
+            # take the whole outline down with it. Measured on the 40mm
+            # fixture: C14's label alone cost R3 its courtyard AND its
+            # pin-1 mark.
+            if any(
+                other != inst
+                and other_side == side_name
+                and any(
+                    _stroke_crosses_stroke(pts, ring, stroke_width_mm)
+                    for pts in strokes
+                )
+                for other, (other_side, ring) in courtyard_ring.items()
+            ):
                 continue
             for pts in strokes:
                 bucket.append(_draw(pts, stroke_width_mm, role="refdes", refdes=refdes))
