@@ -2402,7 +2402,14 @@ class DraftHandler(Handler):
                         next=f"edit(kind='draft', id={chunk.dc!r}, "
                         f"find={find!r}, text='')",
                     )
-                pattern_src, replacement = re.escape(find), str(text)
+                # Literal find ⇒ literal replace. `subn` treats a str
+                # replacement as a *template*, so an unescaped `\cite{…}`
+                # or `$\sim$` raises re.error ("bad escape \\c"/"\\s") and a
+                # `\1` would silently interpolate a group. Escaping the
+                # backslashes makes the template emit the text verbatim —
+                # the regex sibling (`sub=`) keeps backreferences by design.
+                pattern_src = re.escape(find)
+                replacement = str(text).replace("\\", "\\\\")
             else:
                 assert sub is not None
                 f, r, flags = self._parse_sub_expr(sub)
@@ -2412,7 +2419,19 @@ class DraftHandler(Handler):
                 rx = re.compile(pattern_src)
             except re.error as exc:
                 raise BadInput(f"invalid regex {pattern_src!r}: {exc}") from exc
-            new_raw, replace_count = patch_latex_table_text(raw, rx, replacement)
+            try:
+                new_raw, replace_count = patch_latex_table_text(raw, rx, replacement)
+            except re.error as exc:
+                # Only reachable from sub=, whose replacement stays a live
+                # template; a literal find= is escaped above.
+                raise BadInput(
+                    f"invalid replacement template {replacement!r}: {exc} — "
+                    "in sub= the replacement is a regex template, so a "
+                    "backslash starts an escape (\\1 is a group). Double it "
+                    "(\\\\cite) to emit a literal backslash.",
+                    next=f"edit(kind='draft', id={chunk.dc!r}, "
+                    "find='old', text='new')  # literal, no escaping needed",
+                ) from exc
             if replace_count == 0:
                 shown = find if find is not None else pattern_src
                 raise BadInput(

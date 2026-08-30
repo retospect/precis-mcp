@@ -1034,6 +1034,77 @@ def test_edit_table_latex_sub_invalid_regex_rejected(
     assert after.text == before.text
 
 
+def test_edit_table_latex_find_replacement_may_contain_latex_commands(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A literal ``find=`` replacement carrying backslash commands lands
+    VERBATIM. Regression for gripe 273955: the replacement was handed to
+    ``Pattern.subn`` as a *template*, so ``\\cite{…}`` / ``$\\sim$`` died on
+    ``re.error: bad escape \\c`` and surfaced as an opaque ``[error:Internal]``
+    — meaning no citation or inline math could ever be introduced into a
+    table cell, which is exactly what citation-accuracy work needs."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(
+        id=tc.dc,
+        find="SWITCH (DAE + rotaxane + BODIPY)",
+        text="500--2000 (best $\\sim$10$^3$)\\cite{collier2001}",
+    )
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert "500--2000 (best $\\sim$10$^3$)\\cite{collier2001}" in after.text
+    # in-place patch: surrounding LaTeX untouched
+    assert "\\label{tab:poc-roles}" in after.text
+    assert "\\multicolumn{3}{l}{\\textit{Total}}" in after.text
+
+
+def test_edit_table_latex_find_replacement_backreference_stays_literal(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``find=`` is literal on BOTH sides: a ``\\1`` in the replacement is
+    emitted as the two characters, never interpolated as group 1. Without
+    the escaping this silently substituted captured text instead of raising
+    — the quiet half of gripe 273955."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(id=tc.dc, find="BEACON", text="\\1 marker")
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert "\\1 marker" in after.text
+
+
+def test_edit_table_latex_sub_keeps_backreference_interpolation(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The 273955 fix escapes the replacement for literal ``find=`` ONLY —
+    ``sub=`` keeps its documented regex-template semantics, so a
+    backreference still resolves. Pins that the fix did not over-escape and
+    quietly break the regex path."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(id=tc.dc, sub={"find": r"(BEACON)", "replace": r"\1-PRIMARY"})
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert "BEACON-PRIMARY" in after.text
+    assert "\\1-PRIMARY" not in after.text
+
+
+def test_edit_table_latex_sub_bad_replacement_template_is_badinput(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A malformed replacement *template* in ``sub=`` (unescaped ``\\cite``)
+    is refused as ``BadInput`` naming the escaping rule, not raised as a
+    bare ``re.error`` that the handler reports as ``[error:Internal]`` with
+    nothing actionable. Chunk left untouched. The ``next=`` distinguishes
+    this from the find-side "invalid regex" refusal."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="invalid replacement template") as exc:
+        draft.edit(id=tc.dc, sub={"find": "BEACON", "replace": "\\cite{x}"})
+    assert exc.value.next is not None
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
 def test_edit_table_latex_sub_no_match_refuses(draft: DraftHandler, hub: Hub) -> None:
     """``sub=`` with a valid regex that matches nothing in the raw LaTeX
     refuses (zero replacements) — the LaTeX-path sibling of the
