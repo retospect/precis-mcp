@@ -1,0 +1,14 @@
+# LaTeX build intermediates — regenerate with ./build.sh (docker texlive).
+# The built PDF *is* tracked: the deck is the deliverable and most readers
+# don't have a TeX toolchain.
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.vrb
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.textClipping
