@@ -3,6 +3,7 @@ JSON + derived markdown ``text``, inert ``meta.regen``. No execution."""
 
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 import pytest
@@ -620,6 +621,47 @@ def test_edit_table_recovers_caption_from_raw_latex(
     assert "alpha & b" in chunk.text
 
 
+def test_edit_table_markdown_fallback_recovery_promotes_to_canonical(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The SIBLING ``table_payload`` fallback — plain GFM markdown text
+    with no canonical ``meta.table`` (a pre-canonical-store chunk, not a
+    LaTeX import) — edits through the ORDINARY re-derive path and
+    promotes ``meta.table`` to canonical. ``is_latex_source``
+    (``parse_markdown_table(chunk.text or "") is None``) has to see the
+    REAL text to tell the two recovery shapes apart: fed an unconditional
+    ``""`` (the ``or`` → ``and`` mutant, since `chunk.text` is truthy
+    here) it would misclassify this markdown-recovered chunk as
+    LaTeX-sourced and divert the edit into the raw-LaTeX in-place patcher
+    — which can't find any ``&``/``\\\\``-delimited LaTeX structure in
+    GFM pipe syntax (refusing or mangling the whole chunk), and never
+    promotes ``meta.table`` either way."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["placeholder"], "rows": [["x"]]},
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    md_text = table_to_markdown({"header": ["a", "b"], "rows": [["1", "2"]]})
+    # Simulate a pre-canonical-store chunk: raw GFM text, no meta.table
+    # (no needs-table-review flag either — that flag is a LaTeX-import
+    # marker, not part of this fallback shape).
+    hub.live_store.drafts.edit_text(tc.handle, md_text, meta_patch={"table": None})
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert not meta.get("table")  # precondition: recoverable only via the fallback
+
+    draft.edit(id=tc.dc, cell="A1", text="one")
+
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    # Promoted to canonical — proves the ordinary re-derive path fired
+    # (is_latex_source correctly False), not the LaTeX in-place patcher,
+    # which never writes meta.table.
+    assert meta.get("table") == {"header": ["one", "b"], "rows": [["1", "2"]]}
+
+
 # ── LaTeX in-place patching (gripe 271129) ─────────────────────────────
 #
 # The exact chunk that exposed the bug (dr42995 dc1506560): a full
@@ -779,6 +821,36 @@ def test_blank_balanced_command_unbalanced_brace_stops_blanking() -> None:
     assert out == text
 
 
+def test_blank_balanced_command_matches_at_text_start() -> None:
+    """The scan has to start at offset 0 — a ``\\caption{}`` opening the
+    text (no preceding wrapper, the "captured tabular inner" shape this
+    function's own docstring calls out) gets found and blanked, not
+    skipped over. Distinct from the unbalanced-brace case above, which
+    returns the text unchanged regardless of the starting offset (no
+    match found vs. no matching close found look the same) — this one's
+    caption DOES close, so only a genuine from-0 scan blanks it."""
+    text = "\\caption{Foo}\\label{tab:x}\nbody"
+    out = _blank_balanced_command(text, _CAPTION_CMD_RE)
+    assert "Foo" not in out
+    assert "\\label{tab:x}" in out
+    assert len(out) == len(text)
+
+
+def test_blank_balanced_command_offset_targets_the_open_brace() -> None:
+    """``_find_balanced`` is handed ``m.end() - 1`` — the index of the
+    matched command's own opening ``{`` — not one character earlier. A
+    synthetic pattern whose match ends in a literal ``\\{`` (a backslash
+    immediately followed by the brace) makes the distinction sharp:
+    starting one index too early (``- 2``) lands ON that backslash, whose
+    escape-handling then skips clean over the real opening brace — the
+    depth count never opens, so the scan runs off the end of the string
+    unbalanced and nothing gets blanked at all."""
+    pattern = re.compile(r"Q\\\{")
+    text = "Q\\{Foo}rest"
+    out = _blank_balanced_command(text, pattern)
+    assert out == " " * 7 + "rest"
+
+
 def test_tabular_env_span_unmatched_begin_returns_rest_of_text() -> None:
     """No matching ``\\end{tabular}`` anywhere after an inner
     ``\\begin{tabular}`` — the span falls back to "everything after the
@@ -847,8 +919,53 @@ def test_edit_table_latex_caption_regen_rejected_alongside_data_edit(
     meta.caption wouldn't be read back (the read path re-derives the
     caption from \\caption{} in the text itself, not from meta)."""
     tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
-    with pytest.raises(BadInput, match="don't apply together"):
+    with pytest.raises(BadInput, match="don't apply together") as exc:
         draft.edit(id=tc.dc, find="XOR", text="NOR", caption="New caption")
+    # The next= hint names the selector actually in play (find=) so the
+    # agent retries with the right verb — a wrong name here (the
+    # cell/find ternary picking the wrong branch) would send it to retry
+    # with cell= or sub= instead of find=.
+    assert ", find=…" in (exc.value.next or "")
+
+
+def test_edit_table_latex_caption_alone_rejected_alongside_cell_edit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """caption= alone (regen= absent) riding along a cell= edit is also
+    refused — one half of the `caption is not None or regen is not None`
+    guard; if it were `and` instead of `or`, this would fall through
+    silently to the data-edit path since regen= is unset."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="don't apply together"):
+        draft.edit(
+            id=tc.dc, cell={"row": 6, "col": 1}, text="oops", caption="New caption"
+        )
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+def test_edit_table_latex_regen_alone_rejected_alongside_cell_edit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """regen= alone (caption= absent) riding along a cell= edit is also
+    refused — the sibling half of the `or` guard; `and` would let this
+    slip through to the data-edit path silently instead of refusing."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="don't apply together"):
+        draft.edit(
+            id=tc.dc,
+            cell={"row": 6, "col": 1},
+            text="oops",
+            regen={"source": "manual"},
+        )
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
 
 
 # ── LaTeX in-place patching: refuse paths (_edit_latex_table_in_place) ──
@@ -898,12 +1015,20 @@ def test_edit_table_latex_sub_invalid_regex_rejected(
 ) -> None:
     """An unparseable regex in ``sub=`` (unbalanced group) is re-raised as
     ``BadInput`` rather than propagating the raw ``re.error`` — chunk left
-    untouched."""
+    untouched. This exact refusal is raised from TWO call sites depending
+    on routing — ``_edit_latex_table_in_place`` (correct, for a
+    ``sub=``-only selector on a LaTeX-sourced chunk) with no ``next=``,
+    vs. ``find_replace_cells`` on the legacy re-derive path (wrong route,
+    reached if the ``sub is not None`` routing guard mis-fires) which DOES
+    set one ("check the pattern — …") — so asserting ``next is None``
+    pins the route, not just the exception type/message (both routes
+    raise the identically-worded "invalid regex ..." BadInput)."""
     tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
     before = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert before is not None
-    with pytest.raises(BadInput, match="invalid regex"):
+    with pytest.raises(BadInput, match="invalid regex") as exc:
         draft.edit(id=tc.dc, sub={"find": "(unclosed", "replace": "x"})
+    assert exc.value.next is None
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert after is not None
     assert after.text == before.text
