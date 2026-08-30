@@ -56,16 +56,23 @@ _BOARD_MM = 40.0
 
 _SEED = 1
 
-#: **A waiver, not a baseline — this board is knowingly not manufacturable.**
+#: **Empty since 2026-08-30 — this board now passes DRC outright.**
 #:
-#: Each entry is an engine defect that PRE-DATES the DRC rules which now
-#: report it; none is a regression. They became visible together on
-#: 2026-08-30 when ``_render_drc`` began folding board furniture into the
-#: DRC model and the plane stitcher started reporting honestly. The
-#: ``board_edge_clearance`` and ``connectivity`` numbers are corroborated
-#: verbatim by a checkpoint written BEFORE that work landed
-#: (``docs/backlog/pcb-engine-plan.md``, "0.390 vs 0.400mm — 10um short";
-#: "GND in 3 pieces; VCC3V3 in 2").
+#: It did not start that way. Every entry below was an engine defect that
+#: PRE-DATED the DRC rules which reported it; none was a regression. They
+#: became visible together when ``_render_drc`` began folding board
+#: furniture into the DRC model and the plane stitcher started reporting
+#: honestly, peaking at 57 errors. The ``board_edge_clearance`` and
+#: ``connectivity`` numbers are corroborated verbatim by a checkpoint
+#: written BEFORE that work landed (``docs/backlog/pcb-engine-plan.md``,
+#: "0.390 vs 0.400mm — 10um short"; "GND in 3 pieces; VCC3V3 in 2").
+#:
+#: The history is kept because an empty dict is the one state that cannot
+#: explain itself: a reader finding no waiver cannot tell a board that was
+#: always clean from one whose defects were fixed, and the fix for each of
+#: these was structural rather than a tuning nudge. **Do not add an entry
+#: back to make a red run green** — the whole point of the ledger below is
+#: that each line was retired by understanding it.
 #:
 #: - ``clearance`` -- FIXED. A fiducial (net ``""``) used to come back
 #:   flooded by a GND pour: fiducials are synthesised at RENDER time, pour
@@ -91,28 +98,30 @@ _SEED = 1
 #:   second sheet to detour through and provably could not close it. Fixed
 #:   by the two-via/spare-layer jumper (``realize.py::_try_plane_jumper``),
 #:   which routes across a layer that is neither fragment's own.
-#: - ``silk_missing`` (was 61, now 25). The courtyard half of that
-#:   population is GONE — zero courtyard drops on this board — and it went
-#:   two ways at once. A courtyard is now the hull of the part's own pads
-#:   offset by the fab chain (``ir.instance_courtyard_polygon``), so it
-#:   cannot land on its own pads at all; and an outline that meets someone
-#:   else's copper is BROKEN around it and drawn in pieces
-#:   (``silk._clip_polyline``) instead of thrown away whole, which is what
-#:   a fab would have trimmed it to anyway. What is left is two different
-#:   defects that happened to share a rule: 9 pin-1 ticks whose courtyard
-#:   corner is occupied by a plane fan-out via (a tick is too small to
-#:   break usefully — it needs a second marker convention, not a clip),
-#:   and 16 refdes labels with nowhere to go on a board deliberately
-#:   squeezed to 40mm for ~44mm of parts. Both tracked by
-#:   ``docs/backlog/pcb-courtyard-polygon.md``'s residue section.
+#: - ``silk_missing`` (61 → 25 → 0 — FIXED, waiver removed). Four
+#:   mechanisms, and each was a different defect wearing the same rule:
 #:
-#: The assertion below permits EXACTLY these counts. A new rule, or more of
-#: any existing one, still fails — the waiver buys silence for known
-#: defects, never for new ones. **Lower each number as its item ships**; a
-#: stale allowance is indistinguishable from an unnoticed regression.
-KNOWN_OPEN_DRC_ERRORS = {
-    "silk_missing": 25,
-}
+#:   1. A courtyard is now the hull of the part's OWN pads offset by the
+#:      fab chain (``ir.instance_courtyard_polygon``), so landing on its
+#:      own copper is unrepresentable rather than merely rare.
+#:   2. An outline that meets someone else's copper is BROKEN around it
+#:      and drawn in pieces (``silk._clip_polyline``) instead of thrown
+#:      away whole — what a fab would have trimmed it to anyway. This is
+#:      the one that mattered: (1) alone made the count WORSE, because the
+#:      oversized square it replaced had been ENCLOSING each part's plane
+#:      fan-out vias and an honest polygon passes through them instead.
+#:   3. The refdes ladder became a ring sweep (``silk._refdes_candidates``,
+#:      37 spots). Every remaining label finding was an artifact of the
+#:      six fixed spots it replaced — measured, 16 of 16 here and 8 of 8
+#:      on the natural-size reference board.
+#:   4. A pin-1 tick whose courtyard corner is taken by a fan-out via
+#:      falls back to a DOT beside pin 1 (``silk._pin1_dot_candidates``),
+#:      the industry's other spelling for exactly that situation. A tick
+#:      marks a corner and has nowhere else to go; a dot does.
+#:
+#: A new rule, or ANY error at all, now fails this test — a rule absent
+#: from this (empty) mapping is allowed zero.
+KNOWN_OPEN_DRC_ERRORS: dict[str, int] = {}
 
 #: The films this board must produce with geometry on them. Listed
 #: explicitly rather than derived from the exporter, because a test that
@@ -245,10 +254,10 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     # to a human as a deliverable implies the board behind it is sound, so
     # assert that here rather than letting the picture speak for it.
     #
-    # That claim is currently WAIVED for a named set of pre-existing engine
-    # defects — see `KNOWN_OPEN_DRC_ERRORS`. This board is not manufacturable
-    # as rendered; the waiver keeps the test sensitive to NEW breakage while
-    # those items are open, and is not a statement that the board is sound.
+    # As of 2026-08-30 the claim is UNWAIVED: `KNOWN_OPEN_DRC_ERRORS` is
+    # empty, so any error of any rule fails here. See that mapping's own
+    # docstring for the ledger of what each retired entry was and how it
+    # was closed — an empty waiver cannot explain itself.
     #
     # Declaring a plane is what exercises the pour path, and it is also
     # what exposes the fan-out defects, so this assertion belongs on

@@ -42,7 +42,13 @@ already applies to copper.
    big enough.
 3. a **pin-1 marker** — a small tick cut at whichever courtyard VERTEX
    sits nearest pin 1's own land-pattern offset (or the first declared
-   pin, when no pin is literally named ``"1"``).
+   pin, when no pin is literally named ``"1"``). When that corner is
+   already taken — almost always by this part's own plane fan-out via,
+   which the router places long after silk had any say — the marker falls
+   back to the industry's other spelling, a **dot** beside pin 1
+   (:func:`_pin1_dot_candidates`). A tick marks a corner and so has
+   nowhere else to go; a dot does, which is the whole reason for keeping
+   both.
 
 **Suppression, not silent loss.** Every drawn stroke — text, outline,
 tick alike — is checked against the passed-in ``pads`` (real flashed pad
@@ -196,33 +202,94 @@ Point = tuple[float, float]
 #: physical footprint).
 DEFAULT_REFDES_HEIGHT_MM = 1.0
 
-#: Candidate refdes placements, tried in order, expressed as
-#: ``(dx_units, dy_units, h_align, v_align)`` in the INSTANCE's own local
-#: frame (dx/dy scaled by the courtyard's reach IN THAT DIRECTION, plus a
-#: gap, before use — :func:`_courtyard_support_mm`) — so a
-#: relocated label moves with the part's own rotation/mirror, not with
-#: the board's absolute axes. The first candidate (centered on the part)
-#: is the common case; the rest walk around the courtyard's four sides.
-#: The final entry is a deliberately-FAR fallback, at double the usual
-#: offset: reached only when all five closer spots fail (whether against a
-#: pad/via, board-level ``reserved`` geometry, or silk any part —
-#: including this same instance's own courtyard/pin-1 tick — has already
-#: committed, all folded into the SAME growing obstacle list; see the
-#: module docstring's "Avoidance is GLOBAL" section) — the label a small
-#: part (e.g. an
-#: 0402, whose courtyard is smaller than any legible label at a normal
-#: ``height_mm`` -- "centered" can NEVER clear its own outline there, so
-#: this ladder always walks past it) ends up with, before this function
-#: gives up and drops it. Landing just outside a part's courtyard is still
-#: an unambiguous, readable label — more than a dropped one is (task
-#: brief: "prefer moving the label to shrinking the outline").
-_CANDIDATES: tuple[tuple[float, float, str, str], ...] = (
-    (0.0, 0.0, "center", "middle"),
-    (0.0, 1.0, "center", "baseline"),
-    (0.0, -1.0, "center", "top"),
-    (1.0, 0.0, "left", "middle"),
-    (-1.0, 0.0, "right", "middle"),
-    (0.0, -2.0, "center", "top"),
+#: How many rings out the refdes ladder walks, and how many directions it
+#: tries on each — 1 + 3x12 = 37 placements per label.
+#:
+#: **These are measured, not chosen.** The ladder was six fixed spots
+#: (centred, above, below, left, right, and one far fallback) until
+#: 2026-08-30, and on the ESP32-C3 reference board EVERY remaining
+#: ``silk_missing`` refdes finding turned out to be an artifact of it: 8 of
+#: 8 there and 16 of 16 on the squeezed 40mm fixture were recovered by a
+#: ring sweep, so the room existed and nothing was looking for it. The
+#: knee is here: 2x8 leaves one finding on the 40mm board, 4x16 recovers
+#: nothing 3x12 does not. Re-measure both fixtures before changing either
+#: number — a label relocated to a NEW spot becomes an obstacle for every
+#: part processed after it, so the effect is not confined to labels (at
+#: 2x8 the residual finding is a courtyard, not a refdes).
+_REFDES_RINGS = 3
+_REFDES_DIRECTIONS = 12
+
+#: How far off an axis a direction must lean before the text stops being
+#: centred on that axis and starts being pushed to one side of the anchor.
+#: A label offset UP wants its baseline on the anchor and its glyphs
+#: centred horizontally; one offset up-and-right wants to start at the
+#: anchor and run away from the part. At :data:`_REFDES_DIRECTIONS` = 12
+#: the components are 0, 0.5, 0.87 and 1.0, so any deadband in (0, 0.5)
+#: gives the same answer — the value is a readable middle, not a tuned
+#: threshold.
+_REFDES_ALIGN_DEADBAND = 0.25
+
+
+def _refdes_candidates(
+    n_rings: int, per_ring: int
+) -> tuple[tuple[float, float, str, str, str], ...]:
+    """Candidate refdes placements, tried in order, as ``(dx_units,
+    dy_units, h_align, v_align, label)`` in the INSTANCE's own local frame
+    — so a relocated label moves with the part's own rotation/mirror, not
+    with the board's absolute axes.
+
+    ``dx``/``dy`` are scaled by the courtyard's reach IN THAT DIRECTION
+    plus a gap before use (:func:`_courtyard_support_mm`), and their
+    MAGNITUDE is the ring number, so ring 2 sits twice as far out as ring
+    1 — the same meaning the old hand-written ``(0, -2)`` fallback had.
+
+    Order is: centred first (the common case), then each ring outward,
+    and within a ring the directions nearest STRAIGHT UP first. Up is
+    where a reader expects a refdes, so a label only ends up somewhere
+    unusual when everything more conventional was taken. Ties (a
+    direction's mirror image about the vertical) break toward the smaller
+    angle, so the sweep is deterministic rather than dict-ordered.
+
+    The ladder always walks past candidate 0 for a small part — an 0402's
+    courtyard is smaller than any legible label at a normal ``height_mm``,
+    so "centred" can never clear its own outline there. Landing outside a
+    part's courtyard is still an unambiguous, readable label; more than a
+    dropped one is (task brief: "prefer moving the label to shrinking the
+    outline"). A candidate is rejected against a pad/via, board-level
+    ``reserved`` geometry, or silk ANY part — including this same
+    instance's own courtyard and pin-1 mark — has already committed, all
+    folded into the SAME growing obstacle list (module docstring's
+    "Avoidance is GLOBAL")."""
+    out: list[tuple[float, float, str, str, str]] = [
+        (0.0, 0.0, "center", "middle", "centred")
+    ]
+    for ring in range(1, n_rings + 1):
+        angles = [2.0 * math.pi * k / per_ring for k in range(per_ring)]
+        # Nearest straight up (pi/2) first; the mirror pair breaks toward
+        # the smaller angle so the order never depends on float ties.
+        angles.sort(key=lambda a: (round(abs(a - math.pi / 2.0), 9), a))
+        for theta in angles:
+            du, dv = math.cos(theta) * ring, math.sin(theta) * ring
+            h = (
+                "left"
+                if du > _REFDES_ALIGN_DEADBAND * ring
+                else "right"
+                if du < -_REFDES_ALIGN_DEADBAND * ring
+                else "center"
+            )
+            v = (
+                "baseline"
+                if dv > _REFDES_ALIGN_DEADBAND * ring
+                else "top"
+                if dv < -_REFDES_ALIGN_DEADBAND * ring
+                else "middle"
+            )
+            out.append((du, dv, h, v, f"ring {ring} at {math.degrees(theta):.0f}deg"))
+    return tuple(out)
+
+
+_CANDIDATES: tuple[tuple[float, float, str, str, str], ...] = _refdes_candidates(
+    _REFDES_RINGS, _REFDES_DIRECTIONS
 )
 
 
@@ -777,6 +844,63 @@ def _pin1_tick(
         corner,
         _towards(corner, after, tick_len),
     ]
+
+
+#: The pin-1 dot's diameter as a multiple of the silk stroke width, and how
+#: many directions/distances the ladder tries around pin 1 before giving
+#: up. 3x the pen is the smallest blob that still reads as a deliberate
+#: mark rather than a printing defect, and it is drawn as a wider STROKE
+#: rather than a filled region so it rides the same width/printability
+#: checks (:func:`precis.pcb.drc.check_silk_printability`) as every other
+#: mark here — a wider pen clears the fab's minimum, never undercuts it.
+_PIN1_DOT_STROKES = 3.0
+_PIN1_DOT_DIRECTIONS = 8
+_PIN1_DOT_DISTANCES = 3
+
+
+def _pin1_dot_candidates(
+    ir: PcbIR, pin1: int, stroke_width_mm: float, clearance_mm: float
+) -> list[tuple[Point, float]]:
+    """Where a pin-1 DOT may sit, best spot first, as
+    ``(centre, dot_diameter)`` pairs in the instance's local frame.
+
+    **The corner tick's fallback, not its replacement.** A tick marks a
+    courtyard CORNER, and when a plane fan-out via occupies that exact
+    corner there is nothing to negotiate: shrinking the tick keeps the
+    same blocked corner point, sliding it to another vertex would mark
+    the wrong pin, and clipping a two-segment ``L`` leaves debris rather
+    than a marker. A dot beside pin 1 is the other convention the
+    industry already uses for exactly this situation, and it has somewhere
+    to go — 8 directions at 3 distances, which a tick does not.
+
+    Ordered outward-from-the-part-centre first: that is where a reader
+    looks, and it keeps the dot off the part's body. A pin sitting AT the
+    instance origin (a single-pad part) has no outward direction, so the
+    sweep starts at +x rather than dividing by zero."""
+    dia = stroke_width_mm * _PIN1_DOT_STROKES
+    dx, dy = float(ir.pin_dx[pin1]), float(ir.pin_dy[pin1])
+    hw, hh = float(ir.pin_w[pin1]) / 2.0, float(ir.pin_h[pin1]) / 2.0
+    reach = math.hypot(dx, dy)
+    base = math.atan2(dy, dx) if reach > 1e-9 else 0.0
+    # Clear of pin 1's own pad corner, plus the fab clearance and the
+    # dot's own radius — the first ring is the closest the dot may legally
+    # sit, and each further ring adds one diameter.
+    first = math.hypot(hw, hh) + clearance_mm + dia / 2.0
+    out: list[tuple[Point, float]] = []
+    for step in range(_PIN1_DOT_DISTANCES):
+        radius = first + step * dia
+        for k in range(_PIN1_DOT_DIRECTIONS):
+            # 0, -1, +1, -2, +2 ... around `base`: the outward direction
+            # first, then each symmetric pair. Which member of a pair
+            # comes first is arbitrary and does not change which spot is
+            # chosen when both are clear — only that both are tried.
+            half = (k + 1) // 2
+            sign = 1 if k % 2 == 0 else -1
+            theta = base + sign * half * 2.0 * math.pi / _PIN1_DOT_DIRECTIONS
+            out.append(
+                ((dx + math.cos(theta) * radius, dy + math.sin(theta) * radius), dia)
+            )
+    return out
 
 
 #: Null fallbacks for the two looked-up terms of :func:`silk_clearance_mm`
@@ -1835,19 +1959,74 @@ def build_silk(
                 tick_pts = _place(tick_local, cx=cx, cy=cy, rot=rot, mirror=mirror)
                 tick_hit = _stroke_hits(tick_pts, side_obstacles, stroke_width_mm)
                 if tick_hit is not None:
-                    census.append(
-                        SilkPlacement(
-                            refdes=refdes,
-                            kind="pin1",
-                            side=side_name,
-                            outcome="dropped",
-                            reason=(
-                                "pin-1 marker overlaps "
-                                f"{_obstacle_label(tick_hit)} -- dropped"
-                            ),
-                            stroke_width_mm=stroke_width_mm,
+                    # The corner is taken -- almost always by this part's
+                    # own plane fan-out via, placed by the router long
+                    # after silk had any say. Fall back to the other
+                    # convention: a DOT beside pin 1, which unlike a
+                    # corner tick has somewhere else to go.
+                    dot_pts, dot_dia = None, stroke_width_mm
+                    for local_centre, dia in _pin1_dot_candidates(
+                        ir, pin1, stroke_width_mm, clearance_mm
+                    ):
+                        (dcx, dcy) = _place(
+                            [local_centre], cx=cx, cy=cy, rot=rot, mirror=mirror
+                        )[0]
+                        # A dot is a zero-length stroke at the dot's own
+                        # diameter -- the gerber writer's round cap makes
+                        # it a filled circle, so it needs no new primitive.
+                        candidate = [(dcx, dcy), (dcx, dcy)]
+                        if not _stroke_overlaps_any_pad(
+                            candidate, side_obstacles, dia
+                        ) and not (
+                            courtyard_kept
+                            and _stroke_crosses_stroke(candidate, box_pts, dia)
+                        ):
+                            dot_pts, dot_dia = candidate, dia
+                            break
+                    if dot_pts is None:
+                        census.append(
+                            SilkPlacement(
+                                refdes=refdes,
+                                kind="pin1",
+                                side=side_name,
+                                outcome="dropped",
+                                reason=(
+                                    "pin-1 marker overlaps "
+                                    f"{_obstacle_label(tick_hit)}, and no dot "
+                                    "beside pin 1 is clear either -- dropped"
+                                ),
+                                stroke_width_mm=stroke_width_mm,
+                            )
                         )
-                    )
+                    else:
+                        bucket.append(
+                            _draw(dot_pts, dot_dia, role="pin1", refdes=refdes)
+                        )
+                        # A circle, not `obstacle_from_bbox`: that helper
+                        # bounds a POLYGON, and a dot's polygon is a
+                        # single point -- it would fold in as a zero-area
+                        # rectangle that nothing could ever collide with.
+                        tick_obstacle = {
+                            "shape": "circle",
+                            "x": dot_pts[0][0],
+                            "y": dot_pts[0][1],
+                            "w": dot_dia,
+                            "obstacle": f"{refdes} pin-1 silk",
+                        }
+                        census.append(
+                            SilkPlacement(
+                                refdes=refdes,
+                                kind="pin1",
+                                side=side_name,
+                                outcome="relocated",
+                                reason=(
+                                    "pin-1 corner tick overlaps "
+                                    f"{_obstacle_label(tick_hit)}; marked with a "
+                                    "dot beside pin 1 instead"
+                                ),
+                                stroke_width_mm=dot_dia,
+                            )
+                        )
                 else:
                     bucket.append(
                         _draw(tick_pts, stroke_width_mm, role="pin1", refdes=refdes)
@@ -1918,7 +2097,7 @@ def build_silk(
         text_rot = 0.0
         gap = height_mm * 0.3
         placed_text = False
-        for idx, (du, dv, h_align, v_align) in enumerate(_CANDIDATES):
+        for idx, (du, dv, h_align, v_align, spot) in enumerate(_CANDIDATES):
             # Directional, not one scalar radius: an elongated part reaches
             # much further along its own long axis than across it, and the
             # square courtyard this replaced pushed every label out by the
@@ -1977,7 +2156,7 @@ def build_silk(
                         outcome="relocated",
                         reason=(
                             "refdes label moved off-center to clear a pad, a via, "
-                            f"or silk already committed (candidate {idx})"
+                            f"or silk already committed (drawn at {spot})"
                         ),
                         stroke_width_mm=stroke_width_mm,
                         height_mm=height_mm,

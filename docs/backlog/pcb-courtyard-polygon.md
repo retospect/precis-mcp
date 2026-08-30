@@ -39,13 +39,26 @@ the definitions that remain unmerged.
 - **Outlines break instead of dropping** (`silk._clip_polyline`). Not in
   the original scope; it turned out to be where the population actually
   lived. See "What the measurement said" below.
+- **The refdes ladder became a ring sweep** (`silk._refdes_candidates`,
+  1 + 3x12 spots, centred first then outward, up-first within a ring).
+  Also not in the original scope. Every remaining label finding on both
+  fixtures was an artifact of the six fixed spots it replaced.
+- **A blocked pin-1 corner falls back to a DOT beside pin 1**
+  (`silk._pin1_dot_candidates`). A tick marks a courtyard CORNER and has
+  nowhere else to go when a fan-out via takes it; the dot is the other
+  convention the industry already uses for this, and it has 8 directions
+  at 3 distances to try.
 
 Measured, by rule, on the two fixtures the acceptance criteria named:
 
-| board | `silk_missing` before | after | courtyard drops after |
-|---|---|---|---|
-| ESP32-C3 reference, natural size | 27 | **9** | 0 |
-| 40mm squeezed fixture | 61 | **25** | 0 |
+| board | `silk_missing` before | after |
+|---|---|---|
+| ESP32-C3 reference, natural size | 27 | **0** |
+| 40mm squeezed fixture | 61 | **0** |
+
+The 40mm fixture's `KNOWN_OPEN_DRC_ERRORS` is now EMPTY — that board
+passes DRC outright, having peaked at 57 errors. Both ratchets are at
+their floor, so any silk finding at all is now a regression.
 
 ## What the measurement said (read before item 3)
 
@@ -61,6 +74,24 @@ the "Explicitly NOT in scope" note below (courtyard relocation/clipping,
 This also answers the item's own **OPEN — does the 40mm fixture still
 place?**: yes, unchanged, and its DRC is strictly better.
 
+## Filed, not fixed: the silk obstacle list has no broad phase
+
+`build_silk`'s per-instance loop tests every candidate against
+`side_obstacles`, a plain list that grows by ~3 entries per part already
+processed (courtyard, pin-1 mark, refdes bbox, all appended in place).
+That is O(parts^2) and was so before this work. The ring sweep multiplies
+its constant by ~6 (6 candidate spots -> 37), and a blocked pin-1 adds up
+to 24 more dot candidates against the same list.
+
+No new complexity class, and unmeasurable on a 29-part board — the pcb
+suite's runtime did not move. But the two fixtures are the only evidence,
+and a few-hundred-part board would feel a 6x constant on a quadratic loop.
+The fix when it is needed is a spatial index (grid bucket keyed on the
+board bbox) behind the same `side_obstacles` interface, NOT fewer
+candidates: the candidate count is what closed 24 findings and is pinned
+by measurement. `_near_obstacles` is already the broad-phase shape this
+would generalize — it exists for `_clip_polyline` only.
+
 ## Still in scope
 
 3. **`optimize.py` tests polygon overlap (SAT), batched numpy**,
@@ -75,18 +106,29 @@ place?**: yes, unchanged, and its DRC is strictly better.
    and `check_outline_containment` — leaving DRC on circles while the
    placer goes polygon re-creates the drift.
 
-## Residue the shipped work narrowed but did not close
+## Residue: none for `silk_missing`
 
-- **Pin-1 ticks whose courtyard corner holds a fan-out via** (9 of the
-  40mm fixture's 25, 1 of the reference board's 9). A tick is too small to
-  break usefully — clipping it leaves debris, and shrinking it does not
-  move it off a corner the via already occupies. The fix is a second
-  marker convention (a dot beside pin 1, the other standard spelling)
-  chosen when the corner is unavailable, not more geometry on the tick.
-- **Refdes labels with nowhere to go** (16 of 25, 8 of 9). The 6-candidate
-  ladder is exhausted; on the 40mm fixture that is substantially the
-  fixture (~44mm of parts on a 40mm board), on the reference board it is
-  not. Needs a real placement search, not another hardcoded candidate.
+Both populations this section used to track are closed, and the first was
+closed by correcting a wrong diagnosis rather than by building what the
+diagnosis asked for:
+
+- **Refdes labels** were called "nowhere to go on a board squeezed to
+  40mm for ~44mm of parts". That was wrong. Swapping the six fixed
+  candidate spots for a ring sweep recovered 16 of 16 there and 8 of 8 on
+  the natural-size reference board — the room existed and nothing was
+  looking for it. Measured knee: 2x8 spots leaves one finding, 3x12
+  leaves none, 4x16 buys nothing more. **Re-measure both fixtures before
+  touching `_REFDES_RINGS`/`_REFDES_DIRECTIONS`** — a label relocated to a
+  new spot becomes an obstacle for every part processed after it, so the
+  effect is not confined to labels (at 2x8 the one residual finding is a
+  courtyard, not a refdes).
+- **Pin-1 ticks on a via-occupied corner** were closed as diagnosed: the
+  dot fallback. Worth keeping: a dot is a zero-length stroke at 3x the pen
+  width, which is the one silk shape where "the census says it was drawn"
+  and "the film carries ink" could come apart — `check_silk_missing` only
+  proves a draw DICT exists. `tests/test_pcb_silk.py` reads the exported
+  gerber back with the independent parser and asserts real ink of the
+  right diameter at the right place.
 
 ## Motivation / why (the definitions that remain)
 

@@ -46,6 +46,11 @@ scripts/exercise-mcp/out/
 # command and not useful in version control.
 .test-results.xml
 
+# Board render kept for inspection: PRECIS_PCB_RENDER_OUT=... on
+# tests/test_pcb_fab_render_all_layers.py writes the fab SVG here. Half a
+# megabyte, regenerated on demand, and stale the moment the engine moves.
+board_latest.svg
+
 # devin/windsurf: ignore session state, but TRACK the shareable
 # workflows (ported from .claude/commands/) so they ship with the repo.
 .devin/*

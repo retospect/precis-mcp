@@ -100,19 +100,19 @@ BASELINE_DRC_ERRORS = 0
 #: defect the fab would print as ink on copper — they are recorded, not
 #: forgiven.
 #:
-#: 27 -> 9 on 2026-08-30, and the courtyard population is gone entirely
-#: (0 of the 9; 8 refdes labels and 1 pin-1 tick remain). Two changes did
-#: it, both from ``docs/backlog/pcb-courtyard-polygon.md``: a courtyard is
-#: now the hull of the part's OWN pads offset by the fab-derived clearance
-#: (``ir.instance_courtyard_polygon``), so landing on its own pads is
-#: unrepresentable rather than merely rare; and an outline that meets
-#: someone else's copper is broken around it and drawn in pieces
-#: (``silk._clip_polyline``) instead of dropped whole.
+#: 27 -> 9 -> 0 on 2026-08-30. Four mechanisms, each a different defect
+#: that happened to share this one rule (the full ledger is in
+#: ``tests/test_pcb_fab_render_all_layers.py``'s ``KNOWN_OPEN_DRC_ERRORS``
+#: docstring): a courtyard derived from the hull of the part's OWN pads,
+#: outlines that break around an obstacle instead of dropping whole, a
+#: refdes ring sweep replacing six fixed candidate spots, and a dot beside
+#: pin 1 when a fan-out via has taken the courtyard corner its tick marks.
 #:
-#: **This number may only go DOWN.** Raising it to accept a measurement is
-#: the failure mode; so is lowering it by making the checker quieter, which
-#: is why the routed-nets assertion below must be read alongside it.
-BASELINE_SILK_ERRORS = 9
+#: **This number may only go DOWN, and it is now at the floor.** Raising it
+#: to accept a measurement is the failure mode; so is lowering it by making
+#: the checker quieter, which is why the routed-nets assertion below must
+#: be read alongside it.
+BASELINE_SILK_ERRORS = 0
 
 #: A fixed seed for run-to-run reproducibility of THIS test's own numbers
 #: (the optimizer is simulated annealing). Still asserting direction, not

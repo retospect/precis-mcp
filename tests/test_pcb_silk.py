@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import itertools
 import math
+import re
 from typing import Any
 
 import pytest
 
-from precis.pcb import DEFAULT_STACKUP, gerber, gerber_view, realize, stroke_font
+from precis.pcb import DEFAULT_STACKUP, gerber, gerber_view, realize, silk, stroke_font
 from precis.pcb.capabilities import CapabilityRow, capability_for
-from precis.pcb.ir import from_graph
+from precis.pcb.ir import from_graph, instance_courtyard_polygon
 from precis.pcb.planes import plane_pours, point_in_pour
 from precis.pcb.silk import (
     FIDUCIAL_COPPER_DIA_MM,
@@ -1558,9 +1559,182 @@ def test_census_records_dropped_outcome_with_a_reason_matching_the_derived_prose
     assert f"TP4: {refdes_row.reason}" in result.dropped
 
 
-def test_census_records_relocated_outcome_with_the_candidate_index():
+def _blocked_pin1_corner():
+    """A part whose pin-1 courtyard CORNER is occupied by a via, with
+    everything else clear -- the shape a plane fan-out via makes on a real
+    board, and the only situation the dot fallback exists for."""
+    ir = from_graph(_graph("U4", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    poly = instance_courtyard_polygon(
+        ir, 0, clearance_mm=silk_clearance_mm(None, stroke_width_mm=0.15)
+    )
+    pin1 = (float(ir.pin_dx[0]), float(ir.pin_dy[0]))
+    corner = min(poly[:-1], key=lambda p: math.hypot(p[0] - pin1[0], p[1] - pin1[1]))
+    via = {
+        "x": corner[0],
+        "y": corner[1],
+        "dia_mm": 0.6,
+        "drill_mm": 0.3,
+        "span": [DEFAULT_STACKUP[0]["name"], DEFAULT_STACKUP[-1]["name"]],
+    }
+    return ir, via, corner
+
+
+def test_a_blocked_pin1_corner_falls_back_to_a_dot_beside_pin_1():
+    """A corner tick has nowhere to go: shrinking it keeps the same
+    blocked corner point, and sliding it to another vertex would mark the
+    wrong pin. The dot is the industry's other spelling for exactly this,
+    and unlike the tick it has somewhere to go -- so the marker survives
+    instead of the whole pin-1 identification being lost."""
+    ir, via, corner = _blocked_pin1_corner()
+    result = build_silk(ir, pads=[], vias=[via])
+    row = next(c for c in result.census if c.refdes == "U4" and c.kind == "pin1")
+    assert row.outcome == "relocated"
+    assert row.reason is not None and "dot beside pin 1" in row.reason
+    assert "via" in row.reason  # names what took the corner
+
+    marks = [d for d in result.draws["top"] if d["role"] == "pin1"]
+    assert len(marks) == 1
+    dot = marks[0]
+    assert dot["width_mm"] == pytest.approx(0.15 * 3.0)
+    # A dot, not a line: one degenerate segment at a single point.
+    assert len(dot["segments"]) == 1
+    assert dot["segments"][0]["start"] == dot["segments"][0]["end"]
+    # Beside pin 1, not at the corner the via took.
+    (dx, dy) = dot["segments"][0]["start"]
+    assert math.hypot(dx - corner[0], dy - corner[1]) > 0.3
+    assert math.hypot(dx - float(ir.pin_dx[0]), dy - float(ir.pin_dy[0])) < 2.0
+
+
+def test_the_pin1_dot_survives_to_the_gerber_as_real_ink():
+    """**A mark that satisfies the census and prints nothing is worse than
+    a dropped one.** ``check_silk_missing`` cross-checks the census
+    against ``model["silkscreen"]`` by ``(refdes, kind)``, which proves a
+    draw DICT exists -- not that it carries visible geometry. A dot is a
+    zero-length stroke, the one shape where those two could come apart,
+    so this reads the exported gerber back with an independent parser and
+    asserts real ink of the right size at the right place."""
+    ir, via, _corner = _blocked_pin1_corner()
+    result = build_silk(ir, pads=[], vias=[via])
+    dot = next(d for d in result.draws["top"] if d["role"] == "pin1")
+    (dx, dy) = dot["segments"][0]["start"]
+
+    model = {
+        "layers": [layer["name"] for layer in DEFAULT_STACKUP],
+        "silkscreen": result.draws,
+    }
+    art = gerber_view.parse_gerber(gerber.silkscreen_gerber(model, "top"))
+    ink = [
+        s
+        for s in art.strokes
+        if math.isclose(s.width, 0.15 * 3.0, abs_tol=1e-6)
+        and all(
+            math.isclose(p[0], dx, abs_tol=1e-6)
+            and math.isclose(p[1], dy, abs_tol=1e-6)
+            for p in s.points
+        )
+    ]
+    assert ink, (
+        "the pin-1 dot reached the census but not the film -- "
+        f"strokes back from the gerber: {[(s.width, s.points) for s in art.strokes]}"
+    )
+
+
+def test_the_pin1_dot_renders_as_a_visible_dot_in_the_fab_svg():
+    """The gerber round-trip above proves the dot is in the FILM; this
+    proves it is in the PICTURE, and the two are not the same claim.
+
+    A zero-length SVG subpath (``M x,y L x,y``) renders **nothing** unless
+    it carries ``stroke-linecap="round"`` — it is the round cap alone that
+    turns it into a filled circle, exactly as the gerber writer's round
+    aperture does. Delete that one attribute and every pin-1 dot on every
+    board becomes invisible while the census, the DRC rule and the gerber
+    test all still pass. That is the same class of failure this module's
+    own drill-hole bug was (rendered, present, and the same colour as the
+    background), so it is asserted rather than eyeballed."""
+    ir, via, _corner = _blocked_pin1_corner()
+    result = build_silk(ir, pads=[], vias=[via])
+    dot = next(d for d in result.draws["top"] if d["role"] == "pin1")
+    (dx, dy) = dot["segments"][0]["start"]
+
+    model = {
+        "layers": [layer["name"] for layer in DEFAULT_STACKUP],
+        "outline": [[-10, -10], [10, -10], [10, 10], [-10, 10]],
+        "copper": [],
+        "pads": [],
+        "silkscreen": result.draws,
+    }
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+
+    group = re.search(r'<g id="layer-F_Silkscreen"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert group is not None, svg[:400]
+    paths = re.findall(r"<path\b[^>]*>", group.group(1))
+    degenerate = [
+        p
+        for p in paths
+        # The dot's own subpath: a move and a line to the SAME point.
+        if re.search(r'd="M (-?[\d.]+) (-?[\d.]+) L \1 \2"', p)
+    ]
+    assert degenerate, (
+        f"no zero-length path in F_Silkscreen — the dot at ({dx}, {dy}) never "
+        f"reached the picture. paths: {[p[:120] for p in paths[:5]]}"
+    )
+    # And at the dot's own width, not the pen's: a zero-length path at
+    # 0.15mm would be a speck, and would mean the marker had quietly
+    # reverted to a stroke-width draw somewhere in the chain.
+    assert any(f'stroke-width="{0.15 * 3.0:.4f}"' in p for p in degenerate), (
+        f"the zero-length path is not at the dot's diameter: {degenerate}"
+    )
+    for path in degenerate:
+        assert 'stroke-linecap="round"' in path, (
+            "the pin-1 dot is a zero-length path with no round cap — it is in "
+            f"the document and prints nothing: {path}"
+        )
+
+
+def test_the_pin1_dot_is_not_reached_when_the_corner_tick_is_clear():
+    """The dot is a FALLBACK. A part with an unobstructed corner must
+    still get the conventional two-segment tick, or this change would
+    have quietly replaced the marker convention on every board rather
+    than rescuing the blocked ones."""
+    ir, _via, _corner = _blocked_pin1_corner()
+    result = build_silk(ir, pads=[], vias=[])
+    row = next(c for c in result.census if c.refdes == "U4" and c.kind == "pin1")
+    assert row.outcome == "placed"
+    tick = next(d for d in result.draws["top"] if d["role"] == "pin1")
+    assert len(tick["segments"]) == 2  # the L, not a dot
+    assert tick["width_mm"] == pytest.approx(0.15)
+
+
+def test_the_refdes_ladder_starts_centred_and_walks_outward_upward_first():
+    """Order is the whole contract of the ladder: centred is the common
+    case, and after that a reader expects a refdes ABOVE its part. Only
+    when everything conventional is taken should a label end up somewhere
+    odd. Pinned because the sweep is generated -- a sort-key change could
+    silently start every board's labels at the bottom-left."""
+    cands = silk._refdes_candidates(3, 12)
+    assert len(cands) == 1 + 3 * 12
+    assert cands[0][:2] == (0.0, 0.0)
+    # First spot off centre: straight up, one ring out.
+    du, dv, h_align, v_align, spot = cands[1]
+    assert (round(du, 6), round(dv, 6)) == (0.0, 1.0)
+    assert (h_align, v_align) == ("center", "baseline")
+    assert "ring 1" in spot
+    # Rings are walked in order, and magnitude IS the ring number, so
+    # ring 2 sits twice as far out as ring 1 (the old hand-written
+    # `(0, -2)` fallback's meaning, generalized).
+    rings = [round(math.hypot(du, dv)) for du, dv, _h, _v, _s in cands[1:]]
+    assert rings == sorted(rings)
+    assert set(rings) == {1, 2, 3}
+
+
+def test_census_records_relocated_outcome_with_the_spot_it_settled_on():
+    """A relocated label must say WHERE it went, not just that it moved.
+    The ladder is 37 spots wide since 2026-08-30, so the bare ordinal it
+    used to report ("candidate 17") named nothing a reader could picture
+    -- the ring and bearing do."""
     ir = from_graph(_graph("TP3", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # a pad on the part's centre forces the default (candidate 0) spot to
+    # a pad on the part's centre forces the default (centred) spot to
     # relocate -- same fixture shape as
     # test_refdes_relocates_when_the_default_center_spot_overlaps_a_pad.
     pads = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 3.0, "net": "FOREIGN"}]
@@ -1569,7 +1743,7 @@ def test_census_records_relocated_outcome_with_the_candidate_index():
         c for c in result.census if c.refdes == "TP3" and c.kind == "refdes"
     )
     assert refdes_row.outcome == "relocated"
-    assert refdes_row.reason is not None and "candidate" in refdes_row.reason
+    assert refdes_row.reason is not None and "ring" in refdes_row.reason
     assert f"TP3: {refdes_row.reason}" in result.relocated
 
 
