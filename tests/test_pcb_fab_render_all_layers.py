@@ -77,10 +77,20 @@ _SEED = 1
 #:   already-realized pour dicts via ``planes.cut_antipads`` immediately
 #:   after ``build_fiducials`` runs, sized off the same fab-capability
 #:   ``clearance_mm`` ``plane_pours`` itself uses.
-#: - ``board_edge_clearance`` (1): a VCC3V3 via 10um inside the 0.400mm
-#:   4-layer V-cut floor. Mechanism unattributed — the rule persists no
-#:   coordinates, so which via placed it is still open.
-#: - ``connectivity`` (2): plane nets that are not one electrical node.
+#: - ``board_edge_clearance``: FIXED. Was a VCC3V3 via 10um inside the
+#:   0.400mm 4-layer V-cut floor. Not a missing edge check —
+#:   ``maze.grid_for`` rounded its node count UP, putting the last grid
+#:   node up to a pitch outside the very clip ``_outline_clip`` had just
+#:   inset. Flooring it handed the margin back.
+#: - ``connectivity`` (1, was 2): GND's poured copper is in 3 pieces.
+#:   VCC3V3's split is FIXED — its orphan was the same drop via that sat
+#:   past the board edge, so placing it legally also put it back in the
+#:   pour. GND's is a structural gap, not a tuning one: GND is poured on
+#:   ``F.Cu`` ONLY (measured: 4 fragments, all one layer), and a via joins
+#:   LAYERS, not lateral gaps — so the stitcher has no second sheet to
+#:   detour through and provably cannot close it. Needs the two-via/
+#:   spare-layer jumper ``_stitch_one_net`` scopes out. Tracked in
+#:   ``docs/backlog/pcb-same-layer-plane-bridge.md``.
 #:   ``_stitch_one_net`` adds bridging vias and never removes copper, so it
 #:   cannot have caused this; it closes some gaps and reports the rest.
 #: - ``silk_missing`` (61): courtyard outlines that cannot be drawn without
@@ -92,8 +102,7 @@ _SEED = 1
 #: defects, never for new ones. **Lower each number as its item ships**; a
 #: stale allowance is indistinguishable from an unnoticed regression.
 KNOWN_OPEN_DRC_ERRORS = {
-    "board_edge_clearance": 1,
-    "connectivity": 2,
+    "connectivity": 1,
     "silk_missing": 61,
 }
 
@@ -256,7 +265,6 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     )
     errors = [f for f in findings if f["severity"] == "error"]
     by_rule = collections.Counter(str(f["rule"]) for f in errors)
-    detail = " | ".join(str(f["detail"])[:120] for f in errors[:6])
     # Compare per RULE against the waiver, never a total: a summed budget
     # lets a fixed defect pay for a new one silently.
     over_budget = {
@@ -264,6 +272,17 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
         for rule, n in by_rule.items()
         if n > KNOWN_OPEN_DRC_ERRORS.get(rule, 0)
     }
+    # Report the OFFENDING findings with their objects, not the first six of
+    # whatever the board produced. A message that names a rule and a count
+    # sends the reader back to instrument a run before they can begin; the
+    # objects carry the coordinates that say WHICH via or pad it is. (This
+    # rule's 10um board-edge finding was diagnosed twice from the wrong
+    # mechanism because this line printed prose without objects.)
+    detail = "\n".join(
+        f"  {f['rule']}: {f['detail']}\n    objects={f['objects']}"
+        for f in errors
+        if str(f["rule"]) in over_budget
+    )[:3000]
     assert not over_budget, (
         f"DRC error(s) beyond the known-open waiver: "
         f"{ {r: f'{got} > {allowed}' for r, (got, allowed) in over_budget.items()} }"

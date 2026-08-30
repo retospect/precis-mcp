@@ -679,12 +679,17 @@ def _vias_for_track(
     for endpoint, point in (("a", start), ("b", end)):
         for k in range(n):
             offset = (k - (n - 1) / 2.0) * pitch
+            # These vias never touch the routing grid, so nothing else
+            # keeps them off the board edge — see `_clamp_via_into_board`.
+            vx, vy = _clamp_via_into_board(
+                ir, config, point[0] + offset, point[1], rules.via_dia_mm
+            )
             vias.append(
                 RealizedVia(
                     seg_id=track.seg_id,
                     net_id=track.net_id,
-                    x=point[0] + offset,
-                    y=point[1],
+                    x=vx,
+                    y=vy,
                     dia_mm=rules.via_dia_mm,
                     drill_mm=rules.via_drill_mm,
                     layer_lo=layer_lo,
@@ -931,6 +936,52 @@ def _outline_clip(
     return (x0, y0, x1, y1)
 
 
+def _board_edge_min_mm(config: RealizeConfig) -> float:
+    """The fab's copper-to-board-edge figure, house tier where published.
+
+    Hoisted so the routing grid's inset, and every via placed OUTSIDE that
+    grid, read the one value — ``drc.check_board_edge_clearance`` reads the
+    same ``board_edge_clearance_*_mm`` field, and a second copy of this
+    lookup is how a placement site ends up disagreeing with the checker
+    that grades it.
+    """
+    return float(
+        config.fab_caps.house_default.get("board_edge_clearance_vcut_mm")
+        or config.fab_caps.jlc_min.get("board_edge_clearance_vcut_mm")
+        or 0.0
+    )
+
+
+def _clamp_via_into_board(
+    ir: PcbIR, config: RealizeConfig, x: float, y: float, via_dia_mm: float
+) -> tuple[float, float]:
+    """Pull a via centre inside the board-edge inset for its OWN diameter.
+
+    **Why a clamp and not a check.** Ampacity vias
+    (:func:`_current_vias`) are anchored to a track ENDPOINT — a pad
+    coordinate — and never consult the routing grid, so
+    :func:`_outline_clip`'s inset, which is what keeps every grid-placed
+    via legal, simply does not apply to them. A pad placed legally can
+    still sit nearer the edge than a via hung off it may go, and the
+    result was measured on the 40mm reference fixture: a VCC3V3 via
+    0.010mm inside the 0.400mm V-cut floor, reported by the checker and
+    fixable by nothing upstream, because no code owned the question.
+
+    The group is already spread off its anchor by design (see
+    ``_current_vias``), so a small correction keeps it on its own pad's
+    copper. A LARGE one would not — a via dragged far from its endpoint
+    stops carrying current between layers, which is the whole reason it
+    exists. That case is left to :func:`precis.pcb.drc.check_connectivity`
+    to report rather than silently accepted here: a clamp that quietly
+    detaches a via would trade a reported defect for an unreported one.
+    """
+    clip = _outline_clip(ir, _board_edge_min_mm(config) + via_dia_mm / 2.0)
+    if clip is None:
+        return x, y
+    cx0, cy0, cx1, cy1 = clip
+    return min(max(x, cx0), cx1), min(max(y, cy0), cy1)
+
+
 def _seg_span_mm(ir: PcbIR, seg_id: int) -> float:
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
     pa, pb = pin_point(ir, a), pin_point(ir, b)
@@ -1026,9 +1077,7 @@ def _realize_maze(
     # to come off it too. Take the house tier where the fab publishes one,
     # so the result clears the advisory threshold and not merely the hard
     # one.
-    edge_min = config.fab_caps.house_default.get(
-        "board_edge_clearance_vcut_mm"
-    ) or config.fab_caps.jlc_min.get("board_edge_clearance_vcut_mm")
+    edge_min = _board_edge_min_mm(config)
     # A via is not a track (see maze.py's module docstring): its copper is
     # an annulus at its OWN diameter, not the routing net's track width, and
     # nothing downstream of this inset is via-aware — `grid.route`'s via
@@ -1057,7 +1106,7 @@ def _realize_maze(
             default=0.0,
         ),
     )
-    edge_inset = max(clearance, float(edge_min or 0.0)) + widest / 2.0
+    edge_inset = max(clearance, edge_min) + widest / 2.0
     spec = maze.grid_for(
         [p for p, _, _ in pads],
         n_layers=len(ir.stackup) or 1,
@@ -1773,6 +1822,10 @@ def _plane_fanout(
                 range(lo, hi + 1),
                 pad_radius,
                 placed_via_sites,
+                _outline_clip(
+                    ir,
+                    _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
+                ),
             )
             if stub_end is None:
                 failed.append(pid)
@@ -1887,6 +1940,7 @@ def _drop_via_site(
     layers: range,
     pad_radius_mm: float,
     placed_via_sites: list[tuple[float, float, float]],
+    edge_clip: tuple[float, float, float, float] | None = None,
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
 
@@ -1919,6 +1973,20 @@ def _drop_via_site(
     pass already placed** (:func:`_via_clears_vias`, ``placed_via_sites``)
     — a second, narrower guard than the pad one above, for the same
     same-net-blind-is-wrong-here reason.
+
+    **And it must stay inside the board.** ``edge_clip`` is
+    :func:`_outline_clip` inset for this via's own radius; a candidate
+    outside it is rejected so the search simply tries the next angle or
+    reach. Nothing else covers this site: the candidates below are
+    CONTINUOUS positions swept around the pad, never grid nodes, so the
+    inset baked into the routing grid's bounds — which is what keeps every
+    grid-placed via legal — never applied to them, and the three checks
+    above all ask about copper, not about the board's edge. Measured on
+    the 40mm reference fixture as a VCC3V3 drop via 0.010mm inside the
+    0.400mm V-cut floor. Rejecting beats clamping here precisely BECAUSE
+    this is a search: a clamped site would have to be re-tested against
+    all three copper checks anyway, and a clamp that fails them silently
+    yields a worse via than the next candidate the sweep would have found.
     """
     if rules.via_dia_mm is None or rules.via_drill_mm is None:
         return None  # this fab publishes no via figures — don't invent any
@@ -1945,6 +2013,11 @@ def _drop_via_site(
             cos_a, sin_a = math.cos(angle), math.sin(angle)
             vx, vy = ux * cos_a - uy * sin_a, ux * sin_a + uy * cos_a
             site = (pad[0] + vx * reach, pad[1] + vy * reach)
+            if edge_clip is not None and not (
+                edge_clip[0] <= site[0] <= edge_clip[2]
+                and edge_clip[1] <= site[1] <= edge_clip[3]
+            ):
+                continue
             if not grid.disk_is_free(layers, site[0], site[1], via_r, net_id):
                 continue
             if not grid.via_clears_pads(site[0], site[1], via_radius_mm):

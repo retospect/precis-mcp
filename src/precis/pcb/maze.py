@@ -229,9 +229,37 @@ def grid_for(
         x1, y1 = max(min(x1, bx1), max(xs)), max(min(y1, by1), max(ys))
     span = max(x1 - x0, y1 - y0, 1e-6)
     pitch = max(min_pitch_mm, span / target_cells_per_axis)
-    nx = math.ceil((x1 - x0) / pitch) + 1
-    ny = math.ceil((y1 - y0) / pitch) + 1
+    # **Round the node count DOWN, not up.** ``ceil`` puts the last node at
+    # ``x0 + ceil(span/pitch)*pitch``, which is >= ``x1`` — up to a full
+    # pitch OUTSIDE the very rectangle ``bounds`` was passed in to enforce.
+    # Copper then lands legally-by-the-grid but illegally-by-the-board:
+    # measured as a via 0.010mm past the usable edge on the 40mm reference
+    # fixture (`board_edge_clearance` 0.390 vs a 0.400mm floor), which is
+    # not a missing edge check but this rounding handing back the margin
+    # `realize._outline_clip` had already subtracted. Flooring makes the
+    # last node land ON or INSIDE the clip, so the one place that decides
+    # "how far from the board edge may copper be" stays the only place.
+    nx = _nodes_within(x0, x1, pitch, cover_to=max(xs))
+    ny = _nodes_within(y0, y1, pitch, cover_to=max(ys))
     return GridSpec(x0, y0, pitch, nx, ny, max(1, n_layers))
+
+
+def _nodes_within(lo: float, hi: float, pitch: float, *, cover_to: float) -> int:
+    """Node count whose last node sits at or inside ``hi``.
+
+    ``cover_to`` is the far edge of the PADS, and it wins if flooring would
+    leave a pad off the grid: the clip above already guarantees
+    ``hi >= cover_to``, so this only fires when a pad sits within one pitch
+    of the usable boundary. Dropping that pad from the grid would turn a
+    placement problem into a silent routing failure (``grid_for``'s own
+    clip comment makes the same choice for the same reason), so the grid
+    grows by the one node needed to hold it and the board-edge rule
+    reports it honestly instead.
+    """
+    n = math.floor((hi - lo) / pitch + 1e-9) + 1
+    while lo + (n - 1) * pitch < cover_to - 1e-9:
+        n += 1
+    return max(n, 1)
 
 
 @dataclass(frozen=True, slots=True)
