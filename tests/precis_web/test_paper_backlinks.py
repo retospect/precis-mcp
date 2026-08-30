@@ -31,10 +31,10 @@ def _lk(src: int, dst: int, relation: str, *, src_pos: int | None = None) -> Any
 
 
 def _ref(
-    id_: int, kind: str, *, slug: str = "", title: str = "", deleted_at: Any = None
+    id_: int, kind: str, *, slug: str = "", title: str = "", retired_at: Any = None
 ) -> Any:
     return SimpleNamespace(
-        id=id_, kind=kind, slug=slug, title=title, deleted_at=deleted_at
+        id=id_, kind=kind, slug=slug, title=title, retired_at=retired_at
     )
 
 
@@ -110,7 +110,7 @@ def test_backlinks_skips_missing_and_deleted_sources() -> None:
             _lk(600, paper, "cites"),  # live → kept
         ],
         refs=[
-            _ref(500, "draft", title="Gone", deleted_at="2026-01-01"),
+            _ref(500, "draft", title="Gone", retired_at="2026-01-01"),
             _ref(600, "draft", slug="live", title="Live draft"),
         ],
     )

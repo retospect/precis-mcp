@@ -82,7 +82,7 @@ def _experiment_structures(text: str) -> list[int]:
 def _measuring_pathway(store: Store, structure_id: int, tier: str) -> int | None:
     """The pathway ref that produced the structure's canonical barrier —
     :func:`precis.quest.compute._find_tier_pathway` on the stamped
-    ``barrier_tier`` (ladder-aware dispatches only; a legacy candidate's
+    ``barrier_fidelity`` (ladder-aware dispatches only; a legacy candidate's
     pre-ladder pathway is invisible and the ruling degrades to no ``[pw…]``
     handle / no ``tests`` edge rather than guessing)."""
     from precis.quest.compute import _find_tier_pathway
@@ -99,7 +99,7 @@ def _existing_ruling(store: Store, ruling_key: str) -> int | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'finding' "
-            "AND deleted_at IS NULL AND meta->>'sim_ruling_key' = %s "
+            "AND retired_at IS NULL AND meta->>'sim_ruling_key' = %s "
             "ORDER BY ref_id LIMIT 1",
             (ruling_key,),
         ).fetchone()
@@ -203,7 +203,7 @@ def mint_measurement_rulings(store: Store, quest_id: int) -> int:
                 barrier = smeta.get("barrier")
                 if not isinstance(barrier, (int, float)) or isinstance(barrier, bool):
                     continue
-                tier = str(smeta.get("barrier_tier") or "neb")
+                tier = str(smeta.get("barrier_fidelity") or "neb")
                 pw_id = _measuring_pathway(store, st_id, tier)
                 key = (
                     f"st{st_id}:pw{pw_id}"

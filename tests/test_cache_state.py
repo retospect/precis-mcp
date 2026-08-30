@@ -108,7 +108,7 @@ def test_soft_deleted_ref_is_not_a_cache_hit(store: Store) -> None:
         request_hash="soft-hash",
         ttl_seconds=3600,
     )
-    store.soft_delete_ref(ref.id)
+    store.retire_ref(ref.id)
     assert store.get_cache_entry(provider="wolfram", request_hash="soft-hash") is None
 
 

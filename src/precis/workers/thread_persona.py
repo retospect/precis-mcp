@@ -9,7 +9,7 @@ and its cache segment only changes when the thread type does.
 This module is the registry that generalizes two one-offs in
 ``planner_prompt.py``:
 
-- the fixed ``_PINNED_SKILL_ID = "precis-tasks-help"`` head of the cached
+- the fixed ``_PINNED_SKILL_ID = "precis-todo-tree-help"`` head of the cached
   layer (the *write-document* persona), and
 - the ``has_review``-gated reviewer persona injected in the variable layer.
 
@@ -23,7 +23,7 @@ built thread-type-invariant (one fleet-wide prefix, ``planner_prompt.
 _build_system_prompt`` uses a bare context) and the reviewer persona rides
 the *variable* layer. A2 introduces this registry and routes the cached
 **floor** persona through :func:`persona_for`, but the default resolution
-(``write-document`` → ``precis-tasks-help``) reproduces today's bytes
+(``write-document`` → ``precis-todo-tree-help``) reproduces today's bytes
 exactly, and the reviewer's variable-layer path is untouched. Forking a
 distinct cache prefix per thread type — the persona-first cache island of
 Turn-taking persona threads — is deferred to the render-loop slice (B), where the cached
@@ -74,12 +74,12 @@ class PersonaSpec:
 #: missing skill — the loader would fall back to an error stub).
 #:
 #: - ``write-document`` — the synthesis base; persona = the operational
-#:   manual ``precis-tasks-help`` (identical to the pre-A2 pinned skill).
+#:   manual ``precis-todo-tree-help`` (identical to the pre-A2 pinned skill).
 #: - ``review`` — the draft-reviewer persona (today injected in the variable
 #:   layer via ``has_review``; registered here for the §2 floor promotion
 #:   that lands with review-as-a-spawned-thread, phase E).
 THREAD_PERSONAS: dict[str, PersonaSpec] = {
-    "write-document": PersonaSpec(persona_skill_id="precis-tasks-help"),
+    "write-document": PersonaSpec(persona_skill_id="precis-todo-tree-help"),
     "review": PersonaSpec(
         persona_skill_id="precis-draft-reviewer",
         extension_verbs=("flag-claim", "request-evidence"),

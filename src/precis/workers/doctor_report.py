@@ -174,7 +174,7 @@ def latest_report(
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id, created_at, title FROM refs "
-            "WHERE kind = 'draft' AND deleted_at IS NULL "
+            "WHERE kind = 'draft' AND retired_at IS NULL "
             "AND meta->>'author' = %s "
             "ORDER BY created_at DESC LIMIT 1",
             (AUTHOR,),

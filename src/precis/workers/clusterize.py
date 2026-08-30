@@ -97,7 +97,7 @@ _CANDIDATE_WHERE = """
        AND ce.status = 'ok'
       JOIN refs r ON r.ref_id = c.ref_id
      WHERE r.kind = %(kind)s
-       AND r.deleted_at IS NULL
+       AND r.retired_at IS NULL
        AND c.keywords IS NOT NULL
 """
 

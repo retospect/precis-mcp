@@ -233,8 +233,8 @@ class TestRetire:
             title="foreign",
             meta={"source": "anki-foreign", "readonly": True},
         )
-        store.soft_delete_ref(authored.id)
-        store.soft_delete_ref(foreign.id)
+        store.retire_ref(authored.id)
+        store.retire_ref(foreign.id)
         ids = _retired_ref_ids(store)
         assert int(authored.id) in ids
         assert int(foreign.id) not in ids

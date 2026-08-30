@@ -135,7 +135,7 @@ class RefsMixin:
         # the decay clock starts immediately.
         #
         # ``parent_id`` (migration 0013 / todo-tree) wires the ref
-        # into a hierarchical task graph. NULL for refs not in a
+        # into a hierarchical todo graph. NULL for refs not in a
         # tree. Cycle / depth / level-gradient guards run at the
         # handler layer (see ``handlers/_todo_guards.py``) before
         # this insert, so the store layer trusts the caller.
@@ -191,9 +191,9 @@ class RefsMixin:
                 #
                 # Reclaim-on-conflict: a slug's cite_key row is NOT released
                 # when its ref is soft-deleted (soft-delete only stamps
-                # ``deleted_at``). A plain ``DO NOTHING`` would then leave a
+                # ``retired_at``). A plain ``DO NOTHING`` would then leave a
                 # re-created same-slug ref with NO cite_key, and ``get_ref``
-                # (which filters ``deleted_at IS NULL`` *after* resolving the
+                # (which filters ``retired_at IS NULL`` *after* resolving the
                 # slug→ref_id) would resolve the slug to the dead ref → None —
                 # silently orphaning the new ref (gr201814, seen across every
                 # content-addressed kind, e.g. quest candidate structures). So
@@ -209,7 +209,7 @@ class RefsMixin:
                     "  WHERE EXISTS ("
                     "    SELECT 1 FROM refs r "
                     "    WHERE r.ref_id = ref_identifiers.ref_id "
-                    "      AND r.deleted_at IS NOT NULL"
+                    "      AND r.retired_at IS NOT NULL"
                     "  )",
                     ("cite_key", slug, ref_id, provider),
                 )
@@ -254,7 +254,7 @@ class RefsMixin:
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
             " LIMIT 1) AS slug "
-            "FROM refs r WHERE r.ref_id = %s AND r.deleted_at IS NULL"
+            "FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL"
         )
 
         def _do(c: Connection) -> ResolvedHandle | None:
@@ -322,14 +322,14 @@ class RefsMixin:
                     return None
                 seen.add(cur)
                 row = c.execute(
-                    "SELECT deleted_at, meta->>'superseded_by' "
+                    "SELECT retired_at, meta->>'superseded_by' "
                     "FROM refs WHERE ref_id = %s",
                     (cur,),
                 ).fetchone()
                 if row is None:
                     return None
-                deleted_at, sup = row[0], row[1]
-                if deleted_at is None:
+                retired_at, sup = row[0], row[1]
+                if retired_at is None:
                     # Reached a live ref — it's the survivor iff we moved.
                     return cur if cur != ref_id else None
                 if sup is None:
@@ -360,7 +360,7 @@ class RefsMixin:
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
             " LIMIT 1) AS slug "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-            "WHERE c.chunk_id = %s AND r.deleted_at IS NULL"
+            "WHERE c.chunk_id = %s AND r.retired_at IS NULL"
         )
 
         def _do(c: Connection) -> ResolvedHandle | None:
@@ -467,7 +467,7 @@ class RefsMixin:
                 # title-only acquire onto a paper we demonstrably have.
                 held = c.execute(
                     "SELECT r.ref_id FROM refs r "
-                    "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                    "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                     "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
                     "  AND similarity(r.title, %s) >= 0.85 "
                     # Cast the year param: a title-only acquire with no year
@@ -552,7 +552,7 @@ class RefsMixin:
                        ),
                        updated_at = now()
                  WHERE ref_id = %s AND kind = 'paper'
-                   AND pdf_sha256 IS NULL AND deleted_at IS NULL
+                   AND pdf_sha256 IS NULL AND retired_at IS NULL
                 """,
                 (ref_id,),
             )
@@ -893,7 +893,7 @@ class RefsMixin:
             sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
             params: tuple[Any, ...] = (kind, id)
             if not include_deleted:
-                sql += " AND deleted_at IS NULL"
+                sql += " AND retired_at IS NULL"
             with self.pool.connection() as conn:
                 row = conn.execute(sql, params).fetchone()
             return _row_to_ref(row) if row is not None else None
@@ -913,7 +913,7 @@ class RefsMixin:
             ref_id = int(ident_row[0])
             sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
             if not include_deleted:
-                sql += " AND deleted_at IS NULL"
+                sql += " AND retired_at IS NULL"
             row = conn.execute(sql, (kind, ref_id)).fetchone()
         return _row_to_ref(row) if row is not None else None
 
@@ -970,7 +970,7 @@ class RefsMixin:
             "  AND ri.id_kind = 'cite_key' "
             "WHERE r.kind = %s "
             "  AND ri.id_value = ANY(%s) "
-            "  AND r.deleted_at IS NULL"
+            "  AND r.retired_at IS NULL"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (kind, unique)).fetchall()
@@ -993,7 +993,7 @@ class RefsMixin:
             return {}
         sql = f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = ANY(%s)"
         if not include_deleted:
-            sql += " AND deleted_at IS NULL"
+            sql += " AND retired_at IS NULL"
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (ids,)).fetchall()
         return {r[0]: _row_to_ref(r) for r in rows}
@@ -1015,7 +1015,7 @@ class RefsMixin:
         """
         sql = (
             "UPDATE refs SET prio = %s, updated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         if conn is not None:
             conn.execute(sql, (prio, ref_id))
@@ -1031,7 +1031,7 @@ class RefsMixin:
         case). ``None`` when nothing matches."""
         sql = (
             f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
-            "WHERE r.kind = %s AND r.deleted_at IS NULL "
+            "WHERE r.kind = %s AND r.retired_at IS NULL "
             "AND r.meta->>%s = %s "
             "ORDER BY r.created_at DESC LIMIT 1"
         )
@@ -1054,7 +1054,7 @@ class RefsMixin:
         called — this is the bare column write."""
         sql = (
             "UPDATE refs SET parent_id = %s, updated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         if conn is not None:
             conn.execute(sql, (new_parent_id, ref_id))
@@ -1075,11 +1075,11 @@ class RefsMixin:
                 """
                 WITH RECURSIVE sub(ref_id) AS (
                     SELECT ref_id FROM refs
-                     WHERE ref_id = %s AND deleted_at IS NULL
+                     WHERE ref_id = %s AND retired_at IS NULL
                     UNION ALL
                     SELECT r.ref_id FROM refs r
                       JOIN sub s ON r.parent_id = s.ref_id
-                     WHERE r.deleted_at IS NULL
+                     WHERE r.retired_at IS NULL
                 )
                 SELECT ref_id FROM sub
                 """,
@@ -1096,7 +1096,7 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id FROM refs "
-                "WHERE kind = 'folder' AND deleted_at IS NULL "
+                "WHERE kind = 'folder' AND retired_at IS NULL "
                 "AND lower(title) = lower(%s) ORDER BY ref_id",
                 (title,),
             ).fetchall()
@@ -1104,7 +1104,7 @@ class RefsMixin:
 
     def locked_ref_ids(self, ref_ids: list[int]) -> set[int]:
         """Subset of ``ref_ids`` currently row-locked. Used by the web
-        Tasks tab to flag "locked right now" nodes (e.g. a ``job`` ref a
+        Todo tab to flag "locked right now" nodes (e.g. a ``job`` ref a
         worker holds ``FOR UPDATE``). Implemented as a ``SELECT … FOR
         UPDATE SKIP LOCKED`` diff: locked rows are skipped, so the ids
         we fail to re-select are exactly the locked ones. Rolls back
@@ -1143,7 +1143,7 @@ class RefsMixin:
                              ELSE meta || %s::jsonb
                         END,
                 updated_at = now()
-            WHERE ref_id = %s AND deleted_at IS NULL
+            WHERE ref_id = %s AND retired_at IS NULL
             RETURNING {_REFS_COLS}
         """
         params = (
@@ -1204,7 +1204,7 @@ class RefsMixin:
                 meta    = CASE WHEN %s::jsonb IS NULL THEN meta
                                ELSE meta || %s::jsonb END,
                 updated_at = now()
-            WHERE ref_id = %s AND deleted_at IS NULL
+            WHERE ref_id = %s AND retired_at IS NULL
             RETURNING {_REFS_COLS}
         """
         params = (
@@ -1268,7 +1268,7 @@ class RefsMixin:
             "  retraction_url    = %s, "
             "  retraction_checked_at = now(), "
             "  updated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         params = (status, retracted_at, reason, url, ref_id)
 
@@ -1300,7 +1300,7 @@ class RefsMixin:
         a ref change."""
         sql = (
             "UPDATE refs SET retraction_checked_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         if conn is not None:
             conn.execute(sql, (ref_id,))
@@ -1338,7 +1338,7 @@ class RefsMixin:
         "touch only" variant."""
         sql = (
             "UPDATE refs SET doi_status = %s, doi_validated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         if conn is not None:
             conn.execute(sql, (status, ref_id))
@@ -1374,7 +1374,7 @@ class RefsMixin:
         # about (findings table is small).
         rows = conn.execute(
             "SELECT ref_id, meta FROM refs "
-            "WHERE kind = 'finding' AND deleted_at IS NULL "
+            "WHERE kind = 'finding' AND retired_at IS NULL "
             "  AND meta @? "
             "      ('$.chain[*] ? (@.ref_id == ' || %s || ')')::jsonpath",
             (retracted_ref_id,),
@@ -1470,7 +1470,7 @@ class RefsMixin:
             "  human_verified_by   = %s, "
             "  human_verified_note = %s, "
             "  updated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         params = (by, note, ref_id)
         if conn is not None:
@@ -1502,7 +1502,7 @@ class RefsMixin:
             "  human_verified_by   = NULL, "
             "  human_verified_note = NULL, "
             "  updated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         if conn is not None:
             conn.execute(sql, (ref_id,))
@@ -1529,7 +1529,7 @@ class RefsMixin:
 
         def _do(c: Connection) -> str | None:
             row = c.execute(
-                "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                "SELECT title FROM refs WHERE ref_id = %s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
             if row is None:
@@ -1557,21 +1557,21 @@ class RefsMixin:
         with self.pool.connection() as c:
             return _do(c)
 
-    def soft_delete_ref(
+    def retire_ref(
         self,
         ref_id: int,
         *,
         conn: Connection | None = None,
     ) -> None:
-        """Soft-delete a ref by setting ``deleted_at = now()``.
+        """Soft-delete a ref by setting ``retired_at = now()``.
 
         ``conn`` lets the delete join an outer transaction (e.g. the
         memory ``supersede`` merge, where retiring the originals must
         be atomic with minting the survivor + migrating links).
         """
         sql = (
-            "UPDATE refs SET deleted_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL"
+            "UPDATE refs SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL"
         )
         if conn is not None:
             rowcount = conn.execute(sql, (ref_id,)).rowcount
@@ -1587,15 +1587,15 @@ class RefsMixin:
         *,
         conn: Connection | None = None,
     ) -> bool:
-        """Undo a soft-delete by clearing ``deleted_at`` — inverse of
-        :meth:`soft_delete_ref`. Returns ``True`` if a soft-deleted row
+        """Undo a soft-delete by clearing ``retired_at`` — inverse of
+        :meth:`retire_ref`. Returns ``True`` if a soft-deleted row
         was restored, ``False`` if absent or already live (idempotent).
-        The ``WHERE deleted_at IS NOT NULL`` guard touches only a
+        The ``WHERE retired_at IS NOT NULL`` guard touches only a
         currently-deleted ref; body chunks/links were never removed by
         the soft-delete, so clearing the flag brings the whole ref back."""
         sql = (
-            "UPDATE refs SET deleted_at = NULL, updated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NOT NULL"
+            "UPDATE refs SET retired_at = NULL, updated_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NOT NULL"
         )
         if conn is not None:
             rowcount = conn.execute(sql, (ref_id,)).rowcount
@@ -1604,9 +1604,9 @@ class RefsMixin:
                 rowcount = c.execute(sql, (ref_id,)).rowcount
         return rowcount > 0
 
-    def soft_delete_todo_subtree(self, ref_id: int) -> int:
+    def retire_todo_subtree(self, ref_id: int) -> int:
         """Soft-delete a todo and every live ``kind='todo'`` descendant.
-        Cascading form of :meth:`soft_delete_ref` for the scheduling
+        Cascading form of :meth:`retire_ref` for the scheduling
         tree — a live child left under a deleted parent is *stranded
         debris* (the nursery orphan walk needs a live parent chain, so it
         evades detection while surfacing as a stuck-doable leaf forever;
@@ -1624,10 +1624,10 @@ class RefsMixin:
             "   WHERE r.ref_id = %s AND r.kind = 'todo'"
             "  UNION ALL"
             "  SELECT c.ref_id FROM refs c JOIN sub s ON c.parent_id = s.ref_id"
-            "   WHERE c.kind = 'todo' AND c.deleted_at IS NULL"
+            "   WHERE c.kind = 'todo' AND c.retired_at IS NULL"
             ") "
-            "UPDATE refs SET deleted_at = now() "
-            "WHERE ref_id IN (SELECT ref_id FROM sub) AND deleted_at IS NULL "
+            "UPDATE refs SET retired_at = now() "
+            "WHERE ref_id IN (SELECT ref_id FROM sub) AND retired_at IS NULL "
             "RETURNING ref_id"
         )
         with self.pool.connection() as c:
@@ -1655,13 +1655,13 @@ class RefsMixin:
             sql = (
                 "UPDATE refs SET refreshed_at = now(), "
                 "auto_refresh_days = %s, updated_at = now() "
-                "WHERE ref_id = %s AND deleted_at IS NULL"
+                "WHERE ref_id = %s AND retired_at IS NULL"
             )
             params: tuple[Any, ...] = (auto_refresh_days, ref_id)
         else:
             sql = (
                 "UPDATE refs SET refreshed_at = now(), updated_at = now() "
-                "WHERE ref_id = %s AND deleted_at IS NULL"
+                "WHERE ref_id = %s AND retired_at IS NULL"
             )
             params = (ref_id,)
         if conn is not None:
@@ -1705,7 +1705,7 @@ class RefsMixin:
                 "SELECT DISTINCT r.kind FROM ref_identifiers ri "
                 "JOIN refs r ON r.ref_id = ri.ref_id "
                 "WHERE ri.id_kind = 'cite_key' AND ri.id_value = %s "
-                "AND r.deleted_at IS NULL LIMIT 2",
+                "AND r.retired_at IS NULL LIMIT 2",
                 (slug,),
             ).fetchall()
         return str(rows[0][0]) if len(rows) == 1 else None
@@ -1718,7 +1718,7 @@ class RefsMixin:
         omits it — biases toward what the agent's been working with (a
         7B caller forgetting ``kind=`` is a real risk). One indexed
         query against ``refs.updated_at``."""
-        clauses = ["deleted_at IS NULL"]
+        clauses = ["retired_at IS NULL"]
         params: list[Any] = []
         if kinds is not None:
             if not kinds:
@@ -1792,7 +1792,7 @@ class RefsMixin:
         """
         # Aliased as ``r`` so the tag-filter helper can reference
         # ``r.ref_id`` uniformly across all store query shapes.
-        clauses = ["r.deleted_at IS NULL"]
+        clauses = ["r.retired_at IS NULL"]
         params: list[Any] = []
         if kind is not None:
             params.append(kind)
@@ -1874,7 +1874,7 @@ class RefsMixin:
         """
         clauses = [
             "r.kind = ANY(%s)",
-            "r.deleted_at IS NOT NULL" if deleted else "r.deleted_at IS NULL",
+            "r.retired_at IS NOT NULL" if deleted else "r.retired_at IS NULL",
         ]
         params: list[Any] = [list(kinds)]
         if has_pdf is not None:
@@ -2068,7 +2068,7 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id, title, parent_id FROM refs "
-                "WHERE kind = 'folder' AND deleted_at IS NULL "
+                "WHERE kind = 'folder' AND retired_at IS NULL "
                 "ORDER BY lower(title)"
             ).fetchall()
         return [
@@ -2134,7 +2134,7 @@ class RefsMixin:
         similarity)`` above ``min_similarity``, best first; the high
         default bar means only a near-title query fires it."""
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "r.kind = %s",
             "r.title IS NOT NULL",
         ]
@@ -2171,7 +2171,7 @@ class RefsMixin:
         (partial title). Held papers (``pdf_sha256 IS NOT NULL``) sort
         first, then by similarity. Returns ``ref_id`` in rank order."""
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             # Defensive: a superseded ref is normally soft-deleted (caught
             # above), but exclude it explicitly so a retired duplicate can
             # never surface as a record row even if a merge skipped the
@@ -2217,7 +2217,7 @@ class RefsMixin:
         its best-matching author. Held papers sort first, then by
         similarity. Returns ``ref_id`` in rank order."""
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             # Defensive superseded-duplicate exclusion (see
             # find_papers_by_title).
             "NOT (r.meta ? 'superseded_by')",
@@ -2262,7 +2262,7 @@ class RefsMixin:
         ``to_tsvector('english', r.title)`` (slower, functionally
         identical; Phase 3 switches to ``chunks.tsv``)."""
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "to_tsvector('english', r.title) @@ qq.qq",
         ]
         params: list[Any] = [q]
@@ -2309,7 +2309,7 @@ class RefsMixin:
         ``chunks.tsv``).
         """
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "to_tsvector('english', r.title) @@ qq.qq",
         ]
         params: list[Any] = [q]
@@ -2356,7 +2356,7 @@ class RefsMixin:
         :meth:`list_refs`; runtime callers must validate via
         :meth:`Tag.parse_strict` before this point.
         """
-        clauses = ["r.deleted_at IS NULL"]
+        clauses = ["r.retired_at IS NULL"]
         params: list[Any] = []
         if kind is not None:
             params.append(kind)

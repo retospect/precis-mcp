@@ -82,7 +82,7 @@ def _backfill_batch(store: Store, *, limit: int) -> list[tuple[int, str]]:
                  WHERE ref_id = r.ref_id AND id_kind = 'doi') AS doi
           FROM refs r
          WHERE r.kind = 'paper'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (SELECT 1 FROM ref_identifiers ri
                         WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi')
            AND (

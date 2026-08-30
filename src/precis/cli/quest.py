@@ -8,7 +8,7 @@
     precis quest status 7            # ops roll-up: logbook, candidates, sim
                                       # jobs, coordinator trail, LLM spend
     precis quest review-all <draft>  # rung 3a: mint a review-todo for every
-                                      # (reviewable chunk x lens) of a draft
+                                      # (reviewable chunk x persona) of a draft
     precis quest tag-papers 7        # backfill quest:<id> tag onto serving
                                       # papers (Drive-scoped browse)
 
@@ -82,13 +82,13 @@ def add_parser(subparsers: Any) -> None:
     ra = qsub.add_parser(
         "review-all",
         help="One-shot whole-draft review fanout (rung 3a): mint a "
-        "review-todo for every (reviewable chunk x lens) of a draft.",
+        "review-todo for every (reviewable chunk x persona) of a draft.",
     )
     ra.add_argument("draft", help="Draft slug or numeric id.")
     ra.add_argument(
-        "--lenses",
+        "--personas",
         default=None,
-        help="Comma-separated lens list (default: flow,cites,structure,"
+        help="Comma-separated persona list (default: flow,cites,structure,"
         "adversarial — all four).",
     )
     ra.add_argument(
@@ -102,7 +102,7 @@ def add_parser(subparsers: Any) -> None:
         "--only-dirty",
         action="store_true",
         help="Incremental re-check: "
-        "skip a (chunk, lens) pair already approved at the chunk's "
+        "skip a (chunk, persona) pair already approved at the chunk's "
         "current sha, and skip any chunk carrying an open anchored "
         "change-request. Cheap re-run after edits instead of a full "
         "re-review.",
@@ -343,9 +343,9 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
         print(f"quest review-all: no draft {args.draft!r}", file=sys.stderr)
         sys.exit(2)
 
-    lenses = (
-        tuple(x.strip() for x in args.lenses.split(",") if x.strip())
-        if args.lenses
+    personas = (
+        tuple(x.strip() for x in args.personas.split(",") if x.strip())
+        if args.personas
         else ALL_PERSONAS
     )
 
@@ -361,7 +361,7 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
         result = mint_review_fanout(
             store,
             ref.id,
-            personas=lenses,
+            personas=personas,
             doc_personas=DOC_PERSONAS if scope_chunk_id is None else (),
             author=bool(args.author),
             only_dirty=bool(args.only_dirty),
@@ -373,7 +373,7 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
 
     msg = (
         f"draft {args.draft!r}: review-all fanout — {result['chunks_seen']} "
-        f"chunk(s) x {len(lenses)} lens(es), {len(result['minted'])} minted, "
+        f"chunk(s) x {len(personas)} persona(s), {len(result['minted'])} minted, "
         f"{result['skipped']} already live, {result['unsettled_skipped']} "
         f"unsettled-skipped, parented on todo {result['parent_id']}"
     )

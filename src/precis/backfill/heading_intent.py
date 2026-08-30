@@ -88,7 +88,7 @@ def _intent_ref_for(store: Store, heading_handle: str) -> int | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE kind = 'memory' AND deleted_at IS NULL "
+            "WHERE kind = 'memory' AND retired_at IS NULL "
             "  AND meta ? %s AND meta->>'anchor' = %s "
             "ORDER BY ref_id LIMIT 1",
             (_META_KEY, heading_handle),
@@ -170,7 +170,7 @@ def intents_for(store: Store, heading_handles: list[str]) -> dict[str, Intent]:
             "            AND ch.chunk_kind = %s "
             "          ORDER BY ch.ord LIMIT 1) "
             "  FROM refs r "
-            " WHERE r.kind = 'memory' AND r.deleted_at IS NULL "
+            " WHERE r.kind = 'memory' AND r.retired_at IS NULL "
             "   AND r.meta ? %s AND r.meta->>'anchor' = ANY(%s)",
             (_META_KEY, _BODY_KIND, _META_KEY, handles),
         ).fetchall()
@@ -283,7 +283,7 @@ def section_intents(store: Store, anchor_handle: str) -> IntentContext:
 def retire_intent(store: Store, ref_id: int, *, conn: Any = None) -> None:
     """Retire (soft-delete) an intent note — the heading it belonged to is gone or
     the section was cut."""
-    store.soft_delete_ref(int(ref_id), conn=conn)
+    store.retire_ref(int(ref_id), conn=conn)
 
 
 def prune_dangling(store: Store) -> list[int]:
@@ -294,13 +294,13 @@ def prune_dangling(store: Store) -> list[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, meta->>'anchor' FROM refs "
-            "WHERE kind = 'memory' AND deleted_at IS NULL AND meta ? %s",
+            "WHERE kind = 'memory' AND retired_at IS NULL AND meta ? %s",
             (_META_KEY,),
         ).fetchall()
     retired: list[int] = []
     for ref_id, anchor in rows:
         alive = bool(anchor) and store.resolve_handle(str(anchor)) is not None
         if not alive:
-            store.soft_delete_ref(int(ref_id))
+            store.retire_ref(int(ref_id))
             retired.append(int(ref_id))
     return retired

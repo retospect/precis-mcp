@@ -9,7 +9,7 @@ Deterministic, in-process work (no claude): per source,
 project (reusing the draft-export preamble/geometry), ``precis.export.
 compile.compile_pdf`` renders it, and ``precis.export.remarkable.send_pdf``
 (the ``rmapi`` CLI) uploads the result. Each step streams as a ``job_event``
-so the run is followable on the task page.
+so the run is followable on the todo page.
 
 **Body + claims come from the database, not the filesystem** — the
 key difference from ``remarkable_papers_send`` (which sends the raw original
@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 
 #: Truncated tail of a failed compile's LaTeX log surfaced on the failing
 #: source's job_event — long enough to diagnose, short enough not to flood
-#: the task page across a multi-source run.
+#: the todo page across a multi-source run.
 _LOG_TAIL_CHARS = 500
 
 _PARAMS_SCHEMA: dict[str, Any] = {

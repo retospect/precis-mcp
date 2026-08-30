@@ -113,7 +113,7 @@ def _concept_id_by_name(store: Any, name: str) -> int | None:
 
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind='concept' AND deleted_at IS NULL "
+            "SELECT ref_id FROM refs WHERE kind='concept' AND retired_at IS NULL "
             "AND meta->>'norm_name' = %s ORDER BY ref_id LIMIT 1",
             (normalize_name(name),),
         ).fetchone()

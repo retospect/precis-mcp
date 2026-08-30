@@ -219,7 +219,7 @@ _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
     (
         "papers_ingested",
         "ingest",
-        "SELECT max(created_at) FROM refs WHERE kind = 'paper' AND deleted_at IS NULL",
+        "SELECT max(created_at) FROM refs WHERE kind = 'paper' AND retired_at IS NULL",
         6.0,
         _WARN,
         "a new paper landing",
@@ -246,7 +246,7 @@ _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
     (
         "news",
         "ingest",
-        "SELECT max(created_at) FROM refs WHERE kind = 'news' AND deleted_at IS NULL",
+        "SELECT max(created_at) FROM refs WHERE kind = 'news' AND retired_at IS NULL",
         8.0,
         _WARN,
         "a news ref landing",
@@ -450,7 +450,7 @@ def _diagnose_embed_pipeline(conn: Any) -> str:
 def _diagnose_embed_pipeline_inner(conn: Any) -> str:
     # Stage 1 — materializer minting?
     minted_row = conn.execute(
-        "SELECT count(*) FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+        "SELECT count(*) FROM refs WHERE kind = 'job' AND retired_at IS NULL "
         "AND meta->>'job_type' = %(jt)s "
         "AND created_at > now() - (%(w)s || ' hours')::interval",
         {"jt": _DIAGNOSE_JOB_TYPE, "w": _DIAGNOSE_WINDOW_HOURS},
@@ -485,7 +485,7 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
         """
         SELECT count(*), min(r.created_at)
           FROM refs r
-         WHERE r.kind = 'job' AND r.deleted_at IS NULL
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
            AND r.meta->>'job_type' = %(jt)s
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -538,7 +538,7 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
           FROM refs r
           JOIN ref_tags rt ON rt.ref_id = r.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
-         WHERE r.kind = 'job' AND r.deleted_at IS NULL
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
            AND r.meta->>'job_type' = %(jt)s
            AND t.namespace = 'STATUS'
         """,
@@ -559,7 +559,7 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
               JOIN tags t ON t.tag_id = rt.tag_id
               LEFT JOIN chunks c
                      ON c.ref_id = r.ref_id AND c.chunk_kind = 'job_event'
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %(jt)s
                AND t.namespace = 'STATUS' AND t.value = 'failed'
                AND rt.created_at > now() - (%(w)s || ' hours')::interval
@@ -614,7 +614,7 @@ def _check_chunks_extracted(conn: Any) -> CheckResult:
             (SELECT max(created_at) FROM chunks WHERE ord >= 0) AS newest_chunk_ts,
             (SELECT max(r.created_at)
                FROM refs r
-              WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+              WHERE r.kind = 'paper' AND r.retired_at IS NULL
                 AND r.created_at < now() - (%(budget)s || ' hours')::interval
                 AND r.created_at > COALESCE(
                       (SELECT max(created_at) FROM chunks WHERE ord >= 0),
@@ -670,7 +670,7 @@ def _check_card_forge(conn: Any) -> CheckResult:
           FROM refs j
           JOIN ref_tags rt ON rt.ref_id = j.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
-         WHERE j.kind = 'job' AND j.deleted_at IS NULL
+         WHERE j.kind = 'job' AND j.retired_at IS NULL
            AND j.meta->>'job_type' = 'card_forge'
            AND t.namespace = 'STATUS' AND t.value = 'succeeded'
     """
@@ -758,7 +758,7 @@ def _check_claim_hub_dedup_index(conn: Any) -> CheckResult:
           LEFT JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
                                        AND ce.embedder = %s
                                        AND ce.status = 'ok'
-         WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+         WHERE r.kind = 'finding' AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -845,7 +845,7 @@ def _check_nanopub_candidates_fresh(conn: Any) -> CheckResult:
                EXISTS (
                    SELECT 1 FROM links l
                     JOIN refs pr ON pr.ref_id = l.src_ref_id
-                                AND pr.deleted_at IS NULL
+                                AND pr.retired_at IS NULL
                    WHERE l.dst_ref_id = r.ref_id AND l.relation = 'contradicts'
                ) AS disputed,
                (EXISTS (
@@ -861,7 +861,7 @@ def _check_nanopub_candidates_fresh(conn: Any) -> CheckResult:
                        AND t.namespace = 'STATUS' AND t.value = 'canonical'
                 )) AS canonical
           FROM nanopub_publish p
-          JOIN refs r ON r.ref_id = p.claim_ref_id AND r.deleted_at IS NULL
+          JOIN refs r ON r.ref_id = p.claim_ref_id AND r.retired_at IS NULL
          WHERE p.state = 'candidate'
          ORDER BY p.id
     """
@@ -941,7 +941,7 @@ def _check_agent_jobs_completing(conn: Any) -> CheckResult:
           FROM refs j
           JOIN ref_tags rt ON rt.ref_id = j.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
-         WHERE j.kind = 'job' AND j.deleted_at IS NULL
+         WHERE j.kind = 'job' AND j.retired_at IS NULL
            AND j.meta->>'executor' = 'claude_inproc'
            AND t.namespace = 'STATUS' AND t.value IN ('succeeded', 'failed')
            AND rt.created_at > now() - interval '6 hours'
@@ -1045,7 +1045,7 @@ def _check_alert_backlog_rot(conn: Any) -> CheckResult:
           FROM refs r
           JOIN ref_tags rt ON rt.ref_id = r.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
-         WHERE r.kind = 'alert' AND r.deleted_at IS NULL
+         WHERE r.kind = 'alert' AND r.retired_at IS NULL
            AND t.namespace = 'OPEN' AND t.value = %s
            AND r.created_at < now() - interval '7 days'
     """
@@ -1410,7 +1410,7 @@ def _sync_alerts(store: Store, checks: list[CheckResult]) -> tuple[int, int, boo
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'alert' AND r.deleted_at IS NULL
+             WHERE r.kind = 'alert' AND r.retired_at IS NULL
                AND r.alert_source LIKE 'watchdog:%%'
                AND t.namespace = 'OPEN' AND t.value = %s
             """,
@@ -1579,7 +1579,7 @@ def _open_marker_gripes(store: Store) -> dict[tuple[str, str], int]:
                     AND c.chunk_kind = 'gripe_body' AND c.ord = 0
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'gripe' AND r.deleted_at IS NULL
+             WHERE r.kind = 'gripe' AND r.retired_at IS NULL
                AND t.namespace = 'STATUS' AND t.value = 'open'
                AND c.text LIKE %s
             """,
@@ -1622,7 +1622,7 @@ def _auto_close_marker_gripe(
             ],
             conn=conn,
         )
-        store.soft_delete_ref(gripe_id, conn=conn)
+        store.retire_ref(gripe_id, conn=conn)
     log.info(
         "health_digest: router auto-closed gripe id=%d (%s/%s fresh)",
         gripe_id,
@@ -1716,7 +1716,7 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'alert' AND r.deleted_at IS NULL
+             WHERE r.kind = 'alert' AND r.retired_at IS NULL
                AND (r.alert_source LIKE 'watchdog:%%'
                     OR r.alert_source = ANY(%s))
                AND r.alert_source IS NOT NULL AND r.fingerprint IS NOT NULL

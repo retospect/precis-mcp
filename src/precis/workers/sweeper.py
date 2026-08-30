@@ -542,7 +542,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'queued'
              ORDER BY r.ref_id
@@ -755,7 +755,7 @@ def _enumerate_orphans(
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
                AND COALESCE(r.meta->>'executor', '') <> ALL(%s)
@@ -836,7 +836,7 @@ def _enumerate_dead_node_orphans(
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
                AND r.meta->>'executor' = 'ssh_node'
@@ -899,7 +899,7 @@ def _transition_dead_node_orphan_to_failed(
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.ref_id = %(ref_id)s
                AND r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
                AND r.meta->>'executor' = 'ssh_node'
@@ -1072,7 +1072,7 @@ def _enumerate_parked_leaves(store: Store, *, limit: int) -> list[_ParkedLeaf]:
             SELECT r.ref_id
               FROM refs r
              WHERE r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND EXISTS (
                      SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                       WHERE rt.ref_id = r.ref_id
@@ -1150,7 +1150,7 @@ def _transition_unpark(store: Store, ref_id: int) -> str:
               FROM refs r
              WHERE r.ref_id = %s
                AND r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND EXISTS (
                      SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                       WHERE rt.ref_id = r.ref_id
@@ -1299,7 +1299,7 @@ def _transition_to_failed(
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.ref_id = %s
                AND r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
                AND (r.meta->>'executor') IS DISTINCT FROM 'ssh_node'

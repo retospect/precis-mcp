@@ -49,7 +49,7 @@ from precis.utils.handles import new_handle
 if TYPE_CHECKING:
     from precis.store.store import Store
 
-#: Re-exported so review-fanout code (the lens × chunk-kind mapping,
+#: Re-exported so review-fanout code (the persona × chunk-kind mapping,
 #: ``quest/review_fanout.py``) imports it off this module rather than
 #: reaching into ``utils.wordcount`` directly — but ``wordcount.py``
 #: stays the one place the set is *defined* (it must stay
@@ -188,7 +188,7 @@ class DraftWorkItem:
     """An open todo working on this draft (walked draft→project→subtree),
     with child-job status and whether a failure bubble *blocks* it.
     Surfaces stuck enrichment work in the draft outline instead of
-    burying it in the task tree."""
+    burying it in the todo tree."""
 
     todo_id: int
     title: str
@@ -692,15 +692,15 @@ class DraftStore(_AbbrevMixin):
             ).fetchone()
         return dict(row[0]) if row and row[0] else {}
 
-    def soft_delete_draft(self, ref_id: int) -> int:
+    def retire_draft(self, ref_id: int) -> int:
         """Soft-delete a whole draft **atomically**: mark the ref
-        ``deleted_at`` and retire all live chunks, one transaction.
-        Recoverable (clear ``deleted_at``+``retired_at`` to restore).
+        ``retired_at`` and retire all live chunks, one transaction.
+        Recoverable (clear the ref's + its chunks' ``retired_at`` to restore).
         Returns chunks retired. Raises if the ref isn't a live draft."""
         with self.tx() as conn:
             rc = conn.execute(
-                "UPDATE refs SET deleted_at = now() "
-                "WHERE ref_id = %s AND kind = 'draft' AND deleted_at IS NULL",
+                "UPDATE refs SET retired_at = now() "
+                "WHERE ref_id = %s AND kind = 'draft' AND retired_at IS NULL",
                 (ref_id,),
             ).rowcount
             if rc == 0:
@@ -1017,7 +1017,7 @@ class DraftStore(_AbbrevMixin):
                 ON o.ref_id = CASE WHEN l.src_chunk_id = c.chunk_id
                                    THEN l.dst_ref_id ELSE l.src_ref_id END
              WHERE c.ref_id = %s AND c.handle = ANY(%s)
-               AND c.retired_at IS NULL AND o.deleted_at IS NULL
+               AND c.retired_at IS NULL AND o.retired_at IS NULL
              ORDER BY c.handle, l.created_at
         """
         out: dict[str, list[dict[str, Any]]] = {}
@@ -1062,7 +1062,7 @@ class DraftStore(_AbbrevMixin):
                                    THEN l.dst_ref_id ELSE l.src_ref_id END
              WHERE (l.src_ref_id = %(rid)s OR l.dst_ref_id = %(rid)s)
                AND l.src_chunk_id IS NULL AND l.dst_chunk_id IS NULL
-               AND o.deleted_at IS NULL AND o.ref_id <> %(rid)s
+               AND o.retired_at IS NULL AND o.ref_id <> %(rid)s
              ORDER BY l.created_at
         """
         out: list[dict[str, Any]] = []
@@ -1122,7 +1122,7 @@ class DraftStore(_AbbrevMixin):
             "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
             "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'AUDIT' LIMIT 1) AS audit "
             "FROM refs r "
-            "WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
+            "WHERE r.kind = 'todo' AND r.retired_at IS NULL "
             "  AND r.meta->>'anchor' = ANY(%s)"
         )
         out: dict[str, list[dict[str, Any]]] = {}
@@ -1342,7 +1342,7 @@ class DraftStore(_AbbrevMixin):
               FROM links l
               JOIN refs o ON o.ref_id = l.dst_ref_id
              WHERE l.src_chunk_id = %s AND l.relation = 'depicts'
-               AND o.deleted_at IS NULL
+               AND o.retired_at IS NULL
              ORDER BY l.created_at
         """
         out: list[dict[str, Any]] = []
@@ -1444,7 +1444,7 @@ class DraftStore(_AbbrevMixin):
                     "SELECT ri.id_value FROM ref_identifiers ri "
                     "JOIN refs r ON r.ref_id = ri.ref_id "
                     "WHERE ri.id_kind = 'cite_key' AND r.kind = 'paper' "
-                    "  AND r.deleted_at IS NULL AND ri.id_value = ANY(%s)",
+                    "  AND r.retired_at IS NULL AND ri.id_value = ANY(%s)",
                     (slug_list,),
                 ).fetchall()
                 live |= {str(v) for (v,) in rows}
@@ -1452,7 +1452,7 @@ class DraftStore(_AbbrevMixin):
                 rows = conn.execute(
                     "SELECT c.chunk_id FROM chunks c "
                     "JOIN refs r ON r.ref_id = c.ref_id "
-                    "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                    "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                     "  AND c.retired_at IS NULL AND c.chunk_id = ANY(%s)",
                     (list(chunk_pks),),
                 ).fetchall()
@@ -1460,7 +1460,7 @@ class DraftStore(_AbbrevMixin):
             if record_pks:
                 rows = conn.execute(
                     "SELECT r.ref_id FROM refs r "
-                    "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                    "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                     "  AND r.ref_id = ANY(%s)",
                     (list(record_pks),),
                 ).fetchall()
@@ -1674,7 +1674,7 @@ class DraftStore(_AbbrevMixin):
                     UNION ALL
                     SELECT c.ref_id FROM refs c
                       JOIN subtree s ON c.parent_id = s.ref_id
-                     WHERE c.kind = 'todo' AND c.deleted_at IS NULL
+                     WHERE c.kind = 'todo' AND c.retired_at IS NULL
                 ),
                 open_todos AS (
                     SELECT r.ref_id, r.title
@@ -1682,7 +1682,7 @@ class DraftStore(_AbbrevMixin):
                       JOIN subtree s ON s.ref_id = r.ref_id
                       JOIN ref_tags rt ON rt.ref_id = r.ref_id
                       JOIN tags t ON t.tag_id = rt.tag_id
-                     WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                     WHERE r.kind = 'todo' AND r.retired_at IS NULL
                        AND t.namespace = 'STATUS' AND t.value = 'open'
                 ),
                 bubbles AS (
@@ -1698,7 +1698,7 @@ class DraftStore(_AbbrevMixin):
                       LEFT JOIN ref_tags rt ON rt.ref_id = j.ref_id
                       LEFT JOIN tags t
                         ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
-                     WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                     WHERE j.kind = 'job' AND j.retired_at IS NULL
                 ),
                 asks AS (
                     -- ``ask-user[:question]`` tags: work waiting on a human.
@@ -1907,7 +1907,7 @@ class DraftStore(_AbbrevMixin):
             )
         with self.tx() as conn:
             row = conn.execute(
-                "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                "SELECT title FROM refs WHERE ref_id = %s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
             if row is None:
@@ -2074,7 +2074,7 @@ class DraftStore(_AbbrevMixin):
 
             src_row = conn.execute(
                 "SELECT title, meta, authors, year FROM refs "
-                "WHERE ref_id = %s AND kind = 'draft' AND deleted_at IS NULL",
+                "WHERE ref_id = %s AND kind = 'draft' AND retired_at IS NULL",
                 (src_ref_id,),
             ).fetchone()
             if src_row is None:
@@ -2599,7 +2599,7 @@ class DraftStore(_AbbrevMixin):
                     WHERE l.src_chunk_id = %s
                       AND l.relation = 'has-figure'
                       AND r.kind = 'figure'
-                      AND r.deleted_at IS NULL
+                      AND r.retired_at IS NULL
                     LIMIT 1""",
                 (figure_chunk_id,),
             ).fetchone()
@@ -2620,7 +2620,7 @@ class DraftStore(_AbbrevMixin):
                     WHERE l.dst_ref_id = %s
                       AND l.relation = 'has-figure'
                       AND r.kind = 'draft'
-                      AND r.deleted_at IS NULL
+                      AND r.retired_at IS NULL
                       AND l.src_chunk_id IS NOT NULL
                     LIMIT 1""",
                 (canvas_ref_id,),
@@ -3217,7 +3217,7 @@ class DraftStore(_AbbrevMixin):
     def draft_authoring_enabled(self, ref_id: int) -> bool:
         """Per-document auto-author toggle (rung 3e):
         ``refs.meta.authoring_enabled``, default ``False``. When on, the
-        grounded review lenses (``cites``/``structure``) EDIT the draft
+        grounded review personas (``cites``/``structure``) EDIT the draft
         instead of only filing findings
         (:func:`precis.quest.review_fanout.mint_review_fanout`)."""
         with self.pool.connection() as conn:

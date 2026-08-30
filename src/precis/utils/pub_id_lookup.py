@@ -87,7 +87,7 @@ def lookup_pub_id_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT r.ref_id, r.kind, r.deleted_at, r.meta,
+            SELECT r.ref_id, r.kind, r.retired_at, r.meta,
                    (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
                      WHERE rt.ref_id = r.ref_id
                        AND t.namespace = 'STATUS'
@@ -111,10 +111,10 @@ def lookup_pub_id_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
         ).fetchone()
     if row is None:
         return None
-    ref_id, kind, deleted_at, meta, status, human_verified_at, is_hub = row
+    ref_id, kind, retired_at, meta, status, human_verified_at, is_hub = row
     if kind != "finding":
         return None
-    if deleted_at is not None:
+    if retired_at is not None:
         return None
     meta = dict(meta or {})
     return {

@@ -2170,7 +2170,7 @@ class _TickRun:
 
         store, quest_id = self.store, self.quest_id
         qref = store.get_ref(kind="quest", id=quest_id)
-        if qref is None or qref.deleted_at is not None:
+        if qref is None or qref.retired_at is not None:
             return QuestTickOutcome(
                 quest_id, "failed", 0, False, None, "quest not found"
             )

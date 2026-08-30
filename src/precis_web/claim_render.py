@@ -132,7 +132,7 @@ def _refuted_ref_ids_bulk(store: Store, ref_ids: Iterable[int]) -> set[int]:
             JOIN tags t ON t.tag_id = rt.tag_id
                        AND t.namespace = 'STATUS' AND t.value = 'refuted'
             WHERE r.ref_id = ANY(%(ids)s) AND r.kind = 'finding'
-              AND r.deleted_at IS NULL
+              AND r.retired_at IS NULL
             """,
             {"ids": ids},
         ).fetchall()
@@ -159,7 +159,7 @@ def _hypothesis_ref_ids_bulk(store: Store, ref_ids: Iterable[int]) -> set[int]:
             """
             SELECT ref_id FROM refs
             WHERE ref_id = ANY(%(ids)s) AND kind = 'finding'
-              AND deleted_at IS NULL
+              AND retired_at IS NULL
               AND meta->>'artifact_type' = %(hypothesis_artifact)s
             """,
             {"ids": ids, "hypothesis_artifact": ARTIFACT_HYPOTHESIS},

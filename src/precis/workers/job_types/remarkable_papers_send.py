@@ -7,7 +7,7 @@ LaTeX render/compile is involved here: the cited sources are already-ingested
 PDFs, resolved via ``precis.export.sources.collect_cited_sources`` (the same
 primitive the LaTeX appendix and ``papers.zip`` use) and pushed one at a time
 via ``precis.export.remarkable.send_pdf`` (the ``rmapi`` CLI). Each step
-streams as a ``job_event`` so the run is followable on the task page.
+streams as a ``job_event`` so the run is followable on the todo page.
 
 The destination is a per-draft subfolder under the ``remarkable.target_folder``
 app_setting (default ``/Precis``) — e.g. ``/Precis/173020`` — so a tablet

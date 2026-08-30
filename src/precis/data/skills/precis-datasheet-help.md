@@ -45,12 +45,13 @@ research evidence.
 
 ## Where a datasheet comes from
 
-**Drop a PDF into `<inbox>/datasheets/`** — the `precis watch` inbox routes
-that subtree through the paper Marker→chunks pipeline stamped as `datasheet`
-(exactly like `<inbox>/cfp/` for a `cfp`). On the cluster the inbox is
-`$PRECIS_WATCH_INBOX` (`/opt/nas/botshome/papers/inbox`), so the drop dir is
-`/opt/nas/botshome/papers/inbox/datasheets/`; locally it's the `datasheets/`
-subdir of whatever you pass to `precis watch <dir>`. The usual `tagging/`
+**Drop a PDF into `<inbox>/datasheets/`** — the `precis ingest --watch`
+inbox routes that subtree through the paper Marker→chunks pipeline stamped
+as `datasheet` (exactly like `<inbox>/cfp/` for a `cfp`). On the cluster
+the inbox is `$PRECIS_WATCH_INBOX` (`/opt/nas/botshome/papers/inbox`), so
+the drop dir is `/opt/nas/botshome/papers/inbox/datasheets/`; locally it's
+the `datasheets/` subdir of whatever you pass to
+`precis ingest --watch <dir>`. The usual `tagging/`
 sentinel works too (`datasheets/tagging/<topic>/foo.pdf` → `topic:<topic>`).
 
 Every catalog `part` row also carries a `datasheet_url`

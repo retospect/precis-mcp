@@ -350,7 +350,7 @@ def _count_papers_since(store: Store, cutoff: datetime) -> int:
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM refs "
-                "WHERE kind = 'paper' AND deleted_at IS NULL AND updated_at > %s",
+                "WHERE kind = 'paper' AND retired_at IS NULL AND updated_at > %s",
                 (cutoff,),
             ).fetchone()
         return int(row[0] or 0) if row else 0
@@ -497,7 +497,7 @@ def _lane_recall(store: Store, *, cutoff: datetime) -> str:
             leeches = conn.execute(
                 "SELECT title, meta->'fields'->>'Text', "
                 "       meta->'fields'->>'Back Extra' FROM refs "
-                "WHERE kind='anki' AND deleted_at IS NULL "
+                "WHERE kind='anki' AND retired_at IS NULL "
                 # ``%%`` — psycopg parses ``%`` in the query text as a
                 # placeholder marker; the literal LIKE wildcard must be doubled.
                 "AND (meta->>'deck' = 'Precis' OR meta->>'deck' LIKE 'Precis::%%') "
@@ -534,13 +534,13 @@ def _lane_recall(store: Store, *, cutoff: datetime) -> str:
         with store.pool.connection() as conn:
             minted = conn.execute(
                 "SELECT COUNT(*) FROM refs "
-                "WHERE kind='anki' AND deleted_at IS NULL "
+                "WHERE kind='anki' AND retired_at IS NULL "
                 "AND meta->>'authored_by' = 'card_forge' AND created_at >= %s",
                 (cutoff,),
             ).fetchone()
             escalated = conn.execute(
                 "SELECT meta->>'name' FROM refs "
-                "WHERE kind='concept' AND deleted_at IS NULL "
+                "WHERE kind='concept' AND retired_at IS NULL "
                 "AND (meta->>'escalated_at')::timestamptz >= %s "
                 "ORDER BY meta->>'escalated_at' DESC LIMIT %s",
                 (cutoff, _LANE_ITEM_CAP),
@@ -561,7 +561,7 @@ def _lane_recall(store: Store, *, cutoff: datetime) -> str:
         with store.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT meta->>'name' FROM refs "
-                "WHERE kind='concept' AND deleted_at IS NULL AND created_at >= %s "
+                "WHERE kind='concept' AND retired_at IS NULL AND created_at >= %s "
                 "ORDER BY created_at DESC LIMIT %s",
                 (cutoff, _LANE_ITEM_CAP),
             ).fetchall()
@@ -600,7 +600,7 @@ def _lane_reading(
                 "SELECT r.ref_id, r.title, MAX(c.last_seen) AS opened "
                 "FROM refs r JOIN chunks c ON c.ref_id = r.ref_id "
                 "  AND c.ord >= 0 AND c.retired_at IS NULL "
-                "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                 "  AND c.last_seen > %s "
                 "  AND c.last_seen > r.created_at + interval '1 hour' "
                 "GROUP BY r.ref_id, r.title "

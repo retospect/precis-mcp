@@ -436,7 +436,7 @@ def stage_run_artifact(
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'folder' "
-            "AND deleted_at IS NULL",
+            "AND retired_at IS NULL",
             (folder_id,),
         ).fetchone()
     if row is None:
@@ -510,7 +510,7 @@ def _reconstruct_from_plaintext_refs(
             "         ORDER BY created_at DESC LIMIT 1) AS slug, "
             "       meta "
             "  FROM refs WHERE parent_id = %s "
-            "   AND kind = 'plaintext' AND deleted_at IS NULL",
+            "   AND kind = 'plaintext' AND retired_at IS NULL",
             (folder_id,),
         ).fetchall()
     if not rows:

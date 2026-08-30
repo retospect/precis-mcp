@@ -260,13 +260,13 @@ def _pending_sim_ids(store: Store, quest_id: int) -> list[int]:
                 SELECT r.ref_id
                   FROM refs r
                   JOIN subtree s ON r.parent_id = s.ref_id
-                 WHERE r.deleted_at IS NULL
+                 WHERE r.retired_at IS NULL
             )
             SELECT j.ref_id
               FROM refs j
               JOIN subtree s ON s.ref_id = j.ref_id
              WHERE j.kind = 'job'
-               AND j.deleted_at IS NULL
+               AND j.retired_at IS NULL
                AND (j.meta->>'job_type') = ANY(%s)
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt
@@ -290,7 +290,7 @@ def _queued_sim_count(store: Store) -> int:
             SELECT count(*)
               FROM refs j
              WHERE j.kind = 'job'
-               AND j.deleted_at IS NULL
+               AND j.retired_at IS NULL
                AND (j.meta->>'job_type') = ANY(%s)
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt
@@ -353,7 +353,7 @@ def _quest_status(store: Store, quest_id: int) -> str:
         ref = store.get_ref(kind="quest", id=quest_id)
     except Exception:
         return "unknown"
-    if ref is None or getattr(ref, "deleted_at", None) is not None:
+    if ref is None or getattr(ref, "retired_at", None) is not None:
         return "deleted"
     for t in store.tags_for(quest_id):
         if (

@@ -230,7 +230,7 @@ class TestBlocksMissingEmbeddings:
         store.chunks.insert_chunks(ref_id, [ChunkInsert(ord=0, text="x")])
         dead = store.insert_ref(kind="paper", slug="dead", title="Dead")
         store.chunks.insert_chunks(dead.id, [ChunkInsert(ord=0, text="y")])
-        store.soft_delete_ref(dead.id)
+        store.retire_ref(dead.id)
 
         missing = store.chunks.chunks_missing_embeddings(kind="paper")
         assert len(missing) == 1

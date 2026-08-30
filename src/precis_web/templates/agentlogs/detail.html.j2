@@ -11,10 +11,10 @@
     {% if model %}<span>model: <span class="font-mono">{{ model }}</span></span>{% endif %}
     {% if status %}<span>status: {{ status }}</span>{% endif %}
     {% if parent_ref_id is not none %}
-    <a href="/tasks?focus={{ parent_ref_id }}" class="text-sky-700 hover:underline">todo #{{ parent_ref_id }}</a>
+    <a href="/todo?focus={{ parent_ref_id }}" class="text-sky-700 hover:underline">todo #{{ parent_ref_id }}</a>
     {% endif %}
     {% if job_ref_id is not none %}
-    <a href="/tasks/{{ job_ref_id }}/transcript" class="text-sky-700 hover:underline">📜 full transcript</a>
+    <a href="/todo/{{ job_ref_id }}/transcript" class="text-sky-700 hover:underline">📜 full transcript</a>
     {% endif %}
     <span>{{ created }}</span>
   </div>

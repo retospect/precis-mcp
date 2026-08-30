@@ -162,9 +162,9 @@ ask for an opinion-knob:
 **Proposal**: a single optional kwarg
 
 ```python
-search(kind="patent", q="...", source="local")  # skip OPS leg
-search(kind="patent", q="...", source="remote")  # skip local leg
-search(kind="patent", q="...", source="both")  # explicit default
+search(kind="patent", q="...", reach="local")  # skip OPS leg
+search(kind="patent", q="...", reach="remote")  # skip local leg
+search(kind="patent", q="...", reach="both")  # explicit default
 ```
 
 One branch in `PatentHandler.search` (skip the corresponding leg
@@ -172,9 +172,9 @@ One branch in `PatentHandler.search` (skip the corresponding leg
 output proves insufficient** — `[local]` markers may already give
 the agent enough to disambiguate without a knob.
 
-When implemented, the same `source=` kwarg should land on any
-other hybrid handler (`web` bookmarks, future `news`, etc.) so
-the convention is uniform.
+Shipped (vocabulary-compaction Stage D, 2026-08-30): the kwarg landed
+as `reach=` (not `source=`, which the provenance family owns) on both
+`patent` and `edgar` — the two hybrid local/remote handlers today.
 
 ## 8. Block-level (positional) tag filtering
 

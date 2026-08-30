@@ -57,7 +57,7 @@ def _ref_id_for_cite_key(store: Store, slug: str) -> int | None:
                   FROM ref_identifiers ri
                   JOIN refs r ON r.ref_id = ri.ref_id
                  WHERE ri.id_kind = 'cite_key' AND ri.id_value = %s
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                  LIMIT 1
                 """,
                 (slug,),

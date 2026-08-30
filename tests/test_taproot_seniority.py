@@ -1015,7 +1015,7 @@ def test_derive_refines_drops_a_soft_deleted_neighbour(store: Any) -> None:
     link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original)
 
     with store.pool.connection() as conn:
-        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (sharper,))
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (sharper,))
         conn.commit()
 
     # The original no longer surfaces the deleted sharper hub as a neighbour.
@@ -1063,7 +1063,7 @@ def test_derive_conjuncts_drops_a_soft_deleted_atom(store: Any) -> None:
     )
 
     with store.pool.connection() as conn:
-        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (atom,))
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (atom,))
         conn.commit()
 
     # A deleted atom no longer surfaces as one of the compound's conjuncts.

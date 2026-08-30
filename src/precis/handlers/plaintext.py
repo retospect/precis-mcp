@@ -842,8 +842,8 @@ class PlaintextHandler(Handler):
             body=format_write_result(
                 verb="appended",
                 file_slug=slug,
-                block_pos=last.ord if last else None,
-                block_slug=last.slug if last else None,
+                chunk_pos=last.ord if last else None,
+                chunk_slug=last.slug if last else None,
                 line_start=(last.meta or {}).get("line_start") if last else None,
                 line_end=(last.meta or {}).get("line_end") if last else None,
             )
@@ -914,8 +914,8 @@ class PlaintextHandler(Handler):
             body=format_write_result(
                 verb="replaced",
                 file_slug=slug,
-                block_pos=new_block.ord if new_block else target.pos,
-                block_slug=new_block.slug if new_block else target.slug,
+                chunk_pos=new_block.ord if new_block else target.pos,
+                chunk_slug=new_block.slug if new_block else target.slug,
                 line_start=(new_block.meta or {}).get("line_start")
                 if new_block
                 else target.line_start,
@@ -951,8 +951,8 @@ class PlaintextHandler(Handler):
             body=format_write_result(
                 verb="deleted",
                 file_slug=slug,
-                block_pos=deleted_pos,
-                block_slug=deleted_slug,
+                chunk_pos=deleted_pos,
+                chunk_slug=deleted_slug,
                 line_start=deleted_line_start,
                 line_end=deleted_line_end,
             )
@@ -973,7 +973,7 @@ class PlaintextHandler(Handler):
         if path.exists():
             os.remove(path)
         if ref is not None:
-            self.store.soft_delete_ref(ref.id)
+            self.store.retire_ref(ref.id)
         return Response(body=format_write_result(verb="deleted file", file_slug=slug))
 
     def _put_anchored(
@@ -1113,8 +1113,8 @@ class PlaintextHandler(Handler):
             body=format_write_result(
                 verb=verb,
                 file_slug=slug,
-                block_pos=anchor_block.ord if anchor_block else None,
-                block_slug=anchor_block.slug if anchor_block else None,
+                chunk_pos=anchor_block.ord if anchor_block else None,
+                chunk_slug=anchor_block.slug if anchor_block else None,
                 line_start=first_line or None,
                 line_end=last_line or None,
                 span_count=len(spans),
@@ -1374,7 +1374,7 @@ class PlaintextHandler(Handler):
 
         if not path.exists():
             if ref is not None:
-                self.store.soft_delete_ref(ref.id)
+                self.store.retire_ref(ref.id)
             return None
 
         st = path.stat()

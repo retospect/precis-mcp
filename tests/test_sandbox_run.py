@@ -210,20 +210,13 @@ def test_compose_prompt_has_task_and_harvest_contract() -> None:
     assert "uv.lock" in body
 
 
-def test_resolve_wall_seconds_prefers_nested_falls_back_to_legacy_flat() -> None:
-    """The shared job wall-clock budget key: current writers nest it under
-    ``resources`` (matching ssh_node/coordinator/quest.compute); a job row
-    minted before that migration carried it flat at ``params.wall_seconds``
-    — the read-both shim must still honor that in-flight shape."""
+def test_resolve_wall_seconds_reads_the_nested_shape() -> None:
+    """The shared job wall-clock budget key lives at ``params.resources.
+    wall_seconds`` (matching ssh_node/coordinator/quest.compute) — migration
+    0147 backfilled every legacy flat ``params.wall_seconds`` row into this
+    shape, so the read-both shim is gone (vocab-compaction Stage C)."""
     assert sandbox_run.resolve_wall_seconds({"resources": {"wall_seconds": 900}}) == 900
-    assert sandbox_run.resolve_wall_seconds({"wall_seconds": 900}) == 900
-    # nested wins when (implausibly) both are present.
-    assert (
-        sandbox_run.resolve_wall_seconds(
-            {"resources": {"wall_seconds": 900}, "wall_seconds": 1}
-        )
-        == 900
-    )
+    assert sandbox_run.resolve_wall_seconds({"wall_seconds": 900}) is None
     assert sandbox_run.resolve_wall_seconds({}) is None
 
 
@@ -505,24 +498,6 @@ def test_claim_is_node_pinned_and_leased(
     assert meta["container"] == f"sandbox-{jid}"
     assert "lease_until" in meta
     assert meta["run_host"] == "spark"
-
-
-def test_legacy_flat_wall_seconds_row_still_claims_and_launches(
-    store: Store, sandbox_env: Path
-) -> None:
-    """A job row minted before the nested-``resources`` migration (flat
-    ``params.wall_seconds``) — never re-submitted, so never re-validated
-    against the current schema — must still lease + launch correctly via
-    the read-both shim (:func:`sandbox_run.resolve_wall_seconds`)."""
-    legacy_params = _valid_params()
-    legacy_params["wall_seconds"] = legacy_params.pop("resources")["wall_seconds"]
-    jid = _mk_queued_job(store, params=legacy_params)
-    claude_docker.run_claude_docker_pass(store, limit=4)
-    assert _status(store, jid) == "running"
-    meta = _meta(store, jid)
-    assert meta["container"] == f"sandbox-{jid}"
-    assert meta["deadline"] > 0
-    assert "lease_until" in meta
 
 
 # ── Worker boot epoch: reclaim + re-adopt (the lease-epoch reclaim arm) ──
@@ -1099,7 +1074,7 @@ def test_recurring_mints_mode_run_child_with_same_params(
 
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id, meta FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            "SELECT ref_id, meta FROM refs WHERE parent_id = %s AND retired_at IS NULL",
             (rec_id,),
         ).fetchall()
     assert len(rows) == 1

@@ -232,6 +232,6 @@ above don't change — only what you can put in the config.
 ## See also
 
 - `precis-search-help` — grounding levers in the paper corpus.
-- `precis-tasks-help` / `precis-decomposition-help` — running a standing
+- `precis-todo-tree-help` / `precis-decomposition-help` — running a standing
   optimization campaign on the todo tree.
 - `precis-structure-help` — the atomistic structures behind each intermediate.

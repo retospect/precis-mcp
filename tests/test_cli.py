@@ -592,7 +592,7 @@ def test_gripes_dump_json_one_per_line(
     for p in payloads:
         assert isinstance(p["id"], int)
         assert p["created_at"] is not None
-        assert "deleted_at" not in p  # live-only by default
+        assert "retired_at" not in p  # live-only by default
 
 
 def test_gripes_dump_include_deleted(
@@ -603,7 +603,7 @@ def test_gripes_dump_include_deleted(
     """--include-deleted surfaces soft-deleted tombstones."""
     live_id = _insert_gripe(store, "still here")
     dead_id = _insert_gripe(store, "tombstoned")
-    store.soft_delete_ref(dead_id)
+    store.retire_ref(dead_id)
 
     dsn = _store_dsn_from(store)
     # Default run hides the tombstone.

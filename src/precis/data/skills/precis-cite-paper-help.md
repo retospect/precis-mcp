@@ -145,7 +145,7 @@ link(kind='todo', id=<your writing leaf>, target=f'todo:{wait.id}', rel='blocked
 
 The waiting leaf flips to `STATUS:done` when the paper lands (or
 `STATUS:auto-timeout` if the fetch stalls past `timeout_at`). Mechanism
-+ the other evaluators: [[precis-auto-tasks-help]].
++ the other evaluators: [[precis-auto-todo-help]].
 
 **3. Cite it once it's in.** When the wait resolves, the paper is a
 normal corpus paper — go back to *Cite a paper that's in the corpus*
@@ -221,7 +221,7 @@ get(
 get(kind="skill", id="precis-finding-help")  # chase a claim to its primary source
 get(kind="skill", id="precis-stubs-help")  # request a paper we don't hold
 get(
-    kind="skill", id="precis-auto-tasks-help"
+    kind="skill", id="precis-auto-todo-help"
 )  # a todo that waits for the paper to appear
 get(
     kind="skill", id="precis-paper-help"

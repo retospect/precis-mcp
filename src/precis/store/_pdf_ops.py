@@ -212,7 +212,7 @@ class PdfMixin:
                   JOIN refs r
                     ON r.pdf_sha256 = p.pdf_sha256
                    AND r.kind = 'paper'
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                   LEFT JOIN ref_identifiers ri
                     ON ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
                   LEFT JOIN pdf_locations loc

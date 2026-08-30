@@ -96,7 +96,7 @@ def _load(
             order = (mastery_order if prefer_mastered else "") + "ref_id"
             rows = conn.execute(
                 "SELECT ref_id, meta->>'name', meta->>'definition' FROM refs "
-                "WHERE kind='concept' AND deleted_at IS NULL "
+                "WHERE kind='concept' AND retired_at IS NULL "
                 f"AND jsonb_exists(meta->'cohorts', %s) ORDER BY {order} LIMIT %s",
                 (cohort, limit),
             ).fetchall()
@@ -104,7 +104,7 @@ def _load(
             order = (mastery_order if prefer_mastered else "") + "ref_id DESC"
             rows = conn.execute(
                 "SELECT ref_id, meta->>'name', meta->>'definition' FROM refs "
-                "WHERE kind='concept' AND deleted_at IS NULL "
+                "WHERE kind='concept' AND retired_at IS NULL "
                 f"ORDER BY {order} LIMIT %s",
                 (limit,),
             ).fetchall()
@@ -118,7 +118,7 @@ def _load(
             if missing:
                 extra = conn.execute(
                     "SELECT ref_id, meta->>'name', meta->>'definition' FROM refs "
-                    "WHERE kind='concept' AND deleted_at IS NULL "
+                    "WHERE kind='concept' AND retired_at IS NULL "
                     "AND ref_id = ANY(%s)",
                     (missing,),
                 ).fetchall()
@@ -289,7 +289,7 @@ def ensure_reading_project(store: Store) -> int:
     drafts have a `draft-of` home). Marked by ``meta.reading_prep_root``."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind='todo' AND deleted_at IS NULL "
+            "SELECT ref_id FROM refs WHERE kind='todo' AND retired_at IS NULL "
             "AND meta->>'reading_prep_root' = '1' ORDER BY ref_id LIMIT 1"
         ).fetchone()
         if row:

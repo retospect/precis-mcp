@@ -249,7 +249,7 @@ def _failed_rest_cooldown_active(
                       LIMIT 1) AS age_s
                   FROM refs r
                  WHERE r.kind = 'job'
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND r.meta->>'idem_key' = %s
                    AND r.meta->>'executor' = 'coordinator'
                  ORDER BY r.ref_id DESC
@@ -313,7 +313,7 @@ def _dry_rest_cooldown_active(
                     r.meta->>'rest_reason' AS rest_reason
                   FROM refs r
                  WHERE r.kind = 'job'
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND r.meta->>'idem_key' = %s
                    AND r.meta->>'executor' = 'coordinator'
                  ORDER BY r.ref_id DESC
@@ -393,7 +393,7 @@ def _dry_rest_escalation_active(
                     r.meta->>'rest_reason' AS rest_reason
                   FROM refs r
                  WHERE r.kind = 'job'
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND r.meta->>'idem_key' = %s
                    AND r.meta->>'executor' = 'coordinator'
                  ORDER BY r.ref_id DESC
@@ -514,7 +514,7 @@ def _reap_orphaned_loop(store: Store, quest_id: int, *, grace_s: int) -> int | N
                          WHERE c.ref_id = r.ref_id) AS last_chunk_at
                   FROM refs r
                  WHERE r.kind = 'job'
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND r.meta->>'idem_key' = %s
                    AND r.meta->>'executor' = 'coordinator'
                    AND (r.meta->>'lease_until') IS NOT NULL
@@ -638,14 +638,14 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
                 """
                 WITH agg AS (
                   SELECT ref_id FROM refs
-                   WHERE kind = 'todo' AND deleted_at IS NULL
+                   WHERE kind = 'todo' AND retired_at IS NULL
                      AND meta->'params'->>'pathway_ref_id' = %(pid)s
                 ),
                 tree AS (
                   SELECT ref_id, TRUE AS is_root FROM agg
                   UNION ALL
                   SELECT t.ref_id, FALSE FROM refs t JOIN agg a ON t.parent_id = a.ref_id
-                   WHERE t.kind = 'todo' AND t.deleted_at IS NULL
+                   WHERE t.kind = 'todo' AND t.retired_at IS NULL
                 )
                 SELECT
                   tr.is_root,
@@ -670,7 +670,7 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
                   FROM tree tr
                   LEFT JOIN refs j
                     ON j.parent_id = tr.ref_id AND j.kind = 'job'
-                       AND j.deleted_at IS NULL
+                       AND j.retired_at IS NULL
                 """,
                 {
                     "pid": str(pathway_id),
@@ -759,7 +759,7 @@ def _reconcile_orphaned_pathways(
                 rows = conn.execute(
                     """
                     SELECT ref_id, meta FROM refs
-                     WHERE kind = 'pathway' AND deleted_at IS NULL
+                     WHERE kind = 'pathway' AND retired_at IS NULL
                        AND meta->>'candidate_ref' = %(sid)s
                        AND meta->>'status' = 'computing'
                     """,
@@ -850,12 +850,12 @@ def _reconcile_stale_computing_pathways(store: Store) -> int:
             rows = conn.execute(
                 """
                 SELECT p.ref_id FROM refs p
-                 WHERE p.kind = 'pathway' AND p.deleted_at IS NULL
+                 WHERE p.kind = 'pathway' AND p.retired_at IS NULL
                    AND p.meta->>'status' = 'computing'
                    AND p.updated_at < now() - %(max_age)s::interval
                    AND NOT EXISTS (
                          SELECT 1 FROM refs j
-                          WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                          WHERE j.kind = 'job' AND j.retired_at IS NULL
                             AND j.meta->'params'->>'pathway_ref_id' = p.ref_id::text
                             AND EXISTS (
                                   SELECT 1 FROM ref_tags rt JOIN tags t

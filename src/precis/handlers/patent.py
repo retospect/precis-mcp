@@ -225,7 +225,7 @@ class PatentHandler(Handler):
         tags: list[str] | None = None,
         scope: str | None = None,
         page_size: int = 10,
-        source: str = "both",
+        reach: str = "both",
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
@@ -233,15 +233,15 @@ class PatentHandler(Handler):
         # outside ``{SRC, CACHE}`` raise BadInput at the agent boundary.
         normalized_tags = Tag.normalize_filter(tags, kind="patent")
 
-        # ``source=`` picks which leg(s) run. ``'remote'`` additionally
+        # ``reach=`` picks which leg(s) run. ``'remote'`` additionally
         # filters out hits whose DOCDB id is already in the local
         # store, so the agent sees only patents it hasn't fetched yet
         # — the natural "prior-art sweep" mode. See
         # ``docs/backlog/search-future-filters.md`` §7.
-        if source not in ("both", "local", "remote"):
+        if reach not in ("both", "local", "remote"):
             raise BadInput(
-                f"invalid source={source!r} - expected 'both', 'local', or 'remote'",
-                next="search(kind='patent', q='...', source='remote')",
+                f"invalid reach={reach!r} - expected 'both', 'local', or 'remote'",
+                next="search(kind='patent', q='...', reach='remote')",
             )
 
         scope_ref_id: int | None = None
@@ -259,7 +259,7 @@ class PatentHandler(Handler):
         # local-only (searching one specific patent remotely makes no
         # sense) so the local leg always runs when scope is set.
         local_hits: list[tuple[Any, Ref, float]] = []
-        if source != "remote" or scope_ref_id is not None:
+        if reach != "remote" or scope_ref_id is not None:
             local_hits = self._search_local(
                 q=q,
                 scope_ref_id=scope_ref_id,
@@ -274,7 +274,7 @@ class PatentHandler(Handler):
         # didn't ask for local-only.
         remote_hits: list[OpsHit] = []
         cql_used: str | None = None
-        if scope_ref_id is None and source != "local":
+        if scope_ref_id is None and reach != "local":
             try:
                 cql = build_cql(q=q, tags=tags, store=self.store)
             except BadInput:
@@ -328,10 +328,10 @@ class PatentHandler(Handler):
                         )
                     remote_hits = []
 
-        # source='remote' — dedupe against local so the caller sees
+        # reach='remote' — dedupe against local so the caller sees
         # only patents they haven't fetched yet. One point lookup per
         # remote hit; the OPS page size caps this at a few dozen.
-        if source == "remote" and remote_hits:
+        if reach == "remote" and remote_hits:
             remote_hits = [
                 h
                 for h in remote_hits
@@ -473,7 +473,7 @@ class PatentHandler(Handler):
         sql = f"""
             SELECT {_REFS_COLS_ALIASED}
             FROM   refs r
-            WHERE  r.kind = 'patent' AND r.deleted_at IS NULL
+            WHERE  r.kind = 'patent' AND r.retired_at IS NULL
             ORDER BY (r.meta->>'publication_date') DESC NULLS LAST,
                      (SELECT min(id_value) FROM ref_identifiers
                        WHERE ref_id = r.ref_id AND id_kind = 'cite_key') ASC
@@ -640,7 +640,7 @@ class PatentHandler(Handler):
         local_stream: list[SearchHit] = block_hits_to_search_hits(
             local_hits,
             kind="patent",
-            source="local",
+            reach="local",
             excerpt=200,
             ref_level_dedupe=True,
         )
@@ -762,7 +762,7 @@ def _parse_patent_id(raw: str) -> tuple[str, tuple[int, int] | None]:
 def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
     """Adapt an OPS remote-search hit into a ``SearchHit``.
 
-    ``source='ops'`` so the renderer marks remote rows with
+    ``reach='ops'`` so the renderer marks remote rows with
     ``[ops]`` (mirroring the local rows' ``[local]`` marker).
     The DOCDB id becomes both the ``slug`` (for the citation
     handle) and the ``dedupe_key`` (so a remote hit that's
@@ -783,7 +783,7 @@ def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
         slug=hit.docdb_id,
         title=hit.title,
         preview=hit.abstract_preview or "",
-        source="ops",
+        reach="ops",
         extra_lines=extras,
         dedupe_key=f"patent:{hit.docdb_id}",
     )

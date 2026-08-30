@@ -74,7 +74,7 @@ Package-level invariants (detail lives on the named module):
   reap, failed/dry-rest backoff + escalation; see :mod:`precis.quest.loop`);
   ``allocator`` backs only the manual ``precis quest run`` one-shot.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite``,
-  ``meta.tier_ladder`` (screening→neb→verify) — seed time only.
+  ``meta.fidelity_ladder`` (screening→neb→verify) — seed time only.
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token, so new results never dedupe onto stale jobs;
   ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.

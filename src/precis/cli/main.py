@@ -186,7 +186,7 @@ def main() -> None:
         add.run(args)
         return
 
-    if args.cmd == "watch":
+    if args.cmd == "ingest":
         watch.run(args)
         return
 

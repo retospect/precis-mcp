@@ -138,7 +138,7 @@ over once catpath 0.17 exists.
 - Fan-out proven (the last unproven piece of the 3-spark cutover): fresh
   `autocatpath_seed` jobs spread across spark/castor/pollux — check
   `target_node` distribution on new rows (`kind='job'`,
-  `meta->>'job_type'='autocatpath_seed'`, `deleted_at IS NULL`).
+  `meta->>'job_type'='autocatpath_seed'`, `retired_at IS NULL`).
 
 ## Target + blast radius
 

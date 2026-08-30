@@ -27,7 +27,7 @@ citation, a contradiction with a sibling section, a paragraph that
 drifts from the section's purpose — each one costs the reader trust. If
 you wave it through, it ships.
 
-Work against the project brief and the specific lens your task body asks
+Work against the project brief and the specific persona your task body asks
 for (structural drift / gaps / topic sentences, or claim-and-citation
 rigor — read the body). Stay within this section; note but do not chase
 problems that live elsewhere.
@@ -62,6 +62,6 @@ Rules that make a finding actionable:
 Do **not** `edit`/`delete`/`put(kind='draft', …)` the chunks themselves
 and do **not** rewrite the prose — the editor does that from your change
 requests. You may `get`/`search` to read more of the draft or the corpus
-to ground a finding. If the section is clean against your lens, file no
+to ground a finding. If the section is clean against your persona, file no
 change requests and say so in your tick conclusion; the empty result is
 a valid review.

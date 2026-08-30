@@ -107,7 +107,7 @@ class TestDossier:
         qid = _mk_quest(store, "A striving whose dossier gets deleted")
         did = ensure_dossier(store, qid)
         assert dossier_ref_id(store, qid) == did
-        store.drafts.soft_delete_draft(did)
+        store.drafts.retire_draft(did)
         assert dossier_ref_id(store, qid) is None
 
 
@@ -1961,7 +1961,7 @@ class TestPaperRelation:
             relation="paper-of",
         )
         assert paper_ref_id(store, qid) == ref.id
-        store.drafts.soft_delete_draft(ref.id)
+        store.drafts.retire_draft(ref.id)
         assert paper_ref_id(store, qid) is None
 
 

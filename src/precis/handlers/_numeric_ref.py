@@ -264,7 +264,7 @@ class NumericRefHandler(Handler):
                 next=(
                     "post-mortem only - soft-deleted refs are "
                     "recoverable at the SQL layer by setting "
-                    "deleted_at=NULL on the row"
+                    "retired_at=NULL on the row"
                 ),
             )
         raise NotFound(
@@ -1369,7 +1369,7 @@ class NumericRefHandler(Handler):
                 next=f"delete(kind={self.kind!r}, id=N)",
             )
         ref_id = self._coerce_id(id)
-        self.store.soft_delete_ref(ref_id)
+        self.store.retire_ref(ref_id)
         return Response(body=f"deleted {self._sense()} id={ref_id}")
 
     # ── coercion ────────────────────────────────────────────────────
@@ -1515,7 +1515,7 @@ class NumericRefHandler(Handler):
                 )
             else:
                 target = f"{ref.kind}:{ident}~{other_pos}"
-            if ref.deleted_at is not None:
+            if ref.retired_at is not None:
                 target += " (deleted)"
         return f"{arrow} {target}  ({link.relation})"
 
@@ -1555,7 +1555,7 @@ class NumericRefHandler(Handler):
             ("year", ref.year),
             ("created_at", ref.created_at),
             ("updated_at", ref.updated_at),
-            ("deleted_at", ref.deleted_at),
+            ("retired_at", ref.retired_at),
             ("auto_refresh_days", ref.auto_refresh_days),
             ("refreshed_at", ref.refreshed_at),
         ]

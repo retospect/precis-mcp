@@ -105,7 +105,7 @@ def _resolve_finding_ref_id(store: Store, raw: str) -> int:
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT ref_id FROM refs "
-                "WHERE ref_id = %s AND kind = 'finding' AND deleted_at IS NULL",
+                "WHERE ref_id = %s AND kind = 'finding' AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
         if row is None:
@@ -118,7 +118,7 @@ def _resolve_finding_ref_id(store: Store, raw: str) -> int:
             "FROM ref_identifiers ri "
             "JOIN refs r ON r.ref_id = ri.ref_id "
             "WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s "
-            "  AND r.kind = 'finding' AND r.deleted_at IS NULL",
+            "  AND r.kind = 'finding' AND r.retired_at IS NULL",
             (raw,),
         ).fetchone()
     if row is None:

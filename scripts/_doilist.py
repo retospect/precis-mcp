@@ -148,7 +148,7 @@ def precis_known_identifiers() -> set[str]:
         cur.execute(
             "SELECT pi.scheme, pi.value FROM ref_identifiers pi "
             "JOIN refs r ON r.id = pi.ref_id "
-            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL"
+            "WHERE r.kind = 'paper' AND r.retired_at IS NULL"
         )
         for scheme, value in cur.fetchall():
             if not value:
@@ -170,11 +170,11 @@ def _psql_known_identifiers(db_url: str) -> set[str]:
     sql = (
         "SELECT pi.value FROM ref_identifiers pi "
         "JOIN refs r ON r.id = pi.ref_id "
-        "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+        "WHERE r.kind='paper' AND r.retired_at IS NULL "
         "UNION "
         "SELECT '10.48550/arxiv.' || pi.value FROM ref_identifiers pi "
         "JOIN refs r ON r.id = pi.ref_id "
-        "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+        "WHERE r.kind='paper' AND r.retired_at IS NULL "
         "AND pi.scheme = 'arxiv'"
     )
     res = subprocess.run(
@@ -852,7 +852,7 @@ def precis_doi_to_slug_map() -> dict[str, str]:
             "SELECT pi.scheme, pi.value, r.slug "
             "FROM ref_identifiers pi "
             "JOIN refs r ON r.id = pi.ref_id "
-            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+            "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
             "  AND pi.scheme IN ('doi', 'arxiv')"
         )
         for scheme, value, slug in cur.fetchall():
@@ -873,7 +873,7 @@ def _psql_doi_to_slug_map(db_url: str) -> dict[str, str]:
         "SELECT pi.scheme || E'\t' || pi.value || E'\t' || r.slug "
         "FROM ref_identifiers pi "
         "JOIN refs r ON r.id = pi.ref_id "
-        "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+        "WHERE r.kind='paper' AND r.retired_at IS NULL "
         "  AND pi.scheme IN ('doi', 'arxiv')"
     )
     res = subprocess.run(

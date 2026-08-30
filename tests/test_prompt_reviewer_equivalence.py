@@ -21,8 +21,9 @@ the golden, DOCUMENTING the only two whitespace-level differences:
    content moves.
 2. **One soft-wrap reflow (deep only).** The shared footer fixes ONE hand
    wrapping of the sentence "Your final stdout IS the digest body." The two
-   templates had wrapped it differently *because the interpolated tier tag has
-   a different length* (``tier:structural`` vs ``tier:deep`` shifted the fill).
+   templates had wrapped it differently *because the interpolated digest tag
+   has a different length* (``digest:structural`` vs ``digest:deep`` shifted
+   the fill).
    The shared footer adopts the ``structural`` wrapping, so ``structural`` is
    byte-identical there and ``deep`` differs only by where that one line
    breaks — a whitespace reflow, no word changed. Proven below by collapsing
@@ -101,7 +102,7 @@ hyphenated compounds (`GNR-FET`).
 
 Do not address anyone. Do not use the precis MCP `put` tool to
 write a memory directly — the worker will write your output as a
-memory tagged `tier:structural` after you finish. Your final stdout
+memory tagged `digest:structural` after you finish. Your final stdout
 IS the digest body.
 
 Exception: if a precis tool itself errored or returned wrong results
@@ -167,7 +168,7 @@ hyphenated compounds (`GNR-FET`).
 
 Do not address anyone. Do not use the precis MCP `put` tool to
 write a memory directly — the worker will write your output as a
-memory tagged `tier:deep` after you finish. Your final stdout IS
+memory tagged `digest:deep` after you finish. Your final stdout IS
 the digest body.
 
 Exception: if a precis tool itself errored or returned wrong results
@@ -195,7 +196,7 @@ def _assemble(reviewer: Reviewer, **extras: str) -> str:
         ref_id=0,
         model=reviewer.model,
         profile=Profile.AGENT,
-        extras={"tier_tag": reviewer.tier_tag, **extras},
+        extras={"digest_tag": reviewer.digest_tag, **extras},
     )
     system, user = ClaudeAgentAdapter.render(assemble(reviewer.modules, ctx))
     # Reviewers are a single flat directive: nothing lands in the cached half.
@@ -248,7 +249,7 @@ def test_deep_prompt_matches_legacy_wording() -> None:
     # Diff 2 — one soft-wrap reflow in the shared footer. The shared footer
     # adopts the `structural` wrapping ("... Your final stdout\nIS the digest
     # body."); the deep template hand-wrapped it one word later ("... Your
-    # final stdout IS\nthe digest body.") because `tier:deep` is shorter. No
+    # final stdout IS\nthe digest body.") because `digest:deep` is shorter. No
     # word changes — only where that line breaks.
     assert "Your final stdout\nIS the digest body." in assembled
     assert "Your final stdout IS\nthe digest body." in legacy
@@ -282,14 +283,14 @@ def test_shared_boilerplate_modules_are_the_same_objects() -> None:
 
 def test_gripe_carveout_survives_in_shared_footer() -> None:
     """The gripe carve-out (only put you may make) rides the shared footer for
-    both reviewers, with each reviewer's own tier tag interpolated."""
-    for reviewer, fixture, tier in (
-        (STRUCTURAL, _FIXTURE_STRUCTURAL, "tier:structural"),
-        (DEEP_REVIEW, _FIXTURE_DEEP, "tier:deep"),
+    both reviewers, with each reviewer's own digest tag interpolated."""
+    for reviewer, fixture, tag in (
+        (STRUCTURAL, _FIXTURE_STRUCTURAL, "digest:structural"),
+        (DEEP_REVIEW, _FIXTURE_DEEP, "digest:deep"),
     ):
         prompt = _assemble(reviewer, **fixture)
         assert (
             "may `put(kind='gripe', text=…)` — search existing gripes first." in prompt
         )
         assert "is the only `put` you may make" in prompt
-        assert f"memory tagged `{tier}`" in prompt
+        assert f"memory tagged `{tag}`" in prompt

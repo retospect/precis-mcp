@@ -90,7 +90,7 @@ def test_runner_adapter_returns_batch_result() -> None:
 #
 # Regression for good-search-coordinator §Substrate fixes #1: the
 # NOT EXISTS subquery in ``_wake_children_done`` must not count a
-# soft-deleted child (``deleted_at`` set, tags — including a
+# soft-deleted child (``retired_at`` set, tags — including a
 # non-terminal STATUS — persist) as still-pending. An operator
 # soft-deleting a stuck child must unblock the wake, matching the
 # hard-delete behaviour (a vanished row can't block the NOT EXISTS).
@@ -164,12 +164,12 @@ def test_children_done_wake_treats_soft_deleted_child_as_terminal(
     wake_runner.run_wake_pass(store)
     assert _status_of(store, coord) == "waiting_children"
 
-    # Operator soft-deletes the stuck child. ``deleted_at`` is set but
+    # Operator soft-deletes the stuck child. ``retired_at`` is set but
     # the STATUS:running tag persists — the pre-fix subquery kept
     # counting it as pending, parking the coordinator forever.
     with store.pool.connection() as conn:
         conn.execute(
-            "UPDATE refs SET deleted_at = now() WHERE ref_id = %s",
+            "UPDATE refs SET retired_at = now() WHERE ref_id = %s",
             (stuck_child,),
         )
         conn.commit()

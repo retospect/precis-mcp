@@ -1,17 +1,17 @@
-"""inject_scan — tier-1/2 model injection scan + quarantine ladder (slice 4).
+"""inject_scan — depth-1/2 model injection scan + quarantine ladder (slice 4).
 
 The LLM lane of the email kind (docs/backlog/email-kind.md), the deep rung of
-the cascade whose tier-0 regex sibling runs inline in ``mail_poll``. Each pass:
+the cascade whose depth-0 regex sibling runs inline in ``mail_poll``. Each pass:
 
-1. **Claim** tier-0 verdicts a deeper scan hasn't reached
+1. **Claim** depth-0 verdicts a deeper scan hasn't reached
    (``store.pending_email_scans`` — the ``email_scan_pending_idx`` partial
-   index over ``tier < 1``). No row lock is held across the model call; the
-   ``tier < new_tier`` compare-and-swap in ``store.upgrade_email_scan`` is the
-   race-guard, so a re-run or a concurrent runner is an idempotent no-op.
+   index over ``depth < 1``). No row lock is held across the model call; the
+   ``depth < new_depth`` compare-and-swap in ``store.upgrade_email_scan`` is
+   the race-guard, so a re-run or a concurrent runner is an idempotent no-op.
 2. **Re-fetch the body** from IMAP (``email_scan`` stores no body — IMAP stays
    the source of truth) and score it with a local model
    (:data:`precis.mail.inject.TIER1_SYSTEM`). Ambiguous ``suspect`` verdicts
-   escalate to a stronger model (tier 2) when one is configured.
+   escalate to a stronger model (depth 2) when one is configured.
 3. **Upgrade the verdict** (guarded), and on ``high`` **raise an alert** — the
    surfacing half of the quarantine ladder. The *withholding* half (a ``high``
    body is kept out of every LLM context) is enforced at read time in
@@ -75,7 +75,7 @@ def run_inject_scan_pass(
 ) -> dict[str, int]:
     """One claim→scan→upgrade cycle. Returns ``{claimed, ok, failed}``.
 
-    ``ok`` counts rows advanced to a deeper tier (including a message that has
+    ``ok`` counts rows advanced to a deeper depth (including a message that has
     since left the mailbox — retired so it stops being pending); ``failed``
     counts rows left pending for a retry (model returned nothing, IMAP error,
     or the account is unavailable).
@@ -125,7 +125,7 @@ def run_inject_scan_pass(
             uid=scan.uid,
             cooldown_min=ATTEMPT_COOLDOWN_MIN,
         )
-        verdict, tier, evidence = _scan_one(client, escalate_client, scan, msg)
+        verdict, depth, evidence = _scan_one(client, escalate_client, scan, msg)
         if verdict is None:  # model unparseable / errored — leave pending
             failed += 1
             continue
@@ -136,7 +136,7 @@ def run_inject_scan_pass(
             uidvalidity=scan.uidvalidity,
             uid=scan.uid,
             verdict=verdict,
-            tier=tier,
+            depth=depth,
             evidence=evidence,
         )
         if applied and verdict == "high":
@@ -167,9 +167,9 @@ def _judge(client: Any, scan: EmailScan, msg: Message) -> tuple[str | None, str]
 def _scan_one(
     client: Any, escalate_client: Any | None, scan: EmailScan, msg: Message
 ) -> tuple[str | None, int, dict[str, Any]]:
-    """Cascade one message: tier-1, then escalate an ambiguous ``suspect``.
+    """Cascade one message: depth-1, then escalate an ambiguous ``suspect``.
 
-    Returns ``(verdict, tier, evidence)`` or ``(None, 0, {})`` when the model
+    Returns ``(verdict, depth, evidence)`` or ``(None, 0, {})`` when the model
     gave nothing usable (caller leaves the row pending).
     """
     verdict, reason = _judge(client, scan, msg)
@@ -181,21 +181,21 @@ def _scan_one(
         "signals": list(scan.evidence.get("signals", []) or ()),
         "tier1": {"verdict": verdict, "reason": reason[:400]},
     }
-    tier = 1
+    depth = 1
 
     # Escalate only the ambiguous middle — a stronger model breaks the tie.
     if verdict == "suspect" and escalate_client is not None:
         ev, ev_reason = _judge(escalate_client, scan, msg)
         if ev is not None:
-            tier = 2
+            depth = 2
             verdict = ev
             evidence["tier2"] = {"verdict": ev, "reason": ev_reason[:400]}
 
-    return verdict, tier, evidence
+    return verdict, depth, evidence
 
 
 def _retire(store: Store, scan: EmailScan, *, note: str) -> None:
-    """Advance a scan to tier 1 keeping its verdict — for messages we can no
+    """Advance a scan to depth 1 keeping its verdict — for messages we can no
     longer fetch (gone / account unavailable), so they stop being pending."""
     evidence = dict(scan.evidence)
     evidence["tier1"] = {"verdict": scan.verdict, "reason": note}
@@ -205,7 +205,7 @@ def _retire(store: Store, scan: EmailScan, *, note: str) -> None:
         uidvalidity=scan.uidvalidity,
         uid=scan.uid,
         verdict=scan.verdict,
-        tier=1,
+        depth=1,
         evidence=evidence,
     )
 

@@ -76,7 +76,7 @@ _NEWS_LEAD_IN_PAUSE_S = 1.5
 #: code no longer applies. Placeholders, in order: the max-age cutoff, the
 #: backoff ceiling in minutes, the max backoff exponent, and ``now``.
 _SELECTABLE_SQL = (
-    "kind = 'draft' AND deleted_at IS NULL "
+    "kind = 'draft' AND retired_at IS NULL "
     "AND meta ? 'cast' "
     "AND NOT (meta ? 'audio_episode_id') "
     "AND created_at >= %s "

@@ -63,6 +63,7 @@ pc2409795 (skip).
 
 ## One durable schema note
 
-`chunks` soft-deletes via **`retired_at`**, not `deleted_at`. Ad-hoc chunk
-queries that filter `deleted_at IS NULL` fail; those that omit `retired_at IS
-NULL` silently include retired rows.
+`chunks` and `refs` both soft-delete via **`retired_at`** (unified by
+vocab-compaction Stage E — `refs` used to spell it `deleted_at`, a frequent
+source of ad-hoc-query bugs; that quirk is gone). Ad-hoc chunk/ref queries
+that omit a `retired_at IS NULL` filter still silently include retired rows.

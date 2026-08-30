@@ -87,7 +87,7 @@ def _enable_refresh(
 def _draft_refresh_jobs(store: Store, *, slug: str) -> list[dict[str, Any]]:
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT meta FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "SELECT meta FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "ORDER BY ref_id"
         ).fetchall()
     out = []

@@ -187,15 +187,15 @@ class EdgarHandler(Handler):
         tags: list[str] | None = None,
         scope: str | None = None,
         page_size: int = 10,
-        source: str = "both",
+        reach: str = "both",
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         normalized_tags = Tag.normalize_filter(tags, kind="edgar")
-        if source not in ("both", "local", "remote"):
+        if reach not in ("both", "local", "remote"):
             raise BadInput(
-                f"invalid source={source!r} - expected 'both', 'local', or 'remote'",
-                next="search(kind='edgar', q='...', source='remote')",
+                f"invalid reach={reach!r} - expected 'both', 'local', or 'remote'",
+                next="search(kind='edgar', q='...', reach='remote')",
             )
 
         scope_ref_id: int | None = None
@@ -209,7 +209,7 @@ class EdgarHandler(Handler):
             scope_ref_id = scope_ref.id
 
         local_hits: list[tuple[Any, Ref, float]] = []
-        if source != "remote" or scope_ref_id is not None:
+        if reach != "remote" or scope_ref_id is not None:
             local_hits = self._search_local(
                 q=q,
                 scope_ref_id=scope_ref_id,
@@ -220,7 +220,7 @@ class EdgarHandler(Handler):
 
         remote_hits: list[EdgarHit] = []
         params_used: dict[str, str] | None = None
-        if scope_ref_id is None and source != "local":
+        if scope_ref_id is None and reach != "local":
             try:
                 params = build_fts_params(q=q, tags=tags, resolver=self.client)
             except BadInput:
@@ -235,7 +235,7 @@ class EdgarHandler(Handler):
                 except EdgarError:
                     remote_hits = []
 
-        if source == "remote" and remote_hits:
+        if reach == "remote" and remote_hits:
             remote_hits = [
                 h
                 for h in remote_hits
@@ -489,7 +489,7 @@ class EdgarHandler(Handler):
         local_stream: list[SearchHit] = block_hits_to_search_hits(
             local_hits,
             kind="edgar",
-            source="local",
+            reach="local",
             excerpt=200,
             ref_level_dedupe=True,
         )
@@ -567,7 +567,7 @@ def _edgar_hit_to_search_hit(hit: EdgarHit) -> SearchHit:
         slug=hit.accession,
         title=title,
         preview="",
-        source="edgar",
+        reach="edgar",
         extra_lines=extras,
         dedupe_key=f"edgar:{hit.accession}",
     )

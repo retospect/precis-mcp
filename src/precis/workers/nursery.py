@@ -382,12 +382,12 @@ def _detect_orphans(store: Store) -> list[Symptom]:
             WITH RECURSIVE walk(ref_id, parent_id, root_id) AS (
                 SELECT ref_id, parent_id, ref_id
                   FROM refs
-                 WHERE kind = 'todo' AND deleted_at IS NULL
+                 WHERE kind = 'todo' AND retired_at IS NULL
                 UNION ALL
                 SELECT w.ref_id, r.parent_id, r.ref_id
                   FROM walk w
                   JOIN refs r ON r.ref_id = w.parent_id
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
             ),
             roots AS (
                 -- folder placement roles: the root is the topmost *todo* — a folder
@@ -405,7 +405,7 @@ def _detect_orphans(store: Store) -> list[Symptom]:
             SELECT r.ref_id, r.title, COUNT(*) OVER () AS total_count
               FROM refs r
               JOIN roots rt ON rt.leaf_id = r.ref_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
                        WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -453,7 +453,7 @@ def _detect_stale_claims(store: Store) -> list[Symptom]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'claimed-by:%%'
                AND rt.created_at < now() - %s::interval
@@ -504,7 +504,7 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'waiting-for:%%'
                AND rt.created_at < now() - %s::interval
@@ -581,7 +581,7 @@ def _detect_stuck_doable(store: Store) -> list[Symptom]:
             """
             SELECT r.ref_id, r.title, r.created_at, COUNT(*) OVER () AS total_count
               FROM refs r
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND r.created_at < now() - %s::interval
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -592,7 +592,7 @@ def _detect_stuck_doable(store: Store) -> list[Symptom]:
                AND NOT EXISTS (
                    SELECT 1 FROM refs c
                     WHERE c.parent_id = r.ref_id
-                      AND c.deleted_at IS NULL
+                      AND c.retired_at IS NULL
                )
                -- Dispatch-candidacy gate — mirrors dispatch.py::
                -- _candidate_parent_ids' first eligibility check.
@@ -624,7 +624,7 @@ def _detect_stuck_doable(store: Store) -> list[Symptom]:
                    SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
                     WHERE l.src_ref_id = r.ref_id
                       AND l.relation = 'blocked-by'
-                      AND b.deleted_at IS NULL
+                      AND b.retired_at IS NULL
                       AND COALESCE(
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -684,7 +684,7 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                   FROM refs r
                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
                    AND t.namespace = 'OPEN'
                    AND t.value LIKE 'child-failed:%%'
                    AND rt.created_at < now() - %s::interval
@@ -747,7 +747,7 @@ def _detect_child_failed_final(store: Store) -> list[Symptom]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = 'child-failed-final'
                AND COALESCE(
@@ -802,9 +802,9 @@ def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
               child.created_at AS child_created
               FROM refs rec
               JOIN refs child ON child.parent_id = rec.ref_id
-                              AND child.deleted_at IS NULL
+                              AND child.retired_at IS NULL
                               AND child.meta ? 'spawned_for_tick'
-             WHERE rec.kind = 'todo' AND rec.deleted_at IS NULL
+             WHERE rec.kind = 'todo' AND rec.retired_at IS NULL
                AND (rec.meta ? 'schedule')
                AND child.created_at < now() - interval '1 hour'
                AND COALESCE(
@@ -815,7 +815,7 @@ def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
                AND child.created_at = (
                    SELECT max(c2.created_at) FROM refs c2
                     WHERE c2.parent_id = rec.ref_id
-                      AND c2.deleted_at IS NULL
+                      AND c2.retired_at IS NULL
                       AND c2.meta ? 'spawned_for_tick'
                )
              ORDER BY rec.ref_id
@@ -915,7 +915,7 @@ def _detect_plan_tick_spins(store: Store) -> list[Symptom]:
                AND j.meta->>'job_type' = 'plan_tick'
                AND j.created_at > now() - interval '24 hours'
                AND j.parent_id IS NOT NULL
-               AND p.deleted_at IS NULL
+               AND p.retired_at IS NULL
              GROUP BY j.parent_id, p.title
             HAVING count(*) > %s
              ORDER BY count(*) DESC
@@ -967,10 +967,10 @@ def _detect_quest_loop_failures(store: Store) -> list[Symptom]:
               JOIN ref_tags rt ON rt.ref_id = j.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE j.kind = 'job'
-               AND j.deleted_at IS NULL
+               AND j.retired_at IS NULL
                AND j.meta->>'job_type' = 'quest_tick'
                AND j.parent_id IS NOT NULL
-               AND q.deleted_at IS NULL
+               AND q.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'failed'
                AND rt.created_at > now() - interval '24 hours'
@@ -1057,7 +1057,7 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Symptom]:
                   FROM refs j
                   JOIN ref_tags rt ON rt.ref_id = j.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
-                 WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                 WHERE j.kind = 'job' AND j.retired_at IS NULL
                    AND j.meta->>'job_type' = 'quest_tick'
                    AND j.meta->>'executor' = 'coordinator'
                    AND j.parent_id IS NOT NULL
@@ -1066,7 +1066,7 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Symptom]:
             SELECT n.coord_id, q.title, n.job_id, n.status_at
               FROM newest n
               JOIN refs q ON q.ref_id = n.coord_id
-             WHERE q.kind = 'quest' AND q.deleted_at IS NULL
+             WHERE q.kind = 'quest' AND q.retired_at IS NULL
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = q.ref_id
@@ -1088,7 +1088,7 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Symptom]:
                   FROM refs j
                   JOIN ref_tags rt ON rt.ref_id = j.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
-                 WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                 WHERE j.kind = 'job' AND j.retired_at IS NULL
                    AND j.meta->>'job_type' = 'plan_tick'
                    AND j.parent_id IS NOT NULL
                  ORDER BY j.parent_id, j.ref_id DESC
@@ -1096,7 +1096,7 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Symptom]:
             SELECT n.coord_id, p.title, n.job_id, n.status_at
               FROM newest n
               JOIN refs p ON p.ref_id = n.coord_id
-             WHERE p.kind = 'todo' AND p.deleted_at IS NULL
+             WHERE p.kind = 'todo' AND p.retired_at IS NULL
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = p.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1524,7 +1524,7 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
                          LIMIT 1) AS status
                   FROM refs j
                  WHERE j.kind = 'job'
-                   AND j.deleted_at IS NULL
+                   AND j.retired_at IS NULL
                    AND j.meta->>'executor' = 'claude_inproc'
             )
             SELECT
@@ -1611,7 +1611,7 @@ def _detect_embed_lane_stalled(store: Store) -> list[Symptom]:
               JOIN ref_tags rt ON rt.ref_id = j.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE j.kind = 'job'
-               AND j.deleted_at IS NULL
+               AND j.retired_at IS NULL
                AND j.meta->>'job_type' = 'embed_batch'
                AND t.namespace = 'STATUS'
             """,

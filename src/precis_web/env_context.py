@@ -13,7 +13,7 @@ WHERE the capture lands differs by agent (mirrors Part 3A's contract):
 * ``job_claude_inproc`` drains many job_types; only ``plan_tick`` captures
   today, onto its own ``kind='job'`` ref (``meta.job_type = 'plan_tick'``).
 * ``structural`` / ``deep_review`` mint no job ref — capture lands on the
-  ``kind='memory'`` digest ref the pass writes, found by its ``tier_tag``.
+  ``kind='memory'`` digest ref the pass writes, found by its ``digest_tag``.
 * ``dream_agent`` builds its prompt by hand (no :mod:`precis.utils.prompt`
   assembler on that path) — never captured, and no dry-run is possible.
 
@@ -116,7 +116,7 @@ def _last_real_job(store: Store, *, job_type: str) -> LastReal | None:
             SELECT ref_id, meta
               FROM refs
              WHERE kind = 'job'
-               AND deleted_at IS NULL
+               AND retired_at IS NULL
                AND meta ? 'assembled_context'
                AND meta->>'job_type' = %s
              ORDER BY meta->>'assembled_context_at' DESC NULLS LAST
@@ -135,8 +135,8 @@ def _last_real_job(store: Store, *, job_type: str) -> LastReal | None:
     )
 
 
-def _last_real_digest(store: Store, *, tier_tag: str) -> LastReal | None:
-    """Latest ``kind='memory'`` digest ref tagged ``tier_tag`` carrying a capture."""
+def _last_real_digest(store: Store, *, digest_tag: str) -> LastReal | None:
+    """Latest ``kind='memory'`` digest ref tagged ``digest_tag`` carrying a capture."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -145,14 +145,14 @@ def _last_real_digest(store: Store, *, tier_tag: str) -> LastReal | None:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = %s
                AND r.meta ? 'assembled_context'
              ORDER BY r.meta->>'assembled_context_at' DESC NULLS LAST
              LIMIT 1
             """,
-            (tier_tag,),
+            (digest_tag,),
         ).fetchone()
     if row is None:
         return None
@@ -180,11 +180,11 @@ def load_last_real(store: Store, spec: ServiceSpec) -> LastReal | None:
     if spec.name == "structural":
         from precis.workers.structural import STRUCTURAL
 
-        return _last_real_digest(store, tier_tag=STRUCTURAL.tier_tag)
+        return _last_real_digest(store, digest_tag=STRUCTURAL.digest_tag)
     if spec.name == "deep_review":
         from precis.workers.deep_review import DEEP_REVIEW
 
-        return _last_real_digest(store, tier_tag=DEEP_REVIEW.tier_tag)
+        return _last_real_digest(store, digest_tag=DEEP_REVIEW.digest_tag)
     # dream_agent (and any future introspectable agent with no capture
     # mapping yet) — nothing to look up.
     return None
@@ -210,7 +210,7 @@ def _representative_todo_ref_id(store: Store) -> int | None:
             SELECT r.ref_id
               FROM refs r
              WHERE r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta ? 'llm_tier'
              ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC
              LIMIT 1

@@ -394,7 +394,7 @@ def _resolve_finding_ref_id(store: Store, *, kind: str, raw_id: int | str) -> in
             "SELECT r.ref_id FROM ref_identifiers ri "
             "JOIN refs r ON r.ref_id = ri.ref_id "
             "WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s "
-            "  AND r.kind = 'finding' AND r.deleted_at IS NULL",
+            "  AND r.kind = 'finding' AND r.retired_at IS NULL",
             (s,),
         ).fetchone()
     if row is None:

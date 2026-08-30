@@ -82,11 +82,11 @@ _OPEN_URL_OVERRIDES: dict[str, str] = {
     "figure": "/figure/{slug}",
     "mermaid": "/mermaid/{slug}",
     # Work-facet rows (Drive's "Work" chip row): a quest opens its hub
-    # dashboard, a todo drills into just its own subtree on /tasks (never
+    # dashboard, a todo drills into just its own subtree on /todo (never
     # the full 5000-row tree). Mirrors the folder-child map in
     # ``routes/drive.py`` (``_READER_URL``) so both row builders agree.
     "quest": "/refs/quest/{id}",
-    "todo": "/tasks?focus={id}",
+    "todo": "/todo?focus={id}",
 }
 
 #: Kinds whose ingest runs a fetch→PDF→chunk pipeline, so the

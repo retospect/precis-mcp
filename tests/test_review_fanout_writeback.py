@@ -1045,7 +1045,7 @@ class TestReviewWriteback:
                 store,
                 conn,
                 review_todo_id=999999,
-                lens="flow",
+                persona="flow",
                 chunk_id=p.chunk_id,
                 sha_before=current_sha,
             )

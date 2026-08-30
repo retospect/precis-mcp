@@ -43,7 +43,7 @@
    computations), the deterministic document-shape stats (item 10,
    ``shape_stats``), and two actions: "run outstanding checks" (the
    incremental whole-draft fanout) and "run toc review" (the document-
-   altitude lens). Per-heading rollup counts in the TOC pane are skipped —
+   altitude persona). Per-heading rollup counts in the TOC pane are skipped —
    ``_section_chunk_id`` only gives the NEAREST heading, so a recursive
    nested-subtree total isn't derivable from the one status fetch without
    re-walking the tree per heading; not worth the extra pass for a
@@ -1195,7 +1195,7 @@
         </div>
         {# Voice/style — the standing writing register (meta.workspace.voice),
            always applied by the planner (## Voice & style), distinct from
-           genre's project context (brief) and from the one-shot task (the
+           genre's project context (brief) and from the one-shot ask (the
            project todo body). A separate popover so it posts alone (partial
            update — see routes/drafts.py::set_workspace) without touching
            genre/brief. #}
@@ -1220,12 +1220,12 @@
           </form>
         </div>
         {# Per-document auto-author toggle (3e). Turning ON confirms first
-           (the grounded lenses will EDIT the draft). #}
+           (the grounded personas will EDIT the draft). #}
         <form method="post" action="/drafts/{{ ident }}/authoring"
-              @submit="if (!{{ 'true' if authoring_enabled else 'false' }} && !confirm('Turn ON auto-authoring? The cites/structure review lenses will EDIT this draft — adding grounded, cited prose where a real source supports it and flagging the rest. Every edit re-opens that paragraph for your human sign-off.')) $event.preventDefault()">
+              @submit="if (!{{ 'true' if authoring_enabled else 'false' }} && !confirm('Turn ON auto-authoring? The cites/structure review personas will EDIT this draft — adding grounded, cited prose where a real source supports it and flagging the rest. Every edit re-opens that paragraph for your human sign-off.')) $event.preventDefault()">
           <input type="hidden" name="enabled" value="{{ '0' if authoring_enabled else '1' }}" />
           <button class="underline {% if authoring_enabled %}text-amber-600 hover:text-amber-800{% else %}text-slate-500 hover:text-slate-800{% endif %}"
-                  title="{% if authoring_enabled %}auto-author is ON — grounded lenses edit the draft; click to turn OFF{% else %}auto-author is OFF — review lenses only file findings; click to turn ON{% endif %}">✎ auto-author: {{ 'ON' if authoring_enabled else 'OFF' }}</button>
+                  title="{% if authoring_enabled %}auto-author is ON — grounded personas edit the draft; click to turn OFF{% else %}auto-author is OFF — review personas only file findings; click to turn ON{% endif %}">✎ auto-author: {{ 'ON' if authoring_enabled else 'OFF' }}</button>
         </form>
       </div>
 
@@ -1958,17 +1958,17 @@ function sdReviewRetract(dc) {
     body: JSON.stringify({ dc, checker: 'human' }),
   }).then(() => window.__sdRefresh()).catch(() => window.alert('network error — not saved'));
 }
-function sdReviewRun(dc, lens) {
+function sdReviewRun(dc, persona) {
   fetch(`/drafts/{{ ident }}/review`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dc, lens }),
+    body: JSON.stringify({ dc, persona }),
   }).then((r) => { if (!r.ok) window.alert('review run failed'); else window.__sdRefresh(); })
     .catch(() => window.alert('network error — review not started'));
 }
 function sdReviewAllOutstanding() {
   fetch(`/drafts/{{ ident }}/review`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lens: 'all', only_dirty: true }),
+    body: JSON.stringify({ persona: 'all', only_dirty: true }),
   }).then(() => window.__sdRefresh()).catch(() => window.alert('network error — review not started'));
 }
 function sdReviewToc() {
@@ -1977,7 +1977,7 @@ function sdReviewToc() {
     // Explicit click — force a re-run even if the toc row already looks
     // approved (only_dirty defaults true for whole-draft scope, which would
     // silently no-op an already-approved toc).
-    body: JSON.stringify({ lens: 'toc', only_dirty: false }),
+    body: JSON.stringify({ persona: 'toc', only_dirty: false }),
   }).then(() => window.__sdRefresh()).catch(() => window.alert('network error — review not started'));
 }
 // Convert to living cites (item 5b) — dry-run preview first, confirm, then

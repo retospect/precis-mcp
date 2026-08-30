@@ -30,7 +30,7 @@ def _todo(store: Store, title: str, *, parent_id: int | None = None) -> int:
 
 def _soft_delete(store: Store, ref_id: int) -> None:
     with store.pool.connection() as conn:
-        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (ref_id,))
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (ref_id,))
         conn.commit()
 
 
@@ -56,9 +56,9 @@ def test_mint_rejects_directly_deleted_parent(store: Store) -> None:
 
 
 def test_mint_rejects_parent_under_deleted_ancestor(store: Store) -> None:
-    """THE regression: ``deleted_at`` is not transitive.
+    """THE regression: ``retired_at`` is not transitive.
 
-    Deleting the project leaves the section's own ``deleted_at`` NULL, so
+    Deleting the project leaves the section's own ``retired_at`` NULL, so
     a parent-row-only check waves this through — which is exactly what
     happened to the 258.
     """

@@ -433,7 +433,7 @@ def test_schedule_pass_spawns_one_child(handler: TodoHandler, store: Store) -> N
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, prio, meta->>'spawned_for_tick' "
-            "FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            "FROM refs WHERE parent_id = %s AND retired_at IS NULL",
             (rid,),
         ).fetchall()
     assert len(rows) == 1
@@ -455,7 +455,7 @@ def test_schedule_pass_is_idempotent_same_minute(
     run_schedule_pass(store, limit=50)
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL",
             (rid,),
         ).fetchone()
     assert rows is not None
@@ -520,7 +520,7 @@ def test_schedule_pass_failed_previous_tick_does_not_wedge(
     assert result.ok == 1, "failed previous tick should not block the next one"
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL "
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL "
             "AND meta->>'spawned_for_tick' <> %s",
             (rid, old_stamp),
         ).fetchone()
@@ -663,7 +663,7 @@ def test_schedule_pass_row_lock_serialises_concurrent_workers(
         # Confirm no child was minted while locked.
         with store.pool.connection() as c:
             n = c.execute(
-                "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+                "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL",
                 (rid,),
             ).fetchone()
         assert n is not None and int(n[0]) == 0
@@ -702,7 +702,7 @@ def test_schedule_pass_skips_paused_recurring(
     result = run_schedule_pass(store, limit=50)
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL",
             (rid,),
         ).fetchone()
     assert rows is not None
@@ -805,7 +805,7 @@ def test_schedule_pass_delivers_instead_of_spawning(
 
     with store.pool.connection() as conn:
         n_children_row = conn.execute(
-            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL",
             (rid,),
         ).fetchone()
         n_deliver_events_row = conn.execute(
@@ -866,7 +866,7 @@ def test_schedule_pass_fires_due_one_shot_and_retires(
     assert "STATUS:done" in tags
     with store.pool.connection() as conn:
         n_children_row = conn.execute(
-            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL",
             (rid,),
         ).fetchone()
     assert n_children_row is not None

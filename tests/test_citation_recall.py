@@ -336,7 +336,7 @@ def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> Non
 
 def test_disabled_by_env(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
     g = _build_graph(hub.live_store)
-    monkeypatch.setenv("PRECIS_BACKFILL_CITATION_LENS", "0")
+    monkeypatch.setenv("PRECIS_BACKFILL_CITATION_RECALL", "0")
     assert (
         cl.find_citation_candidates(hub.live_store, {g["a"]}, exclude=set(), limit=8)
         == []

@@ -40,7 +40,7 @@ def _mk_structure(
     store: Any, *, barrier: float | None, trusted: bool, tier: str = "neb"
 ) -> int:
     st = seed_ref(store, title="Pd(111) + Mo adatom 1/9", kind="structure")
-    meta: dict[str, Any] = {"barrier_trusted": trusted, "barrier_tier": tier}
+    meta: dict[str, Any] = {"barrier_trusted": trusted, "barrier_fidelity": tier}
     if barrier is not None:
         meta["barrier"] = barrier
     store.stamp_ref_meta(st, meta)
@@ -78,7 +78,7 @@ def _ruling_ids(store: Any, hyp: int) -> list[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'finding' "
-            "AND deleted_at IS NULL AND meta->>'hypothesis' = %s "
+            "AND retired_at IS NULL AND meta->>'hypothesis' = %s "
             "AND (meta->>'sim_ruling')::boolean IS TRUE ORDER BY ref_id",
             (str(hyp),),
         ).fetchall()

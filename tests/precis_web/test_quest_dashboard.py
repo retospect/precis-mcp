@@ -89,9 +89,9 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
 
     # Servers-lite: two todos + one paper serve the quest.
     servers = [
-        SimpleNamespace(id=1, kind="todo", deleted_at=None, title="Build the rig"),
-        SimpleNamespace(id=2, kind="todo", deleted_at=None, title="Screen candidates"),
-        SimpleNamespace(id=10, kind="paper", deleted_at=None, title="A paper"),
+        SimpleNamespace(id=1, kind="todo", retired_at=None, title="Build the rig"),
+        SimpleNamespace(id=2, kind="todo", retired_at=None, title="Screen candidates"),
+        SimpleNamespace(id=10, kind="paper", retired_at=None, title="A paper"),
     ]
     monkeypatch.setattr("precis.quest.gaps._live_servers", lambda s, qid: list(servers))
 
@@ -642,13 +642,13 @@ def test_quest_hub_exploration_queue_links_to_drive_stubs(client, runtime) -> No
 
 
 def _quest(**kw: Any) -> SimpleNamespace:
-    """A duck-typed quest ``Ref`` — ``deleted_at`` set explicitly since the
+    """A duck-typed quest ``Ref`` — ``retired_at`` set explicitly since the
     shared ``make_ref`` fixture doesn't carry it and the real
     ``_live_servers`` (unlike this route's own defensive ``getattr``
-    reads) does a bare ``r.deleted_at is None`` check."""
+    reads) does a bare ``r.retired_at is None`` check."""
     from tests.precis_web.conftest import make_ref
 
-    kw.setdefault("deleted_at", None)
+    kw.setdefault("retired_at", None)
     kw.setdefault("prio", None)
     return make_ref(kind="quest", **kw)
 

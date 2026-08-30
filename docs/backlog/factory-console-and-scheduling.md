@@ -89,7 +89,7 @@ endpoint-scoped `record_eval(quant=)`. The harness + deterministic axes
 ### Skills follow-up
 
 Capability-goes-to-work produces smaller, capability-scoped todos; the
-authoring skills (`precis-decomposition-help`, `precis-tasks-help`)
+authoring skills (`precis-decomposition-help`, `precis-todo-tree-help`)
 should teach agents to author work that way — a small,
 single-capability unit routes; a monolithic one parks.
 

@@ -324,7 +324,7 @@ class RouteHandler(Handler):
         ref = self.store.get_ref(kind="route", id=str(id).strip())
         if ref is None:
             raise NotFound(f"route {id!r} not found")
-        self.store.soft_delete_ref(ref.id)
+        self.store.retire_ref(ref.id)
         return Response(body=f"retired route '{ref.slug}'")
 
     # ── helpers ────────────────────────────────────────────────────────

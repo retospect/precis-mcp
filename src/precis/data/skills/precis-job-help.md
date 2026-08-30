@@ -37,7 +37,7 @@ Not cron. Not celery. Not a subprocess you wait on.
   `meta={'executor': ..., 'job_type': ...}`; the dispatch worker
   mints the job under it. Direct `put(kind='job', parent_id=N,
   ...)` works for ad-hoc submits but skips the auto_check
-  injection — see `precis-dispatch-help` for the full pattern.
+  injection — see `precis-minter-help` for the full pattern.
 * **A failed job tags its parent — with bounded self-healing.**
   Infra-class failures (`swept:claim-orphaned`, `infra:child-killed`
   — lease orphan / compute child died by signal or without a result
@@ -235,7 +235,7 @@ put(kind='job', id=<failed_job_id>, mode='retry')
 # so the re-minted tick runs on the new tier. Only valid when the
 # parent is an LLM-planner todo (already has meta.llm_tier set) —
 # handy when a tick hit an AUP refusal or needs a stronger/cheaper
-# model. The web Tasks tab exposes the same thing as a "Retry" button
+# model. The web Todo tab exposes the same thing as a "Retry" button
 # (with a model dropdown) on failed job rows — turn on "+ show closed
 # jobs" to see them.
 put(kind='job', id=<failed_job_id>, mode='retry', model='sonnet')
@@ -334,7 +334,7 @@ Answer the pending question by clearing the matching tag on the job
 (`tag(kind='job', id=N, remove=['ask-user:<phase>:<slug>'])`) once
 you've decided. This is the job-level sibling of the todo-level
 `ask-user`/`ask-user:<question>` open tag a dispatched agent tags on
-its own todo to yield the same way — see `precis-tasks-help`,
+its own todo to yield the same way — see `precis-todo-tree-help`,
 `precis-decomposition-help` for that path.
 
 ## See also

@@ -180,5 +180,5 @@ edit(kind="plan", id="nanotrans-plan", cursor="pe90")  # now on 'draft the intro
 get(kind="plan", id="nanotrans-plan")
 ```
 
-See `precis-overview` for the master kinds table, `precis-tasks-help` for
+See `precis-overview` for the master kinds table, `precis-todo-tree-help` for
 the todo tree the plan hangs off, and ADR 0051 §2b for the design.

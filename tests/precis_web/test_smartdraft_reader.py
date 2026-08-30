@@ -53,7 +53,7 @@ def _sd_chunk(
         chunk_id=chunk_id,
         ref_id=700,
         meta=meta or {},
-        # The toc document-altitude lens's document-shape stats reuse
+        # The toc document-altitude persona's document-shape stats reuse
         # `precis.utils.wordcount.aggregate_word_counts`, which reads this
         # off every chunk (``_ChunkLike`` protocol) — default None (a flat,
         # unnested fixture) is enough for every existing test.
@@ -285,7 +285,7 @@ class ReviewMatrixFakeStore(SmartDraftFakeStore):
     * chunk 1 (heading) — ``structure``+``adversarial``+``toc`` all
       current, no ``human`` → **machine**.
     * chunk 2 (paragraph, section=1) — own ``flow``+``cites`` current, AND
-      chunk 1's section lenses current → **machine** (via-section).
+      chunk 1's section personas current → **machine** (via-section).
     * chunk 3 (paragraph, section=1) — ``human`` approved, clean →
       **human**.
     * chunk 7 (paragraph, section=1) — ``human`` approved but ``dirty``
@@ -295,7 +295,7 @@ class ReviewMatrixFakeStore(SmartDraftFakeStore):
       2/3/7/8/9 = 5; ``done`` (human approved clean) = chunk 3 only → 1/5.
     * chunk 4 (table, section=1) — reviewable, nothing ever run → **empty**,
       but NOT prose or heading, so item 3's dropdown gate offers it NO
-      run-lens buttons (excluded from the prose-only rollup denominator
+      run-persona buttons (excluded from the prose-only rollup denominator
       too — the ``1/5`` above stays exactly 5, not 6).
     """
 
@@ -735,10 +735,10 @@ def test_smartdraft_block_review_indicator_reflects_ledger_state(
     assert f"id%3D{dc3}%20view%3Dreview-diff" in r3.text
 
 
-def test_smartdraft_review_dropdown_uses_ledger_lens_vocabulary(
+def test_smartdraft_review_dropdown_uses_ledger_persona_vocabulary(
     review_matrix_client: TestClient,
 ) -> None:
-    """The per-block dropdown (item 7) runs the FOUR ledger lens names —
+    """The per-block dropdown (item 7) runs the FOUR ledger persona names —
     never the retired heading-only review▾ menu's structural/deep_review
     vocabulary — and a heading's "all" implicitly covers its subtree (the
     fanout's own scope rule), not a separate subtree control."""
@@ -762,12 +762,12 @@ def test_smartdraft_review_dropdown_ineligible_kind_has_no_run_buttons(
     review_matrix_client: TestClient,
 ) -> None:
     """item 3: a chunk kind that is neither prose nor a heading (here,
-    ``chunk_kind='table'``, dc4) gets NO run-lens buttons at all — offering
+    ``chunk_kind='table'``, dc4) gets NO run-persona buttons at all — offering
     ``flow``/``cites`` (or ``structure``/``adversarial``) on it would
     silently no-op the click, since ``review_fanout._personas_for_kind``
     mints nothing for that kind. The human ✓ mark-reviewed entry is still
     offered (human sign-off is available on any reviewable block, by
-    design) — only the machine-lens triggers are gated."""
+    design) — only the machine-persona triggers are gated."""
     dc4 = handle_registry.format_handle("draft", 4, chunk=True)  # table chunk
     r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc4}")
     assert r.status_code == 200
@@ -784,10 +784,10 @@ def test_smartdraft_indicator_machine_green_derives_via_section(
 ) -> None:
     """A prose block's machine state is its own ``flow``/``cites`` PLUS its
     enclosing heading's ``structure``/``adversarial`` (item 2/6's "via
-    section" derivation) — chunk 2's own lenses AND chunk 1's (its section)
+    section" derivation) — chunk 2's own personas AND chunk 1's (its section)
     are all current, with no ``human`` row, so it reads "machine" (hollow/
     blue), not "empty". The tooltip lists all four machine checkers plus
-    ``human``, and section lenses are labelled "via section" so the
+    ``human``, and section personas are labelled "via section" so the
     tooltip never implies the paragraph itself carries them."""
     dc2 = handle_registry.format_handle("draft", 2, chunk=True)
     r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc2}")
@@ -1019,7 +1019,7 @@ def test_smartdraft_review_widget_never_speaks_old_reviewer_vocabulary(
 ) -> None:
     """Acceptance criterion: the smartdraft page never emits the retired
     ``structural``/``deep_review`` reviewer names anywhere — the whole
-    per-block dropdown + toolbar rollup speak only the four ledger lenses
+    per-block dropdown + toolbar rollup speak only the four ledger personas
     (+ ``human``/``toc``)."""
     r = review_matrix_client.get("/smartdraft/sdt")
     assert r.status_code == 200

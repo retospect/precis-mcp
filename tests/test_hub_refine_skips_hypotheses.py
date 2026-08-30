@@ -39,7 +39,7 @@ def _selected(store: Store) -> set[int]:
     """Hub ids the widening passes' shared predicate pair admits."""
     sql = (
         "SELECT r.ref_id FROM refs r WHERE r.kind = 'finding' "
-        "AND r.deleted_at IS NULL "
+        "AND r.retired_at IS NULL "
         f"AND {claim_hub_predicate_sql()} AND {not_hypothesis_predicate_sql()}"
     )
     params: dict[str, Any] = {
@@ -75,7 +75,7 @@ def test_the_claim_hub_predicate_alone_cannot_tell_them_apart(store: Store) -> N
 
     sql = (
         "SELECT r.ref_id FROM refs r WHERE r.kind = 'finding' "
-        "AND r.deleted_at IS NULL "
+        "AND r.retired_at IS NULL "
         f"AND {claim_hub_predicate_sql()}"
     )
     with store.pool.connection() as conn:

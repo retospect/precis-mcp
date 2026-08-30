@@ -1,7 +1,7 @@
 """Ancestry predicates over the ``refs.parent_id`` tree.
 
-``refs.deleted_at`` is **not transitive**: soft-deleting a project todo
-leaves every descendant's own ``deleted_at`` NULL. So ``deleted_at IS
+``refs.retired_at`` is **not transitive**: soft-deleting a project todo
+leaves every descendant's own ``retired_at`` NULL. So ``retired_at IS
 NULL`` on a single row says nothing about whether the *tree* that row
 lives in is still alive — you have to walk up.
 
@@ -51,16 +51,16 @@ def deleted_in_ancestry(
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            WITH RECURSIVE anc (cand_id, parent_id, deleted_at, depth) AS (
-                SELECT r.ref_id, r.parent_id, r.deleted_at, 0
+            WITH RECURSIVE anc (cand_id, parent_id, retired_at, depth) AS (
+                SELECT r.ref_id, r.parent_id, r.retired_at, 0
                   FROM refs r WHERE r.ref_id = ANY(%(ids)s)
                 UNION ALL
-                SELECT a.cand_id, p.parent_id, p.deleted_at, a.depth + 1
+                SELECT a.cand_id, p.parent_id, p.retired_at, a.depth + 1
                   FROM anc a JOIN refs p ON p.ref_id = a.parent_id
                  WHERE a.depth < %(max_depth)s
             )
             SELECT DISTINCT cand_id FROM anc
-             WHERE deleted_at IS NOT NULL AND depth >= %(min_depth)s
+             WHERE retired_at IS NOT NULL AND depth >= %(min_depth)s
             """,
             {
                 "ids": ids,

@@ -441,7 +441,7 @@ class PathwayHandler(Handler):
                 "SELECT slug_id.id_value, refs.meta FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
                 "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
-                "WHERE refs.kind = 'pathway' AND refs.deleted_at IS NULL "
+                "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
                 "  AND refs.meta->'results'->>'substrate' = %s "
                 "  AND refs.meta->'results'->>'target' = %s "
                 "  AND refs.meta->>'status' = 'ready'",
@@ -557,7 +557,7 @@ class PathwayHandler(Handler):
         ref = store.get_ref(kind="pathway", id=str(id))
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
-        store.soft_delete_ref(ref.id)
+        store.retire_ref(ref.id)
         return Response(body=f"deleted pathway '{id}'")
 
     # -- tag -------------------------------------------------------------

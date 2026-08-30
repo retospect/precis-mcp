@@ -36,7 +36,7 @@ search(kind="paper", q="X", tags=["topic:noxrr"])  # tag-filter
 search(kind="paper", q="X", scope="pa5")  # search inside one ref, by handle
 search(kind="paper", q="X", exclude=["pa5", "pa12"])  # skip refs by handle
 search(kind="paper", q="X", uncited="dr173020")  # skip what that draft already cites
-search(kind="patent", q="X", source="remote")  # patent-only knob
+search(kind="patent", q="X", reach="remote")  # patent/edgar-only knob
 search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
 search(
     kind="paper",
@@ -393,12 +393,12 @@ This is the standard first move on any non-trivial task.
 ## How do I find a patent that isn't ingested yet?
 
 ```python
-search(kind="patent", q="photocatalysis", source="remote")
-search(kind="patent", tags=["cpc:B01J27/24"], source="remote")
+search(kind="patent", q="photocatalysis", reach="remote")
+search(kind="patent", tags=["cpc:B01J27/24"], reach="remote")
 ```
 
-`source=` is patent-only. `'both'` (default) merges local + remote;
-`'local'` skips OPS; `'remote'` returns only patents *not* already in
+`reach=` is patent/EDGAR-only. `'both'` (default) merges local + remote;
+`'local'` skips OPS/SEC; `'remote'` returns only hits *not* already in
 the local store. CQL details in `precis-patent-search-help`.
 
 ## See also
@@ -406,7 +406,7 @@ the local store. CQL details in `precis-patent-search-help`.
 ```python
 get(kind="skill", id="precis-overview")  # verbs and kinds
 get(kind="skill", id="precis-paper-help")  # paper-specific search shape
-get(kind="skill", id="precis-patent-search-help")  # CQL + source= matrix
+get(kind="skill", id="precis-patent-search-help")  # CQL + reach= matrix
 get(kind="skill", id="precis-tags")  # axis vocabulary
 get(kind="skill", id="precis-relations")  # link vocabulary
 get(kind="skill", id="precis-toc-help")  # drilling into hits via /toc

@@ -254,7 +254,7 @@ def gc_stale_logs(store: Store, *, older_than_days: int = RETENTION_DAYS) -> int
     attribution, worthless once the run record is gone — but NEVER the
     chunks they point at (links carry no FK / cascade to ``refs``; the
     body chunks are append-only and survive). The agentlog ref is
-    soft-deleted (``deleted_at``) like any other ref, keeping the row
+    soft-deleted (``retired_at``) like any other ref, keeping the row
     for forensics while dropping it from every live view.
 
     Cheap: one DELETE on links + one UPDATE on refs per pass.
@@ -264,7 +264,7 @@ def gc_stale_logs(store: Store, *, older_than_days: int = RETENTION_DAYS) -> int
             int(r[0])
             for r in conn.execute(
                 "SELECT ref_id FROM refs "
-                "WHERE kind = 'agentlog' AND deleted_at IS NULL "
+                "WHERE kind = 'agentlog' AND retired_at IS NULL "
                 "  AND created_at < now() - %s::interval",
                 (f"{int(older_than_days)} days",),
             ).fetchall()
@@ -280,7 +280,7 @@ def gc_stale_logs(store: Store, *, older_than_days: int = RETENTION_DAYS) -> int
             (ids, ids),
         )
         conn.execute(
-            "UPDATE refs SET deleted_at = now(), updated_at = now() "
+            "UPDATE refs SET retired_at = now(), updated_at = now() "
             "WHERE ref_id = ANY(%s)",
             (ids,),
         )
@@ -309,7 +309,7 @@ def list_recent(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
                      AS touched
               FROM refs r
              WHERE r.kind = 'agentlog'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
              ORDER BY r.created_at DESC
              LIMIT %s
             """,

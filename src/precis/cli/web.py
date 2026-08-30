@@ -1,6 +1,6 @@
 """``precis web`` — launch the precis-web FastAPI service (uvicorn).
 
-The web surface (Tasks / Papers / Console / Status) lives in the
+The web surface (Todo / Papers / Console / Status) lives in the
 optional ``precis_web`` package, pulled in by the ``precis-mcp[web]``
 extra. This subcommand imports it lazily so a base install without
 FastAPI keeps the rest of the CLI working; a missing extra surfaces

@@ -104,7 +104,7 @@ def test_now_jobs_running_queued_stalled_and_terminal(store: Any) -> None:
         kind="job", slug=None, title="deleted queued", meta={"job_type": "fold"}
     )
     _set_status(store, deleted_queued.id, "queued")
-    store.soft_delete_ref(deleted_queued.id)
+    store.retire_ref(deleted_queued.id)
 
     succeeded = store.insert_ref(
         kind="job", slug=None, title="done job", meta={"job_type": "fold"}

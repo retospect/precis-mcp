@@ -46,7 +46,7 @@ def ensure_watches_root(store: Store) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE kind='todo' AND deleted_at IS NULL "
+            "WHERE kind='todo' AND retired_at IS NULL "
             "AND meta->>'builtin' = %s LIMIT 1",
             (WATCHES_BUILTIN,),
         ).fetchone()
@@ -60,7 +60,7 @@ def ensure_watches_root(store: Store) -> int:
         # writer's INSERT — losers retry safely.
         row = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE kind='todo' AND deleted_at IS NULL "
+            "WHERE kind='todo' AND retired_at IS NULL "
             "AND meta->>'builtin' = %s LIMIT 1 FOR UPDATE",
             (WATCHES_BUILTIN,),
         ).fetchone()

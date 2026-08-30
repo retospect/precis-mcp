@@ -59,7 +59,7 @@ def active_quest_weights(store: Store) -> dict[int, float]:
             "SELECT r.ref_id, r.prio FROM refs r "
             "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE r.kind = 'quest' AND r.deleted_at IS NULL "
+            "WHERE r.kind = 'quest' AND r.retired_at IS NULL "
             "AND t.namespace = 'STATUS' AND t.value = 'active'"
         ).fetchall()
     eff: dict[int, float] = {int(q): base_weight(p) for q, p in rows}
@@ -139,7 +139,7 @@ def server_weights_for_active_quests(
         "SELECT l.src_ref_id, l.dst_ref_id FROM links l "
         "JOIN refs s ON s.ref_id = l.src_ref_id "
         "WHERE l.relation = 'serves' AND l.dst_ref_id = ANY(%s) "
-        "AND s.deleted_at IS NULL"
+        "AND s.retired_at IS NULL"
     )
     params: list[object] = [list(qw)]
     if server_kind is not None:

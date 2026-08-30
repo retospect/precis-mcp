@@ -45,15 +45,15 @@ def test_duplicate_cite_keys_resolve_to_one_slug(store: Store) -> None:
 def test_soft_deleted_slug_is_reclaimed_by_new_ref(store: Store) -> None:
     """Soft-delete must not orphan a later same-slug re-creation (gr201814).
 
-    Soft-delete only stamps ``deleted_at``; it does not release the
+    Soft-delete only stamps ``retired_at``; it does not release the
     ``ref_identifiers`` cite_key row. Before the fix, a re-created same-slug
     ref got NO cite_key (``ON CONFLICT DO NOTHING``) and ``get_ref(slug)``
-    resolved the slug to the dead ref → filtered by ``deleted_at`` → ``None``,
+    resolved the slug to the dead ref → filtered by ``retired_at`` → ``None``,
     silently orphaning the new ref. ``insert_ref`` now reclaims a slug bound to
     a soft-deleted owner.
     """
     first = store.insert_ref(kind="paper", slug="recycle99", title="First")
-    store.soft_delete_ref(first.id)
+    store.retire_ref(first.id)
     # The slug now points at a soft-deleted ref → live lookup is None.
     assert store.get_ref(kind="paper", id="recycle99") is None
 

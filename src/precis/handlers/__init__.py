@@ -22,9 +22,9 @@ keep the historical silent-drop contract.
 The todo tree
 =============
 
-``kind='todo'`` is a hierarchical task graph unifying intent, scheduling,
+``kind='todo'`` is a hierarchical todo graph unifying intent, scheduling,
 execution, and review. Handler detail: :mod:`precis.handlers.todo`;
-skills ``precis-tasks-help``, ``precis-dispatch-help``.
+skills ``precis-todo-tree-help``, ``precis-minter-help``.
 
 **Facet model (§M, migration 0102).** One faceted kind — ``tags`` +
 ``meta`` — never a family of kinds: level gradient, schedule shape, LLM
@@ -113,7 +113,7 @@ transports included. Code defaults; prod runs the deploy templates'
 values (``tests/test_deploy_planner_caps.py`` asserts every render site
 sets all four).
 
-**Orphan subtrees.** ``deleted_at`` is not transitive; the ancestor walk
+**Orphan subtrees.** ``retired_at`` is not transitive; the ancestor walk
 is ``utils/ref_tree.deleted_in_ancestry``, applied both dispatching
 (``dispatch._drop_orphaned`` silently skips candidates under a deleted
 todo) and growing (``quest/weave_review.mint_review_todo`` raises

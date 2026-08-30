@@ -42,7 +42,7 @@ _OPEN_STATUSES: frozenset[str] = frozenset({"open", "doing", "blocked", "paused"
 
 
 def run_auto_check_pass(store: Store, *, limit: int = 50) -> BatchResult:
-    """Drain up to ``limit`` open auto-task leaves.
+    """Drain up to ``limit`` open auto_check leaves.
 
     Returns a :class:`BatchResult` whose:
 
@@ -112,7 +112,7 @@ def _fetch_candidates(store: Store, *, limit: int) -> list[tuple[int, dict[str, 
             SELECT r.ref_id, r.meta->'auto_check'
               FROM refs r
              WHERE r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta ? 'auto_check'
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt
@@ -149,7 +149,7 @@ def _open_auto_check_total(store: Store) -> int:
             """
             SELECT count(*) FROM refs r
              WHERE r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta ? 'auto_check'
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt

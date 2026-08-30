@@ -139,7 +139,7 @@ def _existing_seed(store: Store, seed_key: str) -> int | None:
     """The ref id of an already-seeded quest carrying ``meta.seed_key``, or None."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind = 'quest' AND deleted_at IS NULL "
+            "SELECT ref_id FROM refs WHERE kind = 'quest' AND retired_at IS NULL "
             "AND meta->>'seed_key' = %s ORDER BY ref_id ASC LIMIT 1",
             (seed_key,),
         ).fetchone()
@@ -151,9 +151,9 @@ def seed_catalyst_quest(
     *,
     hub: Any | None = None,
     rubric_composite: dict[str, Any] | None = None,
-    tier_ladder: bool = True,
-    tier_promote_neb: int | None = None,
-    tier_promote_verify: int | None = None,
+    fidelity_ladder: bool = True,
+    fidelity_promote_neb: int | None = None,
+    fidelity_promote_verify: int | None = None,
 ) -> tuple[int, bool]:
     """Mint (or return) the NO→NH₃/Pd catalyst quest.
 
@@ -169,16 +169,16 @@ def seed_catalyst_quest(
     the LLM loop may write this key later (the agent may not tune its own
     objective).
 
-    ``tier_ladder`` (default ``True``) opts the quest into the
-    **screening → neb → verify** catpath tier ladder
+    ``fidelity_ladder`` (default ``True``) opts the quest into the
+    **screening → neb → verify** catpath fidelity ladder
     (:mod:`precis.quest.compute` — ``run_compute_step``'s initial dispatch +
-    ``promote_tiers``' code-driven promotion both read ``meta.tier_ladder``).
-    A NEW catalyst quest gets it on by default; pass ``tier_ladder=False`` for
-    today's straight-to-NEB behaviour. This default only affects quests
+    ``promote_tiers``' code-driven promotion both read ``meta.fidelity_ladder``).
+    A NEW catalyst quest gets it on by default; pass ``fidelity_ladder=False``
+    for today's straight-to-NEB behaviour. This default only affects quests
     minted through THIS seed — a quest built any other way (a bare
     ``QuestHandler.put`` + manual ``meta.reaction_config`` stamp, as every
-    pre-ladder test does) has no ``meta.tier_ladder`` key at all and stays
-    ladder-off, unaffected. ``tier_promote_neb`` / ``tier_promote_verify``
+    pre-ladder test does) has no ``meta.fidelity_ladder`` key at all and stays
+    ladder-off, unaffected. ``fidelity_promote_neb`` / ``fidelity_promote_verify``
     (default :data:`precis.quest.compute._DEFAULT_TIER_PROMOTE_NEB` /
     :data:`precis.quest.compute._DEFAULT_TIER_PROMOTE_VERIFY` when omitted)
     are the human-set per-tick promotion caps — written once at seed time,
@@ -208,15 +208,15 @@ def seed_catalyst_quest(
         "rubric_objectives": RUBRIC_OBJECTIVES,
         "graduation": GRADUATION,
         "param_space": PARAM_SPACE,
-        "tier_ladder": tier_ladder,
-        "tier_promote_neb": (
-            tier_promote_neb
-            if tier_promote_neb is not None
+        "fidelity_ladder": fidelity_ladder,
+        "fidelity_promote_neb": (
+            fidelity_promote_neb
+            if fidelity_promote_neb is not None
             else _DEFAULT_TIER_PROMOTE_NEB
         ),
-        "tier_promote_verify": (
-            tier_promote_verify
-            if tier_promote_verify is not None
+        "fidelity_promote_verify": (
+            fidelity_promote_verify
+            if fidelity_promote_verify is not None
             else _DEFAULT_TIER_PROMOTE_VERIFY
         ),
     }

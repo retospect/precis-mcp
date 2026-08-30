@@ -72,7 +72,7 @@ class Gone(PrecisError):
     two apart: ``NotFound`` means "try a different id / spelling",
     while ``Gone`` means "the row was here, it was deleted, the MCP
     surface can't resurrect it." The row is still recoverable at the
-    SQL layer (``deleted_at IS NOT NULL`` filter) but no MCP verb
+    SQL layer (``retired_at IS NOT NULL`` filter) but no MCP verb
     undoes the delete.
 
     Added as a response to MCP critic finding MINOR-C: ``delete

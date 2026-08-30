@@ -27,7 +27,7 @@ no-op. Cascade stops at the first PDF; later legs run only after
 ``no_oa_version``/``fetch_failed``. Each attempt writes a ``ref_events``
 row (``source='fetcher:<leg>'``).
 
-A landed PDF: watch inbox → ``precis watch`` → ``precis_add`` →
+A landed PDF: watch inbox → ``precis ingest --watch`` → ``precis_add`` →
 ``register_aliases_and_maybe_upgrade`` (promotes the stub) → chase
 resumes.
 
@@ -385,7 +385,7 @@ def claim_stubs_to_fetch(
                  WHERE l.src_ref_id = r.ref_id
                    AND l.relation = 'serves'
                    AND q.kind = 'quest'
-                   AND q.deleted_at IS NULL
+                   AND q.retired_at IS NULL
                    AND t.namespace = 'STATUS' AND t.value = 'active'
           ) qb ON TRUE
          WHERE {stub_predicate_sql("r")}
@@ -1743,7 +1743,7 @@ def run_oa_fetch_pass(
     event) — arXiv and S2 still run.
 
     ``inbox_dir`` is taken from ``PRECIS_WATCH_INBOX`` when not passed
-    explicitly. It **must** be the directory the ``precis watch``
+    explicitly. It **must** be the directory the ``precis ingest --watch``
     daemon scans — otherwise the bytes download fine (``fetch_ok``) but
     no watcher ever ingests them and the stub stays claimable,
     re-fetching every pass forever. In the cluster,

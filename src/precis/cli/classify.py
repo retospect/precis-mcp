@@ -98,7 +98,7 @@ def _resolve_cites_of(store: Store, ref_id: int) -> list[int]:
             "SELECT DISTINCT l.dst_ref_id FROM links l "
             "JOIN refs r ON r.ref_id = l.dst_ref_id "
             "WHERE l.src_ref_id = %s AND l.relation = 'cites' "
-            "AND r.kind = 'paper' AND r.deleted_at IS NULL",
+            "AND r.kind = 'paper' AND r.retired_at IS NULL",
             (ref_id,),
         ).fetchall()
     return [int(r[0]) for r in rows]
@@ -111,7 +111,7 @@ def _resolve_topic(store: Store, slug: str) -> list[int]:
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "JOIN refs r ON r.ref_id = rt.ref_id "
             "WHERE t.namespace = 'OPEN' AND t.value = %s "
-            "AND r.kind = 'paper' AND r.deleted_at IS NULL",
+            "AND r.kind = 'paper' AND r.retired_at IS NULL",
             (f"topic:{slug}",),
         ).fetchall()
     return [int(r[0]) for r in rows]

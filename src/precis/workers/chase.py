@@ -322,7 +322,7 @@ def claim_tracing_findings(
                        )
           ) wait_run ON TRUE
          WHERE r.kind = 'finding'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -615,7 +615,7 @@ def _stub_exhausted(conn: Connection, stub_ref_id: int) -> bool:
     **A ``fetch_ok`` event always means NOT exhausted**, checked first
     and unconditionally — regardless of grace-window age or any earlier
     failed leg. ``fetch_ok`` means a leg downloaded the PDF into the
-    watch inbox; ingest (``precis watch`` → ``precis_add`` →
+    watch inbox; ingest (``precis ingest --watch`` → ``precis_add`` →
     ``register_aliases_and_maybe_upgrade``) runs as a LATER, separate
     pass that sets ``refs.pdf_sha256`` and writes the chunks this
     function's caller is polling for. Without this check, a stub whose
@@ -1027,7 +1027,7 @@ def _fetch_ref(conn: Connection, ref_id: int) -> dict[str, Any] | None:
                -- CardinalityViolation on a dedup-merged ref.
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS slug,
-               r.deleted_at,
+               r.retired_at,
                COALESCE(
                  (SELECT jsonb_object_agg(id_kind, id_value)
                     FROM ref_identifiers WHERE ref_id = r.ref_id),

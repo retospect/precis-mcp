@@ -205,7 +205,7 @@ def probe_existing(
         "SELECT ri.ref_id, ri.id_kind FROM ref_identifiers ri "
         "JOIN refs r ON r.ref_id = ri.ref_id "
         f"WHERE (ri.id_kind, ri.id_value) IN ({placeholders}) "
-        "AND r.deleted_at IS NULL "
+        "AND r.retired_at IS NULL "
         "LIMIT 1"
     )
     flat_params: list[str] = []
@@ -576,7 +576,7 @@ def register_aliases_and_maybe_upgrade(
     #     stay authoritative and a re-dropped publisher PDF is a cheap
     #     printable attach, not a duplicate Marker run.
     existing_pdf_row = conn.execute(
-        "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+        "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
         (existing_ref_id,),
     ).fetchone()
     if existing_pdf_row is None:
@@ -605,7 +605,7 @@ def register_aliases_and_maybe_upgrade(
             "  pdf_pages  = COALESCE(%s::int4range, pdf_pages), "
             "  pdf_role   = COALESCE(%s, pdf_role), "
             "  updated_at = now() "
-            "WHERE ref_id = %s AND deleted_at IS NULL",
+            "WHERE ref_id = %s AND retired_at IS NULL",
             (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
         )
 

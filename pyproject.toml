@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.32.0"
+version = "8.33.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -753,7 +753,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "tests.test_tts_kokoro",
-    "tests.precis_web.test_tasks",
+    "tests.precis_web.test_todo",
     "tests.test_asa_slash",
     "precis.ingest.marker",
     "precis.structure.relax",

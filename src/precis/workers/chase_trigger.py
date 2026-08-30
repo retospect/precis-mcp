@@ -20,7 +20,7 @@ without having been matched):
     stored ``claim_embeddings`` row is missing or whose ``claim_sha`` no
     longer matches the live title (an edited claim). Shape mirrors
     ``tag_embeddings`` (``migration 0101``'s own docstring): one row per
-    ``(claim_ref_id, embedder)``, ``claim_sha`` gating re-embed the same way
+    ``(hub_ref_id, embedder)``, ``claim_sha`` gating re-embed the same way
     ``hub_refine`` gates a reopen off the same hash (:func:`taproot.canon.claim_sha`
     — the two passes share the helper so "changed" means the same thing to
     both).
@@ -176,9 +176,9 @@ def _refresh_claim_embeddings(
         SELECT r.ref_id, r.title, ce.claim_sha
           FROM refs r
           LEFT JOIN claim_embeddings ce
-            ON ce.claim_ref_id = r.ref_id AND ce.embedder = %(embedder)s
+            ON ce.hub_ref_id = r.ref_id AND ce.embedder = %(embedder)s
          WHERE r.kind = 'finding'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND {_CLAIM_HUB_SQL}
            AND {_NOT_HYPOTHESIS_SQL}
            AND NOT EXISTS (
@@ -187,7 +187,7 @@ def _refresh_claim_embeddings(
                  WHERE l.dst_ref_id = r.ref_id
                    AND l.relation = 'conjunct-of'
                    AND a.kind = 'finding'
-                   AND a.deleted_at IS NULL
+                   AND a.retired_at IS NULL
                )
          ORDER BY r.ref_id
         """,
@@ -213,9 +213,9 @@ def _refresh_claim_embeddings(
             continue
         conn.execute(
             """
-            INSERT INTO claim_embeddings (claim_ref_id, embedder, claim_sha, vector)
+            INSERT INTO claim_embeddings (hub_ref_id, embedder, claim_sha, vector)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (claim_ref_id, embedder) DO UPDATE
+            ON CONFLICT (hub_ref_id, embedder) DO UPDATE
               SET claim_sha = EXCLUDED.claim_sha,
                   vector = EXCLUDED.vector,
                   embedded_at = now()
@@ -253,7 +253,7 @@ def _claim_chunks_to_sweep(
            AND ce.embedder = %(embedder)s
            AND ce.status = 'ok'
          WHERE r.kind = ANY(%(kinds)s)
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND c.ord >= 0
            AND c.retired_at IS NULL
            AND NOT EXISTS (
@@ -302,7 +302,7 @@ def _near_claims(
     """
     rows = conn.execute(
         """
-        SELECT DISTINCT ce.chunk_id, cl.claim_ref_id
+        SELECT DISTINCT ce.chunk_id, cl.hub_ref_id
           FROM chunk_embeddings ce
           JOIN claim_embeddings cl
             ON cl.embedder = %(embedder)s
@@ -314,21 +314,21 @@ def _near_claims(
            AND NOT EXISTS (
                  SELECT 1 FROM links l
                   JOIN refs a ON a.ref_id = l.src_ref_id
-                 WHERE l.dst_ref_id = cl.claim_ref_id
+                 WHERE l.dst_ref_id = cl.hub_ref_id
                    AND l.relation = 'conjunct-of'
                    AND a.kind = 'finding'
-                   AND a.deleted_at IS NULL
+                   AND a.retired_at IS NULL
                )
         """,
         {"floor": floor, "chunk_ids": chunk_ids, "embedder": embedder_model},
     ).fetchall()
     near: set[int] = set()
-    for chunk_id, claim_ref_id in rows:
+    for chunk_id, hub_ref_id in rows:
         chunk_id = int(chunk_id)
-        claim_ref_id = int(claim_ref_id)
-        if chunk_ref_map.get(chunk_id) == claim_ref_id:
+        hub_ref_id = int(hub_ref_id)
+        if chunk_ref_map.get(chunk_id) == hub_ref_id:
             continue
-        near.add(claim_ref_id)
+        near.add(hub_ref_id)
     return near
 
 
@@ -411,9 +411,9 @@ def run_chase_trigger_pass(
                     floor=resolved_min_sim,
                     chunk_ref_map=chunk_ref_map,
                 )
-                for claim_ref_id in near:
+                for hub_ref_id in near:
                     store.add_tag(
-                        claim_ref_id,
+                        hub_ref_id,
                         Tag.closed(_DUE_NS, _DUE_VALUE),
                         set_by="system",
                         conn=conn,

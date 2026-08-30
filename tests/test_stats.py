@@ -128,7 +128,7 @@ class TestQueryFindings:
         """Soft-deleted findings drop out of the summary."""
         kept = _seed_finding(store, cite_key="a", status="established")
         gone = _seed_finding(store, cite_key="b", status="established")
-        store.soft_delete_ref(gone)
+        store.retire_ref(gone)
 
         rows = _query_findings(store)
         assert {r["status"]: r["count"] for r in rows} == {"established": 1}

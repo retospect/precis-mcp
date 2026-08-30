@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from precis_web.routes.tasks import _parse_transcript
+from precis_web.routes.todo import _parse_transcript
 
 
 def test_parse_transcript_into_turns() -> None:
@@ -35,7 +35,7 @@ def test_parse_transcript_is_tolerant() -> None:
 
 
 def test_transcript_route_missing_is_graceful(client) -> None:
-    r = client.get("/tasks/999999/transcript")
+    r = client.get("/todo/999999/transcript")
     assert r.status_code == 200
     assert "No transcript" in r.text
 

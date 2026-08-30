@@ -126,7 +126,7 @@ def test_select_dream_seed_skips_deleted_refs(store: Store) -> None:
     pa = store.insert_ref(kind="paper", slug="pd", title="D", meta={})
     ca = _mk_chunk(store, pa.id, 0, "a")
     store.chunks.bump_salience([ca])
-    store.soft_delete_ref(pa.id)
+    store.retire_ref(pa.id)
     assert store.chunks.select_dream_seed() is None
 
 

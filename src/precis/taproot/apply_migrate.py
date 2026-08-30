@@ -237,7 +237,7 @@ def _hub_meta(store: Store, hub_ref_id: int) -> dict[str, Any] | None:
     (deleted, or never existed) since the dry-run ran."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (hub_ref_id,),
         ).fetchone()
     return dict(row[0] or {}) if row is not None else None
@@ -255,7 +255,7 @@ def _is_compound(store: Store, ref_id: int, *, conn: Any) -> bool:
          WHERE l.dst_ref_id = %s
            AND l.relation = 'conjunct-of'
            AND a.kind = 'finding'
-           AND a.deleted_at IS NULL
+           AND a.retired_at IS NULL
          LIMIT 1
         """,
         (ref_id,),
@@ -299,7 +299,7 @@ def _fetch_evidence_edges(store: Store, hub_ref_id: int) -> list[_EvidenceEdge]:
              WHERE l.dst_ref_id = %(hub)s
                AND l.relation = ANY(%(roles)s)
                AND p.kind = ANY(%(kinds)s)
-               AND p.deleted_at IS NULL
+               AND p.retired_at IS NULL
             """,
             {
                 "hub": hub_ref_id,
@@ -408,7 +408,7 @@ def _fetch_lineage_links(store: Store, hub_ref_id: int) -> list[_LineageLink]:
              WHERE l.src_ref_id = %(hub)s
                AND l.relation = 'derived-from'
                AND p.kind = ANY(%(kinds)s)
-               AND p.deleted_at IS NULL
+               AND p.retired_at IS NULL
             """,
             {"hub": hub_ref_id, "kinds": list(EVIDENCE_SRC_KINDS)},
         ).fetchall()
@@ -439,13 +439,13 @@ def _atom_paper_ref_count(conn: Any, atom_hub_id: int) -> int:
               WHERE l.dst_ref_id = %(id)s
                 AND l.relation = ANY(%(roles)s)
                 AND p.kind = ANY(%(kinds)s)
-                AND p.deleted_at IS NULL)
+                AND p.retired_at IS NULL)
           + (SELECT count(*)
                FROM links l JOIN refs p ON p.ref_id = l.dst_ref_id
               WHERE l.src_ref_id = %(id)s
                 AND l.relation = 'derived-from'
                 AND p.kind = ANY(%(kinds)s)
-                AND p.deleted_at IS NULL)
+                AND p.retired_at IS NULL)
         """,
         {
             "id": atom_hub_id,
@@ -473,7 +473,7 @@ def _live_evidence_count(store: Store, conn: Any, hub_ref_ids: list[int]) -> int
          WHERE l.dst_ref_id = ANY(%(ids)s)
            AND l.relation = ANY(%(roles)s)
            AND p.kind = ANY(%(kinds)s)
-           AND p.deleted_at IS NULL
+           AND p.retired_at IS NULL
         """,
         {
             "ids": hub_ref_ids,

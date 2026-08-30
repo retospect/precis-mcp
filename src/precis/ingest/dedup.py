@@ -103,7 +103,7 @@ def merge_duplicate(
         conn=conn,
     )
     # (d) soft-delete + audit both sides.
-    store.soft_delete_ref(duplicate_ref_id, conn=conn)
+    store.retire_ref(duplicate_ref_id, conn=conn)
     store.append_event(
         survivor_ref_id,
         source=source,
@@ -187,7 +187,7 @@ class ReconcileOutcome:
 _GROUPS_SQL = """
     SELECT pdf_sha256, array_agg(ref_id ORDER BY ref_id) AS ids
       FROM refs
-     WHERE kind = 'paper' AND deleted_at IS NULL AND pdf_sha256 IS NOT NULL
+     WHERE kind = 'paper' AND retired_at IS NULL AND pdf_sha256 IS NOT NULL
      GROUP BY pdf_sha256
     HAVING count(*) > 1
      ORDER BY pdf_sha256
@@ -280,7 +280,7 @@ _DOI_CASE_GROUPS_SQL = """
       JOIN refs r ON r.ref_id = ri.ref_id
      WHERE ri.id_kind = 'doi'
        AND r.kind = 'paper'
-       AND r.deleted_at IS NULL
+       AND r.retired_at IS NULL
      GROUP BY lower(ri.id_value)
     HAVING count(DISTINCT ri.ref_id) > 1
      ORDER BY lower(ri.id_value)
@@ -466,7 +466,7 @@ _TITLE_REVIEW_SIM = 0.6
 _TITLE_STUB_SQL = """
     SELECT r.ref_id, r.title, r.year
       FROM refs r
-     WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+     WHERE r.kind = 'paper' AND r.retired_at IS NULL
        AND r.pdf_sha256 IS NULL AND r.title IS NOT NULL
        AND NOT EXISTS (
              SELECT 1 FROM ref_identifiers ri
@@ -531,7 +531,7 @@ def reconcile_by_title_similarity(
             row = conn.execute(
                 "SELECT r.ref_id, r.year, similarity(r.title, %s) AS sim "
                 "FROM refs r "
-                "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                 "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
                 "  AND similarity(r.title, %s) >= %s "
                 # Survivor must be a *truly ingested* copy — a pdf_sha256

@@ -51,7 +51,7 @@ citing the winner or the draft silently loses its reference. Outbound: `refines`
 2. **Self-loop.** If winner and loser are linked to each other — a `contradicts`
    between near-duplicates is plausible — repointing yields an edge from the
    winner to itself. Drop it.
-3. **No soft-delete on links.** The `links` table has no `deleted_at` column at
+3. **No soft-delete on links.** The `links` table has no `retired_at` column at
    all, so removing a redundant edge is a hard DELETE. There is no undo; the
    dry-run is the only safety net, which is why it is mandatory rather than
    polite.
@@ -64,7 +64,7 @@ citing the winner or the draft silently loses its reference. Outbound: `refines`
 cannot be retroactively re-identified. Today all rows are `candidate`, so this
 guard costs nothing and stops the pass being run later at the wrong moment.
 
-**Record the merge.** The loser is soft-deleted (`refs.deleted_at`) with a link
+**Record the merge.** The loser is soft-deleted (`refs.retired_at`) with a link
 to the winner so the collapse is traceable and idempotent. Reuse whatever
 `taproot refine` already writes rather than inventing vocabulary — note
 `supersedes`/`superseded-by` are live but reserved for nanopub *artifact*

@@ -106,7 +106,7 @@ class LinksMixin:
     """v2 link insert / remove / read with inverse-relation rewrite."""
 
     pool: ConnectionPool
-    soft_delete_ref: Any  # provided by RefsMixin (used by merge_refs)
+    retire_ref: Any  # provided by RefsMixin (used by merge_refs)
     # Provided by ArgumentGraphMixin. Called after a retraction / concern
     # edge is added or removed so the argument-graph STALE: flag stays a
     # pure function of current graph reachability.
@@ -701,13 +701,13 @@ class LinksMixin:
            graph position rather than orphaning its edges;
         2. drops the victim's ``ref_identifiers`` rows — the
            uniqueness check (``set_ref_identifier``) ignores
-           ``deleted_at``, so a bare soft-delete would leave the
+           ``retired_at``, so a bare soft-delete would leave the
            duplicate's DOI / arXiv / cite_key claimed and unassignable to
            the survivor;
         3. soft-deletes the victim.
 
         Returns the number of migrated link rows. Raises ``BadInput`` on a
-        self-merge and ``NotFound`` (from :meth:`soft_delete_ref`) if the
+        self-merge and ``NotFound`` (from :meth:`retire_ref`) if the
         victim is missing or already deleted.
         """
         if victim_ref_id == survivor_ref_id:
@@ -717,7 +717,7 @@ class LinksMixin:
             conn.execute(
                 "DELETE FROM ref_identifiers WHERE ref_id = %s", (victim_ref_id,)
             )
-            self.soft_delete_ref(victim_ref_id, conn=conn)
+            self.retire_ref(victim_ref_id, conn=conn)
         return migrated
 
 

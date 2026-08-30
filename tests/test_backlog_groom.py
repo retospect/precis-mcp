@@ -36,7 +36,7 @@ def _groomer_todos(store: Store) -> list[dict]:
         rows = conn.execute(
             """
             SELECT ref_id, title, meta, parent_id, prio FROM refs
-             WHERE kind = 'todo' AND deleted_at IS NULL
+             WHERE kind = 'todo' AND retired_at IS NULL
                AND meta -> 'params' ? 'gripe_id'
              ORDER BY ref_id
             """
@@ -200,7 +200,7 @@ def test_minted_todo_is_a_valid_dispatch_candidate(store: Store) -> None:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s "
-            "AND deleted_at IS NULL",
+            "AND retired_at IS NULL",
             (todo_id,),
         ).fetchall()
     assert len(rows) == 1

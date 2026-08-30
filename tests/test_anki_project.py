@@ -107,7 +107,7 @@ class TestProjection:
         # confirm the row is actually soft-deleted, not hard-deleted
         with store.pool.connection() as conn:
             row = conn.execute(
-                "select deleted_at from refs where ref_id=%s", (drop_id,)
+                "select retired_at from refs where ref_id=%s", (drop_id,)
             ).fetchone()
         assert row[0] is not None
 
@@ -176,7 +176,7 @@ class TestProjection:
 def _lookup(store, guid) -> int | None:
     with store.pool.connection() as conn:
         row = conn.execute(
-            "select ref_id from refs where kind='anki' and deleted_at is null "
+            "select ref_id from refs where kind='anki' and retired_at is null "
             "and meta->'anki'->>'guid' = %s",
             (guid,),
         ).fetchone()

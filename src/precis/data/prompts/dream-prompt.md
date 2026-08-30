@@ -73,7 +73,7 @@ Step 6c — pursue threads worth returning to (speculative, capped). Beyond the 
 
 Constraints — these are load-bearing (the dream pass has a spin-loop history):
 
-  * SPECULATIVE, not a task. A thread is a note-to-future-self, NOT a todo. Never mint a ``kind='todo'`` here — threads live only as ``kind='memory'`` and are surfaced by search when relevant, so they never enter the doable rotation.
+  * SPECULATIVE, not actionable work. A thread is a note-to-future-self, NOT a todo. Never mint a ``kind='todo'`` here — threads live only as ``kind='memory'`` and are surfaced by search when relevant, so they never enter the doable rotation.
   * CAP: at most THREE thread memories per dream cycle. If more than three threads occur to you, keep only the most promising three.
   * DEDUP first. Before writing a thread, check whether you (or a prior cycle) already captured it:
       precis search(kind="memory", tags=["thread:"], page_size=8)

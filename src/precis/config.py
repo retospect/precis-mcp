@@ -192,12 +192,12 @@ class PrecisConfig(BaseSettings):
 
     corpus_dir: str | None = None
     """Filesystem root of the ingested-PDF corpus, laid out as
-    ``<corpus_dir>/<letter>/<cite_key>.pdf`` by ``precis watch``
+    ``<corpus_dir>/<letter>/<cite_key>.pdf`` by ``precis ingest --watch``
     (``letter`` = lowercase first alnum char of the cite_key, else ``_``).
 
     Used by the web paper viewer (``precis_web``) to stream a paper's PDF
     to the browser. On the cluster this is the NFS mount. When unset the
-    web layer falls back to ``~/work/corpus`` (the ``precis watch``
+    web layer falls back to ``~/work/corpus`` (the ``precis ingest --watch``
     default). Set via ``PRECIS_CORPUS_DIR`` in the env.
     """
 

@@ -31,7 +31,7 @@ Remaining open work:
 - **Failed-job un-pin policy**: a `draft_refresh` job that latches
   `STATUS:failed` pins its section's idem_key forever (date component =
   `min(created_at)`, stable), so the scan never re-mints — operator must
-  soft-delete the job row (the existence check filters `deleted_at IS
+  soft-delete the job row (the existence check filters `retired_at IS
   NULL`). First hit: job 202755 (stale orphan worker, unknown job_type).
   Consider excluding latched-failed jobs from the existence check or
   auto-expiring them after N days.

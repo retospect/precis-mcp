@@ -77,8 +77,8 @@ class Workspace:
     brief: str = ""
     # Standing writing register — the always-applied "voice" (e.g.
     # "light-hearted, colloquial, occasional puns"). Distinct from ``brief``
-    # (project scope/constraints) and from the one-shot task (the todo
-    # BODY): this is *how* every tick should sound, not *what* it's working
+    # (project scope/constraints) and from the todo's own one-shot ask
+    # (its BODY): this is *how* every tick should sound, not *what* it's working
     # on. Surfaced to the planner as a ``## Voice & style`` block
     # (``workers/planner_prompt._render_voice``) — do NOT confuse with
     # :attr:`style`, which is citation style.
@@ -115,7 +115,7 @@ class Workspace:
         """Parse a ``meta.workspace`` block into a Workspace, or None."""
         # ``meta`` is contracted as ``dict | None`` but a malformed ref can
         # carry a JSON scalar (e.g. a bare string) — guard on the type, not
-        # just truthiness, so one bad ref can't 500 the whole /tasks page.
+        # just truthiness, so one bad ref can't 500 the whole /todo page.
         if not isinstance(meta, dict):
             return None
         ws = meta.get("workspace")

@@ -1160,11 +1160,11 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     # from (:func:`precis.quest.compute._canonicalize_barrier`) — read by
     # :mod:`precis.quest.graduate`'s verify-only gate; absent on a candidate
     # with no autocatpath barrier harvested yet.
-    if "barrier_tier" in meta:
-        flags["barrier_tier"] = meta.get("barrier_tier")
+    if "barrier_fidelity" in meta:
+        flags["barrier_fidelity"] = meta.get("barrier_fidelity")
     # The candidate's OWN tier-ladder rung (highest tier with a completed
     # run, :func:`precis.quest.compute._bump_tier_stamp` — distinct from
-    # ``barrier_tier`` above, which tracks the ranked barrier specifically).
+    # ``barrier_fidelity`` above, which tracks the ranked barrier specifically).
     # Display-only: the leaderboard's glyph column reads this
     # (:func:`leaderboard`); never a ranking measure (already excluded from
     # ``measures`` — ``_META_NON_MEASURE``/``_numeric`` filter the string).
@@ -1373,8 +1373,8 @@ def _provisional_split(
 
 #: Tier-ladder glyph column (tier-ladder UX item 4) — one character per rung,
 #: read off ``Candidate.flags['tier']`` (the candidate's OWN highest-attained
-#: tier, not ``barrier_tier``). A candidate with no tier stamp at all (a
-#: pre-ladder quest, or one that opted out — ``tier_ladder=False``) gets no
+#: tier, not ``barrier_fidelity``). A candidate with no tier stamp at all (a
+#: pre-ladder quest, or one that opted out — ``fidelity_ladder=False``) gets no
 #: glyph rather than a fabricated one. The word each glyph stands for isn't
 #: repeatable in a plain TOON cell (no title-attribute equivalent), so
 #: ``QuestHandler._render_leaderboard`` prints the legend once in the
@@ -1673,7 +1673,7 @@ def _candidate_key_measure(c: Candidate) -> str:
 
     Tier-ladder UX item 4: when the candidate's CANONICAL barrier came from a
     verify-tier pathway that superseded an earlier parked(neb)-tier one
-    (``flags['barrier_tier'] == 'verify'`` + a kept ``barrier_screen`` —
+    (``flags['barrier_fidelity'] == 'verify'`` + a kept ``barrier_screen`` —
     :func:`precis.quest.compute._canonicalize_barrier`), show the
     screen→verify delta itself (``"screen 0.84 → verified 0.96"``) in place
     of the single barrier figure — the headline calibration signal, not just
@@ -1682,7 +1682,7 @@ def _candidate_key_measure(c: Candidate) -> str:
     screen = c.flags.get("barrier_screen")
     verified = c.measures.get(PARETO_X_MEASURE)
     if (
-        c.flags.get("barrier_tier") == "verify"
+        c.flags.get("barrier_fidelity") == "verify"
         and screen is not None
         and verified is not None
     ):

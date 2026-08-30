@@ -215,7 +215,7 @@ WITH active_quests AS (
       FROM refs r
       JOIN ref_tags rt ON rt.ref_id = r.ref_id
       JOIN tags t ON t.tag_id = rt.tag_id
-     WHERE r.kind = 'quest' AND r.deleted_at IS NULL
+     WHERE r.kind = 'quest' AND r.retired_at IS NULL
        AND t.namespace = 'STATUS' AND t.value = 'active'
 ), latest_loop AS (
     SELECT DISTINCT ON (aq.quest_id)
@@ -224,7 +224,7 @@ WITH active_quests AS (
            jt.value AS job_status, jrt.created_at AS status_since
       FROM active_quests aq
       LEFT JOIN refs j
-        ON j.kind = 'job' AND j.deleted_at IS NULL
+        ON j.kind = 'job' AND j.retired_at IS NULL
        AND j.meta->>'idem_key' = 'quest_tick:' || aq.quest_id
        AND j.meta->>'executor' = 'coordinator'
       LEFT JOIN ref_tags jrt ON jrt.ref_id = j.ref_id

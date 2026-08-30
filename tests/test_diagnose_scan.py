@@ -46,7 +46,7 @@ def _diagnose_jobs(store: Store) -> list[dict]:
         rows = conn.execute(
             """
             SELECT ref_id, title, meta, prio FROM refs
-             WHERE kind = 'job' AND deleted_at IS NULL
+             WHERE kind = 'job' AND retired_at IS NULL
                AND meta ->> 'job_type' = 'diagnose_gripe'
              ORDER BY ref_id
             """

@@ -35,7 +35,7 @@ WITH elsevier_fetch AS (
 )
 SELECT r.ref_id, r.title, e.size_bytes, r.pdf_pages
 FROM elsevier_fetch e
-JOIN refs r ON r.ref_id = e.ref_id AND r.deleted_at IS NULL
+JOIN refs r ON r.ref_id = e.ref_id AND r.retired_at IS NULL
 WHERE (upper(r.pdf_pages) - lower(r.pdf_pages)) <= 2
   AND e.size_bytes > 100000
 ORDER BY e.size_bytes DESC;

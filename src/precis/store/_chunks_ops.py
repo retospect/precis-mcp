@@ -408,7 +408,7 @@ class ChunkStore:
         """
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             # Ghost-chunk guard: a retired draft chunk keeps its embedding +
             # tsv but must never surface in search — else a stale handle is
             # returned-yet-uneditable (gripe 49153). No-op for paper chunks
@@ -468,7 +468,7 @@ class ChunkStore:
         "nothing exists" when the real cause is missing metadata.
         """
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "r.kind = 'paper'",
             "r.year IS NULL",
             "c.ord >= 0",
@@ -580,7 +580,7 @@ class ChunkStore:
         can't quote (MCP critic MAJOR #11).
         """
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             # Ghost-chunk guard: a retired draft chunk keeps its embedding +
             # tsv but must never surface in search — else a stale handle is
             # returned-yet-uneditable (gripe 49153). No-op for paper chunks
@@ -671,7 +671,7 @@ class ChunkStore:
         if not norm:
             return []
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
             "c.keywords @> %s::text[]",
@@ -755,7 +755,7 @@ class ChunkStore:
             embedder = self._default_embedder_name(conn)
 
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "c.retired_at IS NULL",  # ghost-chunk guard (gripe 49153)
             _ord_card_clause(card_kinds),
             "ce.vector IS NOT NULL",
@@ -872,7 +872,7 @@ class ChunkStore:
             embedder = self._default_embedder_name(conn)
 
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "c.retired_at IS NULL",  # ghost-chunk guard (gripe 49153)
             _ord_card_clause(card_kinds),
             *_chunk_noise_clauses(text_alias="c.text"),
@@ -1394,7 +1394,7 @@ class ChunkStore:
                 " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
                 " LIMIT 1) AS slug "
                 "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-                "WHERE c.chunk_id = %s AND r.deleted_at IS NULL AND c.ord >= 0",
+                "WHERE c.chunk_id = %s AND r.retired_at IS NULL AND c.ord >= 0",
                 (chunk_id,),
             ).fetchone()
             if row is None:
@@ -1620,7 +1620,7 @@ class ChunkStore:
 
         def _do(c: Connection) -> str | None:
             row = c.execute(
-                "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                "SELECT title FROM refs WHERE ref_id = %s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
             if row is None:
@@ -1887,7 +1887,7 @@ class ChunkStore:
                 FROM chunks c
                 JOIN refs r ON r.ref_id = c.ref_id
                 {embed_join}
-                WHERE r.deleted_at IS NULL
+                WHERE r.retired_at IS NULL
                   AND c.retired_at IS NULL
                   AND r.kind = ANY(%s)
                 ORDER BY (
@@ -1968,7 +1968,7 @@ class ChunkStore:
             "JOIN refs r ON r.ref_id = c.ref_id "
             "JOIN chunk_embeddings ce "
             "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
-            "WHERE r.deleted_at IS NULL "
+            "WHERE r.retired_at IS NULL "
             "  AND c.retired_at IS NULL "
             "  AND ce.vector IS NOT NULL AND ce.status = 'ok' "
             "  AND r.kind = ANY(%s) "
@@ -1999,7 +1999,7 @@ class ChunkStore:
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT c.text FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-                "WHERE c.chunk_id = %s AND c.ord >= 0 AND r.deleted_at IS NULL",
+                "WHERE c.chunk_id = %s AND c.ord >= 0 AND r.retired_at IS NULL",
                 (chunk_id,),
             ).fetchone()
         return str(row[0]) if row is not None and row[0] is not None else None
@@ -2107,7 +2107,7 @@ class ChunkStore:
         """
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "c.retired_at IS NULL",
             "ce.vector IS NOT NULL",
             "ce.status = 'ok'",
@@ -2336,7 +2336,7 @@ class ChunkStore:
             row = conn.execute(
                 "SELECT count(*) FROM chunks c "
                 "JOIN refs r ON r.ref_id = c.ref_id "
-                "WHERE r.kind = %s AND r.deleted_at IS NULL AND c.ord >= 0",
+                "WHERE r.kind = %s AND r.retired_at IS NULL AND c.ord >= 0",
                 (kind,),
             ).fetchone()
         assert row is not None
@@ -2391,7 +2391,7 @@ class ChunkStore:
         """Pick one random undeleted body chunk that has an embedding.
 
         Drives ``get(kind='random')``. Filters mirror Phase-3
-        ``search_chunks_semantic``: live ref (``deleted_at IS NULL``),
+        ``search_chunks_semantic``: live ref (``retired_at IS NULL``),
         body chunk (ord>=0), and a present vector in
         ``chunk_embeddings`` for the default embedder.
         """
@@ -2409,7 +2409,7 @@ class ChunkStore:
                 "JOIN chunk_embeddings ce "
                 "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
                 "  AND ce.status = 'ok' AND ce.vector IS NOT NULL "
-                "WHERE r.deleted_at IS NULL AND c.ord >= 0 "
+                "WHERE r.retired_at IS NULL AND c.ord >= 0 "
                 "ORDER BY random() LIMIT 1"
             )
             row = conn.execute(sql, (embedder,)).fetchone()
@@ -2477,7 +2477,7 @@ class ChunkStore:
         also counts as missing so background re-embed retries pick it up.
         """
         clauses = [
-            "r.deleted_at IS NULL",
+            "r.retired_at IS NULL",
             "c.ord >= 0",
             "(ce.vector IS NULL OR ce.status = 'failed')",
         ]

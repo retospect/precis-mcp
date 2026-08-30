@@ -3,7 +3,7 @@
 A held paper's PDF lives at ``<root>/<letter>/<cite_key>.pdf`` where
 ``letter`` is the lower-cased first ASCII-alnum char of the cite_key (else
 ``_``), the layout described in ``pip-merge`` (git-only) and laid down
-by ``precis watch``. This convention used to be re-derived in three places
+by ``precis ingest --watch``. This convention used to be re-derived in three places
 (``cli.watch``, ``ingest.remediate``, the web PDF resolver); they now all
 call :func:`corpus_pdf_dest` so the shard math lives once.
 
@@ -22,7 +22,7 @@ import socket
 from pathlib import Path
 
 #: Default corpus root when ``PRECIS_CORPUS_DIR`` is unset — matches the
-#: ``precis watch`` fallback and ``precis_web.config._DEFAULT_CORPUS``.
+#: ``precis ingest --watch`` fallback and ``precis_web.config._DEFAULT_CORPUS``.
 DEFAULT_CORPUS = Path.home() / "work" / "corpus"
 
 

@@ -68,8 +68,14 @@ legacy note shrunk to just the prompt-assembly `Block` type.
 - CLI `precis watch` → `precis ingest --watch` (+ deploy launchd plist).
   `WATCH:` tag axis and recurring-todo watches KEEP the word (they are the
   canonical senses); patent_watch is semantically a watch — keeps it.
-- MCP `source=` kwarg split: search(kind='patent', source=…) vs
-  put(source='paper:<slug>') are unrelated. DECIDE the winner/renames.
+- MCP `source=` kwarg split — DECIDED (Reto 2026-08-30): the provenance
+  family wins the word (`put(source='paper:<slug>')`, `source_handle`,
+  `source_quote` — "the artifact a datum comes from"). The patent-search
+  `source='both'|'local'|'remote'` is a search-LEG selector, not a source
+  → rename to `reach=` (1 token, reads naturally: reach='remote'). Sites:
+  tools/core.py verb kwarg + handlers/patent.py + patent skills. The
+  `SRC:primary/secondary` tag axis is bibliographic source-grade (Stage A's
+  SourceGrade) — standard literature term, KEEP.
 - Review persona externals (Stage A renamed code only): web HTTP `"lens"`
   JSON field + CLI `--lenses` flag → persona vocabulary.
 - Write-ack string `"<verb> block <N> '<slug>' …"` (`utils/file_id.py::
@@ -77,6 +83,24 @@ legacy note shrunk to just the prompt-assembly `Block` type.
   agents → "chunk", together with its `block_pos=`/`block_slug=` kwargs and
   the wider agent-facing `pos`/`block_pos=` convention (`add_link`,
   `LinkTarget.pos`, …) — one coordinated surface rename, agents re-learn.
+
+### Stage D residuals (found during the D build — fold into Stage E's ship)
+
+- Code-internal review "lens" survives in `store/_draft_ops.py`,
+  `store/_draft_review_ops.py`, `handlers/draft.py`,
+  `workers/executors/claude_inproc.py` (incl. the persisted todo
+  `meta.review=<persona>` write path) — Stage A's persona rename only
+  reached quest/planner. Cheap-class but sizeable; touches the executor
+  state machine, do deliberately.
+- `PRECIS_BACKFILL_CITATION_LENS` env var → `_RECALL` (not `_PERSONA` — see
+  the Stage E build note; it follows Stage A's citation_lens→citation_recall
+  vocabulary). No deploy reference exists — code+docs only.
+- Scope expansions D already made (recorded so the spec reads true): edgar's
+  identical leg selector renamed to `reach=` in lockstep (shared verb
+  kwarg); `SearchHit.source`→`reach` in `utils/search_merge.py`;
+  `smartdraft.py` `_MACHINE_LENSES`→`_MACHINE_PERSONAS`. The
+  `precis_watch` deploy role/label/log filenames keep their names (only the
+  invocation changed).
 
 ## Stage E — task→todo + retire/soft-delete unification (largest)
 
@@ -91,6 +115,35 @@ legacy note shrunk to just the prompt-assembly `Block` type.
   Store.soft_delete_ref→retire_ref (+ partial indexes); the 8 retired_at
   tables already conform. Heaviest migration in the plan — schedule
   deliberately.
+
+### Stage E build notes (recorded so the spec reads true)
+
+- `precis-tasks-help` collided with the existing flat-CRUD
+  `precis-todo-help` skill id — renamed to `precis-todo-tree-help` instead
+  (the skill is specifically the hierarchical-tree layer on top of the
+  flat surface, so the extra word is accurate, not just disambiguating).
+- The `refs.deleted_at`→`retired_at` migration (0149) checked the baseline
+  for partial-index names mentioning "deleted": neither
+  `refs_alive_idx` nor `uq_alert_open_source_fingerprint` does (only their
+  *predicates* mention `deleted_at`, which Postgres rewrites automatically
+  on column rename) — so no index rename was needed after all, just the
+  column.
+- `store/_refs_ops.py::soft_delete_todo_subtree` /
+  `store/_draft_ops.py::soft_delete_draft` renamed to `retire_todo_subtree`
+  / `retire_draft` alongside `soft_delete_ref`→`retire_ref` (same
+  "soft_delete_*" family the stage note calls out) — not spelled out by
+  name in the original bullet but the same rename.
+- `include_deleted=` kwargs (`fetch_refs_by_ids`, `resolve_handle_ref`, the
+  gripe CLI's `--include-deleted`/`--only-deleted`) were left alone: they
+  don't match either grep target (`deleted_at` / `soft_delete_*`), and a
+  bare-"deleted" sweep is out of scope per the stage note's own caution
+  about false-positive-prone generic English.
+- `PRECIS_BACKFILL_CITATION_LENS`→`_PERSONA` was correctly **refused** by
+  the E build: this var's "lens" is the citation-graph-recall backfill
+  sense, not a reviewer persona — `_PERSONA` would misdescribe it.
+  RESOLVED in the same session: renamed to `PRECIS_BACKFILL_CITATION_RECALL`
+  instead, following Stage A's own citation_lens→citation_recall rename
+  (code + test + config-variables doc; nothing in deploy/ referenced it).
 
 ## Stage F — dispatch Hub→Registry (PARKED)
 

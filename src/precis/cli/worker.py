@@ -180,7 +180,7 @@ def _classify_topics_enabled_slugs(
 # another delays every pass behind it by its full batch duration. That
 # is how a post-outage ``fetch_oa`` backlog once froze the planner —
 # the fetch pass monopolised the single worker thread for tens of
-# minutes each cycle while ``dispatch`` (which mints the planner's
+# minutes each cycle while ``minter`` (which mints the planner's
 # ``plan_tick`` jobs) sat near the end of the registration list and
 # never got a turn, so freshly-created ``meta.llm_tier``-set todos went
 # un-dispatched cluster-wide.
@@ -223,7 +223,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_auto_check_pass": PassPriority.PLANNER,
     "_schedule_pass": PassPriority.PLANNER,
     "_scheduler_pass": PassPriority.PLANNER,
-    "_dispatch_pass": PassPriority.PLANNER,
+    "_minter_pass": PassPriority.PLANNER,
     "_sweeper_pass": PassPriority.PLANNER,
     "_nursery_pass": PassPriority.HEALTH,
     "_heartbeat_pass": PassPriority.HEALTH,
@@ -327,7 +327,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Which pass rotation to run. 'system' (default) = the "
         "everything-except-heavy-LLM rotation: embed, summarize, "
         "chunk_keywords, chase, fetch, tag_embeddings, auto_check, "
-        "schedule, nursery, dispatch, sweeper. 'agent' = the OAuth "
+        "schedule, nursery, minter, sweeper. 'agent' = the OAuth "
         "rotation: scheduler, job_claude_inproc, quota_check. "
         "dream_agent/structural/deep_review are NOT in either rotation — "
         "each is cadence-fired via the scheduler lease (workers/"
@@ -366,7 +366,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "heartbeat",
             "structural",
             "deep_review",
-            "dispatch",
+            "minter",
             "sweeper",
             "quota_check",
             "disk_check",
@@ -1961,7 +1961,7 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_gp_fetch_pass)
 
-        # Auto-check pass — drains the todo-tree's auto-task queue
+        # Auto-check pass — drains the todo-tree's auto_check queue
         # (Slice 1b of todo-tree-plan.md). Cheap and SQL-only by
         # default — the registered evaluators are SQL queries, not
         # LLM calls — so it stays in the default cycle.
@@ -2079,19 +2079,19 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_deep_review_pass)
 
-        # Dispatch pass — Slice 5 of todo-tree-plan.md. Walks open
-        # todos with meta.executor set, mints kind='job' children
+        # Minter pass (legacy: dispatch) — Slice 5 of todo-tree-plan.md.
+        # Walks open todos with meta.executor set, mints kind='job' children
         # under them so the executor pool can run the work. SQL-only,
         # cheap, multi-host safe via FOR UPDATE SKIP LOCKED. Shares
         # the default rotation with auto_check + schedule + nursery.
-        if _register("dispatch"):
+        if _register("minter"):
             from precis.workers.dispatch import run_dispatch_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
-            def _dispatch_pass(batch_size: int) -> _BatchResult:
+            def _minter_pass(batch_size: int) -> _BatchResult:
                 return run_dispatch_pass(store, limit=batch_size)
 
-            ref_passes.append(_dispatch_pass)
+            ref_passes.append(_minter_pass)
 
         # Sweeper pass — recovers cascades after orphaned claims.
         # SQL-only: any kind='job' carrying STATUS:running older than
@@ -2325,7 +2325,7 @@ def run(args: argparse.Namespace) -> None:
         # Real work before background I/O. The run loop is sequential
         # per cycle, so ordering is priority: job execution + planner
         # lifecycle must run ahead of slow fetch/enrichment/reviewer
-        # passes or a fetch backlog starves ``dispatch`` and the
+        # passes or a fetch backlog starves ``minter`` and the
         # planner stalls. Stable sort ⇒ registration order preserved
         # within a band. See ``_REF_PASS_PRIORITY``.
         ref_passes.sort(key=_ref_pass_priority)

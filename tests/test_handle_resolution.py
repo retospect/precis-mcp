@@ -331,7 +331,7 @@ def test_surface_get_soft_deleted_handle_is_gone(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     ref = store.insert_ref(kind="gripe", slug=None, title="doomed", meta={})
-    store.soft_delete_ref(ref.id)
+    store.retire_ref(ref.id)
     h = handle_registry.format_handle("gripe", ref.id)  # 'gr<ref_id>'
     out, is_error = runtime_with_store.dispatch_with_status("get", {"id": h})
     assert is_error
@@ -371,7 +371,7 @@ def test_surface_get_soft_deleted_handle_explicit_mismatched_kind_falls_through(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     ref = store.insert_ref(kind="gripe", slug=None, title="doomed too", meta={})
-    store.soft_delete_ref(ref.id)
+    store.retire_ref(ref.id)
     h = handle_registry.format_handle("gripe", ref.id)  # 'gr<ref_id>'
     # An explicit kind= that disagrees with the handle's own type code must
     # not be silently overridden — the mismatch falls through to normal

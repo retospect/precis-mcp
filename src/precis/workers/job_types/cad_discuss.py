@@ -171,7 +171,7 @@ def _prior_turns(
            AND r.meta->>'job_type' = 'cad_discuss'
            AND (r.meta->'params'->>'cad_ref_id')::int = %s
            AND r.ref_id <> %s
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
          ORDER BY r.ref_id ASC
     """
     with store.pool.connection() as conn:

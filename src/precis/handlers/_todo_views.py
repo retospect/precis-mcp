@@ -227,12 +227,12 @@ def _ancestor_chain(store: Store, ref_id: int) -> list[dict[str, Any]]:
             """
             WITH RECURSIVE chain(ref_id, parent_id, title, depth) AS (
                 SELECT ref_id, parent_id, title, 0
-                  FROM refs WHERE ref_id = %s AND deleted_at IS NULL
+                  FROM refs WHERE ref_id = %s AND retired_at IS NULL
                 UNION ALL
                 SELECT r.ref_id, r.parent_id, r.title, c.depth + 1
                   FROM refs r
                   JOIN chain c ON r.ref_id = c.parent_id
-                 WHERE r.deleted_at IS NULL
+                 WHERE r.retired_at IS NULL
             )
             SELECT c.ref_id, c.title, c.depth,
                    COALESCE((rf.meta->>'rotation_root')::boolean, false),
@@ -273,7 +273,7 @@ def _picks_7d_by_strategic(store: Store) -> dict[int, int]:
                 SELECT r.ref_id
                   FROM refs r
                  WHERE r.kind = 'todo'
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND {todo_root_sql("r")}
                    AND COALESCE((r.meta->>'rotation_root')::boolean, false)
                    AND NOT EXISTS (
@@ -290,7 +290,7 @@ def _picks_7d_by_strategic(store: Store) -> dict[int, int]:
                 SELECT r.ref_id, st.strategic_id
                   FROM refs r
                   JOIN subtree st ON r.parent_id = st.ref_id
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
               )
             SELECT st.strategic_id, count(e.event_id) AS picks_7d
               FROM subtree st
@@ -324,7 +324,7 @@ def render_roots(store: Store) -> Response:
                      LIMIT 1) AS status
               FROM refs r
              WHERE r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND {todo_root_sql("r")}
                AND COALESCE((r.meta->>'rotation_root')::boolean, false)
              ORDER BY r.ref_id
@@ -446,7 +446,7 @@ def render_projects(store: Store) -> Response:
                    r.meta->'workspace'->>'brief'   AS brief
               FROM refs r
              WHERE r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta->'workspace'->>'path' IS NOT NULL
                AND (
                    r.parent_id IS NULL
@@ -467,7 +467,7 @@ def render_projects(store: Store) -> Response:
                     UNION ALL
                     SELECT c.ref_id FROM refs c
                       JOIN sub ON c.parent_id = sub.ref_id
-                     WHERE c.deleted_at IS NULL
+                     WHERE c.retired_at IS NULL
                 )
                 SELECT count(*)
                   FROM sub s
@@ -600,7 +600,7 @@ def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
                        AND e.source = 'schedule'
                        AND e.event IN ('spawn', 'deliver')) AS last_tick
               FROM refs r
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND (r.meta ? 'schedule')
                AND (r.meta->>'builtin') IS NULL
              ORDER BY r.ref_id
@@ -627,7 +627,7 @@ def _active_strategic_ids(store: Store) -> list[int]:
               strat AS (
                 SELECT r.ref_id
                   FROM refs r
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
                    AND {todo_root_sql("r")}
                    AND COALESCE((r.meta->>'rotation_root')::boolean, false)
                    AND NOT EXISTS (
@@ -644,7 +644,7 @@ def _active_strategic_ids(store: Store) -> list[int]:
                 SELECT r.ref_id, st.strategic_id
                   FROM refs r
                   JOIN subtree st ON r.parent_id = st.ref_id
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
               )
             SELECT DISTINCT st.strategic_id
               FROM subtree st
@@ -652,7 +652,7 @@ def _active_strategic_ids(store: Store) -> list[int]:
              WHERE NOT EXISTS (
                  SELECT 1 FROM refs c
                   WHERE c.parent_id = r.ref_id
-                    AND c.deleted_at IS NULL
+                    AND c.retired_at IS NULL
              )
                AND NOT EXISTS (
                  SELECT 1 FROM ref_tags rt
@@ -684,11 +684,11 @@ def render_strategic(store: Store) -> Response:
                 SELECT t.ref_id AS tactical_id, t.title AS tactical_title,
                        t.parent_id AS strategic_id
                   FROM refs t
-                 WHERE t.kind = 'todo' AND t.deleted_at IS NULL
+                 WHERE t.kind = 'todo' AND t.retired_at IS NULL
                    AND EXISTS (
                        SELECT 1 FROM refs s
                         WHERE s.ref_id = t.parent_id
-                          AND s.kind = 'todo' AND s.deleted_at IS NULL
+                          AND s.kind = 'todo' AND s.retired_at IS NULL
                           AND {todo_root_sql("s")}
                           AND COALESCE((s.meta->>'rotation_root')::boolean, false)
                    )
@@ -699,7 +699,7 @@ def render_strategic(store: Store) -> Response:
                 SELECT ts.tactical_id, r.ref_id
                   FROM tac_subtree ts
                   JOIN refs r ON r.parent_id = ts.desc_id
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
               ),
               leaves AS (
                 SELECT ts.tactical_id, ts.desc_id AS leaf_id,
@@ -716,7 +716,7 @@ def render_strategic(store: Store) -> Response:
                      SELECT 1 FROM refs c
                       WHERE c.parent_id = ts.desc_id
                         AND c.kind = 'todo'
-                        AND c.deleted_at IS NULL
+                        AND c.retired_at IS NULL
                  )
               )
             SELECT s.ref_id AS strategic_id, s.title AS strategic_title,
@@ -728,7 +728,7 @@ def render_strategic(store: Store) -> Response:
               FROM refs s
               LEFT JOIN tac ON tac.strategic_id = s.ref_id
               LEFT JOIN leaves l ON l.tactical_id = tac.tactical_id
-             WHERE s.kind = 'todo' AND s.deleted_at IS NULL
+             WHERE s.kind = 'todo' AND s.retired_at IS NULL
                AND {todo_root_sql("s")}
                AND COALESCE((s.meta->>'rotation_root')::boolean, false)
              GROUP BY s.ref_id, s.title, tac.tactical_id, tac.tactical_title
@@ -843,13 +843,13 @@ def _fetch_subtree(store: Store, root_id: int) -> list[dict[str, Any]]:
                 SELECT ref_id, parent_id, title, 0, kind
                   FROM refs WHERE ref_id = %s
                               AND kind = 'todo'
-                              AND deleted_at IS NULL
+                              AND retired_at IS NULL
                 UNION ALL
                 SELECT r.ref_id, r.parent_id, r.title, w.depth + 1, r.kind
                   FROM refs r
                   JOIN walk w ON r.parent_id = w.ref_id
                  WHERE r.kind IN ('todo', 'job')
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND w.depth < 10
             )
             SELECT ref_id, parent_id, title, depth, kind FROM walk
@@ -1064,7 +1064,7 @@ def _fetch_doable(
           strat AS (
             SELECT r.ref_id
               FROM refs r
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND {todo_root_sql("r")}
                AND COALESCE((r.meta->>'rotation_root')::boolean, false)
           ),
@@ -1073,7 +1073,7 @@ def _fetch_doable(
             UNION ALL
             SELECT r.ref_id, st.strategic_id
               FROM refs r JOIN subtree st ON r.parent_id = st.ref_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
           ),
           picks AS (
             SELECT st.strategic_id, count(e.event_id) AS picks_7d
@@ -1112,7 +1112,7 @@ def _fetch_doable(
           LEFT JOIN subtree st ON st.ref_id = r.ref_id
           LEFT JOIN picks p ON p.strategic_id = st.strategic_id
           LEFT JOIN sv ON sv.strategic_id = st.strategic_id
-         WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL
            AND COALESCE(
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1120,13 +1120,13 @@ def _fetch_doable(
                ) IN ('open', 'doing')
            AND NOT EXISTS (
                SELECT 1 FROM refs c WHERE c.parent_id = r.ref_id
-                                      AND c.deleted_at IS NULL
+                                      AND c.retired_at IS NULL
            )
            AND NOT EXISTS (
                SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
                 WHERE l.src_ref_id = r.ref_id
                   AND l.relation = 'blocked-by'
-                  AND b.deleted_at IS NULL
+                  AND b.retired_at IS NULL
                   AND COALESCE(
                         (SELECT t.value FROM ref_tags rt2 JOIN tags t ON t.tag_id = rt2.tag_id
                           WHERE rt2.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1202,7 +1202,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
                 WHERE EXISTS (
                   SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
                    WHERE l.src_ref_id = r.ref_id AND l.relation = 'blocked-by'
-                     AND b.deleted_at IS NULL
+                     AND b.retired_at IS NULL
                 )
               ) AS blocked,
               count(*) FILTER (
@@ -1213,7 +1213,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
                 )
               ) AS asking
               FROM refs r
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
             """,
         ).fetchone()
     if row is None:
@@ -1239,7 +1239,7 @@ def render_waiting(store: Store) -> Response:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'waiting-for:%%'
              GROUP BY r.ref_id, r.title
@@ -1267,8 +1267,8 @@ def render_blocked(store: Store) -> Response:
               FROM refs r
               JOIN links l ON l.src_ref_id = r.ref_id AND l.relation = 'blocked-by'
               JOIN refs b ON b.ref_id = l.dst_ref_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-               AND b.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND b.retired_at IS NULL
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1302,7 +1302,7 @@ def render_ask_user(store: Store) -> Response:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
@@ -1445,7 +1445,7 @@ def _attention_ask_user(store: Store) -> list[dict[str, Any]]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
@@ -1477,7 +1477,7 @@ def _attention_halted(store: Store) -> list[dict[str, Any]]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND (t.value = 'halt' OR t.value LIKE 'halt:%%')
                AND COALESCE(
@@ -1524,7 +1524,7 @@ def _attention_child_failed(store: Store) -> list[dict[str, Any]]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'child-failed:%%'
                AND COALESCE(

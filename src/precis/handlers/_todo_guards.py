@@ -352,7 +352,7 @@ def check_parent_exists(store: Store, parent_id: int) -> int:
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT kind, deleted_at FROM refs WHERE ref_id = %s",
+            "SELECT kind, retired_at FROM refs WHERE ref_id = %s",
             (parent_id,),
         ).fetchone()
     if row is None:
@@ -360,8 +360,8 @@ def check_parent_exists(store: Store, parent_id: int) -> int:
             f"parent todo id={parent_id} not found",
             next=("get(kind='todo', id='/recent') to find the parent's actual id"),
         )
-    kind, deleted_at = row[0], row[1]
-    if deleted_at is not None:
+    kind, retired_at = row[0], row[1]
+    if retired_at is not None:
         raise NotFound(
             f"parent todo id={parent_id} was soft-deleted",
             next="pick a live parent or omit parent_id= for a root",
@@ -393,7 +393,7 @@ def check_job_parent_exists(
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT kind, deleted_at FROM refs WHERE ref_id = %s",
+            "SELECT kind, retired_at FROM refs WHERE ref_id = %s",
             (parent_id,),
         ).fetchone()
     if row is None:
@@ -401,8 +401,8 @@ def check_job_parent_exists(
             f"job parent id={parent_id} not found",
             next="get(kind='todo', id='/recent') to find the parent's actual id",
         )
-    kind, deleted_at = row[0], row[1]
-    if deleted_at is not None:
+    kind, retired_at = row[0], row[1]
+    if retired_at is not None:
         raise NotFound(
             f"job parent id={parent_id} was soft-deleted",
             next="pick a live parent todo (or the subject artifact for a derived job)",
@@ -519,12 +519,12 @@ def _subtree_height(store: Store, ref_id: int) -> int:
             """
             WITH RECURSIVE sub(ref_id, lvl) AS (
                 SELECT ref_id, 0
-                  FROM refs WHERE ref_id = %s AND deleted_at IS NULL
+                  FROM refs WHERE ref_id = %s AND retired_at IS NULL
                 UNION ALL
                 SELECT r.ref_id, s.lvl + 1
                   FROM refs r
                   JOIN sub s ON r.parent_id = s.ref_id
-                 WHERE r.deleted_at IS NULL
+                 WHERE r.retired_at IS NULL
             )
             SELECT max(lvl) FROM sub
             """,
@@ -728,7 +728,7 @@ def check_status_done_artifact(
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE c.parent_id = %s
                AND c.kind = 'job'
-               AND c.deleted_at IS NULL
+               AND c.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'succeeded'
              LIMIT 1
@@ -740,13 +740,13 @@ def check_status_done_artifact(
         # 2. All live child todos are STATUS:done / won't-do (stitching role)?
         cur = conn.execute(
             """
-            SELECT count(*) FILTER (WHERE c.kind = 'todo' AND c.deleted_at IS NULL
+            SELECT count(*) FILTER (WHERE c.kind = 'todo' AND c.retired_at IS NULL
                                      AND COALESCE(
                                        (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                                          WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                                        'open'
                                      ) NOT IN ('done', 'won''t-do')) AS open_kids,
-                   count(*) FILTER (WHERE c.kind = 'todo' AND c.deleted_at IS NULL) AS total_kids
+                   count(*) FILTER (WHERE c.kind = 'todo' AND c.retired_at IS NULL) AS total_kids
               FROM refs c WHERE c.parent_id = %s
             """,
             (ref_id,),
@@ -764,7 +764,7 @@ def check_status_done_artifact(
                   JOIN ref_tags rt_cit ON rt_cit.ref_id = cit.ref_id
                   JOIN tags t_cit ON t_cit.tag_id = rt_cit.tag_id
                  WHERE cit.kind = 'citation'
-                   AND cit.deleted_at IS NULL
+                   AND cit.retired_at IS NULL
                    AND t_cit.namespace = 'OPEN'
                    AND t_cit.value LIKE 'project:%%'
                    AND t_cit.value IN (
@@ -790,7 +790,7 @@ def check_status_done_artifact(
                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id
                  WHERE r.kind IN ('tex','markdown','plaintext','pic')
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND t.namespace = 'OPEN' AND t.value LIKE 'project:%%'
                    AND t.value IN (
                        SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id

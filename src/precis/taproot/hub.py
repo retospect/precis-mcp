@@ -258,7 +258,7 @@ def _is_claim_hub(ref_id: int, *, conn: Any) -> bool:
         JOIN ref_tags rt ON rt.ref_id = r.ref_id
         JOIN tags t ON t.tag_id = rt.tag_id
                    AND t.namespace = %(ns)s AND t.value = %(val)s
-        WHERE r.ref_id = %(rid)s AND r.kind = 'finding' AND r.deleted_at IS NULL
+        WHERE r.ref_id = %(rid)s AND r.kind = 'finding' AND r.retired_at IS NULL
         LIMIT 1
         """,
         {"ns": TAPROOT_NAMESPACE, "val": TAPROOT_CLAIM, "rid": ref_id},
@@ -287,7 +287,7 @@ def _is_compound_hub(ref_id: int, *, conn: Any) -> bool:
          WHERE l.dst_ref_id = %s
            AND l.relation = 'conjunct-of'
            AND a.kind = 'finding'
-           AND a.deleted_at IS NULL
+           AND a.retired_at IS NULL
          LIMIT 1
         """,
         (ref_id,),
@@ -506,7 +506,7 @@ def refine_claim_sentence(
             raise ValueError(f"ref_id={hub_ref_id} is not a TAPROOT:claim hub")
 
         row = c.execute(
-            "SELECT title, meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT title, meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (hub_ref_id,),
         ).fetchone()
         if (
@@ -763,7 +763,7 @@ def attach_evidence(
 # because ``hub_refine`` was strictly additive. Reground audits existing
 # edges and auto-removes proxy grounding, so removal needs the same
 # single-choke-point treatment — plus one thing attach doesn't need: an
-# audit trail. ``links`` has **no ``deleted_at`` column**, so a removal is
+# audit trail. ``links`` has **no ``retired_at`` column**, so a removal is
 # a HARD DELETE; nothing is left behind to read afterwards. The log below
 # IS the record.
 
@@ -807,7 +807,7 @@ def live_evidence_handles(conn: Any, hub_ref_id: int) -> set[EvidenceHandle]:
     """Every evidence edge (:data:`HUB_ROLES`) currently pointing at
     ``hub_ref_id``, as :class:`EvidenceHandle`\\ s.
 
-    No ``deleted_at IS NULL`` filter — ``links`` has no such column, and
+    No ``retired_at IS NULL`` filter — ``links`` has no such column, and
     adding one to the predicate *errors* rather than merely
     under-returning (docs/backlog/taproot-reground.md §"applier
     contract"). Every row here is live by construction.
@@ -894,7 +894,7 @@ def append_reground_log(
 
     def _do(c: Any) -> None:
         row = c.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (hub_ref_id,),
         ).fetchone()
         if row is None:
@@ -1441,7 +1441,7 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
     publish-state refusal, which IS reported rather than raised here).
     """
     loser_row = conn.execute(
-        "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser_ref_id,)
+        "SELECT retired_at FROM refs WHERE ref_id = %s", (loser_ref_id,)
     ).fetchone()
     if loser_row is None:
         raise BadInput(f"loser ref_id={loser_ref_id} does not exist")
@@ -1614,7 +1614,7 @@ def _apply_merge_plan(
                 f"UPDATE links SET {column} = %s WHERE link_id = %s",
                 (plan.winner_ref_id, edge.link_id),
             )
-        else:  # drop_redundant | drop_self_loop -- links has no deleted_at
+        else:  # drop_redundant | drop_self_loop -- links has no retired_at
             conn.execute("DELETE FROM links WHERE link_id = %s", (edge.link_id,))
 
     # Record the collapse BEFORE retiring the loser: link_claims requires
@@ -1634,7 +1634,7 @@ def _apply_merge_plan(
         conn=conn,
     )
 
-    store.soft_delete_ref(plan.loser_ref_id, conn=conn)
+    store.retire_ref(plan.loser_ref_id, conn=conn)
 
 
 def merge_hubs(
@@ -1656,7 +1656,7 @@ def merge_hubs(
     collapse via ``loser --{MERGE_COLLAPSE_RELATION}--> winner``
     (:func:`link_claims`), soft-delete the loser. The winner's
     ``title``/``scope``/``pub_id`` are never touched. ``links`` has no
-    ``deleted_at``, so every drop is a **hard** DELETE -- ``dry_run=True``
+    ``retired_at``, so every drop is a **hard** DELETE -- ``dry_run=True``
     runs the identical plan and returns it without ever opening a write.
 
     **Refusal**: either side past ``'candidate'`` in ``nanopub_publish``
@@ -1919,7 +1919,7 @@ def _merge_not_claims_memo(
 
     def _do(c: Any) -> None:
         row = c.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (hub_ref_id,),
         ).fetchone()
         current = dict(row[0] or {}) if row is not None else {}

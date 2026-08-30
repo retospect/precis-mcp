@@ -29,10 +29,10 @@ placeholders lazily hydrated on scroll. :func:`focus_index` accepts both
 the universal ``dc<id>`` handle and the legacy base58 form.
 
 Review status: per-chunk marks read the ``chunk_review`` watermark ledger
-(migration 0086) via `routes/drafts.py::_review_status_by_chunk` — lens
+(migration 0086) via `routes/drafts.py::_review_status_by_chunk` — persona
 namespace ``flow``/``cites``/``structure``/``adversarial``/``toc``
 (`precis.quest.review_fanout`) plus ``human`` as fixed point. Fanout is
-incremental (stale chunks only) at prio 2; a lens row writes back only
+incremental (stale chunks only) at prio 2; a persona row writes back only
 from a clean, non-resumed tick concluding ``verdict: done``
 (`executors/claude_inproc.py`) — else a false approval hides an
 unreviewed section behind a green ✓.
@@ -185,7 +185,7 @@ class ChunkNode:
     def is_prose(self) -> bool:
         """Whether this chunk is one of ``PROSE_CHUNK_KINDS`` (paragraph/
         aside/callout/claim) — the review widget's gate for the
-        ``flow``/``cites`` run-lens buttons (item 3): those two personas only
+        ``flow``/``cites`` run-persona buttons (item 3): those two personas only
         ever mint on prose chunks (:func:`precis.quest.review_fanout.
         _personas_for_kind`), so offering them on a table/figure/term/equation
         block would silently no-op the click."""
@@ -925,13 +925,13 @@ def semantic_ranks(
 # plus the read-time (never sha-pinned) citation-integrity flag (item 5c).
 # Human sign-off supersedes machine state by design (proposal's "churn/
 # termination model" decision): a chunk approved by ``human`` at its
-# current sha is DONE regardless of what the machine lenses say.
+# current sha is DONE regardless of what the machine personas say.
 
-#: The per-chunk machine lenses that gate a PROSE block's own state.
-_MACHINE_LENSES: tuple[str, ...] = ("flow", "cites")
-#: The per-chunk machine lenses that gate a HEADING's own state, and a
+#: The per-chunk machine personas that gate a PROSE block's own state.
+_MACHINE_PERSONAS: tuple[str, ...] = ("flow", "cites")
+#: The per-chunk machine personas that gate a HEADING's own state, and a
 #: prose block's *section* state (via its nearest heading ancestor).
-_SECTION_LENSES: tuple[str, ...] = ("structure", "adversarial")
+_SECTION_PERSONAS: tuple[str, ...] = ("structure", "adversarial")
 _STATUS_SYMBOL: dict[str, str] = {"current": "✓", "stale": "⚠", "never": "–"}
 
 
@@ -961,9 +961,9 @@ def _matrix_row(
     checker: str, entry: dict[str, Any] | None, *, via_section: bool
 ) -> dict[str, Any]:
     """One tooltip-matrix line — ``✓ current`` / ``⚠ stale`` / ``– never``,
-    with the checker's verdict + age once it has ever run; section lenses
+    with the checker's verdict + age once it has ever run; section personas
     (item 2's "via section" imprecision) get an explicit suffix so the
-    tooltip never reads as if the paragraph itself carries that lens."""
+    tooltip never reads as if the paragraph itself carries that persona."""
     if entry is None:
         status = "never"
     elif entry.get("dirty"):
@@ -997,9 +997,9 @@ def review_indicator(
     ``state`` is one of:
 
     * ``"empty"`` — checks outstanding (grey).
-    * ``"machine"`` — every relevant machine lens approved at the current
+    * ``"machine"`` — every relevant machine persona approved at the current
       sha, human still pending (hollow/blue). A PROSE block's relevant
-      lenses are its own ``flow``/``cites`` PLUS its enclosing heading's
+      personas are its own ``flow``/``cites`` PLUS its enclosing heading's
       ``structure``/``adversarial`` ("via section" — the nearest heading
       ancestor, ``_section_chunk_id``); a HEADING's are its own
       ``structure``/``adversarial`` (plus ``toc`` when the ledger map
@@ -1009,7 +1009,7 @@ def review_indicator(
     * ``"dirty"`` — was human-approved, edited since (amber).
 
     ``matrix`` is the tooltip's per-checker list (:func:`_matrix_row`), in
-    lens → human display order."""
+    persona → human display order."""
     own = status_by_chunk.get(chunk_id)
     if own is None:
         return None
@@ -1026,20 +1026,20 @@ def review_indicator(
             machine_seen = True
 
     if is_heading:
-        for lens in _SECTION_LENSES:
-            entry = own.get(lens)
-            matrix.append(_matrix_row(lens, entry, via_section=False))
+        for persona in _SECTION_PERSONAS:
+            entry = own.get(persona)
+            matrix.append(_matrix_row(persona, entry, via_section=False))
             _gate(entry)
     else:
-        for lens in _MACHINE_LENSES:
-            entry = own.get(lens)
-            matrix.append(_matrix_row(lens, entry, via_section=False))
+        for persona in _MACHINE_PERSONAS:
+            entry = own.get(persona)
+            matrix.append(_matrix_row(persona, entry, via_section=False))
             _gate(entry)
         section_id = own.get("_section_chunk_id")
         section = status_by_chunk.get(section_id) if section_id is not None else None
-        for lens in _SECTION_LENSES:
-            entry = section.get(lens) if section is not None else None
-            matrix.append(_matrix_row(lens, entry, via_section=True))
+        for persona in _SECTION_PERSONAS:
+            entry = section.get(persona) if section is not None else None
+            matrix.append(_matrix_row(persona, entry, via_section=True))
             _gate(entry)
     if "toc" in own:  # rides on whichever chunk is document-first (item 10)
         entry = own.get("toc")

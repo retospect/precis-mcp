@@ -32,7 +32,7 @@ def fetch_ref_any_kind(store: Store, ref_id: int) -> Ref:
 
     with store.pool.connection() as conn:
         row = conn.execute(
-            f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         ).fetchone()
     if row is None:

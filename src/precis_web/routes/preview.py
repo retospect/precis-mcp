@@ -7,7 +7,7 @@ Two surfaces:
   snippet. 400 / 404 stubs render gracefully inside the popover.
 * ``GET /r/{kind}/{id}`` — click-target redirector. Resolves the
   ref's canonical address and 303s to its native view
-  (``/papers/{ref_id}`` for paper, ``/tasks?focus={ref_id}`` for
+  (``/papers/{ref_id}`` for paper, ``/todo?focus={ref_id}`` for
   todo, generic ``/refs/{kind}/{ref_id}`` for everything else). For
   paper refs with a ``?chunk=…`` suffix, the resolver translates the
   chunk address into a PDF page and lands on
@@ -89,8 +89,8 @@ def _numeric_kinds(hub: Any) -> frozenset[str]:
 #: back to ``/refs/{kind}/{id}`` for unlisted kinds.
 _NATIVE_URL: dict[str, str] = {
     "paper": "/papers/{id}",
-    "todo": "/tasks?focus={id}",
-    "job": "/tasks?focus={id}",
+    "todo": "/todo?focus={id}",
+    "job": "/todo?focus={id}",
     "patent": "/refs/patent/{id}",
     "memory": "/refs/memory/{id}",
     "conv": "/refs/conv/{id}",
@@ -151,7 +151,7 @@ def _resolve_ref_id(
         if raw_id.isdigit():
             hit = conn.execute(
                 "SELECT ref_id FROM refs "
-                "WHERE ref_id = %s AND kind = %s AND deleted_at IS NULL",
+                "WHERE ref_id = %s AND kind = %s AND retired_at IS NULL",
                 (int(raw_id), kind),
             ).fetchone()
             if hit is not None:
@@ -226,7 +226,7 @@ async def preview(
             ord_for_quote = int(m.group("from"))
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT title, deleted_at IS NOT NULL FROM refs WHERE ref_id = %s",
+            "SELECT title, retired_at IS NOT NULL FROM refs WHERE ref_id = %s",
             (numeric_id,),
         ).fetchone()
         if ord_for_quote is not None:

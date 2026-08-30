@@ -351,7 +351,7 @@ def _polling_jobs(
             SELECT r.ref_id, r.title, r.meta
               FROM refs r
              WHERE r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta->>'executor' = %s
                AND r.meta ? 'compute_handle'
                AND (r.meta->'params'->>'target_node') IS NOT DISTINCT FROM %s

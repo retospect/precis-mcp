@@ -173,7 +173,7 @@ class FolderHandler(NumericRefHandler):
     def _live_child_count(self, ref_id: int) -> int:
         with self.store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+                "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
         return int(row[0]) if row else 0
@@ -188,7 +188,7 @@ class FolderHandler(NumericRefHandler):
                          WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
                          LIMIT 1) AS slug
                   FROM refs r
-                 WHERE r.parent_id = %s AND r.deleted_at IS NULL
+                 WHERE r.parent_id = %s AND r.retired_at IS NULL
                  ORDER BY (r.kind != 'folder'), r.kind, lower(r.title)
                 """,
                 (ref_id,),
@@ -205,7 +205,7 @@ class FolderHandler(NumericRefHandler):
             with self.store.pool.connection() as conn:
                 row = conn.execute(
                     "SELECT kind, title, parent_id FROM refs "
-                    "WHERE ref_id = %s AND deleted_at IS NULL",
+                    "WHERE ref_id = %s AND retired_at IS NULL",
                     (parent_id,),
                 ).fetchone()
             if row is None or row[0] != "folder":
@@ -306,11 +306,11 @@ class FolderHandler(NumericRefHandler):
                 SELECT f.ref_id, f.title, f.parent_id,
                        (SELECT count(*) FROM refs c
                          WHERE c.parent_id = f.ref_id
-                           AND c.deleted_at IS NULL) AS n_children,
+                           AND c.retired_at IS NULL) AS n_children,
                        (SELECT p.kind FROM refs p
                          WHERE p.ref_id = f.parent_id) AS parent_kind
                   FROM refs f
-                 WHERE f.kind = 'folder' AND f.deleted_at IS NULL
+                 WHERE f.kind = 'folder' AND f.retired_at IS NULL
                  ORDER BY lower(f.title)
                 """
             ).fetchall()

@@ -130,7 +130,7 @@ def _list_due(store: Store, *, now: datetime, limit: int) -> list[tuple[int, str
         JOIN   ref_tags rt ON rt.ref_id = r.ref_id
         JOIN   tags t       ON t.tag_id  = rt.tag_id
         WHERE  r.kind = 'patent'
-          AND  r.deleted_at IS NULL
+          AND  r.retired_at IS NULL
           AND  t.namespace = 'OPEN'
           AND  t.value = %s
           AND  (r.meta->>'fulltext_retry_at') IS NOT NULL

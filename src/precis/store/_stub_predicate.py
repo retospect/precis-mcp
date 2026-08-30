@@ -103,7 +103,7 @@ def stub_predicate_sql(
     """The shared "is this a fetchable stub" WHERE-fragment.
 
     References ``<alias>.kind`` / ``<alias>.pdf_sha256`` /
-    ``<alias>.deleted_at`` / ``<alias>.ref_id`` / ``<alias>.
+    ``<alias>.retired_at`` / ``<alias>.ref_id`` / ``<alias>.
     retraction_status`` — the caller's query must alias the ``refs``
     row accordingly (``r`` everywhere today).
 
@@ -122,7 +122,7 @@ def stub_predicate_sql(
     """
     predicate = (
         f"{alias}.kind = 'paper' AND {alias}.pdf_sha256 IS NULL "
-        f"AND {alias}.deleted_at IS NULL "
+        f"AND {alias}.retired_at IS NULL "
         f"AND {fetchable_id_exists_sql(alias, id_kinds=id_kinds)}"
     )
     if exclude_retracted:

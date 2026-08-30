@@ -68,7 +68,7 @@ name/path.
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
 | `md` | `docs/backlog/some-item.md~Motivation` | Read-only, DB-free hybrid search over configured markdown roots (docs, backlog, skills prose) | `PRECIS_MD_ROOTS` |
 | `folder` | `fo12` | Organizational container for authored artifacts — single-parent placement via `link(rel='parent')`; `search(folder=...)` scopes to the subtree. See `precis-folder-help`. | store |
-| `todo` | `td122` | A task in the hierarchical tree. Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
+| `todo` | `td122` | A node in the hierarchical todo tree. Branches read as outcomes; leaves as next actions. See `precis-todo-tree-help`. | store |
 | `memory` | `me47` | Agent note / scratchpad | store |
 | `gripe` | `gr9` | Annoyance / niggle | store |
 | `alert` | `al38260` | Machine-detected ops / health condition, deduped + auto-resolved, surfaced by the `/alerts` web tab — not semantic search. See `precis-alert-help`. | store |
@@ -80,7 +80,7 @@ name/path.
 | `citation` | `ci18` | Verified claim → source quote | store |
 | `finding` | `fi73` | Chain-of-evidence head over a citation chase; a `TAPROOT:claim`-tagged finding is a cross-paper claim hub (see `precis-taproot-help`) | store |
 | `orcid` | `orcid:0000-0002-1825-0097` | Researcher identity (ORCID): resolves + stores an author dossier, links held works + reports missing ones (LLM-gated `enqueue=`), and is the `authored` link hub. See `precis-orcid-help`. | `ORCID_CLIENT_ID` |
-| `job` | `jo55` | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
+| `job` | `jo55` | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-minter-help`. | store |
 | `message` | `ms11` | Proactive outbound (Discord post) | store |
 | `email` | *(no handle — live IMAP adapter)* | Live, read-only mailbox browse over IMAP — mirrors nothing. `get(kind='email')` lists recent mail; `id='INBOX'` a folder; `id='INBOX/<uid>'` reads one message; `account='addr@host'` picks among configured accounts. Never marks mail `\Seen`. | store |
 | `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
@@ -155,11 +155,11 @@ The todo tree is the unified surface for *intent*, *execution*,
 
 | Skill | What it teaches |
 |---|---|
-| `precis-tasks-help` | Tree shape (strategic/tactical/subtask), claim/release/done, doable view rules |
+| `precis-todo-tree-help` | Tree shape (strategic/tactical/subtask), claim/release/done, doable view rules |
 | `precis-decomposition-help` | The GTD interrogation: when to split, when to block, when to wait |
-| `precis-auto-tasks-help` | Wait-for-condition leaves via `meta.auto_check` |
+| `precis-auto-todo-help` | Wait-for-condition leaves via `meta.auto_check` |
 | `precis-recurring-help` | `meta.schedule` format + the **Watches** umbrella |
-| `precis-dispatch-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
+| `precis-minter-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
 | `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
 | `precis-fix-gripe-help` | First concrete job_type, end-to-end recipe |
 | `precis-proposal-help` | Write a proposal against a `kind='cfp'` call — intake, requirement link, section-by-section drafting, word-count checks |
@@ -208,7 +208,7 @@ shows up in output and is ambiguous:
   furniture, the citation-grounding filter); a kind's *citability* is a separate
   thing. See `precis-tags`.
 - **lane** — as a `todo`/`job` scheduling concept it's legitimate contract
-  vocabulary (`precis-job-help`, `precis-dispatch-help`); any other, ad-hoc
+  vocabulary (`precis-job-help`, `precis-minter-help`); any other, ad-hoc
   sense of "lane" isn't part of the API.
 
 ## See also

@@ -99,7 +99,7 @@ def _wake_children_done(conn: Connection, *, limit: int) -> list[int]:
     ``meta.wake_when.payload.child_job_ids`` is a JSON array of
     int IDs. The NOT EXISTS subquery rejects any row that still
     has a *live*, non-terminal child. A soft-deleted child
-    (``deleted_at`` set; its tags persist) counts as terminal /
+    (``retired_at`` set; its tags persist) counts as terminal /
     absent — matching the hard-delete behaviour documented in
     ``dft-phase-0-pr-3-coordinator-executor`` (git-only) — so
     an operator soft-deleting a stuck child unblocks the wake
@@ -110,7 +110,7 @@ def _wake_children_done(conn: Connection, *, limit: int) -> list[int]:
         SELECT r.ref_id
           FROM refs r
          WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -126,7 +126,7 @@ def _wake_children_done(conn: Connection, *, limit: int) -> list[int]:
                         ) AS child_id_text(child_id) ON true
                   WHERE c.ref_id = child_id_text.child_id::bigint
                     AND c.kind = 'job'
-                    AND c.deleted_at IS NULL
+                    AND c.retired_at IS NULL
                     AND COALESCE(
                           (SELECT t.value FROM ref_tags rt
                              JOIN tags t ON t.tag_id = rt.tag_id
@@ -161,7 +161,7 @@ def _non_terminal_children(conn: Connection, child_job_ids: list[int]) -> list[i
           FROM refs c
          WHERE c.ref_id = ANY(%s)
            AND c.kind = 'job'
-           AND c.deleted_at IS NULL
+           AND c.retired_at IS NULL
            AND COALESCE(
                  (SELECT t.value FROM ref_tags rt
                     JOIN tags t ON t.tag_id = rt.tag_id
@@ -198,7 +198,7 @@ def _wake_children_deadline_exceeded(
         SELECT r.ref_id, r.meta->'wake_when'->'payload'->'child_job_ids'
           FROM refs r
          WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -233,7 +233,7 @@ def _wake_at_time(conn: Connection, *, limit: int) -> list[int]:
         SELECT r.ref_id
           FROM refs r
          WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -265,7 +265,7 @@ def _wake_tag_cleared(conn: Connection, *, limit: int) -> list[int]:
         SELECT r.ref_id, r.meta->'wake_when'->'payload'->>'tag'
           FROM refs r
          WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -303,7 +303,7 @@ def _wake_tag_added(conn: Connection, *, limit: int) -> list[int]:
         SELECT r.ref_id, r.meta->'wake_when'->'payload'->>'tag'
           FROM refs r
          WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -344,7 +344,7 @@ def _wake_cancel_override(conn: Connection, *, limit: int) -> list[int]:
         SELECT r.ref_id
           FROM refs r
          WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id

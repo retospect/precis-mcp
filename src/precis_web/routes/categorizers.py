@@ -463,7 +463,7 @@ def _ref_axis_progress(
             "FROM ref_tags rt "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "JOIN refs r ON r.ref_id = rt.ref_id "
-            "WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL "
+            "WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL "
             "AND t.namespace = %(ns)s",
             {"kinds": ["paper", "patent"], "ns": namespace},
         ).fetchone()
@@ -476,7 +476,7 @@ def _paper_patent_total(store: Store) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT count(*)::int FROM refs "
-            "WHERE kind = ANY(%s) AND deleted_at IS NULL",
+            "WHERE kind = ANY(%s) AND retired_at IS NULL",
             (["paper", "patent"],),
         ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
@@ -494,7 +494,7 @@ def _topics_marker_done(store: Store, marker_value: str) -> int:
             "SELECT count(DISTINCT rt.ref_id)::int FROM ref_tags rt "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "JOIN refs r ON r.ref_id = rt.ref_id "
-            "WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL "
+            "WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL "
             "AND t.namespace = %(ns)s AND t.value = %(marker)s",
             {
                 "kinds": ["paper", "patent"],
@@ -518,7 +518,7 @@ def _topic_hit_count(store: Store, slug: str) -> tuple[int, datetime | None]:
             "FROM ref_tags rt "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "JOIN refs r ON r.ref_id = rt.ref_id "
-            "WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL "
+            "WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL "
             "AND t.namespace = 'OPEN' AND t.value = %(val)s",
             {"kinds": ["paper", "patent"], "val": f"topic:{slug}"},
         ).fetchone()

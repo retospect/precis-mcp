@@ -80,7 +80,7 @@ def has_open_change_request(conn: Connection, chunk_id: int) -> bool:
     no ``review`` key, the shape the reviewer files a finding as) counts."""
     anchors = chunk_anchor_forms(conn, chunk_id)
     row = conn.execute(
-        "SELECT 1 FROM refs r WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
+        "SELECT 1 FROM refs r WHERE r.kind = 'todo' AND r.retired_at IS NULL "
         "AND r.meta->>'anchor' = ANY(%s) AND r.meta->>'review' IS NULL "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "

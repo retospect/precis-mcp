@@ -54,7 +54,7 @@ def claim_chunks(conn, *, namespace: str, artifact: str, limit: int) -> list[dic
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
       FROM chunks c
       JOIN refs r ON r.ref_id = c.ref_id
-      WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+      WHERE r.kind = 'paper' AND r.retired_at IS NULL
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph'
         AND length(c.text) > 120
         AND NOT EXISTS (

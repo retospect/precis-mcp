@@ -32,7 +32,7 @@ from here:
   heading chunk in one transaction (``store.drafts.set_draft_title``) so
   search-result name can't drift from the document's.
 * ``POST /drafts/{ident}/delete`` — soft-delete, gated on typing the
-  name; atomic (ref ``deleted_at`` + chunks retired), recoverable.
+  name; atomic (ref ``retired_at`` + chunks retired), recoverable.
 * ``GET /c/{handle}`` — chunk handle → redirect: draft chunk
   (``dc``/``¶``) into smartdraft focused there; paper/other chunk
   (``pc``/``mc``/…) through the ``/r`` resolver. Click target of every
@@ -235,7 +235,7 @@ def _project_id(store: Store, ref_id: int) -> int | None:
     """The draft's owning *live* project todo (the ``draft-of`` target).
 
     Skips a soft-deleted target: ``links_for`` doesn't filter on the
-    destination's ``deleted_at``, so a draft whose project todo was
+    destination's ``retired_at``, so a draft whose project todo was
     deleted would otherwise hand back a dead ``parent_id`` and ``put``
     rejects it (NotFound). Returning ``None`` here makes the anchored
     todo a root instead of erroring."""
@@ -252,7 +252,7 @@ def _job_parent(store: Store, ref: Any) -> int:
 
     ``draft`` is a valid :data:`JOB_PARENT_KINDS` member, so a project-less
     draft still parents its job cleanly (progress/result land under the draft
-    on the task page) instead of hard-erroring. Mirrors ``_owner_workspace``'s
+    on the todo page) instead of hard-erroring. Mirrors ``_owner_workspace``'s
     ``pid if pid is not None else ref.id`` fallback."""
     pid = _project_id(store, ref.id)
     return pid if pid is not None else int(ref.id)
@@ -909,7 +909,7 @@ async def new_draft(
         workspace["doc_type"] = doctype
     # The brief is the planner's standing ``## Project context`` — the
     # document-type register/voice guidance only. The user's description is
-    # the *task*, so it rides as the todo body below (and cascades to child
+    # the *ask*, so it rides as the todo body below (and cascades to child
     # ticks the planner mints), not buried here as background context.
     guidance = _DOC_TYPE_BRIEF.get(doctype, "")
     if guidance:
@@ -1303,7 +1303,7 @@ async def papers_zip_route(request: Request, ident: str) -> Response:
 async def export_pdf_route(request: Request, ident: str) -> Response:
     """Start a ``draft_export`` job (LaTeX → PDF). The job runs on a
     worker; its progress logs + result land under the draft's project on
-    the task page. Redirects back to the reader.
+    the todo page. Redirects back to the reader.
 
     A ``sources=1`` form field additionally bundles every cited
     paper/datasheet PDF the worker holds as a ``pdfpages`` appendix.
@@ -1496,7 +1496,7 @@ async def send_remarkable_route(request: Request, ident: str) -> Response:
     """Start a ``remarkable_send`` job — export the draft in reMarkable mode
     (RM2 geometry + citations as self-contained footnotes), compile the PDF,
     and upload it to the tablet. Runs on a worker; progress + result land
-    under the draft's project on the task page. Redirects back to the reader.
+    under the draft's project on the todo page. Redirects back to the reader.
 
     Only meaningful when a reMarkable credential is configured — the button
     is hidden otherwise — but we re-check here so a stale page can't enqueue
@@ -1551,7 +1551,7 @@ async def send_remarkable_papers_route(request: Request, ident: str) -> Response
     (papers/patents/datasheets) of the draft to the tablet. No export/compile
     is involved: the sources are already-ingested PDFs, pushed as-is into a
     per-draft folder. Runs on a worker; progress + result land under the
-    draft's project on the task page. Redirects back to the reader.
+    draft's project on the todo page. Redirects back to the reader.
 
     Only meaningful when a reMarkable credential is configured — the button
     is hidden otherwise — but we re-check here so a stale page can't enqueue
@@ -1606,7 +1606,7 @@ async def send_remarkable_reading_route(request: Request, ident: str) -> Respons
     (papers/patents/datasheets) of the draft as a tablet-sized "reading
     edition" (body chunks + a claims appendix + the original PDF when this
     host holds a copy) and send each to the tablet. Runs on a worker;
-    progress + result land under the draft's project on the task page.
+    progress + result land under the draft's project on the todo page.
     Redirects back to the reader.
 
     Only meaningful when a reMarkable credential is configured — the button
@@ -1675,7 +1675,7 @@ async def delete_draft(
     request: Request, ident: str, confirm: str = Form("")
 ) -> Response:
     """Soft-delete a whole draft, gated on typing its name. Atomic
-    (``store.drafts.soft_delete_draft`` marks the ref deleted + retires its chunks
+    (``store.drafts.retire_draft`` marks the ref deleted + retires its chunks
     in one transaction); recoverable. The owning project todo is left
     intact — this deletes the document, not the project."""
     store = get_store(request)
@@ -1686,7 +1686,7 @@ async def delete_draft(
         # name mismatch — bounce back to the reader, nothing deleted.
         return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
     try:
-        store.drafts.soft_delete_draft(ref.id)
+        store.drafts.retire_draft(ref.id)
     except Exception as exc:  # pragma: no cover - defensive
         return templates.TemplateResponse(
             request,
@@ -2426,13 +2426,15 @@ async def delete_block(
     return JSONResponse({"ok": True})
 
 
-#: Old reviewer-menu vocabulary → the unified ledger's lens names (decided
-#: fallback): one checker namespace —
-#: ``structural``/``deep_review`` are kept as accepted ``lens=`` ALIASES so
-#: an old caller (bookmark, script) still works, but every mint now lands
-#: under ``structure``/``adversarial`` in ``chunk_review``, never the old
-#: names.
-_LENS_ALIASES: dict[str, str] = {
+#: Old reviewer-menu vocabulary → the unified ledger's persona names
+#: (decided fallback): one checker namespace —
+#: ``structural``/``deep_review`` are kept as accepted ``persona=`` ALIASES
+#: so an old caller (bookmark, script) still works, but every mint now
+#: lands under ``structure``/``adversarial`` in ``chunk_review``, never the
+#: old names. (Vocabulary-compaction Stage D: this endpoint's wire field
+#: was ``lens``; Stage A already renamed the code-internal concept to
+#: **persona** — see ``quest/review_fanout.py``.)
+_PERSONA_ALIASES: dict[str, str] = {
     "structural": "structure",
     "deep_review": "adversarial",
 }
@@ -2443,13 +2445,13 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
     """Runs the incremental review fanout
     (``quest.review_fanout.mint_review_fanout``) over a draft.
 
-    Body ``{lens, dc?, only_dirty?}``:
+    Body ``{persona, dc?, only_dirty?}``:
 
-    - ``lens`` — ``flow``|``cites``|``structure``|``adversarial``|``toc``|
+    - ``persona`` — ``flow``|``cites``|``structure``|``adversarial``|``toc``|
       ``all`` (aliases: ``structural``→``structure``,
       ``deep_review``→``adversarial``). ``all`` mints :data:`ALL_PERSONAS`
       plus :data:`DOC_PERSONAS` when scope is the whole draft
-      (``mint_review_fanout`` gates ``doc_lenses`` to ``scope is None``, so
+      (``mint_review_fanout`` gates ``doc_personas`` to ``scope is None``, so
       passing them ``dc``-scoped is a no-op). ``toc`` is
       document-altitude-only: 400 if ``dc`` scopes it to a chunk/subtree.
     - ``dc`` — block handle (chunk or heading) narrowing scope to it/its
@@ -2471,8 +2473,8 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    lens_raw = str(payload.get("lens") or "").strip()
-    lens = _LENS_ALIASES.get(lens_raw, lens_raw)
+    persona_raw = str(payload.get("persona") or "").strip()
+    persona = _PERSONA_ALIASES.get(persona_raw, persona_raw)
     dc = str(payload.get("dc") or "").strip()
     scope_chunk_id: int | None = None
     if dc:
@@ -2482,25 +2484,25 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
                 {"ok": False, "error": "block not found"}, status_code=404
             )
         scope_chunk_id = chunk.chunk_id
-    lenses: tuple[str, ...]
-    doc_lenses: tuple[str, ...]
-    if lens == "toc":
+    personas: tuple[str, ...]
+    doc_personas: tuple[str, ...]
+    if persona == "toc":
         if scope_chunk_id is not None:
             return JSONResponse(
                 {
                     "ok": False,
-                    "error": "the toc lens is whole-draft only — omit dc",
+                    "error": "the toc persona is whole-draft only — omit dc",
                 },
                 status_code=400,
             )
-        lenses, doc_lenses = (), ("toc",)
-    elif lens == "all":
-        lenses, doc_lenses = ALL_PERSONAS, DOC_PERSONAS
-    elif lens in ALL_PERSONAS:
-        lenses, doc_lenses = (lens,), ()
+        personas, doc_personas = (), ("toc",)
+    elif persona == "all":
+        personas, doc_personas = ALL_PERSONAS, DOC_PERSONAS
+    elif persona in ALL_PERSONAS:
+        personas, doc_personas = (persona,), ()
     else:
         return JSONResponse(
-            {"ok": False, "error": f"unknown lens {lens_raw!r}"}, status_code=400
+            {"ok": False, "error": f"unknown persona {persona_raw!r}"}, status_code=400
         )
     only_dirty_raw = payload.get("only_dirty")
     only_dirty = (
@@ -2510,8 +2512,8 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
         summary = mint_review_fanout(
             store,
             ref.id,
-            personas=lenses,
-            doc_personas=doc_lenses,
+            personas=personas,
+            doc_personas=doc_personas,
             only_dirty=only_dirty,
             scope=scope_chunk_id,
         )
@@ -2527,8 +2529,8 @@ async def retract_review_route(request: Request, ident: str) -> JSONResponse:
     ``Store.retract_review``, reverting the chunk to "requires review".
 
     Body ``{dc, checker?}`` — ``checker`` defaults to ``'human'`` (the ✓
-    gutter's un-check), but any ledger checker name works (a machine lens's
-    row can be retracted the same way). Returns the chunk's fresh
+    gutter's un-check), but any ledger checker name works (a machine
+    persona's row can be retracted the same way). Returns the chunk's fresh
     per-checker status (mirrors ``/human-review``'s response shape) plus
     the whole-draft rollup; a 404 when no such row existed to retract
     (matches this file's not-found convention elsewhere)."""
@@ -2667,7 +2669,7 @@ async def set_authoring(
     request: Request, ident: str, enabled: str = Form("0")
 ) -> Response:
     """Per-document auto-author toggle (3e): when ON, the grounded review
-    lenses (cites/structure) EDIT the draft instead of only filing findings.
+    personas (cites/structure) EDIT the draft instead of only filing findings.
     Writes draft.meta.authoring_enabled. Default OFF."""
     store = get_store(request)
     ref = _draft_ref(store, ident)

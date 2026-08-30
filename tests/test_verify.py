@@ -92,7 +92,7 @@ class TestResolveFindingRefId:
 
     def test_rejects_deleted_finding(self, store) -> None:
         ref_id, pub_id = _seed_established_finding(store)
-        store.soft_delete_ref(ref_id)
+        store.retire_ref(ref_id)
         with pytest.raises(NotFound):
             _resolve_finding_ref_id(store, pub_id)
 

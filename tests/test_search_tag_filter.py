@@ -345,7 +345,7 @@ class TestPosBoundary:
         # the rest of the WHERE clause via " AND ".
         with store.pool.connection() as conn:
             row = conn.execute(
-                f"SELECT count(*) FROM refs r WHERE r.deleted_at IS NULL AND {frag}",
+                f"SELECT count(*) FROM refs r WHERE r.retired_at IS NULL AND {frag}",
                 params,
             ).fetchone()
         assert row is not None

@@ -144,7 +144,7 @@ def _parked_child_still_blocks_sql(parent_alias: str, child_alias: str) -> str:
                SELECT 1 FROM refs j
                 WHERE j.parent_id = {parent_alias}.ref_id
                   AND j.kind = 'job'
-                  AND j.deleted_at IS NULL
+                  AND j.retired_at IS NULL
                   AND j.meta->>'job_type' = 'plan_tick'
                   AND j.created_at > now() - interval '{_PARKED_CHILD_REPLAN_COOLDOWN}'
            )
@@ -388,7 +388,7 @@ def _cadence_parent_ids(store: Store, parent_ids: list[int]) -> set[int]:
             "SELECT r.ref_id FROM refs r "
             "JOIN refs w ON w.ref_id = r.parent_id "
             "WHERE r.ref_id = ANY(%s) "
-            "AND w.deleted_at IS NULL "
+            "AND w.retired_at IS NULL "
             "AND w.meta ? 'schedule'",
             (parent_ids,),
         ).fetchall()
@@ -425,7 +425,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
 
     * ``kind='todo'`` and not deleted — nor descended from a deleted
       todo. The SQL below only checks the candidate's own
-      ``deleted_at``; the ancestor walk is ``_drop_orphaned``, applied
+      ``retired_at``; the ancestor walk is ``_drop_orphaned``, applied
       to the result.
     * Auto-run signal: either a closed-vocab ``meta.llm_tier``
       (opus / sonnet / haiku — runs the LLM planner) OR an
@@ -476,7 +476,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
             """
             SELECT r.ref_id
               FROM refs r
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND (
                    r.meta ? 'executor'
                    OR r.meta ? 'llm_tier'
@@ -495,7 +495,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                    SELECT 1 FROM refs c
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'job'
-                      AND c.deleted_at IS NULL
+                      AND c.retired_at IS NULL
                       AND """
             + _job_blocks_dispatch_sql("r", "c")
             + """
@@ -504,7 +504,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                    SELECT 1 FROM refs c
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'todo'
-                      AND c.deleted_at IS NULL
+                      AND c.retired_at IS NULL
                       AND COALESCE(
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -537,9 +537,9 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
 def _drop_orphaned(store: Store, ids: list[int]) -> list[int]:
     """Filter out candidates with a soft-deleted **ancestor**.
 
-    ``deleted_at`` is not transitive: deleting a project todo leaves
-    every descendant's own ``deleted_at`` NULL, so the candidate query's
-    ``r.deleted_at IS NULL`` says nothing about whether the *tree* the
+    ``retired_at`` is not transitive: deleting a project todo leaves
+    every descendant's own ``retired_at`` NULL, so the candidate query's
+    ``r.retired_at IS NULL`` says nothing about whether the *tree* the
     candidate lives in is still alive. Without this walk, deleting a
     parent doesn't stop its subtree — it only removes the row you'd look
     at to notice the subtree is still dispatching. (One such orphaned
@@ -553,7 +553,7 @@ def _drop_orphaned(store: Store, ids: list[int]) -> list[int]:
     if not ids:
         return ids
     # Strict ancestors only — the candidate query already filtered rows
-    # whose own ``deleted_at`` is set.
+    # whose own ``retired_at`` is set.
     orphaned = deleted_in_ancestry(store, ids)
     if orphaned:
         log.info(
@@ -597,7 +597,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
               FROM refs r
              WHERE r.ref_id = %s
                AND r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND (
                    r.meta ? 'executor'
                    OR r.meta ? 'llm_tier'
@@ -616,7 +616,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                    SELECT 1 FROM refs c
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'job'
-                      AND c.deleted_at IS NULL
+                      AND c.retired_at IS NULL
                       AND """
             + _job_blocks_dispatch_sql("r", "c")
             + """
@@ -625,7 +625,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                    SELECT 1 FROM refs c
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'todo'
-                      AND c.deleted_at IS NULL
+                      AND c.retired_at IS NULL
                       AND COALESCE(
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -836,7 +836,11 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         )
         store.append_event(
             ref_id,
-            source="dispatch",
+            # Vocabulary-compaction Stage D: the worker registered as
+            # `minter` (registry name; legacy `dispatch`) — this is the
+            # historical source string on ref_events, not the pass's
+            # worker_logs identity (see registry.py's `log_name`).
+            source="minter",
             event="job-minted",
             payload={
                 "job_id": int(child.id),

@@ -968,7 +968,7 @@ def test_full_pass_auto_resolves_cleared_condition(
         resolved = conn.execute(
             "SELECT count(*) FROM refs r JOIN ref_tags rt USING(ref_id) "
             "JOIN tags t USING(tag_id) WHERE r.kind='alert' "
-            "AND r.deleted_at IS NULL AND t.namespace='OPEN' AND t.value=%s",
+            "AND r.retired_at IS NULL AND t.namespace='OPEN' AND t.value=%s",
             (STATE_RESOLVED,),
         ).fetchone()
     assert resolved is not None

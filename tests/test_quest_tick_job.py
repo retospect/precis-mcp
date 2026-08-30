@@ -718,7 +718,7 @@ class TestRC2SelfRest:
         calls = _stub_tick(monkeypatch, _Outcome())
         ctx = FakeCtx(_meta())
         ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
-            deleted_at=None, meta={}
+            retired_at=None, meta={}
         )
         ctx.store.tags_for = lambda ref_id: [
             SimpleNamespace(namespace="closed", prefix="STATUS", value="dormant")
@@ -745,7 +745,7 @@ class TestRC2SelfRest:
         monkeypatch.setattr(qt, "_pending_sim_ids", _fake_pending)
         ctx = FakeCtx(_meta({"phase": "await", "child_job_ids": [811]}))
         ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
-            deleted_at=None, meta={}
+            retired_at=None, meta={}
         )
         ctx.store.tags_for = lambda ref_id: [
             SimpleNamespace(namespace="closed", prefix="STATUS", value="abandoned")

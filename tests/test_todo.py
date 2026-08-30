@@ -65,14 +65,14 @@ def _latest_todo_id(handler: TodoHandler) -> int:
 
 
 def test_create_without_body_writes_no_chunk(handler: TodoHandler) -> None:
-    """The common case: a todo is just a task line — no body chunk at all."""
+    """The common case: a todo is just a title — no body chunk at all."""
     handler.put(text="finish the report")
     tid = _latest_todo_id(handler)
     assert handler.store.chunks.list_chunks_for_ref(tid) == []
 
 
 def test_create_with_body_writes_todo_body_chunk(handler: TodoHandler) -> None:
-    """put(body=...) attaches a todo_body chunk; the task line stays in
+    """put(body=...) attaches a todo_body chunk; the title stays in
     refs.title (a good header already), the details ride in the chunk."""
     handler.put(text="finish the report", body="cover Q3 revenue and churn")
     tid = _latest_todo_id(handler)

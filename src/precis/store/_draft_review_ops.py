@@ -46,7 +46,7 @@ class ReviewableChunk:
     """One live, reviewable chunk stub — the ``(chunk_id, handle,
     chunk_kind)`` triple :meth:`DraftReviewStore.reviewable_chunks`
     returns. Walked by the review fanout (``quest/review_fanout.py::
-    mint_review_fanout``) to decide which ``(chunk, lens)`` pairs to mint
+    mint_review_fanout``) to decide which ``(chunk, persona)`` pairs to mint
     review-todos for, independent of any checker's ledger state."""
 
     chunk_id: int
@@ -211,7 +211,7 @@ class DraftReviewStore:
     def toc_digest(self, ref_id: int) -> str:
         """Hex sha256 over the ordered ``(chunk_id, content_sha)`` list of
         ``ref_id``'s live HEADING chunks, in document order (item 10 — the
-        ``toc`` lens's approval pins to this instead of any single chunk's
+        ``toc`` persona's approval pins to this instead of any single chunk's
         sha). Adding/removing/renaming/reordering a section changes the
         digest; editing a paragraph's body does not — deliberately excludes
         body text and word counts (balance drift is the deterministic
@@ -279,7 +279,7 @@ class DraftReviewStore:
         Unlike :meth:`chunks_requiring_review`, this is not filtered by
         ``checker`` — it's the whole-draft chunk list a fanout (rung 3a
         ``mint_review_fanout``) walks to mint one review-todo per
-        ``(chunk, lens)``, independent of dirty/clean status."""
+        ``(chunk, persona)``, independent of dirty/clean status."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 """
@@ -331,7 +331,7 @@ class DraftReviewStore:
         ]
 
     def review_root_chunk_id(self, ref_id: int) -> int | None:
-        """The chunk the document-level ``toc`` lens rides on (item 10) —
+        """The chunk the document-level ``toc`` persona rides on (item 10) —
         the first ROOT-level chunk (``parent_chunk_id IS NULL``) in
         document order (lowest ``pos``) that satisfies the SAME
         reviewability filters :meth:`review_status_for_draft` scopes its
@@ -390,7 +390,7 @@ class DraftReviewStore:
         scaffolded top-level sections are all ``parent_chunk_id IS NULL``
         siblings, see :meth:`DraftStore.create_draft`/
         :meth:`DraftStore.scaffold_sections`) also carries the
-        document-level ``toc`` lens entry (item 10): its ``dirty`` is
+        document-level ``toc`` persona entry (item 10): its ``dirty`` is
         patched to compare the stored digest (``approved_sha``) against
         :meth:`toc_digest` — NOT the chunk's own ``content_sha`` — and a
         synthetic never-reviewed ``toc`` row is added when no
@@ -482,7 +482,7 @@ class DraftReviewStore:
         # root. Patch/synthesize its ``toc`` row against the recomputed
         # digest rather than the generic content_sha comparison. Routed
         # through ``review_root_chunk_id`` (not just ``roots[0]``) so this
-        # picks the SAME chunk the fanout's toc-lens mint anchors on —
+        # picks the SAME chunk the fanout's toc-persona mint anchors on —
         # both already apply the identical content_sha filter here (the
         # rows feeding ``roots`` were fetched with it above), but sharing
         # the helper keeps the two selections from ever drifting apart.

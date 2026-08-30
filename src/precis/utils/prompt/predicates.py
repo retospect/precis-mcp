@@ -187,7 +187,7 @@ def _project_plan(ctx: AssemblyContext) -> tuple[int, str] | None:
                   FROM links l JOIN refs pl ON pl.ref_id = l.src_ref_id
                  WHERE l.relation = 'plan-of'
                    AND l.dst_ref_id IN (SELECT ref_id FROM anc)
-                   AND pl.kind = 'plan' AND pl.deleted_at IS NULL
+                   AND pl.kind = 'plan' AND pl.retired_at IS NULL
                  LIMIT 1
                 """,
                 (ctx.ref_id,),
@@ -241,7 +241,7 @@ def _bound_draft_ref(ctx: AssemblyContext) -> tuple[int, str, str] | None:
                   FROM links l JOIN refs dr ON dr.ref_id = l.src_ref_id
                  WHERE l.relation = 'draft-of'
                    AND l.dst_ref_id IN (SELECT ref_id FROM anc)
-                   AND dr.deleted_at IS NULL
+                   AND dr.retired_at IS NULL
                  LIMIT 1
                 """,
                 (ctx.ref_id,),

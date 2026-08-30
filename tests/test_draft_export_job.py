@@ -267,4 +267,4 @@ def test_dispatch_targets_project_workspace(
     assert not ctx.failures, ctx.failures
     # main.tex written into the project workspace under PRECIS_ROOT
     assert (tmp_path / "projects" / "p1" / "main.tex").is_file()
-    assert any("task page" in t for _k, t in ctx.events)
+    assert any("todo page" in t for _k, t in ctx.events)

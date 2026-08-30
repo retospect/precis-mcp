@@ -96,7 +96,7 @@ def _groomed_gripe_ids(store: Store) -> set[int]:
             SELECT DISTINCT (meta -> 'params' ->> 'gripe_id')
               FROM refs
              WHERE kind = 'todo'
-               AND deleted_at IS NULL
+               AND retired_at IS NULL
                AND meta -> 'params' ? 'gripe_id'
             """
         ).fetchall()
@@ -122,7 +122,7 @@ def _ensure_root(store: Store) -> int:
             """
             SELECT ref_id FROM refs
              WHERE kind = 'todo'
-               AND deleted_at IS NULL
+               AND retired_at IS NULL
                AND (meta ->> %s) = 'true'
              ORDER BY ref_id
              LIMIT 1

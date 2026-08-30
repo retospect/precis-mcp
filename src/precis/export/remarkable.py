@@ -283,7 +283,7 @@ def send_pdf(
     """Upload a compiled PDF to the reMarkable cloud under ``folder``.
 
     Never raises on an upload failure — returns ``ok=False`` with the
-    process output (the worker records it on the task page). ``skipped=True``
+    process output (the worker records it on the todo page). ``skipped=True``
     when the binary or credential is missing (a configuration gap, not a
     failed upload). ``display_name`` sets the document's visible title on the
     tablet (defaults to the PDF's stem); the file is staged under that name

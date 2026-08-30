@@ -313,7 +313,7 @@ def _live_jobs(
         row = conn.execute(
             f"""
             SELECT count(*) FROM refs r
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %s
                {pass_clause}
                AND EXISTS (
@@ -356,7 +356,7 @@ def _in_failed_cooldown(
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %s
                {pass_clause}
                AND t.namespace = 'STATUS'
@@ -413,7 +413,7 @@ def _mint_jobs(store: Store, src: _BacklogSource, n: int) -> int:
         idem_key = f"materialize:{src.name}:{tick}:{i}"
         with store.pool.connection() as conn:
             existing = conn.execute(
-                "SELECT 1 FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+                "SELECT 1 FROM refs WHERE kind = 'job' AND retired_at IS NULL "
                 "AND meta->>'idem_key' = %s LIMIT 1",
                 (idem_key,),
             ).fetchone()
@@ -482,7 +482,7 @@ def _rebalance_stuck_band(store: Store, src: _BacklogSource, *, stuck: bool) -> 
             f"""
             UPDATE refs r
                SET prio = %s
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %s
                {pass_clause}
                AND r.prio IS DISTINCT FROM %s

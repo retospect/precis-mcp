@@ -109,7 +109,7 @@ def main() -> None:
                       ON e.chunk_id = c.chunk_id
                      AND e.embedder = %(embedder)s AND e.status = 'ok'
                     JOIN refs r ON r.ref_id = c.ref_id
-                    WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+                    WHERE r.kind = 'paper' AND r.retired_at IS NULL
                       AND c.ord >= 0
                 )
                 SELECT COALESCE((SELECT id_value FROM ref_identifiers
@@ -123,7 +123,7 @@ def main() -> None:
                        AVG(h.vector)::vector                     AS rep
                 FROM refs r
                 JOIN head h ON h.ref_id = r.ref_id AND h.rn <= %(head)s
-                WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+                WHERE r.kind = 'paper' AND r.retired_at IS NULL
                 GROUP BY r.ref_id
                 HAVING AVG(h.vector) IS NOT NULL
                 ORDER BY slug

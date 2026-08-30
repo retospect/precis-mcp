@@ -32,7 +32,7 @@ def _open_drift_alerts(store: Any) -> list[tuple[int, str]]:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta->>'alert_source' = 'llm_reconcile:drift'
                AND t.namespace = 'OPEN'
                AND t.value = 'alert-state:open'

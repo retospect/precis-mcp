@@ -264,7 +264,7 @@ def _format_target_handle(
     else:
         ident = ref.slug if ref.slug is not None else str(ref.id)
         handle = f"{ref.kind}:{ident}~{pos}"
-    if ref.deleted_at is not None:
+    if ref.retired_at is not None:
         handle += " (deleted)"
     return handle
 

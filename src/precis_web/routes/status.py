@@ -126,7 +126,7 @@ def _safe(fn) -> Any:
 def _kind_counts(store: Store) -> list[dict[str, Any]]:
     with _connect(store) as conn:
         rows = conn.execute(
-            "SELECT kind, count(*)::int FROM refs WHERE deleted_at IS NULL "
+            "SELECT kind, count(*)::int FROM refs WHERE retired_at IS NULL "
             "GROUP BY kind ORDER BY count(*) DESC"
         ).fetchall()
     return [{"kind": r[0], "count": int(r[1])} for r in rows]
@@ -137,7 +137,7 @@ def _paper_summary(store: Store) -> dict[str, int]:
         row = conn.execute(
             "SELECT count(*)::int AS total, "
             "count(*) FILTER (WHERE pdf_sha256 IS NOT NULL)::int AS held "
-            "FROM refs WHERE kind = 'paper' AND deleted_at IS NULL"
+            "FROM refs WHERE kind = 'paper' AND retired_at IS NULL"
         ).fetchone()
     total, held = (int(row[0]), int(row[1])) if row else (0, 0)
     return {"total": total, "held": held, "stub": total - held}
@@ -153,7 +153,7 @@ def _todo_status(store: Store) -> list[dict[str, Any]]:
                 SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                  WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1
               ) st ON TRUE
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
              GROUP BY COALESCE(st.value, 'open')
              ORDER BY count(*) DESC
             """
@@ -185,7 +185,7 @@ def _recent_dreams(store: Store, limit: int = 5) -> list[dict[str, Any]]:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'tier' AND t.value = 'dream'
              ORDER BY r.updated_at DESC
              LIMIT %s
@@ -217,7 +217,7 @@ def _synthetic_insights_count(store: Store) -> int:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'tier'
                AND t.value = 'synthetic-insight'
             """
@@ -595,7 +595,7 @@ def _heartbeats(store: Store) -> list[dict[str, Any]]:
 _LIVENESS_SIGNALS: list[tuple[str, str, int | None]] = [
     (
         "Paper ingested",
-        "SELECT max(created_at) FROM refs WHERE kind = 'paper' AND deleted_at IS NULL",
+        "SELECT max(created_at) FROM refs WHERE kind = 'paper' AND retired_at IS NULL",
         None,
     ),
     # ``max(created_at)`` seq-scans all ~1.5M chunks (no index on
@@ -612,7 +612,7 @@ _LIVENESS_SIGNALS: list[tuple[str, str, int | None]] = [
     ("Chunk summarized", "SELECT max(created_at) FROM chunk_summaries", None),
     (
         "News ingested",
-        "SELECT max(created_at) FROM refs WHERE kind = 'news' AND deleted_at IS NULL",
+        "SELECT max(created_at) FROM refs WHERE kind = 'news' AND retired_at IS NULL",
         2 * 3600,  # cron */30m — amber after ~4 missed polls
     ),
     (
@@ -768,7 +768,7 @@ def _now_jobs(store: Store) -> dict[str, Any]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND t.namespace = %s AND t.value = %s
              ORDER BY rt.created_at DESC
             """,
@@ -780,7 +780,7 @@ def _now_jobs(store: Store) -> dict[str, Any]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND t.namespace = %s AND t.value = %s
              ORDER BY r.created_at ASC
             """,
@@ -792,7 +792,7 @@ def _now_jobs(store: Store) -> dict[str, Any]:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND t.namespace = %s AND t.value = ANY(%s)
              ORDER BY rt.created_at DESC
              LIMIT %s
@@ -1046,7 +1046,7 @@ def _automations(store: Store, limit: int = 20) -> list[dict[str, Any]]:
                 "SELECT o.ref_id, o.kind, o.title FROM links l "
                 "JOIN refs o ON o.ref_id = l.dst_ref_id "
                 "WHERE l.src_ref_id = %s AND l.relation = 'derived-into' "
-                "  AND o.deleted_at IS NULL "
+                "  AND o.retired_at IS NULL "
                 "ORDER BY l.created_at DESC LIMIT 1",
                 (r.id,),
             ).fetchone()

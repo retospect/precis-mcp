@@ -406,7 +406,7 @@ def _triage_refs(store: Store, limit: int | None) -> list[Any]:
             "LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id "
             "LEFT JOIN tags t ON t.tag_id = rt.tag_id "
             "  AND t.namespace='OPEN' AND t.value='needs-triage' "
-            "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+            "WHERE r.kind='paper' AND r.retired_at IS NULL "
             "  AND ( t.tag_id IS NOT NULL "
             "        OR ( r.pdf_sha256 IS NOT NULL "
             "             AND ( r.title IS NULL OR btrim(r.title) = '' "

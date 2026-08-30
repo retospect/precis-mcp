@@ -143,7 +143,7 @@ def test_delete(handler: MemoryHandler) -> None:
 
     # MCP critic MINOR-C (round 1): soft-deleted refs raise ``Gone``
     # (distinct from ``NotFound`` for never-existed ids). The row is
-    # still addressable at the SQL layer by clearing ``deleted_at``.
+    # still addressable at the SQL layer by clearing ``retired_at``.
     with pytest.raises(Gone, match="soft-deleted"):
         handler.get(id=new_id)
 

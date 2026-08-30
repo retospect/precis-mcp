@@ -454,7 +454,7 @@ def _load_papers(store: Store) -> dict[int, _PaperRow]:
                      SELECT count(*) AS n FROM chunks c
                       WHERE c.ref_id = r.ref_id AND c.ord >= 0 AND c.retired_at IS NULL
                    ) bc ON true
-             WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+             WHERE r.kind = 'paper' AND r.retired_at IS NULL
             """
         ).fetchall()
 
@@ -505,7 +505,7 @@ def top_ranked_papers(store: Store, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT ref_id, title, (meta->'paper_rank'->>'read_first')::float "
             "AS read_first FROM refs "
-            "WHERE kind = 'paper' AND deleted_at IS NULL AND meta ? 'paper_rank' "
+            "WHERE kind = 'paper' AND retired_at IS NULL AND meta ? 'paper_rank' "
             "ORDER BY read_first DESC, ref_id LIMIT %s",
             (limit,),
         ).fetchall()

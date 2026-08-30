@@ -46,7 +46,7 @@ def _load_cohort_concepts(
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, meta->>'name', meta->>'definition' FROM refs "
-            "WHERE kind = 'concept' AND deleted_at IS NULL "
+            "WHERE kind = 'concept' AND retired_at IS NULL "
             "AND jsonb_exists(meta->'cohorts', %s) "
             "ORDER BY ref_id LIMIT %s",
             (cohort, limit),

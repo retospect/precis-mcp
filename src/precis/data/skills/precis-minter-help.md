@@ -1,35 +1,35 @@
 ---
-id: precis-dispatch-help
-title: precis — the dispatch worker (todo intent → kind='job' execution)
-summary: bridging intent to execution — meta.executor markers, dispatch worker, auto-injected resolution
+id: precis-minter-help
+title: precis — the minter worker (todo intent → kind='job' execution)
+summary: bridging intent to execution — meta.executor markers, minter worker, auto-injected resolution
 answers:
   - how do I get a todo turned into a running job automatically?
   - when should I set meta.executor on a todo?
   - how does a parent todo know its child job succeeded?
-  - what's the difference between the dispatch worker and putting a job directly?
-applies-to: put (kind='todo' with meta.executor); the precis worker --only dispatch pass
+  - what's the difference between the minter worker and putting a job directly?
+applies-to: put (kind='todo' with meta.executor); the precis worker --only minter pass
 status: active
 ---
 
-# precis-dispatch-help — the intent → execution bridge
+# precis-minter-help — the intent → execution bridge
 
 Wires the todo tree (intent) to the job substrate
 (execution) via three pieces:
 
 * **`meta.executor`** + **`meta.job_type`** on a `kind='todo'` ref —
   the "I want this run" marker.
-* The **dispatch worker** (`precis worker --only dispatch`, in the
-  default rotation) — walks open todos with `meta.executor` set,
-  mints a `kind='job'` child under each, leaves the existing
-  executor pool to run it.
+* The **minter worker** (`precis worker --only minter`, in the
+  default rotation; legacy name `dispatch`) — walks open todos with
+  `meta.executor` set, mints a `kind='job'` child under each, leaves
+  the existing executor pool to run it.
 * The **`child_job_succeeded` auto_check evaluator** —
-  auto-injected on the parent when the dispatch worker mints the
+  auto-injected on the parent when the minter worker mints the
   job, so the parent flips `STATUS:done` when the job succeeds.
 
-The dispatch worker is the **only sanctioned path** for minting new
+The minter worker is the **only sanctioned path** for minting new
 jobs. Direct `put(kind='job', parent_id=N, ...)` still works
 (documented in `precis-job-help`) but skips the auto_check
-injection and the dispatch logging — use it for one-off submits,
+injection and the minter's logging — use it for one-off submits,
 not for recurring intent.
 
 ## When do I set `meta.executor`?
@@ -43,7 +43,7 @@ not for recurring intent.
 | …is one tick of a recurring (spawned automatically) | usually inherited from the umbrella |
 
 In short: `meta.executor` means **"this todo IS a thing the
-dispatch worker should turn into a job."**
+minter worker should turn into a job."**
 
 ## Toolpath — write an intent, walk away
 
@@ -57,10 +57,10 @@ todo = put(
 )
 # 2) Link to whatever the job operates on, if anything.
 link(kind="todo", id=todo.id, target="gripe:42", rel="fixes")
-# 3) That's it. Within one dispatch tick (≤ 1 min) you'll see:
+# 3) That's it. Within one minter tick (≤ 1 min) you'll see:
 #    - a kind='job' child of todo.id with STATUS:queued
 #    - meta.auto_check={'type':'child_job_succeeded'} on the todo
-#    - a ref_events row on the todo: source='dispatch', event='job-minted'
+#    - a ref_events row on the todo: source='minter', event='job-minted'
 ```
 
 You can verify by reading the todo:
@@ -70,13 +70,13 @@ get(kind="todo", id=todo.id, view="tree")
 # → todo + the spawned job under it (job rendered with ⚙ marker)
 ```
 
-## What the dispatcher does, step-by-step
+## What the minter does, step-by-step
 
 1. **Candidate scan.** SQL: every open todo with `meta.executor`,
    no existing live `kind='job'` child, status in `open|doing`,
    not under a paused / recurring ancestor.
 2. **Per-candidate claim.** `SELECT … FROM refs WHERE ref_id = …
-   FOR UPDATE OF r SKIP LOCKED` so two dispatch workers (different
+   FOR UPDATE OF r SKIP LOCKED` so two minter workers (different
    hosts) serialise on the row.
 3. **Validate.** Executor must be known (`is_known_executor`);
    job_type must exist; `job_type.compatible_executors` must
@@ -88,16 +88,16 @@ get(kind="todo", id=todo.id, view="tree")
 5. **Mint the child job.** `parent_id` = the todo; `meta` carries
    `job_type`, `executor`, `params`, `dispatched_from_todo`;
    `STATUS:queued` open tag.
-6. **Append `ref_events`** on the parent: `source='dispatch',
+6. **Append `ref_events`** on the parent: `source='minter',
    event='job-minted', payload={'job_id': N, ...}`.
 
 Once the job is queued, the `job_claude_inproc` worker (also in
 the default rotation) picks it up by `STATUS:queued`, runs the
 executor, and flips status to succeeded / failed.
 
-## What gets rejected at dispatch time?
+## What gets rejected at mint time?
 
-The dispatcher logs the rejection and moves on; the todo stays
+The minter logs the rejection and moves on; the todo stays
 open. The operator notices via worker logs, which carry structured
 entries with the rejection reason.
 
@@ -109,12 +109,16 @@ entries with the rejection reason.
 | Executor / job_type mismatch | `dispatch: parent #N job_type=X incompatible with executor=Y` |
 | Required capability missing | `dispatch: parent #N executor=X missing caps for Y: {...}` |
 
+(Log lines still carry the `dispatch:` prefix — `workers/dispatch.py`
+is the still-named module; `registry.py`'s `log_name="dispatch"`
+keeps `worker_logs` attribution matched to it.)
+
 ## Toolpath — failed job, decide next move
 
 A failed job tags the parent todo `child-failed:<job_id>` (the
 failure bubble). The doable view excludes parents with that
 tag, so they don't keep getting re-picked. asa-bot reads
-`view='attention'` (see `precis-tasks-help`), sees the stuck
+`view='attention'` (see `precis-todo-tree-help`), sees the stuck
 parent, decides:
 
 ```python
@@ -126,7 +130,7 @@ the_job = get(kind="job", id=143)  # status + job_event chunks
 # Option A — same executor, fresh attempt.
 tag(kind="todo", id=98, remove=["child-failed:143"])
 delete(kind="job", id=143)
-# Dispatch worker mints a fresh kind='job' on the next tick because
+# Minter worker mints a fresh kind='job' on the next tick because
 # the "no existing child job" check now passes.
 
 # Option B — switch executor (once we have more than claude_inproc).
@@ -177,11 +181,11 @@ slices and parks at `STATUS:waiting_*` between them).
 Job_types pair with a compatible executor at submit; see the table
 in `precis-job-help`.
 
-## Running the dispatcher
+## Running the minter
 
 ```sh
-precis worker --only dispatch              # drain alone (debug / backfill)
-precis worker                              # default cycle includes dispatch
+precis worker --only minter                # drain alone (debug / backfill)
+precis worker                              # default cycle includes minter
 precis worker --profile system             # explicit profile (default)
 ```
 
@@ -193,6 +197,6 @@ OF r SKIP LOCKED` per candidate parent.
 ```python
 get(kind="skill", id="precis-job-help")  # the kind='job' surface
 get(kind="skill", id="precis-fix-gripe-help")  # the first concrete job_type
-get(kind="skill", id="precis-auto-tasks-help")  # the child_job_succeeded evaluator
-get(kind="skill", id="precis-tasks-help")  # the todo tree shape
+get(kind="skill", id="precis-auto-todo-help")  # the child_job_succeeded evaluator
+get(kind="skill", id="precis-todo-tree-help")  # the todo tree shape
 ```

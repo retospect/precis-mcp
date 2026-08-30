@@ -69,7 +69,7 @@ def _claim_embedding_sha(
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT claim_sha FROM claim_embeddings "
-            "WHERE claim_ref_id = %s AND embedder = %s",
+            "WHERE hub_ref_id = %s AND embedder = %s",
             (hub_ref_id, embedder_model),
         ).fetchone()
     return None if row is None else str(row[0])
@@ -250,7 +250,7 @@ def test_near_claims_excludes_a_claim_matching_its_own_source_chunk(store: Any) 
         # ref_id, to exercise the self-exclusion guard in isolation.
         vec = embedder.embed_one("A self-match exclusion probe claim.")
         conn.execute(
-            "INSERT INTO claim_embeddings (claim_ref_id, embedder, claim_sha, vector) "
+            "INSERT INTO claim_embeddings (hub_ref_id, embedder, claim_sha, vector) "
             "VALUES (%s, %s, 'deadbeef', %s)",
             (hub, embedder.model, vec),
         )
@@ -329,7 +329,7 @@ def test_compound_hub_excluded_from_due_marking_even_with_a_stale_embedding_row(
     with store.pool.connection() as conn:
         vec = embedder.embed_one(claim_sentence)
         conn.execute(
-            "INSERT INTO claim_embeddings (claim_ref_id, embedder, claim_sha, vector) "
+            "INSERT INTO claim_embeddings (hub_ref_id, embedder, claim_sha, vector) "
             "VALUES (%s, %s, 'deadbeef', %s)",
             (compound, embedder.model, vec),
         )
@@ -365,7 +365,7 @@ def test_near_claims_excludes_a_compound_claim(store: Any) -> None:
     with store.pool.connection() as conn:
         vec = embedder.embed_one(claim_sentence)
         conn.execute(
-            "INSERT INTO claim_embeddings (claim_ref_id, embedder, claim_sha, vector) "
+            "INSERT INTO claim_embeddings (hub_ref_id, embedder, claim_sha, vector) "
             "VALUES (%s, %s, 'deadbeef', %s)",
             (compound, embedder.model, vec),
         )

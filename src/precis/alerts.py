@@ -177,7 +177,7 @@ def raise_alert(
                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id
                  WHERE r.kind = 'alert'
-                   AND r.deleted_at IS NULL
+                   AND r.retired_at IS NULL
                    AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
                    AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = %s
                    AND t.namespace = 'OPEN'
@@ -273,7 +273,7 @@ def open_alert_severity(store: Store, *, source: str, fingerprint: str) -> str |
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
                AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = %s
                AND t.namespace = 'OPEN'
@@ -351,7 +351,7 @@ def sync_resolved_at_with_tags(
                       AND t.namespace = 'OPEN' AND t.value = %s
                ) AS is_open
           FROM refs r
-         WHERE r.ref_id = %s AND r.kind = 'alert' AND r.deleted_at IS NULL
+         WHERE r.ref_id = %s AND r.kind = 'alert' AND r.retired_at IS NULL
         """,
         (STATE_OPEN, ref_id),
     ).fetchone()
@@ -364,7 +364,7 @@ def sync_resolved_at_with_tags(
         conflict = conn.execute(
             """
             SELECT ref_id FROM refs
-             WHERE kind = 'alert' AND deleted_at IS NULL
+             WHERE kind = 'alert' AND retired_at IS NULL
                AND resolved_at IS NULL
                AND alert_source = %s AND fingerprint = %s
                AND ref_id <> %s
@@ -423,7 +423,7 @@ def resolve_stale_alerts(
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
                AND t.namespace = 'OPEN'
                AND t.value = %s
@@ -467,7 +467,7 @@ def resolve_alert(store: Store, ref_id: int, *, resolved_by: str = "") -> bool:
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.ref_id = %s
                AND r.kind = 'alert'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = %s
             """,
@@ -501,7 +501,7 @@ def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = %s
              ORDER BY CASE r.meta->>'severity'

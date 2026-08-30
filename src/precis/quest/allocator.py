@@ -113,7 +113,7 @@ def active_quest_ids(store: Store) -> list[int]:
             "SELECT r.ref_id FROM refs r "
             "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE r.kind = 'quest' AND r.deleted_at IS NULL "
+            "WHERE r.kind = 'quest' AND r.retired_at IS NULL "
             "AND t.namespace = 'STATUS' AND t.value = 'active' "
             "ORDER BY COALESCE(r.prio, 5) ASC, r.ref_id ASC"
         ).fetchall()

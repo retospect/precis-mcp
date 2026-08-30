@@ -4,7 +4,7 @@ Scans rendered text for ``kind:slug``/``kind:#id``/``kind:N`` and
 replaces each match with an anchor: hover (200ms grace) → htmx fetches a
 preview card from ``/preview/{kind}/{id}`` into a sibling popover;
 click → ``/r/{kind}/{id}`` redirects to the ref's canonical view (paper
-viewer, tasks dashboard focused, generic refs detail).
+viewer, todo dashboard focused, generic refs detail).
 
 Input is **plain text**, HTML-escaped: callers pass raw store fields
 (todo title, memory/conv body, console output) that may legitimately

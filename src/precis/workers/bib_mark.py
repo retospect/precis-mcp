@@ -117,7 +117,7 @@ def _claim_chunks_to_sweep(
           FROM chunks c
           JOIN refs r ON r.ref_id = c.ref_id
          WHERE r.kind = 'paper'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND c.ord >= 0
            AND c.retired_at IS NULL
            AND EXISTS (

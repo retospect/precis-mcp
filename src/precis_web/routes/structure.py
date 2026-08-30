@@ -117,7 +117,7 @@ def _list_rows(store: Store) -> list[dict[str, Any]]:
                r.updated_at
           FROM refs r
          WHERE r.kind = 'structure'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
          ORDER BY r.ref_id DESC
          LIMIT %s
     """
@@ -325,7 +325,7 @@ def _pending_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
           JOIN tags t ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
          WHERE r.parent_id = %s
            AND r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND r.meta->>'job_type' = 'struct_relax'
            AND t.value IN ('queued', 'running', 'failed')
          ORDER BY r.ref_id DESC
@@ -442,7 +442,7 @@ def _run_detail(store: Store, ref_id: int, run_id: int) -> dict[str, Any] | None
             "         WHERE rt.ref_id = r.ref_id LIMIT 1) "
             "  FROM refs r "
             " WHERE r.parent_id = %s AND r.kind = 'job' "
-            "   AND r.deleted_at IS NULL "
+            "   AND r.retired_at IS NULL "
             "   AND r.meta->>'struct_run_id' = %s "
             " ORDER BY r.ref_id DESC LIMIT 1",
             (ref_id, str(run_id)),
@@ -803,7 +803,7 @@ def _quest_context(store: Store, ref_id: int) -> dict[str, Any] | None:
                 "COALESCE(meta->>'rate_Ea', meta->'results'->>'barrier', "
                 "meta->'results'->>'rate_Ea', meta->'results'->>'rate_ea', "
                 "meta->'results'->>'ea') FROM refs "
-                "WHERE kind = 'pathway' AND deleted_at IS NULL "
+                "WHERE kind = 'pathway' AND retired_at IS NULL "
                 "AND meta->>'candidate_ref' = %s ORDER BY ref_id DESC",
                 (str(ref_id),),
             ).fetchall()
@@ -837,7 +837,7 @@ def _latest_proposal(store: Store, ref_id: int) -> dict[str, Any] | None:
          WHERE r.kind = 'job'
            AND r.meta->>'job_type' = 'structure_propose'
            AND (r.meta->'params'->>'structure_ref_id')::int = %s
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
          ORDER BY r.ref_id DESC LIMIT 1
     """
     with store.pool.connection() as conn:

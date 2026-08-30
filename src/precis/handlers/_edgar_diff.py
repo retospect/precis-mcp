@@ -110,7 +110,7 @@ def find_prior_ref(store: Store, ref: Ref) -> Ref | None:
     sql = f"""
         SELECT {_REFS_COLS_ALIASED}
         FROM   refs r
-        WHERE  r.kind = 'edgar' AND r.deleted_at IS NULL
+        WHERE  r.kind = 'edgar' AND r.retired_at IS NULL
                AND r.meta->>'cik' = %s
                AND r.meta->>'form' = %s
                AND coalesce(r.meta->>'period_of_report',

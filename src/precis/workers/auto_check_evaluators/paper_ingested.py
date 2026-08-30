@@ -50,7 +50,7 @@ def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
              WHERE ri.id_kind = %s
                AND ri.id_value = %s
                AND r.kind = 'paper'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND EXISTS (
                    SELECT 1 FROM chunks c
                      JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id

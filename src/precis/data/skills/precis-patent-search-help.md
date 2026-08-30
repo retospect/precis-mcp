@@ -1,9 +1,9 @@
 ---
 id: precis-patent-search-help
 title: precis — search patents (local + EPO OPS)
-summary: patent discovery — merge local hits with EPO OPS, source selection, deduped by DOCDB id
+summary: patent discovery — merge local hits with EPO OPS, reach selection, deduped by DOCDB id
 answers:
-  - when do I use source='local' vs source='remote' for patent search?
+  - when do I use reach='local' vs reach='remote' for patent search?
   - how do I filter patent search by CPC code, applicant, or country?
   - how do I look up a specific patent that a search didn't return?
   - what's the difference between local and remote patent search hits?
@@ -14,7 +14,7 @@ status: active
 # precis-patent-search-help — search × patent
 
 Patent search merges local hits with EPO OPS. The patent-specific
-knob is `source=`; everything else follows the cross-kind search
+knob is `reach=`; everything else follows the cross-kind search
 shape (`page=`, `page_size=`, `tags=`, `scope=`, `exclude=`).
 
 ## Search patents
@@ -27,26 +27,26 @@ search(kind="patent", q="Z-scheme photocatalysis", page_size=20)
 search(kind="patent", q="amine carbon capture", page=2)
 ```
 
-Default `source='both'` — merges local + remote, deduped by DOCDB
+Default `reach='both'` — merges local + remote, deduped by DOCDB
 id. Order is the relevance signal.
 
 ## Pick which leg of search runs
 ## Choose between local store and EPO OPS
-## When do I use source='local' vs source='remote'?
+## When do I use reach='local' vs reach='remote'?
 
 ```python
 search(kind="patent", q="amine carbon capture")  # both (default)
-search(kind="patent", q="amine carbon capture", source="local")  # local only
-search(kind="patent", q="amine carbon capture", source="remote")  # OPS, minus local
+search(kind="patent", q="amine carbon capture", reach="local")  # local only
+search(kind="patent", q="amine carbon capture", reach="remote")  # OPS, minus local
 ```
 
-| `source=` | Returns | Use when |
+| `reach=` | Returns | Use when |
 |---|---|---|
 | `'both'` | Local ∪ OPS, merged by DOCDB id | Default discovery |
 | `'local'` | Only patents already ingested | Offline; reviewing what's curated |
 | `'remote'` | OPS hits **not** already local | Prior-art sweep |
 
-`source='remote'` is the prior-art sweep: OPS results with locally-
+`reach='remote'` is the prior-art sweep: OPS results with locally-
 stored DOCDB ids drop out, so you only see patents you haven't
 fetched yet. `get(kind='patent', id=...)` on any remote hit fetches
 and persists it.

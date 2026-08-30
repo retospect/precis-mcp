@@ -80,8 +80,8 @@ def _collect_seed_results(store: PoolStore, agg_todo_id: int) -> list[dict[str, 
             """
             SELECT j.meta FROM refs t
               JOIN refs j ON j.parent_id = t.ref_id AND j.kind = 'job'
-                          AND j.deleted_at IS NULL
-             WHERE t.parent_id = %s AND t.kind = 'todo' AND t.deleted_at IS NULL
+                          AND j.retired_at IS NULL
+             WHERE t.parent_id = %s AND t.kind = 'todo' AND t.retired_at IS NULL
                AND j.meta->>'job_type' = 'autocatpath_seed'
                AND EXISTS (
                      SELECT 1 FROM ref_tags rt JOIN tags tg ON tg.tag_id = rt.tag_id

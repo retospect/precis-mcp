@@ -42,9 +42,9 @@ class EmailAccount:
 class EmailScan:
     """One row from ``email_scan`` — a per-message injection-scan verdict.
 
-    No body is stored (IMAP is source of truth); only the verdict, the tier
-    that produced it (0 = ``mail_poll`` regex), and the ``evidence`` bag
-    (which signals fired + scanner version). Keyed by
+    No body is stored (IMAP is source of truth); only the verdict, the depth
+    of scan that produced it (0 = ``mail_poll`` regex), and the ``evidence``
+    bag (which signals fired + scanner version). Keyed by
     (account, folder, uidvalidity, uid).
     """
 
@@ -53,7 +53,7 @@ class EmailScan:
     uidvalidity: int
     uid: int
     verdict: str
-    tier: int
+    depth: int
     evidence: dict[str, Any] = field(default_factory=dict)
     scanned_at: datetime | None = None
 
@@ -79,7 +79,7 @@ def _row_to_account(row: tuple[Any, ...]) -> EmailAccount:
     )
 
 
-_SCAN_COLS = "account, folder, uidvalidity, uid, verdict, tier, evidence, scanned_at"
+_SCAN_COLS = "account, folder, uidvalidity, uid, verdict, depth, evidence, scanned_at"
 
 
 def _row_to_scan(row: tuple[Any, ...]) -> EmailScan:
@@ -89,7 +89,7 @@ def _row_to_scan(row: tuple[Any, ...]) -> EmailScan:
         uidvalidity=int(row[2]),
         uid=int(row[3]),
         verdict=str(row[4]),
-        tier=int(row[5]),
+        depth=int(row[5]),
         evidence=dict(row[6] or {}),
         scanned_at=row[7],
     )
@@ -143,31 +143,31 @@ _RECORD_POLL = (
     "WHERE account = %s"
 )
 
-# Record a tier-0 verdict. INSERT-if-absent: a message is scanned exactly once
-# (the high-water advances past it), and DO NOTHING guarantees tier-0 never
-# clobbers a deeper (tier >= 1) verdict a later inject_scan pass wrote.
+# Record a depth-0 verdict. INSERT-if-absent: a message is scanned exactly once
+# (the high-water advances past it), and DO NOTHING guarantees depth-0 never
+# clobbers a deeper (depth >= 1) verdict a later inject_scan pass wrote.
 _INSERT_SCAN = (
     "INSERT INTO email_scan "
-    "(account, folder, uidvalidity, uid, verdict, tier, evidence) "
+    "(account, folder, uidvalidity, uid, verdict, depth, evidence) "
     "VALUES (%s, %s, %s, %s, %s, %s, %s) "
     "ON CONFLICT (account, folder, uidvalidity, uid) DO NOTHING"
 )
 
-# Upgrade a verdict to a deeper tier (slice 4 inject_scan). The
-# ``tier < %(tier)s`` guard is a compare-and-swap: a tier-1 write only lands
-# on a still-tier-0 row, a tier-2 write only over a tier-1 row — so a deeper
+# Upgrade a verdict to a deeper depth (slice 4 inject_scan). The
+# ``depth < %(depth)s`` guard is a compare-and-swap: a depth-1 write only lands
+# on a still-depth-0 row, a depth-2 write only over a depth-1 row — so a deeper
 # verdict is never clobbered by a shallower re-scan, and a concurrent runner
 # or a re-run is an idempotent no-op (rowcount 0). This is the lock-free claim:
-# ``pending_email_scans`` selects tier-0 rows without a row lock, and the CAS
+# ``pending_email_scans`` selects depth-0 rows without a row lock, and the CAS
 # here resolves any race at write time.
 _UPGRADE_SCAN = (
-    "UPDATE email_scan SET verdict = %(verdict)s, tier = %(tier)s, "
+    "UPDATE email_scan SET verdict = %(verdict)s, depth = %(depth)s, "
     "evidence = %(evidence)s, scanned_at = now() "
     "WHERE account = %(account)s AND folder = %(folder)s "
-    "AND uidvalidity = %(uidvalidity)s AND uid = %(uid)s AND tier < %(tier)s"
+    "AND uidvalidity = %(uidvalidity)s AND uid = %(uid)s AND depth < %(depth)s"
 )
 
-# The slice-4 lease target: messages a deeper (tier >= 1) scan hasn't reached
+# The slice-4 lease target: messages a deeper (depth >= 1) scan hasn't reached
 # (the email_scan_pending_idx partial index). Oldest-scanned first so a backlog
 # drains in arrival order. No FOR UPDATE — the CAS in _UPGRADE_SCAN is the
 # race-guard, so this stays a cheap lock-free read. ``next_attempt_at`` (migration
@@ -177,7 +177,7 @@ _UPGRADE_SCAN = (
 # sweep (OPEN-ITEMS "Unbraked LLM-pass cluster").
 _PENDING_SCANS = (
     f"SELECT {_SCAN_COLS} FROM email_scan "
-    "WHERE tier < 1 AND (next_attempt_at IS NULL OR next_attempt_at <= now()) "
+    "WHERE depth < 1 AND (next_attempt_at IS NULL OR next_attempt_at <= now()) "
     "ORDER BY scanned_at LIMIT %s"
 )
 
@@ -277,16 +277,16 @@ class EmailAccountMixin:
         uidvalidity: int,
         uid: int,
         verdict: str,
-        tier: int,
+        depth: int,
         evidence: dict[str, Any],
     ) -> bool:
-        """Persist a tier-0 verdict; returns False if a row already existed."""
+        """Persist a depth-0 verdict; returns False if a row already existed."""
         from psycopg.types.json import Jsonb
 
         with self.pool.connection() as conn:
             cur = conn.execute(
                 _INSERT_SCAN,
-                (account, folder, uidvalidity, uid, verdict, tier, Jsonb(evidence)),
+                (account, folder, uidvalidity, uid, verdict, depth, Jsonb(evidence)),
             )
             return cur.rowcount > 0
 
@@ -325,7 +325,7 @@ class EmailAccountMixin:
         ``pending_email_scans`` for ``cooldown_min`` regardless of outcome
         (OPEN-ITEMS "Unbraked LLM-pass cluster"). A subsequent successful
         ``upgrade_email_scan`` naturally drops the row out of the pending
-        set (its ``tier`` advances past 0) without needing to clear this."""
+        set (its ``depth`` advances past 0) without needing to clear this."""
         with self.pool.connection() as conn:
             conn.execute(
                 _STAMP_ATTEMPT,
@@ -346,10 +346,10 @@ class EmailAccountMixin:
         uidvalidity: int,
         uid: int,
         verdict: str,
-        tier: int,
+        depth: int,
         evidence: dict[str, Any],
     ) -> bool:
-        """Deepen a verdict; the ``tier < new_tier`` CAS never clobbers a
+        """Deepen a verdict; the ``depth < new_depth`` CAS never clobbers a
         deeper verdict. Returns True when this call actually moved the row."""
         from psycopg.types.json import Jsonb
 
@@ -358,7 +358,7 @@ class EmailAccountMixin:
                 _UPGRADE_SCAN,
                 {
                     "verdict": verdict,
-                    "tier": tier,
+                    "depth": depth,
                     "evidence": Jsonb(evidence),
                     "account": account,
                     "folder": folder,

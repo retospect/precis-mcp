@@ -52,7 +52,7 @@ closed axis or an existing column) and its writer + every
 
 | prefix | writer (file:line) | target | readers to update |
 |---|---|---|---|
-| `tier:` | `workers/review.py:308` (values `tier:structural` `workers/structural.py:201`, `tier:deep` `workers/deep_review.py:220`) | `TIER:` closed axis | `deep_review.py:120`, structural filter |
+| `digest:` (was `tier:`, renamed vocab-compaction Stage C) | `workers/review.py::_write_digest` (values `digest:structural` `workers/structural.py`, `digest:deep` `workers/deep_review.py`) | `DIGEST:` closed axis | `deep_review.py::_recent_review_summary`, structural filter |
 | `severity:` | `src/precis/alerts.py::raise_alert`, `src/precis/alerts.py::_set_severity_tag` (was `create_alert`/`set_severity` — drifted) | `ASEV:` closed axis (alert severity — **distinct from `SEV`**, see §collision) | alert reads |
 | `alert-state:` | `alerts.py:151,195` (`STATE_OPEN`→resolved) | `ALERT:` axis or a `refs.meta` field | alert lifecycle reads |
 | `alert-source:` | `alerts.py:152` | `ALERT-SRC:` axis / meta | alert dedup |

@@ -181,7 +181,7 @@ def _child_states(store: Store, child_ids: list[int]) -> dict[int, str]:
               FROM refs r
              WHERE r.ref_id = ANY(%s)
                AND r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
             """,
             (list(child_ids),),
         ).fetchall()

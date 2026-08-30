@@ -79,7 +79,7 @@ def _foreign_index(store: Any) -> dict[str, tuple[int, str | None]]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "select ref_id, meta->'anki'->>'guid', meta->'anki'->>'content_sha' "
-            "from refs where kind = 'anki' and deleted_at is null "
+            "from refs where kind = 'anki' and retired_at is null "
             "and meta->>'source' = %s",
             (FOREIGN_SOURCE,),
         ).fetchall()
@@ -138,6 +138,6 @@ def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
 
     for guid, (ref_id, _sha) in existing.items():
         if guid not in seen:
-            store.soft_delete_ref(ref_id)
+            store.retire_ref(ref_id)
             res.deleted += 1
     return res

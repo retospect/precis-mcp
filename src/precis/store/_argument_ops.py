@@ -76,7 +76,7 @@ def _classify_node(conn: Connection, ref_id: int) -> tuple[str, str | None] | No
     ``finding`` (findings have no sub-kind tag).
     """
     row = conn.execute(
-        "SELECT kind FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+        "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL",
         (ref_id,),
     ).fetchone()
     if row is None:
@@ -124,7 +124,7 @@ def _premises_citing(conn: Connection, ref_id: int) -> list[int]:
     """finding / kind:lemma nodes with an outbound link to ``ref_id``."""
     rows = conn.execute(
         "SELECT DISTINCT l.src_ref_id FROM links l "
-        "JOIN refs r ON r.ref_id = l.src_ref_id AND r.deleted_at IS NULL "
+        "JOIN refs r ON r.ref_id = l.src_ref_id AND r.retired_at IS NULL "
         "WHERE l.dst_ref_id = %s AND r.kind IN ('finding', 'memory')",
         (ref_id,),
     ).fetchall()
@@ -137,7 +137,7 @@ def _inferences_derived_from(conn: Connection, premise_ref_id: int) -> list[int]
     edge — the argument graph)."""
     rows = conn.execute(
         "SELECT DISTINCT l.src_ref_id FROM links l "
-        "JOIN refs r ON r.ref_id = l.src_ref_id AND r.deleted_at IS NULL "
+        "JOIN refs r ON r.ref_id = l.src_ref_id AND r.retired_at IS NULL "
         "WHERE l.dst_ref_id = %s AND l.relation = 'derived-from' AND r.kind = 'memory'",
         (premise_ref_id,),
     ).fetchall()
@@ -280,7 +280,7 @@ class ArgumentGraphMixin:
 
     pool: ConnectionPool
 
-    # Provided by TagsMixin — declared here (mirrors the ``soft_delete_ref:
+    # Provided by TagsMixin — declared here (mirrors the ``retire_ref:
     # Any`` forward-reference pattern in ``_links_ops.LinksMixin``) so this
     # mixin can write/clear the STALE: tag without importing TagsMixin.
     add_tag: Any

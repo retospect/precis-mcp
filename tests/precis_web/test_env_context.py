@@ -71,7 +71,7 @@ def test_env_route_renders_last_real_capture_for_structural_digest(
     """A seeded structural digest memory carrying the capture renders under
     'Last real'; the dry-run sub-section assembles fresh alongside it."""
     digest = store.insert_ref(kind="memory", slug=None, title="structural digest")
-    store.add_tag(digest.id, Tag.open(STRUCTURAL.tier_tag), set_by="system")
+    store.add_tag(digest.id, Tag.open(STRUCTURAL.digest_tag), set_by="system")
     blocks = [
         Block(
             id="structural.body", layer=Layer.VARIABLE, text="structural findings body"

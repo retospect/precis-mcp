@@ -1404,7 +1404,7 @@ class DraftHandler(Handler):
         # plain-text-mutation paths (find-replace + whole-chunk rewrite)
         # only. Lets a caller that knows *why* it's editing — e.g. the
         # grounded-authoring reviewer persona stamping
-        # ``source={'authored_by': 'review:<lens>'}`` — leave that on the
+        # ``source={'authored_by': 'review:<persona>'}`` — leave that on the
         # append-only edit log, queryable per-chunk, without a new store
         # primitive or a ``chunks.meta`` write (which would collide with the
         # ``meta=`` term-attrs patch branch below).
@@ -1474,7 +1474,7 @@ class DraftHandler(Handler):
         # ``authoring`` is a draft-level op (paper-writing pipeline rung 3e,
         # the per-document auto-author toggle) — id is the slug (or any
         # handle in the draft), not a single chunk. When on, the grounded
-        # review lenses (``cites``/``structure``) EDIT the draft instead of
+        # review personas (``cites``/``structure``) EDIT the draft instead of
         # only filing findings (``quest/review_fanout.py``'s
         # ``mint_review_fanout`` ORs this into its ``author`` decision).
         if authoring is not None:
@@ -1794,8 +1794,8 @@ class DraftHandler(Handler):
         A **chunk** address (``dc<id>`` / ``¶<base58>``) retires that one
         chunk (``mode='promote'|'cascade'`` for a heading with children).
         A **ref-level** address (the draft's slug, or its numeric ref id)
-        retires the whole document — ref ``deleted_at`` plus every chunk,
-        in one transaction (``store.drafts.soft_delete_draft``), the same
+        retires the whole document — ref ``retired_at`` plus every chunk,
+        in one transaction (``store.drafts.retire_draft``), the same
         atomic op behind the reader's type-the-name delete button. The
         owning project todo is left intact: this deletes the document, not
         the project. Both granularities refuse a machine-owned body
@@ -1814,7 +1814,7 @@ class DraftHandler(Handler):
             )
         if not _is_draft_chunk_handle(raw):
             ref = self._resolve_draft_any(raw)  # refuses a machine-owned body
-            retired = self.store.drafts.soft_delete_draft(ref.id)
+            retired = self.store.drafts.retire_draft(ref.id)
             label = ref.slug or ref.id
             return Response(
                 body=f"deleted draft {label} ({retired} chunks retired) — "

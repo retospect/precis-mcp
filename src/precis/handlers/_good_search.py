@@ -72,7 +72,7 @@ def _count_nonterminal_campaigns(store: PoolStore) -> int:
             SELECT count(*)
               FROM refs r
              WHERE r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta->>'job_type' = 'good_search'
                AND NOT EXISTS (
                      SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
@@ -189,7 +189,7 @@ def submit_good_search(
         # soft-delete it (recoverable, same shape as operator delete).
         with store.pool.connection() as conn:
             conn.execute(
-                "UPDATE refs SET deleted_at = now() "
+                "UPDATE refs SET retired_at = now() "
                 "WHERE ref_id = %s AND kind = 'todo'",
                 (todo_id,),
             )

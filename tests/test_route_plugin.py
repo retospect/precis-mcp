@@ -230,7 +230,7 @@ def test_put_dispatches_job_when_route_node_set(
     with route_store.pool.connection() as c:
         row = c.execute(
             "SELECT ref_id, meta FROM refs "
-            "WHERE kind = 'job' AND parent_id = %s AND deleted_at IS NULL",
+            "WHERE kind = 'job' AND parent_id = %s AND retired_at IS NULL",
             (route_ref.id,),
         ).fetchone()
     assert row is not None, "a retrosynth job should parent on the route"

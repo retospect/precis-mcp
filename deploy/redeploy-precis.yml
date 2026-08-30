@@ -669,7 +669,7 @@
           JOIN ref_tags rt ON rt.ref_id = r.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
           WHERE r.kind = 'job'
-            AND r.deleted_at IS NULL
+            AND COALESCE(to_jsonb(r)->>'retired_at', to_jsonb(r)->>'deleted_at') IS NULL
             AND t.namespace = 'STATUS' AND t.value = 'running'
             AND r.meta->>'lease_host' = '{{ inventory_hostname | regex_replace('\\..*$', '') }}'
             AND r.meta->>'job_type' IN ('quest_tick','autocatpath_seed','autocatpath_aggregate','struct_relax','taproot_backfill')

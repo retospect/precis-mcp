@@ -130,7 +130,7 @@ def _arm_scan(store, *, uid, verdict, address="rs@retostamm.com", uidv=1000):
         uidvalidity=uidv,
         uid=uid,
         verdict=verdict,
-        tier=1,
+        depth=1,
         evidence={},
     )
 

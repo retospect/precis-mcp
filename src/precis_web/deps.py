@@ -49,7 +49,7 @@ def _make_jinja_env() -> jinja2.Environment:
         # literal ``<title or DOI>`` placeholder opened a real
         # ``<title>`` element, flipped the tokenizer to RAWTEXT, and
         # swallowed the rest of the page — silently killing the inline
-        # ``<script>`` blocks (the Tasks filter / collapse buttons went
+        # ``<script>`` blocks (the Todo filter / collapse buttons went
         # dead with no JS error). It was also a broad stored-XSS hole.
         # Recognise ``.j2`` so escaping is ON; the only intentional HTML
         # comes from Markup-returning filters (``linkify_refs``,
@@ -97,7 +97,7 @@ def _make_jinja_env() -> jinja2.Environment:
     # ``planner_models()`` → the ordered list of picker rows
     # (``{alias, tier, model, placement, fallbacks, size, context}``) the
     # router understands for ``meta.llm_tier``. Registered as a Jinja global
-    # so every model-picker dropdown (task retry, draft change-request,
+    # so every model-picker dropdown (todo retry, draft change-request,
     # review, smartdraft ask) renders the SAME options — the capability tiers
     # available on this cluster (opus/sonnet/haiku + the local qwen), labelled
     # with the model each currently *routes to* (the live placement chain,

@@ -227,7 +227,7 @@ def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> 
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT COUNT(DISTINCT a.meta->>'concept_ref_id') FROM refs a "
-            "WHERE a.kind='anki' AND a.deleted_at IS NULL "
+            "WHERE a.kind='anki' AND a.retired_at IS NULL "
             f"AND a.meta->>'authored_by' = %s AND a.created_at >= %s {cohort_clause}",
             params,
         ).fetchone()
@@ -244,13 +244,13 @@ def _cardless_concepts(
     sql = f"""
         SELECT c.ref_id, c.meta->>'name', c.meta->>'definition'
         FROM refs c
-        WHERE c.kind='concept' AND c.deleted_at IS NULL
+        WHERE c.kind='concept' AND c.retired_at IS NULL
           AND COALESCE(c.meta->>'state','candidate') != 'mastered'
           AND NOT (c.meta ? 'card_forge_skip')
           {cohort_clause}
           AND NOT EXISTS (
             SELECT 1 FROM links l
-            JOIN refs a ON a.kind='anki' AND a.deleted_at IS NULL
+            JOIN refs a ON a.kind='anki' AND a.retired_at IS NULL
                        AND a.ref_id = CASE WHEN l.src_ref_id = c.ref_id
                                            THEN l.dst_ref_id ELSE l.src_ref_id END
             WHERE (l.src_ref_id = c.ref_id AND l.relation='represents')
@@ -269,7 +269,7 @@ def _neighbor_names(store: Store, concept_id: int, *, mastered_only: bool) -> li
     sql = """
         SELECT DISTINCT n.meta->>'name'
         FROM links l
-        JOIN refs n ON n.kind='concept' AND n.deleted_at IS NULL
+        JOIN refs n ON n.kind='concept' AND n.retired_at IS NULL
                    AND n.ref_id = CASE WHEN l.src_ref_id = %s
                                        THEN l.dst_ref_id ELSE l.src_ref_id END
         WHERE (l.src_ref_id = %s OR l.dst_ref_id = %s)
@@ -364,7 +364,7 @@ def _stale_leeches(
         JOIN links l ON (
                  (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
               OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by'))
-        WHERE a.kind='anki' AND a.deleted_at IS NULL
+        WHERE a.kind='anki' AND a.retired_at IS NULL
           AND COALESCE(a.meta->>'source','') != 'anki-foreign'
           AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
           AND a.meta ? 'anki_stats'
@@ -387,7 +387,7 @@ def _weak_prereq(
     sql = """
         SELECT p.ref_id, p.meta->>'name'
         FROM links l
-        JOIN refs p ON p.kind='concept' AND p.deleted_at IS NULL
+        JOIN refs p ON p.kind='concept' AND p.retired_at IS NULL
                    AND p.ref_id = CASE WHEN l.relation = 'has-prerequisite'
                                        THEN l.dst_ref_id ELSE l.src_ref_id END
         WHERE (l.src_ref_id = %s AND l.relation = 'has-prerequisite')
@@ -447,7 +447,7 @@ def rework_stale_cards(
                 f"({stat_str})",
             )
             if act:
-                store.soft_delete_ref(card_id)
+                store.retire_ref(card_id)
                 d.applied = True
             report.decisions.append(d)
             continue
@@ -528,7 +528,7 @@ def rework_stale_cards(
                 d.reason += " — model gave no valid cloze, card left in place"
                 report.decisions.append(d)
                 continue
-            store.soft_delete_ref(card_id)
+            store.retire_ref(card_id)
             store.update_ref(concept_id, meta_patch={"remunge_streak": streak_n + 1})
             d.applied = True
             d.new_card_id = new_id

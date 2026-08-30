@@ -109,15 +109,15 @@ def _crumb(store: Store, ref_id: int, *, max_depth: int = 8) -> list[dict[str, A
             """
             WITH RECURSIVE chain AS (
                 SELECT r.parent_id, 0 AS depth FROM refs r
-                 WHERE r.ref_id = %s AND r.deleted_at IS NULL
+                 WHERE r.ref_id = %s AND r.retired_at IS NULL
                 UNION ALL
                 SELECT r.parent_id, c.depth + 1 FROM refs r
                   JOIN chain c ON r.ref_id = c.parent_id
-                 WHERE r.deleted_at IS NULL AND c.depth < %s
+                 WHERE r.retired_at IS NULL AND c.depth < %s
             )
             SELECT r.ref_id, r.kind, r.title, c.depth
               FROM chain c JOIN refs r ON r.ref_id = c.parent_id
-             WHERE r.deleted_at IS NULL
+             WHERE r.retired_at IS NULL
              ORDER BY c.depth DESC
             """,
             (ref_id, max_depth),
@@ -147,7 +147,7 @@ def _project_draft(store: Store, ancestor_ids: list[int]) -> dict[str, str] | No
             SELECT l.src_ref_id FROM links l
               JOIN refs r ON r.ref_id = l.src_ref_id
              WHERE l.dst_ref_id = ANY(%s) AND l.relation = 'draft-of'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
              LIMIT 1
             """,
             (ancestor_ids,),
@@ -290,7 +290,7 @@ def _load_asks(
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(

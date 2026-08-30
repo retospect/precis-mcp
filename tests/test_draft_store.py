@@ -76,14 +76,14 @@ def test_soft_delete_draft_is_atomic_and_recoverable(store: Store) -> None:
     n_live = len(store.drafts.reading_order(ref.id))
     assert n_live >= 3  # title heading + two paragraphs
 
-    retired = store.drafts.soft_delete_draft(ref.id)
+    retired = store.drafts.retire_draft(ref.id)
     assert retired == n_live
     # ref is soft-deleted (hidden from the kind lookup) and all chunks retired
     assert store.get_ref(kind="draft", id=ref.id) is None
     assert store.drafts.reading_order(ref.id) == []
     with store.pool.connection() as conn:
         dref = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id=%s", (ref.id,)
+            "SELECT retired_at FROM refs WHERE ref_id=%s", (ref.id,)
         ).fetchone()
         live_chunks = conn.execute(
             "SELECT count(*) FROM chunks WHERE ref_id=%s AND retired_at IS NULL",
@@ -98,7 +98,7 @@ def test_soft_delete_draft_is_atomic_and_recoverable(store: Store) -> None:
     from precis.errors import BadInput
 
     with pytest.raises(BadInput):
-        store.drafts.soft_delete_draft(ref.id)
+        store.drafts.retire_draft(ref.id)
 
 
 def test_add_chunks_positions_and_hierarchy(store: Store) -> None:
@@ -732,7 +732,7 @@ def test_live_paper_cites_splits_local_vs_external(store: Store) -> None:
     assert "ghost404" not in live and "pc999999" not in live and me not in live
 
     # soft-deleting the paper flips every one of its tokens to external
-    store.soft_delete_ref(paper.id)
+    store.retire_ref(paper.id)
     assert store.drafts.live_paper_cites({pc, pa}, {"miller23"}) == set()
 
 

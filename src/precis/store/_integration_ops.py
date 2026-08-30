@@ -70,7 +70,7 @@ class IntegrationLedgerMixin:
             "r.title AS paper_title, l.dst_chunk_id AS section_chunk_id, "
             "c.text AS section_heading, l.relation, l.created_at AS at "
             "FROM links l "
-            "JOIN refs r ON r.ref_id = l.src_ref_id AND r.deleted_at IS NULL "
+            "JOIN refs r ON r.ref_id = l.src_ref_id AND r.retired_at IS NULL "
             "LEFT JOIN chunks c ON c.chunk_id = l.dst_chunk_id "
             "WHERE l.dst_ref_id = %s AND l.relation = ANY(%s) "
             "ORDER BY l.created_at ASC"
@@ -123,7 +123,7 @@ class IntegrationLedgerMixin:
         sql = (
             "SELECT r.ref_id AS paper_ref_id, r.title AS title "
             "FROM refs r "
-            "WHERE r.deleted_at IS NULL AND r.kind = 'paper' "
+            "WHERE r.retired_at IS NULL AND r.kind = 'paper' "
             f"AND {tag_clause} "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM links l "

@@ -503,7 +503,7 @@ def test_raise_alert_dedups_onto_null_column_row_during_rollout(
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND COALESCE(r.alert_source, r.meta->>'alert_source') = 's'
                AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = 'fp:rollout'
                AND t.namespace = 'OPEN'

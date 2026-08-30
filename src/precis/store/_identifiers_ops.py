@@ -184,7 +184,7 @@ class IdentifiersMixin:
             "FROM ref_identifiers pi "
             "JOIN refs r ON r.ref_id = pi.ref_id "
             "WHERE pi.id_kind = %s AND pi.id_value = %s "
-            "AND r.deleted_at IS NULL"
+            "AND r.retired_at IS NULL"
         )
         params: list[object] = [s, v]
         if kind is not None:
@@ -256,7 +256,7 @@ class IdentifiersMixin:
                     "FROM ref_identifiers pi "
                     "JOIN refs r ON r.ref_id = pi.ref_id "
                     "WHERE pi.id_kind = %s AND pi.id_value = ANY(%s) "
-                    "AND r.kind = 'paper' AND r.deleted_at IS NULL",
+                    "AND r.kind = 'paper' AND r.retired_at IS NULL",
                     (scheme, list(norm_to_raw)),
                 ).fetchall()
                 for id_value, ref_id in rows:
@@ -347,7 +347,7 @@ class IdentifiersMixin:
 
         def _do(c: Connection) -> bool:
             owner = c.execute(
-                "SELECT ri.ref_id, r.deleted_at IS NOT NULL "
+                "SELECT ri.ref_id, r.retired_at IS NOT NULL "
                 "FROM ref_identifiers ri "
                 "JOIN refs r ON r.ref_id = ri.ref_id "
                 "WHERE ri.id_kind = %s AND ri.id_value = %s",
@@ -513,7 +513,7 @@ class IdentifiersMixin:
             "WHERE ri.id_kind = %s AND ri.id_value = %s"
         )
         if not include_deleted:
-            sql += " AND r.deleted_at IS NULL"
+            sql += " AND r.retired_at IS NULL"
         sql += " LIMIT 1"
 
         def _do(c: Connection) -> int | None:

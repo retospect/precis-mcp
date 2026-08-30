@@ -398,7 +398,7 @@ class Ref:
     meta: dict[str, Any]
     created_at: datetime
     updated_at: datetime
-    deleted_at: datetime | None
+    retired_at: datetime | None
     # v2-new fields. All optional with sensible defaults so existing
     # call sites that don't know about them (everything but the v2
     # ingest path) continue to work unchanged.
@@ -922,7 +922,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # a subtree — its leaves drop out of ``view='doable'`` until
             # the branch is unpaused (the doable filter walks the
             # ancestor chain). ``auto-timeout`` is written by the
-            # auto-check worker (Slice 1b) when an auto-task leaf
+            # auto-check worker (Slice 1b) when an auto_check leaf
             # exceeds its ``meta.auto_check.timeout_at`` without
             # resolving; the nursery sweep surfaces these for triage.
             "paused",

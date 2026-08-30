@@ -77,10 +77,10 @@ def test_chunk_to_pos() -> None:
 
 class _FakeRef:
     def __init__(
-        self, ref_id: int, deleted_at: object = None, kind: str = "memory"
+        self, ref_id: int, retired_at: object = None, kind: str = "memory"
     ) -> None:
         self.id = ref_id
-        self.deleted_at = deleted_at
+        self.retired_at = retired_at
         self.kind = kind
 
 
@@ -123,7 +123,7 @@ class _FakeStore:
             for slug in sorted(self._patent):  # deterministic: lowest slug
                 rid = self._patent[slug]
                 ref = self._refs.get(rid)
-                if ref is None or getattr(ref, "deleted_at", None) is not None:
+                if ref is None or getattr(ref, "retired_at", None) is not None:
                     continue
                 if getattr(ref, "kind", None) != "patent":
                     continue
@@ -148,7 +148,7 @@ class _FakeStore:
             ref = self._refs.get(i)
             if ref is None:
                 continue
-            if ref.deleted_at is not None and not include_deleted:
+            if ref.retired_at is not None and not include_deleted:
                 continue
             out[i] = ref
         return out
@@ -176,7 +176,7 @@ def test_resolve_skips_missing_deleted_and_self() -> None:
     store = _FakeStore(
         refs={
             6134: _FakeRef(6134),
-            50: _FakeRef(50, deleted_at="2026-01-01"),  # soft-deleted
+            50: _FakeRef(50, retired_at="2026-01-01"),  # soft-deleted
         },
         cite_keys={},
     )

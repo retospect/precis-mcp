@@ -48,7 +48,7 @@ def check_parent_is_folder(store: Store, parent_id: int) -> None:
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT kind, deleted_at FROM refs WHERE ref_id = %s",
+            "SELECT kind, retired_at FROM refs WHERE ref_id = %s",
             (parent_id,),
         ).fetchone()
     if row is None or row[1] is not None:

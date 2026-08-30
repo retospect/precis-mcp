@@ -124,7 +124,7 @@ _COHORT_SQL = """\
     SELECT r.ref_id, r.title, r.meta
       FROM refs r
      WHERE r.kind = 'finding'
-       AND r.deleted_at IS NULL
+       AND r.retired_at IS NULL
        AND EXISTS (
              SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
               WHERE rt.ref_id = r.ref_id

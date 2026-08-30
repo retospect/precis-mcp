@@ -395,7 +395,7 @@ class DiagramHandler(Handler):
         if id is None or not str(id).strip():
             raise BadInput(f"delete(kind='{self.LANG.kind}') requires id=")
         ref = resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=str(id).strip())
-        self.store.soft_delete_ref(ref.id)
+        self.store.retire_ref(ref.id)
         return Response(body=f"retired {self.LANG.kind} {ref.slug}")
 
     # ── link: folder placement + element→chunk binding (0057) ──

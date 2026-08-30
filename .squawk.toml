@@ -14,4 +14,11 @@ excluded_rules = [
     # (e.g. 0128's leaf_count/leaf_index).
     "prefer-identity",
     "prefer-bigint-over-int",
+    # Vocabulary-compaction stages C/D/E (docs/backlog/vocab-compaction-
+    # stages.md) rename persisted columns on purpose. Their own Deploy
+    # protocol section is the mitigation squawk is warning about here: quiesce
+    # the fleet, then migrate + deploy the renamed-column-aware code together
+    # in one play, so no old binary ever reads the old name — the exact
+    # "existing clients" hazard this rule flags, handled operationally.
+    "renaming-column",
 ]

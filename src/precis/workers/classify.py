@@ -225,7 +225,7 @@ def _claim_slice(
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
       FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
-      WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+      WHERE r.kind = 'paper' AND r.retired_at IS NULL
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
         {ref_filter}
         {floor_filter}
@@ -310,7 +310,7 @@ def unclassified_chunk_count(conn) -> int:
         """
         SELECT count(*)
           FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
-         WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+         WHERE r.kind = 'paper' AND r.retired_at IS NULL
            AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
            AND NOT EXISTS (
                    SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id

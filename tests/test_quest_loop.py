@@ -111,7 +111,7 @@ def _non_terminal_loop_ids(store: Store, quest_id: int) -> list[int]:
         rows = conn.execute(
             """
             SELECT r.ref_id FROM refs r
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'idem_key' = %s
                AND NOT EXISTS (
                      SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)

@@ -622,7 +622,7 @@ def _ensure_candidate_detail(
             _note_symmetry_duplicate(store, quest_id, proposal, twin_handle)
             try:
                 store.stamp_ref_meta(ref.id, {"symmetry_duplicate_of": twin_handle})
-                store.soft_delete_ref(ref.id)
+                store.retire_ref(ref.id)
             except Exception:
                 log.debug(
                     "ensure_candidate: cleanup of symmetry-duplicate %s failed",
@@ -946,7 +946,7 @@ def _find_child_todo_by_content_key(
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
-            "AND deleted_at IS NULL AND meta->>'content_key' = %s "
+            "AND retired_at IS NULL AND meta->>'content_key' = %s "
             "ORDER BY ref_id LIMIT 1",
             (parent_id, content_key),
         ).fetchone()
@@ -1039,7 +1039,7 @@ def _seed_todo_handled(store: Store, seed_todo_id: int) -> bool:
                       JOIN ref_tags rt2 ON rt2.ref_id = j.ref_id
                       JOIN tags t2 ON t2.tag_id = rt2.tag_id
                      WHERE j.parent_id = st.ref_id AND j.kind = 'job'
-                       AND j.deleted_at IS NULL
+                       AND j.retired_at IS NULL
                        AND t2.namespace = 'STATUS'
                        AND t2.value NOT IN ('failed', 'cancelled')
                   )
@@ -1820,8 +1820,8 @@ def _flag_barrier_twin_disagreement(
     Only compares candidates where BOTH sides carry a non-null
     ``geom_hash_c`` (the lazy canonical-hash backfill may not have run yet —
     silently skipped, not treated as a mismatch) and BOTH carry a numeric
-    ``barrier`` at the SAME ``barrier_tier`` (a screening-tier reading is not
-    comparable to a verify-tier one). Re-fetches the other candidates' refs
+    ``barrier`` at the SAME ``barrier_fidelity`` (a screening-tier reading is
+    not comparable to a verify-tier one). Re-fetches the other candidates' refs
     fresh (rather than trusting ``structures``, captured once at the top of
     :func:`harvest_measures`) so a twin harvested earlier in THIS SAME pass
     is compared against its just-written barrier, not a stale one.
@@ -1838,7 +1838,7 @@ def _flag_barrier_twin_disagreement(
     barrier = _num_measure(candidate_meta.get("barrier"))
     if barrier is None:
         return
-    tier = candidate_meta.get("barrier_tier")
+    tier = candidate_meta.get("barrier_fidelity")
     if tier is None:
         # Pre-ladder legacy reading with no tier stamp — not comparable
         # (two Nones must not count as "the same tier").
@@ -1860,7 +1860,7 @@ def _flag_barrier_twin_disagreement(
         ):
             continue
         other_barrier = _num_measure(other_meta.get("barrier"))
-        if other_barrier is None or other_meta.get("barrier_tier") != tier:
+        if other_barrier is None or other_meta.get("barrier_fidelity") != tier:
             continue
         if abs(barrier - other_barrier) <= _TWIN_BARRIER_TOL_EV:
             continue
@@ -1927,7 +1927,7 @@ def _fresh_autocatpath_jobs(
         rows = conn.execute(
             """
             SELECT j.ref_id, j.meta FROM refs j
-             WHERE j.kind = 'job' AND j.deleted_at IS NULL AND j.ref_id > %(upto)s
+             WHERE j.kind = 'job' AND j.retired_at IS NULL AND j.ref_id > %(upto)s
                AND (
                      (j.parent_id = %(sid)s
                       AND j.meta->>'job_type' = 'autocatpath_explore')
@@ -1935,7 +1935,7 @@ def _fresh_autocatpath_jobs(
                       AND j.parent_id IN (
                             SELECT ref_id FROM refs
                              WHERE parent_id = %(sid)s AND kind = 'todo'
-                               AND deleted_at IS NULL
+                               AND retired_at IS NULL
                           ))
                )
              ORDER BY j.ref_id ASC
@@ -1985,7 +1985,7 @@ def _find_tier_pathway(store: Store, structure_ref_id: int, tier: str) -> int | 
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind = 'pathway' AND deleted_at IS NULL "
+            "SELECT ref_id FROM refs WHERE kind = 'pathway' AND retired_at IS NULL "
             "AND meta->>'candidate_ref' = %s AND meta->>'tier' = %s "
             "ORDER BY ref_id DESC LIMIT 1",
             (str(structure_ref_id), tier),
@@ -2033,7 +2033,7 @@ def _canonicalize_barrier(
     superseded value: when a fresh **verify**-tier barrier supersedes an
     existing **neb**-tier one, the outgoing pruned value moves to
     ``barrier_screen`` (kept as calibration data — the pruned→exhaustive
-    delta). ``barrier_tier``
+    delta). ``barrier_fidelity``
     always tracks which tier the candidate's current ``barrier`` came from
     (read by :mod:`precis.quest.graduate`'s verify-gate and
     :mod:`precis.quest.frontier`'s ``Candidate.flags``).
@@ -2046,12 +2046,12 @@ def _canonicalize_barrier(
     if "barrier" not in measures:
         return
     if (
-        existing_meta.get("barrier_tier") == _TIER_NEB
+        existing_meta.get("barrier_fidelity") == _TIER_NEB
         and tier == _TIER_VERIFY
         and "barrier" in existing_meta
     ):
         measures["barrier_screen"] = existing_meta["barrier"]
-    measures["barrier_tier"] = tier
+    measures["barrier_fidelity"] = tier
 
 
 def _bump_tier_stamp(
@@ -2106,7 +2106,7 @@ def _latest_relax_job(
             "SELECT t.value, j.meta FROM refs j "
             "JOIN ref_tags rt ON rt.ref_id = j.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
+            "WHERE j.parent_id = %s AND j.kind = 'job' AND j.retired_at IS NULL "
             "AND j.meta->>'job_type' = 'struct_relax' AND t.namespace = 'STATUS' "
             "ORDER BY j.ref_id DESC LIMIT 1",
             (structure_ref_id,),
@@ -2145,7 +2145,7 @@ def _latest_autocatpath_job(
             "SELECT t.value, j.meta FROM refs j "
             "JOIN ref_tags rt ON rt.ref_id = j.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE j.kind = 'job' AND j.deleted_at IS NULL "
+            "WHERE j.kind = 'job' AND j.retired_at IS NULL "
             "AND t.namespace = 'STATUS' "
             "AND ((j.parent_id = %(sid)s "
             "      AND j.meta->>'job_type' = 'autocatpath_explore') "
@@ -2153,7 +2153,7 @@ def _latest_autocatpath_job(
             "      AND j.parent_id IN ( "
             "            SELECT ref_id FROM refs "
             "             WHERE parent_id = %(sid)s AND kind = 'todo' "
-            "               AND deleted_at IS NULL "
+            "               AND retired_at IS NULL "
             "          ))) "
             "ORDER BY j.ref_id DESC LIMIT 1",
             {"sid": structure_ref_id},
@@ -2213,16 +2213,16 @@ def _stuck_seed_failure(
               FROM refs t_agg
               JOIN refs seed_todo ON seed_todo.parent_id = t_agg.ref_id
                                   AND seed_todo.kind = 'todo'
-                                  AND seed_todo.deleted_at IS NULL
+                                  AND seed_todo.retired_at IS NULL
               JOIN refs j ON j.parent_id = seed_todo.ref_id
-                          AND j.kind = 'job' AND j.deleted_at IS NULL
+                          AND j.kind = 'job' AND j.retired_at IS NULL
                           AND j.meta->>'job_type' = 'autocatpath_seed'
               JOIN ref_tags rt ON rt.ref_id = j.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
                           AND t.namespace = 'STATUS'
                           AND t.value IN ('failed', 'cancelled')
              WHERE t_agg.parent_id = %(sid)s
-               AND t_agg.kind = 'todo' AND t_agg.deleted_at IS NULL
+               AND t_agg.kind = 'todo' AND t_agg.retired_at IS NULL
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2
                         JOIN tags t2 ON t2.tag_id = rt2.tag_id
@@ -2235,18 +2235,18 @@ def _stuck_seed_failure(
                        JOIN ref_tags rt3 ON rt3.ref_id = j2.ref_id
                        JOIN tags t3 ON t3.tag_id = rt3.tag_id
                       WHERE j2.parent_id = seed_todo.ref_id AND j2.kind = 'job'
-                        AND j2.deleted_at IS NULL
+                        AND j2.retired_at IS NULL
                         AND t3.namespace = 'STATUS'
                         AND t3.value NOT IN ('failed', 'cancelled')
                    )
                AND NOT EXISTS (
                      SELECT 1 FROM refs agg_job
-                      WHERE agg_job.kind = 'job' AND agg_job.deleted_at IS NULL
+                      WHERE agg_job.kind = 'job' AND agg_job.retired_at IS NULL
                         AND agg_job.meta->>'job_type' = 'autocatpath_aggregate'
                         AND agg_job.parent_id IN (
                               SELECT ref_id FROM refs
                                WHERE parent_id = %(sid)s AND kind = 'todo'
-                                 AND deleted_at IS NULL
+                                 AND retired_at IS NULL
                             )
                    )
              ORDER BY j.ref_id DESC LIMIT 1
@@ -2905,17 +2905,17 @@ def _quest_reaction_config(store: Store, quest_id: int) -> dict[str, Any] | None
     return cfg if isinstance(cfg, dict) and cfg else None
 
 
-def _tier_ladder_enabled(store: Store, quest_id: int) -> bool:
-    """``meta.tier_ladder`` — human-set at seed time (default ``True`` for a
-    quest minted via :func:`precis.quest.catalyst_seed.seed_catalyst_quest`,
+def _fidelity_ladder_enabled(store: Store, quest_id: int) -> bool:
+    """``meta.fidelity_ladder`` — human-set at seed time (default ``True`` for
+    a quest minted via :func:`precis.quest.catalyst_seed.seed_catalyst_quest`,
     see its own docstring), never written by the tick/LLM loop. Absent (a
-    quest predating the ladder, or one seeded with ``tier_ladder=False``)
+    quest predating the ladder, or one seeded with ``fidelity_ladder=False``)
     keeps today's straight-to-NEB behaviour: :func:`run_compute_step`
     dispatches a new candidate's first autocatpath run at ``tier="neb"`` and
     :func:`promote_tiers` never fires.
     """
     ref = store.get_ref(kind="quest", id=quest_id)
-    return bool((ref.meta or {}).get("tier_ladder")) if ref is not None else False
+    return bool((ref.meta or {}).get("fidelity_ladder")) if ref is not None else False
 
 
 def _candidate_struct_ids(store: Store, quest_id: int) -> list[int]:
@@ -2998,22 +2998,22 @@ def promote_tiers(
     whichever candidates earned it. Never an LLM decision (no proposal, no
     prompt): purely a function of the harvested measures + human-set caps.
 
-    A no-op unless the quest opted into the ladder (``meta.tier_ladder``,
-    see :func:`_tier_ladder_enabled`) and declares a reaction
+    A no-op unless the quest opted into the ladder (``meta.fidelity_ladder``,
+    see :func:`_fidelity_ladder_enabled`) and declares a reaction
     (``meta.reaction_config``). Two independent promotions, each a fresh
     :func:`dispatch_autocatpath` call at the next tier — content-addressed
     (the tier folds into the config, hence the idem key), so a promotion
     call that lands on an already-in-flight candidate just collapses onto
     the same job/pathway rather than duplicating it:
 
-    * **screening → neb** — up to ``meta.tier_promote_neb`` (default
+    * **screening → neb** — up to ``meta.fidelity_promote_neb`` (default
       :data:`_DEFAULT_TIER_PROMOTE_NEB`) live, non-ruled-out candidates
       whose highest completed run is ``screening`` (``structure.meta.tier``)
       and that have no neb-tier pathway dispatched yet
       (:func:`_find_tier_pathway`), ranked best-first
       (:func:`_promotion_sort_key`) on the screening tier's thermodynamic
       measures (U_L_abs / span / …).
-    * **neb → verify** — up to ``meta.tier_promote_verify`` (default
+    * **neb → verify** — up to ``meta.fidelity_promote_verify`` (default
       :data:`_DEFAULT_TIER_PROMOTE_VERIFY`) **frontier** (Pareto
       non-dominated) candidates with a trusted neb-tier barrier
       (``barrier_trusted is True`` + a ``barrier`` measure — the neb tier is
@@ -3028,16 +3028,16 @@ def promote_tiers(
     """
     notes: list[str] = []
     try:
-        if not _tier_ladder_enabled(store, quest_id):
+        if not _fidelity_ladder_enabled(store, quest_id):
             return notes
         reaction = _quest_reaction_config(store, quest_id)
         if reaction is None:
             return notes
         qref = store.get_ref(kind="quest", id=quest_id)
         qmeta = qref.meta or {} if qref is not None else {}
-        cap_neb = int(qmeta.get("tier_promote_neb", _DEFAULT_TIER_PROMOTE_NEB) or 0)
+        cap_neb = int(qmeta.get("fidelity_promote_neb", _DEFAULT_TIER_PROMOTE_NEB) or 0)
         cap_verify = int(
-            qmeta.get("tier_promote_verify", _DEFAULT_TIER_PROMOTE_VERIFY) or 0
+            qmeta.get("fidelity_promote_verify", _DEFAULT_TIER_PROMOTE_VERIFY) or 0
         )
         hub = hub or _hub_for(store)
 
@@ -3095,12 +3095,12 @@ def promote_tiers(
 #: not re-processed — only the fresh redispatch jobs (higher ref ids) are harvested.
 #: Nulling it to 0 would make the next harvest re-read the stale completed job and
 #: re-stamp the very barrier this reset just cleared.
-#: ``barrier_screen`` / ``barrier_tier`` / ``tier`` are the tier-ladder's own
-#: bookkeeping (:func:`_canonicalize_barrier` / :func:`_bump_tier_stamp`) —
-#: cleared alongside the barrier itself so a reset candidate's stale tier
+#: ``barrier_screen`` / ``barrier_fidelity`` / ``tier`` are the tier-ladder's
+#: own bookkeeping (:func:`_canonicalize_barrier` / :func:`_bump_tier_stamp`)
+#: — cleared alongside the barrier itself so a reset candidate's stale tier
 #: provenance can't mis-canonicalize the FIRST fresh redispatch result (e.g.
-#: reading a stale ``barrier_tier="verify"`` and wrongly refusing to stamp a
-#: fresh neb-tier barrier as canonical).
+#: reading a stale ``barrier_fidelity="verify"`` and wrongly refusing to
+#: stamp a fresh neb-tier barrier as canonical).
 _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier",
     "span",
@@ -3110,7 +3110,7 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_wrong_site",
     "barrier_low_confidence",
     "barrier_screen",
-    "barrier_tier",
+    "barrier_fidelity",
     "tier",
     # selectivity/poisoning scalars + context — same engine, same staleness
     *_AUTOCATPATH_SELECTIVITY_KEYS,
@@ -3230,7 +3230,7 @@ def run_compute_step(
     # pre-ladder quest/test) keeps today's straight-to-neb dispatch.
     initial_tier = (
         _TIER_SCREENING
-        if reaction is not None and _tier_ladder_enabled(store, quest_id)
+        if reaction is not None and _fidelity_ladder_enabled(store, quest_id)
         else _TIER_NEB
     )
     created = dispatched = duplicates = 0

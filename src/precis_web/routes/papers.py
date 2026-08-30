@@ -5,7 +5,7 @@
 bookmarks working. The **reader** stays here: detail page embeds the
 browser's native PDF viewer at ``/papers/{id}/pdf``, streaming from
 ``corpus_dir`` (cluster NFS mount) via ref cite_key (``Ref.slug``) and
-the ``precis watch`` shard layout ``<corpus_dir>/<letter>/<cite_key>.pdf``
+the ``precis ingest --watch`` shard layout ``<corpus_dir>/<letter>/<cite_key>.pdf``
 — plus metadata edit/triage-lookup/tag/delete, unmoved.
 
 Chunk anchoring is phrase-first with page fallback
@@ -326,7 +326,7 @@ def _backlinks(store: LinksStore, ref_id: int) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
     for lk in links:
         src = refs.get(lk.src_ref_id)
-        if src is None or getattr(src, "deleted_at", None) is not None:
+        if src is None or getattr(src, "retired_at", None) is not None:
             continue  # missing / soft-deleted source
         bucket = groups.setdefault((src.kind, lk.relation), {})
         row = bucket.get(src.id)
@@ -1987,12 +1987,12 @@ async def delete(
     ref_id: int,
     return_to: str = Form("/drive"),
 ) -> RedirectResponse | HTMLResponse:
-    """Soft-delete this paper (sets ``refs.deleted_at = now()``).
+    """Soft-delete this paper (sets ``refs.retired_at = now()``).
 
     Web-only by policy: the call goes straight to the store rather than
     through ``runtime.dispatch`` so paper deletion is NOT exposed on the
     agent MCP surface. Soft delete is reversible at the DB level (toggle
-    ``deleted_at`` back to NULL); the UX presents it as a one-way removal.
+    ``retired_at`` back to NULL); the UX presents it as a one-way removal.
     ``return_to`` lands the operator back where they were (triage queue /
     duplicate resolver), constrained to ``/papers*``/``/drive*`` to avoid
     an open redirect; it defaults to Drive (WS1b — the papers list this
@@ -2012,7 +2012,7 @@ async def delete(
             status_code=404,
         )
     try:
-        await asyncio.to_thread(store.soft_delete_ref, ref_id)
+        await asyncio.to_thread(store.retire_ref, ref_id)
     except NotFound as exc:
         return templates.TemplateResponse(
             request,

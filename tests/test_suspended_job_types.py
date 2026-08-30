@@ -118,7 +118,7 @@ def _jobs_under(store: Store, parent_id: int) -> list[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE parent_id = %s AND kind = 'job' AND deleted_at IS NULL",
+            "WHERE parent_id = %s AND kind = 'job' AND retired_at IS NULL",
             (parent_id,),
         ).fetchall()
     return [int(r[0]) for r in rows]

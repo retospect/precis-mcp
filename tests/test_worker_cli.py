@@ -372,10 +372,10 @@ class TestRefPassPriority:
     def test_real_work_outranks_background_fetch(self):
         from precis.cli.worker import _ref_pass_priority
 
-        dispatch = _ref_pass_priority(self._named("_dispatch_pass"))
+        minter = _ref_pass_priority(self._named("_minter_pass"))
         inproc = _ref_pass_priority(self._named("_job_claude_inproc_pass"))
         for slow in ("_fetch_pass", "_chase_pass", "_gp_fetch_pass"):
-            assert dispatch < _ref_pass_priority(self._named(slow))
+            assert minter < _ref_pass_priority(self._named(slow))
             assert inproc < _ref_pass_priority(self._named(slow))
 
     def test_plan_tick_executor_outranks_reviewers(self):
@@ -395,12 +395,12 @@ class TestRefPassPriority:
         from precis.cli.worker import _ref_pass_priority
 
         unknown = _ref_pass_priority(self._named("_some_plugin_pass"))
-        assert _ref_pass_priority(self._named("_dispatch_pass")) < unknown
+        assert _ref_pass_priority(self._named("_minter_pass")) < unknown
         assert unknown < _ref_pass_priority(self._named("_fetch_pass"))
 
-    def test_stable_sort_pulls_dispatch_ahead_of_fetch(self):
-        # Registration order has fetch before dispatch (fetch_oa at 746,
-        # dispatch at 924); the sort must invert that while keeping
+    def test_stable_sort_pulls_minter_ahead_of_fetch(self):
+        # Registration order has fetch before minter (fetch_oa at 746,
+        # minter at 924); the sort must invert that while keeping
         # intra-band registration order stable.
         from precis.cli.worker import _ref_pass_priority
 
@@ -411,7 +411,7 @@ class TestRefPassPriority:
                 "_fetch_pass",
                 "_llm_summarize_pass",
                 "_auto_check_pass",
-                "_dispatch_pass",
+                "_minter_pass",
                 "_sweeper_pass",
                 "_job_claude_inproc_pass",
             )
@@ -420,14 +420,14 @@ class TestRefPassPriority:
         order = [p.__name__ for p in registered]
         # Job execution first, then lifecycle, then the fetch tail.
         assert order.index("_job_claude_inproc_pass") < order.index("_auto_check_pass")
-        assert order.index("_dispatch_pass") < order.index("_fetch_pass")
-        assert order.index("_dispatch_pass") < order.index("_chase_pass")
+        assert order.index("_minter_pass") < order.index("_fetch_pass")
+        assert order.index("_minter_pass") < order.index("_chase_pass")
         assert order.index("_sweeper_pass") < order.index("_llm_summarize_pass")
         # Stable within the lifecycle band: auto_check kept ahead of
-        # dispatch kept ahead of sweeper (their registration order).
+        # minter kept ahead of sweeper (their registration order).
         assert (
             order.index("_auto_check_pass")
-            < order.index("_dispatch_pass")
+            < order.index("_minter_pass")
             < order.index("_sweeper_pass")
         )
 
@@ -500,13 +500,11 @@ class TestShouldRegister:
         assert _should_register("axis:domain", "axis:material") is False
 
     def test_profile_pass_registers_only_in_its_profile(self):
-        # A pass with NO `enable_env` (dispatch: system-profile only) is not
+        # A pass with NO `enable_env` (minter: system-profile only) is not
         # an "always register" categorizer-style service — it only registers
         # when the running invocation's profile actually carries it.
-        assert _should_register(
-            None, "dispatch", profile_passes=frozenset({"dispatch"})
-        )
-        assert not _should_register(None, "dispatch", profile_passes=frozenset())
+        assert _should_register(None, "minter", profile_passes=frozenset({"minter"}))
+        assert not _should_register(None, "minter", profile_passes=frozenset())
 
     def test_enable_env_pass_always_registers_regardless_of_profile(self):
         # hub_refine carries `enable_env` (PRECIS_TAPROOT_REFINE_ENABLED) in
@@ -514,7 +512,7 @@ class TestShouldRegister:
         # now (the old boot gate needed the env set OR a DB row first).
         assert _should_register(None, "hub_refine", profile_passes=frozenset())
         assert _should_register(
-            None, "hub_refine", profile_passes=frozenset({"dispatch"})
+            None, "hub_refine", profile_passes=frozenset({"minter"})
         )
 
     def test_unknown_name_registers_unconditionally(self):
@@ -529,7 +527,7 @@ class TestShouldRegister:
         # acceptance list.
         assert _should_register("hub_refine", "hub_refine", profile_passes=frozenset())
         assert not _should_register(
-            "hub_refine", "dispatch", profile_passes=frozenset({"dispatch"})
+            "hub_refine", "minter", profile_passes=frozenset({"minter"})
         )
 
 
@@ -554,9 +552,9 @@ class TestCapabilityGateDefault:
             assert _capability_ok(name, {"PRECIS_MCP_CONFIG": "/etc/precis/mcp.json"})
 
     def test_pass_without_capability_env_is_unaffected(self):
-        # dispatch has no capability_env; an unknown name has no spec at
+        # minter has no capability_env; an unknown name has no spec at
         # all — both stay pure profile-membership defaults.
-        assert _capability_ok("dispatch", {}) is True
+        assert _capability_ok("minter", {}) is True
         assert _capability_ok("some_plugin_pass", {}) is True
 
     def test_profile_all_union_still_carries_the_agent_passes(self):
@@ -640,8 +638,8 @@ class TestControlCutoverGateDefaults:
         from precis.workers.service_config import ServiceConfigResolver
 
         resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
-        # A profile-rotation pass (dispatch) with no row: on.
-        assert resolver.enabled("dispatch", default_on=True) is True
+        # A profile-rotation pass (minter) with no row: on.
+        assert resolver.enabled("minter", default_on=True) is True
         # A formerly-env-gated pass (hub_refine) with no row: §L retired the
         # env fallback, so absent a row it now defaults OFF outright.
         assert resolver.enabled("hub_refine", default_on=False) is False
@@ -652,9 +650,9 @@ class TestControlCutoverGateDefaults:
             set_service_prio,
         )
 
-        set_service_prio(store, "melchior", "dispatch", 0, actor="test")
+        set_service_prio(store, "melchior", "minter", 0, actor="test")
         resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
-        assert resolver.enabled("dispatch", default_on=True) is False
+        assert resolver.enabled("minter", default_on=True) is False
 
     def test_c_prio_nonzero_enables_a_formerly_env_gated_pass_with_no_env(
         self, store, monkeypatch

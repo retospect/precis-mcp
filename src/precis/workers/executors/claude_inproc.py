@@ -459,10 +459,10 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     review_pass: tuple[str, int, str | None] | None = None
     review_meta = _review_meta(store, parent_id)
     if review_meta is not None:
-        lens, anchor = review_meta
-        snap = _anchor_chunk_snapshot(store, anchor, lens)
+        persona, anchor = review_meta
+        snap = _anchor_chunk_snapshot(store, anchor, persona)
         if snap is not None:
-            review_pass = (lens, snap[0], snap[1])
+            review_pass = (persona, snap[0], snap[1])
 
     # ``meta.params`` carries the model (synthesized from the parent's
     # ``meta.llm_tier`` at dispatch time). Pull it from the job ref.
@@ -523,7 +523,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             final_text or "(no output)",
             conn=conn,
         )
-        # Full LLM transcript for the Tasks-view debugger. Capped at 1 MiB
+        # Full LLM transcript for the Todo-view debugger. Capped at 1 MiB
         # so a runaway tick can't bloat refs.meta; stored on the job ref
         # (not a chunk → never embedded, no migration).
         _TRANSCRIPT_CAP = 1_000_000
@@ -718,12 +718,12 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             and conclusion is not None
             and conclusion.verdict == "done"
         ):
-            lens, chunk_id, sha_before = review_pass
+            persona, chunk_id, sha_before = review_pass
             _maybe_record_review_pass(
                 store,
                 conn,
                 review_todo_id=parent_id,
-                lens=lens,
+                persona=persona,
                 chunk_id=chunk_id,
                 sha_before=sha_before,
             )
@@ -781,7 +781,7 @@ def _build_job_result_text(
                 SELECT count(*) FROM refs r
                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id
-                 WHERE r.kind = 'citation' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'citation' AND r.retired_at IS NULL
                    AND t.namespace = 'OPEN' AND t.value = %s
                    AND r.created_at >= %s
                 """,
@@ -793,7 +793,7 @@ def _build_job_result_text(
                 SELECT count(*) FROM refs r
                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id
-                 WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'finding' AND r.retired_at IS NULL
                    AND t.namespace = 'OPEN' AND t.value = %s
                    AND r.created_at >= %s
                 """,
@@ -802,7 +802,7 @@ def _build_job_result_text(
             finding_count = int(finding_row[0]) if finding_row else 0
         child_row = conn.execute(
             "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'todo' "
-            "AND deleted_at IS NULL AND created_at >= %s",
+            "AND retired_at IS NULL AND created_at >= %s",
             (parent_ref_id, ts_started),
         ).fetchone()
         child_count = int(child_row[0]) if child_row else 0
@@ -862,7 +862,7 @@ def _parent_todo_id(store: Store, job_ref_id: int) -> int | None:
               JOIN refs p ON p.ref_id = j.parent_id
              WHERE j.ref_id = %s
                AND p.kind = 'todo'
-               AND p.deleted_at IS NULL
+               AND p.retired_at IS NULL
             """,
             (job_ref_id,),
         ).fetchone()
@@ -873,25 +873,25 @@ def _parent_todo_id(store: Store, job_ref_id: int) -> int | None:
 # passed" per docs/backlog/paper-writing-pipeline.md §"Review — the
 # memoized approval ledger") ───────────────────────────────────────────
 #
-# A review-mode plan_tick's parent todo carries meta.review=<lens> +
+# A review-mode plan_tick's parent todo carries meta.review=<persona> +
 # meta.anchor='dc<id>' (the same shape predicates.has_review/has_anchor
 # read). On a clean SUCCEEDED completion — zero filed findings AND the
 # anchor chunk's content_sha unchanged since the tick started — record
-# store.drafts.record_review(chunk_id, lens, verdict='approved'). Any findings,
+# store.drafts.record_review(chunk_id, persona, verdict='approved'). Any findings,
 # or a sha that moved (the reviewer edited the chunk itself — future
 # authoring reviewers must not self-approve prose they just wrote),
 # records nothing: the chunk correctly stays "requires review".
 #
-# The `toc` lens (item 10, document-altitude review) pins its approval to
+# The `toc` persona (item 10, document-altitude review) pins its approval to
 # the draft's TOC digest instead of the anchor chunk's content_sha — a
 # heading add/remove/rename/reorder moves the digest (no self-approval,
-# same mechanism as any other lens's sha check), but a paragraph body edit
+# same mechanism as any other persona's sha check), but a paragraph body edit
 # leaves the digest untouched (approval still records — deliberate: the
-# toc lens judges outline shape, not prose).
+# toc persona judges outline shape, not prose).
 
 
 def _review_meta(store: Store, parent_id: int) -> tuple[str, str] | None:
-    """``(lens, anchor)`` when ``parent_id`` is a review-mode todo (its
+    """``(persona, anchor)`` when ``parent_id`` is a review-mode todo (its
     ``refs.meta`` carries both ``review`` and ``anchor``), else ``None``.
 
     One cheap read, run for *every* plan_tick — this is the entire
@@ -907,14 +907,14 @@ def _review_meta(store: Store, parent_id: int) -> tuple[str, str] | None:
 
 
 def _anchor_chunk_snapshot(
-    store: Store, anchor: str, lens: str
+    store: Store, anchor: str, persona: str
 ) -> tuple[int, str | None] | None:
     """Resolve a ``dc<id>`` anchor to ``(chunk_id, sha_before)`` via the
     shared handle resolver (``store.drafts.get_draft_chunk`` — same lookup
     ``predicates.py``'s anchor handling relies on), or ``None`` when the
     anchor doesn't resolve to a live chunk.
 
-    For every lens but ``toc``, ``sha_before`` is the anchor chunk's own
+    For every persona but ``toc``, ``sha_before`` is the anchor chunk's own
     ``content_sha``. For ``toc`` (item 10 — document-altitude review) the
     approval isn't pinned to any one chunk's text: it's pinned to the
     draft's :meth:`~precis.store._draft_ops.DraftOps.toc_digest`, captured
@@ -924,7 +924,7 @@ def _anchor_chunk_snapshot(
     chunk = store.drafts.get_draft_chunk(anchor)
     if chunk is None:
         return None
-    if lens == "toc":
+    if persona == "toc":
         return (chunk.chunk_id, store.drafts.toc_digest(chunk.ref_id))
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -938,20 +938,20 @@ def _maybe_record_review_pass(
     conn: Connection,
     *,
     review_todo_id: int,
-    lens: str,
+    persona: str,
     chunk_id: int,
     sha_before: str | None,
 ) -> None:
     """Record a ``chunk_review`` "approved" verdict for a clean review
     tick — the reviewer filed nothing AND the anchor's watermark
-    (the chunk's ``content_sha`` for every lens but ``toc``; the draft's
+    (the chunk's ``content_sha`` for every persona but ``toc``; the draft's
     TOC digest for ``toc``, item 10) is unchanged since the tick started.
     Called from ``_run_plan_tick``'s success path (gated on a non-resumed
     ``verdict: done`` tick), after ``_set_status(..., _SUCCEEDED, ...)``
     and before ``conn.commit()``.
 
     "Filed nothing" spans BOTH representations a reviewer uses: a
-    ``kind='finding'`` child of the review-todo (the lens skills'
+    ``kind='finding'`` child of the review-todo (the persona skills'
     ``put(kind='finding')`` shape) AND an anchored change-request
     ``kind='todo'`` on the chunk (``meta.anchor=dc<id>`` — the shape the
     ``precis-draft-reviewer`` persona files, which is NOT a child of the
@@ -964,7 +964,7 @@ def _maybe_record_review_pass(
     try:
         finding_row = conn.execute(
             "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'finding' "
-            "AND deleted_at IS NULL",
+            "AND retired_at IS NULL",
             (review_todo_id,),
         ).fetchone()
         if finding_row is not None and int(finding_row[0]) > 0:
@@ -974,20 +974,20 @@ def _maybe_record_review_pass(
         # kind='finding' child — so also skip approval when this chunk carries
         # any OPEN (not done / won't-do) anchored change-request, matched
         # across the dc<id> / base58-handle / legacy ¶handle anchor forms.
-        # Conservative by design: an open request from any lens or a human
+        # Conservative by design: an open request from any persona or a human
         # blocks the auto-approval, erring toward "requires review". Shared
         # with the incremental fanout's skip-unsettled check —
         # ``quest.review_guard``.
         if review_guard.has_open_change_request(conn, chunk_id):
             return  # an open anchored change-request — requires review
-        if lens == "toc":
-            # The toc lens's watermark is the draft's TOC digest, not this
+        if persona == "toc":
+            # The toc persona's watermark is the draft's TOC digest, not this
             # (or any single) chunk's content_sha — resolve the owning ref
             # via the anchored chunk, recompute the digest now, and compare
             # against the one captured at tick start. A heading rename/
             # reorder/add/remove moves the digest (no self-approval); a
             # paragraph body edit does not (approval still records — the
-            # deliberate item-10 semantic difference from chunk lenses).
+            # deliberate item-10 semantic difference from chunk personas).
             ref_row = conn.execute(
                 "SELECT ref_id FROM chunks WHERE chunk_id = %s", (chunk_id,)
             ).fetchone()
@@ -1003,7 +1003,7 @@ def _maybe_record_review_pass(
                           SET approved_sha = EXCLUDED.approved_sha,
                               verdict = EXCLUDED.verdict,
                               at = now()""",
-                (chunk_id, lens, digest_now, "approved"),
+                (chunk_id, persona, digest_now, "approved"),
             )
             return
         sha_row = conn.execute(
@@ -1012,14 +1012,14 @@ def _maybe_record_review_pass(
         sha_now = sha_row[0] if sha_row is not None else None
         if sha_now != sha_before:
             return  # the reviewer edited the chunk itself — no self-approval
-        store.drafts.record_review(chunk_id, lens, verdict="approved")
+        store.drafts.record_review(chunk_id, persona, verdict="approved")
     except Exception:
         log.exception(
-            "review writeback failed (review_todo=%s chunk=%s lens=%s) — "
+            "review writeback failed (review_todo=%s chunk=%s persona=%s) — "
             "swallowing; job status/commit is unaffected",
             review_todo_id,
             chunk_id,
-            lens,
+            persona,
         )
 
 
@@ -1355,7 +1355,7 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
             outcome.text or "(no output)",
             conn=conn,
         )
-        # Full LLM transcript for the Tasks-view debugger, same 1 MiB cap
+        # Full LLM transcript for the Todo-view debugger, same 1 MiB cap
         # and idiom as plan_tick's — stored on the job ref (never a
         # chunk, so never embedded, no migration).
         _TRANSCRIPT_CAP = 1_000_000

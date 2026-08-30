@@ -155,7 +155,7 @@ alert rows). An operator preamble can read the open set via
 * `precis-health-digest-help` — the slow-rot, non-paging digest sibling
   tier — outcome checks, cadence staleness, registry coherence
 * `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)
-* `precis-tasks-help` — the tree shape + level gradient
+* `precis-todo-tree-help` — the tree shape + level gradient
 * `precis-decomposition-help` — the GTD interrogation
 * `precis-recurring-help` — `meta.schedule` + the Watches umbrella
-* `precis-auto-tasks-help` — `meta.auto_check` leaves
+* `precis-auto-todo-help` — `meta.auto_check` leaves

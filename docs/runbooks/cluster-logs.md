@@ -61,7 +61,7 @@ namespace as colon-strings — `alert-state:open`, `alert-source:…`,
         max(CASE WHEN t.value LIKE '\''severity:%'\'' THEN split_part(t.value,'\'':'\'',2) END) severity
       FROM refs r JOIN ref_tags rt ON rt.ref_id=r.ref_id
                   JOIN tags t ON t.tag_id=rt.tag_id AND t.namespace='\''OPEN'\''
-      WHERE r.kind='\''alert'\'' AND r.deleted_at IS NULL
+      WHERE r.kind='\''alert'\'' AND r.retired_at IS NULL
       GROUP BY r.ref_id, r.title, r.updated_at)
     SELECT severity, source, to_char(updated_at,'\''MM-DD HH24:MI'\''), left(title,85)
     FROM a WHERE state='\''open'\'' ORDER BY (severity='\''critical'\'') DESC, source, updated_at DESC;"'

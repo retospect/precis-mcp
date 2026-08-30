@@ -1261,7 +1261,7 @@ def test_bibtex_unescapes_html_entities() -> None:
         },
         created_at=_now,
         updated_at=_now,
-        deleted_at=None,
+        retired_at=None,
     )
     bibtex = _render_citation(ref, style="bibtex")
     # &amp; must collapse to & then LaTeX-escape to \&.
@@ -1293,7 +1293,7 @@ def _citation_ref(entry_type: str | None) -> Any:
         meta=meta,
         created_at=_now,
         updated_at=_now,
-        deleted_at=None,
+        retired_at=None,
     )
 
 

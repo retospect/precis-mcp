@@ -129,7 +129,7 @@ between detection and remediation.
 ```
 ssh melchior "grep 'runner worker:' /var/log/precis-worker.log | tail -20"
 scripts/prod-psql "SELECT ref_id, title FROM refs WHERE kind='alert'
-  AND title LIKE '%rescue-gap%' AND deleted_at IS NULL"
+  AND title LIKE '%rescue-gap%' AND retired_at IS NULL"
 ```
 
 Healthy looks like `quest_loop_reconcile` appearing every ~2h (its cadence

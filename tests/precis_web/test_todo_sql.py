@@ -1,6 +1,6 @@
-"""Real-PG regression tests for the tasks route's raw SQL.
+"""Real-PG regression tests for the todo route's raw SQL.
 
-The route-level tests in ``test_tasks.py`` run against the web
+The route-level tests in ``test_todo.py`` run against the web
 ``FakeStore``, which does *not* parse SQL — so ``_load_tags``'s
 ``status_since`` subselect and ``_child_jobs``'s ``created_at`` /
 ``meta->>'started_at'`` columns are never actually exercised there.
@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis.store import Tag
-from precis_web.routes.tasks import _child_jobs, _load_tags
+from precis_web.routes.todo import _child_jobs, _load_tags
 
 
 def test_load_tags_status_since_matches_status_tag_write(store: Any) -> None:

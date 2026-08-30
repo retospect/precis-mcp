@@ -88,13 +88,13 @@ def run(args: argparse.Namespace) -> None:
     clauses = ["kind = %s"]
     params: list[Any] = ["gripe"]
     if args.only_deleted:
-        clauses.append("deleted_at IS NOT NULL")
+        clauses.append("retired_at IS NOT NULL")
     elif not include_deleted:
-        clauses.append("deleted_at IS NULL")
+        clauses.append("retired_at IS NULL")
 
     order = "ASC" if args.oldest_first else "DESC"
     sql = (
-        "SELECT ref_id, title, created_at, updated_at, deleted_at "
+        "SELECT ref_id, title, created_at, updated_at, retired_at "
         "FROM refs WHERE " + " AND ".join(clauses) + f" ORDER BY ref_id {order}"
     )
     if args.limit is not None:
@@ -140,21 +140,21 @@ def run(args: argparse.Namespace) -> None:
 
 
 def _row_to_json(row: tuple[Any, ...]) -> dict[str, Any]:
-    ref_id, title, created_at, updated_at, deleted_at = row
+    ref_id, title, created_at, updated_at, retired_at = row
     out: dict[str, Any] = {
         "id": int(ref_id),
         "text": title,
         "created_at": _iso(created_at),
         "updated_at": _iso(updated_at),
     }
-    if deleted_at is not None:
-        out["deleted_at"] = _iso(deleted_at)
+    if retired_at is not None:
+        out["retired_at"] = _iso(retired_at)
     return out
 
 
 def _print_text(row: tuple[Any, ...]) -> None:
-    ref_id, title, created_at, _updated_at, deleted_at = row
-    marker = "  (deleted)" if deleted_at is not None else ""
+    ref_id, title, created_at, _updated_at, retired_at = row
+    marker = "  (deleted)" if retired_at is not None else ""
     print(f"## gripe {ref_id}  [{_iso(created_at)}]{marker}")
     print(title)
     print()

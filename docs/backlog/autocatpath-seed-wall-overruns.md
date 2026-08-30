@@ -109,7 +109,7 @@ Status 2026-08-09:
 - **Operational state 2026-08-09:** spark idle, precis-worker **running**
   (restarted ~13:16 UTC, not by this session), GPU 0%, engine still **0.7.0**
   (0.8/0.9 never deployed). **130 `autocatpath_seed` job rows** (`kind='job'`,
-  `deleted_at IS NULL`): **105 unclaimed/claimable-now**, 24 stale
+  `retired_at IS NULL`): **105 unclaimed/claimable-now**, 24 stale
   expired-lease (the known leak, [[catpath-barrier-trust]]), 1 live-lease. The
   running worker will start grinding a **0.7-engine** (dense-BFGS, all-edges,
   ~10 h) seed at the next claim — so these want killing before anything else.

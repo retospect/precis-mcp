@@ -79,7 +79,7 @@ def heal_drifted_cards(
             "FROM refs r "
             "JOIN chunks c ON c.ref_id = r.ref_id "
             "               AND c.chunk_kind = 'card_combined' "
-            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+            "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
             "  AND r.title IS NOT NULL AND btrim(r.title) <> '' "
             "  AND position(lower(left(r.title, 25)) in lower(c.text)) = 0 "
             "ORDER BY r.ref_id"
@@ -220,7 +220,7 @@ def migrate_dangling_paper_links(
             "       (tgt.meta->>'superseded_by')::bigint AS surv "
             "FROM links l "
             "JOIN refs tgt ON tgt.ref_id = l.dst_ref_id "
-            "WHERE tgt.kind = 'paper' AND tgt.deleted_at IS NOT NULL "
+            "WHERE tgt.kind = 'paper' AND tgt.retired_at IS NOT NULL "
             "  AND l.relation <> 'supersedes' AND tgt.meta ? 'superseded_by' "
             "ORDER BY l.link_id"
         ).fetchall()
@@ -315,7 +315,7 @@ def requeue_stranded_fetches(
               ) fe ON TRUE
              WHERE r.kind = 'paper'
                AND r.pdf_sha256 IS NULL
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND NOT (r.meta ? 'oa_requeued')
                AND fe.last_ok IS NOT NULL
                AND fe.last_ok < now() - make_interval(hours => %s)
@@ -484,7 +484,7 @@ def metadata_hygiene_stats(
 ) -> MetadataHygieneStats:
     """Corpus-quality visibility for the author-format-drift backfill.
 
-    Pure read over ``refs`` (``kind='paper' AND deleted_at IS NULL``); makes
+    Pure read over ``refs`` (``kind='paper' AND retired_at IS NULL``); makes
     no writes. Counts:
 
     * ``structured_authors_papers`` / ``_pct`` — of the *authored* papers
@@ -540,7 +540,7 @@ def metadata_hygiene_stats(
             "    WHERE r.meta->>'authors_source' = 'heuristic'"
             "  ) AS heuristic_source "
             "FROM refs r "
-            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL"
+            "WHERE r.kind = 'paper' AND r.retired_at IS NULL"
         ).fetchone()
     assert row is not None
     total, authored, structured, with_entry_type, with_journal, heuristic = (
@@ -550,7 +550,7 @@ def metadata_hygiene_stats(
     with store.pool.connection() as conn:
         sample_rows = conn.execute(
             "SELECT authors FROM refs "
-            "WHERE kind = 'paper' AND deleted_at IS NULL "
+            "WHERE kind = 'paper' AND retired_at IS NULL "
             "  AND jsonb_array_length(coalesce(authors, '[]'::jsonb)) > 0 "
             "ORDER BY ref_id "
             "LIMIT %s",
@@ -570,7 +570,7 @@ def metadata_hygiene_stats(
     with store.pool.connection() as conn:
         title_rows = conn.execute(
             "SELECT title FROM refs "
-            "WHERE kind = 'paper' AND deleted_at IS NULL "
+            "WHERE kind = 'paper' AND retired_at IS NULL "
             "  AND title IS NOT NULL AND btrim(title) <> '' "
             "ORDER BY ref_id "
             "LIMIT %s",

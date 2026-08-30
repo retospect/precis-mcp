@@ -34,7 +34,7 @@ def _child_jobs(store: Store, parent_id: int) -> list[dict]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, meta FROM refs "
-            "WHERE parent_id = %s AND kind = 'job' AND deleted_at IS NULL "
+            "WHERE parent_id = %s AND kind = 'job' AND retired_at IS NULL "
             "ORDER BY ref_id",
             (parent_id,),
         ).fetchall()

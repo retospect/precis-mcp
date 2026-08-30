@@ -1,5 +1,5 @@
 ---
-# precis_watch — runs `precis watch` against papers_inbox_path.
+# precis_watch — runs `precis ingest --watch` against papers_inbox_path.
 # Single instance only (race on inbox dir if multiple watchers). Throughput
 # scales via the precis_worker pool, not via watcher copies.
 #

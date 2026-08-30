@@ -5,7 +5,7 @@ Two linked gaps from the gr204309 diagnosis (2026-08-12):
 1. **Orphaned seed todos don't recover.** q164903's 9 OPEN:ephemeral
    autocatpath seed todos each lost their only `autocatpath_seed` job
    child to a bulk soft-delete (2026-08-11 14:00:58Z); `_pending_sim_ids`
-   filters `deleted_at IS NULL`, so backpressure went blind and nothing
+   filters `retired_at IS NULL`, so backpressure went blind and nothing
    re-mints a child for a seed todo stuck mid-compute-lifecycle. Design a
    re-mint path (quest tick notices a live seed todo with zero live sim
    children → re-mints once) that CANNOT reintroduce the 238-seed runaway
@@ -16,7 +16,7 @@ Two linked gaps from the gr204309 diagnosis (2026-08-12):
 
 2. **Audit-less bulk soft-delete.** Those 9 job refs were soft-deleted in
    one transaction with ZERO ref_events — something bypassed
-   `Store.soft_delete_ref`/`append_event` (raw SQL or untracked tooling,
+   `Store.retire_ref`/`append_event` (raw SQL or untracked tooling,
    actor unknown). Find the writer (grep tooling/crons for bulk
-   `UPDATE refs SET deleted_at`), and consider a DB trigger or store-layer
+   `UPDATE refs SET retired_at`), and consider a DB trigger or store-layer
    invariant so kind='job' soft-deletes always leave an event trail.

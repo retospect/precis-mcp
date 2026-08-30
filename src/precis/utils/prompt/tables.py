@@ -94,7 +94,7 @@ _KIND_ROWS: list[tuple[str, bool, str, str]] = [
     ("draft", True, "a document we're writing", "get put edit search"),
     ("paper", True, "an ingested paper", "get search"),
     ("patent", True, "an EPO-OPS patent", "get search"),
-    ("todo", False, "a task node in the tree", "get put tag link"),
+    ("todo", False, "a todo node in the tree", "get put tag link"),
     ("citation", False, "a claim bound to a source chunk", "get put"),
     ("finding", False, "a claim being chased into the corpus", "get put"),
     ("memory", False, "a durable note / thought", "get put"),

@@ -180,7 +180,7 @@ _CANDIDATE_HUBS_SQL = """
                  AND t.namespace = %(ns)s AND t.value = %(val)s
       LEFT JOIN chunks c ON c.ref_id = r.ref_id AND c.ord = 0
                         AND c.chunk_kind = 'finding_body' AND c.retired_at IS NULL
-     WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+     WHERE r.kind = 'finding' AND r.retired_at IS NULL
        AND NOT (r.meta ? %(stamp_key)s)
        AND NOT EXISTS (
              SELECT 1 FROM links l
@@ -188,7 +188,7 @@ _CANDIDATE_HUBS_SQL = """
               WHERE l.dst_ref_id = r.ref_id
                 AND l.relation = 'conjunct-of'
                 AND a.kind = 'finding'
-                AND a.deleted_at IS NULL
+                AND a.retired_at IS NULL
            )
 """
 

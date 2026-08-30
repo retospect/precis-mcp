@@ -62,7 +62,7 @@ def test_untrusted_html_is_escaped_not_rendered() -> None:
     """Regression — a raw ``<title or DOI>`` placeholder in a planner
     prompt used to render as a live ``<title>`` element, flipping the
     HTML tokenizer to RAWTEXT and swallowing the rest of the page
-    (every inline ``<script>`` after it stopped firing — the Tasks
+    (every inline ``<script>`` after it stopped firing — the Todo
     filter/collapse buttons went dead with no JS error). Input is plain
     text now: angle brackets are escaped, never opened as a tag."""
     out = str(linkify_refs("search q='<title or DOI>' then mint put(kind='finding')"))

@@ -181,7 +181,7 @@ def draft_cited_ref_ids(store: Store, ref_id: int, *, kind: str = "draft") -> se
             rid
             for rid, r in refs.items()
             if getattr(r, "kind", None) in _CITED_KINDS
-            and getattr(r, "deleted_at", None) is None
+            and getattr(r, "retired_at", None) is None
         }
     return cited | _hub_supporter_ref_ids(store, chunks)
 

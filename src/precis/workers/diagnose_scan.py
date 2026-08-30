@@ -102,7 +102,7 @@ def _keys_held(store: Store, gripe_ids: list[int]) -> set[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT meta->>'idem_key' FROM refs "
-            "WHERE kind = 'job' AND deleted_at IS NULL "
+            "WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'idem_key' = ANY(%s)",
             (keys,),
         ).fetchall()
@@ -121,7 +121,7 @@ def _mint(store: Store, *, gripe_id: int, prio: int | None) -> bool:
     idem_key = f"diagnose:{gripe_id}"
     with store.pool.connection() as conn:
         existing = conn.execute(
-            "SELECT 1 FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "SELECT 1 FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'idem_key' = %s LIMIT 1",
             (idem_key,),
         ).fetchone()

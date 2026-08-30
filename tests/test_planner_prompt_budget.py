@@ -10,7 +10,7 @@ listing all 141 active skills with their full `summary:` front-matter. Every
 tick, on a lane where 88% of todos finish in exactly one tick.
 
 It was redundant twice: the block's own header tells the model to
-`search(kind='skill', q=...)`, and `precis-tasks-help`'s `## See also` already
+`search(kind='skill', q=...)`, and `precis-todo-tree-help`'s `## See also` already
 names the nine skills a planner needs, ending "if none of the above fit".
 
 Slugs stayed (cheap, self-describing, still advertise the namespace); summaries

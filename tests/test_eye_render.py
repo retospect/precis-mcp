@@ -92,7 +92,7 @@ def test_memory_eye_1hop_counts_overflow_against_live_neighbours(hub: Hub) -> No
     for other in others:
         store.add_link(src_ref_id=mem.id, dst_ref_id=other.id, relation="related-to")
     for dead in others[:2]:
-        store.soft_delete_ref(dead.id)
+        store.retire_ref(dead.id)
 
     h = handle_registry.format_handle("memory", mem.id)
     out = render_eye(store, h, "fisheye+1hop")

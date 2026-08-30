@@ -348,7 +348,7 @@ def _ungroundable_handles(store: Store, handles: list[str]) -> set[str]:
             (list(chunk_ids),),
         ).fetchall()
     # A retired chunk resolves upstream (``resolve_paper_ref_id`` filters
-    # ``refs.deleted_at``, not ``chunks.retired_at``) but is dead text: a
+    # ``refs.retired_at``, not ``chunks.retired_at``) but is dead text: a
     # re-chunk retires the row and inserts a replacement, so grounding an edge
     # on the old id cites content no reader can reach. Absent from the live
     # rows ⇒ ungroundable, same as prose-less.
@@ -453,7 +453,7 @@ def _read_draft_chunk(store: Store, chunk_id: int) -> tuple[str, int]:
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT c.text, c.ref_id, r.kind, r.deleted_at "
+            "SELECT c.text, c.ref_id, r.kind, r.retired_at "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
             "WHERE c.chunk_id = %s AND c.ord >= 0 AND c.retired_at IS NULL",
             (chunk_id,),
@@ -463,8 +463,8 @@ def _read_draft_chunk(store: Store, chunk_id: int) -> tuple[str, int]:
             f"no live draft body chunk with chunk_id={chunk_id}",
             next="pass a dc<id> handle for a live draft chunk",
         )
-    text, ref_id, kind, deleted_at = row
-    if kind != "draft" or deleted_at is not None:
+    text, ref_id, kind, retired_at = row
+    if kind != "draft" or retired_at is not None:
         raise BadInput(
             f"chunk_id={chunk_id} belongs to a {kind!r} ref (ref_id={ref_id}), "
             "not a live draft",

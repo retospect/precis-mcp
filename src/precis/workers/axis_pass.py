@@ -368,7 +368,7 @@ def _claim_chunk(
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
       FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
-      WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL
+      WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
         {ref_filter}
         {prereq_sql}
@@ -462,7 +462,7 @@ def _claim_ref(
     sql = f"""
         SELECT r.ref_id, r.title
         FROM refs r
-        WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL
+        WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL
           {ref_filter}
           {prereq_sql}
           {applies_sql}

@@ -344,52 +344,52 @@ class TestSearch:
 
 
 # ---------------------------------------------------------------------------
-# source='local' / 'remote' / 'both' — prior-art sweep affordance
+# reach='local' / 'remote' / 'both' — prior-art sweep affordance
 # ---------------------------------------------------------------------------
 
 
-class TestSearchSourceKwarg:
-    """``source=`` picks which leg(s) run.  ``'remote'`` also dedupes
+class TestSearchReachKwarg:
+    """``reach=`` picks which leg(s) run.  ``'remote'`` also dedupes
     OPS hits against the local store so the agent sees only patents
     it hasn't fetched yet — the natural prior-art sweep mode.
     See ``docs/backlog/search-future-filters.md`` §7.
     """
 
-    def test_source_invalid_raises(self, handler: PatentHandler) -> None:
-        with pytest.raises(BadInput, match="invalid source"):
-            handler.search(q="photocatalytic", source="nonsense")
+    def test_reach_invalid_raises(self, handler: PatentHandler) -> None:
+        with pytest.raises(BadInput, match="invalid reach"):
+            handler.search(q="photocatalytic", reach="nonsense")
 
-    def test_source_local_skips_ops_call(
+    def test_reach_local_skips_ops_call(
         self, handler: PatentHandler, fake_ops: FakeOpsClient
     ) -> None:
-        # No patents locally and source='local' → no OPS call fires and
+        # No patents locally and reach='local' → no OPS call fires and
         # the envelope reports zero matches.
         before_searches = [c for c in fake_ops.calls if c[0] == "search"]
-        r = handler.search(q="photocatalytic", source="local")
+        r = handler.search(q="photocatalytic", reach="local")
         assert "no patent" in r.body.lower() or "no patents match" in r.body.lower()
         # The OPS client's search() was never called for this query.
         after_searches = [c for c in fake_ops.calls if c[0] == "search"]
         assert after_searches == before_searches
 
-    def test_source_remote_skips_local_leg(self, handler: PatentHandler) -> None:
+    def test_reach_remote_skips_local_leg(self, handler: PatentHandler) -> None:
         # Ingest the fixture patent so the local store is non-empty.
         handler.get(id="EP1234567B1")
-        # source='remote' should not render block-level local hits
+        # reach='remote' should not render block-level local hits
         # (the [local] marker disappears when local leg is skipped).
-        r = handler.search(q="photocatalytic", source="remote")
+        r = handler.search(q="photocatalytic", reach="remote")
         # ``wo2023123456a1`` is remote-only and NOT in the local store,
         # so it must surface.
         assert "wo2023123456a1" in r.body
-        # ``ep1234567b1`` IS in the local store, so source='remote'
+        # ``ep1234567b1`` IS in the local store, so reach='remote'
         # dedupes it out — the agent only sees patents it hasn't
         # fetched yet.
         assert "ep1234567b1" not in r.body
 
-    def test_source_both_is_default(self, handler: PatentHandler) -> None:
-        # source defaults to 'both' — local AND remote hits render.
+    def test_reach_both_is_default(self, handler: PatentHandler) -> None:
+        # reach defaults to 'both' — local AND remote hits render.
         handler.get(id="EP1234567B1")
         default = handler.search(q="photocatalytic", page_size=10)
-        explicit = handler.search(q="photocatalytic", page_size=10, source="both")
+        explicit = handler.search(q="photocatalytic", page_size=10, reach="both")
         assert default.body == explicit.body
 
 

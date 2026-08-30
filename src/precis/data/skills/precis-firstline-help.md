@@ -84,6 +84,6 @@ No dangling "this / that / it" — name the thing.
 
 ```python
 get(kind="skill", id="precis-memory-help")  # memory capture mechanics
-get(kind="skill", id="precis-tasks-help")  # todo shapes + GTD next-action
+get(kind="skill", id="precis-todo-tree-help")  # todo shapes + GTD next-action
 get(kind="skill", id="precis-gripe-help")  # the bug tracker
 ```

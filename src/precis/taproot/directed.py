@@ -335,7 +335,7 @@ def _read_passage_chunk(store: Store, chunk_id: int) -> tuple[str, int, str, str
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT c.text, c.ref_id, r.kind, r.title, r.deleted_at "
+            "SELECT c.text, c.ref_id, r.kind, r.title, r.retired_at "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
             "WHERE c.chunk_id = %s AND c.ord >= 0 AND c.retired_at IS NULL",
             (chunk_id,),
@@ -345,8 +345,8 @@ def _read_passage_chunk(store: Store, chunk_id: int) -> tuple[str, int, str, str
             f"no live body chunk with chunk_id={chunk_id}",
             next="pass a pc<id> handle for a live paper/patent/edgar chunk",
         )
-    text, ref_id, kind, title, deleted_at = row
-    if deleted_at is not None or kind not in EVIDENCE_SRC_KINDS:
+    text, ref_id, kind, title, retired_at = row
+    if retired_at is not None or kind not in EVIDENCE_SRC_KINDS:
         raise BadInput(
             f"chunk_id={chunk_id} belongs to a {kind!r} ref (ref_id={ref_id}), "
             "not a live evidence source",

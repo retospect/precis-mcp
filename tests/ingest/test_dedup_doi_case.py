@@ -91,7 +91,7 @@ def _mk_stub(store: Store, *, slug: str, doi: str, verbatim: bool = False) -> in
 def _is_deleted(store: Store, ref_id: int) -> bool:
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT deleted_at IS NOT NULL FROM refs WHERE ref_id = %s", (ref_id,)
+            "SELECT retired_at IS NOT NULL FROM refs WHERE ref_id = %s", (ref_id,)
         ).fetchone()
     assert row is not None
     return bool(row[0])

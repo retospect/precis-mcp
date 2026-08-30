@@ -5,7 +5,7 @@ Deterministic, in-process work (no claude), like ``draft_export``: render
 the draft with ``remarkable=True`` (RM2 page geometry + source citations as
 self-contained footnotes), compile the PDF, then push it to the reMarkable
 cloud via ``precis.export.remarkable.send_pdf`` (the ``rmapi`` CLI). Each
-step streams as a ``job_event`` so the run is followable on the task page.
+step streams as a ``job_event`` so the run is followable on the todo page.
 
 Started from the ``/drafts`` "Send to reMarkable" button (shown only when a
 device credential is configured), or by an agent::
@@ -115,7 +115,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     # The reMarkable PDF is transient (uploaded, then discardable) — render
     # into a temp dir, not the project workspace (don't clobber the normal
-    # project PDF the task page shows).
+    # project PDF the todo page shows).
     with tempfile.TemporaryDirectory(prefix="rm-send-") as td:
         out_dir = Path(td)
         ctx.append_chunk(

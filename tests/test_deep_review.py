@@ -177,8 +177,8 @@ def test_pass_writes_digest_on_happy_path(
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:deep'
+             WHERE r.kind = 'memory' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'digest:deep'
              ORDER BY r.created_at DESC LIMIT 1
             """,
         ).fetchone()
@@ -208,8 +208,8 @@ def test_pass_records_failure_on_llm_error(
             SELECT count(*) FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:deep'
+             WHERE r.kind = 'memory' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'digest:deep'
             """,
         ).fetchone()
     assert n is not None and int(n[0]) == 0
@@ -243,8 +243,8 @@ def test_pass_skips_on_breaker_pause(
             SELECT count(*) FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:deep'
+             WHERE r.kind = 'memory' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'digest:deep'
             """,
         ).fetchone()
     assert n is not None and int(n[0]) == 0

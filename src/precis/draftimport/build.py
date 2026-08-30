@@ -200,7 +200,7 @@ def _retire_existing_draft(store: Any, slug: str) -> None:
             "WHERE src_ref_id = %s AND relation = 'draft-of'",
             (existing.id,),
         ).fetchone()
-        store.soft_delete_ref(existing.id, conn=conn)
+        store.retire_ref(existing.id, conn=conn)
         conn.execute(
             "DELETE FROM ref_identifiers WHERE id_kind = 'cite_key' AND id_value = %s",
             (slug,),
@@ -211,7 +211,7 @@ def _retire_existing_draft(store: Any, slug: str) -> None:
         )
         if proj is not None:
             try:
-                store.soft_delete_ref(int(proj[0]), conn=conn)
+                store.retire_ref(int(proj[0]), conn=conn)
             except Exception:
                 pass
 

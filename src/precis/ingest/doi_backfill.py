@@ -114,7 +114,7 @@ def _cohort(
     }[order]
     sql = (
         "SELECT r.ref_id FROM refs r "
-        "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+        "WHERE r.kind='paper' AND r.retired_at IS NULL "
         "  AND NOT EXISTS (SELECT 1 FROM ref_identifiers d "
         "                  WHERE d.ref_id=r.ref_id AND d.id_kind='doi') "
         "  AND ( coalesce(btrim(r.title),'') <> '' "

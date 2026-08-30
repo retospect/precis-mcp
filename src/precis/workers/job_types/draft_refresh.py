@@ -223,7 +223,7 @@ def _owning_quest_id(store: Store, draft_ref_id: int) -> int | None:
             for link in links
             if (ref := refs.get(int(link.dst_ref_id))) is not None
             and getattr(ref, "kind", None) == "quest"
-            and getattr(ref, "deleted_at", None) is None
+            and getattr(ref, "retired_at", None) is None
         ]
         # Deterministic when a draft serves >1 quest: the lowest ref_id wins
         # (arbitrary but stable — was link-scan order, i.e. undefined).
@@ -253,7 +253,7 @@ def _serving_quest_ids(store: Store, quest_id: int) -> list[int]:
                     "SELECT l.src_ref_id FROM links l "
                     "JOIN refs r ON r.ref_id = l.src_ref_id "
                     "WHERE l.relation = 'serves' AND l.dst_ref_id = ANY(%s) "
-                    "AND r.kind = 'quest' AND r.deleted_at IS NULL",
+                    "AND r.kind = 'quest' AND r.retired_at IS NULL",
                     (list(frontier),),
                 ).fetchall()
             new = {int(r[0]) for r in rows} - seen

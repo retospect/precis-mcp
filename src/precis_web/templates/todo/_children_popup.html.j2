@@ -7,7 +7,7 @@
   {% if depth >= max_depth %}
   <p class="text-xs text-slate-500 px-2 py-2">
     4 levels deep — drill further in the
-    <a href="/tasks?focus={{ parent_id }}&tree=3"
+    <a href="/todo?focus={{ parent_id }}&tree=3"
        class="text-sky-600 hover:underline">Mermaid tree view ↗</a>
   </p>
   {% elif children %}
@@ -27,13 +27,13 @@
           "won't-do":"bg-slate-200 text-slate-500",
         } %}
         <span class="text-[10px] px-1 py-0.5 rounded {{ sc.get(c.status, 'bg-slate-100 text-slate-600') }}">{{ c.status }}</span>
-        <a href="/tasks?focus={{ c.id }}"
+        <a href="/todo?focus={{ c.id }}"
            class="text-xs break-words flex-1 hover:text-emerald-700 {% if c.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}"
            title="{{ c.title }}">{{ (c.title or '').split('\n', 1)[0] | truncate(60, killwords=False, end='…') }}</a>
         {% if c.rollup and c.rollup.total %}
         <button type="button"
                 @click="open = !open; if (open && !loaded) loaded = true"
-                hx-get="/tasks/{{ c.id }}/children-popup?depth={{ depth + 1 }}"
+                hx-get="/todo/{{ c.id }}/children-popup?depth={{ depth + 1 }}"
                 hx-target="#subpopup-{{ c.id }}"
                 hx-trigger="click once"
                 class="inline-flex items-center gap-0.5 text-[10px] cursor-pointer hover:opacity-80 shrink-0"

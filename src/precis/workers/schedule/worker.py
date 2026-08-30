@@ -208,7 +208,7 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
             f"""
             SELECT r.ref_id
               FROM refs r
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND r.meta ? 'schedule'
                AND (
                      CASE WHEN {_IS_ONE_SHOT_SQL} THEN
@@ -278,7 +278,7 @@ def _claim_and_process(
               FROM refs r
              WHERE r.ref_id = %s
                AND r.kind = 'todo'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta ? 'schedule'
                AND COALESCE(r.meta->>'builtin', '') <> %s
                AND (
@@ -523,7 +523,7 @@ def _child_with_stamp_exists_conn(conn: Any, parent_id: int, stamp: str) -> bool
         """
         SELECT 1 FROM refs
          WHERE parent_id = %s
-           AND deleted_at IS NULL
+           AND retired_at IS NULL
            AND meta->>'spawned_for_tick' = %s
          LIMIT 1
         """,
@@ -575,7 +575,7 @@ def _has_open_previous_tick_conn(
         """
         SELECT 1 FROM refs c
          WHERE c.parent_id = %s
-           AND c.deleted_at IS NULL
+           AND c.retired_at IS NULL
            AND c.meta ? 'spawned_for_tick'
            AND COALESCE(
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id

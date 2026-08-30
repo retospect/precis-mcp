@@ -132,11 +132,11 @@ def test_dispatch_skips_with_halt_reason(handler: TodoHandler, store: Store) -> 
 
 
 def test_system_prompt_contains_pinned_skill_and_index() -> None:
-    """Cached layer carries precis-tasks-help + the skill index header."""
+    """Cached layer carries precis-todo-tree-help + the skill index header."""
     out = _build_system_prompt(store=None)
     assert "Available skills" in out
     # Pinned skill header line.
-    assert "precis-tasks-help" in out
+    assert "precis-todo-tree-help" in out
     # Planner contract section header.
     assert "Planner contract" in out
 
@@ -150,7 +150,7 @@ def test_skill_index_lists_active_skill_slugs() -> None:
     Budget + shape are pinned in tests/test_planner_prompt_budget.py.
     """
     out = _build_skill_index(store=None)
-    assert "precis-tasks-help" in out
+    assert "precis-todo-tree-help" in out
     assert "precis-decomposition-help" in out
     # A skill with no `summary:` front-matter is still not advertised.
     from precis.handlers._skill_common import parse_frontmatter

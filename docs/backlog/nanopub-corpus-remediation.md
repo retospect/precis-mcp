@@ -163,7 +163,7 @@ them uniformly is how this becomes a 1,500-item rewrite it does not need to be.
 
 Hub definition that reproduces the audit (a first attempt got 1,710 by
 row-multiplying the tag join, and 0 empty scopes by filtering on `meta ?
-'scope'` — neither is real): `refs.kind='finding'`, `deleted_at IS NULL`,
+'scope'` — neither is real): `refs.kind='finding'`, `retired_at IS NULL`,
 joined to `tags` on `namespace='TAPROOT' AND value='claim'` with
 `ref_tags.expires_at` null-or-future. Edges live in **`links`**
 (`src_ref_id`/`dst_ref_id`) — there is no `ref_edges` table.

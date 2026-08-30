@@ -49,7 +49,7 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_ASK_SOUL_PATH` | Web "ask" persona | unset | System prompt for `precis_web/ask.py`. Opt-in and set by no deploy, so `/ask` reasons without a persona. The dreamer persona is packaged (`precis/data/prompts/dream-persona.md`) and takes no env override — the retired `PRECIS_DREAM_SOUL_PATH` used to point it at the operator's chat persona, which is written for a Discord/Slack turn loop, not corpus synthesis. |
 | `PRECIS_FRICTION_REFLECT` | Friction-reflection pass | off | Staged — prerequisite recorded in [`docs/backlog/friction-reflection-enable.md`](../backlog/friction-reflection-enable.md). |
 | `PRECIS_ORACLE_AUTO_REINGEST` | Reingest on oracle sync | `1` (on) | |
-| `PRECIS_BACKFILL_CITATION_LENS` | Citation-lens backfill | `1` (on) | |
+| `PRECIS_BACKFILL_CITATION_RECALL` | Citation-recall backfill | `1` (on) | |
 | `PRECIS_FETCH_MARKUP` | Markup-first fetch leg | `0` | Ships dark; flipping is gated on the PDF-race decision — [`docs/backlog/markup-first-ingest.md`](../backlog/markup-first-ingest.md). |
 | `PRECIS_PATCH_PDFS` | Patch PDFs on ingest | `1` (on) | |
 | `PRECIS_LAYER2_FIXER` | Layer-2 plaintext fixer | off | Kept dark deliberately — fate: [`docs/backlog/tex-layer2-fixer-fate.md`](../backlog/tex-layer2-fixer-fate.md). |

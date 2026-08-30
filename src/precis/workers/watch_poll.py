@@ -159,7 +159,7 @@ def _seed_for_chunk(store: Store, chunk_id: int) -> tuple[int, str, str | None] 
             """
             SELECT r.ref_id
               FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
-             WHERE c.chunk_id = %s AND r.deleted_at IS NULL
+             WHERE c.chunk_id = %s AND r.retired_at IS NULL
             """,
             (chunk_id,),
         ).fetchone()

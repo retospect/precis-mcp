@@ -106,7 +106,7 @@ _SUSPECT_SQL = """
         ON ck.ref_id = r.ref_id AND ck.id_kind = 'cite_key'
      WHERE r.kind = 'paper'
        AND r.provider = 'local'
-       AND r.deleted_at IS NULL
+       AND r.retired_at IS NULL
        AND (
             r.title = ''
          OR r.title IS NULL

@@ -47,7 +47,7 @@ def test_deleted_cited_paper_excluded(store) -> None:
     d = _draft(store, "ddel")
     store.add_link(src_ref_id=d, dst_ref_id=p, relation="cites")
     with store.pool.connection() as conn:
-        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (p,))
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (p,))
         conn.commit()
     assert p not in set(_recent_draft_cited_paper_ids(store, 10))
 

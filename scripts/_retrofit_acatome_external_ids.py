@@ -171,7 +171,7 @@ def _process_one(
                 "SELECT ri.ref_id FROM ref_identifiers ri "
                 "JOIN refs r ON r.id = ri.ref_id "
                 "WHERE ri.scheme = %s AND ri.value = %s "
-                "  AND r.kind = 'paper' AND r.deleted_at IS NULL",
+                "  AND r.kind = 'paper' AND r.retired_at IS NULL",
                 (scheme, value),
             )
             row = cur.fetchone()

@@ -17,7 +17,7 @@ The CLI is reachable only by someone who already has a prod DSN in hand. The MCP
 surface is reachable by **every agent in the cluster**, and merge is the most
 destructive door taproot has:
 
-- It **hard-DELETEs** redundant `links` rows. `links` has no `deleted_at`; there
+- It **hard-DELETEs** redundant `links` rows. `links` has no `retired_at`; there
   is no undo.
 - It **soft-deletes a claim hub**, changing what the corpus asserts.
 - It is exactly the **over-merge** direction `eval_canon`'s live gate exists to

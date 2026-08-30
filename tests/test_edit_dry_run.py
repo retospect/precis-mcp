@@ -40,7 +40,7 @@ from precis.store.types import ChunkInsert
 
 def test_todo_edit_dry_run_does_not_write(hub: Hub) -> None:
     h = TodoHandler(hub=hub)
-    h.put(text="original task line", body="original body")
+    h.put(text="original title", body="original body")
     tid = h.store.list_refs(kind="todo", limit=1)[0].id
 
     resp = h.edit(
@@ -50,7 +50,7 @@ def test_todo_edit_dry_run_does_not_write(hub: Hub) -> None:
 
     # Task line unchanged.
     detail = h.get(id=tid).body
-    assert "original task line" in detail
+    assert "original title" in detail
     assert "rewritten" not in detail
     # Body chunk unchanged.
     with h.store.pool.connection() as conn:

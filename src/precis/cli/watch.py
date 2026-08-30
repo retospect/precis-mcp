@@ -1,5 +1,6 @@
-"""``precis watch`` — directory watcher that auto-ingests dropped PDFs
-(unrelated to the `level:recurring` todo **watch** — see glossary).
+"""``precis ingest --watch`` (legacy CLI name: ``precis watch``) — directory
+watcher that auto-ingests dropped PDFs (unrelated to the `level:recurring`
+todo **watch** — see glossary).
 
 Loops over a directory using ``watchdog``. For every PDF that arrives
 (new file event, or an existing file at startup with ``--backfill``):
@@ -112,15 +113,27 @@ _TAGGING_SENTINEL: str = "tagging"
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
-    """Register ``precis watch`` on ``sub``."""
+    """Register ``precis ingest`` on ``sub`` (legacy command name: ``watch``).
+
+    ``--watch`` is required today (the only mode this subcommand offers is
+    the long-running directory watcher) — a flag rather than baking the verb
+    into the subcommand name, so a future one-shot (non-watching) ingest
+    mode has somewhere to land without another CLI rename.
+    """
     p = sub.add_parser(
-        "watch",
+        "ingest",
         help="Watch a directory and auto-ingest PDFs into the v2 schema.",
         description=(
             "Long-running watcher: every PDF dropped into <watch-dir> is "
             "ingested via precis_add() and moved to the corpus on success "
             "or to <watch-dir>/errors/ on failure."
         ),
+    )
+    p.add_argument(
+        "--watch",
+        action="store_true",
+        required=True,
+        help="Run the long-running directory watcher (the only mode today).",
     )
     p.add_argument(
         "watch_dir",
@@ -279,7 +292,7 @@ def run_batch(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
-    """Top-level handler for ``precis watch``."""
+    """Top-level handler for ``precis ingest --watch``."""
     dsn = resolve_dsn(args.database_url)
     corpus_dir = args.corpus_dir or (Path.home() / "work" / "corpus")
     corpus_pres_dir = args.corpus_pres_dir
@@ -372,7 +385,7 @@ def watch(
     user = user or getpass.getuser()
 
     log.info(
-        "precis watch starting: watch=%s corpus=%s corpus_pres=%s recursive=%s",
+        "precis ingest starting: watch=%s corpus=%s corpus_pres=%s recursive=%s",
         watch_dir,
         corpus_dir,
         corpus_pres_dir,
@@ -402,7 +415,7 @@ def watch(
     stop = Event()
 
     def _on_signal(signum: int, _frame: Any) -> None:
-        log.info("precis watch: received signal %d, shutting down", signum)
+        log.info("precis ingest: received signal %d, shutting down", signum)
         stop.set()
         # gr171254: force-reap any in-flight batch subprocess group NOW,
         # rather than passively waiting for its natural completion (which
@@ -424,7 +437,7 @@ def watch(
     finally:
         observer.stop()
         observer.join()
-        log.info("precis watch: stopped")
+        log.info("precis ingest: stopped")
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +557,7 @@ class _PdfHandler(FileSystemEventHandler):
         )
         if markup_candidates:
             log.info(
-                "precis watch: backfilling %d markup trigger(s)",
+                "precis ingest: backfilling %d markup trigger(s)",
                 len(markup_candidates),
             )
             for markup in markup_candidates:
@@ -553,7 +566,7 @@ class _PdfHandler(FileSystemEventHandler):
         if self.subprocess_batch_size > 0:
             k = self.subprocess_concurrency
             log.info(
-                "precis watch: backfilling %d PDF(s) in %d parallel shard(s), "
+                "precis ingest: backfilling %d PDF(s) in %d parallel shard(s), "
                 "subprocess batches of %d",
                 len(candidates),
                 k,
@@ -697,7 +710,7 @@ def _check_elsevier_truncation(
     if result.chunks_written >= _ELSEVIER_TRUNCATION_MIN_CHUNKS:
         return
     log.error(
-        "precis watch: fetcher:elsevier ref_id=%s produced only %d chunks "
+        "precis ingest: fetcher:elsevier ref_id=%s produced only %d chunks "
         "from a %d-byte payload — looks like a truncated/preview-only "
         "fetch (gr162364); flagging.",
         result.ref_id,
@@ -729,7 +742,7 @@ def _check_elsevier_truncation(
             notify_critical_alert(store, title, detail, fingerprint=fingerprint)
     except Exception:  # pragma: no cover — defensive, never fail the ingest
         log.exception(
-            "precis watch: failed to raise elsevier-truncation alert for ref_id=%s",
+            "precis ingest: failed to raise elsevier-truncation alert for ref_id=%s",
             result.ref_id,
         )
 
@@ -782,7 +795,7 @@ def _check_marker_fallback(pdf: Path, result: IngestResult, *, store: Store) -> 
         )
     except Exception:  # pragma: no cover — defensive, never fail the ingest
         log.exception(
-            "precis watch: failed to raise marker-fallback alert for ref_id=%s",
+            "precis ingest: failed to raise marker-fallback alert for ref_id=%s",
             result.ref_id,
         )
 
@@ -830,7 +843,7 @@ def process_pdf(
     loop survives a single bad PDF.
     """
     if not _wait_stable(pdf, debounce=debounce):
-        log.warning("precis watch: file disappeared before stable: %s", pdf)
+        log.warning("precis ingest: file disappeared before stable: %s", pdf)
         return None
 
     routing = route_pdf(pdf, watch_dir)
@@ -858,7 +871,7 @@ def process_pdf(
         fmt = _infer_markup_fmt(pdf, sidecar)
         if fmt is None:
             log.warning(
-                "precis watch: cannot infer markup format for %s; skipping",
+                "precis ingest: cannot infer markup format for %s; skipping",
                 pdf.name,
             )
             return None
@@ -866,7 +879,7 @@ def process_pdf(
             routing.kind if routing.kind in ("paper", "cfp", "datasheet") else "paper"
         )
         log.info(
-            "precis watch: routing %s as markup (fmt=%s, as_kind=%s)",
+            "precis ingest: routing %s as markup (fmt=%s, as_kind=%s)",
             pdf.name,
             fmt,
             as_kind,
@@ -918,7 +931,7 @@ def process_pdf(
         if sidecar is not None:
             retired = _retire_markup_trigger(pdf, watch_dir)
             log.info(
-                "precis watch: retired unparsed %s markup trigger %s to %s "
+                "precis ingest: retired unparsed %s markup trigger %s to %s "
                 "(body recovered via companion PDF)",
                 exc.fmt or "markup",
                 pdf.name,
@@ -926,7 +939,7 @@ def process_pdf(
             )
         else:
             log.warning(
-                "precis watch: manual markup drop %s failed to parse (%s); "
+                "precis ingest: manual markup drop %s failed to parse (%s); "
                 "moving to errors/",
                 pdf.name,
                 exc,
@@ -942,11 +955,11 @@ def process_pdf(
         # present here would be a genuine bug — surface it normally.)
         if not pdf.exists():
             log.info(
-                "precis watch: %s vanished mid-ingest — another host owns it, skipping",
+                "precis ingest: %s vanished mid-ingest — another host owns it, skipping",
                 pdf.name,
             )
             return None
-        log.exception("precis watch: ingest failed for %s", pdf.name)
+        log.exception("precis ingest: ingest failed for %s", pdf.name)
         _handle_failure(pdf, exc, errors_dir=errors_dir)
         clear_sidecar(pdf)
         return None
@@ -957,13 +970,13 @@ def process_pdf(
         # manual recovery for what is almost always a self-healing
         # condition.
         log.warning(
-            "precis watch: transient DB error for %s (%s); leaving in inbox for retry",
+            "precis ingest: transient DB error for %s (%s); leaving in inbox for retry",
             pdf.name,
             exc,
         )
         return None
     except Exception as exc:
-        log.exception("precis watch: ingest failed for %s", pdf.name)
+        log.exception("precis ingest: ingest failed for %s", pdf.name)
         _handle_failure(pdf, exc, errors_dir=errors_dir)
         clear_sidecar(pdf)
         return None
@@ -991,7 +1004,7 @@ def process_pdf(
         # and deliberately skip clear_sidecar below so the fold stays
         # retryable.
         log.error(
-            "precis watch: %s used the fitz fallback and yielded 0 body "
+            "precis ingest: %s used the fitz fallback and yielded 0 body "
             "chunks (ref_id=%d) — routing to errors/ instead of "
             "reporting success; sidecar left in place for retry",
             pdf.name,
@@ -1073,7 +1086,7 @@ def _handle_success(
             dest = _move_to_corpus(pdf, cite_key=result.cite_key, corpus_dir=corpus_dir)
             status = "inserted"
         log.info(
-            "precis watch: ingested %s as %s (ref_id=%d, kind=%s)",
+            "precis ingest: ingested %s as %s (ref_id=%d, kind=%s)",
             pdf.name,
             result.cite_key,
             result.ref_id,
@@ -1111,7 +1124,7 @@ def _handle_success(
                 )
             status = "recovered_pres" if is_pres else "recovered"
             log.info(
-                "precis watch: recovered held-but-missing %s as %s "
+                "precis ingest: recovered held-but-missing %s as %s "
                 "(ref_id=%d existed, corpus had no file, kind=%s)",
                 pdf.name,
                 result.cite_key,
@@ -1122,7 +1135,7 @@ def _handle_success(
             dest = _move_to(pdf, duplicates_dir)
             status = "existed_pres" if is_pres else "existed"
             log.info(
-                "precis watch: duplicate %s (existing ref_id=%d, cite_key=%s, kind=%s)",
+                "precis ingest: duplicate %s (existing ref_id=%d, cite_key=%s, kind=%s)",
                 pdf.name,
                 result.ref_id,
                 result.cite_key,
@@ -1189,7 +1202,7 @@ def reap_tracked_process_groups(grace_s: float = 5.0) -> None:
         except ProcessLookupError:
             pass
         except PermissionError:
-            log.debug("precis watch: teardown SIGTERM killpg(%d) denied", pgid)
+            log.debug("precis ingest: teardown SIGTERM killpg(%d) denied", pgid)
     deadline = time.monotonic() + grace_s
     remaining = set(pgids)
     while remaining and time.monotonic() < deadline:
@@ -1206,14 +1219,14 @@ def reap_tracked_process_groups(grace_s: float = 5.0) -> None:
         try:
             os.killpg(pgid, signal.SIGKILL)
             log.warning(
-                "precis watch: teardown KILLed process group %d after %.1fs grace",
+                "precis ingest: teardown KILLed process group %d after %.1fs grace",
                 pgid,
                 grace_s,
             )
         except ProcessLookupError:
             pass
         except PermissionError:
-            log.debug("precis watch: teardown SIGKILL killpg(%d) denied", pgid)
+            log.debug("precis ingest: teardown SIGKILL killpg(%d) denied", pgid)
 
 
 atexit.register(reap_tracked_process_groups)
@@ -1260,7 +1273,7 @@ def _run_in_process_group(
         except ProcessLookupError:
             pass  # empty group = clean exit, nothing leaked (the happy path)
         except PermissionError:
-            log.debug("precis watch: killpg(%d) denied permission", pgid)
+            log.debug("precis ingest: killpg(%d) denied permission", pgid)
         if timed_out:
             # killpg killed the OS processes, but the Popen still needs a
             # wait() to reap the leader's exit status — otherwise every
@@ -1269,7 +1282,7 @@ def _run_in_process_group(
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover — D-state
-                log.warning("precis watch: killed batch %d not reaped", pgid)
+                log.warning("precis ingest: killed batch %d not reaped", pgid)
         _untrack_pgid(pgid)
     return None if timed_out else proc.returncode
 
@@ -1342,14 +1355,14 @@ def _spawn_batch_subprocess(
     if marker_timeout_s and marker_timeout_s > 0:
         batch_timeout_s = len(pdfs) * marker_timeout_s
 
-    log.info("precis watch: spawning batch subprocess for %d PDF(s)", len(pdfs))
+    log.info("precis ingest: spawning batch subprocess for %d PDF(s)", len(pdfs))
     returncode = _run_in_process_group(cmd, env, timeout_s=batch_timeout_s)
     if returncode is None:
         # batch_timeout_s is guaranteed non-None here: _run_in_process_group
         # only returns None when a timeout fired, which requires timeout_s
         # (== batch_timeout_s) to have been set in the first place.
         log.warning(
-            "precis watch: batch subprocess for %d PDF(s) exceeded its "
+            "precis ingest: batch subprocess for %d PDF(s) exceeded its "
             "%.0fs wall-clock budget (marker-timeout-s=%.0f x batch size) "
             "and was killed; the in-flight PDF's lock file is recovered "
             "per PDF metadata write-back, remaining PDFs retried on the next backfill",
@@ -1359,7 +1372,7 @@ def _spawn_batch_subprocess(
         )
     elif returncode != 0:
         log.warning(
-            "precis watch: batch subprocess exited with code %d "
+            "precis ingest: batch subprocess exited with code %d "
             "(advisory-lock claim auto-released; the next watcher run "
             "will retry any unmoved files)",
             returncode,
@@ -1488,7 +1501,7 @@ def _walk_unmanaged_files(watch_dir: Path) -> list[Path]:
     out: list[Path] = []
 
     def _onerror(exc: OSError) -> None:
-        log.warning("precis watch: backfill skipping unreadable path (%s)", exc)
+        log.warning("precis ingest: backfill skipping unreadable path (%s)", exc)
 
     for dirpath, dirnames, filenames in os.walk(watch_dir, onerror=_onerror):
         if Path(dirpath) == watch_dir:
@@ -1620,7 +1633,7 @@ def _move_to(src: Path, dest_dir: Path) -> Path:
         # move. That's exactly the multi-host case we're meant to
         # tolerate — the other host is handling the file, just
         # report the would-be destination.
-        log.info("precis watch: %s already moved by another host", src.name)
+        log.info("precis ingest: %s already moved by another host", src.name)
     return dest
 
 
@@ -1663,7 +1676,7 @@ def _move_to_pres_corpus(pdf: Path, *, slug: str, corpus_pres_dir: Path) -> Path
         shutil.move(str(pdf), str(dest))
     except FileNotFoundError:
         log.info(
-            "precis watch: %s already moved by another host (pres slug=%s)",
+            "precis ingest: %s already moved by another host (pres slug=%s)",
             pdf.name,
             slug,
         )
@@ -1697,7 +1710,7 @@ def _move_to_corpus(pdf: Path, *, cite_key: str, corpus_dir: Path) -> Path:
         shutil.move(str(pdf), str(dest))
     except FileNotFoundError:
         log.info(
-            "precis watch: %s already moved by another host (cite_key=%s)",
+            "precis ingest: %s already moved by another host (cite_key=%s)",
             pdf.name,
             cite_key,
         )
@@ -1742,7 +1755,7 @@ def _append_ingest_log(
     except OSError as exc:
         # Logging-only failure — don't fail the ingest because we
         # couldn't open the log file (read-only mount, etc.).
-        log.warning("precis watch: failed to append ingest.log: %s", exc)
+        log.warning("precis ingest: failed to append ingest.log: %s", exc)
 
 
 __all__ = [
@@ -1756,5 +1769,5 @@ __all__ = [
 
 
 if __name__ == "__main__":  # pragma: no cover
-    sys.stderr.write("Use `precis watch …` instead of running this module.\n")
+    sys.stderr.write("Use `precis ingest --watch …` instead of running this module.\n")
     sys.exit(2)

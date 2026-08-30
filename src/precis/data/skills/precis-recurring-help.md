@@ -207,8 +207,8 @@ backfills); the default rotation includes it alongside `auto_check`.
 
 ## Related skills
 
-* `precis-tasks-help` — the tree shape, level gradient, doable rules
-* `precis-auto-tasks-help` — `meta.auto_check` leaves (the other
+* `precis-todo-tree-help` — the tree shape, level gradient, doable rules
+* `precis-auto-todo-help` — `meta.auto_check` leaves (the other
   worker-driven leaf pattern; orthogonal to `meta.schedule`)
 * `precis-automations` — the standing-automation convention
   (`automation` tag) for a push- or job-driven recurring

@@ -30,10 +30,11 @@ _WATCH_PLIST = Path("/Library/LaunchDaemons/com.precis.watch.plist")
 
 
 def _watch_dir_from_plist() -> str | None:
-    """Lift the watch-dir argument out of ``precis watch``'s plist.
+    """Lift the watch-dir argument out of ``precis ingest --watch``'s plist
+    (legacy CLI name: ``precis watch``).
 
     The plist invokes ``bash -c "exec /opt/precis/venv/bin/precis
-    watch <flags> <watch_dir>"`` — the watch_dir is the last
+    ingest --watch <flags> <watch_dir>"`` — the watch_dir is the last
     whitespace-separated token in the bash command. Returns ``None``
     when the plist isn't readable so the template falls back to a
     placeholder hint.
@@ -49,9 +50,9 @@ def _watch_dir_from_plist() -> str | None:
     if not isinstance(args, list) or not args:
         return None
     # Find the bash -c command argument (longest string, contains
-    # 'precis watch'). The watch_dir is the final positional in it.
+    # 'precis ingest --watch'). The watch_dir is the final positional in it.
     for tok in args:
-        if isinstance(tok, str) and "precis watch" in tok:
+        if isinstance(tok, str) and "precis ingest" in tok and "--watch" in tok:
             # Split into shell-style tokens; walk backwards for the
             # first absolute path that isn't preceded by a flag.
             parts = tok.split()

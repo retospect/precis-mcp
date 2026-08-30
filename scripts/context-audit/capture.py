@@ -112,7 +112,7 @@ def _recent_ref_id(store: Store, kind: str) -> int | None:
     recent ref"."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind = %s AND deleted_at IS NULL "
+            "SELECT ref_id FROM refs WHERE kind = %s AND retired_at IS NULL "
             "ORDER BY updated_at DESC LIMIT 1",
             (kind,),
         ).fetchone()

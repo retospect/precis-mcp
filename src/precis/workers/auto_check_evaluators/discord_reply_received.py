@@ -45,7 +45,7 @@ def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
               FROM ref_tags rt
               JOIN tags t ON t.tag_id = rt.tag_id
               JOIN refs r ON r.ref_id = rt.ref_id
-             WHERE r.deleted_at IS NULL
+             WHERE r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = %s
              LIMIT 1

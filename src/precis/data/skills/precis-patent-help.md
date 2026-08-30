@@ -84,11 +84,11 @@ retry, so trust it and re-issue.
 ```python
 search(kind="patent", q="photocatalytic NOx reduction")
 search(kind="patent", q="Z-scheme photocatalysis", page_size=20)
-search(kind="patent", q="amine carbon capture", source="remote")
+search(kind="patent", q="amine carbon capture", reach="remote")
 ```
 
 Returns local + remote hits merged by DOCDB id; locally-stored
-rows are tagged `[local]`. CQL queries, the `source=` matrix,
+rows are tagged `[local]`. CQL queries, the `reach=` matrix,
 saved watches, and the OPS-CQL tag lift live in
 `precis-patent-search-help`.
 
@@ -190,7 +190,7 @@ put(kind="memory", text="<note>", link="pt40", rel="annotates")
 
 ```python
 get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-patent-search-help")  # source=, CQL, watches
+get(kind="skill", id="precis-patent-search-help")  # reach=, CQL, watches
 get(kind="skill", id="precis-patent-power")  # raw OPS CQL grammar
 get(kind="skill", id="precis-search-help")  # search mechanics
 get(kind="skill", id="precis-paper-help")  # sibling kind, same ~N..M syntax

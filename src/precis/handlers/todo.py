@@ -71,7 +71,7 @@ if TYPE_CHECKING:
     from precis.store.store import Store
 
 #: Chunk kind holding a todo's optional details body (parallel to
-#: ``memory_body``, migration 0050). The task line stays in ``refs.title``
+#: ``memory_body``, migration 0050). The title stays in ``refs.title``
 #: (a good header already); the body is extra prose read on ``get`` and
 #: embedded + keyworded for free. Additive — most todos never set one.
 _BODY_KIND = "todo_body"
@@ -215,7 +215,7 @@ class TodoHandler(NumericRefHandler):
             "Task / action item. Numeric id assigned on create. "
             "Status tracked via STATUS:open|doing|blocked|done|won't-do|paused|"
             "auto-timeout. Optional parent_id wires the todo into the "
-            "hierarchical task tree (see precis-tasks-help)."
+            "hierarchical todo tree (see precis-todo-tree-help)."
         ),
         supports_get=True,
         supports_search=True,
@@ -375,7 +375,7 @@ class TodoHandler(NumericRefHandler):
                 raise Unsupported(
                     f"unknown view {view!r} for kind={self.kind!r} search",
                     options=available,
-                    next=f"views available: {available}; see precis-tasks-help",
+                    next=f"views available: {available}; see precis-todo-tree-help",
                 ) from None
             return _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size)
         return super().search(q=q, tags=tags, page_size=page_size, **_kw)
@@ -624,7 +624,7 @@ class TodoHandler(NumericRefHandler):
             )
             # Optional details body → a todo_body chunk at pos 0, written
             # *before* the tag-overflow redirect (which appends at the next
-            # free ord). Additive: the task line stays in refs.title; the
+            # free ord). Additive: the title stays in refs.title; the
             # body is extra prose, embedded + keyworded by the workers.
             if self._pending_body:
                 self.store.chunks.insert_chunks(
@@ -704,9 +704,9 @@ class TodoHandler(NumericRefHandler):
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
-        """In-place rewrite of a todo's task line and/or details body.
+        """In-place rewrite of a todo's title and/or details body.
 
-        ``text=`` rewrites the task line (``refs.title``); ``body=`` sets or
+        ``text=`` rewrites the title (``refs.title``); ``body=`` sets or
         rewrites the optional details body (a ``todo_body`` chunk). Pass
         either or both. Same id; parent, links, and tags all stay attached —
         the old text lands in ``ref_events`` as a ``body_replaced`` row
@@ -744,7 +744,7 @@ class TodoHandler(NumericRefHandler):
                 assert text is not None
                 old = ref.title or ""
                 preview.append(
-                    f"task line: {old!r} → {text!r} "
+                    f"title: {old!r} → {text!r} "
                     f"({len(old.split())} → {len(text.split())} words)"
                 )
             if has_body:
@@ -778,7 +778,7 @@ class TodoHandler(NumericRefHandler):
             assert text is not None
             old_words = len((old_text or "").split())
             new_words = len(text.split())
-            parts.append(f"task line ({old_words} → {new_words} words)")
+            parts.append(f"title ({old_words} → {new_words} words)")
         if has_body:
             parts.append("details body")
         return Response(
@@ -1002,7 +1002,7 @@ class TodoHandler(NumericRefHandler):
         # parent chain) yet rots forever as a stuck-doable leaf — the
         # subtree goes with its root. Jobs/findings parented here keep
         # their own lifecycles and stay.
-        n_desc = self.store.soft_delete_todo_subtree(ref_id)
+        n_desc = self.store.retire_todo_subtree(ref_id)
         suffix = f" (+{n_desc} descendant todos)" if n_desc else ""
         return Response(body=f"deleted {self._sense()} id={ref_id}{suffix}")
 

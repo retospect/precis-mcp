@@ -1,1 +1,1 @@
-"""Route modules — one per tab (tasks, papers, console, status)."""
+"""Route modules — one per tab (todo, papers, console, status)."""

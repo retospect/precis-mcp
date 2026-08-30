@@ -184,7 +184,7 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     idem_key = f"doctor:{_doctor_tick_window(now)}"
     with store.pool.connection() as conn:
         existing = conn.execute(
-            "SELECT 1 FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "SELECT 1 FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'idem_key' = %s LIMIT 1",
             (idem_key,),
         ).fetchone()

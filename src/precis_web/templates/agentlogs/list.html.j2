@@ -39,10 +39,10 @@
               {% if r.status %}<span>status: {{ r.status }}</span>{% endif %}
               <span>touched {{ r.touched }} chunk{{ '' if r.touched == 1 else 's' }}</span>
               {% if r.parent_ref_id is not none %}
-              <a href="/tasks?focus={{ r.parent_ref_id }}" class="text-sky-700 hover:underline">todo #{{ r.parent_ref_id }}</a>
+              <a href="/todo?focus={{ r.parent_ref_id }}" class="text-sky-700 hover:underline">todo #{{ r.parent_ref_id }}</a>
               {% endif %}
               {% if r.job_ref_id is not none %}
-              <a href="/tasks/{{ r.job_ref_id }}/transcript" class="text-sky-700 hover:underline">📜 transcript</a>
+              <a href="/todo/{{ r.job_ref_id }}/transcript" class="text-sky-700 hover:underline">📜 transcript</a>
               {% endif %}
               <span>{{ r.created }}</span>
             </div>

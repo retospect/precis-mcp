@@ -46,7 +46,7 @@ class PcbMixin:
     tx: Any
     insert_ref: Any
     get_ref: Any
-    soft_delete_ref: Any  # RefsMixin — the shared ref soft-delete
+    retire_ref: Any  # RefsMixin — the shared ref soft-delete
     chunks: Any  # ChunkStore sub-store — the shared card_combined write
 
     # -- write ----------------------------------------------------------
@@ -2000,7 +2000,7 @@ class PcbMixin:
         drop its search card — atomically."""
         counts = {}
         with self.tx() as conn:
-            self.soft_delete_ref(ref_id, conn=conn)
+            self.retire_ref(ref_id, conn=conn)
             for tbl in (
                 "pcb_instances",
                 "pcb_components",

@@ -230,11 +230,11 @@ class TestBarrierQualityGate:
 
 
 class TestTierLadderGraduationGate:
-    """A ``meta.tier_ladder`` quest additionally requires the candidate's
+    """A ``meta.fidelity_ladder`` quest additionally requires the candidate's
     canonical barrier to have come from a TRUSTED verify-tier (coadsorbed)
     pathway before it graduates — a barrier that only crossed the ceiling on
     the cheaper parked/neb tier is held back as "pending verify", not
-    graduated. A ladder-off quest (no ``meta.tier_ladder``) is unaffected —
+    graduated. A ladder-off quest (no ``meta.fidelity_ladder``) is unaffected —
     today's straight-to-NEB graduation stays exactly as tested above."""
 
     def _candidate_with_tiered_barrier(
@@ -243,7 +243,7 @@ class TestTierLadderGraduationGate:
         qid: int,
         barrier: float,
         *,
-        barrier_tier: str | None,
+        barrier_fidelity: str | None,
         trusted: bool = True,
     ) -> int:
         sid = compute_mod.ensure_candidate(
@@ -260,8 +260,8 @@ class TestTierLadderGraduationGate:
             energy=-10.0,
         )
         meta: dict[str, Any] = {"barrier": barrier, "barrier_trusted": trusted}
-        if barrier_tier is not None:
-            meta["barrier_tier"] = barrier_tier
+        if barrier_fidelity is not None:
+            meta["barrier_fidelity"] = barrier_fidelity
         store.stamp_ref_meta(sid, meta)
         return sid
 
@@ -272,12 +272,12 @@ class TestTierLadderGraduationGate:
         store.stamp_ref_meta(
             qid,
             {
-                "tier_ladder": True,
+                "fidelity_ladder": True,
                 "rubric_objectives": [{"key": "barrier", "sense": "min"}],
             },
         )
         sid = self._candidate_with_tiered_barrier(
-            store, qid, 0.3, barrier_tier="neb", trusted=True
+            store, qid, 0.3, barrier_fidelity="neb", trusted=True
         )
         _set_rule(store, qid, key="barrier", sense="min", threshold=0.5)
         graduated = grad.graduate_frontier(store, qid)
@@ -302,12 +302,12 @@ class TestTierLadderGraduationGate:
         store.stamp_ref_meta(
             qid,
             {
-                "tier_ladder": True,
+                "fidelity_ladder": True,
                 "rubric_objectives": [{"key": "barrier", "sense": "min"}],
             },
         )
         sid = self._candidate_with_tiered_barrier(
-            store, qid, 0.3, barrier_tier="verify", trusted=True
+            store, qid, 0.3, barrier_fidelity="verify", trusted=True
         )
         _set_rule(store, qid, key="barrier", sense="min", threshold=0.5)
         graduated = grad.graduate_frontier(store, qid)
@@ -317,7 +317,7 @@ class TestTierLadderGraduationGate:
     def test_ladder_off_quest_graduates_on_a_neb_tier_barrier_unaffected(
         self, store: Any
     ) -> None:
-        """No ``meta.tier_ladder`` at all (the default, pre-ladder shape) —
+        """No ``meta.fidelity_ladder`` at all (the default, pre-ladder shape) —
         the new verify-only gate never fires, matching every existing
         `TestBarrierQualityGate` assertion above."""
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
@@ -325,7 +325,7 @@ class TestTierLadderGraduationGate:
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
         )
         sid = self._candidate_with_tiered_barrier(
-            store, qid, 0.3, barrier_tier="neb", trusted=True
+            store, qid, 0.3, barrier_fidelity="neb", trusted=True
         )
         _set_rule(store, qid, key="barrier", sense="min", threshold=0.5)
         graduated = grad.graduate_frontier(store, qid)

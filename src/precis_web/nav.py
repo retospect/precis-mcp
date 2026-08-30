@@ -52,7 +52,7 @@ def _asks_count(store: Store) -> int:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
@@ -78,7 +78,7 @@ def _alerts_count(store: Store) -> int:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'alert' AND r.deleted_at IS NULL
+             WHERE r.kind = 'alert' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN' AND t.value = %s
             """,
             (STATE_OPEN,),
@@ -105,7 +105,7 @@ def _gripes_count(store: Any) -> int:
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'gripe' AND r.deleted_at IS NULL
+             WHERE r.kind = 'gripe' AND r.retired_at IS NULL
                AND t.namespace = 'STATUS' AND t.value NOT IN ({terminals})
             """,
         ).fetchone()

@@ -76,7 +76,7 @@ def _load_targets(
     """Return the list of paper refs that need an S2 round-trip.
 
     A ref is a target if:
-      * It's a live paper (``kind='paper' AND deleted_at IS NULL``).
+      * It's a live paper (``kind='paper' AND retired_at IS NULL``).
       * It has at least one S2-lookup-able key: DOI in
         ``ref_identifiers`` (scheme='doi'), arxiv id (scheme='arxiv'),
         or S2 paperId (scheme='s2'). Without one of these we have no
@@ -105,7 +105,7 @@ def _load_targets(
                    WHERE t.ref_id = r.id AND t.value = 's2-enriched'
                ) AS already_enriched
         FROM refs r
-        WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+        WHERE r.kind = 'paper' AND r.retired_at IS NULL
         ORDER BY r.id
     """
     out: list[dict[str, Any]] = []

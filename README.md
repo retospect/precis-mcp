@@ -40,7 +40,7 @@ or `id=` and hand back text.
   `structure` (atomistic cell + bond graph for DFT/molecular work),
   `pcb` (netlist + placement graph → BOM/CPL/DSN + Freerouting), and
   `folder` (organizational container for the above).
-- **Personal state & knowledge** — `todo` (hierarchical task tree),
+- **Personal state & knowledge** — `todo` (hierarchical todo tree),
   `memory`, `gripe`, `anki` (spaced-repetition cloze cards → AnkiWeb),
   `citation` (verified claim → source quote), `finding`
   (chain-of-evidence over a citation chase), `job` (offline LLM run,
@@ -246,18 +246,18 @@ The policy for *adding* a var (the three-tier scheme) is
   blades as you reach for them, instead of advertising 20
   unfamiliar buttons in `tools/list`. (UX literature calls this
   pattern progressive disclosure.)
-- **The todo tree.** `kind='todo'` is a hierarchical task graph — a
+- **The todo tree.** `kind='todo'` is a hierarchical todo graph — a
   level gradient (`strategic` → `tactical` → `subtask`, plus
   `recurring`), a PRIO sort key, `meta.auto_check` wait-for-condition
   leaves, and `meta.schedule` recurring spawn (the *Watches*
   umbrella). It is the unified substrate for intent, execution, and
   review; `kind='job'` (an offline LLM run) always hangs off a todo
-  via `parent_id`, and the `dispatch` worker is the canonical path
+  via `parent_id`, and the `minter` worker is the canonical path
   from a todo's `meta.executor` to a queued job. See
-  [`precis-tasks-help`](src/precis/data/skills/precis-tasks-help.md).
+  [`precis-todo-tree-help`](src/precis/data/skills/precis-todo-tree-help.md).
 - **Two-profile worker.** Every background pass runs under one of two
   long-running daemons: `precis worker --profile=system` (embeddings,
-  keywords, dispatch, sweepers — safe to run on every node) and
+  keywords, minter, sweepers — safe to run on every node) and
   `--profile=agent` (the LLM-heavy review/planner rotation, each pass
   self-gated by env + a load-average ceiling). Per-pass daemons are
   retired.
@@ -312,7 +312,7 @@ precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
 # Background processing
 precis worker [--profile system|agent]
                                    # Drive the background passes. 'system'
-                                   #   (default) = embeddings/keywords/dispatch/
+                                   #   (default) = embeddings/keywords/minter/
                                    #   sweepers; 'agent' = the LLM-heavy review
                                    #   + planner rotation. --only X --once for
                                    #   ad-hoc backfills.

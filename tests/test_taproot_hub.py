@@ -223,7 +223,7 @@ def test_mint_hub_pub_id_resolves_back_to_the_hub(store: Any) -> None:
             "SELECT r.ref_id FROM ref_identifiers ri "
             "JOIN refs r ON r.ref_id = ri.ref_id "
             "WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s "
-            "AND r.deleted_at IS NULL",
+            "AND r.retired_at IS NULL",
             (pub_id,),
         ).fetchone()
 
@@ -1220,10 +1220,10 @@ def test_merge_hubs_repoints_a_plain_evidence_edge(store: Any) -> None:
     assert _edge(store, paper, loser) is None
     assert _edge(store, paper, winner) == "corroborates"
     with store.pool.connection() as conn:
-        deleted_at = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser,)
+        retired_at = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (loser,)
         ).fetchone()[0]
-    assert deleted_at is not None
+    assert retired_at is not None
     assert _edge(store, loser, winner) == MERGE_COLLAPSE_RELATION
 
 
@@ -1301,10 +1301,10 @@ def test_merge_hubs_refuses_when_either_side_is_past_candidate(store: Any) -> No
 
     # Nothing moved -- the refusal is raised before any write.
     with store.pool.connection() as conn:
-        deleted_at = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser,)
+        retired_at = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (loser,)
         ).fetchone()[0]
-    assert deleted_at is None
+    assert retired_at is None
 
     # A dry run reports the SAME refusal instead of raising.
     plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
@@ -1348,10 +1348,10 @@ def test_merge_hubs_dry_run_writes_nothing(store: Any) -> None:
     assert _edge(store, paper, loser) == "corroborates"  # untouched
     assert _edge(store, paper, winner) is None
     with store.pool.connection() as conn:
-        deleted_at = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser,)
+        retired_at = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (loser,)
         ).fetchone()[0]
-    assert deleted_at is None
+    assert retired_at is None
     assert _edge(store, loser, winner) is None  # no collapse edge written
 
 

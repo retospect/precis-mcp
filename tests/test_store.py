@@ -127,22 +127,22 @@ def test_update_ref_missing_raises(store: Store) -> None:
 
 def test_soft_delete(store: Store) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="bye")
-    store.soft_delete_ref(ref.id)
+    store.retire_ref(ref.id)
 
     assert store.get_ref(kind="memory", id=ref.id) is None
     found = store.get_ref(kind="memory", id=ref.id, include_deleted=True)
     assert found is not None
-    assert found.deleted_at is not None
+    assert found.retired_at is not None
 
 
 def test_restore_ref(store: Store) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="undelete me")
-    store.soft_delete_ref(ref.id)
+    store.retire_ref(ref.id)
     assert store.get_ref(kind="memory", id=ref.id) is None
 
     assert store.restore_ref(ref.id) is True
     live = store.get_ref(kind="memory", id=ref.id)
-    assert live is not None and live.deleted_at is None
+    assert live is not None and live.retired_at is None
 
     # idempotent: restoring an already-live (or absent) ref is a no-op, not an error
     assert store.restore_ref(ref.id) is False

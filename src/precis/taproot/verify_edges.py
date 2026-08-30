@@ -218,8 +218,8 @@ _COHORT_SQL = """
              ORDER BY created_at DESC LIMIT 1) AS cite_key,
            h.title, h.meta->'scope'
       FROM links l
-      JOIN refs s ON s.ref_id = l.src_ref_id AND s.deleted_at IS NULL
-      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.deleted_at IS NULL
+      JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
+      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.retired_at IS NULL
                  AND h.kind = 'finding'
       LEFT JOIN chunks c ON c.chunk_id = l.src_chunk_id
                         AND c.retired_at IS NULL
@@ -237,8 +237,8 @@ _COHORT_SQL = """
 _PASSAGELESS_COUNT_SQL = """
     SELECT count(*)
       FROM links l
-      JOIN refs s ON s.ref_id = l.src_ref_id AND s.deleted_at IS NULL
-      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.deleted_at IS NULL
+      JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
+      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.retired_at IS NULL
                  AND h.kind = 'finding'
      WHERE l.relation IN ('establishes', 'corroborates')
        AND l.src_chunk_id IS NULL

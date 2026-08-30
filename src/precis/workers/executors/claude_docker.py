@@ -472,7 +472,7 @@ def _job_is_live(store: Store, job_id: int) -> bool:
                      ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
              WHERE r.ref_id = %s
                AND r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
              LIMIT 1
             """,
             (job_id,),
@@ -904,7 +904,7 @@ def _running_jobs(store: Store, node: str | None) -> list[tuple[int, dict[str, A
             SELECT r.ref_id, r.meta
               FROM refs r
              WHERE r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta->>'executor' = %s
                AND r.meta ? 'container'
                AND (r.meta->'params'->>'target_node') IS NOT DISTINCT FROM %s

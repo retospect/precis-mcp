@@ -471,7 +471,7 @@ class TagsMixin:
                     "FROM tags t "
                     "JOIN ref_tags rt ON rt.tag_id = t.tag_id "
                     "JOIN refs r ON r.ref_id = rt.ref_id "
-                    "WHERE r.kind = %s AND r.deleted_at IS NULL "
+                    "WHERE r.kind = %s AND r.retired_at IS NULL "
                     "GROUP BY t.namespace, t.value "
                     "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
                     "LIMIT %s OFFSET %s",
@@ -528,19 +528,19 @@ class TagsMixin:
             # hint. Join refs to compute live_count via a FILTER.
             agg = conn.execute(
                 "WITH all_attachments AS ( "
-                "  SELECT rt.created_at, r.deleted_at "
+                "  SELECT rt.created_at, r.retired_at "
                 "    FROM ref_tags rt "
                 "    JOIN refs r ON r.ref_id = rt.ref_id "
                 "    WHERE rt.tag_id = %s "
                 "  UNION ALL "
-                "  SELECT ct.created_at, r.deleted_at "
+                "  SELECT ct.created_at, r.retired_at "
                 "    FROM chunk_tags ct "
                 "    JOIN chunks c ON c.chunk_id = ct.chunk_id "
                 "    JOIN refs r ON r.ref_id = c.ref_id "
                 "    WHERE ct.tag_id = %s "
                 ") "
                 "SELECT COUNT(*), "
-                "       COUNT(*) FILTER (WHERE deleted_at IS NULL), "
+                "       COUNT(*) FILTER (WHERE retired_at IS NULL), "
                 "       MIN(created_at), MAX(created_at) "
                 "FROM all_attachments",
                 (tag_id, tag_id),
@@ -564,7 +564,7 @@ class TagsMixin:
                 "       r.ref_id "
                 "FROM ref_tags rt "
                 "JOIN refs r ON r.ref_id = rt.ref_id "
-                "WHERE rt.tag_id = %s AND r.deleted_at IS NULL "
+                "WHERE rt.tag_id = %s AND r.retired_at IS NULL "
                 "ORDER BY rt.created_at DESC, r.ref_id DESC "
                 "LIMIT 5",
                 (tag_id,),
@@ -744,7 +744,7 @@ class TagsMixin:
                 "WHERE r.kind = %s "
                 "  AND t.namespace = 'OPEN' "
                 "  AND t.value = %s "
-                "  AND r.deleted_at IS NULL "
+                "  AND r.retired_at IS NULL "
                 "LIMIT 1",
                 (kind, tag),
             ).fetchone()

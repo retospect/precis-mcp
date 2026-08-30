@@ -176,7 +176,7 @@ def _has_live_child_todos(store: Store, ref_id: int) -> bool:
                 SELECT 1 FROM refs c
                  WHERE c.parent_id = %s
                    AND c.kind = 'todo'
-                   AND c.deleted_at IS NULL
+                   AND c.retired_at IS NULL
                    AND COALESCE(
                          (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                            WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),

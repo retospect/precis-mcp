@@ -55,7 +55,7 @@ def evaluate(store: Store, spec: dict[str, Any], *, ref_id: int) -> bool | None:
              WHERE l.src_ref_id = %s
                AND l.relation = 'requested'
                AND j.kind = 'job'
-               AND j.deleted_at IS NULL
+               AND j.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'succeeded'
              LIMIT 1

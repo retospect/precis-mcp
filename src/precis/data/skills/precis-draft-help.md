@@ -62,7 +62,7 @@ call)
 | `table=` / `cell=` / `find=`+`text=` / `sub=` | table-chunk cell edits — grammar below |
 | `sub=` | regex substitute over a draft/section, dry-run by default, `apply=True` commits |
 | `review=` | record a checker's sign-off (`'human'` or a worker name) |
-| `authoring=` | `'on'`/`'off'` — let review lenses author fixes inline |
+| `authoring=` | `'on'`/`'off'` — let review personas author fixes inline |
 | `authors=` | replace the byline — grammar below |
 | `title=` | rename (both `refs.title` and the heading, atomically) |
 | `scaffold=` | append a document class's section skeleton |
@@ -245,7 +245,7 @@ edit(id="dc<heading>", style="<section-style skill>")
 `word_target=` bounds are non-negative ints, `min <= max`, either bound
 omittable; counts come from `view='wordcount'` (a section includes its
 subsections) and the web reader badges off-target sections. `style=`
-tells review lenses and scaffolded genres what the section should look
+tells review personas and scaffolded genres what the section should look
 like. Both are generic draft params, not proposal-specific.
 
 ## Document metadata — rename & byline
@@ -479,7 +479,7 @@ edit(
 )  # record a sign-off
 edit(
     kind="draft", id="nanotrans", authoring="on"
-)  # let review lenses author fixes inline
+)  # let review personas author fixes inline
 delete(id="dc12")  # retire a chunk (un-delete restores)
 delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
 delete(id="dc20", mode="cascade")  # delete heading AND its contents
@@ -499,9 +499,9 @@ worker). `verdict=` free text, default `'approved'`. Upsert keyed on
 makes the chunk "dirty" for that checker again. Web reader's ✓ gutter
 button drives this; no un-review verb — re-review overwrites the prior
 row. `authoring=` is a per-document flag, default off — on, the
-`cites`/`structure` review lenses edit the draft inline (mint a
+`cites`/`structure` review personas edit the draft inline (mint a
 grounded citation, extend/add a chunk stamped
-`authored_by='review:<lens>'`) instead of only filing a change-request
+`authored_by='review:<persona>'`) instead of only filing a change-request
 todo, whenever they can ground the fix; `flow`/`adversarial` never
 author regardless. Web reader toolbar carries the same switch.
 
@@ -661,7 +661,7 @@ Never invent a paper-chunk handle, write `paper:slug` for a paper not
 held, or leave a bare `[citation pending]` with nothing chasing it — the
 stub/finding *is* the acquisition. Until `[pc<id>]` lands, cite the
 in-flight `[fi<id>]` finding (a resolved citation form). See
-`precis-stubs-help`, `precis-auto-tasks-help` (wait-on-ingest),
+`precis-stubs-help`, `precis-auto-todo-help` (wait-on-ingest),
 `precis-paper-help` (S2 nav + held-paper citing).
 
 ## Audit the draft — hygiene checks & the gap-finder
@@ -801,7 +801,7 @@ get(
     kind="skill", id="precis-fisheye-help"
 )  # view='fisheye'/'fisheye+1hop' — a chunk + its neighborhood/reference ring
 get(
-    kind="skill", id="precis-auto-tasks-help"
+    kind="skill", id="precis-auto-todo-help"
 )  # wait-on-ingest (paper_ingested) leaf pattern
 get(kind="skill", id="precis-taproot-help")  # cite a claim hub (living [fi<id>])
 get(kind="skill", id="precis-taproot-mint-help")  # mint a claim hub

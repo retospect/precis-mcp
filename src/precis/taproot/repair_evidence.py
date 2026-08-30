@@ -206,8 +206,8 @@ class EdgeRepair:
 _BROKEN_EVIDENCE_COHORT_SQL = """
     SELECT l.link_id, l.dst_ref_id, l.src_ref_id, s.kind, l.relation
       FROM links l
-      JOIN refs s ON s.ref_id = l.src_ref_id AND s.deleted_at IS NULL
-      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.deleted_at IS NULL
+      JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
+      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.retired_at IS NULL
      WHERE s.kind IN ('paper', 'patent')
        AND l.relation IN ('establishes', 'corroborates', 'contradicts')
        AND l.src_chunk_id IS NULL
@@ -253,8 +253,8 @@ _DRAFT_CLAUSE = """
 _PROSE_LESS_COHORT_SQL = """
     SELECT l.link_id, l.dst_ref_id, l.src_ref_id, s.kind, l.relation, c.text
       FROM links l
-      JOIN refs s ON s.ref_id = l.src_ref_id AND s.deleted_at IS NULL
-      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.deleted_at IS NULL
+      JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
+      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.retired_at IS NULL
       LEFT JOIN chunks c
              ON c.chunk_id = l.src_chunk_id AND c.retired_at IS NULL
      WHERE s.kind IN ('paper', 'patent')
@@ -354,7 +354,7 @@ def _fetch_hub_claim(store: Store, hub_ref_id: int) -> CanonicalClaim | None:
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT title, meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT title, meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (hub_ref_id,),
         ).fetchone()
     if row is None:

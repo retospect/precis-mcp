@@ -18,8 +18,8 @@ import pytest
 def clean_catalog(store: Any) -> Any:
     with store.pool.connection() as conn:
         conn.execute(
-            "UPDATE refs SET deleted_at = now() "
-            "WHERE kind = 'llm' AND deleted_at IS NULL"
+            "UPDATE refs SET retired_at = now() "
+            "WHERE kind = 'llm' AND retired_at IS NULL"
         )
     return store
 

@@ -176,11 +176,11 @@ class TestListViews:
 class TestSearch:
     def test_local_hit_after_ingest(self, handler: EdgarHandler) -> None:
         handler.get(id="0000320193-23-000106")
-        resp = handler.search(q="supply chain", source="local")
+        resp = handler.search(q="supply chain", reach="local")
         assert "supply chain" in resp.body.lower() or "filing hit" in resp.body.lower()
 
     def test_remote_leg(self, handler: EdgarHandler) -> None:
-        resp = handler.search(q="risk", source="remote")
+        resp = handler.search(q="risk", reach="remote")
         # Remote FTS hit surfaces the 2024 accession.
         assert "0000320193-24-000010" in resp.body
 

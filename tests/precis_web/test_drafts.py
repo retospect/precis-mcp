@@ -190,7 +190,7 @@ class DraftFakeStore(FakeStore):
     def reading_order(self, ref_id):
         return list(self._chunks)
 
-    def soft_delete_draft(self, ref_id):
+    def retire_draft(self, ref_id):
         self.soft_deleted_drafts = getattr(self, "soft_deleted_drafts", [])
         self.soft_deleted_drafts.append(ref_id)
         return len(self._chunks)
@@ -1588,7 +1588,7 @@ class WsFakeStore(DraftFakeStore):
                 kind="draft",
                 title="Nano draft",
                 meta=self._ref_meta.get(500, {}),
-                deleted_at=None,
+                retired_at=None,
             )
         return base
 
@@ -2316,7 +2316,7 @@ def test_pdf_cache_token_includes_ref_updated_at(monkeypatch) -> None:
 def test_tasks_gist_summarises_long_bodies_only() -> None:
     """A multi-line / long todo body gets a 3-keyword RAKE gist; a short
     single-line one is shown verbatim (no gist)."""
-    from precis_web.routes.tasks import _gist
+    from precis_web.routes.todo import _gist
 
     assert _gist("tighten this") == ""  # short single line → no gist
     long_body = (
@@ -2371,12 +2371,12 @@ def test_draft_author_lines_empty() -> None:
     assert _draft_author_lines(make_ref(kind="draft", authors=None)) == ""
 
 
-# ── lens-run endpoint (the incremental review fanout) ──────────────────
+# ── persona-run endpoint (the incremental review fanout) ──────────────────
 #
 # The fanout's own minting behaviour (only_dirty, subtree scope,
-# unsettled-skip, lens x chunk-kind mapping) is unit-tested against a real
+# unsettled-skip, persona x chunk-kind mapping) is unit-tested against a real
 # store in tests/test_review_fanout_writeback.py; these assert the ROUTE's
-# contract — it resolves dc/lens/only_dirty and calls
+# contract — it resolves dc/persona/only_dirty and calls
 # quest.review_fanout.mint_review_fanout with the right arguments (incl.
 # the structural/deep_review alias mapping and the scoped-toc 400) — via a
 # monkeypatched fanout that just records its call.
@@ -2396,8 +2396,8 @@ def _fake_fanout_recorder(calls: list[dict[str, Any]]):
         calls.append(
             {
                 "ref_id": ref_id,
-                "lenses": personas,
-                "doc_lenses": doc_personas,
+                "personas": personas,
+                "doc_personas": doc_personas,
                 "only_dirty": only_dirty,
                 "scope": scope,
             }
@@ -2421,7 +2421,7 @@ def test_review_route_alias_maps_and_scopes_to_dc_chunk(tmp_path, monkeypatch) -
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
 
-    r = client.post("/drafts/nt/review", json={"lens": "structural", "dc": "dc2"})
+    r = client.post("/drafts/nt/review", json={"persona": "structural", "dc": "dc2"})
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -2429,8 +2429,8 @@ def test_review_route_alias_maps_and_scopes_to_dc_chunk(tmp_path, monkeypatch) -
     assert len(calls) == 1
     call = calls[0]
     assert call["ref_id"] == 500
-    assert call["lenses"] == ("structure",)  # 'structural' alias -> 'structure'
-    assert call["doc_lenses"] == ()
+    assert call["personas"] == ("structure",)  # 'structural' alias -> 'structure'
+    assert call["doc_personas"] == ()
     assert call["scope"] == 2  # dc2 -> chunk_id 2
     assert call["only_dirty"] is False  # a dc-scoped call defaults to re-run
 
@@ -2444,14 +2444,14 @@ def test_review_route_deep_review_alias_maps_to_adversarial(
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
 
-    r = client.post("/drafts/nt/review", json={"lens": "deep_review"})
+    r = client.post("/drafts/nt/review", json={"persona": "deep_review"})
     assert r.status_code == 200
-    assert calls[0]["lenses"] == ("adversarial",)
+    assert calls[0]["personas"] == ("adversarial",)
     assert calls[0]["scope"] is None  # no dc -> whole draft
     assert calls[0]["only_dirty"] is True  # whole-draft call defaults to incremental
 
 
-def test_review_route_all_lens_whole_draft_includes_doc_lenses(
+def test_review_route_all_persona_whole_draft_includes_doc_personas(
     tmp_path, monkeypatch
 ) -> None:
     import precis_web.routes.drafts as drafts_mod
@@ -2461,17 +2461,17 @@ def test_review_route_all_lens_whole_draft_includes_doc_lenses(
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
 
-    r = client.post("/drafts/nt/review", json={"lens": "all"})
+    r = client.post("/drafts/nt/review", json={"persona": "all"})
     assert r.status_code == 200
-    assert calls[0]["lenses"] == ALL_PERSONAS
-    assert calls[0]["doc_lenses"] == DOC_PERSONAS
+    assert calls[0]["personas"] == ALL_PERSONAS
+    assert calls[0]["doc_personas"] == DOC_PERSONAS
     assert calls[0]["scope"] is None
 
 
-def test_review_route_all_lens_scoped_still_passes_doc_lenses_through(
+def test_review_route_all_persona_scoped_still_passes_doc_personas_through(
     tmp_path, monkeypatch
 ) -> None:
-    # mint_review_fanout itself gates doc_lenses to scope=None (a no-op for a
+    # mint_review_fanout itself gates doc_personas to scope=None (a no-op for a
     # scoped call) — the route doesn't need to special-case this, just pass
     # both through.
     import precis_web.routes.drafts as drafts_mod
@@ -2481,20 +2481,20 @@ def test_review_route_all_lens_scoped_still_passes_doc_lenses_through(
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
 
-    r = client.post("/drafts/nt/review", json={"lens": "all", "dc": "dc2"})
+    r = client.post("/drafts/nt/review", json={"persona": "all", "dc": "dc2"})
     assert r.status_code == 200
-    assert calls[0]["lenses"] == ALL_PERSONAS
-    assert calls[0]["doc_lenses"] == DOC_PERSONAS
+    assert calls[0]["personas"] == ALL_PERSONAS
+    assert calls[0]["doc_personas"] == DOC_PERSONAS
     assert calls[0]["scope"] == 2
 
 
-def test_review_route_toc_lens_scoped_to_dc_is_rejected_400(tmp_path) -> None:
+def test_review_route_toc_persona_scoped_to_dc_is_rejected_400(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
-    r = client.post("/drafts/nt/review", json={"lens": "toc", "dc": "dc2"})
+    r = client.post("/drafts/nt/review", json={"persona": "toc", "dc": "dc2"})
     assert r.status_code == 400
 
 
-def test_review_route_toc_lens_whole_draft_mints_doc_lens_only(
+def test_review_route_toc_persona_whole_draft_mints_doc_persona_only(
     tmp_path, monkeypatch
 ) -> None:
     import precis_web.routes.drafts as drafts_mod
@@ -2503,27 +2503,27 @@ def test_review_route_toc_lens_whole_draft_mints_doc_lens_only(
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
 
-    r = client.post("/drafts/nt/review", json={"lens": "toc"})
+    r = client.post("/drafts/nt/review", json={"persona": "toc"})
     assert r.status_code == 200
-    assert calls[0]["lenses"] == ()
-    assert calls[0]["doc_lenses"] == ("toc",)
+    assert calls[0]["personas"] == ()
+    assert calls[0]["doc_personas"] == ("toc",)
 
 
-def test_review_route_unknown_lens_400(tmp_path) -> None:
+def test_review_route_unknown_persona_400(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
-    r = client.post("/drafts/nt/review", json={"lens": "bogus"})
+    r = client.post("/drafts/nt/review", json={"persona": "bogus"})
     assert r.status_code == 400
 
 
 def test_review_route_unknown_dc_404(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
-    r = client.post("/drafts/nt/review", json={"lens": "flow", "dc": "dc999"})
+    r = client.post("/drafts/nt/review", json={"persona": "flow", "dc": "dc999"})
     assert r.status_code == 404
 
 
 def test_review_route_missing_draft_404(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
-    r = client.post("/drafts/no-such-draft/review", json={"lens": "flow"})
+    r = client.post("/drafts/no-such-draft/review", json={"persona": "flow"})
     assert r.status_code == 404
 
 

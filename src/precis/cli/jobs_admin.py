@@ -63,7 +63,7 @@ def _cmd_kill(store: Store, args: argparse.Namespace) -> None:
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT kind FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (args.ref_id,),
         ).fetchone()
         if row is None:

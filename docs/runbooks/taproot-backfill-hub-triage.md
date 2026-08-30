@@ -27,7 +27,7 @@ COPY (SELECT json_agg(row_to_json(t)) FROM (
   JOIN refs   r ON r.ref_id = l.dst_ref_id
   JOIN chunks c ON c.chunk_id = (substring(l.meta->>'source_handle' from 3))::bigint
   WHERE l.meta->>'origin' = 'draft-backfill'
-    AND r.deleted_at IS NULL
+    AND r.retired_at IS NULL
     AND c.retired_at IS NULL
 ) t) TO STDOUT
 ```

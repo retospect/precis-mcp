@@ -426,7 +426,7 @@ def test_infra_orphan_retry_leaves_parent_a_candidate_and_re_mints(
         for row in _query(
             store,
             "SELECT ref_id FROM refs WHERE parent_id = %s AND kind = 'job' "
-            "AND deleted_at IS NULL",
+            "AND retired_at IS NULL",
             (rid,),
         )
     }

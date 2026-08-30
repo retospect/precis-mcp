@@ -284,7 +284,7 @@ def test_refresh_source_ref_deleted(fig_client, runtime_with_store) -> None:
     store = runtime_with_store.store
     quest_ref = store.insert_ref(kind="quest", slug=None, title="Q1")
     ref, fig = _draft_with_data_package_figure(store, quest_ref.id)
-    store.soft_delete_ref(quest_ref.id)
+    store.retire_ref(quest_ref.id)
 
     r = fig_client.post(f"/drafts/{ref.slug}/figure/{fig.handle}/refresh")
     assert r.status_code == 404

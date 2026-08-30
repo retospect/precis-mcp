@@ -294,7 +294,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         default_profiles=_SYS,
         ref_pass=True,
         one_line="Drain the todo-tree wait-for-condition leaves.",
-        doc_skill="precis-tasks-help",
+        doc_skill="precis-todo-tree-help",
     ),
     ServiceSpec(
         name="schedule",
@@ -389,14 +389,20 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
-        name="dispatch",
-        label="Dispatch (mint jobs)",
+        # Vocabulary-compaction Stage D: registry name (legacy: `dispatch`)
+        # renamed to `minter` — `mint kind='job' children` is what it does;
+        # `log_name` keeps the `worker_logs`/`ref_events` identity the
+        # still-named `workers/dispatch.py` module writes under (matches
+        # the `fetch`→`fetch_oa` divergence pattern above).
+        name="minter",
+        label="Minter (mint jobs)",
         category="jobs",
         kind=ServiceKind.PASS,
         default_profiles=_SYS,
         ref_pass=True,
+        log_name="dispatch",
         one_line="Mint kind='job' children under executor-bearing todos.",
-        doc_skill="precis-dispatch-help",
+        doc_skill="precis-minter-help",
     ),
     ServiceSpec(
         name="sweeper",
@@ -552,7 +558,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         cost_sources=("structural",),
         one_line="Opus 6h-dedup review of tree shape (drift, contradictions) "
         "— `structural` scheduler cadence (gr192752), not a profile default.",
-        doc_skill="precis-tasks-help",
+        doc_skill="precis-todo-tree-help",
         introspect=AgentIntrospect(
             launchd_label="com.precis.worker",
             model_default="",
@@ -589,7 +595,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         cost_sources=("deep_review",),
         one_line="Opus weekly Allen-style archive / prune / rebalance review "
         "— `deep_review` scheduler cadence (gr192752), not a profile default.",
-        doc_skill="precis-tasks-help",
+        doc_skill="precis-todo-tree-help",
         introspect=AgentIntrospect(
             launchd_label="com.precis.worker",
             model_default="",
@@ -1049,26 +1055,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # host — no default profile, so it doesn't poll the same mailbox from
         # every node (a per-account lease that would make every-node safe is the
         # §15i scheduler, still dark). Per-account cadence + IMAP-error backoff
-        # live in the pass; it fetches new bodies (BODY.PEEK) + tier-0 scans.
+        # live in the pass; it fetches new bodies (BODY.PEEK) + depth-0 scans.
         name="mail_poll",
-        label="Mailbox poll + tier-0 scan",
+        label="Mailbox poll + depth-0 scan",
         category="acquisition",
         kind=ServiceKind.PASS,
         ref_pass=True,
         enable_env="PRECIS_MAIL_POLL_ENABLED",
         uses_external=("imap",),
-        one_line="Poll email accounts for new mail; inline tier-0 injection scan.",
+        one_line="Poll email accounts for new mail; inline depth-0 injection scan.",
         doc_skill="precis-overview",
     ),
     ServiceSpec(
-        # email slice 4: the deep rung of the injection cascade. Leases tier-0
+        # email slice 4: the deep rung of the injection cascade. Leases depth-0
         # verdicts (email_scan_pending_idx), re-fetches the body from IMAP,
-        # scores it with a local model (+ optional tier-2 escalate), and raises
+        # scores it with a local model (+ optional depth-2 escalate), and raises
         # an alert on `high`. DARK — no default profile + PRECIS_INJECT_SCAN_
         # ENABLED unset; enabled on the agent host (melchior) where the local
         # model proxy resolves, alongside mail_poll.
         name="inject_scan",
-        label="Email injection scan (tier 1/2)",
+        label="Email injection scan (depth 1/2)",
         category="acquisition",
         kind=ServiceKind.PASS,
         ref_pass=True,

@@ -114,9 +114,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # Resource budget — currently just the hard wall-clock ceiling
         # (seconds), which sizes the lease + deadline. Nested (not a flat
         # ``wall_seconds``) to match the shared job-budget key used by
-        # ssh_node / coordinator / quest.compute / precis_pathway; see
-        # ``resolve_wall_seconds`` for the legacy-flat read-both shim that
-        # still lands on in-flight rows minted before this migration.
+        # ssh_node / coordinator / quest.compute / precis_pathway.
         "resources": {
             "type": "object",
             "properties": {"wall_seconds": {"type": "integer"}},
@@ -186,18 +184,16 @@ def read_mcp_enabled() -> bool:
 
 def resolve_wall_seconds(params: dict[str, Any]) -> Any:
     """Read the wall-clock budget: ``params.resources.wall_seconds``
-    (current, nested — matches ssh_node/coordinator/quest.compute/
-    precis_pathway) falling back to the legacy flat
-    ``params.wall_seconds`` so a job row minted before this migration
-    still validates/leases/launches correctly. Writers (the schema above,
-    ``validate_submit`` callers) always write the nested shape now — this
-    is a read-only compatibility shim, not a second accepted write shape.
-    Returns whatever was stored (unvalidated type) or ``None``.
+    (nested — matches ssh_node/coordinator/quest.compute/precis_pathway).
+    Returns whatever was stored (unvalidated type) or ``None``. Migration
+    0147 backfilled every job row still carrying the legacy flat
+    ``params.wall_seconds`` into this nested shape, so the read-both shim
+    this function used to be is retired (vocab-compaction Stage C).
     """
     resources = params.get("resources")
-    if isinstance(resources, dict) and "wall_seconds" in resources:
-        return resources["wall_seconds"]
-    return params.get("wall_seconds")
+    if isinstance(resources, dict):
+        return resources.get("wall_seconds")
+    return None
 
 
 def resolve_sandbox_model() -> str:

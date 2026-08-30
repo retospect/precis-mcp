@@ -9,7 +9,7 @@ Coverage:
   contributions across streams; raw score breaks ties; insertion
   order is the final tiebreak so output is deterministic.
 - ``block_hits_to_search_hits`` — block dedupe vs ref-level
-  dedupe; preview truncation; extra_lines callable; source label.
+  dedupe; preview truncation; extra_lines callable; reach label.
 - ``ref_hits_to_search_hits`` — ref-level dedupe by slug or ref_id.
 - Empty streams render the empty body, with custom override.
 """
@@ -62,7 +62,7 @@ def _hit(
     slug: str | None = None,
     pos: int | None = None,
     score: float = 0.0,
-    source: str | None = None,
+    reach: str | None = None,
     dedupe_key: str | None = None,
     title: str = "T",
     preview: str = "P",
@@ -74,7 +74,7 @@ def _hit(
         preview=preview,
         slug=slug,
         pos=pos,
-        source=source,
+        reach=reach,
         dedupe_key=dedupe_key,
     )
 
@@ -180,19 +180,19 @@ def test_renders_handle_title_and_preview() -> None:
 
 
 def test_show_label_false_drops_bracket() -> None:
-    s1 = [_hit(slug="a", pos=3, source="local")]
+    s1 = [_hit(slug="a", pos=3, reach="local")]
     out = merge_and_render([s1], page_size=10, mode="priority", show_label=False)
     assert "[local]" not in out.body
 
 
-def test_show_label_uses_kind_when_no_source() -> None:
+def test_show_label_uses_kind_when_no_reach() -> None:
     s1 = [_hit(slug="a", pos=3, kind="paper")]
     out = merge_and_render([s1], page_size=10, mode="priority")
     assert "[paper]" in out.body
 
 
-def test_show_label_prefers_source_over_kind() -> None:
-    s1 = [_hit(slug="a", pos=3, kind="paper", source="local")]
+def test_show_label_prefers_reach_over_kind() -> None:
+    s1 = [_hit(slug="a", pos=3, kind="paper", reach="local")]
     out = merge_and_render([s1], page_size=10, mode="priority")
     assert "[local]" in out.body
     assert "[paper]" not in out.body
@@ -258,10 +258,10 @@ def test_block_helper_extra_lines_callable() -> None:
     assert hit.extra_lines == ("slug=abc",)
 
 
-def test_block_helper_source_overrides_label() -> None:
+def test_block_helper_reach_overrides_label() -> None:
     triples = [(FakeBlock("body", 0), FakeRef("title", "abc"), 0.5)]
-    [hit] = block_hits_to_search_hits(triples, kind="patent", source="local")
-    assert hit.source == "local"
+    [hit] = block_hits_to_search_hits(triples, kind="patent", reach="local")
+    assert hit.reach == "local"
     assert hit.kind == "patent"
 
 

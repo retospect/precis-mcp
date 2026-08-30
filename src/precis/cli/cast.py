@@ -112,7 +112,7 @@ def _publish(store: Store, draft_id: int, *, speed: float) -> None:
 def _find_cast_watch(store: Store, cast: str) -> int | None:
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind='todo' AND deleted_at IS NULL "
+            "SELECT ref_id FROM refs WHERE kind='todo' AND retired_at IS NULL "
             "AND meta->>'cast_watch' = %s LIMIT 1",
             (cast,),
         ).fetchone()

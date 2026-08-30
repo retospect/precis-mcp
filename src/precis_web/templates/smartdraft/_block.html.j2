@@ -93,7 +93,7 @@
    unsupported wins visually over a plain integrity ``!`` via CSS source
    order, not template logic). ``review`` is one entry of
    ``review_by_dc`` (``None`` → the block isn't reviewable, render nothing).
-   Click opens a small action menu: mark/un-review, run one lens or all
+   Click opens a small action menu: mark/un-review, run one persona or all
    (a heading's "all" implicitly covers its subtree — the fanout's own
    scope rule), convert to living cites (dry-run preview → confirm apply),
    and — once a human row exists — a diff-since-approval deep link into the
@@ -118,17 +118,17 @@
     {% if hr %}
     <button type="button" @click="open = false" onclick="sdReviewRetract('{{ n.dc }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">↩ un-review</button>
     {% endif %}
-    {#- Run-lens buttons (item 2/3): flow/cites only mint on prose chunks,
-       structure/adversarial only on headings (``review_fanout._lenses_for_kind``)
-       — a table/figure/term/equation block gets NO run-lens buttons at all
+    {#- Run-persona buttons (item 2/3): flow/cites only mint on prose chunks,
+       structure/adversarial only on headings (``review_fanout._personas_for_kind``)
+       — a table/figure/term/equation block gets NO run-persona buttons at all
        (offering one would silently no-op the click), though the human
        ✓/un-review entries above/below stay available on ANY reviewable
        block by design. -#}
-    {% set _lens_pair = ['structure', 'adversarial'] if n.is_heading else (['flow', 'cites'] if n.is_prose else []) %}
-    {% for lens in _lens_pair %}
-    <button type="button" @click="open = false" onclick="sdReviewRun('{{ n.dc }}', '{{ lens }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">▶ {{ lens }}</button>
+    {% set _persona_pair = ['structure', 'adversarial'] if n.is_heading else (['flow', 'cites'] if n.is_prose else []) %}
+    {% for persona in _persona_pair %}
+    <button type="button" @click="open = false" onclick="sdReviewRun('{{ n.dc }}', '{{ persona }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">▶ {{ persona }}</button>
     {% endfor %}
-    {% if _lens_pair %}
+    {% if _persona_pair %}
     <button type="button" @click="open = false" onclick="sdReviewRun('{{ n.dc }}', 'all')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">▶ all{% if n.is_heading %} (subtree){% endif %}</button>
     {% endif %}
     <button type="button" @click="open = false" onclick="sdConvertCites('{{ n.dc }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">⇄ convert to living cites</button>

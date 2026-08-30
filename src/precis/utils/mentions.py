@@ -417,7 +417,7 @@ def resolve_patent_pubnum(store: Store, token: str) -> LinkTarget | None:
                 "SELECT r.ref_id FROM refs r "
                 "JOIN ref_identifiers ri "
                 "  ON ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-                "WHERE r.kind = 'patent' AND r.deleted_at IS NULL "
+                "WHERE r.kind = 'patent' AND r.retired_at IS NULL "
                 "  AND lower(ri.id_value) ~ %s "
                 "ORDER BY lower(ri.id_value) LIMIT 1",
                 ("^" + val + "([a-z][0-9]?)?$",),
@@ -476,7 +476,7 @@ def resolve_link_targets(
     targets: dict[tuple[int, int | None], LinkTarget] = {}
     for _kind, ident, chunk in extract_handles(body):
         ref = resolve_handle_ref(store, ident)
-        if ref is None or getattr(ref, "deleted_at", None) is not None:
+        if ref is None or getattr(ref, "retired_at", None) is not None:
             continue
         if exclude_ref_id is not None and ref.id == exclude_ref_id:
             continue

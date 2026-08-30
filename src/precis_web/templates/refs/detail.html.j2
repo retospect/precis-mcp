@@ -110,7 +110,7 @@
    read (transcript / parent intent), not a thought you interrogate. This
    replaces the dream-memory "Ask & think" box for kind='job' so an
    operator landing on a closed:failed job (e.g. a swept claim-orphaned
-   plan_tick) has the same affordances the /tasks dashboard offers,
+   plan_tick) has the same affordances the /todo dashboard offers,
    without leaving the page they clicked. #}
 {% if job_actions %}
 <section class="mt-6" x-data="{ showModel: false }">
@@ -120,8 +120,8 @@
       {% if job_actions.can_retry %}
       {# Retry clears the parent todo's child-failed: bubble so dispatch
          re-mints a fresh attempt (~1 min). The failed job stays for
-         forensics. Redirects to /tasks to watch the re-minted job. #}
-      <form method="post" action="/tasks/{{ job_actions.job_id }}/retry"
+         forensics. Redirects to /todo to watch the re-minted job. #}
+      <form method="post" action="/todo/{{ job_actions.job_id }}/retry"
             class="inline-flex items-center gap-2">
         {% if job_actions.is_llm_planner %}
         <select name="model"
@@ -149,14 +149,14 @@
       {% endif %}
 
       {% if job_actions.has_transcript %}
-      <a href="/tasks/{{ job_actions.job_id }}/transcript"
+      <a href="/todo/{{ job_actions.job_id }}/transcript"
          class="rounded-md border border-slate-300 text-sm px-4 py-2 text-slate-700 hover:bg-slate-50">
         📜 View transcript
       </a>
       {% endif %}
 
       {% if job_actions.parent_id %}
-      <a href="/tasks?focus={{ job_actions.parent_id }}"
+      <a href="/todo?focus={{ job_actions.parent_id }}"
          class="rounded-md border border-slate-300 text-sm px-4 py-2 text-slate-700 hover:bg-slate-50">
         ↑ Parent todo #{{ job_actions.parent_id }}
       </a>

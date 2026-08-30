@@ -562,7 +562,7 @@ def _load_rank_candidates(
                      OR EXISTS (
                        SELECT 1 FROM links l JOIN refs q ON q.ref_id = l.dst_ref_id
                         WHERE l.src_ref_id = r.ref_id AND l.relation = 'serves'
-                          AND q.kind = 'quest' AND q.deleted_at IS NULL
+                          AND q.kind = 'quest' AND q.retired_at IS NULL
                      )
                    ) AS requested_by_quest,
                    EXISTS (
@@ -613,7 +613,7 @@ def _load_anchors(store: Store) -> list[tuple[list[float], float]]:
                AND c.ord = -1 AND c.chunk_kind = 'card_combined'
               JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
                AND ce.embedder = %s AND ce.status = 'ok'
-             WHERE q.kind = 'quest' AND q.deleted_at IS NULL
+             WHERE q.kind = 'quest' AND q.retired_at IS NULL
                AND (rt.expires_at IS NULL OR rt.expires_at > now())
             """,
             (_EMBEDDER_NAME,),
@@ -763,7 +763,7 @@ def _load_interest_profile(store: Store) -> str:
                AND t.namespace = 'STATUS' AND t.value = 'active'
               JOIN chunks c ON c.ref_id = q.ref_id
                AND c.ord = -1 AND c.chunk_kind = 'card_combined'
-             WHERE q.kind = 'quest' AND q.deleted_at IS NULL
+             WHERE q.kind = 'quest' AND q.retired_at IS NULL
                AND (rt.expires_at IS NULL OR rt.expires_at > now())
             """
         ).fetchall()

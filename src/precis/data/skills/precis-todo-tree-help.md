@@ -1,10 +1,10 @@
 ---
-id: precis-tasks-help
-title: precis — hierarchical task tree (strategic / tactical / subtask)
+id: precis-todo-tree-help
+title: precis — hierarchical todo tree (strategic / tactical / subtask)
 summary: the todo tree — strategic/tactical/subtask levels, doable rotation, halt/ask-user yielding
 answers:
   - how do I add a strategic root or a project?
-  - how do I split a task into subtasks?
+  - how do I split a todo into subtasks?
   - what's the dashboard view for my project's tree?
   - I'm stuck on a leaf — how do I decompose it?
   - how do I attach a longer spec or acceptance criteria to a todo?
@@ -12,7 +12,7 @@ applies-to: get/search/put/delete/tag/link (kind='todo'; tree views)
 status: active
 ---
 
-# precis-tasks-help — the hierarchical task tree
+# precis-todo-tree-help — the hierarchical todo tree
 
 Built on top of `kind='todo'`. Every todo is a node; an optional
 `parent_id` wires it under another todo to form a tree. The tier is two
@@ -82,11 +82,11 @@ or a `blocked-by` link instead of splitting further.
 
 ## Attach a details body to a todo
 
-The `text=` task line is the header — keep it a short imperative. For
+The `text=` title is the header — keep it a short imperative. For
 longer context (a spec, acceptance criteria, a plan), pass an optional
 `body=`; it lands in a `todo_body` chunk (embedded + keyworded, so it's
-searchable) and renders under the task line on `get(kind='todo', id=N)`.
-The tree / doable / attention views still show only the task line.
+searchable) and renders under the title on `get(kind='todo', id=N)`.
+The tree / doable / attention views still show only the title.
 
 ```python
 put(
@@ -98,7 +98,7 @@ put(
 # rewrite it later:
 edit(kind="todo", id=N, mode="replace", body="updated acceptance criteria")
 # or rewrite both at once:
-edit(kind="todo", id=N, mode="replace", text="new task line", body="new body")
+edit(kind="todo", id=N, mode="replace", text="new title", body="new body")
 ```
 
 ## Dashboard: strategic roots and 7d accounting
@@ -250,13 +250,13 @@ get(kind="skill", id="precis-todo-help")  # flat todo surface
 get(
     kind="skill", id="precis-decomposition-help"
 )  # GTD interrogation, split rule
-get(kind="skill", id="precis-auto-tasks-help")  # meta.auto_check leaves
+get(kind="skill", id="precis-auto-todo-help")  # meta.auto_check leaves
 get(
     kind="skill", id="precis-recurring-help"
 )  # meta.schedule + Watches umbrella
 get(
-    kind="skill", id="precis-dispatch-help"
-)  # meta.executor + dispatch worker
+    kind="skill", id="precis-minter-help"
+)  # meta.executor + minter worker
 get(kind="skill", id="precis-job-help")  # the kind='job' substrate
 get(kind="skill", id="precis-nursery-help")  # hourly review digest tier
 get(kind="skill", id="precis-tags")  # STATUS / PRIO vocabulary

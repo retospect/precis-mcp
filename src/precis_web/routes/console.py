@@ -145,13 +145,13 @@ CONSOLE_EXAMPLES: list[dict[str, Any]] = [
         ],
     },
     {
-        "key": "tasks",
-        "group": "Tasks, jobs & ops",
+        "key": "todo",
+        "group": "Todo, jobs & ops",
         "examples": [
             {
                 "verb": "search",
                 "args": 'kind=todo q="ingest"',
-                "note": "open tasks matching a topic",
+                "note": "open todos matching a topic",
             },
             {
                 "verb": "search",

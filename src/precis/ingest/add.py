@@ -54,7 +54,7 @@ log = logging.getLogger(__name__)
 # Keeping the import lazy here means ``precis serve`` /
 # ``precis migrate`` / ``precis worker`` keep working on a bare
 # install without the ``[paper]`` extra; only ``precis add`` /
-# ``precis watch`` ever actually call into the pipeline and they
+# ``precis ingest --watch`` ever actually call into the pipeline and they
 # fail with a clean ``ModuleNotFoundError`` at runtime if the
 # extra is missing.
 
@@ -501,7 +501,7 @@ def _valid_fold_stub(ref_id: int, *, kind: str, conn: Any) -> int | None:
          WHERE ref_id = %s
            AND kind = %s
            AND pdf_sha256 IS NULL
-           AND deleted_at IS NULL
+           AND retired_at IS NULL
         """,
         (ref_id, kind),
     ).fetchone()
@@ -548,7 +548,7 @@ def _reconcile_orphan_stub(
          WHERE ri.id_kind = 'cite_key'
            AND lower(ri.id_value) = %s
            AND r.pdf_sha256 IS NULL
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND r.ref_id <> %s
          LIMIT 1
         """,
@@ -587,7 +587,7 @@ def _reconcile_orphan_stub(
         {"superseded_by": survivor_ref_id, "dedup": "content-duplicate-stub"},
         conn=conn,
     )
-    store.soft_delete_ref(stub_id, conn=conn)
+    store.retire_ref(stub_id, conn=conn)
     store.append_event(
         survivor_ref_id,
         source="ingest:dedup",
@@ -944,7 +944,7 @@ def _recover_markup_parse_failure(input: MarkupInput, *, store: Store) -> None:
     # Locate the stored copy and OCR it now.
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (input.fold_ref_id,),
         ).fetchone()
     if row is None or row[0] is None:

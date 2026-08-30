@@ -656,7 +656,7 @@ def dossier_ref_id(store: Store, owner_id: int) -> int | None:
             "SELECT l.src_ref_id FROM links l "
             "JOIN refs r ON r.ref_id = l.src_ref_id "
             "WHERE l.dst_ref_id = %s AND l.relation = %s "
-            "AND r.deleted_at IS NULL LIMIT 1",
+            "AND r.retired_at IS NULL LIMIT 1",
             (owner_id, _RELATION),
         ).fetchone()
     return int(row[0]) if row else None
@@ -680,7 +680,7 @@ def paper_ref_id(store: Store, owner_id: int) -> int | None:
             "SELECT l.src_ref_id FROM links l "
             "JOIN refs r ON r.ref_id = l.src_ref_id "
             "WHERE l.dst_ref_id = %s AND l.relation = %s "
-            "AND r.deleted_at IS NULL LIMIT 1",
+            "AND r.retired_at IS NULL LIMIT 1",
             (owner_id, _PAPER_RELATION),
         ).fetchone()
     return int(row[0]) if row else None
@@ -696,7 +696,7 @@ def _owner_title(store: Store, owner_id: int) -> str:
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT title FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (owner_id,),
         ).fetchone()
     return str(row[0]) if row and row[0] else f"ref {owner_id}"

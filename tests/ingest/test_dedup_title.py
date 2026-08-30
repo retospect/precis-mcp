@@ -59,7 +59,7 @@ def _held(
 def _ref_state(store: Store, ref_id: int) -> dict[str, Any]:
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT deleted_at IS NOT NULL, meta->>'superseded_by' "
+            "SELECT retired_at IS NOT NULL, meta->>'superseded_by' "
             "FROM refs WHERE ref_id = %s",
             (ref_id,),
         ).fetchone()

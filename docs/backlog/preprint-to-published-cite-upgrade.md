@@ -80,7 +80,7 @@ not the preprint, once the version of record is available.
   threshold. Never upgrade on a weak match (a wrong upgrade silently rewrites a
   citation — worse than leaving the preprint).
 - **What "soft retire" means precisely:** a `STATUS:` tag + supersede link and
-  keep the ref, vs. `deleted_at` with the link. Leaning tag + link so existing
+  keep the ref, vs. `retired_at` with the link. Leaning tag + link so existing
   chains/findings that referenced the preprint stay resolvable.
 - **Author consent:** silent upgrade vs. surface "N cited preprints have a
   published version — upgrade?" in the pane. The version of record is almost

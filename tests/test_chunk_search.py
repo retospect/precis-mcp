@@ -96,7 +96,7 @@ class TestSearchBlocksLexical:
             blocks=["unique topic xenophilus"],
             embed=False,
         )
-        store.soft_delete_ref(rid)
+        store.retire_ref(rid)
         hits = store.chunks.search_chunks_lexical(q="xenophilus", kind="paper")
         assert hits == []
 

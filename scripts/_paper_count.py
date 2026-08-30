@@ -57,7 +57,7 @@ def main() -> None:
             row = conn.execute(
                 "SELECT count(*) FROM blocks b "
                 "JOIN refs r ON r.id = b.ref_id "
-                "WHERE r.kind = 'paper' AND r.deleted_at IS NULL"
+                "WHERE r.kind = 'paper' AND r.retired_at IS NULL"
             ).fetchone()
         if row is not None:
             print(f"paper blocks: {row[0]}")
@@ -66,7 +66,7 @@ def main() -> None:
             with store.pool.connection() as conn:
                 rows = conn.execute(
                     "SELECT kind, count(*) FROM refs "
-                    "WHERE deleted_at IS NULL "
+                    "WHERE retired_at IS NULL "
                     "GROUP BY kind ORDER BY count(*) DESC"
                 ).fetchall()
             print("\nby kind:")
@@ -77,7 +77,7 @@ def main() -> None:
             with store.pool.connection() as conn:
                 rows = conn.execute(
                     "SELECT provider, count(*) FROM refs "
-                    "WHERE kind = 'paper' AND deleted_at IS NULL "
+                    "WHERE kind = 'paper' AND retired_at IS NULL "
                     "GROUP BY provider ORDER BY count(*) DESC"
                 ).fetchall()
             print("\nby provider:")
@@ -89,7 +89,7 @@ def main() -> None:
                 rows = conn.execute(
                     "SELECT slug, title, created_at "
                     "FROM refs "
-                    "WHERE kind = 'paper' AND deleted_at IS NULL "
+                    "WHERE kind = 'paper' AND retired_at IS NULL "
                     "ORDER BY created_at DESC NULLS LAST "
                     "LIMIT %s",
                     (args.recent,),

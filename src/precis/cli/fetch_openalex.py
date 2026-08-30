@@ -4,7 +4,7 @@ Rescue for OA papers stuck behind a publisher anti-bot wall — MDPI's Akamai,
 Wiley/science.org's Cloudflare — that every free fetch leg 403s on. OpenAlex
 caches the full text and serves it from ``content.openalex.org`` (**not** the
 publisher), so this downloads the PDF straight into the watch inbox, where
-``precis watch`` ingests it like any other drop.
+``precis ingest --watch`` ingests it like any other drop.
 
 Paid (~$0.01/file); needs ``PRECIS_OPENALEX_CONTENT_KEY`` (free to obtain at
 https://openalex.org/users, then fund a balance). This is the deliberate
@@ -145,7 +145,7 @@ def _backfill_batch(store: Store, *, limit: int) -> list[StubRef]:
           FROM refs r
          WHERE r.kind = 'paper'
            AND r.pdf_sha256 IS NULL
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND EXISTS (SELECT 1 FROM ref_identifiers ri
                         WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi')
            AND EXISTS (SELECT 1 FROM ref_events e
@@ -265,7 +265,7 @@ def _run_backfill(
     print(
         f"fetch-openalex: done — {fetched} fetched (~${spent:.2f}), "
         f"{no_content} no-content, {errors} errors, of {len(stubs)} tried. "
-        f"`precis watch` ingests the {fetched} PDFs.",
+        f"`precis ingest --watch` ingests the {fetched} PDFs.",
         file=sys.stderr,
     )
 
@@ -307,7 +307,7 @@ def _run_single(
         print(
             f"fetch-openalex: OK — {outcome.payload.get('size_bytes')} bytes → "
             f"{outcome.payload.get('filename')} (${outcome.cost_usd:.2f}); "
-            "`precis watch` will ingest it.",
+            "`precis ingest --watch` will ingest it.",
             file=sys.stderr,
         )
         return
@@ -327,7 +327,7 @@ def run(args: argparse.Namespace) -> None:
     if not inbox:
         raise SystemExit(
             "fetch-openalex: no inbox — pass --into or set PRECIS_WATCH_INBOX "
-            "(the dir `precis watch` scans)."
+            "(the dir `precis ingest --watch` scans)."
         )
     inbox_dir = Path(inbox)
     email = (settings.get_str("contact.polite_email") or "").strip()

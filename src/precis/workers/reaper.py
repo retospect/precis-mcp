@@ -157,7 +157,7 @@ _LOCATE_AGENTLOGS = (
     "       meta -> 'worker' ->> 'host', meta -> 'worker' ->> 'process', "
     "       EXTRACT(EPOCH FROM (now() - created_at)) "
     "  FROM refs "
-    " WHERE kind = 'agentlog' AND deleted_at IS NULL "
+    " WHERE kind = 'agentlog' AND retired_at IS NULL "
     "   AND meta ? 'worker' AND NOT meta ? 'ended_at' "
     "   AND created_at < now() - make_interval(secs => %s)"
 )

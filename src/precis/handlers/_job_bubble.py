@@ -348,7 +348,7 @@ def _requester_todos(
         " WHERE l.dst_ref_id = %s "
         "   AND l.relation = 'requested' "
         "   AND r.kind = 'todo' "
-        "   AND r.deleted_at IS NULL"
+        "   AND r.retired_at IS NULL"
     )
     if conn is not None:
         rows = conn.execute(sql, (job_id,)).fetchall()

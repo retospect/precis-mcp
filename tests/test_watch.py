@@ -1091,7 +1091,10 @@ class TestParserRegistration:
         assert sub_actions, "expected a subparsers action with dest='cmd'"
         choices = sub_actions[0].choices
         assert choices is not None
-        assert "watch" in choices
+        # Vocabulary-compaction Stage D: `precis watch` -> `precis ingest
+        # --watch`; the legacy `watch` subcommand name no longer registers.
+        assert "ingest" in choices
+        assert "watch" not in choices
         assert "add" in choices  # sanity — B4 still registered
 
     def test_watch_help_renders(self, capsys):
@@ -1099,8 +1102,9 @@ class TestParserRegistration:
 
         parser = _build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args(["watch", "--help"])
+            parser.parse_args(["ingest", "--help"])
         out = capsys.readouterr().out
         assert "watch_dir" in out
+        assert "--watch" in out
         assert "--corpus-dir" in out
         assert "--no-backfill" in out

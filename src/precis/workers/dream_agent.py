@@ -418,7 +418,7 @@ def _recent_ref_ids(store: Store, kind: str, limit: int) -> list[int]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id, meta FROM refs WHERE kind = %s AND deleted_at IS NULL "
+            "SELECT ref_id, meta FROM refs WHERE kind = %s AND retired_at IS NULL "
             "ORDER BY updated_at DESC LIMIT %s",
             (kind, limit * 3),
         ).fetchall()
@@ -457,8 +457,8 @@ def _recent_draft_cited_paper_ids(store: Store, limit: int) -> list[int]:
         rows = conn.execute(
             "SELECT l.dst_ref_id FROM refs d "
             "JOIN links l ON l.src_ref_id = d.ref_id AND l.relation = 'cites' "
-            "JOIN refs p ON p.ref_id = l.dst_ref_id AND p.deleted_at IS NULL "
-            "WHERE d.kind = 'draft' AND d.deleted_at IS NULL "
+            "JOIN refs p ON p.ref_id = l.dst_ref_id AND p.retired_at IS NULL "
+            "WHERE d.kind = 'draft' AND d.retired_at IS NULL "
             "GROUP BY l.dst_ref_id "
             "ORDER BY max(d.updated_at) DESC LIMIT %s",
             (limit,),

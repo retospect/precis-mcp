@@ -116,8 +116,8 @@ def _cards_by_concept(
               OR (l.dst_ref_id = c.ref_id AND l.relation = 'represented-by'))
         JOIN refs a ON a.ref_id = CASE WHEN l.src_ref_id = c.ref_id
                                        THEN l.dst_ref_id ELSE l.src_ref_id END
-        WHERE c.kind = 'concept' AND c.deleted_at IS NULL
-          AND a.kind = 'anki' AND a.deleted_at IS NULL
+        WHERE c.kind = 'concept' AND c.retired_at IS NULL
+          AND a.kind = 'anki' AND a.retired_at IS NULL
     """
     out: dict[int, list[tuple[dict[str, Any] | None, datetime]]] = {}
     with store.pool.connection() as conn:

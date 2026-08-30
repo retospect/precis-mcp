@@ -7,7 +7,7 @@ layers so Anthropic's prompt cache works:
 
 CACHED LAYER — stable across every planner tick, system role:
 
-* The pinned ``precis-tasks-help`` skill verbatim (the planner's
+* The pinned ``precis-todo-tree-help`` skill verbatim (the planner's
   operational manual: levels, doable rotation, halt/ask-user,
   ``llm_tier`` convention).
 * The skill **index** — one line per active skill carrying its
@@ -66,7 +66,7 @@ log = logging.getLogger(__name__)
 #: — the floor that states how the thread works. Selected per
 #: thread type from :data:`~precis.workers.thread_persona.THREAD_PERSONAS`;
 #: the default ``write-document`` persona is the operational manual
-#: ``precis-tasks-help``, so the cached floor is byte-identical to the
+#: ``precis-todo-tree-help``, so the cached floor is byte-identical to the
 #: pre-A2 pinned skill. Other skills are summary-only in the index (personas
 #: excluded, §2) and pulled on demand via MCP ``get``.
 
@@ -76,7 +76,7 @@ log = logging.getLogger(__name__)
 #: tokens, so the cap keeps the cached system prompt bounded even as the
 #: corpus grows. Sized to admit the whole active set today (a purely
 #: alphabetical truncation would otherwise drop late-sorted core skills
-#: like ``precis-tasks-help`` — bumped 120 -> 160 on 2026-07-29 when the
+#: like ``precis-todo-tree-help`` — bumped 120 -> 160 on 2026-07-29 when the
 #: ``component`` kind's new skill tipped the corpus past the old cap and
 #: evicted exactly that one). If a planner needs a skill beyond the cap
 #: it calls ``search(kind='skill', q='…')`` — that's the discovery
@@ -181,7 +181,7 @@ def _build_skill_index(store: Store | None = None) -> str:
 
     It was also redundant twice over. The block's own header tells the model to
     ``search(kind='skill', q=...)`` to discover by topic, and the
-    ``precis-tasks-help`` body already carries a curated ``## See also`` naming
+    ``precis-todo-tree-help`` body already carries a curated ``## See also`` naming
     the nine skills a planner actually needs, ending with "if none of the above
     fit". A full catalogue between two working discovery paths buys nothing.
 
@@ -723,7 +723,7 @@ def _render_voice(store: Store, ref_id: int) -> str:
     ``meta.workspace.voice`` is the always-applied "voice/style" — e.g.
     "light-hearted, colloquial, occasional puns" — distinct from
     :func:`_render_project_brief` (project scope/constraints) and from the
-    one-shot task (the todo body). Set once on the project root; cascades
+    one-shot ask (the todo body). Set once on the project root; cascades
     to every descendant via the workspace-inheritance at ``put`` time
     (``Workspace.to_meta`` carries it down), same as the brief.
 
@@ -764,7 +764,7 @@ def _render_patent_authoring(store: Store, ref_id: int) -> str:
         "## Patent authoring — write against the prior art\n\n"
         "You are drafting a **patent**. Do not write in a vacuum; each tick:\n\n"
         "1. **Sweep prior art.** Derive queries from the current description "
-        "and run `search(kind='patent', source='remote', q='…')` — it returns "
+        "and run `search(kind='patent', reach='remote', q='…')` — it returns "
         "EPO OPS hits you do not already hold. For each *material* hit, "
         "`get(kind='patent', id='<docdb-id>')` to ingest it (synchronous). "
         "Keep pulls bounded (a few per tick — each `get` persists a real "
@@ -921,7 +921,7 @@ def bound_draft(store: Store, ref_id: int) -> tuple[str, str, str] | None:
               FROM links l JOIN refs dr ON dr.ref_id = l.src_ref_id
              WHERE l.relation = 'draft-of'
                AND l.dst_ref_id IN (SELECT ref_id FROM anc)
-               AND dr.deleted_at IS NULL
+               AND dr.retired_at IS NULL
              LIMIT 1
             """,
             (ref_id,),
@@ -1108,7 +1108,7 @@ def _existing_citations_block(store: Store, draft_ref_id: int) -> str:
     refs = store.fetch_refs_by_ids(sorted(cited_ids)) if cited_ids else {}
     rows: list[tuple[str, str, str]] = []
     for rid, ref in refs.items():
-        if getattr(ref, "deleted_at", None) is not None:
+        if getattr(ref, "retired_at", None) is not None:
             continue
         kind = getattr(ref, "kind", None) or "paper"
         handle = handle_registry.try_format(kind, rid) or f"{kind}:{rid}"
@@ -1249,7 +1249,7 @@ def _render_requirements(store: Store, ref_id: int) -> str:
              WHERE l.relation = 'has-requirement'
                AND l.src_ref_id IN (SELECT ref_id FROM anc)
                AND cf.kind = 'cfp'
-               AND cf.deleted_at IS NULL
+               AND cf.retired_at IS NULL
              LIMIT 1
             """,
             (ref_id,),
@@ -1621,7 +1621,7 @@ def _render_children_status(store: Store, ref_id: int) -> str:
                    ) AS last_result
               FROM refs c
              WHERE c.parent_id = %s
-               AND c.deleted_at IS NULL
+               AND c.retired_at IS NULL
                AND c.kind IN ('todo', 'job')
              ORDER BY c.ref_id
             """,
@@ -1745,7 +1745,7 @@ def _m_persona(ctx: AssemblyContext) -> str:
     Selects the persona skill from the registry by the tick's
     ``thread_type`` (``extras['thread_type']``); absent — as in the current
     thread-type-invariant cached layer — it falls back to the default
-    ``write-document`` persona (``precis-tasks-help``), reproducing the
+    ``write-document`` persona (``precis-todo-tree-help``), reproducing the
     pre-A2 pinned-skill bytes exactly."""
     from precis.workers.thread_persona import persona_for
 

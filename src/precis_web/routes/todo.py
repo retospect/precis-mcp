@@ -1,4 +1,4 @@
-"""Tasks tab — the hierarchical todo tree.
+"""Todo tab — the hierarchical todo tree.
 
 Reads assemble a structured tree directly off the DB (the
 "work-off-the-db" principle); writes route through the in-process
@@ -7,12 +7,12 @@ depth check, and STATUS vocabulary stay single-sourced.
 
 Routes:
 
-* ``GET  /tasks``                       — dashboard (tree + doable)
-* ``POST /tasks/roots``                 — create a strategic root
-* ``POST /tasks/{parent_id}/children``  — create a child leaf
-* ``POST /tasks/{id}/status``           — set STATUS
-* ``POST /tasks/{id}/move``             — reparent (link rel='parent')
-* ``POST /tasks/{id}/delete``           — soft-delete
+* ``GET  /todo``                       — dashboard (tree + doable)
+* ``POST /todo/roots``                 — create a strategic root
+* ``POST /todo/{parent_id}/children``  — create a child leaf
+* ``POST /todo/{id}/status``           — set STATUS
+* ``POST /todo/{id}/move``             — reparent (link rel='parent')
+* ``POST /todo/{id}/delete``           — soft-delete
 
 The move route is a thin shell over the reserved virtual relation
 ``link(kind='todo', rel='parent')`` so the cycle / depth / owner
@@ -60,7 +60,7 @@ from precis_web.timefmt import age_seconds, duration, span_seconds
 if TYPE_CHECKING:
     from precis.store.store import Store
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+router = APIRouter(prefix="/todo", tags=["todo"])
 
 #: STATUS values the UI offers as a dropdown. Mirrors the todo
 #: handler's closed vocabulary (``precis.store.types._CLOSED_VOCAB``).
@@ -187,14 +187,14 @@ def _resolve_workspace_pdf(
     return pdf_path if pdf_path.is_file() else None
 
 
-def _tasks_url(
+def _todo_url(
     require: list[str],
     exclude: list[str],
     focus: int | None = None,
     show_jobs: str | None = None,
     tree: int | None = None,
 ) -> str:
-    """Build the ``/tasks`` URL with the current filter + focus applied.
+    """Build the ``/todo`` URL with the current filter + focus applied.
 
     Each value becomes its own ``require=`` / ``exclude=`` param so a
     filter with multiple tags round-trips through the form / redirect
@@ -213,7 +213,7 @@ def _tasks_url(
     if tree:
         params.append(("tree", str(tree)))
     qs = urlencode(params)
-    return f"/tasks?{qs}" if qs else "/tasks"
+    return f"/todo?{qs}" if qs else "/todo"
 
 
 #: Allowed depths for the mermaid tree view. The values come from a
@@ -618,7 +618,7 @@ def _child_jobs(store: Store, todo_ids: list[int]) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT ref_id, parent_id, title, meta->>'lease_until', "
             "created_at, meta->>'started_at' "
-            "FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "AND parent_id = ANY(%s)",
             (todo_ids,),
         ).fetchall()
@@ -652,11 +652,11 @@ def _subtree_rows(store: Store, root_id: int) -> list[tuple[int, str, str]]:
                 """
                 WITH RECURSIVE tree AS (
                     SELECT ref_id, kind FROM refs
-                     WHERE ref_id = %s AND deleted_at IS NULL
+                     WHERE ref_id = %s AND retired_at IS NULL
                     UNION ALL
                     SELECT r.ref_id, r.kind FROM refs r
                       JOIN tree t ON r.parent_id = t.ref_id
-                     WHERE r.deleted_at IS NULL
+                     WHERE r.retired_at IS NULL
                 )
                 SELECT tr.ref_id, tr.kind,
                        COALESCE((
@@ -712,7 +712,7 @@ def _parent_todo_id(store: Store, ref_id: int) -> int | None:
     try:
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT parent_id FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                "SELECT parent_id FROM refs WHERE ref_id = %s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
     except Exception:  # pragma: no cover - defensive (fake cursor)
@@ -784,7 +784,7 @@ def _job_notes(store: Store, job_ids: list[int]) -> dict[int, dict[str, Any]]:
 def _reason_from_summary(summary: str, *, limit: int = 200) -> str:
     """Collapse a job's ``job_summary`` into a one-line 'why it failed'
     string — whitespace-flattened and capped. Mirrors
-    ``Store.job_fail_reason`` so the tasks page and the draft reader show
+    ``Store.job_fail_reason`` so the todo page and the draft reader show
     the same reason for the same failed job. ``''`` when there's no
     summary yet."""
     if not summary:
@@ -897,7 +897,7 @@ def _build_rows(
 
     ``precis_root`` (default: ``$PRECIS_ROOT``) is where workspace PDFs
     live; when a todo's workspace has a compiled PDF on disk the row
-    gets a 📄 attention icon linking to ``/tasks/{id}/pdf``.
+    gets a 📄 attention icon linking to ``/todo/{id}/pdf``.
     """
     if precis_root is None:
         raw = os.environ.get("PRECIS_ROOT")
@@ -1035,7 +1035,7 @@ def _build_rows(
                     {
                         "icon": "📄",
                         "title": "view compiled PDF",
-                        "href": f"/tasks/{node['id']}/pdf",
+                        "href": f"/todo/{node['id']}/pdf",
                     },
                 ]
         rollup_total = rollup_done + rollup_waiting + rollup_active
@@ -1267,9 +1267,9 @@ async def dashboard(
         tree_diagram = _build_mermaid_tree(focused_rows, focus, tree_depth)
     return templates.TemplateResponse(
         request,
-        "tasks/dashboard.html.j2",
+        "todo/dashboard.html.j2",
         {
-            "active_tab": "tasks",
+            "active_tab": "todo",
             "rows": filtered,
             "total_rows": len(rows),
             "filtered_rows": filtered_count,
@@ -1296,7 +1296,7 @@ async def dashboard(
 
 
 @router.get("/{ref_id}/pdf")
-async def task_pdf(request: Request, ref_id: int) -> FileResponse:
+async def todo_pdf(request: Request, ref_id: int) -> FileResponse:
     """Stream a todo's compiled workspace PDF inline (paper-viewer style).
 
     Mirrors ``/papers/{id}/pdf`` but resolves under ``PRECIS_ROOT`` (the
@@ -1335,7 +1335,7 @@ async def children_popup(
     """Return the immediate ``kind='todo'`` children of ``ref_id``.
 
     Rendered as an HTML fragment for htmx-driven drill-down popups
-    triggered from rollup chips on the Tasks dashboard. Each child row
+    triggered from rollup chips on the Todo dashboard. Each child row
     carries its own chip pointing back at this same route (depth + 1)
     so the popup chain is purely template-recursive.
 
@@ -1353,7 +1353,7 @@ async def children_popup(
     direct = [c for c in children_of.get(ref_id, []) if c["kind"] == "todo"]
     return templates.TemplateResponse(
         request,
-        "tasks/_children_popup.html.j2",
+        "todo/_children_popup.html.j2",
         {
             "parent_id": ref_id,
             "depth": depth,
@@ -1385,7 +1385,7 @@ async def create_root(
     """Create a top-level planner root via the wizard.
 
     The wizard collects intent before outputting:
-    * ``text`` is the task line (title),
+    * ``text`` is the title,
     * ``description`` becomes the todo body,
     * ``doc_type`` is stored in ``meta.doc_type`` and seeds the workspace,
     * ``start=on`` stamps ``meta.llm_tier='opus'`` and a workspace so
@@ -1407,7 +1407,7 @@ async def create_root(
             "body": description or None,
             "meta": meta,
         },
-        redirect=_tasks_url(
+        redirect=_todo_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
     )
@@ -1436,7 +1436,7 @@ async def create_child(
         request,
         "put",
         {"kind": "todo", "text": text, "parent_id": parent_id, "meta": meta},
-        redirect=_tasks_url(
+        redirect=_todo_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
     )
@@ -1457,7 +1457,7 @@ async def set_status(
         request,
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
-        redirect=_tasks_url(
+        redirect=_todo_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
     )
@@ -1502,7 +1502,7 @@ async def retry_job(
         request,
         "put",
         args,
-        redirect=_tasks_url(
+        redirect=_todo_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
     )
@@ -1551,7 +1551,7 @@ async def stop_task(
     job is skipped.
     """
     store = get_store(request)
-    redirect = _tasks_url(
+    redirect = _todo_url(
         require, exclude, focus, show_jobs if show_jobs != "active" else None
     )
     rows = _subtree_rows(store, ref_id)
@@ -1606,7 +1606,7 @@ async def start_task(
     guard passes.
     """
     store = get_store(request)
-    redirect = _tasks_url(
+    redirect = _todo_url(
         require, exclude, focus, show_jobs if show_jobs != "active" else None
     )
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
@@ -1659,7 +1659,7 @@ async def move_task(
     (``mode='add'``). All tree guards (cycle / depth / owner) fire in
     the handler — a rejected move returns the handler's BadInput.
     """
-    redirect = _tasks_url(
+    redirect = _todo_url(
         require, exclude, focus, show_jobs if show_jobs != "active" else None
     )
     npid = new_parent_id.strip()
@@ -1701,7 +1701,7 @@ async def edit_text(
     whitespace ``text`` is a no-op. Owner-only on strategic / tactical
     nodes — the web process runs as owner, so the guard passes here.
     """
-    redirect = _tasks_url(
+    redirect = _todo_url(
         require, exclude, focus, show_jobs if show_jobs != "active" else None
     )
     if not text.strip():
@@ -1741,7 +1741,7 @@ async def edit_tags(
         args["add"] = add_list
     if remove_list:
         args["remove"] = remove_list
-    redirect = _tasks_url(
+    redirect = _todo_url(
         require, exclude, focus, show_jobs if show_jobs != "active" else None
     )
     if not add_list and not remove_list:
@@ -1803,7 +1803,7 @@ async def history(request: Request, ref_id: int) -> HTMLResponse:
         )
     return templates.TemplateResponse(
         request,
-        "tasks/_history.html.j2",
+        "todo/_history.html.j2",
         {"ref_id": ref_id, "attempts": attempts, "events": events},
     )
 
@@ -1820,7 +1820,7 @@ async def delete_task(
     """Soft-delete a todo (children re-parent to NULL via FK)."""
     await await_dispatch(request, "delete", {"kind": "todo", "id": ref_id})
     return RedirectResponse(
-        url=_tasks_url(
+        url=_todo_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
         status_code=303,
@@ -1938,9 +1938,9 @@ async def transcript(request: Request, ref_id: int) -> HTMLResponse:
     turns = _parse_transcript(found[1]) if found else []
     return templates.TemplateResponse(
         request,
-        "tasks/transcript.html.j2",
+        "todo/transcript.html.j2",
         {
-            "active_tab": "tasks",
+            "active_tab": "todo",
             "ref_id": ref_id,
             "job_id": found[0] if found else None,
             "turns": turns,

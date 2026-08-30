@@ -380,7 +380,7 @@ def test_repair_edge_duplicate_twin_is_reported_not_raised(store: Any) -> None:
 def test_repair_edge_missing_hub_is_a_status_not_a_crash(store: Any) -> None:
     hub, paper, _chunk_id, link_id = _seed_broken_edge(store)
     with store.pool.connection() as conn:
-        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (hub,))
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (hub,))
         conn.commit()
 
     result = repair_edge(

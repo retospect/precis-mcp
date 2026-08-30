@@ -164,7 +164,7 @@ def rewrite(
 def _make_resolvers(store: Store) -> tuple[RecordResolver, ChunkResolver]:
     def resolve_record(_kind: str, ident: str) -> str | None:
         ref = mentions.resolve_handle_ref(store, ident)
-        if ref is None or getattr(ref, "deleted_at", None) is not None:
+        if ref is None or getattr(ref, "retired_at", None) is not None:
             return None
         # The actual kind wins (a ``memory:6184`` whose row is really a
         # finding formats as ``fi6184``) — matching read-time resolution.
@@ -204,7 +204,7 @@ def _scan_drafts(store: Store) -> list[Change]:
         rows = conn.execute(
             """SELECT c.handle, c.text
                  FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
-                WHERE r.kind = 'draft' AND r.deleted_at IS NULL
+                WHERE r.kind = 'draft' AND r.retired_at IS NULL
                   AND c.retired_at IS NULL AND c.pos IS NOT NULL
                   AND c.text ~ %s""",
             (_PREFILTER,),
@@ -231,7 +231,7 @@ def _scan_memories(store: Store) -> list[Change]:
         rows = conn.execute(
             """SELECT c.ref_id, c.text
                  FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
-                WHERE r.kind = 'memory' AND r.deleted_at IS NULL
+                WHERE r.kind = 'memory' AND r.retired_at IS NULL
                   AND c.chunk_kind = 'memory_body'
                   AND c.text ~ %s""",
             (_PREFILTER,),

@@ -285,7 +285,7 @@ def _render_doc_eye(
         raise ValueError(f"eye: no live {kind} for {handle!r}")
     ref_id = int(rh.ref_id)
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
-    if ref is None or getattr(ref, "deleted_at", None) is not None:
+    if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
     head = _head(ref, kind)
     if ext <= Extent.TOC:
@@ -333,7 +333,7 @@ def _render_note_eye(store: Store, handle: str, kind: str, ext: Extent) -> str:
     linked to it, *either direction*, with its relation type. For a memory the
     body *is* the note and the links are its point."""
     ref = _resolve_ref(store, handle)
-    if ref is None or getattr(ref, "deleted_at", None) is not None:
+    if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
     if ext <= Extent.TOC:
         return f"· {_head(ref, kind)}"
@@ -381,7 +381,7 @@ def _link_neighbors(store: Store, ref_id: int) -> str:
 
     def _live(oid: int) -> bool:
         r = refs.get(oid)
-        return r is not None and getattr(r, "deleted_at", None) is None
+        return r is not None and getattr(r, "retired_at", None) is None
 
     lines = ["— linked (1 hop) —"]
     rendered_any = False

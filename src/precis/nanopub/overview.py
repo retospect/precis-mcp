@@ -156,7 +156,7 @@ def hub_tree(store: Store) -> list[HubTreeNode]:
             SELECT l.dst_ref_id, l.src_ref_id, l.relation, p.title, p.kind
               FROM links l
               JOIN refs p ON p.ref_id = l.src_ref_id
-                         AND p.deleted_at IS NULL
+                         AND p.retired_at IS NULL
                          AND (p.kind != 'finding' OR l.relation = 'contradicts')
              WHERE l.dst_ref_id = ANY(%(ids)s)
                AND l.relation IN ('establishes', 'corroborates', 'contradicts')
@@ -168,7 +168,7 @@ def hub_tree(store: Store) -> list[HubTreeNode]:
             SELECT l.src_ref_id, l.dst_ref_id, p.title, p.kind
               FROM links l
               JOIN refs p ON p.ref_id = l.dst_ref_id
-                         AND p.deleted_at IS NULL AND p.kind != 'finding'
+                         AND p.retired_at IS NULL AND p.kind != 'finding'
              WHERE l.src_ref_id = ANY(%(ids)s)
                AND l.relation = 'derived-from'
             """,
@@ -249,7 +249,7 @@ def draft_cited_hub_ids(store: Store, draft_ref_id: int) -> set[int]:
             """
             SELECT DISTINCT l.dst_ref_id
               FROM links l
-              JOIN refs r ON r.ref_id = l.dst_ref_id AND r.deleted_at IS NULL
+              JOIN refs r ON r.ref_id = l.dst_ref_id AND r.retired_at IS NULL
              WHERE l.src_ref_id = %(draft)s AND l.relation = 'cites'
             """,
             {"draft": draft_ref_id},
@@ -320,7 +320,7 @@ def hub_rows(
                     SELECT MIN(l.created_at) AS since
                       FROM links l
                       JOIN refs pr ON pr.ref_id = l.src_ref_id
-                                  AND pr.deleted_at IS NULL
+                                  AND pr.retired_at IS NULL
                      WHERE l.dst_ref_id = r.ref_id
                        AND l.relation = 'contradicts'
                     HAVING COUNT(*) > 0
@@ -340,11 +340,11 @@ def hub_rows(
                            ) AS s
                       FROM links l
                       JOIN refs pr ON pr.ref_id = l.src_ref_id
-                                  AND pr.deleted_at IS NULL
+                                  AND pr.retired_at IS NULL
                      WHERE l.dst_ref_id = r.ref_id
                        AND l.relation IN ('establishes', 'corroborates')
               ) w ON TRUE
-             WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+             WHERE r.kind = 'finding' AND r.retired_at IS NULL
                AND {ref_filter}
                AND {claim_hub_predicate_sql()}
              ORDER BY d.since ASC NULLS LAST, p.created_at ASC NULLS LAST,

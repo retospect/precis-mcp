@@ -153,7 +153,7 @@ def _is_claim_hub(store: PoolStore, ref_id: int) -> bool:
             JOIN ref_tags rt ON rt.ref_id = r.ref_id
             JOIN tags t ON t.tag_id = rt.tag_id
                        AND t.namespace = %(ns)s AND t.value = %(val)s
-            WHERE r.ref_id = %(rid)s AND r.kind = 'finding' AND r.deleted_at IS NULL
+            WHERE r.ref_id = %(rid)s AND r.kind = 'finding' AND r.retired_at IS NULL
             LIMIT 1
             """,
             {"ns": TAPROOT_NAMESPACE, "val": TAPROOT_CLAIM, "rid": ref_id},
@@ -186,7 +186,7 @@ def is_claim_hub_bulk(store: PoolStore, ref_ids: Iterable[int]) -> dict[int, boo
             JOIN tags t ON t.tag_id = rt.tag_id
                        AND t.namespace = %(ns)s AND t.value = %(val)s
             WHERE r.ref_id = ANY(%(ids)s) AND r.kind = 'finding'
-              AND r.deleted_at IS NULL
+              AND r.retired_at IS NULL
             """,
             {"ns": TAPROOT_NAMESPACE, "val": TAPROOT_CLAIM, "ids": ids},
         ).fetchall()
@@ -257,7 +257,7 @@ def _fetch_evidence_rows(
             WHERE l.dst_ref_id = %(hub)s
               AND l.relation = ANY(%(roles)s)
               AND p.kind = ANY(%(kinds)s)
-              AND p.deleted_at IS NULL
+              AND p.retired_at IS NULL
             """,
             {
                 "hub": hub_ref_id,
@@ -404,8 +404,8 @@ def _derive_claim_links(store: PoolStore, hub_ref_id: int, relation: str) -> Cla
                        AND t.namespace = %(ns)s AND t.value = %(val)s
             WHERE l.relation = %(rel)s
               AND (l.src_ref_id = %(hub)s OR l.dst_ref_id = %(hub)s)
-              AND a.kind = 'finding' AND a.deleted_at IS NULL
-              AND b.kind = 'finding' AND b.deleted_at IS NULL
+              AND a.kind = 'finding' AND a.retired_at IS NULL
+              AND b.kind = 'finding' AND b.retired_at IS NULL
             """,
             {
                 "hub": hub_ref_id,
@@ -494,7 +494,7 @@ def conjunct_atoms_bulk(
                        AND t.namespace = %(ns)s AND t.value = %(val)s
             WHERE l.relation = %(rel)s
               AND l.dst_ref_id = ANY(%(hubs)s)
-              AND a.kind = 'finding' AND a.deleted_at IS NULL
+              AND a.kind = 'finding' AND a.retired_at IS NULL
             """,
             {
                 "hubs": ids,
@@ -550,7 +550,7 @@ def hub_citers(store: PoolStore, hub_ref_id: int) -> list[CiterEdge]:
             JOIN refs r ON r.ref_id = l.src_ref_id
             WHERE l.dst_ref_id = %(hub)s
               AND l.relation = %(rel)s
-              AND r.deleted_at IS NULL
+              AND r.retired_at IS NULL
             ORDER BY r.year DESC NULLS LAST, l.src_ref_id
             """,
             {"hub": hub_ref_id, "rel": _CITES_INBOUND_ROLE},
@@ -664,7 +664,7 @@ def _fetch_evidence_rows_bulk(
             WHERE l.dst_ref_id = ANY(%(hubs)s)
               AND l.relation = ANY(%(roles)s)
               AND p.kind = ANY(%(kinds)s)
-              AND p.deleted_at IS NULL
+              AND p.retired_at IS NULL
             """,
             {
                 "hubs": hub_ref_ids,

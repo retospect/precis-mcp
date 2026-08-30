@@ -1,7 +1,7 @@
 """Tags browser — every tag in the cluster, ordered by usage count.
 
 Single-page table. Each row carries the namespace:value, a per-tag
-usage count, and a one-click pivot to the Tasks dashboard filtered
+usage count, and a one-click pivot to the Todo dashboard filtered
 to refs carrying that tag. Useful when the operator wants to see
 what conventions have crept into the corpus (which ``DREAM:*`` and
 ``tier:*`` and ``waiting-for:*`` tags exist, who's using
@@ -144,7 +144,7 @@ async def refs_by_tag(
 
     Page groups by kind and links each ref to its native detail view
     (``/refs/{kind}/{ref_id}`` for browsable kinds, ``/papers/{ref_id}``
-    for papers, ``/tasks?focus=N`` for todos).
+    for papers, ``/todo?focus=N`` for todos).
     """
     if namespace is None and value is None and kind is None:
         raise HTTPException(
@@ -164,7 +164,7 @@ async def refs_by_tag(
     if kind:
         where_parts.append("r.kind = %s")
         params.append(kind)
-    where_parts.append("r.deleted_at IS NULL")  # default: hide soft-deleted
+    where_parts.append("r.retired_at IS NULL")  # default: hide soft-deleted
     where_sql = " AND ".join(where_parts)
     # Tag-carrying call shapes need the ref_tags/tags join; the
     # kind-only pivot reads refs directly. Both the count and the page
@@ -175,7 +175,7 @@ async def refs_by_tag(
         else "FROM refs r"
     )
     select_cols = (
-        "SELECT r.kind, r.ref_id, r.title, r.deleted_at IS NOT NULL AS dropped"
+        "SELECT r.kind, r.ref_id, r.title, r.retired_at IS NOT NULL AS dropped"
         if has_tag
         else "SELECT r.kind, r.ref_id, r.title, FALSE AS dropped"
     )
@@ -274,8 +274,8 @@ async def refs_by_tag(
 #: list above.
 _KIND_URLS: dict[str, str] = {
     "paper": "/papers/{id}",
-    "todo": "/tasks?focus={id}",
-    "job": "/tasks?focus={id}",
+    "todo": "/todo?focus={id}",
+    "job": "/todo?focus={id}",
 }
 
 

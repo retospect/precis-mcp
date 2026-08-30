@@ -103,6 +103,6 @@ rung for the tier fails the call rather than silently falling back to cloud.
 ## See also
 
 ```python
-get(kind="skill", id="precis-dispatch-help")  # meta.llm_tier → dispatch worker → model
-get(kind="skill", id="precis-tasks-help")  # facet vocabulary on the todo tree
+get(kind="skill", id="precis-minter-help")  # meta.llm_tier → minter worker → model
+get(kind="skill", id="precis-todo-tree-help")  # facet vocabulary on the todo tree
 ```

@@ -4,7 +4,7 @@ Deterministic, in-process work (no claude). Registered with a plugin
 ``dispatch`` so ``claude_inproc`` runs it directly (the executor calls
 ``spec.dispatch(ctx, spec)`` and skips the claude subprocess entirely):
 ``export_draft`` → ``compile_pdf``, streaming each step as ``job_event``
-chunks so the run is followable on the task page, and landing the PDF path
+chunks so the run is followable on the todo page, and landing the PDF path
 in ``refs.meta`` + the ``job_summary``.
 
 Started from the ``/drafts`` "export PDF" button, or by an agent::
@@ -59,7 +59,7 @@ def _resolve_out_dir(ctx: Any, slug: str) -> tuple[Path, bool]:
     """Where to write the export. Prefer the **project workspace** under
     ``PRECIS_ROOT`` — that's where the per-todo PDF viewer
     (``tasks._resolve_workspace_pdf``) looks for ``<entrypoint-stem>.pdf``,
-    so the compiled ``main.pdf`` shows on the project's task page for free
+    so the compiled ``main.pdf`` shows on the project's todo page for free
     (export_draft writes ``main.tex``; the default workspace entrypoint is
     ``main.tex``). Fall back to a temp export dir when there's no
     ``PRECIS_ROOT`` or the project has no workspace.
@@ -161,7 +161,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"draft_export: {exc}")
         return
     where = (
-        "project workspace (shows on the task page)" if in_workspace else "export dir"
+        "project workspace (shows on the todo page)" if in_workspace else "export dir"
     )
     ctx.append_chunk("job_event", f"exporting draft {slug!r} → {out_dir} [{where}]")
     try:

@@ -113,7 +113,7 @@ agent-facing copy.
 
 - **`skill` / `python` / `tag`** carry codes for completeness but are still
   addressed by their slug/path or `kind=`+id — a bare `sk…`/`py…`/`tg…` is not
-  yet a resolvable handle. Skills: `get(kind='skill', id='precis-tasks-help')`.
+  yet a resolvable handle. Skills: `get(kind='skill', id='precis-todo-tree-help')`.
 - **`draft`** chunks currently keep their ADR-0033 `¶<handle>` form; the `dr`/`dc`
   codes are reserved for a later unification.
 - **Providers** (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,

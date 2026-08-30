@@ -172,7 +172,7 @@ _COHORT_SQL = f"""
     SELECT r.ref_id, r.title, r.meta
       FROM refs r
      WHERE r.kind = 'finding'
-       AND r.deleted_at IS NULL
+       AND r.retired_at IS NULL
        AND EXISTS (
              SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
               WHERE rt.ref_id = r.ref_id
@@ -188,7 +188,7 @@ _COHORT_SQL = f"""
        AND {_NOT_HYPOTHESIS_SQL}
        AND NOT EXISTS (
              SELECT 1 FROM links l
-             JOIN refs s ON s.ref_id = l.src_ref_id AND s.deleted_at IS NULL
+             JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
               WHERE l.dst_ref_id = r.ref_id AND l.relation = 'contradicts'
            )
        AND NOT EXISTS (

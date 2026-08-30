@@ -49,7 +49,7 @@ Precis has no execution sandbox — decide before writing anything down:
 
 - **Plan only** (default) — persist the plan; a human runs it.
 - **Dispatch** — mint a todo an operator or worker can pick up
-  (`meta.executor` for automated dispatch — `precis-dispatch-help`).
+  (`meta.executor` for automated dispatch — `precis-minter-help`).
 
 ```python
 put(
@@ -99,6 +99,6 @@ get(kind="skill", id="precis-plan-help")  # the reasoning-outline kind
 get(kind="skill", id="precis-finding-help")  # register a mismatch as a citation target
 get(kind="skill", id="precis-ml-recipe")  # extracting a recipe in more depth
 get(kind="skill", id="precis-web-help")  # fetch the paper's code repo
-get(kind="skill", id="precis-tasks-help")  # dispatch execution as a todo
-get(kind="skill", id="precis-dispatch-help")  # meta.executor for automated dispatch
+get(kind="skill", id="precis-todo-tree-help")  # dispatch execution as a todo
+get(kind="skill", id="precis-minter-help")  # meta.executor for automated dispatch
 ```

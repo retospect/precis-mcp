@@ -740,7 +740,7 @@ def _print_merge_plan(plan: Any, *, dry_run: bool) -> None:
     if plan.can_merge:
         print(f"{tag}publish-state check: OK (neither side past 'candidate')")
         print(
-            f"{tag}retire fi{plan.loser_ref_id}: refs.deleted_at set; "
+            f"{tag}retire fi{plan.loser_ref_id}: refs.retired_at set; "
             f"recorded fi{plan.loser_ref_id} --{MERGE_COLLAPSE_RELATION}--> "
             f"fi{plan.winner_ref_id}"
         )
@@ -1113,7 +1113,7 @@ def _resolve_draft_ref_id(store: Store, token: str) -> int:
     if ref_id is not None:
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT kind FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
         kind = str(row[0]) if row is not None else None
@@ -1503,7 +1503,7 @@ _LINT_COHORT_SQL = """
                         AND ch.chunk_kind = 'finding_body'
                         AND ch.retired_at IS NULL
     WHERE r.kind = 'finding'
-      AND r.deleted_at IS NULL
+      AND r.retired_at IS NULL
       AND (rt.expires_at IS NULL OR rt.expires_at > now())
     ORDER BY r.ref_id
 """
@@ -1545,7 +1545,7 @@ def _select_lint_cohort(
                 "LEFT JOIN chunks ch ON ch.ref_id = r.ref_id AND ch.ord = 0 "
                 "                    AND ch.chunk_kind = 'finding_body' "
                 "                    AND ch.retired_at IS NULL "
-                "WHERE r.ref_id = ANY(%s) AND r.deleted_at IS NULL",
+                "WHERE r.ref_id = ANY(%s) AND r.retired_at IS NULL",
                 (ref_ids,),
             ).fetchall()
         by_id = {int(r[0]): (str(r[1] or ""), dict(r[2] or {}), r[3]) for r in rows}

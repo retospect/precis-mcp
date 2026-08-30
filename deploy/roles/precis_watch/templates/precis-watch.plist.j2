@@ -26,7 +26,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>exec {{ precis_watch_venv }}/bin/precis watch --polling --debounce {{ precis_watch_debounce }} --user {{ precis_watch_user }} --corpus-dir {{ precis_watch_corpus }} --subprocess-batch-size {{ precis_watch_subprocess_batch }} --subprocess-concurrency {{ precis_watch_subprocess_concurrency }} {{ precis_watch_dir }}</string>
+    <string>exec {{ precis_watch_venv }}/bin/precis ingest --watch --polling --debounce {{ precis_watch_debounce }} --user {{ precis_watch_user }} --corpus-dir {{ precis_watch_corpus }} --subprocess-batch-size {{ precis_watch_subprocess_batch }} --subprocess-concurrency {{ precis_watch_subprocess_concurrency }} {{ precis_watch_dir }}</string>
   </array>
 
   <key>UserName</key>

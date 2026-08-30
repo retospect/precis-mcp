@@ -78,7 +78,7 @@ def evaluate(store: Store, spec: dict[str, Any], *, ref_id: int) -> bool | None:
               FROM refs c
              WHERE c.parent_id = %s
                AND c.kind = 'finding'
-               AND c.deleted_at IS NULL
+               AND c.retired_at IS NULL
              GROUP BY 1
             """,
             (ref_id,),

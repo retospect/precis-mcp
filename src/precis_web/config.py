@@ -23,7 +23,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-#: Default corpus root, matching the ``precis watch`` fallback
+#: Default corpus root, matching the ``precis ingest --watch`` fallback
 #: (``cli/watch.py``: ``Path.home() / "work" / "corpus"``).
 _DEFAULT_CORPUS = Path.home() / "work" / "corpus"
 

@@ -61,7 +61,7 @@ def hubs_grounded_by_paper(
             WHERE l.src_ref_id = %(paper)s
               AND l.relation = ANY(%(roles)s)
               AND r.kind = 'finding'
-              AND r.deleted_at IS NULL
+              AND r.retired_at IS NULL
             ORDER BY r.ref_id
             """,
             {

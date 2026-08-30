@@ -114,7 +114,7 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     # ``ssh_node`` runs a job's plugin ``dispatch`` on a remote node
     # (precis-dft's ``gpaw_relax`` shells out to ``ssh spark docker
     # run …``). Phase 1: static capability set = the spark node.
-    # Host-aware PROVIDES is a later refinement (precis-dispatch doc).
+    # Host-aware PROVIDES is a later refinement (precis-minter doc).
     "ssh_node": frozenset({"has_gpaw"}),
     # ``claude_docker`` runs a ``sandbox_run`` job as a detached,
     # cgroup-capped container on an ``agent_sandbox_host`` — launch,

@@ -63,7 +63,7 @@ def _rows(store: Store, *, state_tag: str, limit: int | None) -> list[dict[str, 
           LEFT JOIN refs sr
                  ON sr.ref_id = NULLIF(r.meta->>'subject_ref_id', '')::int
          WHERE r.kind = 'alert'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND t.namespace = 'OPEN'
            AND t.value = %s
          ORDER BY CASE r.meta->>'severity'

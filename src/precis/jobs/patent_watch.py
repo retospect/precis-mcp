@@ -109,7 +109,7 @@ def compute_rolling_fair_use_bytes(store: Store) -> int:
         FROM refs
         WHERE kind = 'patent'
           AND created_at > now() - INTERVAL '7 days'
-          AND deleted_at IS NULL
+          AND retired_at IS NULL
     """
     with store.pool.connection() as conn:
         row = conn.execute(sql).fetchone()

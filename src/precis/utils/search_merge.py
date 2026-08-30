@@ -139,11 +139,15 @@ class SearchHit:
             level.  ``None`` for ref-level hits (numeric kinds, the
             patent-handler list view, etc.).  Renders as
             ``slug~pos`` when set.
-        source: Optional source-stream label (``"local"``,
+        reach: Optional source-stream label (``"local"``,
             ``"ops"``).  When set it appears in brackets after the
             handle; useful when one kind has multiple sources.  In
-            cross-kind merges where ``source`` is unset the kind
-            itself is the label.
+            cross-kind merges where ``reach`` is unset the kind
+            itself is the label. (Vocabulary-compaction Stage D: named
+            ``reach`` — the leg a hit came from — to keep the word
+            ``source`` for provenance, "the artifact a datum comes
+            from"; only patent/edgar's local-vs-remote search legs set
+            this today.)
         extra_lines: Bib metadata that should appear between the
             title and the preview.  Used by patents (applicants,
             publication date) and papers (DOI, year) — kept as a
@@ -167,7 +171,7 @@ class SearchHit:
     preview: str
     slug: str | None = None
     pos: int | None = None
-    source: str | None = None
+    reach: str | None = None
     extra_lines: tuple[str, ...] = ()
     ref_id: int | None = None
     dedupe_key: str | None = None
@@ -259,7 +263,7 @@ def merge_and_render(
               across streams sum.  Hits without a ``dedupe_key``
               are treated as singletons.  Result sorted by total
               RRF score desc, ties broken by best raw ``score``.
-        show_label: Whether to emit the ``[source-or-kind]`` label
+        show_label: Whether to emit the ``[reach-or-kind]`` label
             after the citation handle.  ``False`` for single-kind
             single-source merges that don't need the marker.
         empty_body: Override message when every stream is empty
@@ -594,7 +598,7 @@ def _render_keywords_table(hits: list[SearchHit]) -> str:
 def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     label = ""
     if show_label:
-        marker = hit.source or hit.kind
+        marker = hit.reach or hit.kind
         if marker:
             label = f"  [{marker}]"
     # emit the universal handle when known, else the legacy
@@ -627,7 +631,7 @@ def block_hits_to_search_hits(
     triples: list[tuple[Any, Any, float]],
     *,
     kind: str,
-    source: str | None = None,
+    reach: str | None = None,
     excerpt: int = 200,
     extra_lines_for: Any = None,
     dedupe_by_handle: bool = True,
@@ -643,7 +647,7 @@ def block_hits_to_search_hits(
             ``store.search_chunks_lexical`` /
             ``store.search_chunks_semantic``.
         kind: Owning kind, used as the per-hit label fallback.
-        source: Optional override for the per-hit ``source`` field
+        reach: Optional override for the per-hit ``reach`` field
             — set this when the producer is one of multiple
             sources within a kind (e.g. patent's ``"local"`` /
             ``"ops"`` legs).
@@ -695,7 +699,7 @@ def block_hits_to_search_hits(
                 preview=preview,
                 slug=slug,
                 pos=pos,
-                source=source,
+                reach=reach,
                 extra_lines=extras,
                 ref_id=getattr(ref, "id", None),
                 dedupe_key=dedupe,
@@ -718,7 +722,7 @@ def ref_hits_to_search_hits(
     pairs: list[tuple[Any, float]],
     *,
     kind: str,
-    source: str | None = None,
+    reach: str | None = None,
     preview_for: Any = None,
     excerpt: int = 140,
 ) -> list[SearchHit]:
@@ -731,7 +735,7 @@ def ref_hits_to_search_hits(
     Args:
         pairs: Output of ``store.search_refs_lexical``.
         kind: Owning kind.
-        source: Optional source-stream label.
+        reach: Optional source-stream label.
         preview_for: Optional ``(ref) -> str`` callable for the
             preview text.  Defaults to a truncated ref title.
         excerpt: Truncation cap for the default title-based preview.
@@ -766,7 +770,7 @@ def ref_hits_to_search_hits(
                 preview=preview,
                 slug=slug,
                 pos=None,
-                source=source,
+                reach=reach,
                 ref_id=ref_id,
                 dedupe_key=dedupe,
                 # the record handle is computed from

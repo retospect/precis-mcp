@@ -1063,7 +1063,7 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
     assert ("coherence", "some-pass") in routed_still_live
     with store.pool.connection() as conn:
         still_open = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (gripe_id,)
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
         ).fetchone()
     assert still_open[0] is None
 
@@ -1075,7 +1075,7 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
 
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (gripe_id,)
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
         ).fetchone()
         comment = conn.execute(
             "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'gripe_comment' "
@@ -1083,7 +1083,7 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
             (gripe_id,),
         ).fetchone()
         other_row = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (other.id,)
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (other.id,)
         ).fetchone()
     assert row[0] is not None  # soft-deleted
     assert comment is not None and "auto-closed by health_digest" in comment[0]
@@ -1187,7 +1187,7 @@ def test_nursery_backlog_drained_auto_closes_aggregate_gripe(store) -> None:
 
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (gripe_id,)
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
         ).fetchone()
     assert row[0] is not None
 

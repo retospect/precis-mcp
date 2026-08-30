@@ -441,7 +441,7 @@ def search(
     page_size: int = 10,
     page: int = 1,
     tags: list[str] | None = None,
-    source: str | None = None,
+    reach: str | None = None,
     exclude: list[str] | None = None,
     angle: float | None = None,
     n: int | None = None,
@@ -524,25 +524,26 @@ def search(
     """Hybrid lexical + semantic search across kinds.
 
     `page_size` ≤ 100; `page=N` paginates. Omit `kind` (or `'*'`) for
-    cross-kind fan-out; `exclude=` skips slugs; `source=` is patent-only;
+    cross-kind fan-out; `exclude=` skips slugs; `reach=`
+    ('local'|'remote'|'both'; patent/edgar) picks the search leg;
     `folder=` scopes to a subtree.
 
     `mode=` `'hybrid'` (default) / `'lexical'` (exact string) /
     `'semantic'` / `'verbatim'` (all query words present as chunk
-    keywords). `angle=`+`like=` spray `n` diverse items;
-    `view='dreamable'`/`'stubs'` are special browses.
+    keywords). `angle=`+`like=` spray `n` diverse hits;
+    `view='dreamable'`/`'stubs'`: special browses.
 
     Broad retrieval (paper): `queries=`/`answers=` (HyDE) fuse ranked
     legs; `per_paper=` spreads across papers; `good=True` queues a deep
     search; `title=`/`author=` look up by byline.
 
     Claims (finding): `trust='verified'` = evidence-backed + unopposed;
-    `'signed'` = provenance (separate axis, not a higher bar); also
-    `'disputed'`/`'any'`. `status=` is the chase lifecycle.
+    `'signed'` = provenance (separate axis, not a higher bar);
+    also `'disputed'`/`'any'`. `status=`: chase lifecycle.
 
-    Discovery: `uncited=<draft>` drops sources that draft already cites.
+    `uncited=<draft>` drops sources it already cites.
 
-    Full reference: get(kind='skill', id='precis-search-help').
+    Full docs: get(kind='skill', id='precis-search-help').
     """
     # Validate page_size at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.
@@ -677,8 +678,8 @@ def search(
     # Only forward optional kwargs when set
     if tags is not None:
         payload["tags"] = tags
-    if source is not None:
-        payload["source"] = source
+    if reach is not None:
+        payload["reach"] = reach
     if exclude is not None:
         payload["exclude"] = exclude
     # Angle-spray knobs — forwarded only when set so a plain search
@@ -1060,8 +1061,8 @@ def edit(
     # memory (see precis-memory-help): edit(mode='replace') rewrites the body
     # prose; pass title= to also update the short header (omit to keep it).
     title: str | None = None,
-    # todo (see precis-tasks-help): edit(mode='replace', body='…') sets/rewrites
-    # the optional details body; combine with text= to rewrite the task line too.
+    # todo (see precis-todo-tree-help): edit(mode='replace', body='…') sets/rewrites
+    # the optional details body; combine with text= to rewrite the title too.
     body: str | None = None,
     # paper (see precis-paper-help): edit(kind='paper', doi=…) / edit(kind=
     # 'paper', arxiv=…) upgrades a title-only stub's identifier (replaces the
@@ -1403,7 +1404,7 @@ _SEARCH_HELP: dict[str, str] = {
     "page": "Page number (default 1). Pass page=2 to see results "
     "page_size..2*page_size-1, etc.",
     "tags": "Per-kind tag filters (closed-vocab axes + open tags).",
-    "source": "Patent only: 'both' (default) | 'local' | 'remote'.",
+    "reach": "Patent/EDGAR only: 'both' (default) | 'local' | 'remote'.",
     "exclude": "Ref slugs to drop from results (hand-skip; page= is "
     "usually preferable).",
     "uncited": "Drop every source a draft (handle/slug/id) already cites, "

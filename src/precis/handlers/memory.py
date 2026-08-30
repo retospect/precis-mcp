@@ -729,7 +729,7 @@ class MemoryHandler(NumericRefHandler):
                 self.store.stamp_ref_meta(
                     mid, {"superseded_by": survivor.id}, conn=conn
                 )
-                self.store.soft_delete_ref(mid, conn=conn)
+                self.store.retire_ref(mid, conn=conn)
 
         merged = ", ".join(str(m) for m in ids)
         return Response(

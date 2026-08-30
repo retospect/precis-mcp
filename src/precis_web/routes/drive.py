@@ -93,7 +93,7 @@ _READER_URL = {
     "figure": "/figure/{ident}",
     "mermaid": "/mermaid/{ident}",
     "datasheet": "/datasheets/{ident}",
-    "todo": "/tasks?focus={ref_id}",
+    "todo": "/todo?focus={ref_id}",
 }
 
 _KIND_ICON = {
@@ -166,10 +166,10 @@ def _folder_tree(store: Store) -> list[dict[str, Any]]:
             """
             SELECT f.ref_id, f.title, f.parent_id,
                    (SELECT count(*) FROM refs c
-                     WHERE c.parent_id = f.ref_id AND c.deleted_at IS NULL),
+                     WHERE c.parent_id = f.ref_id AND c.retired_at IS NULL),
                    (SELECT p.kind FROM refs p WHERE p.ref_id = f.parent_id)
               FROM refs f
-             WHERE f.kind = 'folder' AND f.deleted_at IS NULL
+             WHERE f.kind = 'folder' AND f.retired_at IS NULL
              ORDER BY lower(f.title)
             """
         ).fetchall()
@@ -251,7 +251,7 @@ def _children(store: Store, folder_id: int) -> list[dict[str, Any]]:
             f"""
             SELECT {_CHILD_COLS}
               FROM refs r
-             WHERE r.parent_id = %s AND r.deleted_at IS NULL
+             WHERE r.parent_id = %s AND r.retired_at IS NULL
              ORDER BY (r.kind != 'folder'), r.kind, lower(r.title)
             """,
             (folder_id,),
@@ -271,7 +271,7 @@ def _unfiled(store: Store, artifact_kinds: list[str]) -> list[dict[str, Any]]:
             SELECT {_CHILD_COLS}
               FROM refs r
              WHERE r.kind = ANY(%s) AND r.parent_id IS NULL
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
              ORDER BY r.kind, r.updated_at DESC
             """,
             (kinds,),
@@ -289,7 +289,7 @@ def _breadcrumb(store: Store, folder_id: int) -> list[dict[str, Any]]:
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT kind, title, parent_id FROM refs "
-                "WHERE ref_id = %s AND deleted_at IS NULL",
+                "WHERE ref_id = %s AND retired_at IS NULL",
                 (current,),
             ).fetchone()
         if row is None or row[0] != "folder":
@@ -824,7 +824,7 @@ async def create_folder(
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT ref_id FROM refs WHERE kind = 'folder' "
-                "AND deleted_at IS NULL AND title = %s "
+                "AND retired_at IS NULL AND title = %s "
                 "ORDER BY ref_id DESC LIMIT 1",
                 (name.strip(),),
             ).fetchone()

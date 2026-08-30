@@ -680,8 +680,8 @@ class StructureMixin:
         ver = self.structure_version(ref_id) + 1
         with self.tx() as conn:
             conn.execute(
-                "UPDATE refs SET deleted_at = now() "
-                "WHERE ref_id = %s AND kind = 'structure' AND deleted_at IS NULL",
+                "UPDATE refs SET retired_at = now() "
+                "WHERE ref_id = %s AND kind = 'structure' AND retired_at IS NULL",
                 (ref_id,),
             )
             n = conn.execute(

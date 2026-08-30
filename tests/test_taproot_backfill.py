@@ -261,7 +261,7 @@ def _seed_draft_para(
 def _finding_count(store: Store) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT count(*) FROM refs WHERE kind = 'finding' AND deleted_at IS NULL"
+            "SELECT count(*) FROM refs WHERE kind = 'finding' AND retired_at IS NULL"
         ).fetchone()
     return int(row[0]) if row else 0
 
@@ -946,7 +946,7 @@ def _citation_refs(store: Store) -> list[Any]:
     """Every live citation ref, oldest first."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind = 'citation' AND deleted_at IS NULL "
+            "SELECT ref_id FROM refs WHERE kind = 'citation' AND retired_at IS NULL "
             "ORDER BY ref_id"
         ).fetchall()
     out = []
@@ -1663,7 +1663,7 @@ def test_apply_pc_on_front_matter_chunk_is_ungroundable(
 def test_apply_pc_on_retired_chunk_is_ungroundable(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    # A retired chunk still resolves (handle resolution filters refs.deleted_at,
+    # A retired chunk still resolves (handle resolution filters refs.retired_at,
     # not chunks.retired_at) but is dead text — a re-chunk retires the row and
     # inserts a replacement, so the old id cites content no reader can reach.
     paper = seed_ref(hub.live_store, title="rechunked paper", kind="paper")

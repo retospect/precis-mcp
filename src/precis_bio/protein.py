@@ -394,7 +394,7 @@ class ProteinHandler(Handler):
         ref = self.store.get_ref(kind="protein", id=str(id).strip())
         if ref is None:
             raise NotFound(f"protein {id!r} not found")
-        self.store.soft_delete_ref(ref.id)
+        self.store.retire_ref(ref.id)
         return Response(body=f"retired protein '{ref.slug}'")
 
     # ── helpers ────────────────────────────────────────────────────────

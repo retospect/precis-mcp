@@ -109,7 +109,7 @@ def _hubs_for_tag(store: Store, tag: str, *, limit: int) -> list[int]:
             SELECT r.ref_id FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t USING (tag_id)
-             WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+             WHERE r.kind = 'finding' AND r.retired_at IS NULL
                AND t.namespace = %s AND t.value = %s
              ORDER BY r.ref_id
              LIMIT %s

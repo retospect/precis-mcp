@@ -3868,8 +3868,9 @@ class TestTierLadderHarvest:
     """The tier-ladder half of harvest: a completed screening run stamps
     ``tier`` with no barrier at all (catpath omits it — nothing here
     special-cases the absence); a neb→verify supersession preserves the
-    outgoing parked barrier as ``barrier_screen`` and tracks ``barrier_tier``;
-    a landed verify pathway wires ``refines`` back to its parked sibling."""
+    outgoing parked barrier as ``barrier_screen`` and tracks
+    ``barrier_fidelity``; a landed verify pathway wires ``refines`` back to
+    its parked sibling."""
 
     def _candidate(self, store: Any, qid: int) -> int:
         sid = compute_mod.ensure_candidate(
@@ -3908,7 +3909,7 @@ class TestTierLadderHarvest:
         assert "barrier" not in meta
         assert meta["tier"] == "screening"
 
-    def test_neb_barrier_stamps_barrier_tier_neb(self, store: Any) -> None:
+    def test_neb_barrier_stamps_barrier_fidelity_neb(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         pw = store.insert_ref(
@@ -3924,7 +3925,7 @@ class TestTierLadderHarvest:
         compute_mod.harvest_measures(store, qid)
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta["barrier"] == 0.5
-        assert meta["barrier_tier"] == "neb"
+        assert meta["barrier_fidelity"] == "neb"
         assert meta["tier"] == "neb"
         assert "barrier_screen" not in meta
 
@@ -3960,7 +3961,7 @@ class TestTierLadderHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta["barrier"] == 0.3  # canonical = highest fidelity
         assert meta["barrier_screen"] == 0.5  # superseded parked value kept
-        assert meta["barrier_tier"] == "verify"
+        assert meta["barrier_fidelity"] == "verify"
         assert meta["tier"] == "verify"
 
     def test_barrier_screen_excluded_from_ranking_measures(self, store: Any) -> None:
@@ -3969,12 +3970,12 @@ class TestTierLadderHarvest:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         store.stamp_ref_meta(
-            sid, {"barrier": 0.3, "barrier_screen": 0.5, "barrier_tier": "verify"}
+            sid, {"barrier": 0.3, "barrier_screen": 0.5, "barrier_fidelity": "verify"}
         )
         c = _cand(store, sid)
         assert "barrier_screen" not in c.measures
         assert c.flags["barrier_screen"] == 0.5
-        assert c.flags["barrier_tier"] == "verify"
+        assert c.flags["barrier_fidelity"] == "verify"
 
 
 class TestTierLadderRefinesLink:
@@ -4325,12 +4326,12 @@ class TestDispatchAutocatpath:
                 """
                 SELECT j.ref_id, j.meta FROM refs seed_todo
                   JOIN refs j ON j.parent_id = seed_todo.ref_id
-                              AND j.kind = 'job' AND j.deleted_at IS NULL
-                 WHERE seed_todo.kind = 'todo' AND seed_todo.deleted_at IS NULL
+                              AND j.kind = 'job' AND j.retired_at IS NULL
+                 WHERE seed_todo.kind = 'todo' AND seed_todo.retired_at IS NULL
                    AND seed_todo.parent_id IN (
                          SELECT ref_id FROM refs
                           WHERE parent_id = %s AND kind = 'todo'
-                            AND deleted_at IS NULL
+                            AND retired_at IS NULL
                        )
                    AND j.meta->>'job_type' = 'autocatpath_seed'
                  ORDER BY j.ref_id
@@ -4346,7 +4347,7 @@ class TestDispatchAutocatpath:
         with store.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id FROM refs WHERE parent_id = %s AND kind = 'todo' "
-                "AND deleted_at IS NULL ORDER BY ref_id",
+                "AND retired_at IS NULL ORDER BY ref_id",
                 (sid,),
             ).fetchall()
         return [int(r[0]) for r in rows]
@@ -4359,11 +4360,11 @@ class TestDispatchAutocatpath:
             rows = conn.execute(
                 """
                 SELECT DISTINCT seed_todo.ref_id FROM refs seed_todo
-                 WHERE seed_todo.kind = 'todo' AND seed_todo.deleted_at IS NULL
+                 WHERE seed_todo.kind = 'todo' AND seed_todo.retired_at IS NULL
                    AND seed_todo.parent_id IN (
                          SELECT ref_id FROM refs
                           WHERE parent_id = %s AND kind = 'todo'
-                            AND deleted_at IS NULL
+                            AND retired_at IS NULL
                        )
                  ORDER BY seed_todo.ref_id
                 """,
@@ -4555,7 +4556,7 @@ class TestDispatchAutocatpath:
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         job0_id, _m = self._seed_job_for(store, sid, 0)
-        store.soft_delete_ref(job0_id)
+        store.retire_ref(job0_id)
 
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         seed_jobs = self._seed_jobs(store, sid)
@@ -4946,7 +4947,7 @@ class TestDispatchAutocatpath:
             row = conn.execute(
                 """
                 SELECT meta FROM refs
-                 WHERE parent_id = %s AND kind = 'todo' AND deleted_at IS NULL
+                 WHERE parent_id = %s AND kind = 'todo' AND retired_at IS NULL
                 """,
                 (sid,),
             ).fetchone()
@@ -5109,7 +5110,7 @@ class TestReactionCoDispatch:
     def test_ladder_on_quest_dispatches_screening_tier_first(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        """``meta.tier_ladder=True`` steers a NEW candidate's first
+        """``meta.fidelity_ladder=True`` steers a NEW candidate's first
         autocatpath run to the cheap screening rung, not straight to neb."""
         tier_calls: list[Any] = []
 
@@ -5122,14 +5123,16 @@ class TestReactionCoDispatch:
         )
         monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_autocatpath)
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
-        store.stamp_ref_meta(qid, {"reaction_config": self._RX, "tier_ladder": True})
+        store.stamp_ref_meta(
+            qid, {"reaction_config": self._RX, "fidelity_ladder": True}
+        )
         compute_mod.run_compute_step(store, qid, [{"name": "Pd", "structure": _SPEC}])
         assert tier_calls == [compute_mod._TIER_SCREENING]
 
     def test_ladder_off_quest_dispatches_neb_tier_by_default(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        """No ``meta.tier_ladder`` (the pre-ladder default, and every
+        """No ``meta.fidelity_ladder`` (the pre-ladder default, and every
         existing quest/test) keeps today's straight-to-NEB dispatch."""
         tier_calls: list[Any] = []
 
@@ -5227,7 +5230,7 @@ class TestTierPromotion:
     def _quest(self, store: Any, **extra_meta: Any) -> int:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
         store.stamp_ref_meta(
-            qid, {"reaction_config": self._RX, "tier_ladder": True, **extra_meta}
+            qid, {"reaction_config": self._RX, "fidelity_ladder": True, **extra_meta}
         )
         return qid
 
@@ -5269,7 +5272,8 @@ class TestTierPromotion:
             energy=energy,
         )
         store.stamp_ref_meta(
-            sid, {"barrier": barrier, "barrier_trusted": True, "barrier_tier": "neb"}
+            sid,
+            {"barrier": barrier, "barrier_trusted": True, "barrier_fidelity": "neb"},
         )
         return sid
 
@@ -5286,7 +5290,7 @@ class TestTierPromotion:
     def test_ladder_off_is_a_noop(self, store: Any, monkeypatch: Any) -> None:
         calls = self._stub_dispatch(monkeypatch)
         qid = _mk_quest(store, "A striving")
-        store.stamp_ref_meta(qid, {"reaction_config": self._RX})  # no tier_ladder
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})  # no fidelity_ladder
         self._screening_candidate(store, qid, "A", 0.5)
         assert compute_mod.promote_tiers(store, qid) == []
         assert calls == []
@@ -5294,7 +5298,7 @@ class TestTierPromotion:
     def test_no_reaction_config_is_a_noop(self, store: Any, monkeypatch: Any) -> None:
         calls = self._stub_dispatch(monkeypatch)
         qid = _mk_quest(store, "A striving")
-        store.stamp_ref_meta(qid, {"tier_ladder": True})  # no reaction_config
+        store.stamp_ref_meta(qid, {"fidelity_ladder": True})  # no reaction_config
         assert compute_mod.promote_tiers(store, qid) == []
         assert calls == []
 
@@ -5302,7 +5306,7 @@ class TestTierPromotion:
         self, store: Any, monkeypatch: Any
     ) -> None:
         calls = self._stub_dispatch(monkeypatch)
-        qid = self._quest(store, tier_promote_neb=2, tier_promote_verify=0)
+        qid = self._quest(store, fidelity_promote_neb=2, fidelity_promote_verify=0)
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "U_L_abs", "sense": "min"}]}
         )
@@ -5326,7 +5330,7 @@ class TestTierPromotion:
         self, store: Any, monkeypatch: Any
     ) -> None:
         calls = self._stub_dispatch(monkeypatch)
-        qid = self._quest(store, tier_promote_neb=5, tier_promote_verify=0)
+        qid = self._quest(store, fidelity_promote_neb=5, fidelity_promote_verify=0)
         eligible = self._screening_candidate(store, qid, "eligible", 0.3)
         already = self._screening_candidate(store, qid, "already", 0.1)
         store.insert_ref(
@@ -5345,7 +5349,7 @@ class TestTierPromotion:
         self, store: Any, monkeypatch: Any
     ) -> None:
         calls = self._stub_dispatch(monkeypatch)
-        qid = self._quest(store, tier_promote_neb=0, tier_promote_verify=1)
+        qid = self._quest(store, fidelity_promote_neb=0, fidelity_promote_verify=1)
         store.stamp_ref_meta(
             qid,
             {
@@ -5376,7 +5380,7 @@ class TestTierPromotion:
         self, store: Any, monkeypatch: Any
     ) -> None:
         calls = self._stub_dispatch(monkeypatch)
-        qid = self._quest(store, tier_promote_neb=0, tier_promote_verify=1)
+        qid = self._quest(store, fidelity_promote_neb=0, fidelity_promote_verify=1)
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
         )
@@ -5394,7 +5398,7 @@ class TestTierPromotion:
             energy=-5.0,
         )
         store.stamp_ref_meta(
-            sid, {"barrier": 0.2, "barrier_trusted": False, "barrier_tier": "neb"}
+            sid, {"barrier": 0.2, "barrier_trusted": False, "barrier_fidelity": "neb"}
         )
         assert compute_mod.promote_tiers(store, qid) == []
         assert calls == []
@@ -5403,7 +5407,7 @@ class TestTierPromotion:
         self, store: Any, monkeypatch: Any
     ) -> None:
         calls = self._stub_dispatch(monkeypatch)
-        qid = self._quest(store, tier_promote_neb=0, tier_promote_verify=5)
+        qid = self._quest(store, fidelity_promote_neb=0, fidelity_promote_verify=5)
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
         )
@@ -5763,7 +5767,7 @@ class TestCanonicalSymmetryDedup:
         b_slug = compute_mod._candidate_slug(qid, _TWIN_B)
         fresh = store.get_ref(kind="structure", id=b_slug, include_deleted=True)
         assert fresh is not None
-        assert fresh.deleted_at is not None
+        assert fresh.retired_at is not None
         handle_a = (
             handle_registry.try_format("structure", sid_a) or f"structure:{sid_a}"
         )
@@ -6030,7 +6034,7 @@ class TestFrontierTreeDossierChunk:
         self, store: Any
     ) -> None:
         """Tier-ladder UX item 4: once a candidate's canonical ``barrier``
-        was superseded by a verify-tier run (``barrier_tier == 'verify'`` +
+        was superseded by a verify-tier run (``barrier_fidelity == 'verify'`` +
         a kept ``barrier_screen`` — :func:`compute._canonicalize_barrier`'s
         own contract), the frontier-tree line shows the delta itself
         (``"screen 0.84 → verified 0.96"``) rather than a single figure."""
@@ -6041,7 +6045,7 @@ class TestFrontierTreeDossierChunk:
         assert sid is not None
         store.stamp_ref_meta(
             sid,
-            {"barrier": 0.96, "barrier_screen": 0.84, "barrier_tier": "verify"},
+            {"barrier": 0.96, "barrier_screen": 0.84, "barrier_fidelity": "verify"},
         )
         text = render_frontier_tree(store, qid)
         line = next(ln for ln in text.splitlines() if "Pd-ladder" in ln)

@@ -876,7 +876,7 @@ def block(
         JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
                                 AND ce.embedder = %(embedder)s
                                 AND ce.status = 'ok'
-        WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+        WHERE r.kind = 'finding' AND r.retired_at IS NULL
           AND {claim_hub_predicate_sql()}
         ORDER BY ce.vector <=> %(vec)s::vector ASC
         LIMIT %(k)s

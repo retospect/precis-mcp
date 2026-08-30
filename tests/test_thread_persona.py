@@ -6,10 +6,10 @@ from precis.workers import thread_persona as tp
 
 
 def test_default_persona_is_the_operational_manual() -> None:
-    """The write-document floor is precis-tasks-help — byte-identical to the
+    """The write-document floor is precis-todo-tree-help — byte-identical to the
     pre-A2 pinned skill, so the cached layer does not shift."""
     spec = tp.persona_for("write-document")
-    assert spec.persona_skill_id == "precis-tasks-help"
+    assert spec.persona_skill_id == "precis-todo-tree-help"
 
 
 def test_unknown_and_none_thread_type_fall_back_to_default() -> None:

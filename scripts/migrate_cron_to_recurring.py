@@ -12,7 +12,7 @@ string column). For every non-deleted `cron` ref it:
   ``STATUS:*`` — those get re-derived), and a best-effort ``STATUS``
   (already-resolved crons land ``STATUS:done``; paused ones land
   ``STATUS:paused``);
-* soft-deletes the original ``cron`` ref (``deleted_at``) so the row stays
+* soft-deletes the original ``cron`` ref (``retired_at``) so the row stays
   for audit but stops rendering live.
 
 **Not run against prod by this change** — see `OPEN-ITEMS.md`. Dry-run by
@@ -170,7 +170,7 @@ def _fetch_cron_rows(conn: Any) -> list[Row]:
         """
         SELECT r.ref_id, r.title, r.meta
           FROM refs r
-         WHERE r.kind = 'cron' AND r.deleted_at IS NULL
+         WHERE r.kind = 'cron' AND r.retired_at IS NULL
          ORDER BY r.ref_id
         """
     ).fetchall()
@@ -272,7 +272,7 @@ def _migrate_one(store: Any, row: Row, *, commit: bool, watches_root: int) -> st
             conn=conn,
         )
         conn.execute(
-            "UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (row.ref_id,)
+            "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (row.ref_id,)
         )
 
     return report + f" [committed as todo id={new_ref.id}]"

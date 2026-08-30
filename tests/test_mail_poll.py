@@ -1,4 +1,4 @@
-"""mail_poll pass — poll → tier-0 scan → persist, with IMAP injected (slice 3).
+"""mail_poll pass — poll → depth-0 scan → persist, with IMAP injected (slice 3).
 
 Uses the real store for account/scan rows but injects ``watermark`` /
 ``fetch_new`` so no IMAP server is needed. The point is the pass's control flow:
@@ -85,7 +85,7 @@ def test_steady_poll_scans_new_messages_and_advances(store) -> None:
     assert r == {"claimed": 1, "ok": 2, "failed": 0}
 
     clean = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1717, uid=11)
-    assert clean is not None and clean.verdict == "clean" and clean.tier == 0
+    assert clean is not None and clean.verdict == "clean" and clean.depth == 0
     sus = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1717, uid=12)
     assert sus is not None and sus.verdict == "suspect"
     assert "ignore-previous" in sus.evidence["signals"]

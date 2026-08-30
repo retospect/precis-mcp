@@ -644,11 +644,11 @@ class TestGoodSearchSurface:
         with store.pool.connection() as conn:
             n_jobs = conn.execute(
                 "SELECT count(*) FROM refs WHERE kind='job' "
-                "AND meta->>'job_type'='good_search' AND deleted_at IS NULL"
+                "AND meta->>'job_type'='good_search' AND retired_at IS NULL"
             ).fetchone()[0]
             n_todos = conn.execute(
                 "SELECT count(*) FROM refs WHERE kind='todo' "
-                "AND title LIKE 'deep search:%' AND deleted_at IS NULL"
+                "AND title LIKE 'deep search:%' AND retired_at IS NULL"
             ).fetchone()[0]
         assert n_jobs == 1
         assert n_todos == 1

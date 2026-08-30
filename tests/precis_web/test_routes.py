@@ -1487,11 +1487,11 @@ def test_refs_by_tag_custom_page_size_preserved_in_links() -> None:
     assert "page_size=50" in resp.text
 
 
-# ── tasks ──────────────────────────────────────────────────────────
+# ── todo ──────────────────────────────────────────────────────────
 
 
-def test_tasks_dashboard_renders_tree(client) -> None:
-    resp = client.get("/tasks")
+def test_todo_dashboard_renders_tree(client) -> None:
+    resp = client.get("/todo")
     assert resp.status_code == 200
     assert "Build the thing" in resp.text
     assert "Draft the spec" in resp.text
@@ -1501,7 +1501,7 @@ def test_tasks_dashboard_renders_tree(client) -> None:
 
 def test_create_root_dispatches_put_with_level(client, runtime) -> None:
     resp = client.post(
-        "/tasks/roots",
+        "/todo/roots",
         data={"text": "New root"},
         follow_redirects=False,
     )
@@ -1515,9 +1515,7 @@ def test_create_root_dispatches_put_with_level(client, runtime) -> None:
 
 
 def test_create_child_passes_parent_id(client, runtime) -> None:
-    client.post(
-        "/tasks/1/children", data={"text": "child task"}, follow_redirects=False
-    )
+    client.post("/todo/1/children", data={"text": "child task"}, follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert verb == "put"
     assert args["parent_id"] == 1
@@ -1526,14 +1524,14 @@ def test_create_child_passes_parent_id(client, runtime) -> None:
 
 
 def test_set_status_dispatches_tag(client, runtime) -> None:
-    client.post("/tasks/2/status", data={"status": "done"}, follow_redirects=False)
+    client.post("/todo/2/status", data={"status": "done"}, follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert verb == "tag"
     assert args["add"] == ["STATUS:done"]
 
 
 def test_delete_dispatches_delete(client, runtime) -> None:
-    client.post("/tasks/2/delete", follow_redirects=False)
+    client.post("/todo/2/delete", follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert verb == "delete"
     assert args == {"kind": "todo", "id": 2}
@@ -1557,7 +1555,7 @@ def test_ask_terminate_closes_and_clears_tags(client, runtime) -> None:
 
 def test_move_dispatches_parent_link(client, runtime) -> None:
     resp = client.post(
-        "/tasks/2/move", data={"new_parent_id": "1"}, follow_redirects=False
+        "/todo/2/move", data={"new_parent_id": "1"}, follow_redirects=False
     )
     assert resp.status_code == 303
     verb, args = runtime.calls[-1]
@@ -1572,21 +1570,21 @@ def test_move_dispatches_parent_link(client, runtime) -> None:
 
 
 def test_move_empty_parent_detaches_to_root(client, runtime) -> None:
-    client.post("/tasks/2/move", data={"new_parent_id": ""}, follow_redirects=False)
+    client.post("/todo/2/move", data={"new_parent_id": ""}, follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert verb == "link"
     assert args == {"kind": "todo", "id": 2, "rel": "parent", "mode": "remove"}
 
 
 def test_retry_bare_dispatches_put_retry(client, runtime) -> None:
-    client.post("/tasks/2/retry", data={}, follow_redirects=False)
+    client.post("/todo/2/retry", data={}, follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert verb == "put"
     assert args == {"kind": "job", "id": 2, "mode": "retry"}
 
 
 def test_retry_with_model_passes_model(client, runtime) -> None:
-    client.post("/tasks/2/retry", data={"model": "sonnet"}, follow_redirects=False)
+    client.post("/todo/2/retry", data={"model": "sonnet"}, follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert args["model"] == "sonnet"
     assert "select" not in args
@@ -1595,7 +1593,7 @@ def test_retry_with_model_passes_model(client, runtime) -> None:
 def test_retry_with_reasoning_builds_llm_select(client, runtime) -> None:
     """``reasoning=`` builds the same structured ``select`` dict
     the smartdraft ask does — split into thinking/effort."""
-    client.post("/tasks/2/retry", data={"reasoning": "high"}, follow_redirects=False)
+    client.post("/todo/2/retry", data={"reasoning": "high"}, follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert verb == "put"
     assert args["select"] == {"thinking": True, "effort": "high"}
@@ -1603,7 +1601,7 @@ def test_retry_with_reasoning_builds_llm_select(client, runtime) -> None:
 
 def test_retry_with_placement_and_temperature(client, runtime) -> None:
     client.post(
-        "/tasks/2/retry",
+        "/todo/2/retry",
         data={"placement": "local", "temperature": "0.5"},
         follow_redirects=False,
     )
@@ -1615,7 +1613,7 @@ def test_retry_junk_knobs_omit_select(client, runtime) -> None:
     """A junk placement/reasoning/temperature degrades to no select= at
     all rather than 500ing the form post."""
     client.post(
-        "/tasks/2/retry",
+        "/todo/2/retry",
         data={"placement": "moon", "reasoning": "extreme", "temperature": "hot"},
         follow_redirects=False,
     )
@@ -2956,8 +2954,8 @@ def test_job_detail_shows_actions_not_ask_think(client, runtime) -> None:
     )
     resp = client.get("/refs/job/80")
     assert resp.status_code == 200
-    # The retry form posts to the existing tasks retry route.
-    assert 'action="/tasks/80/retry"' in resp.text
+    # The retry form posts to the existing todo retry route.
+    assert 'action="/todo/80/retry"' in resp.text
     assert "Retry job" in resp.text
     # LLM-planner parent → the model-swap dropdown is offered, scoped to the
     # 4 canonical tiers (opus/sonnet/haiku/local aliases retired from this
@@ -2968,8 +2966,8 @@ def test_job_detail_shows_actions_not_ask_think(client, runtime) -> None:
     for tier in ("small", "medium", "big", "frontier"):
         assert f"retry on {tier} ·" in resp.text
     # Transcript + parent affordances.
-    assert "/tasks/80/transcript" in resp.text
-    assert "/tasks?focus=81" in resp.text
+    assert "/todo/80/transcript" in resp.text
+    assert "/todo?focus=81" in resp.text
     # The generic dream-memory Ask & think box is suppressed for jobs.
     assert "Ask &amp; think" not in resp.text
     assert 'action="/refs/job/80/ask"' not in resp.text
@@ -2982,7 +2980,7 @@ def test_orphan_job_detail_blocks_retry(client, runtime) -> None:
     resp = client.get("/refs/job/82")
     assert resp.status_code == 200
     # No retry form (orphan / non-failed).
-    assert 'action="/tasks/82/retry"' not in resp.text
+    assert 'action="/todo/82/retry"' not in resp.text
     # Still no dream-memory box.
     assert "Ask &amp; think" not in resp.text
 
@@ -3300,7 +3298,7 @@ def test_env_missing_plist_surfaces_red_banner(client, monkeypatch) -> None:
 
 def test_env_in_base_nav(client) -> None:
     """The Env tab is reachable from base.html.j2 nav."""
-    resp = client.get("/tasks")
+    resp = client.get("/todo")
     assert resp.status_code == 200
     assert 'href="/env"' in resp.text
 
@@ -3308,7 +3306,7 @@ def test_env_in_base_nav(client) -> None:
 def test_loupe_in_base_nav(client) -> None:
     """The 🔍 loupe form posts to /drive (WS1b repoint) so cross-kind
     search lands on the unified Drive surface."""
-    resp = client.get("/tasks")  # any page; loupe is in base
+    resp = client.get("/todo")  # any page; loupe is in base
     assert resp.status_code == 200
     assert 'action="/drive"' in resp.text
 
@@ -3318,7 +3316,7 @@ def test_loupe_in_base_nav(client) -> None:
 
 def test_task_add_tag_dispatches_tag_add(client, runtime) -> None:
     resp = client.post(
-        "/tasks/2/tags",
+        "/todo/2/tags",
         data={"add": "project:precis context:work"},
         follow_redirects=False,
     )
@@ -3330,7 +3328,7 @@ def test_task_add_tag_dispatches_tag_add(client, runtime) -> None:
 
 def test_task_remove_tag_dispatches_tag_remove(client, runtime) -> None:
     client.post(
-        "/tasks/2/tags", data={"remove": "project:precis"}, follow_redirects=False
+        "/todo/2/tags", data={"remove": "project:precis"}, follow_redirects=False
     )
     verb, args = runtime.calls[-1]
     assert verb == "tag"
@@ -3338,14 +3336,12 @@ def test_task_remove_tag_dispatches_tag_remove(client, runtime) -> None:
 
 
 def test_task_empty_tag_call_is_noop(client, runtime) -> None:
-    client.post("/tasks/2/tags", data={}, follow_redirects=False)
+    client.post("/todo/2/tags", data={}, follow_redirects=False)
     assert runtime.calls == []  # nothing dispatched
 
 
 def test_task_edit_text_dispatches_edit_verb(client, runtime) -> None:
-    client.post(
-        "/tasks/2/edit", data={"text": "Polished title"}, follow_redirects=False
-    )
+    client.post("/todo/2/edit", data={"text": "Polished title"}, follow_redirects=False)
     verb, args = runtime.calls[-1]
     assert verb == "edit"
     assert args == {
@@ -3357,7 +3353,7 @@ def test_task_edit_text_dispatches_edit_verb(client, runtime) -> None:
 
 
 def test_task_edit_blank_text_is_noop(client, runtime) -> None:
-    client.post("/tasks/2/edit", data={"text": "   "}, follow_redirects=False)
+    client.post("/todo/2/edit", data={"text": "   "}, follow_redirects=False)
     assert runtime.calls == []  # nothing dispatched
 
 
@@ -3368,7 +3364,7 @@ def test_task_tag_error_renders_inline_instead_of_silent_redirect(
     # handler message, not silently redirect leaving the operator
     # wondering why the tag "didn't show up".
     runtime.error_verbs = {"tag"}
-    resp = client.post("/tasks/2/tags", data={"add": "bogus"}, follow_redirects=False)
+    resp = client.post("/todo/2/tags", data={"add": "bogus"}, follow_redirects=False)
     assert resp.status_code == 400
     assert "rejected by handler" in resp.text
 
@@ -3376,7 +3372,7 @@ def test_task_tag_error_renders_inline_instead_of_silent_redirect(
 def test_task_edit_error_renders_inline(client, runtime) -> None:
     runtime.error_verbs = {"edit"}
     resp = client.post(
-        "/tasks/2/edit", data={"text": "new text"}, follow_redirects=False
+        "/todo/2/edit", data={"text": "new text"}, follow_redirects=False
     )
     assert resp.status_code == 400
     assert "rejected by handler" in resp.text
@@ -3386,7 +3382,7 @@ def test_job_notes_splits_events_and_summary() -> None:
     """``_job_notes`` groups job_event (failure reasons) vs job_summary."""
     from contextlib import contextmanager
 
-    from precis_web.routes.tasks import _job_notes
+    from precis_web.routes.todo import _job_notes
 
     rows = [
         (6689, "job_event", "runner: timeout after 600s"),
@@ -3419,7 +3415,7 @@ def test_job_notes_includes_result() -> None:
     """``_job_notes`` surfaces the structured job_result audit chunk."""
     from contextlib import contextmanager
 
-    from precis_web.routes.tasks import _job_notes
+    from precis_web.routes.todo import _job_notes
 
     rows = [
         (6689, "job_result", "verdict (LLM): continue\nsubtasks minted: 5"),
@@ -3453,7 +3449,7 @@ def test_job_notes_reads_chunk_kind_column_not_meta_mirror(store) -> None:
     that made a child-failed row show 'open to debug' instead of the real
     'API Error: …')."""
     from precis.workers.executors._common import append_chunk
-    from precis_web.routes.tasks import _job_notes
+    from precis_web.routes.todo import _job_notes
 
     ref = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
     append_chunk(store, ref.id, "job_summary", "API Error: unable to respond")
@@ -3474,7 +3470,7 @@ def test_job_notes_reads_chunk_kind_column_not_meta_mirror(store) -> None:
 
 def test_resolve_workspace_pdf(tmp_path) -> None:
     """``_resolve_workspace_pdf`` returns the path only when it exists."""
-    from precis_web.routes.tasks import _resolve_workspace_pdf
+    from precis_web.routes.todo import _resolve_workspace_pdf
 
     meta = {
         "workspace": {
@@ -3498,8 +3494,8 @@ def test_resolve_workspace_pdf(tmp_path) -> None:
     assert got.name == "main.pdf"
 
 
-def test_task_pdf_route_serves_and_rejects(runtime, tmp_path) -> None:
-    """GET /tasks/{id}/pdf streams a compiled workspace PDF, else errors."""
+def test_todo_pdf_route_serves_and_rejects(runtime, tmp_path) -> None:
+    """GET /todo/{id}/pdf streams a compiled workspace PDF, else errors."""
     from fastapi.testclient import TestClient
 
     from precis_web.app import create_app
@@ -3519,22 +3515,22 @@ def test_task_pdf_route_serves_and_rejects(runtime, tmp_path) -> None:
     app = create_app(runtime=runtime, web_config=WebConfig(precis_root=tmp_path))
     client = TestClient(app)
 
-    served = client.get("/tasks/1/pdf")
+    served = client.get("/todo/1/pdf")
     assert served.status_code == 200
     assert served.headers["content-type"] == "application/pdf"
 
     # No workspace PDF → PrecisError (NotFound) → 400, like the papers route.
-    missing = client.get("/tasks/2/pdf")
+    missing = client.get("/todo/2/pdf")
     assert missing.status_code == 400
 
 
 def test_history_attempt_detail_renders(client, monkeypatch) -> None:
     """The history fragment exposes per-attempt failure/summary detail."""
-    from precis_web.routes import tasks as tasks_mod
+    from precis_web.routes import todo as todo_mod
 
     # Inject one failed attempt with a failure reason + summary.
     monkeypatch.setattr(
-        tasks_mod,
+        todo_mod,
         "_child_jobs",
         lambda store, ids: (
             [{"id": 6689, "parent_id": 2, "title": "plan_tick", "lease_until": None}]
@@ -3543,19 +3539,19 @@ def test_history_attempt_detail_renders(client, monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(
-        tasks_mod,
+        todo_mod,
         "_job_notes",
         lambda store, ids: {
             6689: {"events": ["runner: timeout after 600s"], "summary": "did stuff"}
         },
     )
-    resp = client.get("/tasks/2/history")
+    resp = client.get("/todo/2/history")
     assert resp.status_code == 200
     assert "timeout after 600s" in resp.text
 
 
 def test_task_history_renders_event_log(client) -> None:
-    resp = client.get("/tasks/2/history")
+    resp = client.get("/todo/2/history")
     assert resp.status_code == 200
     assert "Event log" in resp.text
     assert "status:done" in resp.text
@@ -3563,7 +3559,7 @@ def test_task_history_renders_event_log(client) -> None:
 
 
 def test_task_history_empty_log(client) -> None:
-    resp = client.get("/tasks/1/history")
+    resp = client.get("/todo/1/history")
     assert resp.status_code == 200
     assert "No recorded events yet" in resp.text
 
@@ -4422,17 +4418,17 @@ def test_status_budget_tab_renders_tote_and_caps(client) -> None:
     assert 'action="/budget/resume"' in resp.text
 
 
-# ── tasks tag filter ───────────────────────────────────────────────
+# ── todo tag filter ───────────────────────────────────────────────
 
 
-def test_tasks_url_helper_encodes_each_tag_separately() -> None:
-    from precis_web.routes.tasks import _tasks_url
+def test_todo_url_helper_encodes_each_tag_separately() -> None:
+    from precis_web.routes.todo import _todo_url
 
-    assert _tasks_url([], []) == "/tasks"
-    assert _tasks_url(["a"], []) == "/tasks?require=a"
+    assert _todo_url([], []) == "/todo"
+    assert _todo_url(["a"], []) == "/todo?require=a"
     assert (
-        _tasks_url(["a", "STATUS:doing"], ["topic:foo"])
-        == "/tasks?require=a&require=STATUS%3Adoing&exclude=topic%3Afoo"
+        _todo_url(["a", "STATUS:doing"], ["topic:foo"])
+        == "/todo?require=a&require=STATUS%3Adoing&exclude=topic%3Afoo"
     )
 
 
@@ -4457,14 +4453,14 @@ def _row(id, kind="todo", parent_id=None, status="open", level="", tags=None, de
 
 
 def test_filter_rows_passthrough_when_no_filter() -> None:
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [_row(1), _row(2, parent_id=1)]
     assert _filter_rows(rows, require=[], exclude=[]) == rows
 
 
 def test_filter_rows_require_and_exclude_and_ancestors() -> None:
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [
         _row(1, tags=["project:precis"]),
@@ -4480,7 +4476,7 @@ def test_filter_rows_require_and_exclude_and_ancestors() -> None:
 
 def test_filter_rows_status_and_level_match() -> None:
     """STATUS:* and level:* are matchable like free tags."""
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [
         _row(1, status="doing", level="strategic"),
@@ -4493,7 +4489,7 @@ def test_filter_rows_status_and_level_match() -> None:
 
 
 def test_filter_rows_jobs_ride_along_with_matching_parent() -> None:
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [
         _row(1, tags=["ask-user:Q"]),
@@ -4515,20 +4511,20 @@ def test_dashboard_query_filters_rows(client, runtime) -> None:
     ]
     # Inject filtering at the helper level so we don't need the fake
     # tag-join SQL to wire up ask-user tags.
-    import precis_web.routes.tasks as tasks_mod
+    import precis_web.routes.todo as todo_mod
 
     monkey_calls: list[tuple[list[str], list[str]]] = []
-    real_filter = tasks_mod._filter_rows
+    real_filter = todo_mod._filter_rows
 
     def spy(rows, *, require, exclude):
         monkey_calls.append((list(require), list(exclude)))
         return real_filter(rows, require=require, exclude=exclude)
 
-    tasks_mod._filter_rows = spy
+    todo_mod._filter_rows = spy
     try:
-        resp = client.get("/tasks?require=ask-user%3AQ&exclude=STATUS%3Adone")
+        resp = client.get("/todo?require=ask-user%3AQ&exclude=STATUS%3Adone")
     finally:
-        tasks_mod._filter_rows = real_filter
+        todo_mod._filter_rows = real_filter
 
     assert resp.status_code == 200
     assert monkey_calls and monkey_calls[-1] == (["ask-user:Q"], ["STATUS:done"])
@@ -4539,7 +4535,7 @@ def test_dashboard_query_filters_rows(client, runtime) -> None:
 
 def test_status_post_preserves_filter_in_redirect(client) -> None:
     resp = client.post(
-        "/tasks/2/status",
+        "/todo/2/status",
         data={
             "status": "done",
             "require": ["ask-user:Q"],
@@ -4549,26 +4545,26 @@ def test_status_post_preserves_filter_in_redirect(client) -> None:
     )
     assert resp.status_code == 303
     loc = resp.headers["location"]
-    assert loc.startswith("/tasks?")
+    assert loc.startswith("/todo?")
     assert "require=ask-user%3AQ" in loc
     assert "exclude=STATUS%3Adone" in loc
 
 
 def test_delete_post_preserves_filter_in_redirect(client) -> None:
     resp = client.post(
-        "/tasks/2/delete",
+        "/todo/2/delete",
         data={"require": ["level:strategic"]},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/tasks?require=level%3Astrategic"
+    assert resp.headers["location"] == "/todo?require=level%3Astrategic"
 
 
-# ── tasks: row classification, attention icons, rollup ─────────────
+# ── todo: row classification, attention icons, rollup ─────────────
 
 
 def test_classify_row_buckets() -> None:
-    from precis_web.routes.tasks import _classify_row
+    from precis_web.routes.todo import _classify_row
 
     assert _classify_row("done", []) == "done"
     assert _classify_row("won't-do", []) == "done"
@@ -4584,7 +4580,7 @@ def test_classify_row_buckets() -> None:
 
 
 def test_attention_icons_for_ask_and_paper() -> None:
-    from precis_web.routes.tasks import _attention_icons
+    from precis_web.routes.todo import _attention_icons
 
     icons = _attention_icons(["ask-user:what scope?"])
     assert len(icons) == 1 and icons[0]["icon"] == "🔔"
@@ -4603,17 +4599,17 @@ def test_attention_icons_for_ask_and_paper() -> None:
 
 def test_attention_icons_deduplicate_same_class() -> None:
     """Multiple ask-user tags collapse to one 🔔 (not five)."""
-    from precis_web.routes.tasks import _attention_icons
+    from precis_web.routes.todo import _attention_icons
 
     icons = _attention_icons(["ask-user:Q1", "ask-user:Q2", "ask-user:Q3"])
     assert [i["icon"] for i in icons] == ["🔔"]
 
 
-# ── tasks: focus / drill-down ──────────────────────────────────────
+# ── todo: focus / drill-down ──────────────────────────────────────
 
 
 def test_focus_rows_returns_subtree_and_breadcrumb() -> None:
-    from precis_web.routes.tasks import _focus_rows
+    from precis_web.routes.todo import _focus_rows
 
     rows = [
         _row(1, parent_id=None, depth=0),
@@ -4630,7 +4626,7 @@ def test_focus_rows_returns_subtree_and_breadcrumb() -> None:
 
 def test_focus_rows_missing_id_is_noop() -> None:
     """A stale ``focus`` (e.g. after a delete) doesn't crash."""
-    from precis_web.routes.tasks import _focus_rows
+    from precis_web.routes.todo import _focus_rows
 
     rows = [_row(1)]
     focused, breadcrumb = _focus_rows(rows, focus_id=999)
@@ -4639,7 +4635,7 @@ def test_focus_rows_missing_id_is_noop() -> None:
 
 
 def test_focus_rows_none_is_passthrough() -> None:
-    from precis_web.routes.tasks import _focus_rows
+    from precis_web.routes.todo import _focus_rows
 
     rows = [_row(1)]
     focused, breadcrumb = _focus_rows(rows, focus_id=None)
@@ -4647,31 +4643,31 @@ def test_focus_rows_none_is_passthrough() -> None:
 
 
 def test_focus_url_round_trips_in_helper() -> None:
-    from precis_web.routes.tasks import _tasks_url
+    from precis_web.routes.todo import _todo_url
 
-    assert _tasks_url([], [], focus=42) == "/tasks?focus=42"
+    assert _todo_url([], [], focus=42) == "/todo?focus=42"
     assert (
-        _tasks_url(["ask-user"], ["STATUS:done"], focus=7)
-        == "/tasks?require=ask-user&exclude=STATUS%3Adone&focus=7"
+        _todo_url(["ask-user"], ["STATUS:done"], focus=7)
+        == "/todo?require=ask-user&exclude=STATUS%3Adone&focus=7"
     )
 
 
 def test_post_preserves_focus_in_redirect(client) -> None:
     resp = client.post(
-        "/tasks/2/status",
+        "/todo/2/status",
         data={"status": "doing", "focus": "1"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/tasks?focus=1"
+    assert resp.headers["location"] == "/todo?focus=1"
 
 
-# ── tasks: clickable badges + kind:* pseudo-tag + closed-job hide ──
+# ── todo: clickable badges + kind:* pseudo-tag + closed-job hide ──
 
 
 def test_filter_rows_matches_kind_pseudo_tag() -> None:
     """``kind:job`` is a filterable pseudo-tag like ``STATUS:*``."""
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [
         _row(1, tags=[]),
@@ -4694,7 +4690,7 @@ def test_filter_rows_matches_job_status_directly() -> None:
     """The header chips' filter (kind:job + STATUS:running) lands on
     exactly the counted jobs — not an empty page (the todo-only match
     bug), and not the matched jobs' terminal siblings."""
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [
         _row(1),
@@ -4710,7 +4706,7 @@ def test_filter_rows_matches_job_status_directly() -> None:
 def test_filter_rows_exclude_drops_ride_along_job() -> None:
     """A job riding along under a matched todo is still subject to
     ``exclude`` — so exclude=STATUS:failed hides the failed attempts."""
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [
         _row(1, tags=["project:p"]),
@@ -4724,7 +4720,7 @@ def test_filter_rows_exclude_drops_ride_along_job() -> None:
 def test_filter_rows_parked_and_halted_pseudo_tags() -> None:
     """``parked`` / ``halted`` are filterable, mirroring the header
     chips (``_tree_summary`` counts the same row flags)."""
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [
         {**_row(1), "child_failures": [{"job": 5}]},
@@ -4737,7 +4733,7 @@ def test_filter_rows_parked_and_halted_pseudo_tags() -> None:
 
 def test_filter_rows_matches_lowercase_status_too() -> None:
     """``status:doing`` matches the same row as ``STATUS:doing``."""
-    from precis_web.routes.tasks import _filter_rows
+    from precis_web.routes.todo import _filter_rows
 
     rows = [_row(1, status="doing"), _row(2, status="done")]
     assert [
@@ -4750,7 +4746,7 @@ def test_filter_rows_matches_lowercase_status_too() -> None:
 
 def test_hide_inactive_jobs_drops_closed_attempts() -> None:
     """Failed / succeeded / done / won't-do jobs are dropped by default."""
-    from precis_web.routes.tasks import _hide_inactive_jobs
+    from precis_web.routes.todo import _hide_inactive_jobs
 
     rows = [
         _row(1),  # todo, kept
@@ -4773,7 +4769,7 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
     runtime.store.todos = [
         make_ref(id=1, kind="todo", title="parent todo"),
     ]
-    import precis_web.routes.tasks as tasks_mod
+    import precis_web.routes.todo as todo_mod
 
     monkeypatch_jobs = [
         {
@@ -4783,8 +4779,8 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
             "lease_until": None,
         }
     ]
-    original_child = tasks_mod._child_jobs
-    original_tags = tasks_mod._load_tags
+    original_child = todo_mod._child_jobs
+    original_tags = todo_mod._load_tags
 
     def child_jobs(store, todo_ids):
         return monkeypatch_jobs if 1 in todo_ids else []
@@ -4795,20 +4791,20 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
             out[99] = {"status": "failed", "level": ""}
         return out
 
-    tasks_mod._child_jobs = child_jobs
-    tasks_mod._load_tags = load_tags
+    todo_mod._child_jobs = child_jobs
+    todo_mod._load_tags = load_tags
     try:
         # Default: closed job hidden.
-        resp = client.get("/tasks")
+        resp = client.get("/todo")
         assert resp.status_code == 200
         assert "plan_tick attempt" not in resp.text
         # show_jobs=all: closed job visible.
-        resp = client.get("/tasks?show_jobs=all")
+        resp = client.get("/todo?show_jobs=all")
         assert resp.status_code == 200
         assert "plan_tick attempt" in resp.text
     finally:
-        tasks_mod._child_jobs = original_child
-        tasks_mod._load_tags = original_tags
+        todo_mod._child_jobs = original_child
+        todo_mod._load_tags = original_tags
 
 
 def test_dashboard_child_failed_shows_reason_and_retry(
@@ -4820,7 +4816,7 @@ def test_dashboard_child_failed_shows_reason_and_retry(
     from tests.precis_web.conftest import make_ref
 
     runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
-    import precis_web.routes.tasks as tasks_mod
+    import precis_web.routes.todo as todo_mod
 
     def child_jobs(store, todo_ids):
         return (
@@ -4847,17 +4843,17 @@ def test_dashboard_child_failed_shows_reason_and_retry(
             }
         }
 
-    monkeypatch.setattr(tasks_mod, "_child_jobs", child_jobs)
-    monkeypatch.setattr(tasks_mod, "_load_tags", load_tags)
-    monkeypatch.setattr(tasks_mod, "_load_freeform_tags", load_freeform)
-    monkeypatch.setattr(tasks_mod, "_job_notes", job_notes)
-    resp = client.get("/tasks")
+    monkeypatch.setattr(todo_mod, "_child_jobs", child_jobs)
+    monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
+    monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
+    monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
+    resp = client.get("/todo")
     assert resp.status_code == 200
     # The reason is surfaced inline…
     assert "⚠ failed" in resp.text
     assert "API Error: Claude Code is unable to respond" in resp.text
     # …with a ▶ restart form posting to the *job* retry endpoint…
-    assert 'action="/tasks/99/retry"' in resp.text
+    assert 'action="/todo/99/retry"' in resp.text
     assert "▶" in resp.text
     # …and a model picker sourced from the router's 4 canonical
     # capability tiers (each labelled with the model it resolves to) —
@@ -4878,7 +4874,7 @@ def test_dashboard_child_failed_shows_reason_and_retry(
 def test_reason_from_summary_flattens_and_caps() -> None:
     """``_reason_from_summary`` collapses whitespace to one line and caps
     length — mirroring ``Store.job_fail_reason`` so both surfaces match."""
-    from precis_web.routes.tasks import _reason_from_summary
+    from precis_web.routes.todo import _reason_from_summary
 
     assert _reason_from_summary("") == ""
     assert (
@@ -4899,7 +4895,7 @@ def test_dashboard_child_failed_prefers_job_summary_over_job_event(
     from tests.precis_web.conftest import make_ref
 
     runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
-    import precis_web.routes.tasks as tasks_mod
+    import precis_web.routes.todo as todo_mod
 
     def child_jobs(store, todo_ids):
         return (
@@ -4926,11 +4922,11 @@ def test_dashboard_child_failed_prefers_job_summary_over_job_event(
             }
         }
 
-    monkeypatch.setattr(tasks_mod, "_child_jobs", child_jobs)
-    monkeypatch.setattr(tasks_mod, "_load_tags", load_tags)
-    monkeypatch.setattr(tasks_mod, "_load_freeform_tags", load_freeform)
-    monkeypatch.setattr(tasks_mod, "_job_notes", job_notes)
-    resp = client.get("/tasks")
+    monkeypatch.setattr(todo_mod, "_child_jobs", child_jobs)
+    monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
+    monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
+    monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
+    resp = client.get("/todo")
     assert resp.status_code == 200
     assert "API Error: Claude Code is unable to respond" in resp.text
     assert "runner: killed at wall-clock deadline" not in resp.text
@@ -4941,7 +4937,7 @@ def test_reason_from_event_takes_first_line_only_and_caps() -> None:
     message first line — a ``--- tail ---`` block of raw subprocess
     output must not leak into the UI reason — and caps length like
     ``_reason_from_summary``."""
-    from precis_web.routes.tasks import _reason_from_event
+    from precis_web.routes.todo import _reason_from_event
 
     assert _reason_from_event("") == ""
     assert (
@@ -4967,7 +4963,7 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(
     from tests.precis_web.conftest import make_ref
 
     runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
-    import precis_web.routes.tasks as tasks_mod
+    import precis_web.routes.todo as todo_mod
 
     def child_jobs(store, todo_ids):
         return (
@@ -4998,11 +4994,11 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(
             }
         }
 
-    monkeypatch.setattr(tasks_mod, "_child_jobs", child_jobs)
-    monkeypatch.setattr(tasks_mod, "_load_tags", load_tags)
-    monkeypatch.setattr(tasks_mod, "_load_freeform_tags", load_freeform)
-    monkeypatch.setattr(tasks_mod, "_job_notes", job_notes)
-    resp = client.get("/tasks")
+    monkeypatch.setattr(todo_mod, "_child_jobs", child_jobs)
+    monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
+    monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
+    monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
+    resp = client.get("/todo")
     assert resp.status_code == 200
     assert (
         "autocatpath_seed: run failed: child process exited without "
@@ -5013,7 +5009,7 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(
 
 def test_dashboard_status_badge_is_clickable_filter(client) -> None:
     """STATUS / level badges render as ``<a>`` links that filter on click."""
-    resp = client.get("/tasks")
+    resp = client.get("/todo")
     assert resp.status_code == 200
     # Fake store seeds two open todos; the open badge should be a link
     # to ?require=STATUS:open. The kind:todo badge isn't rendered (only
@@ -5021,23 +5017,23 @@ def test_dashboard_status_badge_is_clickable_filter(client) -> None:
     assert "require=STATUS%3Aopen" in resp.text
 
 
-def test_tasks_url_round_trips_show_jobs() -> None:
-    from precis_web.routes.tasks import _tasks_url
+def test_todo_url_round_trips_show_jobs() -> None:
+    from precis_web.routes.todo import _todo_url
 
-    assert _tasks_url([], [], None, "all") == "/tasks?show_jobs=all"
-    assert _tasks_url([], [], None, None) == "/tasks"
+    assert _todo_url([], [], None, "all") == "/todo?show_jobs=all"
+    assert _todo_url([], [], None, None) == "/todo"
     assert (
-        _tasks_url(["kind:job"], [], None, "all")
-        == "/tasks?require=kind%3Ajob&show_jobs=all"
+        _todo_url(["kind:job"], [], None, "all")
+        == "/todo?require=kind%3Ajob&show_jobs=all"
     )
 
 
-# ── tasks: mermaid tree view ───────────────────────────────────────
+# ── todo: mermaid tree view ───────────────────────────────────────
 
 
 def test_build_mermaid_tree_root_and_children() -> None:
     """Two-level subtree renders the root and its kids as labelled nodes."""
-    from precis_web.routes.tasks import _build_mermaid_tree
+    from precis_web.routes.todo import _build_mermaid_tree
 
     rows = [
         _row(1, status="open", depth=0),
@@ -5059,7 +5055,7 @@ def test_build_mermaid_tree_root_and_children() -> None:
 
 def test_build_mermaid_tree_truncates_at_max_depth() -> None:
     """Nodes beyond max_depth are excluded; the parent gets a … suffix."""
-    from precis_web.routes.tasks import _build_mermaid_tree
+    from precis_web.routes.todo import _build_mermaid_tree
 
     rows = [
         _row(1, depth=0),
@@ -5077,7 +5073,7 @@ def test_build_mermaid_tree_truncates_at_max_depth() -> None:
 
 
 def test_build_mermaid_tree_missing_root_is_empty() -> None:
-    from precis_web.routes.tasks import _build_mermaid_tree
+    from precis_web.routes.todo import _build_mermaid_tree
 
     assert _build_mermaid_tree([], root_id=42, max_depth=3) == ""
     assert _build_mermaid_tree([_row(1)], root_id=99, max_depth=3) == ""
@@ -5085,7 +5081,7 @@ def test_build_mermaid_tree_missing_root_is_empty() -> None:
 
 def test_build_mermaid_tree_excludes_jobs() -> None:
     """Job rows aren't structure — they don't appear in the diagram."""
-    from precis_web.routes.tasks import _build_mermaid_tree
+    from precis_web.routes.todo import _build_mermaid_tree
 
     rows = [
         _row(1, depth=0),
@@ -5104,7 +5100,7 @@ def test_dashboard_emits_mermaid_when_tree_and_focus(client, runtime) -> None:
         make_ref(id=1, kind="todo", title="parent"),
         make_ref(id=2, kind="todo", title="child", parent_id=1),
     ]
-    resp = client.get("/tasks?focus=1&tree=3")
+    resp = client.get("/todo?focus=1&tree=3")
     assert resp.status_code == 200
     # Mermaid source block present.
     assert 'class="mermaid"' in resp.text
@@ -5118,7 +5114,7 @@ def test_dashboard_emits_mermaid_when_tree_and_focus(client, runtime) -> None:
 
 def test_dashboard_no_mermaid_without_focus(client) -> None:
     """``?tree=3`` without focus is a no-op (no diagram block)."""
-    resp = client.get("/tasks?tree=3")
+    resp = client.get("/todo?tree=3")
     assert resp.status_code == 200
     assert "graph TD" not in resp.text
     assert "mermaid.esm.min.mjs" not in resp.text
@@ -5143,7 +5139,7 @@ def test_dashboard_truncates_title_first_line_with_hover_tooltip(
     runtime.store.todos = [
         make_ref(id=1, kind="todo", title=long_body),
     ]
-    resp = client.get("/tasks")
+    resp = client.get("/todo")
     assert resp.status_code == 200
     # First line shows.
     assert "First line summary that should stand alone in the row." in resp.text
@@ -5153,7 +5149,7 @@ def test_dashboard_truncates_title_first_line_with_hover_tooltip(
 
 
 def test_children_popup_returns_immediate_children(client, runtime) -> None:
-    """``/tasks/{id}/children-popup`` returns just one level of children."""
+    """``/todo/{id}/children-popup`` returns just one level of children."""
     from tests.precis_web.conftest import make_ref
 
     runtime.store.todos = [
@@ -5162,7 +5158,7 @@ def test_children_popup_returns_immediate_children(client, runtime) -> None:
         make_ref(id=3, kind="todo", title="child B", parent_id=1),
         make_ref(id=4, kind="todo", title="grandchild", parent_id=2),
     ]
-    resp = client.get("/tasks/1/children-popup")
+    resp = client.get("/todo/1/children-popup")
     assert resp.status_code == 200
     assert "child A" in resp.text
     assert "child B" in resp.text
@@ -5179,7 +5175,7 @@ def test_children_popup_max_depth_links_to_mermaid(client, runtime) -> None:
         make_ref(id=1, kind="todo", title="root"),
         make_ref(id=2, kind="todo", title="child", parent_id=1),
     ]
-    resp = client.get("/tasks/1/children-popup?depth=4")
+    resp = client.get("/todo/1/children-popup?depth=4")
     assert resp.status_code == 200
     assert "Mermaid tree view" in resp.text
     # child name should NOT render — we're past the depth cap.
@@ -5193,7 +5189,7 @@ def test_children_popup_handles_no_children(client, runtime) -> None:
     runtime.store.todos = [
         make_ref(id=1, kind="todo", title="lone leaf"),
     ]
-    resp = client.get("/tasks/1/children-popup")
+    resp = client.get("/todo/1/children-popup")
     assert resp.status_code == 200
     assert "No children" in resp.text
 
@@ -5205,20 +5201,20 @@ def test_dashboard_focus_shows_inline_add_child_form(client, runtime) -> None:
     runtime.store.todos = [
         make_ref(id=1, kind="todo", title="parent"),
     ]
-    resp = client.get("/tasks?focus=1")
+    resp = client.get("/todo?focus=1")
     assert resp.status_code == 200
     # Form action targets the focused id directly.
-    assert 'action="/tasks/1/children"' in resp.text
+    assert 'action="/todo/1/children"' in resp.text
     # Placeholder mentions the focused id so the operator knows where
     # the child will land.
     assert "Add a child under #1" in resp.text
 
 
-def test_tasks_url_round_trips_tree() -> None:
-    from precis_web.routes.tasks import _tasks_url
+def test_todo_url_round_trips_tree() -> None:
+    from precis_web.routes.todo import _todo_url
 
-    assert _tasks_url([], [], 1, None, 3) == "/tasks?focus=1&tree=3"
-    assert _tasks_url([], [], 1, None, None) == "/tasks?focus=1"
+    assert _todo_url([], [], 1, None, 3) == "/todo?focus=1&tree=3"
+    assert _todo_url([], [], 1, None, None) == "/todo?focus=1"
 
 
 # ── patent detail chunks ───────────────────────────────────────────
@@ -5450,9 +5446,9 @@ def test_nav_badge_counts_on_every_page(client) -> None:
     """The global nav injects the Needs-you badge on an unrelated page.
 
     The badge processor sums asks (0 under the empty-cursor fake) and
-    the needs-triage paper count, so the rose badge shows on /tasks.
+    the needs-triage paper count, so the rose badge shows on /todo.
     """
-    resp = client.get("/tasks")
+    resp = client.get("/todo")
     assert resp.status_code == 200
     # New nav structure is present site-wide.
     assert "Needs you" in resp.text
@@ -5916,15 +5912,15 @@ def test_ask_followup_thinking_failure_records_error_turn(
 def _patch_subtree(monkeypatch, rows, *, parent=None, halts=None):
     """Stub the subtree/halt DB helpers so the stop/start route logic is
     exercised without Postgres (the fake pool returns empty cursors)."""
-    from precis_web.routes import tasks
+    from precis_web.routes import todo
 
-    monkeypatch.setattr(tasks, "_subtree_rows", lambda store, root_id: rows)
+    monkeypatch.setattr(todo, "_subtree_rows", lambda store, root_id: rows)
     monkeypatch.setattr(
-        tasks,
+        todo,
         "_halt_tags_for",
         lambda store, ids: {i: (halts or {}).get(i, []) for i in ids},
     )
-    monkeypatch.setattr(tasks, "_parent_todo_id", lambda store, ref_id: parent)
+    monkeypatch.setattr(todo, "_parent_todo_id", lambda store, ref_id: parent)
 
 
 def test_stop_todo_halts_subtree_and_cancels_live_jobs(
@@ -5942,7 +5938,7 @@ def test_stop_todo_halts_subtree_and_cancels_live_jobs(
             (104, "job", "succeeded"),
         ],
     )
-    resp = client.post("/tasks/100/stop", data={}, follow_redirects=False)
+    resp = client.post("/todo/100/stop", data={}, follow_redirects=False)
     assert resp.status_code == 303
     halts = [a for v, a in runtime.calls if v == "tag" and a.get("add") == ["halt"]]
     assert {a["id"] for a in halts} == {100, 101}
@@ -5961,7 +5957,7 @@ def test_stop_skips_already_halted_todo(runtime, client, monkeypatch) -> None:
         rows=[(100, "todo", "open"), (101, "todo", "open")],
         halts={101: ["halt:cost-cap"]},
     )
-    resp = client.post("/tasks/100/stop", data={}, follow_redirects=False)
+    resp = client.post("/todo/100/stop", data={}, follow_redirects=False)
     assert resp.status_code == 303
     halted_ids = {
         a["id"] for v, a in runtime.calls if v == "tag" and a.get("add") == ["halt"]
@@ -5972,7 +5968,7 @@ def test_stop_skips_already_halted_todo(runtime, client, monkeypatch) -> None:
 def test_stop_job_cancels_and_halts_parent(runtime, client, monkeypatch) -> None:
     """⏹ on a job cancels it and halts its owner todo."""
     _patch_subtree(monkeypatch, rows=[(200, "job", "running")], parent=42)
-    resp = client.post("/tasks/200/stop", data={}, follow_redirects=False)
+    resp = client.post("/todo/200/stop", data={}, follow_redirects=False)
     assert resp.status_code == 303
     assert (
         "tag",
@@ -5984,7 +5980,7 @@ def test_stop_job_cancels_and_halts_parent(runtime, client, monkeypatch) -> None
 def test_stop_missing_ref_is_noop(runtime, client, monkeypatch) -> None:
     """Posting stop for a ref not in the subtree walk redirects, no writes."""
     _patch_subtree(monkeypatch, rows=[])
-    resp = client.post("/tasks/999/stop", data={}, follow_redirects=False)
+    resp = client.post("/todo/999/stop", data={}, follow_redirects=False)
     assert resp.status_code == 303
     assert runtime.calls == []
 
@@ -5996,7 +5992,7 @@ def test_start_removes_halt_from_subtree(runtime, client, monkeypatch) -> None:
         rows=[(100, "todo", "open"), (101, "todo", "open"), (102, "job", "queued")],
         halts={100: ["halt"], 101: ["halt", "halt:tick-cap"]},
     )
-    resp = client.post("/tasks/100/start", data={}, follow_redirects=False)
+    resp = client.post("/todo/100/start", data={}, follow_redirects=False)
     assert resp.status_code == 303
     removes = {
         tuple(sorted(a["remove"])): a["id"] for v, a in runtime.calls if v == "tag"
@@ -6008,14 +6004,14 @@ def test_stop_surfaces_handler_error(runtime, client, monkeypatch) -> None:
     """A rejected tag mutation renders the error page (not a silent redirect)."""
     _patch_subtree(monkeypatch, rows=[(100, "todo", "open")])
     runtime.error_verbs.add("tag")
-    resp = client.post("/tasks/100/stop", data={}, follow_redirects=False)
+    resp = client.post("/todo/100/stop", data={}, follow_redirects=False)
     assert resp.status_code == 400
 
 
 def test_stop_start_routes_registered(client) -> None:
     paths = _registered_paths(client.app)
-    assert "/tasks/{ref_id}/stop" in paths
-    assert "/tasks/{ref_id}/start" in paths
+    assert "/todo/{ref_id}/stop" in paths
+    assert "/todo/{ref_id}/start" in paths
 
 
 def test_drive_includes_conv_kind(runtime, client) -> None:

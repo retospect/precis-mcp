@@ -63,9 +63,9 @@ Already a deprecated alias for `ask-user`; prod carries **zero**
 - `workers/nursery.py`, `workers/executors/coordinator.py`,
   `workers/executors/_common.py`, `workers/dispatch.py` (comments + 1
   SQL clause in nursery)
-- `precis_web/routes/asks.py`, `routes/tasks.py` (prefix-strip +
+- `precis_web/routes/asks.py`, `routes/todo.py` (prefix-strip +
   matchers)
-- `data/skills/precis-tasks-help.md` (the "legacy alias" notes)
+- `data/skills/precis-todo-tree-help.md` (the "legacy alias" notes)
 
 Keep `ask-user` / `ask-user:` exactly as-is. Removing `view='asking-reto'`
 is a breaking change for any caller still passing it → CHANGELOG note.
@@ -179,7 +179,7 @@ Should `user:<username>` validate against a registry?
 8. Data migration for `user:` reconciliation if the canonical handle
    ≠ `elmsfeuer`.
 9. Docs: note `web:owner` (not `web:reto`) in the two stale design
-   docs; refresh `precis-tasks-help`.
+   docs; refresh `precis-todo-tree-help`.
 10. Tests: ask-routing filter, alias-removal regression, config default.
 
 ## 7. Definition of done

@@ -166,7 +166,7 @@ def test_edit_find_replace(handler: TexHandler, tex_root: Path) -> None:
         text="New Title",
     )
     # Unified write-result shape (MCP critic MAJOR-C 2026-05-02).
-    assert out.body.startswith("edited block ")
+    assert out.body.startswith("edited chunk ")
     assert "'paper'" in out.body
     assert " (L" in out.body
     content = (tex_root / "paper.tex").read_text(encoding="utf-8")
@@ -181,7 +181,7 @@ def test_edit_append(handler: TexHandler, tex_root: Path) -> None:
         mode="append",
         text=r"\section{Two}",
     )
-    assert out.body.startswith("appended block ")
+    assert out.body.startswith("appended chunk ")
     assert "'doc'" in out.body
     assert r"\section{Two}" in (tex_root / "doc.tex").read_text(encoding="utf-8")
 

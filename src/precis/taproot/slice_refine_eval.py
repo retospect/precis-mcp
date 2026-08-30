@@ -149,7 +149,7 @@ def _fetch_hub_row(conn: Any, ref_id: int) -> tuple[str, dict[str, Any]] | None:
     row lock — this harness never claims/mutates anything).
     """
     row = conn.execute(
-        "SELECT title, meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+        "SELECT title, meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
         (ref_id,),
     ).fetchone()
     if row is None:

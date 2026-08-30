@@ -86,7 +86,7 @@ class OrphanedParentError(RuntimeError):
     earlier minted 258 live review-todos into the grave — each one then a
     dispatch candidate, which is how a deleted project kept billing
     planner ticks. The check is by *ancestry*, not just the parent row:
-    ``deleted_at`` is not transitive (see :mod:`precis.utils.ref_tree`).
+    ``retired_at`` is not transitive (see :mod:`precis.utils.ref_tree`).
     """
 
 
@@ -143,7 +143,7 @@ def _existing_review_todo(
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE parent_id = %s AND kind = 'todo' AND deleted_at IS NULL "
+            "WHERE parent_id = %s AND kind = 'todo' AND retired_at IS NULL "
             "AND meta->>'review' = %s AND meta->>'anchor' = %s "
             "LIMIT 1",
             (parent_id, persona, anchor),

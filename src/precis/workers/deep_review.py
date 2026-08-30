@@ -54,7 +54,7 @@ def _strategic_dashboard(store: Store) -> str:
               strat AS (
                 SELECT r.ref_id, r.title
                   FROM refs r
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
                    AND {todo_root_sql("r")}
                    AND COALESCE((r.meta->>'rotation_root')::boolean, false)
               ),
@@ -63,7 +63,7 @@ def _strategic_dashboard(store: Store) -> str:
                 UNION ALL
                 SELECT r.ref_id, st.strategic_id
                   FROM refs r JOIN subtree st ON r.parent_id = st.ref_id
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
               )
             SELECT s.ref_id, s.title,
                    (SELECT count(*) FROM subtree st WHERE st.strategic_id = s.ref_id) AS subtree_size,
@@ -93,7 +93,7 @@ def _recent_review_summary(store: Store) -> str:
 
     Nursery moved from a digest memory to per-condition ``kind='alert'``
     rows (see :mod:`precis.alerts`), so its half is the current open set
-    rather than a dated digest; structural still writes ``tier:structural``
+    rather than a dated digest; structural still writes ``digest:structural``
     memories.
     """
     from precis.alerts import list_open_alerts
@@ -113,9 +113,9 @@ def _recent_review_summary(store: Store) -> str:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
-               AND t.value = 'tier:structural'
+               AND t.value = 'digest:structural'
                AND r.created_at > now() - interval '7 days'
              ORDER BY r.created_at DESC
              LIMIT 30
@@ -215,7 +215,7 @@ _DEEP_MODULES: list[Module] = [
 
 DEEP_REVIEW = Reviewer(
     name="deep_review",
-    tier_tag="tier:deep",
+    digest_tag="digest:deep",
     gate_env="PRECIS_DEEP_REVIEW",
     meta_prefix="deep_review_",
     # BIG tier via the router — local-first (``llm.chain.big``). This is the
@@ -257,7 +257,7 @@ def _gate_enabled() -> bool:
 
 
 def _recent_digest_exists(store: Store, hours: float) -> bool:
-    return _review_recent_digest_exists(store, DEEP_REVIEW.tier_tag, hours)
+    return _review_recent_digest_exists(store, DEEP_REVIEW.digest_tag, hours)
 
 
 def _write_digest(store: Store, body: str, cost_usd: float | None) -> int:

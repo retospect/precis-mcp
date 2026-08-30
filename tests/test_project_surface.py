@@ -78,7 +78,7 @@ def test_workspace_voice_round_trips() -> None:
 def test_workspace_from_meta_tolerates_non_dict_meta() -> None:
     # A malformed ref can carry a JSON scalar as ``meta`` (a bare string,
     # not an object). ``from_meta`` must degrade to None rather than crash
-    # on ``str.get`` — one bad ref was 500-ing the whole /tasks dashboard.
+    # on ``str.get`` — one bad ref was 500-ing the whole /todo dashboard.
     assert Workspace.from_meta(None) is None
     assert Workspace.from_meta({}) is None
     # deliberately outside the declared dict | None to exercise the

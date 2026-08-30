@@ -116,7 +116,7 @@ def _live_servers(store: Store, quest_id: int) -> list[Ref]:
             continue
         seen.add(i)
         r = refs.get(i)
-        if r is not None and r.deleted_at is None:
+        if r is not None and r.retired_at is None:
             out.append(r)
     return out
 

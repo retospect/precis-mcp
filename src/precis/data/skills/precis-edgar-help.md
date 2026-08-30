@@ -104,7 +104,7 @@ search(kind="edgar", q="...", tags=["new-risk-factor"])
 search(kind="edgar", q="climate risk disclosure")
 search(kind="edgar", q="going concern", tags=["form:10-k"])
 search(kind="edgar", q="cyber incident", tags=["form:8-k", "cik:320193"])
-search(kind="edgar", q="revenue recognition", source="remote")
+search(kind="edgar", q="revenue recognition", reach="remote")
 ```
 
 Returns local + remote EDGAR full-text hits merged by accession;

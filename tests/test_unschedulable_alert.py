@@ -24,7 +24,7 @@ def _queue(store: Store, meta: dict[str, object]) -> int:
 def _alert_open(store: Store, fingerprint: str) -> bool:
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM refs WHERE kind = 'alert' AND deleted_at IS NULL "
+            "SELECT 1 FROM refs WHERE kind = 'alert' AND retired_at IS NULL "
             "AND meta->>'fingerprint' = %s LIMIT 1",
             (fingerprint,),
         ).fetchone()

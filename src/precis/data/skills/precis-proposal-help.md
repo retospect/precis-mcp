@@ -108,5 +108,5 @@ cannot be a citation source (the citation verb resolves only
 `kind='paper'`). That keeps the requirements document from ever being
 quoted *as if it were evidence* in your own proposal — a category error
 the separate kind makes impossible. See `precis-draft-help` (writing),
-`precis-decomposition-help` (section subtasks), and `precis-tasks-help`
+`precis-decomposition-help` (section subtasks), and `precis-todo-tree-help`
 (projects).

@@ -218,7 +218,7 @@ def test_sweeper_intent_prune_throttles_when_marker_fresh(
     assert _prune_dangling_intents(store) == 0  # throttled → did not run
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s", (dead,)
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (dead,)
         ).fetchone()
     assert row is not None
     assert row[0] is None  # orphan untouched because the pass was throttled

@@ -276,7 +276,7 @@ def test_ids_cohort_excludes_soft_deleted_ref(store: Store) -> None:
     <tombstoned-ref>`` write a DOI onto a dead row."""
     live = _paper(store, slug="live-ref", title="Live Paper", s2="s2live")
     gone = _paper(store, slug="gone-ref", title="Gone Paper", s2="s2gone")
-    store.soft_delete_ref(gone)
+    store.retire_ref(gone)
 
     def fake_batch(req_ids: list[str], api_key: str) -> list[dict[str, Any] | None]:
         return [{"doi": "10.1234/x"} for _ in req_ids]

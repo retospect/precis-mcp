@@ -39,7 +39,7 @@ def _ref(
         meta={},
         created_at=now,
         updated_at=now,
-        deleted_at=None,
+        retired_at=None,
         retraction_status=status,
         retraction_checked_at=checked_at,
         doi_status=doi_status,

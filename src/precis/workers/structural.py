@@ -59,8 +59,8 @@ def _strategic_layer_snapshot(store: Store) -> str:
               FROM refs s
               LEFT JOIN refs t ON t.parent_id = s.ref_id
                               AND t.kind = 'todo'
-                              AND t.deleted_at IS NULL
-             WHERE s.kind = 'todo' AND s.deleted_at IS NULL
+                              AND t.retired_at IS NULL
+             WHERE s.kind = 'todo' AND s.retired_at IS NULL
                AND {todo_root_sql("s")}
                AND COALESCE((s.meta->>'rotation_root')::boolean, false)
              ORDER BY s.ref_id, t.ref_id NULLS FIRST
@@ -191,7 +191,7 @@ _STRUCTURAL_MODULES: list[Module] = [
 
 STRUCTURAL = Reviewer(
     name="structural",
-    tier_tag="tier:structural",
+    digest_tag="digest:structural",
     gate_env="PRECIS_STRUCTURAL_REVIEW",
     meta_prefix="structural_",
     # BIG tier via the router — local-first (``llm.chain.big``). A tree-shape
@@ -242,7 +242,7 @@ def _gate_enabled() -> bool:
 
 
 def _recent_digest_exists(store: Store, hours: float) -> bool:
-    return _review_recent_digest_exists(store, STRUCTURAL.tier_tag, hours)
+    return _review_recent_digest_exists(store, STRUCTURAL.digest_tag, hours)
 
 
 def _write_digest(store: Store, body: str, cost_usd: float | None) -> int:

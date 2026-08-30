@@ -94,7 +94,7 @@ def test_pass_skips_under_high_load(
 def test_recent_digest_detects_existing_within_window(
     store: Store,
 ) -> None:
-    # Manually mint a tier:structural digest by going through the
+    # Manually mint a digest:structural digest by going through the
     # writer (uses real handlers + tags).
     _write_digest(store, "first digest", cost_usd=0.5)
     assert _recent_digest_exists(store, 1) is True
@@ -292,8 +292,8 @@ def test_pass_writes_digest_on_happy_path(
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:structural'
+             WHERE r.kind = 'memory' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'digest:structural'
              ORDER BY r.created_at DESC
              LIMIT 1
             """,
@@ -328,8 +328,8 @@ def test_pass_records_failure_on_llm_error(
             SELECT count(*) FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:structural'
+             WHERE r.kind = 'memory' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'digest:structural'
             """,
         ).fetchone()
     assert n is not None and int(n[0]) == 0
@@ -353,8 +353,8 @@ def test_pass_writes_empty_digest_with_placeholder_title(
             SELECT r.title FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:structural'
+             WHERE r.kind = 'memory' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'digest:structural'
              ORDER BY r.created_at DESC LIMIT 1
             """,
         ).fetchone()
@@ -384,8 +384,8 @@ def _structural_digest_count(store: Store) -> int:
             SELECT count(*) FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:structural'
+             WHERE r.kind = 'memory' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'digest:structural'
             """,
         ).fetchone()
     return int(row[0]) if row else 0

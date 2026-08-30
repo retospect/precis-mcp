@@ -324,7 +324,7 @@ _REFS_COLS = (
     " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key'"
     " ORDER BY created_at DESC LIMIT 1) AS slug, "
     "kind, title, provider, meta, "
-    "created_at, updated_at, deleted_at, "
+    "created_at, updated_at, retired_at, "
     "set_by, authors, year, "
     "human_verified_at, human_verified_by, human_verified_note, "
     "retraction_status, retracted_at, retraction_reason, "
@@ -340,7 +340,7 @@ _REFS_COLS_ALIASED = (
     " WHERE ref_id = r.ref_id AND id_kind = 'cite_key'"
     " ORDER BY created_at DESC LIMIT 1) AS slug, "
     "r.kind, r.title, r.provider, r.meta, "
-    "r.created_at, r.updated_at, r.deleted_at, "
+    "r.created_at, r.updated_at, r.retired_at, "
     "r.set_by, r.authors, r.year, "
     "r.human_verified_at, r.human_verified_by, r.human_verified_note, "
     "r.retraction_status, r.retracted_at, r.retraction_reason, "
@@ -369,7 +369,7 @@ def _row_to_ref(row: tuple) -> Ref:
       5 meta
       6 created_at
       7 updated_at
-      8 deleted_at
+      8 retired_at
       9 set_by
       10 authors
       11 year
@@ -407,7 +407,7 @@ def _row_to_ref(row: tuple) -> Ref:
         meta=row[5] or {},
         created_at=row[6],
         updated_at=row[7],
-        deleted_at=row[8],
+        retired_at=row[8],
         set_by=row[9],
         authors=row[10],
         year=row[11],

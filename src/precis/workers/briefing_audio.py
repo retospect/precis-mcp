@@ -56,7 +56,7 @@ def _latest_unnarrated_briefing(
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE kind = 'news' AND deleted_at IS NULL "
+            "WHERE kind = 'news' AND retired_at IS NULL "
             "AND meta @> '{\"briefing\": true}'::jsonb "
             "AND NOT (meta ? 'audio_episode_id') "
             "AND updated_at >= %s "

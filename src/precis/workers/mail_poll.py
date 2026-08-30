@@ -1,4 +1,4 @@
-"""mail_poll — per-account IMAP poll + inline tier-0 injection scan (slice 3).
+"""mail_poll — per-account IMAP poll + inline depth-0 injection scan (slice 3).
 
 The mechanical, LLM-free lane of the email kind (docs/backlog/email-kind.md).
 Each pass, for every account whose cadence is due:
@@ -8,7 +8,7 @@ Each pass, for every account whose cadence is due:
    newsletter mailbox means scanning new mail going forward, not re-scanning
    thousands of archived messages; a human can promote an old one on demand.
 2. **Steady state** — fetch messages with ``UID > last_uid`` (oldest-first,
-   capped so a backlog drains across ticks), run the tier-0 regex scan on each
+   capped so a backlog drains across ticks), run the depth-0 regex scan on each
    inline, persist a verdict row to ``email_scan``, and advance ``last_uid``.
 
 The poll paces itself off ``email_account.last_polled_at`` (cadence from
@@ -19,8 +19,8 @@ The poll paces itself off ``email_account.last_polled_at`` (cadence from
 v1 watches the account's **primary** folder (``folders[0]``, normally INBOX) —
 the 0075 schema keeps one account-level cursor. Per-folder cursors are a later
 slice. Bodies are never stored (IMAP is the source of truth); only the scan
-verdict + evidence persist. The tier-1/2 model scan + the quarantine ladder are
-slice 4; this pass only writes tier-0.
+verdict + evidence persist. The depth-1/2 model scan + the quarantine ladder are
+slice 4; this pass only writes depth-0.
 
 ``watermark`` / ``fetch_new`` are injectable so tests exercise the pass without
 a live IMAP server.
@@ -57,7 +57,7 @@ def run_mail_poll(
     watermark: WatermarkFn | None = None,
     fetch_new: FetchNewFn | None = None,
 ) -> dict[str, int]:
-    """Poll accounts' primary folder; tier-0 scan new messages.
+    """Poll accounts' primary folder; depth-0 scan new messages.
 
     By default (the worker path) polls every account whose cadence is *due*.
     ``only_account`` restricts to one account regardless of cadence/enabled
@@ -162,7 +162,7 @@ def _poll_account(
             uidvalidity=account.uidvalidity,
             uid=msg.uid,
             verdict=result.verdict,
-            tier=0,
+            depth=0,
             evidence=result.evidence,
         )
         scanned += 1

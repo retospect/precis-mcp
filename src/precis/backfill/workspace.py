@@ -137,7 +137,7 @@ def assemble(
     cited_here = _target_cited_refs(store, target_chunks, kind=kind)
     refs = store.fetch_refs_by_ids(list(cited_here)) if cited_here else {}
     for rid, ref in refs.items():
-        if getattr(ref, "deleted_at", None) is not None:
+        if getattr(ref, "retired_at", None) is not None:
             continue
         rkind = getattr(ref, "kind", None)
         handle = handle_registry.try_format(rkind, rid) if rkind else None
@@ -220,7 +220,7 @@ def _backfill_marks(
     refs = store.fetch_refs_by_ids(list(citing)) if citing else {}
     for rid, sections in citing.items():
         ref = refs.get(rid)
-        if ref is None or getattr(ref, "deleted_at", None) is not None:
+        if ref is None or getattr(ref, "retired_at", None) is not None:
             continue
         rkind = getattr(ref, "kind", None)
         handle = handle_registry.try_format(rkind, rid) if rkind else None
@@ -254,7 +254,7 @@ def _render_grounding(store: Store, target_chunks: list[Any], *, kind: str) -> s
         cites = [
             short_cite(refs[r])
             for r in cited_ids
-            if r in refs and getattr(refs[r], "deleted_at", None) is None
+            if r in refs and getattr(refs[r], "retired_at", None) is None
         ]
         if not cites:
             status = "⚠ uncited assertion"

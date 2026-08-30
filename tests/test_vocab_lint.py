@@ -184,7 +184,43 @@ def test_reserved_class_allowlist_entries_are_still_current() -> None:
 # Bare def/class names retired by a vocab-compaction stage. An allowlist
 # entry here is a *known, permanent, unrelated* homonym only — not a
 # parking spot for a straggler that should just be renamed.
-_RETIRED_NAMES = {"PassBand", "format_patent_citation", "_extract_json"}
+_RETIRED_NAMES = {
+    "PassBand",
+    "format_patent_citation",
+    "_extract_json",
+    # Stage C persisted-key renames (docs/backlog/vocab-compaction-stages.md):
+    # these were never a def/class name themselves (dataclass fields / dict
+    # keys / DB columns), so this only catches a *new* def/class reusing the
+    # bare word — belt-and-suspenders alongside the migrations that renamed
+    # the persisted keys.
+    "tier_ladder",
+    "barrier_tier",
+    "tier_tag",
+    "claim_ref_id",
+    "PRECIS_BACKFILL_CITATION_LENS",
+    # Stage D surface renames (docs/backlog/vocab-compaction-stages.md):
+    # `_dispatch_pass` (cli/worker.py closure) -> `_minter_pass`, matching
+    # the registry rename `dispatch` -> `minter`; `block_pos`/`block_slug`
+    # (utils/file_id.py::format_write_result kwargs) -> `chunk_pos`/
+    # `chunk_slug` -- never def/class names themselves, belt-and-suspenders
+    # per the Stage C pattern above.
+    "_dispatch_pass",
+    "block_pos",
+    "block_slug",
+    # Stage E surface renames (docs/backlog/vocab-compaction-stages.md):
+    # the web Tasks-tab route module's helpers renamed with its
+    # `/tasks` -> `/todo` route (`routes/todo.py`); `Store.soft_delete_ref`
+    # -> `retire_ref` (+ the same-shaped `soft_delete_todo_subtree` /
+    # `soft_delete_draft`) and the `refs.deleted_at` column -> `retired_at`
+    # -- the column/field is never a def/class name itself, belt-and-
+    # suspenders per the Stage C pattern above.
+    "_tasks_url",
+    "task_pdf",
+    "soft_delete_ref",
+    "soft_delete_todo_subtree",
+    "soft_delete_draft",
+    "deleted_at",
+}
 # name-pattern -> (regex, files exempted as a genuine unrelated word sense).
 # "glossary" itself must not trip the gloss->summary retirement.
 _GLOSS_STYLE = re.compile(r"^_?gloss(_|$)")
@@ -246,6 +282,22 @@ _RETIRED_PHRASES = [
     "trust tier",
     "the blocks table",
     "verified-by-refine",
+    # Stage D surface renames (docs/backlog/vocab-compaction-stages.md):
+    # the dispatch-worker skill id, and the patent/edgar search-leg kwarg
+    # (now `precis-minter-help` / `reach='remote'`).
+    "precis-dispatch-help",
+    "source='remote'",
+    'source="remote"',
+    # Stage E surface renames (docs/backlog/vocab-compaction-stages.md):
+    # task->todo (the web Tasks tab, the "task line"/`text=` title, the
+    # tree skill's old id) and the retire/soft-delete unification (bare
+    # "task"/"deleted_at" are NOT banned here -- both collide too heavily
+    # with generic English / other tables' history to be a deterministic
+    # phrase gate; the identifier-level bans above are the enforcement).
+    "precis-tasks-help",
+    "precis-auto-tasks-help",
+    "tasks tab",
+    "task line",
 ]
 _PHRASE_RE = re.compile("|".join(re.escape(p) for p in _RETIRED_PHRASES), re.IGNORECASE)
 

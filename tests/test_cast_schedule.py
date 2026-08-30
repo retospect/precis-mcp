@@ -47,7 +47,7 @@ def test_exactly_one_watch_per_cast(store: Any) -> None:
     for cast in ("reading", "nidra", "card_forge"):
         with store.pool.connection() as conn:
             n = conn.execute(
-                "SELECT count(*) FROM refs WHERE kind='todo' AND deleted_at IS NULL "
+                "SELECT count(*) FROM refs WHERE kind='todo' AND retired_at IS NULL "
                 "AND meta->>'cast_watch' = %s",
                 (cast,),
             ).fetchone()[0]

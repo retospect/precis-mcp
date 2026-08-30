@@ -368,7 +368,7 @@ def test_put_dispatches_job_when_fold_node_set(
     with protein_store.pool.connection() as c:
         row = c.execute(
             "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s "
-            "AND deleted_at IS NULL",
+            "AND retired_at IS NULL",
             (ref.id,),
         ).fetchone()
     assert row is not None, "a fold job should parent on the protein"

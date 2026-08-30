@@ -49,7 +49,7 @@ def family_members(store: PoolStore, family_id: str | None) -> list[Ref]:
     sql = f"""
         SELECT {_REFS_COLS_ALIASED}
         FROM refs r
-        WHERE r.kind = 'patent' AND r.deleted_at IS NULL
+        WHERE r.kind = 'patent' AND r.retired_at IS NULL
           AND r.meta->>'family_id' = %s
     """
     with store.pool.connection() as conn:

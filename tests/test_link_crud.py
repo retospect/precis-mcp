@@ -367,7 +367,7 @@ class TestStoreMergeRefs:
     def test_merge_frees_the_victims_identifier(self, store: Store) -> None:
         """The victim's DOI must free up so it can be assigned to the
         survivor — a bare soft-delete would leave it claimed (the
-        ``ref_identifiers`` uniqueness check ignores ``deleted_at``)."""
+        ``ref_identifiers`` uniqueness check ignores ``retired_at``)."""
         survivor = _seed_paper(store, slug="keepme2022")
         victim = _seed_paper(store, slug="dropme2022")
         store.set_ref_identifier(victim, "doi", "10.1234/dup.2022")
@@ -390,7 +390,7 @@ class TestStoreMergeRefs:
         survivor = _seed_paper(store, slug="keepme1994")
         store.set_ref_identifier(deleted, "doi", "10.1126/science.7973651")
         # Bare soft-delete leaves the DOI row behind (cf. merge_refs).
-        store.soft_delete_ref(deleted)
+        store.retire_ref(deleted)
 
         # Reassigning to the live paper now succeeds (no dead-end conflict).
         assert store.set_ref_identifier(survivor, "doi", "10.1126/science.7973651")
@@ -727,7 +727,7 @@ class TestMemoryHandlerLinksView:
         a_id = id_of(a.body)
         b_id = id_of(b.body)
         memory_handler.link(id=a_id, target=f"memory:{b_id}")
-        store.soft_delete_ref(b_id)
+        store.retire_ref(b_id)
 
         out = memory_handler.get(id=a_id, view="links")
         assert "(deleted)" in out.body

@@ -46,7 +46,7 @@ def _log_spend(
 
 def _soft_delete(store: Store, ref_id: int) -> None:
     with store.pool.connection() as conn:
-        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (ref_id,))
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (ref_id,))
         conn.commit()
 
 

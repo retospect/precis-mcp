@@ -66,7 +66,7 @@ Schema evolves **forward-only** (dual-track baseline; see `store/migrate.py`): n
 ```
 
 Autonomous work rides the **todo tree**: `kind='todo'` is a hierarchical
-task graph (strategic/tactical gradient, `auto_check` leaves, `recurring`
+todo graph (strategic/tactical gradient, `auto_check` leaves, `recurring`
 watches, planner coroutines) with **jobs** hanging off owner refs in two
 lanes — *intent* (parent is a `todo`) and *compute* (parent is a build
 artifact: derived, idempotent, content-addressed). This is "the factory."
@@ -79,7 +79,7 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 | **Storage / model** | `Store`, handlers, `migrations/` | refs + chunks + derived cascade |
 | **Workers** | `src/precis/workers/` | derived-queue passes; `system` profile (every node) + `agent` profile (melchior only, `claude_inproc`) |
 | **Discovery / search** | search verbs, F20 layer | keywords, `toc`, hybrid retrieval |
-| **Task tree / factory** | `todo` handler, planner, jobs | intent vs compute lanes, dispatch |
+| **Todo tree / factory** | `todo` handler, planner, jobs | intent vs compute lanes, dispatch |
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |
 | **Nanopub publication** | `src/precis/nanopub/`, `nanopub_*` tables (0128) | reviewed claims → signed, OTS-anchored artifacts; append-only proof store; the ladder runs **both ways** — a `contradicts` edge demotes below the freeze line, alerts above it |
 

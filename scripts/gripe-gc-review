@@ -42,7 +42,7 @@ if (( days > WINDOW_DAYS )); then
     echo "gripe-gc-review: DUE (last pass $last, ${days}d ago > ${WINDOW_DAYS}d) — list shipped-marked open gripes, close the genuinely-fully-shipped ones (soft-delete with a resolution comment naming the sha), append a dated line to $LOG. See the runbook."
     # Best-effort nicety: how many are waiting, if prod is reachable. Never
     # blocks or fails the clock — guarded with || true throughout.
-    count=$(scripts/prod-psql "SELECT count(*) FROM refs WHERE kind='gripe' AND deleted_at IS NULL AND title ILIKE '%shipped%';" 2>/dev/null | tr -d '[:space:]' || true)
+    count=$(scripts/prod-psql "SELECT count(*) FROM refs WHERE kind='gripe' AND retired_at IS NULL AND title ILIKE '%shipped%';" 2>/dev/null | tr -d '[:space:]' || true)
     if [[ -n "$count" && "$count" =~ ^[0-9]+$ ]]; then
         echo "  ($count shipped-marked open gripe(s) in prod, at last check)"
     fi

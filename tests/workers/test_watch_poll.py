@@ -45,7 +45,7 @@ def _papers_with_tag(store: Store, tag_value: str) -> list[int]:
             "SELECT r.ref_id FROM refs r "
             "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL AND t.value = %s",
+            "WHERE r.kind = 'paper' AND r.retired_at IS NULL AND t.value = %s",
             (tag_value,),
         ).fetchall()
     return [int(r[0]) for r in rows]

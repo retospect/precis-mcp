@@ -106,15 +106,15 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 
 | Goal | Toolpath | Depth |
 |---|---|---|
-| See project dashboard | `search(kind='todo', view='projects')` | `precis-tasks-help` |
-| Drill into one project's tree | `get(kind='todo', id=N, view='tree')` | `precis-tasks-help` |
-| Doable leaves in a subtree | `search(kind='todo', view='doable', args={'under': N})` | `precis-tasks-help` |
-| What needs my attention | `search(kind='todo', view='attention')` | `precis-tasks-help` |
+| See project dashboard | `search(kind='todo', view='projects')` | `precis-todo-tree-help` |
+| Drill into one project's tree | `get(kind='todo', id=N, view='tree')` | `precis-todo-tree-help` |
+| Doable leaves in a subtree | `search(kind='todo', view='doable', args={'under': N})` | `precis-todo-tree-help` |
+| What needs my attention | `search(kind='todo', view='attention')` | `precis-todo-tree-help` |
 | Split a task | children via `put(..., parent_id=N)` | `precis-decomposition-help` |
 | Sketch a thread's reasoning outline | `put(kind='plan', id='x-plan', title='…', project=N)`, then add `pe<id>` nodes | `precis-plan-help` |
-| Wait on a condition | leaf with `meta.auto_check` | `precis-auto-tasks-help` |
+| Wait on a condition | leaf with `meta.auto_check` | `precis-auto-todo-help` |
 | Recurring work | `meta.schedule` set | `precis-recurring-help` |
-| Run a job under a todo | set `meta.executor`; `dispatch` mints a `kind='job'` | `precis-dispatch-help`, `precis-job-help` |
+| Run a job under a todo | set `meta.executor`; `minter` mints a `kind='job'` | `precis-minter-help`, `precis-job-help` |
 | Auto-fix a gripe | `put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')` | `precis-fix-gripe-help` |
 
 ## Authoring artifacts

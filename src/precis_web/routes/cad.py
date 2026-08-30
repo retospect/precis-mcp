@@ -98,7 +98,7 @@ def _list_rows(store: Store) -> list[dict[str, Any]]:
                r.updated_at
           FROM refs r
          WHERE r.kind = 'cad'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
          ORDER BY r.ref_id DESC
          LIMIT %s
     """
@@ -287,7 +287,7 @@ _PROPOSAL_SELECT = """
      WHERE r.kind = 'job'
        AND r.meta->>'job_type' = 'cad_propose'
        AND (r.meta->'params'->>'cad_ref_id')::int = %s
-       AND r.deleted_at IS NULL
+       AND r.retired_at IS NULL
 """
 
 
@@ -354,7 +354,7 @@ def _discussion_thread(
          WHERE r.kind = 'job'
            AND r.meta->>'job_type' = 'cad_discuss'
            AND (r.meta->'params'->>'cad_ref_id')::int = %s
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
          ORDER BY r.ref_id ASC
          LIMIT %s
     """

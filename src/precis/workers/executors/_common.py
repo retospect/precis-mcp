@@ -401,7 +401,7 @@ def claim_executor_jobs(
     make a job that has been nominally running for hours report as having
     just started, and its stalled time would read as queue wait. The
     reclaim instants live in ``meta.reclaims`` instead. Read by the
-    ``/tasks`` dashboard to split a job's queue wait from its run time;
+    ``/todo`` dashboard to split a job's queue wait from its run time;
     absent on any job claimed before this shipped.
 
     **Attempt cap (§H piece 3, generalized from ssh_node's original
@@ -748,7 +748,7 @@ def claim_executor_jobs(
             SELECT r.ref_id, r.title, r.meta, r.created_at
               FROM refs r
              WHERE r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND r.meta->>'executor' = %s
                AND (
                     (r.meta->'params'->>'target_node') IS NULL
@@ -816,7 +816,7 @@ def claim_executor_jobs(
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at
           FROM refs r
          WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND r.meta->>'executor' = %s
            AND (
                 (r.meta->'params'->>'target_node') IS NULL

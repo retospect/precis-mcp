@@ -509,7 +509,7 @@ def prose_marked_hubs(store: Store) -> list[tuple[int, str, str]]:
               FROM refs r
               JOIN chunks c ON c.ref_id = r.ref_id
              WHERE r.kind = 'finding'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND c.chunk_kind = 'finding_body'
                AND c.ord >= 0
                AND c.retired_at IS NULL

@@ -86,8 +86,8 @@ records what it learned as a memory/comment, and either continues (`verdict:
 continue`) or yields to the human (`ask-user:`) when a decision needs you (which
 engine, whether a low-pLDDT fold is worth wet-lab time). The compute (route/fold)
 lands off the tick via the compute lane, so a tick never blocks on the GPU — it
-mints, then a later tick reads the result. Depth: `precis-dispatch-help`,
-`precis-auto-tasks-help`.
+mints, then a later tick reads the result. Depth: `precis-minter-help`,
+`precis-auto-todo-help`.
 
 ## The discipline (same as the rest of precis)
 

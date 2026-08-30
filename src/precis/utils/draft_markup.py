@@ -187,7 +187,7 @@ def _resolve_reference(store: Store, ref: Reference) -> LinkTarget | None:
         if m is None:
             return None
         r = resolve_handle_ref(store, m.group("slug"))
-        if r is None or getattr(r, "deleted_at", None) is not None:
+        if r is None or getattr(r, "retired_at", None) is not None:
             return None
         return LinkTarget(r.id, chunk_to_pos(m.group("chunk")))
     return None

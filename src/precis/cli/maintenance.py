@@ -27,7 +27,7 @@ What it does, in order:
    ``monthly`` once per ~30d. Driven by ``cache_state.fetched_at``
    so reruns within the interval are no-ops.
 
-2. **Soft-delete purge** — hard-delete ``deleted_at IS NOT NULL``
+2. **Soft-delete purge** — hard-delete ``retired_at IS NOT NULL``
    refs whose tombstone is older than ``--purge-after-days``
    (default: 30 days). Audit trail lives on the disk-backed WAL
    for as long as backups retain it.
@@ -391,7 +391,7 @@ def _purge_soft_deleted(
     older_than_days: int,
     dry_run: bool,
 ) -> int:
-    """Hard-delete refs whose ``deleted_at`` is older than ``older_than_days``.
+    """Hard-delete refs whose ``retired_at`` is older than ``older_than_days``.
 
     Cascades to chunks, cache_state, and tag tables via the
     referential constraints. Returns the count of rows affected.
@@ -401,13 +401,13 @@ def _purge_soft_deleted(
     """
     sql_count = (
         "SELECT count(*) FROM refs "
-        "WHERE deleted_at IS NOT NULL "
-        "  AND deleted_at < now() - (%s || ' days')::interval"
+        "WHERE retired_at IS NOT NULL "
+        "  AND retired_at < now() - (%s || ' days')::interval"
     )
     sql_delete = (
         "DELETE FROM refs "
-        "WHERE deleted_at IS NOT NULL "
-        "  AND deleted_at < now() - (%s || ' days')::interval"
+        "WHERE retired_at IS NOT NULL "
+        "  AND retired_at < now() - (%s || ' days')::interval"
     )
     with store.pool.connection() as conn:
         row = conn.execute(sql_count, (str(older_than_days),)).fetchone()

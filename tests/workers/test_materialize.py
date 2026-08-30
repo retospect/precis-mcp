@@ -64,7 +64,7 @@ def _queued_job_count(store: Store, job_type: str) -> int:
         row = conn.execute(
             """
             SELECT count(*) FROM refs r
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %s
             """,
             (job_type,),
@@ -98,7 +98,7 @@ def _queued_derived(store: Store, pass_name: str) -> int:
         row = conn.execute(
             """
             SELECT count(*) FROM refs r
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = 'derived_drain'
                AND r.meta->'params'->>'pass' = %s
             """,
@@ -146,7 +146,7 @@ def _small_band_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _job_prios(store: Store, job_type: str) -> list[int | None]:
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT prio FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "SELECT prio FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'job_type' = %s ORDER BY ref_id",
             (job_type,),
         ).fetchall()
@@ -172,7 +172,7 @@ def _derived_prios(
         rows = conn.execute(
             f"""
             SELECT prio FROM refs r
-             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = 'derived_drain'
                AND r.meta->'params'->>'pass' = %s
                {status_join}
@@ -188,7 +188,7 @@ def _set_all_status(store: Store, job_type: str, status: str) -> None:
         ids = [
             int(r[0])
             for r in conn.execute(
-                "SELECT ref_id FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+                "SELECT ref_id FROM refs WHERE kind = 'job' AND retired_at IS NULL "
                 "AND meta->>'job_type' = %s",
                 (job_type,),
             ).fetchall()

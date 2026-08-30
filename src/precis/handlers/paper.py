@@ -2,7 +2,7 @@
 
 Bodies are read-only via ``get`` / ``search``; ingest happens
 out-of-band via :func:`precis.ingest.add.precis_add` (or the
-top-level ``precis add`` / ``precis watch`` CLI), so ``put`` is not
+top-level ``precis add`` / ``precis ingest --watch`` CLI), so ``put`` is not
 exposed. ``edit`` is supported but scoped to *bibliographic metadata*
 (authors / year / title / abstract / doi / arxiv / journal / entry_type)
 — it never touches block text.

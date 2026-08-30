@@ -76,7 +76,7 @@ def _touched_chunks(store: Store, log_id: int) -> list[dict[str, Any]]:
          WHERE l.src_ref_id = %s
            AND l.relation = 'touched'
            AND c.retired_at IS NULL
-           AND d.deleted_at IS NULL
+           AND d.retired_at IS NULL
          ORDER BY d.ref_id, c.ord
     """
     with store.pool.connection() as conn:
@@ -108,7 +108,7 @@ async def agentlog_detail(request: Request, ref_id: int) -> HTMLResponse:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT title, meta, created_at FROM refs "
-            "WHERE ref_id = %s AND kind = 'agentlog' AND deleted_at IS NULL",
+            "WHERE ref_id = %s AND kind = 'agentlog' AND retired_at IS NULL",
             (ref_id,),
         ).fetchone()
     if row is None:

@@ -62,7 +62,7 @@
           {# ── Daily: always-visible daily-driver kinds ──
              Drafts/Papers/Items retired into Drive (WS1a/WS1b/nav
              restructure) — their routes redirect, so no tab needed. #}
-          {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('tasks','ToDo','/tasks')] %}
+          {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('todo','ToDo','/todo')] %}
           {% for key, label, href in tabs %}
           <a href="{{ href }}"
              class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">

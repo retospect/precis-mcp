@@ -101,9 +101,9 @@ fetch_citations_batch: Callable[
 
 
 def _citation_recall_enabled() -> bool:
-    """The lens is on by default; ``PRECIS_BACKFILL_CITATION_LENS=0`` disables
+    """On by default; ``PRECIS_BACKFILL_CITATION_RECALL=0`` disables
     it (e.g. to keep an offline/CI run purely local)."""
-    return bool(int(os.environ.get("PRECIS_BACKFILL_CITATION_LENS", "1") or "0"))
+    return bool(int(os.environ.get("PRECIS_BACKFILL_CITATION_RECALL", "1") or "0"))
 
 
 def _ttl_days() -> int:
@@ -392,7 +392,7 @@ def citation_neighbor_degrees(
                    ) e
               JOIN refs r ON r.ref_id = e.other
              WHERE r.kind = 'paper'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND e.other <> ALL(%(exclude)s)
                AND EXISTS (
                      SELECT 1 FROM chunks ch
@@ -440,7 +440,7 @@ def find_citation_candidates(
     with store.pool.connection() as conn:
         for rid, degree in degrees[:limit]:
             ref = refs.get(rid)
-            if ref is None or getattr(ref, "deleted_at", None) is not None:
+            if ref is None or getattr(ref, "retired_at", None) is not None:
                 continue
             lead = _lead_chunk(conn, rid)
             if lead is None:

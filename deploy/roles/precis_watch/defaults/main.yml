@@ -1,5 +1,5 @@
 ---
-# precis_watch — runs `precis watch` on the NAS inbox, single instance.
+# precis_watch — runs `precis ingest --watch` on the NAS inbox, single instance.
 # Reuses the /opt/precis/venv from the precis_worker role (already has
 # precis-mcp[paper] installed).
 

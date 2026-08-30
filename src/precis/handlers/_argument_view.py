@@ -137,7 +137,7 @@ def _fetch_any(store: Store, ref_id: int) -> Ref | None:
 
     with store.pool.connection() as conn:
         row = conn.execute(
-            f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         ).fetchone()
     return _row_to_ref(row) if row is not None else None

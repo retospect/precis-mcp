@@ -11,7 +11,7 @@ module and one pair of templates behind every tab.
 * Detail renders the handler's own ``get`` output read-only (through
   the in-process runtime, so the rendering can't drift from MCP).
 
-Read-only: mutations stay on verb-specific tabs (Tasks) or the Console.
+Read-only: mutations stay on verb-specific tabs (Todo) or the Console.
 Slug kinds (conv/oracle/patent/pres) and numeric kinds (memory/gripe) are
 both URL-addressed by numeric ``ref_id``; detail view resolves the
 canonical address (slug when present, else id) for the ``get`` call.
@@ -278,9 +278,9 @@ def _followup_discussions(store: Store, ref_id: int) -> list[dict[str, Any]]:
 
 def _job_actions(store: Store, ref: Any, tags: list[Any]) -> dict[str, Any]:
     """Context for ``/refs/job/{id}``'s actions strip — retry, transcript,
-    parent — mirroring ``/tasks`` dashboard affordances:
+    parent — mirroring ``/todo`` dashboard affordances:
 
-    * **retry** — POST ``/tasks/{id}/retry`` clears the parent's
+    * **retry** — POST ``/todo/{id}/retry`` clears the parent's
       ``child-failed:`` bubble so ``dispatch`` re-mints. Only
       ``failed``/``cancelled`` retryable (handler-enforced; gated here too
       to avoid a guaranteed error).
@@ -484,7 +484,7 @@ def _quest_last_agentlog_id(store: Store, qid: int) -> int | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE kind = 'agentlog' AND deleted_at IS NULL "
+            "WHERE kind = 'agentlog' AND retired_at IS NULL "
             "AND meta->>'source' = 'quest_tick' "
             "AND (meta->>'parent_ref_id')::bigint = %s "
             "ORDER BY ref_id DESC LIMIT 1",
@@ -547,7 +547,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         _quest_lineage_row(store, pref)
         for pid in parent_ids
         if (pref := parent_refs.get(pid)) is not None
-        and getattr(pref, "deleted_at", None) is None
+        and getattr(pref, "retired_at", None) is None
         and pref.kind == "quest"
     ]
 
@@ -1504,7 +1504,7 @@ def _pathway_run_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
         with store.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id, meta->>'job_type' FROM refs "
-                "WHERE kind = 'job' AND deleted_at IS NULL "
+                "WHERE kind = 'job' AND retired_at IS NULL "
                 "AND meta->>'pathway_ref' = %s "
                 "ORDER BY ref_id DESC LIMIT 10",
                 (str(ref_id),),
@@ -1704,7 +1704,7 @@ def _pathway_tier_sibling(
         with store.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id, meta->>'tier' FROM refs "
-                "WHERE kind = 'pathway' AND deleted_at IS NULL "
+                "WHERE kind = 'pathway' AND retired_at IS NULL "
                 "AND meta->>'candidate_ref' = %s AND ref_id != %s "
                 "ORDER BY ref_id DESC",
                 (str(candidate_ref_id), ref.id),
@@ -1854,7 +1854,7 @@ def _pathway_candidate_stepper(
         with store.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id, meta->>'rate_Ea', meta->>'span' FROM refs "
-                "WHERE kind = 'pathway' AND deleted_at IS NULL "
+                "WHERE kind = 'pathway' AND retired_at IS NULL "
                 "AND meta->'results'->>'substrate' = %s "
                 "AND meta->'results'->>'target' = %s "
                 "ORDER BY (meta->>'rate_Ea')::float ASC NULLS LAST, ref_id "
@@ -2237,7 +2237,7 @@ def _expand_handle(
             "status": "missing",
             "kind": kind,
         }
-    if getattr(ref, "deleted_at", None) is not None:
+    if getattr(ref, "retired_at", None) is not None:
         return {
             "handle": raw_handle,
             "url": url,
@@ -2435,8 +2435,8 @@ async def consolidated(
 #: Per-kind URL shape for the native detail viewer in consolidated view.
 _CONSOLIDATED_KIND_URLS: dict[str, str] = {
     "paper": "/papers/{id}",
-    "todo": "/tasks?focus={id}",
-    "job": "/tasks?focus={id}",
+    "todo": "/todo?focus={id}",
+    "job": "/todo?focus={id}",
 }
 
 
@@ -2846,7 +2846,7 @@ async def edit_tags(
 ) -> Response:
     """Add or remove tags on a browsable ref via the ``tag`` verb.
 
-    Same shape as ``/tasks/{id}/tags`` — ``add`` is a comma/space-
+    Same shape as ``/todo/{id}/tags`` — ``add`` is a comma/space-
     separated string the operator typed; ``remove`` is a single
     ``namespace:value`` from a chip's × button. Both flow through
     the handler so tag-vocabulary validation stays single-sourced.
@@ -2871,7 +2871,7 @@ async def edit_tags(
 async def undelete(request: Request, kind: str, ref_id: int) -> Response:
     """Restore a soft-deleted ref — the Undelete button on the tombstone page.
 
-    Clears ``deleted_at`` (idempotent — a no-op if the ref is already live)
+    Clears ``retired_at`` (idempotent — a no-op if the ref is already live)
     and redirects back to the detail URL, which now resolves: a restored
     structure 303-hops on to its ``/structure/{slug}`` viewer.
     """

@@ -603,7 +603,7 @@ def test_dead_chain_when_target_soft_deleted(store) -> None:
         blocks=["body"],
     )
     fid = _seed_finding(store, cite_key="frontier")
-    store.soft_delete_ref(pid)
+    store.retire_ref(pid)
 
     result = run_finding_chase_pass(store, limit=10)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}

@@ -88,7 +88,7 @@ def _promote_openalex_abstracts(store: Store, *, limit: int | None) -> list[int]
          WHERE ref_id IN (
              SELECT ref_id FROM refs
               WHERE kind = 'paper'
-                AND deleted_at IS NULL
+                AND retired_at IS NULL
                 AND COALESCE(meta->>'abstract', '') = ''
                 AND COALESCE(meta->'openalex'->>'abstract', '') != ''
               ORDER BY ref_id DESC
@@ -109,7 +109,7 @@ def _fetch_batch(store: Store, *, limit: int) -> list[tuple[int, str]]:
                  WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi') AS doi
           FROM refs r
          WHERE r.kind = 'paper'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND COALESCE(r.meta->>'abstract', '') = ''
            AND r.meta->'openalex' IS NULL
            AND EXISTS (SELECT 1 FROM ref_identifiers ri

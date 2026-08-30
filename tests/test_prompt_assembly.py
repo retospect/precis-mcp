@@ -530,7 +530,7 @@ def test_patent_authoring_block_gated_and_content(hub: Hub) -> None:
     hub.live_store.stamp_ref_meta(run.id, {"workspace": ws.to_meta()})
     block = _m_patent(_ctx(hub.live_store, run.id))
     assert "Patent authoring" in block
-    assert "source='remote'" in block  # prior-art sweep
+    assert "reach='remote'" in block  # prior-art sweep
     assert "[pk…]" in block  # patent handle, not [pc…]
     assert "freedom to operate" in block.lower()
     assert "plan" in block.lower()  # scoping ledger

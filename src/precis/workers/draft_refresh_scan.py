@@ -108,7 +108,7 @@ def _opted_in_drafts(store: Store) -> list[tuple[int, str, dict[str, Any]]]:
             "         LIMIT 1) AS slug, "
             "       r.meta "
             "  FROM refs r "
-            " WHERE r.kind = 'draft' AND r.deleted_at IS NULL "
+            " WHERE r.kind = 'draft' AND r.retired_at IS NULL "
             "   AND r.meta->'draft_refresh'->>'enabled' = 'true' "
             " ORDER BY r.ref_id"
         ).fetchall()
@@ -202,7 +202,7 @@ def _mint(store: Store, *, slug: str, section: _StaleSection) -> bool:
     idem_key = f"draft_refresh:{slug}:{scope}:{section.min_created_at:%Y-%m-%d}"
     with store.pool.connection() as conn:
         existing = conn.execute(
-            "SELECT 1 FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "SELECT 1 FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'idem_key' = %s LIMIT 1",
             (idem_key,),
         ).fetchone()

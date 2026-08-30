@@ -47,7 +47,7 @@ Environment={{ env_key }}={{ env_val }}
 # singleton (deterministic container name `surya-vllm-<port>`) instead of
 # one unbounded container per worker process. Both are read by surya's
 # pydantic Settings verbatim (no env prefix) and reach the OCR subprocess
-# via `os.environ.copy()` in `precis watch`. Since surya-ocr 0.22.1,
+# via `os.environ.copy()` in `precis ingest --watch`. Since surya-ocr 0.22.1,
 # non-CUDA (mps/cpu) hosts are NOT inert: surya falls back to a llamacpp
 # backend that hard-requires a `llama-server` binary on PATH (gr236139) —
 # the watch role brew-installs llama.cpp on macOS for this.
@@ -60,7 +60,7 @@ Environment=SURYA_INFERENCE_PORT={{ surya_inference_port | default('8912') }}
 # Leading '-' makes it non-fatal when docker or the container is absent.
 ExecStartPre=-/usr/bin/env docker rm -f surya-vllm-{{ surya_inference_port | default('8912') }}
 
-ExecStart={{ precis_watch_venv }}/bin/precis watch \
+ExecStart={{ precis_watch_venv }}/bin/precis ingest --watch \
   --polling \
   --debounce {{ precis_watch_debounce }} \
   --user {{ precis_watch_user }} \

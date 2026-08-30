@@ -2,7 +2,8 @@
 # 28-precis-watch.yml — multi-node inbox watcher.
 # Replaces the legacy `extract_watch` role / 27-extract-watch.yml: same
 # daemon shape (a `com.precis.watch` LaunchDaemon / precis-watch.service),
-# but the watcher is `precis watch` (v8) writing into precis_prod, not
+# but the watcher is `precis ingest --watch` (v8; legacy CLI name `precis
+# watch`) writing into precis_prod, not
 # acatome-extract writing into the non-existent `cluster` db.
 #
 # Run order: precis_worker (20) must run first — it provisions

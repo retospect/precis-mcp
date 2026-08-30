@@ -15,7 +15,7 @@ from precis.workers import scheduler
 def _doctor_jobs(store: Store) -> list[dict]:
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT meta FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "SELECT meta FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'job_type' = 'doctor_tick' ORDER BY ref_id"
         ).fetchall()
     return [dict(r[0]) for r in rows]

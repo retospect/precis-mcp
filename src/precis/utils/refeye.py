@@ -503,7 +503,7 @@ def _render_claims_group(
     entries: list[tuple[int, str]] = []
     for hub_ref_id, op, _handles in hub_cites:
         ref = refs.get(hub_ref_id)
-        if ref is None or getattr(ref, "deleted_at", None) is not None:
+        if ref is None or getattr(ref, "retired_at", None) is not None:
             continue
         evidence = derive_evidence(store, hub_ref_id)
         claim_links = derive_refines(store, hub_ref_id)
@@ -594,7 +594,7 @@ def collect_ring(
         refs = store.fetch_refs_by_ids(list(all_ids))
         for rid in all_ids:
             ref = refs.get(rid)
-            if ref is None or getattr(ref, "deleted_at", None) is not None:
+            if ref is None or getattr(ref, "retired_at", None) is not None:
                 continue
             groups[_group_for(getattr(ref, "kind", "?"))].append((rid, _label(ref)))
 

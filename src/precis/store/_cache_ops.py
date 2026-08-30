@@ -113,7 +113,7 @@ class CacheMixin:
             JOIN refs ON refs.ref_id = cs.ref_id
             WHERE cs.provider = %s
               AND cs.request_hash = %s
-              AND refs.deleted_at IS NULL
+              AND refs.retired_at IS NULL
             LIMIT 1
         """
         with self.pool.connection() as conn:
@@ -155,7 +155,7 @@ class CacheMixin:
               AND ri.id_kind = 'cite_key'
             WHERE refs.kind = %s
               AND ri.id_value = %s
-              AND refs.deleted_at IS NULL
+              AND refs.retired_at IS NULL
             LIMIT 1
         """
         with self.pool.connection() as conn:
@@ -214,7 +214,7 @@ class CacheMixin:
             # the refresh.
             row = conn.execute(
                 f"UPDATE refs SET title = %s, updated_at = now() "
-                "WHERE ref_id = %s AND deleted_at IS NULL "
+                "WHERE ref_id = %s AND retired_at IS NULL "
                 f"RETURNING {_REFS_COLS}",
                 (title, ref_id),
             ).fetchone()
@@ -332,7 +332,7 @@ class CacheMixin:
                 "  AND ri.id_kind = 'cite_key' "
                 "WHERE r.kind = %s "
                 "  AND ri.id_value = %s "
-                "  AND r.deleted_at IS NULL",
+                "  AND r.retired_at IS NULL",
                 (kind, slug),
             ).fetchone()
             if existing is not None:
@@ -388,7 +388,7 @@ _REFS_COLS_FOR_CACHE = (
     " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key'"
     " ORDER BY created_at DESC LIMIT 1) AS slug, "
     "refs.kind, refs.title, refs.provider, refs.meta, "
-    "refs.created_at, refs.updated_at, refs.deleted_at, "
+    "refs.created_at, refs.updated_at, refs.retired_at, "
     "refs.set_by, refs.authors, refs.year, "
     "refs.human_verified_at, refs.human_verified_by, refs.human_verified_note, "
     "refs.retraction_status, refs.retracted_at, refs.retraction_reason, "

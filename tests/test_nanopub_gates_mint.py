@@ -428,7 +428,7 @@ def test_acquiring_hub_without_live_stub_rejects_grounded_mint(
         store, CanonicalClaim(sentence="DFT shows the orphaned claim holds.", scope={})
     )
     stub = _await_stub(store, hub, "The primary whose stub was withdrawn")
-    store.soft_delete_ref(stub)
+    store.retire_ref(stub)
     store.add_tag(
         hub,
         Tag.closed("STATUS", "acquiring"),

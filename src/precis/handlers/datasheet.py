@@ -22,7 +22,7 @@ machinery verbatim, parameterised on ``self.spec.kind``. Link a datasheet to
 the ``part`` it documents with ``link(rel='datasheet-of')`` — the relation is
 seeded by migration 0054. It is read at ``/datasheets/<slug>`` in the same
 two-pane reader as a paper (``precis_web.routes.datasheets``), and ingested by
-dropping a PDF into ``<inbox>/datasheets/`` (``precis watch`` routes it through
+dropping a PDF into ``<inbox>/datasheets/`` (``precis ingest --watch`` routes it through
 the paper pipeline with ``as_kind='datasheet'``).
 """
 

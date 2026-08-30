@@ -165,7 +165,7 @@ precis jobs watch-patents --name limerick-cat --delete
 ## See also
 
 ```python
-get(kind="skill", id="precis-patent-search-help")  # friendly q= form, source= matrix
+get(kind="skill", id="precis-patent-search-help")  # friendly q= form, reach= matrix
 get(kind="skill", id="precis-patent-help")  # read patents (get, views, slugs)
 get(kind="skill", id="precis-search-help")  # cross-kind search mechanics
 get(kind="skill", id="precis-tags")  # tag axes that lift to CQL

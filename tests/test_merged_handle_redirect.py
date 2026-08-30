@@ -32,7 +32,7 @@ def _seed_paper(store: Store, slug: str) -> int:
 def _merge(store: Store, loser: int, survivor: int) -> None:
     """Mirror ``ingest/dedup.merge_duplicate``'s tombstone: pointer + delete."""
     store.stamp_ref_meta(loser, {"superseded_by": survivor, "dedup": "test"})
-    store.soft_delete_ref(loser)
+    store.retire_ref(loser)
 
 
 # ── B: follow_supersede + resolve_handle redirect ──────────────────────
@@ -94,7 +94,7 @@ def test_link_target_redirects_bare_handle(store: Store) -> None:
 def test_link_target_still_raises_when_no_survivor(store: Store) -> None:
     """A soft-deleted ref with *no* ``superseded_by`` still hard-fails."""
     dead = _seed_paper(store, "dead2025")
-    store.soft_delete_ref(dead)
+    store.retire_ref(dead)
     with pytest.raises(NotFound):
         parse_link_target(f"paper:pa{dead}", store=store)
 

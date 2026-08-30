@@ -289,7 +289,7 @@ def build_pareto_snapshot(
             "on_frontier": p["on_frontier"],
             "converged": p["converged"],
             "trusted": all(gate_vals) if gate_vals else None,
-            "tier": flags.get("barrier_tier") or flags.get("tier"),
+            "tier": flags.get("barrier_fidelity") or flags.get("tier"),
             "barrier": measures.get("barrier"),
             "energy": measures.get("energy"),
         }

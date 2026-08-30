@@ -95,5 +95,5 @@ only. If a folder wants a third level, it probably wants to be a
 project (a strategic todo with `meta.workspace`). No auto-foldering
 pass exists on purpose; placement is an authored act.
 
-Cross-refs: `precis-tasks-help` (projects), `precis-structure-help`,
+Cross-refs: `precis-todo-tree-help` (projects), `precis-structure-help`,
 `precis-cad-help`, `precis-draft-help`, `precis-search-help`.

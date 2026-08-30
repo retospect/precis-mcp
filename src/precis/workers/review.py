@@ -11,18 +11,18 @@ SQL, no new claim flow.
 Anatomy of a reviewer:
 
 * **identity** — ``name`` (used in ``BatchResult`` and logging),
-  ``tier_tag`` (the open-tag literal that marks digest memories),
+  ``digest_tag`` (the open-tag literal that marks digest memories),
   ``meta_prefix`` (for the digest's ``meta`` keys).
 * **gating** — ``gate_env`` (truthy env var that turns the pass on),
   ``min_interval_hours`` (dedup window against the most recent
-  digest of this tier).
+  digest of this reviewer).
 * **dispatch** — ``model`` / ``max_turns`` / ``timeout_s``.
 * **content** — ``context_builder(store) -> dict[str, str]`` returns
   the live tree/context strings (the SQL reads), and ``modules`` is the
   ordered :class:`~precis.utils.prompt.Module` list that renders the
   prompt. The driver assembles those modules against
   an :class:`~precis.utils.prompt.AssemblyContext` whose ``extras`` carry
-  ``today`` + ``tier_tag`` + everything the context-builder returned, then
+  ``today`` + ``digest_tag`` + everything the context-builder returned, then
   packages the blocks with :class:`~precis.utils.prompt.ClaudeAgentAdapter`.
   The shared "define your abbreviations" + "only-put-is-a-gripe" footer
   blocks live once here (:data:`_ABBREVIATIONS_MODULE` /
@@ -72,7 +72,7 @@ log = logging.getLogger(__name__)
 
 #: Tier-1 tool deny for every standing reviewer pass (gr179501). A reviewer
 #: reads the corpus and emits a plain-text digest — the worker writes that
-#: stdout as the tier-tagged memory, so the reviewer must NOT ``put`` a
+#: stdout as the digest-tagged memory, so the reviewer must NOT ``put`` a
 #: memory itself. Its one sanctioned write is the gripe carve-out in
 #: :func:`_footer_block`, so ``mcp__precis__put`` stays allowed; everything
 #: that mutates existing refs, writes the filesystem, runs a shell, or hits
@@ -121,16 +121,17 @@ _ABBREVIATIONS_BLOCK = (
 def _footer_block(ctx: AssemblyContext) -> str:
     """The "do not address anyone / the only put you may make is a gripe" footer.
 
-    Identical between reviewers except for the tier tag the worker will
-    stamp on the digest, which is interpolated from ``ctx.extras['tier_tag']``.
-    The gripe carve-out (added earlier on this branch) is part of the shared
-    text, so it is guaranteed to stay in lock-step across reviewers.
+    Identical between reviewers except for the digest tag the worker will
+    stamp on the digest, which is interpolated from
+    ``ctx.extras['digest_tag']``. The gripe carve-out (added earlier on this
+    branch) is part of the shared text, so it is guaranteed to stay in
+    lock-step across reviewers.
     """
-    tier_tag = ctx.extras["tier_tag"]
+    digest_tag = ctx.extras["digest_tag"]
     return (
         "Do not address anyone. Do not use the precis MCP `put` tool to\n"
         "write a memory directly — the worker will write your output as a\n"
-        f"memory tagged `{tier_tag}` after you finish. Your final stdout\n"
+        f"memory tagged `{digest_tag}` after you finish. Your final stdout\n"
         "IS the digest body.\n"
         "\n"
         "Exception: if a precis tool itself errored or returned wrong results\n"
@@ -164,7 +165,7 @@ class Reviewer:
 
     ``context_builder`` is a callable taking the store and returning a
     dict of named strings (the live tree/context reads). The driver
-    always injects ``today`` (ISO date) and ``tier_tag`` on top of
+    always injects ``today`` (ISO date) and ``digest_tag`` on top of
     whatever the builder returns, then exposes the merged dict as the
     :class:`~precis.utils.prompt.AssemblyContext` ``extras``.
 
@@ -172,12 +173,12 @@ class Reviewer:
     that renders the prompt. Each module's ``build``
     reads what it needs from ``ctx.extras`` — so the reviewer-specific
     body reads ``today`` + the builder's keys, and the shared
-    :data:`_FOOTER_MODULE` reads ``tier_tag``. The context strings come
+    :data:`_FOOTER_MODULE` reads ``digest_tag``. The context strings come
     from a SQL read on the internal corpus, so no escaping is needed.
     """
 
     name: str
-    tier_tag: str
+    digest_tag: str
     gate_env: str
     meta_prefix: str
     #: The capability tier the call routes through; the
@@ -212,7 +213,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     if skip_if_high_load(f"review[{reviewer.name}]"):
         return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
-    if _recent_digest_exists(store, reviewer.tier_tag, reviewer.min_interval_hours):
+    if _recent_digest_exists(store, reviewer.digest_tag, reviewer.min_interval_hours):
         log.info(
             "review[%s]: digest written < %sh ago; skipping",
             reviewer.name,
@@ -357,8 +358,8 @@ def _gate_enabled(env_var: str) -> bool:
     return env_flag(env_var)
 
 
-def _recent_digest_exists(store: Store, tier_tag: str, hours: float) -> bool:
-    """True when a digest of the given tier was written within ``hours``."""
+def _recent_digest_exists(store: Store, digest_tag: str, hours: float) -> bool:
+    """True when a digest of the given tag was written within ``hours``."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -366,13 +367,13 @@ def _recent_digest_exists(store: Store, tier_tag: str, hours: float) -> bool:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = %s
                AND r.created_at > now() - %s::interval
              LIMIT 1
             """,
-            (tier_tag, f"{hours} hours"),
+            (digest_tag, f"{hours} hours"),
         ).fetchone()
     return row is not None
 
@@ -399,7 +400,7 @@ def _recent_failure(store: Store, reviewer: Reviewer) -> bool:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = %s
                AND r.created_at > now() - %s::interval
@@ -566,8 +567,8 @@ def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -
     One marker per interval (the next tick dedups on it via
     :func:`_recent_failure`), so a broken reviewer attempts at its normal
     cadence (~``min_interval_hours``) rather than every tick. Tagged
-    ``internal-thought`` only — NOT ``{tier_tag}`` — so it never masquerades as
-    a real digest in the deep-review summary.
+    ``internal-thought`` only — NOT ``{digest_tag}`` — so it never
+    masquerades as a real digest in the deep-review summary.
     """
     today = datetime.now(UTC).date().isoformat()
     msg = (error or "").strip()
@@ -589,7 +590,7 @@ def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -
 def _assemble_reviewer_blocks(reviewer: Reviewer, store: Store) -> list[Block]:
     """Assemble ``reviewer.modules`` into ordered blocks.
 
-    The context-builder's live strings (plus ``today`` and ``tier_tag``)
+    The context-builder's live strings (plus ``today`` and ``digest_tag``)
     ride the :class:`AssemblyContext` ``extras``; every module reads what
     it needs from there. Factored out of :func:`_build_prompt` so
     :func:`run_review_pass` can also capture the raw block list (for
@@ -604,7 +605,7 @@ def _assemble_reviewer_blocks(reviewer: Reviewer, store: Store) -> list[Block]:
         profile=Profile.AGENT,
         extras={
             "today": today,
-            "tier_tag": reviewer.tier_tag,
+            "digest_tag": reviewer.digest_tag,
             **reviewer.context_builder(store),
         },
     )
@@ -632,7 +633,7 @@ def _write_digest(
 ) -> int:
     """Insert the digest as a ``kind='memory'`` ref and return its id.
 
-    Tags applied: ``tree-review:YYYY-MM-DD`` + ``{tier_tag}`` +
+    Tags applied: ``tree-review:YYYY-MM-DD`` + ``{digest_tag}`` +
     ``user:asa`` + ``internal-thought``. ``meta`` keys are namespaced
     by ``{meta_prefix}date`` and ``{meta_prefix}cost_usd`` so a single
     `kind='memory'` row can answer "when did this reviewer last run"
@@ -656,7 +657,7 @@ def _write_digest(
         )
         for tag in (
             Tag.open(f"tree-review:{today}"),
-            Tag.open(reviewer.tier_tag),
+            Tag.open(reviewer.digest_tag),
             Tag.open("user:asa"),
             Tag.open("internal-thought"),
         ):

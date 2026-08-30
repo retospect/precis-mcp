@@ -164,7 +164,7 @@ def resolve_merge_loser_ref_id(store: Store, hub: int | str) -> int:
     Like :func:`resolve_hub_ref_id`, and reusing the same resolvers, but
     **not** gated on the ref currently being a *live* claim hub: the loser
     side of an already-applied merge is soft-deleted
-    (:func:`~precis.taproot.hub.merge_hubs` sets ``refs.deleted_at``), and
+    (:func:`~precis.taproot.hub.merge_hubs` sets ``refs.retired_at``), and
     re-running the same merge must still find it so
     :func:`~precis.taproot.hub.merge_hubs` can report the idempotent no-op
     (that function's own domain check, with a clearer error than a bare

@@ -45,8 +45,8 @@ def retired_ref_ids(store: Store, *, window_days: int = 90) -> list[int]:
     to the mirror every tick)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind='anki' AND deleted_at IS NOT NULL "
-            "AND deleted_at >= now() - make_interval(days => %s) "
+            "SELECT ref_id FROM refs WHERE kind='anki' AND retired_at IS NOT NULL "
+            "AND retired_at >= now() - make_interval(days => %s) "
             "AND COALESCE(meta->>'source','') != 'anki-foreign'",
             (window_days,),
         ).fetchall()

@@ -81,8 +81,8 @@ def test_collapse_points_chain_at_terminal_survivor(store: Store) -> None:
     with store.tx() as conn:
         store.stamp_ref_meta(mid, {"superseded_by": final}, conn=conn)
         store.stamp_ref_meta(head, {"superseded_by": mid}, conn=conn)
-        store.soft_delete_ref(mid, conn=conn)
-        store.soft_delete_ref(head, conn=conn)
+        store.retire_ref(mid, conn=conn)
+        store.retire_ref(head, conn=conn)
 
     fixed = collapse_superseded_chains(store, dry_run=False)
     assert (head, final) in fixed
@@ -105,7 +105,7 @@ def test_migrate_repoints_dangling_link_to_survivor(store: Store) -> None:
             conn=conn,
         )
         store.stamp_ref_meta(dead, {"superseded_by": survivor}, conn=conn)
-        store.soft_delete_ref(dead, conn=conn)
+        store.retire_ref(dead, conn=conn)
 
     acted = migrate_dangling_paper_links(store, dry_run=False)
     assert len(acted) == 1
@@ -130,7 +130,7 @@ def test_migrate_leaves_supersedes_edge_alone(store: Store) -> None:
             conn=conn,
         )
         store.stamp_ref_meta(dead, {"superseded_by": survivor}, conn=conn)
-        store.soft_delete_ref(dead, conn=conn)
+        store.retire_ref(dead, conn=conn)
 
     assert migrate_dangling_paper_links(store, dry_run=False) == []
     with store.pool.connection() as conn:

@@ -281,10 +281,10 @@ def test_edit_response_shape_uniform(
     kwargs: dict,
 ) -> None:
     """MCP critic MAJOR-C: every edit-mode response must carry
-    ``<verb> block N '<slug>' (L<a>-<b>) in '<file-slug>'``.
+    ``<verb> chunk N '<slug>' (L<a>-<b>) in '<file-slug>'``.
 
     Previously ``append`` and ``replace`` returned no line info;
-    ``find-replace`` and ``insert`` returned no block slug. Agents
+    ``find-replace`` and ``insert`` returned no chunk slug. Agents
     had to re-fetch ``/toc`` to learn where their write landed.
     """
     _write(
@@ -302,7 +302,7 @@ def test_edit_response_shape_uniform(
     import re
 
     pattern = (
-        r"(appended|replaced|edited|inserted) block \d+ '[^']+' "
+        r"(appended|replaced|edited|inserted) chunk \d+ '[^']+' "
         r"\(L\d+(?:-\d+)?\) in 'doc'"
     )
     assert re.search(pattern, resp.body), (
@@ -317,13 +317,13 @@ def test_format_write_result_unit() -> None:
     out = format_write_result(
         verb="replaced",
         file_slug="notes--meeting",
-        block_pos=3,
-        block_slug="conclusion",
+        chunk_pos=3,
+        chunk_slug="conclusion",
         line_start=42,
         line_end=58,
     )
     assert "replaced" in out
-    assert "block 3" in out
+    assert "chunk 3" in out
     assert "'conclusion'" in out
     assert "(L42-58)" in out
     assert "'notes--meeting'" in out
@@ -331,8 +331,8 @@ def test_format_write_result_unit() -> None:
     multi = format_write_result(
         verb="edited",
         file_slug="x",
-        block_pos=0,
-        block_slug="a",
+        chunk_pos=0,
+        chunk_slug="a",
         line_start=1,
         line_end=1,
         span_count=3,

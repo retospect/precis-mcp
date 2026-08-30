@@ -170,7 +170,7 @@ class AnkiHandler(NumericRefHandler):
                    (meta->'anki_stats'->>'ease_min')::float      AS ease,
                    (meta->'anki_stats'->>'reps_total')::int      AS reps
             FROM refs
-            WHERE kind = 'anki' AND deleted_at IS NULL
+            WHERE kind = 'anki' AND retired_at IS NULL
               AND meta ? 'anki_stats'
               AND ( (meta->'anki_stats'->>'lapses_total')::int >= 4
                  OR (meta->'anki_stats'->>'ease_min')::float <= 2.0 )

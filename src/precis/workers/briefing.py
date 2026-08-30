@@ -370,7 +370,7 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
         with store.tx() as conn:
             existing = conn.execute(
                 "SELECT 1 FROM refs WHERE kind = 'message' "
-                "AND meta->>'briefing_date' = %s AND deleted_at IS NULL LIMIT 1",
+                "AND meta->>'briefing_date' = %s AND retired_at IS NULL LIMIT 1",
                 (date_tag,),
             ).fetchone()
             if existing is not None:

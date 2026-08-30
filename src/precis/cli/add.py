@@ -9,7 +9,7 @@ Three input modes (mutually exclusive):
 
 Stdout (success): one line ``<cite_key>\\t<ref_id>\\t<status>``
 where ``status`` is ``inserted`` or ``existed``. Designed to be
-parseable for ``precis watch`` (B5).
+parseable for ``precis ingest --watch`` (B5).
 
 Exit codes:
 * 0 — paper ingested or already known.
@@ -132,7 +132,7 @@ def run(args: argparse.Namespace) -> None:
         sys.exit(4)
 
     status = "inserted" if result.inserted else "existed"
-    # Tab-separated for easy parsing by precis watch (B5).
+    # Tab-separated for easy parsing by precis ingest --watch (B5).
     print(f"{result.cite_key}\t{result.ref_id}\t{status}")
 
 

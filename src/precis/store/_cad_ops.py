@@ -155,8 +155,8 @@ class CadMixin:
         drop its search card — atomically. Returns nodes retired."""
         with self.tx() as conn:
             conn.execute(
-                "UPDATE refs SET deleted_at = now() "
-                "WHERE ref_id = %s AND kind = 'cad' AND deleted_at IS NULL",
+                "UPDATE refs SET retired_at = now() "
+                "WHERE ref_id = %s AND kind = 'cad' AND retired_at IS NULL",
                 (ref_id,),
             )
             n = conn.execute(

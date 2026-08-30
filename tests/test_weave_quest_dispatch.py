@@ -117,7 +117,7 @@ def _weave_quest_ref(meta: dict[str, Any] | None = None) -> SimpleNamespace:
     m = {QUEST_BODY_META_KEY: QUEST_BODY_WEAVE}
     if meta:
         m.update(meta)
-    return SimpleNamespace(deleted_at=None, meta=m)
+    return SimpleNamespace(retired_at=None, meta=m)
 
 
 class TestWeaveRouting:
@@ -168,7 +168,7 @@ class TestWeaveRouting:
 
         ctx = FakeCtx(_meta())
         ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
-            deleted_at=None, meta={QUEST_BODY_META_KEY: "something-else"}
+            retired_at=None, meta={QUEST_BODY_META_KEY: "something-else"}
         )
 
         out = qt._dispatch(ctx, qt.SPEC)

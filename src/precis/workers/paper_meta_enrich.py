@@ -71,7 +71,7 @@ def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
                  WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi') AS doi
           FROM refs r
          WHERE r.kind = 'paper'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND r.meta->>'authors_resolved_at' IS NULL
          ORDER BY r.ref_id DESC
          LIMIT %s

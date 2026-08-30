@@ -457,7 +457,7 @@ class TestReconcileOrphanStub:
                 "WHERE id_kind='arxiv' AND id_value='2404.02416'"
             ).fetchone()
             stub_row = conn.execute(
-                "SELECT deleted_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                "SELECT retired_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
                 (stub.id,),
             ).fetchone()
             link = conn.execute(
@@ -563,7 +563,7 @@ class TestSidecarFold:
         dead = store.insert_ref(kind="paper", slug="dead24", title="merged away")
         with store.pool.connection() as conn:
             conn.execute(
-                "UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (dead.id,)
+                "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (dead.id,)
             )
             conn.commit()
             assert _valid_fold_stub(dead.id, kind="paper", conn=conn) is None
@@ -614,7 +614,7 @@ class TestSidecarFold:
         assert result.ref_id != stub.id
         with store.pool.connection() as conn:
             stub_row = conn.execute(
-                "SELECT deleted_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                "SELECT retired_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
                 (stub.id,),
             ).fetchone()
             doi_owner = conn.execute(

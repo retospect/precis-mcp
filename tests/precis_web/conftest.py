@@ -820,9 +820,9 @@ class FakeStore(_FakeStoreBase):
 
         raise NotFound(f"ref id={ref_id} not found")
 
-    def soft_delete_ref(self, ref_id, *, conn=None):
+    def retire_ref(self, ref_id, *, conn=None):
         """Record the soft-delete; raise NotFound on a repeat (mirrors the
-        real store's ``deleted_at IS NULL`` guard) so the route's error
+        real store's ``retired_at IS NULL`` guard) so the route's error
         branch can be exercised."""
         from precis.errors import NotFound
 
@@ -865,7 +865,7 @@ class FakeStore(_FakeStoreBase):
         if victim_ref_id == survivor_ref_id:
             raise BadInput("cannot merge a ref into itself")
         self.merges.append((victim_ref_id, survivor_ref_id))
-        self.soft_delete_ref(victim_ref_id)
+        self.retire_ref(victim_ref_id)
         return 0
 
     def set_ref_identifier(
@@ -1249,7 +1249,7 @@ class FakeStore(_FakeStoreBase):
         return 1
 
     def locked_ref_ids(self, ref_ids):
-        # No live Postgres locks under the fake; the Tasks tab's
+        # No live Postgres locks under the fake; the Todo tab's
         # processing probe degrades to "nothing locked".
         return set()
 

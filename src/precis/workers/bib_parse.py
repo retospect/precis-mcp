@@ -699,7 +699,7 @@ def _claim(
     sql = f"""
         SELECT r.ref_id, r.title
         FROM refs r
-        WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+        WHERE r.kind = 'paper' AND r.retired_at IS NULL
           {ref_filter}
           AND EXISTS (
             SELECT 1 FROM chunks c

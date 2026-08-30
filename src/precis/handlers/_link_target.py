@@ -320,7 +320,7 @@ def _kind_is_numeric(kind: str, *, store: Store) -> bool:
             for r in conn.execute(
                 "SELECT DISTINCT k.slug FROM kinds k "
                 "JOIN refs r ON r.kind = k.slug "
-                "WHERE r.deleted_at IS NULL "
+                "WHERE r.retired_at IS NULL "
                 "ORDER BY k.slug"
             ).fetchall()
         ]

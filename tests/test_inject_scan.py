@@ -1,8 +1,8 @@
-"""inject_scan pass — tier-1/2 model scan + quarantine ladder (slice 4).
+"""inject_scan pass — depth-1/2 model scan + quarantine ladder (slice 4).
 
 Real store for the ``email_scan`` rows; the model ``client`` and the IMAP
 ``fetch_body`` are injected so no proxy / server is needed. Exercises the
-control flow: claim tier-0 → score → guarded upgrade → alert on ``high``,
+control flow: claim depth-0 → score → guarded upgrade → alert on ``high``,
 escalation of ``suspect``, the CAS guard, and the retry / retire edges.
 """
 
@@ -54,14 +54,14 @@ def _seed(store, account="rs@x.test") -> None:
 
 
 def _flag(store, *, uid, verdict="suspect", account="rs@x.test", uidv=1) -> None:
-    """A tier-0 verdict awaiting a deep scan."""
+    """A depth-0 verdict awaiting a deep scan."""
     store.record_email_scan(
         account,
         folder="INBOX",
         uidvalidity=uidv,
         uid=uid,
         verdict=verdict,
-        tier=0,
+        depth=0,
         evidence={"signals": ["ignore-previous"]},
     )
 
@@ -87,7 +87,7 @@ def test_scan_upgrades_and_records_tier1(store) -> None:
     )
     assert r["ok"] == 1 and r["failed"] == 0
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=5)
-    assert row is not None and row.verdict == "clean" and row.tier == 1
+    assert row is not None and row.verdict == "clean" and row.depth == 1
     assert row.evidence["tier1"]["verdict"] == "clean"
     # No longer pending.
     assert store.pending_email_scans(limit=10) == []
@@ -105,8 +105,8 @@ def test_high_verdict_raises_alert(store) -> None:
 def test_suspect_escalates_to_tier2(store) -> None:
     _seed(store)
     _flag(store, uid=7, verdict="suspect")
-    primary = _Client("suspect")  # tier-1 stays ambiguous
-    escalate = _Client("high")  # tier-2 breaks the tie
+    primary = _Client("suspect")  # depth-1 stays ambiguous
+    escalate = _Client("high")  # depth-2 breaks the tie
     run_inject_scan_pass(
         store,
         client=primary,
@@ -114,7 +114,7 @@ def test_suspect_escalates_to_tier2(store) -> None:
         fetch_body=_fetch({7: _msg(7)}),
     )
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=7)
-    assert row is not None and row.verdict == "high" and row.tier == 2
+    assert row is not None and row.verdict == "high" and row.depth == 2
     assert escalate.calls == 1  # escalated exactly once
     assert row.evidence["tier2"]["verdict"] == "high"
 
@@ -130,7 +130,7 @@ def test_clean_tier1_does_not_escalate(store) -> None:
         fetch_body=_fetch({8: _msg(8)}),
     )
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=8)
-    assert row is not None and row.verdict == "clean" and row.tier == 1
+    assert row is not None and row.verdict == "clean" and row.depth == 1
     assert escalate.calls == 0  # only ambiguous verdicts escalate
 
 
@@ -144,12 +144,12 @@ def test_unparseable_model_leaves_row_pending(store) -> None:
 
     r = run_inject_scan_pass(store, client=_Bad(), fetch_body=_fetch({9: _msg(9)}))
     assert r["failed"] == 1 and r["ok"] == 0
-    # Still tier-0 (never silently downgraded) but braked from immediate
+    # Still depth-0 (never silently downgraded) but braked from immediate
     # re-claim by the claim-time attempt cooldown (migration 0110) — the
     # ``pending_email_scans`` set it's fed from is a DIFFERENT thing from
     # "logically pending" (see the dedicated cooldown test below).
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=9)
-    assert row is not None and row.tier == 0
+    assert row is not None and row.depth == 0
 
 
 def test_unparseable_model_is_not_reclaimed_by_an_immediately_following_sweep(
@@ -227,28 +227,28 @@ def test_imap_error_leaves_row_pending(store) -> None:
 def test_absent_message_is_retired_keeping_verdict(store) -> None:
     _seed(store)
     _flag(store, uid=12, verdict="suspect")
-    # Message gone from the mailbox since tier-0: fetch returns None.
+    # Message gone from the mailbox since depth-0: fetch returns None.
     r = run_inject_scan_pass(
         store, client=_Client("high"), fetch_body=_fetch({12: None})
     )
     assert r["ok"] == 1
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=12)
-    # Retired at tier-1 (no longer pending) but keeps the coarse tier-0 verdict.
-    assert row is not None and row.tier == 1 and row.verdict == "suspect"
+    # Retired at depth-1 (no longer pending) but keeps the coarse depth-0 verdict.
+    assert row is not None and row.depth == 1 and row.verdict == "suspect"
     assert store.pending_email_scans(limit=10) == []
 
 
 def test_cas_guard_does_not_clobber_existing_tier2(store) -> None:
     _seed(store)
-    # A tier-2 verdict already present; the pending index won't pick it (tier>=1),
-    # but assert directly that a tier-1 write can't overwrite it.
+    # A depth-2 verdict already present; the pending index won't pick it (depth>=1),
+    # but assert directly that a depth-1 write can't overwrite it.
     store.record_email_scan(
         "rs@x.test",
         folder="INBOX",
         uidvalidity=1,
         uid=13,
         verdict="high",
-        tier=2,
+        depth=2,
         evidence={},
     )
     r = run_inject_scan_pass(
@@ -256,4 +256,4 @@ def test_cas_guard_does_not_clobber_existing_tier2(store) -> None:
     )
     assert r == {"claimed": 0, "ok": 0, "failed": 0}  # not even claimed
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=13)
-    assert row is not None and row.verdict == "high" and row.tier == 2
+    assert row is not None and row.verdict == "high" and row.depth == 2

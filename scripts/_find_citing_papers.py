@@ -145,7 +145,7 @@ def _load_corpus(
             # matching against S2 responses.
             rows = conn.execute(
                 "SELECT lower(meta->>'doi') FROM refs "
-                "WHERE kind = 'paper' AND deleted_at IS NULL "
+                "WHERE kind = 'paper' AND retired_at IS NULL "
                 "AND meta->>'doi' IS NOT NULL AND meta->>'doi' <> ''"
             ).fetchall()
             known_dois = {r[0] for r in rows if r[0]}
@@ -155,7 +155,7 @@ def _load_corpus(
                 "(meta->>'year')::int AS yr, "
                 "meta->>'doi', meta->>'arxiv_id', meta->>'s2_id' "
                 "FROM refs "
-                "WHERE kind = 'paper' AND deleted_at IS NULL "
+                "WHERE kind = 'paper' AND retired_at IS NULL "
                 "AND ("
                 "  (meta->>'doi'      IS NOT NULL AND meta->>'doi'      <> '') "
                 "  OR (meta->>'arxiv_id' IS NOT NULL AND meta->>'arxiv_id' <> '') "
@@ -528,7 +528,7 @@ def _load_source_paper_text(slugs: set[str]) -> dict[str, str]:
         with store.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT slug, title, meta->>'abstract' "
-                "FROM refs WHERE kind='paper' AND deleted_at IS NULL "
+                "FROM refs WHERE kind='paper' AND retired_at IS NULL "
                 "AND slug = ANY(%s)",
                 (list(slugs),),
             ).fetchall()

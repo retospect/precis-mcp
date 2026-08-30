@@ -27,7 +27,7 @@ def _child_jobs_under(store: Store, parent_id: int) -> list[dict]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, title, meta FROM refs "
-            "WHERE parent_id = %s AND kind = 'job' AND deleted_at IS NULL "
+            "WHERE parent_id = %s AND kind = 'job' AND retired_at IS NULL "
             "ORDER BY ref_id",
             (parent_id,),
         ).fetchall()
@@ -138,7 +138,7 @@ def test_mints_child_job_under_parent(handler: TodoHandler, store: Store) -> Non
     assert "STATUS:queued" in tags
     # A dispatch event was appended on the parent.
     events = store.events_for(rid)
-    assert any(e.event == "job-minted" and e.source == "dispatch" for e in events)
+    assert any(e.event == "job-minted" and e.source == "minter" for e in events)
 
 
 def test_auto_injects_auto_check_when_missing(
@@ -1251,7 +1251,7 @@ def _dispatchable_child(store: Store, title: str, parent_id: int | None) -> int:
 
 def _soft_delete(store: Store, ref_id: int) -> None:
     with store.pool.connection() as conn:
-        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (ref_id,))
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (ref_id,))
         conn.commit()
 
 
@@ -1260,7 +1260,7 @@ def test_skips_candidate_under_deleted_ancestor(
 ) -> None:
     """Deleting a parent must stop its whole subtree dispatching.
 
-    ``deleted_at`` is not transitive, and the candidate query only
+    ``retired_at`` is not transitive, and the candidate query only
     checks the candidate's *own* flag — so before ``_drop_orphaned``
     an orphaned subtree kept ticking indefinitely under a parent
     nobody could see any more.

@@ -12,7 +12,7 @@ on.
 
 Claim shape (``_claim_patents_for_gp``):
 
-* ``kind='patent'`` AND ``deleted_at IS NULL``
+* ``kind='patent'`` AND ``retired_at IS NULL``
 * Tagged ``awaiting-fulltext`` OR ``fulltext-unavailable``
   (OPS either still missing OR gave up)
 * Not tagged ``gp-attempted`` (one try per patent — manual ``--force``
@@ -275,7 +275,7 @@ def _claim_patents_for_gp(
     """Return up to ``limit`` patents needing a Google Patents try.
 
     Match criteria:
-    - ``kind='patent'`` AND ``deleted_at IS NULL``
+    - ``kind='patent'`` AND ``retired_at IS NULL``
     - Carries either the awaiting-fulltext or fulltext-unavailable open tag
     - Does NOT carry the gp-attempted open tag (unless ``force=True``)
 
@@ -329,7 +329,7 @@ def _claim_patents_for_gp(
                  LIMIT 1) AS status_tag
         FROM   refs r
         WHERE  r.kind = 'patent'
-          AND  r.deleted_at IS NULL
+          AND  r.retired_at IS NULL
           AND  EXISTS (
                   SELECT 1 FROM ref_tags rt
                   JOIN tags t ON t.tag_id = rt.tag_id

@@ -33,7 +33,7 @@ def _held(store: Store, *, n: int, slug: str, title: str, year: int = 2017) -> i
 def _deleted(store: Store, ref_id: int) -> bool:
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT deleted_at IS NOT NULL FROM refs WHERE ref_id = %s", (ref_id,)
+            "SELECT retired_at IS NOT NULL FROM refs WHERE ref_id = %s", (ref_id,)
         ).fetchone()
     assert row is not None
     return bool(row[0])

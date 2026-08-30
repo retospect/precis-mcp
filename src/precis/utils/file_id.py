@@ -199,8 +199,8 @@ def format_write_result(
     *,
     verb: str,
     file_slug: str,
-    block_pos: int | None = None,
-    block_slug: str | None = None,
+    chunk_pos: int | None = None,
+    chunk_slug: str | None = None,
     line_start: int | None = None,
     line_end: int | None = None,
     span_count: int = 1,
@@ -209,23 +209,26 @@ def format_write_result(
 
     Shape::
 
-        <verb> block <N> '<block-slug>' (L<a>-<b>) in '<file-slug>'
+        <verb> chunk <N> '<chunk-slug>' (L<a>-<b>) in '<file-slug>'
 
-    Any of the block / line fields may be ``None``; this is defensive
+    Any of the chunk / line fields may be ``None``; this is defensive
     — fresh ingest always supplies them, but a caller who wrote a
-    span crossing a block boundary (``find-replace match='all'``)
+    span crossing a chunk boundary (``find-replace match='all'``)
     gets the first span's location with ``[<N> spans]`` appended.
+    ``pos`` (not ``ord``) is deliberate here — the agent-facing surface
+    convention (``add_link(src_pos=)``, ``LinkTarget.pos``, …); ``ord``
+    is the internal ``ChunkRow`` field name only.
 
     The format is pinned by
     ``tests/test_files_write.py::test_edit_response_shape`` (MCP
     critic MAJOR-C, 2026-05-02).
     """
-    block_parts: list[str] = []
-    if block_pos is not None:
-        block_parts.append(f"block {block_pos}")
-    if block_slug:
-        block_parts.append(f"{block_slug!r}")
-    block_desc = " ".join(block_parts) or "file"
+    chunk_parts: list[str] = []
+    if chunk_pos is not None:
+        chunk_parts.append(f"chunk {chunk_pos}")
+    if chunk_slug:
+        chunk_parts.append(f"{chunk_slug!r}")
+    chunk_desc = " ".join(chunk_parts) or "file"
 
     line_part = ""
     if line_start is not None:
@@ -235,7 +238,7 @@ def format_write_result(
             line_part = f" (L{line_start})"
 
     span_note = f" [{span_count} spans]" if span_count > 1 else ""
-    return f"{verb} {block_desc}{line_part} in {file_slug!r}{span_note}"
+    return f"{verb} {chunk_desc}{line_part} in {file_slug!r}{span_note}"
 
 
 __all__ = [

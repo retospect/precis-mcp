@@ -115,7 +115,7 @@ def _has_live_child_todo(conn: Connection, ref_id: int) -> bool:
         SELECT 1 FROM refs c
          WHERE c.parent_id = %s
            AND c.kind = 'todo'
-           AND c.deleted_at IS NULL
+           AND c.retired_at IS NULL
            AND COALESCE(
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -160,7 +160,7 @@ def evaluate(store: Store, spec: dict[str, Any], *, ref_id: int) -> bool | None:
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.parent_id = %s
                AND r.kind = 'job'
-               AND r.deleted_at IS NULL
+               AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'succeeded'
              LIMIT 1

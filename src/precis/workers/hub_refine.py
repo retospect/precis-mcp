@@ -482,7 +482,7 @@ def _claim_hubs_due_for_refine(
                ) AS has_attempt_lease
           FROM refs r
          WHERE r.kind = 'finding'
-           AND r.deleted_at IS NULL
+           AND r.retired_at IS NULL
            AND {_CLAIM_HUB_SQL}
            AND {_NOT_HYPOTHESIS_SQL}
            AND NOT EXISTS (
@@ -491,7 +491,7 @@ def _claim_hubs_due_for_refine(
                  WHERE l.dst_ref_id = r.ref_id
                    AND l.relation = 'conjunct-of'
                    AND a.kind = 'finding'
-                   AND a.deleted_at IS NULL
+                   AND a.retired_at IS NULL
                )
         """,
         {
@@ -589,7 +589,7 @@ def _is_compound_hub(conn: Connection, ref_id: int) -> bool:
          WHERE l.dst_ref_id = %s
            AND l.relation = 'conjunct-of'
            AND a.kind = 'finding'
-           AND a.deleted_at IS NULL
+           AND a.retired_at IS NULL
          LIMIT 1
         """,
         (ref_id,),
@@ -600,7 +600,7 @@ def _is_compound_hub(conn: Connection, ref_id: int) -> bool:
 def _fetch_hub_info(conn: Connection, ref_id: int) -> tuple[str, dict[str, Any]] | None:
     """``(title, meta)`` for a live hub finding — ``None`` if it's gone."""
     row = conn.execute(
-        "SELECT title, meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+        "SELECT title, meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
         (ref_id,),
     ).fetchone()
     if row is None:
@@ -1272,7 +1272,7 @@ def _external_candidates(
         row = conn.execute(
             "SELECT r.ref_id FROM refs r JOIN ref_identifiers ri "
             "ON ri.ref_id = r.ref_id AND ri.id_kind = 'doi' "
-            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+            "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
             "AND ri.id_value = %s LIMIT 1",
             (doi_s,),
         ).fetchone()
@@ -1748,7 +1748,7 @@ def _attached_source_refs(conn: Connection, hub_ref_id: int) -> list[tuple[int, 
         "SELECT DISTINCT l.src_ref_id, r.kind FROM links l "
         "JOIN refs r ON r.ref_id = l.src_ref_id "
         "WHERE l.dst_ref_id = %s AND l.relation = ANY(%s) "
-        "AND r.deleted_at IS NULL",
+        "AND r.retired_at IS NULL",
         (hub_ref_id, sorted(HUB_ROLES)),
     ).fetchall()
     return [(int(r[0]), str(r[1])) for r in rows]
@@ -1839,7 +1839,7 @@ def _inbound_draft_citers(conn: Connection, hub_ref_id: int) -> list[int]:
     silently rewritten."""
     rows = conn.execute(
         "SELECT c.chunk_id FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-        "WHERE r.kind = 'draft' AND r.deleted_at IS NULL AND c.ord >= 0 "
+        "WHERE r.kind = 'draft' AND r.retired_at IS NULL AND c.ord >= 0 "
         "AND c.retired_at IS NULL AND c.text LIKE %s ORDER BY c.chunk_id",
         (f"%[fi{hub_ref_id}]%",),
     ).fetchall()
@@ -2211,7 +2211,7 @@ class RegroundDiff:
 
 def _stored_intent(conn: Connection, hub_ref_id: int) -> set[EvidenceHandle] | None:
     row = conn.execute(
-        "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+        "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
         (hub_ref_id,),
     ).fetchone()
     if row is None:

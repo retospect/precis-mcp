@@ -20,20 +20,20 @@ def test_record_and_get_scan(store) -> None:
         uidvalidity=1717,
         uid=42,
         verdict="suspect",
-        tier=0,
+        depth=0,
         evidence={"signals": ["ignore-previous"], "version": 1},
     )
     assert inserted is True
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1717, uid=42)
     assert row is not None
     assert row.verdict == "suspect"
-    assert row.tier == 0
+    assert row.depth == 0
     assert row.evidence["signals"] == ["ignore-previous"]
 
 
 def test_record_scan_is_insert_if_absent(store) -> None:
-    # record_email_scan is the tier-0 writer: insert-if-absent. It never
-    # clobbers an existing row (a later tier-1 pass upgrades via its own guarded
+    # record_email_scan is the depth-0 writer: insert-if-absent. It never
+    # clobbers an existing row (a later depth-1 pass upgrades via its own guarded
     # update, slice 4), so a second call for the same message is a no-op.
     _seed(store)
     first = store.record_email_scan(
@@ -42,7 +42,7 @@ def test_record_scan_is_insert_if_absent(store) -> None:
         uidvalidity=1,
         uid=7,
         verdict="suspect",
-        tier=0,
+        depth=0,
         evidence={"signals": ["role-reassign"]},
     )
     again = store.record_email_scan(
@@ -51,7 +51,7 @@ def test_record_scan_is_insert_if_absent(store) -> None:
         uidvalidity=1,
         uid=7,
         verdict="clean",  # a re-scan that would have downgraded it
-        tier=0,
+        depth=0,
         evidence={},
     )
     assert first is True and again is False  # first inserted, second no-op
@@ -121,7 +121,7 @@ def test_due_accounts_skips_disabled(store) -> None:
 
 
 def _seed_scan(
-    store, *, uid, verdict="suspect", tier=0, folder="INBOX", uidv=1
+    store, *, uid, verdict="suspect", depth=0, folder="INBOX", uidv=1
 ) -> None:
     _seed(store)
     store.record_email_scan(
@@ -130,75 +130,75 @@ def _seed_scan(
         uidvalidity=uidv,
         uid=uid,
         verdict=verdict,
-        tier=tier,
+        depth=depth,
         evidence={"signals": ["ignore-previous"]},
     )
 
 
 def test_upgrade_deepens_a_tier0_verdict(store) -> None:
-    _seed_scan(store, uid=5, verdict="suspect", tier=0)
+    _seed_scan(store, uid=5, verdict="suspect", depth=0)
     moved = store.upgrade_email_scan(
         "rs@x.test",
         folder="INBOX",
         uidvalidity=1,
         uid=5,
         verdict="high",
-        tier=1,
+        depth=1,
         evidence={"tier1": {"verdict": "high"}},
     )
     assert moved is True
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=5)
-    assert row is not None and row.verdict == "high" and row.tier == 1
+    assert row is not None and row.verdict == "high" and row.depth == 1
 
 
 def test_upgrade_cas_never_clobbers_a_deeper_verdict(store) -> None:
-    # A tier-2 verdict is in place; a stray tier-1 write must not overwrite it.
-    _seed_scan(store, uid=6, verdict="high", tier=2)
+    # A depth-2 verdict is in place; a stray depth-1 write must not overwrite it.
+    _seed_scan(store, uid=6, verdict="high", depth=2)
     moved = store.upgrade_email_scan(
         "rs@x.test",
         folder="INBOX",
         uidvalidity=1,
         uid=6,
         verdict="clean",
-        tier=1,
+        depth=1,
         evidence={},
     )
-    assert moved is False  # tier < 1 guard: 2 is not < 1, so no-op
+    assert moved is False  # depth < 1 guard: 2 is not < 1, so no-op
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=6)
-    assert row is not None and row.verdict == "high" and row.tier == 2
+    assert row is not None and row.verdict == "high" and row.depth == 2
 
 
-def test_upgrade_is_idempotent_at_same_tier(store) -> None:
-    _seed_scan(store, uid=7, verdict="suspect", tier=1)
+def test_upgrade_is_idempotent_at_same_depth(store) -> None:
+    _seed_scan(store, uid=7, verdict="suspect", depth=1)
     moved = store.upgrade_email_scan(
         "rs@x.test",
         folder="INBOX",
         uidvalidity=1,
         uid=7,
         verdict="high",
-        tier=1,
+        depth=1,
         evidence={},
     )
-    assert moved is False  # tier 1 is not < 1 — a re-run does nothing
+    assert moved is False  # depth 1 is not < 1 — a re-run does nothing
 
 
 def test_pending_scans_returns_only_tier0(store) -> None:
-    _seed_scan(store, uid=10, tier=0)
-    _seed_scan(store, uid=11, tier=0)
-    _seed_scan(store, uid=12, tier=1)  # already deep — excluded
+    _seed_scan(store, uid=10, depth=0)
+    _seed_scan(store, uid=11, depth=0)
+    _seed_scan(store, uid=12, depth=1)  # already deep — excluded
     pending = {s.uid for s in store.pending_email_scans(limit=10)}
     assert pending == {10, 11}
 
 
 def test_pending_scans_respects_limit(store) -> None:
     for u in range(20, 25):
-        _seed_scan(store, uid=u, tier=0)
+        _seed_scan(store, uid=u, depth=0)
     assert len(store.pending_email_scans(limit=3)) == 3
 
 
 def test_list_verdicts_maps_uid_to_verdict(store) -> None:
-    _seed_scan(store, uid=30, verdict="high", tier=1)
-    _seed_scan(store, uid=31, verdict="clean", tier=1)
+    _seed_scan(store, uid=30, verdict="high", depth=1)
+    _seed_scan(store, uid=31, verdict="clean", depth=1)
     got = store.list_email_scan_verdicts(
         "rs@x.test", folder="INBOX", uidvalidity=1, uids=[30, 31, 99]
     )
@@ -206,7 +206,7 @@ def test_list_verdicts_maps_uid_to_verdict(store) -> None:
 
 
 def test_list_verdicts_is_uidvalidity_scoped(store) -> None:
-    _seed_scan(store, uid=40, verdict="high", tier=1, uidv=1)
+    _seed_scan(store, uid=40, verdict="high", depth=1, uidv=1)
     # A resync (new uidvalidity) must not leak the stale verdict.
     got = store.list_email_scan_verdicts(
         "rs@x.test", folder="INBOX", uidvalidity=2, uids=[40]

@@ -1,5 +1,5 @@
 {% extends "base.html.j2" %}
-{% block title %}Tasks{% endblock %}
+{% block title %}Todo{% endblock %}
 {# Inline the current tag filter as hidden inputs so write POSTs
    round-trip the filter and the redirect lands on the same view. #}
 {% macro filter_inputs() %}
@@ -32,7 +32,7 @@
 {# Tag filter bar. ``require`` and ``exclude`` are repeating GET
    params; AND semantics within each list; matching todos pull in
    their ancestor chain so the tree shape stays legible. #}
-<form method="get" action="/tasks"
+<form method="get" action="/todo"
       class="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3 flex flex-wrap items-end gap-3">
   <div class="flex flex-col">
     <label class="text-xs text-slate-400 mb-0.5">Require tags (AND)</label>
@@ -57,7 +57,7 @@
   {%- set clear_parts = [] -%}
   {%- if focus_id -%}{%- set _ = clear_parts.append('focus=' ~ focus_id) -%}{%- endif -%}
   {%- if show_jobs and show_jobs != 'active' -%}{%- set _ = clear_parts.append('show_jobs=' ~ show_jobs) -%}{%- endif -%}
-  <a href="/tasks{% if clear_parts %}?{{ clear_parts|join('&') }}{% endif %}"
+  <a href="/todo{% if clear_parts %}?{{ clear_parts|join('&') }}{% endif %}"
      class="text-sm text-slate-500 underline pb-1.5">clear filter</a>
   {% endif %}
   <div class="flex items-center gap-2 ml-auto">
@@ -65,13 +65,13 @@
        a flurry of failed plan_tick / fix_gripe attempts doesn't bury
        the live work. #}
     {% if show_jobs == 'active' %}
-    <a href="/tasks{{ state_qs(focus_id, show_jobs_override='all') }}"
+    <a href="/todo{{ state_qs(focus_id, show_jobs_override='all') }}"
        class="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
        title="show kind='job' rows in failed / succeeded / done / won't-do states">
       + show closed jobs
     </a>
     {% else %}
-    <a href="/tasks{{ state_qs(focus_id, show_jobs_override='active') }}"
+    <a href="/todo{{ state_qs(focus_id, show_jobs_override='active') }}"
        class="text-xs px-2 py-1 rounded bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200">
       − hide closed jobs
     </a>
@@ -88,9 +88,9 @@
     {% set sep = '&' if '?' in base else '?' %}
     {% set npages = (total_roots + roots_per_page - 1) // roots_per_page %}
     <span class="text-xs text-slate-500 flex items-center gap-2">
-      {% if page > 1 %}<a href="/tasks{{ base }}{{ sep }}page={{ page - 1 }}" class="text-sky-600 hover:underline">← prev</a>{% endif %}
+      {% if page > 1 %}<a href="/todo{{ base }}{{ sep }}page={{ page - 1 }}" class="text-sky-600 hover:underline">← prev</a>{% endif %}
       <span>page {{ page }} of {{ npages }} · {{ total_roots }} roots</span>
-      {% if has_next %}<a href="/tasks{{ base }}{{ sep }}page={{ page + 1 }}" class="text-sky-600 hover:underline">next →</a>{% endif %}
+      {% if has_next %}<a href="/todo{{ base }}{{ sep }}page={{ page + 1 }}" class="text-sky-600 hover:underline">next →</a>{% endif %}
     </span>
     {% endif %}
   </div>
@@ -124,14 +124,14 @@
   <section class="lg:col-span-2">
     {# Drill-up breadcrumb: each ancestor is a clickable focus link;
        the final entry is the focused node itself (rendered as plain
-       text since it's the current scope). The "All tasks" link drops
+       text since it's the current scope). The "All todos" link drops
        focus entirely but keeps the tag filter. #}
     {% if focus_id %}
     <nav class="mb-3 flex flex-wrap items-center gap-1 text-xs text-slate-500">
-      <a href="/tasks{{ focus_qs(none) }}" class="hover:text-emerald-700 underline">All tasks</a>
+      <a href="/todo{{ focus_qs(none) }}" class="hover:text-emerald-700 underline">All todos</a>
       {% for b in breadcrumb %}
       <span class="text-slate-300">›</span>
-      <a href="/tasks{{ focus_qs(b.id) }}" class="hover:text-emerald-700">#{{ b.id }} {{ b.title }}</a>
+      <a href="/todo{{ focus_qs(b.id) }}" class="hover:text-emerald-700">#{{ b.id }} {{ b.title }}</a>
       {% endfor %}
       {% if focus_row %}
       <span class="text-slate-300">›</span>
@@ -144,7 +144,7 @@
        not two (the ⋯ panel below still works the same). #}
     {% if focus_id and focus_row %}
     <section class="mb-3 rounded-lg border border-slate-200 bg-white p-3">
-      <form method="post" action="/tasks/{{ focus_id }}/children" class="flex items-start gap-2">
+      <form method="post" action="/todo/{{ focus_id }}/children" class="flex items-start gap-2">
         {{ filter_inputs() }}
         <textarea name="text" required rows="2" placeholder="Add a child under #{{ focus_id }}…"
                   class="flex-1 rounded border-slate-300 text-sm border px-2 py-1"></textarea>
@@ -158,13 +158,13 @@
       <div class="mt-2 flex items-center gap-1 text-xs">
         <span class="text-slate-400">Tree diagram:</span>
         {% for d in tree_depths %}
-        <a href="/tasks{{ state_qs(focus_id, tree_override=d) }}"
+        <a href="/todo{{ state_qs(focus_id, tree_override=d) }}"
            class="px-2 py-0.5 rounded {% if d == tree_depth %}bg-emerald-100 text-emerald-700 font-medium{% else %}border border-slate-300 text-slate-600 hover:bg-slate-100{% endif %}">
           {{ d }} deep
         </a>
         {% endfor %}
         {% if tree_depth %}
-        <a href="/tasks{{ state_qs(focus_id, tree_override=0) }}" class="ml-2 text-slate-500 hover:text-slate-700 underline">hide</a>
+        <a href="/todo{{ state_qs(focus_id, tree_override=0) }}" class="ml-2 text-slate-500 hover:text-slate-700 underline">hide</a>
         {% endif %}
       </div>
     </section>
@@ -179,30 +179,30 @@
     </script>
     {% endif %}
     {# ── Vitals strip ──────────────────────────────────────────────
-       Counted over the WHOLE tree (routes/tasks.py::_tree_summary),
+       Counted over the WHOLE tree (routes/todo.py::_tree_summary),
        not the 25 roots this page renders — "is the factory alive" is
        not a per-page question. Each count links to the filter that
        shows exactly those rows, so a non-zero number is one click
        from its cause. #}
     <div class="mb-3 flex flex-wrap items-center gap-2 text-xs">
-      <a href="/tasks?require=kind%3Ajob&require=STATUS%3Arunning&show_jobs=all"
+      <a href="/todo?require=kind%3Ajob&require=STATUS%3Arunning&show_jobs=all"
          class="px-2 py-1 rounded-full border {% if summary.running %}bg-amber-50 border-amber-300 text-amber-800{% else %}border-slate-200 text-slate-500{% endif %}"
          title="jobs currently claimed by a worker">⏱ {{ summary.running }} running</a>
-      <a href="/tasks?require=kind%3Ajob&require=STATUS%3Aqueued&show_jobs=all"
+      <a href="/todo?require=kind%3Ajob&require=STATUS%3Aqueued&show_jobs=all"
          class="px-2 py-1 rounded-full border {% if summary.queued %}bg-sky-50 border-sky-300 text-sky-800{% else %}border-slate-200 text-slate-500{% endif %}"
          title="jobs minted and waiting for a worker">{{ summary.queued }} queued</a>
       {% if summary.stuck %}
-      <a href="/tasks?require=stuck&show_jobs=all"
+      <a href="/todo?require=stuck&show_jobs=all"
          class="px-2 py-1 rounded-full border bg-rose-50 border-rose-300 text-rose-800 font-medium"
          title="running past PRECIS_STUCK_JOB_HOURS with a dead lease — presumed dead, pending sweeper or claim-time reclaim">⚠ {{ summary.stuck }} stuck</a>
       {% endif %}
       {% if summary.parked %}
-      <a href="/tasks?require=parked&show_jobs=all"
+      <a href="/todo?require=parked&show_jobs=all"
          class="px-2 py-1 rounded-full border bg-rose-50 border-rose-200 text-rose-700"
          title="todos parked behind a failed child job — each shows a ▶ restart on its row">{{ summary.parked }} parked on failure</a>
       {% endif %}
       {% if summary.halted %}
-      <a href="/tasks?require=halted"
+      <a href="/todo?require=halted"
          class="px-2 py-1 rounded-full border border-slate-300 text-slate-600"
          title="subtrees with a halt brake on — the planner mints no ticks under these until ▶">⏸ {{ summary.halted }} halted</a>
       {% endif %}
@@ -214,8 +214,8 @@
          worse than a stale number. The JS below skips the reload while any
          input is focused for the same reason. #}
       <span class="ml-auto flex items-center gap-2 text-slate-400">
-        <span id="tasks-as-of" title="server render time — {{ as_of | abs_ts }}">as of {{ as_of | abs_ts }}</span>
-        <button type="button" id="tasks-autorefresh"
+        <span id="todo-as-of" title="server render time — {{ as_of | abs_ts }}">as of {{ as_of | abs_ts }}</span>
+        <button type="button" id="todo-autorefresh"
                 class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50"
                 title="reload every 30s so a left-open tab stays honest; skipped while you're typing">
           <span data-when-on>⟳ auto 30s</span><span data-when-off>⟳ auto off</span>
@@ -224,9 +224,9 @@
     </div>
     <div class="flex items-center justify-between mb-3">
       <h1 class="text-lg font-semibold">
-        {% if focus_id %}Subtree of #{{ focus_id }}{% else %}Task tree{% endif %}
+        {% if focus_id %}Subtree of #{{ focus_id }}{% else %}Todo tree{% endif %}
       </h1>
-      <form method="post" action="/tasks/roots" class="flex items-center gap-2"
+      <form method="post" action="/todo/roots" class="flex items-center gap-2"
             x-data="{open:false}">
         {{ filter_inputs() }}
         <template x-if="open">
@@ -256,10 +256,10 @@
     </div>
 
     {% if not rows %}
-      <p class="text-sm text-slate-500">No tasks yet. Add a strategic root to begin.</p>
+      <p class="text-sm text-slate-500">No todos yet. Add a strategic root to begin.</p>
     {% else %}
       <p class="text-xs text-slate-400 mb-2">
-        Drag a task onto another to reparent it; drop on the bar below to promote it to a root.
+        Drag a todo onto another to reparent it; drop on the bar below to promote it to a root.
       </p>
       <!-- Detach-to-root drop zone -->
       <div data-droptop="1"
@@ -268,13 +268,13 @@
       </div>
     {% endif %}
 
-    {# T12.2 — Tasks-tree filter chips + collapse-all/expand-all. The
+    {# T12.2 — Todo-tree filter chips + collapse-all/expand-all. The
        chips toggle classes on #tree which CSS uses to hide matching
        rows. Per-row collapse is below — each row with children gets
        a ▶/▼ toggle; clicking it walks subsequent rows by data-depth
        and hides those deeper than the row's depth. State persists in
        localStorage so a refresh keeps the user's view. #}
-    <div class="mb-2 flex items-center gap-1.5 text-xs flex-wrap" id="task-filter-bar">
+    <div class="mb-2 flex items-center gap-1.5 text-xs flex-wrap" id="todo-filter-bar">
       <button type="button" data-filter-toggle="hide-done"
               class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
         <span data-when-on>👁 done hidden</span><span data-when-off>show / hide done</span>
@@ -296,11 +296,11 @@
         <span data-when-on>⚙ jobs only</span><span data-when-off>jobs only</span>
       </button>
       <span class="mx-1 text-slate-300">|</span>
-      <button type="button" id="task-expand-all"
+      <button type="button" id="todo-expand-all"
               class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">▼ expand all</button>
-      <button type="button" id="task-collapse-all"
+      <button type="button" id="todo-collapse-all"
               class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">▶ collapse all</button>
-      <span class="ml-auto text-slate-400" id="task-row-count"></span>
+      <span class="ml-auto text-slate-400" id="todo-row-count"></span>
     </div>
     {# CSS rules driven by the filter classes on #tree. #}
     <style>
@@ -331,16 +331,16 @@
              corresponding pseudo-tag to ``require`` (composes with
              the current filter, focus, and show_jobs state). #}
           {% if r.kind == 'job' %}
-          <a href="/tasks{{ state_qs(focus_id, require_add='kind:job') }}"
+          <a href="/todo{{ state_qs(focus_id, require_add='kind:job') }}"
              class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 hover:bg-slate-300"
              title="filter to kind:job">job</a>
           {% endif %}
           {% set sc = {'done':'bg-emerald-100 text-emerald-700','doing':'bg-amber-100 text-amber-700','blocked':'bg-rose-100 text-rose-700','paused':'bg-slate-200 text-slate-600',"won't-do":'bg-slate-200 text-slate-500'} %}
-          <a href="/tasks{{ state_qs(focus_id, require_add='STATUS:' ~ r.status) }}"
+          <a href="/todo{{ state_qs(focus_id, require_add='STATUS:' ~ r.status) }}"
              class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-sky-100 text-sky-700') }} hover:opacity-80{% if r.note %} cursor-help{% endif %}"
              {% if r.note %}title="{{ r.note }} (click to filter to STATUS:{{ r.status }})"{% else %}title="filter to STATUS:{{ r.status }}"{% endif %}>{{ r.status }}{% if r.note %} ⓘ{% endif %}</a>
           {% if r.level %}
-          <a href="/tasks{{ state_qs(focus_id, require_add='level:' ~ r.level) }}"
+          <a href="/todo{{ state_qs(focus_id, require_add='level:' ~ r.level) }}"
              class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 hover:bg-violet-200"
              title="filter to level:{{ r.level }}">{{ r.level }}</a>
           {% endif %}
@@ -385,7 +385,7 @@
                 @keyup.escape.window="open = false">
             <button type="button"
                     @click="open = !open; if (open && !loaded) loaded = true"
-                    hx-get="/tasks/{{ r.id }}/children-popup?depth=0"
+                    hx-get="/todo/{{ r.id }}/children-popup?depth=0"
                     hx-target="#popup-children-{{ r.id }}"
                     hx-trigger="click once"
                     class="inline-flex items-center gap-0.5 text-xs ml-1 cursor-pointer hover:opacity-80"
@@ -413,7 +413,7 @@
                        terminal: when it finished, and the queue/run
                        split from ``r.timing``.
              ``status_since`` is the ref_tags row for the CURRENT status
-             — see routes/tasks.py::_load_tags for why that's all the
+             — see routes/todo.py::_load_tags for why that's all the
              transition history there is. #}
           <span class="ml-auto flex items-center gap-1.5 text-xs text-slate-400 tabular-nums whitespace-nowrap">
             {% if r.stuck %}
@@ -443,7 +443,7 @@
              re-mints a fresh attempt. Posts to put(kind='job', mode='retry')
              via the /retry route. Visible with "+ show closed jobs". #}
           {% if r.kind == 'job' and r.status in ['failed', "cancelled"] %}
-          <form method="post" action="/tasks/{{ r.id }}/retry" class="flex items-center gap-1">
+          <form method="post" action="/todo/{{ r.id }}/retry" class="flex items-center gap-1">
             {{ filter_inputs() }}
             <select name="model" class="rounded border-slate-300 text-xs border px-1 py-0.5"
                     title="model for the retry (blank = keep the parent's current LLM tier)">
@@ -457,13 +457,13 @@
                     title="clear the failure bubble on the parent todo so dispatch re-mints a fresh job">Retry</button>
           </form>
           {% endif %}
-          {# Tape-player ⏹ for a live job: cancel it and halt its parent task
+          {# Tape-player ⏹ for a live job: cancel it and halt its parent todo
              so dispatch doesn't immediately re-mint a fresh tick. #}
           {% if r.kind == 'job' and r.status in ['queued', 'running'] %}
-          <form method="post" action="/tasks/{{ r.id }}/stop" class="inline-flex">
+          <form method="post" action="/todo/{{ r.id }}/stop" class="inline-flex">
             {{ filter_inputs() }}
             <button class="text-sm leading-none text-rose-600 hover:text-rose-800"
-                    title="⏹ stop — cancel this job &amp; halt its parent task">⏹</button>
+                    title="⏹ stop — cancel this job &amp; halt its parent todo">⏹</button>
           </form>
           {% endif %}
           {% if r.kind == 'todo' %}
@@ -471,10 +471,10 @@
              📊 tree (focus + mermaid 3 deep). 📊 collapses both into
              one click for the visual-tree path. #}
           {% if r.id != focus_id %}
-          <a href="/tasks{{ state_qs(r.id) }}"
+          <a href="/todo{{ state_qs(r.id) }}"
              class="text-xs text-slate-400 hover:text-emerald-700"
              title="focus this subtree">🔍</a>
-          <a href="/tasks{{ state_qs(r.id, tree_override=3) }}"
+          <a href="/todo{{ state_qs(r.id, tree_override=3) }}"
              class="text-xs text-slate-400 hover:text-emerald-700"
              title="focus + show tree diagram (3 deep)">📊</a>
           {% else %}
@@ -483,13 +483,13 @@
              its live jobs) so the planner stops minting ticks; ▶ clears the
              halt to resume. State flips on whether a halt marker is present. #}
           {% if r.halted %}
-          <form method="post" action="/tasks/{{ r.id }}/start" class="inline-flex">
+          <form method="post" action="/todo/{{ r.id }}/start" class="inline-flex">
             {{ filter_inputs() }}
             <button class="text-sm leading-none text-emerald-600 hover:text-emerald-800"
                     title="▶ start — resume this subtree (clears halt)">▶</button>
           </form>
           {% else %}
-          <form method="post" action="/tasks/{{ r.id }}/stop" class="inline-flex">
+          <form method="post" action="/todo/{{ r.id }}/stop" class="inline-flex">
             {{ filter_inputs() }}
             <button class="text-sm leading-none text-rose-600 hover:text-rose-800"
                     title="⏹ stop — halt this whole subtree &amp; cancel its running jobs">⏹</button>
@@ -513,9 +513,9 @@
              skipped in the generic loop below — this replaces it. #}
           {% for cf in r.child_failures %}
           <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
-            <a href="/tasks/{{ r.id }}/transcript" target="_blank" rel="noopener"
+            <a href="/todo/{{ r.id }}/transcript" target="_blank" rel="noopener"
                class="hover:underline" title="open the failed job's LLM transcript">⚠ failed{% if cf.reason %} — {{ cf.reason }}{% else %} (job #{{ cf.job_id }} — open to debug){% endif %}</a>
-            <form method="post" action="/tasks/{{ cf.job_id }}/retry" class="inline-flex items-center gap-1">
+            <form method="post" action="/todo/{{ cf.job_id }}/retry" class="inline-flex items-center gap-1">
               {{ filter_inputs() }}
               <select name="model" class="rounded border-rose-300 text-xs border px-1 py-0.5 bg-white"
                       title="model to retry on (blank = keep the current LLM tier)">
@@ -528,7 +528,7 @@
               <button class="leading-none text-emerald-600 hover:text-emerald-800"
                       title="▶ restart — clear the failure and re-run this job">▶</button>
             </form>
-            <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex">
+            <form method="post" action="/todo/{{ r.id }}/tags" class="inline-flex">
               {{ filter_inputs() }}
               <input type="hidden" name="remove" value="child-failed:{{ cf.job_id }}" />
               <button class="leading-none text-rose-400 hover:text-rose-600"
@@ -541,7 +541,7 @@
           {% if not t.startswith('child-failed:') %}
           <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-slate-100 text-slate-600">
             <span>{{ t }}</span>
-            <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex">
+            <form method="post" action="/todo/{{ r.id }}/tags" class="inline-flex">
               {{ filter_inputs() }}
               <input type="hidden" name="remove" value="{{ t }}" />
               <button class="leading-none text-slate-400 hover:text-rose-600"
@@ -550,7 +550,7 @@
           </span>
           {% endif %}
           {% endfor %}
-          <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex items-center gap-1">
+          <form method="post" action="/todo/{{ r.id }}/tags" class="inline-flex items-center gap-1">
             {{ filter_inputs() }}
             <input name="add" placeholder="+ tag…"
                    class="rounded border-slate-300 text-xs border px-2 py-0.5 w-24" />
@@ -562,14 +562,14 @@
         <div x-show="actions" x-cloak class="mt-2 flex flex-wrap items-center gap-2"
              style="padding-left: {{ r.depth * 1.25 }}rem">
           <!-- Edit text: in-place rewrite via the edit verb (same id).
-               Textarea so multiline task bodies edit + save verbatim. -->
-          <form method="post" action="/tasks/{{ r.id }}/edit" class="flex items-start gap-1 w-full">
+               Textarea so multiline todo bodies edit + save verbatim. -->
+          <form method="post" action="/todo/{{ r.id }}/edit" class="flex items-start gap-1 w-full">
             {{ filter_inputs() }}
             <textarea name="text" required rows="3"
                       class="rounded border-slate-300 text-xs border px-2 py-1 flex-1 font-mono">{{ r.title }}</textarea>
             <button class="rounded bg-slate-700 text-white text-xs px-2 py-0.5">Save text</button>
           </form>
-          <form method="post" action="/tasks/{{ r.id }}/status" class="flex items-center gap-1">
+          <form method="post" action="/todo/{{ r.id }}/status" class="flex items-center gap-1">
             {{ filter_inputs() }}
             <select name="status" class="rounded border-slate-300 text-xs border px-1 py-0.5">
               {% for s in status_choices %}
@@ -578,21 +578,21 @@
             </select>
             <button class="rounded bg-slate-700 text-white text-xs px-2 py-0.5">Set</button>
           </form>
-          <form method="post" action="/tasks/{{ r.id }}/children" class="flex items-start gap-1">
+          <form method="post" action="/todo/{{ r.id }}/children" class="flex items-start gap-1">
             {{ filter_inputs() }}
             <textarea name="text" required rows="2" placeholder="add child…"
                       class="rounded border-slate-300 text-xs border px-2 py-1 w-48"></textarea>
             <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100">+ child</button>
           </form>
           <!-- Manual reparent fallback (keyboard / non-DnD path). -->
-          <form method="post" action="/tasks/{{ r.id }}/move" class="flex items-center gap-1">
+          <form method="post" action="/todo/{{ r.id }}/move" class="flex items-center gap-1">
             {{ filter_inputs() }}
             <input name="new_parent_id" type="number" min="1" placeholder="parent #"
                    class="rounded border-slate-300 text-xs border px-2 py-0.5 w-20" />
             <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100"
                     title="empty = move to top level">move</button>
           </form>
-          <form method="post" action="/tasks/{{ r.id }}/delete"
+          <form method="post" action="/todo/{{ r.id }}/delete"
                 onsubmit="return confirm('Delete #{{ r.id }}? Children re-parent to top level.')">
             {{ filter_inputs() }}
             <button class="rounded text-xs px-2 py-0.5 text-rose-600 hover:bg-rose-50">delete</button>
@@ -600,7 +600,7 @@
           <!-- History: lazy-load attempts (jobs) + event log via htmx. -->
           <button type="button"
                   class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100"
-                  hx-get="/tasks/{{ r.id }}/history"
+                  hx-get="/todo/{{ r.id }}/history"
                   hx-target="#hist-{{ r.id }}" hx-swap="innerHTML">history</button>
           <div id="hist-{{ r.id }}" class="w-full"></div>
         </div>
@@ -624,7 +624,7 @@
 <script>
 (function () {
   // Drag-to-reparent. A todo <li> is the draggable; dropping it on
-  // another todo <li> (or the top-level bar) POSTs to /tasks/{id}/move,
+  // another todo <li> (or the top-level bar) POSTs to /todo/{id}/move,
   // which dispatches link(rel='parent') with the tree guards. We submit
   // a real form (full reload) to stay consistent with the no-SPA UI.
   let draggingId = null;
@@ -642,7 +642,7 @@
     if (String(childId) === String(newParentId)) return;  // no-op onto self
     const f = document.createElement('form');
     f.method = 'post';
-    f.action = '/tasks/' + childId + '/move';
+    f.action = '/todo/' + childId + '/move';
     const inp = document.createElement('input');
     inp.type = 'hidden';
     inp.name = 'new_parent_id';
@@ -710,16 +710,16 @@
 </script>
 
 <script>
-/* T12.2 — Tasks-tree filter chips + per-row collapse.
+/* T12.2 — Todo-tree filter chips + per-row collapse.
    No backend, no Alpine; localStorage persists view state. */
 (function () {
   const TREE = document.getElementById('tree');
   if (!TREE) return;
-  const BAR = document.getElementById('task-filter-bar');
-  const ROW_COUNT_BADGE = document.getElementById('task-row-count');
+  const BAR = document.getElementById('todo-filter-bar');
+  const ROW_COUNT_BADGE = document.getElementById('todo-row-count');
 
   // ---- filter chip toggle ------------------------------------------
-  const FILTER_STORAGE_KEY = 'precis.tasks.filters';
+  const FILTER_STORAGE_KEY = 'precis.todo.filters';
   function loadFilters() {
     try {
       const raw = localStorage.getItem(FILTER_STORAGE_KEY);
@@ -763,7 +763,7 @@
   });
 
   // ---- per-row collapse --------------------------------------------
-  const COLLAPSE_STORAGE_KEY = 'precis.tasks.collapsed';
+  const COLLAPSE_STORAGE_KEY = 'precis.todo.collapsed';
   function loadCollapsed() {
     try {
       const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
@@ -830,7 +830,7 @@
     saveCollapsed(collapsed);
     applyCollapsed();
   });
-  document.getElementById('task-collapse-all').addEventListener('click', function () {
+  document.getElementById('todo-collapse-all').addEventListener('click', function () {
     const collapsed = new Set();
     rows.forEach(function (row) {
       if (hasChildren.get(row.dataset.id)) collapsed.add(row.dataset.id);
@@ -838,7 +838,7 @@
     saveCollapsed(collapsed);
     applyCollapsed();
   });
-  document.getElementById('task-expand-all').addEventListener('click', function () {
+  document.getElementById('todo-expand-all').addEventListener('click', function () {
     saveCollapsed(new Set());
     applyCollapsed();
   });
@@ -866,10 +866,10 @@
    are no rows — an empty tree is exactly when you most want to know
    whether the page is live or a tab you left open on Tuesday. */
 (function () {
-  const BTN = document.getElementById('tasks-autorefresh');
-  const AS_OF = document.getElementById('tasks-as-of');
+  const BTN = document.getElementById('todo-autorefresh');
+  const AS_OF = document.getElementById('todo-as-of');
   if (!BTN || !AS_OF) return;
-  const KEY = 'precis.tasks.autorefresh';
+  const KEY = 'precis.todo.autorefresh';
   const RENDERED_AT = Date.now();
   const BASE_LABEL = AS_OF.textContent;
 
@@ -903,7 +903,7 @@
   }
   setInterval(tickAge, 15000);
 
-  // Never reload out from under a half-typed tag / edited task body.
+  // Never reload out from under a half-typed tag / edited todo body.
   function isTyping() {
     const el = document.activeElement;
     if (!el) return false;

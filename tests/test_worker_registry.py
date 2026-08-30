@@ -54,7 +54,7 @@ _EXPECTED_SYSTEM = frozenset(
         "scheduler",
         "nursery",
         "heartbeat",
-        "dispatch",
+        "minter",
         "sweeper",
         "job_coordinator",
         "wake_runner",

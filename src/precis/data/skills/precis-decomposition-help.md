@@ -1,6 +1,6 @@
 ---
 id: precis-decomposition-help
-title: precis — when to split a task and how to size siblings
+title: precis — when to split a todo and how to size siblings
 summary: when to split vs do it yourself, how to size siblings, depth-at-leaves principle
 answers:
   - should I split this task into subtasks or just do it myself?

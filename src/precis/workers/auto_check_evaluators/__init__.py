@@ -97,7 +97,7 @@ def validate_auto_check_spec(spec: Any) -> None:
             f"meta.auto_check.type {type_name!r} is not a registered evaluator",
             options=sorted(REGISTRY.keys()),
             next=(
-                "see precis-auto-tasks-help for the evaluator catalogue; "
+                "see precis-auto-todo-help for the evaluator catalogue; "
                 f"registered types: {sorted(REGISTRY.keys())}"
             ),
         )

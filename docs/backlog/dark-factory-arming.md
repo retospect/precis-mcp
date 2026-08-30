@@ -154,7 +154,7 @@ not have, and worth remembering when a diagnosis lane goes quiet: check
 - **17 burned idem-keys.** Every live `diagnose_gripe` job is
   `STATUS:failed`, one per new gripe daily 08-16→08-20. Each burned key
   blocks its gripe from ever being re-diagnosed. Sweep
-  (`deleted_at=now()`) only AFTER step 3 proves the lane — sweeping
+  (`retired_at=now()`) only AFTER step 3 proves the lane — sweeping
   first risks burning all 17 a second time. Reto authorized a canary
   approach: prove one, then bulk. **Canary passed 2026-08-21 (job
   232974), so the bulk sweep is now unblocked — but it is a prod write:
@@ -168,8 +168,8 @@ not have, and worth remembering when a diagnosis lane goes quiet: check
   still required, exactly once, to give these 15 their diagnosis.
   Exact sweep (expect `UPDATE 16`):
   ```sql
-  UPDATE refs r SET deleted_at = now()
-  WHERE r.kind='job' AND r.deleted_at IS NULL
+  UPDATE refs r SET retired_at = now()
+  WHERE r.kind='job' AND r.retired_at IS NULL
     AND r.meta->>'idem_key' LIKE 'diagnose:%'
     AND r.ref_id <> 210697
     AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g ON g.tag_id=rt.tag_id

@@ -186,7 +186,7 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     ``PRIO:`` tag (a plain join would duplicate rows for a
     multi-PRIO-tagged gripe).
     """
-    clauses = ["r.kind = 'gripe'", "r.deleted_at IS NULL", "t.namespace = 'STATUS'"]
+    clauses = ["r.kind = 'gripe'", "r.retired_at IS NULL", "t.namespace = 'STATUS'"]
     if status_filter == "wontfix":
         clauses.append("t.value = 'wontfix'")
     elif status_filter != "all":

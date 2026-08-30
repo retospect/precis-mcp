@@ -144,7 +144,7 @@ def _sim_job_rows(
             "   WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS' "
             "   ORDER BY rt.ref_id DESC LIMIT 1) AS status "
             "FROM refs j "
-            "WHERE j.kind = 'job' AND j.deleted_at IS NULL "
+            "WHERE j.kind = 'job' AND j.retired_at IS NULL "
             "AND j.parent_id = ANY(%s) AND j.meta->>'job_type' = ANY(%s) "
             "ORDER BY j.created_at DESC LIMIT %s",
             (list(candidate_ids), list(_SIM_JOB_TYPES), limit),
@@ -173,7 +173,7 @@ def _tick_events(store: Store, quest_id: int, *, n: int) -> list[TickEvent]:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs "
-            "WHERE kind = 'job' AND deleted_at IS NULL "
+            "WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'job_type' = 'quest_tick' "
             "AND (meta #>> '{params,quest_id}')::bigint = %s "
             "ORDER BY ref_id DESC LIMIT 1",

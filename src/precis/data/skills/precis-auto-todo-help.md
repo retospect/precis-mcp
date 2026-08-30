@@ -1,5 +1,5 @@
 ---
-id: precis-auto-tasks-help
+id: precis-auto-todo-help
 title: precis — wait-for-condition todos via meta.auto_check
 summary: wait-for-condition todos — SQL-checkable evaluators, parking leaves, auto-resolve, timeouts
 answers:
@@ -11,7 +11,7 @@ applies-to: put (kind='todo' with meta.auto_check); precis worker --only auto_ch
 status: active
 ---
 
-# precis-auto-tasks-help — wait-for-condition todos
+# precis-auto-todo-help — wait-for-condition todos
 
 A todo can be a leaf that the agent *parks* until a SQL-checkable
 condition flips. The worker polls every cycle; when the condition
@@ -189,7 +189,7 @@ in the default rotation. Polling cadence matches the worker's
 ## See also
 
 ```python
-get(kind="skill", id="precis-tasks-help")  # the tree itself
+get(kind="skill", id="precis-todo-tree-help")  # the tree itself
 get(kind="skill", id="precis-tags")  # STATUS / PRIO / open tag rules
 get(kind="skill", id="precis-relations")  # blocked-by + note-for links
 ```

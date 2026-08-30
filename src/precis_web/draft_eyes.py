@@ -234,7 +234,7 @@ def expand_around(
             continue
         refs = store.fetch_refs_by_ids(list(ring_ids))
         for rid, r in refs.items():
-            if getattr(r, "deleted_at", None) is not None:
+            if getattr(r, "retired_at", None) is not None:
                 continue
             kind = getattr(r, "kind", None)
             handle = handle_registry.try_format(kind, rid) if kind else None

@@ -95,7 +95,7 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
 
     with store.pool.connection() as conn:
         hub_row = conn.execute(
-            "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            "SELECT title FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (hub_ref_id,),
         ).fetchone()
         # No live hub row → no live sentence to have verified against; any
@@ -107,7 +107,7 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
             SELECT l.link_id, l.src_ref_id, r.title, l.relation,
                    l.meta->>'support'
               FROM links l
-              JOIN refs r ON r.ref_id = l.src_ref_id AND r.deleted_at IS NULL
+              JOIN refs r ON r.ref_id = l.src_ref_id AND r.retired_at IS NULL
              WHERE l.dst_ref_id = %(hub)s
                AND l.relation IN ('establishes', 'corroborates')
                AND (
