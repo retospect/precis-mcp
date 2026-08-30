@@ -47,6 +47,7 @@ import logging
 import tempfile
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -76,6 +77,24 @@ from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
 
 log = logging.getLogger(__name__)
+
+
+def _export_date() -> str:
+    """Today, UTC, for the silkscreen title block.
+
+    :func:`precis.pcb.silk.build_title_block` refuses to invent a date and
+    requires the caller to supply one, which is right for a library: a
+    date on a board is a claim about that artwork. The handler is the
+    layer that legitimately holds one — this IS the export, so the export
+    date is a fact it has rather than a guess.
+
+    There is no stored design revision to pair it with (``pcb_boards``
+    carries ``board_id``/``name``/``stackup``/``fold_lines`` and no
+    version or timestamp column), so the block renders name + date and
+    omits the revision rather than fabricating one.
+    """
+    return datetime.now(UTC).date().isoformat()
+
 
 #: The "eyes" — analytic, computed-on-read (Slice 4/5).
 _PROBE_VIEWS = (
@@ -495,6 +514,28 @@ class PcbHandler(Handler):
                 f"layer {layer!r} is not in this board's stackup",
                 options=layer_names,
             )
+        # A layer is ONE sheet of copper, so two nets cannot both be poured
+        # on it — a hard constraint, not a price. Without this, a second
+        # op='plane_net' on the same layer was accepted, and
+        # planes.plane_pours' "lowest net id wins" tie-break then silently
+        # dropped one of them: the caller's instruction was stored, agreed
+        # to, and never appeared on the board. Same failure the annealer's
+        # one-net-per-plane-layer fix closed on the derived side.
+        conflict = next(
+            (
+                row
+                for row in self.store.pcb_planes_list(ref.id)
+                if row["layer"] == layer and row["net"] != net
+            ),
+            None,
+        )
+        if conflict is not None:
+            raise BadInput(
+                f"layer {layer!r} already carries plane net {conflict['net']!r} "
+                f"({conflict['source']}) — a layer is one sheet of copper, so "
+                "reassign it or pick a different layer",
+                options=[n for n in layer_names if n != layer],
+            )
         plane_id = self.store.pcb_assign_plane(ref.id, layer, net)
         if not plane_id:
             raise NotFound(f"net {net!r} not found in {ref.slug!r}")
@@ -688,6 +729,171 @@ class PcbHandler(Handler):
                 return [[float(p[0]), float(p[1])] for p in geom["path"]]
         return None
 
+    def _board_furniture(
+        self,
+        ir: pcb_ir.PcbIR,
+        pads: list[dict[str, Any]],
+        *,
+        vias: list[dict[str, Any]],
+        instance_sides: dict[str, str],
+        copper: list[dict[str, Any]],
+        outline: list[list[float]] | list[tuple[float, float]] | None,
+        layer_names: list[str],
+        slug: str,
+        date: str | None = None,
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[str, list[dict[str, Any]]],
+        list[str],
+        tuple[pcb_silk.SilkPlacement, ...],
+    ]:
+        """Fiducials, title block and silkscreen, assembled ONCE.
+
+        Returns ``(pads, silk_draws, warnings, census)`` — ``pads`` with
+        the fiducial flashes folded in (they are ordinary ``model["pads"]``
+        entries, so copper and the swelled mask opening fall out of the
+        existing pad pipeline untouched), and ``census`` (one
+        :class:`~precis.pcb.silk.SilkPlacement` per per-instance courtyard/
+        pin-1/refdes item :func:`~precis.pcb.silk.build_silk` considered)
+        for a caller wiring ``view='drc'`` (:meth:`_render_drc`) — the
+        structured record :func:`precis.pcb.drc.check_silk_missing`/
+        :func:`~precis.pcb.drc.check_silk_printability` read, rather than
+        this function's own ``warnings`` prose.
+
+        **This exists because there are two render sites** —
+        :meth:`_render_gerber` (the fab set a human orders from) and the
+        fab SVG (the picture they inspect it with) — and this subsystem's
+        recurring defect is one rule implemented at two call sites that
+        then drift. A board whose picture shows fiducials the gerbers
+        lack is exactly that bug, and it would look like a rendering
+        nicety rather than a fab defect.
+
+        **Order is load-bearing, not stylistic — and this paragraph
+        describes what the code below actually does, not the reverse.**
+        An EARLIER version of this function placed fiducials first (they
+        are optical targets a machine is told to look at, so the instinct
+        is "they should not have to move for anything else") — but a
+        fiducial pinned to the outline's bottom-right corner then blocked
+        every candidate in the title block's own margin ladder and
+        silently dropped it from the rendered board (found by rendering
+        and looking, not by any test; see the comment ahead of the title
+        block call below). The title block and the S/N patch are each
+        anchored to a specific outline-bbox corner with a short,
+        fixed-order fallback ladder (:func:`precis.pcb.silk.
+        build_title_block`/:func:`~precis.pcb.silk.build_sn_patch`) — they
+        have almost nowhere else to go. Fiducials, by contrast,
+        :func:`~precis.pcb.silk.build_fiducials` walks ALL four corners
+        and is content with whichever three clear first, so THEY are the
+        one board-level feature with real room to move around something
+        already committed. The actual order below is therefore: **title
+        block first, the S/N patch second** (against the title block,
+        which becomes an obstacle for it, not merely an anchor — see the
+        comment ahead of that call), **fiducials third** (checked against
+        both), **and per-part silk last of all**, against everything the
+        first three placed — the only ordering under which every board-
+        level feature that CAN move out of the way for another one
+        actually does.
+        """
+        warnings: list[str] = []
+        if not outline:
+            # Both builders need a bounding box. Say so rather than
+            # returning a board that is quietly missing its fab targets.
+            warnings.append(
+                "no outline feature — skipped fiducials and the title block "
+                "(both are placed relative to the board's bounding box)"
+            )
+            silk_only = pcb_silk.build_silk(
+                ir, pads, vias=vias, instance_sides=instance_sides
+            )
+            warnings.extend(f"silk: {m}" for m in silk_only.dropped)
+            warnings.extend(f"silk: {m}" for m in silk_only.relocated)
+            return pads, silk_only.draws, warnings, silk_only.census
+
+        # **Title block FIRST, fiducials second.** Both want a corner of the
+        # same bounding box, and only the fiducials can go somewhere else:
+        # `build_fiducials` walks a list of corners and takes the first that
+        # are clear, while `build_title_block` stacks at ONE corner and is
+        # dropped outright if that corner is occupied.
+        #
+        # Placing fiducials first put one at the outline's bottom-right,
+        # which blocked every title-block candidate inside its margin ladder
+        # and silently dropped the block from the rendered board — found by
+        # rendering and looking, not by any test. `build_title_block`'s own
+        # docstring says to place it first; this is that instruction.
+        title = pcb_silk.build_title_block(outline, pads, name=slug, date=date)
+        warnings.extend(f"title block: {m}" for m in title.dropped)
+
+        # The serial-number patch sits against the title block, so it is
+        # placed immediately after it and before anything that would
+        # compete for the same corner.
+        # The title block is an OBSTACLE for the patch, not merely an anchor.
+        # Passing only `title_bbox` positioned the patch relative to the
+        # block but left nothing stopping it from overlapping — and a solid
+        # silk box painted over the board name erases it, which is worse
+        # than either element being dropped.
+        sn = pcb_silk.build_sn_patch(
+            outline,
+            pads,
+            title_bbox=title.bbox,
+            avoid=(
+                [pcb_silk.obstacle_from_bbox(title.bbox)]
+                if title.bbox is not None
+                else None
+            ),
+        )
+        warnings.extend(f"S/N patch: {m}" for m in sn.dropped)
+
+        fid_layer = layer_names[0] if layer_names else "F.Cu"
+        # `obstacle_from_bbox` returns a pad-shaped dict, which is exactly
+        # what `build_fiducials` checks its candidate corners against — so
+        # the block becomes an ordinary obstacle rather than a special case.
+        fid_obstacles = list(pads)
+        for placed_bbox in (title.bbox, sn.bbox):
+            if placed_bbox is not None:
+                fid_obstacles.append(pcb_silk.obstacle_from_bbox(placed_bbox))
+        fid = pcb_silk.build_fiducials(outline, fid_obstacles, layer=fid_layer)
+        warnings.extend(f"fiducial: {m}" for m in fid.dropped)
+
+        # `FiducialResult.plane_blockers` cannot be honoured from here:
+        # antipads are cut at REALIZE time by `planes.plane_pours`, and
+        # this runs at render time off already-realized copper. So a
+        # fiducial on a poured layer is flooded over, which destroys the
+        # optical contrast the target exists for. Nothing downstream
+        # would report that, so report it here — a defect that presents
+        # as a picture looking slightly wrong is one nobody attributes.
+        if any(
+            c.get("ctype") == "pour" and str(c.get("layer") or "") == fid_layer
+            for c in copper
+        ):
+            warnings.append(
+                f"fiducial: {fid_layer} carries a copper pour, which floods the "
+                "fiducial targets — they need an antipad cut at realize time "
+                "(FiducialResult.plane_blockers), which this render-time path "
+                "cannot do"
+            )
+
+        pads = pads + fid.pads
+
+        # Everything already placed becomes an obstacle for the per-part
+        # labels, on BOTH sides: a fiducial is a copper/mask feature and
+        # blocks silk wherever it lands.
+        board_obstacles = list(fid.silk_keepouts)
+        for placed_bbox in (title.bbox, sn.bbox):
+            if placed_bbox is not None:
+                board_obstacles.append(pcb_silk.obstacle_from_bbox(placed_bbox))
+        reserved = {side: list(board_obstacles) for side in ("top", "bottom")}
+
+        silk_result = pcb_silk.build_silk(
+            ir, pads, vias=vias, instance_sides=instance_sides, reserved=reserved
+        )
+        warnings.extend(f"silk: {m}" for m in silk_result.dropped)
+        warnings.extend(f"silk: {m}" for m in silk_result.relocated)
+
+        draws = {side: list(items) for side, items in silk_result.draws.items()}
+        draws.setdefault("top", []).extend(title.draws)
+        draws.setdefault("top", []).extend(sn.draws)
+        return pads, draws, warnings, silk_result.census
+
     def _drc_pads(self, ref_id: int, layers: list[str]) -> list[dict[str, Any]]:
         """This design's pads, in :mod:`precis.pcb.gerber` model shape.
 
@@ -721,9 +927,28 @@ class PcbHandler(Handler):
         keep-out radius, keyed by refdes.
 
         **The radius is not computed here.**
-        :func:`precis.pcb.ir.instance_keepout_radius_mm` is the ONE
-        definition, shared with ``OptimizeEngine._keepout_r`` and
-        ``seed_placement``. A flat
+        :func:`precis.pcb.ir.instance_keepout_radius_mm` is the definition
+        used by every COPPER-side consumer — this view,
+        ``OptimizeEngine._keepout_r`` and ``seed_placement``.
+
+        **It is NOT the only courtyard in this subsystem, and this
+        docstring claimed it was until 2026-08-29.** The courtyard actually
+        DRAWN on the silkscreen comes from
+        :func:`precis.pcb.silk._courtyard_reach_mm`, which is a separate
+        formula: a SQUARE of half-extent ``instance_pad_radius + half_pad
+        + margin``, against this function's CIRCLE of radius
+        ``instance_pad_radius + PAD_BREATHING_MM`` floored at
+        ``COURTYARD_MIN_SEPARATION_MM / 2``. Different shape, different
+        size. So ``courtyard_overlap`` enforces one boundary while the
+        board's silkscreen shows an assembler a different one — they are
+        not required to agree (a placement-legality keep-out and a visual
+        assembly aid are different questions), but nothing currently
+        states the relationship or checks it, and a reader who believed
+        the old "ONE definition" claim would not go looking. Whether they
+        SHOULD be reconciled is tracked in
+        ``docs/backlog/pcb-engine-plan.md``.
+
+        A flat
         :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` for EVERY
         instance made ``courtyard_overlap`` structurally dormant: it is
         smaller than any real part's derived keep-out, so placement always
@@ -874,7 +1099,8 @@ class PcbHandler(Handler):
         pose + its cached footprint, and a GENERATED silkscreen
         (:mod:`precis.pcb.silk` — refdes labels, courtyard outlines, pin-1
         ticks, built off the same IR and checked against these same pads
-        so nothing prints where a fab would scrape it off)."""
+        AND this same realized copper's vias, so nothing prints where a
+        fab would scrape it off)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         design = self.store.pcb_load(ref_id)
@@ -972,11 +1198,19 @@ class PcbHandler(Handler):
             str(i.get("refdes")): str(i.get("layer") or "top")
             for i in design["instances"]
         }
-        silk_result = pcb_silk.build_silk(ir, pads, instance_sides=instance_sides)
-        if silk_result.dropped:
-            warnings.extend(f"silk: {msg}" for msg in silk_result.dropped)
-        if silk_result.relocated:
-            warnings.extend(f"silk: {msg}" for msg in silk_result.relocated)
+        vias = [c for c in copper if c.get("ctype") == "via"]
+        pads, silk_draws, furniture_warnings, _silk_census = self._board_furniture(
+            ir,
+            pads,
+            vias=vias,
+            instance_sides=instance_sides,
+            copper=copper,
+            outline=outline,
+            layer_names=layer_names,
+            slug=slug,
+            date=_export_date(),
+        )
+        warnings.extend(furniture_warnings)
 
         model: dict[str, Any] = {
             "layers": layer_names,
@@ -984,7 +1218,7 @@ class PcbHandler(Handler):
             "copper": copper,
             "pads": pads,
             "drills": drills,
-            "silkscreen": silk_result.draws,
+            "silkscreen": silk_draws,
         }
         try:
             files = pcb_gerber.export_fab(model, name=slug)
@@ -1180,7 +1414,21 @@ class PcbHandler(Handler):
         stays inside the optimizer, not this view. Every call is itself a
         DRC "run" — findings are persisted to ``pcb_drc_findings`` under a
         fresh ``run_id`` so ``netlist_drc_clean`` and a human reviewer can
-        both read the same durable record afterward."""
+        both read the same durable record afterward.
+
+        **Now builds board furniture (fiducials/title block/silkscreen)
+        too**, via the SAME :meth:`_board_furniture` :meth:`_render_gerber`
+        and the fab SVG already call — this view used to check ONLY
+        component pads/copper, so a fiducial (an ordinary flashed pad on
+        the real fab set) had no representation here at all: a track
+        routed near an outline corner could ship a gerber with a 1mm
+        copper dot sitting on top of it while ``view='drc'`` read clean,
+        because the dot was never in the model this view checked. The
+        furniture is COMPUTED fresh on every call, never persisted and
+        read back — see :meth:`Store.pcb_drc_findings_latest`'s own
+        docstring for why a persisted-then-read DRC result makes "no rows"
+        and "no problems" the same value, the exact trap a silk census
+        computed here (not on write) avoids."""
         design = self.store.pcb_load(ref_id)
         board = design["board"]
         if board is None:
@@ -1207,11 +1455,48 @@ class PcbHandler(Handler):
         # two call sites, drifted — and connectivity is precisely the check
         # that would be fooled by pads in the wrong place.
         pads, courtyard_radius = self._drc_geometry(ref_id, layer_names)
+
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        graph = self.store.pcb_graph(ref_id)
+        ir = pcb_session.build_ir(graph)
+        instance_sides = {
+            str(i.get("refdes")): str(i.get("layer") or "top")
+            for i in design["instances"]
+        }
+        vias = [c for c in copper if c.get("ctype") == "via"]
+        outline = self._outline_from_features(ref_id)
+        # `pads` below is REPLACED with `_board_furniture`'s own return, not
+        # merely extended — that call already folds the component pads
+        # passed in here together with the fiducial flashes it mints
+        # (module docstring above: this is the fix for fiducial copper
+        # being invisible to this view). Component pads never travel
+        # through a second path once this line runs.
+        # `furniture_warnings` (fiducial/title-block/S/N-patch drop prose)
+        # is discarded here on purpose: those three are board-level
+        # furniture with no per-instance `SilkPlacement` row to check
+        # against (silk.py's own module docstring — fiducials/title block
+        # sit outside `build_silk`'s per-instance census entirely), so
+        # `run_geometric_drc` has no structured rule for them yet; the
+        # gerber/fab-SVG render paths still surface this same prose to a
+        # human inspecting those artifacts.
+        pads, silk_draws, _furniture_warnings, silk_census = self._board_furniture(
+            ir,
+            pads,
+            vias=vias,
+            instance_sides=instance_sides,
+            copper=copper,
+            outline=outline,
+            layer_names=layer_names,
+            slug=slug,
+            date=_export_date(),
+        )
         model = {
             "layers": layer_names,
             "copper": copper,
             "pads": pads,
             "drills": self._drc_drills(ref_id),
+            "silkscreen": silk_draws,
         }
         courtyards = [
             (
@@ -1246,7 +1531,7 @@ class PcbHandler(Handler):
         findings = pcb_drc.run_geometric_drc(
             model,
             capability=capability,
-            outline=self._outline_from_features(ref_id),
+            outline=outline,
             courtyards=courtyards,
             net_rules=net_rules,
             unrouted=[
@@ -1254,6 +1539,7 @@ class PcbHandler(Handler):
                 for r in self.store.pcb_route_status(ref_id)
                 if r["status"] != "realized"
             ],
+            census=silk_census,
         )
         run_id = uuid.uuid4().hex
         self.store.pcb_write_drc_findings(
@@ -1387,20 +1673,56 @@ class PcbHandler(Handler):
             str(i.get("refdes")): str(i.get("layer") or "top")
             for i in design["instances"]
         }
-        silk_result = pcb_silk.build_silk(ir, pads, instance_sides=instance_sides)
+        copper = self.store.pcb_copper_list(int(board["board_id"]))
+        vias = [c for c in copper if c.get("ctype") == "via"]
+        outline = self._outline_from_features(ref_id) or []
+        pads, silk_draws, furniture_warnings, _silk_census = self._board_furniture(
+            ir,
+            pads,
+            vias=vias,
+            instance_sides=instance_sides,
+            copper=copper,
+            outline=outline,
+            layer_names=layer_names,
+            slug=slug,
+            date=_export_date(),
+        )
         model: dict[str, Any] = {
             "layers": layer_names,
-            "outline": self._outline_from_features(ref_id) or [],
-            "copper": self.store.pcb_copper_list(int(board["board_id"])),
+            "outline": outline,
+            "copper": copper,
             "pads": pads,
-            "silkscreen": silk_result.draws,
+            "silkscreen": silk_draws,
         }
         # allow_synthesized, because this is a picture and not an order.
         # export_fab's refusal exists to stop a land-pattern BOUND reaching
         # a fab; looking at one is exactly how you notice it is a bound.
         files = pcb_gerber.export_fab(model, name=slug, allow_synthesized=True)
         try:
-            return Response(body=gerber_view.render_fab_svg(files, title=slug))
+            body = gerber_view.render_fab_svg(files, title=slug)
+            # **A dropped fiducial or title block must not be invisible on the
+            # surface a human INSPECTS the board with.** This path used to
+            # discard these: a silently-missing title block looked identical
+            # to one nobody asked for, and that cost a real diagnosis. The
+            # gerber path prints them; here the SVG body is the whole
+            # response, so they ride along inside the document.
+            #
+            # **`<desc>`, not an XML comment.** The first cut used a comment
+            # and every renderer rejected the whole file: these messages are
+            # full of `--` ("-- dropped", "-- skipped") and an XML comment
+            # may not contain a double hyphen. That turned a diagnostic into
+            # a corrupted artefact, and only opening the SVG revealed it —
+            # the honesty mechanism broke the thing it was reporting on.
+            # `<desc>` is a legal child of `<svg>`, ignored by renderers,
+            # read by screen readers, and greppable.
+            if furniture_warnings:
+                notes = "\n".join(
+                    "  " + w.replace("&", "&amp;").replace("<", "&lt;")
+                    for w in furniture_warnings
+                )
+                desc = f"<desc>pcb render warnings:\n{notes}\n</desc>\n"
+                body = body.replace("</svg>", f"{desc}</svg>", 1)
+            return Response(body=body)
         except gerber_view.UnsupportedGerber as exc:
             raise BadInput(f"pcb: cannot render this fab set — {exc}") from exc
 

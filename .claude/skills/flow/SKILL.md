@@ -47,6 +47,17 @@ manufacture ceremony for a small change.
    (sonnet) per the Agent-sizing table in `CLAUDE.md` — that table, not this
    skill, is the authority on tiering.
 
+   **Checkpoint-commit at every agent boundary.** Nothing else in this
+   workflow asks for a commit — `scripts/ship` commits WIP itself, which makes
+   commit feel like ship's job. It is not, and ship must not run while agents
+   are editing (it snapshots mid-write, then resets the branch). On a long
+   tree that pairs into a trap: deferring the ship defers the *only* commit,
+   and a whole session accumulates as unstaged files with zero commits ahead.
+   A bare `git commit` is not a ship — no gate, no push, no `main`. Run one
+   after every agent reports, before every ship, and before every compaction.
+   Agents themselves stay out of git entirely (one ran `git checkout -- <file>`
+   and destroyed hours of unstaged work), so nobody commits unless you do.
+
 5. **Ship.** `/land` (ship only) or `/go` (ship + deploy). On ship, fold
    surviving truth into the owning package docstring and **delete the
    backlog item** in the same commit (`docs/README.md` §Backlog lifecycle).

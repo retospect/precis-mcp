@@ -1,39 +1,148 @@
-"""precis.pcb.stroke_font -- the single-stroke silkscreen vector font.
+"""precis.pcb.stroke_font -- the single-stroke (Hershey Simplex-modeled)
+silkscreen vector font.
 
-Covers: every supported glyph draws real, non-degenerate strokes; layout
-respects advance width / height / alignment; rotation and mirror route
-through the SAME transform (:func:`precis.pcb.landpattern.rotate_offset`)
-every placed pad offset uses, so a property (bbox area preserved under a
-pure rotation) is a real cross-check, not a restatement of the code.
+Covers: every supported glyph draws real, non-degenerate strokes with a
+sane bounding box; per-glyph advance metrics genuinely vary (the specific
+thing that distinguishes real Hershey-style metrics from a fixed monospace
+grid) and a laid-out string's total width is always the sum of its own
+glyphs' advances (layout and metrics cannot drift apart); rotation and
+mirror route through the SAME transform
+(:func:`precis.pcb.landpattern.rotate_offset`) every placed pad offset
+uses, so a property (bbox area preserved under a pure rotation) is a real
+cross-check, not a restatement of the code.
 """
 
 from __future__ import annotations
 
 import math
+import string
 
 import pytest
 
 from precis.pcb import stroke_font
 
+# every printable-ASCII character except lowercase a-z, which folds to
+# uppercase before lookup (see module docstring) -- see
+# test_full_printable_ascii_coverage_except_lowercase below.
+_PRINTABLE_NO_LOWER = "".join(
+    ch for ch in string.printable if ch.isprintable() and not ch.islower()
+)
+
 
 # ── glyph table ─────────────────────────────────────────────────────────
-def test_every_glyph_except_space_has_at_least_one_stroke():
+def test_every_glyph_except_space_has_at_least_one_stroke_and_a_sane_bbox():
     for ch, strokes in stroke_font.GLYPHS.items():
         if ch == " ":
             continue
-        assert strokes, f"{ch!r} has no strokes"
+        assert strokes, f"{ch!r} has no strokes -- a silent .notdef gap"
+        xs: list[float] = []
+        ys: list[float] = []
         for stroke in strokes:
             assert len(stroke) >= 2, f"{ch!r} has a degenerate (<2 point) stroke"
-
-
-def test_glyph_coordinates_are_within_the_unit_em_box():
-    # a little slack (0.1 em) for glyphs like Q's tail / the period dot that
-    # legitimately dip past the nominal cap box.
-    for ch, strokes in stroke_font.GLYPHS.items():
-        for stroke in strokes:
             for x, y in stroke:
-                assert -0.1 <= x <= 1.0, f"{ch!r} x={x} out of range"
-                assert -0.1 <= y <= 1.1, f"{ch!r} y={y} out of range"
+                assert math.isfinite(x) and math.isfinite(y)
+                xs.append(x)
+                ys.append(y)
+        # a "sane" bounding box: real extent in at least one axis (a purely
+        # vertical stroke like 'I'/'|' has zero WIDTH by design, a purely
+        # horizontal one like '-'/'_' has zero HEIGHT by design -- neither
+        # is degenerate, a single coincident point would be), and within
+        # generous slack of the nominal 1.0 EM cap box (round-letter
+        # overshoot / descending tails are legitimate). The y slack is
+        # wider than a naive cap-height box: real Hershey Roman Simplex
+        # digitizes brackets/braces/parentheses and the '#'/'$' bars taller
+        # than cap height and dipping below baseline (so they visually
+        # bracket ascenders+descenders) -- measured extremes are y=-7/21
+        # ('(' / ')' / '#') and y=25/21 ('[' / '$' / '{' / '}' / etc.), see
+        # the module docstring's "Coordinate convention".
+        extent = (max(xs) - min(xs)) + (max(ys) - min(ys))
+        assert extent > 0.05, f"{ch!r} bbox is ~degenerate (a point, not a stroke)"
+        assert min(xs) >= -0.2 and max(xs) <= 1.3, f"{ch!r} x out of range"
+        assert min(ys) >= -0.4 and max(ys) <= 1.25, f"{ch!r} y out of range"
+
+
+# ── handedness: a mirror or a flip must be DETECTABLE ──────────────────────
+# The bbox/stroke-count checks above are symmetry-blind: they pass IDENTICALLY
+# for a glyph and its mirror image, which is exactly how a mirrored "S" (both
+# arcs authored with reversed sweeps) shipped undetected in every prior
+# version of this table. "S" (and "N") both have 180-degree point symmetry,
+# so no test built from their own overall bbox/point-count can ever catch a
+# mirror -- a mirrored S has the SAME bbox and the SAME number of points as a
+# correct one. The tests below instead pin concrete, ORDERED geometric
+# relationships (first-point-vs-last-point, left-vs-right, upper-vs-lower)
+# on glyphs asymmetric in BOTH axes ("F" is the canonical orientation-test
+# glyph in graphics; "N"/"R"/"P" also work), plus "S" itself with a signature
+# that a left-right mirror OR a top-bottom flip would each independently
+# violate.
+def test_f_bars_both_extend_right_of_the_stem_and_upper_bar_is_longer():
+    """"F" is asymmetric in both axes: a mirror (left-right) would put both
+    bars on the WRONG side of the stem; a flip (top-bottom) would make the
+    (shorter) lower bar the longer one. Neither transform error is visible
+    to a bbox/point-count check -- both are visible here."""
+    strokes = stroke_font.GLYPHS["F"]
+    stem, bar_top, bar_bottom = strokes
+    stem_x = stem[0][0]
+    assert stem[0][0] == pytest.approx(stem[1][0])  # the stem is vertical
+    top_extent = max(x for x, _y in bar_top) - stem_x
+    bottom_extent = max(x for x, _y in bar_bottom) - stem_x
+    assert top_extent > 0
+    assert bottom_extent > 0, "both bars must extend RIGHT of the stem"
+    assert top_extent > bottom_extent, "the upper bar must be LONGER than the lower one"
+
+
+def test_n_diagonal_runs_top_left_to_bottom_right():
+    """The diagonal stroke's first point must be up-and-left of its last
+    point -- a left-right mirror OR a top-bottom flip each independently
+    reverses one half of this compound check."""
+    _left_stem, diagonal, _right_stem = stroke_font.GLYPHS["N"]
+    first, last = diagonal[0], diagonal[-1]
+    assert first[0] < last[0], "N's diagonal must run left-to-right"
+    assert first[1] > last[1], "N's diagonal must run top-to-bottom"
+
+
+def test_r_leg_runs_mid_left_to_bottom_right():
+    """R's diagonal leg (distinct from its bowl) must run down-and-right,
+    same handedness signature as N's diagonal -- same mirror/flip
+    sensitivity."""
+    _stem, _bowl, leg = stroke_font.GLYPHS["R"]
+    first, last = leg[0], leg[-1]
+    assert first[0] < last[0], "R's leg must run left-to-right"
+    assert first[1] > last[1], "R's leg must run top-to-bottom"
+
+
+def test_p_bowl_sits_in_the_upper_half_and_right_of_the_stem():
+    """P's bowl occupies roughly the upper half of the cap height and
+    extends right of the stem -- a top-bottom flip would move it to the
+    lower half, a left-right mirror would put it left of the stem."""
+    stem, bowl = stroke_font.GLYPHS["P"]
+    stem_x = stem[0][0]
+    assert min(y for _x, y in bowl) >= 0.45, "P's bowl must stay in the upper half"
+    assert max(x for x, _y in bowl) > stem_x, "P's bowl must extend RIGHT of the stem"
+
+
+def test_s_runs_from_the_upper_right_hook_to_the_lower_left_hook():
+    """The defect this whole change fixes: ``_RAW["S"]`` used to author
+    both of its arcs with REVERSED sweeps, producing a mirrored S that
+    passed every bbox/stroke-count test identically to a correct one (S has
+    180-degree point symmetry -- a mirror of it looks like a normal S with
+    the SAME bbox and the SAME point count, just traced backwards/
+    left-right flipped). This signature -- the glyph's first point sits
+    up-and-right of its last point -- is chosen precisely because it is
+    false for that mirrored version.
+
+    Verified by hand (NOT via this suite, since the old ``_RAW`` no longer
+    exists to import): temporarily restoring the old, buggy
+    ``_RAW["S"] = ((_arc(10.5, 16, 4.5, 125, -115, 8), _arc(8.5, 5, 4.5,
+    305, 65, 8)),16.0)`` (its first point is ~(7.9, 19.7), its last point
+    is ~(10.4, 9.1) in raw 21-unit grid units) makes ``first[0] > last[0]``
+    FALSE (7.9 < 10.4) -- this test goes red on the old data -- while
+    ``first[1] > last[1]`` still holds. Restoring the real Hershey data
+    (this test's fixture) makes both halves true again.
+    """
+    strokes = stroke_font.GLYPHS["S"]
+    first, last = strokes[0][0], strokes[-1][-1]
+    assert first[0] > last[0], "S must start RIGHT of where it ends"
+    assert first[1] > last[1], "S must start ABOVE where it ends"
 
 
 def test_space_has_no_strokes_but_is_supported():
@@ -44,7 +153,7 @@ def test_space_has_no_strokes_but_is_supported():
 def test_supported_is_case_insensitive():
     assert stroke_font.supported("a")
     assert stroke_font.supported("A")
-    assert not stroke_font.supported("!")  # not in the required glyph set
+    assert not stroke_font.supported("\x01")  # a real control char, never covered
 
 
 def test_required_glyph_coverage():
@@ -53,26 +162,59 @@ def test_required_glyph_coverage():
         assert stroke_font.supported(ch), f"{ch!r} must be supported"
 
 
-# ── layout ───────────────────────────────────────────────────────────────
-def test_text_width_is_monospace_and_scales_with_height():
+def test_full_printable_ascii_coverage_except_lowercase():
+    """Every printable-ASCII character has a real glyph, except lowercase
+    a-z, which the existing case-fold contract routes to the SAME entries
+    as their uppercase form (not a separate table -- see module
+    docstring's "Uppercase-only")."""
+    for ch in _PRINTABLE_NO_LOWER:
+        assert stroke_font.supported(ch), f"{ch!r} must be supported"
+    for ch in string.ascii_lowercase:
+        assert stroke_font.supported(ch)
+        # no SEPARATE lowercase entry -- lowercase folds to reuse the
+        # uppercase glyph, per the module's documented case-fold contract.
+        assert ch not in stroke_font.GLYPHS
+        assert ch.upper() in stroke_font.GLYPHS
+
+
+# ── metrics: real per-glyph advance, not a fixed grid ─────────────────────
+def test_glyph_advance_varies_by_character():
+    """The specific thing that distinguishes real Hershey-style metrics
+    from the old fixed monospace cell: a narrow glyph (I) must not occupy
+    the same advance width as a wide one (M)."""
+    assert stroke_font.GLYPH_ADVANCE_EM["I"] < stroke_font.GLYPH_ADVANCE_EM["M"]
+    # and it's not just I/M -- the table isn't secretly uniform elsewhere.
+    widths = {stroke_font.GLYPH_ADVANCE_EM[ch] for ch in "ILMW1"}
+    assert len(widths) > 1
+
+
+def test_text_width_scales_with_height():
     w1 = stroke_font.text_width_mm("U1", 1.0)
     w2 = stroke_font.text_width_mm("U1", 2.0)
     assert w2 == pytest.approx(2 * w1)
-    assert stroke_font.text_width_mm("U1", 1.0) == pytest.approx(
-        2 * stroke_font.ADVANCE_EM
-    )
+    assert w1 > 0
+
+
+def test_text_width_is_the_sum_of_each_glyphs_own_advance():
+    """Layout and metrics cannot drift apart: a rendered string's total
+    advance width is exactly the sum of its glyphs' own per-character
+    advances (never a restated constant)."""
+    text = "MI1O"
+    expected = sum(stroke_font.GLYPH_ADVANCE_EM[ch] for ch in text) * 1.5
+    assert stroke_font.text_width_mm(text, 1.5) == pytest.approx(expected)
 
 
 def test_unsupported_char_advances_but_draws_nothing():
-    with_bang = stroke_font.layout_text("A!A", anchor=(0.0, 0.0), height_mm=1.0)
+    with_gap = stroke_font.layout_text("A\x01A", anchor=(0.0, 0.0), height_mm=1.0)
     plain = stroke_font.layout_text("AA", anchor=(0.0, 0.0), height_mm=1.0)
-    # same number of strokes (the "!" contributes none) but the second "A"
-    # is shifted right by one full advance cell relative to "AA"'s second A
-    assert len(with_bang) == len(plain)
+    # same number of strokes (the control char contributes none) but the
+    # second "A" is shifted right by ADVANCE_EM relative to "AA"'s second A.
+    assert len(with_gap) == len(plain)
     shift = stroke_font.ADVANCE_EM * 1.0
-    second_a_with_bang = with_bang[len(with_bang) // 2 :]
-    second_a_plain = plain[len(plain) // 2 :]
-    dx = second_a_with_bang[0][0][0] - second_a_plain[0][0][0]
+    a_strokes = len(stroke_font.GLYPHS["A"])
+    second_a_with_gap = with_gap[a_strokes:]
+    second_a_plain = plain[a_strokes:]
+    dx = second_a_with_gap[0][0][0] - second_a_plain[0][0][0]
     assert dx == pytest.approx(shift, abs=1e-9)
 
 
@@ -80,8 +222,6 @@ def test_layout_left_baseline_starts_at_anchor():
     strokes = stroke_font.layout_text("I", anchor=(5.0, 2.0), height_mm=2.0)
     xs = [p[0] for stroke in strokes for p in stroke]
     ys = [p[1] for stroke in strokes for p in stroke]
-    # "I" is a single vertical stroke at x=2/4 of the glyph cell -> some
-    # offset right of the anchor, baseline (min y) at the anchor's y.
     assert min(xs) >= 5.0 - 1e-9
     assert min(ys) == pytest.approx(2.0, abs=1e-9)
     assert max(ys) == pytest.approx(2.0 + 2.0, abs=1e-9)  # cap height = height_mm

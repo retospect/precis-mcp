@@ -22,7 +22,7 @@ import pytest
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.cost import CostConfig, evaluate_cost
-from precis.pcb.ir import UNSET_LAYER, Level, from_graph
+from precis.pcb.ir import Level, from_graph, plane_layers_of
 from precis.pcb.optimize import (
     MOVE_GENERATORS,
     Move,
@@ -182,14 +182,14 @@ def test_plane_promote_demote_dirty_only_that_nets_segments_leave_l2_l3_clean():
     assert seg_ids
 
     engine.apply_move(move)
-    assert int(ir.net_plane_layer[net]) == move.new_int[0]
+    assert plane_layers_of(int(ir.net_plane_layers[net])) == [move.new_int[0]]
     for s in seg_ids:
         assert ir.dirty_l1[s]
     assert not ir.dirty_l2.any()
     assert (ir.dirty_l3 == l3_before).all()  # untouched -- no component moved
 
     engine.undo_move(move)
-    assert int(ir.net_plane_layer[net]) == UNSET_LAYER
+    assert int(ir.net_plane_layers[net]) == 0
 
 
 def test_plane_promote_only_targets_plane_role_layers():
@@ -297,8 +297,10 @@ def test_locked_plane_net_survives_a_full_anneal_unlocked_one_still_demotes():
         ir,
         OptimizeConfig(iters=3000, seed=1, locked_plane_nets=frozenset({0})),
     )
-    assert int(ir.net_plane_layer[0]) == 1, "the locked/authored net must survive"
-    assert int(ir.net_plane_layer[1]) == UNSET_LAYER, (
+    assert plane_layers_of(int(ir.net_plane_layers[0])) == [
+        1
+    ], "the locked/authored net must survive"
+    assert int(ir.net_plane_layers[1]) == 0, (
         "the unlocked net must remain exactly as demotable as before -- a "
         "blanket freeze would be as wrong as the original bug"
     )

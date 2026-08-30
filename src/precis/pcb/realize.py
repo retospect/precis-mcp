@@ -61,6 +61,46 @@ current annotation (:func:`precis.pcb.rules.via_count_for_current`)
 rather than always emitting one — an array that can't carry its rail's
 current is the same silent-failure class as missing geometry.
 
+**Plane fragment stitching is a PRODUCER, deliberately independent of its
+own checker** (:func:`_stitch_plane_fragments`, gripe 270637). A net poured
+on several layers (``ir.net_plane_layers``, a bitmask —
+:func:`~precis.pcb.ir.plane_layers_of`) used to come out as one electrical
+net only where a per-pin drop via *happened* to span every poured sheet, or
+where a foreign via's antipad *happened* to leave a net's own pin
+population inside every fragment it cut a same-layer pour into — both
+purely incidental, and measured (gripe 270637) to fragment on real boards
+(GND, more pins, got lucky every seed; VCC3V3, fewer pins, did not).
+:func:`_stitch_plane_fragments` places deliberate stitching vias instead,
+in two stages: a generous regular-grid SPRINKLE across every pair of a
+net's poured sheets that spatially overlap (stage 1 — what a real fab tool
+does, reusing this module's own keep-out checks:
+:meth:`~precis.pcb.maze.OccupancyGrid.via_clears_pads`,
+:func:`_via_clears_vias`, :meth:`~precis.pcb.maze.OccupancyGrid.
+disk_is_free` — no new geometry predicate duplicates any of those), then a
+bounded TARGETED pass that finds whatever pieces remain disconnected and
+tries the single nearest legal via to join them (stage 2 — see that
+function's own docstring for exactly which gaps one via can and cannot
+bridge).
+
+**This pass computes its own connectivity, with its own union-find
+(:class:`_UnionFind`), and never calls
+:func:`precis.pcb.connectivity.net_islands` or imports from that module.**
+``net_islands`` is the INDEPENDENT CHECKER for exactly this property
+(:mod:`precis.pcb.connectivity`'s own module docstring); if this pass
+decided when to stop by asking that same checker whether it was happy, the
+``connectivity`` DRC finding could never fire again for a REAL defect
+either — not because boards became correct, but because the check became
+tautological. So the two are deliberately duplicated, not shared, for the
+same reason :mod:`precis.pcb.drc`'s own ``clearance_violations_naive``
+reference oracle reimplements its own layer logic rather than importing
+the accelerated engine's: a producer and its checker must stay
+independent, even though a *shared definition* elsewhere in this codebase
+(a clearance constant, a pad's real shape) still belongs in ONE place. The
+one thing this pass DOES reuse is generic, checker-agnostic geometry —
+shapely polygon construction/intersection/nearest-point queries, and this
+module's own existing keep-out predicates — never ``connectivity.py``'s
+reasoning about what "connected" means.
+
 **Rip-up primitives**: :func:`rip_net` removes one net's tracks (and
 warnings), leaving every other net's geometry byte-identical.
 :func:`pin_topology` delegates to :meth:`precis.pcb.ir.PcbIR.set_side`
@@ -77,10 +117,24 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.pcb import maze, padplace
+# shapely ships no py.typed marker here -- same suppression drc.py/planes.py
+# carry, same reason: only the polygon booleans this module's stitching
+# pass (below) needs, never a track/via/pad's own shape (that stays this
+# module's existing closed-form Point/dist arithmetic).
+from shapely.geometry import Point as _ShapelyPoint  # type: ignore[import-untyped]
+from shapely.geometry import Polygon as _ShapelyPolygon
+
+from precis.pcb import geom, maze, padplace
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist, dist_point_to_segment
-from precis.pcb.ir import NO_NET, UNSET_LAYER, PcbIR, nearest_other_instance, pin_point
+from precis.pcb.ir import (
+    NO_NET,
+    PcbIR,
+    nearest_other_instance,
+    pin_point,
+    plane_layers_of,
+    routable_layers,
+)
 from precis.pcb.planes import plane_pours
 from precis.pcb.rules import (
     PAD_LAYER,
@@ -127,6 +181,20 @@ class RealizeConfig:
     #: length. The via-to-plane connection itself is ``planes.py``'s job,
     #: a later module; this realizer only ever draws the stub.
     dogbone_stub_mm: float = 0.5
+    #: Corner radius for filleting routed traces, as a MULTIPLE of the
+    #: track's own width — so a wide power trace gets a proportionally
+    #: wider corner rather than every trace on the board sharing one
+    #: absolute radius (the flat-constant mistake this module has made in
+    #: five other places: a courtyard radius, a seed pitch, a claim radius,
+    #: ``PAD_RADIUS_MM``, and the drop-via reach).
+    #:
+    #: **This is an engineering/appearance choice, not a fab figure.** No
+    #: row in ``capabilities.py``/``pcb_capabilities.json`` publishes a
+    #: corner radius, and none is needed: the radius is additionally
+    #: clamped per run so filleting can only remove copper (see
+    #: :func:`_track_from_run`). ``0.0`` disables filleting and restores
+    #: mitered corners exactly.
+    fillet_radius_tracks: float = 1.5
     #: The fab this board realizes against — every emitted track's width
     #: is clamped to this table's minimum (:mod:`precis.pcb.rules`'s own
     #: resolver discipline). Defaults to the house 4-layer row so a bare
@@ -231,6 +299,35 @@ class RealizeConfig:
     #: purpose ("slightly", per the backlog) — this is a cosmetic taut-up
     #: of the search's own result, not a second placement pass.
     via_shove_radius_mm: float = 0.5
+    #: Regular-grid pitch for stage-1 "sprinkle" stitching-via placement
+    #: (:func:`_stitch_plane_fragments`, gripe 270637): candidate via sites
+    #: are tried every this many mm across the OVERLAP of two of one net's
+    #: poured sheets. Not a fab figure — neither ``capabilities.py`` nor
+    #: ``pcb_capabilities.json`` publish a hole-to-hole spacing row to pin
+    #: this to (checked before adding this field). ``None`` (the default)
+    #: derives it from geometry already in hand instead of a bare
+    #: constant: twice the resolved via's own (diameter + clearance) — the
+    #: SAME pitch :func:`_route_pass`/:func:`_vias_for_track` already use
+    #: to space members of one via GROUP, doubled so consecutive grid
+    #: candidates don't immediately crowd each other's own keep-out before
+    #: the keep-out filter below even gets a chance to accept either one.
+    #: An explicit override here is an ENGINEERING choice about stitching
+    #: density (more vias = more thermal/EMI margin = more copper cost),
+    #: never a fab minimum.
+    stitch_pitch_mm: float | None = None
+    #: Cap on ACCEPTED sprinkle vias per (sheet, sheet) overlap region — a
+    #: runtime/copper-budget guard, not a connectivity requirement: the
+    #: residue stage is what GUARANTEES the fragment count goes down, not
+    #: this cap. An overlap the size of the whole board at a fine pitch
+    #: would otherwise sprinkle thousands of vias for a property that
+    #: needs at most one.
+    max_sprinkle_vias_per_overlap: int = 24
+    #: Bound on the residue stage's stitch-and-recheck loop, per net (see
+    #: :func:`_stitch_plane_fragments`). Each iteration either merges two
+    #: pieces or proves that pair has no legal single-via bridge and moves
+    #: on — a rejected candidate leaves a net exactly as fragmented as it
+    #: was, never more, so this bounds worst-case runtime, not correctness.
+    max_stitch_iterations: int = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,7 +578,7 @@ def realize_segment(
     layer = int(ir.seg_layer[seg_id])
     width_mm = _resolve_track_rules(ir, net_id, layer, config).track_width_mm
 
-    if int(ir.net_plane_layer[net_id]) != UNSET_LAYER:
+    if int(ir.net_plane_layers[net_id]) != 0:
         # Dog-bone fanout: a short stub off the near pad, not a full route
         # to the far end (which is served by the plane, not this trace).
         dx, dy = end[0] - start[0], end[1] - start[1]
@@ -653,6 +750,14 @@ class RealizeResult:
     #: allowed layer — three very different fixes wearing one word. Always
     #: empty for ``router='tangent'`` (nothing there is ever unrouted).
     unrouted_reasons: tuple[UnroutedReason, ...] = ()
+    #: Plane-promoted nets :func:`_stitch_plane_fragments` could NOT bring
+    #: to a single connected piece within its own bounded attempt (module
+    #: docstring's stitching note, gripe 270637). Always empty for
+    #: ``router='tangent'`` (that drawer never pours a plane at all) and
+    #: usually empty for ``'maze'`` too — non-empty is this pass's own
+    #: honest "tried and could not", independent of whatever
+    #: :func:`precis.pcb.connectivity.net_islands` separately finds.
+    unstitched: tuple[UnstitchedNet, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -699,6 +804,27 @@ class UnroutedReason:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class UnstitchedNet:
+    """One plane-promoted net :func:`_stitch_plane_fragments` could NOT
+    bring to a single piece within its own bounded attempt — this pass's
+    own honest failure report, independent of whatever
+    :func:`precis.pcb.connectivity.net_islands` separately finds on the
+    same board (module docstring's independence note: this is the
+    PRODUCER's signal, not a restatement of the checker's verdict).
+    Reported so a caller sees a concrete "tried and could not", never
+    silence standing in for "checked, clean" — the same "fail legibly"
+    discipline :class:`UnroutedReason` already applies to the router half
+    of this module."""
+
+    net_id: int
+    net: str
+    #: Distinct connected pieces remaining after the bounded attempt.
+    #: Always >= 2 — a net with 0 or 1 pieces is never reported here.
+    fragments: int
+    message: str
+
+
 def _gap_usage(
     ir: PcbIR, seg_ids: list[int], config: RealizeConfig
 ) -> list[CongestionWarning]:
@@ -732,14 +858,50 @@ def _gap_usage(
 
 
 def _signal_layers(ir: PcbIR) -> list[int]:
-    """Stackup indices that can carry a routed trace. Mirrors
-    :func:`precis.pcb.session.signal_layers` (four lines, duplicated
-    rather than imported: ``session.py`` is a store-facing module this
-    pure one has no other reason to depend on). Falls back to the pad
-    layer for a stackup that declares no roles at all, so a synthetic IR
-    still routes somewhere rather than nowhere."""
-    layers = [i for i, layer in enumerate(ir.stackup) if layer.get("role") == "signal"]
-    return layers or [PAD_LAYER]
+    """Stackup indices that can carry a routed trace —
+    :func:`precis.pcb.ir.routable_layers` (the single answer, no longer
+    duplicated: this used to keep its own four-line copy rather than
+    import :mod:`precis.pcb.session`'s, on layering grounds; the query
+    itself has since moved down to :mod:`precis.pcb.ir`, which both this
+    module and ``session.py`` already depend on, so there is no longer a
+    second copy to drift). Falls back to the pad layer for a stackup that
+    declares no roles/routable flags at all, so a synthetic IR still
+    routes somewhere rather than nowhere."""
+    return routable_layers(ir) or [PAD_LAYER]
+
+
+def _layer_preferences(ir: PcbIR, signal_layers: list[int]) -> dict[int, str]:
+    """Per-group H/V/diagonal axis assignment
+    (:func:`precis.pcb.maze.preferred_directions`), computed separately
+    for the OUTER and INNER members of ``signal_layers`` rather than once
+    over the whole routable set.
+
+    ``preferred_directions`` cycles H, V, diagonal, H, ... in STACKUP
+    INDEX order over whatever list it is given — feeding it the whole
+    routable set in one call means an outer layer (always the lowest
+    index once it is ALSO routable) claims 'H' first and pushes every
+    inner layer's axis one further round the cycle for each outer layer
+    that precedes it. That is invisible today (:data:`precis.pcb.
+    DEFAULT_STACKUP`: only F.Cu/B.Cu are routable, and a single call over
+    ``[0, 3]`` already gives F.Cu='H', B.Cu='V') but wrong the moment an
+    inner layer becomes ALSO routable — this module's new "a layer can
+    carry BOTH traces and copper fill" capability: a board with all four
+    layers routable and no split would give F.Cu='H', In1.Cu='V',
+    In2.Cu='diagonal', B.Cu='H', not the In1='H'/In2='V' a caller who
+    explicitly marked exactly those two layers routable actually asked
+    for.
+
+    Splitting by :func:`precis.pcb.rules.layer_is_outer` (the SAME
+    inner/outer question :mod:`precis.pcb.rules`'s IPC-2221 width
+    resolver already asks, reused rather than re-derived) restarts the
+    H/V/diagonal cycle at each group's own first (lowest-index) member,
+    so In1.Cu — the first INNER routable layer — gets 'H' and In2.Cu gets
+    'V' regardless of how many outer layers are also routable. Two calls
+    into a pure, order-preserving function and a dict merge; no change to
+    :mod:`precis.pcb.maze` itself."""
+    outer = [layer for layer in signal_layers if layer_is_outer(ir, layer)]
+    inner = [layer for layer in signal_layers if not layer_is_outer(ir, layer)]
+    return {**maze.preferred_directions(outer), **maze.preferred_directions(inner)}
 
 
 def _outline_clip(
@@ -788,6 +950,7 @@ def _realize_maze(
     list[int],
     list[dict[str, Any]],
     list[UnroutedReason],
+    list[UnstitchedNet],
 ]:
     """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
     maze` for why this cannot emit overlapping copper, and what it gives
@@ -847,34 +1010,60 @@ def _realize_maze(
                 net = ir.n_nets + pid
             pads.append((point, net, radius))
     if not pads:
-        return [], [], list(ids), [], []
+        return [], [], list(ids), [], [], []
 
     rules_by_net = {
         n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
     }
     if not rules_by_net:
-        return [], [], list(ids), [], []
+        return [], [], list(ids), [], [], []
     clearance = max(
         config.clearance_mm, max(r.clearance_mm for r in rules_by_net.values())
     )
     # The board-edge inset is a DIFFERENT figure from inter-net clearance
     # (drc.check_board_edge_clearance reads board_edge_clearance_*_mm), and
-    # it applies to the copper's edge, so half the widest track has to come
-    # off it too. Take the house tier where the fab publishes one, so the
-    # result clears the advisory threshold and not merely the hard one.
+    # it applies to the copper's edge, so half the widest COPPER FEATURE has
+    # to come off it too. Take the house tier where the fab publishes one,
+    # so the result clears the advisory threshold and not merely the hard
+    # one.
     edge_min = config.fab_caps.house_default.get(
         "board_edge_clearance_vcut_mm"
     ) or config.fab_caps.jlc_min.get("board_edge_clearance_vcut_mm")
-    widest = max(r.track_width_mm for r in rules_by_net.values())
+    # A via is not a track (see maze.py's module docstring): its copper is
+    # an annulus at its OWN diameter, not the routing net's track width, and
+    # nothing downstream of this inset is via-aware — `grid.route`'s via
+    # search and `_shove_vias` both place a via anywhere the shared
+    # occupancy grid says is in-bounds, with no separate edge test of their
+    # own. `_outline_clip`'s bounds (fed straight into `maze.grid_for`) are
+    # therefore the ONE place "how far from the board edge may copper be"
+    # gets decided, for a track's centreline AND a via's centre alike — a
+    # via-blind inset here silently reused a track-sized margin for a
+    # via-sized hole. Widening the shared clip to the widest of every net's
+    # track width OR via diameter (rather than adding a second, via-only
+    # edge check at each placement site) keeps that one definition true:
+    # a per-site check would have to be threaded through both `maze.
+    # OccupancyGrid.route`'s via mask and `_shove_vias`'s candidate test,
+    # duplicating the same "distance to true edge" arithmetic this
+    # subsystem has already drifted out of step on once (see maze.py's
+    # via-vs-track mask history). The cost is symmetric: every track's
+    # routable margin also grows to the widest via's, not just the widest
+    # track's, giving up a little edge-adjacent routability on nets that
+    # never place a via there — the same "conservative is the safe
+    # direction" trade `stamp_disk`'s pad radius already makes.
+    widest = max(
+        max(r.track_width_mm for r in rules_by_net.values()),
+        max(
+            (r.via_dia_mm for r in rules_by_net.values() if r.via_dia_mm is not None),
+            default=0.0,
+        ),
+    )
     edge_inset = max(clearance, float(edge_min or 0.0)) + widest / 2.0
     spec = maze.grid_for(
         [p for p, _, _ in pads],
         n_layers=len(ir.stackup) or 1,
         bounds=_outline_clip(ir, edge_inset),
     )
-    plane_ids = [
-        s for s in ids if int(ir.net_plane_layer[int(ir.seg_net[s])]) != UNSET_LAYER
-    ]
+    plane_ids = [s for s in ids if int(ir.net_plane_layers[int(ir.seg_net[s])]) != 0]
     route_ids = [s for s in ids if s not in set(plane_ids)]
     # Shortest-first is the opening order. A short connection has the
     # fewest alternative corridors, so letting a long one claim the board
@@ -894,6 +1083,7 @@ def _realize_maze(
             clearance,
             signal_layers,
             spec,
+            pad_geoms,
         )
         if best is None or len(outcome[2]) < len(best[2]):
             best = outcome
@@ -907,8 +1097,23 @@ def _realize_maze(
     assert best is not None  # the loop runs at least once
     tracks, vias, unrouted = best
     pours, extra_unrouted = _pour_planes(
-        ir, tracks, vias, unrouted, plane_ids, clearance, edge_inset
+        ir, tracks, vias, unrouted, plane_ids, clearance, edge_inset, footprints
     )
+    # Deliberate stitching vias, AFTER pouring -- this pass needs the
+    # finished pour polygons to know what it is joining (module docstring's
+    # "Plane fragment stitching" note, gripe 270637).
+    stitch_vias, unstitched = _stitch_plane_fragments(
+        ir,
+        tracks,
+        vias,
+        pours,
+        spec=spec,
+        clearance=clearance,
+        pads=pads,
+        rules_by_net=rules_by_net,
+        config=config,
+    )
+    vias = vias + stitch_vias
     reasons = _diagnose_all(
         ir,
         unrouted,
@@ -921,7 +1126,7 @@ def _realize_maze(
         rules_by_net,
         config.max_expansions,
     )
-    return tracks, vias, unrouted + extra_unrouted, pours, reasons
+    return tracks, vias, unrouted + extra_unrouted, pours, reasons, unstitched
 
 
 def _diagnose_all(
@@ -1011,6 +1216,30 @@ def _stamp_pads(grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float]]) 
     radius (``pads``' third element, from :func:`pad_geometry` — real
     footprint size where supplied, package-family synthesis otherwise)
     rather than every pad on the board claiming the same disc.
+
+    **The second pass calls :meth:`~precis.pcb.maze.OccupancyGrid.
+    stamp_pad`, never plain ``stamp_disk``** — found 2026-08-29 as a live,
+    currently-reproducible defect (gripe 269811 comment 2): this loop used
+    to call ``stamp_disk`` directly, which claims the SAME copper on
+    ``grid._owner`` but never appends to ``grid._pads``. Every consumer of
+    a pad's true footprint as a KEEP-OUT rather than an occupancy claim —
+    :meth:`~precis.pcb.maze.OccupancyGrid.via_clears_pads` (called by
+    :func:`_drop_via_site`, the plane fan-out's own drop-via search) and
+    :meth:`~precis.pcb.maze.OccupancyGrid._pad_keepout_mask` (folded into
+    :meth:`~precis.pcb.maze.OccupancyGrid.route`'s own via candidate mask)
+    — reads ONLY ``grid._pads``. With that list permanently empty, both
+    guards were vacuously true for every pad on every board this module
+    has ever routed: ``via_clears_pads`` allowed a drop via to land
+    directly on (or well inside) its own pin's pad, or a neighbour's,
+    because it had nothing to check against. Measured on the ESP32-C3
+    reference fixture with GND/VCC3V3 plane-promoted: 55 of 57
+    ``via_pad_keepout`` DRC findings were exactly this — the fix is this
+    one entry-point swap, not a new keep-out rule (the rule already
+    existed and was already correct; it just never received any data).
+    The first (CONTESTED) pass stays on plain ``stamp_disk`` unchanged —
+    :meth:`stamp_pad`'s own docstring is explicit that the pre-pass is a
+    collision marker, not a pad's true footprint, and recording it in
+    ``_pads`` too would double-count one pad as two keep-out entries.
     """
     for point, net, radius in pads:
         grid.stamp_disk(
@@ -1022,7 +1251,7 @@ def _stamp_pads(grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float]]) 
             contest=True,
         )
     for point, net, radius in pads:
-        grid.stamp_disk((PAD_LAYER,), point[0], point[1], radius, net)
+        grid.stamp_pad((PAD_LAYER,), point[0], point[1], radius, net)
 
 
 def _via_group_extent(
@@ -1172,6 +1401,7 @@ def _route_pass(
     clearance: float,
     signal_layers: list[int],
     spec: maze.GridSpec,
+    pad_geoms: list[PadGeom],
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """One complete routing attempt onto a fresh ``grid``, in ``order``."""
     _stamp_pads(grid, pads)
@@ -1184,7 +1414,7 @@ def _route_pass(
     # they ARE copper, so they get realized (and claimed) first, before
     # any route can be planned through where they sit.
     plane_tracks, plane_vias, plane_failed = _plane_fanout(
-        ir, plane_ids, grid, config, rules_by_net
+        ir, plane_ids, grid, config, rules_by_net, pad_geoms
     )
     tracks += plane_tracks
     vias += plane_vias
@@ -1220,7 +1450,7 @@ def _route_pass(
             pad_layer=PAD_LAYER,
             max_expansions=config.max_expansions,
             layer_prefs=(
-                maze.preferred_directions(signal_layers)
+                _layer_preferences(ir, signal_layers)
                 if config.preferred_directions
                 else None
             ),
@@ -1287,8 +1517,93 @@ def _route_pass(
                         [(vx - half, vy), (vx + half, vy)],
                         rules.via_dia_mm,
                     )
-        tracks.extend(_tracks_from_path(seg_id, net_id, path, rules.track_width_mm))
+        tracks.extend(
+            _tracks_from_path(
+                seg_id,
+                net_id,
+                path,
+                rules.track_width_mm,
+                fillet_radius_mm=config.fillet_radius_tracks * rules.track_width_mm,
+            )
+        )
     return tracks, vias, unrouted
+
+
+def _pad_blockers(
+    ir: PcbIR, layers: list[str], footprints: dict[str, dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Every placed pad, reshaped into a ``model["copper"]`` item
+    :func:`precis.pcb.drc._copper_item_polygon` already knows how to turn
+    into a polygon — so :func:`_pour_planes` can hand it to
+    :func:`~precis.pcb.planes.plane_pours` as just another blocker,
+    without ``planes.py`` (or ``drc.py``, neither of which this module
+    may edit) ever having to learn a fourth ``ctype``.
+
+    **Why a pad has to be a blocker at all.** ``to_gerber_model``'s
+    ``model["copper"]`` is tracks/vias/pours only — real pin copper is a
+    SEPARATE ``model["pads"]`` key (:func:`pads_for_ir`'s own docstring).
+    :func:`_pour_planes` used to pass only ``["copper"]`` to
+    ``plane_pours``, so a fill flowed around a via's antipad but straight
+    OVER every pad on its layer, merging every net's pads on a filled
+    layer into the fill net — on a board with GND filled on F.Cu, that is
+    every net on the board shorted to GND. Found from the render, not
+    from a check: a pad's antipad was missing entirely, not merely the
+    wrong shape.
+
+    A circular pad fakes a single-layer ``via`` (its own ``dia_mm``,
+    pinned to just this one layer through the ``layers`` override
+    :func:`~precis.pcb.drc._via_layer_names` reads before ``span`` — no
+    stackup-index lookup needed for a pad that never spans anything). A
+    rectangular pad fakes a ``pour`` (its four corners, axis-aligned, as
+    ``polygon`` — the same enclosing-rectangle-in-board-frame treatment
+    :func:`pad_geometry` already gives every pad's KEEPOUT; a true
+    per-footprint rotation is a finer shape than anything else in this
+    router tracks). Neither fake item is buffered here:
+    ``plane_pours`` buffers every blocker by its own ``clearance_mm``
+    uniformly, so doing it again here would double it.
+
+    ``plane_pours`` already skips a blocker whose ``net`` matches the
+    pour's own net (own-net copper is the connection, not an obstacle) —
+    the SAME check that keeps a GND pad merged into a GND pour applies to
+    these fakes for free, because they carry ``net`` too. An unconnected
+    pin's pad (``net=""``, :func:`pads_for_ir`'s own NO_NET handling)
+    therefore correctly gets an antipad on every real net's plane, since
+    ``""`` never equals a real net name — exactly right: an NC pad is not
+    part of the fill.
+    """
+    out: list[dict[str, Any]] = []
+    for pad in pads_for_ir(ir, layers, footprints):
+        net = str(pad.get("net") or "")
+        layer = str(pad["layer"])
+        x, y = float(pad["x"]), float(pad["y"])
+        if pad.get("shape") == "circle":
+            out.append(
+                {
+                    "ctype": "via",
+                    "net": net,
+                    "x": x,
+                    "y": y,
+                    "dia_mm": float(pad["w"]),
+                    "layers": [layer],
+                }
+            )
+            continue
+        half_w = float(pad["w"]) / 2.0
+        half_h = float(pad.get("h", pad["w"])) / 2.0
+        out.append(
+            {
+                "ctype": "pour",
+                "net": net,
+                "layer": layer,
+                "polygon": [
+                    [x - half_w, y - half_h],
+                    [x + half_w, y - half_h],
+                    [x + half_w, y + half_h],
+                    [x - half_w, y + half_h],
+                ],
+            }
+        )
+    return out
 
 
 def _pour_planes(
@@ -1299,37 +1614,45 @@ def _pour_planes(
     plane_ids: list[int],
     clearance: float,
     edge_inset: float,
+    footprints: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Pour every plane-assigned layer over the FINISHED copper.
 
     Last, because a pour is defined by what it has to avoid and cannot be
     computed before the thing it avoids exists. The copper list is built by
     :func:`to_gerber_model` rather than assembled here, so "what shape is a
-    track" has one answer. Returns the pours and any additional unrouted
-    segments the pouring revealed.
+    track" has one answer — plus every placed PAD (:func:`_pad_blockers`,
+    its own docstring has the defect this closes), which ``to_gerber_model``
+    does NOT fold into ``model["copper"]``. Returns the pours and any
+    additional unrouted segments the pouring revealed.
     """
     layer_names = [str(layer.get("name")) for layer in ir.stackup]
-    # A plane layer carries one net (optimize._gen_plane_promote enforces
-    # it). If an externally-authored IR ever contradicts that, the LOWEST
-    # net id wins — deterministically, so two runs of the same board pour
-    # the same copper. Every other net on that layer then shows up as
-    # disconnected in check_connectivity rather than as a plausible board,
-    # which is the reporting direction that gets the contradiction fixed.
+    # A plane LAYER carries one net (optimize._gen_plane_promote enforces
+    # it) — but one NET may now carry several layers (net_plane_layers is
+    # a bitmask, module docstring), so this is keyed by layer, not net:
+    # a net's name can legally appear as the value for several different
+    # layer_idx keys at once, one dict entry per poured sheet of copper.
+    # If an externally-authored IR ever contradicts the one-net-per-layer
+    # half of that rule, the LOWEST net id wins for that layer —
+    # deterministically, so two runs of the same board pour the same
+    # copper. Every other net on that layer then shows up as disconnected
+    # in check_connectivity rather than as a plausible board, which is the
+    # reporting direction that gets the contradiction fixed.
     plane_nets: dict[int, str] = {}
     for n in range(ir.n_nets):
-        layer_idx = int(ir.net_plane_layer[n])
-        if layer_idx != UNSET_LAYER:
+        for layer_idx in plane_layers_of(int(ir.net_plane_layers[n])):
             plane_nets.setdefault(layer_idx, str(ir.net_name[n]))
     pours: list[dict[str, Any]] = []
     if plane_nets and ir.outline:
         interim = RealizeResult(tuple(tracks), tuple(vias), ())
+        copper = to_gerber_model(interim, ir, layers=layer_names, outline=[])[
+            "copper"
+        ] + _pad_blockers(ir, layer_names, footprints)
         pours = plane_pours(
             outline=[[float(p[0]), float(p[1])] for p in ir.outline],
             layers=layer_names,
             plane_nets=plane_nets,
-            copper=to_gerber_model(interim, ir, layers=layer_names, outline=[])[
-                "copper"
-            ],
+            copper=copper,
             clearance_mm=clearance,
             edge_clearance_mm=edge_inset,
         )
@@ -1345,8 +1668,7 @@ def _pour_planes(
     unpoured = {
         n
         for n in range(ir.n_nets)
-        if int(ir.net_plane_layer[n]) != UNSET_LAYER
-        and str(ir.net_name[n]) not in poured_nets
+        if int(ir.net_plane_layers[n]) != 0 and str(ir.net_name[n]) not in poured_nets
     }
     extra: list[int] = []
     if unpoured:
@@ -1363,6 +1685,7 @@ def _plane_fanout(
     grid: maze.OccupancyGrid,
     config: RealizeConfig,
     rules_by_net: dict[int, NetRules],
+    pad_geoms: list[PadGeom],
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Connect every pin of a plane-promoted net DOWN to its plane.
 
@@ -1392,8 +1715,34 @@ def _plane_fanout(
     seg_of_net: dict[int, int] = {}
     for seg_id in plane_ids:
         seg_of_net.setdefault(int(ir.seg_net[seg_id]), seg_id)
+    # Every drop via this call places, (x, y, via_radius_mm), NET-BLIND —
+    # shared across every net's pins in this one pass, not reset per net.
+    # `disk_is_free`'s same-net exemption (right for a trace legally
+    # ending on its own pad) is the wrong exemption for two via BARRELS:
+    # a same-net cluster of GND drop vias is exactly where two are most
+    # likely to land close together, and their drilled holes do not care
+    # whose net they carry. See :func:`_via_clears_vias`'s own docstring
+    # (gripe 269811 comment 2: two SCL drop vias measured 0.1598mm apart,
+    # dia 0.75mm each — copper overlapping by 0.590mm and, worse, their
+    # 0.25mm drills overlapping too).
+    placed_via_sites: list[tuple[float, float, float]] = []
     for net_id, seg_id in sorted(seg_of_net.items()):
-        plane_layer = int(ir.net_plane_layer[net_id])
+        # A net may now be poured on SEVERAL layers at once
+        # (net_plane_layers is a bitmask). One drop via per pin still
+        # suffices: a via is ALWAYS a contiguous span (RealizedVia's own
+        # docstring — never a scalar layer) and a through barrel connects
+        # every layer it passes, not just its two ends (confirmed by
+        # connectivity.py's via-group union, which joins a via's
+        # primitives on EVERY layer `_via_layer_names` reports for it, not
+        # just `layer_lo`/`layer_hi`). So spanning from the pad's own
+        # layer to the FARTHEST of this net's poured layers reaches every
+        # nearer poured layer for free, and is simultaneously the
+        # stitching connection between them — a GND fill on F.Cu and
+        # In1.Cu is tied into ONE net the moment any GND pin's drop via
+        # spans both, no separate stitching-via pass required.
+        plane_layers = plane_layers_of(int(ir.net_plane_layers[net_id]))
+        span_lo = min([PAD_LAYER, *plane_layers])
+        span_hi = max([PAD_LAYER, *plane_layers])
         rules = rules_by_net[net_id]
         for pid in range(ir.n_pins):
             if int(ir.pin_net[pid]) != net_id:
@@ -1407,9 +1756,23 @@ def _plane_fanout(
             # direction to offer. +x is arbitrary but deterministic, and
             # the grid still refuses to let the stub overlap anything.
             ux, uy = (dx / norm, dy / norm) if norm > 1e-9 else (1.0, 0.0)
-            lo, hi = min(PAD_LAYER, plane_layer), max(PAD_LAYER, plane_layer)
+            lo, hi = span_lo, span_hi
+            # Same conservative enclosing-circle radius `_realize_maze`'s own
+            # pad-claim loop uses (see its docstring) — the drop via has to
+            # clear THIS pin's own pad, whatever its real (possibly
+            # rectangular) footprint.
+            geom = pad_geoms[pid]
+            pad_radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
             stub_end = _drop_via_site(
-                grid, point, (ux, uy), net_id, rules, config, range(lo, hi + 1)
+                grid,
+                point,
+                (ux, uy),
+                net_id,
+                rules,
+                config,
+                range(lo, hi + 1),
+                pad_radius,
+                placed_via_sites,
             )
             if stub_end is None:
                 failed.append(pid)
@@ -1466,6 +1829,7 @@ def _plane_fanout(
                     endpoint="a",
                 )
             )
+            placed_via_sites.append((stub_end[0], stub_end[1], rules.via_dia_mm / 2.0))
     return tracks, vias, failed
 
 
@@ -1480,6 +1844,39 @@ _DROP_SEARCH_STEPS = 6
 _DROP_SEARCH_ANGLES = (0.0, 0.4, -0.4, 0.9, -0.9, 1.6, -1.6)
 
 
+def _via_clears_vias(
+    x: float,
+    y: float,
+    via_radius_mm: float,
+    placed: list[tuple[float, float, float]],
+    clearance_mm: float,
+) -> bool:
+    """May a via of this (undilated) copper radius be centred at
+    ``(x, y)`` without landing on, or crowding, ANY already-placed via in
+    ``placed`` — mirrors :meth:`~precis.pcb.maze.OccupancyGrid.
+    via_clears_pads`'s own formula and reasoning exactly, asked of OTHER
+    vias instead of pads, and just as deliberately NET-BLIND.
+
+    ``disk_is_free``'s same-net exemption is right for a TRACE (it must
+    legally end on its own pad) and wrong here for the identical reason
+    ``via_clears_pads`` itself exists: two via BARRELS this close is a
+    broken drill bit or an unintended slot, regardless of whose net(s)
+    they carry — a same-net cluster of plane drop vias (several GND pins
+    close together) is exactly where two are most likely to land close,
+    so exempting same-net pairs would leave the most common case
+    unguarded. Checking the COPPER (dia) radius with the same clearance
+    margin ``via_clears_pads`` uses is sufficient to also protect the
+    DRILL: a via's drill is always narrower than its own copper annulus,
+    so a legal copper-to-copper gap is provably a wider drill-to-drill
+    gap. Found live (gripe 269811 comment 2): two SCL drop vias 0.1598mm
+    apart, dia 0.75mm each — copper overlapping by 0.590mm and, worse,
+    their 0.25mm drills overlapping too (0.1598mm < 0.25mm)."""
+    for px, py, pr in placed:
+        if math.hypot(x - px, y - py) - via_radius_mm - pr < clearance_mm:
+            return False
+    return True
+
+
 def _drop_via_site(
     grid: maze.OccupancyGrid,
     pad: Point,
@@ -1488,6 +1885,8 @@ def _drop_via_site(
     rules: NetRules,
     config: RealizeConfig,
     layers: range,
+    pad_radius_mm: float,
+    placed_via_sites: list[tuple[float, float, float]],
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
 
@@ -1495,19 +1894,64 @@ def _drop_via_site(
     the stub that feeds it — the same claim-then-draw discipline every
     routed trace already follows, applied to the one piece of copper that
     was exempt from it.
+
+    **A drop via must also clear its OWN pad — same-net copper included.**
+    :meth:`~precis.pcb.maze.OccupancyGrid.disk_is_free` is deliberately
+    same-net-blind (a trace legally ends ON its own pad); a via is not a
+    trace, it is a hole drilled through the board, and landing it on —
+    or crowding — the very pad it drops from wicks solder down the barrel
+    exactly as it would for any other pad (:meth:`~precis.pcb.maze.
+    OccupancyGrid.via_clears_pads`'s own docstring). ``grid.route``'s own
+    via search already folds this into its candidate mask
+    (``_pad_keepout_mask``); this search used to try candidate sites
+    without ever asking the one question that mask exists to answer —
+    measured on the reference board as 55 of 57 DRC errors, one
+    ``via_pad_keepout`` at essentially every plane-promoted pin, all of
+    them this exact via landing on its own pad. Root cause was one level
+    deeper than "the call was missing": :func:`_stamp_pads` was claiming
+    every pad via plain ``stamp_disk`` rather than ``stamp_pad``, so
+    ``grid._pads`` — what :meth:`via_clears_pads` and
+    ``_pad_keepout_mask`` both actually read — was empty on every board
+    this module has ever routed; see :func:`_stamp_pads`'s own docstring
+    for the fix.
+
+    **A drop via must also clear every OTHER drop via this same fan-out
+    pass already placed** (:func:`_via_clears_vias`, ``placed_via_sites``)
+    — a second, narrower guard than the pad one above, for the same
+    same-net-blind-is-wrong-here reason.
     """
     if rules.via_dia_mm is None or rules.via_drill_mm is None:
         return None  # this fab publishes no via figures — don't invent any
+    via_radius_mm = rules.via_dia_mm / 2.0
     via_r = grid.core_radius_mm(rules.via_dia_mm)
     stub_r = grid.core_radius_mm(rules.track_width_mm)
+    # The nominal reach a via needs from its own pad is not a flat
+    # constant (this subsystem's most-repeated defect — a courtyard
+    # radius, a seed pitch, a claim radius, PAD_RADIUS_MM, and now this,
+    # tuned to nothing rather than derived): it is exactly the distance
+    # `via_clears_pads` itself requires — the pad's own (enclosing-circle)
+    # radius, plus the via's, plus the net's clearance. `config.
+    # dogbone_stub_mm` stays as a FLOOR, not the figure itself — a courtesy
+    # minimum visible stub length for a vanishingly small pad, not a
+    # substitute for the pad-derived distance that actually varies by
+    # pad size and is the one that prevents the keep-out violation.
+    base_reach = max(
+        config.dogbone_stub_mm, pad_radius_mm + via_radius_mm + grid.clearance_mm
+    )
     ux, uy = direction
     for step in range(1, _DROP_SEARCH_STEPS + 1):
-        reach = config.dogbone_stub_mm * step
+        reach = base_reach * step
         for angle in _DROP_SEARCH_ANGLES:
             cos_a, sin_a = math.cos(angle), math.sin(angle)
             vx, vy = ux * cos_a - uy * sin_a, ux * sin_a + uy * cos_a
             site = (pad[0] + vx * reach, pad[1] + vy * reach)
             if not grid.disk_is_free(layers, site[0], site[1], via_r, net_id):
+                continue
+            if not grid.via_clears_pads(site[0], site[1], via_radius_mm):
+                continue
+            if not _via_clears_vias(
+                site[0], site[1], via_radius_mm, placed_via_sites, grid.clearance_mm
+            ):
                 continue
             # The stub between pad and via has to be clear too — a via in
             # free space fed by a trace through someone else's copper is
@@ -1525,6 +1969,493 @@ def _drop_via_site(
             ):
                 return site
     return None
+
+
+# ── plane fragment stitching (gripe 270637) ───────────────────────────────
+#
+# See the module docstring's "Plane fragment stitching" note for the two
+# stages and the independence-from-connectivity.py discipline. Everything
+# below is scoped to one call, from `_realize_maze`, after both routing AND
+# pouring have finished (`_stitch_plane_fragments` needs the FINISHED pour
+# polygons to know what it's joining).
+
+
+class _UnionFind:
+    """A small, PRIVATE union-find over one net's poured-fragment indices —
+    written fresh here rather than imported from
+    :mod:`precis.pcb.connectivity`'s own ``_DisjointSet``, on purpose: see
+    this module's docstring on why the stitching PRODUCER must not share
+    machinery with the connectivity CHECKER, even though the two data
+    structures are one-for-one identical in shape. That is the deliberate
+    duplication, not an oversight."""
+
+    def __init__(self, n: int) -> None:
+        self._parent = list(range(n))
+
+    def find(self, a: int) -> int:
+        root = a
+        while self._parent[root] != root:
+            root = self._parent[root]
+        while self._parent[a] != root:  # path compression
+            self._parent[a], a = root, self._parent[a]
+        return root
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self._parent[rb] = ra
+
+
+def _default_stitch_pitch(rules: NetRules, clearance_mm: float) -> float:
+    """See :attr:`RealizeConfig.stitch_pitch_mm`'s own docstring for why
+    this is derived from geometry already in hand rather than a bare
+    constant."""
+    assert rules.via_dia_mm is not None
+    return 2.0 * (rules.via_dia_mm + clearance_mm)
+
+
+def _pour_polygon(pour: dict[str, Any]) -> Any:
+    """One pour item's shapely polygon, holes included — built directly
+    from the SAME ``polygon``/``holes`` ring shape :mod:`precis.pcb.planes`
+    (:func:`~precis.pcb.planes.plane_pours`) already emits and
+    :mod:`precis.pcb.drc`'s ``_copper_item_polygon`` already turns into
+    shapely for the clearance engine. Constructed independently here
+    (never imported from ``drc.py``) for the same reason the rest of this
+    pass is independent of its checkers: ``drc.py``'s reference oracle is
+    the entity that PROVES this shape correct against the accelerated
+    engine, and this producer must not depend on that proof holding to
+    decide where it is allowed to place copper. Returns an empty polygon
+    for a degenerate (<3-point) ring rather than raising — a malformed
+    pour is this pass's cue to skip it, not to crash the whole board."""
+    ext = pour.get("polygon") or []
+    if len(ext) < 3:
+        return _ShapelyPolygon()
+    holes = [h for h in (pour.get("holes") or []) if len(h) >= 3]
+    poly = _ShapelyPolygon(
+        [(float(p[0]), float(p[1])) for p in ext],
+        [[(float(p[0]), float(p[1])) for p in h] for h in holes],
+    )
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    return poly
+
+
+def _touches(poly: Any, x: float, y: float) -> bool:
+    """Does point ``(x, y)`` touch ``poly`` (interior OR boundary)? Used to
+    ask "does this via's CENTRE already land on this net's own copper" —
+    boundary counts, the same "boundary cases go to inside" choice
+    :func:`precis.pcb.planes.point_in_pour` makes and for the same reason:
+    under-reporting a touch here would invent a fragment that isn't real."""
+    return not poly.is_empty and bool(poly.intersects(_ShapelyPoint(x, y)))
+
+
+def _grid_candidates(poly: Any, pitch: float) -> list[tuple[float, float]]:
+    """Every point of a ``pitch``-spaced grid that lands strictly inside
+    ``poly`` — stage 1's "sprinkle" candidate set (module docstring)."""
+    if poly.is_empty or pitch <= 0:
+        return []
+    minx, miny, maxx, maxy = poly.bounds
+    out: list[tuple[float, float]] = []
+    y = miny + pitch / 2.0
+    while y <= maxy:
+        x = minx + pitch / 2.0
+        while x <= maxx:
+            if poly.contains(_ShapelyPoint(x, y)):
+                out.append((x, y))
+            x += pitch
+        y += pitch
+    return out
+
+
+def _candidate_points_in(region: Any, via_r: float) -> list[tuple[float, float]]:
+    """A handful of candidate sites inside ``region`` for stage 2's
+    targeted single-via bridge: the region's own guaranteed-interior
+    representative point first (works for a concave/oddly-shaped region
+    where a plain centroid can land outside it), then a small ring of
+    points offset by the via's own radius around it — a fallback for the
+    case where the exact representative point is legal geometry but
+    already claimed by other copper the keep-out filter (below) will
+    reject. Every candidate is filtered back through ``region.contains``,
+    so an offset can only ever narrow the set, never propose a point
+    outside the region it was computed from."""
+    if region.is_empty:
+        return []
+    rp = region.representative_point()
+    out = [(rp.x, rp.y)]
+    for k in range(8):
+        ang = k * math.pi / 4.0
+        cand = (rp.x + math.cos(ang) * via_r, rp.y + math.sin(ang) * via_r)
+        if region.contains(_ShapelyPoint(*cand)):
+            out.append(cand)
+    return out
+
+
+def _stamp_realized_track(grid: maze.OccupancyGrid, track: RealizedTrack) -> None:
+    """Claim ``track``'s corridor on a FRESH scratch grid — replaying
+    :meth:`~precis.pcb.maze.OccupancyGrid.stamp_path`'s own discipline by
+    hand, because :func:`_stitch_plane_fragments` builds a NEW grid from
+    the finished :class:`RealizeResult` rather than reusing a route pass's
+    own (``_realize_maze`` opens one ``OccupancyGrid`` per attempt and
+    keeps none of them once routing is decided — see that function's own
+    docstring). Only handles a ``"line"`` segment: this pass runs only
+    under the maze router (:func:`realize`'s ``'maze'`` branch is the only
+    caller of :func:`_stitch_plane_fragments`), which never emits an arc."""
+    if track.layer < 0:
+        return
+    radius = grid.core_radius_mm(track.width_mm)
+    step = grid.spec.pitch / 2.0
+    for seg in track.segments:
+        ax, ay = float(seg["start"][0]), float(seg["start"][1])
+        bx, by = float(seg["end"][0]), float(seg["end"][1])
+        span = math.hypot(bx - ax, by - ay)
+        n = max(1, math.ceil(span / step))
+        for k in range(n + 1):
+            t = k / n
+            grid.stamp_disk(
+                (track.layer,),
+                ax + (bx - ax) * t,
+                ay + (by - ay) * t,
+                radius,
+                track.net_id,
+            )
+
+
+def _stitch_one_net(
+    net_id: int,
+    net_name: str,
+    frags: list[tuple[int, Any]],
+    existing_vias: list[RealizedVia],
+    grid: maze.OccupancyGrid,
+    rules: NetRules,
+    config: RealizeConfig,
+    placed_via_sites: list[tuple[float, float, float]],
+) -> tuple[list[RealizedVia], int, str]:
+    """One net's stitching attempt, both stages of the module docstring.
+
+    **The graph has TWO kinds of node, not one — ``frags`` (this net's own
+    poured fragments, one entry per ``(layer_idx, polygon)``; a "sheet" may
+    already be more than one fragment on the SAME layer, antipad-cut by
+    foreign copper) AND ``existing_vias`` (this net's already-realized
+    per-pin drop vias).** An earlier version of this function unioned only
+    fragments and treated a via purely as a JOINER between them — which
+    silently dropped a via that touches NO fragment at all off the graph
+    entirely: :func:`precis.pcb.connectivity.net_islands` never turns a
+    bare, untouched pour into a graph node either (a pour merges whatever
+    already falls inside it; it is never a node on its own), so that via
+    (with its own pad and dog-bone stub) is real, disconnected copper the
+    independent checker WILL flag — measured live on the
+    ``esp32c3_reference`` flood-all-four fixture (gr270637): VCC3V3's 23rd
+    drop via landed nowhere near either poured sheet, this function's
+    fragment-only graph had no way to even represent that as a problem, and
+    it reported "fully stitched" while ``net_islands`` reported a real
+    2-piece split. A via node is now first-class in the graph FOR COUNTING
+    PURPOSES: it can join a fragment (the seed step below) and its
+    isolation is visible in the returned piece count either way.
+
+    **A via node is never a BRIDGING TARGET for a new via, and this is a
+    proof, not a missing feature.** Two DISTINCT, DRC-legal vias of the
+    SAME net must still be at least ``clearance_mm`` apart
+    (:func:`_via_clears_vias`'s own docstring: a barrel-to-barrel gap this
+    close "is a broken drill bit... regardless of whose net(s) they
+    carry") — but :mod:`precis.pcb.connectivity`'s own via-via rule only
+    counts two vias as CONNECTED when their gap is <= ``TOUCH_EPS_MM``
+    (effectively zero). Those two thresholds can never both hold at once
+    (``clearance_mm > 0``), so a brand-new via can never be close enough to
+    an EXISTING via to register as "touching" it without first being
+    illegal. This is a hard, board-geometry-independent fact, not
+    something a smarter search could someday satisfy — so stage 2 below
+    never treats a via node as one half of a bridge. The genuine fix for a
+    via that is near-but-not-touching its own pour is to move THAT via
+    (a "shove", a different mechanism this pass does not perform) or to
+    add a same-net jumper (a second via off an extended stub, or a
+    two-via/spare-layer trace) — both materially bigger than "place one
+    more via" and out of scope here; see the returned message.
+
+    Returns the vias it placed, the number of DISTINCT connected pieces
+    remaining afterward across ALL nodes (0 or 1 means fully stitched,
+    never more than ``len(frags) + len(existing_vias)``), and a message
+    that is non-empty only when that count is > 1.
+
+    Assumes ``rules.via_dia_mm``/``via_drill_mm`` are already known — the
+    caller filters out nets whose fab publishes neither (nothing to stitch
+    WITH, the same refusal every other via-placing function in this module
+    already makes rather than inventing a figure)."""
+    n_frags = len(frags)
+    n = n_frags + len(existing_vias)
+    dsu = _UnionFind(n)
+    assert rules.via_dia_mm is not None and rules.via_drill_mm is not None
+    via_dia_mm, via_drill_mm = rules.via_dia_mm, rules.via_drill_mm
+    via_r = via_dia_mm / 2.0
+
+    # Seed: any of this net's ALREADY-realized drop vias that touch one or
+    # more fragments joins them (and joins the via itself into that group)
+    # for free — the "lucky" case gripe 270637 itself measured (GND, more
+    # pins, already comes out as one island on every seed without this
+    # pass doing anything). Both stages below only ever need to close what
+    # this seed did not. Point-exact on purpose (never via-radius-tolerant)
+    # — this is :func:`precis.pcb.planes.point_in_pour`'s own convention,
+    # the SAME test :mod:`precis.pcb.connectivity` uses for pour
+    # membership (class docstring's independence note: this is physics
+    # copied from the checker's own model, not the checker consulted at
+    # runtime).
+    for k, v in enumerate(existing_vias):
+        node = n_frags + k
+        for i, (layer, poly) in enumerate(frags):
+            if v.layer_lo <= layer <= v.layer_hi and _touches(poly, v.x, v.y):
+                dsu.union(node, i)
+
+    if n <= 1:
+        return [], min(n, 1), ""
+
+    core_r = grid.core_radius_mm(via_dia_mm)
+    pitch = config.stitch_pitch_mm or _default_stitch_pitch(rules, grid.clearance_mm)
+    new_vias: list[RealizedVia] = []
+
+    def try_via(x: float, y: float, lo: int, hi: int) -> bool:
+        if not grid.disk_is_free(range(lo, hi + 1), x, y, core_r, net_id):
+            return False
+        if not grid.via_clears_pads(x, y, via_r):
+            return False
+        if not _via_clears_vias(x, y, via_r, placed_via_sites, grid.clearance_mm):
+            return False
+        new_vias.append(
+            RealizedVia(
+                seg_id=-1,  # not tied to any L1 segment -- see class docstring
+                net_id=net_id,
+                x=x,
+                y=y,
+                dia_mm=via_dia_mm,
+                drill_mm=via_drill_mm,
+                layer_lo=lo,
+                layer_hi=hi,
+                endpoint="a",
+            )
+        )
+        grid.stamp_disk(range(lo, hi + 1), x, y, core_r, net_id)
+        placed_via_sites.append((x, y, via_r))
+        return True
+
+    # Stage 1 -- sprinkle: every pair of DIFFERENT sheets whose footprints
+    # overlap gets a generous grid of stitching vias across that overlap
+    # (module docstring: "what real tools do"). A candidate is only ever
+    # drawn from the literal polygon INTERSECTION (``poly.contains``), so
+    # its centre is, by construction, exactly inside both fragments — the
+    # point-exact touch rule the seed step above uses, satisfied for free
+    # rather than checked after the fact. A pair the seed step already
+    # joined is skipped -- extra density beyond what connectivity needs is
+    # a real feature (thermal/EMI margin) but not this pass's job.
+    # Same-layer pairs are left to stage 2 (they never spatially overlap
+    # by definition — see stage 2's own note).
+    for i, j in itertools.combinations(range(n_frags), 2):
+        li, poly_i = frags[i]
+        lj, poly_j = frags[j]
+        if li == lj or dsu.find(i) == dsu.find(j):
+            continue
+        overlap = poly_i.intersection(poly_j)
+        if overlap.is_empty or overlap.area <= 0.0:
+            continue
+        lo, hi = (li, lj) if li < lj else (lj, li)
+        placed = 0
+        for x, y in _grid_candidates(overlap, pitch):
+            if placed >= config.max_sprinkle_vias_per_overlap:
+                break
+            if try_via(x, y, lo, hi):
+                dsu.union(i, j)
+                placed += 1
+
+    # Stage 2 -- targeted residue over FRAGMENT PAIRS ONLY (class
+    # docstring's proof: a via node can never be a legal bridging target).
+    # Whatever stage 1 left disconnected — a narrow overlap sliver the
+    # fixed pitch stepped over, or every candidate in a small overlap
+    # already claimed — gets a bounded, closest-pair-first attempt with
+    # the overlap's own interior point rather than a grid.
+    #
+    # **The provable limit.** A via joins copper at ONE (x, y) with a FIXED
+    # radius (``via_r``): for it to touch both fragment A and fragment B
+    # (point-exact, per the seed step's own rule), some point must lie
+    # inside BOTH polygons at once — which is only possible if they
+    # geometrically overlap. Two fragments with NO overlap at all cannot
+    # be joined by ANY single via, full stop, independent of pitch or
+    # search effort — this pass proves that rather than merely having
+    # failed to find a site.
+    impossible: set[tuple[int, int]] = set()
+    for _ in range(config.max_stitch_iterations):
+        roots = [dsu.find(i) for i in range(n)]
+        if len(set(roots)) <= 1:
+            break
+        candidates = sorted(
+            (
+                (frags[i][1].distance(frags[j][1]), i, j)
+                for i in range(n_frags)
+                for j in range(i + 1, n_frags)
+                if roots[i] != roots[j] and (i, j) not in impossible
+            ),
+            key=lambda t: t[0],
+        )
+        if not candidates:
+            break  # every remaining fragment pair already tried and failed
+        _gap, i, j = candidates[0]
+        li, poly_i = frags[i]
+        lj, poly_j = frags[j]
+        lo, hi = (li, lj) if li <= lj else (lj, li)
+        overlap = poly_i.intersection(poly_j)
+        placed_here = False
+        if not overlap.is_empty and overlap.area > 0.0:
+            for x, y in _candidate_points_in(overlap, via_r):
+                if try_via(x, y, lo, hi):
+                    dsu.union(i, j)
+                    placed_here = True
+                    break
+        if not placed_here:
+            impossible.add((i, j))
+
+    remaining = len({dsu.find(i) for i in range(n)})
+    message = ""
+    if remaining > 1:
+        stray_vias = sum(
+            1
+            for k in range(len(existing_vias))
+            if dsu.find(n_frags + k) not in {dsu.find(i) for i in range(n_frags)}
+        )
+        via_note = (
+            f" {stray_vias} of this net's own drop via(s) touch no poured "
+            "fragment at all and cannot be rescued by ANY new via (see this "
+            "function's own docstring's proof — a companion via close "
+            "enough to touch one would violate that same via's own "
+            "clearance); fixing them needs moving the via or a jumper, "
+            "neither of which this pass attempts."
+            if stray_vias
+            else ""
+        )
+        message = (
+            f"{net_name}: {remaining} disconnected piece(s) remain after the "
+            f"stitching pass (sprinkle + up to {config.max_stitch_iterations} "
+            "targeted attempt(s))."
+            + via_note
+            + (
+                " At least one remaining fragment pair has no spatial "
+                "overlap for a single via to land in, or a legal site "
+                "existed but every candidate there was already claimed by "
+                "other copper."
+                if stray_vias < remaining - 1
+                else ""
+            )
+        )
+    return new_vias, remaining, message
+
+
+def _stitch_plane_fragments(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    pours: list[dict[str, Any]],
+    *,
+    spec: maze.GridSpec,
+    clearance: float,
+    pads: list[tuple[Point, int, float]],
+    rules_by_net: dict[int, NetRules],
+    config: RealizeConfig,
+) -> tuple[list[RealizedVia], list[UnstitchedNet]]:
+    """Deliberate stitching vias for every plane-promoted net whose own
+    poured copper is not already one piece — see the module docstring for
+    the two-stage approach and why this function computes its own
+    connectivity rather than asking
+    :func:`precis.pcb.connectivity.net_islands`.
+
+    Builds a FRESH scratch :class:`~precis.pcb.maze.OccupancyGrid` from the
+    already-finished ``tracks``/``vias``/``pads`` (not the grid a route
+    pass used — ``_realize_maze`` keeps none of those once routing is
+    decided) so every keep-out check below (:meth:`~precis.pcb.maze.
+    OccupancyGrid.disk_is_free`, :meth:`~precis.pcb.maze.OccupancyGrid.
+    via_clears_pads`, :func:`_via_clears_vias`) sees the REAL, final board,
+    not an intermediate one.
+
+    **Board-edge clearance needs no separate check here.** Every candidate
+    site this function ever proposes comes from INSIDE an already-computed
+    pour polygon, and :func:`precis.pcb.planes.plane_pours` already insets
+    its region by the edge clearance before it ever produces one — a site
+    strictly inside a pour is, by construction, already inside the board's
+    usable rectangle. Re-deriving that inset here would be the exact
+    "second copy of a shared definition" this codebase's own discipline
+    warns against.
+
+    Nets whose fab publishes no via figures are skipped (nothing to stitch
+    WITH); a net with no poured fragment at all is skipped (nothing to
+    stitch TO — this includes every non-plane-promoted net, since
+    ``pours`` never contains an entry for one); a net reduced to exactly
+    one node total (one fragment and no drop vias, say) is skipped too —
+    a single node cannot be disconnected from itself. Otherwise every
+    plane-promoted net is checked, including one with only a SINGLE
+    poured sheet: :func:`_stitch_one_net`'s graph includes this net's own
+    drop vias as nodes too, so a lone stray via that missed its net's one
+    and only sheet is exactly the case this pass exists to catch (see that
+    function's own docstring for the gr270637 measurement that found it).
+
+    **Known limitation, stated rather than hidden**: a stitching via's
+    keep-out check (``disk_is_free``) is asked only about copper this
+    module has already CLAIMED on the occupancy grid (routed tracks,
+    vias, pads) — it has no notion of a THIRD net's finished pour on a
+    layer the stitching via merely passes through. On both reference
+    fixtures every plane-promoted net's own poured layers are adjacent
+    (no foreign pour sits between them), so this never arises in the
+    boards this module is tested against; a design that pours three
+    different nets on three adjacent layers and stitches across all three
+    could, in principle, place a via that shorts to the middle one. Fixing
+    that would mean re-running :func:`_pour_planes` after stitching (to
+    carve fresh antipads around the new vias) rather than stitching after
+    pouring, a bigger reordering than this task's scope.
+    """
+    plane_net_ids = [n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0]
+    if not plane_net_ids or not pours:
+        return [], []
+    layer_names = [str(layer.get("name")) for layer in ir.stackup]
+    layer_index = {name: i for i, name in enumerate(layer_names)}
+
+    grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    _stamp_pads(grid, pads)
+    for t in tracks:
+        _stamp_realized_track(grid, t)
+    for v in vias:
+        grid.stamp_disk(
+            range(v.layer_lo, v.layer_hi + 1),
+            v.x,
+            v.y,
+            grid.core_radius_mm(v.dia_mm),
+            v.net_id,
+        )
+    placed_via_sites: list[tuple[float, float, float]] = [
+        (v.x, v.y, v.dia_mm / 2.0) for v in vias
+    ]
+
+    extra_vias: list[RealizedVia] = []
+    unstitched: list[UnstitchedNet] = []
+    for net_id in plane_net_ids:
+        net_name = str(ir.net_name[net_id])
+        rules = rules_by_net[net_id]
+        if rules.via_dia_mm is None or rules.via_drill_mm is None:
+            continue
+        frags: list[tuple[int, Any]] = []
+        for pour in pours:
+            if str(pour.get("net", "")) != net_name:
+                continue
+            layer_idx = layer_index.get(str(pour.get("layer", "")))
+            if layer_idx is None:
+                continue
+            poly = _pour_polygon(pour)
+            if not poly.is_empty:
+                frags.append((layer_idx, poly))
+        if not frags:
+            continue  # nothing poured for this net at all -- nothing to stitch TO
+        existing = [v for v in vias if v.net_id == net_id]
+        if len(frags) + len(existing) <= 1:
+            continue  # a single node, alone, cannot be disconnected from itself
+        net_vias, remaining, message = _stitch_one_net(
+            net_id, net_name, frags, existing, grid, rules, config, placed_via_sites
+        )
+        extra_vias += net_vias
+        if remaining > 1:
+            unstitched.append(UnstitchedNet(net_id, net_name, remaining, message))
+    return extra_vias, unstitched
 
 
 def _straighten(
@@ -1719,12 +2650,30 @@ def _shove_vias(
             chord_radius_mm,
             step,
         )
-        via_ok = far_ok and grid.disk_is_free(
-            range(0, grid.spec.n_layers),
-            candidate[0],
-            candidate[1],
-            grid.core_radius_mm(via_group_extent_mm),
-            net_id,
+        via_ok = (
+            far_ok
+            and grid.disk_is_free(
+                range(0, grid.spec.n_layers),
+                candidate[0],
+                candidate[1],
+                grid.core_radius_mm(via_group_extent_mm),
+                net_id,
+            )
+            # `disk_is_free` is deliberately SAME-NET-blind (right for a
+            # trace legally ending on its own pad, module docstring above)
+            # — a shoved via is not a trace, so it must also clear
+            # `via_clears_pads` (net-blind, checks a pad's own net too)
+            # or a shove can walk a via straight onto its own pad. Found
+            # 2026-08-29 (gripe 269811): this loop moved a via by testing
+            # only `disk_is_free`, so a candidate site that was merely
+            # "not foreign copper" was accepted even when it sat on the
+            # via's own net's pad, at the SAME group-extent radius the
+            # occupancy check above already uses (the conservative
+            # stitched-group footprint, never the single via's own
+            # smaller diameter).
+            and grid.via_clears_pads(
+                candidate[0], candidate[1], via_group_extent_mm / 2.0
+            )
         )
         if via_ok:
             pts[i] = (candidate[0], candidate[1], v_pre[2])
@@ -1803,7 +2752,12 @@ def _snap_to_pads(
 
 
 def _tracks_from_path(
-    seg_id: int, net_id: int, path: maze.RoutePath, width_mm: float
+    seg_id: int,
+    net_id: int,
+    path: maze.RoutePath,
+    width_mm: float,
+    *,
+    fillet_radius_mm: float | None = None,
 ) -> list[RealizedTrack]:
     """Split one routed path into per-layer :class:`RealizedTrack`\\ s —
     that class carries a single ``layer``, so a route that changes layer
@@ -1814,12 +2768,17 @@ def _tracks_from_path(
     layer = path.points[0][2]
     for x, y, this_layer in path.points:
         if this_layer != layer:
-            out += _track_from_run(seg_id, net_id, layer, run, width_mm)
+            out += _track_from_run(
+                seg_id, net_id, layer, run, width_mm,
+                fillet_radius_mm=fillet_radius_mm,
+            )
             run = [(x, y)]
             layer = this_layer
         else:
             run.append((x, y))
-    out += _track_from_run(seg_id, net_id, layer, run, width_mm)
+    out += _track_from_run(
+        seg_id, net_id, layer, run, width_mm, fillet_radius_mm=fillet_radius_mm
+    )
     return out
 
 
@@ -1829,14 +2788,58 @@ def _track_from_run(
     layer: int,
     run: list[tuple[float, float]],
     width_mm: float,
+    *,
+    fillet_radius_mm: float | None = None,
 ) -> list[RealizedTrack]:
+    """One per-layer run of routed points, as a track.
+
+    **Corners are rounded, and the radius is clamped so that rounding can
+    only REMOVE copper.** A fillet cuts the outside of a corner but bulges
+    inward, by ``r·(1 − sin(θ/2))`` — ``0.29·r`` at a right angle
+    (:func:`precis.pcb.geom.max_inward_deviation`). That inward bulge is
+    new copper on the concave side, exactly where a pad or via may be
+    sitting, so an unclamped fillet can introduce a clearance violation on
+    a path the router had already proved clear.
+
+    Rather than fillet freely and re-run DRC to find out, the radius is
+    capped so the worst inward deviation on this run fits inside the
+    track's own half-width. Copper within half a width of the mitered
+    centreline is copper the unfilleted track already occupied, so the
+    filleted track is a strict subset of the straight one and the router's
+    existing clearance guarantee carries over untouched.
+
+    :func:`precis.pcb.geom.max_radius_for_deviation` computes that cap in
+    closed form. **It replaced a proportional ``radius *= budget / worst``
+    step that did not work**: deviation is linear in the radius only at an
+    UNCLAMPED corner, and ``fillet_polyline`` clamps the setback to half
+    the shorter adjoining leg, back-solving an ``r_eff`` that ignores the
+    requested radius entirely. On a 60-degree corner with legs 4x the
+    track width, the proportional step moved the deviation by exactly zero
+    and left it 0.1443mm against a 0.125mm budget — a fillet bulging new
+    copper past the envelope the router proved clear, which is the one
+    thing this budget exists to prevent.
+
+    ``length`` stays the PRE-fillet centreline length: it is the routing
+    cost figure the maze search itself optimised and is reported against,
+    not a fabrication dimension. Filleting shortens the real copper
+    slightly; quoting the router's own number here keeps the reported
+    length comparable across a change to the corner treatment.
+    """
     if len(run) < 2:
         return []
-    segments = [
-        {"shape": "line", "start": list(a), "end": list(b)}
-        for a, b in itertools.pairwise(run)
-    ]
     length = sum(dist(a, b) for a, b in itertools.pairwise(run))
+    segments: list[dict[str, Any]]
+    if fillet_radius_mm and fillet_radius_mm > 0.0 and len(run) > 2:
+        budget = width_mm / 2.0
+        radius = min(
+            fillet_radius_mm, geom.max_radius_for_deviation(list(run), budget)
+        )
+        segments = geom.fillet_polyline(list(run), radius)
+    else:
+        segments = [
+            {"shape": "line", "start": list(a), "end": list(b)}
+            for a, b in itertools.pairwise(run)
+        ]
     return [
         RealizedTrack(seg_id, net_id, layer, tuple(segments), length, None, width_mm)
     ]
@@ -1868,7 +2871,7 @@ def realize(
     pad at :mod:`precis.pcb.landpattern`'s synthesized size."""
     ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
     if config.router == "maze":
-        tracks, vias, unrouted, pours, reasons = _realize_maze(
+        tracks, vias, unrouted, pours, reasons, unstitched = _realize_maze(
             ir, ids, config, footprints
         )
         warnings = _gap_usage(ir, ids, config)
@@ -1879,6 +2882,7 @@ def realize(
             tuple(unrouted),
             tuple(pours),
             tuple(reasons),
+            tuple(unstitched),
         )
     if config.router != "tangent":
         raise ValueError(
@@ -1915,7 +2919,11 @@ def rip_net(
     tracks = tuple(t for t in result.tracks if t.net_id != net_id)
     vias = tuple(v for v in result.vias if v.net_id != net_id)
     warnings = tuple(_gap_usage(ir, [t.seg_id for t in tracks], config))
-    return RealizeResult(tracks, vias, warnings)
+    # Stitching status is a whole-board diagnostic, not per-track state, and
+    # this function never touches plane copper (rip-up is per-net, and a
+    # ripped net's own removal is not this pass's concern) -- carried over
+    # unchanged rather than silently dropped.
+    return RealizeResult(tracks, vias, warnings, unstitched=result.unstitched)
 
 
 def pin_topology(ir: PcbIR, seg_id: int, side: int) -> None:
@@ -1964,7 +2972,9 @@ def re_realize_segments(
     vias = tuple(v for v in result.vias if v.seg_id not in touched)
     vias += tuple(v for t in replaced.values() for v in _vias_for_track(ir, t, config))
     warnings = tuple(_gap_usage(ir, [t.seg_id for t in tracks], config))
-    return RealizeResult(tracks, vias, warnings)
+    # See rip_net's own comment: stitching status is a whole-board
+    # diagnostic this per-segment recompute has no new information about.
+    return RealizeResult(tracks, vias, warnings, unstitched=result.unstitched)
 
 
 # ── gerber.py hand-off ────────────────────────────────────────────────────
@@ -2025,12 +3035,53 @@ def to_gerber_model(
             }
         )
     copper += [dict(p) for p in result.pours]
-    return {
-        "layers": layers,
-        "outline": outline,
-        "copper": copper,
-        "pads": pads_for_ir(ir, layers, footprints),
-    }
+    return _quantized(
+        {
+            "layers": layers,
+            "outline": outline,
+            "copper": copper,
+            "pads": pads_for_ir(ir, layers, footprints),
+        }
+    )
+
+
+def _quantized(value: Any) -> Any:
+    """Snap every millimetre in a gerber model to the gerber unit.
+
+    ``gerber.py`` writes fixed-point integers — ``_u(mm) = round(mm *
+    10**6)`` — so it rounds every coordinate at EMISSION anyway. Doing it
+    HERE instead, once, at the hand-off, means the artefact on disk is
+    exactly the geometry this module computed rather than a rounded copy
+    of it: what a human inspects and what DRC checked are then the same
+    numbers, not two roundings of a third.
+
+    It also makes exact-equality geometry decidable. Two coordinates
+    produced by different float paths that ought to coincide — a fillet's
+    tangent point and the leg it sits on, two arcs that should share a
+    centre — differ in the last bits and compare unequal forever, which is
+    why an alignment reward over raw floats is measure-zero and can never
+    fire. After quantisation they are simply equal.
+
+    **Applied to every float in the structure, deliberately.** The gerber
+    model is a pure geometry carrier: every float in it is a millimetre
+    (coordinates, widths, diameters, drills, pad sizes). An allow-list of
+    keys would be one more place to forget a key when a new primitive is
+    added — the exact failure this subsystem keeps shipping. ``bool`` is
+    checked before ``float`` because ``bool`` is a subclass of ``int`` and
+    an arc's ``cw`` flag must stay a bool; ``int`` layer indices are left
+    alone so their type does not silently become float.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return geom.quantize(value)
+    if isinstance(value, dict):
+        return {k: _quantized(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_quantized(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_quantized(v) for v in value)
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -2206,6 +3257,17 @@ def pads_for_ir(
             "y": point[1],
             "w": geom.w_mm,
             "synthesized": geom.synthesized,
+            # X2 object identity for the gerber viewer's hover tooltip
+            # (gerber.py's own module docstring / `%TO.P,<refdes>,<pin>*%`)
+            # — the IR already carries both, so there is no reason a pad
+            # can say its net and its coordinates but not which pin of
+            # which part it is. Emitted for a SYNTHESIZED pad too: a
+            # synthesized pad is still a real pin of a real part, only its
+            # GEOMETRY is a bound — withholding identity there would make
+            # the tooltip least informative exactly where the shape is
+            # least trustworthy, backwards from the point of having one.
+            "refdes": str(ir.instance_refdes[int(ir.pin_instance[pid])]),
+            "pin": str(ir.pin_label[pid]),
         }
         if geom.shape != "circle":
             pad["h"] = geom.h_mm
@@ -2223,6 +3285,7 @@ __all__ = [
     "RealizedTrack",
     "RealizedVia",
     "UnroutedReason",
+    "UnstitchedNet",
     "pad_geometry",
     "pads_for_ir",
     "pin_topology",

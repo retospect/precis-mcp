@@ -27,6 +27,7 @@ board for inspection; unset, the test still runs and asserts everything.
 
 from __future__ import annotations
 
+import collections
 import copy
 import json
 import os
@@ -110,10 +111,44 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     pcb = PcbHandler(hub=Hub(store=store))
     assert "created" in pcb.put(id="fabrender", args=design).body
 
-    # Declared, not discovered — see the module docstring.
-    pcb.put(id="fabrender", args={"op": "plane_net", "layer": "In1.Cu", "net": "GND"})
+    # The arrangement a human actually asks for on 4 layers: signals route
+    # on the inner pair with opposed preferred directions, and the outer
+    # pair carries traces AND a copper fill in the space between them.
+    #
+    # Written straight to the board row because **there is no stackup
+    # authoring path** — `_pcb_ensure_board` always creates
+    # `DEFAULT_STACKUP` and no verb overrides it. That is a real gap in the
+    # tool surface (an agent cannot ask for this board at all today), filed
+    # rather than worked around; this test writes the row directly so the
+    # engine below it can be exercised meanwhile.
+    ref = store.get_ref(kind="pcb", id="fabrender")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pcb_boards SET stackup = %s WHERE board_id = %s",
+            (
+                json.dumps(
+                    [
+                        {"name": "F.Cu", "role": "signal", "routable": True,
+                         "pourable": True},
+                        {"name": "In1.Cu", "role": "signal", "routable": True,
+                         "pourable": False},
+                        {"name": "In2.Cu", "role": "signal", "routable": True,
+                         "pourable": False},
+                        {"name": "B.Cu", "role": "signal", "routable": True,
+                         "pourable": True},
+                    ]
+                ),
+                board_id,
+            ),
+        )
+
+    # Declared, not discovered — see the module docstring. Fill the two
+    # OUTER layers; the inner pair stays clear for routing.
+    pcb.put(id="fabrender", args={"op": "plane_net", "layer": "F.Cu", "net": "GND"})
     pcb.put(
-        id="fabrender", args={"op": "plane_net", "layer": "In2.Cu", "net": "VCC3V3"}
+        id="fabrender", args={"op": "plane_net", "layer": "B.Cu", "net": "VCC3V3"}
     )
 
     assert (
@@ -130,6 +165,42 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     out = os.environ.get("PRECIS_PCB_RENDER_OUT")
     if out:
         Path(out).write_text(svg, encoding="utf-8")
+
+    # **The board this renders must be a board, not just a picture.**
+    # This test originally asserted only that every film reached the
+    # viewer, and it passed happily over a design carrying 57 DRC errors —
+    # 55 of them plane drop-vias sitting on their own pads. A render handed
+    # to a human as a deliverable implies the board behind it is sound, so
+    # assert that here rather than letting the picture speak for it.
+    #
+    # Declaring a plane is what exercises the pour path, and it is also
+    # what exposes the fan-out defects, so this assertion belongs on
+    # exactly this test and not on a quieter one.
+    # **DRC IS PULL-BASED. Nothing runs it for you.**
+    # `run_geometric_drc` executes only from `get(view='drc')`; place and
+    # route never trigger it. `pcb_drc_findings_latest` reads PERSISTED
+    # rows, and its own docstring says "no run yet means 'not yet', not
+    # 'clean'" — so reading it without this call returns an empty list and
+    # `assert not errors` passes VACUOUSLY over any board at all.
+    #
+    # That is exactly what this test did when the assertion was first
+    # added: it was written to stop a 57-error board being presented as a
+    # deliverable, and it asserted nothing, because an absent run and a
+    # clean run are the same empty list. The check that was supposed to
+    # catch the trap fell into it.
+    drc_view = pcb.get(id="fabrender", view="drc")
+    run_id, findings = store.pcb_drc_findings_latest(ref.id)
+    assert run_id is not None, (
+        "no DRC run was recorded even after view='drc' — a missing run and "
+        f"a clean run are indistinguishable downstream. View said: {drc_view.body[:200]!r}"
+    )
+    errors = [f for f in findings if f["severity"] == "error"]
+    by_rule = collections.Counter(str(f["rule"]) for f in errors)
+    detail = " | ".join(str(f["detail"])[:120] for f in errors[:6])
+    assert not errors, (
+        f"{len(errors)} DRC error(s) on the rendered board: {dict(by_rule)}\n"
+        f"{detail}"
+    )
 
     groups = {name: body for name, body in _GROUP_RE.findall(svg)}
     missing = [layer for layer in _EXPECTED_LAYERS if layer not in groups]
@@ -157,7 +228,7 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     # through it, so "In1_Cu has geometry" is satisfied by a board with no
     # plane at all — which is exactly how a declared-but-never-poured GND
     # went unnoticed until someone looked at the picture.
-    for plane_layer in ("In1_Cu", "In2_Cu"):
+    for plane_layer in ("F_Cu", "B_Cu"):
         assert re.search(
             r'<path d="[^"]+" fill="#[0-9a-fA-F]{6}"', groups[plane_layer]
         ), (

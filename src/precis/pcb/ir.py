@@ -195,7 +195,22 @@ class PcbIR:
     seg_pin_a: np.ndarray  # int32[n_seg]
     seg_pin_b: np.ndarray  # int32[n_seg]
     seg_layer: np.ndarray  # int8[n_seg], UNSET_LAYER until assigned
-    net_plane_layer: np.ndarray  # int8[n_nets], UNSET_LAYER unless promoted to a plane
+    #: uint16[n_nets], bitmask — bit k set iff this net is poured (plane
+    #: role) on stackup layer k. ``0`` means "not promoted anywhere",
+    #: same role ``UNSET_LAYER`` played for the old scalar field, restated
+    #: as "no bits set" because a bitmask has no room for a second sentinel
+    #: value (``-1`` doesn't survive a ``uint16`` cast). A net may now be
+    #: poured on SEVERAL layers at once — real 4-layer boards flood GND/PWR
+    #: on every plane-role layer they reach, not just one — while a single
+    #: layer still carries at most one net (module docstring's "a plane
+    #: layer carries ONE net" rule; :func:`plane_layers_of` plus every
+    #: reader's collision set is what still enforces that, per-bit). Same
+    #: in-house "a set of layers is a bitmask" convention
+    #: :attr:`via_layer_span` already established — this field is the net
+    #: analog of that via-side one, not a second spelling of it. Mutate
+    #: only via :meth:`promote_plane`/:meth:`demote_plane`, never by direct
+    #: assignment (module docstring's mutator discipline).
+    net_plane_layers: np.ndarray
     via_layer_span: np.ndarray  # uint16[n_via], bitmask
     via_net: np.ndarray  # int32[n_via], NO_NET => pure keepout
 
@@ -317,24 +332,39 @@ class PcbIR:
         self.dirty_l5[seg_id] = True
 
     def promote_plane(self, net_id: int, layer: int) -> None:
-        """L1 mutator: assign ``net_id`` to plane role on ``layer`` — a
-        layer-*role* decision (backlog: roles are emergent, not hardcoded).
-        Its own segments stop being routed traces (they dog-bone fan out
-        instead), so they're dirtied at L1/L4/L5 same as a layer
-        reassignment; L3 is untouched (no component moved)."""
+        """L1 mutator: ADD ``layer`` to ``net_id``'s plane-role layer set
+        (OR the bit into :attr:`net_plane_layers`) — a layer-*role*
+        decision (backlog: roles are emergent, not hardcoded). Calling
+        this again with a DIFFERENT layer does not undo the previous
+        one — a net may be poured on several layers at once (use
+        :meth:`demote_plane` to remove one, or all). Its own segments
+        stop being routed traces (they dog-bone fan out instead), so
+        they're dirtied at L1/L4/L5 same as a layer reassignment; L3 is
+        untouched (no component moved)."""
         if not (0 <= layer < self.n_layers):
             raise ValueError(
                 f"layer {layer} out of range for a {self.n_layers}-layer stackup"
             )
-        self.net_plane_layer[net_id] = layer
+        self.net_plane_layers[net_id] = np.uint16(
+            int(self.net_plane_layers[net_id]) | (1 << layer)
+        )
         for seg_id in np.flatnonzero(self.seg_net == net_id):
             self.dirty_l1[seg_id] = True
             self.dirty_l4[seg_id] = True
             self.dirty_l5[seg_id] = True
 
-    def demote_plane(self, net_id: int) -> None:
-        """Undo :meth:`promote_plane` — same dirty footprint."""
-        self.net_plane_layer[net_id] = UNSET_LAYER
+    def demote_plane(self, net_id: int, layer: int | None = None) -> None:
+        """Undo :meth:`promote_plane` for ONE layer (``layer`` given —
+        clears just that bit, leaving any other poured layer of this net
+        untouched) or for EVERY layer (``layer=None``, the default — clears
+        the whole mask back to "not promoted anywhere"). Same dirty
+        footprint either way."""
+        if layer is None:
+            self.net_plane_layers[net_id] = np.uint16(0)
+        else:
+            self.net_plane_layers[net_id] = np.uint16(
+                int(self.net_plane_layers[net_id]) & ~(1 << layer)
+            )
         for seg_id in np.flatnonzero(self.seg_net == net_id):
             self.dirty_l1[seg_id] = True
             self.dirty_l4[seg_id] = True
@@ -668,7 +698,7 @@ def from_graph(
         seg_pin_a=np.array(seg_pin_a, dtype=np.int32),
         seg_pin_b=np.array(seg_pin_b, dtype=np.int32),
         seg_layer=np.full(n_seg, UNSET_LAYER, dtype=np.int8),
-        net_plane_layer=np.full(n_nets, UNSET_LAYER, dtype=np.int8),
+        net_plane_layers=np.zeros(n_nets, dtype=np.uint16),
         via_layer_span=np.zeros(0, dtype=np.uint16),
         via_net=np.zeros(0, dtype=np.int32),
         seg_side=np.zeros(n_seg, dtype=np.int8),
@@ -705,6 +735,97 @@ def from_graph(
         ir.seg_pin_a, ir.seg_pin_b, ir.pin_instance
     )
     return ir
+
+
+# ── layer capability: "routable" and "pourable" are separate questions ──
+# A layer used to be either traces (role == "signal") or copper fill
+# (role == "plane"), never both — the standard 4-layer arrangement (signal
+# traces flowing AROUND a GND/PWR fill on the SAME outer layer) genuinely
+# needs both at once on one layer, and `role` alone can't say that without
+# inventing a third value every consumer would then have to learn. These
+# two predicates split "may this layer carry a routed trace" from "may the
+# AUTOMATIC annealer choose this layer for a net it decides to promote" —
+# each stackup layer answers them independently via an optional explicit
+# ``"routable"``/``"pourable"`` bool, falling back to the legacy
+# role-implies-one-or-the-other rule when the key is absent, so
+# :data:`precis.pcb.DEFAULT_STACKUP` and every existing caller that has
+# never heard of either flag keeps behaving exactly as it does today.
+
+
+def layer_is_routable(layer: dict[str, Any]) -> bool:
+    """Whether one stackup layer entry may carry a routed trace.
+
+    An explicit ``"routable"`` key on the layer dict wins when present;
+    otherwise this falls back to the legacy rule (``role == "signal"``).
+    A stackup author who wants a layer to be BOTH routed and poured (F.Cu
+    carrying signal traces around a GND fill, say) sets
+    ``"routable": True`` explicitly — the pour side of that same layer is
+    :func:`layer_is_pourable`, answered completely independently.
+    """
+    if "routable" in layer:
+        return bool(layer["routable"])
+    return layer.get("role") == "signal"
+
+
+def layer_is_pourable(layer: dict[str, Any]) -> bool:
+    """Whether one stackup layer entry is a layer the AUTOMATIC annealer
+    (:class:`precis.pcb.optimize.OptimizeEngine`'s own ``PLANE_PROMOTE``
+    move generator, never a human instruction) may choose on its own when
+    it decides to promote some net to a plane.
+
+    An explicit ``"pourable"`` key wins when present; otherwise this
+    falls back to the legacy rule (``role == "plane"``), so
+    :data:`precis.pcb.DEFAULT_STACKUP` keeps today's behaviour: the
+    annealer may auto-promote a net onto In1.Cu/In2.Cu, never onto
+    F.Cu/B.Cu.
+
+    **This predicate gates only the automatic move generator — never a
+    human instruction.** ``op='plane_net'`` reaches :meth:`PcbIR.
+    promote_plane` directly (``handlers/pcb.py::_op_plane_net`` ->
+    ``pcb_planes`` -> the ``pcb_route`` job's authored-row
+    re-application, locked against the annealer via ``OptimizeConfig.
+    locked_plane_nets``) and is honoured on ANY stackup layer regardless
+    of this flag: a human declaring "fill the front in GND, the back in
+    PWR" is a constraint, not a suggestion the engine gets to
+    second-guess by layer eligibility — including on a layer this
+    predicate itself says is not (automatically) pourable.
+    """
+    if "pourable" in layer:
+        return bool(layer["pourable"])
+    return layer.get("role") == "plane"
+
+
+def routable_layers(ir: PcbIR) -> list[int]:
+    """Stackup indices that may carry a routed trace
+    (:func:`layer_is_routable`) — the ONE place this question is
+    answered; :mod:`precis.pcb.session` and :mod:`precis.pcb.realize`
+    both call this rather than each keeping their own copy (closes a
+    prior four-line duplication, 2026-08-29 — see
+    :mod:`precis.pcb.session`'s own former docstring note on it)."""
+    return [i for i, layer in enumerate(ir.stackup) if layer_is_routable(layer)]
+
+
+def pourable_layers(ir: PcbIR) -> list[int]:
+    """Stackup indices the AUTOMATIC annealer may promote a net onto
+    (:func:`layer_is_pourable`) — see that function's docstring for why
+    this does NOT gate a human's authored ``op='plane_net'`` assignment,
+    which :func:`precis.pcb.planes.plane_pours` and this module's own
+    :meth:`PcbIR.promote_plane` accept on any layer index."""
+    return [i for i, layer in enumerate(ir.stackup) if layer_is_pourable(layer)]
+
+
+def plane_layers_of(mask: int) -> list[int]:
+    """The sorted list of stackup layer indices set in one
+    :attr:`PcbIR.net_plane_layers` bitmask entry — the bitmask analog of
+    comparing an old scalar ``net_plane_layer`` entry to ``UNSET_LAYER``,
+    for a caller that needs every poured layer of a net rather than just
+    "is this net a plane at all" (``mask != 0``, no helper needed for
+    that half). :data:`via_layer_span`'s bitmask has no equivalent free
+    function because it is always read as a contiguous span
+    (``layer_lo``/``layer_hi``); a net's plane layers are NOT required to
+    be contiguous (GND may be poured on F.Cu and In2.Cu without In1.Cu),
+    so this returns every set bit, not a span."""
+    return [i for i in range(16) if mask & (1 << i)]
 
 
 # ── L2: propose + validate, never define (see module docstring) ────────
@@ -1227,10 +1348,22 @@ def same_layer_crossing_count(ir: PcbIR, layer: int) -> int:
     return sweep_line_crossings(segments)
 
 
-def plane_connectivity(ir: PcbIR, net_id: int) -> PlaneConnectivity:
-    layer = int(ir.net_plane_layer[net_id])
-    if layer == UNSET_LAYER:
-        raise ValueError(f"net {net_id} is not plane-promoted")
+def plane_connectivity(ir: PcbIR, net_id: int, layer: int) -> PlaneConnectivity:
+    """One net's stitching-via count on ONE of its poured layers.
+
+    A net now may be promoted on several layers at once (module docstring
+    of :attr:`PcbIR.net_plane_layers`), and each poured SHEET is its own
+    physical piece of copper — F.Cu's fill and In1.Cu's fill are not one
+    conductor until vias tie them together, so this must be asked
+    per-layer, never once per net (a single stitch count could not tell
+    "two vias on F.Cu, zero on In1.Cu" apart from "one each", which are
+    very different boards). ``layer`` must be one of ``net_id``'s
+    currently-set bits (:func:`plane_layers_of`) — raises otherwise, the
+    same discipline the old scalar-field version raised on an unpromoted
+    net."""
+    mask = int(ir.net_plane_layers[net_id])
+    if not (mask & (1 << layer)):
+        raise ValueError(f"net {net_id} is not plane-promoted on layer {layer}")
     stitches = [
         v
         for v in range(ir.n_vias)

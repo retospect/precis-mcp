@@ -248,12 +248,30 @@ def _drill_el(hole: dict[str, Any]) -> str:
 
 
 def _pour_el(item: dict[str, Any], *, pattern_id: str, edge_color: str) -> str:
+    """A pour, WITH its antipads.
+
+    ``holes`` are not decoration — each is a void the pour cuts around a
+    foreign-net pad or via so the fill does not short it, and
+    :func:`precis.pcb.planes.plane_pours` emits them for exactly that
+    reason. Drawing only the exterior ring renders solid copper where the
+    real board has a hole, i.e. **a picture of a short**. The gerber writer
+    (``gerber._emit_region``) already cuts them as ``%LPC*%`` clear-polarity
+    sub-regions; this is the same fact, and the two renderers disagreeing
+    about it is how a figure gets trusted over the artefact.
+
+    An ``evenodd`` compound path is the SVG spelling of "exterior minus
+    interiors" — a plain ``<polygon>`` cannot express a hole at all.
+    """
     poly = item.get("polygon") or []
     if not poly:
         return ""
-    pts = " ".join(_pt((float(p[0]), float(p[1]))) for p in poly)
+    rings = [poly, *(h for h in (item.get("holes") or []) if len(h) >= 3)]
+    d = " ".join(
+        "M " + " L ".join(_pt((float(p[0]), float(p[1]))) for p in ring) + " Z"
+        for ring in rings
+    )
     return (
-        f'<polygon points="{pts}" fill="url(#{pattern_id})" '
+        f'<path d="{d}" fill="url(#{pattern_id})" fill-rule="evenodd" '
         f'stroke="{edge_color}" stroke-width="0.05"/>'
     )
 

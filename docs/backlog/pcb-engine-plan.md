@@ -616,6 +616,326 @@ subsume `BASELINE_ROUTED_FANOUT2` rather than sit beside it. Keep both
 anyway; they fail with different messages, and the routed count is the one
 a human reads.
 
+### RESUME POINTER (2026-08-29 LATE — supersedes the evening one below)
+
+**Tree state: everything is COMMITTED on this branch, nothing shipped.**
+`origin/main` is still `74390332`; this branch is many commits ahead of it,
+last one `docs(pcb): correct padplace's false claim...`. The earlier "33
+files uncommitted" hazard is resolved — the working practice now is a
+**checkpoint commit at every agent boundary** (written into
+`.claude/skills/flow` and `coder-chain`, and into auto-memory). Keep doing
+that. **Never run `git checkout`, `git stash` or any destructive git command
+in this tree** — an agent destroyed WIP that way earlier today — and put
+that sentence in every agent prompt.
+
+**Stroke font: DONE (`d388d6cb`), no agents in flight.** The hand-authored
+table is gone, replaced by real Hershey Roman Simplex transcribed from
+`rowmans.jhf` (licence permits conversion but REQUIRES two acknowledgements,
+now in the module docstring — do not delete them). The defect it fixed:
+`_RAW["S"]` authored both arcs with reversed sweeps, so every "S" this
+system had ever silkscreened was MIRRORED — root-caused to the glyph table,
+not the pipeline (`gerber_view` applies exactly one uniform y-flip,
+correctly). The "N" was never affected; an earlier claim that it was is
+wrong.
+
+Verified by plotting the *shipped* table through the real `layout_text`
+path, top-side and mirrored: S starts upper-right and ends lower-left, P's
+bowl is upper-and-right of the stem, F's upper bar is longer than its
+middle, R's leg runs down-right. Five handedness tests now pin those ordered
+relations. **They exist because the old bbox/stroke-count assertions were
+symmetry-blind by construction** — see "A test fixture must have a TRIVIAL
+symmetry group". Any future glyph test must use a glyph asymmetric in BOTH
+axes; never S or N alone.
+
+**Latest rendered board: `/tmp/board-latest.svg`** (regenerate with
+`PRECIS_PCB_RENDER_OUT=/app/board-latest.svg UV_WITH="--with shapely"
+scripts/test tests/test_pcb_fab_render_all_layers.py -q`, then copy it out
+of the worktree — `scripts/test` now forwards that env var). That test FAILS
+by design on its DRC assertion; the SVG is written first. Render warnings
+ride in a `<desc>` element at the end of the SVG (NOT an XML comment — the
+messages contain `--`, which is illegal there and corrupted the file once).
+
+**Known state of that board:** 3 DRC errors (`board_edge_clearance` 0.390 vs
+0.400mm — 10µm short; GND in 3 pieces; VCC3V3 in 2). Title block and S/N
+patch place correctly; only 2 of 3 fiducials fit and they are flooded by the
+F.Cu pour anyway (needs a realize-time antipad, which the render path
+structurally cannot cut). 7 courtyards for 29 parts.
+
+**Nothing in flight.** (Earlier agents — multi-layer copper fill, via↔via
+DRC + cross-part silk collision, the `fable` critique of
+`pcb-drc-keepout-matrix.md` — have all reported and landed.)
+
+**Next up, in order** (the silk queue agreed with the user; all in
+`silk.py` and `drc.py`, all were blocked on the font and no longer are):
+structured per-instance silk census → a `silk_missing` DRC rule → a
+`silk_printability` rule (consumes the currently-dead `silk_width_mm`) →
+labels placed OUTSIDE courtyards → pin-1 honesty (a marker only where a
+pin is really named "1"; 7 of 29 parts on the reference board are not, and
+today they get a `min(pin_id)` guess drawn with full confidence), plus a
+cathode band for diodes. Then: restrict routing to orthogonal/45° — note
+`_collapse_straight`'s any-angle shortcutting is what *creates* the
+diagonals, so it must be constrained too, not just the search.
+
+**Do not ship while agents are editing** — `scripts/ship` snapshots WIP.
+
+#### The lesson that outranks every individual fix
+
+**DRC IS PULL-BASED AND NOTHING RUNS IT FOR YOU.**
+`run_geometric_drc` executes only from `get(view='drc')`. `place` and
+`route` never trigger it. `Store.pcb_drc_findings_latest` reads *persisted*
+rows and returns `(None, [])` when no run exists — its own docstring says
+**"no run yet means 'not yet', not 'clean'"**.
+
+`tests/test_pcb_fab_render_all_layers.py` asserted `not errors` after
+reading that function *without ever calling `view='drc'`*. It passed
+vacuously, and a board with **7 `via_pad_keepout` errors** was reported to
+the user as verified-clean. The assertion had been added specifically to
+stop a defective board being presented as a deliverable, and it caught
+nothing. Fixed: the test now calls `view='drc'` and asserts `run_id is not
+None` before reading findings.
+
+**Generalise it: any caller that reads `pcb_drc_findings_latest` without
+having caused a run is asserting nothing.** Audit every such caller —
+including `workers/auto_check_evaluators/netlist_drc_clean.py`, whose
+docstring admits it "reads what a prior call already wrote".
+
+#### Still open, in priority order
+
+1. **7 `via_pad_keepout` errors** on the 4-layer render config — plane
+   drop vias landing on pads *despite* `_drop_via_site` already calling
+   `via_clears_pads`. The guard exists and they got through it. Likely the
+   reach is derived from *this* pin's pad while the via lands on a
+   *neighbouring* pin's pad (the failing SCL via sits on R2 pin 1).
+2. **Two vias overlapping each other**, drills included — SCL pair 0.1598mm
+   apart (drills are 0.25mm), GND pair near U1 at −0.392mm. No rule exists;
+   `check_clearance`'s same-net exemption is correct for copper and wrong
+   for holes.
+3. **Cross-part silk collision** — `build_silk` tracks `own_silk` per
+   instance and resets it each iteration, so two parts' labels may overlap.
+   6 refdes labels dropped on this board (C14, C3, C6, C8, R2, U3), each
+   honestly reported in `SilkResult.dropped` — which no test reads.
+4. **A part can keep a lone pin-1 tick** after losing both its courtyard
+   and its label (C3), leaving context-less ink beside a pad.
+5. **Pour inset (0.975mm) ≠ DRC board-edge minimum (0.6mm).** The pour
+   borrows the router's grid-clip figure, so a part can be legally placed
+   and still sit in the strip that gets no copper (C9). Two numbers, nobody
+   reconciling them.
+6. **Fiducials/title block are built but not wired** — `handlers/pcb.py`
+   call-site diffs are in the agent report, unapplied. Also
+   `soldermask_gerber` swells every pad by a fixed 0.05mm with no per-pad
+   override, so a fiducial's 2mm opening comes out 1.1mm.
+7. **Inner layers barely used** (In1: 3 traces, In2: 0, F.Cu: 66). The maze
+   router ignores `ir.seg_layer`, so nothing can *ask* for a layer; choice
+   is A* cost alone and `VIA_COST_MM = 3.0` each way never pays on a 40mm
+   board. User also wants direction *restricted* (up/down + diagonal, or
+   up/down + 90° arcs) rather than merely penalised.
+8. **Font is a reconstruction, not real Hershey** — the agent had no
+   network. Genuine digitized data can be fetched and swapped behind the
+   same interface.
+9. `padplace.board_pads` lacks `refdes`/`pin`, so tooltips stay anonymous
+   on the cached-footprint path.
+10. `gr270090` (THT pad claimed on `PAD_LAYER` only, drill never read) and
+    `gr269811` (tangent router `_vias_for_track` places a via at the pad
+    coordinate) — both dormant, both real.
+
+### THE SHORT: a pour cuts no antipad around any PAD (user, 2026-08-29)
+
+**The worst defect this build has produced, found by a human looking at a
+render, on a board reporting zero DRC errors.** The user's words, which
+name the mechanism exactly: *"there is a tiny round cutout for the square
+pad that is much larger"* — and *"all nets are functionally connected with
+the copper on F.Cu."*
+
+**Cause 1 — the pour never sees pads.** `realize._pour_planes` calls
+`plane_pours(..., copper=to_gerber_model(interim, ir, ...)["copper"])`.
+`to_gerber_model` returns **`copper` and `pads` as separate keys**; only
+`copper` is passed. So the fill flows around tracks, vias and other pours
+— and straight over every pad on its layer. The round cutout the user saw
+is a *via*'s antipad (vias are in `copper`); the square pad beside it gets
+nothing. Every pad on a filled layer is electrically merged with the fill
+net.
+
+**Cause 2 — clearance DRC never sees pads either.**
+`drc.clearance_pairs_indexed` iterates `model["copper"]` only. Its own
+docstring says "every same-layer, different-net copper-item pair
+(tracks/vias/pours)" — pads are not in that list. So **pad↔pour,
+pad↔track, pad↔via and pad↔pad are all unchecked.** Clearance is the one
+rule that independently verifies the occupancy grid's central guarantee,
+and it has been blind to the primitive class you solder to. Check the
+O(n²) reference oracle too: if it shares the blindness, then "the oracle
+agrees" was load-bearing evidence over a shared blind spot.
+
+Two independent omissions, same shape — *"pads live in a separate list and
+this code forgot"* — and together they produce a shorted board with a
+clean DRC. Neither is a subtle geometry error; both are a missing key.
+
+**The lesson, stated as a rule:** the model has `copper` and `pads` as
+sibling keys and **a pad is copper**. Every consumer that reasons about
+copper must be audited for whether it reads both. Grep for
+`model["copper"]` and `model.get("copper")` and check each one.
+
+### Drop vias skip the pad keep-out: 55 of 57 errors (user, 2026-08-29)
+
+User: *"on J2 I see square pads that overlap with vias" … "same in C7 and
+U3."* Confirmed, root-caused, and board-wide rather than three instances.
+
+`realize._drop_via_site` — the plane fan-out path, used for **every pin of
+every plane-promoted net** — checks `grid.disk_is_free` only, which is
+deliberately **same-net-blind** (that is precisely what `via_clears_pads`
+exists to catch), and never calls `via_clears_pads`. `grid.route()`'s own
+via search applies the guard through `_pad_keepout_mask`; this path does
+not.
+
+Measured on the user's exact board (esp32c3, 40mm, GND→In1.Cu,
+VCC3V3→In2.Cu, seed 1): **57 DRC errors, 55 of them `via_pad_keepout`.**
+GND has 26 pins and VCC3V3 has 23. J2 gap −0.1675mm, U3 −0.1675mm, C7
+−0.100mm.
+
+**Second fault, and the more instructive one:** `dogbone_stub_mm` is a
+flat **0.5mm** — exactly the distance measured at J2 — that ignores the
+pin's own pad size, which is why a 0.585mm pad and a 0.45mm pad overlap by
+different amounts. **Fifth instance of "a constant tuned to nothing"**
+(courtyard radius, seed pitch, claim radius, `PAD_RADIUS_MM`, this).
+Derive the stub from pad extent + via radius + clearance.
+
+Ruled out by census on the same board: every via's drill against every
+foreign pad and track, on every layer it spans — **zero** overlaps. The
+normal router's via placement is correct; this is confined to plane
+fan-out.
+
+**Dormant sibling, filed `gr270090`:** `pad_geometry` never reads a
+footprint's `drill`, so a **through-hole** pad is claimed on `PAD_LAYER`
+only while its real annular ring spans every copper layer — a foreign
+trace may run under a THT pad and be drilled through. Measured at the code
+level: foreign trace vs the real In1.Cu pad, gap −0.725mm; vs the drill
+itself, −0.425mm. Cannot fire today because no fixture has a cached THT
+footprint. `check_npth_clearance` cannot catch it either: it filters to
+`not plated`, and a THT component drill is always plated.
+
+### "Inner layers are barely used" — nothing can ASK for a layer
+
+User confirmed after seeing In1 carry 3 traces and In2 zero, against 66 on
+F.Cu, on a board where both inner layers were explicitly made routable
+with opposed preferred directions.
+
+The capability is real; the *mechanism to request it* does not exist.
+**The maze router picks its own layers and ignores `ir.seg_layer`** — its
+module docstring says so outright. So the optimizer's `LAYER_ASSIGN` move
+and the `crossings`/`via_count` cost terms derived from `seg_layer` model
+something the shipping realizer does not do (already recorded as a
+deliberate known tension). Layer choice is therefore made solely by A*
+cost, where a layer change costs `VIA_COST_MM = 3.0` **each way**; on a
+40mm board with a mostly-empty top layer no detour is ever long enough to
+pay for that.
+
+Note the fill cannot supply the missing pressure either: a pour is
+computed **after** routing by design (it is defined by what it must
+avoid), so it takes leftover space rather than competing for it.
+
+Two levers, and they are not equivalent:
+- **`VIA_COST_MM`** is an explicitly documented routing *preference* dial.
+  Cheap, measurable, and a global nudge — it buys layer spread with vias
+  and does not give a *structured* board.
+- **Honour `seg_layer`** (or bias strongly toward it) in the maze router.
+  This is the real answer, it is what makes H/V preferred directions mean
+  something, and it simultaneously un-deadens `LAYER_ASSIGN` and the two
+  cost terms. It costs routability — routing to a fixed layer assignment
+  is what makes 0-unrouted hard — which is exactly why it was deferred.
+
+### A via may not sit on a pad — and 14 do (user, 2026-08-29)
+
+User: *"vias should not overlap with pads (they have a courtyard too)."*
+Correct, and it was unchecked everywhere.
+
+**Why nothing caught it.** `OccupancyGrid.disk_is_free` deliberately
+treats **same-net** copper as legal — that is precisely what lets a trace
+end on its own pad. No via-placement site had any notion of "pad" as
+distinct from "claimed copper", so a via landing on its own net's pad was
+legal at every one of them. It cannot be expressed by tightening
+clearance, because clearance's same-net exemption is load-bearing. It is a
+different question about the same geometry, the way `check_connectivity`
+is to `check_clearance` — and it is a **manufacturing** rule, not an
+electrical one: a hole drilled through a land you intend to solder to
+wicks solder down the barrel and starves the joint.
+
+**All four grid-aware sites were unsafe**, each for the same reason:
+- the maze router's layer-transition via — gated only against *foreign*
+  copper via `via_ok`/`via_blocked`;
+- the **ampacity via group's satellites** — placed by straight-line
+  arithmetic and **never re-asked of the grid at all**;
+- `_drop_via_site` — searches outward at `dogbone_stub_mm * step`, and at
+  step 1 a typical via radius plus pad radius still overlaps;
+- `_shove_vias` — the worst, because it is the only one that can take an
+  **already-legal** via and move it into a violation.
+
+**A fifth site, found unprompted and NOT fixed** (`gr269811`):
+`_vias_for_track`, used by `router='tangent'` and `re_realize_segments`,
+has no `OccupancyGrid` at all — pure IR arithmetic — and its single-via
+case places the via at `offset=0`, which *is* the pad coordinate.
+Measured: gap **−0.875mm** against a 0.090mm requirement. Needs a
+different mechanism.
+
+**The margin is not a new constant.** `capabilities.py` has no via-to-pad
+field and does not need one: `trace_spacing_mm` is already this project's
+"how close may two independent copper features get", and a via annulus and
+a solder land are independent features by that rule's own premise,
+regardless of net. `maze`'s `clearance_mm` is already that same figure.
+
+**Reachability verified on REAL realized geometry**, not a synthetic
+fixture — `check_npth_clearance` sat wired-in and permanently dead for
+exactly the want of that check. Also confirmed `check_clearance` stays
+silent on the identical geometry, which is the whole point.
+
+**The finding: 14 `via_pad_keepout` errors on the ESP32-C3 reference
+board** — the board that has reported 0 DRC errors all week. Third
+instance this session of the same lesson, and it should now be treated as
+a rule of the build: **a measured zero means the check is dormant until
+proven otherwise.** (The other two: `courtyard_overlap`'s flat 1.0mm
+against real keep-outs reaching 8.9mm; `npth_clearance`'s absent
+producer.) Those 14 must go to zero **by prevention** — the router-side
+guards — never by exempting them. If any survive, that is a router
+capability gap and must be reported as one.
+
+### The drill layer was rendered and invisible (user, 2026-08-29)
+
+User asked "can we show the drill layer too". It was already there:
+`PTH` carried all 26 holes and was painted `#101010` on the viewer's
+`#12141a` background — a brightness delta of a few percent. **A layer that
+exists and cannot be seen reads exactly like a layer that is missing**,
+and no presence check can tell them apart, which is why the test for this
+asserts a *brightness gap* between the hole fill and the document
+background rather than that a `<circle>` was emitted. That test fails
+against the old code by the right mechanism (delta ~5, needs >100).
+
+Holes now render as **voids** — light fill, thin dark stroke so they read
+against a light or dark background — matching `svg.py`'s existing
+`_via_el`/`_drill_el` convention rather than inventing a third look for
+the same physical thing. Plated vs unplated is the dash cue `svg.py`
+already uses (solid = PTH, dashed = NPTH); they are drilled on separate
+fab passes and must not look alike. The legend swatch had the identical
+invisibility bug — it is drawn on a near-black panel — and is fixed too.
+Rows are labelled `PTH (drill)` / `NPTH (drill)`, since the user's own
+words were *"i know its not a gerber"* and a row reading `PTH` does not
+answer that.
+
+### Silkscreen must clear vias, not just pads (user, 2026-08-29)
+
+Silk already refused to print over a **pad** (a fab scrapes silk off
+exposed copper, so the text is silently lost). A via has the same problem
+and was not in the obstacle set. Now `build_silk(..., vias=...)`, applied
+to all three silk elements — courtyard outline, pin-1 tick and refdes —
+not only the label.
+
+Two details worth keeping:
+- **Side-aware.** Only a via whose barrel actually reaches the silk's own
+  side blocks it; a blind via to `F.Cu` must not push the bottom-side
+  refdes around. Derived from the via's `span` against `ir.stackup`'s
+  order, the same convention `svg._via_layer_names` and `drc.py` use. A
+  malformed span conservatively blocks both sides.
+- A via is reshaped into a circle-pad dict so it rides the **existing**
+  SAT overlap helpers. Adding a second geometry convention for "does this
+  stroke hit that thing" is how the two would later disagree.
+
 ### "Pads are to be precisely what the footprint says" (user, 2026-08-29)
 
 **The join key was dropped in the middle, and both ends already worked.**
@@ -1245,6 +1565,377 @@ Three agents were run concurrently in one worktree and clobbered each other
 — one hit a `NameError` from a sibling's half-written edit and its
 measurement became unattributable. Serialize agents that share files, or
 give each its own worktree.
+
+## SILKSCREEN: decisions from the 2026-08-29 render review
+
+Found by rendering the board and looking at it — none of it by reading code
+or by any test. Do these in order; the first is a prerequisite for the rest.
+
+1. **Structured per-instance silk census, replacing free-text drops.**
+   `build_silk` reports drops as prose (`"C2: courtyard outline overlaps a
+   pad or via -- dropped"`) and only for SOME failure modes. Measured on the
+   reference board: **7 courtyards drawn for 29 parts, with only 2 drops
+   reported** — ~20 silent omissions. `SilkResult` must carry, per placed
+   instance, three outcomes (courtyard / pin-1 / label), each `placed` or a
+   REASON CODE. The render warnings and the DRC rule below are both
+   generated FROM that structure, so there is one source and absence stops
+   being inferred from silence.
+2. **Two rules, not one — PRESENCE and PRINTABILITY** (user, 2026-08-29:
+   "drc fail for lack of courtyard line printability and label printability").
+   - **`silk_missing`** — presence. Needs item 1's census; a rule reading
+     today's free-text drops would only see the ANNOUNCED subset and would
+     certify a board with ~20 silent omissions as clean.
+   - **`silk_printability`** — is what WAS placed manufacturable: stroke
+     width below the fab minimum, silk overlapping a soldermask opening (it
+     will not adhere and contaminates the pad — the user's ENIG question),
+     silk crossing the board edge.
+   **`silk_width_mm` and `soldermask_dam_mm` in `capabilities.py` have ZERO
+   consumers** (found by the dead-export sweep the same day). The
+   printability rule is precisely what consumes the first, and a mask-dam
+   rule the second — the dead fab fields and the missing rules are the same
+   gap from opposite ends: capability data ingested for checks nobody wrote.
+
+   Original note on severity (user: "should DRC fail, or at least have a
+   rather high cost"). One finding per instance per missing element,
+   severity `error` for a dropped refdes — a board you cannot identify parts
+   on is one you cannot assemble or inspect. Note `drc.py` has **zero**
+   mentions of silk today (11 rules, none about silkscreen); silk avoidance
+   is enforced only at CONSTRUCTION time in `build_silk` and never verified.
+   Wiring: `handlers/pcb.py::_board_furniture` already builds silk once for
+   both render paths — feed DRC from there rather than letting DRC rebuild
+   silk and the two drift.
+3. **Labels go OUTSIDE the courtyard** (user). The default candidate is
+   currently centred INSIDE it, so J1's refdes will be invisible once the
+   connector is soldered. This DELETES a special case rather than adding
+   one: the courtyard's solid bbox is presently withheld from its own
+   instance's label search and folded in only afterwards, purely to let the
+   centred candidate survive. Outside-only makes it an ordinary obstacle for
+   everyone. **Expect the measured placement rate to DROP** — labels under a
+   part body were being counted as placed while being unreadable; the worse
+   number is the honest one.
+4. **Pin-1 must be able to say it does not know.** `_pin1_id` looks for a
+   pin literally named `"1"` and otherwise falls back to `min(pin_id)` —
+   whichever pin was ingested first — then draws the tick with full
+   confidence. Measured: **22 of 29 parts have a pin named `"1"` (all
+   passives, where orientation is irrelevant); the 7 that do not are U1, U2,
+   U3, D1, D2, J1, J2** — exactly the parts where pin 1 matters. U1's pins
+   are `3V3/GND1/EN/BOOT/...`; J1's are `P1..P6`, so one character decides
+   whether the marker is a fact or a guess, and the output is identical
+   either way. **A wrong pin-1 marker solders a part backwards — strictly
+   worse than no marker.** Recognise real spellings (`1`, `P1`, `A1`), and
+   skip the tick when unknown.
+   - **A diode has no pin 1.** `D1`/`D2` are `A`/`K`: polarity needs a
+     CATHODE BAND, a different silk primitive. A corner tick on a two-pin
+     polarised part communicates nothing.
+5. **Placement cost proxy for un-drawable silk** — the deeper fix, after the
+   above. Making the placer pay stops the problem at source. **Trap:** silk
+   placement is a per-part search and the annealer runs thousands of
+   iterations on an incremental dirty cascade, so running real silk in the
+   loop is both slow and breaks incrementality. Use free area in each part's
+   label candidate ring, which depends on neighbour positions exactly as
+   `gap_capacity` already does — a term that can actually fire, unlike the
+   alignment rewards this engine has already shipped twice.
+
+**Decorative silk: DEFERRED (user, 2026-08-29) — do not let it hold up items
+1-5.** Board art (image underlay, logos, exposed-copper design work) is not
+urgent. Recorded here only so the eventual retrofit is a known, priced cost
+rather than a surprise: the `silk_missing` rule in item 2 counts PER-INSTANCE
+elements and treats absence as an error, and artwork has no instance — so
+whenever art does arrive it needs a silk role that is a DRC *participant*
+(respects keep-outs) without being a DRC *subject* (can never be "missing"),
+which means amending that rule rather than adding a struct field. Cheap
+either way; just not free.
+
+**Co-generation (user, 2026-08-29): art as a PARTICIPANT in placement, not
+an overlay.** Bind refdes to named artwork anchors ("left eye") and add an
+`art_anchor` cost term = Σ distance(instance, its anchor). Two properties
+make this worth doing here rather than in an external tool:
+- **It can actually fire.** A distance penalty is continuous with a gradient
+  everywhere — the opposite of the alignment and concentric-arc rewards
+  killed on this same day for being measure-zero. It is also CHEAPER than
+  the existing terms: it depends only on the instance's own position, so the
+  dirty cascade handles it trivially (`gap_capacity` must re-search
+  neighbours).
+- **It makes the art/function trade a measurable number** instead of a
+  workflow: turn the weight and read back the extra vias, trace length and
+  unrouted nets. An overlay pipeline cannot report that.
+Routing side: the tractable form is CORRIDORS (regions where routing is
+cheap, so traces flow along the image's contours) or authored traces as a
+fixed feature; traces-as-art directly is not in the maze router's
+vocabulary. The 2026-08-29 fillet work is the aesthetic vocabulary for both.
+
+**CO-generation, where the art is a free variable too (user: "make this
+circuit and a dragon face could co-run").** Three shapes, very different
+costs:
+- **Parametric art is nearly free.** Eye spacing, jaw width, horn angle
+  become continuous variables in the annealer's own state vector alongside
+  positions and rotations; one anneal optimises art and circuit together.
+- **Generative-model art is an expensive OUTER loop** — no image model can
+  live inside an annealer running thousands of iterations. It degrades to
+  generate → place → measure → regenerate, minutes per round trip. Decide
+  which of these two we are building BEFORE starting; they share almost no
+  machinery.
+- **Best of all, possibly no optimisation at all:** choose art whose
+  primitives are already the board's primitives — scales that ARE the
+  ground-plane hatch, whiskers that ARE traces, a pupil that IS a via
+  cluster. Art that fights the medium needs heavy co-optimisation; art
+  chosen to fit it needs almost none.
+**Division of labour this stack is already shaped for:** "which component is
+the eye, which net is a whisker" is SEMANTIC BINDING — the LLM layer's job,
+proposed once, not the annealer's. The cost function then optimises geometry
+given the binding. No model in the inner loop.
+
+**Traces following a direction field (user: "follow the direction of hair in
+the image") — deferred, but cheaper than it sounds.** `_layer_preferences`
+already gives each layer a preferred routing direction, which IS a direction
+field, just a constant one. This is the same per-step cost bias sampled per
+CELL instead of per layer; the orientation field comes from the structure
+tensor of the image gradient. The bounded change is the sampling, not the
+mechanism.
+- **Conflicts with the requested up/down/left/right + 45° restriction**, and
+  the reconciliation is to QUANTISE the field to the allowed direction set —
+  traces then step along the flow in 45° increments, which likely reads as
+  deliberate rather than melted. Decide the two together; shipping the
+  direction restriction without knowing this is coming would bake in a
+  constant-direction assumption.
+**Sequence it after the ratsnest/rubber-band placement work** — adding an
+aesthetic objective to a placer that is not yet reliably meeting its
+ELECTRICAL objectives means the art term gets blamed for pre-existing
+placement quality problems.
+
+Direction when it happens: artwork belongs in the board's existing
+`features` list (`ftype: "outline"` is already there, so `ftype: "artwork"`
+targeting a named layer set fits), with **gerbolyze as an OFFLINE
+converter** whose output is stored as geometry — it is AGPL-3.0 and C++, and
+this repo is a network-served MCP server with a container deploy that has
+been bitten twice by optional/binary dependencies. Offline keeps both out of
+the serving path. Build our own only for TEXT (labels, boxes, knockouts):
+that geometry has to stay attributable for the census, and the primitives
+(`G36`/`G37` regions, `%LPC*%` clear polarity) already exist in `gerber.py`.
+Note also that ~5 tones (bare laminate, mask-over-copper, mask-over-laminate,
+exposed copper, silk) are available with NO vendor feature — that is what
+most PCB art actually uses. JLC's multi-colour silkscreen is unverified here
+and must be sourced from their live capability data before it enters a spec.
+
+Also observed and NOT yet filed as its own item: silk placement has no
+concept of the component BODY as a readability keep-out (it avoids pads and
+vias only), which is the mechanism behind item 3; and no part in
+`esp32c3_reference` has a real footprint (`footprint: None` for all 29, every
+pad synthesized, all 57 drills are vias and there are zero component drills)
+— so courtyards, pad sizes and body outlines on that board are BOUNDS, not
+data, and `export_fab` already refuses to call it manufacturable.
+
+## FOUR courtyards, and the drawn one is not the checked one (2026-08-29)
+
+Root-causing the 53 `silk_missing` findings turned up something bigger than
+the bug it was chasing. This subsystem has **four** notions of a part's
+courtyard:
+
+1. `ir.instance_pad_radius` — centre to outermost **pin centre**, by its own
+   docstring "deliberately not widened by pad SIZE". The shared primitive.
+2. `ir.instance_keepout_radius_mm` = (1) + `PAD_BREATHING_MM` (0.6mm), a
+   CIRCLE. Used by `OptimizeEngine._keepout_r`, `seed_placement`, and
+   `_drc_geometry` — so this is what `courtyard_overlap` DRC enforces.
+3. `silk._courtyard_reach_mm` = (1) + `half_pad`, a SQUARE, historically
+   with **zero** margin. This is the courtyard actually DRAWN on the board.
+4. `drc.DEFAULT_COURTYARD_RADIUS_MM` = 1.0mm flat — the fallback, and the
+   base of `cost.COURTYARD_MIN_SEPARATION_MM`.
+
+(2) and (3) are different shapes at different sizes, computed independently.
+**The silkscreen shows an assembler one keep-out boundary while DRC enforces
+another**, and nothing states the relationship or checks that it holds.
+`handlers/pcb.py::_drc_geometry` asserted (2) was "the ONE definition" until
+this was found — the same false-uniqueness claim corrected in `padplace.py`
+the same day, and the same consequence: a reader who believes it stops
+looking.
+
+They are not *required* to agree — a placement-legality keep-out and a
+visual assembly aid are genuinely different questions. But the divergence
+should be a stated, tested relationship rather than an accident. **Open
+decision for a human:** reconcile them (silk courtyard derived from the
+keepout radius, or vice versa), or keep both and add a rule asserting the
+drawn one never claims MORE room than the enforced one — the dangerous
+direction, since that is the one that misleads an assembler.
+
+### The zero-margin defect this came from
+
+`_courtyard_reach_mm` = `instance_pad_radius + half_pad` puts the boundary
+**exactly on the pad's outer edge**, because (1) is a pin-CENTRE distance
+and adding half the pad back just reaches the edge again. `_segment_box`
+then inflates the drawn line by `stroke_width_mm / 2` (0.075mm at the
+0.15mm default pen), so a tangent box is *guaranteed* to overlap. Measured:
+22 of 29 parts lost their courtyard, **18 of them colliding with their own
+pad** (`self_count=18, foreign_count=1`); only `J1` had real neighbour
+crowding. Each dropped courtyard also drops that part's pin-1 tick
+(`build_silk`'s "a pin-1 tick never survives alone" rule), which is why the
+DRC count was 53 rather than 22.
+
+**The drop predicate is CORRECT and must not be touched.** Narrowing it to
+ignore a part's own pads would clear 21 of 22 drops without moving a single
+line of silk — the fab would still print ink on copper, now invisible to
+DRC. Recorded because it is the obvious-looking fix and it is a trap.
+
+Known to REMAIN after the margin fix, as separate causes: `D2`/`R2`/`U1`
+hit their own plane-fanout vias (`_courtyard_reach_mm` does not model vias
+at all), `J2` hits a fiducial's silk keep-out (`build_fiducials` has no
+knowledge of where a later courtyard will land), and `J1` is real crowding.
+The 9 `refdes` drops are a separate placement problem.
+
+## OPEN from the 2026-08-29 fable review of the unshipped branch
+
+A `fable`-model review of `origin/main...HEAD` (26 commits) found six
+defects. Two are FIXED (the fillet budget, `8034a79b`; the stale
+`_board_furniture` ordering docstring, folded into the silk-census change).
+The rest are open and are recorded here because a review finding that lives
+only in a transcript is gone at the next compaction.
+
+- **Fiducials are invisible to DRC** — `_board_furniture` folds fiducial
+  pads into `model["pads"]`, but only on the gerber/fab-SVG paths;
+  `_render_drc` builds its model from `_drc_pads` + `pcb_copper_list` and
+  never sees them. A track passing near an outline-bbox corner ships a
+  gerber with a 1mm copper dot (net `""`) flashed on top of it while
+  `view='drc'` reports green. **Being fixed** as part of the silk census
+  (the same change adds a `_board_furniture` call to `_render_drc`). The
+  second half — `build_fiducials` checks candidates against pads and the
+  title/SN bboxes but never against tracks, vias or pours — is still open.
+- **Three collinear fiducials are reachable.** `_FIDUCIAL_CORNER_SIGNS`'
+  comment argues any 3 of a rectangle's 4 corners form a right triangle,
+  which holds only when all three use the SAME inset. The
+  `for m in (margin_mm, margin_mm * 2.0)` fallback moves a blocked corner
+  diagonally inward. Concrete: 12x12mm board, 3mm margin — corners at
+  (3,3) and (9,9), third corner's 3mm spot blocked, its 6mm fallback lands
+  at (6,6). All three on the main diagonal; the >=2mm spacing check passes.
+  That reinstates exactly the 180-degree rotation ambiguity `FIDUCIAL_COUNT
+  = 3` exists to resolve. `test_build_fiducials_are_non_collinear` cannot
+  catch it — it only runs the unblocked 60x40 fixture, so the assertion
+  exists but only over the easy input. Fix: a triangle-area check inside
+  the placement loop, plus a corner-blocked small-board test.
+- **All net-`""` pads are mutually same-net-exempt.** `pads_for_ir`
+  deliberately writes `net: ""` for every NO_NET pin;
+  `clearance_pairs_indexed` skips a pair when `net_i == net_j`, so two
+  genuinely unconnected pads (test points, NC pins, mounting holes on
+  different parts) at zero gap are never a clearance candidate. Needs a
+  "both empty -> still check" carve-out, or an explicitly stated gap.
+- **`_pcb_ops.py` binds the alias `p` twice in one statement** (scalar
+  subquery `pcb_pins p`, plus the `LEFT JOIN parts p` added for
+  `extended_part`). Legal — inner scope shadows outer — but anyone
+  extending either side silently gets the wrong table. Rename one.
+
+Design questions the review raised, for a human not an agent:
+
+- `test_check_via_pad_keepout_fires_on_a_real_realized_via` pins that the
+  **tangent router's own output fails the new `via_pad_keepout` rule**
+  (`_vias_for_track` puts the k=0 via at the pad coordinate). Documented
+  and asserted, but it means every tangent-routed layer transition is a DRC
+  error by construction. Decide whether the tangent drawer should offset
+  its vias.
+- `_op_plane_net`'s conflict guard reads `pcb_planes_list`, which includes
+  DERIVED rows — a stale optimizer-derived assignment blocks a human's
+  authored `plane_net` until the next route job replaces it. Whether a
+  human can evict a derived row without running a route is a workflow call.
+- `stroke_font.text_bbox_corners` claims to be "exactly the box the glyphs
+  are drawn inside"; `(`, `$`, `#`, `,`, `Q` legitimately overhang it (the
+  module's own docstring says so). Title-block pad overlap is checked
+  against real strokes, but outline containment uses only the 4 advance-box
+  corners, so a descender can leak past a concave outline edge. Marginal at
+  today's >=2mm margins.
+
+Reviewed and explicitly found clean: `_quantized` bool-before-float,
+`quantize`/`GERBER_UNIT_MM` single-sourcing, `_corner_fillet`'s near-0/near-pi
+guards, the stroke-font conversion contract and both licence attributions,
+`stamp_pad`/`via_clears_pads` (the prior vacuous-check defect is genuinely
+fixed and producer/checker stay independent), the `net_plane_layers` bitmask
+migration, and gerber X2 attribute round-tripping.
+
+## AGREED QUEUE (2026-08-29, with the user) — do these in this order
+
+Triaged out of a long representation thread; most of that thread was
+**rejected** and the rejections are recorded below so they are not
+re-proposed.
+
+1. **Rounded corners (fillets)** — replace each interior vertex of a routed
+   polyline with a tangent arc. Cheap because arcs are already first-class
+   end to end: `gerber.py::_emit_stroke` emits `G02`/`G03` with `I`/`J` (and
+   `G75` is already in the header), `svg.py` renders `shape: "arc"`,
+   `drc.py` flattens arcs for clearance, and `realize.py::tangent_arc_path`
+   already does closed-form tangency and signed sweep. A fillet is the
+   EASIER tangency problem than the one already solved (tangent to two
+   lines, not from two points to a circle).
+   - **NOT purely subtractive.** The arc departs from the mitered centerline
+     INWARD by `r·(1 − sin(θ/2))` — `0.29·r` at a right angle — which is new
+     copper on the concave side where a pad or via may sit. Either clamp `r`
+     so the deviation stays under half the trace width, or end the pass with
+     a real `get(view='drc')` run. Do not assume a pre-fillet clean board
+     stays clean.
+   - Must be ONE shared function used by both corner-making paths
+     (`tangent_arc_path` and the new maze-path filleter), not a parallel
+     implementation.
+2. **Quantise coordinates at the model boundary** — snap every coordinate to
+   the gerber unit (`1e-6` mm) on entry to the model; keep float mm as the
+   compute type. This is the ~10% of the int32-nanometre idea that carries
+   most of its value: `gerber._u()`'s emission `round()` becomes a no-op, so
+   the artefact IS the geometry the router computed, and exact-equality
+   geometry (e.g. "do these two arcs share a center") becomes decidable.
+   Choke point is `realize.py::to_gerber_model`.
+
+Then **render a board and take user feedback** before continuing. Only after
+that:
+
+3. **Typed `ctype` + one net-id space, replacing string-keyed dicts.** Kills
+   the defect family that produced five bugs on 2026-08-29 (a key read but
+   never written yields `None` instead of failing). **This must BE the S9
+   decision-6 vocabulary migration** (`pad/hole/conductor/keepout/body/
+   marking`), not a fourth taxonomy alongside it — inventing a competing
+   vocabulary is precisely why the DRC keep-out matrix was killed.
+4. **One affine-transform path** for footprint placement, silk and text.
+   Defect prevention, not speed — a refdes is three glyphs, nobody waits on
+   that arithmetic. **Evidence gathered 2026-08-29, this is not speculative:**
+   - `padplace._rotate_cw` returns `x*c + y*s, -x*s + y*c`.
+   - `landpattern.rotate_offset` returns `dx*cos_t + dy*sin_t, -dx*sin_t +
+     dy*cos_t`. The identical `[[cos, sin], [-sin, cos]]`, written twice.
+   - Distribution is inverted: `rotate_offset` lives in the FOOTPRINT module
+     but its callers are `silk.py::_place` and `stroke_font.py`
+     (`layout_text`, `text_bbox_corners`) — text and silk rotate through the
+     footprint module while footprint pads use padplace's private copy.
+   - `padplace`'s docstring CLAIMED `_rotate_cw` was "the one place that
+     matrix lives" (corrected 2026-08-29). A false uniqueness claim is worse
+     than silence: a reader who checks it stops looking.
+   - Mirror-before-rotate is implemented twice and pinned by two separate
+     test suites asserting the same fact; `export.jlc_rotation` is an
+     acknowledged third re-expression.
+   - The composition (scale/mirror/rotate/translate/alignment) is duplicated
+     per call site, and that is where the real bugs have been: `mirror`
+     negating x about the ANCHOR not the board forced a `draw_h_align`
+     compensation flag in `build_title_block`, and the bottom-side S/N path
+     compounds two reflections. Composed matrices delete the ordering
+     question rather than documenting it.
+
+### Rejected in the same thread — do not re-propose without new evidence
+
+- **Full int32-nanometre coordinates.** `int32` at 1 nm is ±2.147 m (not
+  10 m — 10 m needs 34 bits). Fine for any PCB, but the change needs the
+  `np.nan` "unplaced" sentinel replaced by an explicit `placed` mask, and
+  every distance computation cast to int64 because **numpy integer overflow
+  wraps silently** (`dx²` on a 100 mm board is `10¹⁶`, past int32 at
+  `2.1·10⁹`). Item 2 buys most of the benefit for a fraction of the cost.
+- **Bit-packing into `uint64`.** x+y at 32 bits each already consume the
+  whole word, so nothing else fits. Unpack/repack beats the copy saving, and
+  it destroys readability in exactly the test-failure and debugger output
+  that has caught every bug here.
+- **A universal fixed-width matrix** (`x, y, type, rotation, id`). Pours are
+  variable-length; tracks need two endpoints; rotation is meaningless on a
+  track. A column that is always zero for a structural reason is
+  **indistinguishable from one nobody populated** — the exact bug class this
+  subsystem keeps shipping.
+- **Matrix ops for speed.** No profile exists for the place/route/DRC split
+  of the ~13 s end-to-end. Vectorising `clearance_violations_naive` is
+  genuinely attractive (it would promote a fixture-only oracle to always-on)
+  but must follow a measurement, not precede it.
+- **A concentric-arc reward as a COST TERM.** Measure-zero over continuous
+  coordinates: two independently-derived centers are never bit-equal, so the
+  term scores zero forever and is indistinguishable from a bug. Viable only
+  as a construction rule — a bundle shares one center and varies the radius
+  by track pitch — which needs bundle detection that does not exist.
 
 ## Still open
 

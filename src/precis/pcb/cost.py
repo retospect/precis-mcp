@@ -95,6 +95,7 @@ from precis.pcb.ir import (
     Level,
     PcbIR,
     pin_point,
+    plane_layers_of,
     same_layer_crossing_count,
 )
 from precis.pcb.rules import (
@@ -435,11 +436,8 @@ def layer_count_term(ir: PcbIR, level: Level, config: CostConfig) -> TermValue:
             for s in range(ir.n_segments)
             if int(ir.seg_layer[s]) != UNSET_LAYER
         }
-        layers |= {
-            int(ir.net_plane_layer[n])
-            for n in range(ir.n_nets)
-            if int(ir.net_plane_layer[n]) != UNSET_LAYER
-        }
+        for n in range(ir.n_nets):
+            layers.update(plane_layers_of(int(ir.net_plane_layers[n])))
         used = max(1, len(layers))
         bound = False
     return TermValue(
@@ -550,7 +548,7 @@ def gap_capacity_term(
     net_id = int(ir.seg_net[seg_id])
     pitch = _pitch_for(ir, net_id, config)
     net_name = str(ir.net_name[net_id])
-    if int(ir.net_plane_layer[net_id]) != UNSET_LAYER:
+    if int(ir.net_plane_layers[net_id]) != 0:
         # Plane-served nets excluded from the routing objective (backlog,
         # verbatim, for the crossing metric — this is the nearest analog
         # this slice's registered terms have to it): a plane-promoted net
@@ -795,9 +793,10 @@ def _net_layer_is_outer(ir: PcbIR, net_id: int, level: Level) -> tuple[bool, boo
         for s in range(ir.n_segments)
         if int(ir.seg_net[s]) == net_id and int(ir.seg_layer[s]) != UNSET_LAYER
     ]
-    plane_layer = int(ir.net_plane_layer[net_id])
-    if plane_layer != UNSET_LAYER:
-        layers.append(plane_layer)
+    # A net promoted on several layers is only as safe as its WORST one —
+    # every poured layer's index goes into the same worst-case pool as
+    # its routed segments' layers, not just one.
+    layers.extend(plane_layers_of(int(ir.net_plane_layers[net_id])))
     if not layers:
         return True, True
     all_outer = all(layer_i <= 0 or layer_i >= n_layers - 1 for layer_i in layers)
@@ -940,7 +939,7 @@ def crossings_term_for_layer(
     **Known, unchanged gap: plane-served nets are NOT excluded here.**
     The architecture section's "signal-net crossings (plane-served nets
     excluded)" describes the eventual objective; this term (both before
-    and after this fix) does not yet read ``net_plane_layer`` — carried
+    and after this fix) does not yet read ``net_plane_layers`` — carried
     over unchanged rather than folded into this fix's scope, exactly the
     same honest-deferral shape as ``SIDE_FLIP``'s known inertness in
     :mod:`precis.pcb.optimize`.

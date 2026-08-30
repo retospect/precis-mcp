@@ -777,16 +777,43 @@ class PcbMixin:
                     # refdes-keyed `footprints` arg all along; this is the
                     # missing join that reaches it.
                     "part_lcsc": r[10],
+                    # `extended_part` is the THIRD instance of this same
+                    # gap: `PcbIR.inst_extended_part` (cost.py's
+                    # `_extended_part_fees`) has always come back all-False
+                    # on every board, because nothing here ever joined the
+                    # Basic-vs-Extended signal in — `parts.basic` is a real,
+                    # populated column (`pcb.catalog.normalize_jlcparts_row`,
+                    # `parts_select_idx`), just never selected. JLC charges a
+                    # flat per-line surcharge for every Extended part, so
+                    # every estimate this system has produced understated
+                    # cost by a real amount. `None`/no catalog match reads
+                    # as "not (known) Extended" — same "undefined stays
+                    # undefined, never silently promoted to a fee" caution
+                    # as `coupling_bound_k`'s own note — rather than
+                    # guessing either way for a part not in the catalog.
+                    "extended_part": r[11],
                 }
                 for r in conn.execute(
                     "SELECT i.refdes, i.x, i.y, i.layer, i.roles, c.label, "
                     "       c.height_mm, "
-                    "       (SELECT count(*) FROM pcb_pins p "
-                    "        WHERE p.component_id = i.component_id "
-                    "          AND p.retired_at IS NULL), i.fixed, i.rot, "
-                    "       c.part_lcsc "
+                    # `pn` / `pt`, never both `p`: the scalar subquery and the
+                    # LEFT JOIN below used to share the alias `p`. Legal --
+                    # the inner scope shadows the outer -- but the next
+                    # person to reference `parts` from inside the subquery
+                    # (or `pcb_pins` from the join) silently gets the other
+                    # table and a plausible wrong answer.
+                    "       (SELECT count(*) FROM pcb_pins pn "
+                    "        WHERE pn.component_id = i.component_id "
+                    "          AND pn.retired_at IS NULL), i.fixed, i.rot, "
+                    "       c.part_lcsc, "
+                    # `parts.lcsc` is unique, so this LEFT JOIN cannot
+                    # multiply instance rows; a non-catalog part yields NULL
+                    # -> false, matching `extended_part`'s documented
+                    # "unknown is never silently promoted to a fee".
+                    "       COALESCE(NOT pt.basic, false) "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
+                    "  LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "
                     "WHERE i.ref_id = %s AND i.retired_at IS NULL "
                     "ORDER BY i.refdes",
                     (ref_id,),

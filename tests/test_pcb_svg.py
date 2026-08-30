@@ -60,6 +60,11 @@ _MODEL: dict[str, Any] = {
             "layer": "B.Cu",
             "net": "GND",
             "polygon": [[0.5, 0.5], [10.0, 0.5], [10.0, 10.0], [0.5, 10.0]],
+            # An antipad: the void this pour cuts around a foreign-net
+            # feature so the fill does not short it. Rendering the pour
+            # without it draws solid copper over a hole -- a picture of a
+            # short.
+            "holes": [[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0]]],
         },
         {
             "ctype": "via",
@@ -217,6 +222,34 @@ def test_layers_distinguishable_without_colour():
     f_has_dash = any("stroke-dasharray" in p for p in f_cu)
     b_has_dash = any("stroke-dasharray" in p for p in b_cu)
     assert f_has_dash != b_has_dash  # one solid, one dashed at minimum
+
+
+def test_pour_antipads_are_cut_out_not_painted_over():
+    """A pour's ``holes`` are voids around foreign-net copper. Drawing only
+    the exterior ring renders solid fill where the board has a hole — the
+    gerber writer already cuts them (``%LPC*%``), and a figure that
+    disagrees with the artefact is worse than no figure."""
+    text = svg.render_board(_MODEL, include={"pours"})
+    # A <polygon> cannot express a hole at all, so the fix is visible in
+    # the element choice as well as the geometry.
+    assert "<polygon" not in text
+    assert 'fill-rule="evenodd"' in text
+    # Both rings present in one compound path: exterior and the antipad.
+    assert text.count(" Z") >= 2
+    assert "4,4" in text and "6,6" in text  # the hole's own corners
+
+
+def test_a_pour_with_no_holes_still_renders_its_exterior():
+    """The common case must not regress: a fill with nothing to cut around
+    is one ring, and still fills."""
+    model = dict(_MODEL)
+    model["copper"] = [
+        {**c, "holes": []} if c.get("ctype") == "pour" else c
+        for c in _MODEL["copper"]
+    ]
+    text = svg.render_board(model, include={"pours"})
+    assert 'fill="url(#pcb-hatch-1)"' in text
+    assert text.count(" Z") == 1
 
 
 def test_pour_hatch_pattern_defined_per_layer():

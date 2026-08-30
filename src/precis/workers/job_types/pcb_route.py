@@ -32,7 +32,12 @@ from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.geom import segments_cross
-from precis.pcb.ir import UNSET_LAYER, net_member_counts, segment_points
+from precis.pcb.ir import (
+    UNSET_LAYER,
+    net_member_counts,
+    plane_layers_of,
+    segment_points,
+)
 from precis.pcb.optimize import OptimizeConfig, digest_toon, optimize
 from precis.workers.job_types import JobTypeSpec
 
@@ -215,17 +220,29 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
     # Write back the anneal's settled plane decisions (gr267526: this used
     # to be dropped entirely — PLANE_PROMOTE/DEMOTE moves mutated
-    # net_plane_layer freely during search, but nothing ever persisted the
+    # net_plane_layers freely during search, but nothing ever persisted the
     # result, so a promoted GND/VCC-class net reverted to a full-length
     # trace the moment the job ended). Only nets NOT covered by an
     # authored row are written — an authored net's persisted assignment
     # must stay exactly what the human asked for, never what this run's
     # search happened to leave it at.
+    #
+    # `pcb_planes_replace_derived`'s ``assignments`` is still ``{net_name:
+    # layer_name}`` — ONE layer per net — because a derived (search-only)
+    # net structurally never carries more than one bit:
+    # `optimize._gen_plane_promote` only ever offers a bare (mask==0),
+    # unlocked net a single new layer, and an authored net is excluded
+    # from this dict entirely by the `authored_net_names` filter below. So
+    # `plane_layers_of` yields at most one entry per net here, and this
+    # dict comprehension stays a straight 1:1 mapping without needing a
+    # store-side change (multi-layer fill for one net is carried entirely
+    # by the AUTHORED path — see `handlers/pcb.py::_op_plane_net`, called
+    # once per desired layer, each landing its own `pcb_planes` row).
     derived_assignments = {
-        str(ir.net_name[n]): str(ir.stackup[int(ir.net_plane_layer[n])]["name"])
+        str(ir.net_name[n]): str(ir.stackup[layer]["name"])
         for n in range(ir.n_nets)
-        if int(ir.net_plane_layer[n]) != UNSET_LAYER
-        and str(ir.net_name[n]) not in authored_net_names
+        if str(ir.net_name[n]) not in authored_net_names
+        for layer in plane_layers_of(int(ir.net_plane_layers[n]))
     }
     ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
 
@@ -271,7 +288,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     )
     rres = pcb_realize.realize(ir, config=realize_config, footprints=footprints)
     plane_net_ids = {
-        n for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) != UNSET_LAYER
+        n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0
     }
     crossing_fail = _residual_crossings(ir, plane_net_ids)
     congestion_fail: dict[str, list[dict[str, Any]]] = {}
@@ -368,7 +385,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             kinds = sorted({str(p["reason"]) for p in problems if p.get("reason")})
             if kinds:
                 note = f"unrouted: {', '.join(kinds)}"
-        elif net_id in routed_nets or int(ir.net_plane_layer[net_id]) != UNSET_LAYER:
+        elif net_id in routed_nets or int(ir.net_plane_layers[net_id]) != 0:
             status = "realized"
             n_realized += 1
         else:

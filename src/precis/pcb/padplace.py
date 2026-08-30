@@ -20,8 +20,18 @@ board is, in order:
 2. **Rotate** by the instance's ``rot`` degrees, in :mod:`precis.pcb.export`
    ``jlc_rotation``'s own documented frame — **our internal rotation is
    CW-from-north** (0° = the footprint's natural/authored orientation,
-   increasing = clockwise as seen from above). :func:`_rotate_cw` is the
-   one place that matrix lives; every other module's rotation reasoning
+   increasing = clockwise as seen from above). **:func:`_rotate_cw` is NOT
+   the only place that matrix lives** — this docstring claimed it was until
+   2026-08-29, which was both wrong and actively obstructive: a reader who
+   believed it stopped looking. :func:`precis.pcb.landpattern.rotate_offset`
+   spells out the identical ``[[cos, sin], [-sin, cos]]``, and is what
+   ``silk.py`` and ``stroke_font.py`` call — so TEXT and SILK rotate through
+   the footprint module while footprint pads rotate through this private
+   copy. The two agree today; the mirror-before-rotate policy is likewise
+   implemented twice and pinned by two separate test suites asserting the
+   same fact. Folding both into one affine transform is a tracked item
+   (``docs/backlog/pcb-engine-plan.md``, "one affine-transform path").
+   Every other module's rotation reasoning
    (``export.jlc_rotation``) is a re-expression of the SAME 0°-natural,
    CW-positive convention applied to this same transform, not a second
    invented one.

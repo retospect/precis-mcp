@@ -35,15 +35,34 @@ output largely as-is once it exists::
       ],
       "pads": [
         {"layer": "F.Cu", "net": "3V3", "shape": "circle"|"rect"|"obround",
-         "x": .., "y": .., "w": .., "h": ..},   # h ignored for "circle"
+         "x": .., "y": .., "w": .., "h": ..,   # h ignored for "circle"
+         "refdes": "U1", "pin": "3"},   # OPTIONAL — see the X2 identity
+         # note below; today's realizer-built pad dicts (realize.pads_for_ir)
+         # do not carry these two, so component-pin identity is written
+         # only when a caller supplies it.
       ],
       "silkscreen": {"top": [<draw>, ...], "bottom": [<draw>, ...]},  # <draw>
-      # is the same {"width_mm", "segments"} shape as a track, layer-less.
+      # is normally the same {"width_mm", "segments"} shape as a track,
+      # layer-less, optionally carrying "polarity": "clear" to erase
+      # rather than add ink; OR {"shape": "region", "polygon": [...]} for
+      # a solid fill — see silkscreen_gerber's own docstring.
     }
 
 Everything here is a pure function of that dict → ``{filename: content}`` —
 zero I/O, trivially unit-testable. :func:`zip_fab` is the one thin
 convenience that touches bytes (an in-memory zip), still no disk/network.
+
+**X2 object attributes** (``%TO.N,<net>*%`` / ``%TO.P,<refdes>,<pin>*%``,
+cleared with ``%TD*%``) are written into ``copper_gerber`` alongside the
+draw/flash they describe — the same mechanism the file-level ``%TF...*%``
+attributes already use, one level down, onto individual objects instead of
+the whole file. This is what lets :mod:`precis.pcb.gerber_view` label a
+hovered trace/via/pad with its net (and, where the model supplies it, its
+component pin) *from the gerber itself* rather than by cross-referencing
+the in-memory model — see that module's docstring for why the second
+option is the wrong one. Every ``%TO...*%`` this writer emits is matched by
+a ``%TD*%`` immediately after the object it describes, so an attribute can
+never carry over onto the next draw/flash by omission.
 """
 
 from __future__ import annotations
@@ -117,6 +136,47 @@ def _aperture_for_pad(pad: dict[str, Any], apertures: _ApertureTable) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# X2 object attributes — %TO.N (net) / %TO.P (component pin), %TD (clear)
+# ─────────────────────────────────────────────────────────────────────
+def _emit_object_attrs(
+    body: list[str],
+    *,
+    net: str | None = None,
+    refdes: str | None = None,
+    pin: str | None = None,
+) -> bool:
+    """Emit the identity attributes for the object about to be drawn.
+    Returns whether anything was emitted, so the caller knows whether it
+    owes a matching ``%TD*%`` afterwards — an object with no identity gets
+    no attribute lines at all, not an empty ``%TO.N,*%``."""
+    emitted = False
+    if net:
+        body.append(f"%TO.N,{net}*%")
+        emitted = True
+    if refdes and pin:
+        body.append(f"%TO.P,{refdes},{pin}*%")
+        emitted = True
+    return emitted
+
+
+def _emit_with_attrs(
+    body: list[str],
+    draw: Any,
+    *,
+    net: str | None = None,
+    refdes: str | None = None,
+    pin: str | None = None,
+) -> None:
+    """Wrap one draw/flash call in its ``%TO...*%``/``%TD*%`` pair (if it
+    has any identity to carry) — the single place that guarantees an
+    attribute never leaks onto the object emitted after it."""
+    has_attrs = _emit_object_attrs(body, net=net, refdes=refdes, pin=pin)
+    draw()
+    if has_attrs:
+        body.append("%TD*%")
+
+
+# ─────────────────────────────────────────────────────────────────────
 # draws: strokes (tracks/silk) and flashes (pads/via barrels)
 # ─────────────────────────────────────────────────────────────────────
 def _emit_flash(
@@ -159,7 +219,9 @@ def _emit_stroke(
         cur = end
 
 
-def _emit_region(pour: dict[str, Any], body: list[str]) -> None:
+def _emit_region(
+    pour: dict[str, Any], body: list[str], *, net: str | None = None
+) -> None:
     """``G36``/``G37`` polygon region for a copper pour/plane — filled by the
     boundary trace, no aperture needed (a region's fill isn't a stroke).
 
@@ -169,11 +231,16 @@ def _emit_region(pour: dict[str, Any], body: list[str]) -> None:
     short every foreign via passing through the plane — so the hole list is
     not optional decoration, it is the difference between a plane and a
     short.
+
+    The ``%TO.N*%``/``%TD*%`` pair (if the pour has a net) wraps only the
+    solid ring, never the holes: a hole is where this net's copper ISN'T —
+    tagging it with the pour's own net would mislabel the one place on this
+    object that is deliberately not that net.
     """
     poly = [(float(p[0]), float(p[1])) for p in pour["polygon"]]
     if not poly:
         return
-    _emit_region_ring(poly, body)
+    _emit_with_attrs(body, lambda: _emit_region_ring(poly, body), net=net)
     holes = pour.get("holes") or []
     if not holes:
         return
@@ -273,10 +340,13 @@ def copper_gerber(model: dict[str, Any], layer: str) -> str:
     body: list[str] = []
     for item in model.get("copper", []):
         ctype = item.get("ctype")
+        net = item.get("net")
         if ctype == "track" and item.get("layer") == layer:
-            _emit_stroke(item, apertures, body)
+            _emit_with_attrs(
+                body, lambda item=item: _emit_stroke(item, apertures, body), net=net
+            )
         elif ctype == "pour" and item.get("layer") == layer:
-            _emit_region(item, body)
+            _emit_region(item, body, net=net)
         elif ctype == "via" and layer in _via_layers(item, layers):
             pad = {
                 "shape": "circle",
@@ -284,10 +354,18 @@ def copper_gerber(model: dict[str, Any], layer: str) -> str:
                 "y": item["y"],
                 "w": item["dia_mm"],
             }
-            _emit_flash(pad, apertures, body)
+            _emit_with_attrs(
+                body, lambda pad=pad: _emit_flash(pad, apertures, body), net=net
+            )
     for pad in model.get("pads", []):
         if pad.get("layer") == layer:
-            _emit_flash(pad, apertures, body)
+            _emit_with_attrs(
+                body,
+                lambda pad=pad: _emit_flash(pad, apertures, body),
+                net=pad.get("net"),
+                refdes=pad.get("refdes"),
+                pin=pad.get("pin"),
+            )
     return _assemble(f"Copper,L{index + 1},{pos}", apertures, body)
 
 
@@ -344,10 +422,38 @@ def solderpaste_gerber(model: dict[str, Any], side: str) -> str:
 
 
 def silkscreen_gerber(model: dict[str, Any], side: str) -> str:
+    """A silk draw is normally a stroke (see the module docstring's
+    ``<draw>`` shape). Two extra shapes are recognised here, both reused
+    verbatim from the copper-pour machinery above rather than inventing a
+    silk-specific one:
+
+    - ``{"shape": "region", "polygon": [...]}`` — a solid ``G36``/``G37``
+      fill (:func:`_emit_region`, the same writer a copper pour uses;
+      regions are legal on any layer, not just copper). Used for a filled
+      silk patch, e.g. :func:`precis.pcb.silk.build_sn_patch`'s S/N label
+      box.
+    - a normal stroke draw carrying ``"polarity": "clear"`` — wrapped in
+      ``%LPC*%``/``%LPD*%`` so it ERASES whatever solid silk came before
+      it instead of adding to it, the exact idiom :func:`_emit_region`
+      already uses for a pour's antipad holes (this is that same
+      dark-then-clear-then-back-to-dark sequence, just spelled with a
+      stroke instead of a hole ring — a knocked-out letter is a hole
+      shaped like a glyph, not a filled polygon). A draw with no
+      ``"polarity"`` key (or any value other than ``"clear"``) draws dark,
+      unchanged from before this shape existed.
+    """
     apertures = _ApertureTable()
     body: list[str] = []
     for draw in model.get("silkscreen", {}).get(side, []):
-        _emit_stroke(draw, apertures, body)
+        if draw.get("shape") == "region":
+            _emit_region({"polygon": draw["polygon"]}, body)
+            continue
+        if draw.get("polarity") == "clear":
+            body.append("%LPC*%")
+            _emit_stroke(draw, apertures, body)
+            body.append("%LPD*%")
+        else:
+            _emit_stroke(draw, apertures, body)
     return _assemble(f"Legend,{'Top' if side == 'top' else 'Bot'}", apertures, body)
 
 

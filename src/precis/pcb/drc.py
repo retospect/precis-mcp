@@ -4,9 +4,12 @@
 engines at the IR level boundary. ``ir.py`` owns **graph feasibility**
 (L0-L4, no geometry, no shapely), inside the optimizer's constraint set.
 This module owns **geometric DRC** (L5, on realized copper) — class-rule
-clearance, trace width, annular ring, courtyard overlap, board-edge
-clearance — the *final* check, not the main event. Both emit
-``pcb_drc_findings`` rows, share ``view='drc'`` (``handlers/pcb.py``);
+clearance, trace width, annular ring, via-to-pad keep-out, via-to-via
+keep-out, courtyard overlap, board-edge clearance, silk rendering/
+printability (:func:`check_silk_missing`/:func:`check_silk_printability`,
+off :mod:`precis.pcb.silk`'s own ``SilkPlacement`` census) — the *final*
+check, not the main event. Both emit
+``pcb_drc_findings`` rows and share ``view='drc'`` (``handlers/pcb.py``);
 ``eyes.drc_lite`` is superseded and retired.
 
 **Input model**: the same copper-model dict :mod:`precis.pcb.realize`
@@ -50,17 +53,28 @@ behaviour.
 vs. ``..._vcut_mm``. Unknown panel type → :func:`check_board_edge_clearance`
 uses the V-cut figure (the conservative one, per ``capabilities.py``).
 
-**The O(n^2) reference oracle.** :func:`clearance_violations_naive`
-computes every same-layer, different-net track/via pair's exact
-copper-to-copper gap via closed-form circle/segment math only (no
-shapely, no spatial index, no code shared with the accelerated path) and
-is asserted equal to :func:`check_clearance`'s STRtree-accelerated engine
-over randomized layouts (``tests/test_pcb_drc.py``) — guards against a
-spatial-index bug that silently misses a neighbour and produces a clean
-DRC pass on a shorted board. Pour polygons are checked by the accelerated
-engine only — not cross-validated (the oracle is deliberately restricted
-to circle/capsule primitives for closed-form math) — a stated gap in
-oracle coverage.
+**The O(n^2) reference oracle — the highest-value code in this module.**
+:func:`clearance_violations_naive` computes every same-layer,
+different-net track/via pair's exact copper-to-copper gap using ONLY
+closed-form circle/segment math (no shapely, no spatial index, no shared
+code with the accelerated path below the primitive-flattening step) and is
+asserted equal to :func:`check_clearance`'s STRtree-accelerated engine over
+many randomized layouts (``tests/test_pcb_drc.py``). This build has
+already shipped four silent-but-fatal bugs that crashed nothing and failed
+no type check (an inverted hardening penalty, a schedule-mismatched
+acceptance test, a temperature decayed below eligibility, an estimator
+that was provably always zero) — a spatial-index bug that silently misses
+a neighbour is the same family, and produces a clean DRC pass on a shorted
+board. Pour polygons — and, since 2026-08-29, PAD polygons
+(:func:`clearance_pairs_indexed` now folds ``model["pads"]`` into the same
+per-layer check every other copper item gets; see its own docstring) — are
+checked by the accelerated engine only, not cross-validated by the
+dependency-free oracle, which is deliberately restricted to the
+circle/capsule primitives that make closed-form math possible (a
+rect/obround pad is neither). A stated, not silent, gap in oracle
+coverage — and note it is the SAME gap pours already had: the oracle
+agreeing with the accelerated engine on tracks/vias was never evidence
+that either one was checking pads or pours at all.
 
 **A reference oracle only checks the inputs it's fed**: ``clearance_
 violations_naive`` was correct against every synthetic fixture and still
@@ -81,6 +95,7 @@ machinery, at instance rather than copper-item scale.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,6 +112,7 @@ from precis.pcb.capabilities import CapabilityRow
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.rules import NetRules
+from precis.pcb.silk import SilkPlacement
 
 Coord = tuple[float, float]
 
@@ -282,11 +298,45 @@ def _via_layer_names(item: dict[str, Any], all_layers: list[str]) -> list[str]:
 
 
 def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
-    """The physical copper shape of one ``model["copper"]`` item as a
-    single shapely polygon — a track's full polyline buffered by its half-
-    width in one shot (round caps/joins are the physically correct shape
-    for a routed trace), a via as a buffered point, a pour as its polygon
-    verbatim. ``None`` for a degenerate item (a track with < 2 points)."""
+    """The physical copper shape of one copper-bearing item as a single
+    shapely polygon — a track's full polyline buffered by its half-width in
+    one shot (round caps/joins are the physically correct shape for a
+    routed trace), a via as a buffered point, a pour as its exterior
+    polygon WITH its ``holes`` cut out as interior rings, a PAD (``model
+    ["pads"]``, tagged ``ctype="pad"`` by every caller that mixes it into a
+    copper-item list — pads carry no ``ctype`` of their own on
+    ``model["pads"]``) as its real ``shape`` (circle/rect/obround), not a
+    circle stand-in. ``None`` for a degenerate item (a track with < 2
+    points, or a pad/via with zero size).
+
+    **Pads are copper, not a lesser class of it — this is the ONE shape
+    function.** Every other geometric rule that needs "what does this pad
+    physically occupy" (:func:`clearance_pairs_indexed` via
+    :func:`check_clearance`) reads it from here, not a second circle/rect
+    approximation — that divergence (two functions independently deciding
+    "what shape is this thing", answering differently) is this
+    subsystem's own most-repeated defect (see :func:`pads_for_ir`'s own
+    docstring in :mod:`precis.pcb.realize` for the pad-geometry half of
+    the same lesson). ``check_via_pad_keepout`` and ``check_outline_
+    containment`` still carry their own PRE-EXISTING circumscribed-circle
+    pad approximations (a via's keep-out uses plain circle/circle math
+    with no shapely dependency at all; containment predates this
+    function's pad support) — reported, not silently merged in, since
+    changing either one's numbers was not asked for here.
+
+    **A pour's ``holes`` are antipads, not decoration.** :mod:`precis.pcb.
+    planes` (:func:`~precis.pcb.planes.plane_pours`, its own docstring)
+    punches a hole around every foreign-net via/track that passes through a
+    poured layer specifically so the fill does not short it — the same
+    reason :mod:`precis.pcb.gerber`'s ``_emit_region`` images a hole's
+    interior as clear-polarity copper rather than solid. Reading only
+    ``polygon`` here made every consumer of this function see a pour as a
+    SOLID sheet where the real copper has a hole cut in it — so a trace
+    correctly antipadded inside that hole reported a clearance violation
+    against copper that, on the real board, is not there at all. Now that
+    copper fill can share a layer with routing (``ir.layer_is_routable``/
+    ``layer_is_pourable``), every antipadded feature on a filled layer hit
+    this, not just a rare edge case."""
     ctype = item.get("ctype")
     if ctype == "track":
         pts = _flatten_segments(item.get("segments") or [])
@@ -304,21 +354,92 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
         poly = item.get("polygon") or []
         if len(poly) < 3:
             return None
-        return Polygon([(float(p[0]), float(p[1])) for p in poly])
+        holes = [
+            [(float(p[0]), float(p[1])) for p in hole]
+            for hole in item.get("holes") or []
+            if len(hole) >= 3
+        ]
+        return Polygon([(float(p[0]), float(p[1])) for p in poly], holes)
+    if ctype == "pad":
+        shape = item.get("shape", "circle")
+        x, y = float(item["x"]), float(item["y"])
+        w = float(item.get("w", 0.0))
+        h = float(item.get("h", w))
+        if w <= 0 or h <= 0:
+            return None
+        if shape == "circle":
+            return Point(x, y).buffer(w / 2.0, quad_segs=_BUFFER_QUAD_SEGS)
+        if shape == "rect":
+            hw, hh = w / 2.0, h / 2.0
+            return Polygon(
+                [(x - hw, y - hh), (x + hw, y - hh), (x + hw, y + hh), (x - hw, y + hh)]
+            )
+        if shape == "obround":
+            # A capsule -- the same "buffer a segment" construction a track
+            # uses above -- with the rounded ends on the LONGER of w/h (the
+            # conventional "stadium" reading of an oval pad) and a straight
+            # zero-length degenerate case at w == h so this never divides
+            # by an undefined axis.
+            if w == h:
+                return Point(x, y).buffer(w / 2.0, quad_segs=_BUFFER_QUAD_SEGS)
+            if w > h:
+                half_len, r = (w - h) / 2.0, h / 2.0
+                line = LineString([(x - half_len, y), (x + half_len, y)])
+            else:
+                half_len, r = (h - w) / 2.0, w / 2.0
+                line = LineString([(x, y - half_len), (x, y + half_len)])
+            return line.buffer(r, quad_segs=_BUFFER_QUAD_SEGS)
+        raise ValueError(f"unknown pad shape {shape!r}")
     return None
+
+
+def _clearance_items(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every copper-bearing item :func:`clearance_pairs_indexed` /
+    :func:`check_clearance` reason about, as ONE list: ``model["copper"]``
+    followed by ``model["pads"]`` (each pad shallow-copied with
+    ``ctype="pad"`` tacked on so :func:`_copper_item_polygon`'s existing
+    ``ctype`` dispatch — and every finding's ``where``/``objects`` text —
+    handles a pad exactly like a track/via/pour, never a special case).
+    Both functions below build this list the SAME way so an index computed
+    by one always means the same item to the other — mirrors :mod:`precis.
+    pcb.connectivity`'s ``_pad_primitives(model, start_group=len(model
+    ["copper"]))`` offset convention, the precedent already set for
+    concatenating pads onto a copper-item index space."""
+    return [*(model.get("copper") or []), *_tagged_pads(model)]
+
+
+def _tagged_pads(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """``model["pads"]`` with ``ctype="pad"`` added (shallow copy — never
+    mutates the caller's pad dicts) so a pad can sit in the same item list
+    as ``model["copper"]``'s tracks/vias/pours."""
+    return [{**pad, "ctype": "pad"} for pad in model.get("pads") or []]
 
 
 def clearance_pairs_indexed(
     model: dict[str, Any], *, required_mm: float
 ) -> list[tuple[int, int, float]]:
     """``(item_i, item_j, gap_mm)`` for every same-layer, different-net
-    copper-item pair (tracks/vias/pours) whose true edge-to-edge gap is
-    below ``required_mm`` — the STRtree-accelerated engine. Indices are
-    positions in ``model["copper"]``. A per-layer STRtree prunes candidates
+    copper-item pair (tracks/vias/pours/PADS) whose true edge-to-edge gap
+    is below ``required_mm`` — the STRtree-accelerated engine. Indices are
+    positions in :func:`_clearance_items`'s combined list —
+    ``model["copper"]`` followed by ``model["pads"]`` — NOT
+    ``model["copper"]`` alone; a pad-involving pair's index can land past
+    ``len(model["copper"])``. A per-layer STRtree prunes candidates
     (``predicate='dwithin'``); the reported gap itself is shapely's own
     exact polygon-to-polygon ``distance()``, not an estimate — the
     acceleration is entirely in *which pairs get checked*, never in the
     number reported for a pair that IS checked.
+
+    **Pads used to be invisible here entirely** — this function iterated
+    ``model["copper"]`` only, so a pad (a separate top-level model key,
+    ``to_gerber_model``'s/``_render_drc``'s own shape) was never a
+    candidate on EITHER side of a pair: pad-vs-pour, pad-vs-track,
+    pad-vs-via and pad-vs-pad clearance all went unchecked, on a board
+    whose pads are exactly the copper you solder to. Fixed by folding
+    ``model["pads"]`` into the same per-layer STRtree pass as every other
+    copper item (:func:`_clearance_items`), not a parallel pad-only pass —
+    a pad is a same-net-exempt, different-net-checked copper item like any
+    other, not a second kind of question.
 
     **A via has no single ``item["layer"]``** — it flashes on every layer
     :func:`_via_layer_names` says it spans, exactly like
@@ -330,8 +451,15 @@ def clearance_pairs_indexed(
     every via under a nonexistent ``""`` layer and dropped it out of every
     real layer's candidate set. Caught by :func:`clearance_violations_naive`
     disagreeing on exactly this case (property test,
-    ``tests/test_pcb_drc.py``) — the oracle doing its job."""
-    items = model.get("copper") or []
+    ``tests/test_pcb_drc.py``) — the oracle doing its job.
+
+    **The reference oracle does NOT cross-check a pad pair.**
+    :func:`clearance_violations_naive` is restricted to the circle/capsule
+    primitive alphabet (module docstring); a rect/obround pad is neither,
+    so pad clearance — like pour clearance before it — is validated by
+    this accelerated engine alone, a stated gap in oracle coverage, not a
+    silent one."""
+    items = _clearance_items(model)
     all_layers = list(model.get("layers") or [])
     # (source_idx, net, layer, polygon) — one entry per (item, layer it's on).
     entries: list[tuple[int, str, str, BaseGeometry]] = []
@@ -414,7 +542,14 @@ def check_clearance(
     (module docstring: "class" = fab process, per JLC's own naming, read
     off ``capabilities.py``, house-default tier). STRtree-accelerated; see
     :func:`clearance_violations_naive` for the independent reference this
-    is checked against.
+    is checked against (pad pairs are NOT part of that comparison — see
+    :func:`clearance_pairs_indexed`'s own docstring).
+
+    **Pads are checked here too** (:func:`_clearance_items`) — a pad is
+    the copper you solder to, and is exempt from this rule on the same
+    terms as any other same-net copper (a trace legitimately lands on its
+    own pad) and checked on the same terms otherwise (a foreign pad, pour,
+    track or via too close is exactly what this rule exists to catch).
 
     ``net_rules`` (net NAME -> :class:`~precis.pcb.rules.NetRules`, the
     same resolved rules :mod:`precis.pcb.realize` used to draw the copper)
@@ -440,7 +575,7 @@ def check_clearance(
     else:
         query_radius = house if house is not None else jlc_min
     pairs = clearance_pairs_indexed(model, required_mm=query_radius)
-    items = model.get("copper") or []
+    items = _clearance_items(model)
     findings: list[DrcFinding] = []
     for i, j, gap in pairs:
         a, b = items[i], items[j]
@@ -518,10 +653,12 @@ class _Prim:
 
 
 def _copper_primitives(model: dict[str, Any]) -> list[_Prim]:
-    """Track/via items only, flattened to circles/capsules — pours are
-    deliberately excluded (module docstring: the oracle's scope is the
-    closed-form-representable primitives; pour clearance is validated by
-    the accelerated engine alone)."""
+    """Track/via items only, flattened to circles/capsules — pours AND
+    pads are deliberately excluded (module docstring: the oracle's scope
+    is the closed-form-representable primitives; a rect/obround pad no
+    more fits a circle/capsule than a pour polygon does, so pad clearance
+    — like pour clearance before it — is validated by the accelerated
+    engine alone)."""
     prims: list[_Prim] = []
     for idx, item in enumerate(model.get("copper") or []):
         ctype = item.get("ctype")
@@ -785,6 +922,242 @@ def check_npth_clearance(
     return findings
 
 
+# ── via-to-pad keep-out (a via is a drilled hole, not a trace) ──────────
+
+
+def check_via_pad_keepout(
+    model: dict[str, Any], capability: CapabilityRow
+) -> list[DrcFinding]:
+    """A via must clear every pad — including a pad on its OWN net — by
+    the fab's minimum copper isolation. Closest analogue is
+    :func:`check_npth_clearance` (drill-versus-copper, same closed-form
+    circle math, no shapely): a via is likewise a drilled hole, just a
+    plated one, and this rule is that same "hole must clear copper"
+    question asked of vias against pads specifically.
+
+    **Why this cannot be expressed by tightening :func:`check_clearance`.**
+    That rule deliberately EXEMPTS same-net copper (module docstring's
+    two-tier section) — correctly: same-net copper touching is how a
+    trace joins a pad. A via is not a trace. It is a hole drilled through
+    the board; landing its annulus on a pad — even the via's own net's
+    pad — wicks solder down the barrel and starves the joint, or on a
+    through-hole pad drills a second hole through the first. Widening the
+    clearance exemption to cover this would make the wrong case legal
+    (same-net trace-into-pad is fine; same-net via-onto-pad is not), so
+    the two questions need two rules over the same geometry — the same
+    relationship :func:`check_connectivity` has to :func:`check_clearance`:
+    a different question, not a variant of the same one.
+
+    The margin is DERIVED, not invented: ``trace_spacing_mm`` is already
+    this project's figure for how close two independent copper features
+    may legally sit (module docstring, and :func:`check_clearance`'s own
+    field) — a via's plated annulus and a pad's solder land are
+    independent features by this rule's whole premise, so the same jlc_min
+    floor applies, net or no net. Severity is always ``error`` (no warn
+    tier): a via drilled into a land is a manufacturing defect, not a
+    margin the house_default tier would grade.
+    """
+    field = "trace_spacing_mm"
+    required = capability.jlc_min[field]
+    if required is None:
+        return []
+    all_layers = list(model.get("layers") or [])
+    pads = model.get("pads") or []
+    findings: list[DrcFinding] = []
+    for item in model.get("copper") or []:
+        if item.get("ctype") != "via":
+            continue
+        vx, vy = float(item["x"]), float(item["y"])
+        vr = float(item.get("dia_mm", 0.0)) / 2.0
+        via_net = item.get("net")
+        via_layers = set(_via_layer_names(item, all_layers))
+        for pad in pads:
+            if pad.get("layer") not in via_layers:
+                continue
+            px, py = float(pad["x"]), float(pad["y"])
+            w = float(pad.get("w", 0.0))
+            h = float(pad.get("h", w))
+            # Circumscribed, not inscribed: the same conservative direction
+            # check_outline_containment already takes for a rect/obround
+            # pad approximated as a circle — over-stating the pad can only
+            # produce an extra finding a human sees, understating it can
+            # hide a real via-on-pad.
+            pr = max(w, h) / 2.0
+            gap = _dist((vx, vy), (px, py)) - vr - pr
+            if gap >= required - _EPS:
+                continue
+            pad_net, pad_layer = pad.get("net"), pad.get("layer")
+            findings.append(
+                DrcFinding(
+                    rule="via_pad_keepout",
+                    severity="error",
+                    where=(
+                        f"via[{via_net}] @ ({vx}, {vy}) <-> "
+                        f"pad[{pad_net}] on {pad_layer}"
+                    ),
+                    detail=(
+                        f"via clears pad[{pad_net}] by {gap:.3f}mm, needs "
+                        f"{required:.3f}mm (JLC min {field}, "
+                        f"{capability.process}) — a via drilled into a solder "
+                        "land starves the joint regardless of net"
+                    ),
+                    objects=(
+                        {
+                            "via_net": via_net,
+                            "via_x": vx,
+                            "via_y": vy,
+                            "pad_net": pad_net,
+                            "pad_layer": pad_layer,
+                        },
+                    ),
+                    margin_mm=gap - required,
+                )
+            )
+    return findings
+
+
+# ── via-to-via keep-out (two drilled holes, not a clearance pair) ───────
+
+
+def check_via_via_keepout(
+    model: dict[str, Any], capability: CapabilityRow
+) -> list[DrcFinding]:
+    """Two vias must not overlap — COPPER (the plated barrel) and the
+    DRILLED HOLE alike, net-blind, same tier of defect as
+    :func:`check_via_pad_keepout` (that function's own docstring already
+    makes the argument this one inherits: :func:`check_clearance`
+    deliberately exempts same-net copper because a trace legally lands on
+    its own pad, and that exemption never covered a via — a via is a hole
+    drilled through the board, not a trace, and this is that same
+    "hole must clear copper" question restricted to another via's barrel
+    and, more fundamentally, its DRILL).
+
+    **Two distinct geometries, two distinct margins:**
+
+    - **copper-to-copper** (barrel annulus vs. barrel annulus): the SAME
+      ``trace_spacing_mm`` jlc_min :func:`check_via_pad_keepout` already
+      reads for a via's annulus against independent copper — two via
+      barrels are exactly that, independent copper features, net or no
+      net.
+    - **hole-to-hole** (drilled circle vs. drilled circle): this
+      capability table publishes no hole-to-hole spacing figure, and none
+      is invented here (``capabilities.py``'s own "never carry a figure
+      across" discipline, and this codebase's live-JLC-page verification
+      standard for every OTHER figure in that table — a number this
+      module cannot check against a live page has no business claiming
+      that provenance). The threshold used instead is the physical
+      definition of two DISTINCT holes: their drilled circles must not
+      intersect (required = 0, i.e. centre distance >= the sum of the two
+      drill radii). Two holes that overlap at all are, physically,
+      already one larger hole or an unintended slot — true regardless of
+      any fab's published tolerance, so no published figure is needed to
+      state it. This is the SAME "categorical, not a manufacturability
+      margin" treatment :func:`check_courtyard_overlap` already gives
+      physical overlap; there is no ``house_default`` tier for either.
+
+    **A correctly-spread stitched group stays quiet.**
+    :mod:`precis.pcb.realize` (``_route_pass``) spreads a same-net
+    ampacity-sized via group along a pitch of ``via_dia_mm +
+    clearance_mm`` — a copper gap of exactly ``clearance_mm`` (the
+    resolved net/house clearance, which is always at or above this rule's
+    ``trace_spacing_mm`` floor by construction) and a hole gap of
+    ``via_dia_mm + clearance_mm - drill_mm`` (strictly positive, since a
+    via's annular ring — ``(dia_mm - drill_mm) / 2`` — is itself positive
+    by construction): neither margin trips for a group spread by that
+    code path.
+
+    **Two vias at the EXACT SAME coordinate, on purpose, is a DIFFERENT
+    construct this rule cannot tell apart from the defect it exists to
+    catch.** Nothing in the realized copper model marks "this pair is one
+    deliberate stack" — same net, same net, same (x, y) is indistinguishable
+    from a real duplicate-via bug (two placement/route passes silently
+    emitting the same via twice), and this codebase's own discipline is to
+    report a real geometric collision rather than silently assume intent
+    (module docstring: a spatial-index bug that silently misses a
+    neighbour "produces a clean DRC pass on a shorted board" — inventing a
+    same-coordinate exemption here is the identical failure mode aimed at
+    a different rule). Stated here, not guessed past: if this codebase
+    grows an intentional same-spot via-stack construct, it needs its own
+    marker in the model for this rule to key off, not a same-net/
+    same-coordinate heuristic.
+
+    Severity is always ``error`` — like :func:`check_via_pad_keepout`, a
+    categorical manufacturing defect, not a margin the ``house_default``
+    tier would grade."""
+    field = "trace_spacing_mm"
+    copper_required = capability.jlc_min[field]
+    if copper_required is None:
+        return []
+    all_layers = list(model.get("layers") or [])
+    vias = [item for item in model.get("copper") or [] if item.get("ctype") == "via"]
+    findings: list[DrcFinding] = []
+    for a_i, via_a in enumerate(vias):
+        ax, ay = float(via_a["x"]), float(via_a["y"])
+        a_dia = float(via_a.get("dia_mm", 0.0))
+        a_drill = float(via_a.get("drill_mm", 0.0))
+        a_net = via_a.get("net")
+        a_layers = set(_via_layer_names(via_a, all_layers))
+        for b_i in range(a_i + 1, len(vias)):
+            via_b = vias[b_i]
+            b_layers = set(_via_layer_names(via_b, all_layers))
+            if not (a_layers & b_layers):
+                continue  # no shared copper layer -- not the same physical barrel
+            bx, by = float(via_b["x"]), float(via_b["y"])
+            b_dia = float(via_b.get("dia_mm", 0.0))
+            b_drill = float(via_b.get("drill_mm", 0.0))
+            b_net = via_b.get("net")
+            center = _dist((ax, ay), (bx, by))
+            where = f"via[{a_net}] @ ({ax}, {ay}) <-> via[{b_net}] @ ({bx}, {by})"
+            objects = (
+                {
+                    "a_net": a_net,
+                    "a_x": ax,
+                    "a_y": ay,
+                    "b_net": b_net,
+                    "b_x": bx,
+                    "b_y": by,
+                },
+            )
+
+            copper_gap = center - (a_dia / 2.0 + b_dia / 2.0)
+            if copper_gap < copper_required - _EPS:
+                findings.append(
+                    DrcFinding(
+                        rule="via_via_keepout",
+                        severity="error",
+                        where=where,
+                        detail=(
+                            f"via barrels clear each other by {copper_gap:.3f}mm, "
+                            f"needs {copper_required:.3f}mm (JLC min {field}, "
+                            f"{capability.process}) — independent via copper "
+                            "regardless of net"
+                        ),
+                        objects=objects,
+                        margin_mm=copper_gap - copper_required,
+                    )
+                )
+
+            hole_gap = center - (a_drill / 2.0 + b_drill / 2.0)
+            if hole_gap < -_EPS:
+                findings.append(
+                    DrcFinding(
+                        rule="via_via_keepout",
+                        severity="error",
+                        where=where,
+                        detail=(
+                            f"drilled holes overlap by {abs(hole_gap):.3f}mm "
+                            f"(centres {center:.3f}mm apart, drills "
+                            f"{a_drill:.3f}mm/{b_drill:.3f}mm) — two distinct "
+                            "holes cannot occupy the same space; a broken bit "
+                            "or an unintended slot, regardless of net"
+                        ),
+                        objects=objects,
+                        margin_mm=hole_gap,
+                    )
+                )
+    return findings
+
+
 # ── courtyard overlap ──────────────────────────────────────────────────
 
 
@@ -846,7 +1219,22 @@ def check_board_edge_clearance(
     """Copper-to-board-edge clearance. ``board_edge_clearance_mm`` is TWO
     fields (module docstring) — ``panel_type='routed'`` selects the
     mechanically-routed-edge figure; anything else (including ``None``,
-    the "don't know yet" default) selects V-cut, the conservative one."""
+    the "don't know yet" default) selects V-cut, the conservative one.
+
+    **Pads used to be invisible here** — this rule iterated
+    ``model["copper"]`` only, so a pad (a separate top-level model key) was
+    never a candidate: a pad sitting inside the outline but nearer the edge
+    than the fab can manufacture went unreported, on a board whose pads are
+    exactly the copper you solder to. Fixed by reading
+    :func:`_clearance_items` (copper items followed by ``model["pads"]``,
+    :func:`_copper_item_polygon`'s exact ``ctype == "pad"`` branch) instead
+    of ``model["copper"]`` alone — the same fix already made to
+    :func:`clearance_pairs_indexed`, for the same reason. This is a
+    DIFFERENT question from :func:`check_outline_containment` (that
+    function's own docstring): containment asks whether a pad is on the
+    board at all (binary, no margin); this rule asks whether a pad that IS
+    on the board sits too near the edge to manufacture (two-tier margin).
+    A pad can fail one, the other, both, or neither."""
     field = (
         "board_edge_clearance_routed_mm"
         if panel_type == "routed"
@@ -861,7 +1249,7 @@ def check_board_edge_clearance(
         ring_pts.append(ring_pts[0])
     boundary = LineString(ring_pts)
     findings: list[DrcFinding] = []
-    for item in model.get("copper") or []:
+    for item in _clearance_items(model):
         geom = _copper_item_polygon(item)
         if geom is None or geom.is_empty:
             continue
@@ -968,6 +1356,17 @@ def check_outline_containment(
         )
 
     for pad in model.get("pads") or []:
+        # Deliberately NOT _copper_item_polygon's exact rect/obround pad
+        # shape (that function's own docstring names this function as one
+        # of two pre-existing pad approximations it did not unify away) —
+        # this is a circumscribed-circle stand-in that predates the exact
+        # polygon, and swapping it in here would change which pads report
+        # a containment violation and how much area is claimed to overhang,
+        # a real behaviour change nobody asked for while fixing board-edge
+        # clearance's missing pad coverage. A THIRD pad-shape notion, now
+        # named rather than silently duplicated: circumscribed circle here,
+        # circumscribed circle again in check_via_pad_keepout, exact
+        # polygon everywhere else via _copper_item_polygon.
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
         geom = Point(float(pad["x"]), float(pad["y"])).buffer(
@@ -980,6 +1379,185 @@ def check_outline_containment(
         geom = Point(cx, cy).buffer(radius, quad_segs=_BUFFER_QUAD_SEGS)
         outside(geom, f"part {refdes}", {"refdes": refdes})
 
+    return findings
+
+
+# ── silkscreen: a label/courtyard that never rendered is a DRC error ─────
+#
+# `precis.pcb.silk.build_silk` DROPS a refdes label, a courtyard outline or
+# a pin-1 tick outright when it cannot be placed without colliding with a
+# pad/via/other silk. Before this section that fact lived ONLY in
+# `SilkResult.dropped`/`.relocated` -- human-readable prose nothing checked
+# -- so a board could ship with unlabelled parts and read as DRC-clean.
+# `SilkPlacement` (silk.py) is the structured census this reads instead of
+# re-parsing that prose.
+
+#: A LEGIBILITY judgement, not a fab spec: below this cap height a human
+#: reading an assembled board's silkscreen struggles to make a refdes out
+#: at arm's length (a soldering-iron-and-tweezers distance, not a
+#: magnifier). `capabilities.py`'s `silk_width_mm` is a PRINTABILITY floor
+#: -- can the fab's silkscreen process resolve a line that thin at all --
+#: and is checked separately, per-item, against the real fab-capability
+#: table below; this number is never dressed up as one of that table's
+#: entries (capabilities.py's own "checked directly against live JLCPCB
+#: capability pages" standard does not, and cannot, apply to a readability
+#: opinion this codebase is stating for itself).
+SILK_LEGIBILITY_HEIGHT_MM = 0.8
+
+#: `precis.pcb.silk._draw`'s own `role=` convention, inverted: which
+#: `SilkPlacement.kind` a given `model["silkscreen"]` draw's `role` proves
+#: was actually rendered. `"title"`/`"sn-text"`/`"sn-box"` (board-level
+#: furniture -- title block, S/N patch) are deliberately absent: they carry
+#: no per-instance census row to cross-check against (silk.py's own module
+#: docstring: fiducials/title block are board-level, not part of the
+#: per-instance loop `build_silk` returns a census for).
+_ROLE_TO_SILK_KIND = {"outline": "courtyard", "pin1": "pin1", "refdes": "refdes"}
+
+
+def check_silk_missing(
+    census: Sequence[SilkPlacement], model: dict[str, Any]
+) -> list[DrcFinding]:
+    """An error per :class:`~precis.pcb.silk.SilkPlacement` the builder
+    never rendered (``outcome == "dropped"``) -- a refdes nobody can read
+    off the assembled board, a courtyard silently absent, or a pin-1 tick
+    that never got drawn is exactly as real a defect as a clearance
+    violation, and stayed invisible to every DRC run before this rule
+    existed.
+
+    **The cross-check this rule ALSO runs is not optional (task brief,
+    verbatim: "this is the guard; do not skip it").** A dropped item
+    reported here is a REPORTING channel — it repeats what
+    :func:`~precis.pcb.silk.build_silk` already knew when it built the
+    census, so a bug that makes the census claim success when nothing was
+    actually drawn would sail straight through it. So this function
+    independently reads ``model["silkscreen"]`` (the same
+    ``{"top": [...], "bottom": [...]}`` shape :func:`build_silk` itself
+    returns, and what a real gerber/SVG render is built from) and asserts
+    that every census row claiming ``"placed"``/``"relocated"`` has a
+    matching draw there — by ``(refdes, kind)`` identity, never a bare
+    COUNT (this subsystem's own fixture-symmetry lesson: a count-based
+    check cannot tell "the right N items" from "some other N items", and a
+    census claiming success over an empty silk layer must produce a
+    finding, not agree with it because the totals happen to match)."""
+    findings: list[DrcFinding] = []
+    for c in census:
+        if c.outcome != "dropped":
+            continue
+        findings.append(
+            DrcFinding(
+                rule="silk_missing",
+                severity="error",
+                where=f"{c.refdes} ({c.kind}, {c.side})",
+                detail=f"{c.kind} silk for {c.refdes} was not rendered: {c.reason}",
+                objects=({"refdes": c.refdes, "kind": c.kind, "side": c.side},),
+            )
+        )
+
+    silkscreen = model.get("silkscreen") or {}
+    drawn: set[tuple[str, str]] = set()
+    for side_draws in silkscreen.values():
+        for draw in side_draws:
+            kind = _ROLE_TO_SILK_KIND.get(str(draw.get("role") or ""))
+            refdes = str(draw.get("refdes") or "")
+            if kind is not None and refdes:
+                drawn.add((refdes, kind))
+    for c in census:
+        if c.outcome not in ("placed", "relocated"):
+            continue
+        if (c.refdes, c.kind) in drawn:
+            continue
+        findings.append(
+            DrcFinding(
+                rule="silk_missing",
+                severity="error",
+                where=f"{c.refdes} ({c.kind}, {c.side})",
+                detail=(
+                    f"census claims {c.kind} silk for {c.refdes} was "
+                    f"{c.outcome}, but no matching draw appears in "
+                    "model['silkscreen'] -- the census does not describe the "
+                    "board actually being shipped"
+                ),
+                objects=({"refdes": c.refdes, "kind": c.kind, "side": c.side},),
+            )
+        )
+    return findings
+
+
+def check_silk_printability(
+    census: Sequence[SilkPlacement], capability: CapabilityRow
+) -> list[DrcFinding]:
+    """Two independent findings over the same census, both restricted to
+    items that were actually drawn (``outcome in ("placed", "relocated")``
+    -- a dropped item's silk never reaches the fab at all, and is already
+    covered by :func:`check_silk_missing`, so checking its would-be width
+    here would just be a second finding for the same one defect):
+
+    - **error** when ``stroke_width_mm`` is below the fab's declared
+      minimum printable silk width (``capabilities.py``'s
+      ``silk_width_mm``, ``jlc_min`` tier) — a line the process cannot
+      physically resolve, the exact gap this rule closes: ``silk_width_mm``
+      was declared in :data:`precis.pcb.capabilities.FIELDS` and read by
+      nothing (see that field's own docstring), while :mod:`precis.pcb.silk`
+      carried its own ``stroke_width_mm`` default and never consulted it.
+    - **warn** when a refdes label's ``height_mm`` is below
+      :data:`SILK_LEGIBILITY_HEIGHT_MM` — a READABILITY judgement, not a
+      fab limit (see that constant's own docstring for why the two must
+      never be presented as the same kind of number).
+    """
+    findings: list[DrcFinding] = []
+    min_width = capability.jlc_min.get("silk_width_mm")
+    if min_width is not None:
+        for c in census:
+            if c.outcome not in ("placed", "relocated"):
+                continue
+            if c.stroke_width_mm >= min_width - _EPS:
+                continue
+            findings.append(
+                DrcFinding(
+                    rule="silk_printability",
+                    severity="error",
+                    where=f"{c.refdes} ({c.kind}, {c.side})",
+                    detail=(
+                        f"{c.kind} silk for {c.refdes} uses a "
+                        f"{c.stroke_width_mm:.3f}mm stroke, below "
+                        f"{capability.process}'s {min_width:.3f}mm minimum "
+                        "printable silk width -- the fab cannot resolve a "
+                        "thinner line"
+                    ),
+                    objects=(
+                        {
+                            "refdes": c.refdes,
+                            "kind": c.kind,
+                            "stroke_width_mm": c.stroke_width_mm,
+                        },
+                    ),
+                    margin_mm=c.stroke_width_mm - min_width,
+                )
+            )
+
+    for c in census:
+        if c.outcome not in ("placed", "relocated") or c.height_mm is None:
+            continue
+        if c.height_mm >= SILK_LEGIBILITY_HEIGHT_MM - _EPS:
+            continue
+        findings.append(
+            DrcFinding(
+                rule="silk_printability",
+                severity="warn",
+                where=f"{c.refdes} ({c.kind}, {c.side})",
+                detail=(
+                    f"refdes label for {c.refdes} has a {c.height_mm:.3f}mm "
+                    f"cap height, below the {SILK_LEGIBILITY_HEIGHT_MM:.3f}mm "
+                    "legibility floor -- a human reading the assembled board "
+                    "may struggle to make it out (a readability judgement, "
+                    "not a fab limit)"
+                ),
+                objects=(
+                    {"refdes": c.refdes, "kind": c.kind, "height_mm": c.height_mm},
+                ),
+                margin_mm=c.height_mm - SILK_LEGIBILITY_HEIGHT_MM,
+            )
+        )
     return findings
 
 
@@ -1069,6 +1647,7 @@ def run_geometric_drc(
     panel_type: str | None = None,
     net_rules: dict[str, NetRules] | None = None,
     unrouted: list[dict[str, Any]] | None = None,
+    census: tuple[SilkPlacement, ...] | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
@@ -1082,12 +1661,27 @@ def run_geometric_drc(
     a model cannot distinguish "not routed" from "not attempted" — absence
     of copper is not evidence of failure, and guessing here would either
     invent errors or hide them.
+
+    ``census`` is :func:`precis.pcb.silk.build_silk`'s own per-item
+    placement record (:class:`~precis.pcb.silk.SilkPlacement`) — an
+    argument for the exact same reason ``unrouted`` is one: this module
+    cannot derive "was label X actually rendered, and if not, why" from
+    ``model["silkscreen"]`` alone, since an absent draw there is
+    indistinguishable from "never attempted" versus "dropped for a stated
+    reason" without the record :func:`~precis.pcb.silk.build_silk` already
+    produced while deciding. ``census=None`` (the default) keeps every
+    existing caller — none of which built a census before this rule
+    existed — DRC-clean on this axis exactly as before, the identical
+    "silent about a thing this module was never told" contract
+    ``unrouted=None`` already has.
     """
     findings: list[DrcFinding] = []
     findings += check_clearance(model, capability, net_rules=net_rules)
     findings += check_trace_width(model, capability)
     findings += check_annular_ring(model, capability)
     findings += check_npth_clearance(model, capability)
+    findings += check_via_pad_keepout(model, capability)
+    findings += check_via_via_keepout(model, capability)
     findings += check_board_edge_clearance(
         model, capability, outline=outline, panel_type=panel_type
     )
@@ -1096,11 +1690,14 @@ def run_geometric_drc(
     findings += check_unrouted(unrouted)
     if courtyards:
         findings += check_courtyard_overlap(courtyards)
+    findings += check_silk_missing(census or (), model)
+    findings += check_silk_printability(census or (), capability)
     return findings
 
 
 __all__ = [
     "DEFAULT_COURTYARD_RADIUS_MM",
+    "SILK_LEGIBILITY_HEIGHT_MM",
     "DrcFinding",
     "check_annular_ring",
     "check_board_edge_clearance",
@@ -1109,8 +1706,12 @@ __all__ = [
     "check_courtyard_overlap",
     "check_npth_clearance",
     "check_outline_containment",
+    "check_silk_missing",
+    "check_silk_printability",
     "check_trace_width",
     "check_unrouted",
+    "check_via_pad_keepout",
+    "check_via_via_keepout",
     "clearance_pairs_indexed",
     "clearance_violations_naive",
     "process_for_stackup",

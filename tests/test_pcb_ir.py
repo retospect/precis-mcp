@@ -6,6 +6,7 @@ and the graph feasibility checks. No DB.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 
@@ -19,10 +20,15 @@ from precis.pcb.ir import (
     from_graph,
     instance_keepout_radius_mm,
     instance_pad_radius,
+    layer_is_pourable,
+    layer_is_routable,
     nearest_other_instance,
     per_layer_planar,
     plane_connectivity,
+    plane_layers_of,
+    pourable_layers,
     propose_rotation_from_positions,
+    routable_layers,
     same_layer_crossing_bound,
     same_layer_crossing_count,
     segment_points,
@@ -266,7 +272,7 @@ def test_promote_plane_dirties_only_that_nets_segments():
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     n2 = 1  # "N2" power net -> its single segment
     ir.promote_plane(n2, 0)
-    assert int(ir.net_plane_layer[n2]) == 0
+    assert plane_layers_of(int(ir.net_plane_layers[n2])) == [0]
     n2_segs = {s for s in range(ir.n_segments) if int(ir.seg_net[s]) == n2}
     for s in range(ir.n_segments):
         assert ir.dirty_l1[s] == (s in n2_segs)
@@ -281,6 +287,55 @@ def test_clean_clears_the_named_level_only():
     ir.clean(Level.L1)
     assert not ir.dirty_l1.any()
     assert ir.dirty_l4[0]  # L4 untouched by clean(L1)
+
+
+# ── routable vs pourable: two independent per-layer questions ─────────
+def test_default_stackup_routable_and_pourable_match_legacy_role_split():
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    # F.Cu/B.Cu (role='signal') routable; In1.Cu/In2.Cu (role='plane') not.
+    assert routable_layers(ir) == [0, 3]
+    # In1.Cu/In2.Cu (role='plane') pourable; F.Cu/B.Cu (role='signal') not
+    # -- this is the AUTOMATIC-annealer eligibility set only (see
+    # layer_is_pourable's docstring), never a ceiling on an authored
+    # op='plane_net' assignment.
+    assert pourable_layers(ir) == [1, 2]
+
+
+def test_explicit_routable_flag_overrides_a_plane_role_layer():
+    # Annotated because the entries are heterogeneous (some carry a bool
+    # `routable`, some don't) and mypy joins them to `list[object]`.
+    stackup: list[dict[str, Any]] = [
+        {"name": "F.Cu", "role": "signal"},
+        {"name": "In1.Cu", "role": "plane", "routable": True},
+        {"name": "In2.Cu", "role": "plane", "routable": True},
+        {"name": "B.Cu", "role": "signal"},
+    ]
+    ir = from_graph(_star_graph(), stackup=stackup)
+    # both inner layers stay 'plane' (still auto-pourable) but are now
+    # ALSO routable -- carrying both traces and copper fill is the whole
+    # point (a layer used to be either/or, gated on role alone).
+    assert routable_layers(ir) == [0, 1, 2, 3]
+    assert pourable_layers(ir) == [1, 2]
+
+
+def test_explicit_pourable_false_overrides_a_plane_role_layer():
+    stackup = [{"name": "In1.Cu", "role": "plane", "pourable": False}]
+    assert layer_is_routable(stackup[0]) is False
+    assert layer_is_pourable(stackup[0]) is False
+
+
+def test_explicit_routable_false_overrides_a_signal_role_layer():
+    stackup = [{"name": "F.Cu", "role": "signal", "routable": False}]
+    assert layer_is_routable(stackup[0]) is False
+    # pourable still falls through to the legacy role rule -- routable and
+    # pourable are independent, an override on one never implies the other.
+    assert layer_is_pourable(stackup[0]) is False
+
+
+def test_layer_with_no_role_or_flags_is_neither_routable_nor_pourable():
+    layer = {"name": "stiffener"}
+    assert layer_is_routable(layer) is False
+    assert layer_is_pourable(layer) is False
 
 
 # ── layer bitmask / via-span ─────────────────────────────────────────
@@ -513,7 +568,7 @@ def test_segment_points_returns_instance_centroids_or_none():
 def test_plane_connectivity_zero_stitches_not_ok():
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)
-    result = plane_connectivity(ir, 0)
+    result = plane_connectivity(ir, 0, 1)
     assert isinstance(result, PlaneConnectivity)
     assert result.stitch_vias == []
     assert not result.ok
@@ -523,7 +578,7 @@ def test_plane_connectivity_one_stitch_is_a_single_point_of_failure():
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)
     ir.add_via(layer_span=(1 << 1), net_id=0)
-    assert not plane_connectivity(ir, 0).ok
+    assert not plane_connectivity(ir, 0, 1).ok
 
 
 def test_plane_connectivity_two_stitches_ok():
@@ -531,7 +586,7 @@ def test_plane_connectivity_two_stitches_ok():
     ir.promote_plane(0, 1)
     ir.add_via(layer_span=(1 << 1), net_id=0)
     ir.add_via(layer_span=(1 << 1) | (1 << 0), net_id=0)
-    result = plane_connectivity(ir, 0)
+    result = plane_connectivity(ir, 0, 1)
     assert result.ok
     assert len(result.stitch_vias) == 2
 
@@ -541,7 +596,7 @@ def test_plane_connectivity_ignores_vias_on_other_layers_or_nets():
     ir.promote_plane(0, 1)
     ir.add_via(layer_span=(1 << 0), net_id=0)  # right net, wrong layer
     ir.add_via(layer_span=(1 << 1), net_id=1)  # right layer, wrong net
-    assert plane_connectivity(ir, 0).stitch_vias == []
+    assert plane_connectivity(ir, 0, 1).stitch_vias == []
 
 
 # ── L4 metric annotations ────────────────────────────────────────────

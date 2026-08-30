@@ -136,6 +136,61 @@ def test_route_changes_layer_between_non_adjacent_signal_layers():
         assert (lo, hi) == (0, 3)
 
 
+def test_stamp_pad_records_pad_and_still_claims_copper_like_stamp_disk():
+    grid = OccupancyGrid(_spec(n_layers=1), clearance_mm=0.05)
+    grid.stamp_pad((0,), 2.0, 2.0, 0.2, 3)
+    assert grid.pads == ((2.0, 2.0, 0.2),)
+    assert (grid.owner[0] == 3).any(), "stamp_pad must still claim copper"
+
+
+def test_via_clears_pads_is_net_blind():
+    """The one deliberately net-BLIND query on this grid: same-net copper
+    is legal everywhere else (that is how a trace joins a pad), but a via
+    is a drilled hole, not a trace, and must clear a pad regardless of
+    whose net claimed it."""
+    grid = OccupancyGrid(_spec(n_layers=1), clearance_mm=0.05)
+    # `via_clears_pads` takes no net_id at all -- the rule is about the
+    # PAD, not about who owns the copper crowding it, and the pad here is
+    # claimed on the SAME net the via query stands in for.
+    grid.stamp_pad((0,), 2.0, 2.0, 0.2, net_id=7)
+    assert grid.via_clears_pads(2.0, 2.0, 0.15) is False  # squarely on the pad
+    # Comfortably clear: pad edge (0.2) + via edge (0.15) + clearance
+    # (0.05) = 0.4mm apart is exactly the boundary; go well past it.
+    assert grid.via_clears_pads(3.0, 2.0, 0.15) is True
+
+
+def test_route_never_places_a_via_within_pad_keepout_even_on_the_vias_own_net():
+    """A thin wall on layer 0 forces the search to change layers right
+    where a same-net pad sits — measured (without this fix) to land a via
+    exactly on that pad's coordinate. Prove the negative property that
+    matters: whatever vias the route DOES emit, none of them violate
+    :meth:`OccupancyGrid.via_clears_pads` against the pad."""
+    grid = OccupancyGrid(_spec(n_layers=4), clearance_mm=0.02)
+    for k in range(80):
+        grid.stamp_disk((0,), 3.0, k * 0.1, 0.12, 1)  # sealed on layer 0 only
+    # Baseline (no pad): the search's own natural via site for this
+    # geometry -- confirms the test isn't vacuous before adding the pad.
+    baseline = grid.route(
+        2, (1.0, 4.0), (5.0, 4.0), layers=[0, 3], width_mm=0.05, via_dia_mm=0.3
+    )
+    assert baseline is not None and baseline.vias
+    natural_site = baseline.vias[0][:2]
+
+    grid2 = OccupancyGrid(_spec(n_layers=4), clearance_mm=0.02)
+    for k in range(80):
+        grid2.stamp_disk((0,), 3.0, k * 0.1, 0.12, 1)
+    # A pad on the SAME net right where the via naturally wants to go.
+    grid2.stamp_pad((0,), natural_site[0], natural_site[1], 0.15, net_id=2)
+    path = grid2.route(
+        2, (1.0, 4.0), (5.0, 4.0), layers=[0, 3], width_mm=0.05, via_dia_mm=0.3
+    )
+    assert path is not None and path.vias, "a detour must still exist on this board"
+    for vx, vy, _lo, _hi in path.vias:
+        assert grid2.via_clears_pads(vx, vy, 0.15), (
+            f"via at ({vx}, {vy}) violates the pad keep-out"
+        )
+
+
 def test_route_will_not_place_a_via_it_has_no_geometry_for():
     """No resolved via diameter means no via — never an invented one."""
     grid = OccupancyGrid(_spec(n_layers=4), clearance_mm=0.02)

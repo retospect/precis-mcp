@@ -28,6 +28,40 @@ The result can be disconnected or holed, and both are reported rather than
 smoothed away: a pour that a foreign via array has cut in half is a real
 electrical fact about the board, and merging the halves in the model would
 be the same class of lie as a track that ends *near* its pad.
+
+**The same-net rule, stated once, because getting it backwards is
+plausible-looking either way.** Two nets sharing a layer split into
+exactly two treatments and this module must never blur them:
+
+- **same net as the pour → MERGE.** A GND trace/via on a GND-poured layer
+  is not an obstacle the pour routes around — it is the SAME conductor,
+  so it is excluded from ``blockers`` entirely (the ``continue`` on a
+  matching ``net`` above) and the pour polygon simply covers it. Getting
+  this backwards (subtracting your own net's copper) leaves the pour and
+  its own traces/vias as disconnected islands that LOOK like a normal
+  render — every proximity/clearance/width DRC check passes, because
+  nothing about "this net has no copper touching itself" is a clearance
+  violation. This was the exact defect the module docstring above
+  describes finding on seed 2's SDA net, before any pour geometry existed
+  at all.
+- **foreign net → ANTIPAD.** Every OTHER net's copper is dilated by
+  ``clearance_mm`` and subtracted, so a foreign via barrel through the
+  plane gets a clean keep-out ring rather than shorting the plane to
+  whatever that via carries. Getting THIS backwards (not subtracting
+  foreign copper) also renders as a plausible-looking solid fill — it is
+  a short, not a hole, so nothing about the pour's own shape looks wrong
+  either.
+
+Neither mistake is visible by inspecting the pour polygon alone — both
+render as "a solid-looking fill". The check that can actually tell the
+two apart is :func:`precis.pcb.connectivity.net_islands`: run against a
+board with a routed net sharing a filled layer, it must report the
+poured net as ONE connected island (proving the merge happened) while
+DRC (:mod:`precis.pcb.drc`) independently proves no clearance violation
+exists between the pour and the foreign net's copper (proving the
+antipad happened) — see ``tests/test_pcb_planes.py``'s
+``test_plane_pour_merges_same_net_copper_and_islands_foreign_net``
+for exactly this pairing.
 """
 
 from __future__ import annotations
@@ -84,7 +118,9 @@ def plane_pours(
     """One ``ctype='pour'`` item per connected fragment of each plane.
 
     ``plane_nets`` maps a stackup layer INDEX to the net name poured on it
-    — the caller resolves that from ``ir.net_plane_layer``, because this
+    — the caller resolves that from ``ir.net_plane_layers`` (a per-net
+    bitmask now: one net may be the value for SEVERAL layer keys at once,
+    since a net can be poured on more than one layer), because this
     module deliberately knows nothing about the IR (same boundary
     :mod:`precis.pcb.session` keeps). ``copper`` is the already-realized
     tracks and vias in :mod:`precis.pcb.gerber` model shape.

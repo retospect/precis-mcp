@@ -22,6 +22,7 @@ from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
 from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
 from precis.pcb.rules import NetRules
+from precis.pcb.silk import SilkPlacement
 
 _CAP4 = capability_for("4layer")
 # 4-layer trace_spacing_mm: jlc_min=0.09, house_default=0.15 (capabilities.py)
@@ -189,6 +190,62 @@ def test_check_clearance_net_rules_absent_net_falls_back_to_generic_house():
     assert drc.check_clearance(model, _CAP4, net_rules={}) == []
 
 
+# ── pour antipads (gripe 269908: a pour's ``holes`` must not be dropped,
+# turning a real antipad into phantom solid copper for clearance) ───────
+
+
+def _pour(
+    net: str, layer: str, polygon: list[tuple[float, float]], *, holes=None
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "ctype": "pour",
+        "layer": layer,
+        "net": net,
+        "polygon": [list(p) for p in polygon],
+    }
+    if holes:
+        item["holes"] = [[list(p) for p in hole] for hole in holes]
+    return item
+
+
+# A 10x10mm GND pour with a 2x2mm antipad hole punched around (5, 5) — the
+# same shape :func:`precis.pcb.planes.plane_pours` emits around a foreign
+# via/track passing through a poured layer.
+_POUR_SQUARE = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+_POUR_HOLE = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]
+
+
+def test_check_clearance_quiet_for_foreign_copper_inside_a_pour_antipad():
+    """A foreign-net track sitting well inside a pour's ``holes`` entry
+    (its own antipad) must NOT be reported — before the fix,
+    ``_copper_item_polygon`` dropped ``holes`` entirely and treated the
+    pour as solid copper, so this legitimately-antipadded track collided
+    with a sheet that, on the real board, has a hole cut exactly there."""
+    pour = _pour("GND", "In1.Cu", _POUR_SQUARE, holes=[_POUR_HOLE])
+    # Track centered in the 2x2mm hole (4..6, 4..6), comfortably inside:
+    # 0.5mm to the nearest hole edge on every side, well past house_default.
+    foreign = _track("SIG", "In1.Cu", (4.5, 5.0), (5.5, 5.0))
+    model = {"layers": ["F.Cu", "In1.Cu", "B.Cu"], "copper": [pour, foreign]}
+    assert drc.check_clearance(model, _CAP4) == []
+
+
+def test_check_clearance_fires_for_foreign_copper_on_a_pour_solid_region():
+    """The converse of the antipad test above, or the fix is only half
+    tested: foreign copper actually overlapping the pour's SOLID fill
+    (outside any hole) must still be reported — a fix that made pours
+    invisible to clearance entirely would pass the antipad test and be a
+    worse bug than the one it replaced."""
+    pour = _pour("GND", "In1.Cu", _POUR_SQUARE, holes=[_POUR_HOLE])
+    # Squarely inside the solid fill, nowhere near the (4..6, 4..6) hole.
+    foreign = _track("SIG", "In1.Cu", (1.0, 1.0), (1.5, 1.0))
+    model = {"layers": ["F.Cu", "In1.Cu", "B.Cu"], "copper": [pour, foreign]}
+    findings = drc.check_clearance(model, _CAP4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "clearance" and f.severity == "error"
+    assert f.margin_mm is not None and f.margin_mm < 0
+
+
 # ── trace width ───────────────────────────────────────────────────────
 
 
@@ -295,6 +352,438 @@ def test_check_npth_clearance_empty_when_no_npth_holes():
     assert drc.check_npth_clearance(model, _CAP4) == []
 
 
+# ── pad helper (shared by pad-vs-copper clearance and via-to-pad keep-out
+# tests below) ────────────────────────────────────────────────────────────
+
+
+def _pad(
+    net: str,
+    layer: str,
+    x: float,
+    y: float,
+    *,
+    w: float,
+    h: float | None = None,
+    shape: str = "rect",
+) -> dict[str, Any]:
+    return {
+        "layer": layer,
+        "net": net,
+        "shape": shape,
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": w if h is None else h,
+    }
+
+
+# ── pads as clearance-checked copper (the user's shorted board: a pad is a
+# separate top-level ``model["pads"]`` key, and ``clearance_pairs_indexed``
+# used to iterate ``model["copper"]`` only — a pad vs. pour/track/via/pad
+# pair was never a candidate on EITHER side) ─────────────────────────────
+
+
+def test_check_clearance_fires_for_a_pad_overlapping_a_foreign_net_pour():
+    """The user's actual board, reproduced: a fill pour flowing straight
+    over a foreign-net pad's solid land. Before this fix this reported
+    ZERO DRC errors — this is the case that must fail BEFORE the fix and
+    pass after it."""
+    pour = _pour("GND", "In1.Cu", _POUR_SQUARE)  # solid fill, no antipad hole
+    pad = _pad("SIG", "In1.Cu", 1.0, 1.0, w=1.0, h=1.0)  # squarely in the solid fill
+    model = {"layers": ["F.Cu", "In1.Cu", "B.Cu"], "copper": [pour], "pads": [pad]}
+    findings = drc.check_clearance(model, _CAP4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "clearance" and f.severity == "error"
+    assert f.margin_mm is not None and f.margin_mm < 0
+
+
+def test_check_clearance_quiet_for_a_pad_inside_the_pours_own_antipad_hole():
+    """The converse of the pad-vs-pour test above, mirroring the existing
+    track-vs-pour antipad pair: a pad legitimately sitting in ITS OWN
+    antipad hole (e.g. a through-hole pad on a poured layer) must not be
+    reported — a fix that made every pad-on-a-poured-layer an error,
+    antipad or not, would be a worse bug than the one it replaces."""
+    pour = _pour("GND", "In1.Cu", _POUR_SQUARE, holes=[_POUR_HOLE])
+    pad = _pad("SIG", "In1.Cu", 5.0, 5.0, w=1.0, h=1.0)  # centered in the 2x2mm hole
+    model = {"layers": ["F.Cu", "In1.Cu", "B.Cu"], "copper": [pour], "pads": [pad]}
+    assert drc.check_clearance(model, _CAP4) == []
+
+
+def test_check_clearance_fires_for_a_pad_overlapping_a_foreign_net_track():
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    track = _track("OTHER", "F.Cu", (-2.0, 0.0), (2.0, 0.0))  # runs straight through it
+    model = {"layers": ["F.Cu"], "copper": [track], "pads": [pad]}
+    findings = drc.check_clearance(model, _CAP4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "clearance" and f.severity == "error"
+    assert f.margin_mm is not None and f.margin_mm < 0
+
+
+def test_check_clearance_ignores_a_same_net_track_landing_on_its_pad():
+    """The exemption this fix must preserve exactly: a trace legitimately
+    ends ON its own pad — that is how a trace joins a pad, and must stay
+    legal. A fix that made a pad clearance-checked against EVERY neighbour
+    (same net included) would "work" only by making a correctly-routed
+    board report an error on every single pad, which is worse than the bug
+    it replaces."""
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=0.6, h=0.6)
+    track = _track("SIG", "F.Cu", (0.0, 0.0), (2.0, 0.0))  # starts ON the pad centre
+    model = {"layers": ["F.Cu"], "copper": [track], "pads": [pad]}
+    assert drc.check_clearance(model, _CAP4) == []
+
+
+def test_check_clearance_fires_for_a_pad_overlapping_a_foreign_net_via():
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    via = _via("OTHER", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    findings = drc.check_clearance(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].rule == "clearance" and findings[0].severity == "error"
+    assert findings[0].margin_mm is not None and findings[0].margin_mm < 0
+
+
+def test_check_clearance_fires_for_two_overlapping_foreign_net_pads():
+    a = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    b = _pad(
+        "OTHER", "F.Cu", 0.3, 0.0, w=1.0, h=1.0
+    )  # 0.3mm centres, 0.5mm half-widths
+    model: dict[str, Any] = {"layers": ["F.Cu"], "copper": [], "pads": [a, b]}
+    findings = drc.check_clearance(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].rule == "clearance" and findings[0].severity == "error"
+    assert findings[0].margin_mm is not None and findings[0].margin_mm < 0
+    # Both pair indices land in the PAD segment of the combined item list
+    # (past every copper item) -- pins clearance_pairs_indexed's documented
+    # "copper then pads" index convention, not just check_clearance's output.
+    pairs = drc.clearance_pairs_indexed(model, required_mm=1.0)
+    assert len(pairs) == 1
+    i, j, _gap = pairs[0]
+    assert min(i, j) >= len(model["copper"])
+
+
+def test_check_clearance_ignores_same_net_overlapping_pads():
+    a = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    b = _pad("SIG", "F.Cu", 0.3, 0.0, w=1.0, h=1.0)
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [a, b]}
+    assert drc.check_clearance(model, _CAP4) == []
+
+
+def test_copper_item_polygon_pad_shapes_are_geometrically_correct():
+    """:func:`drc._copper_item_polygon` is the ONE shape function a pad's
+    geometry goes through (no second circle/rect approximation for the
+    clearance path) -- pinned directly per shape rather than only through
+    a clearance-finding's pass/fail, so a wrong-but-still-firing shape
+    can't hide behind a coincidentally-correct finding."""
+    circle = drc._copper_item_polygon(
+        {"ctype": "pad", "shape": "circle", "x": 0.0, "y": 0.0, "w": 2.0}
+    )
+    assert circle is not None
+    assert circle.area == pytest.approx(math.pi * 1.0**2, rel=1e-2)
+
+    rect = drc._copper_item_polygon(
+        {"ctype": "pad", "shape": "rect", "x": 0.0, "y": 0.0, "w": 2.0, "h": 1.0}
+    )
+    assert rect is not None
+    assert rect.area == pytest.approx(2.0, abs=1e-6)
+    assert rect.bounds == pytest.approx((-1.0, -0.5, 1.0, 0.5), abs=1e-6)
+
+    # An obround (stadium): a 1mm-wide, 3mm-long capsule -- area is the
+    # 2x1mm rectangular middle plus a full 1mm-diameter circle's worth of
+    # area split between the two round end caps.
+    obround = drc._copper_item_polygon(
+        {"ctype": "pad", "shape": "obround", "x": 0.0, "y": 0.0, "w": 3.0, "h": 1.0}
+    )
+    assert obround is not None
+    expected_area = 2.0 * 1.0 + math.pi * 0.5**2
+    assert obround.area == pytest.approx(expected_area, rel=1e-2)
+
+    zero_size = drc._copper_item_polygon(
+        {"ctype": "pad", "shape": "circle", "x": 0.0, "y": 0.0, "w": 0.0}
+    )
+    assert zero_size is None
+
+    with pytest.raises(ValueError):
+        drc._copper_item_polygon(
+            {"ctype": "pad", "shape": "hexagon", "x": 0.0, "y": 0.0, "w": 1.0}
+        )
+
+
+# ── via-to-pad keep-out ─────────────────────────────────────────────────
+
+
+def test_check_via_pad_keepout_fires_when_a_via_lands_on_a_same_net_pad():
+    """The exact 'they have a courtyard too' case: same-net copper is
+    legal by :func:`drc.check_clearance` (a trace legitimately touches its
+    own pad), so this is the ONE rule that has to catch a via dropped
+    squarely on a pad it is nominally allowed to overlap."""
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    via = _via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    # A same-net pair is completely invisible to check_clearance...
+    assert drc.check_clearance(model, _CAP4) == []
+    # ...but the via keep-out rule fires anyway.
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "via_pad_keepout" and f.severity == "error"
+    required = _CAP4.jlc_min["trace_spacing_mm"]
+    assert required is not None
+    assert f.margin_mm == pytest.approx(-0.3 - 0.5 - required, abs=1e-9)
+
+
+def test_check_via_pad_keepout_fires_regardless_of_net():
+    pad = _pad("OTHER", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    via = _via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) == 1
+
+
+def test_check_via_pad_keepout_quiet_when_clear():
+    required = _CAP4.jlc_min["trace_spacing_mm"]
+    assert required is not None
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    # via edge sits comfortably clear of the pad edge.
+    via = _via(
+        "SIG", "F.Cu", 0.5 + 0.3 + required + 0.05, 0.0, dia_mm=0.6, drill_mm=0.3
+    )
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    assert drc.check_via_pad_keepout(model, _CAP4) == []
+
+
+def test_check_via_pad_keepout_ignores_a_pad_outside_the_vias_span():
+    """A blind/buried via physically only reaches the layers it spans — a
+    pad on a layer the barrel never touches cannot be drilled through by
+    it, no matter how close in (x, y)."""
+    pad = _pad("SIG", "B.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    via = {
+        "ctype": "via",
+        "net": "SIG",
+        "x": 0.0,
+        "y": 0.0,
+        "dia_mm": 0.6,
+        "drill_mm": 0.3,
+        "layers": ["F.Cu"],  # never reaches B.Cu
+    }
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [via], "pads": [pad]}
+    assert drc.check_via_pad_keepout(model, _CAP4) == []
+
+
+def test_check_via_pad_keepout_none_field_never_crashes():
+    aluminum = capability_for("aluminum")
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    via = _via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    # aluminum still publishes trace_spacing_mm, so this stays a real
+    # check -- included alongside the other rules' None-field regression
+    # tests for the shape, not because this field goes None on this row.
+    assert drc.check_via_pad_keepout(model, aluminum) != []
+
+
+def test_check_via_pad_keepout_fires_on_a_real_realized_via():
+    """Reachability, not just synthetic geometry: run against REAL
+    realize.py output (mirrors :func:`test_check_annular_ring_fires_on_a_
+    real_realized_via`'s own "real production input, not just a fixture"
+    discipline). ``_vias_for_track`` places a single-via group's k=0 via
+    at OFFSET ZERO from the track's own endpoint -- which is the pad
+    coordinate itself -- so this is not a contrived overlap, it is what
+    realize.py already emits today for the single-via case."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 10.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "SIG",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # In1.Cu -- a layer transition, forces vias
+    result = realize(ir, config=RealizeConfig(fab_caps=_CAP4, router="tangent"))
+    assert result.vias  # sanity: a layer-transition via was actually emitted
+    layers = [layer["name"] for layer in DEFAULT_STACKUP]
+    model = to_gerber_model(
+        result, ir, layers=layers, outline=[[0, -5], [20, -5], [20, 5], [0, 5]]
+    )
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) == 2  # both endpoints' vias land on their own pad
+    assert {f.severity for f in findings} == {"error"}
+
+
+# ── via-to-via keep-out ──────────────────────────────────────────────
+
+
+def _model_with_two_vias(
+    center_gap_mm: float,
+    *,
+    dia_mm: float = 0.6,
+    drill_mm: float = 0.2,
+    net_a: str = "SIG",
+    net_b: str = "SIG",
+    layer: str = "F.Cu",
+) -> dict[str, Any]:
+    via_a = _via(net_a, layer, 0.0, 0.0, dia_mm=dia_mm, drill_mm=drill_mm)
+    via_b = _via(net_b, layer, center_gap_mm, 0.0, dia_mm=dia_mm, drill_mm=drill_mm)
+    return {"layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"], "copper": [via_a, via_b]}
+
+
+def test_check_via_via_keepout_fires_on_copper_overlap_same_net():
+    """Same net is completely invisible to check_clearance -- the exact
+    gap this rule exists to close, mirroring check_via_pad_keepout's own
+    'they have a courtyard too' case."""
+    # centres 0.55mm apart, dia 0.6mm -> copper gap -0.05mm (below the
+    # 4-layer jlc_min of 0.09mm); drill 0.2mm -> hole gap 0.35mm (clear).
+    model = _model_with_two_vias(0.55)
+    assert drc.check_clearance(model, _CAP4) == []
+    findings = drc.check_via_via_keepout(model, _CAP4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "via_via_keepout" and f.severity == "error"
+    required = _CAP4.jlc_min["trace_spacing_mm"]
+    assert required is not None
+    copper_gap = 0.55 - 0.6
+    assert f.margin_mm == pytest.approx(copper_gap - required, abs=1e-9)
+    assert "barrel" in f.detail.lower()
+
+
+def test_check_via_via_keepout_fires_on_both_copper_and_hole_overlap():
+    """Two SEPARATE findings when both geometries collide -- copper and
+    drill are different questions with different thresholds (module
+    docstring)."""
+    # centres 0.15mm apart: copper gap -0.45mm, hole gap -0.05mm -- both
+    # margins violated.
+    model = _model_with_two_vias(0.15)
+    findings = drc.check_via_via_keepout(model, _CAP4)
+    assert len(findings) == 2
+    assert {f.severity for f in findings} == {"error"}
+    hole_findings = [f for f in findings if "hole" in f.detail.lower()]
+    copper_findings = [f for f in findings if "barrel" in f.detail.lower()]
+    assert len(hole_findings) == 1 and len(copper_findings) == 1
+    assert hole_findings[0].margin_mm == pytest.approx(0.15 - 0.2, abs=1e-9)
+
+
+def test_check_via_via_keepout_a_hole_violation_always_implies_a_copper_one():
+    """Physically impossible for holes to overlap while barrels don't:
+    ``dia_mm >= drill_mm`` always (a positive annular ring), so
+    ``copper_gap <= hole_gap`` for any pair -- whenever the hole margin is
+    negative the copper margin is too. Asserted here as the property it
+    is, not assumed."""
+    for gap in (0.01, 0.1, 0.19, 0.24):
+        model = _model_with_two_vias(gap, dia_mm=0.6, drill_mm=0.25)
+        findings = drc.check_via_via_keepout(model, _CAP4)
+        by_kind = {
+            ("hole" if "hole" in f.detail.lower() else "copper") for f in findings
+        }
+        if "hole" in by_kind:
+            assert "copper" in by_kind
+
+
+def test_check_via_via_keepout_fires_regardless_of_net():
+    model = _model_with_two_vias(0.15, net_a="SIG_A", net_b="SIG_B")
+    findings = drc.check_via_via_keepout(model, _CAP4)
+    assert len(findings) == 2  # same numbers as the same-net case above
+
+
+def test_check_via_via_keepout_quiet_when_clear():
+    required = _CAP4.jlc_min["trace_spacing_mm"]
+    assert required is not None
+    model = _model_with_two_vias(0.6 + required + 0.05, dia_mm=0.6, drill_mm=0.2)
+    assert drc.check_via_via_keepout(model, _CAP4) == []
+
+
+def test_check_via_via_keepout_ignores_vias_with_no_shared_layer():
+    """A blind/buried via pair whose spans never share a copper layer are
+    not the same physical barrel/hole at all -- mirrors check_via_pad_
+    keepout's own layer-span restriction."""
+    via_a = {
+        "ctype": "via",
+        "net": "SIG",
+        "x": 0.0,
+        "y": 0.0,
+        "dia_mm": 0.6,
+        "drill_mm": 0.2,
+        "layers": ["F.Cu"],
+    }
+    via_b = {
+        "ctype": "via",
+        "net": "SIG",
+        "x": 0.0,
+        "y": 0.0,
+        "dia_mm": 0.6,
+        "drill_mm": 0.2,
+        "layers": ["B.Cu"],
+    }
+    model = {"layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"], "copper": [via_a, via_b]}
+    assert drc.check_via_via_keepout(model, _CAP4) == []
+
+
+def test_check_via_via_keepout_stitched_group_pitch_stays_quiet():
+    """A same-net ampacity group spread by :mod:`precis.pcb.realize`'s
+    ``_route_pass`` (module docstring) sits at pitch ``via_dia_mm +
+    clearance_mm`` -- reproduced here with the SAME formula, not a
+    stand-in constant, so this is a real property of that spread, not a
+    number chosen to make the test pass."""
+    dia_mm, drill_mm = _CAP4.jlc_min["via_diameter_mm"], _CAP4.jlc_min["drill_mm"]
+    assert dia_mm is not None and drill_mm is not None
+    house_clearance = _CAP4.house_default["trace_spacing_mm"]
+    assert house_clearance is not None
+    pitch = dia_mm + house_clearance
+    model = _model_with_two_vias(pitch, dia_mm=dia_mm, drill_mm=drill_mm)
+    assert drc.check_via_via_keepout(model, _CAP4) == []
+
+
+def test_check_via_via_keepout_none_field_never_crashes():
+    aluminum = capability_for("aluminum")
+    # aluminum still publishes trace_spacing_mm (see test_check_via_pad_
+    # keepout_none_field_never_crashes's own note) -- included for the
+    # same shape/None-field regression coverage as every other rule here.
+    model = _model_with_two_vias(0.15)
+    assert drc.check_via_via_keepout(model, aluminum) != []
+
+
+def test_check_via_via_keepout_fires_on_a_real_realized_via():
+    """Reachability against REAL realize.py output, not just synthetic
+    geometry (mirrors test_check_via_pad_keepout_fires_on_a_real_realized_
+    via's own discipline). Two instances 0.2mm apart on ONE net, forced to
+    change layer, so realize.py drops a via at each pad -- 0.2mm apart is
+    close enough that both the copper barrel AND the drilled hole (JLC
+    default dia 0.75mm/drill 0.25mm) collide, entirely invisible to
+    check_clearance because it is the SAME net at both ends."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 0.2, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "SIG",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # In1.Cu -- a layer transition, forces vias at both ends
+    result = realize(ir, config=RealizeConfig(fab_caps=_CAP4, router="tangent"))
+    assert len(result.vias) == 2  # sanity: both endpoints got a via
+    layers = [layer["name"] for layer in DEFAULT_STACKUP]
+    model = to_gerber_model(
+        result, ir, layers=layers, outline=[[-2, -5], [20, -5], [20, 5], [-2, 5]]
+    )
+    assert drc.check_clearance(model, _CAP4) == []  # same net -- invisible to clearance
+    findings = drc.check_via_via_keepout(model, _CAP4)
+    assert len(findings) == 2  # copper AND hole, both collide at 0.2mm apart
+    assert {f.severity for f in findings} == {"error"}
+
+
 # ── courtyard overlap ─────────────────────────────────────────────────
 
 
@@ -343,6 +832,84 @@ def test_check_board_edge_clearance_no_outline_is_a_noop():
     assert drc.check_board_edge_clearance(model, _CAP4, outline=[[0, 0], [1, 1]]) == []
 
 
+# ── board-edge clearance, pads (the third member of the "pads live in a
+# separate model['pads'] list and this rule forgot" family — see
+# clearance_pairs_indexed's own docstring for the first two) ──────────────
+
+_EDGE_OUTLINE = [[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]
+
+
+def test_check_board_edge_clearance_fires_for_a_pad_too_near_the_edge():
+    """A pad squarely inside the outline but nearer the left edge than the
+    fab's V-cut minimum -- must be reported, error tier, negative margin."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    radius = 0.05
+    target_gap = jlc_min / 2.0  # inside jlc_min -> error tier
+    px = target_gap + radius  # so boundary.distance(pad) == target_gap exactly
+    pad = _pad("SIG", "F.Cu", px, 10.0, w=radius * 2, h=radius * 2, shape="circle")
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [pad]}
+    findings = drc.check_board_edge_clearance(model, _CAP4, outline=_EDGE_OUTLINE)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "board_edge_clearance" and f.severity == "error"
+    assert f.margin_mm is not None and f.margin_mm < 0
+    assert f.margin_mm == pytest.approx(target_gap - jlc_min, abs=1e-4)
+
+
+def test_check_board_edge_clearance_quiet_for_a_pad_comfortably_inside():
+    house = _CAP4.house_default["board_edge_clearance_vcut_mm"]
+    assert house is not None
+    radius = 0.05
+    px = house + radius + 0.5  # comfortably clear of every edge
+    pad = _pad("SIG", "F.Cu", px, 10.0, w=radius * 2, h=radius * 2, shape="circle")
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [pad]}
+    assert drc.check_board_edge_clearance(model, _CAP4, outline=_EDGE_OUTLINE) == []
+
+
+def test_pad_outside_the_board_near_the_edge_fires_both_rules_deliberately():
+    """A pad hanging just past the edge is simultaneously (a) not on the
+    board at all -- ``check_outline_containment``'s question -- and (b) too
+    close to the edge LINE to be manufacturable if it were on the board --
+    ``check_board_edge_clearance``'s unsigned-distance question (that
+    function's own docstring: symmetric about the edge, fires on copper on
+    either side). Both statements are true of the SAME pad and answer
+    different questions, so both firing is the two rules working, not a
+    double-report bug -- the same overlap ``check_outline_containment``'s
+    own docstring already documents for tracks/vias/pours, now inherited by
+    pads too since pads are checked by both rules."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    radius = 0.05
+    near_gap = jlc_min / 2.0
+    px = -(radius + near_gap)  # circle wholly at x < 0: wholly outside the board
+    pad = _pad("SIG", "F.Cu", px, 10.0, w=radius * 2, h=radius * 2, shape="circle")
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [pad]}
+
+    edge = drc.check_board_edge_clearance(model, _CAP4, outline=_EDGE_OUTLINE)
+    assert len(edge) == 1 and edge[0].rule == "board_edge_clearance"
+    assert edge[0].severity == "error"
+    assert edge[0].margin_mm is not None and edge[0].margin_mm < 0
+
+    contained = drc.check_outline_containment(model, outline=_EDGE_OUTLINE)
+    assert len(contained) == 1 and contained[0].rule == "outline_containment"
+    assert contained[0].severity == "error"
+
+
+def test_check_board_edge_clearance_does_not_double_report_a_single_pad_as_two_findings():
+    """Neither rule alone reports MORE than one finding for one pad --
+    the double-report risk this task called out is two ENTRIES from the
+    SAME rule for the same pad, not the (deliberate, different-question)
+    cross-rule overlap covered above."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    radius = 0.05
+    px = jlc_min / 4.0
+    pad = _pad("SIG", "F.Cu", px, 10.0, w=radius * 2, h=radius * 2, shape="circle")
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [pad]}
+    assert len(drc.check_board_edge_clearance(model, _CAP4, outline=_EDGE_OUTLINE)) == 1
+
+
 # ── process_for_stackup ───────────────────────────────────────────────
 
 
@@ -361,7 +928,11 @@ def test_run_geometric_drc_aggregates_every_rule():
     assert jlc_min is not None
     model = {
         "layers": ["F.Cu"],
-        "copper": [_track("A", "F.Cu", (0, 0), (1, 0), width_mm=jlc_min / 2)],
+        "copper": [
+            _track("A", "F.Cu", (0, 0), (1, 0), width_mm=jlc_min / 2),
+            _via("SIG", "F.Cu", 5.0, 0.0, dia_mm=0.6, drill_mm=0.2),
+            _via("SIG", "F.Cu", 5.15, 0.0, dia_mm=0.6, drill_mm=0.2),
+        ],
     }
     findings = drc.run_geometric_drc(
         model,
@@ -372,6 +943,8 @@ def test_run_geometric_drc_aggregates_every_rule():
     rules = {f.rule for f in findings}
     assert "trace_width" in rules
     assert "courtyard_overlap" in rules
+    assert "via_via_keepout" in rules  # wired in, not just defined -- see
+    # check_via_via_keepout's own tests for the module-level coverage
 
 
 def test_run_geometric_drc_threads_net_rules_into_clearance_only():
@@ -391,6 +964,152 @@ def test_run_geometric_drc_threads_net_rules_into_clearance_only():
     clearance_findings = [f for f in findings if f.rule == "clearance"]
     assert len(clearance_findings) == 1
     assert clearance_findings[0].severity == "warn"
+
+
+# ── silk missing / printability ────────────────────────────────────────
+#
+# `precis.pcb.silk.SilkPlacement` fixtures below deliberately use refdes
+# strings with no symmetry (`TP7`, `U9`) rather than anything like `S`/`N`
+# -- this module's own recent lesson (see docs/glossary.md and this
+# subsystem's silk fixture postmortem): a symmetric fixture cannot see a
+# bug a count-based or shape-based assertion would otherwise catch.
+
+
+def _placement(
+    refdes: str,
+    kind: str,
+    *,
+    outcome: str,
+    side: str = "top",
+    reason: str | None = None,
+    stroke_width_mm: float = 0.15,
+    height_mm: float | None = None,
+) -> SilkPlacement:
+    return SilkPlacement(
+        refdes=refdes,
+        kind=kind,
+        side=side,
+        outcome=outcome,
+        reason=reason,
+        stroke_width_mm=stroke_width_mm,
+        height_mm=height_mm,
+    )
+
+
+def test_check_silk_missing_fires_an_error_for_a_dropped_refdes():
+    census = [
+        _placement(
+            "TP7",
+            "refdes",
+            outcome="dropped",
+            reason="refdes label dropped -- every candidate placement overlaps a pad",
+        )
+    ]
+    model: dict[str, Any] = {"silkscreen": {"top": [], "bottom": []}}
+    findings = drc.check_silk_missing(census, model)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "silk_missing" and f.severity == "error"
+    assert "TP7" in f.where and "refdes" in f.where
+    assert "overlaps a pad" in f.detail
+
+
+def test_check_silk_missing_quiet_when_everything_placed_and_drawn():
+    census = [_placement("TP7", "refdes", outcome="placed", height_mm=1.0)]
+    model = {
+        "silkscreen": {
+            "top": [
+                {"role": "refdes", "refdes": "TP7", "segments": [], "width_mm": 0.15}
+            ],
+            "bottom": [],
+        }
+    }
+    assert drc.check_silk_missing(census, model) == []
+
+
+def test_check_silk_missing_cross_check_fires_when_census_claims_success_the_model_lacks():
+    """The guard, not the report (task brief, verbatim: "this is the
+    guard; do not skip it"): a census row claiming ``"placed"``/
+    ``"relocated"`` must have a matching draw in ``model['silkscreen']`` --
+    an empty silk layer paired with a "successful" census entry is exactly
+    the lie this cross-check exists to catch, independent of whatever the
+    census itself claims."""
+    census = [_placement("TP7", "refdes", outcome="placed", height_mm=1.0)]
+    model: dict[str, Any] = {
+        "silkscreen": {"top": [], "bottom": []}
+    }  # nothing was actually drawn
+    findings = drc.check_silk_missing(census, model)
+    assert len(findings) == 1
+    assert findings[0].rule == "silk_missing"
+    assert "does not describe the board" in findings[0].detail
+
+
+def test_check_silk_printability_fires_below_jlc_min_stroke_width():
+    jlc_min = _CAP4.jlc_min["silk_width_mm"]
+    assert jlc_min is not None
+    census = [
+        _placement("TP7", "courtyard", outcome="placed", stroke_width_mm=jlc_min / 2)
+    ]
+    findings = drc.check_silk_printability(census, _CAP4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "silk_printability" and f.severity == "error"
+    assert f.margin_mm is not None and f.margin_mm < 0
+
+
+def test_check_silk_printability_quiet_at_or_above_jlc_min():
+    jlc_min = _CAP4.jlc_min["silk_width_mm"]
+    assert jlc_min is not None
+    census = [
+        _placement("TP7", "courtyard", outcome="placed", stroke_width_mm=jlc_min + 0.05)
+    ]
+    assert drc.check_silk_printability(census, _CAP4) == []
+
+
+def test_check_silk_printability_warns_below_the_legibility_floor():
+    census = [
+        _placement(
+            "TP7",
+            "refdes",
+            outcome="placed",
+            stroke_width_mm=0.2,
+            height_mm=drc.SILK_LEGIBILITY_HEIGHT_MM / 2,
+        )
+    ]
+    findings = drc.check_silk_printability(census, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+
+
+def test_check_silk_printability_ignores_dropped_items():
+    """A dropped item's stroke width is moot -- it never reached the fab,
+    and is already covered by check_silk_missing; checking it here too
+    would double-report the same one defect."""
+    census = [
+        _placement(
+            "TP7", "courtyard", outcome="dropped", reason="x", stroke_width_mm=0.01
+        )
+    ]
+    assert drc.check_silk_printability(census, _CAP4) == []
+
+
+def test_run_geometric_drc_wires_silk_census_when_supplied():
+    census = (
+        _placement("TP7", "refdes", outcome="dropped", reason="dropped for a test"),
+    )
+    model = {"layers": ["F.Cu"], "copper": [], "silkscreen": {"top": [], "bottom": []}}
+    findings = drc.run_geometric_drc(model, capability=_CAP4, census=census)
+    rules = {f.rule for f in findings}
+    assert "silk_missing" in rules
+
+
+def test_run_geometric_drc_with_no_census_stays_clean():
+    """No ``census=`` argument at all -- ``run_geometric_drc`` must not
+    crash and must not invent a silk finding, matching ``unrouted=None``'s
+    own "silent about a thing this module was never told" contract."""
+    model = {"layers": ["F.Cu"], "copper": []}
+    findings = drc.run_geometric_drc(model, capability=_CAP4)
+    assert not any(f.rule.startswith("silk_") for f in findings)
 
 
 # ── the O(n^2) reference oracle vs. the STRtree-accelerated engine ─────
@@ -551,15 +1270,24 @@ def test_clearance_oracle_matches_strtree_engine_on_real_realized_vias():
     for trial in range(40):
         model = _random_real_board_model(rng, n_nets=rng.randint(3, 6), span=6.0)
         total_vias += sum(1 for c in model["copper"] if c["ctype"] == "via")
+        n_copper = len(model["copper"])
         naive = {
             (i, j): gap
             for i, j, gap in drc.clearance_violations_naive(
                 model, required_mm=required_mm
             )
         }
+        # `to_gerber_model` (real production output) carries real pads, and
+        # the oracle deliberately excludes pads from its closed-form
+        # circle/capsule alphabet exactly like it already excludes pours
+        # (module docstring) -- so a pad-involving pair is only ever found
+        # by the indexed engine. Restricted here to the track/via-only
+        # comparison this oracle actually claims to make; pad clearance
+        # itself is covered directly in the pad-vs-copper tests above.
         indexed = {
             (i, j): gap
             for i, j, gap in drc.clearance_pairs_indexed(model, required_mm=required_mm)
+            if i < n_copper and j < n_copper
         }
         assert set(naive) == set(indexed), (trial, set(naive) ^ set(indexed))
         for key, gap in naive.items():

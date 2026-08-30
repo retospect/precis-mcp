@@ -14,6 +14,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import catalog
 
 # A tiny but real board: an MCU + a bypass cap + a pull-up, on an I2C net.
 _DESIGN = {
@@ -113,6 +114,35 @@ def test_pcb_graph_part_lcsc_is_none_for_a_part_less_component(pcb, store):
     assert ref is not None
     graph = store.pcb_graph(ref.id)
     assert graph["instances"][0]["part_lcsc"] is None
+
+
+def test_pcb_graph_carries_extended_part_per_instance(pcb, store):
+    """``Store.pcb_graph`` must join the Basic-vs-Extended signal
+    (``parts.basic``, populated by ``pcb.catalog.normalize_jlcparts_row``)
+    into the instance rows it hands to ``PcbIR.inst_extended_part`` — before
+    this it was never selected, so ``cost.py``'s ``extended_part_fees``
+    always priced every board's JLC Extended-part surcharge at $0, real or
+    not (the third instance of the same gap ``rot``/``part_lcsc`` document
+    in ``pcb_graph``'s own comments)."""
+    store.parts_import(
+        [
+            catalog.normalize_jlcparts_row(
+                {"lcsc": "C2838500", "description": "MCU", "basic": 0}
+            ),  # Extended
+            catalog.normalize_jlcparts_row(
+                {"lcsc": "C1525", "description": "cap", "basic": 1}
+            ),  # Basic
+            # C25900 (R1) deliberately absent from the catalog: a part
+            # with no resolvable Basic/Extended signal must read as "not
+            # (known) Extended", never guessed either way.
+        ]
+    )
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    by_refdes = {i["refdes"]: i["extended_part"] for i in graph["instances"]}
+    assert by_refdes == {"U1": True, "C1": False, "R1": False}
 
 
 def test_toc_shows_placement_and_fanout(pcb):

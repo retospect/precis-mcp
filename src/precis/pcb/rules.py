@@ -340,10 +340,11 @@ def implied_via_count(
     ``np.append``, O(n) per call, and SA rejects most proposed moves — a
     materialized via would survive a rejected move's undo and leave state
     unrestorable): this is a pure, derived count, recomputed from
-    ``seg_layer``/``net_plane_layer`` on every call, never stored.
+    ``seg_layer``/``net_plane_layers`` on every call, never stored.
 
-    Zero when: the net is plane-promoted (``net_plane_layer != UNSET_
-    LAYER`` — the dog-bone stub fans to its own via elsewhere, matching
+    Zero when: the net is plane-promoted on ANY layer (``net_plane_layers
+    != 0`` — a net may be poured on several layers now, but even one is
+    enough: the dog-bone stub fans to its own via elsewhere, matching
     ``realize.py``'s ``RealizedTrack.is_dogbone`` exactly, restated here
     directly off the IR since no ``RealizedTrack`` exists at cost-eval
     time); the segment has no layer assigned yet or already sits on
@@ -356,7 +357,7 @@ def implied_via_count(
     consumer of net geometry uses -- never a second sizing path.
     """
     net_id = int(ir.seg_net[seg_id])
-    if int(ir.net_plane_layer[net_id]) != UNSET_LAYER:
+    if int(ir.net_plane_layers[net_id]) != 0:
         return 0
     layer = int(ir.seg_layer[seg_id])
     if layer in (UNSET_LAYER, PAD_LAYER):

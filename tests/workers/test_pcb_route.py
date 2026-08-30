@@ -371,7 +371,7 @@ def test_plane_net_with_no_board_outline_is_reported_not_silently_stranded(
 def test_pcb_route_persists_optimizer_derived_plane_promotion(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr267526: the anneal freely mutates ``net_plane_layer`` via
+    """gr267526: the anneal freely mutates ``net_plane_layers`` via
     ``PLANE_PROMOTE``/``PLANE_DEMOTE`` moves, but nothing used to persist
     the result — the job dropped it at exit and ``view='planes'`` reported
     "no plane assignments yet" even after the search settled on a
@@ -442,7 +442,7 @@ def test_pcb_route_locks_an_authored_plane_through_the_anneal(store: Store) -> N
     used to protect. ``OptimizeConfig.locked_plane_nets`` excludes an
     AUTHORED net from PLANE_DEMOTE.
 
-    This checks the REALIZED COPPER, not just ``net_plane_layer`` /
+    This checks the REALIZED COPPER, not just ``net_plane_layers`` /
     ``pcb_planes`` — an IR-level assertion alone would pass on a board
     whose pour path silently produced nothing, which is exactly the shape
     of defect this whole file is written around."""

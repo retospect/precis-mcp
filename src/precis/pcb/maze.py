@@ -47,6 +47,17 @@ that filter a net owning a through via could start a later connection
 inside the barrel on an inner layer and run a trace along it; on the
 reference board three traces landed on a PLANE layer, which shorts to the
 plane the moment one is poured.
+
+**A via must clear a pad even when the copper would be legal.** Same-net
+copper is exempt from the clearance guarantee above by design — that is
+how a trace joins a pad — so nothing above stops a via from landing
+squarely on a pad it shares a net with. Physically that is not legal
+copper, it is a hole drilled through a land you meant to solder to:
+:meth:`OccupancyGrid.via_clears_pads` is therefore a SEPARATE, net-blind
+question folded into :meth:`OccupancyGrid.route`'s via-candidate mask
+(:meth:`OccupancyGrid._pad_keepout_mask`), not an exception carved into
+the clearance one — the same relationship :func:`precis.pcb.drc.
+check_connectivity` has to :func:`precis.pcb.drc.check_clearance`.
 """
 
 from __future__ import annotations
@@ -315,10 +326,26 @@ class OccupancyGrid:
         #: that actually claimed the cell lets :meth:`route` emit a first
         #: point that lies ON the trunk.
         self._routed_cells: dict[int, dict[int, tuple[float, float]]] = {}
+        #: Every claimed PAD's ``(x, y, radius_mm)``, in board coordinates —
+        #: populated only by :meth:`stamp_pad`, never by the generic
+        #: :meth:`stamp_disk` a routed trace or via itself uses to claim
+        #: copper. Kept separate from ``_owner`` for the same reason the
+        #: reason ``_owner`` cannot answer "may a via go here": ``_owner``
+        #: is a per-NET claim (whose whole job is to be silent about
+        #: same-net overlap — see :meth:`via_clears_pads`), and a pad
+        #: keep-out is a per-FEATURE question that must NOT go silent for
+        #: the pad's own net. A flat list, not a grid mask, because pads
+        #: number in the tens to low hundreds on any board this router
+        #: sees — cheap to scan exactly, no discretisation to get wrong.
+        self._pads: list[tuple[float, float, float]] = []
 
     @property
     def owner(self) -> np.ndarray:
         return self._owner
+
+    @property
+    def pads(self) -> tuple[tuple[float, float, float], ...]:
+        return tuple(self._pads)
 
     def core_radius_mm(self, width_mm: float) -> float:
         """The radius one piece of copper claims for itself: its own
@@ -372,6 +399,47 @@ class OccupancyGrid:
             else:
                 window[inside] = net_id
 
+    def stamp_pad(
+        self,
+        layers: Iterable[int],
+        x: float,
+        y: float,
+        radius_mm: float,
+        net_id: int,
+        *,
+        contest: bool = False,
+    ) -> None:
+        """:meth:`stamp_disk`, plus remembering ``(x, y, radius_mm)`` as a
+        PAD for :meth:`via_clears_pads`/:meth:`route`'s via search.
+
+        A separate entry point rather than a flag on every ``stamp_disk``
+        call: most copper this grid ever claims is a trace or a via, and a
+        via keep-out has to be asked of the pads specifically, not of
+        "everything ever claimed" — a via next to another via, or next to
+        a trace's own corridor, is exactly what routing normally produces
+        and is not this rule's business. Callers that claim a pad's core
+        disk (:mod:`precis.pcb.realize`'s ``_stamp_pads``) call this
+        instead of ``stamp_disk`` for that one claim; the CONTESTED
+        pre-pass (two overlapping pads' outer keep-out radii) stays on
+        plain ``stamp_disk`` — it is not itself a pad's true footprint,
+        just a collision marker, and recording it here would double-count
+        one pad as two.
+
+        ``_pads`` deliberately does not record ``layers`` — a stated
+        simplification, not a silent one. Today's only caller
+        (``_stamp_pads``) claims every pad on ``PAD_LAYER`` alone (an SMD
+        assumption, that function's own docstring), and every via this
+        grid ever places spans ``PAD_LAYER`` at one end (``layer_lo/hi``
+        is always ``min/max(PAD_LAYER, track.layer)``), so a layer-blind
+        keep-out and a layer-aware one agree on every case this grid can
+        construct today. It would stop agreeing the day a THT (through,
+        every-layer) pad is claimed on more than one layer with a via
+        that does NOT reach all of them — worth a ``layers`` field on
+        ``_pads`` at that point, not before.
+        """
+        self.stamp_disk(layers, x, y, radius_mm, net_id, contest=contest)
+        self._pads.append((x, y, radius_mm))
+
     def disk_is_free(
         self, layers: Iterable[int], x: float, y: float, radius_mm: float, net_id: int
     ) -> bool:
@@ -403,6 +471,66 @@ class OccupancyGrid:
             if bool(((window != FREE) & (window != net_id) & inside).any()):
                 return False
         return True
+
+    def via_clears_pads(self, x: float, y: float, via_radius_mm: float) -> bool:
+        """May a via of this (undilated) copper radius be centred at
+        ``(x, y)`` without landing on, or crowding, ANY claimed pad —
+        including one on the via's own net?
+
+        **A different question from :meth:`disk_is_free`, on purpose —
+        the same relationship :func:`precis.pcb.drc.check_connectivity`
+        has to :func:`precis.pcb.drc.check_clearance`.** ``disk_is_free``
+        (and the clearance guarantee this whole module exists for) is
+        deliberately SILENT about same-net copper: a trace legally ends
+        ON its own pad, that is how a net joins one. A via is not a
+        trace — it is a hole drilled through the board — and landing that
+        hole on a pad it is nominally allowed to touch wicks solder down
+        the barrel and starves the joint, or on a through-hole pad drills
+        a second hole through the first. Tightening ``disk_is_free``'s
+        clearance to cover this would make the wrong case illegal too
+        (same-net trace-into-pad would break); this is a second, narrower
+        question about the same geometry, asked only of pads, and it is
+        net-blind on purpose.
+
+        The margin is ``self.clearance_mm`` — not a new number. It is
+        already this grid's own fab-derived copper-isolation figure
+        (:mod:`precis.pcb.rules`'s ``resolve_net_rules`` resolves it off
+        ``capabilities.py``'s ``trace_spacing_mm``, at house_default
+        tier), the same figure every OTHER net already has to clear this
+        pad by; a via's barrel is, physically, exactly the kind of
+        independent copper feature that figure exists to keep apart.
+        """
+        for px, py, pr in self._pads:
+            if math.hypot(x - px, y - py) - via_radius_mm - pr < self.clearance_mm:
+                return False
+        return True
+
+    def _pad_keepout_mask(self, via_radius_mm: float) -> np.ndarray:
+        """``(ny, nx)`` boolean: True where a via of this radius would fail
+        :meth:`via_clears_pads` against SOME claimed pad — the vectorised
+        form :meth:`route` folds into its via-candidate mask so the search
+        never proposes a layer change there in the first place, rather
+        than proposing one and rejecting it after the fact. Same
+        circle-membership arithmetic as :meth:`stamp_disk`/
+        :meth:`disk_is_free`, unioned over every pad instead of queried
+        for one point at a time."""
+        spec = self.spec
+        mask = np.zeros((spec.ny, spec.nx), dtype=bool)
+        for px, py, pr in self._pads:
+            radius_mm = via_radius_mm + pr + self.clearance_mm
+            r_cells = math.ceil(radius_mm / spec.pitch)
+            cx, cy = spec.to_cell(px, py)
+            lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
+            lo_y, hi_y = max(0, cy - r_cells), min(spec.ny - 1, cy + r_cells)
+            if lo_x > hi_x or lo_y > hi_y:
+                continue
+            ix = np.arange(lo_x, hi_x + 1)
+            iy = np.arange(lo_y, hi_y + 1)
+            dx = spec.x0 + ix * spec.pitch - px
+            dy = spec.y0 + iy * spec.pitch - py
+            inside = (dy[:, None] ** 2 + dx[None, :] ** 2) <= radius_mm**2
+            mask[lo_y : hi_y + 1, lo_x : hi_x + 1] |= inside
+        return mask
 
     def stamp_path(self, path: RoutePath, width_mm: float) -> None:
         """Claim a routed path's corridor. Sampling every point of the
@@ -495,7 +623,20 @@ class OccupancyGrid:
             via_blocked = None
         else:
             via_r_cells = math.ceil((via_dia_mm / 2.0) / spec.pitch) + 1
-            via_blocked = _dilate(foreign, via_r_cells).any(axis=0).reshape(-1)
+            via_blocked = _dilate(foreign, via_r_cells).any(axis=0)
+            # A pad keep-out on top of the other-net dilation above, not
+            # instead of it: those two masks answer different questions
+            # (another net's copper vs. ANY net's pad — see
+            # :meth:`via_clears_pads`'s own docstring for why the second
+            # one cannot be folded into clearance). Folded in here, not
+            # left to a post-hoc check, so a via candidate that would land
+            # on a pad is simply never offered to the search — the same
+            # "claim before draw" discipline this module's own module
+            # docstring describes, applied to the one shape (pads) that
+            # was exempt from it.
+            via_blocked = (via_blocked | self._pad_keepout_mask(via_dia_mm / 2.0)).reshape(
+                -1
+            )
 
         def passable(idx: int) -> bool:
             return not blocked[idx]

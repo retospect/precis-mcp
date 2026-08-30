@@ -16,7 +16,7 @@ disqualified regardless of cost. This module never calls
 
 - ``layer_count``, ``via_count``, ``extended_part_fees``,
   ``thermal_rise``: invariant under slice-6 moves (read only
-  ``seg_layer``/``net_plane_layer``/``inst_extended_part``/``net_class``,
+  ``seg_layer``/``net_plane_layers``/``inst_extended_part``/``net_class``,
   none touched by translate/rotate/swap) — evaluated once at
   construction. Slice 7 dirties both: :meth:`OptimizeEngine.
   _refresh_layer_count` (O(n_segments) full rescan — a whole-board
@@ -130,6 +130,9 @@ from precis.pcb.ir import (
     PcbIR,
     instance_keepout_radius_mm,
     nearest_other_instance,
+    plane_layers_of,
+    pourable_layers,
+    routable_layers,
     segment_points,
 )
 from precis.pcb.pinswap import PinSwapGroup
@@ -279,7 +282,7 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
 #: LAYER_ASSIGN and PLANE_PROMOTE/DEMOTE are NOT cost-neutral: LAYER_
 #: ASSIGN's ``layer_count`` money term AND ``crossings`` margin term
 #: respond to it; PLANE_PROMOTE/DEMOTE's ``layer_count`` (via
-#: ``net_plane_layer``) AND ``gap_capacity`` (the plane-exclusion branch)
+#: ``net_plane_layers``) AND ``gap_capacity`` (the plane-exclusion branch)
 #: respond to those moves — see :meth:`OptimizeEngine._refresh_layer_count`,
 #: :meth:`OptimizeEngine._recompute_seg_crossings` and
 #: :func:`precis.pcb.cost.gap_capacity_term`. PIN_SWAP's effect is real
@@ -753,12 +756,17 @@ class OptimizeEngine:
         # decision. Falls back to "every layer is eligible" for a
         # stackup that never declared roles, rather than making every
         # LAYER_ASSIGN/PLANE_PROMOTE move silently inert.
-        self._signal_layers = [
-            i for i, layer in enumerate(ir.stackup) if layer.get("role") == "signal"
-        ] or list(range(ir.n_layers))
-        self._plane_layers = [
-            i for i, layer in enumerate(ir.stackup) if layer.get("role") == "plane"
-        ]
+        # Both read :mod:`precis.pcb.ir`'s routable/pourable predicates. A
+        # layer used to be either/or via ``role`` alone; a stackup can now
+        # mark one BOTH (explicit ``routable``/``pourable`` keys), which is
+        # what lets an inner layer carry traces while an outer one carries
+        # traces AND a ground fill. ``_plane_layers`` still gates only the
+        # AUTOMATIC move generator (``_gen_plane_promote``) — an authored
+        # ``op='plane_net'`` reaches ``PcbIR.promote_plane`` directly
+        # regardless, so this engine never starts auto-filling a layer the
+        # user did not ask it to.
+        self._signal_layers = routable_layers(ir) or list(range(ir.n_layers))
+        self._plane_layers = pourable_layers(ir)
 
         self._init_caches()
         self._init_crossing_state()
@@ -1068,14 +1076,14 @@ class OptimizeEngine:
         (:func:`precis.pcb.rules.implied_via_count`) and fold the delta
         into the cached ``via_count`` money total — O(1), never a board
         rescan. Sound because ``implied_via_count`` reads only ``seg_id``'s
-        own ``seg_net``/``seg_layer``/``net_plane_layer`` fields (see that
+        own ``seg_net``/``seg_layer``/``net_plane_layers`` fields (see that
         function's docstring), so no OTHER segment's cached count can ever
         go stale as a side effect of this one segment's move.
 
         Called from every move kind that can change what
         ``implied_via_count`` reads for a segment: ``LAYER_ASSIGN``
         (``seg_layer``, one segment) and ``PLANE_PROMOTE``/``PLANE_DEMOTE``
-        via :meth:`_rescan_net` (``net_plane_layer``, that net's own
+        via :meth:`_rescan_net` (``net_plane_layers``, that net's own
         segments — never the whole board). Placement moves (TRANSLATE/
         ROTATE/SWAP/SIDE_FLIP/PIN_SWAP) never call this: none of them touch
         a field this function reads, matching the module docstring's
@@ -1329,7 +1337,7 @@ class OptimizeEngine:
     def _rescan_net(self, net_id: int) -> None:
         """Local refresh for PLANE_PROMOTE/PLANE_DEMOTE: every segment of
         ``net_id`` (its ``gap_capacity`` value depends on
-        ``net_plane_layer`` now — see :func:`precis.pcb.cost.
+        ``net_plane_layers`` now — see :func:`precis.pcb.cost.
         gap_capacity_term`'s plane-exclusion branch, and its
         ``implied_via_count`` does too — a plane-promoted net's segments
         dog-bone instead of transitioning layers), scoped to that net's
@@ -1408,18 +1416,30 @@ class OptimizeEngine:
         self._rescan_segments((seg,))
 
     def _apply_plane_promote(self, move: Move, *, forward: bool) -> None:
+        # `_gen_plane_promote` only ever offers a bare (mask==0) net a
+        # SINGLE new layer, so undo needs to remove only that one bit —
+        # demoting the whole net (rather than just this move's layer)
+        # would be wrong the day a locked/authored net could somehow
+        # reach here with a second bit already set; this stays correct
+        # either way since a bare net has nothing else to lose.
         assert move.net is not None
         if forward:
             self.ir.promote_plane(move.net, move.new_int[0])
         else:
-            self.ir.demote_plane(move.net)
+            self.ir.demote_plane(move.net, move.new_int[0])
         self._rescan_net(move.net)
         self._refresh_layer_count()
 
     def _apply_plane_demote(self, move: Move, *, forward: bool) -> None:
+        # Mirror of the above: `_gen_plane_demote` names the ONE layer bit
+        # it is demoting (`move.old_int[0]`), so both directions touch only
+        # that bit — any OTHER layer this net is poured on is untouched,
+        # which is what makes a demote of one of several plane layers a
+        # real, separately-reversible move rather than an all-or-nothing
+        # one.
         assert move.net is not None
         if forward:
-            self.ir.demote_plane(move.net)
+            self.ir.demote_plane(move.net, move.old_int[0])
         else:
             self.ir.promote_plane(move.net, move.old_int[0])
         self._rescan_net(move.net)
@@ -1739,33 +1759,46 @@ def _gen_plane_promote(
     # A locked net is never itself a promotion candidate (it already has
     # its human-fixed assignment) — see `OptimizeConfig.locked_plane_nets`'s
     # docstring for why this is a hard constraint, not a move the search
-    # may merely disfavour. Its OWN plane layer still shows up in the
-    # `taken` set below unchanged (its `net_plane_layer` is left alone by
-    # every generator, so it stays != UNSET_LAYER throughout), so a locked
-    # net's plane layer is correctly unavailable to any other net without
-    # this function needing a second, separate exclusion for it.
+    # may merely disfavour. Its OWN plane layer(s) still show up in the
+    # `taken` set below unchanged (its `net_plane_layers` bits are left
+    # alone by every generator), so a locked net's plane layer(s) stay
+    # correctly unavailable to any other net without this function needing
+    # a second, separate exclusion for it.
+    #
+    # `net_plane_layers[n] == 0` (candidate = a net with NO plane layer
+    # yet) rather than "any net not fully covered" is deliberate: this
+    # generator only ever gives a still-unpromoted net its FIRST plane
+    # layer. A net that already carries one (via a prior PLANE_PROMOTE
+    # move here, or an authored `op='plane_net'` row) never gets a second
+    # one offered automatically — multi-layer fill is reachable only
+    # through the authored path (`handlers/pcb.py::_op_plane_net`, called
+    # once per desired layer), never invented by the search on its own.
     locked = engine.config.locked_plane_nets
     candidates = [
         n
         for n in range(ir.n_nets)
-        if int(ir.net_plane_layer[n]) == UNSET_LAYER and n not in locked
+        if int(ir.net_plane_layers[n]) == 0 and n not in locked
     ]
     if not candidates:
         return None
     # A plane layer carries ONE net. It is a sheet of copper, and two nets
     # cannot both be it — this is a hard physical constraint, not a
     # preference the annealer may pay for. Without the filter the search
-    # cheerfully promoted several nets onto the same handful of plane
-    # layers, which reads as a legal state everywhere: `net_plane_layer`
-    # is per-net so it can represent the contradiction, and every
-    # consumer that maps layer->net silently keeps the last writer,
-    # leaving every other promoted net's pads and stubs connected to
-    # nothing.
-    taken = {
-        int(ir.net_plane_layer[n])
-        for n in range(ir.n_nets)
-        if int(ir.net_plane_layer[n]) != UNSET_LAYER
-    }
+    # cheerfully promoted nine nets onto two plane layers, which reads as a
+    # legal state everywhere: `net_plane_layers` is per-net so it can
+    # represent the contradiction, and every consumer that maps layer->net
+    # silently keeps the last writer. Measured on seed 3 before this
+    # filter: VBUS, VCC3V3, SDA, SCL, EN, GPIO2, GPIO9, TXD and J1_P7 all
+    # promoted, two pours emitted, and every one of the other seven nets
+    # left as pads and stubs connected to nothing.
+    #
+    # A layer is "taken" the moment ANY net has that bit set, not just
+    # when a net's WHOLE mask equals it — a net may now legitimately have
+    # several bits set (one net, several layers), and every one of those
+    # bits still makes its layer unavailable to every OTHER net.
+    taken: set[int] = set()
+    for n in range(ir.n_nets):
+        taken.update(plane_layers_of(int(ir.net_plane_layers[n])))
     free = [layer for layer in engine._plane_layers if layer not in taken]
     if not free:
         return None
@@ -1784,16 +1817,22 @@ def _gen_plane_demote(
     # was offered it, since nothing here distinguished "the search's own
     # exploration" from "the one thing the caller said not to explore
     # away from").
+    # One (net, layer) candidate per bit an unlocked net has set — today
+    # an unlocked (search-derived) net never carries more than one bit
+    # (`_gen_plane_promote` only ever gives a bare net its first layer),
+    # so this degrades to the old one-candidate-per-net list exactly; the
+    # per-bit shape is what stays correct the day a derived net legally
+    # carries several (nothing here assumes "at most one").
     locked = engine.config.locked_plane_nets
     candidates = [
-        n
+        (n, layer)
         for n in range(ir.n_nets)
-        if int(ir.net_plane_layer[n]) != UNSET_LAYER and n not in locked
+        if n not in locked
+        for layer in plane_layers_of(int(ir.net_plane_layers[n]))
     ]
     if not candidates:
         return None
-    net = candidates[rng.randrange(len(candidates))]
-    old_layer = int(ir.net_plane_layer[net])
+    net, old_layer = candidates[rng.randrange(len(candidates))]
     return Move(MoveKind.PLANE_DEMOTE, net=net, old_int=(old_layer,))
 
 

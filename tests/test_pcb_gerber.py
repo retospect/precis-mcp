@@ -95,6 +95,107 @@ _MODEL: dict[str, Any] = {
 }
 
 
+# ── a second small model, purpose-built for the X2 object-attribute
+# tests: two same-layer pads with DIFFERENT identity (one carries a
+# refdes/pin, one doesn't) so leakage between them is actually checkable,
+# plus a track and a through via for the net-only cases ───────────────
+_X2_MODEL: dict[str, Any] = {
+    "layers": ["F.Cu", "B.Cu"],
+    "outline": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+    "copper": [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "GND",
+            "width_mm": 0.2,
+            "segments": [{"shape": "line", "start": [1.0, 1.0], "end": [3.0, 1.0]}],
+        },
+        {
+            "ctype": "via",
+            "net": "VCC",
+            "x": 5.0,
+            "y": 5.0,
+            "dia_mm": 0.5,
+            "drill_mm": 0.25,
+        },
+    ],
+    "pads": [
+        {
+            "layer": "F.Cu",
+            "net": "3V3",
+            "shape": "circle",
+            "x": 2.0,
+            "y": 2.0,
+            "w": 0.6,
+            "refdes": "U1",
+            "pin": "3",
+        },
+        {  # no refdes/pin -> net identity only, must not fabricate a %TO.P
+            "layer": "F.Cu",
+            "net": "GND",
+            "shape": "circle",
+            "x": 4.0,
+            "y": 4.0,
+            "w": 0.6,
+        },
+    ],
+}
+
+
+# ── X2 object attributes: %TO.N / %TO.P / %TD ───────────────────────
+def test_track_carries_its_net_object_attribute():
+    top = gerber.copper_gerber(_X2_MODEL, "F.Cu")
+    assert "%TO.N,GND*%" in top
+
+
+def test_via_carries_its_net_object_attribute():
+    top = gerber.copper_gerber(_X2_MODEL, "F.Cu")
+    assert "%TO.N,VCC*%" in top
+
+
+def test_pad_with_refdes_and_pin_carries_component_pin_attribute():
+    top = gerber.copper_gerber(_X2_MODEL, "F.Cu")
+    assert "%TO.P,U1,3*%" in top
+
+
+def test_pad_without_refdes_gets_no_fabricated_pin_attribute():
+    top = gerber.copper_gerber(_X2_MODEL, "F.Cu")
+    # exactly one pad in this model carries refdes/pin -- the other must
+    # not silently inherit or invent one.
+    assert top.count("%TO.P,") == 1
+
+
+def test_td_clears_the_pad_pin_before_the_next_pads_flash():
+    """The leak this whole mechanism exists to prevent: the U1.3 pad's
+    %TO.P must be closed with %TD*% strictly BEFORE the second pad's own
+    D03 flash, not merely appear somewhere in the file."""
+    top = gerber.copper_gerber(_X2_MODEL, "F.Cu")
+    to_p_idx = top.index("%TO.P,U1,3*%")
+    td_idx = top.index("%TD*%", to_p_idx)
+    second_pad_flash_idx = top.index("X4000000Y4000000D03*")  # the net=GND pad
+    assert to_p_idx < td_idx < second_pad_flash_idx
+
+
+def test_pour_hole_does_not_inherit_the_pours_net_attribute():
+    """A pour's antipad is where its own net's copper explicitly ISN'T --
+    tagging the hole ring with the pour's net would mislabel it."""
+    pour = {
+        "ctype": "pour",
+        "layer": "F.Cu",
+        "net": "GND",
+        "polygon": [[0.5, 0.5], [9.5, 0.5], [9.5, 9.5], [0.5, 9.5]],
+        "holes": [[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0]]],
+    }
+    model = {**_X2_MODEL, "copper": [pour]}
+    top = gerber.copper_gerber(model, "F.Cu")
+    to_n_idx = top.index("%TO.N,GND*%")
+    td_idx = top.index("%TD*%", to_n_idx)
+    hole_start_idx = top.index("%LPC*%")
+    assert to_n_idx < td_idx < hole_start_idx
+    # and no SECOND %TO.N appears between the clear and the hole's own draw
+    assert "%TO.N" not in top[td_idx:hole_start_idx]
+
+
 # ── format header / units ───────────────────────────────────────────
 def test_every_gerber_has_format_and_units():
     for content in gerber.export_gerbers(_MODEL, name="brd").values():
@@ -204,6 +305,71 @@ def test_silkscreen_top_has_stroke_bottom_is_empty():
     bottom = gerber.silkscreen_gerber(_MODEL, "bottom")
     assert "D01*" in top
     assert "D01*" not in bottom and "D02*" not in bottom
+
+
+def test_silkscreen_region_shape_emits_a_g36_g37_fill():
+    """A silk draw carrying `"shape": "region"` must ride the SAME
+    G36/G37 writer a copper pour uses -- silk.py::build_sn_patch's box,
+    reused rather than a second region writer."""
+    model = {
+        **_MODEL,
+        "silkscreen": {
+            "top": [
+                {
+                    "shape": "region",
+                    "polygon": [[0.0, 0.0], [5.0, 0.0], [5.0, 3.0], [0.0, 3.0]],
+                }
+            ],
+            "bottom": [],
+        },
+    }
+    top = gerber.silkscreen_gerber(model, "top")
+    assert "G36*" in top and "G37*" in top
+    assert top.index("G36*") < top.index("G37*")
+
+
+def test_silkscreen_clear_polarity_stroke_is_wrapped_lpc_then_lpd():
+    """The knockout idiom, at the writer level: a stroke carrying
+    `"polarity": "clear"` must be wrapped in %LPC*% ... %LPD*%, and
+    polarity must be back to DARK immediately after -- never left clear
+    for whatever silk draws next. This is the exact assertion a knockout
+    that is never actually clear-polarity would fail."""
+    model = {
+        **_MODEL,
+        "silkscreen": {
+            "top": [
+                {
+                    "shape": "region",
+                    "polygon": [[0.0, 0.0], [5.0, 0.0], [5.0, 3.0], [0.0, 3.0]],
+                },
+                {
+                    "width_mm": 0.3,
+                    "polarity": "clear",
+                    "segments": [
+                        {"shape": "line", "start": [1.0, 1.0], "end": [2.0, 2.0]}
+                    ],
+                },
+            ],
+            "bottom": [],
+        },
+    }
+    top = gerber.silkscreen_gerber(model, "top")
+    g37_idx = top.index("G37*")
+    lpc_idx = top.index("%LPC*%")
+    draw_idx = top.index("X1000000Y1000000D02*")
+    lpd_idx = top.index("%LPD*%", lpc_idx)
+    assert g37_idx < lpc_idx < draw_idx < lpd_idx
+    # exactly one clear draw -> exactly one polarity round trip, no
+    # trailing clear state leaked onto whatever a caller appends next
+    assert top.count("%LPC*%") == 1
+    assert top.count("%LPD*%") == 1
+
+
+def test_silkscreen_plain_stroke_never_gets_a_polarity_token():
+    """A draw with no "polarity" key must render exactly as before this
+    shape existed -- no stray %LPC*%/%LPD*% around ordinary silk ink."""
+    top = gerber.silkscreen_gerber(_MODEL, "top")
+    assert "%LPC*%" not in top and "%LPD*%" not in top
 
 
 # ── Excellon ─────────────────────────────────────────────────────────

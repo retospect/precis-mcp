@@ -124,9 +124,17 @@ def footprints_by_refdes(
 
 
 def signal_layers(ir: pcb_ir.PcbIR) -> list[int]:
-    """Stackup indices whose role is ``'signal'`` — the only layers that
-    ever carry a routed trace (plane/dielectric/stiffener layers don't)."""
-    return [i for i, layer in enumerate(ir.stackup) if layer.get("role") == "signal"]
+    """The stackup indices that may carry a routed trace — a thin
+    delegate to :func:`precis.pcb.ir.routable_layers` (the single answer
+    to "may this layer be routed", now independent of whether the SAME
+    layer also carries a copper pour; see that function's docstring).
+    Kept under this name (rather than renamed to ``routable_layers``
+    everywhere) only because it is this module's own established public
+    name; :mod:`precis.pcb.realize` used to keep a second, duplicated
+    four-line copy of this exact query rather than import it (its own
+    docstring said so) — that duplication is now gone, both modules call
+    :func:`precis.pcb.ir.routable_layers` directly."""
+    return pcb_ir.routable_layers(ir)
 
 
 def segment_key(ir: pcb_ir.PcbIR, seg_id: int) -> str:

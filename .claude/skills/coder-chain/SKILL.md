@@ -72,6 +72,12 @@ report.
 ## Loop rules
 
 - After each round, log one line to the user: `round <n>: <status> — <summary>`.
+- **Commit after each round**, before starting the next: `git add -u && git
+  commit`. Rounds are the only natural checkpoint a chain has — the coders are
+  forbidden to touch git, and `scripts/ship` (the workflow's usual commit) must
+  not run mid-chain, so without this an 8-round build has zero commits ahead
+  and one bad edit loses all of it. It is not a ship: no gate, no push, no
+  `main`.
 - `continue` → next round with the new handoff. `done`/`blocked` → stop.
 - On `blocked`, surface the `question` to the user verbatim and stop.
 - At the round cap with status still `continue`, stop and report the last

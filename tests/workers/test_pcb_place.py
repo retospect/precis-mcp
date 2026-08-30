@@ -148,7 +148,7 @@ def test_pcb_place_reapplies_persisted_plane_without_writing_back(
     the PLACEMENT anneal too (not just ``pcb_route``'s later re-apply) — see
     ``pcb_place.py``'s docstring comment on the write-boundary. Pinned two
     ways: (1) the IR the optimizer actually runs against has
-    ``net_plane_layer`` set for the declared net BEFORE ``optimize()`` is
+    ``net_plane_layers`` set for the declared net BEFORE ``optimize()`` is
     called (a spy on the imported ``optimize`` name), and (2) this job never
     writes back to ``pcb_planes`` — it cannot change a plane assignment
     (``_PLACE_ONLY_SCHEDULE`` carries no PLANE_PROMOTE/DEMOTE weight), so
@@ -161,7 +161,7 @@ def test_pcb_place_reapplies_persisted_plane_without_writing_back(
 
     def _spy_optimize(ir: Any, config: Any) -> Any:
         net_id = next(n for n in range(ir.n_nets) if str(ir.net_name[n]) == "N1")
-        seen_layers.append(int(ir.net_plane_layer[net_id]))
+        seen_layers.append(int(ir.net_plane_layers[net_id]))
         return real_optimize(ir, config)
 
     monkeypatch.setattr(pcb_place, "optimize", _spy_optimize)
@@ -170,9 +170,8 @@ def test_pcb_place_reapplies_persisted_plane_without_writing_back(
     pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
 
     assert not ctx.failures
-    from precis.pcb.ir import UNSET_LAYER
 
-    assert seen_layers and seen_layers[0] != UNSET_LAYER, (
+    assert seen_layers and seen_layers[0] != 0, (
         "the IR handed to optimize() must already have the authored plane "
         "promoted -- placement must see it as fixed context, not learn "
         "about it only after pcb_route re-applies it"

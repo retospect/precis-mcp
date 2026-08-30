@@ -119,6 +119,17 @@ if [[ "$FAST" == "1" ]]; then FAST_ARGS=(-m "not db and not slow"); fi
 # tiny tmpfs test-db above doesn't need one).
 gate_slot_acquire
 
+# Artifact-writing tests (the PCB fab render, chiefly) need to be TOLD where to
+# put their output, and nothing but UV_WITH used to cross the container
+# boundary — so producing a board to look at meant hand-editing a default path
+# into the test and reverting it afterwards. The path is interpreted INSIDE the
+# container, where this worktree is mounted at /app, so a repo-relative path
+# lands on the host.
+ARTIFACT_ENV=()
+if [[ -n "${PRECIS_PCB_RENDER_OUT:-}" ]]; then
+    ARTIFACT_ENV=(-e "PRECIS_PCB_RENDER_OUT=${PRECIS_PCB_RENDER_OUT}")
+fi
+
 # --no-sync: the image already bakes the venv and installs /app editable, so
 # the bind-mounted source is live without a per-run reinstall (that reinstall
 # was pure noise + latency — the reason sessions hand-rolled `--no-sync`).
@@ -127,6 +138,7 @@ gate_slot_acquire
 # inner positional params ("$@") so no cross-shell re-quoting is needed.
 compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
     "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
+    "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
     -v "${WORKTREE}":/app precis-dev \
     bash -lc 'uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
     _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
