@@ -222,14 +222,23 @@ fi
 # file order (a bare `head -1` read the OLDEST entry and left the check
 # permanently DUE after day one).
 #
-# Match the date that OPENS a log entry, with or without the `**bold**` and any
-# `- ` bullet prefix: requiring bold silently froze this clock at 2026-08-13 for
-# two weeks while seven passes went unseen, because the log's own style had
-# drifted to plain and `- ` prefixes. Anchoring at line-start (rather than
-# accepting a date anywhere) is what keeps a date quoted mid-prose from
-# counting as a pass.
+# Match the date that OPENS a log entry, whatever markdown dresses it in.
+# **The prefix class is deliberately permissive, and that is the whole fix.**
+# This clock has frozen three times, each time because the log's own style
+# drifted past a prefix the regex enumerated: requiring `**bold**` froze it at
+# 2026-08-13 for two weeks (seven passes unseen) when entries went plain and
+# `- `-prefixed; allowing only `-` froze it at 2026-08-28 when entries became
+# `## ` headings. Twice the recorded fix was to RE-STAMP one log line in the
+# parseable form (see the 2026-08-07 and 2026-08-16 entries, which say so) —
+# which fixes that run and leaves the trap armed. Any leading run of markdown
+# punctuation now counts, so the next style drift costs nothing.
+#
+# A frozen clock is worse than no clock: it reports DUE forever, so the reader
+# learns the line means nothing and stops acting on it. Anchoring at line-start
+# (rather than accepting a date anywhere) is still what keeps a date quoted
+# mid-prose from counting as a pass.
 today=$(date +%Y-%m-%d)
-last=$(grep -oE '^-?[[:space:]]*\*{0,2}[0-9]{4}-[0-9]{2}-[0-9]{2}' "$MEMDIR/memory_consolidation_log.md" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort | tail -1 || true)
+last=$(grep -oE '^[-#*[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}' "$MEMDIR/memory_consolidation_log.md" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort | tail -1 || true)
 if [[ -z "$last" ]]; then
     echo "reconsolidation: DUE (no consolidation log yet)"
 elif [[ "$last" == "$today" ]]; then
@@ -248,8 +257,15 @@ epoch_of() { date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/d
 # (`sort | tail -1`, ISO dates sort lexically). A bare `head -1` read the OLDEST
 # entry, so the weekly gate stayed permanently DUE and re-stamped on every run
 # — the same trap fixed for the reconsolidation clock above.
+#
+# Same permissive prefix as that clock, for the same reason: this log's entries
+# are `**bold**` TODAY, and requiring bold is precisely what froze the
+# reconsolidation clock twice. The `awk` already scopes the search to after the
+# `## Log` heading and the `^` anchor keeps a mid-prose date out, so accepting
+# any leading markdown punctuation costs nothing and disarms the drift.
 sib_last=$(awk '/^## Log/{f=1;next} f' "$SIB_LOG" 2>/dev/null \
-    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | tr -d '*' | sort | tail -1 || true)
+    | grep -oE '^[-#*[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort | tail -1 || true)
 sib_last_e=$( [[ -n "$sib_last" ]] && epoch_of "$sib_last" || true )
 sib_days=999999
 [[ -n "${sib_last_e:-}" ]] && sib_days=$(( ($(date +%s) - sib_last_e) / 86400 ))
