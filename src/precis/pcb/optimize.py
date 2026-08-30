@@ -123,18 +123,21 @@ from precis.pcb.cost import (
     loop_inductance_term,
     outline_bbox,
 )
-from precis.pcb.geom import segments_cross
+from precis.pcb.geom import convex_polygons_overlap, segments_cross
 from precis.pcb.ir import (
+    COURTYARD_CLEARANCE_MM,
     UNSET_LAYER,
     Level,
     PcbIR,
-    instance_keepout_radius_mm,
+    courtyard_bound_radius_mm,
+    instance_courtyard_polygons,
     nearest_other_instance,
     plane_layers_of,
     pourable_layers,
     routable_layers,
     segment_points,
 )
+from precis.pcb.landpattern import place_points
 from precis.pcb.pinswap import PinSwapGroup
 from precis.pcb.rules import implied_via_count
 
@@ -496,8 +499,24 @@ def seed_placement(
     """
     clusters = _cluster_instances(ir, max_cluster_size=max_cluster_size)
     clusters.sort(key=len, reverse=True)
-    radii = instance_keepout_radius_mm(
-        ir, min_radius_mm=max(COURTYARD_MIN_SEPARATION_MM / 2.0, pitch_mm / 8.0)
+    # The SAME radius `_placement_is_legal`'s broad phase uses, derived
+    # from the same courtyard polygons — a shelf pack needs one scalar
+    # footprint per part, and it must be the conservative circumscribed
+    # one. Seeding to a tighter figure than legality enforces produces a
+    # seed the annealer can never repair: `bounds_for` clamps the
+    # TRANSLATE that would rescue a crowded part while
+    # `_placement_is_legal` rejects the crowding, so it stays illegal for
+    # the whole run (this function's own docstring, "legal by
+    # construction").
+    radii = np.maximum(
+        courtyard_bound_radius_mm(
+            instance_courtyard_polygons(
+                ir,
+                clearance_mm=COURTYARD_CLEARANCE_MM,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        ),
+        max(COURTYARD_MIN_SEPARATION_MM / 2.0, pitch_mm / 8.0),
     )
     order = [inst for members in clusters for inst in members]
     # A square-ish shelf region: total footprint area, with slack for the
@@ -668,21 +687,43 @@ class OptimizeEngine:
         #: (adjacency-clustered, so it is a real answer, not a heuristic
         #: square), padded, then clipped to the outline inset by
         #: :data:`_EDGE_MARGIN_MM`.
-        #: Per-instance placement keep-out RADIUS: the part's own outermost
-        #: pad plus a pad-to-pad breathing gap, floored at the nominal
+        #: Per-instance courtyard POLYGON in the part's own local frame —
+        #: the hull of its pads offset by :data:`~precis.pcb.ir.
+        #: COURTYARD_CLEARANCE_MM`, floored to a square at the nominal
         #: half-courtyard so a pinless part (mounting hole, fiducial) still
-        #: occupies space — :func:`~precis.pcb.ir.instance_keepout_radius_mm`,
-        #: the ONE formula every keep-out consumer (this engine, its own
-        #: seeder, and the DRC courtyard geometry
-        #: :mod:`precis.handlers.pcb` builds) shares, so a part's placement
-        #: legality and its DRC courtyard radius cannot silently drift
-        #: apart into two different numbers for the same part. Two
-        #: instances are legal when their centres are at least the SUM of
-        #: their radii apart — see :meth:`_placement_is_legal` for why a
-        #: single constant is not merely coarse but incorrect.
-        self._keepout_r = instance_keepout_radius_mm(
-            ir, min_radius_mm=COURTYARD_MIN_SEPARATION_MM / 2.0
+        #: occupies space. **The same shape** :mod:`precis.pcb.silk` draws
+        #: and ``courtyard_overlap`` DRC checks: one definition, three
+        #: consumers, so a part's placement legality and the boundary a
+        #: DRC run enforces cannot drift into two different answers for
+        #: the same part. A RADIUS stood here until 2026-08-30 and could
+        #: not do that job — it over-reserves an edge connector eightfold
+        #: while UNDER-reserving a SOIC-8, and no single radius fixes both
+        #: (:func:`~precis.pcb.ir.instance_courtyard_polygon` carries the
+        #: measured table). Computed once: only a part's POSE changes
+        #: during the anneal, never its footprint.
+        self._keepout_poly = instance_courtyard_polygons(
+            ir,
+            clearance_mm=COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
         )
+        #: The broad phase for :meth:`_placement_is_legal`, derived FROM
+        #: the polygon rather than independently: a rotation-invariant
+        #: circumscribed radius (:func:`~precis.pcb.ir.
+        #: courtyard_bound_radius_mm`). This is the same vectorized
+        #: ``d2 < (r_i + r_j)^2`` sweep that used to BE the legality test;
+        #: it is now the filter in front of the exact polygon test, so the
+        #: common "nowhere near each other" answer still costs one numpy
+        #: comparison over the whole board.
+        self._keepout_r = courtyard_bound_radius_mm(self._keepout_poly)
+        #: ``inst -> ((x, y, rot), world-frame polygon)``. Keyed on the
+        #: POSE it was computed at rather than invalidated on move: a
+        #: stale entry is then impossible by construction, which matters
+        #: because moves arrive from several paths (TRANSLATE, SWAP,
+        #: ROTATE, and the seeder) and an invalidation any one of them
+        #: forgot would silently reserve a part's old footprint.
+        self._world_poly: dict[
+            int, tuple[tuple[float, float, float], list[tuple[float, float]]]
+        ] = {}
         self._placement_bounds = self._derive_placement_bounds()
         #: ``t0`` and TRANSLATE's step both scale off ``board_side``. It is
         #: deliberately NOT re-derived from the (larger) placement bounds:
@@ -1210,7 +1251,10 @@ class OptimizeEngine:
         return (x0, y0, x1, y1)
 
     def _placement_is_legal(
-        self, proposals: Sequence[tuple[int, float, float]]
+        self,
+        proposals: Sequence[tuple[int, float, float]],
+        *,
+        rotations: dict[int, float] | None = None,
     ) -> bool:
         """True iff every proposed ``(instance, x, y)`` sits inside
         :attr:`_placement_bounds` and clears every other instance's
@@ -1240,6 +1284,11 @@ class OptimizeEngine:
         ir = self.ir
         keepout = self._keepout_r
         moving = [inst for inst, _, _ in proposals]
+        rotations = rotations or {}
+        proposed_poly = {
+            inst: self._world_courtyard(inst, x, y, rotations.get(inst))
+            for inst, x, y in proposals
+        }
         for i, (inst, x, y) in enumerate(proposals):
             x0, y0, x1, y1 = self.bounds_for(inst)
             if not (x0 <= x <= x1 and y0 <= y <= y1):
@@ -1248,13 +1297,57 @@ class OptimizeEngine:
             d2 = dx * dx + dy * dy
             d2[moving] = math.inf  # a part never collides with its own old slot
             sep = keepout + keepout[inst]
-            if np.any(d2 < sep * sep):  # NaN (unplaced) compares False — correct
-                return False
+            # Broad phase, then exact. NaN (unplaced) compares False —
+            # correct, and it also keeps an unplaced part's NaN pose out of
+            # `_world_courtyard` below, which would otherwise produce a
+            # polygon of NaNs that no SAT axis can separate.
+            near = np.nonzero(d2 < sep * sep)[0]
+            for other in near:
+                if convex_polygons_overlap(
+                    proposed_poly[inst], self._world_courtyard(int(other))
+                ):
+                    return False
             for other, ox, oy in proposals[i + 1 :]:
                 sep_ij = keepout[inst] + keepout[other]
-                if (x - ox) ** 2 + (y - oy) ** 2 < sep_ij * sep_ij:
+                if (x - ox) ** 2 + (y - oy) ** 2 >= sep_ij * sep_ij:
+                    continue
+                if convex_polygons_overlap(proposed_poly[inst], proposed_poly[other]):
                     return False
         return True
+
+    def _world_courtyard(
+        self,
+        inst: int,
+        x: float | None = None,
+        y: float | None = None,
+        rot: float | None = None,
+    ) -> list[tuple[float, float]]:
+        """``inst``'s courtyard polygon in BOARD coordinates, at its
+        current pose or at a proposed ``(x, y)`` / ``rot``.
+
+        Through :func:`precis.pcb.landpattern.place_points`, the same
+        affine path a PAD travels — a courtyard derived from pad geometry
+        that rotated by a different convention would reserve space where
+        the part's own copper is not, and look entirely plausible doing it.
+
+        Mirroring is deliberately not modelled: ``PcbIR`` carries no
+        per-instance board side, so this engine has always been
+        side-agnostic (a circle was mirror-invariant, which is why the
+        question never came up). For an asymmetric part on the bottom side
+        the reserved area is its unmirrored twin — same extent, reflected.
+        Fixing that needs a side on the IR, not a change here."""
+        ir = self.ir
+        px = float(ir.inst_x[inst]) if x is None else x
+        py = float(ir.inst_y[inst]) if y is None else y
+        prot = float(ir.inst_rot[inst]) if rot is None else rot
+        prot = 0.0 if math.isnan(prot) else prot
+        pose = (px, py, prot)
+        cached = self._world_poly.get(inst)
+        if cached is not None and cached[0] == pose:
+            return cached[1]
+        poly = place_points(self._keepout_poly[inst], cx=px, cy=py, rot_deg=prot)
+        self._world_poly[inst] = (pose, poly)
+        return poly
 
     def _rescan_after_move(self, moved_inst: int) -> None:
         """Refresh every cached term a single instance's move can affect.
@@ -1685,6 +1778,21 @@ def _gen_rotate(engine: OptimizeEngine, rng: random.Random, temp: float) -> Move
     inst = movable[rng.randrange(len(movable))]
     old = (float(ir.inst_x[inst]), float(ir.inst_y[inst]), float(ir.inst_rot[inst]))
     new_rot = (old[2] + rng.choice((90.0, -90.0))) % 360.0
+    # **A rotation can now make a placement illegal, and could not before.**
+    # This move went unchecked while the keep-out was a CIRCLE, correctly:
+    # a disc's reserved area is rotation-invariant, so spinning a part
+    # could never bring it into a neighbour. A courtyard polygon is not —
+    # swing an oblong part's long axis toward the part beside it and the
+    # two overlap. Nothing downstream would have caught it either: no
+    # cost term reads `inst_rot` (this module's "ROTATE is cost-neutral,
+    # provably" note), so `delta` is exactly 0.0 and `anneal` accepts
+    # every generated rotation unconditionally — the violation would
+    # surface only in a later DRC run, as a `courtyard_overlap` the
+    # annealer itself had no way to reject.
+    if not engine._placement_is_legal(
+        ((inst, old[0], old[1]),), rotations={inst: new_rot}
+    ):
+        return None
     return Move(MoveKind.ROTATE, (inst,), (old,), ((old[0], old[1], new_rot),))
 
 
@@ -1755,6 +1863,20 @@ def _gen_plane_promote(
 ) -> Move | None:
     ir = engine.ir
     if not engine._plane_layers:
+        return None
+    # **A plane needs somewhere to be poured, and that is the OUTLINE.**
+    # `realize.py` pours into the board profile, so on a design with no
+    # outline feature every promoted net comes back
+    # ``failed: unpourable_plane`` ("no outline to pour a plane into, so
+    # this connection has nowhere to land") — the promotion cannot be
+    # satisfied by any amount of routing effort. Offering it anyway lets
+    # the anneal accept a move that silently converts a perfectly
+    # routable 2-pin net into a permanently failed one, which is what it
+    # did: found 2026-08-30 when a placement change shifted the cost
+    # landscape enough to make this promotion attractive on a 3-part
+    # fixture that had always been routable. Latent since PLANE_PROMOTE
+    # existed, not caused by that change.
+    if not ir.outline or len(ir.outline) < 3:
         return None
     # A locked net is never itself a promotion candidate (it already has
     # its human-fixed assignment) — see `OptimizeConfig.locked_plane_nets`'s

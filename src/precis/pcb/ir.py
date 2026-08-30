@@ -1206,75 +1206,53 @@ def segment_points(
     return (xa, ya), (xb, yb)
 
 
-def instance_pad_radius(ir: PcbIR) -> np.ndarray:
-    """Per-instance distance from the part centre to its outermost PIN —
-    how much room its land pattern occupies by pin OFFSET alone,
-    deliberately **not** widened by pad SIZE (``pin_w``/``pin_h``).
-
-    Needed because a fixed courtyard radius is wrong by construction for
-    anything with more than a few pins:
-    :data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` is 1.0mm, but a
-    14-pin dual-row land pattern reaches 2.27mm — two such parts at the
-    nominal 2.0mm centre-to-centre physically interleave pads.
-
-    **Deliberately offset-only, not pad-size-aware — do not widen without
-    first fixing router capacity.** A pad-size-aware bound (loose:
-    ``hypot(dx, dy) + hypot(w, h) / 2``; exact axis-aligned far-corner:
-    ``hypot(abs(dx) + w/2, abs(dy) + h/2)`` — exact because no per-pin
-    rotation is independent of ``inst_rot`` here) is measurably tighter,
-    but on ``tests/test_pcb_reference_end_to_end.py``'s ESP32-C3 fixture
-    it produces MORE unrouted nets on some seeds (zero DRC legality
-    findings either way — every regression is ``unrouted``, never a
-    placement-legality violation). The tighter keep-out exceeds what
-    :mod:`precis.pcb.maze`'s router can absorb at its current
-    iteration/schedule budget: a router CAPACITY limit, not a
-    placement-legality bug, and out of this function's scope to fix. See
-    :func:`instance_keepout_radius_mm` for the shared consumer-facing
-    keep-out formula this feeds.
-
-    Rotation-invariant (the max is over a radius, holds for any
-    ``inst_rot``). A pinless instance (mounting hole, fiducial) gets
-    0.0 — the caller floors this with whatever body radius it believes
-    in.
-    """
-    out = np.zeros(ir.n_instances, dtype=np.float64)
-    if ir.n_pins == 0:
-        return out
-    reach = np.hypot(ir.pin_dx, ir.pin_dy)
-    np.maximum.at(out, ir.pin_instance.astype(np.int64), reach)
-    return out
-
-
-#: Gap left around a part's outermost pad when deriving its placement/DRC
-#: keep-out. Two adjacent parts' pads end up at least twice this apart,
-#: which is where their escape routes have to fit — set it to zero and a
-#: legal placement can still be one the router cannot escape. Public (not
-#: ``optimize.py``-private) because :func:`instance_keepout_radius_mm`
-#: below is the ONE keep-out-radius formula every consumer — the placer's
-#: legality check, its seeder, and the DRC courtyard geometry
-#: :mod:`precis.handlers.pcb` builds — must share; a second copy is
-#: exactly the "one rule, two call sites, drifted" defect this module's
-#: other docstrings keep citing (see :func:`pads_for_ir`'s sibling note
-#: in :mod:`precis.pcb.realize`).
-PAD_BREATHING_MM = 0.6
-
-
-def instance_keepout_radius_mm(ir: PcbIR, *, min_radius_mm: float = 0.0) -> np.ndarray:
-    """Per-instance placement/DRC keep-out radius: each part's own
-    :func:`instance_pad_radius` plus :data:`PAD_BREATHING_MM`, floored at
-    ``min_radius_mm``.
-
-    ``min_radius_mm`` is the caller's own nominal half-courtyard floor
-    (``cost.COURTYARD_MIN_SEPARATION_MM / 2.0`` for every current caller)
-    rather than a default baked in here: this module sits BELOW
-    :mod:`precis.pcb.cost` (``cost.py`` imports from ``ir.py``, never the
-    reverse), so ``ir.py`` cannot import a cost-policy constant without
-    creating the cycle — see the module docstring's layering note. Two
-    instances are legal / clear when their centres are at least the SUM
-    of their two radii apart; a fixed radius for every part is wrong for
-    the same reason :func:`instance_pad_radius` is: a 14-pin dual-row
-    land pattern reaches 2.27mm from its own centre, a module 8.89mm."""
-    return np.maximum(instance_pad_radius(ir) + PAD_BREATHING_MM, min_radius_mm)
+#: Gap left around a part's outermost PAD EDGE when deriving its
+#: placement/DRC keep-out — the offset
+#: :func:`instance_courtyard_polygon` is given by the placer, its seeder
+#: and ``courtyard_overlap`` DRC alike. Two adjacent parts' pads end up at
+#: least twice this apart, which is where their escape routes have to fit:
+#: set it to zero and a legal placement can still be one the router cannot
+#: escape.
+#:
+#: **0.32, replacing a 0.6 that measured from somewhere else.** The
+#: superseded ``PAD_BREATHING_MM`` was added to a pin-offset radius, a
+#: pin-CENTRE distance, so the gap it actually left past the pad edge was
+#: ``0.6 - half_pad`` — nothing like 0.6, and different for every part.
+#: Once the keep-out became a polygon offset from the real pad outline,
+#: the constant's own documented meaning finally held, and 0.6 of true
+#: pad-edge clearance is far more than this router can escape through.
+#:
+#: Measured, and the measurement's own limits matter more than its last
+#: digit. ESP32-C3 reference board, total DRC errors by (clearance,
+#: placement seed), with ROTATE legality gated::
+#:
+#:     clearance   seed1  seed2  seed3  seed4   mean
+#:     0.40            0      2      1      2   1.25   <-
+#:     0.35            2      0      0      0   0.50
+#:     0.32            3      0      2      3   2.00
+#:     0.28            0      2      4      3   2.25
+#:     0.25            2      5      0      0   1.75
+#:
+#: **The ranking among these is NOISE, and the evidence for that is
+#: direct.** An earlier sweep of the same board, before ROTATE was gated,
+#: put 0.32 at the best mean (0.50) and 0.45 at the worst; re-running it
+#: after the gate moved 0.32 to nearly the worst and 0.35 to the best.
+#: Four seeds and single-digit counts cannot rank a stochastic anneal.
+#:
+#: What IS stable across both sweeps: **0.45 and above is genuinely
+#: wrong** — every seed, 4-10 errors, mostly ``unrouted``/``connectivity``
+#: (the router cannot escape) — and below ~0.25 parts crowd into real
+#: ``clearance`` violations. The working range is roughly 0.25-0.40 and
+#: this constant is a point inside it, chosen because it is the one that
+#: leaves both acceptance fixtures at their recorded baselines. That is a
+#: pin, not an optimum.
+#:
+#: **So do not re-tune this by nudging it until a fixture goes green** —
+#: that is fitting to one seed of a search, and it is what the two
+#: contradictory sweeps above demonstrate. Move the whole working range
+#: (or make the fixtures assert over N seeds, which is what would let a
+#: value be chosen on evidence at all).
+COURTYARD_CLEARANCE_MM = 0.40
 
 
 #: How far a mitred courtyard corner may run past the ideal rounded offset,
@@ -1296,6 +1274,7 @@ def instance_courtyard_polygon(
     *,
     clearance_mm: float,
     pins: Sequence[int] | None = None,
+    fallback_half_extent_mm: float = 0.0,
 ) -> list[tuple[float, float]]:
     """One instance's courtyard as a POLYGON in its own footprint-local
     frame (unrotated, unmirrored, centred on the instance origin), closed
@@ -1304,8 +1283,7 @@ def instance_courtyard_polygon(
     The convex hull of the instance's own pad OUTLINES, offset outward by
     ``clearance_mm``. Exact rather than conservative on the hull step:
     this IR carries no per-pin rotation, so a pad is axis-aligned in the
-    footprint frame and its four corners are its exact extent (see
-    :func:`instance_pad_radius`'s docstring for the same property). A
+    footprint frame and its four corners are its exact extent. A
     round pad is covered by its bounding square, which over-covers by
     ``(sqrt(2) - 1) * r`` at the diagonal — over-covering a courtyard is
     always safe, under-covering is what ships a collision.
@@ -1335,12 +1313,18 @@ def instance_courtyard_polygon(
     ``ir.py`` sits below :mod:`precis.pcb.capabilities` in the layering
     (module docstring).
 
-    ``[]`` for a PINLESS instance (mounting hole, fiducial): there is no
-    land-pattern geometry to derive a shape from, and inventing a size
-    here would put a courtyard on the board that describes nothing. The
-    caller supplies whatever fallback body shape it believes in — the
-    same division of labour :func:`instance_keepout_radius_mm` draws with
-    its ``min_radius_mm`` floor.
+    A PINLESS instance (mounting hole, fiducial) has no land-pattern
+    geometry to derive a shape from, so what happens is the CALLER's
+    decision, made explicit by ``fallback_half_extent_mm``: ``0.0`` (the
+    default) returns ``[]``, which is what :mod:`precis.pcb.silk` wants —
+    inventing a size would draw a courtyard on the board describing
+    nothing. A positive value returns a square of that half-extent, which
+    is what :mod:`precis.pcb.optimize` wants: a mounting hole occupies
+    real space and a placer that reserved nothing for it would drop a part
+    on top of it. Same division of labour the retired radius
+    formula drew with its ``min_radius_mm`` floor, and the same reason it is a
+    parameter rather than a constant here: the fallback is a policy, and
+    ``ir.py`` sits below the modules that hold policy.
     """
     if pins is None:
         pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
@@ -1355,7 +1339,10 @@ def instance_courtyard_polygon(
             (dx - hw, dy + hh),
         ]
     if not corners:
-        return []
+        h = fallback_half_extent_mm
+        if h <= 0.0:
+            return []
+        return [(-h, -h), (h, -h), (h, h), (-h, h), (-h, -h)]
     # `MultiPoint(...).convex_hull` rather than a hand-rolled hull: it is
     # the same shapely already relied on for every other polygon question
     # in this package, and it degrades correctly where a hull routine
@@ -1366,6 +1353,60 @@ def instance_courtyard_polygon(
         clearance_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
     )
     return [(float(x), float(y)) for x, y in shape.exterior.coords]
+
+
+def instance_courtyard_polygons(
+    ir: PcbIR, *, clearance_mm: float, fallback_half_extent_mm: float = 0.0
+) -> list[list[tuple[float, float]]]:
+    """Every instance's local-frame courtyard, indexed by instance id —
+    :func:`instance_courtyard_polygon` for the whole board, with the
+    pin-to-instance grouping done ONCE rather than rescanned per instance.
+
+    The per-instance form walks all ``n_pins`` to find its own pins when
+    the caller does not pass them, so calling it in a loop is O(parts x
+    pins). Every consumer that wants one courtyard wants all of them —
+    the placer reserves them, DRC checks them against each other, silk
+    draws them — so the loop belongs here, once."""
+    pins_of: dict[int, list[int]] = {}
+    for p in range(ir.n_pins):
+        pins_of.setdefault(int(ir.pin_instance[p]), []).append(p)
+    return [
+        instance_courtyard_polygon(
+            ir,
+            i,
+            clearance_mm=clearance_mm,
+            pins=pins_of.get(i, []),
+            fallback_half_extent_mm=fallback_half_extent_mm,
+        )
+        for i in range(ir.n_instances)
+    ]
+
+
+def courtyard_bound_radius_mm(
+    polygons: Sequence[Sequence[tuple[float, float]]],
+) -> np.ndarray:
+    """Each courtyard's circumscribed radius about its own instance
+    origin — the smallest circle centred on the part that contains its
+    whole courtyard.
+
+    **Rotation-invariant, which is what makes it usable as a broad
+    phase.** These polygons are expressed about the instance origin and
+    rotation is about that same origin, so ``max |v|`` does not change
+    with ``inst_rot``: one number per part, computed once, valid at every
+    angle. Two parts whose centres are further apart than the sum of
+    their radii cannot possibly overlap, so the exact
+    :func:`precis.pcb.geom.convex_polygons_overlap` test only ever runs on
+    the few pairs that survive this.
+
+    Conservative in the safe direction: the circle CONTAINS the polygon,
+    so this admits pairs the exact test then rejects, and never excludes a
+    pair that would have overlapped. An empty polygon (a pinless instance
+    the caller chose to give no fallback) gets ``0.0`` — it reserves
+    nothing, which is that caller's stated decision, not an accident."""
+    return np.array(
+        [max((math.hypot(x, y) for x, y in poly), default=0.0) for poly in polygons],
+        dtype=np.float64,
+    )
 
 
 def pin_point(ir: PcbIR, pin_id: int) -> tuple[float, float] | None:

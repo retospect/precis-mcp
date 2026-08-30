@@ -188,10 +188,14 @@ from typing import Any
 
 from precis.pcb import stroke_font
 from precis.pcb.capabilities import CapabilityRow, design_value
-from precis.pcb.geom import dist_point_to_segment, point_in_polygon
+from precis.pcb.geom import (
+    convex_polygons_overlap,
+    dist_point_to_segment,
+    point_in_polygon,
+)
 from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM, SOLDERMASK_EXPANSION_MM
 from precis.pcb.ir import PcbIR, instance_courtyard_polygon
-from precis.pcb.landpattern import rotate_offset
+from precis.pcb.landpattern import place_points
 
 Point = tuple[float, float]
 
@@ -397,22 +401,6 @@ def _polygon_overlaps_circle(poly: list[Point], center: Point, radius: float) ->
     )
 
 
-def _polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
-    """Separating Axis Theorem for two convex polygons — exact (both a
-    text/outline box and an axis-aligned pad rect are convex)."""
-    for poly in (poly_a, poly_b):
-        n = len(poly)
-        for i in range(n):
-            x1, y1 = poly[i]
-            x2, y2 = poly[(i + 1) % n]
-            nx, ny = -(y2 - y1), (x2 - x1)
-            a_vals = [nx * px + ny * py for px, py in poly_a]
-            b_vals = [nx * px + ny * py for px, py in poly_b]
-            if max(a_vals) < min(b_vals) or max(b_vals) < min(a_vals):
-                return False
-    return True
-
-
 def _pad_rect_polygon(pad: dict[str, Any]) -> list[Point]:
     x, y = float(pad["x"]), float(pad["y"])
     w = float(pad["w"])
@@ -489,7 +477,7 @@ def _box_overlaps_pad(box: list[Point], pad: dict[str, Any]) -> bool:
     if str(pad.get("shape") or "circle") == "circle":
         cx, cy = float(pad["x"]), float(pad["y"])
         return _polygon_overlaps_circle(box, (cx, cy), float(pad["w"]) / 2.0)
-    return _polygons_overlap(box, _pad_rect_polygon(pad))
+    return convex_polygons_overlap(box, _pad_rect_polygon(pad))
 
 
 def _segment_box(a: Point, b: Point, half_width: float) -> list[Point]:
@@ -697,7 +685,7 @@ def _stroke_crosses_stroke(
         box1 = _segment_box(a1, b1, half)
         for a2, b2 in itertools.pairwise(points_b):
             box2 = _segment_box(a2, b2, half)
-            if _polygons_overlap(box1, box2):
+            if convex_polygons_overlap(box1, box2):
                 return True
     return False
 
@@ -957,11 +945,12 @@ def silk_clearance_mm(
 def _place(
     points: list[Point], *, cx: float, cy: float, rot: float, mirror: bool
 ) -> list[Point]:
-    out = []
-    for lx, ly in points:
-        rx, ry = rotate_offset(lx, ly, rot, mirrored=mirror)
-        out.append((cx + rx, cy + ry))
-    return out
+    """This module's spelling of :func:`precis.pcb.landpattern.place_points`
+    — a thin alias, not a second implementation. The affine path a
+    courtyard travels has to be the one its pads travel, and
+    :mod:`precis.pcb.optimize` now reserves the same polygon this module
+    draws."""
+    return place_points(points, cx=cx, cy=cy, rot_deg=rot, mirrored=mirror)
 
 
 def _side_for(inst_sides: dict[str, str], refdes: str) -> str:

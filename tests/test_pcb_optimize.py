@@ -22,7 +22,12 @@ import pytest
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.cost import CostConfig, evaluate_cost
-from precis.pcb.ir import Level, from_graph, plane_layers_of
+from precis.pcb.ir import (
+    Level,
+    courtyard_bound_radius_mm,
+    from_graph,
+    plane_layers_of,
+)
 from precis.pcb.optimize import (
     MOVE_GENERATORS,
     Move,
@@ -80,8 +85,30 @@ def _board(n: int = 12, *, seed: int = 0, fixed: dict[int, str] | None = None) -
     return {"instances": instances, "nets": nets}
 
 
-def _seeded_ir(n: int = 12, *, graph_seed: int = 0, seed_rng_seed: int = 0, fixed=None):
-    ir = from_graph(_board(n, seed=graph_seed, fixed=fixed), stackup=DEFAULT_STACKUP)
+def _seeded_ir(
+    n: int = 12,
+    *,
+    graph_seed: int = 0,
+    seed_rng_seed: int = 0,
+    fixed=None,
+    outline: bool = False,
+):
+    """``outline=True`` authors a generous board profile before seeding.
+
+    Needed by any test that exercises PLANE_PROMOTE: a plane is poured
+    INTO the profile, so `_gen_plane_promote` declines outright on a
+    board that has none (promoting there produces a net `realize.py` can
+    only report as ``failed: unpourable_plane``). Off by default so every
+    other test keeps the outline-less seeding it was written against."""
+    graph = _board(n, seed=graph_seed, fixed=fixed)
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    if outline:
+        ir.outline = [
+            (-200.0, -200.0),
+            (200.0, -200.0),
+            (200.0, 200.0),
+            (-200.0, 200.0),
+        ]
     seed_placement(ir, random.Random(seed_rng_seed))
     return ir
 
@@ -170,7 +197,7 @@ def test_side_flip_dirties_l2_leaves_l1_l3_clean():
 
 
 def test_plane_promote_demote_dirty_only_that_nets_segments_leave_l2_l3_clean():
-    ir = _seeded_ir(10, graph_seed=39, seed_rng_seed=40)
+    ir = _seeded_ir(10, graph_seed=39, seed_rng_seed=40, outline=True)
     engine = OptimizeEngine(ir, OptimizeConfig(seed=40))
     l3_before = ir.dirty_l3.copy()
     rng = random.Random(41)
@@ -193,7 +220,7 @@ def test_plane_promote_demote_dirty_only_that_nets_segments_leave_l2_l3_clean():
 
 
 def test_plane_promote_only_targets_plane_role_layers():
-    ir = _seeded_ir(10, graph_seed=42, seed_rng_seed=43)
+    ir = _seeded_ir(10, graph_seed=42, seed_rng_seed=43, outline=True)
     engine = OptimizeEngine(ir, OptimizeConfig(seed=43))
     plane_idx = {
         i for i, layer in enumerate(DEFAULT_STACKUP) if layer["role"] == "plane"
@@ -212,7 +239,7 @@ def test_plane_promote_only_targets_plane_role_layers():
 def test_plane_promote_reduces_gap_capacity_penalty_to_zero():
     """The backlog's "plane-served nets excluded from the objective" —
     the nearest analog this slice's registered terms have to it."""
-    ir = _seeded_ir(10, graph_seed=45, seed_rng_seed=46)
+    ir = _seeded_ir(10, graph_seed=45, seed_rng_seed=46, outline=True)
     engine = OptimizeEngine(ir, OptimizeConfig(seed=46))
     rng = random.Random(47)
     move = None
@@ -307,7 +334,7 @@ def test_locked_plane_net_survives_a_full_anneal_unlocked_one_still_demotes():
 
 
 def test_layer_assign_and_plane_promote_refresh_layer_count():
-    ir = _seeded_ir(10, graph_seed=48, seed_rng_seed=49)
+    ir = _seeded_ir(10, graph_seed=48, seed_rng_seed=49, outline=True)
     engine = OptimizeEngine(ir, OptimizeConfig(seed=49))
     rng = random.Random(50)
     before = engine._money_static_by_name["layer_count"]
@@ -971,3 +998,97 @@ def test_digest_carries_per_term_and_per_region_breakdown():
 def test_optimize_config_rejects_soft_p_norm():
     with pytest.raises(ValueError):
         OptimizeConfig(cost=CostConfig(p_norm=2.0))
+
+
+# ── ROTATE must respect polygon legality (it could ignore a circle) ──────
+def test_rotate_is_refused_when_it_would_swing_a_part_into_its_neighbour():
+    """**A rotation can make a placement illegal, and could not before
+    2026-08-30.** While the keep-out was a CIRCLE this move was correctly
+    left ungated: a disc's reserved area is rotation-invariant, so
+    spinning a part could never bring it into a neighbour. A courtyard
+    POLYGON is not — swing an oblong part's long axis toward the part
+    beside it and the two overlap.
+
+    Nothing downstream would have caught it: no cost term reads
+    ``inst_rot``, so ``delta`` is exactly 0.0 and ``anneal`` accepts every
+    generated ROTATE unconditionally. The violation would have surfaced
+    only in a later DRC run, as a ``courtyard_overlap`` the annealer had
+    no way to reject.
+
+    Built by hand rather than sampled: two long thin parts side by side
+    across their SHORT axis, so the placement is legal as seeded and
+    illegal at 90 degrees. A random fixture almost never lands there."""
+    ir = _seeded_ir(2, graph_seed=70, seed_rng_seed=71)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=72))
+    # A 6 x 0.6mm bar for both instances, in the local frame.
+    bar = [(-3.0, -0.3), (3.0, -0.3), (3.0, 0.3), (-3.0, 0.3), (-3.0, -0.3)]
+    engine._keepout_poly = [list(bar) for _ in range(ir.n_instances)]
+    engine._keepout_r = courtyard_bound_radius_mm(engine._keepout_poly)
+    engine._world_poly.clear()
+    # The domain is derived from the SEED's own extent; these hand-placed
+    # coordinates are not in it, and `_placement_is_legal` checks bounds
+    # first. Widen it so this test reads the courtyard gate and nothing
+    # else.
+    engine._placement_bounds = (-100.0, -100.0, 100.0, 100.0)
+    # Stacked across the short axis, 1mm apart: clear at 0 degrees (the
+    # bars are 0.6 wide), overlapping the moment either turns 90.
+    ir.move_instance(0, x=0.0, y=0.0, rot=0.0)
+    ir.move_instance(1, x=0.0, y=1.0, rot=0.0)
+    assert engine._placement_is_legal(((0, 0.0, 0.0),))
+    assert not engine._placement_is_legal(((0, 0.0, 0.0),), rotations={0: 90.0})
+
+    # And the generator itself refuses, rather than handing the annealer a
+    # move it will accept unconditionally.
+    engine._movable_rot = [0]
+    for attempt in range(20):
+        assert MOVE_GENERATORS[MoveKind.ROTATE](
+            engine, random.Random(attempt), 5.0
+        ) is (None)
+
+
+def test_rotate_still_fires_when_there_is_room_to_turn():
+    """The guard must not become "never rotates" — that would silently
+    delete a whole move kind from the search while every test still
+    passed."""
+    ir = _seeded_ir(2, graph_seed=73, seed_rng_seed=74)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=75))
+    bar = [(-3.0, -0.3), (3.0, -0.3), (3.0, 0.3), (-3.0, 0.3), (-3.0, -0.3)]
+    engine._keepout_poly = [list(bar) for _ in range(ir.n_instances)]
+    engine._keepout_r = courtyard_bound_radius_mm(engine._keepout_poly)
+    engine._world_poly.clear()
+    # The domain is derived from the SEED's own extent; these hand-placed
+    # coordinates are not in it, and `_placement_is_legal` checks bounds
+    # first. Widen it so this test reads the courtyard gate and nothing
+    # else.
+    engine._placement_bounds = (-100.0, -100.0, 100.0, 100.0)
+    ir.move_instance(0, x=0.0, y=0.0, rot=0.0)
+    ir.move_instance(1, x=0.0, y=30.0, rot=0.0)  # far enough that any angle clears
+    engine._movable_rot = [0]
+    moves = [
+        MOVE_GENERATORS[MoveKind.ROTATE](engine, random.Random(a), 5.0)
+        for a in range(5)
+    ]
+    assert any(m is not None for m in moves)
+
+
+def test_plane_promotion_is_not_offered_on_a_board_with_no_outline():
+    """A plane is poured into the board PROFILE, so on a design with no
+    outline feature there is nowhere for it to land: ``realize.py`` comes
+    back ``failed: unpourable_plane`` for every connection on the promoted
+    net, and no amount of routing effort changes that.
+
+    Offering the move anyway let the anneal accept it — PLANE_PROMOTE is
+    priced, but a cheap-enough promotion still wins — silently converting
+    a perfectly routable 2-pin net into a permanently failed one. Found
+    2026-08-30 on a 3-part fixture that had always routed, when a
+    placement change shifted the cost landscape enough to make the
+    promotion attractive; latent since PLANE_PROMOTE existed."""
+    ir = _seeded_ir(6, graph_seed=80, seed_rng_seed=81)
+    assert not ir.outline  # the fixture builder authors none
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=82))
+    assert engine._plane_layers  # the stackup DOES offer pourable layers
+    for attempt in range(30):
+        assert (
+            MOVE_GENERATORS[MoveKind.PLANE_PROMOTE](engine, random.Random(attempt), 5.0)
+            is None
+        )

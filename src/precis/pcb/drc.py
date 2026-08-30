@@ -1161,49 +1161,108 @@ def check_via_via_keepout(
 # ── courtyard overlap ──────────────────────────────────────────────────
 
 
-def check_courtyard_overlap(
-    courtyards: list[tuple[str, float, float, float]],
-) -> list[DrcFinding]:
-    """``(refdes, x, y, radius_mm)`` circular courtyard approximations
-    (module docstring: the same honest fallback ``realize.py`` uses when no
-    real footprint courtyard is available) — any two overlapping is a hard
-    error (no capability two-tier here; overlap is categorical, not a
-    manufacturability margin), reported with the overlap depth so it's
-    still a number, not just a flag."""
+#: One instance's courtyard as DRC receives it: refdes plus the polygon in
+#: BOARD coordinates. Was ``(refdes, x, y, radius_mm)`` until 2026-08-30 —
+#: a circle could not stand in for the real shape, over-reserving an edge
+#: connector eightfold while UNDER-reserving a SOIC-8, so a rule built on
+#: it enforced a boundary that was not the one the placer respected or the
+#: one the silkscreen showed. See ``docs/backlog/pcb-courtyard-polygon.md``.
+Courtyard = tuple[str, list[tuple[float, float]]]
+
+
+def check_courtyard_overlap(courtyards: list[Courtyard]) -> list[DrcFinding]:
+    """Any two parts' courtyards overlapping is a hard error — no
+    capability two-tier here; overlap is categorical, not a
+    manufacturability margin.
+
+    The polygons are :func:`precis.pcb.ir.instance_courtyard_polygon`
+    placed into board coordinates — **the same objects the placer reserves
+    and the silkscreen draws.** That identity is the point of this
+    signature: DRC on circles while the placer went polygon would recreate
+    exactly the drift the courtyard work exists to remove, with the added
+    trap that the drift only shows on parts whose aspect ratio is far from
+    square.
+
+    Reported with two numbers rather than one, because a polygon overlap
+    has no single "depth": the intersection AREA (exact, unambiguous) in
+    the detail, and ``margin_mm`` as the negative of the overlap's
+    depth — the shorter side of the overlap region
+    (:func:`_overlap_depth_mm`), i.e. how far the parts must move apart
+    along the easier axis to separate. A pair that overlaps only near a corner and a pair
+    that is half-buried report very different second numbers, which is the
+    thing a reader wants and a bare flag cannot give."""
     if len(courtyards) < 2:
         return []
-    geoms = [
-        Point(x, y).buffer(r, quad_segs=_BUFFER_QUAD_SEGS) for _, x, y, r in courtyards
-    ]
-    tree = STRtree(geoms)
+    geoms = [Polygon(poly) if len(poly) >= 3 else None for _, poly in courtyards]
+    indexed = [(i, g) for i, g in enumerate(geoms) if g is not None and not g.is_empty]
+    if len(indexed) < 2:
+        return []
+    tree = STRtree([g for _, g in indexed])
     findings: list[DrcFinding] = []
     seen: set[tuple[int, int]] = set()
-    for i, (refdes_i, xi, yi, ri) in enumerate(courtyards):
-        for c in tree.query(geoms[i], predicate="intersects"):
-            j = int(c)
-            if j == i:
+    for pos, (i, gi) in enumerate(indexed):
+        for c in tree.query(gi, predicate="intersects"):
+            if int(c) == pos:
                 continue
+            j, gj = indexed[int(c)]
             key = (min(i, j), max(i, j))
             if key in seen:
                 continue
             seen.add(key)
-            refdes_j, xj, yj, rj = courtyards[j]
-            gap = _dist((xi, yi), (xj, yj)) - ri - rj
-            if gap < -_EPS:
-                findings.append(
-                    DrcFinding(
-                        rule="courtyard_overlap",
-                        severity="error",
-                        where=f"{refdes_i} <-> {refdes_j}",
-                        detail=(
-                            f"{refdes_i} and {refdes_j} courtyards overlap by "
-                            f"{abs(gap):.3f}mm"
-                        ),
-                        objects=({"a": refdes_i, "b": refdes_j},),
-                        margin_mm=gap,
-                    )
+            overlap = gi.intersection(gj)
+            if overlap.is_empty or overlap.area <= _EPS:
+                # A shared edge or a single touching vertex: STRtree's
+                # `intersects` counts it, zero area means it is not one.
+                continue
+            findings.append(
+                DrcFinding(
+                    rule="courtyard_overlap",
+                    severity="error",
+                    where=f"{courtyards[i][0]} <-> {courtyards[j][0]}",
+                    detail=(
+                        f"{courtyards[i][0]} and {courtyards[j][0]} courtyards "
+                        f"overlap over {overlap.area:.4f}mm^2, "
+                        f"{_overlap_depth_mm(overlap):.3f}mm deep"
+                    ),
+                    objects=({"a": courtyards[i][0], "b": courtyards[j][0]},),
+                    margin_mm=-_overlap_depth_mm(overlap),
                 )
+            )
     return findings
+
+
+def _overlap_depth_mm(overlap: BaseGeometry) -> float:
+    """How far two courtyards have to move apart to separate, along the
+    easier axis — the SHORTER side of the overlap region's bounding box.
+
+    Not the minimum translation distance (the textbook penetration depth,
+    which needs a full Minkowski difference), and deliberately not "how
+    far is the deepest vertex buried", which was the first cut here and
+    returned **zero** for the commonest case there is: two axis-aligned
+    courtyards overlapping in a band, where every vertex of one lies
+    exactly ON the other's edge and shapely's ``contains`` — correctly —
+    excludes a boundary point. A depth measure that reads 0.000mm on a
+    real 1mm² overlap is worse than no number, because it looks like a
+    near-miss.
+
+    The shorter bbox side has none of that fragility and keeps the
+    intuition a reader needs: a wide shallow band and a deep narrow one
+    report differently, and the number falls to zero only when the
+    overlap really is degenerate.
+
+    **It is a LOWER BOUND, exact only when both courtyards share an
+    axis-aligned orientation** — which is the common case, and the case
+    the constant was chosen for. Two long thin parts rotated to +45 and
+    -45 degrees and crossing near their centres measure ~0.85mm by this
+    reading while genuinely needing ~14mm of travel to separate: the
+    intersection's bbox is a small diamond, but backing either part out
+    means sliding it the length of the other. The overlap AREA in the
+    same finding does not have that blind spot, which is why the detail
+    carries both numbers and this one is never the whole report."""
+    if overlap.is_empty:
+        return 0.0
+    x0, y0, x1, y1 = overlap.bounds
+    return min(x1 - x0, y1 - y0)
 
 
 # ── board-edge clearance ───────────────────────────────────────────────
@@ -1288,7 +1347,7 @@ def check_outline_containment(
     model: dict[str, Any],
     *,
     outline: list[list[float]] | None,
-    courtyards: list[tuple[str, float, float, float]] | None = None,
+    courtyards: list[Courtyard] | None = None,
 ) -> list[DrcFinding]:
     """Copper, pads and parts must be ON the board.
 
@@ -1385,9 +1444,10 @@ def check_outline_containment(
         net, layer = pad.get("net"), pad.get("layer")
         outside(geom, f"pad[{net}] on {layer}", {"net": net, "layer": layer})
 
-    for refdes, cx, cy, radius in courtyards or []:
-        geom = Point(cx, cy).buffer(radius, quad_segs=_BUFFER_QUAD_SEGS)
-        outside(geom, f"part {refdes}", {"refdes": refdes})
+    for refdes, poly in courtyards or []:
+        if len(poly) < 3:
+            continue  # a pinless part the caller gave no fallback shape
+        outside(Polygon(poly), f"part {refdes}", {"refdes": refdes})
 
     return findings
 
@@ -1653,7 +1713,7 @@ def run_geometric_drc(
     *,
     capability: CapabilityRow,
     outline: list[list[float]] | None = None,
-    courtyards: list[tuple[str, float, float, float]] | None = None,
+    courtyards: list[Courtyard] | None = None,
     panel_type: str | None = None,
     net_rules: dict[str, NetRules] | None = None,
     unrouted: list[dict[str, Any]] | None = None,

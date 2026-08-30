@@ -25,6 +25,7 @@ from precis.pcb.geom import (
     GERBER_UNIT_MM,
     Point,
     _corner_fillet,
+    convex_polygons_overlap,
     dist,
     fillet_polyline,
     max_inward_deviation,
@@ -576,3 +577,79 @@ def test_max_radius_for_deviation_is_unbounded_when_no_corner_is_filleted():
     assert max_radius_for_deviation([(0.0, 0.0), (1.0, 0.0)], 0.1) == math.inf
     straight = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]  # collinear -> skipped
     assert max_radius_for_deviation(straight, 0.1) == math.inf
+
+
+# ── convex_polygons_overlap: the ONE polygon-overlap primitive ──────────
+#
+# Three consumers ask this question about the same shapes (silk: does a
+# stroke hit a pad; optimize: may these two parts sit here; drc: do any two
+# courtyards on the finished board overlap). A placer that thought a
+# placement legal while DRC called it a violation is the drift
+# `docs/backlog/pcb-courtyard-polygon.md` exists to close, so the predicate
+# is verified against an INDEPENDENT implementation, not against itself.
+
+
+def _shapely_overlap(a: list[Point], b: list[Point]) -> bool:
+    """The oracle: shapely, which shares no code with the SAT above."""
+    from shapely.geometry import Polygon  # type: ignore[import-untyped]
+
+    return Polygon(a).intersects(Polygon(b))
+
+
+def _random_convex(rng: random.Random, cx: float, cy: float) -> list[Point]:
+    """A random convex polygon — points on a circle at sorted angles, so
+    convexity is guaranteed by construction rather than hoped for (SAT is
+    exact for convex shapes and silently wrong otherwise, so a concave
+    fixture would test nothing)."""
+    n = rng.randint(3, 7)
+    angles = sorted(rng.uniform(0.0, 2.0 * math.pi) for _ in range(n))
+    r = rng.uniform(0.5, 3.0)
+    return [(cx + math.cos(t) * r, cy + math.sin(t) * r) for t in angles]
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_convex_polygons_overlap_agrees_with_an_independent_oracle(seed: int):
+    rng = random.Random(seed)
+    a = _random_convex(rng, 0.0, 0.0)
+    # Offsets straddle the interesting range: deep overlap through clear.
+    b = _random_convex(rng, rng.uniform(-6.0, 6.0), rng.uniform(-6.0, 6.0))
+    assert convex_polygons_overlap(a, b) == _shapely_overlap(a, b), (a, b)
+
+
+def test_convex_polygons_overlap_counts_an_exact_touch_as_overlapping():
+    """**Constructed, never sampled.** Two polygons sharing an edge or a
+    vertex are a measure-zero event: a randomized sweep will never produce
+    one, and this is exactly the case a placer hits, because a good placer
+    puts parts at their legal minimum spacing. The verdict is pinned here
+    once — touching counts as overlapping — so a future float tweak that
+    flips it fails loudly instead of quietly making every tightly-packed
+    board illegal (or every abutting one legal).
+
+    `drc.check_courtyard_overlap` deliberately takes the OTHER view for
+    its own report, discarding zero-AREA intersections; that is a
+    different question (is this a manufacturing defect) from this one (may
+    these two shapes be treated as disjoint), and the two are reconciled
+    there, not here."""
+    unit = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    shared_edge = [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)]
+    shared_vertex = [(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)]
+    assert convex_polygons_overlap(unit, shared_edge)
+    assert convex_polygons_overlap(unit, shared_vertex)
+    # And a hair's breadth apart is not.
+    apart = [(1.001, 0.0), (2.0, 0.0), (2.0, 1.0), (1.001, 1.0)]
+    assert not convex_polygons_overlap(unit, apart)
+
+
+def test_convex_polygons_overlap_accepts_a_closed_ring():
+    """`instance_courtyard_polygon` returns a CLOSED ring (first vertex
+    repeated last) because that is what a drawn outline needs. The
+    duplicate contributes a zero-length edge whose normal is (0, 0), which
+    projects everything to 0 and can never separate — so it must change no
+    answer. Pinned because passing a closed ring is the natural mistake
+    and it would fail open (report overlap) rather than loudly."""
+    open_ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    closed = [*open_ring, (0.0, 0.0)]
+    far = [(5.0, 5.0), (6.0, 5.0), (6.0, 6.0)]
+    assert convex_polygons_overlap(closed, open_ring)
+    assert not convex_polygons_overlap(closed, far)
+    assert not convex_polygons_overlap(far, closed)

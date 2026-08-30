@@ -15,6 +15,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import catalog
+from precis.pcb import drc as pcb_drc
 
 # A tiny but real board: an MCU + a bypass cap + a pull-up, on an I2C net.
 _DESIGN = {
@@ -533,21 +534,27 @@ def _many_pins(n: int) -> list[dict[str, Any]]:
     return [{"name": str(i)} for i in range(1, n + 1)]
 
 
-def test_drc_view_reports_courtyard_overlap_with_real_derived_radii(pcb):
+def test_drc_view_reports_courtyard_overlap_with_real_derived_geometry(pcb):
     """Defect: the DRC courtyard check read a flat 1.0mm radius
     (``DEFAULT_COURTYARD_RADIUS_MM``) for EVERY instance regardless of
     its actual size -- smaller than any real multi-pin part's derived
     keep-out, so placement (which uses the real, pad-geometry-derived
-    radius) always separated parts further apart than the flat DRC check
+    shape) always separated parts further apart than the flat DRC check
     would ever flag. The rule was dormant by construction, on both
     reference fixtures, on every seed.
 
-    Two 12-pin ("dual" package family) parts placed 3.0mm apart: each
-    part's real derived courtyard radius is ~2.51mm (pad radius ~1.91mm
-    + the same 0.6mm pad-breathing margin placement legality adds), so
-    their real courtyards overlap by ~2mm -- but their FLAT 1.0mm nominal
-    courtyards do not even touch (sum 2.0mm < 3.0mm separation), which is
-    exactly how this defect stayed invisible."""
+    Two 12-pin ("dual" package family) parts, offset along the axis their
+    footprint is LONG in. Each one's real courtyard
+    (:func:`precis.pcb.ir.instance_courtyard_polygon`) measures 2.84 x
+    4.18mm -- a tall dual column, not a disc -- so at 3.0mm apart in y
+    they overlap by ~1.2mm, while their flat 1.0mm nominal courtyards do
+    not even touch (sum 2.0mm < 3.0mm). That gap between the two answers
+    is exactly how the defect stayed invisible.
+
+    **Offset in y, not x, and that is the point of the fixture.** The
+    same two parts 3.0mm apart in X do not overlap at all (half-width
+    1.42mm each), so a radius -- any radius -- gets one of the two
+    directions wrong. Only a shape can be right about both."""
     design = {
         "components": [
             {
@@ -560,8 +567,8 @@ def test_drc_view_reports_courtyard_overlap_with_real_derived_radii(pcb):
             {
                 "refdes": "U2",
                 "label": "big2",
-                "x": 3.0,
-                "y": 0.0,
+                "x": 0.0,
+                "y": 3.0,
                 "pins": _many_pins(12),
             },
         ],
@@ -585,7 +592,7 @@ def test_drc_view_reports_courtyard_overlap_with_real_derived_radii(pcb):
                 "route_id": None,
                 "geom": {
                     "segments": [
-                        {"shape": "line", "start": [0.0, 0.0], "end": [3.0, 0.0]}
+                        {"shape": "line", "start": [0.0, 0.0], "end": [0.0, 3.0]}
                     ],
                     "width_mm": 0.2,
                 },
@@ -595,6 +602,11 @@ def test_drc_view_reports_courtyard_overlap_with_real_derived_radii(pcb):
     pcb.store.pcb_routes_write(ref.id, board_id, {"N1": {"status": "realized"}})
     drc = pcb.get(id="big-parts", view="drc")
     assert "courtyard_overlap" in drc.body, drc.body
+    # The counterfactual, stated rather than implied: a flat nominal
+    # courtyard on both parts would not have reached across this gap,
+    # so a passing assertion above really is the derived geometry
+    # talking and not the fallback constant.
+    assert 2 * pcb_drc.DEFAULT_COURTYARD_RADIUS_MM < 3.0
 
 
 def test_proximity_view(pcb):

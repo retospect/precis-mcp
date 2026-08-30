@@ -96,6 +96,52 @@ def point_in_polygon(p: Point, poly: list[Point]) -> bool:
     return inside
 
 
+def convex_polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
+    """Separating Axis Theorem for two CONVEX polygons — exact, and the ONE
+    polygon-overlap primitive in this package.
+
+    Three consumers ask the same question about the same shapes and must
+    not answer it differently: :mod:`precis.pcb.silk` (does this silk
+    stroke's box hit that pad), :mod:`precis.pcb.optimize` (may these two
+    parts' courtyards be placed here) and :mod:`precis.pcb.drc` (do any two
+    courtyards on the finished board overlap). A placer that thought a
+    placement legal while DRC called it a violation is the drift
+    ``docs/backlog/pcb-courtyard-polygon.md`` exists to close, and two
+    implementations of one predicate is how that drift starts.
+
+    **Convex only, and the name says so.** SAT tests the edge normals of
+    both polygons as candidate separating axes, which is complete for
+    convex shapes and silently WRONG for a concave one (two shapes can be
+    disjoint while no edge normal separates them, and vice versa). Every
+    caller here passes something convex by construction — a rotated
+    rectangle, a pad, or a courtyard (:func:`precis.pcb.ir.
+    instance_courtyard_polygon` is a convex hull offset outward, which
+    stays convex).
+
+    Touching counts as overlapping: the test is a strict ``<`` on the
+    projection gap, so two polygons sharing exactly one edge or vertex
+    return ``True``. That verdict is pinned by test rather than left to
+    float luck — a shared boundary is measure-zero and would otherwise
+    never be exercised.
+
+    A closed ring (first vertex repeated last) is accepted: the duplicate
+    contributes a zero-length edge whose normal is ``(0, 0)``, which
+    projects everything to 0 and can never separate, so it changes no
+    answer.
+    """
+    for poly in (poly_a, poly_b):
+        n = len(poly)
+        for i in range(n):
+            x1, y1 = poly[i]
+            x2, y2 = poly[(i + 1) % n]
+            nx, ny = -(y2 - y1), (x2 - x1)
+            a_vals = [nx * px + ny * py for px, py in poly_a]
+            b_vals = [nx * px + ny * py for px, py in poly_b]
+            if max(a_vals) < min(b_vals) or max(b_vals) < min(a_vals):
+                return False
+    return True
+
+
 def bbox(p1: Point, p2: Point) -> tuple[float, float, float, float]:
     """Axis-aligned bounding box (minx, miny, maxx, maxy) of a segment."""
     return (

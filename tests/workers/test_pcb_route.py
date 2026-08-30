@@ -385,6 +385,17 @@ def test_pcb_route_persists_optimizer_derived_plane_promotion(
     def _force_promote(ir: Any, config: Any) -> Any:
         result = real_optimize(ir, config)
         net_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}["N1"]
+        # Clear first. `promote_plane` ORs a bit in, so promoting on top of
+        # whatever the real anneal happened to settle on leaves a TWO-bit
+        # mask, and the write-back's `{net: layer for ... for layer in
+        # plane_layers_of(...)}` then keeps whichever layer comes last —
+        # making this test a reading of the search heuristic it explicitly
+        # says it is not about. (It went red exactly that way when the
+        # courtyard change moved every placement.) Production cannot reach
+        # a two-bit derived mask: `_gen_plane_promote` only offers a bare
+        # net a single layer, which is the assumption the write-back's own
+        # comment records.
+        ir.demote_plane(net_id)
         ir.promote_plane(net_id, 1)  # In1.Cu — role 'plane' in DEFAULT_STACKUP
         return result
 

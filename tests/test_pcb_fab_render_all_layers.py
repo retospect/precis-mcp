@@ -56,23 +56,27 @@ _BOARD_MM = 40.0
 
 _SEED = 1
 
-#: **Empty since 2026-08-30 — this board now passes DRC outright.**
+#: **57 errors down to 2, over 2026-08-30.** This board is deliberately
+#: too small for its own parts — ~44mm of parts on a 40mm outline — so it
+#: is the stress fixture, not the acceptance one
+#: (``tests/test_pcb_reference_end_to_end.py`` is that, at natural size,
+#: and holds at zero).
 #:
-#: It did not start that way. Every entry below was an engine defect that
-#: PRE-DATED the DRC rules which reported it; none was a regression. They
-#: became visible together when ``_render_drc`` began folding board
-#: furniture into the DRC model and the plane stitcher started reporting
-#: honestly, peaking at 57 errors. The ``board_edge_clearance`` and
-#: ``connectivity`` numbers are corroborated verbatim by a checkpoint
-#: written BEFORE that work landed (``docs/backlog/pcb-engine-plan.md``,
-#: "0.390 vs 0.400mm — 10um short"; "GND in 3 pieces; VCC3V3 in 2").
+#: Every entry below was an engine defect that PRE-DATED the DRC rules
+#: which reported it; none was a regression. They became visible together
+#: when ``_render_drc`` began folding board furniture into the DRC model
+#: and the plane stitcher started reporting honestly. The
+#: ``board_edge_clearance`` and ``connectivity`` numbers are corroborated
+#: verbatim by a checkpoint written BEFORE that work landed
+#: (``docs/backlog/pcb-engine-plan.md``, "0.390 vs 0.400mm — 10um short";
+#: "GND in 3 pieces; VCC3V3 in 2").
 #:
-#: The history is kept because an empty dict is the one state that cannot
-#: explain itself: a reader finding no waiver cannot tell a board that was
-#: always clean from one whose defects were fixed, and the fix for each of
-#: these was structural rather than a tuning nudge. **Do not add an entry
-#: back to make a red run green** — the whole point of the ledger below is
-#: that each line was retired by understanding it.
+#: The retired entries are kept because a shrinking waiver is the one
+#: thing that cannot explain itself: a reader cannot tell a board that was
+#: always clean from one whose defects were fixed, and each fix here was
+#: structural rather than a tuning nudge. **Do not add an entry back, or
+#: raise one, to make a red run green** — see the ``silk_missing`` note
+#: for what that costs when it is genuinely warranted.
 #:
 #: - ``clearance`` -- FIXED. A fiducial (net ``""``) used to come back
 #:   flooded by a GND pour: fiducials are synthesised at RENDER time, pour
@@ -119,9 +123,32 @@ _SEED = 1
 #:      the industry's other spelling for exactly that situation. A tick
 #:      marks a corner and has nowhere else to go; a dot does.
 #:
-#: A new rule, or ANY error at all, now fails this test — a rule absent
-#: from this (empty) mapping is allowed zero.
-KNOWN_OPEN_DRC_ERRORS: dict[str, int] = {}
+#: - ``silk_missing`` (0 -> 2, and the direction is the point). This board
+#:   reached zero on 2026-08-30 and lost it the same day, to a CORRECTNESS
+#:   fix rather than a regression: ``optimize._gen_rotate`` never checked
+#:   placement legality, which was right while a keep-out was a CIRCLE
+#:   (rotation-invariant — spinning a part could not bring it into a
+#:   neighbour) and wrong once it became a polygon. Nothing downstream
+#:   caught it either: no cost term reads ``inst_rot``, so the anneal
+#:   accepted every generated rotation unconditionally. Gating it removed
+#:   moves the search had been using to pack a board that is deliberately
+#:   too small — ~44mm of parts on 40mm — and the best placement it can
+#:   now reach leaves one part's courtyard crossing a plane fan-out via
+#:   (plus that part's pin-1 mark, which never survives its own courtyard).
+#:   That is the known courtyard-meets-via class, not a new defect.
+#:
+#: **This is the one entry that was raised rather than lowered, so it
+#: carries the burden of proof.** The alternative was to keep the zero by
+#: leaving illegal rotations unchecked, which would have meant a fixture
+#: asserting a clean board while the engine could silently produce an
+#: overlapping one. Nothing here may be raised again without that kind of
+#: reason written down.
+#:
+#: A new rule, or more of an existing one, still fails — a rule absent
+#: from this mapping is allowed zero.
+KNOWN_OPEN_DRC_ERRORS: dict[str, int] = {
+    "silk_missing": 2,
+}
 
 #: The films this board must produce with geometry on them. Listed
 #: explicitly rather than derived from the exporter, because a test that

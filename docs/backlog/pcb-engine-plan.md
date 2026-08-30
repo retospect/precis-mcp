@@ -1732,14 +1732,15 @@ the bug it was chasing: this subsystem had FIVE independently-computed
 notions of a part's courtyard, and the one drawn on the board was not the
 one enforced.
 
-**Half-closed 2026-08-30.** The drawn courtyard is now
-`ir.instance_courtyard_polygon` — the hull of the part's own pad outlines
-offset by the fab-derived `silk.silk_clearance_mm` — and the square
-`silk._courtyard_reach_mm` it replaced is gone. What remains is that the
-PLACER and `courtyard_overlap` DRC still reserve
-`ir.instance_keepout_radius_mm`, a CIRCLE, and the anneal still steers by
-a flat 2.0mm centre-distance term. That residue, the reconciliation
-decision, and the measured before/after now live in
+**Closed 2026-08-30.** There is now one courtyard shape,
+`ir.instance_courtyard_polygon` — the hull of the part's own pad outlines,
+offset outward — and the placer reserves it, `courtyard_overlap` and
+`outline_containment` check it, and `silk.py` draws it. The three differ
+only in the clearance they offset by, which is a real difference (router
+escape room vs. fab ink clearance) rather than drift. The circle path
+(`instance_keepout_radius_mm`, `instance_pad_radius`) is deleted. What
+remains is that the anneal's GRADED cost term still steers by a flat
+2.0mm centre-distance; that one open question lives in
 `docs/backlog/pcb-courtyard-polygon.md` — go there, not here.
 
 Two findings from this investigation are worth keeping because they are

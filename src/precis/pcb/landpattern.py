@@ -318,3 +318,31 @@ def rotate_offset(
     cos_t, sin_t = math.cos(theta), math.sin(theta)
     # Clockwise rotation: [[cos, sin], [-sin, cos]].
     return (dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t)
+
+
+def place_points(
+    points: list[tuple[float, float]],
+    *,
+    cx: float,
+    cy: float,
+    rot_deg: float,
+    mirrored: bool = False,
+) -> list[tuple[float, float]]:
+    """A whole footprint-local outline placed into board space for one
+    instance — :func:`rotate_offset` applied vertex by vertex, then
+    translated to the instance centre.
+
+    Exists so a part's COURTYARD travels the identical affine path its
+    PADS do. A courtyard is derived from pad geometry
+    (:func:`precis.pcb.ir.instance_courtyard_polygon`), so a second
+    rotation convention here — a sign flip, or mirror-after-rotate — would
+    put a part's reserved area somewhere its own copper is not, and the
+    result looks entirely plausible in a render. Both
+    :mod:`precis.pcb.silk` (what is drawn) and :mod:`precis.pcb.optimize`
+    (what is reserved) go through this one function.
+    """
+    out = []
+    for lx, ly in points:
+        rx, ry = rotate_offset(lx, ly, rot_deg, mirrored=mirrored)
+        out.append((cx + rx, cy + ry))
+    return out

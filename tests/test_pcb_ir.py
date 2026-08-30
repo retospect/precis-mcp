@@ -19,8 +19,7 @@ from precis.pcb.ir import (
     compute_gap_capacity,
     compute_region_density,
     from_graph,
-    instance_keepout_radius_mm,
-    instance_pad_radius,
+    instance_courtyard_polygon,
     layer_is_pourable,
     layer_is_routable,
     nearest_other_instance,
@@ -131,71 +130,38 @@ def test_from_graph_carries_part_lcsc_per_instance():
     assert ir.instance_part_lcsc[u2] is None
 
 
-def test_instance_pad_radius_is_offset_only_pad_size_does_not_widen_it():
-    """Deliberately offset-only, NOT widened by ``pin_w``/``pin_h`` — see
-    :func:`~precis.pcb.ir.instance_pad_radius`'s own docstring for the
-    2026-08-29 measurement: folding pad size into this bound (both a
-    loose "offset + enclosing circle" version and the exact axis-aligned
-    far-corner version) regressed ``tests/test_pcb_reference_end_to_end.
-    py``'s acceptance fixture on 2 of 5 seeds — a router capacity limit,
-    not a placement-legality bug — so this stays offset-only until that
-    gap is closed. Pinned here so a future change to this formula is
-    deliberate, not an accidental drift back toward the regressed
-    behaviour: two pins at the SAME offset but wildly different pad sizes
-    must still produce the SAME radius."""
+def test_a_pinless_instance_takes_the_callers_fallback_shape():
+    """The keep-out RADIUS formula this replaced (retired 2026-08-30 with
+    the circle it described) floored itself at a caller-supplied
+    ``min_radius_mm`` so a pinless part still occupied space. The polygon
+    keeps that division of labour as
+    ``fallback_half_extent_mm``: the caller decides, because the fallback
+    is a policy and ``ir.py`` sits below the modules that hold policy.
+
+    Both answers are real. ``0.0`` (silk's choice) means "draw nothing" —
+    a courtyard describing no land pattern is a lie on the board.
+    Positive (the placer's choice) means "reserve a square" — a mounting
+    hole occupies space, and a placer reserving nothing drops a part on
+    top of it."""
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
-    u3 = list(ir.instance_refdes).index("U3")
-    u3_pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == u3]
-    for p in u3_pins:
-        ir.pin_dx[p] = 1.0
-        ir.pin_dy[p] = 0.0
-    ir.pin_w[u3_pins[0]] = 4.0
-    ir.pin_h[u3_pins[0]] = 4.0
-    ir.pin_w[u3_pins[1]] = 0.2
-    ir.pin_h[u3_pins[1]] = 0.2
-    radius = instance_pad_radius(ir)
-    assert radius[u3] == pytest.approx(1.0)
+    assert instance_courtyard_polygon(ir, 0, clearance_mm=0.3, pins=[]) == []
 
-
-def test_instance_pad_radius_matches_hand_computed_offset_max():
-    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
-    import numpy as np
-
-    expected: dict[int, float] = {}
-    for p in range(ir.n_pins):
-        inst = int(ir.pin_instance[p])
-        r = math.hypot(float(ir.pin_dx[p]), float(ir.pin_dy[p]))
-        expected[inst] = max(expected.get(inst, 0.0), r)
-    radius = instance_pad_radius(ir)
-    for inst, r in expected.items():
-        assert radius[inst] == pytest.approx(r)
-    assert not np.isnan(radius).any()
-
-
-def test_instance_keepout_radius_mm_is_pad_radius_plus_breathing_floored():
-    """``instance_keepout_radius_mm`` -- the ONE formula the placer's
-    legality check, its seeder, and the DRC courtyard geometry
-    (:mod:`precis.handlers.pcb`) must all share -- is exactly
-    ``instance_pad_radius(ir) + PAD_BREATHING_MM``, floored at the
-    caller-supplied ``min_radius_mm`` (never a value this module invents,
-    since a courtyard-policy constant like
-    ``cost.COURTYARD_MIN_SEPARATION_MM`` lives ABOVE ``ir.py`` in the
-    import order -- see the function's own docstring)."""
-    from precis.pcb.ir import PAD_BREATHING_MM
-
-    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
-    pad_radius = instance_pad_radius(ir)
-
-    # Floor inactive: min_radius_mm below every instance's own pad+breathing
-    # figure, so the result is exactly the unfloored formula.
-    unfloored = instance_keepout_radius_mm(ir, min_radius_mm=0.0)
-    for i in range(ir.n_instances):
-        assert unfloored[i] == pytest.approx(float(pad_radius[i]) + PAD_BREATHING_MM)
-
-    # Floor active: an enormous min_radius_mm must win over every instance's
-    # own (much smaller) derived figure.
-    floored = instance_keepout_radius_mm(ir, min_radius_mm=1000.0)
-    assert (floored == 1000.0).all()
+    square = instance_courtyard_polygon(
+        ir, 0, clearance_mm=0.3, pins=[], fallback_half_extent_mm=1.0
+    )
+    assert len(square) == 5  # closed ring
+    assert {(round(x, 6), round(y, 6)) for x, y in square} == {
+        (-1.0, -1.0),
+        (1.0, -1.0),
+        (1.0, 1.0),
+        (-1.0, 1.0),
+    }
+    # Not scaled by the clearance: a part with no pads has no pad edge to
+    # offset from, so the fallback is the whole answer, not a base for one.
+    wider = instance_courtyard_polygon(
+        ir, 0, clearance_mm=5.0, pins=[], fallback_half_extent_mm=1.0
+    )
+    assert wider == square
 
 
 @pytest.mark.parametrize("seed", range(12))

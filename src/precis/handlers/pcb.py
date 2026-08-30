@@ -69,6 +69,7 @@ from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
 from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.landpattern import place_points
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -1038,44 +1039,38 @@ class PcbHandler(Handler):
 
     def _drc_geometry(
         self, ref_id: int, layers: list[str]
-    ) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, list[tuple[float, float]]]]:
         """DRC's pads (the same IR-sourced geometry :meth:`_drc_pads`
         builds, off ONE ``build_ir`` call here rather than two independent
-        ones) plus each instance's real, pad-geometry-derived courtyard
-        keep-out radius, keyed by refdes.
+        ones) plus each instance's courtyard POLYGON in local-frame
+        coordinates, keyed by refdes.
 
-        **The radius is not computed here.**
-        :func:`precis.pcb.ir.instance_keepout_radius_mm` is the definition
-        used by every COPPER-side consumer — this view,
-        ``OptimizeEngine._keepout_r`` and ``seed_placement``.
+        **The shape is not computed here, and since 2026-08-30 there is
+        only one of it.** :func:`precis.pcb.ir.instance_courtyard_polygon`
+        — the convex hull of the part's own pad outlines, offset outward —
+        is what the placer reserves
+        (``OptimizeEngine._keepout_poly``/``seed_placement``), what
+        ``courtyard_overlap`` and ``outline_containment`` check, and what
+        :mod:`precis.pcb.silk` draws. Three consumers, one definition,
+        which is the whole point of ``docs/backlog/
+        pcb-courtyard-polygon.md``.
 
-        **It is NOT the only courtyard in this subsystem, and this
-        docstring claimed it was until 2026-08-29.** The courtyard actually
-        DRAWN on the silkscreen comes from
-        :func:`precis.pcb.ir.instance_courtyard_polygon`: the convex hull
-        of the part's own pad outlines, offset by the fab-derived
-        :func:`precis.pcb.silk.silk_clearance_mm`, against this function's
-        CIRCLE of radius ``instance_pad_radius + PAD_BREATHING_MM``
-        floored at ``COURTYARD_MIN_SEPARATION_MM / 2``. Different shape,
-        different size, and for an elongated part different by a factor of
-        several. So ``courtyard_overlap`` enforces one boundary while the
-        board's silkscreen shows an assembler a different one — they are
-        not required to agree (a placement-legality keep-out and a visual
-        assembly aid are different questions), but nothing currently
-        states the relationship or checks it, and a reader who believed
-        the old "ONE definition" claim would not go looking. **Putting
-        this check on the same polygon is the open half of**
-        ``docs/backlog/pcb-courtyard-polygon.md`` (its item 4).
+        **The three differ only in the CLEARANCE they offset by, and that
+        is a real difference, not drift.** The placer and this view use
+        :data:`~precis.pcb.ir.COURTYARD_CLEARANCE_MM` — how much room a router
+        needs to escape between two land patterns. Silk uses
+        :func:`precis.pcb.silk.silk_clearance_mm`, walked down the fab
+        chain — how far ink must sit from a mask opening it must not
+        touch. Different questions against different standards, answered
+        at different points in the pipeline; what must NOT differ is the
+        shape they are offsets of.
 
-        A flat
-        :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` for EVERY
-        instance made ``courtyard_overlap`` structurally dormant: it is
-        smaller than any real part's derived keep-out, so placement always
-        separates parts further than the flat check would ever flag — a
-        TO-220's real several-millimetre courtyard was being checked
-        against nothing. The floor is passed in rather than baked into
-        ``ir.py`` because it is a cost-policy constant and ``ir.py`` sits
-        below ``cost.py`` in the import order."""
+        Before this, a circle stood in for all of it, and a flat
+        :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` before that
+        made ``courtyard_overlap`` structurally dormant: smaller than any
+        real part's keep-out, so placement always separated parts further
+        than the check would ever flag — a TO-220's several-millimetre
+        courtyard checked against nothing."""
         graph = self.store.pcb_graph(ref_id)
         ir = pcb_session.build_ir(graph)
         footprints = pcb_session.footprints_by_refdes(
@@ -1084,13 +1079,14 @@ class PcbHandler(Handler):
         pads = (
             pcb_realize.pads_for_ir(ir, layers, footprints) if graph.get("nets") else []
         )
-        radii = pcb_ir.instance_keepout_radius_mm(
-            ir, min_radius_mm=pcb_cost.COURTYARD_MIN_SEPARATION_MM / 2.0
+        polys = pcb_ir.instance_courtyard_polygons(
+            ir,
+            clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=pcb_cost.COURTYARD_MIN_SEPARATION_MM / 2.0,
         )
-        radius_by_refdes = {
-            str(ir.instance_refdes[i]): float(radii[i]) for i in range(ir.n_instances)
+        return pads, {
+            str(ir.instance_refdes[i]): polys[i] for i in range(ir.n_instances)
         }
-        return pads, radius_by_refdes
 
     def _drc_drills(self, ref_id: int) -> list[dict[str, Any]]:
         """``model['drills']`` for :func:`precis.pcb.drc.
@@ -1582,7 +1578,7 @@ class PcbHandler(Handler):
         # pad source is how this build's recurring defect works — one rule,
         # two call sites, drifted — and connectivity is precisely the check
         # that would be fooled by pads in the wrong place.
-        pads, courtyard_radius = self._drc_geometry(ref_id, layer_names)
+        pads, courtyard_local = self._drc_geometry(ref_id, layer_names)
 
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
@@ -1638,18 +1634,27 @@ class PcbHandler(Handler):
             "silkscreen": silk_draws,
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
         }
-        courtyards = [
+        # The part's own courtyard POLYGON (see :meth:`_drc_geometry`),
+        # placed into board coordinates through the SAME affine path its
+        # pads and its silkscreen travel — a courtyard that rotated by a
+        # different convention would reserve space where the part's own
+        # copper is not, and look plausible doing it. A refdes the IR
+        # somehow didn't carry falls back to the flat
+        # ``DEFAULT_COURTYARD_RADIUS_MM`` square: a safety net, not the
+        # normal path, and deliberately still SOMETHING rather than
+        # nothing, since a part checked against no shape is a part the
+        # rule cannot see.
+        _flat = pcb_drc.DEFAULT_COURTYARD_RADIUS_MM
+        _fallback = [(-_flat, -_flat), (_flat, -_flat), (_flat, _flat), (-_flat, _flat)]
+        courtyards: list[pcb_drc.Courtyard] = [
             (
-                i["refdes"],
-                float(i["x"]),
-                float(i["y"]),
-                # The part's own derived keep-out radius (see
-                # :meth:`_drc_geometry`) — NOT the flat
-                # ``DEFAULT_COURTYARD_RADIUS_MM`` every instance used to
-                # share regardless of size. The fallback below is a safety
-                # net for a refdes the IR somehow didn't carry, not the
-                # normal path.
-                courtyard_radius.get(i["refdes"], pcb_drc.DEFAULT_COURTYARD_RADIUS_MM),
+                str(i["refdes"]),
+                place_points(
+                    courtyard_local.get(str(i["refdes"])) or _fallback,
+                    cx=float(i["x"]),
+                    cy=float(i["y"]),
+                    rot_deg=float(i.get("rot") or 0.0),
+                ),
             )
             for i in design["instances"]
             if i["x"] is not None and i["y"] is not None

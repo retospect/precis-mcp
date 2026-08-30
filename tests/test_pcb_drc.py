@@ -787,15 +787,60 @@ def test_check_via_via_keepout_fires_on_a_real_realized_via():
 # ── courtyard overlap ─────────────────────────────────────────────────
 
 
+def _square(cx: float, cy: float, half: float = 1.0) -> list[tuple[float, float]]:
+    return [
+        (cx - half, cy - half),
+        (cx + half, cy - half),
+        (cx + half, cy + half),
+        (cx - half, cy + half),
+    ]
+
+
 def test_check_courtyard_overlap_fires_and_stays_quiet():
-    overlapping = [("U1", 0.0, 0.0, 1.0), ("U2", 1.5, 0.0, 1.0)]  # 0.5mm overlap
+    # 2x2 squares 1.5mm apart: 0.5mm of overlap in x, full 2mm in y.
+    overlapping = [("U1", _square(0.0, 0.0)), ("U2", _square(1.5, 0.0))]
     findings = drc.check_courtyard_overlap(overlapping)
     assert len(findings) == 1
     assert findings[0].severity == "error"
+    # 0.5mm of x-overlap across the full 2mm height -> 1.0mm^2, 0.5mm deep.
+    assert "1.0000mm^2" in findings[0].detail
     assert findings[0].margin_mm == pytest.approx(-0.5, abs=1e-6)
 
-    clear = [("U1", 0.0, 0.0, 1.0), ("U2", 10.0, 0.0, 1.0)]
+    clear = [("U1", _square(0.0, 0.0)), ("U2", _square(10.0, 0.0))]
     assert drc.check_courtyard_overlap(clear) == []
+
+
+def test_courtyards_that_merely_touch_are_not_an_overlap():
+    """**Pinned deliberately, and constructed rather than sampled.** Two
+    courtyards sharing exactly one edge have zero-area intersection —
+    shapely's ``intersects`` says yes, and reporting that as an overlap
+    would fail every board whose parts sit exactly at their legal minimum
+    spacing, which is where a good placer puts them. A sampled near-touch
+    never produces this case (it is measure-zero), so the coordinates are
+    shared exactly."""
+    touching = [("U1", _square(0.0, 0.0)), ("U2", _square(2.0, 0.0))]
+    assert drc.check_courtyard_overlap(touching) == []
+    # One shared vertex, the corner case of the corner case.
+    corner = [("U1", _square(0.0, 0.0)), ("U2", _square(2.0, 2.0))]
+    assert drc.check_courtyard_overlap(corner) == []
+
+
+def test_courtyard_overlap_sees_a_rotation_a_radius_could_not():
+    """The reason this rule takes polygons at all. Two 6x1 bars crossing
+    at right angles, centres 2mm apart, overlap — but their circumscribed
+    circles (radius ~3.04) would have called ANY pair within 6mm of each
+    other overlapping, and two bars end-to-end at 4mm apart do not touch
+    at all. A radius cannot answer this question in either direction."""
+    horizontal = [(-3.0, -0.5), (3.0, -0.5), (3.0, 0.5), (-3.0, 0.5)]
+    vertical = [(-0.5, -3.0), (0.5, -3.0), (0.5, 3.0), (-0.5, 3.0)]
+    crossing = [
+        ("U1", horizontal),
+        ("U2", [(x + 2.0, y) for x, y in vertical]),
+    ]
+    assert len(drc.check_courtyard_overlap(crossing)) == 1
+
+    end_to_end = [("U1", horizontal), ("U2", [(x + 7.0, y) for x, y in horizontal])]
+    assert drc.check_courtyard_overlap(end_to_end) == []
 
 
 # ── board-edge clearance ──────────────────────────────────────────────
@@ -938,7 +983,7 @@ def test_run_geometric_drc_aggregates_every_rule():
         model,
         capability=_CAP4,
         outline=None,
-        courtyards=[("U1", 0.0, 0.0, 1.0), ("U2", 0.5, 0.0, 1.0)],
+        courtyards=[("U1", _square(0.0, 0.0)), ("U2", _square(0.5, 0.0))],
     )
     rules = {f.rule for f in findings}
     assert "trace_width" in rules
@@ -1364,7 +1409,7 @@ def test_a_part_placed_off_the_board_is_reported() -> None:
     them. Nothing reported it."""
     found = _containment(
         {"layers": ["F.Cu"], "copper": []},
-        courtyards=[("U1", 5.0, 5.0, 1.0), ("U2", 45.0, 5.0, 1.0)],
+        courtyards=[("U1", _square(5.0, 5.0)), ("U2", _square(45.0, 5.0))],
     )
     assert [f.objects[0]["refdes"] for f in found] == ["U2"]
 
