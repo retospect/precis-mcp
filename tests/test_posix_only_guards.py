@@ -77,7 +77,9 @@ def _is_win32_aware(tree: ast.AST) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare) and "sys.platform" in ast.unparse(node):
             consts = [c.value for c in ast.walk(node) if isinstance(c, ast.Constant)]
-            if any(isinstance(v, str) and v.startswith(("win", "cygwin")) for v in consts):
+            if any(
+                isinstance(v, str) and v.startswith(("win", "cygwin")) for v in consts
+            ):
                 return True
     return False
 
@@ -159,7 +161,11 @@ def test_posix_only_test_modules_carry_a_win32_guard() -> None:
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source)
         modules, from_subprocess = _imported(tree)
-        why = [f"spawns {s} (line {n})" for n in _spawns_shell(tree, from_subprocess) for s in ["bash/sh"]]
+        why = [
+            f"spawns {s} (line {n})"
+            for n in _spawns_shell(tree, from_subprocess)
+            for s in ["bash/sh"]
+        ]
         why += _posix_only_uses(tree, modules)
         if "subprocess" in modules:
             why += [f"execs shell script {r}" for r in _shell_script_refs(source)]
@@ -169,7 +175,7 @@ def test_posix_only_test_modules_carry_a_win32_guard() -> None:
         f"{len(bad)} test module(s) look POSIX-only but never consider win32 "
         "(the Windows CI leg only runs post-merge — this is how check.yml "
         "goes red for days). Add a skipif guard, module-level for a wholly-"
-        'POSIX module: pytestmark = pytest.mark.skipif(sys.platform == '
+        "POSIX module: pytestmark = pytest.mark.skipif(sys.platform == "
         '"win32", reason="POSIX-only <what>") — or vet + _EXEMPT it here:\n'
         + "\n".join(bad)
     )

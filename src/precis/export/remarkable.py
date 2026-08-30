@@ -76,11 +76,16 @@ _NAME_SANITISE = re.compile(r"[^A-Za-z0-9 _.-]+")
 
 #: reMarkable's one-time-code → device-token registration endpoint. Fixed
 #: (not agent-supplied), overridable via ``PRECIS_RMAPI_REGISTER_URL`` for
-#: tests and the day this URL drifts.
-_REGISTER_URL_DEFAULT = "https://my.remarkable.com/token/json/2/device/new"
+#: tests and the day this URL drifts — which it already did once:
+#: ``my.remarkable.com/token/json/2/device/new`` started answering 405 to
+#: POST (2026-08-30); ``webapp-prod`` is what ``rmapi`` itself registers
+#: against.
+_REGISTER_URL_DEFAULT = (
+    "https://webapp-prod.cloud.remarkable.engineering/token/json/2/device/new"
+)
 
 #: The 8-character one-time pairing code from
-#: https://my.remarkable.com/device/desktop/connect — case-insensitive.
+#: https://my.remarkable.com/device/apps/connect — case-insensitive.
 _PAIRING_CODE_RE = re.compile(r"^[a-z0-9]{8}$")
 
 
@@ -192,7 +197,7 @@ def register_device(code: str, *, timeout_s: float = 15.0) -> str:
     """Exchange a one-time pairing code for a reMarkable device-config body.
 
     ``code`` is the 8-character code shown at
-    https://my.remarkable.com/device/desktop/connect — validated (8
+    https://my.remarkable.com/device/apps/connect — validated (8
     alphanumeric characters), lowercased, and stripped before use. POSTs to
     the reMarkable device-registration endpoint (a FIXED module constant,
     not agent-supplied input — this is not an SSRF surface, so a direct
@@ -219,7 +224,7 @@ def register_device(code: str, *, timeout_s: float = 15.0) -> str:
     if not _PAIRING_CODE_RE.match(normalised):
         raise PairingError(
             "that doesn't look like an 8-character pairing code — copy a "
-            "fresh one from https://my.remarkable.com/device/desktop/connect"
+            "fresh one from https://my.remarkable.com/device/apps/connect"
         )
     url = os.environ.get("PRECIS_RMAPI_REGISTER_URL") or _REGISTER_URL_DEFAULT
     import httpx

@@ -24,7 +24,7 @@ Three things live here today:
   one, the page falls back to "mint to see a link".
 * **reMarkable pairing** — self-service send-to-tablet, the per-user
   half of :mod:`precis.export.remarkable`. Pairing exchanges an 8-character
-  one-time code (from ``my.remarkable.com/device/desktop/connect``) for a
+  one-time code (from ``my.remarkable.com/device/apps/connect``) for a
   device token via :func:`precis.export.remarkable.register_device`, stored
   in the vault under this login's own name — never shared with, or
   overridden by, the deployment-wide device other accounts might fall back
