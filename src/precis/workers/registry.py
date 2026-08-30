@@ -968,7 +968,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
     ServiceSpec(
         # precis.workers.diagnose_scan: mints read-only diagnose_gripe
         # jobs for open, undiagnosed gripes — same dark-pass shape as
-        # backlog_groom (no default_profiles, enable_env gate), a separate
+        # backlog_groom (no default_profiles, `enable_env` check), a separate
         # flip from it: an operator can run the cheap read-only diagnosis
         # without also arming the FRONTIER-tier autonomous fixer. Arming
         # sequence: docs/backlog/dark-factory-arming.md.

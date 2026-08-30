@@ -1290,7 +1290,7 @@ def load_s2_citation_graph(identifiers: dict[str, Any]) -> dict[str, Any] | None
     # this module is on the ``get(kind='paper')`` read path (via
     # ``inbound_chase.mark_paper_active``), which must work in venvs
     # without that extra (asa's /opt/asa). Same pattern as
-    # ``watch_poll.py`` / ``backfill/citation_lens.py``.
+    # ``watch_poll.py`` / ``backfill/citation_recall.py``.
     from precis.ingest.citations import citations as fetch_s2_citations
 
     paper_id = _s2_paper_id(identifiers)

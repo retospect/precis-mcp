@@ -71,10 +71,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 #: The parseable boundary between the model's critique and its rewrite.
 _SENTINEL = "=== REWRITE ==="
 
-#: Cheap shape check for a ``dc<id>`` chunk address — the scope must be a
+#: Cheap shape check for a ``dc<id>`` chunk handle — the scope must be a
 #: chunk anchor (a heading), never a bare draft slug (which ``_scope_chunks``
 #: would otherwise happily resolve to the WHOLE draft).
-_DC_ADDR_RE = re.compile(r"^dc\d+$")
+_DC_HANDLE_RE = re.compile(r"^dc\d+$")
 
 #: Prefixes worth counting as a "citation handle" for the growth gate's
 #: progress-evidence check — paper-chunk, whole-paper, and finding/claim-hub
@@ -342,9 +342,9 @@ def _evidence_digest(store: Store, scope: str) -> str:
         return ""
     lines = ["candidate sources (uncited, corpus-recalled):"]
     for cand in candidates:
-        addr = f"{cand.paper_handle} {cand.chunk_handle}".strip()
+        handle = f"{cand.paper_handle} {cand.chunk_handle}".strip()
         title = cand.title[:90] or "(untitled)"
-        lines.append(f"  {addr} — {title}")
+        lines.append(f"  {handle} — {title}")
     return "\n".join(lines)
 
 
@@ -358,7 +358,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     from precis.quest import logbook
     from precis.quest.narrative_budget import narrative_growth_gate
     from precis.utils.llm.router import LlmRequest, Tier
-    from precis.utils.llm.router import dispatch as llm_dispatch
+    from precis.utils.llm.router import route as llm_dispatch
 
     params = (ctx.meta or {}).get("params") or {}
     draft_slug = str(params.get("draft") or "").strip()
@@ -369,7 +369,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if not scope:
         ctx.record_failure("draft_refresh: params.scope is required")
         return
-    if not _DC_ADDR_RE.match(scope):
+    if not _DC_HANDLE_RE.match(scope):
         ctx.record_failure(
             f"draft_refresh: params.scope must be a dc<id> heading anchor, "
             f"got {scope!r}"

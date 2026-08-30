@@ -3,7 +3,7 @@ docs/backlog/taproot-directed-claim-minting.md.
 
 Two layers, mirroring ``tests/test_taproot_backfill.py``'s split:
 
-* :func:`qualify_claim` parsing — ``directed.dispatch`` monkeypatched (no live
+* :func:`qualify_claim` parsing — ``directed.route`` monkeypatched (no live
   LLM anywhere in this file), exercising the JSON contract, the quote-not-
   found anti-hallucination check, and the strict dispatch posture
   (:class:`QualifyUnavailable` on a dispatch error).
@@ -22,7 +22,7 @@ import pytest
 from precis.errors import BadInput
 from precis.store.store import Store
 from precis.taproot import directed
-from precis.taproot.canon import Candidate, CanonicalClaim, Verdict, claim_sha
+from precis.taproot.canon import CanonicalClaim, MergeCandidate, Verdict, claim_sha
 from precis.taproot.directed import (
     DirectedMintReport,
     QualifyResult,
@@ -60,7 +60,7 @@ def test_qualify_supported_returns_qualified_claim_and_verified_quote(
 ) -> None:
     monkeypatch.setattr(
         directed,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "supported": True,
@@ -93,7 +93,7 @@ def test_qualify_unsupported_returns_reason_no_claim(
 ) -> None:
     monkeypatch.setattr(
         directed,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "supported": False,
@@ -121,7 +121,7 @@ def test_qualify_quote_not_in_passage_invalidates_to_unsupported(
     model's own verdict."""
     monkeypatch.setattr(
         directed,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "supported": True,
@@ -149,7 +149,7 @@ def test_qualify_quote_matches_after_whitespace_collapse(
     wrapped_passage = "Pd/C catalyzes  Suzuki\ncoupling  at room temperature."
     monkeypatch.setattr(
         directed,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "supported": True,
@@ -171,7 +171,7 @@ def test_qualify_supported_with_no_quote_is_unsupported(
 ) -> None:
     monkeypatch.setattr(
         directed,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "supported": True,
@@ -195,7 +195,7 @@ def test_qualify_unparseable_response_is_unsupported(
     a semantic parse failure, not an infra failure: degrades to unsupported,
     never raises."""
     monkeypatch.setattr(
-        directed, "dispatch", lambda req: _result(text="not json at all, sorry")
+        directed, "route", lambda req: _result(text="not json at all, sorry")
     )
 
     result = qualify_claim("Pd/C catalyzes Suzuki coupling.", _PASSAGE)
@@ -210,7 +210,7 @@ def test_qualify_dispatch_error_raises_unavailable_never_unsupported(
 ) -> None:
     """The strict posture: an LLM outage must surface as infra failure, not
     read as 'the passage doesn't support this'."""
-    monkeypatch.setattr(directed, "dispatch", lambda req: _result(error="ECONNREFUSED"))
+    monkeypatch.setattr(directed, "route", lambda req: _result(error="ECONNREFUSED"))
 
     with pytest.raises(QualifyUnavailable, match="ECONNREFUSED"):
         qualify_claim("Pd/C catalyzes Suzuki coupling.", _PASSAGE)
@@ -222,7 +222,7 @@ def test_qualify_empty_proposed_or_passage_short_circuits_no_dispatch(
     def _boom(req: Any) -> Any:
         raise AssertionError("dispatch should not have been called")
 
-    monkeypatch.setattr(directed, "dispatch", _boom)
+    monkeypatch.setattr(directed, "route", _boom)
 
     assert qualify_claim("", _PASSAGE).supported is False
     assert qualify_claim("a claim", "   ").supported is False
@@ -256,13 +256,15 @@ def _qualify_no(reason: str = "not supported") -> Any:
     return _fn
 
 
-def _block_none(claim: CanonicalClaim, store: Any, embedder: Any) -> list[Candidate]:
+def _block_none(
+    claim: CanonicalClaim, store: Any, embedder: Any
+) -> list[MergeCandidate]:
     return []
 
 
 def _block_hit(hub_ref_id: int, claim_text: str) -> Any:
-    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[Candidate]:
-        return [Candidate(hub_ref_id=hub_ref_id, claim=claim_text, distance=0.02)]
+    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[MergeCandidate]:
+        return [MergeCandidate(hub_ref_id=hub_ref_id, claim=claim_text, distance=0.02)]
 
     return _b
 

@@ -1,40 +1,40 @@
 """Rung 3a of the paper-writing pipeline — the whole-draft review fanout
 (docs/backlog/paper-writing-pipeline.md §"Review — the memoized approval
 ledger"; the review-status UI work added incremental re-check + scope +
-the document-altitude lens).
+the document-altitude persona).
 
 :mod:`precis.quest.weave_review`'s ``mint_weave_reviews`` mints review-
-todos for *one just-woven section* across the two per-weave lenses
+todos for *one just-woven section* across the two per-weave personas
 (``flow``/``cites``). :func:`mint_review_fanout` here is the whole-draft
-analogue: mints one review-todo per ``(reviewable chunk × lens)`` across
-the four per-chunk lenses in the design doc's persona table, for every
+analogue: mints one review-todo per ``(reviewable chunk × persona)`` across
+the four per-chunk personas in the design doc's persona table, for every
 reviewable chunk of a draft (or a narrower ``scope``) — a manual "review
 everything" pass (weekly/deep tiers included), not tied to a weave event.
 
 **Shared minting.** Both callers go through
 :func:`precis.quest.weave_review.mint_review_todo` — the single
-``(parent, lens, anchor)`` ref/meta shape (idempotency check + insert +
+``(parent, persona, anchor)`` ref/meta shape (idempotency check + insert +
 ``STATUS:open`` tag / ``meta.llm_tier``). This module only decides
-*which* chunks, *which* lenses, *which* tier, and *which* parent.
+*which* chunks, *which* personas, *which* tier, and *which* parent.
 
-**Lenses → tier.** ``flow``/``cites`` are the per-weave/local lenses
+**Personas → tier.** ``flow``/``cites`` are the per-weave/local personas
 (``llm_tier='sonnet'``, matching ``weave_review``'s per-weave tier);
 ``structure`` (``precis-review-section-structure``) and ``adversarial``
-(``precis-review-paper-help``) are the weekly/deep-tier lenses in the
+(``precis-review-paper-help``) are the weekly/deep-tier personas in the
 design doc's persona table — routed to ``llm_tier='opus'``
 (``Tier.FRONTIER`` in ``utils/llm/router.py``; the same value
 ``workers/deep_review.py`` and the dispatcher's auto-run-signal
 predicate resolve for the opus rung). ``toc`` (the document-altitude
-lens) is also ``opus``.
+persona) is also ``opus``.
 
-**Lens × chunk-kind granularity**:
+**Persona × chunk-kind granularity**:
 ``flow``/``cites`` mint on **prose chunks only**
 (``store.PROSE_CHUNK_KINDS`` — paragraph/aside/callout/claim, never
 equations, tables, headings, or terms); ``structure``/``adversarial``
 mint on **heading chunks only** (the anchored reviewer already renders
 the whole section via fisheye — per-paragraph minting would re-review the
 same section N times for nothing). An equation/table/term chunk gets
-nothing from either lens set. ``toc`` is document-level, not per-chunk —
+nothing from either persona set. ``toc`` is document-level, not per-chunk —
 see below.
 
 **Which chunks.** ``store.drafts.reviewable_chunks(ref_id)`` — the draft's live,
@@ -47,10 +47,10 @@ subtree) or the single named chunk.
 for everything" pass, not filtered by whether a checker already passed a
 chunk at its current sha (a re-run is still cheap: ``mint_review_todo``'s
 own idempotency check skips a pair that already has a *live review-todo*).
-``only_dirty=True`` additionally skips a ``(chunk, lens)`` pair that
+``only_dirty=True`` additionally skips a ``(chunk, persona)`` pair that
 already has an *approved* ``chunk_review`` row at the chunk's current sha
 (``store.drafts.approved_pairs_at_current_sha``) — the cheap re-check loop after
-an edit: only the touched chunks' lenses re-mint.
+an edit: only the touched chunks' personas re-mint.
 
 **Skip unsettled.** A chunk carrying an open anchored change-request is
 excluded from minting entirely (mirrors the writeback's own guard —
@@ -68,10 +68,10 @@ or a single prose chunk, letting the same primitive back a per-paragraph
 "run checks on this" trigger, a per-section "run on this subtree"
 trigger, and the whole-draft "run outstanding checks" button.
 
-**Document-altitude lens (``toc``).** Minted ONLY for whole-draft scope
-(``scope is None``) — a request via ``doc_lenses`` (``DOC_LENSES =
+**Document-altitude persona (``toc``).** Minted ONLY for whole-draft scope
+(``scope is None``) — a request via ``doc_personas`` (``DOC_PERSONAS =
 ('toc',)`` by default; empty unless the caller opts in, so a narrow scope
-call or an old caller that only passes ``lenses=`` never mints it). One
+call or an old caller that only passes ``personas=`` never mints it). One
 review-todo per document, anchored on the draft's first chunk in document
 order (there is no single dedicated root — see
 ``store.drafts.toc_digest``/``review_status_for_draft``'s docstrings). Its
@@ -99,7 +99,7 @@ with the draft's per-document auto-author toggle
 Either forces authoring on; the explicit ``author`` param still lets a
 caller (e.g. the CLI ``--author`` flag) override the toggle regardless of
 its state. The effective flag passes ``author=True`` through to
-``mint_review_todo`` for the ``cites``/``structure`` lenses only
+``mint_review_todo`` for the ``cites``/``structure`` personas only
 (``flow``/``adversarial``/``toc`` never author — they stay pure
 find-and-file). This only stamps ``meta.author=True`` on the minted todo;
 no authoring *behavior* exists yet (a separate piece teaches the reviewer
@@ -114,7 +114,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.quest import review_guard
-from precis.quest.weave_review import _LENS_BRIEFS as _WEAVE_LENS_BRIEFS
+from precis.quest.weave_review import _PERSONA_BRIEFS as _WEAVE_PERSONA_BRIEFS
 from precis.quest.weave_review import mint_review_todo
 from precis.store._draft_ops import PROSE_CHUNK_KINDS, ReviewableChunk
 from precis.utils import handle_registry
@@ -122,10 +122,10 @@ from precis.utils import handle_registry
 if TYPE_CHECKING:
     from precis.store.store import Store
 
-#: Briefs for the lenses the per-weave trigger doesn't cover: the two
-#: deep/weekly per-chunk lenses plus the document-altitude ``toc`` lens.
-#: Mirrors ``weave_review._LENS_BRIEFS``'s shape — each names the
-#: lens-specific skill on top of the generic ``precis-draft-reviewer``
+#: Briefs for the personas the per-weave trigger doesn't cover: the two
+#: deep/weekly per-chunk personas plus the document-altitude ``toc`` persona.
+#: Mirrors ``weave_review._PERSONA_BRIEFS``'s shape — each names the
+#: persona-specific skill on top of the generic ``precis-draft-reviewer``
 #: persona ``_load_review_persona`` auto-loads for any ``has_review`` tick.
 _FANOUT_ONLY_BRIEFS: dict[str, str] = {
     "structure": (
@@ -157,10 +157,10 @@ _FANOUT_ONLY_BRIEFS: dict[str, str] = {
     ),
 }
 
-#: Lens -> LLM tier (meta.llm_tier). flow/cites are the per-weave/local
-#: lenses (matching weave_review's tier); structure/adversarial/toc are
-#: the weekly/deep-tier lenses (design doc persona table) -> the opus rung.
-_LENS_TIER: dict[str, str] = {
+#: Persona -> LLM tier (meta.llm_tier). flow/cites are the per-weave/local
+#: personas (matching weave_review's tier); structure/adversarial/toc are
+#: the weekly/deep-tier personas (design doc persona table) -> the opus rung.
+_PERSONA_TIER: dict[str, str] = {
     "flow": "sonnet",
     "cites": "sonnet",
     "structure": "opus",
@@ -168,26 +168,26 @@ _LENS_TIER: dict[str, str] = {
     "toc": "opus",
 }
 
-#: The four per-chunk lenses in the design doc's persona table — the
-#: fanout's default ``lenses=`` (unlike weave_review's per-weave-only
+#: The four per-chunk personas in the design doc's persona table — the
+#: fanout's default ``personas=`` (unlike weave_review's per-weave-only
 #: ``("flow", "cites")``).
-ALL_LENSES: tuple[str, ...] = ("flow", "cites", "structure", "adversarial")
+ALL_PERSONAS: tuple[str, ...] = ("flow", "cites", "structure", "adversarial")
 
-#: The document-altitude lens(es) — minted once per document, never
-#: per-chunk, and only for whole-draft scope. Opt-in via ``doc_lenses=``
-#: (empty by default) so an old caller that only passes ``lenses=`` never
+#: The document-altitude persona(s) — minted once per document, never
+#: per-chunk, and only for whole-draft scope. Opt-in via ``doc_personas=``
+#: (empty by default) so an old caller that only passes ``personas=`` never
 #: mints one, and a narrow ``scope=`` call never does either.
-DOC_LENSES: tuple[str, ...] = ("toc",)
+DOC_PERSONAS: tuple[str, ...] = ("toc",)
 
-#: Per-chunk lenses restricted to PROSE chunks (item 2).
-_PROSE_LENSES = frozenset({"flow", "cites"})
+#: Per-chunk personas restricted to PROSE chunks (item 2).
+_PROSE_PERSONAS = frozenset({"flow", "cites"})
 
-#: Per-chunk lenses restricted to HEADING chunks (item 2).
-_HEADING_LENSES = frozenset({"structure", "adversarial"})
+#: Per-chunk personas restricted to HEADING chunks (item 2).
+_HEADING_PERSONAS = frozenset({"structure", "adversarial"})
 
-#: Lenses for which ``author=True`` is meaningful (see module docstring).
+#: Personas for which ``author=True`` is meaningful (see module docstring).
 #: ``flow``/``adversarial``/``toc`` never author regardless of the flag.
-_AUTHOR_ELIGIBLE_LENSES = frozenset({"cites", "structure"})
+_AUTHOR_ELIGIBLE_PERSONAS = frozenset({"cites", "structure"})
 
 #: ``refs.prio`` for fanout-minted review todos (0014 scale: lower = more
 #: urgent). The fanout is a *user-triggered* pass (the "run outstanding
@@ -201,28 +201,28 @@ _AUTHOR_ELIGIBLE_LENSES = frozenset({"cites", "structure"})
 _FANOUT_PRIO = 2
 
 
-def _brief_for(lens: str, anchor: str) -> str:
-    brief = _WEAVE_LENS_BRIEFS.get(lens) or _FANOUT_ONLY_BRIEFS.get(lens)
+def _brief_for(persona: str, anchor: str) -> str:
+    brief = _WEAVE_PERSONA_BRIEFS.get(persona) or _FANOUT_ONLY_BRIEFS.get(persona)
     if brief is not None:
         return brief.format(h=anchor)
     return (
-        f"{lens} review of the draft section anchored at {anchor}. File "
+        f"{persona} review of the draft section anchored at {anchor}. File "
         "concrete anchored change requests for what to fix."
     )
 
 
-def _lenses_for_kind(chunk_kind: str, lenses: tuple[str, ...]) -> list[str]:
-    """The subset of ``lenses`` (the per-chunk four) applicable to a chunk
-    of this ``chunk_kind`` — item 2's lens × chunk-kind mapping. A kind
+def _personas_for_kind(chunk_kind: str, personas: tuple[str, ...]) -> list[str]:
+    """The subset of ``personas`` (the per-chunk four) applicable to a chunk
+    of this ``chunk_kind`` — item 2's persona × chunk-kind mapping. A kind
     that is neither prose nor heading (equation/table/term/…) gets
-    nothing from either lens set."""
+    nothing from either persona set."""
     if chunk_kind == "heading":
-        allowed = _HEADING_LENSES
+        allowed = _HEADING_PERSONAS
     elif chunk_kind in PROSE_CHUNK_KINDS:
-        allowed = _PROSE_LENSES
+        allowed = _PROSE_PERSONAS
     else:
         return []
-    return [lens for lens in lenses if lens in allowed]
+    return [persona for persona in personas if persona in allowed]
 
 
 def _draft_project_parent(store: Store, draft_ref_id: int) -> int:
@@ -271,24 +271,24 @@ def mint_review_fanout(
     store: Store,
     draft_ref_id: int,
     *,
-    lenses: tuple[str, ...] = ALL_LENSES,
-    doc_lenses: tuple[str, ...] = (),
+    personas: tuple[str, ...] = ALL_PERSONAS,
+    doc_personas: tuple[str, ...] = (),
     author: bool = False,
     only_dirty: bool = False,
     scope: int | None = None,
 ) -> dict[str, Any]:
-    """Mint one review-todo per ``(chunk × applicable lens)`` for
+    """Mint one review-todo per ``(chunk × applicable persona)`` for
     ``draft_ref_id`` — the whole draft, or a narrower ``scope`` (a heading
     chunk's subtree, or one prose chunk) — parented on the draft's owning
     project todo.
 
-    ``lenses`` is the per-chunk lens set (default ``ALL_LENSES``, all
-    four); each lens only mints on the chunk kinds it applies to (item 2 —
-    ``_lenses_for_kind``). ``doc_lenses`` (default ``()``, opt-in) mints
-    document-level lenses (``DOC_LENSES = ('toc',)``) ONLY when
-    ``scope is None``. ``only_dirty=True`` additionally skips a pair
-    already approved at the chunk's (or, for a doc lens, the draft's TOC
-    digest's) current state. A chunk carrying an open anchored
+    ``personas`` is the per-chunk persona set (default ``ALL_PERSONAS``,
+    all four); each persona only mints on the chunk kinds it applies to
+    (item 2 — ``_personas_for_kind``). ``doc_personas`` (default ``()``,
+    opt-in) mints document-level personas (``DOC_PERSONAS = ('toc',)``)
+    ONLY when ``scope is None``. ``only_dirty=True`` additionally skips a
+    pair already approved at the chunk's (or, for a doc persona, the
+    draft's TOC digest's) current state. A chunk carrying an open anchored
     change-request is always skipped (counted as ``unsettled_skipped``),
     regardless of ``only_dirty``.
 
@@ -296,17 +296,17 @@ def mint_review_fanout(
 
     - ``parent_id``: the resolved project todo id.
     - ``minted``: list of newly-minted review-todo ids (this call only).
-    - ``skipped``: count of ``(chunk, lens)`` pairs that already had a
+    - ``skipped``: count of ``(chunk, persona)`` pairs that already had a
       live review-todo (idempotent no-op).
-    - ``unsettled_skipped``: count of ``(chunk, lens)`` pairs skipped
+    - ``unsettled_skipped``: count of ``(chunk, persona)`` pairs skipped
       because the chunk carries an open anchored change-request.
     - ``author_minted``: count of minted todos that carry
       ``meta.author=True`` (only nonzero when ``author=True`` and the
-      lens is author-eligible — see module docstring).
+      persona is author-eligible — see module docstring).
     - ``chunks_seen``: count of chunks walked (within ``scope``).
 
     Idempotent: a repeat call over an unchanged draft mints nothing (every
-    ``(chunk, lens)`` pair already has a live review-todo from the first
+    ``(chunk, persona)`` pair already has a live review-todo from the first
     call), so ``minted == []`` and ``skipped`` covers every pair.
 
     **Machine-owned drafts are skipped, not scanned.** A draft that is the
@@ -315,7 +315,7 @@ def mint_review_fanout(
     process's machine-managed body, not hand-authored prose — its
     markdown-looking single-chunk shape is that process's own storage
     format (:mod:`precis.quest.dossier`), not authoring debt for a
-    reviewer lens to flag. Returns the same summary shape with every
+    reviewer persona to flag. Returns the same summary shape with every
     count at zero and ``parent_id=None`` rather than resolving a
     ``draft-of`` project (a dossier has none) or minting anything — see
     the module docstring on ``review_guard.is_machine_owned_draft``.
@@ -350,24 +350,24 @@ def mint_review_fanout(
     author_minted = 0
     for chunk in chunks:
         chunk_id = chunk.chunk_id
-        chunk_lenses = _lenses_for_kind(chunk.chunk_kind, lenses)
-        if not chunk_lenses:
+        chunk_personas = _personas_for_kind(chunk.chunk_kind, personas)
+        if not chunk_personas:
             continue
         if review_guard.has_open_change_request_via_store(store, chunk_id):
-            unsettled_skipped += len(chunk_lenses)
+            unsettled_skipped += len(chunk_personas)
             continue
         anchor = handle_registry.format_handle("draft", chunk_id, chunk=True)
-        for lens in chunk_lenses:
-            if only_dirty and (chunk_id, lens) in approved_at_sha:
+        for persona in chunk_personas:
+            if only_dirty and (chunk_id, persona) in approved_at_sha:
                 continue
-            use_author = effective_author and lens in _AUTHOR_ELIGIBLE_LENSES
+            use_author = effective_author and persona in _AUTHOR_ELIGIBLE_PERSONAS
             todo_id = mint_review_todo(
                 store,
                 parent_id=parent_id,
-                lens=lens,
+                persona=persona,
                 anchor=anchor,
-                text=_brief_for(lens, anchor),
-                llm_tag=_LENS_TIER.get(lens, "sonnet"),
+                text=_brief_for(persona, anchor),
+                llm_tag=_PERSONA_TIER.get(persona, "sonnet"),
                 author=use_author,
                 prio=_FANOUT_PRIO,
             )
@@ -378,12 +378,12 @@ def mint_review_fanout(
                 if use_author:
                     author_minted += 1
 
-    if scope is None and doc_lenses:
-        minted_doc, skipped_doc, unsettled_doc = _mint_doc_lenses(
+    if scope is None and doc_personas:
+        minted_doc, skipped_doc, unsettled_doc = _mint_doc_personas(
             store,
             draft_ref_id,
             parent_id=parent_id,
-            doc_lenses=doc_lenses,
+            doc_personas=doc_personas,
             only_dirty=only_dirty,
         )
         minted.extend(minted_doc)
@@ -400,15 +400,15 @@ def mint_review_fanout(
     }
 
 
-def _mint_doc_lenses(
+def _mint_doc_personas(
     store: Store,
     draft_ref_id: int,
     *,
     parent_id: int,
-    doc_lenses: tuple[str, ...],
+    doc_personas: tuple[str, ...],
     only_dirty: bool,
 ) -> tuple[list[int], int, int]:
-    """Mint the document-level lenses (today: ``toc``) — one review-todo
+    """Mint the document-level personas (today: ``toc``) — one review-todo
     per document, anchored on the draft's first REVIEWABLE chunk in
     document order (item 10; see ``store.drafts.toc_digest``'s docstring for why
     there is no single dedicated root to anchor on instead). Anchor is
@@ -425,21 +425,21 @@ def _mint_doc_lenses(
     anchor = handle_registry.format_handle("draft", root_chunk_id, chunk=True)
 
     if review_guard.has_open_change_request_via_store(store, root_chunk_id):
-        return [], 0, len(doc_lenses)
+        return [], 0, len(doc_personas)
 
     minted: list[int] = []
     skipped = 0
-    for lens in doc_lenses:
-        if only_dirty and lens == "toc" and not _toc_is_dirty(store, draft_ref_id):
+    for persona in doc_personas:
+        if only_dirty and persona == "toc" and not _toc_is_dirty(store, draft_ref_id):
             continue
         todo_id = mint_review_todo(
             store,
             parent_id=parent_id,
-            lens=lens,
+            persona=persona,
             anchor=anchor,
-            text=_brief_for(lens, anchor),
-            llm_tag=_LENS_TIER.get(lens, "opus"),
-            author=False,  # doc lenses are never author-eligible
+            text=_brief_for(persona, anchor),
+            llm_tag=_PERSONA_TIER.get(persona, "opus"),
+            author=False,  # doc personas are never author-eligible
             prio=_FANOUT_PRIO,
         )
         if todo_id is None:
@@ -450,7 +450,7 @@ def _mint_doc_lenses(
 
 
 def _toc_is_dirty(store: Store, draft_ref_id: int) -> bool:
-    """Whether the ``toc`` lens's approval is stale — the stored digest
+    """Whether the ``toc`` persona's approval is stale — the stored digest
     (the root chunk's ``chunk_review.approved_sha``) no longer matches the
     recomputed :meth:`~precis.store._draft_ops.DraftStore.toc_digest`.
     ``True`` (dirty) when never approved."""
@@ -460,4 +460,4 @@ def _toc_is_dirty(store: Store, draft_ref_id: int) -> bool:
     return True
 
 
-__all__ = ["ALL_LENSES", "DOC_LENSES", "mint_review_fanout"]
+__all__ = ["ALL_PERSONAS", "DOC_PERSONAS", "mint_review_fanout"]

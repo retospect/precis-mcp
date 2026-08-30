@@ -39,19 +39,19 @@ from .measures import evaluate as evaluate_measure
 from .ops import OpError, apply_ops
 from .relax import RelaxResult, RelaxUnsupported, relax
 from .scene import Atom, Bond, Measure, Scene
-from .validate import Finding, validate
+from .validate import ValidationIssue, validate
 
 __all__ = [
     "Atom",
     "Bond",
     "Cell",
-    "Finding",
     "ImageOffset",
     "Measure",
     "OpError",
     "RelaxResult",
     "RelaxUnsupported",
     "Scene",
+    "ValidationIssue",
     "anchor_identity_verified",
     "apply_ops",
     "evaluate_measure",

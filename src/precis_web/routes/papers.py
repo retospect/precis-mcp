@@ -44,7 +44,7 @@ from fastapi.responses import (
     Response,
 )
 
-from precis.backfill.citation_lens import ensure_s2_neighbors
+from precis.backfill.citation_recall import ensure_s2_neighbors
 from precis.corpus_layout import corpus_pdf_dest
 from precis.errors import BadInput, NotFound
 from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
@@ -678,7 +678,7 @@ def _cited_chunk(
 #: chunk / pdf) are kind-agnostic, so they accept any family member; the
 #: ``cfp``, ``pres`` and ``datasheet`` readers reuse them. The slug-detail
 #: routes pass their own kind. (``pres`` joins so the /pres slide-deck editor
-#: gets the same in-doc search / TOC / chunk-gloss / jump-to-page sidebar;
+#: gets the same in-doc search / TOC / chunk-summary / jump-to-page sidebar;
 #: ``datasheet`` joins so /datasheets reuses the paper reader verbatim.)
 _DOC_FAMILY: tuple[str, ...] = ("paper", "cfp", "pres", "datasheet")
 
@@ -822,7 +822,7 @@ async def search_in_paper(
 
     ords = [b.pos for b, _r, _s in hits]
     pages = store.blocks.chunk_pages(ref.id, ords)
-    # llm-v1 gloss per hit for the Semantic-mode row (falls back to the
+    # llm-v1 summary per hit for the Semantic-mode row (falls back to the
     # keyword chips client-side when a chunk hasn't been summarised yet).
     summaries = store.blocks.chunk_summaries_for(ref.id, ords)
     is_sem = m == "semantic"
@@ -888,19 +888,19 @@ async def toc_in_paper(
 
 @router.get("/{ref_id}/chunks")
 async def chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
-    """Per-chunk gloss list for the sidebar's rapid-nav (Semantic/Keyword).
+    """Per-chunk summary list for the sidebar's rapid-nav (Semantic/Keyword).
 
     Returns every body chunk in reading order as
     ``{ord, page, summary, keywords}`` — the empty-query state of the
     Semantic and Keyword modes, a scannable outline the operator clicks
-    to jump the viewer. ``summary`` is the ``llm-v1`` gloss (often empty —
+    to jump the viewer. ``summary`` is the ``llm-v1`` summary (often empty —
     the summariser is a trickle), ``keywords`` the KeyBERT terms.
     """
     store = get_store(request)
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"chunks": []})
-    return JSONResponse({"chunks": store.blocks.chunk_glosses_for_ref(ref.id)})
+    return JSONResponse({"chunks": store.blocks.chunk_llm_summaries_for_ref(ref.id)})
 
 
 @router.get("/{ref_id}/rawchunks")
@@ -910,7 +910,7 @@ async def raw_chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     Returns every body chunk in reading order as
     ``{ord, page, chunk_kind, text}``. For a chunks-only ingest with no
     PDF on disk (e.g. ``heminamino26``) this is the only way to read the
-    source text in the UI — Semantic/Keyword/TOC all key off a gloss or
+    source text in the UI — Semantic/Keyword/TOC all key off a summary or
     cluster, never the verbatim body. Reuses ``list_blocks_for_ref`` (the
     same store helper the MCP chunk-range reader calls) rather than a new
     chunk-listing query.
@@ -1319,7 +1319,7 @@ async def fetch_ref(
     On success: :meth:`Store.requeue_stubs_for_fetch` (scoped to this
     ref) jumps the ``fetch_oa`` queue; :meth:`Store.update_s2_neighbor_held`
     stamps this row (+ its mirror direction) held/queued immediately,
-    without waiting for the next ``citation_lens`` refresh.
+    without waiting for the next ``citation_recall`` refresh.
 
     htmx-aware (``flags.py`` pattern): ``HX-Request`` → re-rendered row
     (``hx-target="closest .refs-row"``); plain form POST → 303 to the tab.

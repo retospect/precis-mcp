@@ -296,7 +296,7 @@ def test_gate_paid_under_cap_passes() -> None:
 def test_dispatch_returns_error_llmresult_when_breaker_trips(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``router.dispatch`` folds a tripped cap into an error ``LlmResult`` and
+    """``router.route`` folds a tripped cap into an error ``LlmResult`` and
     never runs the provider."""
     from precis.utils.llm import router
 
@@ -316,7 +316,7 @@ def test_dispatch_returns_error_llmresult_when_breaker_trips(
         router, "provider_for", lambda transport, *, bare=False: _BoomProvider()
     )
 
-    out = router.dispatch(router.LlmRequest(tier=Tier.FRONTIER, prompt="hi"))
+    out = router.route(router.LlmRequest(tier=Tier.FRONTIER, prompt="hi"))
     assert out.error is not None
     assert "budget" in out.error
     assert out.text == ""

@@ -752,7 +752,7 @@ def _coerce_verdict(data: dict[str, Any] | None, hits: list[SearchHit]) -> Judge
 def make_llm_judge_fn(*, tier: Any = None) -> JudgeFn:
     """The real LLM judge — one bounded MEDIUM-tier JSON call per entry,
     routed through the switchable router."""
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
     resolved_tier = tier if tier is not None else Tier.MEDIUM
 
@@ -760,7 +760,7 @@ def make_llm_judge_fn(*, tier: Any = None) -> JudgeFn:
         if not hits:
             return JudgeVerdict(False, None, "no corpus hits for this entry")
         prompt = _render_judge_prompt(flagged, hits)
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=resolved_tier,
                 messages=[

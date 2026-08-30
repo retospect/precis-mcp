@@ -2,8 +2,8 @@
 
 The extent ladder separates *how much of the target* from *how much of the
 surroundings*. The content-only rungs render the node **alone** — ``kwd`` a
-bookmark (under its ancestor path), ``summary`` its gloss, ``verbatim`` its
-full text. The **neighborhood** appears only at the ``fisheye`` rung: the
+bookmark (under its ancestor path), ``summary`` a summary of it, ``verbatim``
+its full text. The **neighborhood** appears only at the ``fisheye`` rung: the
 verbatim center over a graduated forward-biased span of reading-order
 neighbours, under the **ancestor branch** (``section_path``) so it never
 floats free of its heading. ``fisheye+1hop`` adds the reference ring
@@ -41,9 +41,9 @@ _FIDELITY_FULL = 5
 _FIDELITY_SUMMARY = 10
 _FIDELITY_KWD = 15
 
-#: One-line gloss cap: a toc/ancestor/skirt line stays a bookmark, not a
+#: One-line summary cap: a toc/ancestor/skirt line stays a bookmark, not a
 #: node's prose body. The verbatim body is what a ``full`` eye is for.
-_GLOSS_CAP = 100
+_SUMMARY_LINE_CAP = 100
 
 
 class _Chunk(Protocol):
@@ -67,13 +67,17 @@ class _Chunk(Protocol):
     def dc(self) -> str: ...
 
 
-def _gloss(chunk: _Chunk, views: dict[str, dict[str, str]]) -> str:
-    """A one-line gloss for a node: summary → keywords → first text line,
+def _summary_line(chunk: _Chunk, views: dict[str, dict[str, str]]) -> str:
+    """A one-line summary for a node: summary → keywords → first text line,
     whitespace-collapsed and capped so a prose body can't spill the bookmark."""
     v = views.get(chunk.handle, {})
     g = v.get("summary") or v.get("keywords") or chunk.text or ""
     flat = " ".join(g.split())
-    return flat if len(flat) <= _GLOSS_CAP else flat[: _GLOSS_CAP - 1].rstrip() + "…"
+    return (
+        flat
+        if len(flat) <= _SUMMARY_LINE_CAP
+        else flat[: _SUMMARY_LINE_CAP - 1].rstrip() + "…"
+    )
 
 
 def _summary_text(chunk: _Chunk, views: dict[str, dict[str, str]]) -> str:
@@ -115,8 +119,8 @@ def render_fisheye(
     handle does not resolve to a live node.
 
     - ``kwd`` — the ancestor branch + a one-line bookmark of the node.
-    - ``summary`` / ``verbatim`` — the node **alone** (gloss vs full text), no
-      surroundings.
+    - ``summary`` / ``verbatim`` — the node **alone** (short summary vs full
+      text), no surroundings.
     - ``fisheye`` — a graduated forward-biased span over reading-order
       neighbours (±5 full / ±10 summary / ±15 kwd), under the ancestor branch.
     - ``fisheye+1hop`` — the ``fisheye`` span **plus the reference ring**:
@@ -130,9 +134,9 @@ def render_fisheye(
     views = store.drafts.block_views(target.ref_id)
     by_id = {c.chunk_id: c for c in chunks}
 
-    # Content-only rungs: the node *alone* — ``summary`` is its gloss,
-    # ``verbatim`` its full text. No surroundings; the spatial ring is what the
-    # ``fisheye`` rung is for.
+    # Content-only rungs: the node *alone* — ``summary`` renders a summary of
+    # it, ``verbatim`` its full text. No surroundings; the spatial ring is
+    # what the ``fisheye`` rung is for.
     if ext is Extent.SUMMARY:
         return f"▸ {target.dc} [{target.chunk_kind}]\n{_summary_text(target, views)}"
     if ext is Extent.FULL:
@@ -143,12 +147,12 @@ def render_fisheye(
     lines: list[str] = []
     anc = _ancestors(by_id, target)
     if anc:
-        crumb = " › ".join(_gloss(a, views) or a.dc for a in anc)
+        crumb = " › ".join(_summary_line(a, views) or a.dc for a in anc)
         lines.append(f"↑ {crumb}")
 
     # kwd (or a collapsed NONE) — a one-line bookmark under its ancestor path.
     if ext <= Extent.TOC:
-        lines.append(f"▸ {target.dc}  {_gloss(target, views)}")
+        lines.append(f"▸ {target.dc}  {_summary_line(target, views)}")
         return "\n".join(lines)
 
     # fisheye — verbatim center over a graduated spatial neighborhood; +1hop
@@ -184,5 +188,5 @@ def _render_fidelity_span(
         elif dist <= _FIDELITY_SUMMARY:
             out.append(f"{indent}· {c.dc}  {_summary_text(c, views)}")
         else:
-            out.append(f"{indent}· {c.dc}  {_gloss(c, views)}")
+            out.append(f"{indent}· {c.dc}  {_summary_line(c, views)}")
     return out

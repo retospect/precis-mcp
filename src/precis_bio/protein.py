@@ -78,7 +78,7 @@ class ProteinHandler(Handler):
         supports_delete=True,
         is_numeric=False,
         id_required=False,
-        role="artifact",
+        placement="artifact",
         corpus_role="none",
         can_own_jobs=True,
         # Dark-ship: the kind is hidden until the `bio.enabled` setting resolves.

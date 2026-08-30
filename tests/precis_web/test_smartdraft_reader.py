@@ -764,7 +764,7 @@ def test_smartdraft_review_dropdown_ineligible_kind_has_no_run_buttons(
     """item 3: a chunk kind that is neither prose nor a heading (here,
     ``chunk_kind='table'``, dc4) gets NO run-lens buttons at all — offering
     ``flow``/``cites`` (or ``structure``/``adversarial``) on it would
-    silently no-op the click, since ``review_fanout._lenses_for_kind``
+    silently no-op the click, since ``review_fanout._personas_for_kind``
     mints nothing for that kind. The human ✓ mark-reviewed entry is still
     offered (human sign-off is available on any reviewable block, by
     design) — only the machine-lens triggers are gated."""

@@ -383,11 +383,11 @@ def presenter_for(kind: str) -> ItemPresenter:
     return cls(kind)
 
 
-#: Kinds declared ``role='artifact'`` that fall back to when the live hub
+#: Kinds declared ``placement='artifact'`` that fall back to when the live hub
 #: isn't reachable (mirrors ``routes/drive.py``'s ``_artifact_kinds``
 #: fallback — kept in sync by hand since both are small, static lists).
 #: ``tests/test_kind_totality.py`` pins this equal to the live
-#: ``role_kinds(specs, "artifact")`` derivation (minus ``folder``, same as
+#: ``placement_kinds(specs, "artifact")`` derivation (minus ``folder``, same as
 #: :func:`artifact_kinds` below excludes) so a newly-declared artifact kind
 #: failing to land here fails CI instead of only ever showing up when the
 #: hub happens to be reachable.
@@ -403,9 +403,9 @@ _ARTIFACT_KIND_FALLBACK: tuple[str, ...] = (
 
 
 def artifact_kinds(hub: Any) -> list[str]:
-    """Kinds declared ``role='artifact'`` in this build (minus ``folder``)
+    """Kinds declared ``placement='artifact'`` in this build (minus ``folder``)
     — the "Author" facet on ``/items`` (source vs. authored, per the
-    proposal's "author/source split is a facet of ``KindSpec.role``").
+    proposal's "author/source split is a facet of ``KindSpec.placement``").
     Reads the live hub so a future placeable kind joins by declaration,
     with no route edit; falls back to a static list when the hub isn't
     wired (e.g. a test double with ``hub=None``)."""
@@ -416,7 +416,7 @@ def artifact_kinds(hub: Any) -> list[str]:
         for k in sorted(hub.kinds):
             handler = hub.handler_for(k)
             spec = getattr(handler, "spec", None)
-            if spec is not None and getattr(spec, "role", None) == "artifact":
+            if spec is not None and getattr(spec, "placement", None) == "artifact":
                 if k != "folder":
                     out.append(k)
         return out

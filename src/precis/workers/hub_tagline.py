@@ -77,7 +77,7 @@ from typing import Any
 from precis.errors import NotFound
 from precis.store import Store
 from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 
 log = logging.getLogger(__name__)
 
@@ -225,7 +225,7 @@ def propose_tagline(sentence: str, scope: dict[str, Any]) -> dict[str, Any] | No
     prompt = _PROMPT_TAGLINE.format(
         sentence=sentence, scope_json=json.dumps(scope, sort_keys=True)
     )
-    res = dispatch(LlmRequest(tier=Tier.BIG, prompt=prompt, source="hub_tagline"))
+    res = route(LlmRequest(tier=Tier.BIG, prompt=prompt, source="hub_tagline"))
     if res.error:
         log.warning("hub_tagline: propose hook failed: %s", res.error)
         return None

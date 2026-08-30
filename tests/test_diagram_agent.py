@@ -1,6 +1,6 @@
 """The agentic drawer (``precis.diagram.agent``) — L3 of the diagram-propose
 design: a tool-using ``claude_fn`` routed through the LLM routing seam. No real
-``claude -p`` here; the seam ``dispatch`` is stubbed.
+``claude -p`` here; the seam ``route`` is stubbed.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def test_agentic_fn_routes_with_tools_and_parses(
         captured["req"] = req
         return SimpleNamespace(error=None, text='{"reply": "drew it", "svg": "<svg/>"}')
 
-    monkeypatch.setattr(router, "dispatch", _fake_dispatch)
+    monkeypatch.setattr(router, "route", _fake_dispatch)
     fn = build_agentic_claude_fn(source="figure:test", mcp_config=None, max_turns=7)
     out = fn("## Current source\n<svg/>\n\nReply with ONE JSON object …")
 
@@ -71,7 +71,7 @@ def test_agentic_fn_routes_with_tools_and_parses(
 
 def test_agentic_fn_raises_on_seam_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        router, "dispatch", lambda req: SimpleNamespace(error="quota exceeded", text="")
+        router, "route", lambda req: SimpleNamespace(error="quota exceeded", text="")
     )
     fn = build_agentic_claude_fn(mcp_config=None)
     with pytest.raises(RuntimeError, match="quota exceeded"):

@@ -17,13 +17,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.backfill.candidates import (
-    Candidate,
+    RecallCandidate,
     draft_cited_ref_ids,
     find_candidates,
     merge_recurrence,
 )
 from precis.backfill.dismissed import dismissed_ref_ids
-from precis.backfill.provenance import tier_tag
+from precis.backfill.provenance import grade_tag
 from precis.utils import handle_registry
 from precis.utils.working_set_render import render_working_set
 from precis.workers.working_set import Provenance, WorkingSet
@@ -94,7 +94,7 @@ def assemble(
     kind: str = "draft",
     per_paper: int = 1,
     max_candidates: int = 8,
-) -> tuple[WorkingSet, list[Candidate], set[int]]:
+) -> tuple[WorkingSet, list[RecallCandidate], set[int]]:
     """Build the workspace for ``targets``. Returns ``(working_set, candidates,
     cited_ref_ids)``. Raises ``ValueError`` if no target resolves to a live
     chunk."""
@@ -156,7 +156,7 @@ def assemble(
     return ws, candidates, cited
 
 
-def _render_candidate_list(candidates: list[Candidate]) -> str:
+def _render_candidate_list(candidates: list[RecallCandidate]) -> str:
     """The plain "candidate sources" block — the uncited-but-relevant hits, the
     product of the sweep. ``○`` marks each as a gap to weigh; the lens tag is
     the (slice-1: single) recall signal, the confidence cue once more lenses
@@ -173,7 +173,7 @@ def _render_candidate_list(candidates: list[Candidate]) -> str:
         lens = "+".join(cand.lenses)
         title = cand.title[:90] or "(untitled)"
         glyph, where = _support_overlay(cand.support)
-        tier = tier_tag(getattr(cand.ref, "kind", None))
+        tier = grade_tag(getattr(cand.ref, "kind", None))
         # chunk-level: "pa5 pc10"; ref-level lead: just "me7" (no chunk handle).
         addr = (
             f"{cand.paper_handle} {cand.chunk_handle}"
@@ -199,7 +199,7 @@ def _support_overlay(support: tuple[str, ...]) -> tuple[str, str]:
 def _backfill_marks(
     store: Store,
     target_chunks: list[Any],
-    candidates: list[Candidate],
+    candidates: list[RecallCandidate],
     *,
     kind: str,
 ) -> dict[str, str]:
@@ -229,7 +229,7 @@ def _backfill_marks(
             marks[handle] = f"★ cited  {back}"
     for cand in candidates:
         glyph, where = _support_overlay(cand.support)
-        tier = tier_tag(getattr(cand.ref, "kind", None))
+        tier = grade_tag(getattr(cand.ref, "kind", None))
         # Key by the handle the composer renders this candidate's eye under — its
         # chunk handle, or its ref handle for a ref-level lead (memory).
         marks[cand.eye_handle] = (
@@ -324,7 +324,7 @@ def assemble_draft(
     per_paper: int = 1,
     section_pool: int = 8,
     max_candidates: int = 20,
-) -> tuple[list[Candidate], set[int], list[str], bool]:
+) -> tuple[list[RecallCandidate], set[int], list[str], bool]:
     """The whole-draft gap-finder roll-up (Build 2 §G2): run the
     section-scoped sweep (:func:`assemble`) once per top-level section, then
     merge every section's candidates by source ref
@@ -339,7 +339,7 @@ def assemble_draft(
     sections = _top_level_section_handles(store, ref_id, kind=kind)
     if not sections:
         return [], set(), [], False
-    per_section: list[list[Candidate]] = []
+    per_section: list[list[RecallCandidate]] = []
     cited: set[int] = set()
     for handle in sections:
         try:

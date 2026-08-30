@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from precis.utils.claude_agent import AgentResult, ClaudeAgentError
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -168,8 +168,8 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
     # Routed through the LLM seam so PRECIS_LLM_BACKEND can
     # switch the follow-up onto an OSS model. The AgentResult-returning /
     # ClaudeAgentError-raising contract is preserved so the route is untouched:
-    # dispatch folds failures into res.error, which we re-raise.
-    res = dispatch(
+    # route folds failures into res.error, which we re-raise.
+    res = route(
         LlmRequest(
             tier=Tier.FRONTIER,
             source="followup",

@@ -11,7 +11,7 @@ claim dedup". Acceptance bar: the fixture eval scores **zero over-merges**
    the same contract at BIG tier (selective escalation, not a blanket
    bump).
 2. :func:`block` — no model; ANN over ``TAPROOT:claim`` hub
-   ``finding_body`` embeddings -> the ``k`` nearest :class:`Candidate`
+   ``finding_body`` embeddings -> the ``k`` nearest :class:`MergeCandidate`
    hubs.
 3. :func:`dedup_judge` (MEDIUM) — THE crux call: ``same``/``different``/
    ``contradicts``, one bounded pairwise judgment, **biased hard toward
@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -285,7 +285,7 @@ def _coerce_extraction(
 
 
 @dataclass(frozen=True)
-class Candidate:
+class MergeCandidate:
     """One ANN hit from :func:`block` — an existing claim hub near the
     query claim."""
 
@@ -627,7 +627,7 @@ _FLAKE_RETRY_BACKOFF_S = 5.0
 def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
     """Like :func:`extract_claim_strict`, but dispatches at
     :data:`Tier.MEDIUM` with an additional format-flake guard on top of the
-    strict dispatch-error contract — routed through :func:`dispatch`
+    strict dispatch-error contract — routed through :func:`route`
     (budget-metered, logs ``llm_call_log`` like every other call in this
     module). Model is steerable via the operator ``llm.chain.medium`` row
     (:func:`precis.utils.llm.router.resolve_model` at ``Tier.MEDIUM``), not
@@ -659,7 +659,7 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
 
     extraction = _EMPTY_EXTRACTION
     for attempt in range(2):
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=Tier.MEDIUM,
                 messages=[
@@ -721,7 +721,7 @@ def _extract_claim_impl(
         return _EMPTY_EXTRACTION
     excerpt = text[:_EXTRACT_EXCERPT_CHARS]
     prompt = _EXTRACT_PROMPT.format(excerpt=excerpt)
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=tier,
             messages=[
@@ -832,7 +832,7 @@ def block(
     *,
     k: int = 10,
     embedder_name: str = "bge-m3",
-) -> list[Candidate]:
+) -> list[MergeCandidate]:
     """The ``k`` nearest existing ``TAPROOT:claim`` hubs to ``claim`` — no
     model.
 
@@ -890,7 +890,7 @@ def block(
     with store.pool.connection() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [
-        Candidate(hub_ref_id=int(r[0]), claim=str(r[1]), distance=float(r[2]))
+        MergeCandidate(hub_ref_id=int(r[0]), claim=str(r[1]), distance=float(r[2]))
         for r in rows
     ]
 
@@ -982,7 +982,7 @@ def dedup_judge(a: str, b: str) -> Verdict:
     even on infrastructure failure).
     """
     prompt = _DEDUP_PROMPT.format(claim_a=a, claim_b=b)
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.MEDIUM,
             messages=[
@@ -1037,7 +1037,7 @@ def merge_confirm(claim_a: str, claim_b: str) -> Verdict:
     confirmation.
     """
     prompt = _MERGE_CONFIRM_PROMPT.format(claim_a=claim_a, claim_b=claim_b)
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.BIG,
             messages=[
@@ -1060,7 +1060,7 @@ def merge_confirm(claim_a: str, claim_b: str) -> Verdict:
 
 def place(
     claim: CanonicalClaim,
-    judged: list[tuple[Candidate, Verdict]],
+    judged: list[tuple[MergeCandidate, Verdict]],
     *,
     confidence_threshold: float = MERGE_CONFIDENCE_THRESHOLD,
     merge_confirm_fn: Any = merge_confirm,
@@ -1175,10 +1175,10 @@ __all__ = [
     "TAPROOT_CLAIM",
     "TAPROOT_NAMESPACE",
     "TAPROOT_REVIEW",
-    "Candidate",
     "CanonicalClaim",
     "ClaimExtraction",
     "ExtractionUnavailable",
+    "MergeCandidate",
     "NotClaim",
     "Placement",
     "Verdict",

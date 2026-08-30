@@ -47,7 +47,7 @@ class FigureHandler(DiagramHandler):
         is_numeric=False,
         id_required=False,
         note_like=True,
-        role="artifact",
+        placement="artifact",
         corpus_role="none",
         # Compute-lane opt-in: a diagram_propose job parents on the figure it builds/verifies.
         can_own_jobs=True,

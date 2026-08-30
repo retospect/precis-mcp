@@ -688,7 +688,7 @@ def boot(
         )
 
     # md — DB-free in-memory markdown index (hybrid lexical + semantic
-    # search over workspace prose). Same env-gated / deferred-kind
+    # search over workspace prose). Same requires_env-deferred-kind
     # shape as python above; see the precis.md_index package
     # docstring for the design.
     if md_roots:

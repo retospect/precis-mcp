@@ -640,10 +640,10 @@ def _coerce_fit_verdict(data: object, *, default_rationale: str) -> FitVerdict:
 def cite_fit_judge(segment: str, claim: str) -> FitVerdict:
     """One bounded pairwise cite-fit judgment — MEDIUM tier, mirroring
     ``taproot/canon.py::dedup_judge``'s dispatch + degrade discipline."""
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
     prompt = _FIT_JUDGE_PROMPT.format(segment=segment, claim=claim)
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.MEDIUM,
             messages=[

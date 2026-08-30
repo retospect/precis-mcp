@@ -7,7 +7,7 @@ todo used it until folder placement roles). No new tables: subtree reads are a
 recursive CTE over the indexed column, a move is one column write.
 
 Containment is single-parent and shallow by policy (1-2 levels,
-artifact kinds only — ``KindSpec.role == 'artifact'``). Corpus kinds
+artifact kinds only — ``KindSpec.placement == 'artifact'``). Corpus kinds
 (paper, cfp) keep their own discovery layer; stream kinds (memory,
 alert, job, …) reach folders only by promotion into an authored note.
 
@@ -69,7 +69,7 @@ class FolderHandler(NumericRefHandler):
         supports_link=True,
         is_numeric=True,
         id_required=False,
-        role="artifact",
+        placement="artifact",
         views=("tree", "links", "log", "raw"),
     )
 

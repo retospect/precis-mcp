@@ -15,8 +15,8 @@ kind, so the ladder generalizes but its shape does not:
     never spills verbatim text; reading real text is always a deliberate
     drill to a chunk eye.
   * A **chunk eye** (``pc13234``) is a fisheye *within* its cluster: the chunks
-    before it and after it as gloss lines (each its own ``pc`` handle to drill),
-    the eye chunk itself verbatim (or a gloss at ``summary``), and every *other*
+    before it and after it as summary lines (each its own ``pc`` handle to drill),
+    the eye chunk itself verbatim (or a summary at ``summary``), and every *other*
     cluster collapsed to a one-line label. So focusing a chunk opens its
     neighborhood and leaves the rest of the paper as a drillable map.
 
@@ -93,12 +93,12 @@ _NEIGHBOR_TITLE_CAP = 80
 #: group is replaced by this cap plus a visible overflow line (no silent
 #: truncation).
 _NEIGHBOR_GROUP_CAP = 8
-_GLOSS_CAP = 140
+_CHUNK_SUMMARY_CAP = 140
 #: Keep the cluster map / label lists skimmable even on a huge doc; the
 #: clusterer already caps the top level, this bounds the collapsed labels.
 _MAP_CLUSTER_CAP = 20
 
-#: Forward-biased gloss window *within* the eye's home cluster (mirrors the
+#: Forward-biased summary window *within* the eye's home cluster (mirrors the
 #: draft fisheye's falloff): a keyword-homogeneous section can cluster into
 #: dozens of chunks, so show the eye's neighbours and collapse the far tail
 #: to a ``⋯ N more ⋯`` marker rather than dumping the whole section.
@@ -193,13 +193,13 @@ def _chunk_handle(kind: str, block: Any) -> str:
     return handle_registry.format_handle(kind, int(block.id), chunk=True)
 
 
-def _block_gloss(block: Any) -> str:
-    """A one-line gloss for a chunk: its KeyBERT keywords, else its first line
+def _chunk_summary(block: Any) -> str:
+    """A one-line summary for a chunk: its KeyBERT keywords, else its first line
     of text, whitespace-collapsed and capped."""
     kws = block.keywords or []
     if kws:
-        return _cap(", ".join(kws), _GLOSS_CAP)
-    return _cap(" ".join((block.text or "").split()), _GLOSS_CAP)
+        return _cap(", ".join(kws), _CHUNK_SUMMARY_CAP)
+    return _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
 
 
 def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
@@ -207,8 +207,8 @@ def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
     size, and the keyword label. Drill it by focusing the handle."""
     lead = _chunk_handle(kind, bucket[0])
     span = f" +{len(bucket) - 1}" if len(bucket) > 1 else ""
-    label = ", ".join(kws) or _block_gloss(bucket[0]) or "…"
-    return f"  · {lead}{span}  {_cap(label, _GLOSS_CAP)}"
+    label = ", ".join(kws) or _chunk_summary(bucket[0]) or "…"
+    return f"  · {lead}{span}  {_cap(label, _CHUNK_SUMMARY_CAP)}"
 
 
 def _cluster_map(kind: str, clusters: list[tuple[list[Any], list[str]]]) -> str:
@@ -229,8 +229,8 @@ def _fisheye_split(
     ext: Extent,
 ) -> str:
     """A chunk eye: the fisheye *within* its cluster. Other clusters collapse to
-    labels; the home cluster splits into before-chunks (gloss) / the eye chunk
-    (verbatim, or a gloss at ``summary``) / after-chunks (gloss) — each chunk
+    labels; the home cluster splits into before-chunks (summary) / the eye chunk
+    (verbatim, or a summary at ``summary``) / after-chunks (summary) — each chunk
     its own ``pc`` handle to drill next."""
     home = next(
         (
@@ -260,11 +260,11 @@ def _fisheye_split(
         h = _chunk_handle(kind, b)
         if b.pos == eye_ord:
             if ext is Extent.SUMMARY:
-                lines.append(f"▸ {h} [{b.chunk_kind}]  {_block_gloss(b)}")
+                lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
             else:
                 lines.append(f"▸ {h} [{b.chunk_kind}]\n{_cap(b.text, _VERBATIM_CAP)}")
         else:
-            lines.append(f"  · {h}  {_block_gloss(b)}")
+            lines.append(f"  · {h}  {_chunk_summary(b)}")
     if hi < len(home_bucket):
         lines.append(f"  ⋯ {len(home_bucket) - hi} more ⋯")
 

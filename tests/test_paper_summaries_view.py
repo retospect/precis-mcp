@@ -1,9 +1,10 @@
-"""``view='summaries'`` — the flat, per-chunk gloss list for a paper.
+"""``view='summaries'`` — the flat, per-chunk summary list for a paper.
 
 The agent-surface twin of the web reader's Semantic/Keyword rapid-nav
-list: both read ``Store.chunk_glosses_for_ref``. One row per body chunk,
-carrying the ``llm-v1`` gloss (``chunk_summaries``) and the KeyBERT
-keyword string. This drives a real store + ``PaperHandler`` end-to-end.
+list: both read ``Store.chunk_llm_summaries_for_ref``. One row per body
+chunk, carrying the ``llm-v1`` summary (``chunk_summaries``) and the
+KeyBERT keyword string. This drives a real store + ``PaperHandler``
+end-to-end.
 """
 
 from __future__ import annotations
@@ -34,17 +35,17 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
                 "UPDATE chunks SET keywords = %s WHERE chunk_id = %s",
                 (["alpha", "beta"], b.id),
             )
-        # Only the first chunk gets an llm-v1 gloss — the rest fall back
+        # Only the first chunk gets an llm-v1 summary — the rest fall back
         # to keywords, exercising both columns.
         conn.execute(
             "INSERT INTO chunk_summaries (chunk_id, summarizer, text, status) "
             "VALUES (%s, 'llm-v1', %s, 'ok')",
-            (blocks[0].id, "The opening gloss."),
+            (blocks[0].id, "The opening summary."),
         )
     return ref.id
 
 
-def test_summaries_view_lists_every_chunk_with_gloss_and_keywords(
+def test_summaries_view_lists_every_chunk_with_summary_and_keywords(
     store: Store,
 ) -> None:
     hub = Hub(store=store, embedder=MockEmbedder(dim=1024))
@@ -53,14 +54,14 @@ def test_summaries_view_lists_every_chunk_with_gloss_and_keywords(
     pa = handle_registry.format_handle("paper", ref_id)
 
     out = handler.get(id=pa, view="summaries").body
-    # Headline reports the coverage (1 of 5 chunks has a gloss).
+    # Headline reports the coverage (1 of 5 chunks has a summary).
     assert out.startswith(f"# {pa} summaries")
-    assert "1 with an llm gloss" in out
+    assert "1 with an llm summary" in out
     # Every chunk is a row, addressed by its ~ord handle.
     for i in range(5):
         assert f"{pa}~{i}" in out
-    # The gloss shows on chunk 0; keywords fill the rest.
-    assert "The opening gloss." in out
+    # The summary shows on chunk 0; keywords fill the rest.
+    assert "The opening summary." in out
     assert "alpha" in out
 
 
@@ -76,18 +77,18 @@ def test_summaries_view_in_supported_views(store: Store) -> None:
     assert kwarg == path
 
 
-def test_chunk_glosses_for_ref_shape_and_scope(store: Store) -> None:
+def test_chunk_llm_summaries_for_ref_shape_and_scope(store: Store) -> None:
     """The store helper the web /chunks + /search endpoints read."""
     ref_id = _seed_paper(store, slug="scoped07", n=6)
-    glosses = store.blocks.chunk_glosses_for_ref(ref_id)
-    assert [g["ord"] for g in glosses] == [0, 1, 2, 3, 4, 5]
-    assert glosses[0]["summary"] == "The opening gloss."
-    assert glosses[1]["summary"] == ""  # no gloss → empty, keyword fallback
-    assert glosses[0]["keywords"] == "alpha, beta"
+    summaries = store.blocks.chunk_llm_summaries_for_ref(ref_id)
+    assert [g["ord"] for g in summaries] == [0, 1, 2, 3, 4, 5]
+    assert summaries[0]["summary"] == "The opening summary."
+    assert summaries[1]["summary"] == ""  # no summary → empty, keyword fallback
+    assert summaries[0]["keywords"] == "alpha, beta"
     # Scope narrows to an ord range inclusively.
-    scoped = store.blocks.chunk_glosses_for_ref(ref_id, pos_range=(2, 4))
+    scoped = store.blocks.chunk_llm_summaries_for_ref(ref_id, pos_range=(2, 4))
     assert [g["ord"] for g in scoped] == [2, 3, 4]
 
     # And the targeted summary batch used by the search path.
     summ = store.blocks.chunk_summaries_for(ref_id, [0, 1, 2])
-    assert summ == {0: "The opening gloss."}
+    assert summ == {0: "The opening summary."}

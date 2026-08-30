@@ -13,7 +13,7 @@ Built (read-only workspace — FIND + WORKSPACE, no auto-weave):
   over the target chunk(s), :func:`candidates.find_candidates`) + the
   **citation** lens (provable-omission: held-but-uncited neighbours one S2
   citation hop from what we cite, materialised corpus-internally into
-  ``links``, :mod:`~precis.backfill.citation_lens`).
+  ``links``, :mod:`~precis.backfill.citation_recall`).
 - **Tier-0 dedup** against the draft-wide cited **and** dismissed sets
   (:func:`candidates.draft_cited_ref_ids` /
   :func:`dismissed.dismissed_ref_ids`). The cited set folds in every cited
@@ -51,13 +51,13 @@ candidates into the draft.
 from __future__ import annotations
 
 from precis.backfill.candidates import (
-    Candidate,
+    RecallCandidate,
     draft_cited_ref_ids,
     draft_topic_slugs,
     find_candidates,
     merge_recurrence,
 )
-from precis.backfill.citation_lens import (
+from precis.backfill.citation_recall import (
     find_citation_candidates,
     materialize_citation_edges,
 )
@@ -85,7 +85,7 @@ from precis.backfill.link_rollup import (
     coarsest_visible_ancestor,
     rollup_edges,
 )
-from precis.backfill.provenance import SOURCE_KINDS, tier_for, tier_tag
+from precis.backfill.provenance import SOURCE_KINDS, grade_for, grade_tag
 from precis.backfill.workspace import (
     assemble,
     assemble_draft,
@@ -96,12 +96,12 @@ from precis.backfill.workspace import (
 
 __all__ = [
     "SOURCE_KINDS",
-    "Candidate",
     "ChunkEdge",
     "Intent",
     "IntentContext",
     "LinkRollup",
     "NamedTarget",
+    "RecallCandidate",
     "Rung",
     "TailBucket",
     "assemble",
@@ -113,6 +113,8 @@ __all__ = [
     "draft_topic_slugs",
     "find_candidates",
     "find_citation_candidates",
+    "grade_for",
+    "grade_tag",
     "intents_for",
     "intents_for_draft",
     "materialize_citation_edges",
@@ -126,6 +128,4 @@ __all__ = [
     "rollup_edges",
     "section_intents",
     "set_intent",
-    "tier_for",
-    "tier_tag",
 ]

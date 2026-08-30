@@ -90,8 +90,8 @@ from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
 from precis.store.types import ActorSlug
 from precis.taproot.canon import (
-    Candidate,
     CanonicalClaim,
+    MergeCandidate,
     Placement,
     Verdict,
     block,
@@ -128,7 +128,7 @@ __all__ = [
 #: it needs its own copy of the literal, not an import of a private name.
 _DECOMPOSED_AT_META_KEY = "taproot_decomposed_at"
 
-BlockFn = Callable[[CanonicalClaim, Any, Any], list[Candidate]]
+BlockFn = Callable[[CanonicalClaim, Any, Any], list[MergeCandidate]]
 JudgeFn = Callable[[str, str], Verdict]
 MergeConfirmFn = Callable[[str, str], Verdict]
 #: The evidence re-point's one-way claim-vs-evidence check — production

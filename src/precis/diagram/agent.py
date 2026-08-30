@@ -150,9 +150,9 @@ def build_agentic_claude_fn(
     _model = model if model is not None else os.environ.get("PRECIS_FIGURE_MODEL")
 
     def _agentic_claude(prompt: str) -> dict[str, Any]:
-        from precis.utils.llm.router import LlmRequest, Tier, dispatch
+        from precis.utils.llm.router import LlmRequest, Tier, route
 
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=Tier.FRONTIER,
                 source=source,

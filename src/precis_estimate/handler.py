@@ -187,7 +187,7 @@ class EstimateHandler(CacheBackedHandler):
         supports_search_hits=True,
         is_numeric=False,
         id_required=True,
-        role="system",
+        placement="system",
     )
 
     provider: ClassVar[str] = "estimate"

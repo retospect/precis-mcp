@@ -1,7 +1,7 @@
 """asa-slack — Slack bridge to Asa, routed through the LLM router.
 
 Socket Mode daemon; each turn is one blocking
-``router.dispatch()`` at ``Tier.BIG`` (asa_bot's Discord bridge, by
+``router.route()`` at ``Tier.BIG`` (asa_bot's Discord bridge, by
 contrast, streams via ``dispatch_async`` at ``FRONTIER``). Slack is a
 semi-trusted multi-user surface, so turns carry a hard kind-allowlist
 (:mod:`asa_slack.kind_policy`, baked in via ``LlmRequest.env_overlay``'s

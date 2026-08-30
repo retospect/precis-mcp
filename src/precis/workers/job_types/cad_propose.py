@@ -28,7 +28,7 @@ import os
 from typing import Any
 
 from precis.cad.scene import SceneError, build_design, parse_source, spec_to_source
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # (mcp_config=None) on FRONTIER, so PRECIS_LLM_BACKEND can switch it.
     # The broad except is kept and the folded res.error is checked too.
     try:
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=Tier.FRONTIER,
                 source="cad_propose",

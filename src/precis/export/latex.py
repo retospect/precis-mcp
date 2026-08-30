@@ -50,7 +50,10 @@ from precis.export._nanopub_appendix import (
 from precis.export._nanopub_appendix import (
     published_claim_entries,
 )
-from precis.export._patent_cite import format_patent_citation, paper_inline_citation
+from precis.export._patent_cite import (
+    render_paper_inline_citation,
+    render_patent_citation,
+)
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -668,9 +671,9 @@ def _inline_source_cite(tgt: str, kind: str, surface: str | None, ctx: _Ctx) -> 
     if ref is None:
         return _encode_unicode(_latex_escape(slug))
     if kind == "patent":
-        text = format_patent_citation(getattr(ref, "meta", None), slug)
+        text = render_patent_citation(getattr(ref, "meta", None), slug)
     else:
-        text = paper_inline_citation(ref)
+        text = render_paper_inline_citation(ref)
     return _encode_unicode(_latex_escape(text))
 
 
@@ -681,7 +684,7 @@ def _inline_paper_by_slug(slug: str, ctx: _Ctx) -> str:
     if ctx.store is None:
         return _encode_unicode(_latex_escape(slug))
     ref = ctx.store.get_ref(kind="paper", id=slug)
-    text = paper_inline_citation(ref) if ref is not None else slug
+    text = render_paper_inline_citation(ref) if ref is not None else slug
     return _encode_unicode(_latex_escape(text))
 
 
@@ -780,9 +783,11 @@ def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
         ctx.cited.append(base)
     ref = ctx.store.get_ref(kind=kind, id=base) if ctx.store is not None else None
     if kind == "patent":
-        line = _tex(format_patent_citation(getattr(ref, "meta", None), base))
+        line = _tex(render_patent_citation(getattr(ref, "meta", None), base))
     else:
-        line = _tex(paper_inline_citation(ref)) if ref is not None else _tex(base)
+        line = (
+            _tex(render_paper_inline_citation(ref)) if ref is not None else _tex(base)
+        )
     body = f"{line}~\\cite{{{base}}}"
     exc = _footnote_excerpt(excerpt, ctx)
     if exc:

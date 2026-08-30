@@ -3,7 +3,7 @@
 Under a tools-capable OSS backend (``PRECIS_LLM_BACKEND=openai``) the tick runs
 in-process over the OSS ``tools=`` loop rather than as ``claude -p`` (the
 ANTHROPIC-backend branch, covered by ``test_plan_tick_claude``).
-The tick goes *through* ``router.dispatch`` (so it gains the breaker gate +
+The tick goes *through* ``router.route`` (so it gains the breaker gate +
 route-log), which runs the OSS loop synchronously in-thread; the tick binds its
 runtime context (parent todo / workspace / model / agentlog / the draft
 prose-file kind-gate) via a thread-isolated ContextVar around the dispatch call.
@@ -281,7 +281,7 @@ def test_run_oss_threads_select_temperature_and_thinking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``params['select']`` rides through ``LlmRequest`` and the
-    real ``dispatch`` onto the OSS loop's ``temperature``/``thinking``
+    real ``route`` onto the OSS loop's ``temperature``/``thinking``
     kwargs."""
     _outcome, seen = _run_oss(
         monkeypatch,
@@ -301,7 +301,7 @@ def test_run_oss_corrupt_select_does_not_crash_the_tick(
 ) -> None:
     """A corrupt ``meta.llm_select`` degrades to no override — the tick
     still completes cleanly, falling through to the tier's own generation
-    defaults (``dispatch``'s ``_tier_gen_defaults``: FRONTIER = thinking on,
+    defaults (``route``'s ``_tier_gen_defaults``: FRONTIER = thinking on,
     temperature unset) exactly as it would with no ``select`` at all."""
     outcome, seen = _run_oss(
         monkeypatch,
@@ -337,7 +337,7 @@ def test_run_oss_bound_draft_gates_prose_kind_on_ctx(
 def test_run_oss_breaker_pause_is_resumable(monkeypatch: pytest.MonkeyPatch) -> None:
     # A router-level pause (breaker / all-slots-busy) folds into a resumable
     # `paused` outcome rather than a hard failure — the executor backs off and
-    # re-mints when the window clears. Stub `dispatch` itself to return paused.
+    # re-mints when the window clears. Stub `route` itself to return paused.
     import precis.workers.planner_prompt as planner_prompt
     from precis.utils.llm import router
     from precis.utils.llm.router import LlmResult, Tier
@@ -353,7 +353,7 @@ def test_run_oss_breaker_pause_is_resumable(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(agentlog, "finalize_log", lambda *a, **k: None)
     monkeypatch.setattr(
         router,
-        "dispatch",
+        "route",
         lambda req: LlmResult(
             text="",
             cost_usd=None,

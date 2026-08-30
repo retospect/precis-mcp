@@ -477,7 +477,7 @@ def search(
     good: bool | None = None,
     # Field-scoped paper lookup (paper kind). ``title=`` / ``author=``
     # return paper *records* — handle + one-line citation + a cite path —
-    # instead of body-block hits. The targeted finder for "I know the
+    # instead of body-chunk hits. The targeted finder for "I know the
     # title / an author": matches refs.title (trigram+FTS) / refs.authors
     # (jsonb) directly, held copies first, so an exact title or a bare
     # surname lands the paper itself rather than other papers' text.
@@ -1174,7 +1174,7 @@ def edit(
       Pass `text=''` to delete the matched span (canonical idiom).
     - `insert`: **Required** `find=`, `text=`, `where='before'|'after'`.
     - `append` / `replace`: **Required** `text=`. `replace` with
-      `id='slug~selector'` rewrites one block.
+      `id='slug~selector'` rewrites one chunk.
 
     Optional anchors: `before=` / `after=` / `match=` (`unique`
     default | `first` | `all` | `nth`) / `nth=`. `dry_run=True`
@@ -1246,7 +1246,7 @@ def delete(
     soft-delete the ref (recoverable at SQL layer).
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
-    python): delete the addressed block/symbol/line range.
+    python): delete the addressed chunk/symbol/line range.
     Without a selector → BadInput. Use `edit(mode='replace', text='')`
     to clear a whole file, or `edit(mode='find-replace', find='…',
     text='')` to delete a matched span.

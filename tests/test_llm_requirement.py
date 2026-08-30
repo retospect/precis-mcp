@@ -63,17 +63,17 @@ class TestInferRequirement:
 
 class TestExtractJson:
     def test_pulls_json_from_prose(self) -> None:
-        from precis.utils.llm.requirement import _extract_json
+        from precis.utils.llm.json_reply import extract_json_object
 
         raw = (
             'Sure! Here is the requirement:\n{"axis": "code", "min_ordinal": 3}\nDone.'
         )
-        assert _extract_json(raw) == {"axis": "code", "min_ordinal": 3}
+        assert extract_json_object(raw) == {"axis": "code", "min_ordinal": 3}
 
-    def test_garbage_is_empty(self) -> None:
-        from precis.utils.llm.requirement import _extract_json
+    def test_garbage_is_none(self) -> None:
+        from precis.utils.llm.json_reply import extract_json_object
 
-        assert _extract_json("no json here") == {}
+        assert extract_json_object("no json here") is None
 
 
 class TestChooseModel:

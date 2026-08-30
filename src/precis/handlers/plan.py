@@ -47,10 +47,10 @@ from precis.utils import handle_registry
 
 log = logging.getLogger(__name__)
 
-#: A bare plan-chunk address — the universal handle ``pe<chunk_id>``,
+#: A bare plan-chunk handle — the universal handle ``pe<chunk_id>``,
 #: optionally with a relative operator (``^`` / ``+`` / ``-`` / ``..``). Used
-#: to tell a chunk address from a plan slug in ``get`` / ``edit`` / ``delete``.
-_PLAN_CHUNK_ADDR_RE = re.compile(r"^pe\d+(?:[+\-^].*|\.\..*)?$")
+#: to tell a chunk handle from a plan slug in ``get`` / ``edit`` / ``delete``.
+_PLAN_CHUNK_HANDLE_RE = re.compile(r"^pe\d+(?:[+\-^].*|\.\..*)?$")
 
 #: Accepted node ``status`` values (the todo-list state) → rendered marker.
 _STATUS_MARKERS: dict[str, str] = {"open": "[open]", "wip": "[wip]", "done": "done:"}
@@ -71,10 +71,10 @@ def _cap(text: str, n: int = _GLOSS_CAP) -> str:
     return flat if len(flat) <= n else flat[: n - 1].rstrip() + "…"
 
 
-def _is_plan_chunk_addr(s: str) -> bool:
+def _is_plan_chunk_handle(s: str) -> bool:
     """True iff ``s`` addresses a plan chunk (``pe<id>``, optionally with a
     relative operator)."""
-    return bool(_PLAN_CHUNK_ADDR_RE.match(s.strip()))
+    return bool(_PLAN_CHUNK_HANDLE_RE.match(s.strip()))
 
 
 class PlanHandler(Handler):
@@ -100,7 +100,7 @@ class PlanHandler(Handler):
         is_numeric=False,
         id_required=False,
         note_like=True,
-        role="artifact",
+        placement="artifact",
         corpus_role="none",
         views=("toc", "links"),
     )
@@ -142,7 +142,7 @@ class PlanHandler(Handler):
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
-        if _is_plan_chunk_addr(s):
+        if _is_plan_chunk_handle(s):
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="plan", id=s)
         if view == "links":
@@ -369,7 +369,7 @@ class PlanHandler(Handler):
     def _resolve_plan_any(self, id: str | int | None) -> Any:
         """Resolve a plan ref from either its slug or a ``pe<id>`` node."""
         s = str(id or "").strip()
-        if _is_plan_chunk_addr(s):
+        if _is_plan_chunk_handle(s):
             node = self.store.drafts.get_draft_chunk(s, kind="plan")
             if node is None:
                 raise NotFound(f"plan node {s} not found")
@@ -380,7 +380,7 @@ class PlanHandler(Handler):
         return resolve_live_slug_ref(self.store, kind="plan", id=s)
 
     def _require_chunk_id(self, id: str | int | None, *, verb: str) -> str:
-        if id is None or not _is_plan_chunk_addr(str(id)):
+        if id is None or not _is_plan_chunk_handle(str(id)):
             raise BadInput(
                 f"{verb}(kind='plan') targets a node — id='pe<chunk_id>'",
                 next=f"{verb}(kind='plan', id='pe42', …)",
@@ -396,7 +396,7 @@ class PlanHandler(Handler):
         out = dict(at)
         for key in ("before", "after", "into"):
             anchor = out.get(key)
-            if anchor is not None and _is_plan_chunk_addr(str(anchor)):
+            if anchor is not None and _is_plan_chunk_handle(str(anchor)):
                 node = self.store.drafts.get_draft_chunk(str(anchor), kind="plan")
                 if node is None:
                     raise NotFound(f"at: no plan node {anchor!r}")
@@ -498,14 +498,16 @@ class PlanHandler(Handler):
             lines.append(f"{'  ' * c.depth}{marker} {c.dc} {_cap(gloss)}".rstrip())
         return Response(body="\n".join(lines))
 
-    def _render_chunk(self, addr: str) -> Response:
+    def _render_chunk(self, handle: str) -> Response:
         """One node verbatim + a small relative window (relative
         nav: ``pe<id>^`` ancestor / ``+N`` step / ``-lo..hi`` span)."""
-        rel = handle_registry.parse_relative(addr)
+        rel = handle_registry.parse_relative(handle)
         if rel is not None:
-            ids = self.store.drafts.draft_relative_chunk_ids(addr, kind="plan")
+            ids = self.store.drafts.draft_relative_chunk_ids(handle, kind="plan")
             if not ids:
-                raise NotFound(f"plan node {addr!r} resolves to nothing (out of range)")
+                raise NotFound(
+                    f"plan node {handle!r} resolves to nothing (out of range)"
+                )
             window = [
                 node
                 for cid in ids
@@ -513,9 +515,9 @@ class PlanHandler(Handler):
                 is not None
             ]
         else:
-            node = self.store.drafts.get_draft_chunk(addr, kind="plan")
+            node = self.store.drafts.get_draft_chunk(handle, kind="plan")
             if node is None:
-                raise NotFound(f"plan node {addr!r} not found")
+                raise NotFound(f"plan node {handle!r} not found")
             window = [node]
         blocks = [
             f"{self._marker(c)} {c.dc}  sha:{content_sha(c.text)[:12]}\n{c.text}"

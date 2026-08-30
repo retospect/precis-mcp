@@ -382,7 +382,7 @@ def _run_oss_tick(
     """Run one planner tick over the in-process OSS ``tools=`` loop (the
     ``OPENAI_TOOLS`` transport), instead of spawning ``claude -p``.
 
-    Goes *through* ``router.dispatch`` — so the OSS tick gains the same breaker
+    Goes *through* ``router.route`` — so the OSS tick gains the same breaker
     gate + route-log the claude tick does — rather than calling the loop
     directly. ``dispatch`` runs the provider synchronously in this thread, so
     the loop still executes inside the ``tick_context`` block below.
@@ -407,7 +407,7 @@ def _run_oss_tick(
     path); a transport ``error`` → a real failure.
     """
     from precis.utils.inproc_context import TickContext, tick_context
-    from precis.utils.llm.router import LlmRequest, dispatch
+    from precis.utils.llm.router import LlmRequest, route
 
     tier = _resolve_oss_tier(model)
     # Tools are advertised iff mcp_config is non-None (router contract); the OSS
@@ -443,7 +443,7 @@ def _run_oss_tick(
     placement, thinking, temperature, effort = _select_knobs(sel)
     try:
         with tick_context(ctx):
-            result = dispatch(
+            result = route(
                 LlmRequest(
                     tier=tier,
                     prompt=prompts.user,
@@ -535,7 +535,7 @@ def _run_claude_tick(
 
     Selected under the ANTHROPIC backend (:func:`~precis.utils.llm.router.select_transport`
     → ``CLAUDE_AGENT``): the real Claude Code agent, MCP tools enabled, authed
-    off the OAuth Max subscription. It goes *through* ``router.dispatch`` — so it
+    off the OAuth Max subscription. It goes *through* ``router.route`` — so it
     gains the breaker gate + route-log — rather than hand-building a ``claude``
     command.
 
@@ -553,7 +553,7 @@ def _run_claude_tick(
     exhaustion semantics: ``max_turns`` / ``budget`` / timeout / a breaker pause
     become a resumable signal rather than a hard failure.
     """
-    from precis.utils.llm.router import LlmRequest, dispatch
+    from precis.utils.llm.router import LlmRequest, route
 
     tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
     mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
@@ -595,7 +595,7 @@ def _run_claude_tick(
             },
         )
     placement, thinking, temperature, effort = _select_knobs(sel)
-    result = dispatch(
+    result = route(
         LlmRequest(
             tier=tier,
             prompt=prompts.user,
@@ -963,7 +963,7 @@ def _resolve_oss_tier(model: str) -> Tier:
     :mod:`precis.utils.llm.live_config`) drives a served local model through
     the in-process tools loop, so the tick runs on the capability the cluster
     actually has. Model selection stays in the LLM routing seam resolver; the
-    tools-loop guarantee is chain-carried through :func:`~precis.utils.llm.router.dispatch`.
+    tools-loop guarantee is chain-carried through :func:`~precis.utils.llm.router.route`.
     """
     tag_tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
     transport = select_transport(tag_tier, tools_needed=True, backend=resolve_backend())

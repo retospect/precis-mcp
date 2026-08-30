@@ -506,11 +506,11 @@ CADENCES: tuple[Cadence, ...] = (
     Cadence(name="materialize", interval_s=300, run=_run_materialize),
     # gr192752: the two opus reviewers, migrated off the agent-profile
     # default rotation. Under `--profile all` a long `chase` pass
-    # (PassBand.BACKGROUND, registered first) can monopolize the strictly-
+    # (PassPriority.BACKGROUND, registered first) can monopolize the strictly-
     # serial rotation for hours (synchronous S2 lookups, tenacity retries),
     # starving both reviewers — observed 85-min starvation on the
     # inference host. NO `host_affinity` here (unlike dream_agent/
-    # anki_sync) — eligibility is purely the env gate
+    # anki_sync) — eligibility is purely the dark switch
     # (PRECIS_STRUCTURAL_REVIEW / PRECIS_DEEP_REVIEW), which the collapsed-
     # unit deploy template scopes to TWO hosts (gateway + inference). That
     # is the actual fix: the lease is fleet-wide, so one host's wedged
@@ -579,7 +579,7 @@ CADENCES: tuple[Cadence, ...] = (
     # Nanopub slice 3: the daily anchor sweep (spec: one cron, decided
     # 2026-08-13). Host-agnostic — the lease is the fleet-singleton
     # throttle. Off the exact day boundary (24h11m) like
-    # draft_refresh_scan's off-hour convention. No `eligible` env gate:
+    # draft_refresh_scan's off-hour convention. No `eligible` check:
     # the pass itself gates calendar traffic on PRECIS_OTS_ENABLED and
     # still runs its (local, free) recompute audit when dark — the proof
     # store's integrity check shouldn't wait on a network flag.
@@ -589,7 +589,7 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=24 * 3600 + 11 * 60,
         run=_run_ots_sweep,
     ),
-    # Same posture as ots_sweep: no `eligible` env gate — the pass
+    # Same posture as ots_sweep: no `eligible` check — the pass
     # itself no-ops unless PRECIS_MIRROR_ENABLED, so the cadence lease
     # advances harmlessly while dark. Offset from ots_sweep's +11m so
     # the two daily nanopub fires don't land together. spends=False:
@@ -601,7 +601,7 @@ CADENCES: tuple[Cadence, ...] = (
     ),
     # gr264357: the JLCPCB catalog ingest — daily, off the exact day
     # boundary like ots_sweep/nanopub_mirror above so the three daily
-    # fires don't land together. Host-agnostic; no `eligible` env gate —
+    # fires don't land together. Host-agnostic; no `eligible` check —
     # the pass itself no-ops cleanly without JLCPCB API credentials (see
     # workers/parts_refresh.py), same posture as ots_sweep/nanopub_mirror.
     # spends=False: no LLM anywhere in the walk.

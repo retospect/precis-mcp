@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from precis.backfill import workspace as wsmod
-from precis.backfill.candidates import Candidate, draft_cited_ref_ids
+from precis.backfill.candidates import RecallCandidate, draft_cited_ref_ids
 from precis.backfill.workspace import _render_candidate_list, assemble
 from precis.dispatch import Hub
 from precis.handlers.plan import PlanHandler
@@ -55,7 +55,7 @@ def test_subtree_chunks_is_heading_plus_descendants() -> None:
 
 
 def test_candidate_list_render_marks_gaps() -> None:
-    cand = Candidate(
+    cand = RecallCandidate(
         ref_id=5,
         ref=NS(kind="paper", title="A Cool Paper on SEI"),
         chunk_id=10,
@@ -76,8 +76,8 @@ def test_candidate_list_render_empty() -> None:
 
 def _cand(
     ref_id: int, chunk_id: int, score: float, support: tuple[str, ...]
-) -> Candidate:
-    return Candidate(
+) -> RecallCandidate:
+    return RecallCandidate(
         ref_id=ref_id,
         ref=NS(kind="paper", title=f"Paper {ref_id}"),
         chunk_id=chunk_id,
@@ -113,14 +113,14 @@ def test_candidate_list_render_shows_recurrence_and_support() -> None:
 
 
 def test_candidate_list_render_shows_provenance_tier() -> None:
-    paper = Candidate(
+    paper = RecallCandidate(
         ref_id=5,
         ref=NS(kind="paper", title="Peer paper"),
         chunk_id=10,
         chunk_handle="pc10",
         score=1.0,
     )
-    sheet = Candidate(
+    sheet = RecallCandidate(
         ref_id=6,
         ref=NS(kind="datasheet", title="Part spec"),
         chunk_id=11,
@@ -164,7 +164,7 @@ def test_find_candidates_broadens_kinds_and_weights_by_tier(
 def test_candidate_ref_level_lead_shape() -> None:
     """A memory hit has no chunk handle — it is a ref-level *lead*, addressed +
     rendered by its ``me<id>`` record handle, tagged ``[own-note]``."""
-    lead = Candidate(
+    lead = RecallCandidate(
         ref_id=7,
         ref=NS(kind="memory", title="my own synthesis of the transport data"),
         chunk_id=555,
@@ -217,7 +217,7 @@ def test_assemble_focuses_memory_lead_as_flat_ref_eye(
     store = hub.live_store
     sec, _cited_id, _cand_id = _doc_with_citation(store, plan)
     note = store.insert_ref(kind="memory", slug=None, title="my synthesis").id
-    lead = Candidate(
+    lead = RecallCandidate(
         ref_id=note,
         ref=store.fetch_refs_by_ids([note])[note],
         chunk_id=999,
@@ -284,7 +284,7 @@ def test_assemble_builds_target_cited_and_candidate_eyes(
 ) -> None:
     store = hub.live_store
     sec, cited_id, cand_id = _doc_with_citation(store, plan)
-    cand = Candidate(
+    cand = RecallCandidate(
         ref_id=cand_id,
         ref=store.fetch_refs_by_ids([cand_id])[cand_id],
         chunk_id=999,
@@ -339,7 +339,7 @@ def test_render_backfill_shows_workspace_and_candidates(
 ) -> None:
     store = hub.live_store
     sec, _cited_id, cand_id = _doc_with_citation(store, plan)
-    cand = Candidate(
+    cand = RecallCandidate(
         ref_id=cand_id,
         ref=store.fetch_refs_by_ids([cand_id])[cand_id],
         chunk_id=999,
@@ -367,7 +367,7 @@ def test_render_backfill_shows_workspace_and_candidates(
 def test_backfill_marks_stamp_cited_and_candidate(hub: Hub, plan: PlanHandler) -> None:
     store = hub.live_store
     sec, cited_id, cand_id = _doc_with_citation(store, plan)
-    cand = Candidate(
+    cand = RecallCandidate(
         ref_id=cand_id,
         ref=store.fetch_refs_by_ids([cand_id])[cand_id],
         chunk_id=999,
@@ -537,13 +537,13 @@ def test_find_candidates_topic_gate_covers_citation_lens_only_hit(
     hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """G3 fix: the gate must also cover a candidate the CITATION lens alone
-    surfaces — before the fix, ``_merge_citation_lens`` appended
+    surfaces — before the fix, ``_merge_citation_recall`` appended
     citation-only hits to ``out`` *after* ``_apply_topic_gate`` had already
     run, so an off-domain citation-graph neighbour rode through undemoted
     (a violation of "nanobuds stays on nanobuds"). Here the text lens finds
     nothing at all — the off-domain hit is citation-lens-only — and it must
     still be demoted once the draft's on-domain topic is derivable."""
-    from precis.backfill import citation_lens as cl
+    from precis.backfill import citation_recall as cl
     from precis.backfill.candidates import LENS_CITATION, LENS_TOPIC, find_candidates
     from precis.store.types import Tag
 
@@ -559,7 +559,7 @@ def test_find_candidates_topic_gate_covers_citation_lens_only_hit(
 
     monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
 
-    cite_cand = Candidate(
+    cite_cand = RecallCandidate(
         ref_id=off_domain.id,
         ref=off_domain,
         chunk_id=911,
@@ -623,7 +623,9 @@ def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
         at={"into": "¶" + methods_h},
     )
 
-    cand = store.insert_ref(kind="paper", slug="cand", title="Recurring Candidate")
+    cand = store.insert_ref(
+        kind="paper", slug="cand", title="Recurring RecallCandidate"
+    )
 
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
         return [(NS(id=555), cand, 1.0)]
@@ -633,7 +635,7 @@ def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
     n_sections = sum(1 for e in store.drafts.draft_toc(ref.id) if e.depth == 0)
     out = draft.get(id="wd", view="backfill").body
     assert f"{n_sections} section(s) scanned" in out
-    assert "Recurring Candidate" in out
+    assert "Recurring RecallCandidate" in out
     assert "○○" in out  # recurs across the sections it was independently recalled in
 
 

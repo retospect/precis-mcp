@@ -5,7 +5,7 @@ section's own keywords (lexical legs) + its embedded text (semantic leg) — the
 section *programs its own recall* — scope it across the source kinds (paper /
 cfp / patent / datasheet, :data:`~precis.backfill.provenance.SOURCE_KINDS`), and
 exclude everything the draft already cites (**Tier-0 dedup**). Returns ranked
-:class:`Candidate` chunks, best first, each score down-weighted by its source's
+:class:`RecallCandidate` chunks, best first, each score down-weighted by its source's
 **provenance tier** so peer-reviewed evidence outranks an equally-matched
 prior-art spec. No LLM: HyDE ``answers=`` and the Tier-1 relevance cull are
 model-authored layers for a later slice; here the RRF fused score is the ranker.
@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from precis.backfill.provenance import SOURCE_KINDS, tier_for
+from precis.backfill.provenance import SOURCE_KINDS, grade_for
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.mentions import resolve_link_targets
@@ -56,7 +56,7 @@ _SEED_TEXT_CAP = 2000
 
 
 @dataclass(frozen=True, slots=True)
-class Candidate:
+class RecallCandidate:
     """One uncited-but-relevant hit the recall sweep surfaced.
 
     Two shapes, distinguished by :attr:`is_ref_level`:
@@ -257,12 +257,12 @@ def _text_lens(
     per_paper: int,
     limit: int,
     support: tuple[str, ...],
-) -> list[Candidate]:
+) -> list[RecallCandidate]:
     """One text-lens sweep for ``target_chunks`` — the section(s) program their
     own recall (keywords + embedded text → RRF hybrid search over ``kinds``,
     Tier-0-excluded). Every hit is stamped with ``support`` (the target handle(s)
     this sweep speaks for) so the caller can see which section surfaced it, and its
-    score is **down-weighted by the source's provenance tier** (:func:`tier_for`)
+    score is **down-weighted by the source's provenance grade** (:func:`grade_for`)
     so a peer-reviewed paper outranks an equally-matched prior-art datasheet."""
     keywords, seed_text = seed_from_targets(store, target_chunks, kind=kind)
     q_texts = keywords or ([seed_text[:400]] if seed_text else [])
@@ -282,7 +282,7 @@ def _text_lens(
         exclude_ref_ids=sorted(exclude_ref_ids) if exclude_ref_ids else None,
         limit=limit,
     )
-    out: list[Candidate] = []
+    out: list[RecallCandidate] = []
     for block, ref, score in hits:
         rkind = getattr(ref, "kind", "paper") or "paper"
         # A chunk handle when the kind exposes one; ``""`` for a handle-less kind
@@ -291,12 +291,12 @@ def _text_lens(
         # kind from crashing the whole sweep the way ``format_handle`` would.
         handle = handle_registry.try_format(rkind, int(block.id), chunk=True) or ""
         out.append(
-            Candidate(
+            RecallCandidate(
                 ref_id=int(ref.id),
                 ref=ref,
                 chunk_id=int(block.id),
                 chunk_handle=handle,
-                score=float(score) * tier_for(rkind).weight,
+                score=float(score) * grade_for(rkind).weight,
                 support=support,
             )
         )
@@ -310,14 +310,14 @@ def _union_support(a: tuple[str, ...], b: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def merge_recurrence(
-    per_target: list[list[Candidate]], *, limit: int
-) -> list[Candidate]:
+    per_target: list[list[RecallCandidate]], *, limit: int
+) -> list[RecallCandidate]:
     """Union per-target text-lens results **by source ref** into the recurrence
     overlay: a paper several sections independently recall keeps its best-scoring
     chunk and accrues every supporting target handle, and **cross-cutting gaps
     rank first** — a source missed in three sections is a stronger omission than
     one missed in one. Pure (no store), so the ranking is unit-testable."""
-    merged: dict[int, Candidate] = {}
+    merged: dict[int, RecallCandidate] = {}
     for cands in per_target:
         for cand in cands:
             prev = merged.get(cand.ref_id)
@@ -342,7 +342,7 @@ def find_candidates(
     citation_seed_ref_ids: set[int] | None = None,
     per_paper: int = 1,
     limit: int = 12,
-) -> list[Candidate]:
+) -> list[RecallCandidate]:
     """Run the recall lenses for the resolved target chunks and return ranked
     candidates, best first. ``exclude_ref_ids`` is the Tier-0 dedup set (cited ∪
     dismissed); ``citation_seed_ref_ids`` is the *cited* set whose citation-graph
@@ -415,7 +415,7 @@ def find_candidates(
     # "nanobuds stays on nanobuds" guarantee for exactly the lens built to
     # find provable-but-adjacent omissions.
     draft_topics = draft_topic_slugs(store, citation_seed_ref_ids or set())
-    _merge_citation_lens(
+    _merge_citation_recall(
         store, out, citation_seed_ref_ids, exclude_ref_ids or set(), limit
     )
     out = _apply_topic_gate(store, out, draft_topics)
@@ -457,8 +457,8 @@ def draft_topic_slugs(store: Store, cited_ref_ids: set[int]) -> set[str]:
 
 
 def _apply_topic_gate(
-    store: Store, candidates: list[Candidate], draft_topics: set[str]
-) -> list[Candidate]:
+    store: Store, candidates: list[RecallCandidate], draft_topics: set[str]
+) -> list[RecallCandidate]:
     """The stay-in-scope precision gate (Build 2 §G3): partitions
     ``candidates`` into on-domain (a ``topic:`` tag in ``draft_topics`` —
     confirmed via ``topic`` folded into ``.lenses``) and off-domain/untagged
@@ -471,8 +471,8 @@ def _apply_topic_gate(
     if not draft_topics or not candidates:
         return candidates
     tags = store.ref_tags_bulk([c.ref_id for c in candidates])
-    on_domain: list[Candidate] = []
-    off_domain: list[Candidate] = []
+    on_domain: list[RecallCandidate] = []
+    off_domain: list[RecallCandidate] = []
     for cand in candidates:
         if _topic_slugs(tags.get(cand.ref_id, [])) & draft_topics:
             if LENS_TOPIC not in cand.lenses:
@@ -483,9 +483,9 @@ def _apply_topic_gate(
     return on_domain + off_domain
 
 
-def _merge_citation_lens(
+def _merge_citation_recall(
     store: Store,
-    out: list[Candidate],
+    out: list[RecallCandidate],
     citation_seed_ref_ids: set[int] | None,
     exclude_ref_ids: set[int],
     limit: int,
@@ -499,7 +499,7 @@ def _merge_citation_lens(
     if not citation_seed_ref_ids:
         return
     try:
-        from precis.backfill.citation_lens import find_citation_candidates
+        from precis.backfill.citation_recall import find_citation_candidates
 
         cite_cands = find_citation_candidates(
             store, citation_seed_ref_ids, exclude=exclude_ref_ids, limit=limit

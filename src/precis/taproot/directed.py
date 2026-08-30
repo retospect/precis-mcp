@@ -72,8 +72,8 @@ from precis.errors import BadInput
 from precis.store.types import ActorSlug
 from precis.taproot.canon import (
     CLAIM_FORM_RULES,
-    Candidate,
     CanonicalClaim,
+    MergeCandidate,
     Placement,
     Verdict,
     _parse_claim_item,
@@ -85,7 +85,7 @@ from precis.taproot.canon import (
     place,
 )
 from precis.taproot.hub import _DEFAULT_ROLE, EVIDENCE_SRC_KINDS, apply_placement
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -294,7 +294,7 @@ def qualify_claim(proposed: str, passage: str) -> QualifyResult:
         passage=passage_s[:_QUALIFY_EXCERPT_CHARS],
         rules=CLAIM_FORM_RULES,
     )
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.BIG,
             messages=[
@@ -318,7 +318,7 @@ def qualify_claim(proposed: str, passage: str) -> QualifyResult:
 # ── directed_mint — qualify, then the same cascade + write door ────────
 
 QualifyFn = Callable[[str, str], QualifyResult]
-BlockFn = Callable[[CanonicalClaim, Any, Any], list[Candidate]]
+BlockFn = Callable[[CanonicalClaim, Any, Any], list[MergeCandidate]]
 JudgeFn = Callable[[str, str], Verdict]
 MergeConfirmFn = Callable[[str, str], Verdict]
 

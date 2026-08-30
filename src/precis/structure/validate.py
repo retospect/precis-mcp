@@ -33,7 +33,7 @@ BOND_LENGTH_FACTOR = 1.3
 
 
 @dataclass
-class Finding:
+class ValidationIssue:
     """One validator finding."""
 
     rule: str
@@ -43,9 +43,9 @@ class Finding:
     suggested_fix: str
 
 
-def validate(scene: Scene) -> list[Finding]:
+def validate(scene: Scene) -> list[ValidationIssue]:
     """Return all gate findings (empty = clean). Pure read over the Scene."""
-    findings: list[Finding] = []
+    findings: list[ValidationIssue] = []
     labels = list(scene.atoms)
 
     # 1. atomic overlap (sub-covalent distance)
@@ -60,7 +60,7 @@ def validate(scene: Scene) -> list[Finding]:
             ) * OVERLAP_FRACTION
             if dist < floor:
                 findings.append(
-                    Finding(
+                    ValidationIssue(
                         rule="atom_overlap",
                         atoms=[a.label, b.label],
                         measured=round(dist, 3),
@@ -86,7 +86,7 @@ def validate(scene: Scene) -> list[Finding]:
         cn = probe.covalent_coordination(scene, label)
         if cn > mv:
             findings.append(
-                Finding(
+                ValidationIssue(
                     rule="over_valence",
                     atoms=[label],
                     measured=cn,
@@ -115,7 +115,7 @@ def validate(scene: Scene) -> list[Finding]:
         ceiling = expected * BOND_LENGTH_FACTOR
         if dist > ceiling:
             findings.append(
-                Finding(
+                ValidationIssue(
                     rule="bond_too_long",
                     atoms=[a.label, c.label],
                     measured=round(dist, 3),
@@ -144,7 +144,7 @@ def validate(scene: Scene) -> list[Finding]:
             mv = elements.max_valence(bond_atom.element)
             if mv is not None and bond.order > mv:
                 findings.append(
-                    Finding(
+                    ValidationIssue(
                         rule="bond_order_exceeds_valence",
                         atoms=[bond.i, bond.j],
                         measured=bond.order,
@@ -184,7 +184,7 @@ def validate(scene: Scene) -> list[Finding]:
             f"{b.j if b.i == label else b.i}({b.order:g})" for b in incident
         )
         findings.append(
-            Finding(
+            ValidationIssue(
                 rule="valence_budget_exceeded",
                 atoms=[label],
                 measured=total,

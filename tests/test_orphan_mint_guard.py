@@ -34,13 +34,13 @@ def _soft_delete(store: Store, ref_id: int) -> None:
         conn.commit()
 
 
-def _mint(store: Store, parent_id: int, *, lens: str = "flow") -> int | None:
+def _mint(store: Store, parent_id: int, *, persona: str = "flow") -> int | None:
     return mint_review_todo(
         store,
         parent_id=parent_id,
-        lens=lens,
+        persona=persona,
         anchor="dc1",
-        text=f"{lens} review",
+        text=f"{persona} review",
     )
 
 

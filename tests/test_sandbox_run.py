@@ -107,7 +107,7 @@ def _valid_params(**over: Any) -> dict[str, Any]:
     p = {
         "prompt": "write a python script that prints hello",
         "target_node": "balthazar",
-        "wall_seconds": 1800,
+        "resources": {"wall_seconds": 1800},
     }
     p.update(over)
     return p
@@ -120,7 +120,7 @@ def _valid_run_params(*, artifact: int, **over: Any) -> dict[str, Any]:
         "mode": "run",
         "artifact": artifact,
         "target_node": "balthazar",
-        "wall_seconds": 1800,
+        "resources": {"wall_seconds": 1800},
     }
     p.update(over)
     return p
@@ -208,6 +208,23 @@ def test_compose_prompt_has_task_and_harvest_contract() -> None:
     assert "do the thing" in body
     assert "/work/out" in body
     assert "uv.lock" in body
+
+
+def test_resolve_wall_seconds_prefers_nested_falls_back_to_legacy_flat() -> None:
+    """The shared job wall-clock budget key: current writers nest it under
+    ``resources`` (matching ssh_node/coordinator/quest.compute); a job row
+    minted before that migration carried it flat at ``params.wall_seconds``
+    — the read-both shim must still honor that in-flight shape."""
+    assert sandbox_run.resolve_wall_seconds({"resources": {"wall_seconds": 900}}) == 900
+    assert sandbox_run.resolve_wall_seconds({"wall_seconds": 900}) == 900
+    # nested wins when (implausibly) both are present.
+    assert (
+        sandbox_run.resolve_wall_seconds(
+            {"resources": {"wall_seconds": 900}, "wall_seconds": 1}
+        )
+        == 900
+    )
+    assert sandbox_run.resolve_wall_seconds({}) is None
 
 
 # ── validate_submit fail-closed gate ───────────────────────────────
@@ -488,6 +505,24 @@ def test_claim_is_node_pinned_and_leased(
     assert meta["container"] == f"sandbox-{jid}"
     assert "lease_until" in meta
     assert meta["run_host"] == "spark"
+
+
+def test_legacy_flat_wall_seconds_row_still_claims_and_launches(
+    store: Store, sandbox_env: Path
+) -> None:
+    """A job row minted before the nested-``resources`` migration (flat
+    ``params.wall_seconds``) — never re-submitted, so never re-validated
+    against the current schema — must still lease + launch correctly via
+    the read-both shim (:func:`sandbox_run.resolve_wall_seconds`)."""
+    legacy_params = _valid_params()
+    legacy_params["wall_seconds"] = legacy_params.pop("resources")["wall_seconds"]
+    jid = _mk_queued_job(store, params=legacy_params)
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    assert _status(store, jid) == "running"
+    meta = _meta(store, jid)
+    assert meta["container"] == f"sandbox-{jid}"
+    assert meta["deadline"] > 0
+    assert "lease_until" in meta
 
 
 # ── Worker boot epoch: reclaim + re-adopt (the lease-epoch reclaim arm) ──

@@ -69,7 +69,7 @@ class PathwayHandler(Handler):
         supports_delete=True,
         supports_tag=True,
         is_numeric=False,
-        role="artifact",
+        placement="artifact",
         corpus_role="none",
         # Own the derived autocatpath_explore compute job (compute lane),
         # so `put` can route the run to the pinned node instead of running it

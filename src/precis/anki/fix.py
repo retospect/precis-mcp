@@ -99,19 +99,19 @@ def propose_fix(req: FixRequest, *, model: str | None = None) -> dict[str, str]:
     """Ask the LLM for corrected field values. Returns only changed fields whose
     names exist on the note (a hallucinated field name is dropped).
 
-    Routes through the LLM routing seam (:func:`~precis.utils.llm.router.dispatch`)
+    Routes through the LLM routing seam (:func:`~precis.utils.llm.router.route`)
     on the ``MEDIUM`` tier so the ``/factory`` backend switch reaches it. Under the default ``anthropic`` backend this resolves to
     the ``claude_p`` transport — the same one-shot JSON judge the direct call
     used — and ``LlmResult.data`` carries the parsed dict exactly as
     ``ClaudePResult.data`` did; when ``PRECIS_LLM_BACKEND=openai`` the OSS
     ``openai_compat`` lane parses the same trailing JSON into ``.data``. A
-    transport failure is re-raised (``dispatch`` folds it into ``result.error``
+    transport failure is re-raised (``route`` folds it into ``result.error``
     rather than raising) so :func:`run_fix_pass` counts it and leaves the card
     tagged for a retry instead of swapping its tag on an empty result.
     """
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
-    result = dispatch(
+    result = route(
         LlmRequest(
             tier=Tier.MEDIUM,
             prompt=build_fix_prompt(req),

@@ -1746,13 +1746,13 @@ def _mint_for_placement(
     sink = pending_checks if conn is not None else owned_checks
 
     def _do(c: Any) -> int:
-        hub = mint_hub(store, claim, set_by=set_by, conn=c, extra_meta=extra_meta)
+        claim_hub = mint_hub(store, claim, set_by=set_by, conn=c, extra_meta=extra_meta)
         if attach_paper:
             if paper_ref_id is None:  # pragma: no cover — defensive
                 raise BadInput("attach_paper=True requires a paper_ref_id")
             attach_evidence(
                 store,
-                hub_ref_id=hub,
+                hub_ref_id=claim_hub,
                 paper_ref_id=paper_ref_id,
                 role=role,
                 meta=meta,
@@ -1768,13 +1768,13 @@ def _mint_for_placement(
             # Hub <-> hub: opposite *claims* (distinct from a paper->hub
             # `contradicts` evidence edge; same slug, different endpoints).
             store.add_link(
-                src_ref_id=hub,
+                src_ref_id=claim_hub,
                 dst_ref_id=placement.contradicts_hub_ref_id,
                 relation=validate_relation("contradicts", store=store),
                 set_by=set_by,
                 conn=c,
             )
-        return hub
+        return claim_hub
 
     if conn is not None:
         return _do(conn)

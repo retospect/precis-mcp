@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
+from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS, mint_review_fanout
 from precis.quest.weave_review import mint_review_todo
 from precis.store._draft_ops import ReviewableChunk
 from precis.store.store import Store
@@ -71,19 +71,19 @@ def _draft_with_chunks(store: Store, *, name: str, n_paragraphs: int = 1) -> int
     return ref.id
 
 
-# Lens x chunk-kind mapping mirrored from review_fanout.py (smartdraft-
+# Persona x chunk-kind mapping mirrored from review_fanout.py (smartdraft-
 # review-status-ui item 2): flow/cites mint on prose chunks only,
 # structure/adversarial on heading chunks only. Used to compute the
 # expected minted count for a fixture's exact chunk-kind mix, since a
 # blunt "chunks x len(lenses)" no longer holds once kind narrows the set.
-_HEADING_LENSES = {"structure", "adversarial"}
-_PROSE_LENSES = {"flow", "cites"}
+_HEADING_PERSONAS = {"structure", "adversarial"}
+_PROSE_PERSONAS = {"flow", "cites"}
 
 
 def _expected_pairs(chunks: list[ReviewableChunk], lenses: tuple[str, ...]) -> int:
     total = 0
     for c in chunks:
-        allowed = _HEADING_LENSES if c.chunk_kind == "heading" else _PROSE_LENSES
+        allowed = _HEADING_PERSONAS if c.chunk_kind == "heading" else _PROSE_PERSONAS
         total += len(allowed & set(lenses))
     return total
 
@@ -101,7 +101,7 @@ class TestMintReviewFanout:
 
         result = mint_review_fanout(store, ref_id)
 
-        expected = _expected_pairs(chunks, ALL_LENSES)
+        expected = _expected_pairs(chunks, ALL_PERSONAS)
         assert len(result["minted"]) == expected
         assert result["skipped"] == 0
         assert result["chunks_seen"] == len(chunks)
@@ -113,7 +113,7 @@ class TestMintReviewFanout:
             assert ref.parent_id == result["parent_id"]
             lens = ref.meta.get("review")
             anchor = ref.meta.get("anchor")
-            assert lens in ALL_LENSES
+            assert lens in ALL_PERSONAS
             assert anchor is not None
             seen_pairs.add((lens, anchor))
 
@@ -155,7 +155,7 @@ class TestMintReviewFanout:
         ref_id = _draft_with_chunks(store, name="fan-lenses")
         chunks = store.drafts.reviewable_chunks(ref_id)
 
-        result = mint_review_fanout(store, ref_id, lenses=("flow",))
+        result = mint_review_fanout(store, ref_id, personas=("flow",))
 
         assert len(result["minted"]) == _expected_pairs(chunks, ("flow",))
         for todo_id in result["minted"]:
@@ -189,7 +189,7 @@ class TestMintReviewFanout:
             assert ref is not None
             anchors.add(ref.meta.get("anchor"))
         assert retired_dc not in anchors
-        assert len(result["minted"]) == _expected_pairs(chunks_after, ALL_LENSES)
+        assert len(result["minted"]) == _expected_pairs(chunks_after, ALL_PERSONAS)
 
     def test_author_flag_stamps_meta_only_on_eligible_lenses(
         self, store: Store
@@ -342,7 +342,7 @@ class TestMintReviewFanout:
 
         result = mint_review_fanout(store, ref.id)
 
-        assert len(result["minted"]) == _expected_pairs(chunks, ALL_LENSES)
+        assert len(result["minted"]) == _expected_pairs(chunks, ALL_PERSONAS)
         assert len(result["minted"]) > 0
         assert result["parent_id"] == proj.id
 
@@ -357,7 +357,9 @@ class TestOnlyDirty:
         ref_id = _draft_with_chunks(store, name="dirty-full", n_paragraphs=1)
         chunks = store.drafts.reviewable_chunks(ref_id)
         for c in chunks:
-            allowed = _HEADING_LENSES if c.chunk_kind == "heading" else _PROSE_LENSES
+            allowed = (
+                _HEADING_PERSONAS if c.chunk_kind == "heading" else _PROSE_PERSONAS
+            )
             for lens in allowed:
                 store.drafts.record_review(c.chunk_id, lens, verdict="approved")
 
@@ -370,7 +372,9 @@ class TestOnlyDirty:
         ref_id = _draft_with_chunks(store, name="dirty-edit", n_paragraphs=2)
         chunks = store.drafts.reviewable_chunks(ref_id)
         for c in chunks:
-            allowed = _HEADING_LENSES if c.chunk_kind == "heading" else _PROSE_LENSES
+            allowed = (
+                _HEADING_PERSONAS if c.chunk_kind == "heading" else _PROSE_PERSONAS
+            )
             for lens in allowed:
                 store.drafts.record_review(c.chunk_id, lens, verdict="approved")
         assert mint_review_fanout(store, ref_id, only_dirty=True)["minted"] == []
@@ -385,8 +389,8 @@ class TestOnlyDirty:
             ref = store.get_ref(kind="todo", id=todo_id)
             assert ref is not None
             minted_pairs.add((ref.meta.get("review"), ref.meta.get("anchor")))
-        assert minted_pairs == {(lens, anchor) for lens in _PROSE_LENSES}
-        assert len(result["minted"]) == len(_PROSE_LENSES)
+        assert minted_pairs == {(lens, anchor) for lens in _PROSE_PERSONAS}
+        assert len(result["minted"]) == len(_PROSE_PERSONAS)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +455,7 @@ class TestScope:
         result = mint_review_fanout(store, ref_id, scope=paras[0].chunk_id)
 
         assert result["chunks_seen"] == 1
-        assert len(result["minted"]) == len(_PROSE_LENSES)
+        assert len(result["minted"]) == len(_PROSE_PERSONAS)
         anchor = handle_registry.format_handle("draft", paras[0].chunk_id, chunk=True)
         for todo_id in result["minted"]:
             r = store.get_ref(kind="todo", id=todo_id)
@@ -487,7 +491,7 @@ class TestSkipUnsettled:
         # its own structure/adversarial pair independently.
         result = mint_review_fanout(store, ref_id, scope=p.chunk_id)
         assert result["minted"] == []
-        assert result["unsettled_skipped"] == len(_PROSE_LENSES)
+        assert result["unsettled_skipped"] == len(_PROSE_PERSONAS)
 
         # resolve the change request and touch the chunk — mints again
         store.add_tag(
@@ -496,7 +500,7 @@ class TestSkipUnsettled:
         store.drafts.edit_text(p.handle, "revised after fix")
 
         result2 = mint_review_fanout(store, ref_id, scope=p.chunk_id)
-        assert len(result2["minted"]) == len(_PROSE_LENSES)
+        assert len(result2["minted"]) == len(_PROSE_PERSONAS)
         assert result2["unsettled_skipped"] == 0
 
 
@@ -539,8 +543,8 @@ class TestLensKindMapping:
         para_anchor = handle_registry.format_handle("draft", para.chunk_id, chunk=True)
         eq_anchor = handle_registry.format_handle("draft", eq.chunk_id, chunk=True)
 
-        assert by_anchor.get(title_anchor) == set(_HEADING_LENSES)
-        assert by_anchor.get(para_anchor) == set(_PROSE_LENSES)
+        assert by_anchor.get(title_anchor) == set(_HEADING_PERSONAS)
+        assert by_anchor.get(para_anchor) == set(_PROSE_PERSONAS)
         assert eq_anchor not in by_anchor
 
 
@@ -565,7 +569,9 @@ class TestDocLenses:
     def test_toc_minted_only_for_whole_draft_scope(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="doclens")
 
-        result = mint_review_fanout(store, ref_id, lenses=(), doc_lenses=DOC_LENSES)
+        result = mint_review_fanout(
+            store, ref_id, personas=(), doc_personas=DOC_PERSONAS
+        )
 
         assert len(result["minted"]) == 1
         ref = store.get_ref(kind="todo", id=result["minted"][0])
@@ -584,7 +590,7 @@ class TestDocLenses:
         )
 
         result = mint_review_fanout(
-            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, scope=p.chunk_id
+            store, ref_id, personas=(), doc_personas=DOC_PERSONAS, scope=p.chunk_id
         )
 
         assert result["minted"] == []
@@ -593,7 +599,7 @@ class TestDocLenses:
         ref_id = _draft_with_chunks(store, name="doclens-author")
 
         result = mint_review_fanout(
-            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, author=True
+            store, ref_id, personas=(), doc_personas=DOC_PERSONAS, author=True
         )
 
         assert len(result["minted"]) == 1
@@ -611,14 +617,14 @@ class TestDocLenses:
         _seed_toc_approval(store, root.chunk_id, digest)
 
         result = mint_review_fanout(
-            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, only_dirty=True
+            store, ref_id, personas=(), doc_personas=DOC_PERSONAS, only_dirty=True
         )
         assert result["minted"] == []
 
         store.drafts.edit_text(root.handle, "T (renamed)")
 
         result2 = mint_review_fanout(
-            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, only_dirty=True
+            store, ref_id, personas=(), doc_personas=DOC_PERSONAS, only_dirty=True
         )
         assert len(result2["minted"]) == 1
 
@@ -626,11 +632,11 @@ class TestDocLenses:
         self, store: Store
     ) -> None:
         """``review_root_chunk_id`` is the SINGLE selection rule shared by
-        the fanout's toc-lens mint (``_mint_doc_lenses``) and
+        the fanout's toc-persona mint (``_mint_doc_personas``) and
         ``review_status_for_draft``'s own toc-row patch — both must land
         on the same chunk even when the draft's first reading-order chunk
         (the title heading) carries a NULL ``content_sha`` (not yet
-        reviewable). Before the fix, ``_mint_doc_lenses`` anchored on
+        reviewable). Before the fix, ``_mint_doc_personas`` anchored on
         ``reading_order()[0]`` (no content_sha filter) while the status
         query skipped that same chunk — the toc indicator would then read
         permanently unapproved no matter how many times the anchored
@@ -647,7 +653,9 @@ class TestDocLenses:
 
         assert store.drafts.review_root_chunk_id(ref_id) == para.chunk_id
 
-        result = mint_review_fanout(store, ref_id, lenses=(), doc_lenses=DOC_LENSES)
+        result = mint_review_fanout(
+            store, ref_id, personas=(), doc_personas=DOC_PERSONAS
+        )
         assert len(result["minted"]) == 1
         ref = store.get_ref(kind="todo", id=result["minted"][0])
         assert ref is not None
@@ -674,11 +682,11 @@ class TestMintReviewTodo:
     def test_second_call_same_pair_is_a_noop(self, store: Store) -> None:
         parent = store.insert_ref(kind="todo", slug=None, title="P").id
         first = mint_review_todo(
-            store, parent_id=parent, lens="flow", anchor="dc1", text="brief"
+            store, parent_id=parent, persona="flow", anchor="dc1", text="brief"
         )
         assert first is not None
         second = mint_review_todo(
-            store, parent_id=parent, lens="flow", anchor="dc1", text="brief"
+            store, parent_id=parent, persona="flow", anchor="dc1", text="brief"
         )
         assert second is None
 
@@ -687,7 +695,7 @@ class TestMintReviewTodo:
         todo_id = mint_review_todo(
             store,
             parent_id=parent,
-            lens="cites",
+            persona="cites",
             anchor="dc2",
             text="brief",
             author=True,

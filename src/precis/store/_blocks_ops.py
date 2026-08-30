@@ -2197,12 +2197,12 @@ class BlockStore:
             ).fetchall()
         return {int(r[0]): int(r[1]) for r in rows}
 
-    def chunk_glosses_for_ref(
+    def chunk_llm_summaries_for_ref(
         self, ref_id: int, *, pos_range: tuple[int, int] | None = None
     ) -> list[dict[str, Any]]:
-        """Per-chunk gloss list for the paper reader's rapid-nav sidebar.
+        """Per-chunk summary list for the paper reader's rapid-nav sidebar.
         Body chunks (``ord >= 0``) in reading order as ``[{ord, page,
-        summary, keywords}]``: ``summary`` is the ``llm-v1`` gloss from
+        summary, keywords}]``: ``summary`` is the ``llm-v1`` summary from
         ``chunk_summaries`` (``''`` before the worker reaches it —
         coverage is a deliberate trickle, caller falls back to
         ``keywords``); ``keywords`` is comma-joined KeyBERT terms (first
@@ -2243,8 +2243,8 @@ class BlockStore:
     def chunk_summaries_for(self, ref_id: int, ords: list[int]) -> dict[int, str]:
         """Map body-chunk ``ord`` → ``llm-v1`` summary text for the given ords.
 
-        Batch companion to :meth:`chunk_glosses_for_ref` for the search
-        path, which already has the hit ords and only needs the gloss to
+        Batch companion to :meth:`chunk_llm_summaries_for_ref` for the search
+        path, which already has the hit ords and only needs the summary to
         display. Ords with no ``llm-v1`` row are omitted (the caller falls
         back to the keyword string). One query.
         """
@@ -2270,8 +2270,8 @@ class BlockStore:
 
         Batch companion to :meth:`chunk_summaries_for` for the cross-kind
         search path, which builds ``(ref_id, ord)`` pairs from the page's
-        hits and needs each hit chunk's llm-v1 gloss at once. Pairs with
-        no gloss are omitted (caller falls back to truncated chunk text).
+        hits and needs each hit chunk's llm-v1 summary at once. Pairs with
+        no summary are omitted (caller falls back to truncated chunk text).
         One query.
         """
         if not pairs:

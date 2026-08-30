@@ -10,7 +10,7 @@ question #1):
   the last-fetch time, so a window sum approximates spend in that window.
 
 ``ref_events`` is deliberately **excluded**: an agentic call already logs to
-``llm_call_log`` via ``router.dispatch``, so summing ``ref_events`` too would
+``llm_call_log`` via ``router.route``, so summing ``ref_events`` too would
 double-count it.
 
 **Dark by construction.** :func:`bind_store` wires the process store at worker

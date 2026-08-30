@@ -1458,10 +1458,12 @@ class FindingHandler(NumericRefHandler):
                 # ref-level → record universal handle; block-level
                 # keeps the legacy ``slug~pos`` (chunk_id unavailable here).
                 if pos is None:
-                    addr = handle_registry.try_format(target.kind, target.id) or legacy
+                    handle = (
+                        handle_registry.try_format(target.kind, target.id) or legacy
+                    )
                 else:
-                    addr = f"{legacy}~{pos}"
-                lines.append(f"  {addr}")
+                    handle = f"{legacy}~{pos}"
+                lines.append(f"  {handle}")
 
         status = _extract_status_tag(tags)
         lines.append("")

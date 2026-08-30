@@ -4,7 +4,7 @@ memory) against a fake DispatchContext.
 
 Mirrors ``tests/workers/test_taproot_backfill_job.py``'s registration+
 dispatch shape. The LLM call itself is monkeypatched at
-``precis.utils.llm.router.dispatch`` (the module `_dispatch` local-imports
+``precis.utils.llm.router.route`` (the module `_dispatch` local-imports
 from on every call, so the patch is picked up each dispatch) to a canned
 critique+rewrite — no real LLM/embedder involved.
 """
@@ -235,7 +235,7 @@ def test_dispatch_happy_path_applies_and_writes_process_memory(
         "Section A",
         ["New para one, tightened.", "New para two, tightened."],
     )
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", lambda _req: result)
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
 
     ctx = _FakeCtx(
         store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
@@ -277,7 +277,7 @@ def test_dispatch_questless_draft_applies_without_process_memory(
     seeded = _seed_section_draft(draft, hub, paras=("Old para about a topic.",))
 
     result = _rewrite_result("Tightened.", "Section A", ["New para, tightened."])
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", lambda _req: result)
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
 
     ctx = _FakeCtx(
         store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
@@ -306,7 +306,7 @@ def test_dispatch_gate_refusal_leaves_section_unchanged(
     # no-progress-growth ratchet (default: prev*1.15 + 50).
     ballooned = " ".join(f"word{i}" for i in range(200))
     result = _rewrite_result("Expanded a lot.", "Section A", [ballooned])
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", lambda _req: result)
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
 
     ctx = _FakeCtx(
         store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
@@ -342,7 +342,7 @@ def test_dispatch_parse_failure_records_failure(
         tier=Tier.BIG,
         error=None,
     )
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", lambda _req: no_sentinel)
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: no_sentinel)
 
     ctx = _FakeCtx(
         store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
@@ -381,7 +381,7 @@ def test_dispatch_preserves_table_chunk(
         "Section A",
         ["New paragraph, tightened."],
     )
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", lambda _req: result)
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
 
     ctx = _FakeCtx(
         store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
@@ -438,7 +438,7 @@ def test_dispatch_preserves_sub_heading_subtree(
         "Section A",
         ["New paragraph, tightened."],
     )
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", lambda _req: result)
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
 
     ctx = _FakeCtx(
         store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
@@ -478,7 +478,7 @@ def test_dispatch_insert_before_retire_survives_mid_apply_failure(
     seeded = _seed_section_draft(draft, hub, paras=(old_text,))
 
     result = _rewrite_result("Tightened.", "Section A", ["New paragraph, tightened."])
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", lambda _req: result)
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
 
     calls: list[str] = []
 

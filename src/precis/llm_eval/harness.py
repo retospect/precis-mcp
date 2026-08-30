@@ -8,7 +8,7 @@ own tasks that de-risks routing to an unproven model *before* it runs
 production work (observed-telemetry > measured-eval > published-benchmark).
 
 The candidate model is exercised through the real router seam
-(:func:`router.dispatch`) so an OSS variant runs on the exact transport +
+(:func:`router.route`) so an OSS variant runs on the exact transport +
 booked endpoint it would in production; a booked ``endpoint`` dict pins the
 variant (gripe 162624), so a fp8 golden run measures the fp8 endpoint.
 
@@ -140,11 +140,11 @@ def run_eval(
     provenance). Tasks naming an unwired scorer are collected into
     ``report.skipped`` and reported, not measured.
 
-    ``dispatch_fn`` defaults to the live :func:`router.dispatch`; tests inject a
+    ``dispatch_fn`` defaults to the live :func:`router.route`; tests inject a
     stub so no real model runs.
     """
     if dispatch_fn is None:
-        from precis.utils.llm.router import dispatch as _live_dispatch
+        from precis.utils.llm.router import route as _live_dispatch
 
         disp: Callable[[Any], Any] = _live_dispatch
     else:

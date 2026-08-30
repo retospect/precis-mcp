@@ -2,7 +2,7 @@
 
 Before 2026-08-07 the branch was ``select_transport(tier, tools_needed=True,
 backend)``, which under the default ANTHROPIC backend *always* answers
-``CLAUDE_AGENT``. An ``llm.op.plan_tick`` tier override reached ``dispatch()``
+``CLAUDE_AGENT``. An ``llm.op.plan_tick`` tier override reached ``route()``
 but not the branch, so the tick still took the claude harness — leaving the
 fleet's largest LLM line item steerable only by the global backend flip, which
 moves every call site at once.
@@ -89,7 +89,7 @@ def test_unregistered_source_falls_back_to_the_alias_tier(monkeypatch):
 def test_harness_agrees_with_what_dispatch_will_resolve(monkeypatch):
     """Regression guard on the coherence hazard.
 
-    Picking the harness from ``select_transport`` while ``dispatch()`` resolves
+    Picking the harness from ``select_transport`` while ``route()`` resolves
     the *chain* could land ``_run_claude_tick`` on a tier whose rung 0 is
     ``openai_tools`` — a claude subprocess handed an OSS model id (the ``dream``
     api_error class). Both must read the same rung.
@@ -98,5 +98,5 @@ def test_harness_agrees_with_what_dispatch_will_resolve(monkeypatch):
     _op(monkeypatch, Tier.BIG)
     _chain(monkeypatch, rungs)
 
-    # What the branch picks must be the transport of the rung dispatch() walks.
+    # What the branch picks must be the transport of the rung route() walks.
     assert _tick_transport("opus") is rungs[0].transport

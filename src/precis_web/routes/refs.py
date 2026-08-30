@@ -2708,8 +2708,8 @@ async def detail(
 
     # Slug kinds (oracle/patent/pres) address get() by slug; numeric
     # kinds (memory/gripe) by id. Prefer the slug when present.
-    addr: str | int = ref.slug if ref.slug else ref.id
-    get_args: dict[str, Any] = {"kind": kind, "id": addr}
+    handle: str | int = ref.slug if ref.slug else ref.id
+    get_args: dict[str, Any] = {"kind": kind, "id": handle}
     # This detail page is a read-only view. For cache-backed kinds a plain
     # get() re-fetches on a cache miss — and addressing by slug reliably
     # misses for query-keyed kinds (perplexity/websearch), so a page view
@@ -2982,9 +2982,9 @@ async def _run_followup(
 
     # 3. Build the prompt: source body + chunk-in-focus + the discussion
     #    so far (every turn except the question we just appended).
-    addr: str | int = source.slug if source.slug else source.id
+    src_handle: str | int = source.slug if source.slug else source.id
     src_body, src_err = await await_dispatch(
-        request, "get", {"kind": source_kind, "id": addr}
+        request, "get", {"kind": source_kind, "id": src_handle}
     )
     if src_err:
         src_body = source.title or ""

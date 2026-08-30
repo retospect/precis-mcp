@@ -122,9 +122,9 @@ class Condition:
     severity: str  # "info" | "warn" — CheckResult's vocabulary
     probe: Callable[[Store], list[ConditionFinding]]
     detail_green: str = ""
-    # kept on the row for the doc/report; the fast lane wires up when the
+    # kept on the row for the doc/report; the fast cadence wires up when the
     # first fast row lands (all current rows are hourly).
-    lane: str = field(default="hourly")
+    cadence: str = field(default="hourly")
 
 
 # ── probes ───────────────────────────────────────────────────────────────

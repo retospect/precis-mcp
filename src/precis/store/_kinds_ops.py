@@ -18,7 +18,7 @@ The fix is to make the **code** the canonical source: each handler's
 :class:`KindSpec` carries the slug + title + description + is_numeric
 flag the table needs, and at boot we just ``INSERT … ON CONFLICT
 (slug) DO UPDATE`` for every registered kind. The runtime hub becomes
-the per-process subset (env-gated kinds drop out via
+the per-process subset (kinds gated on requires_env drop out via
 ``KindSpec.requires_env``); the DB table is the union across every
 process that ever booted with that kind enabled (suitable as FK
 target for ``refs.kind``).

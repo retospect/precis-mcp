@@ -1,6 +1,6 @@
 """Parallel golden-task scorecard — one thread per candidate, over its tier's axes.
 
-DB-free by design: drives the real router seam (:func:`router.dispatch`) with
+DB-free by design: drives the real router seam (:func:`router.route`) with
 the wired scorers (:mod:`llm_eval.scorers`) and buckets to the catalog's 1..5
 ordinal, but never touches the Store — so it runs ``--no-record`` with zero prod
 writes. Emits a per-tier scorecard (ordinal + raw mean + n per axis), the

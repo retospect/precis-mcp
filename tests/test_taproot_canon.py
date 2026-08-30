@@ -1,7 +1,7 @@
 """Offline unit tests for Taproot Phase 1 (``precis.taproot.canon`` +
 ``precis.taproot.eval_canon``).
 
-Every LLM call is mocked (``canon.dispatch`` monkeypatched, or an injected
+Every LLM call is mocked (``canon.route`` monkeypatched, or an injected
 stub function) — no live model, no DB. The live-model eval harness itself
 (``dedup_judge`` run over the real fixture) is a separate, gated test — see
 ``tests/test_taproot_eval_canon.py``.
@@ -16,10 +16,10 @@ import pytest
 
 from precis.taproot import canon
 from precis.taproot.canon import (
-    Candidate,
     CanonicalClaim,
     ClaimExtraction,
     ExtractionUnavailable,
+    MergeCandidate,
     NotClaim,
     Placement,
     Verdict,
@@ -43,7 +43,7 @@ from precis.utils.llm.router import Tier
 def _result(
     *, data: dict[str, Any] | None = None, text: str = "", error: str | None = None
 ) -> Any:
-    """A stand-in for ``LlmResult`` — dispatch() callers only read
+    """A stand-in for ``LlmResult`` — route() callers only read
     ``.error``, ``.data``, and ``.text``."""
     return SimpleNamespace(text=text, data=data, error=error)
 
@@ -62,7 +62,7 @@ def test_extract_claim_returns_single_atom_on_a_real_assertion(
     compound, no rejects -> one atom, no compound (already-atomic)."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claims": [
@@ -99,7 +99,7 @@ def test_extract_claim_splits_a_bundled_passage_into_multiple_atoms(
     groundable atoms + rejected conjuncts + a surviving compound."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claims": [
@@ -148,7 +148,7 @@ def test_extract_claim_folds_a_degenerate_single_atom_compound(
     1-conjunct bundle (the invariant's second bullet)."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claims": [
@@ -172,7 +172,7 @@ def test_extract_claim_keeps_compound_for_a_lone_atom_with_a_reject(
     from the bundle), even though only one atom survived."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claims": [
@@ -202,7 +202,7 @@ def test_extract_claim_returns_empty_extraction_on_pure_pointer_chunk(
     extraction rather than ``None``."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(data={"claims": [], "compound": None, "not_claims": []}),
     )
     result = extract_claim("As shown in prior work [12], ...")
@@ -217,7 +217,7 @@ def test_extract_claim_no_claim_still_records_not_claims_for_audit(
     rejects are kept for the compound hub's audit memo (step 8)."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claims": [],
@@ -248,7 +248,7 @@ def test_extract_claim_tolerates_legacy_single_object_shape(
     same fail-safe posture, never a dropped claim on a format regression."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claim": "Pd/C catalyzes Suzuki coupling at RT with mild base",
@@ -272,7 +272,7 @@ def test_extract_claim_tolerates_legacy_single_object_shape(
 def test_extract_claim_legacy_shape_null_claim_is_empty_extraction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(canon, "dispatch", lambda req: _result(data={"claim": None}))
+    monkeypatch.setattr(canon, "route", lambda req: _result(data={"claim": None}))
     result = extract_claim("As shown in prior work [12], ...")
     assert result.is_empty
 
@@ -280,7 +280,7 @@ def test_extract_claim_legacy_shape_null_claim_is_empty_extraction(
 def test_extract_claim_returns_empty_extraction_on_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="transport down"))
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="transport down"))
     result = extract_claim("some passage")
     assert result.is_empty
     assert result == ClaimExtraction(atoms=(), compound=None, not_claims=())
@@ -291,7 +291,7 @@ def test_extract_claim_strict_raises_on_dispatch_error(
 ) -> None:
     """The strict variant surfaces infra failure as an exception rather
     than degrading to a silent NO-CLAIM — the melchior-incident guard."""
-    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="ECONNREFUSED"))
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="ECONNREFUSED"))
     with pytest.raises(ExtractionUnavailable, match="ECONNREFUSED"):
         extract_claim_strict("some passage")
 
@@ -301,7 +301,7 @@ def test_extract_claim_still_degrades_to_empty_on_the_same_dispatch_error(
 ) -> None:
     """The non-strict variant's fail-safe posture is unchanged by the
     strict sibling's existence — same dispatch error, still empty."""
-    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="ECONNREFUSED"))
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="ECONNREFUSED"))
     result = extract_claim("some passage")
     assert result.is_empty
 
@@ -313,7 +313,7 @@ def test_extract_claim_strict_returns_same_extraction_as_extract_claim_on_succes
     the plain one — the only behavioral difference is on ``res.error``."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claims": [
@@ -335,7 +335,7 @@ def test_extract_claim_strict_still_degrades_to_empty_on_unparseable_output(
     """Unparseable-but-successful model output is a semantic no-claim, not
     an infra failure — the strict variant does not raise on it."""
     monkeypatch.setattr(
-        canon, "dispatch", lambda req: _result(data=None, text="not json at all")
+        canon, "route", lambda req: _result(data=None, text="not json at all")
     )
     assert extract_claim_strict("some passage").is_empty
 
@@ -367,7 +367,7 @@ def test_extract_claim_strict_big_dispatches_at_big_tier(
             }
         )
 
-    monkeypatch.setattr(canon, "dispatch", fake_dispatch)
+    monkeypatch.setattr(canon, "route", fake_dispatch)
     result = extract_claim_strict_big("Pd/C catalyzes Suzuki coupling...")
     assert len(seen_requests) == 1
     assert seen_requests[0].tier == Tier.BIG
@@ -388,7 +388,7 @@ def test_extract_claim_strict_big_raises_on_dispatch_error(
 ) -> None:
     """Shares the strict variant's infra-failure posture — a dispatch error
     raises rather than degrading to a silent NO-CLAIM."""
-    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="ECONNREFUSED"))
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="ECONNREFUSED"))
     with pytest.raises(ExtractionUnavailable, match="ECONNREFUSED"):
         extract_claim_strict_big("some passage")
 
@@ -432,7 +432,7 @@ def test_extract_claim_drops_junk_scope_values_from_the_model(
 ) -> None:
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={
                 "claims": [
@@ -455,7 +455,7 @@ def test_extract_claim_returns_empty_extraction_on_unparseable_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        canon, "dispatch", lambda req: _result(data=None, text="not json at all")
+        canon, "route", lambda req: _result(data=None, text="not json at all")
     )
     assert extract_claim("some passage").is_empty
 
@@ -546,7 +546,7 @@ def test_coerce_extraction_multi_atom_without_compound_or_source_degrades_to_emp
 def test_dedup_judge_parses_a_same_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(
             data={"verdict": "same", "confidence": 0.92, "rationale": "identical fact"}
         ),
@@ -558,7 +558,7 @@ def test_dedup_judge_parses_a_same_verdict(monkeypatch: pytest.MonkeyPatch) -> N
 def test_dedup_judge_degrades_to_different_on_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="boom"))
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="boom"))
     v = dedup_judge("claim A", "claim B")
     assert v["verdict"] == "different"
     assert v["confidence"] == 0.0
@@ -568,7 +568,7 @@ def test_dedup_judge_degrades_to_different_on_unparseable_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        canon, "dispatch", lambda req: _result(data=None, text="prose, no json")
+        canon, "route", lambda req: _result(data=None, text="prose, no json")
     )
     v = dedup_judge("claim A", "claim B")
     assert v["verdict"] == "different"
@@ -582,7 +582,7 @@ def test_dedup_judge_rejects_unrecognized_verdict_string(
     becomes "same" — it degrades to "different"."""
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(data={"verdict": "kinda-same", "confidence": 0.99}),
     )
     v = dedup_judge("claim A", "claim B")
@@ -594,7 +594,7 @@ def test_dedup_judge_clamps_confidence_to_unit_interval(
 ) -> None:
     monkeypatch.setattr(
         canon,
-        "dispatch",
+        "route",
         lambda req: _result(data={"verdict": "same", "confidence": 5.0}),
     )
     v = dedup_judge("a", "b")
@@ -604,7 +604,7 @@ def test_dedup_judge_clamps_confidence_to_unit_interval(
 def test_merge_confirm_degrades_to_different_on_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="down"))
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="down"))
     v = merge_confirm("a", "b")
     assert v["verdict"] == "different"
     assert v["confidence"] == 0.0
@@ -613,10 +613,10 @@ def test_merge_confirm_degrades_to_different_on_dispatch_error(
 # ── place — deterministic branching ─────────────────────────────────────
 
 _CLAIM = CanonicalClaim(sentence="MOFs have tunable pore geometry", scope={})
-_CAND = Candidate(
+_CAND = MergeCandidate(
     hub_ref_id=101, claim="MOFs have tunable pore geometry", distance=0.01
 )
-_CAND2 = Candidate(hub_ref_id=202, claim="unrelated claim", distance=0.5)
+_CAND2 = MergeCandidate(hub_ref_id=202, claim="unrelated claim", distance=0.5)
 
 
 def test_place_attaches_on_high_confidence_same() -> None:

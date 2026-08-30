@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis.taproot.apply_migrate import apply_dry_run
-from precis.taproot.canon import Candidate, CanonicalClaim, Verdict
+from precis.taproot.canon import CanonicalClaim, MergeCandidate, Verdict
 from precis.taproot.directed import QualifyResult
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from tests.workers._helpers import seed_chunk, seed_ref
@@ -31,7 +31,9 @@ def _verdict(v: str, c: float) -> Verdict:
     return {"verdict": v, "confidence": c, "rationale": "test"}  # type: ignore[typeddict-item]
 
 
-def _block_none(claim: CanonicalClaim, store: Any, embedder: Any) -> list[Candidate]:
+def _block_none(
+    claim: CanonicalClaim, store: Any, embedder: Any
+) -> list[MergeCandidate]:
     return []
 
 
@@ -41,10 +43,12 @@ def _block_map(mapping: dict[str, tuple[int, str]]):
     ``mapping`` — mirrors ``test_taproot_backfill.py``'s helper of the
     same name."""
 
-    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[Candidate]:
+    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[MergeCandidate]:
         hit = mapping.get(claim.sentence)
         return (
-            [Candidate(hub_ref_id=hit[0], claim=hit[1], distance=0.02)] if hit else []
+            [MergeCandidate(hub_ref_id=hit[0], claim=hit[1], distance=0.02)]
+            if hit
+            else []
         )
 
     return _b

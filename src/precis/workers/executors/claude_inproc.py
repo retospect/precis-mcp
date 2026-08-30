@@ -562,7 +562,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
         )
         _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
         # Runner-side honoring of a declared ``verdict: halt`` (2026-08-15
-        # zombie-loop outage): the agent decided to halt but couldn't write
+        # orphaned-loop outage): the agent decided to halt but couldn't write
         # the tag — tagging needs the very MCP tools whose failure prompted
         # the halt — so the verdict sat unread in job_summary while dispatch
         # re-minted the tick forever. The runner has direct store access;
@@ -631,7 +631,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             # (the guardrail is one attempt per parent, not a loop).
             # ``no-precis-tools`` is an environment outage, not task width:
             # a decompose tick would burn the same broken env (the 2026-08-15
-            # container-DSN outage ran 18 zombie ticks this way). Skip the
+            # container-DSN outage ran 18 orphaned ticks this way). Skip the
             # decompose attempt and park explicitly below instead.
             if (
                 resume_reason is not None

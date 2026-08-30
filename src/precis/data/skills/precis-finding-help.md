@@ -295,7 +295,7 @@ their `TAPROOT:claim` tag alongside `established` findings. Drill one with
 
 ### Read a hub as its neighborhood — the eye ladder
 
-`view=` also takes the focus ladder
+`view=` also takes the extent ladder
 `kwd|summary|verbatim|fisheye|fisheye+1hop` (same vocabulary as a draft
 node — `precis-fisheye-help`). The rungs below `fisheye+1hop` render the
 hub as a note (title → gist → claim text); `fisheye+1hop` adds its

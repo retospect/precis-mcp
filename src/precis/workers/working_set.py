@@ -66,7 +66,7 @@ def _normal_ttl() -> int:
 
 
 class Extent(IntEnum):
-    """How much of a node to render — the ordinal ``focus`` ladder (§6). An
+    """How much of a node to render — the ordinal extent ladder (§6). An
     ``IntEnum`` so ``a < b`` compares fidelity directly (``NONE`` is least,
     ``HOP1`` most).
 

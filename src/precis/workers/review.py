@@ -54,7 +54,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.utils.db_log_handler import _resolve_host_name
 from precis.utils.env import env_flag
-from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.prompt import (
     AssemblyContext,
@@ -238,7 +238,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
     # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
     # tier default, which equals the old reviewer.model). Errors fold into
     # res.error rather than raising.
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=reviewer.tier,
             source=f"review:{reviewer.name}",

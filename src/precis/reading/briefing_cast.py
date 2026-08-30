@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any
 from precis.reading.cast_common import (
     CAST_PROFILES,
     CastProfile,
-    Source,
+    CitedRef,
     compose_max_tokens,
     create_cast_draft,
     find_cast_draft,
@@ -63,6 +63,7 @@ from precis.reading.cast_common import (
 from precis.store.protocols import SettingsStore
 from precis.utils import handle_registry
 from precis.utils.llm.router import DispatchClient, Tier
+from precis.utils.text import excerpt
 from precis.workers.briefing import _complete_with_retry
 
 if TYPE_CHECKING:
@@ -114,7 +115,7 @@ def _alert_is_fresh(alert: dict[str, Any], cutoff: datetime) -> bool:
     return ts >= cutoff
 
 
-# ``Source`` (a ``(ref_id, relation)`` a lane surfaced) + ``link_sources`` live in
+# ``CitedRef`` (a ``(ref_id, relation)`` a lane surfaced) + ``link_sources`` live in
 # cast_common — shared with the nidra producer. Lanes collect the sources they
 # render; the composed draft is then linked back to them (nothing is cited inline
 # because the brief reads no URL aloud, so the link is the durable pointer back).
@@ -207,7 +208,7 @@ _DORMANT_NUDGE_MAX_DAYS = 32
 
 
 def _safe_lane(
-    name: str, fn: Callable[[], str], sources: list[Source] | None = None
+    name: str, fn: Callable[[], str], sources: list[CitedRef] | None = None
 ) -> str:
     """Run a lane contributor, swallowing any error to ``""``.
 
@@ -227,7 +228,7 @@ def _safe_lane(
         return ""
 
 
-def _collect(sources: list[Source] | None, refs: list[Any], relation: str) -> None:
+def _collect(sources: list[CitedRef] | None, refs: list[Any], relation: str) -> None:
     """Record each titled ref in ``refs`` as a ``relation`` source (best-effort).
 
     Skips refs with no id or no title — a titleless ref is one the brief never
@@ -280,9 +281,7 @@ def _abstract_snippet(meta: Any, *, limit: int = _PAPER_ABSTRACT_CHARS) -> str:
         text = _strip_jats(abstract).strip()
     except Exception:  # pragma: no cover - formatter import is best-effort
         text = abstract.strip()
-    if len(text) > limit:
-        text = text[:limit].rsplit(" ", 1)[0].rstrip() + "…"
-    return text
+    return excerpt(text, limit=limit, collapse_whitespace=False)
 
 
 def _cite_token(ref: Any) -> str:
@@ -388,7 +387,7 @@ def _lane_system_activity(
     *,
     cutoff: datetime,
     now: datetime,
-    sources: list[Source] | None = None,
+    sources: list[CitedRef] | None = None,
 ) -> str:
     """What the untiring collaborator did overnight (LIVE).
 
@@ -578,7 +577,7 @@ def _lane_recall(store: Store, *, cutoff: datetime) -> str:
 
 
 def _lane_reading(
-    store: Store, *, now: datetime, sources: list[Source] | None = None
+    store: Store, *, now: datetime, sources: list[CitedRef] | None = None
 ) -> str:
     """Papers the human has actually opened recently — "where you left off".
 
@@ -714,7 +713,7 @@ def _dormant_nudge(
     dormant: list[Any],
     *,
     now: datetime,
-    sources: list[Source] | None = None,
+    sources: list[CitedRef] | None = None,
 ) -> str:
     """A **decaying** reminder that strivings sit dormant with nothing active.
 
@@ -765,7 +764,7 @@ def _dormant_nudge(
 
 
 def _lane_quest(
-    store: Any, *, now: datetime, sources: list[Source] | None = None
+    store: Any, *, now: datetime, sources: list[CitedRef] | None = None
 ) -> str:
     """The brief's closing "on to the quests" report. **Active quests only** get
     the full momentum + latest-deed treatment; when none is active, a *decaying*
@@ -814,14 +813,14 @@ def _lane_quest(
 
 def _gather_lanes(
     store: Store, *, date_tag: str, cutoff: datetime, now: datetime
-) -> tuple[dict[str, str], list[Source]]:
+) -> tuple[dict[str, str], list[CitedRef]]:
     """All lanes, each degrading to ``""``. Keys preserve reading order.
 
     Also returns the ``(ref_id, relation)`` sources the lanes surfaced, deduped,
     so the composed draft can be linked back to the papers / findings / quests it
     drew on — the durable "for later" pointer the spoken brief can't carry.
     """
-    src: list[Source] = []
+    src: list[CitedRef] = []
     lanes = {
         "system": _safe_lane(
             "system",
@@ -838,8 +837,8 @@ def _gather_lanes(
     }
     # Dedup on (ref_id, relation), keeping first-seen order (a ref could surface
     # in two lanes — link it once per relation).
-    seen: set[Source] = set()
-    deduped: list[Source] = []
+    seen: set[CitedRef] = set()
+    deduped: list[CitedRef] = []
     for s in src:
         if s not in seen:
             seen.add(s)

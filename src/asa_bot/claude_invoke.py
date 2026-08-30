@@ -7,7 +7,7 @@ Two lanes, picked by the effective ``--model`` value:
   streaming lane: ``dispatch_async`` drives ``claude -p`` and this module
   parses its stream-json events into text + progress updates.
 * the ``local`` sentinel (the deployed default) → :func:`_invoke_via_chain`:
-  the sync ``dispatch`` walks the operator-owned ``llm.chain.big`` placement
+  the sync ``route`` walks the operator-owned ``llm.chain.big`` placement
   chain (local/OSS rung first, cloud fallback) in a worker thread — no
   ``claude -p``, no event stream, the reply comes off the aggregated
   :class:`LlmResult`.
@@ -57,9 +57,9 @@ from precis.utils.llm.router import (
     LlmRequest,
     LlmResult,
     Tier,
-    dispatch,
     dispatch_async,
     resolve_model,
+    route,
 )
 
 log = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ _ASA_DISALLOWED_TOOLS: tuple[str, ...] = (
     "WebSearch",
 )
 
-# Chain-lane turns hold a thread for the WHOLE turn (sync dispatch, up to
+# Chain-lane turns hold a thread for the WHOLE turn (sync route, up to
 # turn_timeout_seconds each) — on asyncio's shared default executor that
 # would let a handful of long conversations starve every other to_thread
 # user in the process. A dedicated small pool bounds the chain lane's
@@ -235,7 +235,7 @@ async def invoke(
 
     # DEBUG: opt-in dump of the full prompt for inspection. Off unless
     # ``ASA_PROMPT_DUMP`` names a file path; last turn wins (overwritten each
-    # invocation). Kept env-gated so no host-specific path lives in source.
+    # invocation). Kept behind an env var so no host-specific path lives in source.
     dump_target = os.environ.get("ASA_PROMPT_DUMP")
     if dump_target:
         try:
@@ -356,7 +356,7 @@ async def _invoke_via_chain(
     ``on_event`` — so this lane trades the Discord progress ticker
     (tool_use / first_sentence / text_partial) for operator-owned routing,
     and the final text is lifted off the aggregated :class:`LlmResult`
-    instead of accumulated per-event. ``dispatch`` is synchronous and the
+    instead of accumulated per-event. ``route`` is synchronous and the
     OSS tool loop blocks for the whole turn — it runs in a worker thread so
     the Discord gateway heartbeat (and other queued turns' progress edits)
     keeps running.
@@ -393,7 +393,7 @@ async def _invoke_via_chain(
     try:
         await loop.run_in_executor(executor, warm_runtime)
         llm_result: LlmResult = await loop.run_in_executor(
-            executor, partial(dispatch, req)
+            executor, partial(route, req)
         )
     except Exception:
         # Never raise out of invoke() — see its docstring's contract note.

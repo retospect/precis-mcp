@@ -102,7 +102,7 @@ def _patch_dispatch(monkeypatch: pytest.MonkeyPatch, outcomes: list[Any]) -> lis
         calls.append(req)
         return outcomes[len(calls) - 1]
 
-    monkeypatch.setattr(canon, "dispatch", fake_dispatch)
+    monkeypatch.setattr(canon, "route", fake_dispatch)
     return calls
 
 

@@ -182,7 +182,7 @@ def test_fisheye_split_opens_the_eye_chunk_within_its_cluster() -> None:
     # the eye chunk: marked + full verbatim text
     assert "▸ pc405" in out
     assert "VERBATIM5" in out
-    # a same-cluster neighbour appears as a gloss line (its keywords), not text
+    # a same-cluster neighbour appears as a summary line (its keywords), not text
     assert "pc404" in out
     assert "VERBATIM4" not in out
     # the far cluster is collapsed to one drillable label, not expanded
@@ -206,14 +206,14 @@ def test_fisheye_split_collapses_a_big_home_clusters_far_tail() -> None:
     assert "pc639" not in out
 
 
-def test_fisheye_split_summary_eye_is_a_gloss_not_verbatim() -> None:
+def test_fisheye_split_summary_eye_is_a_summary_not_verbatim() -> None:
     blocks = [
         _B(id=500 + i, pos=i, keywords=["alpha"], text=f"VERBATIM{i}") for i in range(6)
     ]
     clusters = cluster_blocks(blocks)
     out = _fisheye_split("paper", clusters, eye_ord=2, ext=Extent.SUMMARY)
     assert "▸ pc502" in out
-    assert "VERBATIM2" not in out  # summary eye is a gloss, no full text
+    assert "VERBATIM2" not in out  # summary eye is a summary, no full text
 
 
 def _seed_paper_with_keyworded_body(

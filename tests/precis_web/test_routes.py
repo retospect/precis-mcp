@@ -1020,7 +1020,7 @@ def test_drive_has_next_shows_next_link_with_filters_preserved(runtime, client) 
 
 def test_drive_author_facet_renders_artifact_chips(client) -> None:
     """The kind chips split into a 'Source' group and an 'Author'
-    (role='artifact') group — the facet from the proposal's decisions
+    (placement='artifact') group — the facet from the proposal's decisions
     log. With ``hub=None`` in tests, the artifact facet falls back to
     the static kind list."""
     resp = client.get("/drive")

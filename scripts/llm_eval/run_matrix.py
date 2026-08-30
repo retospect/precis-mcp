@@ -2,7 +2,7 @@
 """Run the full candidate×axis LLM eval matrix through the real router seam.
 
 DRY by construction: every candidate is exercised via
-:func:`precis.utils.llm.router.dispatch` — the same switchable ``openai_compat``
+:func:`precis.utils.llm.router.route` — the same switchable ``openai_compat``
 lane production uses when ``PRECIS_LLM_BACKEND=openai`` — so this eval also
 validates the switch itself. We do not open a second HTTP client; we wrap
 ``dispatch`` only to tally cost/tokens (which the harness's per-task score drops).
@@ -44,7 +44,7 @@ if not os.environ.get("PRECIS_LLM_API_KEY"):
 from precis.llm_eval.harness import run_eval
 from precis.llm_eval.tasks import load_gold_set
 from precis.utils.llm.router import Tier
-from precis.utils.llm.router import dispatch as _real_dispatch
+from precis.utils.llm.router import route as _real_dispatch
 
 # tier label -> candidate OpenRouter slugs; the first of each tier is the
 # claude INCUMBENT it would replace. All resolve on OpenRouter (verified).

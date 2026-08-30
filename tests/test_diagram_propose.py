@@ -1,7 +1,7 @@
 """``diagram_propose`` job_type — one autonomous diagram turn.
 
 The model call (the figure/mermaid turn shim → the LLM router) is stubbed by
-monkeypatching ``precis.utils.llm.router.dispatch``, so the resolve → compose
+monkeypatching ``precis.utils.llm.router.route``, so the resolve → compose
 seed message → run turn (mutates the diagram + bindings) → job_result path runs
 offline. The turn loop itself is the shared core exercised by the figure/mermaid
 suites."""
@@ -107,7 +107,7 @@ def test_compose_message_without_seeds_is_just_the_instruction(store) -> None:
 
 
 def _stub_dispatch(reply: dict):
-    """A fake router dispatch returning the turn model's JSON in ``.data``."""
+    """A fake router route returning the turn model's JSON in ``.data``."""
     return lambda _req: SimpleNamespace(error=None, data=reply, text=json.dumps(reply))
 
 
@@ -132,7 +132,7 @@ def test_dispatch_builds_figure_and_binds(store, figure_and_seed, monkeypatch) -
         "svg": _SVG,
         "links": [{"element": "hook", "target": h, "relation": "depicts"}],
     }
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", _stub_dispatch(reply))
+    monkeypatch.setattr("precis.utils.llm.router.route", _stub_dispatch(reply))
 
     ctx = _FakeCtx(
         store,
@@ -224,7 +224,7 @@ def test_dispatch_agentic_runs_tool_using_fn(
         return SimpleNamespace(error=None, data=reply, text=json.dumps(reply))
 
     monkeypatch.setenv("PRECIS_DIAGRAM_AGENTIC", "1")
-    monkeypatch.setattr("precis.utils.llm.router.dispatch", _fake_dispatch)
+    monkeypatch.setattr("precis.utils.llm.router.route", _fake_dispatch)
 
     ctx = _FakeCtx(
         store,

@@ -3,8 +3,8 @@ and bibliography-line (docs/backlog/patent-evidence-parity.md Phase 3).
 
 A patent **specification** cites prior art *in the running text* by number
 ("U.S. Patent No. 2,943,737") with **no bibliography** — unlike a paper,
-which gets ``\\cite`` + a reference list. :func:`format_patent_citation` /
-:func:`paper_inline_citation` render that in-text string. A context that
+which gets ``\\cite`` + a reference list. :func:`render_patent_citation` /
+:func:`render_paper_inline_citation` render that in-text string. A context that
 *does* carry a reference list — a paper-mode draft's bibliography, a
 taproot hub's evidence listing — instead wants a full prose line (applicant,
 title, publication number + kind code, year); that's
@@ -77,7 +77,7 @@ def _wo_citation(digits: str, kind_code: str) -> str:
     return f"PCT International Publication No. WO {body}{tail}"
 
 
-def format_patent_citation(meta: dict[str, Any] | None, slug: str = "") -> str:
+def render_patent_citation(meta: dict[str, Any] | None, slug: str = "") -> str:
     """A patent ref's ``meta`` → its in-text citation string, per authority.
 
     * **US** — ``U.S. Patent No. 2,943,737`` (grant) /
@@ -126,7 +126,7 @@ def _first_author_surname(authors: Any) -> str:
     return name.split(",")[0].strip() if "," in name else name.split()[-1]
 
 
-def paper_inline_citation(ref: Any) -> str:
+def render_paper_inline_citation(ref: Any) -> str:
     """A paper ref → a light in-text ``(Surname et al., YYYY)`` for
     patent-mode export (no bibliography). Best-effort; falls back to the
     quoted title, then the slug."""
@@ -152,7 +152,7 @@ def format_patent_bibliography_entry(ref: Any) -> str:
     """A patent ref → one prose bibliography-line citation, for a context
     that DOES carry a reference list (a paper-mode draft's bibliography, a
     taproot hub's evidence listing) — as opposed to
-    :func:`format_patent_citation` / :func:`paper_inline_citation`, which
+    :func:`render_patent_citation` / :func:`render_paper_inline_citation`, which
     serve the patent-specification in-text convention (no bibliography at
     all).
 

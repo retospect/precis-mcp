@@ -66,15 +66,15 @@ from precis.workers.working_set import Extent
 
 log = logging.getLogger(__name__)
 
-# A bare draft chunk address: the universal handle ``dc<chunk_id>``
+# A bare draft chunk handle: the universal handle ``dc<chunk_id>``
 # or the legacy ``¶<base58>`` form. Relative navigation (``^`` / ``+N`` /
 # ``-lo..hi``) is parsed separately via ``handle_registry.parse_relative``.
-_CHUNK_ADDR = re.compile(r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))$")
+_CHUNK_HANDLE = re.compile(r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))$")
 
-#: Recognises a draft chunk address — bare or with a relative-nav
-#: operator (``^``/``+``/``-``/``..``) — used to tell a chunk address from a
+#: Recognises a draft chunk handle — bare or with a relative-nav
+#: operator (``^``/``+``/``-``/``..``) — used to tell a chunk handle from a
 #: draft slug in ``get`` / ``search``.
-_DRAFT_CHUNK_ADDR_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:[+\-^].*|\.\..*)?$")
+_DRAFT_CHUNK_HANDLE_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:[+\-^].*|\.\..*)?$")
 
 #: Relations an owning *process* (a quest today, per its module
 #: docstring any ref) uses to mark a ``draft`` as its machine-managed
@@ -95,10 +95,10 @@ _PAPER_RELATION = "paper-of"
 _MACHINE_OWNED_RELATIONS: tuple[str, ...] = (_DOSSIER_RELATION, _PAPER_RELATION)
 
 
-def _is_draft_chunk_addr(s: str) -> bool:
+def _is_draft_chunk_handle(s: str) -> bool:
     """True iff ``s`` addresses a draft chunk (``dc<id>`` / ``¶<base58>``,
     optionally with a relative operator)."""
-    return bool(_DRAFT_CHUNK_ADDR_RE.match(s.strip()))
+    return bool(_DRAFT_CHUNK_HANDLE_RE.match(s.strip()))
 
 
 #: Job status → short display label for :func:`_summarize_job_counts`
@@ -311,7 +311,7 @@ class DraftHandler(Handler):
         is_numeric=False,
         id_required=False,
         note_like=True,
-        role="artifact",
+        placement="artifact",
         views=("toc", "links"),
     )
 
@@ -420,7 +420,7 @@ class DraftHandler(Handler):
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
-        if _is_draft_chunk_addr(s):
+        if _is_draft_chunk_handle(s):
             # Turn-taking persona threads eye — render this node at a focus extent via ``view=``:
             # the ladder kwd|summary|verbatim|fisheye|fisheye+1hop (labels
             # derived from ``Extent`` so they can't drift from the enum).
@@ -584,7 +584,7 @@ class DraftHandler(Handler):
         chunk_ids: list[int] | None = None
         where = "all drafts"
         if raw_scope:
-            if _is_draft_chunk_addr(raw_scope):
+            if _is_draft_chunk_handle(raw_scope):
                 chunk_ids = self.store.drafts.draft_subtree_chunk_ids(raw_scope)
                 if not chunk_ids:
                     raise NotFound(f"draft chunk {raw_scope} not found")
@@ -662,7 +662,7 @@ class DraftHandler(Handler):
                 pairs.extend((slug, c) for c in self.store.drafts.reading_order(ref.id))
             return pairs, "all drafts"
         raw = str(raw_scope).strip()
-        if _is_draft_chunk_addr(raw):
+        if _is_draft_chunk_handle(raw):
             ids = self.store.drafts.draft_subtree_chunk_ids(raw)
             if not ids:
                 raise NotFound(f"draft chunk {raw} not found")
@@ -1531,7 +1531,7 @@ class DraftHandler(Handler):
             # substitute, which treats 'table' as a derived kind and skips it
             # (draft_regex.DERIVED_KINDS).
             _sub_target = None
-            if id is not None and _is_draft_chunk_addr(str(id).strip()):
+            if id is not None and _is_draft_chunk_handle(str(id).strip()):
                 _sub_target = self.store.drafts.get_draft_chunk(str(id).strip())
             if _sub_target is None or _sub_target.chunk_kind != "table":
                 return self._substitute(id, sub, apply=bool(apply))
@@ -1808,7 +1808,7 @@ class DraftHandler(Handler):
                 "(id='dc<chunk_id>') or the whole draft (id='<slug>')",
                 next="delete(kind='draft', id='dc42')",
             )
-        if not _is_draft_chunk_addr(raw):
+        if not _is_draft_chunk_handle(raw):
             ref = self._resolve_draft_any(raw)  # refuses a machine-owned body
             retired = self.store.drafts.soft_delete_draft(ref.id)
             label = ref.slug or ref.id
@@ -1835,7 +1835,7 @@ class DraftHandler(Handler):
         ``authoring=``/``scaffold=``, and whole-draft :meth:`delete`) —
         all mutating, so every caller wants the guard."""
         s = str(id or "").strip()
-        if _is_draft_chunk_addr(s):
+        if _is_draft_chunk_handle(s):
             chunk = self.store.drafts.get_draft_chunk(s)
             if chunk is None:
                 raise NotFound(f"draft chunk {s} not found")
@@ -1919,7 +1919,7 @@ class DraftHandler(Handler):
         )
 
     def _require_chunk_id(self, id: str | int | None, *, verb: str) -> str:
-        if id is None or not _is_draft_chunk_addr(str(id)):
+        if id is None or not _is_draft_chunk_handle(str(id)):
             raise BadInput(
                 f"{verb}(kind='draft') targets a chunk — id='dc<chunk_id>'",
                 next=f"{verb}(kind='draft', id='dc42', …)",
@@ -2677,16 +2677,16 @@ class DraftHandler(Handler):
         )
         return out
 
-    def _render_chunk(self, addr: str) -> Response:
+    def _render_chunk(self, handle: str) -> Response:
         # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``
         # (sibling step), ``-lo..hi`` (signed sibling span — the reading
         # window). Resolved against the draft tree; supersedes the legacy
         # ``-B+A`` reading-order window.
-        rel = self.store.drafts.draft_relative_chunk_ids(addr)
+        rel = self.store.drafts.draft_relative_chunk_ids(handle)
         if rel is not None:
             if not rel:
                 raise NotFound(
-                    f"draft chunk {addr!r} resolves to nothing "
+                    f"draft chunk {handle!r} resolves to nothing "
                     "(out of range, or no enclosing heading)"
                 )
             window = [
@@ -2695,17 +2695,17 @@ class DraftHandler(Handler):
                 if (c := self.store.drafts.get_draft_chunk(f"dc{cid}")) is not None
             ]
         else:
-            m = _CHUNK_ADDR.match(addr)
+            m = _CHUNK_HANDLE.match(handle)
             if m is None:
                 raise BadInput(
-                    f"unparseable chunk address {addr!r}",
+                    f"unparseable chunk address {handle!r}",
                     next="id='dc<chunk_id>' (or dc<id>^ / +1 / -2..3 to navigate)",
                 )
             # ``get_draft_chunk`` accepts ``dc<id>`` and legacy ``¶<base58>``.
             core = ("dc" + m.group("cid")) if m.group("cid") else m.group("h")
             chunk = self.store.drafts.get_draft_chunk(core)
             if chunk is None:
-                raise NotFound(f"draft chunk {addr!r} not found")
+                raise NotFound(f"draft chunk {handle!r} not found")
             window = [chunk]
         # ``sha:`` is a short prefix of the chunk's content_sha — pass it
         # back as ``edit(base_sha=…)`` for an optimistic edit that won't

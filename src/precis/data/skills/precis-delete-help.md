@@ -35,13 +35,13 @@ Soft-delete only. The ref disappears from list views and search;
 the row is retained for audit. Links pointing at the soft-deleted
 ref persist — resolve via the link table if you need them.
 
-## Delete a block or section from a markdown / tex file
+## Delete a chunk or section from a markdown / tex file
 ## Remove one part of a file without rewriting the whole thing
 ## How do I drop section X from this file?
 
 ```python
-delete(kind="markdown", id="notes/foo.md~intro")  # named block
-delete(kind="markdown", id="notes/foo.md~3..5")  # block range
+delete(kind="markdown", id="notes/foo.md~intro")  # named chunk
+delete(kind="markdown", id="notes/foo.md~3..5")  # chunk range
 delete(kind="tex", id="chapters/intro.tex~background")  # tex section
 ```
 
@@ -95,8 +95,8 @@ edit(
 )
 ```
 
-`delete` operates on whole blocks / line ranges / symbols.
-For arbitrary spans inside a block, use `edit(mode='find-replace',
+`delete` operates on whole chunks / line ranges / symbols.
+For arbitrary spans inside a chunk, use `edit(mode='find-replace',
 text='')`. See `precis-edit-help`.
 
 ## Why can't I delete a paper or a cached tool answer?

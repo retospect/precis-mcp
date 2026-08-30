@@ -312,7 +312,7 @@ class TestProposeTagline:
                 data={"tagline": "Graphene is strong"},
             )
 
-        monkeypatch.setattr(hub_tagline, "dispatch", fake_dispatch)
+        monkeypatch.setattr(hub_tagline, "route", fake_dispatch)
 
         result = hub_tagline.propose_tagline(_SENTENCE, {})
 
@@ -335,6 +335,6 @@ class TestProposeTagline:
                 error="down",
             )
 
-        monkeypatch.setattr(hub_tagline, "dispatch", fake_dispatch)
+        monkeypatch.setattr(hub_tagline, "route", fake_dispatch)
 
         assert hub_tagline.propose_tagline(_SENTENCE, {}) is None

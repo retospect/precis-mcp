@@ -76,7 +76,7 @@ def test_toc_eye_is_a_one_line_bookmark_with_ancestor_branch(
 
 
 def test_summary_eye_is_the_node_alone(hub: Hub, plan: PlanHandler) -> None:
-    # summary is the target's gloss, alone — no surroundings (§ C0).
+    # summary is the target's summary text, alone — no surroundings (§ C0).
     labels = _build_tree(hub, plan)
     out = render_fisheye(
         hub.live_store, kind="plan", handle=labels["draft"], extent=Extent.SUMMARY
@@ -96,9 +96,9 @@ def test_fidelity_eye_spans_reading_order(hub: Hub, plan: PlanHandler) -> None:
     assert labels["axes"] in seen or labels["draft"] in seen
 
 
-def test_gloss_lines_are_capped_not_spilled(hub: Hub, plan: PlanHandler) -> None:
+def test_summary_lines_are_capped_not_spilled(hub: Hub, plan: PlanHandler) -> None:
     """A toc eye is a bookmark: even if the node carries a prose paragraph, the
-    one-line gloss is whitespace-collapsed + clipped, never a wall of text."""
+    one-line summary is whitespace-collapsed + clipped, never a wall of text."""
     proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
     plan.put(id="p", title="Root", project=proj)
     prose = "alpha beta gamma delta " * 40  # ~920 chars, one logical line
@@ -107,7 +107,7 @@ def test_gloss_lines_are_capped_not_spilled(hub: Hub, plan: PlanHandler) -> None
     out = render_fisheye(hub.live_store, kind="plan", handle=h, extent="toc")
     bookmark = next(line for line in out.splitlines() if h in line)
     assert "\n" not in bookmark
-    assert len(bookmark) <= 130  # ▸ + handle + capped gloss
+    assert len(bookmark) <= 130  # ▸ + handle + capped summary
     assert bookmark.rstrip().endswith("…")
 
 

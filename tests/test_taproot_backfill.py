@@ -26,9 +26,9 @@ from precis.taproot.backfill import (
     segment_cite_groups,
 )
 from precis.taproot.canon import (
-    Candidate,
     CanonicalClaim,
     ClaimExtraction,
+    MergeCandidate,
     NotClaim,
     Verdict,
 )
@@ -81,13 +81,15 @@ def _extract_multi(
     return _fn
 
 
-def _block_none(claim: CanonicalClaim, store: Any, embedder: Any) -> list[Candidate]:
+def _block_none(
+    claim: CanonicalClaim, store: Any, embedder: Any
+) -> list[MergeCandidate]:
     return []
 
 
 def _block_hit(hub_ref_id: int, claim_text: str):
-    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[Candidate]:
-        return [Candidate(hub_ref_id=hub_ref_id, claim=claim_text, distance=0.05)]
+    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[MergeCandidate]:
+        return [MergeCandidate(hub_ref_id=hub_ref_id, claim=claim_text, distance=0.05)]
 
     return _b
 
@@ -98,10 +100,12 @@ def _block_map(mapping: dict[str, tuple[int, str]]):
     extraction converge some claims onto existing hubs while others mint
     fresh, in one call."""
 
-    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[Candidate]:
+    def _b(claim: CanonicalClaim, store: Any, embedder: Any) -> list[MergeCandidate]:
         hit = mapping.get(claim.sentence)
         return (
-            [Candidate(hub_ref_id=hit[0], claim=hit[1], distance=0.02)] if hit else []
+            [MergeCandidate(hub_ref_id=hit[0], claim=hit[1], distance=0.02)]
+            if hit
+            else []
         )
 
     return _b

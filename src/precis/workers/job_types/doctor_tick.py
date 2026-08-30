@@ -165,10 +165,10 @@ def run(
     """
     del params  # no knobs today; kept for the uniform run() signature
     # Lazy import (mirrors plan_tick's ``_run_claude_tick``): resolved at
-    # call time so tests can monkeypatch ``router.dispatch`` directly,
+    # call time so tests can monkeypatch ``router.route`` directly,
     # rather than binding a module-level reference doctor_tick would
     # never see updated.
-    from precis.utils.llm.router import LlmRequest, dispatch
+    from precis.utils.llm.router import LlmRequest, route
     from precis.workers import doctor_report
 
     started = time.monotonic()
@@ -194,7 +194,7 @@ def run(
             "via MCP — gather/dedup/gripe-filing won't land"
         )
 
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=_TIER,
             source="doctor_tick",

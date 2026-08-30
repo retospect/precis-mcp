@@ -1,6 +1,6 @@
 """Shared derivation helpers over ``KindSpec`` — the single place a
 downstream module turns a ``protocol.KindSpec`` fact (``is_numeric`` /
-``corpus_role`` / ``role``) into a ``frozenset[str]`` of kinds, instead of
+``corpus_role`` / ``placement``) into a ``frozenset[str]`` of kinds, instead of
 hand-restating the membership (the "KindSpec facts re-hardcoded downstream"
 drift class — ``news``/``message``/``role3`` all slipped through manual
 lists the same way ``handle_registry``'s docstring warns about).
@@ -10,7 +10,7 @@ Two shapes of caller:
 * **A hub/runtime is reachable at call time** (a request handler with
   ``get_runtime(request).hub``, a booted CLI). Call :func:`specs_of` on the
   live hub and feed the result to :func:`numeric_kinds` /
-  :func:`corpus_role_kinds` / :func:`role_kinds` — the set is always fresh,
+  :func:`corpus_role_kinds` / :func:`placement_kinds` — the set is always fresh,
   a new kind joins with no edit here.
 * **An import-time module constant, no hub reachable** (a frozenset built
   once at module load, e.g. a fisheye/ring kind-grouping table). Booting a
@@ -103,19 +103,19 @@ def corpus_role_kinds(specs: Iterable[KindSpec], *roles: str) -> frozenset[str]:
     return frozenset(s.kind for s in specs if s.corpus_role in role_set)
 
 
-def role_kinds(specs: Iterable[KindSpec], role: str) -> frozenset[str]:
-    """Kinds whose organizational ``KindSpec.role`` equals ``role``.
+def placement_kinds(specs: Iterable[KindSpec], placement: str) -> frozenset[str]:
+    """Kinds whose organizational ``KindSpec.placement`` equals ``placement``.
 
-    E.g. ``role_kinds(specs, "artifact")`` for the placeable-in-a-folder
+    E.g. ``placement_kinds(specs, "artifact")`` for the placeable-in-a-folder
     kinds.
     """
-    return frozenset(s.kind for s in specs if s.role == role)
+    return frozenset(s.kind for s in specs if s.placement == placement)
 
 
 __all__ = [
     "all_declared_specs",
     "corpus_role_kinds",
     "numeric_kinds",
-    "role_kinds",
+    "placement_kinds",
     "specs_of",
 ]

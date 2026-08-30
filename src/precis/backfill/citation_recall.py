@@ -40,7 +40,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from precis.backfill.candidates import LENS_CITATION, Candidate
+from precis.backfill.candidates import LENS_CITATION, RecallCandidate
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -100,7 +100,7 @@ fetch_citations_batch: Callable[
 ] = _default_fetch_batch
 
 
-def _citation_lens_enabled() -> bool:
+def _citation_recall_enabled() -> bool:
     """The lens is on by default; ``PRECIS_BACKFILL_CITATION_LENS=0`` disables
     it (e.g. to keep an offline/CI run purely local)."""
     return bool(int(os.environ.get("PRECIS_BACKFILL_CITATION_LENS", "1") or "0"))
@@ -240,7 +240,7 @@ def materialize_citation_edges(
             try:
                 qid = _s2_query_id(_fetch_identifiers(conn, rid))
             except Exception as exc:  # pragma: no cover — defensive
-                log.debug("citation_lens: id resolve failed for ref %s: %s", rid, exc)
+                log.debug("citation_recall: id resolve failed for ref %s: %s", rid, exc)
                 continue
             if qid is not None:
                 qid_by_rid[rid] = qid
@@ -331,7 +331,7 @@ def materialize_citation_edges(
                 written += edges
         except Exception as exc:  # pragma: no cover — defensive; lens must not
             # break the workspace. Freshness is not stamped → retried next run.
-            log.debug("citation_lens: materialise failed for ref %s: %s", rid, exc)
+            log.debug("citation_recall: materialise failed for ref %s: %s", rid, exc)
     return written
 
 
@@ -423,12 +423,12 @@ def find_citation_candidates(
     *,
     exclude: set[int],
     limit: int = 8,
-) -> list[Candidate]:
+) -> list[RecallCandidate]:
     """Materialise the citation edges for the cited papers, then surface the
-    held-but-uncited citation neighbours as :class:`Candidate` rows (lens
+    held-but-uncited citation neighbours as :class:`RecallCandidate` rows (lens
     ``citation``, opened at the paper's lead chunk, scored by co-citation
     degree). Best first, capped at ``limit``."""
-    if not _citation_lens_enabled() or not cited_ref_ids:
+    if not _citation_recall_enabled() or not cited_ref_ids:
         return []
     materialize_citation_edges(store, cited_ref_ids)
     degrees = citation_neighbor_degrees(store, cited_ref_ids, exclude=exclude)
@@ -436,7 +436,7 @@ def find_citation_candidates(
         return []
     ref_ids = [rid for rid, _ in degrees[:limit]]
     refs = store.fetch_refs_by_ids(ref_ids)
-    out: list[Candidate] = []
+    out: list[RecallCandidate] = []
     with store.pool.connection() as conn:
         for rid, degree in degrees[:limit]:
             ref = refs.get(rid)
@@ -447,7 +447,7 @@ def find_citation_candidates(
                 continue
             handle = handle_registry.format_handle("paper", lead, chunk=True)
             out.append(
-                Candidate(
+                RecallCandidate(
                     ref_id=rid,
                     ref=ref,
                     chunk_id=lead,

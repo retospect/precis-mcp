@@ -403,7 +403,7 @@ class SkillHandler(Handler):
         supports_put=False,
         is_numeric=False,
         id_required=False,
-        role="system",
+        placement="system",
     )
 
     #: Special slugs synthesised at runtime rather than served from a

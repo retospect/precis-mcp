@@ -195,7 +195,7 @@ def _classify_topics_enabled_slugs(
 # profiles — on the agent worker it also keeps ``job_claude_inproc``
 # (the plan_tick executor) ahead of the multi-minute opus reviewers.
 #
-# The bands are an explicit :class:`PassBand` enum rather than bare
+# The bands are an explicit :class:`PassPriority` enum rather than bare
 # ints so the intent reads at a glance, and every key here is guarded
 # by ``test_ref_pass_priority_keys_match_registered_passes``: it parses
 # this module's AST and fails if a key no longer matches a live
@@ -203,7 +203,7 @@ def _classify_topics_enabled_slugs(
 # closure can no longer *silently* drop it into the DEFAULT band.
 
 
-class PassBand(IntEnum):
+class PassPriority(IntEnum):
     """Scheduling band for a ref-pass; lower runs earlier each cycle."""
 
     JOB = 0  # job execution: plan_tick coroutine + other job runners
@@ -213,48 +213,48 @@ class PassBand(IntEnum):
     BACKGROUND = 30  # heavy tail: external fetch + LLM + reviewers
 
 
-_REF_PASS_PRIORITY: dict[str, PassBand] = {
-    "_job_claude_inproc_pass": PassBand.JOB,
-    "_job_coordinator_pass": PassBand.JOB,
-    "_job_ssh_node_pass": PassBand.JOB,
-    "_job_inproc_pass": PassBand.JOB,
-    "_job_claude_docker_pass": PassBand.JOB,
-    "_wake_runner_pass": PassBand.JOB,
-    "_auto_check_pass": PassBand.PLANNER,
-    "_schedule_pass": PassBand.PLANNER,
-    "_scheduler_pass": PassBand.PLANNER,
-    "_dispatch_pass": PassBand.PLANNER,
-    "_sweeper_pass": PassBand.PLANNER,
-    "_nursery_pass": PassBand.HEALTH,
-    "_heartbeat_pass": PassBand.HEALTH,
-    "_chase_pass": PassBand.BACKGROUND,
-    "_bib_parse_pass": PassBand.BACKGROUND,
-    "_bib_retag_pass": PassBand.DEFAULT,
-    "_inbound_chase_pass": PassBand.BACKGROUND,
-    "_hub_refine_pass": PassBand.BACKGROUND,
-    "_hub_tagline_pass": PassBand.BACKGROUND,
-    "_chase_trigger_pass": PassBand.BACKGROUND,
-    "_fetch_pass": PassBand.BACKGROUND,
-    "_gp_fetch_pass": PassBand.BACKGROUND,
-    "_stub_rank_pass": PassBand.BACKGROUND,
-    "_llm_summarize_pass": PassBand.BACKGROUND,
-    "_classify_pass": PassBand.BACKGROUND,
-    "_llm_reconcile_pass": PassBand.BACKGROUND,
-    "_paper_glossary_pass": PassBand.BACKGROUND,
-    "_paper_rank_pass": PassBand.BACKGROUND,
-    "_classify_topics_pass": PassBand.BACKGROUND,
-    "_axis_pass": PassBand.BACKGROUND,
-    "_mail_poll_pass": PassBand.BACKGROUND,
-    "_inject_scan_pass": PassBand.BACKGROUND,
-    "_structural_pass": PassBand.BACKGROUND,
-    "_deep_review_pass": PassBand.BACKGROUND,
-    "_dream_agent_pass": PassBand.BACKGROUND,
+_REF_PASS_PRIORITY: dict[str, PassPriority] = {
+    "_job_claude_inproc_pass": PassPriority.JOB,
+    "_job_coordinator_pass": PassPriority.JOB,
+    "_job_ssh_node_pass": PassPriority.JOB,
+    "_job_inproc_pass": PassPriority.JOB,
+    "_job_claude_docker_pass": PassPriority.JOB,
+    "_wake_runner_pass": PassPriority.JOB,
+    "_auto_check_pass": PassPriority.PLANNER,
+    "_schedule_pass": PassPriority.PLANNER,
+    "_scheduler_pass": PassPriority.PLANNER,
+    "_dispatch_pass": PassPriority.PLANNER,
+    "_sweeper_pass": PassPriority.PLANNER,
+    "_nursery_pass": PassPriority.HEALTH,
+    "_heartbeat_pass": PassPriority.HEALTH,
+    "_chase_pass": PassPriority.BACKGROUND,
+    "_bib_parse_pass": PassPriority.BACKGROUND,
+    "_bib_retag_pass": PassPriority.DEFAULT,
+    "_inbound_chase_pass": PassPriority.BACKGROUND,
+    "_hub_refine_pass": PassPriority.BACKGROUND,
+    "_hub_tagline_pass": PassPriority.BACKGROUND,
+    "_chase_trigger_pass": PassPriority.BACKGROUND,
+    "_fetch_pass": PassPriority.BACKGROUND,
+    "_gp_fetch_pass": PassPriority.BACKGROUND,
+    "_stub_rank_pass": PassPriority.BACKGROUND,
+    "_llm_summarize_pass": PassPriority.BACKGROUND,
+    "_classify_pass": PassPriority.BACKGROUND,
+    "_llm_reconcile_pass": PassPriority.BACKGROUND,
+    "_paper_glossary_pass": PassPriority.BACKGROUND,
+    "_paper_rank_pass": PassPriority.BACKGROUND,
+    "_classify_topics_pass": PassPriority.BACKGROUND,
+    "_axis_pass": PassPriority.BACKGROUND,
+    "_mail_poll_pass": PassPriority.BACKGROUND,
+    "_inject_scan_pass": PassPriority.BACKGROUND,
+    "_structural_pass": PassPriority.BACKGROUND,
+    "_deep_review_pass": PassPriority.BACKGROUND,
+    "_dream_agent_pass": PassPriority.BACKGROUND,
 }
 
 
-def _ref_pass_priority(fn: RefPass) -> PassBand:
+def _ref_pass_priority(fn: RefPass) -> PassPriority:
     """Scheduling band for a ref-pass closure (lower runs earlier)."""
-    return _REF_PASS_PRIORITY.get(getattr(fn, "__name__", ""), PassBand.DEFAULT)
+    return _REF_PASS_PRIORITY.get(getattr(fn, "__name__", ""), PassPriority.DEFAULT)
 
 
 # Column order for ``precis worker --status``. Keeping it in one

@@ -344,7 +344,7 @@ class DraftReviewStore:
         row for — the toc indicator would then read permanently
         unapproved no matter how many times it's actually reviewed.
         SINGLE selection rule, shared by :func:`precis.quest.review_fanout.
-        _mint_doc_lenses` (the toc anchor mint) and this method's own
+        _mint_doc_personas` (the toc anchor mint) and this method's own
         toc-row patch below, so the two can't drift apart. ``None`` for a
         draft with no reviewable root chunk."""
         with self.pool.connection() as conn:

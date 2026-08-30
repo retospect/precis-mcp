@@ -110,7 +110,7 @@ class CadHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
-        role="artifact",
+        placement="artifact",
         views=_VIEWS,
     )
 

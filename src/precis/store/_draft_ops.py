@@ -828,7 +828,7 @@ class DraftStore(_AbbrevMixin):
         )
 
     def draft_relative_chunk_ids(
-        self, addr: str, *, kind: str = "draft"
+        self, handle: str, *, kind: str = "draft"
     ) -> list[int] | None:
         """Resolve a relative draft/plan handle to target chunk id(s).
 
@@ -837,10 +837,10 @@ class DraftStore(_AbbrevMixin):
         the same parent); ``dc<id>-lo..hi`` is the signed sibling span
         (reading-context window). Returns target ids (one for a
         step/ancestor, the contiguous run for a span), **empty list** when
-        out of range/past the root, or ``None`` when ``addr`` isn't a
+        out of range/past the root, or ``None`` when ``handle`` isn't a
         relative handle of ``kind`` (caller then tries the absolute path).
         ``kind='plan'`` resolves ``pe<id>`` handles."""
-        parsed = handle_registry.parse_relative(addr)
+        parsed = handle_registry.parse_relative(handle)
         if parsed is None:
             return None
         parsed_kind, _is_chunk, chunk_id, op = parsed

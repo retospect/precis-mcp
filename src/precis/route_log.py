@@ -1,6 +1,6 @@
 """Full LLM interaction log — Slice 1 of the adaptive-router plan.
 
-Records every ``router.dispatch`` call's full logical request + final response +
+Records every ``router.route`` call's full logical request + final response +
 outcome metadata to postgres (``llm_call_log`` + content-addressed ``llm_blob``,
 migration 0061), so later slices can replay requests on other models and score
 the difference. Operational, **not corpus** — never embedded (peer to
@@ -57,7 +57,7 @@ def enabled() -> bool:
 @dataclass(frozen=True, slots=True)
 class LlmCallRecord:
     """One dispatch call to log: full request/response text + metadata. The
-    caller (``router.dispatch``) fills this; the writer dedups the text blobs."""
+    caller (``router.route``) fills this; the writer dedups the text blobs."""
 
     source: str | None
     tier: str | None

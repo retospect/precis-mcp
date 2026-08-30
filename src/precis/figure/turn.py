@@ -25,9 +25,9 @@ def _default_claude(prompt: str) -> dict[str, Any]:
     # Routed through the LLM seam: FRONTIER (drawing
     # wants a capable model), so PRECIS_LLM_BACKEND can switch it. A
     # PRECIS_FIGURE_MODEL pin still wins (None ⇒ the tier default, opus-4.8).
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.FRONTIER,
             source="figure",

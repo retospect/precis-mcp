@@ -29,7 +29,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
     from precis.workers.chase import _NextHopTarget
@@ -150,7 +150,7 @@ def _verify_support_with_caveats(
         target_chunk_text=target_chunk_text[:4000],  # cap context cost
         patent_note=_PATENT_VERIFY_NOTE if source_kind == "patent" else "",
     )
-    res = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:verify"))
+    res = route(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:verify"))
     if res.error:
         log.warning("chase: verify hook failed: %s", res.error)
         return None
@@ -208,7 +208,7 @@ def _disambiguate_candidates(
         chunk_text=chunk_text[:3000],
         candidates_table=table,
     )
-    res = dispatch(
+    res = route(
         LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:disambiguate")
     )
     if res.error:
@@ -262,7 +262,7 @@ def _locate_chunk_in_target(
         main_text=proposed[2][:1500],
         alternates_table=alt_table,
     )
-    res = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:locate"))
+    res = route(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:locate"))
     if res.error:
         log.warning("chase: locate hook failed: %s", res.error)
         return proposed  # fall back to lexical pick

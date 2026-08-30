@@ -13,7 +13,7 @@ never harmed.
 
 Initial rows: ``slot_hold`` (delete + capped refund — the TTL arm stays
 the heartbeat's ``reclaim_expired_slot_holds`` sweep) and ``agentlog``
-(finalize ``status='aborted'`` — previously a zombie forever). Job
+(finalize ``status='aborted'`` — previously orphaned forever). Job
 leases keep their in-claim machinery (`executors/_common.py`) — it must
 stay in the claim path for the starvation-bound pre-pass.
 
@@ -58,7 +58,7 @@ def _min_age_s() -> float:
 
 
 @dataclass(frozen=True)
-class Candidate:
+class DeadHold:
     """One located claim carrying epoch identity."""
 
     claim_id: int
@@ -82,8 +82,8 @@ class ClaimRow:
     """
 
     claim_type: str
-    locate: Callable[[Store, float], list[Candidate]]
-    reclaim: Callable[[Store, Candidate], bool]
+    locate: Callable[[Store, float], list[DeadHold]]
+    reclaim: Callable[[Store, DeadHold], bool]
 
 
 # ── Guard fragment: the in-transaction re-verify (law #3) ────────────────
@@ -128,15 +128,15 @@ _REAP_SLOT_HOLD = (
 )
 
 
-def _locate_slot_holds(store: Store, min_age_s: float) -> list[Candidate]:
+def _locate_slot_holds(store: Store, min_age_s: float) -> list[DeadHold]:
     with store.pool.connection() as conn:
         rows = conn.execute(_LOCATE_SLOT_HOLDS, (min_age_s,)).fetchall()
     return [
-        Candidate(int(r[0]), str(r[1]), str(r[2]), str(r[3]), float(r[4])) for r in rows
+        DeadHold(int(r[0]), str(r[1]), str(r[2]), str(r[3]), float(r[4])) for r in rows
     ]
 
 
-def _reap_slot_hold(store: Store, c: Candidate) -> bool:
+def _reap_slot_hold(store: Store, c: DeadHold) -> bool:
     with store.tx() as conn:
         row = conn.execute(
             _REAP_SLOT_HOLD,
@@ -150,7 +150,7 @@ def _reap_slot_hold(store: Store, c: Candidate) -> bool:
     return bool(row and int(row[0]))
 
 
-# ── Row: agentlogs (zombie logs — opened, holder gone, never finalized) ──
+# ── Row: agentlogs (orphaned logs — opened, holder gone, never finalized) ──
 
 _LOCATE_AGENTLOGS = (
     "SELECT ref_id, meta -> 'worker' ->> 'boot_id', "
@@ -173,15 +173,15 @@ _REAP_AGENTLOG = (
 )
 
 
-def _locate_agentlogs(store: Store, min_age_s: float) -> list[Candidate]:
+def _locate_agentlogs(store: Store, min_age_s: float) -> list[DeadHold]:
     with store.pool.connection() as conn:
         rows = conn.execute(_LOCATE_AGENTLOGS, (min_age_s,)).fetchall()
     return [
-        Candidate(int(r[0]), str(r[1]), str(r[2]), str(r[3]), float(r[4])) for r in rows
+        DeadHold(int(r[0]), str(r[1]), str(r[2]), str(r[3]), float(r[4])) for r in rows
     ]
 
 
-def _reap_agentlog(store: Store, c: Candidate) -> bool:
+def _reap_agentlog(store: Store, c: DeadHold) -> bool:
     import json
 
     patch = json.dumps(

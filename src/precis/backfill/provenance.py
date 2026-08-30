@@ -1,9 +1,9 @@
-"""Provenance tiers for recall candidates (source-backfill slice 6).
+"""Provenance grades for recall candidates (source-backfill slice 6).
 
 Not all sources are interchangeable evidence — a candidate's **kind** fixes how
 it may be used, and conflating them is how a draft ends up "citing" a datasheet
 for a scientific consensus or a private note as if it were external. So every
-candidate carries a *provenance tier*:
+candidate carries a *provenance grade*:
 
 - **peer-reviewed** (`paper`, `cfp`) — external, reviewed: citable support for a
   scientific claim.
@@ -12,8 +12,8 @@ candidate carries a *provenance tier*:
 - **lead** (`memory` and other own-authored kinds) — your *own* thinking, not
   external evidence at all: a lead to chase, never a citation.
 
-The tier rides on every candidate (a bracketed tag in the render), **down-weights**
-lower tiers in the gap-rank (``weight``), and drives the standing skill admonition
+The grade rides on every candidate (a bracketed tag in the render), **down-weights**
+lower grades in the gap-rank (``weight``), and drives the standing skill admonition
 on how to treat each. This is a policy, not a universal — venue norms differ — but
 the default keeps the model honest about what a source can bear.
 """
@@ -24,10 +24,10 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class Tier:
-    """One provenance tier. ``rank`` orders tiers (0 = strongest); ``weight`` is
-    the multiplicative gap-rank down-weight (1.0 = no penalty); ``admonition`` is
-    the one-line "how to treat this" the skill surfaces."""
+class SourceGrade:
+    """One provenance grade. ``rank`` orders grades (0 = strongest); ``weight``
+    is the multiplicative gap-rank down-weight (1.0 = no penalty); ``admonition``
+    is the one-line "how to treat this" the skill surfaces."""
 
     id: str
     rank: int
@@ -36,14 +36,14 @@ class Tier:
     admonition: str
 
 
-PEER_REVIEWED = Tier(
+PEER_REVIEWED = SourceGrade(
     "peer_reviewed",
     0,
     "peer-reviewed",
     1.0,
     "external and reviewed — citable support for a scientific claim.",
 )
-PRIOR_ART = Tier(
+PRIOR_ART = SourceGrade(
     "prior_art",
     1,
     "prior-art",
@@ -51,7 +51,7 @@ PRIOR_ART = Tier(
     "external but NOT peer-reviewed — cite for 'this exists / was built / is "
     "specified,' never for scientific consensus.",
 )
-LEAD = Tier(
+LEAD = SourceGrade(
     "lead",
     2,
     "own-note",
@@ -60,10 +60,10 @@ LEAD = Tier(
     "it, write the claim yourself and find a real source, or flag an open thread.",
 )
 
-#: The ordered tier ladder, strongest first.
-TIERS: tuple[Tier, ...] = (PEER_REVIEWED, PRIOR_ART, LEAD)
+#: The ordered grade ladder, strongest first.
+SOURCE_GRADES: tuple[SourceGrade, ...] = (PEER_REVIEWED, PRIOR_ART, LEAD)
 
-_TIER_BY_KIND: dict[str, Tier] = {
+_GRADE_BY_KIND: dict[str, SourceGrade] = {
     "paper": PEER_REVIEWED,
     "cfp": PEER_REVIEWED,
     "patent": PRIOR_ART,
@@ -83,13 +83,13 @@ _TIER_BY_KIND: dict[str, Tier] = {
 SOURCE_KINDS: tuple[str, ...] = ("paper", "cfp", "patent", "datasheet", "memory")
 
 
-def tier_for(kind: str | None) -> Tier:
-    """The provenance tier of a source kind. An unknown / own-authored kind
+def grade_for(kind: str | None) -> SourceGrade:
+    """The provenance grade of a source kind. An unknown / own-authored kind
     defaults to ``LEAD`` — the conservative "treat as a lead, not evidence"
     assumption, so a new kind can never silently masquerade as peer-reviewed."""
-    return _TIER_BY_KIND.get(kind or "", LEAD)
+    return _GRADE_BY_KIND.get(kind or "", LEAD)
 
 
-def tier_tag(kind: str | None) -> str:
-    """The bracketed render tag for a kind's tier, e.g. ``[peer-reviewed]``."""
-    return f"[{tier_for(kind).tag}]"
+def grade_tag(kind: str | None) -> str:
+    """The bracketed render tag for a kind's grade, e.g. ``[peer-reviewed]``."""
+    return f"[{grade_for(kind).tag}]"

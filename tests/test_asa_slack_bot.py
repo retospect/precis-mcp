@@ -1,6 +1,6 @@
 """asa_slack.bot — the dispatch seam.
 
-Only `_dispatch_warm` for now: the runtime warm-up MUST precede `dispatch`,
+Only `_dispatch_warm` for now: the runtime warm-up MUST precede `route`,
 else `live_config.chain_override` reads dark in the storeless asa-slack
 process and every turn falls back to the default (claude) chain.
 """
@@ -26,7 +26,7 @@ def test_dispatch_warm_binds_runtime_before_dispatch(monkeypatch):
         return sentinel_result
 
     monkeypatch.setattr(bot, "warm_runtime", fake_warm)
-    monkeypatch.setattr(bot, "dispatch", fake_dispatch)
+    monkeypatch.setattr(bot, "route", fake_dispatch)
 
     assert bot._dispatch_warm(sentinel_req) is sentinel_result
     assert calls == ["warm", "dispatch"]

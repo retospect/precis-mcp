@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
-from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES
+from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS
 from precis.store._draft_ops import content_sha
 from precis.utils.figure_source import RenderSpec, resolve_figure_source
 from precis.utils.table_data import table_payload
@@ -185,9 +185,9 @@ class ChunkNode:
     def is_prose(self) -> bool:
         """Whether this chunk is one of ``PROSE_CHUNK_KINDS`` (paragraph/
         aside/callout/claim) — the review widget's gate for the
-        ``flow``/``cites`` run-lens buttons (item 3): those two lenses only
+        ``flow``/``cites`` run-lens buttons (item 3): those two personas only
         ever mint on prose chunks (:func:`precis.quest.review_fanout.
-        _lenses_for_kind`), so offering them on a table/figure/term/equation
+        _personas_for_kind`), so offering them on a table/figure/term/equation
         block would silently no-op the click."""
         return self.chunk_kind in PROSE_CHUNK_KINDS
 
@@ -1253,7 +1253,7 @@ def checker_rollup(
     scope to heading chunks; ``toc`` scopes to wherever the map's
     synthetic/real toc row rides (the document's first chunk — always
     exactly one, see ``Store.review_status_for_draft``)."""
-    order = (*ALL_LENSES, "human", *DOC_LENSES)
+    order = (*ALL_PERSONAS, "human", *DOC_PERSONAS)
     counts: dict[str, dict[str, int]] = {
         c: {"current": 0, "stale": 0, "never": 0} for c in order
     }

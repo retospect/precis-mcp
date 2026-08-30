@@ -256,7 +256,7 @@ _SEVERITY: dict[str, str] = {
 
 
 @dataclass(frozen=True, slots=True)
-class Finding:
+class Symptom:
     """One nursery hit.
 
     ``ref_id`` + ``category`` is the dedup key for the graph detectors
@@ -266,7 +266,7 @@ class Finding:
     so dedup / auto-resolve still work per (host, process).
 
     ``total`` is the category's true pre-``LIMIT`` count (a window-function
-    read, same value on every ``Finding`` of that pass) for the handful of
+    read, same value on every ``Symptom`` of that pass) for the handful of
     ``LIMIT 50``-capped detectors that compute it; ``None`` for every other
     detector.
     """
@@ -282,7 +282,7 @@ class Finding:
 #: Detectors in catalogue order, each paired with its category. The
 #: category is both the alert sub-source (``nursery:<category>``) and
 #: the dedup-fingerprint prefix. Each detector self-limits to 50 hits.
-_DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
+_DETECTORS: tuple[tuple[str, Callable[[Store], list[Symptom]]], ...] = (
     ("spin-loop", lambda s: _detect_spin_loops(s)),
     ("plan-tick-spin", lambda s: _detect_plan_tick_spins(s)),
     ("quest-loop-failing", lambda s: _detect_quest_loop_failures(s)),
@@ -363,7 +363,7 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
 # ── orphans ────────────────────────────────────────────────────────
 
 
-def _detect_orphans(store: Store) -> list[Finding]:
+def _detect_orphans(store: Store) -> list[Symptom]:
     """Open todos whose ancestor chain has no ``meta.rotation_root`` root.
 
     Walks ``parent_id`` to the topmost ancestor. If that ancestor
@@ -420,7 +420,7 @@ def _detect_orphans(store: Store) -> list[Finding]:
             """,
         ).fetchall()
     return [
-        Finding(
+        Symptom(
             category="orphan",
             ref_id=int(r[0]),
             title=_first_line(r[1]),
@@ -438,7 +438,7 @@ def _detect_orphans(store: Store) -> list[Finding]:
 # ── stale claims ──────────────────────────────────────────────────
 
 
-def _detect_stale_claims(store: Store) -> list[Finding]:
+def _detect_stale_claims(store: Store) -> list[Symptom]:
     """Leaves with ``claimed-by:<x>`` older than ``STALE_CLAIM_HOURS``.
 
     The claim's age is ``ref_tags.created_at`` on the open tag row.
@@ -467,12 +467,12 @@ def _detect_stale_claims(store: Store) -> list[Finding]:
             """,
             (f"{STALE_CLAIM_HOURS} hours",),
         ).fetchall()
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for r in rows:
         claim = str(r[2])
         hours = _hours_since(r[3])
         out.append(
-            Finding(
+            Symptom(
                 category="stale-claim",
                 ref_id=int(r[0]),
                 title=_first_line(r[1]),
@@ -489,7 +489,7 @@ def _detect_stale_claims(store: Store) -> list[Finding]:
 # ── long waits ────────────────────────────────────────────────────
 
 
-def _detect_long_waits(store: Store) -> list[Finding]:
+def _detect_long_waits(store: Store) -> list[Symptom]:
     """Leaves with ``waiting-for:*`` tagged more than ``LONG_WAIT_DAYS``.
 
     The wait may still be legitimate (a slow API, a paper that takes
@@ -518,12 +518,12 @@ def _detect_long_waits(store: Store) -> list[Finding]:
             """,
             (f"{LONG_WAIT_DAYS} days",),
         ).fetchall()
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for r in rows:
         wait = str(r[2])
         days = _days_since(r[3])
         out.append(
-            Finding(
+            Symptom(
                 category="long-wait",
                 ref_id=int(r[0]),
                 title=_first_line(r[1]),
@@ -539,7 +539,7 @@ def _detect_long_waits(store: Store) -> list[Finding]:
 # ── stuck doable ──────────────────────────────────────────────────
 
 
-def _detect_stuck_doable(store: Store) -> list[Finding]:
+def _detect_stuck_doable(store: Store) -> list[Symptom]:
     """Open leaves that are genuine dispatch *candidates*, with no claim,
     no wait, created >24h ago.
 
@@ -637,7 +637,7 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
             (f"{STUCK_DOABLE_HOURS} hours",),
         ).fetchall()
     return [
-        Finding(
+        Symptom(
             category="stuck-doable",
             ref_id=int(r[0]),
             title=_first_line(r[1]),
@@ -654,7 +654,7 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
 # ── child-failed parked ────────────────────────────────────────────
 
 
-def _detect_child_failed_parked(store: Store) -> list[Finding]:
+def _detect_child_failed_parked(store: Store) -> list[Symptom]:
     """Todos carrying an open ``child-failed:<job_id>`` tag longer than
     ``CHILD_FAILED_PARKED_HOURS``.
 
@@ -706,12 +706,12 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
             """,
             (f"{CHILD_FAILED_PARKED_HOURS} hours",),
         ).fetchall()
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for r in rows:
         tag = str(r[2])
         hours = _hours_since(r[3])
         out.append(
-            Finding(
+            Symptom(
                 category="child-failed-parked",
                 ref_id=int(r[0]),
                 title=_first_line(r[1]),
@@ -729,7 +729,7 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
     return out
 
 
-def _detect_child_failed_final(store: Store) -> list[Finding]:
+def _detect_child_failed_final(store: Store) -> list[Symptom]:
     """ONE aggregate finding for every live todo carrying an open
     ``child-failed-final`` tag (parked-leaf-recovery, docs/backlog/
     parked-leaf-recovery.md) — not per-leaf, since a terminal park is a
@@ -761,7 +761,7 @@ def _detect_child_failed_final(store: Store) -> list[Finding]:
     if count == 0:
         return []
     return [
-        Finding(
+        Symptom(
             category="child-failed-final",
             ref_id=None,
             title=f"{count} leaf/leaves stuck at child-failed-final",
@@ -779,7 +779,7 @@ def _detect_child_failed_final(store: Store) -> list[Finding]:
 # ── stalled recurrings ────────────────────────────────────────────
 
 
-def _detect_stalled_recurrings(store: Store) -> list[Finding]:
+def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
     """Recurring refs (``meta.schedule`` set) whose most recent spawned
     child has been open more than ~1.5x the recurring's natural cadence.
 
@@ -823,7 +823,7 @@ def _detect_stalled_recurrings(store: Store) -> list[Finding]:
             """,
         ).fetchall()
     return [
-        Finding(
+        Symptom(
             category="stalled-recurring",
             ref_id=int(r[0]),
             title=_first_line(r[1]),
@@ -841,7 +841,7 @@ def _detect_stalled_recurrings(store: Store) -> list[Finding]:
 # ── spin loops ────────────────────────────────────────────────────
 
 
-def _detect_spin_loops(store: Store) -> list[Finding]:
+def _detect_spin_loops(store: Store) -> list[Symptom]:
     """Refs a background worker is hammering — >N events/24h, one source.
 
     Catches the failure mode where a derived-queue worker re-claims the
@@ -870,11 +870,11 @@ def _detect_spin_loops(store: Store) -> list[Finding]:
             """,
             (SPIN_LOOP_EVENTS_24H,),
         ).fetchall()
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for r in rows:
         ref_id, source, last_event, n = int(r[0]), str(r[1]), r[2], int(r[3])
         out.append(
-            Finding(
+            Symptom(
                 category="spin-loop",
                 ref_id=ref_id,
                 title=f"{source} on #{ref_id}",
@@ -891,7 +891,7 @@ def _detect_spin_loops(store: Store) -> list[Finding]:
 # ── plan-tick spin (planner re-minting without converging) ──────────
 
 
-def _detect_plan_tick_spins(store: Store) -> list[Finding]:
+def _detect_plan_tick_spins(store: Store) -> list[Symptom]:
     """Planner parents re-minting many ``plan_tick`` jobs in 24h.
 
     The resume-streak cap (``meta.plan_tick_resume_streak``) only bubbles an
@@ -924,7 +924,7 @@ def _detect_plan_tick_spins(store: Store) -> list[Finding]:
             (PLAN_TICK_REMINT_24H,),
         ).fetchall()
     return [
-        Finding(
+        Symptom(
             category="plan-tick-spin",
             ref_id=int(r[0]),
             title=_first_line(r[1]),
@@ -942,7 +942,7 @@ def _detect_plan_tick_spins(store: Store) -> list[Finding]:
 # ── quest-loop failing (coordinator re-mint spin on real failure) ──
 
 
-def _detect_quest_loop_failures(store: Store) -> list[Finding]:
+def _detect_quest_loop_failures(store: Store) -> list[Symptom]:
     """Quests whose ``quest_tick`` loop keeps resting ``STATUS:failed`` (RC1).
 
     A quest's coordinator loop rests ``failed`` only after ``_max_tick_failures``
@@ -982,7 +982,7 @@ def _detect_quest_loop_failures(store: Store) -> list[Finding]:
             (QUEST_LOOP_FAIL_24H,),
         ).fetchall()
     return [
-        Finding(
+        Symptom(
             category="quest-loop-failing",
             ref_id=int(r[0]),
             title=_first_line(r[1]),
@@ -1003,7 +1003,7 @@ def _detect_quest_loop_failures(store: Store) -> list[Finding]:
 # ── orphaned coordinator (dark: zero re-mint attempts) ─────────────
 
 
-def _detect_orphaned_coordinator(store: Store) -> list[Finding]:
+def _detect_orphaned_coordinator(store: Store) -> list[Symptom]:
     """Active coordinators whose newest loop failed and nothing re-minted.
 
     ``_detect_quest_loop_failures`` / ``_detect_plan_tick_spins`` both need
@@ -1046,7 +1046,7 @@ def _detect_orphaned_coordinator(store: Store) -> list[Finding]:
         return []
 
 
-def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Finding]:
+def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Symptom]:
     with store.pool.connection() as conn:
         quest_rows = conn.execute(
             """
@@ -1120,12 +1120,12 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Finding]:
             {"stale": f"{ORPHANED_COORDINATOR_STALE_HOURS} hours"},
         ).fetchall()
 
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for r in quest_rows:
         coord_id, title, job_id, status_at = int(r[0]), r[1], int(r[2]), r[3]
         dark_h = _hours_since(status_at)
         out.append(
-            Finding(
+            Symptom(
                 category="orphaned-coordinator",
                 ref_id=coord_id,
                 title=_first_line(title),
@@ -1143,7 +1143,7 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Finding]:
         coord_id, title, job_id, status_at = int(r[0]), r[1], int(r[2]), r[3]
         dark_h = _hours_since(status_at)
         out.append(
-            Finding(
+            Symptom(
                 category="orphaned-coordinator",
                 ref_id=coord_id,
                 title=_first_line(title),
@@ -1208,7 +1208,7 @@ def _restart_storm_detail(process: str, host: str, n: int, platform: str | None)
     return base + how
 
 
-def _detect_worker_restart_storms(store: Store) -> list[Finding]:
+def _detect_worker_restart_storms(store: Store) -> list[Symptom]:
     """Daemons relaunching abnormally often in the last hour.
 
     Counts explicit ``worker: started`` boot rows (emitted at
@@ -1236,7 +1236,7 @@ def _detect_worker_restart_storms(store: Store) -> list[Finding]:
             (WORKER_RESTART_STORM_1H,),
         ).fetchall()
     return [
-        Finding(
+        Symptom(
             category="worker-restart",
             ref_id=None,
             fingerprint_key=f"worker-restart:{r[0]}:{r[1]}",
@@ -1321,7 +1321,7 @@ def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
     )
 
 
-def _detect_dead_workers(store: Store) -> list[Finding]:
+def _detect_dead_workers(store: Store) -> list[Symptom]:
     """Continuous daemons that have gone silent while their host is up.
 
     A worker in :data:`WORKER_CONTINUOUS_PROCESSES` that has written no
@@ -1388,11 +1388,11 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
                 "lookback_days": DEAD_WORKER_LOOKBACK_DAYS,
             },
         ).fetchall()
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for host, process, last_ts, platform in rows:
         silent = _hours_since(last_ts)
         out.append(
-            Finding(
+            Symptom(
                 category="dead-worker",
                 ref_id=None,
                 fingerprint_key=f"dead-worker:{host}:{process}",
@@ -1403,7 +1403,7 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
     return out
 
 
-def _detect_nas_denied(store: Store) -> list[Finding]:
+def _detect_nas_denied(store: Store) -> list[Symptom]:
     """Hosts whose latest heartbeat reports the NAS unreadable from the
     launchd context — every launchd/cron daemon there is locked out of
     /opt/nas. Gated on a fresh (<5 min) heartbeat so a stale row (host/DB
@@ -1422,10 +1422,10 @@ def _detect_nas_denied(store: Store) -> list[Finding]:
              LIMIT 50
             """
         ).fetchall()
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for host, path, _errno in rows:
         out.append(
-            Finding(
+            Symptom(
                 category="nas-denied",
                 ref_id=None,
                 fingerprint_key=f"nas-denied:{host}",
@@ -1445,7 +1445,7 @@ def _detect_nas_denied(store: Store) -> list[Finding]:
     return out
 
 
-def _detect_host_dark(store: Store) -> list[Finding]:
+def _detect_host_dark(store: Store) -> list[Symptom]:
     """Hosts whose ``host_heartbeat`` itself has gone stale (gr186752).
 
     The complement of ``dead-worker``'s ``host_alive`` gate (see that
@@ -1478,11 +1478,11 @@ def _detect_host_dark(store: Store) -> list[Finding]:
                 "lookback": HOST_DARK_LOOKBACK_DAYS,
             },
         ).fetchall()
-    out: list[Finding] = []
+    out: list[Symptom] = []
     for host, ts, platform in rows:
         silent = _hours_since(ts)
         out.append(
-            Finding(
+            Symptom(
                 category="host-dark",
                 ref_id=None,
                 fingerprint_key=f"host-dark:{host}",
@@ -1493,7 +1493,7 @@ def _detect_host_dark(store: Store) -> list[Finding]:
     return out
 
 
-def _detect_dispatch_stalls(store: Store) -> list[Finding]:
+def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
     """The single agent-profile executor stopped claiming — planner dark.
 
     ``dispatch`` mints ``plan_tick`` (and other ``claude_inproc``) jobs on
@@ -1554,7 +1554,7 @@ def _detect_dispatch_stalls(store: Store) -> list[Finding]:
         return []
     oldest_h = _hours_since(oldest)
     return [
-        Finding(
+        Symptom(
             category="dispatch-stall",
             ref_id=None,
             fingerprint_key="dispatch-stall",
@@ -1575,7 +1575,7 @@ def _detect_dispatch_stalls(store: Store) -> list[Finding]:
     ]
 
 
-def _detect_embed_lane_stalled(store: Store) -> list[Finding]:
+def _detect_embed_lane_stalled(store: Store) -> list[Symptom]:
     """``embed_batch`` jobs queued with nothing completing — the embed
     lane is down (``docs/backlog/embedder-wedge-hardening.md``).
 
@@ -1624,7 +1624,7 @@ def _detect_embed_lane_stalled(store: Store) -> list[Finding]:
     if n_queued == 0 or n_recent_succeeded > 0:
         return []
     return [
-        Finding(
+        Symptom(
             category="embed-lane-stalled",
             ref_id=None,
             fingerprint_key="embed-lane-stalled",
@@ -1678,6 +1678,6 @@ __all__ = [
     "SPIN_LOOP_EVENTS_24H",
     "STALE_CLAIM_HOURS",
     "STUCK_DOABLE_HOURS",
-    "Finding",
+    "Symptom",
     "run_nursery_pass",
 ]

@@ -139,7 +139,7 @@ def test_build_document_context_outline_plus_fisheye() -> None:
     )
     assert "Deck Hook" in out
     assert "ground truth" in out  # the admonition
-    # Layer 1: the whole collapsed outline, every block as a gloss row.
+    # Layer 1: the whole collapsed outline, every block as a summary row.
     assert "dc10  [heading]" in out
     assert "dc13  [paragraph]" in out
     # Layer 2: the instruction's paragraphs, fisheye-expanded in place.

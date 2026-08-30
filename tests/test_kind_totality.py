@@ -152,10 +152,10 @@ def test_refeye_claim_relations_matches_taproot_hub_derivation() -> None:
 
 def test_artifact_kind_fallback_matches_live_role_derivation() -> None:
     """``precis_web.item_view._ARTIFACT_KIND_FALLBACK`` (used whenever no
-    hub is reachable) must equal the ``role='artifact'`` set minus
+    hub is reachable) must equal the ``placement='artifact'`` set minus
     ``folder`` — the same exclusion ``artifact_kinds()`` applies when a
     hub IS reachable."""
-    live = kind_facts.role_kinds(_specs(), "artifact") - {"folder"}
+    live = kind_facts.placement_kinds(_specs(), "artifact") - {"folder"}
     assert frozenset(_ARTIFACT_KIND_FALLBACK) == live
 
 

@@ -45,7 +45,10 @@ from precis.export._nanopub_appendix import (
 from precis.export._nanopub_appendix import (
     published_claim_entries,
 )
-from precis.export._patent_cite import format_patent_citation, paper_inline_citation
+from precis.export._patent_cite import (
+    render_paper_inline_citation,
+    render_patent_citation,
+)
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -786,9 +789,9 @@ def _inline_source_cite(
         paragraph.add_run(slug)
         return
     text = (
-        format_patent_citation(getattr(ref, "meta", None), slug)
+        render_patent_citation(getattr(ref, "meta", None), slug)
         if kind == "patent"
-        else paper_inline_citation(ref)
+        else render_paper_inline_citation(ref)
     )
     paragraph.add_run(text)
 
@@ -815,7 +818,9 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> 
         ref = (
             ctx.store.get_ref(kind="paper", id=slug) if ctx.store is not None else None
         )
-        paragraph.add_run(paper_inline_citation(ref) if ref is not None else slug)
+        paragraph.add_run(
+            render_paper_inline_citation(ref) if ref is not None else slug
+        )
         return
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
     if ctx.last_cite == slug:

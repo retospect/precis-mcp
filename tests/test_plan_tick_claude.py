@@ -2,7 +2,7 @@
 
 Under the default ANTHROPIC backend ``select_transport`` routes the tick to
 ``CLAUDE_AGENT`` — the real Claude Code agent (MCP tools, OAuth) — and plan_tick
-drives it *through* ``router.dispatch`` (:func:`plan_tick._run_claude_tick`)
+drives it *through* ``router.route`` (:func:`plan_tick._run_claude_tick`)
 rather than hand-building a ``claude`` command. These tests cover: the request
 the tick binds (tier / prompt / stream-json / neutral cwd / env-overlay context),
 the ``LlmResult`` → ``PlanTickOutcome`` mapping (clean / max_turns / budget /
@@ -10,7 +10,7 @@ timeout / breaker-pause / hard error), and the re-added claude-only helpers
 (env overlay, draft kind-gate, neutral cwd, ambient CLAUDE.md scan).
 
 DB-free: ``run()``'s planner-prompt / workspace / agentlog helpers are stubbed
-and ``dispatch`` is a scripted fake, so no ``claude`` binary and no store.
+and ``route`` is a scripted fake, so no ``claude`` binary and no store.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def _run_claude(
     mcp_config: str | None = "mcp.json",
     params: dict[str, Any] | None = None,
 ) -> tuple[pt.PlanTickOutcome, dict[str, Any]]:
-    """Drive ``plan_tick.run`` on the ANTHROPIC backend with ``dispatch``
+    """Drive ``plan_tick.run`` on the ANTHROPIC backend with ``route``
     scripted; returns the outcome plus the captured ``LlmRequest``."""
     import precis.workers.planner_prompt as planner_prompt
 
@@ -101,7 +101,7 @@ def _run_claude(
     )
     monkeypatch.setattr(agentlog, "open_log", lambda *a, **k: 55)
     monkeypatch.setattr(agentlog, "finalize_log", lambda *a, **k: None)
-    monkeypatch.setattr(router, "dispatch", fake_dispatch)
+    monkeypatch.setattr(router, "route", fake_dispatch)
 
     outcome = pt.run(
         store=object(),

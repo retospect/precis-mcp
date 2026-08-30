@@ -2,7 +2,7 @@
 
 ``GET /api/llm/resolve`` mirrors :func:`~precis.utils.llm.router.resolve_selection`
 over HTTP: given ``(model=alias, placement?, reasoning?, temperature?)`` it
-returns what :func:`~precis.utils.llm.router.dispatch` would actually pick,
+returns what :func:`~precis.utils.llm.router.route` would actually pick,
 without making a call. The shared ``_llm_selector.html.j2`` macro (used by
 smartdraft's ask toolbar, and any future structured picker) fetches this on
 every control change to render its live "→ model · placement" preview line.

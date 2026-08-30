@@ -15,7 +15,7 @@ stays a heading and the section boundary shows itself — no special-casing
 needed. Longer gaps collapse to a visible ``⋯ N more ⋯`` marker (no silent
 omission).
 
-Single-sources the neighborhood bands + gloss helpers from
+Single-sources the neighborhood bands + summary-line helpers from
 :mod:`precis.utils.fisheye`.
 """
 
@@ -31,7 +31,7 @@ from precis.utils.fisheye import (
     _FIDELITY_KWD,
     _FIDELITY_SUMMARY,
     _ancestors,
-    _gloss,
+    _summary_line,
     _summary_text,
 )
 from precis.utils.refeye import _RING_CAP, collect_ring, render_ring_groups
@@ -136,7 +136,7 @@ def _render_doc(
         elif e is Extent.SUMMARY:
             lines.append(f"{indent}{mark}{c.dc}  {_summary_text(c, views)}")
         else:  # TOC / kwd bookmark
-            lines.append(f"{indent}{mark}· {c.dc}  {_gloss(c, views)}")
+            lines.append(f"{indent}{mark}· {c.dc}  {_summary_line(c, views)}")
     return "\n".join(lines)
 
 

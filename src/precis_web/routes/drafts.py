@@ -95,7 +95,7 @@ from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput, NotFound
 from precis.export._data_package import collect_entry
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT
-from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
+from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS, mint_review_fanout
 from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow, content_sha
 
 # The taproot backfill cascade fns (item 5b, "convert to living cites"),
@@ -775,14 +775,14 @@ def _section_styles_for(store: Store, ref: Any) -> list[tuple[str, str]]:
     return _SECTION_STYLES.get(_doc_type(store, ref), [])
 
 
-def _chunk_addr(store: Store, handle: str) -> str | None:
-    """Canonical ``dc<chunk_id>`` address for a posted draft-chunk handle.
+def _chunk_handle(store: Store, handle: str) -> str | None:
+    """Canonical ``dc<chunk_id>`` handle for a posted draft-chunk handle.
 
     The reader posts the bare ``chunks.handle`` (the base-58 chunk anchor,
     e.g. ``u9QG86``) — which ``get_draft_chunk`` resolves but
     ``edit(kind='draft')`` rejects (its guard only accepts the universal handles
     ``dc<chunk_id>`` / legacy ``¶<base58>`` form). Resolve the chunk and
-    hand back the ``dc`` address so the per-heading style / list-kind
+    hand back the ``dc`` handle so the per-heading style / list-kind
     forms reach the handler. ``None`` when the handle resolves to no
     chunk."""
     chunk = store.drafts.get_draft_chunk(handle)
@@ -1935,7 +1935,7 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     """✓ gutter checkbox: records human sign-off on one block (distinct
     from the automated ``POST /drafts/{ident}/review`` "review ▾" menu,
     which files a reviewer todo, not a ledger row). Body ``{dc}`` (base-58
-    handle or ``dc<id>``, resolved via :func:`_chunk_addr`). Writes
+    handle or ``dc<id>``, resolved via :func:`_chunk_handle`). Writes
     through ``edit(kind='draft', review='human')`` — never calls
     ``Store.record_review`` directly, keeping the ledger single-sourced
     with the MCP/CLI verb. Returns fresh per-checker status
@@ -1955,12 +1955,12 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     handle = str(payload.get("dc") or payload.get("handle") or "")
-    addr = _chunk_addr(store, handle) if handle else None
-    if addr is None:
+    dc_handle = _chunk_handle(store, handle) if handle else None
+    if dc_handle is None:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     args: dict[str, Any] = {
         "kind": "draft",
-        "id": addr,
+        "id": dc_handle,
         "review": "human",
         "verdict": str(payload.get("verdict") or "approved"),
     }
@@ -2177,8 +2177,8 @@ async def edit_table_inline(request: Request, ident: str) -> JSONResponse:
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     handle = str(payload.get("handle") or "")
-    addr = _chunk_addr(store, handle)
-    if addr is None:
+    dc_handle = _chunk_handle(store, handle)
+    if dc_handle is None:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     header = payload.get("header") or []
     rows_in = payload.get("rows") or []
@@ -2192,7 +2192,7 @@ async def edit_table_inline(request: Request, ident: str) -> JSONResponse:
     ]
     args: dict[str, Any] = {
         "kind": "draft",
-        "id": addr,
+        "id": dc_handle,
         "table": {"header": [str(h) for h in header], "rows": rows},
         "caption": str(payload.get("caption") or ""),
     }
@@ -2447,8 +2447,8 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
 
     - ``lens`` — ``flow``|``cites``|``structure``|``adversarial``|``toc``|
       ``all`` (aliases: ``structural``→``structure``,
-      ``deep_review``→``adversarial``). ``all`` mints :data:`ALL_LENSES`
-      plus :data:`DOC_LENSES` when scope is the whole draft
+      ``deep_review``→``adversarial``). ``all`` mints :data:`ALL_PERSONAS`
+      plus :data:`DOC_PERSONAS` when scope is the whole draft
       (``mint_review_fanout`` gates ``doc_lenses`` to ``scope is None``, so
       passing them ``dc``-scoped is a no-op). ``toc`` is
       document-altitude-only: 400 if ``dc`` scopes it to a chunk/subtree.
@@ -2495,8 +2495,8 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
             )
         lenses, doc_lenses = (), ("toc",)
     elif lens == "all":
-        lenses, doc_lenses = ALL_LENSES, DOC_LENSES
-    elif lens in ALL_LENSES:
+        lenses, doc_lenses = ALL_PERSONAS, DOC_PERSONAS
+    elif lens in ALL_PERSONAS:
         lenses, doc_lenses = (lens,), ()
     else:
         return JSONResponse(
@@ -2510,8 +2510,8 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
         summary = mint_review_fanout(
             store,
             ref.id,
-            lenses=lenses,
-            doc_lenses=doc_lenses,
+            personas=lenses,
+            doc_personas=doc_lenses,
             only_dirty=only_dirty,
             scope=scope_chunk_id,
         )
@@ -2939,10 +2939,10 @@ async def edit_figure_permission(
     and image bytes are untouched)."""
     back = f"/drafts/{ident}#c-{handle}"
     store = get_store(request)
-    addr = _chunk_addr(store, handle)
-    if addr is None:
+    dc_handle = _chunk_handle(store, handle)
+    if dc_handle is None:
         return RedirectResponse(url=back, status_code=303)
-    args: dict[str, Any] = {"kind": "draft", "id": addr, "origin": origin}
+    args: dict[str, Any] = {"kind": "draft", "id": dc_handle, "origin": origin}
     if origin == "third_party":
         args["permission"] = {
             k: v.strip()

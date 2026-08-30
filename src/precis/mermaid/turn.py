@@ -19,9 +19,9 @@ __all__ = ["TurnResult", "run_turn"]
 
 
 def _default_claude(prompt: str) -> dict[str, Any]:
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.FRONTIER,
             source="mermaid",

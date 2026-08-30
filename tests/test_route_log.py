@@ -236,7 +236,7 @@ def test_lite_row_skips_blob_but_keeps_metadata(store: Any) -> None:
 def test_dispatch_lite_when_log_blobs_false(store: Any, monkeypatch: Any) -> None:
     import precis.utils.llm.router as router
     from precis.utils.claude_p import ClaudePResult
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
     tag = uuid4().hex[:8]
     src = f"litedisp-{tag}"
@@ -250,7 +250,7 @@ def test_dispatch_lite_when_log_blobs_false(store: Any, monkeypatch: Any) -> Non
 
     route_log.bind_store(store)
     try:
-        dispatch(
+        route(
             LlmRequest(
                 tier=Tier.MEDIUM, prompt="gloss this", source=src, log_blobs=False
             )
@@ -350,7 +350,7 @@ def test_record_call_swallows_write_errors() -> None:
 def test_dispatch_records_the_full_call(store: Any, monkeypatch: Any) -> None:
     import precis.utils.llm.router as router
     from precis.utils.claude_p import ClaudePResult
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
     tag = uuid4().hex[:8]
     src = f"judge-{tag}"
@@ -366,7 +366,7 @@ def test_dispatch_records_the_full_call(store: Any, monkeypatch: Any) -> None:
 
     route_log.bind_store(store)
     try:
-        out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="judge this", source=src))
+        out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this", source=src))
     finally:
         route_log.bind_store(None)
 
@@ -401,7 +401,7 @@ def test_dispatch_records_placement_and_token_counts(
     # reach the persisted row.
     import precis.utils.llm.router as router
     from precis.utils.claude_agent import AgentResult
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
     tag = uuid4().hex[:8]
     src = f"agent-tokens-{tag}"
@@ -424,7 +424,7 @@ def test_dispatch_records_placement_and_token_counts(
 
     route_log.bind_store(store)
     try:
-        out = dispatch(
+        out = route(
             LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True, source=src)
         )
     finally:
@@ -453,7 +453,7 @@ def test_dispatch_local_records_openai_token_split(
     # persisted row, and placement lands 'local' (the loopback LOCAL
     # transport is never excludable as cloud spend).
     import precis.workers.llm_summarize as summ
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
     tag = uuid4().hex[:8]
     src = f"local-tokens-{tag}"
@@ -476,7 +476,7 @@ def test_dispatch_local_records_openai_token_split(
 
     route_log.bind_store(store)
     try:
-        out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="summarize me", source=src))
+        out = route(LlmRequest(tier=Tier.SMALL, prompt="summarize me", source=src))
     finally:
         route_log.bind_store(None)
 

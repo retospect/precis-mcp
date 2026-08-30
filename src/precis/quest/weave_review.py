@@ -2,7 +2,7 @@
 trigger (docs/backlog/paper-writing-pipeline.md §"Review — the memoized
 approval ledger").
 
-The reviewer ENGINE already exists: a todo carrying ``meta.review=<lens>``
+The reviewer ENGINE already exists: a todo carrying ``meta.review=<persona>``
 + ``meta.anchor='dc<id>'`` flips a ``plan_tick`` into reviewer mode
 (:mod:`precis.workers.planner_prompt`'s ``has_review``/``has_anchor``-gated
 modules, resolved by :mod:`precis.utils.prompt.predicates`), which renders
@@ -14,8 +14,8 @@ successful, non-``dry_run`` ``weave_section``.
 
 **Shape mirrors the one existing minting site** — the web draft reader's
 per-heading "review ▾" menu (``precis_web.routes.drafts.review_block``):
-``meta={"anchor": <dc-handle>, "review": <lens>}`` on a ``kind='todo'``
-ref, ``text=`` a lens-specific brief. That site runs as an interactive web
+``meta={"anchor": <dc-handle>, "review": <persona>}`` on a ``kind='todo'``
+ref, ``text=`` a persona-specific brief. That site runs as an interactive web
 request and goes through ``TodoHandler.put`` (workspace inheritance,
 ``current_todo_from_env``, owner guards, the auto ``meta.llm_tier='opus'`` default for
 a parented child); this module is background quest-tick code, so it mints
@@ -23,13 +23,13 @@ via ``store.insert_ref`` + ``store.add_tag`` directly instead — the same
 trusted-code-path convention ``workers/dispatch.py`` (job children of a
 todo) and ``workers/backlog_groom.py`` (its own todo children) already use.
 
-**Lenses.** ``docs/backlog/paper-writing-pipeline.md``'s persona table
+**Personas.** ``docs/backlog/paper-writing-pipeline.md``'s persona table
 marks ``flow`` (``precis-review-paragraph-flow``) and ``cites``
 (``precis-review-citation-faithfulness``) as the two *per-weave* checkers;
 ``structure``/``adversarial`` are the weekly/deep tiers, out of scope for
 this trigger. The planner's ``_load_review_persona`` only auto-loads the
-generic ``precis-draft-reviewer`` skill (not a lens-specific one), so each
-brief below names the matching skill explicitly — mirroring how
+generic ``precis-draft-reviewer`` skill (not a persona-specific one), so
+each brief below names the matching skill explicitly — mirroring how
 ``_REVIEW_BRIEFS`` gives the generic persona a specific instruction rather
 than swapping personas.
 
@@ -53,11 +53,11 @@ todo/store layer has none), so this does its own existence check — a live
 ``kind='todo'`` child of ``quest_id`` already carrying this exact
 ``(review, anchor)`` pair — before inserting, so a re-weave of an
 unchanged body doesn't stack duplicates. Returns only the ids minted by
-*this* call; a lens that already has a live review-todo is skipped, not
+*this* call; a persona that already has a live review-todo is skipped, not
 re-returned.
 
 **Shared minting primitive.** :func:`mint_review_todo` is the single
-per-``(parent, lens, anchor)`` minting op (idempotency check + insert +
+per-``(parent, persona, anchor)`` minting op (idempotency check + insert +
 tags), factored out so :mod:`precis.quest.review_fanout` (rung 3a, the
 whole-draft review-all fanout) reuses it instead of re-deriving the same
 ref/tag shape. This module's own :func:`mint_weave_reviews` is now a thin
@@ -90,12 +90,12 @@ class OrphanedParentError(RuntimeError):
     """
 
 
-#: Per-weave lens briefs. The generic reviewer persona
+#: Per-weave persona briefs. The generic reviewer persona
 #: (``_load_review_persona`` in ``workers/planner_prompt.py``) is loaded
 #: automatically for any ``has_review`` tick; these briefs name the
-#: lens-specific skill on top of it, mirroring
+#: persona-specific skill on top of it, mirroring
 #: ``precis_web.routes.drafts._REVIEW_BRIEFS``'s pattern.
-_LENS_BRIEFS: dict[str, str] = {
+_PERSONA_BRIEFS: dict[str, str] = {
     "flow": (
         "Paragraph-flow review of the draft section anchored at {h} (just "
         "woven). Load `get(kind='skill', id='precis-review-paragraph-flow')` "
@@ -128,13 +128,13 @@ _LENS_BRIEFS: dict[str, str] = {
 #: | anchored section fisheye+1hop | mid, per persona".
 _REVIEW_LLM_TAG = "sonnet"
 
-#: The two per-weave lenses (design doc table) — ``structure``/
+#: The two per-weave personas (design doc table) — ``structure``/
 #: ``adversarial`` are weekly/deep-tier, minted elsewhere (not built here).
-_DEFAULT_LENSES: tuple[str, ...] = ("flow", "cites")
+_DEFAULT_PERSONAS: tuple[str, ...] = ("flow", "cites")
 
 
 def _existing_review_todo(
-    store: Store, parent_id: int, lens: str, anchor: str
+    store: Store, parent_id: int, persona: str, anchor: str
 ) -> int | None:
     """A live ``kind='todo'`` child of ``parent_id`` already carrying this
     exact ``(review, anchor)`` pair, or ``None``. Manual idempotency check
@@ -146,7 +146,7 @@ def _existing_review_todo(
             "WHERE parent_id = %s AND kind = 'todo' AND deleted_at IS NULL "
             "AND meta->>'review' = %s AND meta->>'anchor' = %s "
             "LIMIT 1",
-            (parent_id, lens, anchor),
+            (parent_id, persona, anchor),
         ).fetchone()
     return int(row[0]) if row else None
 
@@ -155,14 +155,14 @@ def mint_review_todo(
     store: Store,
     *,
     parent_id: int,
-    lens: str,
+    persona: str,
     anchor: str,
     text: str,
     llm_tag: str = _REVIEW_LLM_TAG,
     author: bool = False,
     prio: int | None = None,
 ) -> int | None:
-    """Mint one review-todo for ``(lens, anchor)`` parented on
+    """Mint one review-todo for ``(persona, anchor)`` parented on
     ``parent_id``, or ``None`` if a live one already exists (idempotent
     skip — see the module docstring).
 
@@ -171,7 +171,7 @@ def mint_review_todo(
     ``TodoHandler.put``'s ``check_parent_exists`` gives the interactive
     path, restated here because this path deliberately bypasses it.
 
-    Each carries ``meta.review=<lens>`` + ``meta.anchor=anchor`` — the
+    Each carries ``meta.review=<persona>`` + ``meta.anchor=anchor`` — the
     shape :mod:`precis.utils.prompt.predicates`'s ``has_review``/
     ``has_anchor`` read to flip a ``plan_tick`` into reviewer mode over
     this section — plus ``meta.llm_tier=<llm_tag>`` (so the dispatcher
@@ -189,23 +189,23 @@ def mint_review_todo(
     minted todo. This is plumbing only (no authoring behavior lives here
     yet — a later piece teaches the reviewer engine to *edit* instead of
     just filing findings when this flag is set); callers should only pass
-    ``author=True`` for lenses where authoring is meaningful (the caller
+    ``author=True`` for personas where authoring is meaningful (the caller
     decides which).
 
     The single minting primitive shared by :func:`mint_weave_reviews`
     (per-weave, parented on the quest) and
     :mod:`precis.quest.review_fanout`'s ``mint_review_fanout`` (whole-
     draft, parented on the draft's owning project todo) — same ref/tag
-    shape, different parent + lens set.
+    shape, different parent + persona set.
     """
     if is_orphaned(store, parent_id):
         raise OrphanedParentError(
-            f"refusing to mint a {lens!r} review-todo under ref {parent_id}: "
+            f"refusing to mint a {persona!r} review-todo under ref {parent_id}: "
             "it is soft-deleted or lives under a soft-deleted ancestor"
         )
-    if _existing_review_todo(store, parent_id, lens, anchor) is not None:
+    if _existing_review_todo(store, parent_id, persona, anchor) is not None:
         return None
-    meta: dict[str, Any] = {"anchor": anchor, "review": lens, "llm_tier": llm_tag}
+    meta: dict[str, Any] = {"anchor": anchor, "review": persona, "llm_tier": llm_tag}
     if author:
         meta["author"] = True
     with store.tx() as conn:
@@ -233,13 +233,13 @@ def mint_weave_reviews(
     quest_id: int,
     body_handle: str,
     *,
-    lenses: tuple[str, ...] = _DEFAULT_LENSES,
+    personas: tuple[str, ...] = _DEFAULT_PERSONAS,
 ) -> list[int]:
-    """Mint one review-todo per lens for the section at ``body_handle``,
+    """Mint one review-todo per persona for the section at ``body_handle``,
     parented on ``quest_id``.
 
     Thin loop over :func:`mint_review_todo` — see that function for the
-    exact ref/tag shape. Returns the ids minted by *this* call; a lens
+    exact ref/tag shape. Returns the ids minted by *this* call; a persona
     already carrying a live review-todo for this exact ``body_handle`` is
     skipped (idempotent-friendly re-weave), so a repeat call over an
     unchanged body returns ``[]``.
@@ -260,13 +260,13 @@ def mint_weave_reviews(
     if chunk is not None and review_guard.is_machine_owned_draft(store, chunk.ref_id):
         return []
     minted: list[int] = []
-    for lens in lenses:
-        brief = _LENS_BRIEFS.get(lens)
+    for persona in personas:
+        brief = _PERSONA_BRIEFS.get(persona)
         text = (
             brief.format(h=body_handle)
             if brief is not None
             else (
-                f"{lens} review of the draft section anchored at "
+                f"{persona} review of the draft section anchored at "
                 f"{body_handle} (just woven). File concrete anchored "
                 "change requests."
             )
@@ -274,7 +274,7 @@ def mint_weave_reviews(
         todo_id = mint_review_todo(
             store,
             parent_id=quest_id,
-            lens=lens,
+            persona=persona,
             anchor=body_handle,
             text=text,
             llm_tag=_REVIEW_LLM_TAG,

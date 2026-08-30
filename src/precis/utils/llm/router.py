@@ -9,8 +9,8 @@ Four pieces:
   override row resolves byte-for-byte to the model in use today.
   :func:`resolve_backend` layers the same DB tier over ``PRECIS_LLM_BACKEND``.
 * :func:`select_transport` — pure ``(tier, tools) → transport``.
-* :class:`LlmProvider` + the adapter classes + :func:`dispatch` — the port.
-  Every backend implements ``run(req, *, model) -> LlmResult``; ``dispatch``
+* :class:`LlmProvider` + the adapter classes + :func:`route` — the port.
+  Every backend implements ``run(req, *, model) -> LlmResult``; ``route``
   resolves the model, looks up the provider in the :data:`Transport`-keyed
   registry, and calls it. A new backend is a new provider class + a registry
   row — zero caller changes. Each adapter wraps its existing helper rather
@@ -164,7 +164,7 @@ class Transport(StrEnum):
 
 class Backend(StrEnum):
     """Vendor family a cloud request routes to. Resolved once per
-    :func:`dispatch` from ``PRECIS_LLM_BACKEND`` (:func:`resolve_backend`)
+    :func:`route` from ``PRECIS_LLM_BACKEND`` (:func:`resolve_backend`)
     and passed to :func:`select_transport`.
 
     Default ``ANTHROPIC`` keeps the ``claude -p`` transports; the
@@ -222,7 +222,7 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     transport it would land on — drop it, fall through to env var/default.
     This stops a half-applied backend demotion (``PRECIS_LLM_BASE_URL``
     missing, but an OSS model override still set) from handing an OSS model
-    id to a claude transport. :func:`dispatch` passes its post-demotion
+    id to a claude transport. :func:`route` passes its post-demotion
     ``backend``; every other caller leaves it ``None`` and is unaffected.
     """
     from precis.utils.llm import live_config
@@ -238,7 +238,7 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     return os.environ.get(env_var, default)
 
 
-#: Per-tier ``(thinking, temperature)`` default, applied by :func:`dispatch`
+#: Per-tier ``(thinking, temperature)`` default, applied by :func:`route`
 #: when :attr:`LlmRequest.thinking`/``.temperature`` are left ``None``.
 #: ``SMALL`` gets thinking **off** + temperature **0.0**: a per-chunk
 #: gloss/inject-scan must answer deterministically and must not burn its
@@ -261,7 +261,7 @@ assert set(_TIER_GEN_DEFAULTS) == set(Tier), (
 
 def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
     """``tier``'s ``(thinking, temperature)`` default — see
-    :data:`_TIER_GEN_DEFAULTS`. :func:`dispatch` uses this only when the
+    :data:`_TIER_GEN_DEFAULTS`. :func:`route` uses this only when the
     caller's :class:`LlmRequest` left the corresponding field ``None``; an
     explicit request value always wins."""
     return _TIER_GEN_DEFAULTS[tier]
@@ -338,7 +338,7 @@ def planner_model_choices() -> list[dict[str, Any]]:
     to right now.
 
     ``model`` is rung 0 of the live chain (:func:`resolve_chain`, the same
-    resolver :func:`dispatch` walks), not the bare :func:`resolve_model`
+    resolver :func:`route` walks), not the bare :func:`resolve_model`
     default — an operator ``llm.chain.<tier>`` override shows up here.
     ``tools_needed`` is ``True`` for every tier but ``SMALL`` (the tool-using
     planner-tick tiers must mirror the chain a tool-needing call walks).
@@ -495,7 +495,7 @@ def reasoning_to_knobs(reasoning: str | None) -> tuple[bool | None, str | None]:
     """Map the UI's combined reasoning selector to the
     ``(thinking, effort)`` pair :class:`LlmRequest` actually carries.
 
-    ``None`` or ``"default"`` → ``(None, None)`` — let :func:`dispatch`
+    ``None`` or ``"default"`` → ``(None, None)`` — let :func:`route`
     resolve the tier's own default (:func:`_tier_gen_defaults`), the same as
     a caller that never touched the selector. ``"off"`` → ``(False, None)`` —
     thinking off, no effort level. ``"low"``/``"medium"``/``"high"`` →
@@ -515,7 +515,7 @@ def resolve_selection(
     reasoning: str | None = None,
     temperature: float | None = None,
 ) -> dict[str, Any]:
-    """Preview what :func:`dispatch` would pick for a structured
+    """Preview what :func:`route` would pick for a structured
     ``(alias, placement, reasoning, temperature)`` selection, without making
     a call — the ``/factory`` picker's live preview row. Never raises; every
     failure degrades to an ``error``-carrying row of the same shape.
@@ -524,7 +524,7 @@ def resolve_selection(
     :func:`resolve_chain`) with :func:`_apply_placement` layered in. Return
     keys are always present: ``alias, tier, model, transport,
     placement_effective, fallbacks, knobs, size, context, warnings, error,
-    temp_default``. ``temp_default`` is the temperature :func:`dispatch`
+    temp_default``. ``temp_default`` is the temperature :func:`route`
     would apply when the caller leaves ``temperature`` unset: ``None`` when
     the rung ignores temperature (:func:`rung_knobs`); else the catalog
     card's ``gen_defaults.temperature`` when present and in ``[0, 2]``; else
@@ -807,7 +807,7 @@ class LlmResult:
       otherwise), so the caller skips re-parsing ``text``.
     * ``model``/``tier`` — what actually ran, for attribution.
     * ``error`` — ``None`` on success; a message on a caught transport
-      failure (:func:`dispatch`).
+      failure (:func:`route`).
     * ``paused`` — ``True`` for a window-scoped breaker trip (dollar cap or
       claude-OAuth quota), not a genuine failure — a pinned pass **skips**
       (clears when the window rolls off) instead of recording a failure and
@@ -966,7 +966,7 @@ def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
     )
 
 
-# ── the request + dispatch seam ────────────────────────────────────────
+# ── the request + route seam ────────────────────────────────────────────
 
 
 @dataclass
@@ -1006,7 +1006,7 @@ class LlmRequest:
     #: the full response still generates and is billed. A caller needing a
     #: real generation-time cap must use a local/openai-compat tier.
     max_tokens: int | None = None
-    #: Reasoning + sampling passthrough. ``None`` on either ⇒ :func:`dispatch`
+    #: Reasoning + sampling passthrough. ``None`` on either ⇒ :func:`route`
     #: resolves the tier default (:func:`_tier_gen_defaults`): ``SMALL`` gets
     #: thinking **off** + temperature **0.0** (deterministic, and required for
     #: a local thinking-only model — thinking left on there yields an empty
@@ -1030,7 +1030,7 @@ class LlmRequest:
     #: an *error* result, not a silent degrade.
     placement: str | None = None
     #: Direct local-serving base URL (llama-swap's OpenAI endpoint), threaded
-    #: by :func:`dispatch` when a reserved
+    #: by :func:`route` when a reserved
     #: :class:`~precis.utils.llm.local_serving.LocalSlot` declares an
     #: ``endpoint`` — the LOCAL transport routes here instead of the default.
     #: ``None`` ⇒ the ``LlmConfig.from_env`` URL.
@@ -1085,8 +1085,8 @@ class LlmRequest:
     #: Real-time progress callback, awaited once per parsed ``stream-json``
     #: event as a ``claude_agent`` run streams (asa_bot's Discord "thinking…"
     #: updates). Only :func:`dispatch_async` honors this; the sync
-    #: :func:`dispatch` has no streaming path and ignores it. ``None`` ⇒ no
-    #: callback, and :func:`dispatch_async` delegates to sync ``dispatch``.
+    #: :func:`route` has no streaming path and ignores it. ``None`` ⇒ no
+    #: callback, and :func:`dispatch_async` delegates to sync ``route``.
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
 
@@ -1097,9 +1097,9 @@ class LlmProvider(Protocol):
     normalized :class:`LlmResult` — folds transport failures into
     :attr:`LlmResult.error` rather than raising (a programming error, an
     unwired path, still raises). :data:`_PROVIDERS` maps each
-    :class:`Transport` to one implementation; :func:`dispatch` is the only
+    :class:`Transport` to one implementation; :func:`route` is the only
     caller. Adding a backend is a new class + a registry row — no caller,
-    ``dispatch``, or :class:`Tier` change.
+    ``route``, or :class:`Tier` change.
     """
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult: ...
@@ -1439,7 +1439,7 @@ def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[
 
 
 def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
-    """The rung list :func:`dispatch` / :func:`dispatch_async` actually walk:
+    """The rung list :func:`route` / :func:`dispatch_async` actually walk:
     an operator-owned ``app_settings`` chain override layered in front of the
     compiled default (:func:`_default_chain`).
 
@@ -1618,7 +1618,7 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
 
     Off: only local rungs survive. A tier with a local rung keeps flowing on
     it; a tier left with **no** rung prunes to **empty**, which
-    :func:`dispatch` turns into a ``paused`` result — the call queues and
+    :func:`route` turns into a ``paused`` result — the call queues and
     resumes when cloud is re-enabled, never silently degraded to a weaker
     local model.
 
@@ -1638,7 +1638,7 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
 
 def _skip_unserved_local_rung(chain: list[Rung], model: str) -> list[Rung]:
     """Drop a leading loopback ``LOCAL`` rung with no live endpoint on this
-    host, returning the tail so :func:`dispatch` advances straight to the
+    host, returning the tail so :func:`route` advances straight to the
     fallback instead of dispatching a guaranteed ``ECONNREFUSED``.
 
     A ``Transport.LOCAL`` rung 0 routes through ``_dispatch_local`` → the
@@ -1686,7 +1686,7 @@ def _apply_placement(chain: list[Rung], placement: str | None) -> list[Rung]:
 
     ``None`` or any value other than ``"local"``/``"cloud"`` is a no-op.
     Unlike :func:`_apply_cloud_throttle`, an emptied chain is **not** handled
-    here — it's the caller's job (:func:`dispatch`/:func:`dispatch_async`) to
+    here — it's the caller's job (:func:`route`/:func:`dispatch_async`) to
     turn that into an explicit error, since the caller asked for a rung the
     chain doesn't have.
     """
@@ -1752,7 +1752,7 @@ def _hosted_small_remap(
     return _hosted_small_model()
 
 
-def dispatch(req: LlmRequest) -> LlmResult:
+def route(req: LlmRequest) -> LlmResult:
     """Route ``req`` to its provider and return a normalized
     :class:`LlmResult`.
 
@@ -1925,7 +1925,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # Local serving slot: if this host declares `served_by` for the model,
     # hold one of its local slots for the call's duration so concurrent local
     # calls can't exceed `max_parallel`. Dark: a model with no `served_by`
-    # returns None and dispatch is unaffected. A `paused` outcome (all slots
+    # returns None and route is unaffected. A `paused` outcome (all slots
     # busy) folds into the same paused shape as the breaker.
     from precis.utils.llm import local_serving as _local
 
@@ -2067,22 +2067,22 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
 
 
 async def dispatch_async(req: LlmRequest) -> LlmResult:
-    """Async twin of :func:`dispatch`, for a caller that needs the real-time
+    """Async twin of :func:`route`, for a caller that needs the real-time
     ``on_event`` stream (asa_bot's Discord bridge).
 
-    Mirrors :func:`dispatch`'s gate sequence (backend fallback, transport
+    Mirrors :func:`route`'s gate sequence (backend fallback, transport
     resolution, budget breaker, window admission, local-serving slot) inline
     and synchronously — all fast in-memory/DB checks. When the resolved
     transport is :data:`Transport.CLAUDE_AGENT` **and** ``req.on_event`` is
     set, awaits :func:`_dispatch_claude_agent_async` instead of the sync
     :class:`ClaudeAgentProvider`; otherwise delegates straight to sync
-    :func:`dispatch` (safe to call from async here since ``dispatch``'s I/O
+    :func:`route` (safe to call from async here since ``route``'s I/O
     is either fast or itself calls the sync ``call_claude_agent``, no event
     loop to block).
 
     Logs via the same :func:`_record_dispatch` call as the sync path; the
     breaker-pause/admission-refusal/all-slots-busy early-outs are not logged
-    (same as :func:`dispatch` — only a call that actually ran is recorded).
+    (same as :func:`route` — only a call that actually ran is recorded).
 
     Checks only the primary rung's transport to decide whether to stream —
     does not wrap the streaming call in :class:`FailoverProvider`, so a
@@ -2095,9 +2095,9 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier, backend=backend)
-    # Resolve the primary transport through the always-on chain, same as sync dispatch — the streaming decision keys on rung 0.
+    # Resolve the primary transport through the always-on chain, same as sync route() — the streaming decision keys on rung 0.
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
-    # Structured placement filter — strict parity with sync dispatch: an
+    # Structured placement filter — strict parity with sync route(): an
     # emptied nonempty chain is an explicit error result, not a silent
     # paused/degrade. No-op when req.placement is None/unrecognized.
     _placed_ladder = _apply_placement(ladder, req.placement)
@@ -2115,22 +2115,22 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             paused=False,
         )
     ladder = _placed_ladder
-    # Cloud-throttle parity with sync dispatch: prune cloud rungs when disabled.
+    # Cloud-throttle parity with sync route(): prune cloud rungs when disabled.
     # An empty result (a cloud-only tier under throttle) is delegated to the
-    # sync dispatch below, which returns the paused result — so the streaming
+    # sync route() below, which returns the paused result — so the streaming
     # path never needs its own copy of that early-out.
     ladder = _apply_cloud_throttle(ladder)
     transport = ladder[0].transport if ladder else None
 
     if transport is not Transport.CLAUDE_AGENT or req.on_event is None:
-        return dispatch(req)
+        return route(req)
 
     # Same budget-breaker / window-admission / local-serving-slot gate
-    # dispatch() runs, ahead of the (here: async) provider call.
+    # route() runs, ahead of the (here: async) provider call.
     from precis.budget import breaker as _breaker
 
     # Reached only for CLAUDE_AGENT (always cloud/OAuth — the non-agent path
-    # delegated to sync dispatch above), so ``local`` is False here; passed for
+    # delegated to sync route() above), so ``local`` is False here; passed for
     # symmetry with the sync gate and to stay correct if the guard ever widens.
     trip = _breaker.gate_tier(
         req.tier,
@@ -2164,7 +2164,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
 
     from precis.utils.llm import local_serving as _local
 
-    # Parity with sync dispatch: acquire under the rung-0 served model, not the
+    # Parity with sync route(): acquire under the rung-0 served model, not the
     # pre-chain alias (see the comment there). Reached only for CLAUDE_AGENT
     # (always cloud), so this is a de-facto no-op today — kept identical so the
     # two paths can't drift if a local-served model ever streams.
@@ -2214,7 +2214,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
 
 
 class DispatchError(RuntimeError):
-    """Raised by :meth:`DispatchClient.complete` on a dispatch error or a
+    """Raised by :meth:`DispatchClient.complete` on a route error or a
     breaker/admission pause — a distinct subclass (not a bare ``RuntimeError``)
     so a caller's retry policy can tell "the router refused/failed this call"
     apart from an unrelated ``RuntimeError`` (e.g. a malformed-response parse
@@ -2234,7 +2234,7 @@ class DispatchError(RuntimeError):
 @dataclass
 class DispatchClient:
     """A ``.complete(messages)``-shaped adapter that routes a completion
-    through :func:`dispatch` instead of holding its own local ``LlmClient``.
+    through :func:`route` instead of holding its own local ``LlmClient``.
 
     Drop-in for the summarize/classify/glossary passes' ``client=`` seam:
     the same ``complete(messages, *, extra_body=None) -> LlmResult`` contract
@@ -2256,7 +2256,7 @@ class DispatchClient:
     ``claude_p``, which demands a parseable trailing JSON block and drops the
     system prompt — wrong for a free-text compose call.
 
-    Raises :class:`DispatchError` on a dispatch error/breaker-pause, exactly
+    Raises :class:`DispatchError` on a route error/breaker-pause, exactly
     as the raw ``LlmClient.complete`` raised on a transport error. Local
     tiers are free (the breaker never trips them); the only pause is
     all-slots-busy.
@@ -2303,7 +2303,7 @@ class DispatchClient:
         prompt = "\n\n".join(
             str(m.get("content", "")) for m in messages if m.get("role") != "system"
         )
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=self.tier,
                 messages=messages,
@@ -2496,7 +2496,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         cfg = replace(cfg, max_tokens=req.max_tokens)
     # Unlike `max_tokens` above, `None` here is a meaningful *resolved* value
     # (the MEDIUM/BIG/FRONTIER-tier default: omit temperature, let the
-    # provider pick) — `dispatch` always resolves `req.temperature` before
+    # provider pick) — `route` always resolves `req.temperature` before
     # calling this, so the override is unconditional.
     cfg = replace(cfg, temperature=req.temperature)
     # NOTE — no-thinking directive intentionally NOT applied here: disabling
@@ -2756,7 +2756,7 @@ def run_oss_tool_loop(
 
     ``temperature``/``thinking`` are the gen-param passthrough
     (:attr:`LlmRequest.temperature`/``.thinking``, tier-resolved by
-    :func:`dispatch`). ``temperature=None`` (the ``MEDIUM``/``BIG``/
+    :func:`route`). ``temperature=None`` (the ``MEDIUM``/``BIG``/
     ``FRONTIER`` default) omits the field from the wire. The no-thinking
     directive applies only for a genuinely *hosted* OSS call (``local_url``
     unset) via :func:`openrouter_routing`'s ``reasoning.enabled`` toggle; a
@@ -2923,7 +2923,6 @@ __all__ = [
     "LlmResult",
     "Tier",
     "Transport",
-    "dispatch",
     "dispatch_async",
     "openrouter_routing",
     "provider_for",
@@ -2932,6 +2931,7 @@ __all__ = [
     "result_from_agent",
     "result_from_claude_p",
     "result_from_openai",
+    "route",
     "run_oss_tool_loop",
     "select_transport",
     "transport_for_profile",

@@ -10,7 +10,7 @@ rendering, JATS scrubbing, author normalisation).
 Public-ish surface (used by ``paper.py`` and a few critic tests):
 
 * :func:`_format_authors` — flat "A; B; C" or "A et al."
-* :func:`_format_citation` — BibTeX / RIS / EndNote renderer, now
+* :func:`_render_citation` — BibTeX / RIS / EndNote renderer, now
   type-aware over ``meta.entry_type`` (see :data:`ENTRY_TYPE_CHOICES` /
   :data:`_EXPORT_TYPE_MAP`, docs/backlog/paper-meta-surfacing.md).
 * :func:`_clean_inline_text` — html.unescape + tag-whitelist strip
@@ -154,7 +154,7 @@ def _format_authors(raw: Any) -> str:
     return f"{names[0]} et al."
 
 
-def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
+def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     """Render a citation in BibTeX / RIS / EndNote.
 
     All scalar metadata fields are run through :func:`_clean_inline_text`
@@ -311,7 +311,7 @@ __all__ = [
     "_author_names",
     "_clean_inline_text",
     "_format_authors",
-    "_format_citation",
     "_latex_escape",
+    "_render_citation",
     "_strip_jats",
 ]

@@ -96,12 +96,12 @@ def render_review_view(store: Store, ref: Ref) -> Response:
     return Response(body=f"{header}\n\n{table}{trailer}")
 
 
-def render_review_diff_view(store: Store, addr: str) -> Response:
+def render_review_diff_view(store: Store, handle: str) -> Response:
     """Render ``view='review-diff'`` for one chunk — the ``human``
     checker's approved→current diff."""
-    chunk = store.drafts.get_draft_chunk(addr)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None:
-        raise NotFound(f"draft chunk {addr!r} not found")
+        raise NotFound(f"draft chunk {handle!r} not found")
     statuses = store.drafts.review_status_for_chunk(chunk.chunk_id)
     human = next((s for s in statuses if s.checker == _HUMAN), None)
     header = f"# {chunk.dc} — review-diff (human)"

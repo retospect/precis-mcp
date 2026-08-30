@@ -483,7 +483,8 @@ class ResolvedHandle:
 
 @dataclass(frozen=True, slots=True)
 class Block:
-    """A block (chunk) row from the `blocks` table."""
+    """A chunk row from the `chunks` table. ("Block" is the legacy v1 name
+    of this Python type.)"""
 
     id: int
     ref_id: int

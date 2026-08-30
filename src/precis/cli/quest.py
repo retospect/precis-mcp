@@ -331,7 +331,11 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
     import sys
 
     from precis.errors import BadInput, NotFound
-    from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
+    from precis.quest.review_fanout import (
+        ALL_PERSONAS,
+        DOC_PERSONAS,
+        mint_review_fanout,
+    )
 
     key: int | str = int(args.draft) if str(args.draft).isdigit() else args.draft
     ref = store.get_ref(kind="draft", id=key)
@@ -342,7 +346,7 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
     lenses = (
         tuple(x.strip() for x in args.lenses.split(",") if x.strip())
         if args.lenses
-        else ALL_LENSES
+        else ALL_PERSONAS
     )
 
     scope_chunk_id: int | None = None
@@ -357,8 +361,8 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
         result = mint_review_fanout(
             store,
             ref.id,
-            lenses=lenses,
-            doc_lenses=DOC_LENSES if scope_chunk_id is None else (),
+            personas=lenses,
+            doc_personas=DOC_PERSONAS if scope_chunk_id is None else (),
             author=bool(args.author),
             only_dirty=bool(args.only_dirty),
             scope=scope_chunk_id,

@@ -57,7 +57,7 @@ def _fake_dispatch(
     paused: bool = False,
     timed_out: bool = False,
 ) -> Any:
-    """A stand-in for router.dispatch returning a canned LlmResult-shaped obj."""
+    """A stand-in for router.route returning a canned LlmResult-shaped obj."""
 
     def _d(_req: Any) -> Any:
         return SimpleNamespace(

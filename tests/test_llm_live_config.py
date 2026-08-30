@@ -337,7 +337,7 @@ def test_resolve_model_no_backend_arg_keeps_override_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every caller that never passes ``backend=`` (every call site but
-    dispatch/dispatch_async) sees the pre-Part-3 behavior byte-for-byte —
+    route/dispatch_async) sees the pre-Part-3 behavior byte-for-byte —
     the coherence check is opt-in via the parameter, not a global change."""
     _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
     assert router.resolve_model(Tier.FRONTIER) == "z-ai/glm-5.2"
@@ -346,11 +346,11 @@ def test_resolve_model_no_backend_arg_keeps_override_unchanged(
 def test_dispatch_openai_override_no_base_url_resolves_claude_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The end-to-end desync fix (acceptance criterion 3): dispatch with
+    """The end-to-end desync fix (acceptance criterion 3): route with
     backend=openai + an OSS model-override row set, but NO
     PRECIS_LLM_BASE_URL, resolves a CLAUDE model on claude_agent — never the
     OSS slug landing on the claude transport (the `dream` api_error class)."""
-    from precis.utils.llm.router import LlmRequest, dispatch
+    from precis.utils.llm.router import LlmRequest, route
     from precis.utils.llm.router import Tier as _Tier
 
     _bind(
@@ -372,7 +372,7 @@ def test_dispatch_openai_override_no_base_url_resolves_claude_model(
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
 
-    out = dispatch(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert calls["model"] == "claude-opus-4-8"  # NOT "z-ai/glm-5.2"
     assert out.text == "claude ran"
@@ -388,7 +388,7 @@ def test_dispatch_openai_override_with_base_url_routes_oss_slug(
         LlmRequest,
         LlmResult,
         Transport,
-        dispatch,
+        route,
     )
     from precis.utils.llm.router import (
         Tier as _Tier,
@@ -415,7 +415,7 @@ def test_dispatch_openai_override_with_base_url_routes_oss_slug(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFnLC(fake_tools))
 
-    out = dispatch(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert calls["model"] == "z-ai/glm-5.2"
     assert out.text == "oss ran"

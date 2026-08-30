@@ -620,7 +620,8 @@ def _claim(
 
 
 def _lease_seconds(meta: dict[str, Any]) -> int:
-    wall = int((meta.get("params") or {}).get("wall_seconds", 0) or 0)
+    params = meta.get("params") or {}
+    wall = int(_sandbox_run.resolve_wall_seconds(params) or 0)
     return max(_LEASE_MARGIN_S, wall + _LEASE_MARGIN_S)
 
 
@@ -705,7 +706,7 @@ def _launch_build(
     # so the key-only inheritance works post-cutover (secrets vault).
     os.environ.setdefault("CLAUDE_CODE_OAUTH_TOKEN", _oauth)
 
-    wall_seconds = int(params["wall_seconds"])
+    wall_seconds = int(_sandbox_run.resolve_wall_seconds(params) or 0)
     image = params.get("image") or _sandbox_run.default_image()
     model = params.get("model") or _sandbox_run.resolve_sandbox_model()
     name = container_name(ref_id)
@@ -838,7 +839,7 @@ def _launch_run(
         )
         return
 
-    wall_seconds = int(params["wall_seconds"])
+    wall_seconds = int(_sandbox_run.resolve_wall_seconds(params) or 0)
     image = (
         params.get("image") or folder_meta.get("image") or _sandbox_run.default_image()
     )

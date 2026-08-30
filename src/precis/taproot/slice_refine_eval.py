@@ -48,7 +48,7 @@ VerifyFn = Any  # Callable[..., dict[str, Any] | None] — kept loose to match _
 
 
 @dataclass
-class Candidate:
+class RefineCandidate:
     """One candidate paper surfaced for a hub, with whatever fields its
     bucket populates (unused fields stay at their default)."""
 
@@ -70,10 +70,10 @@ class HubEval:
     hub_ref_id: int
     claim: str
     existing_edges: int | None
-    would_attach: list[Candidate] = field(default_factory=list)
-    would_reject: list[Candidate] = field(default_factory=list)
-    skipped_attached: list[Candidate] = field(default_factory=list)
-    skipped_rejected: list[Candidate] = field(default_factory=list)
+    would_attach: list[RefineCandidate] = field(default_factory=list)
+    would_reject: list[RefineCandidate] = field(default_factory=list)
+    skipped_attached: list[RefineCandidate] = field(default_factory=list)
+    skipped_rejected: list[RefineCandidate] = field(default_factory=list)
     verify_failed: int = 0
     unexpected: int = 0
     discovery_skipped: bool = False
@@ -222,12 +222,16 @@ def _eval_one_hub(
 
         if paper_ref_id in attached:
             hub_eval.skipped_attached.append(
-                Candidate(paper_ref_id=paper_ref_id, ref_slug=ref.slug, score=score)
+                RefineCandidate(
+                    paper_ref_id=paper_ref_id, ref_slug=ref.slug, score=score
+                )
             )
             continue
         if str(paper_ref_id) in rejected:
             hub_eval.skipped_rejected.append(
-                Candidate(paper_ref_id=paper_ref_id, ref_slug=ref.slug, score=score)
+                RefineCandidate(
+                    paper_ref_id=paper_ref_id, ref_slug=ref.slug, score=score
+                )
             )
             continue
 
@@ -243,7 +247,7 @@ def _eval_one_hub(
             continue
         supports = verification.get("supports")
         contradicts = bool(verification.get("contradicts"))
-        cand = Candidate(
+        cand = RefineCandidate(
             paper_ref_id=paper_ref_id,
             ref_slug=ref.slug,
             support=supports,
@@ -402,8 +406,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "Candidate",
     "HubEval",
+    "RefineCandidate",
     "SliceReport",
     "eval_hub_slice",
 ]

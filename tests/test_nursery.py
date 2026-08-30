@@ -192,7 +192,7 @@ def test_orphans_detector_excludes_recurring_subtree(
 
 
 def test_orphans_detector_reports_true_total_when_capped(store: Store) -> None:
-    """>50 matching orphans: only 50 ``Finding``s surface, but each one
+    """>50 matching orphans: only 50 ``Symptom``s surface, but each one
     carries the true pre-LIMIT total, and the raised alert's detail says
     so (gr — alert-triage §A/§B)."""
     for i in range(55):
@@ -386,7 +386,7 @@ def test_stuck_doable_detector_skips_recurring_umbrella(
 
 
 def test_stuck_doable_detector_reports_true_total_when_capped(store: Store) -> None:
-    """>50 matching stuck-doable leaves: only 50 ``Finding``s surface, but
+    """>50 matching stuck-doable leaves: only 50 ``Symptom``s surface, but
     each one carries the true pre-LIMIT total, and the raised alert's
     detail says so."""
     for i in range(55):
@@ -452,7 +452,7 @@ def test_child_failed_parked_detector_dedups_multiple_bubbles(
     handler: TodoHandler, store: Store
 ) -> None:
     """A parent can carry more than one child-failed:<job_id> tag (each
-    failed child job adds its own) — one Finding per ref_id, not per tag."""
+    failed child job adds its own) — one Symptom per ref_id, not per tag."""
     r = handler.put(text="Twice-bubbled leaf")
     rid = _id_of(r.body)
     store.add_tag(rid, Tag.open("child-failed:111"), set_by="system")
@@ -487,7 +487,7 @@ def test_child_failed_parked_detector_excludes_child_failed_final(
 def test_child_failed_parked_detector_reports_true_total_when_capped(
     store: Store,
 ) -> None:
-    """>50 matching parked parents: only 50 ``Finding``s surface, but each
+    """>50 matching parked parents: only 50 ``Symptom``s surface, but each
     one carries the true pre-LIMIT (post-``DISTINCT ON``) total, and the
     raised alert's detail says so."""
     for i in range(55):

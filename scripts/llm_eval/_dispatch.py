@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import time
 
-from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
 
 #: A model that spent its whole completion budget on reasoning returns
 #: ``content=None``, stringified to ``"None"`` (llm_summarize.py). Treat these —
@@ -63,7 +63,7 @@ def robust_dispatch(
     res: LlmResult | None = None
     note = "empty"
     for attempt in range(tries):
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=tier,
                 prompt=prompt,

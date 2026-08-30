@@ -2,7 +2,7 @@
 (``docs/backlog/doctor-tick-report.md``).
 
 Registry/plumbing + ``run()`` are DB-backed (the report artifact is a real
-``draft`` ref) with the LLM call stubbed via ``router.dispatch``, mirroring
+``draft`` ref) with the LLM call stubbed via ``router.route``, mirroring
 ``test_plan_tick_claude.py``'s pattern for the claude-agent transport.
 """
 
@@ -60,7 +60,7 @@ def test_run_happy_path_writes_report_and_uses_deny_list(
         seen["req"] = req
         return _clean_result()
 
-    monkeypatch.setattr(router, "dispatch", fake_dispatch)
+    monkeypatch.setattr(router, "route", fake_dispatch)
     monkeypatch.setenv("PRECIS_MCP_CONFIG", "")
 
     outcome = dt.run(store=store, job_ref_id=1, params={})
@@ -88,7 +88,7 @@ def test_run_second_tick_same_day_appends_not_duplicates(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = iter([_clean_result("first tick body"), _clean_result("second tick body")])
-    monkeypatch.setattr(router, "dispatch", lambda req: next(calls))
+    monkeypatch.setattr(router, "route", lambda req: next(calls))
 
     first = dt.run(store=store, job_ref_id=1, params={})
     second = dt.run(store=store, job_ref_id=2, params={})
@@ -105,7 +105,7 @@ def test_run_dispatch_error_is_a_failure_and_writes_nothing(
 ) -> None:
     monkeypatch.setattr(
         router,
-        "dispatch",
+        "route",
         lambda req: LlmResult(
             text="",
             cost_usd=None,
@@ -128,7 +128,7 @@ def test_run_dispatch_error_is_a_failure_and_writes_nothing(
 def test_run_empty_reply_is_a_failure(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(router, "dispatch", lambda req: _clean_result(text="   "))
+    monkeypatch.setattr(router, "route", lambda req: _clean_result(text="   "))
 
     outcome = dt.run(store=store, job_ref_id=1, params={})
 

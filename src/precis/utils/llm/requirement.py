@@ -61,18 +61,10 @@ Task:
 Judge = Callable[[str], dict[str, Any]]
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    """Tolerant JSON-object parse, defaulting to ``{}`` (not ``None``) so
-    callers here can always treat the result as a plain (possibly empty)
-    dict. Delegates the actual tolerant parse to the shared
-    :func:`~precis.utils.llm.json_reply.extract_json_object`."""
-    return extract_json_object(text) or {}
-
-
 def _default_judge(task: str) -> dict[str, Any]:
-    from precis.utils.llm.router import LlmRequest, dispatch
+    from precis.utils.llm.router import LlmRequest, route
 
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=_JUDGE_TIER,
             prompt=_PROMPT.format(task=task),
@@ -82,7 +74,7 @@ def _default_judge(task: str) -> dict[str, Any]:
     )
     if isinstance(res.data, dict):
         return res.data
-    return _extract_json(res.text or "")
+    return extract_json_object(res.text or "") or {}
 
 
 def infer_requirement(

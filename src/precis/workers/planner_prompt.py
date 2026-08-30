@@ -1134,7 +1134,7 @@ def _candidate_sources_block(store: Store, draft_ref_id: int) -> str:
     gap-finder roll-up (:func:`~precis.backfill.workspace.assemble_draft`),
     each candidate rendered WITH its verbatim excerpt so the agent can
     confirm support and cite straight from this block, no fetch needed."""
-    from precis.backfill.provenance import tier_tag
+    from precis.backfill.provenance import grade_tag
     from precis.backfill.workspace import assemble_draft, recall_embedder
 
     candidates, _cited, _sections, _truncated = assemble_draft(
@@ -1154,8 +1154,8 @@ def _candidate_sources_block(store: Store, draft_ref_id: int) -> str:
         return "\n".join(lines)
     for cand in candidates:
         glyph = "○○" if len(cand.support) > 1 else "○"
-        addr = f"{cand.paper_handle} {cand.chunk_handle}".strip()
-        tier = tier_tag(getattr(cand.ref, "kind", None))
+        handle = f"{cand.paper_handle} {cand.chunk_handle}".strip()
+        tier = grade_tag(getattr(cand.ref, "kind", None))
         lens = "+".join(cand.lenses)
         if len(cand.support) > 1:
             where = " · recurs across " + " ".join(cand.support)
@@ -1164,7 +1164,7 @@ def _candidate_sources_block(store: Store, draft_ref_id: int) -> str:
         else:
             where = ""
         title = cand.title[:90] or "(untitled)"
-        lines.append(f"{glyph} {addr} · {tier} · {lens}{where} · {title}")
+        lines.append(f"{glyph} {handle} · {tier} · {lens}{where} · {title}")
         if not cand.is_ref_level:
             text = " ".join(
                 (store.blocks.chunk_text_by_id(cand.chunk_id) or "").split()
@@ -2049,29 +2049,29 @@ def _m_children(ctx: AssemblyContext) -> str:
 _REVIEW_PERSONA_SKILL: str = "precis-draft-reviewer"
 
 #: Opt-in persona for a review-todo that carries ``meta.author=true`` on an
-#: author-eligible lens (below) — the grounded-authoring reviewer that may
+#: author-eligible persona (below) — the grounded-authoring reviewer that may
 #: fix a gap in place (`put`/`edit(kind='draft', ...)`) when it can ground
 #: the fix, instead of only filing a change-request todo.
 _REVIEW_AUTHORING_PERSONA_SKILL: str = "precis-review-authoring"
 
-#: Lenses for which ``meta.author=true`` is honoured — mirrors
-#: ``quest/review_fanout.py``'s ``_AUTHOR_ELIGIBLE_LENSES`` (kept as a
+#: Personas for which ``meta.author=true`` is honoured — mirrors
+#: ``quest/review_fanout.py``'s ``_AUTHOR_ELIGIBLE_PERSONAS`` (kept as a
 #: separate literal rather than an import of that module's private name;
 #: same design call — `flow`/`adversarial` stay pure find-and-file
 #: regardless of the flag, since there is nothing "cited" or "structural"
 #: for them to ground a fix in).
-_AUTHOR_ELIGIBLE_LENSES: frozenset[str] = frozenset({"cites", "structure"})
+_AUTHOR_ELIGIBLE_PERSONAS: frozenset[str] = frozenset({"cites", "structure"})
 
 
-def _load_review_persona(lens: str | None, author: bool) -> str:
+def _load_review_persona(persona: str | None, author: bool) -> str:
     """Verbatim body of the reviewer persona for this tick
     (``{{include}}``-expanded by ``SkillHandler.get``): the opt-in
     grounded-authoring persona when ``author`` is set on an author-eligible
-    ``lens`` (see ``_AUTHOR_ELIGIBLE_LENSES``), else the default read-only
-    draft-reviewer. Degrades to a terse inline stance matching whichever
-    persona was selected if the skill can't load, so a review tick never
-    runs persona-less."""
-    authoring = author and lens in _AUTHOR_ELIGIBLE_LENSES
+    ``persona`` (see ``_AUTHOR_ELIGIBLE_PERSONAS``), else the default
+    read-only draft-reviewer. Degrades to a terse inline stance matching
+    whichever persona was selected if the skill can't load, so a review
+    tick never runs persona-less."""
+    authoring = author and persona in _AUTHOR_ELIGIBLE_PERSONAS
     skill_id = _REVIEW_AUTHORING_PERSONA_SKILL if authoring else _REVIEW_PERSONA_SKILL
     try:
         from precis.handlers.skill import SkillHandler
@@ -2110,10 +2110,11 @@ def _m_reviewer_persona(ctx: AssemblyContext) -> str:
     cached planner contract stays genre-agnostic: a review-todo overrides
     the default plan-this-todo stance with review-this-section. Also picks
     between the read-only reviewer and the opt-in grounded-authoring
-    reviewer (``meta.author=true`` on an author-eligible lens — the fanout's
-    ``author=`` flag, ``quest/weave_review.py``/``quest/review_fanout.py``)."""
-    lens = ctx.extras.get("review") or "structural"
-    authoring = bool(ctx.extras.get("author")) and lens in _AUTHOR_ELIGIBLE_LENSES
+    reviewer (``meta.author=true`` on an author-eligible persona — the
+    fanout's ``author=`` flag, ``quest/weave_review.py``/
+    ``quest/review_fanout.py``)."""
+    persona = ctx.extras.get("review") or "structural"
+    authoring = bool(ctx.extras.get("author")) and persona in _AUTHOR_ELIGIBLE_PERSONAS
     stance = (
         "grounded fixes where you can ground them (ground it or flag it), "
         "plus anchored change requests for what you cannot"
@@ -2122,11 +2123,11 @@ def _m_reviewer_persona(ctx: AssemblyContext) -> str:
     )
     mode_note = ", meta.author=true" if authoring else ""
     return (
-        f"## Reviewer mode — {lens}{' (authoring)' if authoring else ''}\n\n"
-        f"This tick is a REVIEW (meta.review={lens}{mode_note}), not a plain "
+        f"## Reviewer mode — {persona}{' (authoring)' if authoring else ''}\n\n"
+        f"This tick is a REVIEW (meta.review={persona}{mode_note}), not a plain "
         f"edit. Adopt the persona below for this tick; apply the specific "
-        f"lens your task body names. Your output is {stance}.\n\n"
-        f"{_load_review_persona(lens, bool(ctx.extras.get('author')))}"
+        f"persona your task body names. Your output is {stance}.\n\n"
+        f"{_load_review_persona(persona, bool(ctx.extras.get('author')))}"
     )
 
 
@@ -2186,9 +2187,11 @@ def _backfill_find_instructions(kind: str, draft_ident: str, run_ref_id: int) ->
     """The **find** phase (slice 4 + slice 7 transition): weave / dismiss / request
     each ``○`` candidate, then advance to *review* rather than finishing — so the
     next tick re-reads the woven prose with its sources still open."""
-    from precis.backfill.provenance import TIERS
+    from precis.backfill.provenance import SOURCE_GRADES
 
-    tier_admonition = "\n".join(f"   - `[{t.tag}]` — {t.admonition}" for t in TIERS)
+    tier_admonition = "\n".join(
+        f"   - `[{t.tag}]` — {t.admonition}" for t in SOURCE_GRADES
+    )
     return (
         "## Source backfill — weave the sources you missed\n\n"
         "This tick is the **find** phase of a source-backfill pass over the "

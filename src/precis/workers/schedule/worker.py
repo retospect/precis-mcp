@@ -560,10 +560,10 @@ def _has_open_previous_tick_conn(
     ``stuck_hours`` additionally time-bounds a still-``running``/open
     child: it only counts as "in flight" (blocking) when it was spawned
     *within* ``stuck_hours``. Composes cap at 600s, so any tick-child
-    still open longer than that is a zombie, not genuine progress — and
+    still open longer than that is orphaned, not genuine progress — and
     the sweeper's lease-past test doesn't catch it if lease-churn keeps
     renewing the lease out from under a killed subprocess. Without this
-    bound, a single orphaned zombie tick-child blocks *every* subsequent
+    bound, a single orphaned tick-child blocks *every* subsequent
     tick indefinitely (one killed ``claude_inproc`` compose silently lost
     every following daily recurring). For a daily cron the previous
     tick is always older than ``stuck_hours`` so it never blocks (daily
@@ -591,7 +591,7 @@ def _has_open_previous_tick_conn(
                     AND t.namespace = 'OPEN'
                     AND t.value LIKE 'child-failed:%%'
                )
-           -- A still-open child older than ``stuck_hours`` is a zombie
+           -- A still-open child older than ``stuck_hours`` is orphaned
            -- (see docstring), not in-flight progress — exclude it so it
            -- can't wedge the cadence forever.
            AND c.created_at >= now() - %s::interval

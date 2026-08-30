@@ -18,11 +18,11 @@ Covered here, mapped to the proposal's acceptance criteria:
 - AC6 — registry well-formedness / drift guard
 - AC7 — env hatch precedence + cast call sites migrated off ``model=``
 
-Plus one ``dispatch()``-level integration test guarding the *ordering* of
-the op-resolution block inside ``dispatch()`` — the tier remap must land
+Plus one ``route()``-level integration test guarding the *ordering* of
+the op-resolution block inside ``route()`` — the tier remap must land
 before ``_tier_gen_defaults``, ``resolve_model``, ``resolve_chain``, and the
 breaker's ``gate_tier(req.tier)`` all read ``req.tier``, a property
-``resolve_op()``-level unit tests can't see (they never touch ``dispatch()``).
+``resolve_op()``-level unit tests can't see (they never touch ``route()``).
 
 DB-free: the store is faked (mirrors ``tests/test_llm_live_config.py``'s
 ``_bind`` idiom) and the TTL cache is busted around every test so no
@@ -41,7 +41,7 @@ from precis.utils.claude_agent import AgentResult
 from precis.utils.llm import live_config, operations
 from precis.utils.llm import router as llm_router
 from precis.utils.llm.operations import EXCLUDED_OPERATIONS, LLM_OPERATIONS
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 
 
 @pytest.fixture(autouse=True)
@@ -373,15 +373,15 @@ def test_meditation_call_site_has_no_hardcoded_model_kwarg() -> None:
     assert "model=" not in stmt
 
 
-# ── dispatch(): op-resolution ordering regression guard ─────────────────
+# ── route(): op-resolution ordering regression guard ─────────────────
 #
 # The unit tests above only exercise resolve_op() in isolation — they can't
-# see whether dispatch() actually applies the tier remap *before* the
+# see whether route() actually applies the tier remap *before* the
 # downstream reads of req.tier (_tier_gen_defaults, resolve_model,
 # resolve_chain, and the breaker's gate_tier(req.tier)). A future edit that
 # reorders the op-resolution block to run after one of those would leave it
 # gated/resolved on the call site's original tier — nothing at the
-# resolve_op() level would catch that. Drives dispatch() end-to-end with the
+# resolve_op() level would catch that. Drives route() end-to-end with the
 # provider/breaker mocked, mirroring test_llm_router.py's
 # test_dispatch_breaker_trip_is_flagged_paused (breaker.gate_tier spy) and
 # test_dispatch_cloud_agent (call_claude_agent fake) idioms.
@@ -417,7 +417,7 @@ def test_dispatch_op_tier_remap_reaches_breaker_and_result(
 
     monkeypatch.setattr("precis.budget.breaker.gate_tier", spy_gate_tier)
 
-    out = dispatch(
+    out = route(
         LlmRequest(
             tier=Tier.FRONTIER,
             source="reading_brief",
@@ -460,7 +460,7 @@ def test_dispatch_unregistered_source_keeps_call_site_tier(
 
     monkeypatch.setattr("precis.budget.breaker.gate_tier", spy_gate_tier)
 
-    out = dispatch(
+    out = route(
         LlmRequest(
             tier=Tier.FRONTIER,
             source="dream",

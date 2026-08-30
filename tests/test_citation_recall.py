@@ -1,7 +1,7 @@
 """source-backfill slice 3 — the citation-graph lens.
 
 Builds a small held corpus with external ids, monkeypatches the batched S2
-fetch seam (``citation_lens.fetch_citations_batch``) so the tests never need
+fetch seam (``citation_recall.fetch_citations_batch``) so the tests never need
 the ``[paper]`` extra, and checks: edges materialise corpus-internally in the
 right direction, non-held / body-less neighbours are handled correctly, the
 neighbour query ranks + excludes, the merge into the text lens badges
@@ -15,8 +15,8 @@ from types import SimpleNamespace as NS
 import pytest
 
 from precis.backfill import candidates as candmod
-from precis.backfill import citation_lens as cl
-from precis.backfill.candidates import LENS_CITATION, LENS_TEXT, Candidate
+from precis.backfill import citation_recall as cl
+from precis.backfill.candidates import LENS_CITATION, LENS_TEXT, RecallCandidate
 from precis.dispatch import Hub
 from precis.store.types import BlockInsert
 
@@ -347,7 +347,7 @@ def test_merge_badges_agreement_and_appends_citation_only(
     hub: Hub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A text candidate for B (found by the text lens)…
-    text_b = Candidate(
+    text_b = RecallCandidate(
         ref_id=101,
         ref=NS(kind="paper", title="Kumar"),
         chunk_id=1,
@@ -357,7 +357,7 @@ def test_merge_badges_agreement_and_appends_citation_only(
     )
     out = [text_b]
     # …and the citation lens finds B (agreement) + C (citation-only).
-    cite_b = Candidate(
+    cite_b = RecallCandidate(
         ref_id=101,
         ref=text_b.ref,
         chunk_id=9,
@@ -365,7 +365,7 @@ def test_merge_badges_agreement_and_appends_citation_only(
         score=1.0,
         lenses=(LENS_CITATION,),
     )
-    cite_c = Candidate(
+    cite_c = RecallCandidate(
         ref_id=202,
         ref=NS(kind="paper", title="Li"),
         chunk_id=5,
@@ -377,7 +377,7 @@ def test_merge_badges_agreement_and_appends_citation_only(
         cl, "find_citation_candidates", lambda *a, **k: [cite_b, cite_c]
     )
 
-    candmod._merge_citation_lens(hub.live_store, out, {1}, set(), 8)
+    candmod._merge_citation_recall(hub.live_store, out, {1}, set(), 8)
 
     assert out[0].ref_id == 101
     assert out[0].lenses == (LENS_TEXT, LENS_CITATION)  # agreement badge

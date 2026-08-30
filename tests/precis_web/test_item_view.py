@@ -298,9 +298,9 @@ def test_artifact_kinds_falls_back_when_hub_is_none() -> None:
 def test_artifact_kinds_reads_role_from_hub() -> None:
     def handler_for(kind):
         specs = {
-            "draft": SimpleNamespace(role="artifact"),
-            "paper": SimpleNamespace(role="corpus"),
-            "folder": SimpleNamespace(role="artifact"),
+            "draft": SimpleNamespace(placement="artifact"),
+            "paper": SimpleNamespace(placement="corpus"),
+            "folder": SimpleNamespace(placement="artifact"),
         }
         return SimpleNamespace(spec=specs[kind])
 

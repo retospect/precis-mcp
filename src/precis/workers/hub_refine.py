@@ -209,7 +209,7 @@ from precis.taproot.verify_edges import (
 )
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 
 if TYPE_CHECKING:
@@ -1105,7 +1105,7 @@ def judge_edge_strict(
         chunk_text=chunk_text[:_JUDGE_PASSAGE_CHARS],
         neighbours=neighbour_text,
     )
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.MEDIUM,
             messages=[

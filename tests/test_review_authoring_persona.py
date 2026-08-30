@@ -1,8 +1,8 @@
 """Opt-in grounded-authoring reviewer — persona-selection wiring.
 
-A review-todo carrying ``meta.author=true`` on an author-eligible lens
+A review-todo carrying ``meta.author=true`` on an author-eligible persona
 (``cites``/``structure`` — see ``quest/review_fanout.py``'s
-``_AUTHOR_ELIGIBLE_LENSES``) should flip the reviewer persona from the
+``_AUTHOR_ELIGIBLE_PERSONAS``) should flip the reviewer persona from the
 read-only ``precis-draft-reviewer`` to the opt-in
 ``precis-review-authoring`` skill (``_load_review_persona`` /
 ``_m_reviewer_persona`` in ``workers/planner_prompt.py``). This only tests

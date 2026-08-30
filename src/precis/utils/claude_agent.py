@@ -282,7 +282,7 @@ def call_claude_agent(
     # instead of in-process, isolated by the envelope's DB role + network
     # tier. A foreground run whose stdout is captured exactly as the
     # in-proc subprocess's, so the parsing below is unchanged. Off ⇒
-    # byte-identical. plan_tick (via router.dispatch → ClaudeAgentProvider)
+    # byte-identical. plan_tick (via router.route → ClaudeAgentProvider)
     # and fix_gripe (via env_base/mounts/require_container) both route
     # through this one chokepoint.
     run_argv = args

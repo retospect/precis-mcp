@@ -220,7 +220,7 @@ def test_retire_has_no_env_flag(monkeypatch: Any) -> None:
 
 
 def test_strict_judge_parses_and_rejects_junk() -> None:
-    path = "precis.workers.hub_refine.dispatch"
+    path = "precis.workers.hub_refine.route"
     kwargs = dict(
         claim="X is 5 nm.",
         scope={},

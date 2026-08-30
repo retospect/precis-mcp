@@ -125,7 +125,7 @@ class FakeStore(_FakeStoreBase):
         #: collision branch can be exercised.
         self.identifier_writes: list[tuple[int, str, str]] = []
         self.taken_cite_keys: set[str] = set()
-        #: {(ref_id, ord): gloss} a test seeds to exercise the
+        #: {(ref_id, ord): summary} a test seeds to exercise the
         #: chunk_summaries_bulk-backed row preview (Drive search rows).
         self.chunk_summaries: dict[tuple[int, int], str] = {}
         #: Overridable lexical-match total for the count_blocks_lexical
@@ -478,7 +478,7 @@ class FakeStore(_FakeStoreBase):
         return 0
 
     def chunk_summaries_for(self, ref_id: int, ords) -> dict[int, str]:
-        """No llm-v1 glosses in the fake corpus — search rows carry an
+        """No llm-v1 summaries in the fake corpus — search rows carry an
         empty summary and the client falls back to keyword chips."""
         return {}
 
@@ -487,11 +487,13 @@ class FakeStore(_FakeStoreBase):
     ) -> dict[tuple[int, int], str]:
         """Batch companion to ``chunk_summaries_for`` — reads the
         overridable ``self.chunk_summaries`` seed dict so a test can
-        exercise the gloss-preview path; empty by default."""
+        exercise the summary-preview path; empty by default."""
         return {p: self.chunk_summaries[p] for p in pairs if p in self.chunk_summaries}
 
-    def chunk_glosses_for_ref(self, ref_id: int, **kw: Any) -> list[dict[str, Any]]:
-        """Per-chunk gloss list for the rapid-nav /chunks endpoint. Empty
+    def chunk_llm_summaries_for_ref(
+        self, ref_id: int, **kw: Any
+    ) -> list[dict[str, Any]]:
+        """Per-chunk summary list for the rapid-nav /chunks endpoint. Empty
         in the fake corpus (no body chunks); the contract is a list."""
         return []
 

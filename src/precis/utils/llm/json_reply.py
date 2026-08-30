@@ -2,7 +2,7 @@
 that asks a model for structured JSON and must survive prose/fences around it.
 
 Consolidates ~13 near-identical ``_extract_json`` copies (classify, axis_pass,
-classify_topics, bib_parse, paper_glossary, reading/graph, reading/cards,
+classify_topics, bib_parse, paper_glossary, reading/graph, reading/flashcards,
 mail/inject, quest/claims, quest/tick, quest/weave, utils/llm/requirement,
 asa_bot/preamble) onto one tolerant parse, unioning their tolerances: a
 same-string ``json.loads`` fast path, then the last *balanced* top-level

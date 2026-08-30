@@ -32,7 +32,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from precis.cad.scene import build_design, spec_to_source
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -249,7 +249,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # FRONTIER, so PRECIS_LLM_BACKEND can switch it. Broad except kept +
     # the folded res.error checked.
     try:
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=Tier.FRONTIER,
                 source="cad_discuss",

@@ -93,7 +93,7 @@ class EdgarHandler(Handler):
         is_numeric=False,
         id_required=False,
         corpus_role="evidence",
-        role="corpus",
+        placement="corpus",
         views=_SUPPORTED_VIEWS,
     )
 

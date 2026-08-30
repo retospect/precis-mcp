@@ -42,7 +42,7 @@ from precis.handlers._link_tag_ops import (
 from precis.handlers._paper_format import (
     _clean_inline_text,
     _format_authors,
-    _format_citation,
+    _render_citation,
     _strip_jats,
 )
 from precis.handlers._paper_search import (
@@ -281,7 +281,7 @@ class PaperHandler(Handler):
         # search and is a valid citation source (the citation handler
         # resolves ``source_handle`` against ``kind='paper'``).
         corpus_role="evidence",
-        role="corpus",
+        placement="corpus",
         views=_SUPPORTED_VIEWS,
     )
 
@@ -1450,7 +1450,7 @@ class PaperHandler(Handler):
         if view in ("bibtex", "ris", "endnote"):
             # F15: pre-fetch the DOI from ref_identifiers. The v2
             # schema moved DOI off ref.meta into its own table, but
-            # _format_citation was still reading meta.get('doi') and
+            # _render_citation was still reading meta.get('doi') and
             # always finding None — so every bibtex looked like a
             # stub even when the data was fully populated.
             doi: str | None = None
@@ -1461,7 +1461,7 @@ class PaperHandler(Handler):
                         break
             except Exception:
                 doi = None
-            return Response(body=_format_citation(ref, style=view, doi=doi))
+            return Response(body=_render_citation(ref, style=view, doi=doi))
 
         if view == "health":
             return self._render_health(ref)
@@ -2019,20 +2019,20 @@ class PaperHandler(Handler):
         )
 
     def _render_summaries(self, ref: Ref) -> Response:
-        """``view='summaries'`` — per-chunk gloss list for the whole body.
+        """``view='summaries'`` — per-chunk summary list for the whole body.
 
-        One row per body chunk: its ``ord`` handle, the ``llm-v1`` gloss
+        One row per body chunk: its ``ord`` handle, the ``llm-v1`` summary
         (``chunk_summaries``), and the KeyBERT keyword string. This is the
         agent-surface twin of the web reader's Semantic/Keyword rapid-nav
-        list (both read :meth:`Store.chunk_glosses_for_ref`).
+        list (both read :meth:`Store.chunk_llm_summaries_for_ref`).
 
         The ``summary`` column is often empty — ``llm_summarize`` coverage
         is a deliberate trickle — so ``keywords`` is the always-present
         fallback the reader falls back to. For a clustered overview use
         ``view='toc'``; for a chunk's full text use ``get(id='pa<id>~N')``.
         """
-        glosses = self.store.blocks.chunk_glosses_for_ref(ref.id)
-        if not glosses:
+        summaries = self.store.blocks.chunk_llm_summaries_for_ref(ref.id)
+        if not summaries:
             return Response(
                 body=(
                     f"# {_pa(ref)} — no body chunks to summarise\n\n"
@@ -2045,11 +2045,11 @@ class PaperHandler(Handler):
                 "summary": g["summary"] or "—",
                 "keywords": g["keywords"] or "—",
             }
-            for g in glosses
+            for g in summaries
         ]
-        n_summ = sum(1 for g in glosses if g["summary"])
+        n_summ = sum(1 for g in summaries if g["summary"])
         head = (
-            f"# {_pa(ref)} summaries — {len(rows)} chunks, {n_summ} with an llm gloss"
+            f"# {_pa(ref)} summaries — {len(rows)} chunks, {n_summ} with an llm summary"
         )
         table = render_agent_table(rows, schema=["handle", "summary", "keywords"])
         body = f"{head}\n\n{table}"
@@ -2492,7 +2492,7 @@ def _parse_paper_id(
 
 # Author + citation + inline-markup helpers moved to
 # ``precis.handlers._paper_format`` (2026-06-05). The symbols
-# ``_author_names``, ``_format_authors``, ``_format_citation``,
+# ``_author_names``, ``_format_authors``, ``_render_citation``,
 # ``_clean_inline_text``, ``_latex_escape`` are imported at the top of
 # this file; tests previously reaching them via
 # ``precis.handlers.paper`` should import from ``_paper_format`` now.

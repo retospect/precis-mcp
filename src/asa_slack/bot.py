@@ -9,7 +9,7 @@ a channel root, always ``thread_ts = incoming.thread_ts or incoming.ts``.
 Unlike the Discord bridge (whose default ``local`` lane also walks the BIG
 chain, but whose ``/model opus`` escape streams via ``dispatch_async``),
 asa-slack makes one blocking
-``precis.utils.llm.router.dispatch()`` call per turn, forced to
+``precis.utils.llm.router.route()`` call per turn, forced to
 ``Tier.BIG`` (the operator's placement chain — OSS-first) with a hard kind-allowlist
 (``asa_slack.kind_policy``) baked in via ``env_overlay`` — Slack is a
 semi-trusted, multi-user surface, and this is the router's governance
@@ -24,7 +24,7 @@ Flow per inbound message (human or bot, any channel the app is in):
   4. build the system prompt (SOUL + Slack hints + who's talking, via
      ``asa_bot.preamble.build`` — its per-user ``memory`` note mechanism
      works unchanged, keyed on the identity's author_handle)
-  5. router.dispatch(), off the event loop thread (asyncio.to_thread) —
+  5. router.route(), off the event loop thread (asyncio.to_thread) —
      a single blocking call, same reliability class as Discord's own
      await-a-subprocess live-turn path (lost only on an asa-slack process
      crash mid-turn — an accepted v1 trade-off)
@@ -53,7 +53,7 @@ from asa_slack import identity as identity_check
 from asa_slack.config import Config, load_slack_tokens
 from asa_slack.conv_slug import compute_slug
 from asa_slack.kind_policy import slack_kinds_disabled
-from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
 from precis.utils.msgsplit import split_message
 
 log = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ _IGNORED_SUBTYPES = frozenset(
 
 
 def _dispatch_warm(req: LlmRequest) -> LlmResult:
-    """``dispatch`` with the in-process precis runtime bound first.
+    """``route`` with the in-process precis runtime bound first.
 
     Without the warm-up this process has no bound store, so
     ``live_config.chain_override`` reads dark and every turn falls back to
@@ -89,7 +89,7 @@ def _dispatch_warm(req: LlmRequest) -> LlmResult:
     event loop; cached after the first call.
     """
     warm_runtime()
-    return dispatch(req)
+    return route(req)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

@@ -282,7 +282,7 @@ def _teaser_for(ref: Ref | None) -> str:
 #: Kinds whose chunks are addressed in ``get`` by their universal handles chunk
 #: handle (``dc<id>``) rather than the paper-family ``slug~ord`` selector.
 #: The draft/plan/figure/mermaid chunk-tree family (see
-#: ``handlers/draft.py`` ``_is_draft_chunk_addr``); everything else
+#: ``handlers/draft.py`` ``_is_draft_chunk_handle``); everything else
 #: (paper/patent/…) reads a chunk via ``slug~pos``.
 _CHUNK_HANDLE_GET_KINDS = frozenset({"draft", "plan", "figure", "mermaid"})
 

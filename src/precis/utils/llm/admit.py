@@ -19,7 +19,7 @@ Two layers, both here:
   byte). Reused by the standalone :func:`admit_context` for the context-assembly
   path, which can split/trim *before* forming a doomed request.
 
-Refusal is a returned reason (folded into ``LlmResult.error`` by ``dispatch``,
+Refusal is a returned reason (folded into ``LlmResult.error`` by ``route``,
 the same shape as the budget ``gate_tier`` trip), **never a raised exception** —
 so a pinned-model worker pass treats it as a failed call and applies its normal
 backoff instead of spinning. A pass that wants to page on a *durable* oversize
@@ -238,7 +238,7 @@ def raise_oversize_alert(
     so a pass that keeps hitting the same oversize bumps one row's ``seen_count``
     rather than flooding ``ref_events`` — the fetcher/chase backoff discipline.
     A pass calls this when it decides the oversize is terminal / backed-off;
-    ``dispatch`` itself only returns the reason (no alert on interactive paths).
+    ``route`` itself only returns the reason (no alert on interactive paths).
     """
     try:
         from precis.alerts import raise_alert

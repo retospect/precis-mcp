@@ -158,8 +158,8 @@ class TestMeditationDispatch:
 
 class TestCardForgeDispatch:
     def test_passes_params_and_reports(self, monkeypatch: Any) -> None:
-        import precis.reading.cards as cards
-        from precis.reading.cards import CardDecision, ForgeReport
+        import precis.reading.flashcards as flashcards
+        from precis.reading.flashcards import CardDecision, ForgeReport
         from precis.workers.job_types import card_forge as cf_jt
 
         seen: dict[str, Any] = {}
@@ -171,7 +171,7 @@ class TestCardForgeDispatch:
                 decisions=[CardDecision(31, 11, "rewrite", "wording at fault")],
             )
 
-        monkeypatch.setattr(cards, "run_card_forge", fake_run)
+        monkeypatch.setattr(flashcards, "run_card_forge", fake_run)
         ctx = _FakeCtx(meta={"params": {"cohort": "waves", "per_day": 3}})
         cf_jt._dispatch(ctx, cf_jt.SPEC)
         assert seen == {"cohort": "waves", "per_day": 3}
@@ -181,13 +181,13 @@ class TestCardForgeDispatch:
         assert "ak21" in summary and "would rewrite ak31" in summary
 
     def test_raise_records_failure(self, monkeypatch: Any) -> None:
-        import precis.reading.cards as cards
+        import precis.reading.flashcards as flashcards
         from precis.workers.job_types import card_forge as cf_jt
 
         def boom(store: Any, **k: Any) -> Any:
             raise RuntimeError("forge cold")
 
-        monkeypatch.setattr(cards, "run_card_forge", boom)
+        monkeypatch.setattr(flashcards, "run_card_forge", boom)
         ctx = _FakeCtx()
         cf_jt._dispatch(ctx, cf_jt.SPEC)
         assert ctx.failure is not None and "forge cold" in ctx.failure

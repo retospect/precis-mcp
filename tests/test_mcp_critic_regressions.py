@@ -1245,7 +1245,7 @@ def test_bibtex_unescapes_html_entities() -> None:
     not the verbatim HTML entity. (MCP critic MINOR.)"""
     from datetime import datetime
 
-    from precis.handlers._paper_format import _format_citation
+    from precis.handlers._paper_format import _render_citation
     from precis.store.types import Ref
 
     _now = datetime(2026, 1, 1, tzinfo=UTC)
@@ -1263,7 +1263,7 @@ def test_bibtex_unescapes_html_entities() -> None:
         updated_at=_now,
         deleted_at=None,
     )
-    bibtex = _format_citation(ref, style="bibtex")
+    bibtex = _render_citation(ref, style="bibtex")
     # &amp; must collapse to & then LaTeX-escape to \&.
     assert r"\&" in bibtex
     assert "&amp;" not in bibtex
@@ -1301,48 +1301,48 @@ def test_citation_export_no_entry_type_unchanged() -> None:
     """A paper with no ``meta.entry_type`` exports exactly as it did
     before the type-aware mapping existed — the journal-article default
     (@article / TY  - JOUR / %0 Journal Article)."""
-    from precis.handlers._paper_format import _format_citation
+    from precis.handlers._paper_format import _render_citation
 
     ref = _citation_ref(None)
-    assert _format_citation(ref, style="bibtex").startswith("@article{")
-    assert _format_citation(ref, style="ris").startswith("TY  - JOUR")
-    assert _format_citation(ref, style="endnote").startswith("%0 Journal Article")
+    assert _render_citation(ref, style="bibtex").startswith("@article{")
+    assert _render_citation(ref, style="ris").startswith("TY  - JOUR")
+    assert _render_citation(ref, style="endnote").startswith("%0 Journal Article")
 
 
 def test_citation_export_proceedings_article_maps_to_conference() -> None:
     """``entry_type: proceedings-article`` → BibTeX ``@inproceedings`` and
     RIS ``TY  - CONF`` (acceptance criterion,
     docs/backlog/paper-meta-surfacing.md)."""
-    from precis.handlers._paper_format import _format_citation
+    from precis.handlers._paper_format import _render_citation
 
     ref = _citation_ref("proceedings-article")
-    assert _format_citation(ref, style="bibtex").startswith("@inproceedings{")
-    assert _format_citation(ref, style="ris").startswith("TY  - CONF")
-    assert _format_citation(ref, style="endnote").startswith("%0 Conference Paper")
+    assert _render_citation(ref, style="bibtex").startswith("@inproceedings{")
+    assert _render_citation(ref, style="ris").startswith("TY  - CONF")
+    assert _render_citation(ref, style="endnote").startswith("%0 Conference Paper")
 
 
 def test_citation_export_posted_content_notes_preprint() -> None:
     """``posted-content`` → BibTeX ``@misc`` + a preprint note, RIS
     ``UNPB``, EndNote "Unpublished Work"."""
-    from precis.handlers._paper_format import _format_citation
+    from precis.handlers._paper_format import _render_citation
 
     ref = _citation_ref("posted-content")
-    bibtex = _format_citation(ref, style="bibtex")
+    bibtex = _render_citation(ref, style="bibtex")
     assert bibtex.startswith("@misc{")
     assert "note = {Preprint}" in bibtex
-    assert _format_citation(ref, style="ris").startswith("TY  - UNPB")
-    assert _format_citation(ref, style="endnote").startswith("%0 Unpublished Work")
+    assert _render_citation(ref, style="ris").startswith("TY  - UNPB")
+    assert _render_citation(ref, style="endnote").startswith("%0 Unpublished Work")
 
 
 def test_citation_export_unknown_entry_type_falls_back_to_default() -> None:
     """An entry_type outside ``_EXPORT_TYPE_MAP`` (e.g. Crossref's
     ``reference-entry``, or the select's ``other``) degrades to the same
     journal-article default as no entry_type at all."""
-    from precis.handlers._paper_format import _format_citation
+    from precis.handlers._paper_format import _render_citation
 
     ref = _citation_ref("reference-entry")
-    assert _format_citation(ref, style="bibtex").startswith("@article{")
-    assert _format_citation(ref, style="ris").startswith("TY  - JOUR")
+    assert _render_citation(ref, style="bibtex").startswith("@article{")
+    assert _render_citation(ref, style="ris").startswith("TY  - JOUR")
 
 
 def test_paper_list_view_strips_jats_markup() -> None:

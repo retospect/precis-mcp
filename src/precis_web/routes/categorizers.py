@@ -271,7 +271,7 @@ def _effective_state(store: Store) -> dict[str, dict[str, Any]]:
 
     out: dict[str, dict[str, Any]] = {
         "classify": {
-            # §L: no env fallback any more — a formerly-env-gated pass with
+            # §L: no env fallback any more — a formerly dark-switched pass with
             # no service_config row now defaults OFF (mirrors
             # cli/worker.py's ``_profile_default_on``).
             "enabled": resolver.enabled("classify", default_on=False),

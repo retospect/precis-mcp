@@ -556,7 +556,7 @@ class LinksMixin:
         Each dict may carry ``s2_id`` / ``doi`` / ``title`` / ``year`` /
         ``held_ref_id`` (all optional, ``None`` when absent) — resolution
         of ``held_ref_id`` against ``ref_identifiers`` is the caller's job
-        (:mod:`precis.backfill.citation_lens`), this method is pure
+        (:mod:`precis.backfill.citation_recall`), this method is pure
         persistence. Returns the number of rows inserted (``len(neighbors)``).
         """
 
@@ -633,7 +633,7 @@ class LinksMixin:
     def s2_neighbors_fresh(self, ref_id: int) -> bool:
         """Cheap presence check: has ``ref_id`` ever had its S2 neighbour
         list persisted (either direction)? **Not** a TTL check — the
-        ``citation_edges`` ref_event (``citation_lens._is_fresh``) is the
+        ``citation_edges`` ref_event (``citation_recall._is_fresh``) is the
         30-day staleness gate that decides whether to re-fetch; this is
         purely "is there anything to show yet", the signal the web layer
         needs to decide whether opening Sources/Cited should trigger an
@@ -662,7 +662,7 @@ class LinksMixin:
         Called right after a single-row Fetch (``POST
         /papers/{ref_id}/fetch-ref``) mints or reuses the stub, so the row
         flips to held/queued immediately instead of waiting for the next
-        ``citation_lens`` TTL refresh. No-op (returns 0, no query run) when
+        ``citation_recall`` TTL refresh. No-op (returns 0, no query run) when
         neither identifier is given — the Fetch button never posts without
         at least one anyway (see ``routes/papers.py::fetch_ref``).
         """

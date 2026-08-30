@@ -75,7 +75,7 @@ from precis.store import Store
 from precis.utils import handle_registry
 from precis.utils.dream_seed import load_lenses, render_lens_block
 from precis.utils.env import env_flag
-from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch, resolve_model
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, resolve_model, route
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.oracle_lens import draw_lens_entry, render_lens_block_from_draw
 from precis.utils.working_set_render import render_working_set
@@ -226,7 +226,7 @@ def run_dream_pass(store: Store) -> BatchResult:
     # operator-authored ``llm.chain.big`` (local qwen3-235b → OSS cloud)
     # carries it. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL``
     # pin (None ⇒ the tier default). Errors fold into ``res.error``.
-    res = dispatch(
+    res = route(
         LlmRequest(
             tier=Tier.BIG,
             source="dream",

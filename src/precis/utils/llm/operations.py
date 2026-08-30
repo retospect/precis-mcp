@@ -6,17 +6,17 @@ and a call-site ``req.model`` pin. An *operation* is one LLM call site, identifi
 by its ``req.source`` tag (``reading_brief``, ``meditation``, …). This module owns
 **which operations are steerable** and **their code defaults**; the runtime override
 lives in ``app_settings`` (:func:`precis.utils.llm.live_config.op_override`) and the
-resolution is applied inside :func:`~precis.utils.llm.router.dispatch`.
+resolution is applied inside :func:`~precis.utils.llm.router.route`.
 
 **Opt-in allow-list, by design.** :data:`LLM_OPERATIONS` is *not* every source that
 runs — it is the curated set that is **safe to steer**: an operation is here only if
-it (a) routes through ``dispatch()`` and (b) carries no *functional* ``req.model``
+it (a) routes through ``route()`` and (b) carries no *functional* ``req.model``
 pin. Two classes are deliberately **excluded** (:data:`EXCLUDED_OPERATIONS`), so the
 override layer never touches them:
 
 - **router-bypassers** — ``fix_gripe`` calls ``resolve_model`` + a raw ``claude -p``
-  subprocess, never ``dispatch()``; an ``llm.op.fix_gripe`` override would be a
-  silent no-op (routing it through ``dispatch()`` is a named follow-up).
+  subprocess, never ``route()``; an ``llm.op.fix_gripe`` override would be a
+  silent no-op (routing it through ``route()`` is a named follow-up).
 - **functional pins** — ``classify`` / ``classify_topics`` pin ``model="summarizer"``
   to hit the *local-serving* alias (``glm-fleet-flip-safety.md`` Part 1); a blanket
   override beating that pin would reopen the empty-response bug it fixed.
@@ -27,7 +27,7 @@ for them.
 
 **Ships dark.** With :data:`LLM_OPERATIONS` mirroring each migrated call site's former
 ``model=`` literal and no ``llm.op.*`` row written, :func:`resolve_op` returns the same
-model the call site pinned before, so ``dispatch()`` resolves byte-identically.
+model the call site pinned before, so ``route()`` resolves byte-identically.
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
 #: never reaches these; the UI shows them read-only with the reason.
 EXCLUDED_OPERATIONS: dict[str, ExcludedOp] = {
     "fix_gripe": ExcludedOp(
-        "bypasses the router — agentic `call_claude_agent` chokepoint, not dispatch()"
+        "bypasses the router — agentic `call_claude_agent` chokepoint, not route()"
     ),
     "classify": ExcludedOp(
         "model pinned in code for correctness (local-serving `summarizer` alias)"
@@ -248,7 +248,7 @@ def resolve_op(source: str | None) -> tuple[Tier, str | None] | None:
         registry literal
 
     for the model, plus a tier remap from the DB override. The returned
-    ``model`` is a *fallback* for ``dispatch()`` (``model or resolve_model(tier)``),
+    ``model`` is a *fallback* for ``route()`` (``model or resolve_model(tier)``),
     so a per-tier ``llm.chain.<tier>`` rung that pins its own model still wins
     over this — matching the proposal's precedence ladder.
     """

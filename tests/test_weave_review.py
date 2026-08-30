@@ -164,7 +164,7 @@ class TestMintWeaveReviews:
 
     def test_custom_lenses(self, store: Any) -> None:
         qid = _mk_quest(store, "A quest for a single-lens review")
-        ids = mint_weave_reviews(store, qid, "dc42", lenses=("flow",))
+        ids = mint_weave_reviews(store, qid, "dc42", personas=("flow",))
         assert len(ids) == 1
         ref = store.get_ref(kind="todo", id=ids[0])
         assert ref is not None

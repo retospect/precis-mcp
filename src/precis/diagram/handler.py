@@ -48,7 +48,7 @@ class DiagramHandler(Handler):
     def _supports_bounds(self) -> bool:
         return self.LANG.default_bounds() is not None
 
-    def _is_node_addr(self, s: str) -> bool:
+    def _is_node_handle(self, s: str) -> bool:
         s = s.strip()
         pre = self.LANG.node_prefix
         return s.startswith(pre) and s[len(pre) :].isdigit()
@@ -109,7 +109,7 @@ class DiagramHandler(Handler):
         s = str(id or "").strip()
         if not s:
             raise BadInput(f"edit(kind='{self.LANG.kind}') requires id=")
-        if self._is_node_addr(s):
+        if self._is_node_handle(s):
             node = self.store.drafts.get_draft_chunk(s, kind=self.LANG.kind)
             if node is None:
                 raise NotFound(f"{self.LANG.kind} node {s} not found")
@@ -171,7 +171,7 @@ class DiagramHandler(Handler):
                 f"unknown {self.LANG.kind} view {view!r}",
                 next=f"omit view= for the {self.LANG.kind}",
             )
-        if self._is_node_addr(s):
+        if self._is_node_handle(s):
             return self._render_node(s)
         ref = resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=s)
         return self._render(s, ref)
@@ -185,10 +185,10 @@ class DiagramHandler(Handler):
             empty_body=f"no {k}s yet — put(kind='{k}', id='…', title='…')",
         )
 
-    def _render_node(self, addr: str) -> Response:
-        node = self.store.drafts.get_draft_chunk(addr, kind=self.LANG.kind)
+    def _render_node(self, handle: str) -> Response:
+        node = self.store.drafts.get_draft_chunk(handle, kind=self.LANG.kind)
         if node is None:
-            raise NotFound(f"{self.LANG.kind} node {addr!r} not found")
+            raise NotFound(f"{self.LANG.kind} node {handle!r} not found")
         return Response(body=f"{node.dc}  [{node.chunk_kind}]\n{node.text}")
 
     def _render(self, slug: str, ref: Any) -> Response:

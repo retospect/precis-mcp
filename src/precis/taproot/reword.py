@@ -75,7 +75,7 @@ from precis.taproot.canon import (
 )
 from precis.taproot.hub import refine_claim_sentence
 from precis.taproot.sentence_lint import _OVER_LONG_CHARS
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.numerics import extract_numerics
 
 if TYPE_CHECKING:
@@ -317,7 +317,7 @@ def propose_reword(
         lint_codes=", ".join(lint_codes) or "(none)",
         max_chars=_OVER_LONG_CHARS,
     )
-    res = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="taproot:reword"))
+    res = route(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="taproot:reword"))
     if res.error:
         log.warning("taproot-reword: reword hook failed: %s", res.error)
         return None

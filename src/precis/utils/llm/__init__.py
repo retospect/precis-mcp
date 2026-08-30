@@ -1,7 +1,7 @@
 """The LLM routing layer — tiers, chains, catalog.
 
 One seam for model selection + transport choice + result normalization:
-every routed call goes through :func:`dispatch` (or :func:`dispatch_async`
+every routed call goes through :func:`route` (or :func:`dispatch_async`
 for streaming) to a narrow :class:`LlmProvider` port picked from a
 :class:`Transport`-keyed registry. ``claude -p`` is just two adapters among
 peers — Anthropic is a swappable leaf, and every agentic + judge call site
@@ -18,7 +18,7 @@ Public surface:
 * :func:`select_transport` / :func:`transport_for_profile` — routing.
 * :class:`LlmProvider` / :func:`provider_for` — the swappable backend port
   + its registry accessor (the LLM-independence seam).
-* :class:`LlmRequest` / :func:`dispatch` — the seam.
+* :class:`LlmRequest` / :func:`route` — the seam.
 * :class:`LlmResult` + ``result_from_*`` — the normalized result.
 
 Tiers
@@ -118,13 +118,13 @@ All switches are live: ``live_config`` layers app_settings rows (written by
 no row ⇒ byte-identical to env-only routing. Two call sites whose
 ``--model`` assumes claude semantics — ``fix_gripe`` and
 ``sandbox_run``/``claude_docker`` — read :func:`resolve_backend` and skip
-clean under ``backend=openai`` instead of folding through :func:`dispatch`.
+clean under ``backend=openai`` instead of folding through :func:`route`.
 
 The ``llm`` model catalog (ships dark) layers on this seam — facts/writer in
 :mod:`precis.llm_catalog`, handler in :mod:`precis.handlers.llm`:
 
 * :mod:`~precis.utils.llm.admit` — pure window fit-check wired into
-  :func:`dispatch` after ``gate_tier``; a doomed (context, model) pairing
+  :func:`route` after ``gate_tier``; a doomed (context, model) pairing
   is refused *with the numbers* as a normalized ``LlmResult.error``, never
   raised. No card / no known window ⇒ no-op.
 * :mod:`~precis.utils.llm.policy` — ``select_offering`` (deterministic
@@ -146,13 +146,13 @@ from precis.utils.llm.router import (
     LlmResult,
     Tier,
     Transport,
-    dispatch,
     provider_for,
     resolve_backend,
     resolve_model,
     result_from_agent,
     result_from_claude_p,
     result_from_openai,
+    route,
     select_transport,
     transport_for_profile,
 )
@@ -164,13 +164,13 @@ __all__ = [
     "LlmResult",
     "Tier",
     "Transport",
-    "dispatch",
     "provider_for",
     "resolve_backend",
     "resolve_model",
     "result_from_agent",
     "result_from_claude_p",
     "result_from_openai",
+    "route",
     "select_transport",
     "transport_for_profile",
 ]

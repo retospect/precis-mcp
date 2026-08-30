@@ -5,7 +5,7 @@ A figure is usually *part of a document*. When it is, the drawer should open
 with the owning draft in front of it — not guess from the figure title. This
 module assembles that context in two layers:
 
-- **Layer 1 — the owning draft, collapsed.** Every block as a heading + gloss
+- **Layer 1 — the owning draft, collapsed.** Every block as a heading + summary
   row (the ``get(kind='draft')`` outline). Cheap, always included; the drawer
   expands what it needs via Layer 3's tools.
 - **Layer 2 — the paragraphs the instruction points at, expanded in place.**
@@ -237,13 +237,13 @@ def _doc_title(store: Any, draft_ref_id: int, chunks: list[Any]) -> str:
     return ""
 
 
-def _gloss(chunk: Any, views: dict[str, Any]) -> str:
+def _summary_line(chunk: Any, views: dict[str, Any]) -> str:
     v = views.get(getattr(chunk, "handle", ""), {}) if views else {}
-    gloss = v.get("summary") or v.get("keywords") or ""
-    if not gloss:
+    summary = v.get("summary") or v.get("keywords") or ""
+    if not summary:
         txt = getattr(chunk, "text", "") or ""
-        gloss = txt.splitlines()[0] if txt else ""
-    return " ".join(str(gloss).split())
+        summary = txt.splitlines()[0] if txt else ""
+    return " ".join(str(summary).split())
 
 
 _ADMONITION = (
@@ -299,7 +299,7 @@ def build_document_context(
         except Exception:  # pragma: no cover — defensive
             views = {}
     outline = [
-        f"{'  ' * getattr(c, 'depth', 0)}{c.dc}  [{c.chunk_kind}] {_gloss(c, views)}".rstrip()
+        f"{'  ' * getattr(c, 'depth', 0)}{c.dc}  [{c.chunk_kind}] {_summary_line(c, views)}".rstrip()
         for c in chunks
     ]
     terms = entities_from_instruction(instruction)

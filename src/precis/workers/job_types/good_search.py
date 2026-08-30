@@ -627,7 +627,7 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
     executor (``_finalize_plugin_dispatch``) drives the happy path to
     ``STATUS:succeeded``.
     """
-    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+    from precis.utils.llm.router import LlmRequest, Tier, route
 
     params = (ctx.meta or {}).get("params") or {}
     q = str(params.get("q") or "").strip()
@@ -650,7 +650,7 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
     for attempt in (1, 2):
         # Routed through the LLM seam: MEDIUM judge, so
         # PRECIS_LLM_BACKEND can switch it. Errors fold into res.error.
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=Tier.MEDIUM,
                 prompt=prompt,

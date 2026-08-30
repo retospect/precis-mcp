@@ -813,7 +813,7 @@ def _render_universal_handle(
 
 
 def _render_authoring(
-    addr: str,
+    handle: str,
     *,
     compact: bool = False,
     local: frozenset[str] | None = None,
@@ -825,15 +825,15 @@ def _render_authoring(
     anything else stays literal. A ``[[dc…]]`` render-policy part shows its
     numeral (``callouts``)."""
     universal = _render_universal_handle(
-        addr, addr, compact=compact, local=local, callouts=callouts
+        handle, handle, compact=compact, local=local, callouts=callouts
     )
     if universal is not None:
         return universal
-    m = _REF_PATTERN.fullmatch(addr)
+    m = _REF_PATTERN.fullmatch(handle)
     if m is not None and m.group("kind") in _LINKIFY_KINDS:
         if m.group("kind") not in _LOW_SIGNAL_KINDS:
             return _render_anchor(m.group("kind"), m.group("id"), m.group("chunk"))
-    return escape(f"[[{addr}]]")
+    return escape(f"[[{handle}]]")
 
 
 #: Splits rendered HTML into tag (``<…>``) vs text runs so the abbrev

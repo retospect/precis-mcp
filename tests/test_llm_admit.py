@@ -141,7 +141,7 @@ class TestDispatchIntegration:
     def test_dispatch_refuses_oversized_fixed_model(self, bound_store: Any) -> None:
         from precis import llm_catalog
         from precis.utils.llm import admit
-        from precis.utils.llm.router import LlmRequest, dispatch
+        from precis.utils.llm.router import LlmRequest, route
 
         llm_catalog.upsert_card(
             store_of(bound_store),
@@ -158,7 +158,7 @@ class TestDispatchIntegration:
             prompt="x" * 4000,  # ~1000 tokens ≫ 100 window
             source="test:admit",
         )
-        res = dispatch(req)
+        res = route(req)
         assert res.error is not None and "max input" in res.error
         assert res.text == ""
 

@@ -3,7 +3,7 @@
 Reuses asa_bot's generic ``PrecisConfig`` / ``PreambleConfig`` dataclasses
 (neither has any Discord coupling) — only the Slack-specific pieces (tokens,
 router/dispatch knobs) are new here. ``asa_slack`` has no ``LLMConfig``
-equivalent: it calls ``precis.utils.llm.router.dispatch()`` in-process
+equivalent: it calls ``precis.utils.llm.router.route()`` in-process
 instead of building its own ``claude`` argv, so there's no subprocess
 command to configure.
 
@@ -54,7 +54,7 @@ class SlackConfig:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class RouterConfig:
-    """Per-turn ``router.dispatch`` knobs — kept low relative to Discord's
+    """Per-turn ``router.route`` knobs — kept low relative to Discord's
     (``--max-turns 100`` there), since Slack turns are semi-trusted and
     shouldn't be able to run away on tool calls or spend."""
 

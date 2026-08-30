@@ -2387,8 +2387,8 @@ def _fake_fanout_recorder(calls: list[dict[str, Any]]):
         store,
         ref_id,
         *,
-        lenses,
-        doc_lenses,
+        personas,
+        doc_personas,
         author=False,
         only_dirty=False,
         scope=None,
@@ -2396,8 +2396,8 @@ def _fake_fanout_recorder(calls: list[dict[str, Any]]):
         calls.append(
             {
                 "ref_id": ref_id,
-                "lenses": lenses,
-                "doc_lenses": doc_lenses,
+                "lenses": personas,
+                "doc_lenses": doc_personas,
                 "only_dirty": only_dirty,
                 "scope": scope,
             }
@@ -2455,7 +2455,7 @@ def test_review_route_all_lens_whole_draft_includes_doc_lenses(
     tmp_path, monkeypatch
 ) -> None:
     import precis_web.routes.drafts as drafts_mod
-    from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES
+    from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS
 
     _rt, client = _review_client(tmp_path)
     calls: list[dict[str, Any]] = []
@@ -2463,8 +2463,8 @@ def test_review_route_all_lens_whole_draft_includes_doc_lenses(
 
     r = client.post("/drafts/nt/review", json={"lens": "all"})
     assert r.status_code == 200
-    assert calls[0]["lenses"] == ALL_LENSES
-    assert calls[0]["doc_lenses"] == DOC_LENSES
+    assert calls[0]["lenses"] == ALL_PERSONAS
+    assert calls[0]["doc_lenses"] == DOC_PERSONAS
     assert calls[0]["scope"] is None
 
 
@@ -2475,7 +2475,7 @@ def test_review_route_all_lens_scoped_still_passes_doc_lenses_through(
     # scoped call) — the route doesn't need to special-case this, just pass
     # both through.
     import precis_web.routes.drafts as drafts_mod
-    from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES
+    from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS
 
     _rt, client = _review_client(tmp_path)
     calls: list[dict[str, Any]] = []
@@ -2483,8 +2483,8 @@ def test_review_route_all_lens_scoped_still_passes_doc_lenses_through(
 
     r = client.post("/drafts/nt/review", json={"lens": "all", "dc": "dc2"})
     assert r.status_code == 200
-    assert calls[0]["lenses"] == ALL_LENSES
-    assert calls[0]["doc_lenses"] == DOC_LENSES
+    assert calls[0]["lenses"] == ALL_PERSONAS
+    assert calls[0]["doc_lenses"] == DOC_PERSONAS
     assert calls[0]["scope"] == 2
 
 

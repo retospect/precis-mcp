@@ -31,6 +31,16 @@ Locations:
 
 Impact: a job carrying the other shape silently gets the floor lease. Needs a decision on the canonical meta shape.
 
+**Decided + partially landed**: the key is unified on the nested spelling
+(`params.resources.wall_seconds` — ssh_node/coordinator/quest.compute/
+precis_pathway already wrote this shape). `sandbox_run.py`'s schema and
+`claude_docker.py`'s three read sites (`_lease_seconds`, `_launch_build`,
+`_launch_run`) were migrated to nested-write + a read-both shim
+(`sandbox_run.resolve_wall_seconds`: prefer nested, fall back to legacy
+flat `params.wall_seconds` so an in-flight row keeps leasing/launching).
+The helper *consolidation* itself (one shared `_lease_seconds` instead of
+per-executor copies) remains open.
+
 ## Module-kept copies by convention ×N
 
 Documented in docstrings as "each module keeps its own copy" — causes real drift.

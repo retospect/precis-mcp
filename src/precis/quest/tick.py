@@ -1,7 +1,7 @@
 """quest_tick — one bounded step of a quest's autonomous research loop.
 
 A single, in-process, structured LLM step routed through the LLM routing
-seam (``dispatch(LlmRequest)``) that reads the quest's rolling context —
+seam (``route(LlmRequest)``) that reads the quest's rolling context —
 striving statement, current dossier, slice-3 gaps + momentum, recent
 logbook tail — and returns:
 
@@ -49,6 +49,7 @@ from precis.quest.logbook import (
 from precis.reading.cast_common import _TOKENS_PER_WORD
 from precis.utils import handle_registry
 from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.text import excerpt
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
@@ -431,9 +432,7 @@ def _paper_abstract_snippet(store: Store, ref: Ref) -> str:
         text = _strip_jats(text).strip()
     except Exception:  # pragma: no cover - formatter import is best-effort
         pass
-    if len(text) > _PAPER_DETAIL_CHARS:
-        text = text[:_PAPER_DETAIL_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
-    return text
+    return excerpt(text, limit=_PAPER_DETAIL_CHARS, collapse_whitespace=False)
 
 
 def _paper_citable_handle(store: Store, ref: Ref) -> str | None:
@@ -2005,7 +2004,7 @@ class _TickRun:
     def disp(self) -> Callable[[Any], Any]:
         if self.dispatch_fn is not None:
             return self.dispatch_fn
-        from precis.utils.llm.router import dispatch as _dispatch
+        from precis.utils.llm.router import route as _dispatch
 
         return _dispatch
 

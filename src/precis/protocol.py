@@ -75,7 +75,7 @@ class KindSpec:
     #: notes, jobs, todos — they are not ingested source documents).
     corpus_role: Literal["evidence", "spec", "none"] = "none"
 
-    #: Organizational role. ``"artifact"`` — an authored
+    #: Organizational placement. ``"artifact"`` — an authored
     #: thing (draft, structure, cad, todo, folder): placeable in a
     #: ``kind='folder'`` container via the reserved virtual ``parent``
     #: relation, first-class in the Drive / one-list web surface.
@@ -87,10 +87,10 @@ class KindSpec:
     #: explicit promotion into an authored note. ``"system"`` —
     #: infrastructure kinds (skill, tag, cron, oracle). The default is
     #: ``"stream"``: the safe failure mode — a new kind stays out of
-    #: folders until deliberately promoted. NB ``role`` does *not*
+    #: folders until deliberately promoted. NB ``placement`` does *not*
     #: alter cross-kind search fan-out, which stays keyed on
     #: ``supports_search_hits``.
-    role: Literal["artifact", "corpus", "stream", "system"] = "stream"
+    placement: Literal["artifact", "corpus", "stream", "system"] = "stream"
 
     #: User-authored note-like kinds opt-in to ``PRECIS_DEFAULT_TAGS``
     #: merging on ``put`` (and tag-suggestion hints on ``tag``).

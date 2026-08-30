@@ -3,7 +3,7 @@ id: precis-edit-help
 title: precis — anchored region edits across file kinds
 summary: anchored region edits — find-replace grammar, before/after anchors, per-kind validation
 answers:
-  - how do I replace one string in a file without rewriting the whole block?
+  - how do I replace one string in a file without rewriting the whole chunk?
   - how do I rewrite an entire section or function by its handle?
   - what do I do when find= matches more than one place?
   - how do I preview an edit without committing it?
@@ -18,8 +18,8 @@ status: active
 across `markdown`, `plaintext`, `tex`, and `python`; only the
 post-edit validation differs.
 
-Address the block by the **handle** get/search hands you — `mc<id>` for a
-markdown block, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
+Address the chunk by the **handle** get/search hands you — `mc<id>` for a
+markdown chunk, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
 `id=`. Append a `~<selector>` to scope within it (`~L42`, `~L42-58`, a content
 slug, …).
 
@@ -30,7 +30,7 @@ slug, …).
 ```python
 edit(
     kind="markdown",
-    id="mc512",  # the block handle from get/search
+    id="mc512",  # the chunk handle from get/search
     mode="find-replace",
     find="the",
     before="over ",
@@ -43,7 +43,7 @@ edit(
 strict whitespace — that pin the match when `find=` alone is
 ambiguous. `mode='find-replace'` is the default.
 
-## Delete a matched span without touching the surrounding block
+## Delete a matched span without touching the surrounding chunk
 ## Remove a line, cite, or token from a file
 ## Drop one field from a structured entry
 
@@ -60,9 +60,9 @@ edit(
 ```
 
 Pass `text=''` to delete the match. The `delete` verb is for whole
-files and whole blocks — not lines or tokens.
+files and whole chunks — not lines or tokens.
 
-## Rewrite a whole block, function, or paragraph
+## Rewrite a whole chunk, function, or paragraph
 ## Replace an entire region by its handle
 ## Overwrite one section of a file
 
@@ -77,7 +77,7 @@ edit(
 )
 ```
 
-`mode='replace'` with `id='<slug>~<selector>'` rewrites one block.
+`mode='replace'` with `id='<slug>~<selector>'` rewrites one chunk.
 With a bare `id='<slug>'` (no selector), it rewrites the whole file.
 
 ## Add text next to an existing anchor
@@ -231,7 +231,7 @@ Per-kind gates:
 
 | Kind | Gate | Format |
 |---|---|---|
-| `markdown` | re-parse blocks on re-ingest | — |
+| `markdown` | re-parse chunks on re-ingest | — |
 | `plaintext` | UTF-8 encode check | — |
 | `tex` | re-parse sections on re-ingest | — |
 | `python` | `ast.parse` + qualname-stable | `ruff check --fix` + `ruff format` |
@@ -242,7 +242,7 @@ Per-kind gates:
 |---|---|
 | Create a new file | `put(kind='<kind>', id='<slug>', text='...')` |
 | Rewrite a region of an existing file | `edit` |
-| Remove a whole file or block | `delete` |
+| Remove a whole file or chunk | `delete` |
 | Remove one line or token | `edit` with `text=''` |
 
 `put` on a file kind is creation-only; use `edit` to modify.
@@ -271,7 +271,7 @@ get(kind="skill", id="precis-markdown-help")  # markdown recipes
 get(kind="skill", id="precis-python-help")  # python AST gates + ruff
 get(kind="skill", id="precis-plaintext-help")  # plaintext quirks
 get(kind="skill", id="precis-put-help")  # creating new files
-get(kind="skill", id="precis-delete-help")  # whole-file and whole-block removal
+get(kind="skill", id="precis-delete-help")  # whole-file and whole-chunk removal
 get(
     kind="skill", id="precis-draft-help"
 )  # draft-only edit ops: move/table/review/authoring/…

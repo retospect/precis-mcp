@@ -2,7 +2,7 @@
 
 The hard rail. Two gates, one for each spend chokepoint:
 
-* :func:`gate_tier` — called from ``router.dispatch`` before a provider runs.
+* :func:`gate_tier` — called from ``router.route`` before a provider runs.
   Any *paid* tier (non-``free`` band — cheap ``BIG``/``MEDIUM`` as
   well as expensive ``FRONTIER``) is gated; if it costs money, the cap
   limits it. Only the free ``SMALL`` tier passes untouched.

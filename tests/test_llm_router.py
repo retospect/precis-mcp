@@ -1,7 +1,7 @@
 """Tests for :mod:`precis.utils.llm.router` — the routing seam.
 
 DB-free and network-free: the tier→model table is pure env reads, the
-transport selection is a pure function, and dispatch is exercised by
+transport selection is a pure function, and route is exercised by
 monkeypatching the three wrappers so no real ``claude`` subprocess spawns
 and no local transport wire is hit.
 
@@ -29,12 +29,12 @@ from precis.utils.llm.router import (
     LlmResult,
     Tier,
     Transport,
-    dispatch,
     resolve_backend,
     resolve_model,
     result_from_agent,
     result_from_claude_p,
     result_from_openai,
+    route,
     select_transport,
     tier_from_str,
     transport_for_profile,
@@ -270,7 +270,7 @@ def test_result_from_openai_missing_split_leaves_tokens_none() -> None:
     assert got.output_tokens is None
 
 
-# ── dispatch: routes to the right transport (wrappers monkeypatched) ────
+# ── route: routes to the right transport (wrappers monkeypatched) ────
 
 
 def test_dispatch_cloud_agent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -286,11 +286,11 @@ def test_dispatch_cloud_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True))
 
     assert out.text == "agent out"
     assert out.turns_used == 3
-    assert out.duration_s == 1.0  # telemetry preserved through dispatch
+    assert out.duration_s == 1.0  # telemetry preserved through route
     assert out.error is None
     assert calls["prompt"] == "hi"
     assert calls["model"] == "claude-sonnet-5"  # resolved from tier
@@ -310,7 +310,7 @@ def test_dispatch_agent_forwards_disallowed_tools_and_log_event(
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
     sentinel_store = object()
 
-    dispatch(
+    route(
         LlmRequest(
             tier=Tier.FRONTIER,
             prompt="x",
@@ -349,7 +349,7 @@ def test_dispatch_agent_max_tokens_truncates_post_hoc(
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
 
-    out = dispatch(
+    out = route(
         LlmRequest(
             tier=Tier.FRONTIER,
             prompt="hi",
@@ -379,7 +379,7 @@ def test_dispatch_agent_no_max_tokens_leaves_text_untouched(
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
 
-    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="hi", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="hi", tools_needed=True))
 
     assert out.text == long_text
 
@@ -396,9 +396,7 @@ def test_dispatch_cloud_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router, "call_claude_p", fake_p)
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
 
-    out = dispatch(
-        LlmRequest(tier=Tier.MEDIUM, prompt="judge this", tools_needed=False)
-    )
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this", tools_needed=False))
 
     assert out.text == '{"ok": true}'
     assert out.turns_used is None
@@ -422,7 +420,7 @@ def test_dispatch_local(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="summarize me"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="summarize me"))
 
     assert out.text == "local gloss"
     assert out.cost_usd is None
@@ -449,7 +447,7 @@ def test_dispatch_local_uses_explicit_messages(
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
 
-    dispatch(LlmRequest(tier=Tier.SMALL, messages=msgs))
+    route(LlmRequest(tier=Tier.SMALL, messages=msgs))
 
     assert seen["messages"] == msgs
 
@@ -473,11 +471,11 @@ def test_dispatch_local_threads_max_tokens(
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.delenv("PRECIS_SUMMARIZE_MAX_TOKENS", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p", max_tokens=2000))
+    route(LlmRequest(tier=Tier.SMALL, prompt="p", max_tokens=2000))
     assert seen["max_tokens"] == 2000
 
     # Unset ⇒ the env/config default (220) — byte-identical to today.
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
+    route(LlmRequest(tier=Tier.SMALL, prompt="p"))
     assert seen["max_tokens"] == 220
 
 
@@ -522,7 +520,7 @@ def test_dispatch_local_threads_tier_gen_default_temperature(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
+    route(LlmRequest(tier=Tier.SMALL, prompt="p"))
     assert seen["temperature"] == 0.0
 
 
@@ -543,11 +541,11 @@ def test_dispatch_local_explicit_temperature_overrides_tier_default(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p", temperature=0.85))
+    route(LlmRequest(tier=Tier.SMALL, prompt="p", temperature=0.85))
     assert seen["temperature"] == 0.85
 
     # Unset ⇒ back to the tier default.
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
+    route(LlmRequest(tier=Tier.SMALL, prompt="p"))
     assert seen["temperature"] == 0.0
 
 
@@ -565,7 +563,7 @@ def test_dispatch_claude_transport_ignores_gen_params(
     monkeypatch.setattr(router, "call_claude_p", fake_p)
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
-    out = dispatch(
+    out = route(
         LlmRequest(tier=Tier.FRONTIER, prompt="x", thinking=False, temperature=0.9)
     )
     assert out.error is None
@@ -579,7 +577,7 @@ def test_dispatch_local_routes_to_served_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A reserved local slot that declares a direct ``endpoint`` (llama-swap)
-    overrides the local dispatch's URL + model — the Phase-2 litellm-retire flip.
+    overrides the local route's URL + model — the Phase-2 litellm-retire flip.
     """
     import precis.workers.llm_summarize as summ
     from precis.utils.llm import local_serving as ls
@@ -612,7 +610,7 @@ def test_dispatch_local_routes_to_served_endpoint(
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="hi"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="hi"))
 
     # URL + model came from the slot's endpoint, not the litellm proxy default.
     assert seen["url"] == "http://127.0.0.1:11445/v1"
@@ -650,7 +648,7 @@ def test_dispatch_local_slot_without_endpoint_keeps_proxy(
     monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
     monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="hi"))
+    route(LlmRequest(tier=Tier.SMALL, prompt="hi"))
 
     assert seen["url"] == "http://127.0.0.1:4000/v1"  # litellm proxy default
     assert seen["model"] == "summarizer"
@@ -731,7 +729,7 @@ def test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="classify me"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="classify me"))
 
     # THE regression: the slot was looked up under the rung's served id, not the
     # pre-chain "summarizer" alias.
@@ -767,7 +765,7 @@ def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "looped"
     assert out.turns_used == 2
@@ -1131,7 +1129,7 @@ def test_openai_tools_unknown_model_and_no_cost_stays_none(
 def test_dispatch_openai_tools_cost_reaches_route_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A full dispatch() through the OPENAI_TOOLS transport writes the loop's
+    """A full route() through the OPENAI_TOOLS transport writes the loop's
     cost into the route-log's LlmCallRecord.cost_usd — un-blinding the budget
     breaker end to end (acceptance criterion 2)."""
     from precis import route_log
@@ -1154,7 +1152,7 @@ def test_dispatch_openai_tools_cost_reaches_route_log(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert len(recorded) == 1
     assert recorded[0].cost_usd == pytest.approx(0.0055)
@@ -1163,7 +1161,7 @@ def test_dispatch_openai_tools_cost_reaches_route_log(
 def test_dispatch_client_routes_through_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """DispatchClient.complete folds a local completion through dispatch,
+    """DispatchClient.complete folds a local completion through route,
     threading model + max_tokens, and returns a result carrying text +
     total_tokens (the summarize/classify/glossary passes' contract)."""
     import precis.workers.llm_summarize as summ
@@ -1191,7 +1189,7 @@ def test_dispatch_client_routes_through_dispatch(
     out = client.complete(msgs)
 
     assert out.text == "gloss out"
-    assert out.total_tokens == 99  # accounting preserved through dispatch
+    assert out.total_tokens == 99  # accounting preserved through route
     assert seen["model"] == "summarizer"
     assert seen["max_tokens"] == 2000
     assert seen["messages"] == msgs
@@ -1201,7 +1199,7 @@ def test_dispatch_client_threads_thinking_and_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DispatchClient's thinking/temperature fields reach the LlmRequest
-    dispatch resolves, same as max_tokens (gen-param passthrough)."""
+    route resolves, same as max_tokens (gen-param passthrough)."""
     import precis.workers.llm_summarize as summ
     from precis.utils.llm.router import DispatchClient
 
@@ -1232,7 +1230,7 @@ def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
 ) -> None:
     """DispatchClient on a cloud tier (``tools_needed=True``) folds a
     ``.complete(messages)`` call through ``claude_agent`` — the router-migrated
-    shape the four former direct-``LlmClient`` cast passes (``reading/cards``,
+    shape the four former direct-``LlmClient`` cast passes (``reading/flashcards``,
     ``workers/briefing``, ``reading/meditation``, ``reading/briefing_cast``) now
     share. ``messages`` (an OpenAI-shaped ``[system, user]`` pair) is split into
     ``system_prompt`` + ``prompt`` — the shape ``claude_agent`` actually reads —
@@ -1281,7 +1279,7 @@ def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
 def test_dispatch_client_cloud_tier_raises_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cloud-tier dispatch failure raises :class:`DispatchError` (a
+    """A cloud-tier route failure raises :class:`DispatchError` (a
     ``RuntimeError`` subclass) — same "the pass marks the item failed" contract
     as the local tier, but distinguishable so a caller's retry policy can treat
     a router-level failure differently from an unrelated ``RuntimeError``."""
@@ -1299,7 +1297,7 @@ def test_dispatch_client_cloud_tier_raises_dispatch_error(
 
 
 def test_dispatch_client_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A dispatch error (transport failure / breaker pause) surfaces as a raise,
+    """A route error (transport failure / breaker pause) surfaces as a raise,
     so the pass marks the item failed + retries — the raw-client contract."""
     import precis.workers.llm_summarize as summ
     from precis.utils.llm.router import DispatchClient
@@ -1338,10 +1336,10 @@ def test_dispatch_log_call_false_skips_route_log(
     recorded: list[object] = []
     monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p", log_call=False))
+    route(LlmRequest(tier=Tier.SMALL, prompt="p", log_call=False))
     assert recorded == []  # opted out
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))  # default logs
+    route(LlmRequest(tier=Tier.SMALL, prompt="p"))  # default logs
     assert len(recorded) == 1
 
 
@@ -1355,7 +1353,7 @@ def test_dispatch_folds_transport_error(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(router, "call_claude_p", boom)
 
-    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 
     # Error is folded into the normalized result, not raised.
     assert out.error is not None
@@ -1426,7 +1424,7 @@ def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="p"))
 
     assert out.paused is True
     assert out.error is not None and "timed out" in out.error
@@ -1448,7 +1446,7 @@ def test_dispatch_local_4xx_is_error_not_paused(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="p"))
 
     assert out.paused is False
     assert out.error is not None and "400" in out.error
@@ -1468,7 +1466,7 @@ def test_dispatch_breaker_trip_is_flagged_paused(
         lambda *a, **kw: "budget: daily cap $20.00 reached ($85.06 spent) — paused",
     )
 
-    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.paused is True
     assert out.error is not None and "daily cap" in out.error
@@ -1486,7 +1484,7 @@ def test_dispatch_explicit_model_override(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
 
-    dispatch(
+    route(
         LlmRequest(
             tier=Tier.FRONTIER,
             prompt="x",
@@ -1570,7 +1568,7 @@ def test_dispatch_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-small")  # OSS id via the tier table
 
-    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
 
     assert out.text == "oss out"
     assert out.cost_usd is None
@@ -1607,7 +1605,7 @@ def test_dispatch_openai_compat_thinking_off_disables_reasoning(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="classify this"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="classify this"))
 
     assert out.error is None
     assert seen["temperature"] == 0.0
@@ -1643,7 +1641,7 @@ def test_dispatch_openai_compat_thinking_on_omits_reasoning_disable(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-small")
 
-    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
 
     assert out.error is None
     assert seen["temperature"] is None  # omitted — provider default
@@ -1676,7 +1674,7 @@ def test_dispatch_openai_compat_explicit_thinking_false_overrides_big_tier_defau
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-mid")
 
-    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", thinking=False))
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", thinking=False))
 
     assert out.error is None
     extra_body = seen["extra_body"]
@@ -1700,7 +1698,7 @@ def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 
     assert out.text == '{"ok": true}'  # claude_p ran, not the OSS path
     assert calls["model"] == "claude-haiku-4-5-20251001"
@@ -1725,7 +1723,7 @@ def test_dispatch_openai_backend_tools_routes_to_loop(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_OPUS", "deepseek-v3")
 
-    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
     assert called.get("ran") is True
     assert called["model"] == "deepseek-v3"
     assert out.text == "ok"
@@ -1745,7 +1743,7 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
     assert calls.get("ran") is True
 
 
@@ -1774,7 +1772,7 @@ def test_dispatch_local_small_remaps_to_hosted_under_openai_flip(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "z-ai/glm-4.7-flash"  # the compiled hosted default
     assert seen["model"] != "summarizer"
@@ -1798,7 +1796,7 @@ def test_dispatch_local_small_remap_env_override(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "some/other-small")
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="rake-lemma"))
+    route(LlmRequest(tier=Tier.SMALL, prompt="x", model="rake-lemma"))
 
     assert seen["model"] == "some/other-small"
 
@@ -1825,7 +1823,7 @@ def test_dispatch_local_small_no_remap_under_default_anthropic(
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "summarizer"
     assert out.model == "summarizer"
@@ -1852,7 +1850,7 @@ def test_dispatch_local_small_no_remap_when_base_url_unset_even_under_openai(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
+    route(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "summarizer"
 
@@ -1893,7 +1891,7 @@ def test_dispatch_served_by_slot_is_never_remapped(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert seen["model"] == "qwen-heavy-served"  # the slot's own name, not remapped
     assert seen["local_url"] == "http://127.0.0.1:11445/v1"
@@ -1929,7 +1927,7 @@ def test_dispatch_saturated_slot_escape_also_remaps(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "z-ai/glm-4.7-flash"
     assert out.model == "z-ai/glm-4.7-flash"
@@ -2210,7 +2208,7 @@ def test_dispatch_failover_flag_falls_back_to_claude(
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.text == "claude saved it"
     assert out.error is None
@@ -2243,7 +2241,7 @@ def test_dispatch_failover_all_rungs_timeout_is_paused(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
 
     assert out.paused is True
     assert out.error is not None and "timed out" in out.error
@@ -2273,7 +2271,7 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x"))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
 
     assert out.paused is False
     assert out.error is not None and "401" in out.error
@@ -2535,7 +2533,7 @@ def test_resolve_chain_empty_override_falls_back_to_default(
 # a tools_needed=True request without complaint and returns prose. Every
 # MEDIUM-tier planner tick therefore ran with zero precis verbs, wrote the
 # calls it would have made as text, and exited clean — so the job was marked
-# succeeded, nothing it was supposed to record got recorded, and dispatch
+# succeeded, nothing it was supposed to record got recorded, and route
 # re-minted it on the next sweep to do it again. Roughly a third of all
 # planner ticks, at a full model run each.
 
@@ -2648,7 +2646,7 @@ def test_dispatch_chain_override_honored_flag_off(
     """The Phase B unlock: an operator ``llm.chain.<tier>`` override is walked
     even with PRECIS_LLM_FAILOVER OFF — Phase A left a set chain inert unless
     the flag was on, so the operator chain editor's rows would have been
-    written but never read. Here rung 0 (OSS) errors and dispatch falls through
+    written but never read. Here rung 0 (OSS) errors and route falls through
     to rung 1 (claude), proving the chain drove the routing."""
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
     monkeypatch.setattr(
@@ -2675,7 +2673,7 @@ def test_dispatch_chain_override_honored_flag_off(
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
     monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, claude)
 
-    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.text == "claude saved it"
     assert out.error is None
@@ -2687,7 +2685,7 @@ def test_dispatch_chain_override_honored_flag_off(
 def test_dispatch_single_rung_chain_override_honors_pinned_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A single-rung operator chain still pins its own model — dispatch must
+    """A single-rung operator chain still pins its own model — route must
     wrap it (``ladder[0].model is not None``) so the rung's model reaches the
     provider rather than the tier-resolved default."""
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
@@ -2708,7 +2706,7 @@ def test_dispatch_single_rung_chain_override_honors_pinned_model(
     compat = _FakeProv(_ok("ok", model="z-ai/glm-4.7"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, compat)
 
-    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 
     assert out.text == "ok"
     assert compat.calls == 1
@@ -2770,7 +2768,7 @@ def test_apply_cloud_throttle_empties_cloud_only_tier(
 #
 # On a host that doesn't locally serve a model, a leading LOCAL rung has no
 # live endpoint — it dials the retired ``:4000`` litellm proxy and ECONNREFUSEs
-# every time. This prunes that guaranteed-dead rung so dispatch advances
+# every time. This prunes that guaranteed-dead rung so route advances
 # straight to the fallback instead of a failover-storm WARN per call.
 
 
@@ -2868,7 +2866,7 @@ def test_dispatch_cloud_throttle_pauses_cloud_only_tier(
     called = _FakeProv(_ok("should not run"))
     monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, called)
 
-    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.paused is True
     assert out.error is not None and "cloud is disabled" in out.error
@@ -2904,7 +2902,7 @@ def test_dispatch_cloud_throttle_drops_to_local_rung(
     prov = _FakeProv(_ok("local qwen out"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, prov)
 
-    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "local qwen out"
     assert prov.calls == 1
@@ -2948,7 +2946,7 @@ def test_dispatch_chain_override_falls_through_to_rung_1(
     )
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
-    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.text == "rung1 saved it"
     assert out.error is None
@@ -2991,7 +2989,7 @@ def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "hosted rung"
     assert out.error is None
@@ -3033,7 +3031,7 @@ def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "claude saved it"
     assert out.error is None
@@ -3070,7 +3068,7 @@ def test_dispatch_paused_local_slot_small_default_backend_still_paused(
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
 
     assert out.paused is True
     assert "busy" in (out.error or "")
@@ -3106,7 +3104,7 @@ def test_dispatch_paused_local_slot_small_openai_backend_falls_to_hosted(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
 
     assert out.text == "hosted rung"
     assert out.error is None
@@ -3137,7 +3135,7 @@ def test_dispatch_paused_local_slot_without_failover_still_returns_paused(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.paused is True
     assert "busy" in (out.error or "")
@@ -3556,7 +3554,7 @@ def test_dispatch_async_falls_back_to_sync_dispatch_without_on_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No ``on_event`` ⇒ ``dispatch_async`` delegates straight to the sync
-    ``dispatch()``, even for a tools-needed cloud tier."""
+    ``route()``, even for a tools-needed cloud tier."""
     import asyncio
 
     from precis.utils.llm.router import dispatch_async
@@ -3569,7 +3567,7 @@ def test_dispatch_async_falls_back_to_sync_dispatch_without_on_event(
             text="sync path", cost_usd=None, turns_used=None, model="m", tier=req.tier
         )
 
-    monkeypatch.setattr(router, "dispatch", fake_dispatch)
+    monkeypatch.setattr(router, "route", fake_dispatch)
 
     out = asyncio.run(
         dispatch_async(LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True))
@@ -3583,7 +3581,7 @@ def test_dispatch_async_falls_back_to_sync_dispatch_for_non_agent_transport(
 ) -> None:
     """``on_event`` is set, but the resolved transport isn't CLAUDE_AGENT (a
     tool-less tier ⇒ ``claude_p``) ⇒ still delegates to the sync
-    ``dispatch()`` — streaming only exists on the agent transport."""
+    ``route()`` — streaming only exists on the agent transport."""
     import asyncio
 
     from precis.utils.llm.router import dispatch_async
@@ -3596,7 +3594,7 @@ def test_dispatch_async_falls_back_to_sync_dispatch_for_non_agent_transport(
             text="sync judge", cost_usd=None, turns_used=None, model="m", tier=req.tier
         )
 
-    monkeypatch.setattr(router, "dispatch", fake_dispatch)
+    monkeypatch.setattr(router, "route", fake_dispatch)
 
     async def on_event(evt: dict) -> None:
         pass
@@ -3743,7 +3741,7 @@ def test_llm_tag_big_passes_todo_guards_vocab() -> None:
 # ── planner_model_choices: the picker source (live chain + catalog meta) ──
 #
 # Every web model-picker dropdown renders these rows, so ``model`` must be
-# the rung dispatch actually tries first (:func:`resolve_chain`'s rung 0),
+# the rung route actually tries first (:func:`resolve_chain`'s rung 0),
 # not the bare :func:`resolve_model` tier default — else an operator
 # ``llm.chain.<tier>`` override (e.g. routing BIG to a local model first)
 # would silently lie to the picker.
@@ -4019,7 +4017,7 @@ def test_dispatch_placement_local_on_cloud_only_chain_is_error(
     called = _FakeProv(_ok("should not run"))
     monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, called)
 
-    out = dispatch(
+    out = route(
         LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, placement="local")
     )
 
@@ -4059,7 +4057,7 @@ def test_dispatch_placement_local_blocks_saturated_slot_hosted_escape(
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, called)
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(
+    out = route(
         LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, placement="local")
     )
 
@@ -4333,7 +4331,7 @@ def test_dispatch_async_placement_parity_with_sync_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``dispatch_async`` applies the same strict placement filter as sync
-    ``dispatch`` before ever deciding whether to stream — a placement that
+    ``route`` before ever deciding whether to stream — a placement that
     empties the (cloud-only) chain errors out without touching the async
     agent path."""
     import asyncio

@@ -1,5 +1,5 @@
-"""Tests for the morning card work (`reading/cards.py`) and mastery-from-Anki
-(`reading/mastery.py`).
+"""Tests for the morning card work (`reading/flashcards.py`) and
+mastery-from-Anki (`reading/mastery.py`).
 
 Pure strength/report helpers run everywhere; the mint/rework/mastery passes run
 against real PG (the `store` fixture) with seeded concepts + a fake client — no
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from precis.reading.cards import (
+from precis.reading.flashcards import (
     ForgeReport,
     _stale_leeches,
     author_card,
@@ -366,7 +366,7 @@ class TestRework:
 
 class TestReportLines:
     def test_lines_read_as_audit_log(self) -> None:
-        from precis.reading.cards import CardDecision
+        from precis.reading.flashcards import CardDecision
 
         r = ForgeReport(
             minted=[(5, [9])],

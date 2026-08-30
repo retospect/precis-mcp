@@ -111,7 +111,7 @@ _KIND_ICON = {
 #: kinds carry no embedded body chunks, so they surface in the no-query
 #: browse view; a *text* query still matches only the chunked Source/
 #: Author kinds (harmless — a chunkless kind contributes nothing). ``todo``
-#: is declared ``role='artifact'`` (it can live in folders), so it is
+#: is declared ``placement='artifact'`` (it can live in folders), so it is
 #: pulled out of the Author facet below to sit here instead — one home,
 #: not two. "Schedules" (recurring todos — ``meta.schedule`` set) is not
 #: a kind but a preset link using the ``tag=level:recurring`` sentinel
@@ -128,7 +128,7 @@ _FOLDER_ANY = "*"
 
 
 def _artifact_kinds(request: Request) -> list[str]:
-    """Kinds declared ``role='artifact'`` in this build (minus folder).
+    """Kinds declared ``placement='artifact'`` in this build (minus folder).
 
     Read from the live hub so a future placeable kind (pcb, …) joins
     the Drive surface by declaration, with no route edit.
@@ -139,7 +139,7 @@ def _artifact_kinds(request: Request) -> list[str]:
         for k in sorted(hub.kinds):
             handler = hub.handler_for(k)
             spec = getattr(handler, "spec", None)
-            if spec is not None and getattr(spec, "role", None) == "artifact":
+            if spec is not None and getattr(spec, "placement", None) == "artifact":
                 if k != "folder":
                     out.append(k)
         return out
@@ -325,7 +325,7 @@ async def index(
     deleted" state, and the watch-dir drop-zone info.
 
     ``q=`` runs the search; ``k=`` (repeated) narrows the kind set —
-    the "Source" chips and the "Author" facet (``role='artifact'``
+    the "Source" chips and the "Author" facet (``placement='artifact'``
     kinds); ``tag=`` (repeated) are the tag-filter chips; ``state=stub``
     shows only paper stubs (awaiting fetch), ``state=deleted`` shows
     soft-deleted refs instead of live ones (a lightweight trash view —
@@ -457,7 +457,7 @@ async def index(
     hub = getattr(runtime, "hub", None)
     artifact_kind_defs = artifact_kinds(hub)
     # Third chip row: keep the Work kinds out of the Author facet so a
-    # role='artifact' work kind (``todo``) lists once, under "Work".
+    # placement='artifact' work kind (``todo``) lists once, under "Work".
     work_kind_defs = list(_WORK_KINDS)
     artifact_kind_defs = [k for k in artifact_kind_defs if k not in _WORK_KINDS]
     # A deep link can scope to a kind that has no chip — Status's "Refs by

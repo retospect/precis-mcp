@@ -15,8 +15,14 @@ from __future__ import annotations
 __all__ = ["excerpt"]
 
 
-def excerpt(text: str, *, limit: int = 240, ellipsis: str = "…") -> str:
-    """Collapse whitespace and trim ``text`` to roughly ``limit`` chars.
+def excerpt(
+    text: str,
+    *,
+    limit: int = 240,
+    ellipsis: str = "…",
+    collapse_whitespace: bool = True,
+) -> str:
+    """Trim ``text`` to roughly ``limit`` chars, word-boundary-aware.
 
     Trimming snaps to the last whitespace boundary inside ``[:limit]``
     when one exists, which is friendlier for prose previews — search
@@ -30,12 +36,19 @@ def excerpt(text: str, *, limit: int = 240, ellipsis: str = "…") -> str:
     "every preview ends in …" smell that the older paper-side
     helper had.
 
+    ``collapse_whitespace`` (default ``True``) flattens all runs of
+    whitespace — including newlines — to a single space before
+    trimming; the usual policy for a one-line preview. Pass ``False``
+    to trim in place instead, preserving embedded newlines/paragraph
+    breaks (a multi-paragraph abstract, say) — only the ``[:limit]``
+    cut point still snaps to the last space.
+
     The function is idempotent on already-collapsed input and never
     raises — pass it whatever the upstream produced.
     """
     if not text:
         return ""
-    collapsed = " ".join(text.split())
+    collapsed = " ".join(text.split()) if collapse_whitespace else text
     if len(collapsed) <= limit:
         return collapsed
     head = collapsed[:limit]

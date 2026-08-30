@@ -231,7 +231,7 @@ class TodoHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
-        role="artifact",
+        placement="artifact",
     )
 
     kind: ClassVar[str] = "todo"

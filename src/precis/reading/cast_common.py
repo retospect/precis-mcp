@@ -43,13 +43,13 @@ log = logging.getLogger(__name__)
 #: cast names its sources but reads no URL aloud (the voice contract), so nothing
 #: is cited inline; :func:`link_sources` writes these edges from the composed
 #: draft so a listener can later reopen the paper / concept / quest it mentioned.
-Source = tuple[int, str]
+CitedRef = tuple[int, str]
 
 
 def link_sources(
     store: Store,
     draft_id: int,
-    sources: list[Source],
+    sources: list[CitedRef],
     *,
     via: str,
     date_tag: str,
@@ -350,7 +350,7 @@ __all__ = [
     "CAST_PROFILES",
     "SINGLE_CALL_WORD_CEILING",
     "CastProfile",
-    "Source",
+    "CitedRef",
     "cast_slug",
     "compose_max_tokens",
     "create_cast_draft",

@@ -522,7 +522,7 @@ def _resolve_crossref_candidates(
 
 def _held_ref_for_doi(conn: Any, doi: str) -> int | None:
     """Resolve a matched ``doi`` to a **held** paper via ``ref_identifiers``
-    (mirrors ``backfill/citation_lens.py::_held_ref_for_neighbor``)."""
+    (mirrors ``backfill/citation_recall.py::_held_ref_for_neighbor``)."""
     from precis.identity import normalize_doi
 
     nd = normalize_doi(doi)

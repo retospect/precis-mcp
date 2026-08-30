@@ -611,7 +611,7 @@ class StructureHandler(Handler):
         supports_search_hits=True,
         is_numeric=False,
         id_required=False,
-        role="artifact",
+        placement="artifact",
         views=_VIEWS,
     )
 

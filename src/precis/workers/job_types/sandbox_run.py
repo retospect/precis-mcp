@@ -111,8 +111,17 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # Which sandbox host runs it — pins the claim to that node's
         # worker (params.target_node is the shared node-gate key).
         "target_node": {"type": "string"},
-        # Hard wall-clock ceiling (seconds); sizes the lease + deadline.
-        "wall_seconds": {"type": "integer"},
+        # Resource budget — currently just the hard wall-clock ceiling
+        # (seconds), which sizes the lease + deadline. Nested (not a flat
+        # ``wall_seconds``) to match the shared job-budget key used by
+        # ssh_node / coordinator / quest.compute / precis_pathway; see
+        # ``resolve_wall_seconds`` for the legacy-flat read-both shim that
+        # still lands on in-flight rows minted before this migration.
+        "resources": {
+            "type": "object",
+            "properties": {"wall_seconds": {"type": "integer"}},
+            "required": ["wall_seconds"],
+        },
         # Container image tag (built in place per host by the ops play).
         "image": {"type": "string"},
         # Model override; unset → resolve_model(Tier.FRONTIER). Ignored
@@ -130,7 +139,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "precis_access": {"type": "string"},
         "secrets": {"type": "array"},
     },
-    "required": ["target_node", "wall_seconds"],
+    "required": ["target_node", "resources"],
     "additionalProperties": False,
 }
 
@@ -175,6 +184,22 @@ def read_mcp_enabled() -> bool:
     )
 
 
+def resolve_wall_seconds(params: dict[str, Any]) -> Any:
+    """Read the wall-clock budget: ``params.resources.wall_seconds``
+    (current, nested — matches ssh_node/coordinator/quest.compute/
+    precis_pathway) falling back to the legacy flat
+    ``params.wall_seconds`` so a job row minted before this migration
+    still validates/leases/launches correctly. Writers (the schema above,
+    ``validate_submit`` callers) always write the nested shape now — this
+    is a read-only compatibility shim, not a second accepted write shape.
+    Returns whatever was stored (unvalidated type) or ``None``.
+    """
+    resources = params.get("resources")
+    if isinstance(resources, dict) and "wall_seconds" in resources:
+        return resources["wall_seconds"]
+    return params.get("wall_seconds")
+
+
 def resolve_sandbox_model() -> str:
     """Model for the container run.
 
@@ -208,9 +233,9 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     unsupported ``precis_access`` value, ``precis_access:read`` without
     ``PRECIS_SANDBOX_READ_MCP``, a non-empty ``secrets`` list, an
     invalid ``image``, a missing / melchior / non-allowlisted
-    ``target_node``, a non-positive ``wall_seconds``, a ``mode:build``
-    with no ``prompt``, and a ``mode:run`` with no (positive integer)
-    ``artifact``.
+    ``target_node``, a non-positive ``resources.wall_seconds``, a
+    ``mode:build`` with no ``prompt``, and a ``mode:run`` with no
+    (positive integer) ``artifact``.
     """
     mode = str(params.get("mode") or _DEFAULT_MODE)
     if mode not in _SUPPORTED_MODES:
@@ -267,9 +292,9 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
             f"sandbox_run: target_node {target_node!r} is not an "
             f"agent_sandbox_host (allowed: {sorted(allowed)})"
         )
-    wall = params.get("wall_seconds")
+    wall = resolve_wall_seconds(params)
     if not isinstance(wall, int) or isinstance(wall, bool) or wall <= 0:
-        return "sandbox_run: params.wall_seconds must be a positive integer"
+        return "sandbox_run: params.resources.wall_seconds must be a positive integer"
     if mode == "build":
         prompt = params.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
@@ -365,6 +390,7 @@ __all__ = [
     "default_image",
     "read_mcp_enabled",
     "resolve_sandbox_model",
+    "resolve_wall_seconds",
     "semantic_rejection",
     "validate_submit",
 ]

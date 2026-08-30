@@ -7,7 +7,7 @@ Third daily reading-loop job beside ``reading_brief`` (06:00) and ``meditation``
 litellm proxy). Driven by a recurring (``meta.schedule`` set) todo
 (``meta.schedule={'cron':'30 5 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='card_forge'``). Calls
-:func:`precis.reading.cards.run_card_forge`: mastery-from-Anki refresh → the
+:func:`precis.reading.flashcards.run_card_forge`: mastery-from-Anki refresh → the
 retire/teach-prereq/escalate/rewrite ladder over stale leech cards
 (observe-first — report mode unless ``PRECIS_CARD_FORGE_AUTONOMY=act``) → mint
 today's new cards from cardless concepts. New/rewritten cards ride the existing
@@ -47,7 +47,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job."""
-    from precis.reading.cards import run_card_forge
+    from precis.reading.flashcards import run_card_forge
 
     params = (ctx.meta or {}).get("params") or {}
     kwargs: dict[str, Any] = {}

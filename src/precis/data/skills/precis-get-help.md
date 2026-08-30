@@ -106,12 +106,12 @@ search(kind="paper", q="perovskite", offset=20)  # next page of hits
 `offset=N`. `exclude=[…]` is for hand-skipping known slugs, not paging.
 
 ## Address a chunk or sub-range inside a ref
-## Read just block 38, or blocks 38..42
+## Read just chunk 38, or chunks 38..42
 ## What does slug~N mean?
 
 ```python
-get(id="pc38")  # one block by handle (prefix infers kind)
-get(kind="paper", id="<slug>~38..42")  # block range (ranges keep the slug form)
+get(id="pc38")  # one chunk by handle (prefix infers kind)
+get(kind="paper", id="<slug>~38..42")  # chunk range (ranges keep the slug form)
 get(kind="paper", id="<slug>", view="toc")
 get(kind="paper", id="<slug>~38..42", view="toc")  # sub-TOC of a range
 ```

@@ -889,7 +889,7 @@ class TestLoadInterestProfile:
         assert _load_interest_profile(store) == ""
 
 
-class TestRunStubRankPassBandWiring:
+class TestRunStubRankPassPriorityWiring:
     """``run_stub_rank_pass`` folds step (d)'s counts in and passes
     ``band_client=None`` straight through (mirrors ``embedder=None``)."""
 

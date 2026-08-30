@@ -2281,9 +2281,9 @@ def _file_infra_gripe(
     job_meta: dict[str, Any],
     *,
     hub: Any,
-    lane: str = "relax",
+    sim_kind: str = "relax",
 ) -> None:
-    """File a bounded, visible gripe for a candidate whose ``lane`` sim
+    """File a bounded, visible gripe for a candidate whose ``sim_kind`` sim
     (``relax`` or ``autocatpath``) has now infra-failed twice — never rules the
     candidate out (still no physical verdict), just surfaces the persistent
     executor problem for a human."""
@@ -2296,9 +2296,9 @@ def _file_infra_gripe(
     }
     GripeHandler(hub=hub).put(
         text=(
-            f"quest {quest_id} candidate {handle} {lane} sim infra-failing "
+            f"quest {quest_id} candidate {handle} {sim_kind} sim infra-failing "
             "repeatedly (2×) — spark/executor. "
-            f"Latest {lane} job failure detail: {detail}"
+            f"Latest {sim_kind} job failure detail: {detail}"
         ),
         tags=["quest-infra-failure"],
     )
@@ -2829,7 +2829,7 @@ def harvest_measures(
                             handle,
                             cp_job_meta,
                             hub=hub,
-                            lane="autocatpath-seed",
+                            sim_kind="autocatpath-seed",
                         )
                         _bump_seed_infra_retry_count(store, s.id)
                         notes.append(
@@ -2867,7 +2867,7 @@ def harvest_measures(
                         handle,
                         cp_job_meta,
                         hub=hub,
-                        lane="autocatpath",
+                        sim_kind="autocatpath",
                     )
                     store.stamp_ref_meta(
                         s.id,

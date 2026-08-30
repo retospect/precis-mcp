@@ -67,7 +67,7 @@ from typing import TYPE_CHECKING, Any
 from precis.taproot.canon import CanonicalClaim, _parse_json_object
 from precis.taproot.grounding import has_grounding_prose
 from precis.taproot.migrate import _content_words, _normalize_number_text
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -486,7 +486,7 @@ def verify_atoms_batch(
         atoms=_format_atoms(atoms), passages=_format_passages(passages)
     )
     for attempt in range(2):
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=tier,
                 messages=[

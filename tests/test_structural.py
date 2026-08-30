@@ -139,7 +139,7 @@ def test_dispatch_failure_backs_off_instead_of_spinning(
         calls["n"] += 1
         return _err_result()
 
-    monkeypatch.setattr("precis.workers.review.dispatch", _fake_dispatch)
+    monkeypatch.setattr("precis.workers.review.route", _fake_dispatch)
 
     # First pass: dispatch runs, errors, records a failure (a real failed=1).
     r1 = run_structural_pass(store)

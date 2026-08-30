@@ -27,7 +27,7 @@ from typing import Any
 from precis.structure import apply_ops
 from precis.structure.ops import OpError
 from precis.structure.probe import toc as _toc
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -179,7 +179,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # id to revert without a redeploy); PRECIS_LLM_BACKEND still switches the
     # transport. Broad except kept + the folded res.error checked.
     try:
-        res = dispatch(
+        res = route(
             LlmRequest(
                 tier=Tier.BIG,
                 source="structure_propose",
