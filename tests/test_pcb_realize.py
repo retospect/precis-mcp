@@ -585,12 +585,18 @@ def test_stitch_one_net_sprinkles_a_via_and_merges_two_overlapping_sheets():
     }
     frags = [(0, _pour_polygon(pour_a)), (1, _pour_polygon(pour_b))]
 
-    new_vias, remaining, message = _stitch_one_net(
-        0, "GND", frags, [], grid, rules, config, []
+    new_vias, new_tracks, remaining, _bare, message = _stitch_one_net(
+        0, "GND", frags, [], grid, rules, config, [], {0: 0.25, 1: 0.25}, {}, []
     )
     assert remaining == 1, message
     assert not message, "a fully-stitched net must report no failure message"
     assert new_vias, "sprinkle stage must have placed at least one stitching via"
+    assert not new_tracks, (
+        "two OVERLAPPING sheets are bridged by a plain via -- a jumper is "
+        "real copper on a spare layer and must never be bought when the "
+        "cheap mechanism already works",
+        new_tracks,
+    )
     for v in new_vias:
         assert v.net_id == 0
         assert (v.layer_lo, v.layer_hi) == (0, 1), (
@@ -661,6 +667,14 @@ def test_stitch_one_net_announces_a_gap_no_single_via_can_bridge():
     placed at all for this pair (a check that cannot fire must announce
     it, not paper over it with copper that doesn't actually join anything).
 
+    **The board here has exactly ONE routable layer**, which is what keeps
+    this the failure case now that a jumper exists: a jumper needs a
+    detour layer that is neither fragment's own, so with nothing but
+    ``F.Cu`` there is no legal one to find. The test below
+    (``..._bridges_two_same_layer_pieces_with_a_jumper``) is the same
+    geometry WITH a spare layer, and closes. Together they pin that the
+    refusal is about the board, not about giving up.
+
     Independently re-checked with
     :func:`precis.pcb.connectivity.net_islands`: the two pieces really are
     reported as two, confirming this isn't a false alarm from this pass's
@@ -693,10 +707,16 @@ def test_stitch_one_net_announces_a_gap_no_single_via_can_bridge():
     }
     frags = [(0, _pour_polygon(pour_a)), (0, _pour_polygon(pour_b))]
 
-    new_vias, remaining, message = _stitch_one_net(
-        0, "GND", frags, [], grid, rules, config, []
+    new_vias, new_tracks, remaining, bare, message = _stitch_one_net(
+        0, "GND", frags, [], grid, rules, config, [], {0: 0.25}, {}, []
     )
     assert remaining == 2, "two genuinely disjoint same-layer pieces stay two"
+    assert bare == 2, (
+        "neither piece holds a via, trace or pad of this net, so BOTH are "
+        "floating copper rather than an electrical split -- the distinction "
+        "`pcb_route` uses to decide whether to fail the net",
+        bare,
+    )
     assert message, "an unstitched net must announce itself, not stay silent"
     assert "no spatial overlap" in message
     assert not new_vias, (
@@ -704,6 +724,11 @@ def test_stitch_one_net_announces_a_gap_no_single_via_can_bridge():
         "unbridgeable by one -- a via that doesn't actually join anything "
         "would be worse than none",
         new_vias,
+    )
+    assert not new_tracks, (
+        "and no half-jumper either: a jumper with nowhere legal to route "
+        "must leave NOTHING behind, not a stranded trace",
+        new_tracks,
     )
 
     # Same anchor discipline as the positive test above -- a bare pour
@@ -731,6 +756,196 @@ def test_stitch_one_net_announces_a_gap_no_single_via_can_bridge():
     }
     islands = net_islands(model)
     assert any(i.net == "GND" and i.components == 2 for i in islands), islands
+
+
+def test_stitch_one_net_counts_a_stitched_piece_as_populated_not_floating():
+    """``bare_fragments`` must be read AFTER this pass places its own
+    copper, not from the board as it arrived.
+
+    The set of fragments known to hold this net's copper is seeded from the
+    pre-existing vias and traces, and the stitching stages then put NEW
+    vias into fragments that had none. Reading the stale seed would call
+    such a fragment empty — and the error runs the dangerous way:
+    ``pcb_route`` fails a net only when
+    ``fragments - bare_fragments > 1``, so an inflated bare count
+    downgrades a genuine electrical split to a cosmetic "floating copper"
+    note.
+
+    The fixture separates the two: sheets A (``F.Cu``) and B (``B.Cu``)
+    OVERLAP, so stage 1 sprinkles a stitching via joining them — that
+    component is populated only by copper this call created. Sheet C sits
+    far away on ``F.Cu`` with nothing in it and no detour layer offered, so
+    it stays genuinely bare. The answer must be 1, not 2."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb.realize import _pour_polygon, _stitch_one_net
+    from precis.pcb.rules import NetRules
+
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=300, ny=60, n_layers=2)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+    rules = NetRules(
+        track_width_mm=0.25, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
+    )
+    config = RealizeConfig()
+
+    poly = _pour_polygon({"polygon": [[1.0, 1.0], [5.0, 1.0], [5.0, 4.0], [1.0, 4.0]]})
+    poly_b = _pour_polygon(
+        {"polygon": [[3.0, 1.0], [7.0, 1.0], [7.0, 4.0], [3.0, 4.0]]}
+    )
+    poly_c = _pour_polygon(
+        {"polygon": [[20.0, 1.0], [24.0, 1.0], [24.0, 4.0], [20.0, 4.0]]}
+    )
+    frags = [(0, poly), (1, poly_b), (0, poly_c)]
+
+    # Only layer 0 is offered as a routable width, so the A/C pair (both on
+    # layer 0) can find no detour layer and buys no jumper.
+    new_vias, _tracks, remaining, bare, message = _stitch_one_net(
+        0, "GND", frags, [], grid, rules, config, [], {0: 0.25}, {}, []
+    )
+    assert new_vias, "the overlapping A/B pair must still be stitched"
+    assert remaining == 2, message
+    assert bare == 1, (
+        "the A+B component holds the stitching via this call just placed "
+        "and is NOT floating copper; only C is",
+        bare,
+        message,
+    )
+    assert "1 of those piece(s) hold NO via or trace" in message
+
+
+def test_stitch_one_net_bridges_two_same_layer_pieces_with_a_jumper():
+    """The same geometry the test above refuses — two same-net pieces on
+    ONE layer, 15mm apart — closes the moment a spare layer exists to
+    detour through (:func:`~precis.pcb.realize._try_plane_jumper`).
+
+    Measured on the 40mm fixture, ``GND`` poured on ``F.Cu`` alone came out
+    in four pieces and no amount of via placement could ever merge them: a
+    via joins LAYERS, not lateral gaps on one layer. The fix is a via out
+    of each fragment plus a trace between them on a layer this net was not
+    using — two jumpers closed that board, and its ``connectivity`` waiver
+    went to zero rather than down.
+
+    **Asserted through the independent checker, not the producer's own
+    count.** ``remaining`` is the stitching pass grading its own homework;
+    :func:`precis.pcb.connectivity.net_islands` is the entity that actually
+    reported the defect, so the jumper's copper is fed back through it as a
+    real gerber model — the two vias AND the trace, since a jumper whose
+    trace never reached the export would connect nothing on the fab floor.
+    """
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb.realize import _pour_polygon, _stitch_one_net
+    from precis.pcb.rules import NetRules
+
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=300, ny=60, n_layers=2)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+    rules = NetRules(
+        track_width_mm=0.25, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
+    )
+    config = RealizeConfig()
+
+    pour_a = {
+        "ctype": "pour",
+        "layer": "F.Cu",
+        "net": "GND",
+        "polygon": [[1.0, 1.0], [5.0, 1.0], [5.0, 4.0], [1.0, 4.0]],
+    }
+    pour_b = {
+        "ctype": "pour",
+        "layer": "F.Cu",
+        "net": "GND",
+        "polygon": [[20.0, 1.0], [24.0, 1.0], [24.0, 4.0], [20.0, 4.0]],
+    }
+    frags = [(0, _pour_polygon(pour_a)), (0, _pour_polygon(pour_b))]
+
+    new_vias, new_tracks, remaining, _bare, message = _stitch_one_net(
+        0, "GND", frags, [], grid, rules, config, [], {0: 0.25, 1: 0.25}, {}, []
+    )
+    assert remaining == 1, message
+    assert not message, "a jumpered net is stitched -- it must not announce"
+    assert len(new_tracks) == 1, ("one jumper, one trace", new_tracks)
+    assert len(new_vias) == 2, ("a jumper is exactly two barrels", new_vias)
+    jumper = new_tracks[0]
+    assert jumper.layer == 1, (
+        "the detour must be on the SPARE layer -- a trace on F.Cu would "
+        "leave the far end with no via to anchor it, which the checker "
+        "joins by first-point containment only",
+        jumper,
+    )
+    for v in new_vias:
+        assert (v.layer_lo, v.layer_hi) == (0, 1), v
+    # One barrel per fragment, each with its CENTRE inside that fragment --
+    # `net_islands` joins a pour to a primitive by containment of the
+    # primitive's own point, so "near the fragment" would not connect.
+    # shapely ships no py.typed marker -- same suppression realize.py and
+    # planes.py already carry at their own import sites.
+    from shapely.geometry import (  # type: ignore[import-untyped]
+        Point as ShapelyPoint,
+    )
+
+    poly_a, poly_b = frags[0][1], frags[1][1]
+    assert sum(1 for v in new_vias if poly_a.contains(ShapelyPoint(v.x, v.y))) == 1
+    assert sum(1 for v in new_vias if poly_b.contains(ShapelyPoint(v.x, v.y))) == 1
+    # ...and the trace's two ends sit exactly on those barrels: a cell-centre
+    # rounding gap here is the "track ends short" defect `connectivity`'s own
+    # module docstring opens with.
+    ends = {
+        (
+            round(jumper.segments[0]["start"][0], 9),
+            round(jumper.segments[0]["start"][1], 9),
+        ),
+        (
+            round(jumper.segments[-1]["end"][0], 9),
+            round(jumper.segments[-1]["end"][1], 9),
+        ),
+    }
+    assert ends == {(round(v.x, 9), round(v.y, 9)) for v in new_vias}, (ends, new_vias)
+
+    anchor_a = {
+        "ctype": "via",
+        "net": "GND",
+        "x": 2.0,
+        "y": 2.0,
+        "dia_mm": 0.3,
+        "layers": ["F.Cu"],
+    }
+    anchor_b = {
+        "ctype": "via",
+        "net": "GND",
+        "x": 22.0,
+        "y": 2.0,
+        "dia_mm": 0.3,
+        "layers": ["F.Cu"],
+    }
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [pour_a, pour_b, anchor_a, anchor_b]
+        + [
+            {
+                "ctype": "via",
+                "net": "GND",
+                "x": v.x,
+                "y": v.y,
+                "dia_mm": v.dia_mm,
+                "span": ["F.Cu", "B.Cu"],
+            }
+            for v in new_vias
+        ]
+        + [
+            {
+                "ctype": "track",
+                "net": "GND",
+                "layer": "B.Cu",
+                "width_mm": jumper.width_mm,
+                "segments": list(jumper.segments),
+            }
+        ],
+        "pads": [],
+    }
+    islands = net_islands(model)
+    assert "GND" not in {i.net for i in islands}, (
+        "the independent connectivity checker must agree the two same-layer "
+        "pieces are now one",
+        islands,
+    )
 
 
 def test_plane_pour_antipads_a_pad_that_has_no_track_or_via_at_all():

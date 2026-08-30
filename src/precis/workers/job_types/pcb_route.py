@@ -340,6 +340,43 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             }
         )
 
+    # `RealizeResult.unstitched` had NO reader anywhere outside the realizer
+    # — the stitching pass computed an honest, specific "I could not bring
+    # this plane to one piece, and here is why" and threw it away, leaving
+    # only the `connectivity` DRC finding's bare piece count. That is the
+    # same one-rule-two-components shape as the `unrouted` gap above, which
+    # is exactly why that comment is worth re-reading here: a producer that
+    # reports its own residue and a persister that ignores it read green
+    # over a real defect. A fragmented plane is a routing failure — the
+    # return path the plane exists to provide is not continuous — so it
+    # lands in `problems` like any other, with the pass's own message rather
+    # than a re-derivation of it.
+    #
+    # **Only an ELECTRICAL split fails the net.** `UnstitchedNet` counts
+    # poured islands, and `bare_fragments` says how many of them hold none
+    # of this net's own vias or traces (that field's own docstring has the
+    # full distinction). A bare island is floating copper — undesirable,
+    # but the net still reaches every pin, and `connectivity` rightly does
+    # not report it. Failing the net for one would make a cosmetic pour
+    # artefact indistinguishable from a board that genuinely cannot carry
+    # its return current, which is the exact conflation this diagnostic
+    # exists to avoid. It still gets said, as a note.
+    unstitched_fail: dict[str, list[dict[str, Any]]] = {}
+    unstitched_note: dict[str, str] = {}
+    for u in rres.unstitched:
+        if u.fragments - u.bare_fragments > 1:
+            unstitched_fail.setdefault(u.net, []).append(
+                {
+                    "kind": "unstitched-plane",
+                    "reason": "unstitched-plane",
+                    "fragments": u.fragments,
+                    "bare_fragments": u.bare_fragments,
+                    "message": u.message,
+                }
+            )
+        else:
+            unstitched_note[u.net] = u.message
+
     sketch = pcb_session.extract_sketch(ir)
     routed_nets = {int(t.net_id) for t in rres.tracks}
     member_counts = net_member_counts(ir)
@@ -370,6 +407,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             crossing_fail.get(net_name, [])
             + congestion_fail.get(net_name, [])
             + unrouted_fail.get(net_name, [])
+            + unstitched_fail.get(net_name, [])
         )
         note = None
         if problems:
@@ -379,15 +417,33 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             # for its own `unrouted=` finding, one level coarser than the
             # per-segment `reason` above -- a caller who only looks at the
             # DRC view (never `pcb_routes.fail`) still sees WHY, not just
-            # THAT, a net failed.
+            # THAT, a net failed. An unstitched plane also carries the
+            # stitching pass's OWN sentence, not just its kind: unlike a
+            # routing failure, where the kind ("walled-in", "lost a race")
+            # is the whole diagnosis, "this plane is in 2 pieces" says
+            # nothing about which mechanism ran out -- and that message is
+            # the only place the distinction survives.
             kinds = sorted({str(p["reason"]) for p in problems if p.get("reason")})
             if kinds:
-                note = f"unrouted: {', '.join(kinds)}"
+                note = f"failed: {', '.join(kinds)}"
+            said = [
+                str(p.get("message", ""))
+                for p in problems
+                if p.get("reason") == "unstitched-plane"
+            ]
+            if said:
+                note = f"{note or 'failed'} — {' '.join(said)}"
         elif net_id in routed_nets or int(ir.net_plane_layers[net_id]) != 0:
             status = "realized"
             n_realized += 1
         else:
             status = "sketched"  # topology decided but nothing placed to realize yet
+        if note is None and net_name in unstitched_note:
+            # Floating poured copper on an otherwise sound net. Deliberately
+            # OUTSIDE the status ladder above — it is not a failure and must
+            # not become one — but the note is the only place this is ever
+            # said, so silence here would lose the single report of it.
+            note = f"floating copper — {unstitched_note[net_name]}"
         rows[net_name] = {
             **entry,
             "status": status,

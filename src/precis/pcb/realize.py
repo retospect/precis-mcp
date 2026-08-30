@@ -80,7 +80,12 @@ disk_is_free` — no new geometry predicate duplicates any of those), then a
 bounded TARGETED pass that finds whatever pieces remain disconnected and
 tries the single nearest legal via to join them (stage 2 — see that
 function's own docstring for exactly which gaps one via can and cannot
-bridge).
+bridge), and finally a JUMPER for a pair stage 2 has just proved no single
+via can close (stage 3, :func:`_try_plane_jumper`): a via out of each
+fragment plus a trace between them on a spare layer. Stage 3 is the only
+mechanism here that can join two fragments of one net on the SAME layer —
+a via joins LAYERS, not lateral gaps, so no number of them ever could —
+and it is the only reason this pass emits TRACKS as well as vias.
 
 **This pass computes its own connectivity, with its own union-find
 (:class:`_UnionFind`), and never calls
@@ -121,7 +126,10 @@ from typing import Any
 # carry, same reason: only the polygon booleans this module's stitching
 # pass (below) needs, never a track/via/pad's own shape (that stays this
 # module's existing closed-form Point/dist arithmetic).
-from shapely.geometry import Point as _ShapelyPoint  # type: ignore[import-untyped]
+from shapely.geometry import (  # type: ignore[import-untyped]
+    LineString as _ShapelyLineString,
+)
+from shapely.geometry import Point as _ShapelyPoint
 from shapely.geometry import Polygon as _ShapelyPolygon
 
 from precis.pcb import geom, maze, padplace
@@ -328,6 +336,17 @@ class RealizeConfig:
     #: on — a rejected candidate leaves a net exactly as fragmented as it
     #: was, never more, so this bounds worst-case runtime, not correctness.
     max_stitch_iterations: int = 8
+    #: Cap on JUMPERS (two vias plus a detour-layer trace,
+    #: :func:`_try_plane_jumper`) placed for one net. A jumper is the only
+    #: mechanism that can join two fragments of one net on the SAME layer —
+    #: no via can, and that is a proof, not a search limit
+    #: (:func:`_stitch_one_net`'s docstring) — but it is also the most
+    #: expensive thing this pass emits: a full A* on the detour layer plus
+    #: real copper on a layer this net had no business being on. A net in
+    #: ``k`` same-layer pieces needs ``k-1`` jumpers, so the default carries
+    #: a 5-piece plane; past that, an honest ``UnstitchedNet`` beats
+    #: silently threading a board full of detours.
+    max_plane_jumpers_per_net: int = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -827,6 +846,20 @@ class UnstitchedNet:
     #: Distinct connected pieces remaining after the bounded attempt.
     #: Always >= 2 — a net with 0 or 1 pieces is never reported here.
     fragments: int
+    #: How many of ``fragments`` are poured copper with NONE of this net's
+    #: own vias or traces inside them.
+    #:
+    #: **Two different defects wear the same piece count, and only this
+    #: field separates them.** An island holding a via or a trace is an
+    #: ELECTRICAL split: part of the net cannot reach the rest, which is
+    #: what :func:`precis.pcb.connectivity.net_islands` reports and what
+    #: makes a board unfinished. An island holding nothing is FLOATING
+    #: copper: undesirable (an unreferenced plate is an antenna, and it
+    #: wastes area) but electrically inert, and invisible to that checker
+    #: for the honest reason that a pour is a joiner in its model, never a
+    #: node. Reporting the second as the first is how a real routing
+    #: failure and a cosmetic pour artefact end up sharing one alarm.
+    bare_fragments: int
     message: str
 
 
@@ -1151,7 +1184,7 @@ def _realize_maze(
     # Deliberate stitching vias, AFTER pouring -- this pass needs the
     # finished pour polygons to know what it is joining (module docstring's
     # "Plane fragment stitching" note, gripe 270637).
-    stitch_vias, unstitched = _stitch_plane_fragments(
+    stitch_vias, stitch_tracks, unstitched = _stitch_plane_fragments(
         ir,
         tracks,
         vias,
@@ -1163,6 +1196,11 @@ def _realize_maze(
         config=config,
     )
     vias = vias + stitch_vias
+    # Jumper traces join the board AFTER pouring, deliberately: they are
+    # this net's own copper on a spare layer and are cleared against every
+    # foreign pour geometrically (`_clears_foreign_pours`), so they need no
+    # antipad cut and must not re-trigger one.
+    tracks = tracks + stitch_tracks
     reasons = _diagnose_all(
         ir,
         unrouted,
@@ -2193,6 +2231,299 @@ def _stamp_realized_track(grid: maze.OccupancyGrid, track: RealizedTrack) -> Non
             )
 
 
+#: ``seg_id`` for copper this stitching pass invents. Every other track and
+#: via in this module is the realization of ONE L1 segment and carries that
+#: segment's id; a stitching via or jumper answers a property of the
+#: FINISHED board (is this net one piece?) and belongs to no segment at all.
+#: A sentinel says so; reusing some nearby segment's id would quietly claim
+#: a provenance that is not true.
+_STITCH_SEG_ID = -1
+
+#: Circle-to-polygon refinement for the jumper's own foreign-pour guard
+#: (:func:`_clears_foreign_pours`). ``buffer`` approximates a disk with an
+#: INSCRIBED polygon, i.e. slightly SMALLER than the true circle — the
+#: unsafe direction for a keep-out test, since a shape that just barely
+#: touches would be missed. At 32 segments per quadrant the shortfall is
+#: ~0.05% of the radius (sub-micron at these dimensions), well under the
+#: nanometre-scale noise the rest of this module already tolerates.
+_JUMPER_QUAD_SEGS = 32
+
+
+#: How many anchor sites a jumper considers per fragment, and how coarsely
+#: it sweeps to find them. A fragment is a whole poured sheet, often most of
+#: a board face, and the site must be simultaneously inside the polygon,
+#: clear of every other net's copper on every layer its barrel spans, and
+#: reachable by a route on a spare layer — so the FIRST spot tried is
+#: routinely occupied. The first version of this reused
+#: :func:`_candidate_points_in`, whose nine points are a representative
+#: point plus a ring one via-radius around it: correct for the small
+#: polygon INTERSECTION it was written for, and useless here, because all
+#: nine sit within half a millimetre of each other and a single pad or
+#: trace at that spot rejects the whole fragment. Measured on the 40mm
+#: fixture: one jumper placed, the rest refused.
+_JUMPER_SITES_PER_FRAGMENT = 8
+_JUMPER_SWEEP_DIVISIONS = 6
+#: Ceiling on A* calls one jumper may spend. Sites are tried nearest-pair
+#: first (shortest detour = least copper), so the bound truncates the tail
+#: of a search that was already ordered best-first, rather than sampling it
+#: arbitrarily.
+_JUMPER_ROUTE_ATTEMPTS = 12
+
+
+def _snapped_sites_in(region: Any, spec: maze.GridSpec, via_r: float) -> list[Point]:
+    """Candidate via sites spread across ``region``, SNAPPED to
+    routing-grid cell centres and re-filtered for containment.
+
+    The snap is what makes a jumper's connectivity provable rather than
+    lucky. :meth:`~precis.pcb.maze.OccupancyGrid.route` returns cell
+    CENTRES (:func:`~precis.pcb.maze._merge_collinear`), so a track routed
+    from an unsnapped point would start up to half a cell diagonal away
+    from the via meant to anchor it — the exact defect
+    :mod:`precis.pcb.connectivity`'s own module docstring opens with
+    ("track ends short of a pad", found by measuring a rendered board).
+    Snapping FIRST makes the two coincide exactly, because
+    ``to_point(to_cell(p))`` is the identity on a point already produced by
+    ``to_point``.
+
+    Re-filtering after the snap is not belt-and-braces: a candidate near a
+    fragment's edge can snap OUT of the polygon it came from, and a via
+    there would sit on this net's name but not on this net's copper.
+
+    The representative point is tried first — it is the one point shapely
+    guarantees is inside the polygon — but it is snapped and re-filtered
+    like every other candidate, and it can therefore be rejected. **A
+    fragment thinner than one grid pitch in some direction can end up
+    offering NO site at all, and that is the honest answer rather than a
+    gap**: the anchor has to be a via that a grid route can actually reach,
+    and a fragment containing no cell centre contains nowhere for one to
+    land. The caller reports "no legal jumper" for it, which is true —
+    though note it is true of THIS mechanism, not of the geometry in
+    general, and a finer grid would change the answer."""
+    minx, miny, maxx, maxy = region.bounds
+    step = max(
+        max(maxx - minx, maxy - miny) / _JUMPER_SWEEP_DIVISIONS,
+        2.0 * via_r,
+        spec.pitch,
+    )
+    rp = region.representative_point()
+    raw: list[Point] = [(rp.x, rp.y)]
+    y = miny + step / 2.0
+    while y <= maxy:
+        x = minx + step / 2.0
+        while x <= maxx:
+            raw.append((x, y))
+            x += step
+        y += step
+
+    out: list[Point] = []
+    seen: set[tuple[int, int]] = set()
+    for cand in raw:
+        cell = spec.to_cell(*cand)
+        if cell in seen:
+            continue
+        seen.add(cell)
+        site = spec.to_point(*cell)
+        if region.contains(_ShapelyPoint(*site)):
+            out.append(site)
+        if len(out) >= _JUMPER_SITES_PER_FRAGMENT:
+            break
+    return out
+
+
+def _clears_foreign_pours(
+    shape: Any, layers: range, foreign_pours: dict[int, list[Any]]
+) -> bool:
+    """Does ``shape`` (already grown by clearance) miss every OTHER net's
+    poured copper on every layer in ``layers``?
+
+    **This is the one keep-out the occupancy grid cannot answer.** The
+    scratch grid :func:`_stitch_plane_fragments` builds is stamped from
+    tracks, vias and pads — never from pours, which do not exist yet when a
+    route pass runs and are not stamped afterwards. That gap is stated as a
+    known limitation for a stitching VIA, where both fixtures happen to
+    avoid it. A jumper cannot inherit that reasoning: it puts a whole
+    TRACE, of arbitrary length, on a layer chosen precisely because this
+    net was not already using it — which on any real board is where another
+    net's plane lives. So the guard is asked here, geometrically, against
+    the finished pour polygons themselves."""
+    for layer in layers:
+        for poly in foreign_pours.get(layer, ()):
+            if not poly.is_empty and poly.intersects(shape):
+                return False
+    return True
+
+
+def _try_plane_jumper(
+    net_id: int,
+    frag_a: tuple[int, Any],
+    frag_b: tuple[int, Any],
+    *,
+    grid: maze.OccupancyGrid,
+    via_dia_mm: float,
+    via_drill_mm: float,
+    via_is_legal: Any,
+    track_width_by_layer: dict[int, float],
+    foreign_pours: dict[int, list[Any]],
+    config: RealizeConfig,
+) -> tuple[list[RealizedVia], RealizedTrack] | None:
+    """A same-net JUMPER between two poured fragments: a via down out of
+    fragment A, a trace across a spare layer, a via back up into fragment
+    B. Returns the two vias and the trace, or ``None`` when no legal one
+    exists (which is a real answer, not a failure to try hard enough).
+
+    **Why this exists at all.** :func:`_stitch_one_net`'s stage 2 proves
+    that a single via can only join two fragments that geometrically
+    OVERLAP — so two fragments of one net on the SAME layer, which by
+    definition never overlap, are unreachable by any number of vias.
+    Measured on the 40mm fixture: ``GND`` poured on ``F.Cu`` alone, in four
+    pieces, reported by :func:`precis.pcb.connectivity.net_islands` and
+    unfixable by the pass that was supposed to fix it. A plane in pieces is
+    a real manufacturing defect — the return path the plane exists to
+    provide is not there — so the mechanism, not the report, was what
+    needed to change.
+
+    **The detour layer is never either fragment's own layer**, and that
+    restriction is about the CHECKER, not about taste. A pour joins the
+    connectivity union-find by containment of a primitive's FIRST point
+    only (:func:`precis.pcb.connectivity.net_islands`), so a bare trace
+    ending inside fragment B registers as connected to A and not to B — it
+    would look like a fix and measure as one fewer piece only by accident.
+    A via at each end has its own centre inside its own fragment, so both
+    joins are containment-true by construction, and the barrel asserts the
+    layer change independently of any geometry. Requiring ``D`` to differ
+    from both layers is what guarantees both ends actually get one.
+
+    Every candidate is checked in cost order — the cheap arithmetic guards
+    (containment, via legality, mutual barrel spacing) before the A* — and
+    nothing is placed or stamped until the whole jumper is known to be
+    legal, so a half-built jumper can never be left behind by a late
+    rejection."""
+    layer_a, poly_a = frag_a
+    layer_b, poly_b = frag_b
+    via_r = via_dia_mm / 2.0
+    clearance = grid.clearance_mm
+    sites_a = _snapped_sites_in(poly_a, grid.spec, via_r)
+    sites_b = _snapped_sites_in(poly_b, grid.spec, via_r)
+    if not sites_a or not sites_b:
+        return None
+
+    detours = [
+        d
+        for d in range(grid.spec.n_layers)
+        if d != layer_a and d != layer_b and d in track_width_by_layer
+    ]
+    # Nearest pair first: the shortest jumper is the least copper, the
+    # least detour-layer congestion for whatever routes next, and the most
+    # likely to find a clear corridor at all.
+    pairs = sorted(
+        (
+            (math.hypot(qb[0] - qa[0], qb[1] - qa[1]), qa, qb)
+            for qa in sites_a
+            for qb in sites_b
+        ),
+        key=lambda t: t[0],
+    )
+    # ONE budget for the whole call, not one per detour layer: the ceiling
+    # is on what a single jumper may spend, and a board with three spare
+    # layers should not silently cost three times as much searching.
+    attempts = 0
+    for detour in detours:
+        width_mm = track_width_by_layer[detour]
+        lo_a, hi_a = min(layer_a, detour), max(layer_a, detour)
+        lo_b, hi_b = min(layer_b, detour), max(layer_b, detour)
+        for gap, qa, qb in pairs:
+            if attempts >= _JUMPER_ROUTE_ATTEMPTS:
+                break
+            # The two barrels are checked against each OTHER by hand:
+            # `via_is_legal` asks about vias already PLACED, and neither
+            # of these is placed yet.
+            if gap - 2.0 * via_r < clearance:
+                continue
+            if not via_is_legal(qa[0], qa[1], lo_a, hi_a):
+                continue
+            if not via_is_legal(qb[0], qb[1], lo_b, hi_b):
+                continue
+            disc_a = _ShapelyPoint(*qa).buffer(
+                via_r + clearance, quad_segs=_JUMPER_QUAD_SEGS
+            )
+            disc_b = _ShapelyPoint(*qb).buffer(
+                via_r + clearance, quad_segs=_JUMPER_QUAD_SEGS
+            )
+            if not _clears_foreign_pours(
+                disc_a, range(lo_a, hi_a + 1), foreign_pours
+            ) or not _clears_foreign_pours(
+                disc_b, range(lo_b, hi_b + 1), foreign_pours
+            ):
+                continue
+            attempts += 1
+            path = grid.route(
+                net_id,
+                qa,
+                qb,
+                layers=[detour],
+                width_mm=width_mm,
+                # No via geometry offered, so the search may not change
+                # layer: this trace stays on `detour`, which is what
+                # makes the two barrels above the whole layer story.
+                via_dia_mm=None,
+                pad_layer=detour,
+                # Never attach: a multi-source start would begin the
+                # path on this net's copper somewhere else entirely,
+                # and the trace would no longer meet the via at `qa`.
+                attach=False,
+                max_expansions=config.max_expansions,
+            )
+            if path is None or len(path.points) < 2:
+                continue
+            run = [(x, y) for x, y, _ in path.points]
+            corridor = _ShapelyLineString(run).buffer(
+                width_mm / 2.0 + clearance, quad_segs=_JUMPER_QUAD_SEGS
+            )
+            if not _clears_foreign_pours(
+                corridor, range(detour, detour + 1), foreign_pours
+            ):
+                continue
+            tracks = _track_from_run(
+                _STITCH_SEG_ID,
+                net_id,
+                detour,
+                run,
+                width_mm,
+                # Unfilleted on purpose: `_track_from_run`'s fillet is
+                # a cosmetic taut-up of a ROUTED corner, and this
+                # trace's two ends must stay exactly on their vias.
+                fillet_radius_mm=None,
+            )
+            if not tracks:
+                continue
+            vias = [
+                RealizedVia(
+                    seg_id=_STITCH_SEG_ID,
+                    net_id=net_id,
+                    x=qa[0],
+                    y=qa[1],
+                    dia_mm=via_dia_mm,
+                    drill_mm=via_drill_mm,
+                    layer_lo=lo_a,
+                    layer_hi=hi_a,
+                    endpoint="a",
+                ),
+                RealizedVia(
+                    seg_id=_STITCH_SEG_ID,
+                    net_id=net_id,
+                    x=qb[0],
+                    y=qb[1],
+                    dia_mm=via_dia_mm,
+                    drill_mm=via_drill_mm,
+                    layer_lo=lo_b,
+                    layer_hi=hi_b,
+                    endpoint="b",
+                ),
+            ]
+            return vias, tracks[0]
+    return None
+
+
 def _stitch_one_net(
     net_id: int,
     net_name: str,
@@ -2202,7 +2533,10 @@ def _stitch_one_net(
     rules: NetRules,
     config: RealizeConfig,
     placed_via_sites: list[tuple[float, float, float]],
-) -> tuple[list[RealizedVia], int, str]:
+    track_width_by_layer: dict[int, float],
+    foreign_pours: dict[int, list[Any]],
+    net_tracks: list[RealizedTrack],
+) -> tuple[list[RealizedVia], list[RealizedTrack], int, int, str]:
     """One net's stitching attempt, both stages of the module docstring.
 
     **The graph has TWO kinds of node, not one — ``frags`` (this net's own
@@ -2225,6 +2559,12 @@ def _stitch_one_net(
     PURPOSES: it can join a fragment (the seed step below) and its
     isolation is visible in the returned piece count either way.
 
+    **This net's own TRACKS are a third thing again: joiners, not nodes.**
+    A routed trace is never something this pass would stitch TO, so it gets
+    no node — but it is real copper, and copper landing in two fragments
+    connects them. Omitting them made the piece count over-report; see the
+    seed step below for the measurement that caught it.
+
     **A via node is never a BRIDGING TARGET for a new via, and this is a
     proof, not a missing feature.** Two DISTINCT, DRC-legal vias of the
     SAME net must still be at least ``clearance_mm`` apart
@@ -2237,17 +2577,28 @@ def _stitch_one_net(
     an EXISTING via to register as "touching" it without first being
     illegal. This is a hard, board-geometry-independent fact, not
     something a smarter search could someday satisfy — so stage 2 below
-    never treats a via node as one half of a bridge. The genuine fix for a
-    via that is near-but-not-touching its own pour is to move THAT via
-    (a "shove", a different mechanism this pass does not perform) or to
-    add a same-net jumper (a second via off an extended stub, or a
-    two-via/spare-layer trace) — both materially bigger than "place one
-    more via" and out of scope here; see the returned message.
+    never treats a via node as one half of a bridge.
 
-    Returns the vias it placed, the number of DISTINCT connected pieces
-    remaining afterward across ALL nodes (0 or 1 means fully stitched,
-    never more than ``len(frags) + len(existing_vias)``), and a message
-    that is non-empty only when that count is > 1.
+    **The same proof condemns two fragments on the SAME layer, and stage 3
+    is the answer to it.** A via joins copper at one ``(x, y)``, so it can
+    only bridge fragments that geometrically OVERLAP; two fragments of one
+    net on one layer never do. That is not a tuning failure either, and it
+    is not rare — ``GND`` on the 40mm fixture is poured on ``F.Cu`` alone
+    and comes out in four pieces. The mechanism that CAN close it is a
+    jumper: a via out of each fragment and a trace between them on a spare
+    layer (:func:`_try_plane_jumper`), which is why this function now
+    returns tracks as well as vias. It remains true that a STRAY VIA — one
+    of this net's own drop vias touching no fragment at all — has no fix
+    here: a jumper anchors on poured copper at both ends, and a bare via
+    offers nothing to anchor to. Moving that via (a "shove", a different
+    mechanism this pass does not perform) is still its only remedy, and the
+    returned message still says so.
+
+    Returns the vias and the jumper tracks it placed, the number of
+    DISTINCT connected pieces remaining afterward across ALL nodes (0 or 1
+    means fully stitched, never more than
+    ``len(frags) + len(existing_vias)``), and a message that is non-empty
+    only when that count is > 1.
 
     Assumes ``rules.via_dia_mm``/``via_drill_mm`` are already known — the
     caller filters out nets whose fab publishes neither (nothing to stitch
@@ -2271,29 +2622,89 @@ def _stitch_one_net(
     # membership (class docstring's independence note: this is physics
     # copied from the checker's own model, not the checker consulted at
     # runtime).
+    #: Fragment indices with at least one of this net's own vias or traces
+    #: inside them — the fragments the independent checker can even SEE, and
+    #: the distinction the closing message turns into "floating copper" vs.
+    #: "electrically split".
+    populated: set[int] = set()
     for k, v in enumerate(existing_vias):
         node = n_frags + k
         for i, (layer, poly) in enumerate(frags):
             if v.layer_lo <= layer <= v.layer_hi and _touches(poly, v.x, v.y):
                 dsu.union(node, i)
+                populated.add(i)
+
+    # Seed, part two: **this net's own TRACKS are joiners too.** They are
+    # not nodes — a routed trace is never a thing this pass would stitch TO
+    # — but they are real copper, and copper that lands in two fragments
+    # connects them just as surely as a via does.
+    #
+    # Leaving them out made this function over-report, and the
+    # over-reporting was invisible until `RealizeResult.unstitched` got its
+    # first reader. Measured on the 40mm fixture: the pass claimed 2
+    # remaining pieces with ZERO stray vias (so both were fragment groups),
+    # while :func:`precis.pcb.connectivity.net_islands` — which models pads
+    # and tracks as primitives too — said one component. The checker was
+    # right; the producer's graph simply had no way to see the trace doing
+    # the joining. A producer independent of its checker still has to model
+    # the copper that exists.
+    #
+    # Union-only, never a split: adding a joiner can lower the piece count
+    # and can never raise it, so this cannot manufacture a fragmentation
+    # report. Its one behavioural consequence is that a pair already joined
+    # by a trace no longer buys stitching vias — correct, since they are
+    # connected, and consistent with stage 1's existing "extra density
+    # beyond what connectivity needs is not this pass's job".
+    for track in net_tracks:
+        touched: list[int] = []
+        endpoints = [
+            (float(seg[end][0]), float(seg[end][1]))
+            for seg in track.segments
+            for end in ("start", "end")
+        ]
+        for i, (layer, poly) in enumerate(frags):
+            if layer == track.layer and any(_touches(poly, x, y) for x, y in endpoints):
+                touched.append(i)
+                populated.add(i)
+        for k, v in enumerate(existing_vias):
+            if v.layer_lo <= track.layer <= v.layer_hi and any(
+                math.hypot(x - v.x, y - v.y) <= v.dia_mm / 2.0 for x, y in endpoints
+            ):
+                touched.append(n_frags + k)
+        for other in touched[1:]:
+            dsu.union(touched[0], other)
 
     if n <= 1:
-        return [], min(n, 1), ""
+        return [], [], min(n, 1), 0, ""
 
     core_r = grid.core_radius_mm(via_dia_mm)
     pitch = config.stitch_pitch_mm or _default_stitch_pitch(rules, grid.clearance_mm)
     new_vias: list[RealizedVia] = []
+    new_tracks: list[RealizedTrack] = []
+
+    def via_is_legal(x: float, y: float, lo: int, hi: int) -> bool:
+        """The three keep-outs a stitching via must satisfy, asked WITHOUT
+        placing anything — stage 3 needs to know both of a jumper's barrels
+        are legal before it commits either one."""
+        return (
+            grid.disk_is_free(range(lo, hi + 1), x, y, core_r, net_id)
+            and grid.via_clears_pads(x, y, via_r)
+            and _via_clears_vias(x, y, via_r, placed_via_sites, grid.clearance_mm)
+        )
+
+    def claim_via(via: RealizedVia) -> None:
+        new_vias.append(via)
+        grid.stamp_disk(
+            range(via.layer_lo, via.layer_hi + 1), via.x, via.y, core_r, net_id
+        )
+        placed_via_sites.append((via.x, via.y, via_r))
 
     def try_via(x: float, y: float, lo: int, hi: int) -> bool:
-        if not grid.disk_is_free(range(lo, hi + 1), x, y, core_r, net_id):
+        if not via_is_legal(x, y, lo, hi):
             return False
-        if not grid.via_clears_pads(x, y, via_r):
-            return False
-        if not _via_clears_vias(x, y, via_r, placed_via_sites, grid.clearance_mm):
-            return False
-        new_vias.append(
+        claim_via(
             RealizedVia(
-                seg_id=-1,  # not tied to any L1 segment -- see class docstring
+                seg_id=_STITCH_SEG_ID,  # no L1 segment -- see the constant
                 net_id=net_id,
                 x=x,
                 y=y,
@@ -2304,8 +2715,6 @@ def _stitch_one_net(
                 endpoint="a",
             )
         )
-        grid.stamp_disk(range(lo, hi + 1), x, y, core_r, net_id)
-        placed_via_sites.append((x, y, via_r))
         return True
 
     # Stage 1 -- sprinkle: every pair of DIFFERENT sheets whose footprints
@@ -2351,7 +2760,22 @@ def _stitch_one_net(
     # be joined by ANY single via, full stop, independent of pitch or
     # search effort — this pass proves that rather than merely having
     # failed to find a site.
+    #
+    # **Stage 3 rides inside the same loop, as the fallback for a pair
+    # stage 2 just proved un-bridgeable** (:func:`_try_plane_jumper`): two
+    # vias and a spare-layer trace, which is the only mechanism that can
+    # join two fragments that do not overlap. It is deliberately second —
+    # a jumper is real copper on a layer this net was not using, so a pair
+    # a single via CAN close should never buy one.
+    #
+    # **Closest-pair-first over a union-find IS a minimum spanning tree**
+    # (that is Kruskal's algorithm), which settles the "one jumper per
+    # pair, or a spanning tree?" question without any extra machinery: a
+    # pair whose two sides are already in one component is skipped by the
+    # `roots[i] != roots[j]` filter above, so a net in k pieces buys
+    # exactly k-1 jumpers and never a redundant one.
     impossible: set[tuple[int, int]] = set()
+    jumpers = 0
     for _ in range(config.max_stitch_iterations):
         roots = [dsu.find(i) for i in range(n)]
         if len(set(roots)) <= 1:
@@ -2379,12 +2803,81 @@ def _stitch_one_net(
                     dsu.union(i, j)
                     placed_here = True
                     break
+        if not placed_here and jumpers < config.max_plane_jumpers_per_net:
+            jumper = _try_plane_jumper(
+                net_id,
+                frags[i],
+                frags[j],
+                grid=grid,
+                via_dia_mm=via_dia_mm,
+                via_drill_mm=via_drill_mm,
+                via_is_legal=via_is_legal,
+                track_width_by_layer=track_width_by_layer,
+                foreign_pours=foreign_pours,
+                config=config,
+            )
+            if jumper is not None:
+                jumper_vias, jumper_track = jumper
+                for v in jumper_vias:
+                    claim_via(v)
+                new_tracks.append(jumper_track)
+                _stamp_realized_track(grid, jumper_track)
+                dsu.union(i, j)
+                jumpers += 1
+                placed_here = True
         if not placed_here:
             impossible.add((i, j))
 
     remaining = len({dsu.find(i) for i in range(n)})
     message = ""
+    bare_pieces = 0
     if remaining > 1:
+        # **Which of the remaining pieces carry any of this net's actual
+        # copper?** A fragment is a node here whether or not a single via,
+        # trace or pad lands inside it, but
+        # :func:`precis.pcb.connectivity.net_islands` counts PRIMITIVES and
+        # treats a pour purely as a joiner — so a poured island with
+        # nothing in it is a piece to this pass and invisible to the
+        # checker. That is not the checker being wrong: an empty island is
+        # floating copper, a different defect with a different remedy
+        # (shrink or grow the pour) than a net split in two. Saying which
+        # kind is left is the difference between a report someone can act
+        # on and a number that sends them back to instrument a run.
+        # **Refresh `populated` with the copper THIS pass just placed.** It
+        # was seeded from the board as it arrived, and the stages above
+        # then put stitching vias and jumper traces into fragments that had
+        # none — so reading the stale set here would call a fragment
+        # "empty" that now demonstrably holds this net's copper. The error
+        # runs in the dangerous direction: an inflated `bare_fragments`
+        # makes `pcb_route` classify a genuine remaining split as mere
+        # floating copper (its `fragments - bare_fragments > 1` test), i.e.
+        # it downgrades a real failure to a note. Same touch rule as the
+        # seed steps, asked of the new copper.
+        for v in new_vias:
+            for i, (layer, poly) in enumerate(frags):
+                if v.layer_lo <= layer <= v.layer_hi and _touches(poly, v.x, v.y):
+                    populated.add(i)
+        for t in new_tracks:
+            ends = [
+                (float(seg[end][0]), float(seg[end][1]))
+                for seg in t.segments
+                for end in ("start", "end")
+            ]
+            for i, (layer, poly) in enumerate(frags):
+                if layer == t.layer and any(_touches(poly, x, y) for x, y in ends):
+                    populated.add(i)
+
+        roots_with_copper = {dsu.find(i) for i in populated} | {
+            dsu.find(n_frags + k) for k in range(len(existing_vias))
+        }
+        bare_pieces = len({dsu.find(i) for i in range(n_frags)} - roots_with_copper)
+        bare_note = (
+            f" {bare_pieces} of those piece(s) hold NO via or trace of this "
+            "net at all — floating poured copper, not an electrical split, "
+            "and invisible to the connectivity checker for that reason."
+            if bare_pieces
+            else ""
+        )
         stray_vias = sum(
             1
             for k in range(len(existing_vias))
@@ -2403,18 +2896,19 @@ def _stitch_one_net(
         message = (
             f"{net_name}: {remaining} disconnected piece(s) remain after the "
             f"stitching pass (sprinkle + up to {config.max_stitch_iterations} "
-            "targeted attempt(s))."
+            f"targeted attempt(s), {jumpers} jumper(s) placed)."
+            + bare_note
             + via_note
             + (
                 " At least one remaining fragment pair has no spatial "
-                "overlap for a single via to land in, or a legal site "
-                "existed but every candidate there was already claimed by "
-                "other copper."
+                "overlap for a single via to land in and no legal jumper "
+                "either — no spare layer that is neither fragment's own, or "
+                "no routable, pour-free corridor across one."
                 if stray_vias < remaining - 1
                 else ""
             )
         )
-    return new_vias, remaining, message
+    return new_vias, new_tracks, remaining, bare_pieces, message
 
 
 def _stitch_plane_fragments(
@@ -2428,7 +2922,7 @@ def _stitch_plane_fragments(
     pads: list[tuple[Point, int, float]],
     rules_by_net: dict[int, NetRules],
     config: RealizeConfig,
-) -> tuple[list[RealizedVia], list[UnstitchedNet]]:
+) -> tuple[list[RealizedVia], list[RealizedTrack], list[UnstitchedNet]]:
     """Deliberate stitching vias for every plane-promoted net whose own
     poured copper is not already one piece — see the module docstring for
     the two-stage approach and why this function computes its own
@@ -2477,12 +2971,32 @@ def _stitch_plane_fragments(
     that would mean re-running :func:`_pour_planes` after stitching (to
     carve fresh antipads around the new vias) rather than stitching after
     pouring, a bigger reordering than this task's scope.
+
+    **A JUMPER does not inherit that limitation**, and must not: it lays a
+    whole trace on a layer picked precisely because this net was not on it,
+    which is exactly where a foreign plane is likely to be. So the pour
+    polygons are handed down per net (``foreign_pours``, keyed by layer
+    index) and :func:`_clears_foreign_pours` checks the jumper's own copper
+    against them geometrically. That guard is narrow on purpose — it
+    answers only for the copper THIS function invents, and does not
+    retroactively make the paragraph above true for anything else.
     """
     plane_net_ids = [n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0]
     if not plane_net_ids or not pours:
-        return [], []
+        return [], [], []
     layer_names = [str(layer.get("name")) for layer in ir.stackup]
     layer_index = {name: i for i, name in enumerate(layer_names)}
+    # Every pour's polygon, once — the per-net `foreign_pours` views below
+    # are filtered from this list rather than rebuilt, so a board with many
+    # planes does not pay to re-triangulate the same rings per net.
+    pour_polys: list[tuple[str, int, Any]] = []
+    for pour in pours:
+        idx = layer_index.get(str(pour.get("layer", "")))
+        if idx is None:
+            continue
+        poly = _pour_polygon(pour)
+        if not poly.is_empty:
+            pour_polys.append((str(pour.get("net", "")), idx, poly))
 
     grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
     _stamp_pads(grid, pads)
@@ -2501,34 +3015,54 @@ def _stitch_plane_fragments(
     ]
 
     extra_vias: list[RealizedVia] = []
+    extra_tracks: list[RealizedTrack] = []
     unstitched: list[UnstitchedNet] = []
     for net_id in plane_net_ids:
         net_name = str(ir.net_name[net_id])
         rules = rules_by_net[net_id]
         if rules.via_dia_mm is None or rules.via_drill_mm is None:
             continue
-        frags: list[tuple[int, Any]] = []
-        for pour in pours:
-            if str(pour.get("net", "")) != net_name:
-                continue
-            layer_idx = layer_index.get(str(pour.get("layer", "")))
-            if layer_idx is None:
-                continue
-            poly = _pour_polygon(pour)
-            if not poly.is_empty:
-                frags.append((layer_idx, poly))
+        frags = [(idx, poly) for net, idx, poly in pour_polys if net == net_name]
         if not frags:
             continue  # nothing poured for this net at all -- nothing to stitch TO
         existing = [v for v in vias if v.net_id == net_id]
         if len(frags) + len(existing) <= 1:
             continue  # a single node, alone, cannot be disconnected from itself
-        net_vias, remaining, message = _stitch_one_net(
-            net_id, net_name, frags, existing, grid, rules, config, placed_via_sites
+        foreign_pours: dict[int, list[Any]] = {}
+        for net, idx, poly in pour_polys:
+            if net != net_name:
+                foreign_pours.setdefault(idx, []).append(poly)
+        # A jumper's trace is a real trace, so its width is this net's
+        # resolved rule for the layer it lands on — the same single
+        # resolver every other track in this module goes through, asked per
+        # candidate detour layer rather than reusing the caller's `rules`
+        # (which were resolved for one layer and would silently apply an
+        # outer-layer width to an inner-layer run). Keying on
+        # `routable_layers` is also what confines a jumper to a layer that
+        # may legally carry a trace at all — a plane-only or non-copper
+        # layer never appears here, so it is never offered as a detour.
+        track_width_by_layer = {
+            layer: _resolve_track_rules(ir, net_id, layer, config).track_width_mm
+            for layer in routable_layers(ir)
+        }
+        net_vias, net_tracks, remaining, bare, message = _stitch_one_net(
+            net_id,
+            net_name,
+            frags,
+            existing,
+            grid,
+            rules,
+            config,
+            placed_via_sites,
+            track_width_by_layer,
+            foreign_pours,
+            [t for t in tracks if t.net_id == net_id],
         )
         extra_vias += net_vias
+        extra_tracks += net_tracks
         if remaining > 1:
-            unstitched.append(UnstitchedNet(net_id, net_name, remaining, message))
-    return extra_vias, unstitched
+            unstitched.append(UnstitchedNet(net_id, net_name, remaining, bare, message))
+    return extra_vias, extra_tracks, unstitched
 
 
 def _straighten(

@@ -82,17 +82,15 @@ _SEED = 1
 #:   ``maze.grid_for`` rounded its node count UP, putting the last grid
 #:   node up to a pitch outside the very clip ``_outline_clip`` had just
 #:   inset. Flooring it handed the margin back.
-#: - ``connectivity`` (1, was 2): GND's poured copper is in 3 pieces.
-#:   VCC3V3's split is FIXED — its orphan was the same drop via that sat
+#: - ``connectivity`` (was 2, then 1, now 0 — FIXED, waiver removed).
+#:   VCC3V3's split went first: its orphan was the same drop via that sat
 #:   past the board edge, so placing it legally also put it back in the
-#:   pour. GND's is a structural gap, not a tuning one: GND is poured on
-#:   ``F.Cu`` ONLY (measured: 4 fragments, all one layer), and a via joins
-#:   LAYERS, not lateral gaps — so the stitcher has no second sheet to
-#:   detour through and provably cannot close it. Needs the two-via/
-#:   spare-layer jumper ``_stitch_one_net`` scopes out. Tracked in
-#:   ``docs/backlog/pcb-same-layer-plane-bridge.md``.
-#:   ``_stitch_one_net`` adds bridging vias and never removes copper, so it
-#:   cannot have caused this; it closes some gaps and reports the rest.
+#:   pour. GND's outlasted it and was structural, not a tuning failure —
+#:   GND is poured on ``F.Cu`` ONLY (measured: 4 fragments, all one layer),
+#:   and a via joins LAYERS, not lateral gaps, so the stitcher had no
+#:   second sheet to detour through and provably could not close it. Fixed
+#:   by the two-via/spare-layer jumper (``realize.py::_try_plane_jumper``),
+#:   which routes across a layer that is neither fragment's own.
 #: - ``silk_missing`` (61): courtyard outlines that cannot be drawn without
 #:   landing on a pad. Fixed structurally by
 #:   ``docs/backlog/pcb-courtyard-polygon.md``.
@@ -102,7 +100,6 @@ _SEED = 1
 #: defects, never for new ones. **Lower each number as its item ships**; a
 #: stale allowance is indistinguishable from an unnoticed regression.
 KNOWN_OPEN_DRC_ERRORS = {
-    "connectivity": 1,
     "silk_missing": 61,
 }
 
