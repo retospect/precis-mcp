@@ -20,12 +20,28 @@ cadence · addr→handle · gloss→summary · excerpt consolidation · export c
 verbs→render_ · block→chunk surface lies (types.py docstring, tools/core.py,
 4 skills) · wall_seconds nested unification (read-both shim) · local hub→claim_hub.
 
-## Stage B — store.blocks→chunks full facade rename (~1,200 sites)
+## Stage B — store.blocks→chunks full facade rename (LANDED)
 
-Code-only (table is already `chunks`). Block/BlockInsert→Chunk*, Store.blocks→
-Store.chunks, BlockStore→ChunkStore + method surface, pos→ord field alignment
-(incl. Link.src_pos/dst_pos), parser *Block types, block_ingest/block_slug,
-protocols accessors, ~477 test sites. Then drop the glossary block legacy note.
+Code-only (table was already `chunks`). `Block`→`ChunkRow` (renamed off
+`workers/base.py::ChunkRow`, a pre-existing unrelated worker-claim type, now
+`ClaimedChunk`), `BlockInsert`→`ChunkInsert`, `Store.blocks`→`Store.chunks`,
+`BlockStore`→`ChunkStore` + the whole method surface (incl. the bare
+`search_blocks`→`search_chunks` dispatcher, not originally enumerated),
+`pos`→`ord` field alignment on `ChunkRow`/`ChunkInsert` (and
+`Link.src_pos`/`dst_pos`→`src_ord`/`dst_ord`, confirmed 1:1 via
+`sc.ord AS src_pos` in `_links_ops.py`), parser `*Block` types renamed
+(`MdBlock`/`PlaintextBlock`/`TexBlock`→`*Chunk`, keeping their own `pos`
+field — a deliberate, separate parse-fragment concept), `block_ingest.py`→
+`chunk_ingest.py`, `block_slug.py`→`chunk_slug.py`, protocol accessors,
+~477 test sites (mypy-driven convergence pass caught the cross-module
+fallout). `add_link(src_pos=…)`/`LinkTarget.pos`/`HeadingHit.pos`/
+`SearchHit.pos`/`LogbookLine.pos`/`block_pos=` kwargs are a deliberate,
+pre-existing "pos" agent-facing convention, untouched. Out of scope (left
+alone, different concept): `ingest/blocks.py` (parse-stage dicts),
+`md_index`'s `MdBlockEntry`/`BlockKind` (its own index-entry type), the real
+persisted `chunks.pos` TEXT column (draft-tree lexicographic ordering, via
+`DraftChunk.pos`) — do not confuse with `ChunkRow.ord`. Glossary block
+legacy note shrunk to just the prompt-assembly `Block` type.
 
 ## Stage C — persisted low-blast migrations (one ship each or bundled)
 
@@ -56,6 +72,11 @@ protocols accessors, ~477 test sites. Then drop the glossary block legacy note.
   put(source='paper:<slug>') are unrelated. DECIDE the winner/renames.
 - Review persona externals (Stage A renamed code only): web HTTP `"lens"`
   JSON field + CLI `--lenses` flag → persona vocabulary.
+- Write-ack string `"<verb> block <N> '<slug>' …"` (`utils/file_id.py::
+  format_write_result`, pinned by test_files_write.py) still says "block" to
+  agents → "chunk", together with its `block_pos=`/`block_slug=` kwargs and
+  the wider agent-facing `pos`/`block_pos=` convention (`add_link`,
+  `LinkTarget.pos`, …) — one coordinated surface rename, agents re-learn.
 
 ## Stage E — task→todo + retire/soft-delete unification (largest)
 

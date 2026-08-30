@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from precis.utils.tex_parse import (
     TEX_SECTION_LEVELS,
-    TexBlock,
+    TexChunk,
     extract_inputs,
     parse_tex,
 )
@@ -232,15 +232,15 @@ def test_slugs_unique_within_file() -> None:
     assert blocks[0].slug != blocks[1].slug
 
 
-# ── TexBlock satisfies the PlaintextBlock duck-type ──────────────────
+# ── TexChunk satisfies the PlaintextChunk duck-type ──────────────────
 
 
 def test_texblock_satisfies_plaintextblock_protocol() -> None:
     """The block_ingest / _find_block helpers expect ``pos``, ``slug``,
     ``text``, ``line_start``, ``line_end`` on every parsed block.
-    Confirm TexBlock keeps that shape after subclassing."""
+    Confirm TexChunk keeps that shape after subclassing."""
     blocks = parse_tex(r"\section{x}" + "\nbody.\n")
     b = blocks[0]
-    assert isinstance(b, TexBlock)
+    assert isinstance(b, TexChunk)
     for attr in ("pos", "slug", "text", "line_start", "line_end"):
-        assert hasattr(b, attr), f"TexBlock missing required attr {attr}"
+        assert hasattr(b, attr), f"TexChunk missing required attr {attr}"

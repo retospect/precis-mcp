@@ -7,7 +7,7 @@ need it to be exact at zero / partial / full / mixed-failure states.
 from __future__ import annotations
 
 from precis.embedder import MockEmbedder
-from precis.workers.base import ArtifactStatus, ChunkRow
+from precis.workers.base import ArtifactStatus, ClaimedChunk
 from precis.workers.embed import EmbedHandler
 from precis.workers.runner import run_handler_once
 from precis.workers.summarize import RakeLemmaHandler
@@ -103,7 +103,7 @@ class TestStatus:
         h_alt = EmbedHandler(MockEmbedder(dim=1024, model="alt-emb"))
 
         # Embed the chunk with main only.
-        vec = h_main.process(ChunkRow(chunk_id=chunk_id, text="alpha"))
+        vec = h_main.process(ClaimedChunk(chunk_id=chunk_id, text="alpha"))
         with store.pool.connection() as conn:
             h_main.write_ok(conn, chunk_id, vec)
             conn.commit()

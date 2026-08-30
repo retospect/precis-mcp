@@ -91,7 +91,7 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
         return Response(body="\n".join(header))
 
     refs_by_id = store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
-    fetched_paper_ids = store.blocks.ref_ids_with_chunks(
+    fetched_paper_ids = store.chunks.ref_ids_with_chunks(
         [e.paper_ref_id for e in all_edges]
     )
 

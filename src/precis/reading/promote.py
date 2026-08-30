@@ -67,7 +67,7 @@ def create_concept(
         ref = store.insert_ref(
             kind="concept", slug=None, title=name.strip(), meta=meta, conn=conn
         )
-        store.blocks.upsert_card_combined(ref.id, card, conn=conn)
+        store.chunks.upsert_card_combined(ref.id, card, conn=conn)
         if source_paper_id is not None:
             store.add_link(
                 src_ref_id=ref.id,

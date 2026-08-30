@@ -543,7 +543,7 @@ def _active_quest_with_card(store: Store, *, title: str, card_text: str) -> int:
     _load_interest_profile` reads."""
     ref = store.insert_ref(kind="quest", slug=None, title=title, meta={})
     store.add_tag(ref.id, Tag.closed("STATUS", "active"), set_by="system")
-    store.blocks.upsert_card_combined(ref.id, card_text)
+    store.chunks.upsert_card_combined(ref.id, card_text)
     return ref.id
 
 
@@ -885,7 +885,7 @@ class TestLoadInterestProfile:
         from precis.workers.stub_rank import _load_interest_profile
 
         ref = store.insert_ref(kind="quest", slug=None, title="Dormant", meta={})
-        store.blocks.upsert_card_combined(ref.id, "no longer active")
+        store.chunks.upsert_card_combined(ref.id, "no longer active")
         assert _load_interest_profile(store) == ""
 
 

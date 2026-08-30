@@ -1,6 +1,6 @@
 """Structured TOC builder (``build_toc_segments``) for the web nav.
 
-Unit-level: drives the builder with a fake store returning Block-like
+Unit-level: drives the builder with a fake store returning Chunk-like
 rows, so it needs no DB. The clustering itself is covered by the
 existing toc_db markdown tests; here we assert the structured shape.
 """
@@ -14,22 +14,22 @@ from precis.utils.toc_db import _BUCKETING_THRESHOLD, build_toc_segments
 
 
 class _Store:
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(self, blocks):
         self._blocks = blocks
 
-    def list_blocks_for_ref(self, ref_id, *, pos_range=None):
+    def list_chunks_for_ref(self, ref_id, *, pos_range=None):
         if pos_range is None:
             return list(self._blocks)
         lo, hi = pos_range
-        return [b for b in self._blocks if lo <= b.pos <= hi]
+        return [b for b in self._blocks if lo <= b.ord <= hi]
 
 
-def _blk(pos, keywords):
-    return SimpleNamespace(pos=pos, keywords=keywords)
+def _blk(ord_, keywords):
+    return SimpleNamespace(ord=ord_, keywords=keywords)
 
 
 def test_empty_paper_yields_no_segments() -> None:

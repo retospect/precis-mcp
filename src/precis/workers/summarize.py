@@ -37,7 +37,7 @@ from typing import ClassVar
 from psycopg import Connection
 
 from precis.utils.rake import _STOPWORDS, extract_keywords
-from precis.workers.base import ChunkRow, WorkerHandler
+from precis.workers.base import ClaimedChunk, WorkerHandler
 
 # ---------------------------------------------------------------------------
 # Handler — wraps extract_keywords for the worker runner
@@ -80,7 +80,7 @@ class RakeLemmaHandler(WorkerHandler):
     # process — pure RAKE on chunk text
     # ------------------------------------------------------------------
 
-    def process(self, row: ChunkRow) -> str:
+    def process(self, row: ClaimedChunk) -> str:
         """Return the summary string (joined keywords).
 
         Empty chunks return the empty string and the runner persists

@@ -12,8 +12,8 @@ expand-on-request) without committing to its scope.
 Both directions are buildable, because
 ``inbound_chase._resolve_citer_chunk`` runs a *second* locate pass
 into the cited paper Y's own chunks: a chunk-scoped ``cites`` link's
-``src_pos`` (the citer's located chunk) is always set when the citer
-has any chunks; ``dst_pos`` (Y's located chunk) is set whenever that
+``src_ord`` (the citer's located chunk) is always set when the citer
+has any chunks; ``dst_ord`` (Y's located chunk) is set whenever that
 second locate finds a confident match in Y, and left unset when it
 doesn't (a citer engaging with Y's paper-level contribution rather
 than one specific passage — expected, not a failure). Two render
@@ -21,10 +21,10 @@ entry points share the same verdict-filtering/capping/best-first
 logic (:func:`_render_sidecar`):
 
 - :func:`render_citer_sidecar` — outbound, ``direction='out'`` filtered
-  on ``src_pos`` — "chunk C of paper X cites Y" (the original build).
+  on ``src_ord`` — "chunk C of paper X cites Y" (the original build).
 - :func:`render_cited_by_sidecar` — inbound, ``direction='in'``
-  filtered on ``dst_pos`` — "chunk D of paper Y is cited by X",
-  now that ``dst_pos`` exists.
+  filtered on ``dst_ord`` — "chunk D of paper Y is cited by X",
+  now that ``dst_ord`` exists.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def render_citer_sidecar(store: Store, ref: Ref, chunk_pos: int) -> str:
 
     Rendering chunk C of paper X: which papers does *this chunk*
     cite, and with what verdict. Returns ``""`` when there's nothing
-    to show (no chunk-scoped ``cites`` links at this ``src_pos``, or
+    to show (no chunk-scoped ``cites`` links at this ``src_ord``, or
     none carry a surfaceable verdict) — callers append
     unconditionally, so the empty case must produce no output.
     """
@@ -71,8 +71,8 @@ def render_cited_by_sidecar(store: Store, ref: Ref, chunk_pos: int) -> str:
     """Capped sidecar for the inbound ``cites`` verdicts on one chunk.
 
     Rendering chunk D of the *cited* paper Y: who cites *this specific
-    passage* (``dst_pos == chunk_pos``), and with what verdict — buildable
-    since ``inbound_chase``'s second locate pass populates ``dst_pos``.
+    passage* (``dst_ord == chunk_pos``), and with what verdict — buildable
+    since ``inbound_chase``'s second locate pass populates ``dst_ord``.
     Returns ``""`` when there's nothing to show, same contract as
     :func:`render_citer_sidecar`.
     """
@@ -105,7 +105,7 @@ def _render_sidecar(
     are noted as a bare count, not expanded.
     """
     links = store.links_for(ref.id, direction=direction, relation="cites")
-    pos_attr = "src_pos" if direction == "out" else "dst_pos"
+    pos_attr = "src_ord" if direction == "out" else "dst_ord"
     other_attr = "dst_ref_id" if direction == "out" else "src_ref_id"
     candidates = [
         lk

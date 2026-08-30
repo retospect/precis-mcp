@@ -34,7 +34,7 @@ from precis.store._resource_slots_ops import (
     release_resource_slots,
     reserve_resource_slots,
 )
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import suspended_job_types
 from precis.workers.registry import SERVICES_BY_NAME
 from precis.workers.service_config import reserve_active
@@ -962,7 +962,7 @@ def append_chunk(
 
     When ``conn`` is provided we count via that connection so back-to-
     back appends inside the same tx see each other's INSERTs. The
-    previous implementation called ``store.list_blocks_for_ref`` which
+    previous implementation called ``store.list_chunks_for_ref`` which
     opens its own pool connection — uncommitted INSERTs in ``conn``
     were invisible, leading to two calls computing the same
     ``next_pos`` and a unique-constraint violation on ``(ref_id, ord)``.
@@ -975,11 +975,11 @@ def append_chunk(
         ).fetchone()
         next_pos = int(row[0]) if row and row[0] is not None else 0
     else:
-        blocks = store.blocks.list_blocks_for_ref(ref_id)
+        blocks = store.chunks.list_chunks_for_ref(ref_id)
         next_pos = len(blocks)
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref_id,
-        [BlockInsert(pos=next_pos, text=text, meta={"chunk_kind": chunk_kind})],
+        [ChunkInsert(ord=next_pos, text=text, meta={"chunk_kind": chunk_kind})],
         conn=conn,
     )
 

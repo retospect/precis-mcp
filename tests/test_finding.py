@@ -37,7 +37,7 @@ def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
     Returns the ref_id. The chunk sits at ord=0 so a chunk-level
     ``cited_in='<cite_key>~0'`` resolves cleanly.
     """
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     ref = store.insert_ref(
         kind="paper",
@@ -45,9 +45,9 @@ def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
         title=f"Test paper {cite_key}",
         meta={},
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=f"Body chunk of {cite_key}.", meta={})],
+        [ChunkInsert(ord=0, text=f"Body chunk of {cite_key}.", meta={})],
     )
     return ref.id
 
@@ -55,10 +55,10 @@ def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
 def _seed_memory(store, *, text: str = "a research note") -> int:
     """Insert a minimal memory ref — a provenance= target for acquisition
     mode (a numeric kind, addressed as ``memory:<id>``)."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, meta={})])
     return ref.id
 
 
@@ -876,7 +876,7 @@ class TestSearchSurfacesHubs:
     def test_default_search_still_hides_ordinary_tracing_finding(self, store) -> None:
         """A plain STATUS:tracing (non-hub) finding stays hidden from the
         default search — only hubs are surfaced, not all tracing rows."""
-        from precis.store.types import BlockInsert
+        from precis.store.types import ChunkInsert
 
         h = _make_handler(store)
         hub_id = mint_hub(store, self._CLAIM)
@@ -884,9 +884,9 @@ class TestSearchSurfacesHubs:
         ref = store.insert_ref(
             kind="paper", slug="perov-src", title="Perovskite source", meta={}
         )
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
-            [BlockInsert(pos=0, text="Perovskite body chunk.", meta={})],
+            [ChunkInsert(ord=0, text="Perovskite body chunk.", meta={})],
         )
         resp = h.put(
             title="in-flight perovskite claim",

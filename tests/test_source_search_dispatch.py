@@ -10,7 +10,7 @@ the kind set, and renders. End to end through ``runtime.dispatch``.
 from __future__ import annotations
 
 from precis.runtime import PrecisRuntime
-from precis.store import BlockInsert
+from precis.store import ChunkInsert
 
 
 def _seed(rt: PrecisRuntime, kind: str, slug: str, title: str, text: str) -> int:
@@ -19,7 +19,7 @@ def _seed(rt: PrecisRuntime, kind: str, slug: str, title: str, text: str) -> int
     ref = store.insert_ref(kind=kind, slug=slug, title=title)
     emb = rt.hub.embedder
     vec = emb.embed_one(text) if emb is not None else None
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, embedding=vec)])
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, embedding=vec)])
     return ref.id
 
 

@@ -16,13 +16,13 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers._citer_sidecar import render_cited_by_sidecar, render_citer_sidecar
 from precis.handlers.paper import PaperHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 
 
 def _paper(store: Store, *, slug: str, blocks: list[str]) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=f"Paper {slug}")
-    store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)]
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=i, text=t, meta={}) for i, t in enumerate(blocks)]
     )
     return ref.id
 

@@ -53,7 +53,7 @@ from precis.ingest import orcid as orcid_api
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 
@@ -327,7 +327,7 @@ class OrcidHandler(Handler):
 
     def _card_hits(self, q: str, *, limit: int, mode: str | None):
         query_vec = embed_query(self.embedder, q)
-        return self.store.blocks.search_blocks(
+        return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -456,8 +456,8 @@ class OrcidHandler(Handler):
                 embedding = self.embedder.embed_one(card)
             except Exception:
                 embedding = None  # embed worker re-claims on a NULL vector
-        card_block = BlockInsert(
-            pos=-1,
+        card_block = ChunkInsert(
+            ord=-1,
             text=card,
             embedding=embedding,
             meta={"chunk_kind": "card_combined"},
@@ -477,7 +477,7 @@ class OrcidHandler(Handler):
             else:
                 ref_id = existing_ref_id
                 self.store.update_ref(ref_id, title=title, meta_patch=meta, conn=conn)
-            self.store.blocks.insert_blocks(
+            self.store.chunks.insert_chunks(
                 ref_id, [card_block], replace=True, conn=conn
             )
         return ref_id

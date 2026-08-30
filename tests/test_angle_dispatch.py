@@ -26,7 +26,7 @@ def _embed_card(runtime: PrecisRuntime, ref_id: int, text: str) -> None:
     store = runtime.hub.live_store
     assert store is not None
     vec = runtime.hub.embed_one(text)
-    (cid,) = store.blocks.card_chunk_ids([ref_id])
+    (cid,) = store.chunks.card_chunk_ids([ref_id])
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, attempts) "

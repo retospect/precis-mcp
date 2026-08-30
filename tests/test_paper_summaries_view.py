@@ -12,7 +12,7 @@ from __future__ import annotations
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers.paper import PaperHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
 
 
@@ -22,10 +22,10 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
     case). Returns the paper ``ref_id``."""
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
     e = MockEmbedder(dim=1024)
-    blocks = store.blocks.insert_blocks(
+    blocks = store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(pos=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))
+            ChunkInsert(ord=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))
             for i in range(n)
         ],
     )
@@ -80,15 +80,15 @@ def test_summaries_view_in_supported_views(store: Store) -> None:
 def test_chunk_llm_summaries_for_ref_shape_and_scope(store: Store) -> None:
     """The store helper the web /chunks + /search endpoints read."""
     ref_id = _seed_paper(store, slug="scoped07", n=6)
-    summaries = store.blocks.chunk_llm_summaries_for_ref(ref_id)
+    summaries = store.chunks.chunk_llm_summaries_for_ref(ref_id)
     assert [g["ord"] for g in summaries] == [0, 1, 2, 3, 4, 5]
     assert summaries[0]["summary"] == "The opening summary."
     assert summaries[1]["summary"] == ""  # no summary → empty, keyword fallback
     assert summaries[0]["keywords"] == "alpha, beta"
     # Scope narrows to an ord range inclusively.
-    scoped = store.blocks.chunk_llm_summaries_for_ref(ref_id, pos_range=(2, 4))
+    scoped = store.chunks.chunk_llm_summaries_for_ref(ref_id, pos_range=(2, 4))
     assert [g["ord"] for g in scoped] == [2, 3, 4]
 
     # And the targeted summary batch used by the search path.
-    summ = store.blocks.chunk_summaries_for(ref_id, [0, 1, 2])
+    summ = store.chunks.chunk_summaries_for(ref_id, [0, 1, 2])
     assert summ == {0: "The opening summary."}

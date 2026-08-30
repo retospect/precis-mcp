@@ -484,8 +484,8 @@ class NumericRefHandler(Handler):
         # Salience: heat the entries this page surfaced. Ref-level kinds
         # carry their salience on the card_combined chunk (ord=-1); kinds
         # without a card contribute nothing. No-op for dream-actor reads.
-        self.store.blocks.bump_salience(
-            self.store.blocks.card_chunk_ids([r.id for r in hit_refs])
+        self.store.chunks.bump_salience(
+            self.store.chunks.card_chunk_ids([r.id for r in hit_refs])
         )
 
         # Total-hits header: a second COUNT(*) with the same WHERE
@@ -705,8 +705,8 @@ class NumericRefHandler(Handler):
             limit=page_size,
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
-        self.store.blocks.bump_salience(
-            self.store.blocks.card_chunk_ids([r.id for r in refs])
+        self.store.chunks.bump_salience(
+            self.store.chunks.card_chunk_ids([r.id for r in refs])
         )
         # Synthesised descending ranks: the fused order *is* the ranking, and
         # SearchHit.score is documented as intra-stream ordering only — the
@@ -737,7 +737,7 @@ class NumericRefHandler(Handler):
         """Best-ranked chunk per ref for a hybrid body-chunk query.
 
         Hybrid (lexical + semantic RRF) since 2026-08-22 — this was
-        ``search_blocks_lexical``, so ``memory`` and ``gripe`` searched 9.8k
+        ``search_chunks_lexical``, so ``memory`` and ``gripe`` searched 9.8k
         embedded chunks with a pure term-AND and no semantic recall. The
         vectors were already there; nothing queried them.
 
@@ -762,7 +762,7 @@ class NumericRefHandler(Handler):
         one. The over-fetch pool grows with ``page`` so later pages
         still have enough distinct refs to dedupe from.
         """
-        raw = self.store.blocks.search_blocks_fused(
+        raw = self.store.chunks.search_chunks_fused(
             q=q,
             query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, mode),
             kind=self.kind,
@@ -784,7 +784,7 @@ class NumericRefHandler(Handler):
         # adds refs beyond this page — an exact fused count would mean
         # running the whole fusion again just for a headline.)
         total = max(
-            self.store.blocks.count_blocks_lexical(
+            self.store.chunks.count_chunks_lexical(
                 q=q, kind=self.kind, tags=tags, distinct_refs=True
             ),
             len(ordered),
@@ -804,8 +804,8 @@ class NumericRefHandler(Handler):
         """Rendered body-chunk search: headline + one block per matching ref."""
         hits, total = self._best_body_hits(q, tags, page_size, page=page, mode=mode)
         if self.heat_salience_on_body_search:
-            self.store.blocks.bump_salience(
-                self.store.blocks.card_chunk_ids([ref.id for _, ref, _ in hits])
+            self.store.chunks.bump_salience(
+                self.store.chunks.card_chunk_ids([ref.id for _, ref, _ in hits])
             )
         if not hits:
             if page > 1 and total > 0:
@@ -1269,7 +1269,7 @@ class NumericRefHandler(Handler):
             if self.emits_card:
                 # Emit the embeddable card in the same tx as the ref
                 # insert so the embed worker can vectorize it lazily.
-                self.store.blocks.upsert_card_combined(
+                self.store.chunks.upsert_card_combined(
                     ref.id, self._card_combined_text(text), conn=conn
                 )
             if self.autolink_mentions:
@@ -1334,7 +1334,7 @@ class NumericRefHandler(Handler):
                         self.store.remove_link(
                             src_ref_id=ref_id,
                             dst_ref_id=link.dst_ref_id,
-                            dst_pos=link.dst_pos,
+                            dst_pos=link.dst_ord,
                             relation="related-to",
                             conn=conn,
                         )
@@ -1496,9 +1496,9 @@ class NumericRefHandler(Handler):
         agent can navigate "upstream" easily.
         """
         if arrow == "→":
-            other_id, other_pos = link.dst_ref_id, link.dst_pos
+            other_id, other_pos = link.dst_ref_id, link.dst_ord
         else:
-            other_id, other_pos = link.src_ref_id, link.src_pos
+            other_id, other_pos = link.src_ref_id, link.src_ord
 
         ref = endpoints.get(other_id)
         if ref is None:

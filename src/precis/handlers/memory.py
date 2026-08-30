@@ -34,7 +34,7 @@ from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store.types import BlockInsert, Ref
+from precis.store.types import ChunkInsert, Ref
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
 #: A guardrail, not a quota — the agent can do several small merges.
@@ -305,9 +305,9 @@ class MemoryHandler(NumericRefHandler):
             # Body → memory_body chunk at pos 0, written *before* the tag
             # redirect below (which appends any overflow chunk at the next
             # free ord), so the body always sits at ord 0.
-            body_blocks = self.store.blocks.insert_blocks(
+            body_blocks = self.store.chunks.insert_chunks(
                 ref.id,
-                [BlockInsert(pos=0, text=body, meta={"chunk_kind": _BODY_KIND})],
+                [ChunkInsert(ord=0, text=body, meta={"chunk_kind": _BODY_KIND})],
                 conn=conn,
             )
             # Redirect long/whitespace ask-user:/halt: yields into an
@@ -432,7 +432,7 @@ class MemoryHandler(NumericRefHandler):
             with self.store.tx() as conn:
                 self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
                 if new_title is not None:
-                    self.store.blocks.set_ref_title(
+                    self.store.chunks.set_ref_title(
                         ref.id, new_title, source="agent", conn=conn
                     )
             changed = ", ".join(k for k in ("rule", "warrant") if k in meta_patch)
@@ -443,13 +443,13 @@ class MemoryHandler(NumericRefHandler):
 
         with self.store.tx() as conn:
             assert text is not None
-            old_body = self.store.blocks.replace_body_chunk(
+            old_body = self.store.chunks.replace_body_chunk(
                 ref.id, text, chunk_kind=_BODY_KIND, source="agent", conn=conn
             )
             if meta_patch:
                 self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
             if new_title is not None:
-                self.store.blocks.set_ref_title(
+                self.store.chunks.set_ref_title(
                     ref.id, new_title, source="agent", conn=conn
                 )
             # Re-sync auto-mention links to the rewritten body: drop the old
@@ -513,7 +513,7 @@ class MemoryHandler(NumericRefHandler):
         Falls back to ``refs.title`` for any pre-0050 row that never got a
         body chunk (defensive — the migration backfilled every live memory).
         """
-        for block in self.store.blocks.list_blocks_for_ref(ref.id):
+        for block in self.store.chunks.list_chunks_for_ref(ref.id):
             if block.chunk_kind == _BODY_KIND:
                 return block.text
         return ref.title or ""
@@ -559,7 +559,7 @@ class MemoryHandler(NumericRefHandler):
             return ""
         ref_ids = [r.id for r in refs]
         link_counts = self.store.count_links_for_refs(ref_ids)
-        body_words = self.store.blocks.chunk_word_counts(ref_ids, chunk_kind=_BODY_KIND)
+        body_words = self.store.chunks.chunk_word_counts(ref_ids, chunk_kind=_BODY_KIND)
         now = datetime.now(UTC)
         rows: list[dict[str, str]] = []
         for r in refs:
@@ -704,9 +704,9 @@ class MemoryHandler(NumericRefHandler):
                 meta={"superseded": ids},
                 conn=conn,
             )
-            self.store.blocks.insert_blocks(
+            self.store.chunks.insert_chunks(
                 survivor.id,
-                [BlockInsert(pos=0, text=new_text, meta={"chunk_kind": _BODY_KIND})],
+                [ChunkInsert(ord=0, text=new_text, meta={"chunk_kind": _BODY_KIND})],
                 conn=conn,
             )
             for tag in tag_objs:

@@ -46,7 +46,7 @@ from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.structure import OpError, apply_ops
 from precis.structure.cache import structure_sha
 from precis.utils import handle_registry
@@ -355,7 +355,7 @@ class EstimateHandler(CacheBackedHandler):
         body = composition_panel(symbols)
         return FetchResult(
             title=title,
-            body_blocks=[BlockInsert(pos=0, text=body)],
+            body_blocks=[ChunkInsert(ord=0, text=body)],
             model="ms-element-descriptors-v1",
             cost_usd=0.0,
             meta={"symbols": symbols, "tier": "composition"},
@@ -425,7 +425,7 @@ class EstimateHandler(CacheBackedHandler):
 
         return FetchResult(
             title=title,
-            body_blocks=[BlockInsert(pos=0, text=body)],
+            body_blocks=[ChunkInsert(ord=0, text=body)],
             model="ms-structure-workup-v1",
             cost_usd=0.0,
             meta=meta,

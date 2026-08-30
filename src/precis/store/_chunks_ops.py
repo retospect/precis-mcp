@@ -1,22 +1,23 @@
-"""Block-level CRUD against the v2 ``chunks`` table — the composed
-:class:`BlockStore` sub-store, reached as ``store.blocks``.
+"""ChunkRow-level CRUD against the v2 ``chunks`` table — the composed
+:class:`ChunkStore` sub-store, reached as ``store.chunks``.
 
-"Blocks" is the v1 name; v2 calls them ``chunks``. The public surface
-keeps the historical name to avoid churning ~150 handler call sites:
-``Block.id``→``chunks.chunk_id``, ``Block.pos``→``chunks.ord``,
-``Block.slug``→``chunks.meta->>'slug'``, ``Block.embedding``→LEFT JOIN
-``chunk_embeddings`` on the default embedder, ``Block.density``→LEFT
+"Block" was the v1 name for this Python facade (the table itself has
+always been ``chunks``); the vocab-compaction rename (stage B) dropped
+it in favour of the same word at every level:
+``ChunkRow.id``→``chunks.chunk_id``, ``ChunkRow.ord``→``chunks.ord``,
+``ChunkRow.slug``→``chunks.meta->>'slug'``, ``ChunkRow.embedding``→LEFT JOIN
+``chunk_embeddings`` on the default embedder, ``ChunkRow.density``→LEFT
 JOIN ``chunk_tags``+``tags`` filtered ``namespace='DENSITY'``.
 
 Two v2-only columns: ``chunks.chunk_kind`` (required FK to
-``chunk_kinds.slug``; :meth:`insert_blocks` defaults ``'paragraph'``
+``chunk_kinds.slug``; :meth:`insert_chunks` defaults ``'paragraph'``
 absent a hint — richer typing (cards/figures/equations) writes
 directly via ``precis.ingest.db_writer``, bypassing this mixin) and
-``chunks.section_path`` (TEXT[], from ``BlockInsert.meta['section_path']``
+``chunks.section_path`` (TEXT[], from ``ChunkInsert.meta['section_path']``
 or ``{}``).
 
 Scope: insert/get/list/count/density+embedding update/random/
-blocks_missing_embeddings, plus lexical/semantic/RRF-fused search.
+chunks_missing_embeddings, plus lexical/semantic/RRF-fused search.
 ``pool`` comes from the shared :class:`~precis.store.core.StoreCore`.
 """
 
@@ -37,9 +38,9 @@ from precis.store._mappers import (
     _CHUNKS_COLS_LEN,
     _REFS_COLS_ALIASED,
     _REFS_COLS_LEN,
-    _block_noise_clauses,
+    _chunk_noise_clauses,
     _coerce_vector,
-    _row_to_block,
+    _row_to_chunk,
     _row_to_ref,
     _upsert_tag,
 )
@@ -58,7 +59,7 @@ _ATTENTION_COLUMNS: dict[str, str] = {
 }
 
 #: Hard ceiling on the total leg count (lexical + semantic) accepted by
-#: :meth:`BlockStore.search_blocks_multi`. The MCP surface and the
+#: :meth:`ChunkStore.search_chunks_multi`. The MCP surface and the
 #: paper handler cap ``queries=`` / ``answers=`` at 8 each; this is the
 #: last-resort bound for direct (agentic-tier) callers.
 _MULTI_LEG_HARD_CAP = 32
@@ -96,7 +97,7 @@ from precis.store._tag_filter import (
     speculative_fence,
     wiki_fence,
 )
-from precis.store.types import Block, BlockInsert, Density, Ref
+from precis.store.types import ChunkInsert, ChunkRow, Density, Ref
 from precis.utils import handle_registry
 from precis.utils.angle import angle_anchors
 
@@ -105,7 +106,7 @@ if TYPE_CHECKING:
 
 # Default chunk_kind for inserts via this mixin. Phase 2 keeps the
 # block surface kind-agnostic; ingesters that want richer typing
-# (cards at ord<0, figures, equations) bypass insert_blocks and use
+# (cards at ord<0, figures, equations) bypass insert_chunks and use
 # precis.ingest.db_writer directly.
 _DEFAULT_CHUNK_KIND = "paragraph"
 
@@ -250,7 +251,7 @@ def _pick_abstract_text(items: list[tuple[str, str]]) -> str:
     """Choose the best abstract-preview text from leading chunks.
 
     ``items`` is the ordered ``(text, section_path)`` list for one
-    ref. See :meth:`BlockStore.abstract_previews` for the preference
+    ref. See :meth:`ChunkStore.abstract_previews` for the preference
     order. Returns ``""`` when nothing usable is present.
     """
     # 1. An explicit abstract chunk wins (label stripped).
@@ -278,7 +279,7 @@ _REF_END = _BLOCK_END + _REFS_COLS_LEN
 _SCORE_IDX = _REF_END
 
 
-def _unpack_search_row(row: tuple) -> tuple[Block, Ref, float]:
+def _unpack_search_row(row: tuple) -> tuple[ChunkRow, Ref, float]:
     """Decompose a ``(chunk_cols, ref_cols, score)`` row into typed parts.
 
     Companion to the search projections above. Variants that need
@@ -286,15 +287,15 @@ def _unpack_search_row(row: tuple) -> tuple[Block, Ref, float]:
     by the named constants directly rather than copy this body.
     """
     return (
-        _row_to_block(row[:_BLOCK_END]),
+        _row_to_chunk(row[:_BLOCK_END]),
         _row_to_ref(row[_BLOCK_END:_REF_END]),
         float(row[_SCORE_IDX]),
     )
 
 
-class BlockStore:
+class ChunkStore:
     """Composed sub-store for block (chunk) ops — reached as
-    ``store.blocks``. Block insert / get / list + lexical / semantic /
+    ``store.chunks``. ChunkRow insert / get / list + lexical / semantic /
     fused search. Holds a reference to the shared
     :class:`~precis.store.core.StoreCore` (pool lifecycle) rather than
     its own pool; it makes no cross-domain calls, so the ``host``
@@ -353,7 +354,7 @@ class BlockStore:
     #
     # SELECT projection across all four search methods is:
     #
-    #   row[:_BLOCK_END]          — chunk columns (matches _row_to_block;
+    #   row[:_BLOCK_END]          — chunk columns (matches _row_to_chunk;
     #                               embedding column projected as
     #                               NULL::vector or ce.vector, density
     #                               via correlated subquery on chunk_tags)
@@ -375,7 +376,7 @@ class BlockStore:
     # introducers; agents searching for content don't want them in
     # the hit list).
 
-    def count_blocks_lexical(
+    def count_chunks_lexical(
         self,
         *,
         q: str,
@@ -390,7 +391,7 @@ class BlockStore:
         until: datetime | None = None,
     ) -> int:
         """Count chunks matching the lexical filter (no LIMIT). Companion
-        to :meth:`search_blocks_lexical` for the "N of K" header — same
+        to :meth:`search_chunks_lexical` for the "N of K" header — same
         WHERE clause (noise-floor guard, ``card_kinds`` opt-in) so the
         header matches the search's exact universe.
 
@@ -415,7 +416,7 @@ class BlockStore:
             "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
             "c.tsv @@ qq.qq",
-            *_block_noise_clauses(text_alias="c.text"),
+            *_chunk_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = [q]
         if kinds is not None:
@@ -472,7 +473,7 @@ class BlockStore:
             "r.year IS NULL",
             "c.ord >= 0",
             "c.tsv @@ qq.qq",
-            *_block_noise_clauses(text_alias="c.text"),
+            *_chunk_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = [q]
         if scope_ref_id is not None:
@@ -546,7 +547,7 @@ class BlockStore:
             return False
         return True
 
-    def search_blocks_lexical(
+    def search_chunks_lexical(
         self,
         *,
         q: str,
@@ -565,7 +566,7 @@ class BlockStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
         Returns ``(block, ref, rank)`` tuples sorted by
@@ -587,7 +588,7 @@ class BlockStore:
             "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
             "c.tsv @@ qq.qq",
-            *_block_noise_clauses(text_alias="c.text"),
+            *_chunk_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = [q]
         kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
@@ -633,7 +634,7 @@ class BlockStore:
             rows = conn.execute(sql, params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
-    def search_blocks_keywords(
+    def search_chunks_keywords(
         self,
         *,
         terms: list[str],
@@ -652,7 +653,7 @@ class BlockStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """Verbatim keyword search — chunks whose ``keywords`` array contains
         **all** of ``terms`` (GIN ``@>`` containment against the per-chunk
         KeyBERT terms, F20). The ``search(mode='verbatim')`` leg: exact,
@@ -674,7 +675,7 @@ class BlockStore:
             "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
             "c.keywords @> %s::text[]",
-            *_block_noise_clauses(text_alias="c.text"),
+            *_chunk_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = [norm]
         kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
@@ -713,7 +714,7 @@ class BlockStore:
             rows = conn.execute(sql, params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
-    def search_blocks_semantic(
+    def search_chunks_semantic(
         self,
         *,
         query_vec: list[float],
@@ -733,7 +734,7 @@ class BlockStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """Cosine-distance semantic search via ``chunk_embeddings``.
 
         Returns ``(block, ref, distance)`` tuples sorted by distance
@@ -759,7 +760,7 @@ class BlockStore:
             _ord_card_clause(card_kinds),
             "ce.vector IS NOT NULL",
             "ce.status = 'ok'",
-            *_block_noise_clauses(text_alias="c.text"),
+            *_chunk_noise_clauses(text_alias="c.text"),
         ]
         where_params: list[Any] = []
         kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
@@ -815,7 +816,7 @@ class BlockStore:
             rows = conn.execute(sql, params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
-    def search_blocks_fused(
+    def search_chunks_fused(
         self,
         *,
         q: str,
@@ -834,7 +835,7 @@ class BlockStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
         If ``query_vec`` is None, falls back to lexical-only and
@@ -851,7 +852,7 @@ class BlockStore:
         legs (see :func:`_ord_card_clause`).
         """
         if query_vec is None:
-            return self.search_blocks_lexical(
+            return self.search_chunks_lexical(
                 q=q,
                 kind=kind,
                 scope_ref_id=scope_ref_id,
@@ -874,7 +875,7 @@ class BlockStore:
             "r.deleted_at IS NULL",
             "c.retired_at IS NULL",  # ghost-chunk guard (gripe 49153)
             _ord_card_clause(card_kinds),
-            *_block_noise_clauses(text_alias="c.text"),
+            *_chunk_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = []
         if kind is not None:
@@ -918,7 +919,7 @@ class BlockStore:
                 SELECT c.chunk_id AS cid,
                        row_number() OVER (
                            -- chunk_id tiebreak: same determinism fix as
-                           -- search_blocks_lexical (rank ties shuffle).
+                           -- search_chunks_lexical (rank ties shuffle).
                            ORDER BY ts_rank_cd(c.tsv, qq.qq) DESC, c.chunk_id
                        ) AS rnk
                 FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
@@ -997,7 +998,7 @@ class BlockStore:
             rows = conn.execute(sql, full_params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
-    def search_blocks_multi(
+    def search_chunks_multi(
         self,
         *,
         q_texts: list[str],
@@ -1022,9 +1023,9 @@ class BlockStore:
         card_kinds: tuple[str, ...] | None = None,
         per_paper: int | None = None,
         pool_per_leg: int = 80,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """Multi-leg reciprocal-rank fusion for broad/high-recall
-        retrieval. Generalises :meth:`search_blocks_fused` (one lexical +
+        retrieval. Generalises :meth:`search_chunks_fused` (one lexical +
         one semantic leg) to *N* legs: each ``q_texts`` entry runs a
         lexical leg, each ``query_vecs`` entry a semantic leg, then
         per-leg ranked lists are RRF-fused into one ordering. A chunk
@@ -1033,8 +1034,8 @@ class BlockStore:
         single-query path lacks.
 
         Fusion is application-level: every leg reuses the tested
-        single-leg SQL (:meth:`search_blocks_lexical`/
-        :meth:`search_blocks_semantic`) rather than a hand-rolled N-CTE
+        single-leg SQL (:meth:`search_chunks_lexical`/
+        :meth:`search_chunks_semantic`) rather than a hand-rolled N-CTE
         query. Each leg over-fetches a pool for the fusion to re-rank
         before the outer ``offset``/``limit`` slice.
 
@@ -1046,7 +1047,7 @@ class BlockStore:
         ``per_paper`` optionally caps hits per ref in the fused result
         (diversity knob); ``None`` disables it.
 
-        Returns ``(Block, Ref, fused_score)``, best first.
+        Returns ``(ChunkRow, Ref, fused_score)``, best first.
         """
         # Defensive hard ceiling on the fan-out. The MCP surface and the
         # paper handler both cap queries=/answers= at 8 each, but this
@@ -1057,7 +1058,7 @@ class BlockStore:
         n_legs = len(q_texts) + len(query_vecs)
         if n_legs > _MULTI_LEG_HARD_CAP:
             raise ValueError(
-                f"search_blocks_multi: {n_legs} legs exceeds the hard cap "
+                f"search_chunks_multi: {n_legs} legs exceeds the hard cap "
                 f"{_MULTI_LEG_HARD_CAP} (callers must bound queries=/answers=)"
             )
         m = (mode or "hybrid").strip().lower()
@@ -1065,7 +1066,7 @@ class BlockStore:
             # Verbatim keyword match has no relevance gradient to fuse across
             # reformulations — run it once on the primary query and return.
             primary = next((qt for qt in q_texts if qt and qt.strip()), "")
-            return self.search_blocks_keywords(
+            return self.search_chunks_keywords(
                 terms=primary.split(),
                 kind=kind,
                 kinds=kinds,
@@ -1095,11 +1096,11 @@ class BlockStore:
         pool = max(pool_per_leg, (offset + limit) * 2)
         clean_q = [qt for qt in q_texts if qt and qt.strip()]
 
-        legs: list[list[tuple[Block, Ref, float]]] = []
+        legs: list[list[tuple[ChunkRow, Ref, float]]] = []
         if run_lexical:
             for qt in clean_q:
                 legs.append(
-                    self.search_blocks_lexical(
+                    self.search_chunks_lexical(
                         q=qt,
                         kind=kind,
                         kinds=kinds,
@@ -1120,7 +1121,7 @@ class BlockStore:
         if run_semantic:
             for qv in query_vecs:
                 legs.append(
-                    self.search_blocks_semantic(
+                    self.search_chunks_semantic(
                         query_vec=qv,
                         kind=kind,
                         kinds=kinds,
@@ -1141,9 +1142,9 @@ class BlockStore:
                 )
 
         # Reciprocal-rank fusion: score[cid] = Σ_leg 1/(k + rank_in_leg).
-        # Keep the first-seen (Block, Ref) per chunk for rendering.
+        # Keep the first-seen (ChunkRow, Ref) per chunk for rendering.
         fused: dict[int, float] = {}
-        seen: dict[int, tuple[Block, Ref]] = {}
+        seen: dict[int, tuple[ChunkRow, Ref]] = {}
         for leg in legs:
             for rank, (block, ref, _score) in enumerate(leg):
                 cid = block.id
@@ -1154,7 +1155,7 @@ class BlockStore:
         # Sort by fused score desc; deterministic tiebreak on chunk id.
         ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
 
-        results: list[tuple[Block, Ref, float]] = []
+        results: list[tuple[ChunkRow, Ref, float]] = []
         per_paper_count: dict[int, int] = {}
         for cid, score in ordered:
             block, ref = seen[cid]
@@ -1183,11 +1184,11 @@ class BlockStore:
         k: int = 60,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
         The source-search primitive behind the unified Drive surface:
         searches a *set* of kinds at once (semantic+lexical, RRF-fused
-        via :meth:`search_blocks_multi`), collapses to one hit per ref
+        via :meth:`search_chunks_multi`), collapses to one hit per ref
         (best-scoring chunk), optionally bounds by ``refs.created_at``
         (``since``/``until``), orders by relevance (default),
         ``sort='recency'`` (newest first), or ``'oldest'``. ``offset``
@@ -1195,7 +1196,7 @@ class BlockStore:
         unlike per-handler cross-kind fan-out
         (``runtime._dispatch_cross_kind``), this runs ONE SQL query over
         every kind, so exclusion never has a per-handler gap. Returns
-        ``(Block, Ref, score)`` one per ref; kinds with no embedded
+        ``(ChunkRow, Ref, score)`` one per ref; kinds with no embedded
         chunks just contribute nothing."""
         if not kinds:
             return []
@@ -1210,7 +1211,7 @@ class BlockStore:
             # yields "most recent/oldest among the relevant"). The pool must
             # cover every page up to this ``offset``, so widen by it too.
             pool = max((offset + limit) * 5, 100)
-            fused = self.search_blocks_multi(
+            fused = self.search_chunks_multi(
                 q_texts=[q],
                 query_vecs=[query_vec] if query_vec is not None else [],
                 mode=mode,
@@ -1230,9 +1231,9 @@ class BlockStore:
             )
             return fused[offset : offset + limit]
         # Relevance: the fused order is final, so delegate offset/limit
-        # slicing to search_blocks_multi itself (it widens its own pool
+        # slicing to search_chunks_multi itself (it widens its own pool
         # by offset+limit internally).
-        return self.search_blocks_multi(
+        return self.search_chunks_multi(
             q_texts=[q],
             query_vecs=[query_vec] if query_vec is not None else [],
             mode=mode,
@@ -1248,7 +1249,7 @@ class BlockStore:
             per_paper=1,
         )
 
-    def search_blocks(
+    def search_chunks(
         self,
         *,
         q: str,
@@ -1268,7 +1269,7 @@ class BlockStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so the LLM-facing ``search(mode=…)`` picks a
         mode instead of a function.
@@ -1276,23 +1277,23 @@ class BlockStore:
         ``year_from``/``year_to`` are inclusive ``refs.year`` bounds for
         the paper publish-date filter, threaded into all three legs.
 
-        * ``mode='lexical'`` — Postgres FTS only (``search_blocks_lexical``):
+        * ``mode='lexical'`` — Postgres FTS only (``search_chunks_lexical``):
           deterministic keyword/exact-phrase/identifier matching, the
           honest tool when the embedder is down.
         * ``mode='semantic'`` — embedding cosine only
-          (``search_blocks_semantic``); degrades to lexical without
+          (``search_chunks_semantic``); degrades to lexical without
           ``query_vec``.
         * ``mode='hybrid'``/``None`` (default) — RRF fusion
-          (``search_blocks_fused``), itself falling back to lexical
+          (``search_chunks_fused``), itself falling back to lexical
           without ``query_vec``.
 
-        Result tuples are ``(Block, Ref, score)`` in every mode — score is
+        Result tuples are ``(ChunkRow, Ref, score)`` in every mode — score is
         an RRF score, cosine distance, or lexical rank, "more relevant
         first" within a mode, never comparable across modes.
         """
         m = (mode or "hybrid").strip().lower()
         if m == "verbatim":
-            return self.search_blocks_keywords(
+            return self.search_chunks_keywords(
                 terms=q.split(),
                 kind=kind,
                 scope_ref_id=scope_ref_id,
@@ -1308,7 +1309,7 @@ class BlockStore:
                 card_kinds=card_kinds,
             )
         if m == "semantic" and query_vec is not None:
-            return self.search_blocks_semantic(
+            return self.search_chunks_semantic(
                 query_vec=query_vec,
                 kind=kind,
                 scope_ref_id=scope_ref_id,
@@ -1325,7 +1326,7 @@ class BlockStore:
                 card_kinds=card_kinds,
             )
         if m == "lexical" or query_vec is None:
-            return self.search_blocks_lexical(
+            return self.search_chunks_lexical(
                 q=q,
                 kind=kind,
                 scope_ref_id=scope_ref_id,
@@ -1340,7 +1341,7 @@ class BlockStore:
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
             )
-        return self.search_blocks_fused(
+        return self.search_chunks_fused(
             q=q,
             query_vec=query_vec,
             kind=kind,
@@ -1435,14 +1436,14 @@ class BlockStore:
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
 
-    def insert_blocks(
+    def insert_chunks(
         self,
         ref_id: int,
-        blocks: list[BlockInsert],
+        blocks: list[ChunkInsert],
         *,
         replace: bool = False,
         conn: Connection | None = None,
-    ) -> list[Block]:
+    ) -> list[ChunkRow]:
         """Bulk-insert chunks (body, ord>=0) for a ref. ``replace=True``
         deletes existing chunks for ``ref_id`` first (re-ingest path).
         Caller owns ``pos`` numbering — no reordering.
@@ -1456,7 +1457,7 @@ class BlockStore:
         if not blocks:
             return []
 
-        def _do(c: Connection) -> list[Block]:
+        def _do(c: Connection) -> list[ChunkRow]:
             if replace:
                 # v2 cascade: chunks → chunk_embeddings/chunk_summaries/
                 # chunk_tags via ON DELETE CASCADE.
@@ -1464,7 +1465,7 @@ class BlockStore:
 
             embedder_name: str | None = None
             density_tag_ids: dict[str, int] = {}
-            out: list[Block] = []
+            out: list[ChunkRow] = []
             for b in blocks:
                 # Build the chunks.meta payload: caller's meta merged
                 # with the prose slug under 'slug' so it round-trips.
@@ -1481,7 +1482,7 @@ class BlockStore:
                     f"RETURNING {_CHUNKS_COLS}",
                     (
                         ref_id,
-                        b.pos,
+                        b.ord,
                         chunk_kind,
                         b.text,
                         b.token_count,
@@ -1490,7 +1491,7 @@ class BlockStore:
                     ),
                 ).fetchone()
                 assert row is not None
-                block = _row_to_block(row)
+                block = _row_to_chunk(row)
 
                 # Embedding side-table write. v2 splits embeddings out
                 # so a chunk can carry multiple vectors (one per
@@ -1525,11 +1526,11 @@ class BlockStore:
                         (block.id, tag_id),
                     )
 
-                # Re-read so the returned Block carries the post-write
-                # density/embedding state (the initial _row_to_block
+                # Re-read so the returned ChunkRow carries the post-write
+                # density/embedding state (the initial _row_to_chunk
                 # row had them NULL on the SELECT projection).
                 out.append(
-                    _refetch_block(c, block.id) if (b.embedding or b.density) else block
+                    _refetch_chunk(c, block.id) if (b.embedding or b.density) else block
                 )
             return out
 
@@ -1575,9 +1576,9 @@ class BlockStore:
                 "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
                 (ref_id, chunk_kind),
             )
-            self.insert_blocks(
+            self.insert_chunks(
                 ref_id,
-                [BlockInsert(pos=pos, text=new_text, meta={"chunk_kind": chunk_kind})],
+                [ChunkInsert(ord=pos, text=new_text, meta={"chunk_kind": chunk_kind})],
                 conn=c,
             )
             c.execute(
@@ -1663,7 +1664,7 @@ class BlockStore:
         (replaces it).
 
         This makes note-like kinds embeddable (today: ``memory``) so
-        ``search_blocks_semantic`` finds true cosine neighbours rather
+        ``search_chunks_semantic`` finds true cosine neighbours rather
         than only lexical ``refs.title`` matches. Returns the new
         ``chunk_id``.
         """
@@ -1935,7 +1936,7 @@ class BlockStore:
         *,
         kinds: tuple[str, ...] = ("paper", "memory"),
         n: int = 12,
-    ) -> tuple[int | None, list[tuple[Block, Ref, float]]]:
+    ) -> tuple[int | None, list[tuple[ChunkRow, Ref, float]]]:
         """The focus region: the salience seed + its ANN neighbourhood.
         Backs ``search(view='dreamable')`` (docs/backlog/dreaming.md,
         §view='dreamable'). Picks the most-due seed via
@@ -1980,7 +1981,7 @@ class BlockStore:
             ).fetchall()
         region = [
             (
-                _row_to_block(r[:_BLOCK_END]),
+                _row_to_chunk(r[:_BLOCK_END]),
                 _row_to_ref(r[_BLOCK_END:_REF_END]),
                 1.0 - float(r[_SCORE_IDX]),
             )
@@ -2058,7 +2059,7 @@ class BlockStore:
         kinds: tuple[str, ...] = ("paper", "memory"),
         exclude_chunk_ids: list[int] | None = None,
         rng: random.Random | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
+    ) -> list[tuple[ChunkRow, Ref, float]]:
         """``n`` diverse items at cosine ``angle`` from ``seed_vec``.
         Draws ``n`` anchors at the requested cosine
         (:func:`precis.utils.angle.angle_anchors`), ANN-snaps each to its
@@ -2068,7 +2069,7 @@ class BlockStore:
         spray).
 
         Card chunks (``ord=-1``) are **included** as snap targets (unlike
-        body-only :meth:`search_blocks_semantic`) so a memory's only
+        body-only :meth:`search_chunks_semantic`) so a memory's only
         embedded chunk is reachable. Returns ``(block, ref, cosine)``
         where ``cosine=1-cosine_distance`` is the *realised* similarity
         (anisotropy means it rarely equals ``angle`` exactly — expected).
@@ -2077,7 +2078,7 @@ class BlockStore:
             return []
         anchors = angle_anchors(seed_vec, angle, n, rng=rng)
         seen: set[int] = {int(x) for x in (exclude_chunk_ids or [])}
-        out: list[tuple[Block, Ref, float]] = []
+        out: list[tuple[ChunkRow, Ref, float]] = []
         with self.pool.connection() as conn:
             embedder = self._default_embedder_name(conn)
             for w in anchors:
@@ -2096,7 +2097,7 @@ class BlockStore:
         embedder: str,
         kinds: list[str],
         exclude: set[int],
-    ) -> tuple[Block, Ref, float] | None:
+    ) -> tuple[ChunkRow, Ref, float] | None:
         """Single nearest embedded chunk to ``vec`` over ``kinds``.
 
         Card-inclusive (no ``ord >= 0`` filter) so memory cards snap.
@@ -2132,22 +2133,22 @@ class BlockStore:
             return None
         return _unpack_search_row(row)
 
-    def get_block(
+    def get_chunk(
         self,
         ref_id: int,
         *,
         pos: int | None = None,
         slug: str | None = None,
         with_embedding: bool = False,
-    ) -> Block | None:
+    ) -> ChunkRow | None:
         """Look up a single chunk by ``(ref_id, pos)`` or ``(ref_id, slug)``.
 
         Slug lookup matches ``chunks.meta->>'slug'``.
         """
         if (pos is None) == (slug is None):
             raise BadInput(
-                "get_block requires exactly one of pos= or slug=",
-                next="get_block(ref_id, pos=N)  or  get_block(ref_id, slug='PLXDX')",
+                "get_chunk requires exactly one of pos= or slug=",
+                next="get_chunk(ref_id, pos=N)  or  get_chunk(ref_id, slug='PLXDX')",
             )
         if pos is not None:
             where = "c.ref_id = %s AND c.ord = %s"
@@ -2158,13 +2159,13 @@ class BlockStore:
         with self.pool.connection() as conn:
             return _fetch_block_one(conn, where, params, with_embedding=with_embedding)
 
-    def list_blocks_for_ref(
+    def list_chunks_for_ref(
         self,
         ref_id: int,
         *,
         pos_range: tuple[int, int] | None = None,
         with_embedding: bool = False,
-    ) -> list[Block]:
+    ) -> list[ChunkRow]:
         """List chunks for a ref, ordered by ord ASC.
 
         Excludes synthetic card chunks (ord < 0). ``pos_range=(lo, hi)``
@@ -2177,7 +2178,7 @@ class BlockStore:
             clauses.append("c.ord BETWEEN %s AND %s")
         where = " AND ".join(clauses)
         with self.pool.connection() as conn:
-            return _fetch_blocks(conn, where, params, with_embedding=with_embedding)
+            return _fetch_chunks(conn, where, params, with_embedding=with_embedding)
 
     def chunk_pages(self, ref_id: int, ords: list[int]) -> dict[int, int]:
         """Map body-chunk ``ord`` → ``page_first`` for the given ords.
@@ -2314,7 +2315,7 @@ class BlockStore:
             ).fetchall()
         return {int(r[0]) for r in rows}
 
-    def count_blocks(self, ref_id: int) -> int:
+    def count_chunks(self, ref_id: int) -> int:
         """Total body chunks on a ref (ord>=0). Tiny indexed count."""
         with self.pool.connection() as conn:
             row = conn.execute(
@@ -2386,11 +2387,11 @@ class BlockStore:
             out[rid] = pick
         return out
 
-    def random_embedded_block(self) -> tuple[Block, Ref] | None:
+    def random_embedded_chunk(self) -> tuple[ChunkRow, Ref] | None:
         """Pick one random undeleted body chunk that has an embedding.
 
         Drives ``get(kind='random')``. Filters mirror Phase-3
-        ``search_blocks_semantic``: live ref (``deleted_at IS NULL``),
+        ``search_chunks_semantic``: live ref (``deleted_at IS NULL``),
         body chunk (ord>=0), and a present vector in
         ``chunk_embeddings`` for the default embedder.
         """
@@ -2414,9 +2415,9 @@ class BlockStore:
             row = conn.execute(sql, (embedder,)).fetchone()
         if row is None:
             return None
-        return _row_to_block(row[:_BLOCK_END]), _row_to_ref(row[_BLOCK_END:])
+        return _row_to_chunk(row[:_BLOCK_END]), _row_to_ref(row[_BLOCK_END:])
 
-    def update_block_density(self, block_id: int, density: Density) -> None:
+    def update_chunk_density(self, block_id: int, density: Density) -> None:
         """Set the density bucket (sparse/medium/dense) on a chunk.
 
         v2 stores density as a tag in ``namespace='DENSITY'``. Idempotent:
@@ -2444,7 +2445,7 @@ class BlockStore:
                     (block_id, tag_id),
                 )
 
-    def update_block_embedding(self, block_id: int, embedding: list[float]) -> None:
+    def update_chunk_embedding(self, block_id: int, embedding: list[float]) -> None:
         """Write a single chunk's embedding — used by background re-embed.
 
         v2: embeddings live in ``chunk_embeddings``, keyed by
@@ -2463,12 +2464,12 @@ class BlockStore:
                 (block_id, embedder, embedding),
             )
 
-    def blocks_missing_embeddings(
+    def chunks_missing_embeddings(
         self,
         *,
         kind: str | None = None,
         limit: int = 100,
-    ) -> list[Block]:
+    ) -> list[ChunkRow]:
         """Fetch body chunks that lack an embedding under the default embedder.
 
         v2: ``chunk_embeddings`` is sparse; a chunk without a row for
@@ -2507,7 +2508,7 @@ class BlockStore:
                 "LIMIT %s"
             )
             rows = conn.execute(sql, [embedder, *params]).fetchall()
-        return [_row_to_block(r) for r in rows]
+        return [_row_to_chunk(r) for r in rows]
 
 
 # -- module-level helpers ---------------------------------------------------
@@ -2540,8 +2541,8 @@ def _fetch_block_one(
     params: tuple[Any, ...],
     *,
     with_embedding: bool,
-) -> Block | None:
-    """SELECT one chunk row mapped to Block. with_embedding=True LEFT
+) -> ChunkRow | None:
+    """SELECT one chunk row mapped to ChunkRow. with_embedding=True LEFT
     JOINs the default embedder's vector into the projection."""
     if with_embedding:
         embedder_name = _select_default_embedder(conn)
@@ -2557,16 +2558,16 @@ def _fetch_block_one(
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         sql = f"SELECT {proj} FROM chunks c WHERE {where}"
         row = conn.execute(sql, params).fetchone()
-    return _row_to_block(row) if row is not None else None
+    return _row_to_chunk(row) if row is not None else None
 
 
-def _fetch_blocks(
+def _fetch_chunks(
     conn: Connection,
     where: str,
     params: list[Any],
     *,
     with_embedding: bool,
-) -> list[Block]:
+) -> list[ChunkRow]:
     """SELECT many chunk rows ordered by ord ASC. Mirrors
     :func:`_fetch_block_one` projection."""
     if with_embedding:
@@ -2583,7 +2584,7 @@ def _fetch_blocks(
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         sql = f"SELECT {proj} FROM chunks c WHERE {where} ORDER BY c.ord ASC"
         rows = conn.execute(sql, params).fetchall()
-    return [_row_to_block(r) for r in rows]
+    return [_row_to_chunk(r) for r in rows]
 
 
 def _select_default_embedder(conn: Connection) -> str:
@@ -2598,11 +2599,11 @@ def _select_default_embedder(conn: Connection) -> str:
     return str(row[0])
 
 
-def _refetch_block(conn: Connection, chunk_id: int) -> Block:
+def _refetch_chunk(conn: Connection, chunk_id: int) -> ChunkRow:
     """Re-read a chunk row with embedding + density projected.
 
-    Used after insert_blocks writes side-table rows so the returned
-    Block carries the post-write state.
+    Used after insert_chunks writes side-table rows so the returned
+    ChunkRow carries the post-write state.
     """
     embedder_name = _select_default_embedder(conn)
     sql = (
@@ -2622,7 +2623,7 @@ def _refetch_block(conn: Connection, chunk_id: int) -> Block:
     )
     row = conn.execute(sql, (embedder_name, chunk_id)).fetchone()
     assert row is not None
-    return _row_to_block(row)
+    return _row_to_chunk(row)
 
 
-__all__ = ["BlockStore"]
+__all__ = ["ChunkStore"]

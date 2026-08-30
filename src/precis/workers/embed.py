@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 from psycopg import Connection
 
 from precis.embedder import Embedder, EmbedderUnavailable, make_embedder
-from precis.workers.base import ChunkRow, WorkerHandler
+from precis.workers.base import ClaimedChunk, WorkerHandler
 
 
 class EmbedHandler(WorkerHandler):
@@ -111,7 +111,7 @@ class EmbedHandler(WorkerHandler):
     # process — pure compute (delegate to embedder)
     # ------------------------------------------------------------------
 
-    def process(self, row: ChunkRow) -> list[float]:
+    def process(self, row: ClaimedChunk) -> list[float]:
         """Return the dense vector for ``row.text``.
 
         ``Embedder.embed_one`` performs L2 normalization and any
@@ -123,7 +123,7 @@ class EmbedHandler(WorkerHandler):
         """
         return self._embedder.embed_one(row.text)
 
-    def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+    def process_batch(self, rows: list[ClaimedChunk]) -> list[object]:
         """Embed the whole claimed batch in one forward pass.
 
         ``Embedder.embed`` accepts ``list[str]`` and returns

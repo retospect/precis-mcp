@@ -837,7 +837,7 @@ def test_handler_roundtrip(pathway_store: Store) -> None:
     ref = pathway_store.get_ref(kind="pathway", id=slug)
     assert ref is not None and ref.meta["results"]["nodes"]
     assert ref.meta["backend_forced"] == "emt"
-    blocks = pathway_store.blocks.list_blocks_for_ref(ref.id)
+    blocks = pathway_store.chunks.list_chunks_for_ref(ref.id)
     assert blocks and blocks[0].text.startswith("# Methods")
 
     assert "States (relative energy" in h.get(id=slug, view="profile").body
@@ -981,13 +981,13 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
             meta={"content_key": runner.content_key(eff), "status": "computing"},
             conn=c,
         )
-        from precis.store.types import BlockInsert
+        from precis.store.types import ChunkInsert
 
-        pathway_store.blocks.insert_blocks(
+        pathway_store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
+                ChunkInsert(
+                    ord=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
                 )
             ],
             conn=c,
@@ -1010,7 +1010,7 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
     assert got.meta["results"]["nodes"], "results not written back"
     assert got.meta["produced_by"] == "autocatpath_explore"
     assert got.meta["ran_on"] == "spark"
-    blocks = pathway_store.blocks.list_blocks_for_ref(got.id)
+    blocks = pathway_store.chunks.list_chunks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")
 
 
@@ -1963,7 +1963,7 @@ def _seed_a_todo_tree(
     ``quest.compute.dispatch_autocatpath`` mints — enough for
     ``aggregate_job._dispatch`` to walk. Returns ``(pathway_ref, agg_todo_id)``."""
     from precis.store import Tag
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     eff = runner.effective_config(cfg, force_backend="emt")
     with store.tx() as c:
@@ -1974,11 +1974,11 @@ def _seed_a_todo_tree(
             meta={"content_key": runner.content_key(eff), "status": "computing"},
             conn=c,
         )
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
+                ChunkInsert(
+                    ord=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
                 )
             ],
             conn=c,
@@ -2055,7 +2055,7 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     assert got.meta["produced_by"] == "autocatpath_aggregate"
     assert got.meta["ran_on"] == "spark"
     assert got.meta["n_seed_partials"] == 2
-    blocks = pathway_store.blocks.list_blocks_for_ref(got.id)
+    blocks = pathway_store.chunks.list_chunks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")
 
     # per-state geometry survived the seed->aggregate job boundary and was
@@ -2165,7 +2165,7 @@ def test_aggregate_job_dispatch_no_seed_partials_fails_cleanly(
     """An aggregate job minted with no succeeded seed underneath it (a bad
     tree, or all seeds still failing) fails loud rather than writing a
     hollow pathway result."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
     from precis_pathway import aggregate_job
 
     cfg = _yaml_dict(FANOUT)
@@ -2178,11 +2178,11 @@ def test_aggregate_job_dispatch_no_seed_partials_fails_cleanly(
             meta={"content_key": runner.content_key(eff), "status": "computing"},
             conn=c,
         )
-        pathway_store.blocks.insert_blocks(
+        pathway_store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
+                ChunkInsert(
+                    ord=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
                 )
             ],
             conn=c,

@@ -86,9 +86,9 @@ class _FakePool:
 
 
 class FakeStore(_FakeStoreBase):
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(self) -> None:
         super().__init__()
@@ -128,11 +128,11 @@ class FakeStore(_FakeStoreBase):
         #: {(ref_id, ord): summary} a test seeds to exercise the
         #: chunk_summaries_bulk-backed row preview (Drive search rows).
         self.chunk_summaries: dict[tuple[int, int], str] = {}
-        #: Overridable lexical-match total for the count_blocks_lexical
+        #: Overridable lexical-match total for the count_chunks_lexical
         #: distinct-refs call (the /drive "showing N of ~K" header) — 0 by
         #: default.
         self.result_total = 0
-        #: kwargs from the most recent count_blocks_lexical(kinds=…,
+        #: kwargs from the most recent count_chunks_lexical(kinds=…,
         #: distinct_refs=True) call, so a test can assert the filters it
         #: was invoked with.
         self.result_total_call: dict[str, Any] | None = None
@@ -383,16 +383,16 @@ class FakeStore(_FakeStoreBase):
             ),
         ]
         # Canned turns for conv id=40, keyed by ref_id. Blocks expose
-        # pos / text / meta (author, ts) like the real Block dataclass.
+        # ord / text / meta (author, ts) like the real ChunkRow dataclass.
         self._conv_blocks: dict[int, list[Any]] = {
             40: [
                 SimpleNamespace(
-                    pos=0,
+                    ord=0,
                     text="hello there",
                     meta={"author": "alice", "ts": "2026-06-14T20:00:00Z"},
                 ),
                 SimpleNamespace(
-                    pos=1,
+                    ord=1,
                     text="general kenobi",
                     meta={"author": "bob", "ts": "2026-06-14T20:01:00Z"},
                 ),
@@ -401,13 +401,13 @@ class FakeStore(_FakeStoreBase):
             # (chunk_kind='gripe_comment') for the /gripes detail test.
             96: [
                 SimpleNamespace(
-                    pos=0,
+                    ord=0,
                     text="the paper slug NotFound error doesn't suggest near matches",
                     meta={},
                     chunk_kind="gripe_body",
                 ),
                 SimpleNamespace(
-                    pos=1,
+                    ord=1,
                     text="only triggers when the slug has a hyphen",
                     meta={},
                     chunk_kind="gripe_comment",
@@ -453,7 +453,7 @@ class FakeStore(_FakeStoreBase):
             return None
         return ref, SimpleNamespace(meta=meta)
 
-    def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
+    def list_chunks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
         # Overrides the shared base's ``self._blocks`` lookup — this
         # fixture's canned-block map is named ``_conv_blocks`` and is
         # poked directly by several other test files, so it keeps its
@@ -497,12 +497,12 @@ class FakeStore(_FakeStoreBase):
         in the fake corpus (no body chunks); the contract is a list."""
         return []
 
-    def search_blocks_semantic(self, *, query_vec, scope_ref_id=None, limit=20, **kw):
+    def search_chunks_semantic(self, *, query_vec, scope_ref_id=None, limit=20, **kw):
         """Return canned (block, ref, distance) hits for the paper-nav
         search route. Tests populate ``self.nav_hits`` per ref."""
         return list(self.nav_hits.get(scope_ref_id, []))
 
-    def search_blocks_lexical(self, *, q, scope_ref_id=None, limit=20, **kw):
+    def search_chunks_lexical(self, *, q, scope_ref_id=None, limit=20, **kw):
         """Keyword path — same canned hits as the semantic path so the
         route's result-shaping is exercised either way."""
         return list(self.nav_hits.get(scope_ref_id, []))
@@ -512,7 +512,7 @@ class FakeStore(_FakeStoreBase):
         # degrades to "none ingested". Routes handle the empty set.
         return set()
 
-    def count_blocks(self, ref_id: int) -> int:
+    def count_chunks(self, ref_id: int) -> int:
         return len(self._conv_blocks.get(ref_id, []))
 
     def links_for(self, ref_id, *, direction="both", relation=None):
@@ -989,13 +989,13 @@ class FakeStore(_FakeStoreBase):
             wref = make_ref(
                 id=70, kind="web", slug="example.com/page", title="A web page"
             )
-            blk_p = SimpleNamespace(id=1001, pos=3, text="passage about the query")
-            blk_w = SimpleNamespace(id=1002, pos=0, text="web snippet about the query")
+            blk_p = SimpleNamespace(id=1001, ord=3, text="passage about the query")
+            blk_w = SimpleNamespace(id=1002, ord=0, text="web snippet about the query")
             hits = [(blk_p, pref, 0.9), (blk_w, wref, 0.8)]
         want = set(kinds)
         return [(b, r, s) for (b, r, s) in hits if r.kind in want][offset:]
 
-    def count_blocks_lexical(
+    def count_chunks_lexical(
         self,
         *,
         q,
@@ -1013,7 +1013,7 @@ class FakeStore(_FakeStoreBase):
         header (the consolidated ``kinds=…, distinct_refs=True`` call
         shape) — records the call args (``self.result_total_call``) and
         returns the seeded ``self.result_total`` (0 by default). No other
-        route in this test suite drives ``count_blocks_lexical`` through
+        route in this test suite drives ``count_chunks_lexical`` through
         ``FakeStore``, so a single fake covers the one call shape."""
         self.result_total_call = {
             "kinds": list(kinds) if kinds is not None else None,

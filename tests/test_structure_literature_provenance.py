@@ -19,7 +19,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.structure import StructureHandler, paper_provenance_rows
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 
 _PD_ADSORBATE = json.dumps(
     {
@@ -63,7 +63,7 @@ def _seed_paper(
     embedder needed — the handler fixture wires no embedder, so search
     degrades to lexical, same as ``test_search_finds_by_description``)."""
     ref = store.insert_ref(kind="paper", slug=slug, title=title, meta=meta or {})
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=body)])
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=body)])
     return ref.id
 
 

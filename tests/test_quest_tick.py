@@ -865,7 +865,7 @@ class TestQuestTick:
         run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert logs[-1].meta["by"] == "agent"
@@ -882,7 +882,7 @@ class TestQuestTick:
         # 162594); the model's clamped entry is the one carrying its text.
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log" and "still recorded" in b.text
         ]
         assert logs[-1].meta["entry_type"] == "note"
@@ -904,7 +904,7 @@ class TestQuestTick:
         # nothing written
         assert not [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
 
@@ -924,7 +924,7 @@ class TestQuestTick:
         assert out.pause_kind == "window"
         assert not [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
 
@@ -1298,7 +1298,7 @@ class TestNarrativeGateIntegration:
         # the refusal is logged with structured word counts + reason
         entries = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if (b.meta or {}).get("entry_type") == "observation"
             and "narrative rewrite refused" in (b.text or "")
         ]
@@ -1368,7 +1368,7 @@ class TestNarrativeGateIntegration:
         assert len(dispatch.calls) == 2
         entries = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if (b.meta or {}).get("gate_reason") == "ceiling"
         ]
         assert len(entries) == 1
@@ -1494,7 +1494,7 @@ class TestTickSlicing:
         assert read_narrative(store, qid) == self._PAYLOAD["dossier_text"]
         assert [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if (b.meta or {}).get("entry_type") == "observation"
         ]
 
@@ -1593,7 +1593,7 @@ class TestTickSlicing:
         ]
         assert any(
             "agent declined to propose an untried variant" in (b.text or "")
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
         )
 
     def test_every_tick_llm_call_carries_an_explicit_timeout(
@@ -1786,7 +1786,7 @@ class TestModelCannotFabricateResults:
     as unverified."""
 
     def _logs(self, store: Any, qid: int) -> list[Any]:
-        blocks = store.blocks.list_blocks_for_ref(qid)
+        blocks = store.chunks.list_chunks_for_ref(qid)
         return [b for b in blocks if b.chunk_kind == "quest_log"]
 
     def test_model_result_with_fabricated_barrier_is_downgraded_and_flagged(
@@ -2245,7 +2245,7 @@ class TestReviewLogbookTail:
         )
         blocks = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == tick_mod.LOG_KIND
         ]
         assert len(blocks) == 1
@@ -2465,7 +2465,7 @@ def _embed_chunk(store: Any, chunk_id: int, vec: list[float]) -> None:
 
 
 def _embed_quest_gist(store: Any, quest_id: int, vec: list[float]) -> None:
-    cid = store.blocks.upsert_card_combined(quest_id, "gist")
+    cid = store.chunks.upsert_card_combined(quest_id, "gist")
     _embed_chunk(store, cid, vec)
 
 
@@ -2486,7 +2486,7 @@ def _stub_paper_with_vector(store: Any, title: str, vec: list[float]) -> int:
     from tests.workers._helpers import seed_ref
 
     ref_id = seed_ref(store, title=title)
-    cid = store.blocks.upsert_card_combined(ref_id, title)
+    cid = store.chunks.upsert_card_combined(ref_id, title)
     _embed_chunk(store, cid, vec)
     return ref_id
 
@@ -2677,7 +2677,7 @@ class TestCommitReRepromptLadder:
     def _logs(self, store: Any, qid: int) -> list[Any]:
         return [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
 
@@ -2978,7 +2978,7 @@ class TestWipCap:
     def _logs(self, store: Any, qid: int) -> list[Any]:
         return [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
 

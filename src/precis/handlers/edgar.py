@@ -302,7 +302,7 @@ class EdgarHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        return self.store.blocks.search_blocks(
+        return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -405,7 +405,7 @@ class EdgarHandler(Handler):
             lines.append(f"items: {', '.join(str(i) for i in items[:12])}")
 
         # Leading body excerpt.
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id, pos_range=(0, 3))
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(0, 3))
         if blocks:
             lead = " ".join(b.text for b in blocks)
             lines.append("")
@@ -423,7 +423,7 @@ class EdgarHandler(Handler):
             return Response(body=_format_biblio(ref, meta))
 
         if view == "body":
-            blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+            blocks = self.store.chunks.list_chunks_for_ref(ref.id)
             if not blocks:
                 return Response(body=f"no body blocks stored for {ref.slug}")
             lines = [f"# {handle} - Body"]
@@ -461,7 +461,7 @@ class EdgarHandler(Handler):
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
         handle = handle_registry.format_handle("edgar", ref.id)
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id, pos_range=(lo, hi))
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
             raise NotFound(
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
@@ -471,7 +471,7 @@ class EdgarHandler(Handler):
         lines: list[str] = []
         for b in blocks:
             lines.append(
-                f"# {handle_registry.try_format(ref.kind, b.id, chunk=True) or f'{slug}~{b.pos}'}"
+                f"# {handle_registry.try_format(ref.kind, b.id, chunk=True) or f'{slug}~{b.ord}'}"
             )
             lines.append(b.text)
             lines.append("")

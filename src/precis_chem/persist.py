@@ -42,4 +42,4 @@ def apply_route_result(
             },
             conn=conn,
         )
-        store.blocks.upsert_card_combined(route_ref_id, graph.card_text(), conn=conn)
+        store.chunks.upsert_card_combined(route_ref_id, graph.card_text(), conn=conn)

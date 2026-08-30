@@ -14,22 +14,22 @@ from precis.export import reading_edition as re_mod
 
 
 @dataclass
-class _FakeBlock:
+class _FakeChunk:
     text: str
     meta: dict[str, Any] = field(default_factory=dict)
 
 
-class _FakeBlocks:
-    def __init__(self, blocks: list[_FakeBlock]) -> None:
+class _FakeChunks:
+    def __init__(self, blocks: list[_FakeChunk]) -> None:
         self._blocks = blocks
 
-    def list_blocks_for_ref(self, ref_id: int) -> list[_FakeBlock]:
+    def list_chunks_for_ref(self, ref_id: int) -> list[_FakeChunk]:
         return self._blocks
 
 
 class _FakeStore:
-    def __init__(self, blocks: list[_FakeBlock]) -> None:
-        self.blocks = _FakeBlocks(blocks)
+    def __init__(self, blocks: list[_FakeChunk]) -> None:
+        self.chunks = _FakeChunks(blocks)
 
 
 def _source(
@@ -49,10 +49,10 @@ def _main_tex(target_dir: Path) -> str:
 
 def test_section_heading_emission_on_change(tmp_path: Path) -> None:
     blocks = [
-        _FakeBlock("intro text", {"section_path": ["Introduction"]}),
-        _FakeBlock("more intro", {"section_path": ["Introduction"]}),
-        _FakeBlock("methods text", {"section_path": ["Methods", "Materials"]}),
-        _FakeBlock("deeper", {"section_path": ["Methods", "Materials", "Reagents"]}),
+        _FakeChunk("intro text", {"section_path": ["Introduction"]}),
+        _FakeChunk("more intro", {"section_path": ["Introduction"]}),
+        _FakeChunk("methods text", {"section_path": ["Methods", "Materials"]}),
+        _FakeChunk("deeper", {"section_path": ["Methods", "Materials", "Reagents"]}),
     ]
     store = _FakeStore(blocks)
     res = re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
@@ -64,7 +64,7 @@ def test_section_heading_emission_on_change(tmp_path: Path) -> None:
 
 
 def test_no_heading_when_section_path_absent(tmp_path: Path) -> None:
-    blocks = [_FakeBlock("plain prose", {})]
+    blocks = [_FakeChunk("plain prose", {})]
     store = _FakeStore(blocks)
     re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)
@@ -76,7 +76,7 @@ def test_no_heading_when_section_path_absent(tmp_path: Path) -> None:
 
 
 def test_image_only_chunk_placeholder_no_original(tmp_path: Path) -> None:
-    blocks = [_FakeBlock('<span id="page-3-0"></span>![](_page_3_Figure_1.jpeg)', {})]
+    blocks = [_FakeChunk('<span id="page-3-0"></span>![](_page_3_Figure_1.jpeg)', {})]
     store = _FakeStore(blocks)
     re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)
@@ -88,7 +88,7 @@ def test_image_only_chunk_placeholder_with_original(tmp_path: Path) -> None:
     original = tmp_path / "orig.pdf"
     original.write_bytes(b"%PDF-1.4 fake")
     out_dir = tmp_path / "out"
-    blocks = [_FakeBlock('<span id="page-3-0"></span>![](_page_3_Figure_1.jpeg)', {})]
+    blocks = [_FakeChunk('<span id="page-3-0"></span>![](_page_3_Figure_1.jpeg)', {})]
     store = _FakeStore(blocks)
     re_mod.export_reading_edition(store, _source(), out_dir, original_pdf=original)
     tex = _main_tex(out_dir)
@@ -114,7 +114,7 @@ def test_claims_appendix_renders_state_chip(tmp_path: Path, monkeypatch: Any) ->
         "precis.nanopub.overview.hub_rows",
         lambda store, *, ref_ids: [row],
     )
-    store = _FakeStore([_FakeBlock("body", {})])
+    store = _FakeStore([_FakeChunk("body", {})])
     res = re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)
     assert "Claims grounded in this source" in tex
@@ -142,7 +142,7 @@ def test_claims_appendix_unminted_state_when_no_publish_row(
         "precis.nanopub.overview.hub_rows",
         lambda store, *, ref_ids: [],
     )
-    store = _FakeStore([_FakeBlock("body", {})])
+    store = _FakeStore([_FakeChunk("body", {})])
     re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)
     assert "unminted" in tex
@@ -153,7 +153,7 @@ def test_claims_appendix_omitted_when_empty(tmp_path: Path, monkeypatch: Any) ->
         "precis.taproot.lookup.hubs_grounded_by_paper",
         lambda store, ref_id, *, require_pub_id=False: [],
     )
-    store = _FakeStore([_FakeBlock("body", {})])
+    store = _FakeStore([_FakeChunk("body", {})])
     res = re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)
     assert "Claims grounded in this source" not in tex
@@ -167,7 +167,7 @@ def test_claims_appendix_degrades_on_lookup_failure(
         raise RuntimeError("db hiccup")
 
     monkeypatch.setattr("precis.taproot.lookup.hubs_grounded_by_paper", _boom)
-    store = _FakeStore([_FakeBlock("body", {})])
+    store = _FakeStore([_FakeChunk("body", {})])
     res = re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)
     assert "Claims grounded in this source" not in tex
@@ -181,7 +181,7 @@ def test_original_appended_when_given(tmp_path: Path) -> None:
     original = tmp_path / "orig.pdf"
     original.write_bytes(b"%PDF-1.4 fake")
     out_dir = tmp_path / "out"
-    store = _FakeStore([_FakeBlock("body", {})])
+    store = _FakeStore([_FakeChunk("body", {})])
     res = re_mod.export_reading_edition(
         store, _source(), out_dir, original_pdf=original
     )
@@ -193,7 +193,7 @@ def test_original_appended_when_given(tmp_path: Path) -> None:
 
 
 def test_no_original_note_when_absent(tmp_path: Path) -> None:
-    store = _FakeStore([_FakeBlock("body", {})])
+    store = _FakeStore([_FakeChunk("body", {})])
     res = re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)
     # The preamble carries an unrelated ``\includepdf`` mention in a comment
@@ -207,7 +207,7 @@ def test_no_original_note_when_absent(tmp_path: Path) -> None:
 
 
 def test_project_files_written(tmp_path: Path) -> None:
-    store = _FakeStore([_FakeBlock("body", {})])
+    store = _FakeStore([_FakeChunk("body", {})])
     re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     assert (tmp_path / "refs.bib").read_text(encoding="utf-8") == ""
     assert (tmp_path / "preamble.tex").is_file()
@@ -227,7 +227,7 @@ def test_zero_chunks_no_original_reports_empty(tmp_path: Path) -> None:
 
 
 def test_body_text_escaped(tmp_path: Path) -> None:
-    blocks = [_FakeBlock("50% & $x_1$", {})]
+    blocks = [_FakeChunk("50% & $x_1$", {})]
     store = _FakeStore(blocks)
     re_mod.export_reading_edition(store, _source(), tmp_path, original_pdf=None)
     tex = _main_tex(tmp_path)

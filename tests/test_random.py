@@ -15,7 +15,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import NotFound, Unsupported
 from precis.handlers.random import RandomHandler
 from precis.store import Store
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 
 @pytest.fixture
@@ -42,11 +42,11 @@ def _seed_oracle_with_embeddings(
     assert embedder is not None
     ref = store.insert_ref(kind="oracle", slug=slug, title=f"Oracle {slug}")
     embs = embedder.embed(texts)
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(
-                pos=i,
+            ChunkInsert(
+                ord=i,
                 slug=None,
                 text=text,
                 token_count=len(text.split()),
@@ -66,11 +66,11 @@ def _seed_memory(store: Store, hub: Hub, text: str) -> int:
     embedder = hub.embedder
     assert embedder is not None
     ref = store.insert_ref(kind="memory", slug=None, title=text[:40])
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 slug=None,
                 text=text,
                 token_count=len(text.split()),
@@ -244,12 +244,12 @@ def test_blocks_without_embeddings_excluded(
     ref = store.insert_ref(kind="oracle", slug="mixed", title="Mixed")
     embedder = hub.embedder
     assert embedder is not None
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
         [
             # pos=0 has no embedding → must be excluded.
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 slug=None,
                 text="no embedding here",
                 token_count=3,
@@ -258,8 +258,8 @@ def test_blocks_without_embeddings_excluded(
                 meta={},
             ),
             # pos=1 has a real embedding → the only legal pick.
-            BlockInsert(
-                pos=1,
+            ChunkInsert(
+                ord=1,
                 slug=None,
                 text="has embedding",
                 token_count=2,

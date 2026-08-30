@@ -98,11 +98,11 @@ def test_dr_container_excludes_via_pc_owning_paper(
     store: Store, hub: Hub, draft: DraftHandler
 ) -> None:
     """A ``[pc…]`` paper-chunk cite resolves to its OWNING paper."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     cited = _mk_paper(store, slug="cited-paper-chunk")
-    store.blocks.insert_blocks(cited, [BlockInsert(pos=0, text="Intro.")])
-    chunk_id = store.blocks.list_blocks_for_ref(cited)[0].id
+    store.chunks.insert_chunks(cited, [ChunkInsert(ord=0, text="Intro.")])
+    chunk_id = store.chunks.list_chunks_for_ref(cited)[0].id
 
     proj = _proj(hub)
     draft.put(id="d2", title="Draft two", project=proj)

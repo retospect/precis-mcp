@@ -14,7 +14,7 @@ Drives the fetch-as-ingest flow (spec § "Mental model"):
         ↓
     Store.insert_ref('edgar', slug=<accession dashed>, ...)
         ↓
-    Store.blocks.insert_blocks([one block per paragraph, section labels on meta])
+    Store.chunks.insert_chunks([one block per paragraph, section labels on meta])
         ↓
     Store.add_tag(...) for each auto-tag (form:, cik:, fiscal-year:)
         ↓
@@ -46,7 +46,7 @@ from precis.handlers._edgar_parse import (
 )
 from precis.ingest.blocks import classify_density
 from precis.store import Store, Tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ def ingest_filing(
             ref_id=existing.id,
             slug=slug,
             accession=parsed,
-            block_count=store.blocks.count_blocks(existing.id),
+            block_count=store.chunks.count_chunks(existing.id),
             inserted=False,
             bytes_fetched=0,
         )
@@ -211,7 +211,7 @@ def ingest_filing(
             conn=conn,
         )
         if block_inserts:
-            store.blocks.insert_blocks(ref.id, block_inserts, conn=conn)
+            store.chunks.insert_chunks(ref.id, block_inserts, conn=conn)
 
     _apply_auto_tags(store, ref.id, parsed_filing)
 
@@ -230,18 +230,18 @@ def ingest_filing(
 # ---------------------------------------------------------------------------
 
 
-def _build_block_inserts(parsed: ParsedFiling) -> list[BlockInsert]:
-    """One BlockInsert per parsed paragraph, section labels on meta.
+def _build_block_inserts(parsed: ParsedFiling) -> list[ChunkInsert]:
+    """One ChunkInsert per parsed paragraph, section labels on meta.
 
-    ``chunk_kind`` + ``section_path`` are popped by ``insert_blocks``
+    ``chunk_kind`` + ``section_path`` are popped by ``insert_chunks``
     into their dedicated columns; ``item_code`` / ``canonical_id`` stay
     in ``chunks.meta`` for the diff layer + section-scoped search.
     """
-    inserts: list[BlockInsert] = []
+    inserts: list[ChunkInsert] = []
     for i, fb in enumerate(parsed.blocks):
         inserts.append(
-            BlockInsert(
-                pos=i,
+            ChunkInsert(
+                ord=i,
                 text=fb.text,
                 density=classify_density(fb.text),
                 token_count=len(fb.text.split()),

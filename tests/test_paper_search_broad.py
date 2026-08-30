@@ -20,7 +20,7 @@ from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 
 _BLOCKS_A = [
     "Single-atom copper boosts nitrate to ammonia selectivity.",
@@ -38,10 +38,10 @@ def _seed(store: Store, *, slug: str, blocks: list[str], embed: bool = True) -> 
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
     e = MockEmbedder(dim=1024)
     rows = [
-        BlockInsert(pos=i, text=t, embedding=(e.embed_one(t) if embed else None))
+        ChunkInsert(ord=i, text=t, embedding=(e.embed_one(t) if embed else None))
         for i, t in enumerate(blocks)
     ]
-    store.blocks.insert_blocks(ref.id, rows)
+    store.chunks.insert_chunks(ref.id, rows)
     return ref.id
 
 

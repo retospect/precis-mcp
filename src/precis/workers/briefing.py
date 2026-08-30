@@ -33,7 +33,7 @@ from typing import Any
 from precis.handlers.news import article_blocks
 from precis.liveness import drain_requested, drain_sleep
 from precis.store import Store
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils.llm.router import DispatchClient, DispatchError, Tier
 from precis.utils.prompt import (
     AssemblyContext,
@@ -396,11 +396,11 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
                     meta=meta,
                     conn=conn,
                 )
-                store.blocks.insert_blocks(
+                store.chunks.insert_chunks(
                     ref.id,
                     [
-                        BlockInsert(
-                            pos=0, text=part, meta={"chunk_kind": "message_body"}
+                        ChunkInsert(
+                            ord=0, text=part, meta={"chunk_kind": "message_body"}
                         )
                     ],
                     conn=conn,

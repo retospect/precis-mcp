@@ -64,7 +64,7 @@ def _seed_pathway(store: Any, *, meta: dict[str, Any], body_text: str | None) ->
     blocks = []
     if body_text is not None:
         blocks.append(
-            SimpleNamespace(pos=0, text=body_text, chunk_kind="pathway_body", meta={})
+            SimpleNamespace(ord=0, text=body_text, chunk_kind="pathway_body", meta={})
         )
     store._conv_blocks[171696] = blocks
 

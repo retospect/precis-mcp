@@ -73,8 +73,8 @@ def test_plots_relation_links_figure_to_data(seeded: tuple) -> None:
     )
     assert link.relation == "plots"
     # round-trips through the projection as (fig ord → data ord)
-    assert link.src_pos == _ord(hub, fig.chunk_id)
-    assert link.dst_pos == _ord(hub, data_c.chunk_id)
+    assert link.src_ord == _ord(hub, fig.chunk_id)
+    assert link.dst_ord == _ord(hub, data_c.chunk_id)
     # the edge is discoverable on the draft (the stale-walk reads it back)
     found = hub.live_store.links_for(ref_id, relation="plots", direction="out")
     assert any(ln.relation == "plots" for ln in found)

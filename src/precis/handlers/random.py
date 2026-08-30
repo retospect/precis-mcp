@@ -108,7 +108,7 @@ class RandomHandler(Handler):
                     "'slug' (random short identifier)"
                 ),
             )
-        picked = self.store.blocks.random_embedded_block()
+        picked = self.store.chunks.random_embedded_chunk()
         if picked is None:
             raise NotFound(
                 "corpus has no embedded blocks to pick from",
@@ -232,7 +232,7 @@ def _handle(ref: Any, block: Any) -> str:
     """
     ident = ref.slug if ref.slug else str(ref.id)
     return handle_registry.try_format(ref.kind, block.id, chunk=True) or (
-        f"{ref.kind}:{ident}~{block.pos}"
+        f"{ref.kind}:{ident}~{block.ord}"
     )
 
 
@@ -250,7 +250,7 @@ def _drill_down(ref: Any, block: Any) -> str:
         # Numeric kind — ``id=`` is an int literal, not a quoted slug.
         return f"get(kind={ref.kind!r}, id={ref.id})"
     # Slug kind — address the specific block via ``slug~pos``.
-    selector = f"{ref.slug}~{block.pos}"
+    selector = f"{ref.slug}~{block.ord}"
     return f"get(kind={ref.kind!r}, id={selector!r})"
 
 

@@ -347,7 +347,7 @@ class SearchMixin(RuntimeShape):
 
         ``args['exclude_ref_ids']`` (``_dispatch_inner``'s ``uncited=``
         resolution) threads straight into
-        :meth:`~precis.store._blocks_ops.BlocksMixin.search_chunks_across_kinds`,
+        :meth:`~precis.store._chunks_ops.BlocksMixin.search_chunks_across_kinds`,
         applied in the ONE underlying SQL query across every kind — the
         only search path with no per-kind support gap (unlike
         :meth:`_dispatch_cross_kind`'s per-handler fan-out), so this is
@@ -389,7 +389,7 @@ class SearchMixin(RuntimeShape):
                 log.exception("source search: query embed failed; lexical-only")
 
         exclude_ref_ids = args.get("exclude_ref_ids")
-        results = store.blocks.search_chunks_across_kinds(
+        results = store.chunks.search_chunks_across_kinds(
             kinds=kinds,
             q=q,
             query_vec=query_vec,

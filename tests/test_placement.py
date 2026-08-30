@@ -69,7 +69,7 @@ def _dossier_with_sections(store: Store, slug: str, n: int) -> tuple[int, list[s
 def _paper(store: Store, slug: str, vec: list[float] | None) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=slug, meta={})
     if vec is not None:
-        cid = store.blocks.upsert_card_combined(ref.id, "gist")
+        cid = store.chunks.upsert_card_combined(ref.id, "gist")
         _embed(store, cid, vec)
     return ref.id
 

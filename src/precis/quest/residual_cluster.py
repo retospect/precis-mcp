@@ -53,8 +53,8 @@ def _gist_vectors(store: Store, paper_ref_ids: list[int]) -> dict[int, list[floa
     """
     out: dict[int, list[float]] = {}
     for pid in paper_ref_ids:
-        seed_cid = store.blocks.seed_chunk_for_ref(pid)
-        vec = store.blocks.get_chunk_vector(seed_cid) if seed_cid is not None else None
+        seed_cid = store.chunks.seed_chunk_for_ref(pid)
+        vec = store.chunks.get_chunk_vector(seed_cid) if seed_cid is not None else None
         if vec is not None:
             out[pid] = vec
     return out

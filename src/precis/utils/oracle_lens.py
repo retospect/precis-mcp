@@ -38,7 +38,7 @@ from precis.errors import BadInput
 if TYPE_CHECKING:
     from random import Random
 
-    from precis.store import Block, Ref, Store
+    from precis.store import ChunkRow, Ref, Store
 
 
 # Predefined lenses: name → favoured oracle tradition slugs. Passing
@@ -62,7 +62,7 @@ class LensDraw:
     """One entry drawn under a lens policy."""
 
     ref: Ref
-    block: Block
+    block: ChunkRow
     from_favoured: bool
 
 
@@ -146,7 +146,7 @@ def render_lens_block_from_draw(draw: LensDraw) -> str:
 
 def _pick_ref_with_blocks(
     store: Store, pool: list[Ref], rng: Random | None
-) -> tuple[Ref, list[Block]] | None:
+) -> tuple[Ref, list[ChunkRow]] | None:
     """Pick a random ref from ``pool`` that has at least one block.
 
     Loads blocks lazily and drops empty traditions, retrying until the
@@ -155,7 +155,7 @@ def _pick_ref_with_blocks(
     remaining = list(pool)
     while remaining:
         ref = remaining.pop(_below(len(remaining), rng))
-        blocks = store.blocks.list_blocks_for_ref(ref.id)
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
         if blocks:
             return ref, blocks
     return None
@@ -178,7 +178,7 @@ def _coin(p: float, rng: Random | None) -> bool:
     return r < p
 
 
-def _entry_title(block: Block) -> str | None:
+def _entry_title(block: ChunkRow) -> str | None:
     """The entry title from ``meta.section_path[0]`` (oracle ingest shape)."""
     meta: dict[str, Any] = block.meta or {}
     path = meta.get("section_path") or []

@@ -9,13 +9,13 @@ diversity is real, not accidental duplication, so this module does
 *not* try to force one do-everything fake. It holds only the handful
 of things that were byte-for-byte identical across two or more of the
 originals — a ``pool = None`` default and a canned
-``ref_id -> blocks`` map backing ``list_blocks_for_ref`` — and every
+``ref_id -> blocks`` map backing ``list_chunks_for_ref`` — and every
 per-file fake subclasses it, adding whatever is genuinely specific to
 its own tests.
 
 KNOWN LIMITATION — read before trusting a green test built on this:
 none of these fakes parse SQL. A method like ``search_refs_lexical``
-or ``count_blocks_lexical`` just returns canned Python objects it was
+or ``count_chunks_lexical`` just returns canned Python objects it was
 handed; a bug in the *real* query string — a stray ``%`` in a ``LIKE``
 pattern, wrong parameter binding, a broken ``WHERE`` clause — passes
 silently here. Any code path that executes raw SQL against a real
@@ -41,9 +41,9 @@ class FakeStore:
     satisfy the call sites each subclass's tests hit.
     """
 
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     #: Advisory-lock / raw-SQL call sites that read ``store.pool``
     #: degrade gracefully against ``None`` — the intended behaviour for
@@ -54,8 +54,8 @@ class FakeStore:
 
     def __init__(self) -> None:
         #: ``ref_id -> [block-like, ...]``, read by
-        #: ``list_blocks_for_ref``. Populate in a subclass ``__init__``.
+        #: ``list_chunks_for_ref``. Populate in a subclass ``__init__``.
         self._blocks: dict[int, list[Any]] = {}
 
-    def list_blocks_for_ref(self, ref_id: int) -> list[Any]:
+    def list_chunks_for_ref(self, ref_id: int) -> list[Any]:
         return list(self._blocks.get(ref_id, []))

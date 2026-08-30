@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.store.types import CacheEntry, Ref
 
 
@@ -16,7 +16,7 @@ def test_put_and_get_cache_entry_roundtrip(store: Store) -> None:
         slug="population-of-ireland",
         title="population of Ireland",
         body_blocks=[
-            BlockInsert(pos=0, text="Approximately 5.1 million as of 2024."),
+            ChunkInsert(ord=0, text="Approximately 5.1 million as of 2024."),
         ],
         provider="wolfram",
         request_hash="abc123",
@@ -54,7 +54,7 @@ def test_pinned_entry_has_null_fresh_until(store: Store) -> None:
         kind="math",
         slug="pi",
         title="π",
-        body_blocks=[BlockInsert(pos=0, text="3.14159...")],
+        body_blocks=[ChunkInsert(ord=0, text="3.14159...")],
         provider="wolfram",
         request_hash="pi-hash",
         ttl_seconds=None,
@@ -68,7 +68,7 @@ def test_replace_existing_cache_entry(store: Store) -> None:
         kind="math",
         slug="speed-of-light",
         title="speed of light",
-        body_blocks=[BlockInsert(pos=0, text="299792458 m/s")],
+        body_blocks=[ChunkInsert(ord=0, text="299792458 m/s")],
         provider="wolfram",
         request_hash="sol-hash",
         ttl_seconds=3600,
@@ -81,15 +81,15 @@ def test_replace_existing_cache_entry(store: Store) -> None:
         slug="speed-of-light",
         title="speed of light (revised)",
         body_blocks=[
-            BlockInsert(pos=0, text="299_792_458 m/s — exact"),
-            BlockInsert(pos=1, text="≈ 3 × 10⁸ m/s"),
+            ChunkInsert(ord=0, text="299_792_458 m/s — exact"),
+            ChunkInsert(ord=1, text="≈ 3 × 10⁸ m/s"),
         ],
         provider="wolfram",
         request_hash="sol-hash",
         ttl_seconds=7200,
     )
     assert ref2.title == "speed of light (revised)"
-    assert store.blocks.count_blocks(ref2.id) == 2
+    assert store.chunks.count_chunks(ref2.id) == 2
 
     # Lookup returns the new entry.
     found = store.get_cache_entry(provider="wolfram", request_hash="sol-hash")
@@ -103,7 +103,7 @@ def test_soft_deleted_ref_is_not_a_cache_hit(store: Store) -> None:
         kind="math",
         slug="soft-del",
         title="soft delete test",
-        body_blocks=[BlockInsert(pos=0, text="x")],
+        body_blocks=[ChunkInsert(ord=0, text="x")],
         provider="wolfram",
         request_hash="soft-hash",
         ttl_seconds=3600,
@@ -124,7 +124,7 @@ def test_freshness_logic_via_view(store: Store) -> None:
         kind="math",
         slug="fresh",
         title="fresh",
-        body_blocks=[BlockInsert(pos=0, text="x")],
+        body_blocks=[ChunkInsert(ord=0, text="x")],
         provider="wolfram",
         request_hash="fresh",
         ttl_seconds=3600,
@@ -133,7 +133,7 @@ def test_freshness_logic_via_view(store: Store) -> None:
         kind="math",
         slug="stale",
         title="stale",
-        body_blocks=[BlockInsert(pos=0, text="x")],
+        body_blocks=[ChunkInsert(ord=0, text="x")],
         provider="wolfram",
         request_hash="stale",
         ttl_seconds=0,
@@ -152,7 +152,7 @@ def test_two_providers_share_request_hash(store: Store) -> None:
         kind="math",
         slug="m1",
         title="m1",
-        body_blocks=[BlockInsert(pos=0, text="m")],
+        body_blocks=[ChunkInsert(ord=0, text="m")],
         provider="wolfram",
         request_hash="shared",
         ttl_seconds=3600,
@@ -161,7 +161,7 @@ def test_two_providers_share_request_hash(store: Store) -> None:
         kind="web",
         slug="w1",
         title="w1",
-        body_blocks=[BlockInsert(pos=0, text="w")],
+        body_blocks=[ChunkInsert(ord=0, text="w")],
         provider="web",
         request_hash="shared",
         ttl_seconds=3600,
@@ -180,16 +180,16 @@ def test_blocks_persist_with_cache_entry(store: Store) -> None:
         slug="multi",
         title="multi-block",
         body_blocks=[
-            BlockInsert(pos=0, text="line 1"),
-            BlockInsert(pos=1, text="line 2"),
-            BlockInsert(pos=2, text="line 3"),
+            ChunkInsert(ord=0, text="line 1"),
+            ChunkInsert(ord=1, text="line 2"),
+            ChunkInsert(ord=2, text="line 3"),
         ],
         provider="wolfram",
         request_hash="multi",
         ttl_seconds=3600,
     )
-    blocks = store.blocks.list_blocks_for_ref(ref.id)
-    assert [b.pos for b in blocks] == [0, 1, 2]
+    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    assert [b.ord for b in blocks] == [0, 1, 2]
     assert [b.text for b in blocks] == ["line 1", "line 2", "line 3"]
 
 
@@ -199,7 +199,7 @@ def test_cost_usd_optional(store: Store) -> None:
         kind="youtube",
         slug="abc",
         title="t",
-        body_blocks=[BlockInsert(pos=0, text="transcript")],
+        body_blocks=[ChunkInsert(ord=0, text="transcript")],
         provider="youtube",
         request_hash="vid:abc",
         ttl_seconds=86400 * 30,

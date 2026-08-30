@@ -602,7 +602,7 @@ class DraftHandler(Handler):
         chunk_kinds = ["heading"] if headings_only else None
         query_vec = query_vec_for(self.embedder, q, mode)
         offset = max(0, (int(page) - 1) * int(page_size))
-        hits = self.store.blocks.search_blocks(
+        hits = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -1997,13 +1997,13 @@ class DraftHandler(Handler):
                 ):
                     if (link.meta or {}).get("auto") != "mention":
                         continue
-                    key = (link.src_pos, link.dst_ref_id, link.dst_pos)
+                    key = (link.src_ord, link.dst_ref_id, link.dst_ord)
                     if wanted.get(key) != relation:
                         self.store.remove_link(
                             src_ref_id=ref_id,
-                            src_pos=link.src_pos,
+                            src_pos=link.src_ord,
                             dst_ref_id=link.dst_ref_id,
-                            dst_pos=link.dst_pos,
+                            dst_pos=link.dst_ord,
                             relation=relation,
                         )
             for (src_ord, dst, pos), relation in wanted.items():

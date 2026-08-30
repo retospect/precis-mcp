@@ -21,7 +21,7 @@ from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
 
@@ -228,7 +228,7 @@ class YouTubeHandler(CacheBackedHandler):
         title = scraped_meta.get("title") or f"YouTube transcript: {video_id}"
         return FetchResult(
             title=title,
-            body_blocks=[BlockInsert(pos=0, text=text)],
+            body_blocks=[ChunkInsert(ord=0, text=text)],
             cost_usd=None,  # free
             meta=meta,
         )

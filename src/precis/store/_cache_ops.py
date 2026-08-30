@@ -37,7 +37,7 @@ Mixin assumes the concrete Store provides:
 * ``self.tx()``                 — context-manager transaction
 * ``self.insert_ref(...)``      — RefsMixin method (writes refs +
                                   ref_identifiers row for the slug)
-* ``self.blocks.insert_blocks(...)`` — BlockStore method used for the
+* ``self.chunks.insert_chunks(...)`` — ChunkStore method used for the
                                   body-on-replace path (v2: writes
                                   to ``chunks``)
 """
@@ -57,7 +57,7 @@ from precis.store._mappers import (
     _row_to_cache_entry,
     _row_to_ref,
 )
-from precis.store.types import BlockInsert, CacheEntry, Ref
+from precis.store.types import CacheEntry, ChunkInsert, Ref
 
 
 class CacheMixin:
@@ -73,7 +73,7 @@ class CacheMixin:
     # ``_refs_ops.py``; gripe 202377). ``tests/test_store_mixin_guard.py``
     # enforces this class-wide.
     if TYPE_CHECKING:
-        from precis.store._blocks_ops import BlockStore
+        from precis.store._chunks_ops import ChunkStore
 
         # Provided by the concrete Store (store.py).
         def tx(self) -> AbstractContextManager[Connection]: ...
@@ -90,7 +90,7 @@ class CacheMixin:
         ) -> Ref: ...
 
         @property
-        def blocks(self) -> BlockStore: ...
+        def chunks(self) -> ChunkStore: ...
 
     def get_cache_entry(
         self,
@@ -173,7 +173,7 @@ class CacheMixin:
         *,
         ref_id: int,
         title: str,
-        body_blocks: list[BlockInsert],
+        body_blocks: list[ChunkInsert],
         ttl_seconds: int | None,
         request_hash: str | None = None,
         model: str | None = None,
@@ -229,7 +229,7 @@ class CacheMixin:
             # Ref-level tags/links/identifiers are untouched.
             conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
             if body_blocks:
-                self.blocks.insert_blocks(ref_id, body_blocks, conn=conn)
+                self.chunks.insert_chunks(ref_id, body_blocks, conn=conn)
 
             # Update cache_state. Keep existing request_hash unless
             # caller passed a new one.
@@ -289,7 +289,7 @@ class CacheMixin:
         kind: str,
         slug: str,
         title: str,
-        body_blocks: list[BlockInsert],
+        body_blocks: list[ChunkInsert],
         provider: str,
         request_hash: str,
         ttl_seconds: int | None,
@@ -348,7 +348,7 @@ class CacheMixin:
             )
 
             if body_blocks:
-                self.blocks.insert_blocks(ref.id, body_blocks, conn=conn)
+                self.chunks.insert_chunks(ref.id, body_blocks, conn=conn)
 
             cache_sql = (
                 "INSERT INTO cache_state "
@@ -411,7 +411,7 @@ _CACHE_COLS_LEN = 8
 # ``_REFS_COLS_FOR_CACHE`` above, this assertion fires at import time —
 # loud, immediate, instead of cascading dozens of "tuple index out of
 # range" failures across the cache_state / perplexity / web caches.
-# v8.7.1 patched the same drift class in ``_blocks_ops.py``; this is
+# v8.7.1 patched the same drift class in ``_chunks_ops.py``; this is
 # the equivalent guard for the cache path.
 assert _REFS_COLS_FOR_CACHE.count(",") + 1 == _REFS_COLS_LEN, (
     f"_REFS_COLS_FOR_CACHE drift: projects "

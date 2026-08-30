@@ -195,7 +195,7 @@ def author_card(
     card_text = f"{stripped}\n\n{extra}".rstrip() if extra else stripped
     with store.tx() as conn:
         ref = store.insert_ref(kind="anki", slug=None, title=text, meta=meta, conn=conn)
-        store.blocks.upsert_card_combined(ref.id, card_text, conn=conn)
+        store.chunks.upsert_card_combined(ref.id, card_text, conn=conn)
         store.add_link(
             src_ref_id=concept_id,
             dst_ref_id=ref.id,

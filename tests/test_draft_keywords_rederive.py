@@ -94,11 +94,11 @@ def test_draft_chunks_jump_queue_ahead_of_papers(store: Store) -> None:
     """A freshly-written draft chunk is claimed for keywords BEFORE an
     older un-keyworded paper chunk — drafts are the actively-edited
     surface and shouldn't wait behind the paper backlog (view-slider)."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     # an older paper chunk lacking keywords (lower ref_id), embedded.
     paper = store.insert_ref(kind="paper", slug="qjump1", title="Paper")
-    pblk = store.blocks.insert_blocks(paper.id, [BlockInsert(pos=0, text=_LONG)])[0]
+    pblk = store.chunks.insert_chunks(paper.id, [ChunkInsert(ord=0, text=_LONG)])[0]
     _insert_embedding(store, pblk.id, None)  # papers leave content_sha NULL
 
     # a newer draft chunk (higher ref_id), embedded at its current sha.

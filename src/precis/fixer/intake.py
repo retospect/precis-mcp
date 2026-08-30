@@ -193,7 +193,7 @@ _DIAGNOSIS_PREFIX = "DIAGNOSIS"
 class _TimelineEntry(NamedTuple):
     """One chunk of a gripe's timeline — just enough to render + filter.
 
-    Deliberately not :class:`precis.store.types.Block` — keeping this
+    Deliberately not :class:`precis.store.types.ChunkRow` — keeping this
     local means the pure rendering/filtering helpers below take no
     dependency on the store package and stay unit-testable with plain
     tuples, no DB or fakes required.
@@ -303,8 +303,8 @@ def gripe_items(db_url: str) -> list[WorkItem]:
         )
         items: list[WorkItem] = []
         for ref in refs:
-            blocks = store.blocks.list_blocks_for_ref(ref.id)
-            entries = [_TimelineEntry(b.chunk_kind, b.pos, b.text) for b in blocks]
+            blocks = store.chunks.list_chunks_for_ref(ref.id)
+            entries = [_TimelineEntry(b.chunk_kind, b.ord, b.text) for b in blocks]
             item = _work_item_from_gripe(ref.id, ref.title, ref.prio, entries)
             if item is not None:
                 items.append(item)

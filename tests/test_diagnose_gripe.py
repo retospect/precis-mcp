@@ -150,7 +150,7 @@ def test_dispatch_writes_diagnosis_comment_and_parses_confidence(
     assert ctx.status == "succeeded" and ctx.failure is None
     assert ctx.meta_sets.get("confidence") == 0.92
 
-    blocks = store.blocks.list_blocks_for_ref(gid)
+    blocks = store.chunks.list_chunks_for_ref(gid)
     comments = [b for b in blocks if b.chunk_kind == "gripe_comment"]
     assert len(comments) == 1
     assert comments[0].text.startswith("DIAGNOSIS (auto, job 999):")
@@ -197,7 +197,7 @@ def test_dispatch_fails_on_empty_diagnosis(
     assert ctx.status is None
     assert ctx.failure is not None and "empty diagnosis" in ctx.failure
     # No gripe_comment was appended — only the original body chunk.
-    blocks = store.blocks.list_blocks_for_ref(gid)
+    blocks = store.chunks.list_chunks_for_ref(gid)
     assert all(b.chunk_kind != "gripe_comment" for b in blocks)
 
 

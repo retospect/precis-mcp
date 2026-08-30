@@ -656,7 +656,7 @@ def make_corpus_search_fn(
 
     def _search(query: str) -> list[SearchHit]:
         try:
-            rows = store.blocks.search_chunks_across_kinds(
+            rows = store.chunks.search_chunks_across_kinds(
                 kinds=search_kinds, q=query, limit=limit
             )
         except Exception as exc:  # pragma: no cover - defensive

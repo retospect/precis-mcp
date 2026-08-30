@@ -413,7 +413,7 @@ class PatentHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        return self.store.blocks.search_blocks(
+        return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -553,7 +553,7 @@ class PatentHandler(Handler):
             return Response(body=_format_biblio(ref, meta))
 
         if view in ("description", "claims"):
-            blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+            blocks = self.store.chunks.list_chunks_for_ref(ref.id)
             if not blocks:
                 return Response(body=f"no body blocks stored for {slug}")
             want = "claim" if view == "claims" else "description"
@@ -597,7 +597,7 @@ class PatentHandler(Handler):
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
         handle = handle_registry.format_handle("patent", ref.id)
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id, pos_range=(lo, hi))
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
             raise NotFound(
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
@@ -607,7 +607,7 @@ class PatentHandler(Handler):
         lines: list[str] = []
         for b in blocks:
             lines.append(
-                f"# {handle_registry.try_format(ref.kind, b.id, chunk=True) or f'{slug}~{b.pos}'}"
+                f"# {handle_registry.try_format(ref.kind, b.id, chunk=True) or f'{slug}~{b.ord}'}"
             )
             lines.append(b.text)
             lines.append("")

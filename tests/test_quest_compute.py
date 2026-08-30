@@ -654,7 +654,7 @@ class TestRejectedProposalFeedback:
     def _observations(store: Any, qid: int) -> list[str]:
         return [
             b.text
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
         ]
 
@@ -746,7 +746,7 @@ class TestHarvest:
         assert step.results_harvested == 1
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any("E=-12.5 eV" in b.text for b in logs)
@@ -786,7 +786,7 @@ class TestHarvest:
             energy=-5.0,
         )
         compute_mod.harvest_measures(store, qid, by="agent")
-        blocks = store.blocks.list_blocks_for_ref(qid)
+        blocks = store.chunks.list_chunks_for_ref(qid)
         logs = [
             b
             for b in blocks
@@ -817,7 +817,7 @@ class TestHarvest:
         assert any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
         dead_ends = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
             and (b.meta or {}).get("entry_type") == "dead-end"
         ]
@@ -2944,7 +2944,7 @@ class TestAutocatpathHarvest:
         assert meta["barrier"] == 0.7 and meta["span"] == 1.2
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any("barrier=0.7" in b.text for b in logs)
@@ -3553,7 +3553,7 @@ class TestBarrierAbsurdMagnitudeGuard:
         assert meta["barrier_absurd"] is True
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any("nonphysical barrier" in b.text for b in logs)
@@ -3593,7 +3593,7 @@ class TestBarrierAbsurdMagnitudeGuard:
         # early-exit `return False` flipped to True went unnoticed).
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert not any("nonphysical barrier" in b.text for b in logs)
@@ -3652,7 +3652,7 @@ class TestBarrierUnrelaxedGeometryGuard:
         assert "barrier_trusted" not in meta
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any("converged in 0 steps" in b.text for b in logs)
@@ -3736,7 +3736,7 @@ class TestBarrierTwinDisagreementGuard:
 
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         disagree_logs = [
@@ -3810,7 +3810,7 @@ class TestBarrierTwinDisagreementGuard:
 
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         disagree_logs = [
@@ -3855,7 +3855,7 @@ class TestBarrierTwinDisagreementGuard:
 
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         disagree_logs = [
@@ -5049,7 +5049,7 @@ class TestDispatchAutocatpath:
         assert handle is not None
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         dead_end = next(b for b in logs if f"ruled out [{handle}]" in b.text)
@@ -5438,7 +5438,7 @@ class TestTickProposals:
         assert out.candidates_created == 0  # compute off
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any("Fe-N4" in b.text and "buildable" in b.text for b in logs)
@@ -5573,7 +5573,7 @@ class TestDuplicateProposalFeedback:
         assert was_dup is True
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         dup_logs = [b for b in logs if "duplicate proposal" in b.text]
@@ -5596,7 +5596,7 @@ class TestDuplicateProposalFeedback:
         assert was_dup is True
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         dup_logs = [b for b in logs if "duplicate proposal" in b.text]
@@ -5691,7 +5691,7 @@ class TestGeomHash:
         assert was_dup is True
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any("symmetry-duplicate proposal" in b.text for b in logs)
@@ -5739,7 +5739,7 @@ class TestCanonicalSymmetryDedup:
         )
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         dup_logs = [b for b in logs if "symmetry-duplicate proposal" in b.text]

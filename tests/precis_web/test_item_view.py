@@ -36,7 +36,7 @@ def _ref(**kw):
 
 
 def _block(text: str):
-    return SimpleNamespace(id=1, pos=0, text=text)
+    return SimpleNamespace(id=1, ord=0, text=text)
 
 
 def test_name_caps_long_title_for_drive_row() -> None:

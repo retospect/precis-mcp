@@ -495,7 +495,7 @@ def test_verify_sim_live_flips_commits_and_mints(
     assert mat.title == "Aluminum 6061-T6"
 
     # quest deed appended (a milestone in the logbook).
-    blocks = store.blocks.list_blocks_for_ref(qid)
+    blocks = store.chunks.list_chunks_for_ref(qid)
     deeds = [
         b
         for b in blocks

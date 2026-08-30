@@ -5,7 +5,7 @@ sequence (see that module's ``_refine_one_hub``, the reference this mirrors)
 for a caller-supplied slice of claim-hub ``ref_id``s, over a real corpus, but
 performs **zero writes**: no ``attach_evidence``, no ``update_ref``, no
 rejection-memo mutation, no commit. It reuses the exact real read-only
-primitives (``_attached_source_ids``, ``embed_query``, ``store.search_blocks``,
+primitives (``_attached_source_ids``, ``embed_query``, ``store.search_chunks``,
 ``_verify_support_with_caveats``) so its verdicts are what a live pass would
 have done, not an approximation.
 
@@ -42,7 +42,7 @@ from precis.workers.hub_refine import (
 )
 
 if TYPE_CHECKING:
-    from precis.store.protocols import BlockSearchStore
+    from precis.store.protocols import ChunkSearchStore
 
 VerifyFn = Any  # Callable[..., dict[str, Any] | None] — kept loose to match _verify_support_with_caveats
 
@@ -173,7 +173,7 @@ def _count_existing_edges(conn: Any, hub_ref_id: int) -> int | None:
 
 def _eval_one_hub(
     conn: Any,
-    store: BlockSearchStore,
+    store: ChunkSearchStore,
     hub_ref_id: int,
     *,
     embedder: Any,
@@ -205,7 +205,7 @@ def _eval_one_hub(
         hub_eval.discovery_skipped = True
         return hub_eval
 
-    candidates = store.blocks.search_blocks(
+    candidates = store.chunks.search_chunks(
         q=claim_sentence,
         query_vec=query_vec,
         mode="semantic",
@@ -239,7 +239,7 @@ def _eval_one_hub(
             claim=claim_sentence,
             scope=scope,
             target_cite_key=ref.slug or f"ref:{paper_ref_id}",
-            target_chunk_ord=block.pos,
+            target_chunk_ord=block.ord,
             target_chunk_text=block.text,
         )
         if verification is None:
@@ -254,7 +254,7 @@ def _eval_one_hub(
             contradicts=contradicts,
             caveats=list(verification.get("caveats") or []),
             source_handle=f"pc{block.id}",
-            chunk_pos=block.pos,
+            chunk_pos=block.ord,
             chunk_excerpt=block.text[:240],
             score=score,
         )
@@ -272,7 +272,7 @@ def _eval_one_hub(
 
 
 def eval_hub_slice(
-    store: BlockSearchStore,
+    store: ChunkSearchStore,
     ref_ids: list[int],
     *,
     embedder: Any,

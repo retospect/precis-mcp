@@ -654,7 +654,7 @@ def _quest_report(store: Store, quest: Any, *, status: str) -> str:
     try:
         entries = [
             b
-            for b in store.blocks.list_blocks_for_ref(int(quest.id))
+            for b in store.chunks.list_chunks_for_ref(int(quest.id))
             if b.chunk_kind == LOG_KIND
         ]
         deed = next(

@@ -10,9 +10,9 @@ pytest.importorskip("fastapi")
 
 
 def _block(pos: int, text: str, keywords: list[str]) -> SimpleNamespace:
-    """A minimal stand-in for store.types.Block (only the fields the
-    nav route reads: pos / text / keywords)."""
-    return SimpleNamespace(pos=pos, text=text, keywords=keywords)
+    """A minimal stand-in for store.types.ChunkRow (only the fields the
+    nav route reads: ord / text / keywords)."""
+    return SimpleNamespace(ord=pos, text=text, keywords=keywords)
 
 
 # ── slug routing ────────────────────────────────────────────────────
@@ -230,8 +230,8 @@ def test_rawchunks_endpoint_lists_verbatim_text_in_reading_order(
     reading order, verbatim text + chunk_kind — the only in-UI way to
     browse a chunks-only doc (no PDF) like heminamino26."""
     runtime.store._conv_blocks[10] = [
-        SimpleNamespace(pos=0, text="Introduction text.", chunk_kind="paragraph"),
-        SimpleNamespace(pos=1, text="Methods text.", chunk_kind="paragraph"),
+        SimpleNamespace(ord=0, text="Introduction text.", chunk_kind="paragraph"),
+        SimpleNamespace(ord=1, text="Methods text.", chunk_kind="paragraph"),
     ]
     resp = client.get("/papers/10/rawchunks")
     assert resp.status_code == 200

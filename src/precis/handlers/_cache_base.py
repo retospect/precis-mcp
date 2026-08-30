@@ -51,9 +51,9 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
-from precis.utils.block_ingest import to_block_inserts
+from precis.utils.chunk_ingest import to_chunk_inserts
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.inject_scan import inject_meta, scan_tier0
 from precis.utils.md_parse import block_meta, parse_markdown
@@ -168,7 +168,7 @@ class FetchResult:
     title: str
     """Short human label for the ref. Renders as the response heading."""
 
-    body_blocks: list[BlockInsert]
+    body_blocks: list[ChunkInsert]
     """The cached body, sliced into blocks. One block is fine for short
     answers; transcripts / pages get many."""
 
@@ -258,7 +258,7 @@ class CacheBackedHandler(Handler):
     #: target the paper / patent ingest path uses.
     chunk_target_chars: ClassVar[int] = 800
 
-    def _split_body_blocks(self, blocks: list[BlockInsert]) -> list[BlockInsert]:
+    def _split_body_blocks(self, blocks: list[ChunkInsert]) -> list[ChunkInsert]:
         """Split any oversized ``body_blocks`` into semantic chunks.
 
         Blocks ≤ ``chunk_target_chars`` pass through unchanged. Larger
@@ -288,7 +288,7 @@ class CacheBackedHandler(Handler):
 
         from precis.ingest.text_chunker import split_text
 
-        out: list[BlockInsert] = []
+        out: list[ChunkInsert] = []
         pos = 0
         for block in blocks:
             text = block.text or ""
@@ -296,14 +296,14 @@ class CacheBackedHandler(Handler):
             # the embedding is anchored to the full text, splitting
             # would orphan it.
             if block.embedding is not None or len(text) <= self.chunk_target_chars:
-                out.append(replace(block, pos=pos))
+                out.append(replace(block, ord=pos))
                 pos += 1
                 continue
             pieces = split_text(text, chunk_size=self.chunk_target_chars)
             for piece in pieces:
-                # Carry every other BlockInsert field through verbatim
+                # Carry every other ChunkInsert field through verbatim
                 # (slug, meta, density) — only pos + text change.
-                out.append(replace(block, pos=pos, text=piece))
+                out.append(replace(block, ord=pos, text=piece))
                 pos += 1
         return out
 
@@ -596,14 +596,14 @@ class CacheBackedHandler(Handler):
         this call."""
         from precis import agentlog
 
-        # Fast-path out before the extra list_blocks_for_ref round-trip: on the
+        # Fast-path out before the extra list_chunks_for_ref round-trip: on the
         # common path (any ordinary fetch with PRECIS_CURRENT_AGENTLOG unset) no
         # run is attributing, so there is nothing to touch and no reason to query.
         if agentlog.current_from_env() is None:
             return
         agentlog.touch_from_env(
             self.store,
-            chunk_ids=[b.id for b in self.store.blocks.list_blocks_for_ref(ref_id)],
+            chunk_ids=[b.id for b in self.store.chunks.list_chunks_for_ref(ref_id)],
         )
 
     def _recover_key(self, ref: Ref, cache: CacheEntry) -> str | None:
@@ -780,7 +780,7 @@ class CacheBackedHandler(Handler):
                 lines.append(cite)
             return Response(body="\n".join(lines), cost=self._cost_str(cache, hit=hit))
 
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         # Blocks may be overlapping chunks from ``_split_body_blocks`` (a big
         # single body split for the embedder). Drop the overlap when rejoining
         # so the reader sees the original text, not ~150-char echoes at each
@@ -1007,7 +1007,7 @@ class CacheBackedHandler(Handler):
         """Block-level mode-dispatched search across cached entries.
 
         Default hybrid lexical + semantic (when an embedder is wired)
-        via :meth:`Store.search_blocks`; ``mode='lexical'`` /
+        via :meth:`Store.search_chunks`; ``mode='lexical'`` /
         ``'semantic'`` force a single leg. Subclasses whose ``_fetch``
         stores only a single un-embedded block (no call to
         :meth:`_blocks_from_report`) will land lexical hits only —
@@ -1021,7 +1021,7 @@ class CacheBackedHandler(Handler):
 
         query_vec = query_vec_for(self.embedder, q, mode)
 
-        hits = self.store.blocks.search_blocks(
+        hits = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -1051,9 +1051,9 @@ class CacheBackedHandler(Handler):
             return Response(body=body)
 
         # Salience: heat the chunks this page surfaced; no-op for dreamer.
-        self.store.blocks.bump_salience([block.id for block, _ref, _score in hits])
+        self.store.chunks.bump_salience([block.id for block, _ref, _score in hits])
 
-        total = self.store.blocks.count_blocks_lexical(q=q, kind=self.spec.kind)
+        total = self.store.chunks.count_chunks_lexical(q=q, kind=self.spec.kind)
         lines = [
             format_search_headline(
                 n_returned=len(hits),
@@ -1066,7 +1066,7 @@ class CacheBackedHandler(Handler):
             slug = ref.slug or "???"
             handle = (
                 handle_registry.try_format(ref.kind, block.id, chunk=True)
-                or f"{slug}~{block.slug or block.pos}"
+                or f"{slug}~{block.slug or block.ord}"
             )
             preview = _excerpt(block.text)
             lines.append(f"\n## {handle}  (score={score:.4f})")
@@ -1099,7 +1099,7 @@ class CacheBackedHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.blocks.search_blocks(
+        triples = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -1108,13 +1108,13 @@ class CacheBackedHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         # Salience bump (block-level); no-op for dream-actor reads.
-        self.store.blocks.bump_salience([block.id for block, _ref, _score in triples])
+        self.store.chunks.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind=self.spec.kind)
 
     # ── block ingestion helper ────────────────────────────────────
 
-    def _blocks_from_report(self, body: str) -> list[BlockInsert]:
-        """Parse a markdown body into embedded ``BlockInsert`` rows.
+    def _blocks_from_report(self, body: str) -> list[ChunkInsert]:
+        """Parse a markdown body into embedded ``ChunkInsert`` rows.
 
         Used by subclasses whose ``_fetch`` returns markdown-shaped
         content (Perplexity reports, trafilatura-extracted web
@@ -1132,10 +1132,10 @@ class CacheBackedHandler(Handler):
             # Defensive fallback: parser found no structure → store
             # the whole text as one paragraph block (no embedding).
             # Better than dropping content entirely.
-            return [BlockInsert(pos=0, text=body)]
+            return [ChunkInsert(ord=0, text=body)]
 
         try:
-            return to_block_inserts(
+            return to_chunk_inserts(
                 md_blocks, embedder=self.embedder, meta_for=block_meta
             )
         except (EmbedderUnavailable, Upstream):
@@ -1158,7 +1158,7 @@ class CacheBackedHandler(Handler):
                 self.spec.kind,
                 exc_info=True,
             )
-            return to_block_inserts(md_blocks, embedder=None, meta_for=block_meta)
+            return to_chunk_inserts(md_blocks, embedder=None, meta_for=block_meta)
 
 
 def _format_cache_footer(cache: CacheEntry) -> str:

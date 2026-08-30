@@ -127,7 +127,7 @@ def test_claims_and_dispatches_success(
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert _status(store, rid) == "succeeded"
     assert "lease_until" in _meta(store, rid)
-    blocks = store.blocks.list_blocks_for_ref(rid)
+    blocks = store.chunks.list_chunks_for_ref(rid)
     assert any("fake relax done" in b.text for b in blocks)
 
 
@@ -1017,7 +1017,7 @@ def test_poll_past_deadline_terminalizes_without_kill_hook(
     assert "swept:wall-timeout" in tags
     events = [
         c.text
-        for c in store.blocks.list_blocks_for_ref(rid)
+        for c in store.chunks.list_chunks_for_ref(rid)
         if getattr(c, "chunk_kind", None) == "job_event"
     ]
     assert any("killed at wall-clock deadline" in t for t in events)
@@ -1158,7 +1158,7 @@ def test_kill_requested_terminalizes_via_kill_hook_and_bubbles(
     assert "swept:killed-by-operator" in tags
     events = [
         c.text
-        for c in store.blocks.list_blocks_for_ref(rid)
+        for c in store.chunks.list_chunks_for_ref(rid)
         if getattr(c, "chunk_kind", None) == "job_event"
     ]
     assert any("killed by operator" in t and "operator drill" in t for t in events)
@@ -1253,7 +1253,7 @@ def test_reclaimed_row_with_compute_handle_is_re_adopted_not_double_submitted(
     assert _meta(store, rid)["lease_boot_id"] != "dead-generation"
     events = [
         c.text
-        for c in store.blocks.list_blocks_for_ref(rid)
+        for c in store.chunks.list_chunks_for_ref(rid)
         if getattr(c, "chunk_kind", None) == "job_event"
     ]
     assert any("re-adopted" in t for t in events)

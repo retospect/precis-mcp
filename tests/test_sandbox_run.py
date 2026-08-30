@@ -620,7 +620,7 @@ def test_epoch_reclaim_re_adopts_live_container_without_relaunch(
     assert _status(store, jid) == "running"  # still tracked, not terminalized
     summaries_and_events = [
         c.text
-        for c in store.blocks.list_blocks_for_ref(jid)
+        for c in store.chunks.list_chunks_for_ref(jid)
         if getattr(c, "chunk_kind", None) == "job_event"
     ]
     assert any("re-adopted" in t for t in summaries_and_events)

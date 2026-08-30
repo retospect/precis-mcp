@@ -41,7 +41,7 @@ from typing import Any
 
 from precis.errors import BadInput
 from precis.store import Store
-from precis.store.types import Block, BlockInsert
+from precis.store.types import ChunkInsert, ChunkRow
 
 #: The workload-relevant capability axes — chosen by what precis *does*, not what
 #: academia measures. Each is a coarse 1–5 ordinal (not a continuous scalar). The set
@@ -320,11 +320,11 @@ def upsert_card(
             ref = store.insert_ref(
                 kind=LLM_KIND, slug=None, title=text, meta=meta, conn=conn
             )
-            store.blocks.upsert_card_combined(ref.id, text, conn=conn)
+            store.chunks.upsert_card_combined(ref.id, text, conn=conn)
         return ref.id, True
     store.update_ref(existing.id, title=text, meta_patch=meta)
     with store.tx() as conn:
-        store.blocks.upsert_card_combined(existing.id, text, conn=conn)
+        store.chunks.upsert_card_combined(existing.id, text, conn=conn)
     return existing.id, False
 
 
@@ -392,20 +392,20 @@ def append_review(
         meta["ordinal"] = int(ordinal)
     if variant is not None:
         meta["variant"] = variant
-    # list_blocks_for_ref excludes the ord=-1 card, so the first review is pos=0.
-    next_pos = len(store.blocks.list_blocks_for_ref(ref_id))
+    # list_chunks_for_ref excludes the ord=-1 card, so the first review is pos=0.
+    next_pos = len(store.chunks.list_chunks_for_ref(ref_id))
     with store.tx() as conn:
-        store.blocks.insert_blocks(
-            ref_id, [BlockInsert(pos=next_pos, text=text, meta=meta)], conn=conn
+        store.chunks.insert_chunks(
+            ref_id, [ChunkInsert(ord=next_pos, text=text, meta=meta)], conn=conn
         )
     return next_pos + 1
 
 
-def list_reviews(store: Store, ref_id: int) -> list[Block]:
+def list_reviews(store: Store, ref_id: int) -> list[ChunkRow]:
     """The review-log entries (``llm_review`` chunks) in append order."""
     return [
         b
-        for b in store.blocks.list_blocks_for_ref(ref_id)
+        for b in store.chunks.list_chunks_for_ref(ref_id)
         if b.chunk_kind == REVIEW_KIND
     ]
 

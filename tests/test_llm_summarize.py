@@ -1041,7 +1041,7 @@ def test_bump_salience_for_ref_heats_body_chunks(store: Any) -> None:
             f"UPDATE chunks SET last_seen = {aged} WHERE ref_id = %s", (ref_id,)
         )
         conn.commit()
-    n = store.blocks.bump_salience_for_ref(ref_id)
+    n = store.chunks.bump_salience_for_ref(ref_id)
     assert n == len(chunk_ids)
     with store.pool.connection() as conn:
         fresh = conn.execute(

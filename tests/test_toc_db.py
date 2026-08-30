@@ -23,27 +23,27 @@ from precis.utils.toc_db import build_toc_segments, render_from_store
 
 @dataclass
 class _Stub:
-    """Minimal stand-in for ``Block`` — renderer reads pos + keywords."""
+    """Minimal stand-in for ``ChunkRow`` — renderer reads ord + keywords."""
 
-    pos: int
+    ord: int
     keywords: list[str] = field(default_factory=list)
 
 
 class _StubStore:
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(self, blocks: list[_Stub]) -> None:
         self._blocks = blocks
 
-    def list_blocks_for_ref(
+    def list_chunks_for_ref(
         self, ref_id: int, *, pos_range: tuple[int, int] | None = None
     ) -> list[_Stub]:
         if pos_range is None:
             return list(self._blocks)
         lo, hi = pos_range
-        return [b for b in self._blocks if lo <= b.pos <= hi]
+        return [b for b in self._blocks if lo <= b.ord <= hi]
 
 
 def _render(blocks: list[_Stub], *, scope: tuple[int, int] | None = None) -> str:
@@ -61,7 +61,7 @@ def _render(blocks: list[_Stub], *, scope: tuple[int, int] | None = None) -> str
 
 class TestPerChunkPath:
     def test_short_range_emits_one_row_per_chunk(self) -> None:
-        blocks = [_Stub(pos=i, keywords=[f"kw{i}"]) for i in range(4)]
+        blocks = [_Stub(ord=i, keywords=[f"kw{i}"]) for i in range(4)]
         out = _render(blocks)
         # Headline names chunk count, not "(per-chunk preview)".
         assert "4 chunks" in out
@@ -77,8 +77,8 @@ class TestPerChunkPath:
         text into the 'preview' column. The new contract has no
         'preview' column and never inspects ``.text``."""
         blocks = [
-            _Stub(pos=0, keywords=["mitochondria", "parkin"]),
-            _Stub(pos=1, keywords=["retromer", "vps35"]),
+            _Stub(ord=0, keywords=["mitochondria", "parkin"]),
+            _Stub(ord=1, keywords=["retromer", "vps35"]),
         ]
         out = _render(blocks)
         assert "preview" not in out
@@ -86,7 +86,7 @@ class TestPerChunkPath:
         assert "retromer, vps35" in out
 
     def test_per_chunk_path_emits_no_topics_or_next(self) -> None:
-        blocks = [_Stub(pos=i, keywords=["shared"]) for i in range(5)]
+        blocks = [_Stub(ord=i, keywords=["shared"]) for i in range(5)]
         out = _render(blocks)
         assert "Topics:" not in out
         assert "Next:" not in out
@@ -103,9 +103,9 @@ class TestBucketedPath:
         cleanly separates them no matter what k it's asked for.
         """
         half = n // 2
-        a = [_Stub(pos=i, keywords=["alpha", "beta", "shared"]) for i in range(half)]
+        a = [_Stub(ord=i, keywords=["alpha", "beta", "shared"]) for i in range(half)]
         b = [
-            _Stub(pos=i, keywords=["gamma", "delta", "shared"]) for i in range(half, n)
+            _Stub(ord=i, keywords=["gamma", "delta", "shared"]) for i in range(half, n)
         ]
         return a + b
 
@@ -135,8 +135,8 @@ class TestBucketedPath:
 
     def test_no_topics_when_no_keyword_is_pervasive(self) -> None:
         """Two clusters share no keywords → no Topics line."""
-        a = [_Stub(pos=i, keywords=["alpha", "beta"]) for i in range(30)]
-        b = [_Stub(pos=i, keywords=["gamma", "delta"]) for i in range(30, 60)]
+        a = [_Stub(ord=i, keywords=["alpha", "beta"]) for i in range(30)]
+        b = [_Stub(ord=i, keywords=["gamma", "delta"]) for i in range(30, 60)]
         out = _render(a + b)
         assert "Topics:" not in out
 
@@ -150,8 +150,8 @@ class TestDrillInHint:
         # 40 identical-keyword chunks, then 30 different ones. The
         # first 40 form a fat cluster (≥ _BUCKETING_THRESHOLD=30).
         blocks = [
-            _Stub(pos=i, keywords=["alpha", "beta", "gamma"]) for i in range(40)
-        ] + [_Stub(pos=i, keywords=["delta", "epsilon", "zeta"]) for i in range(40, 70)]
+            _Stub(ord=i, keywords=["alpha", "beta", "gamma"]) for i in range(40)
+        ] + [_Stub(ord=i, keywords=["delta", "epsilon", "zeta"]) for i in range(40, 70)]
         out = _render(blocks)
         assert "Next: drill" in out
         # The fat cluster's handle appears in a drill-in suggestion.
@@ -169,8 +169,8 @@ class TestDrillInHint:
         """Drill-in hints address by the universal handle (``pa<id>~lo..hi``)
         and drop the superfluous ``# N chunks`` trailing comment."""
         blocks = [
-            _Stub(pos=i, keywords=["alpha", "beta", "gamma"]) for i in range(40)
-        ] + [_Stub(pos=i, keywords=["delta", "epsilon", "zeta"]) for i in range(40, 70)]
+            _Stub(ord=i, keywords=["alpha", "beta", "gamma"]) for i in range(40)
+        ] + [_Stub(ord=i, keywords=["delta", "epsilon", "zeta"]) for i in range(40, 70)]
         out = _render(blocks)
         next_lines = [
             line for line in out.splitlines() if "view='toc'" in line and "get(" in line
@@ -189,7 +189,7 @@ class TestDrillInHint:
         blocks: list[_Stub] = []
         for i in range(30):
             # Each chunk a different "topic" so DP cuts often.
-            blocks.append(_Stub(pos=i, keywords=[f"topic{i // 3}", "shared"]))
+            blocks.append(_Stub(ord=i, keywords=[f"topic{i // 3}", "shared"]))
         out = _render(blocks)
         assert "Next: drill" not in out
 
@@ -203,7 +203,7 @@ class TestEdges:
         assert "no chunks in scope" in out
 
     def test_scope_headline(self) -> None:
-        blocks = [_Stub(pos=i, keywords=[f"kw{i}"]) for i in range(5)]
+        blocks = [_Stub(ord=i, keywords=[f"kw{i}"]) for i in range(5)]
         out = _render(blocks, scope=(0, 4))
         assert "sub-TOC ~0..4" in out
 
@@ -227,7 +227,7 @@ class TestDrillHierarchy:
     def _range(self, lo: int, hi: int) -> list[_Stub]:
         # Distinct per-chunk keyword + a shared topic; DP splits on size,
         # mimicking a coherent drilled sub-range.
-        return [_Stub(pos=i, keywords=[f"kw{i}", "topic"]) for i in range(lo, hi + 1)]
+        return [_Stub(ord=i, keywords=[f"kw{i}", "topic"]) for i in range(lo, hi + 1)]
 
     def test_drilled_subrange_subclusters_not_flattened(self) -> None:
         blocks = self._range(25, 47)  # 23 chunks, < top-level threshold 30

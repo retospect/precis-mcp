@@ -28,7 +28,7 @@ from precis.utils.slug import slug_from_text
 _MD_DECORATION_RE = re.compile(r"[*_`~\[\]()!#>]+")
 
 
-def mint_block_slug(
+def mint_chunk_slug(
     text: str,
     taken: set[str],
     *,
@@ -74,4 +74,4 @@ def mint_block_slug(
     raise ValueError(f"unreachable: more than 10k collisions on {base!r}")
 
 
-__all__ = ["mint_block_slug"]
+__all__ = ["mint_chunk_slug"]

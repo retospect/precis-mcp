@@ -37,7 +37,7 @@ from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store.types import BlockInsert, Ref
+from precis.store.types import ChunkInsert, Ref
 
 # Chunk-kind slugs we own. Match the seed in 0005.
 _BODY_KIND = "gripe_body"
@@ -220,7 +220,7 @@ class GripeHandler(NumericRefHandler):
         # The base insert (ref + gripe_body chunk + the STATUS:open
         # default tag) routes through ``file_gripe_readonly()``
         # (migration 0079) rather than hand-rolled insert_ref/
-        # insert_blocks/add_tag calls. That SQL function is SECURITY
+        # insert_chunks/add_tag calls. That SQL function is SECURITY
         # DEFINER — it runs with its owner's privileges regardless of
         # the calling role — so filing a gripe keeps working even from
         # an ``agent_ro`` connection (``write:none`` envelope,
@@ -277,17 +277,17 @@ class GripeHandler(NumericRefHandler):
         ref_id = self._coerce_id(id)
         ref = self._resolve_live_ref(ref_id)
         # Next pos = current chunk count (body is pos=0, comments
-        # follow). list_blocks_for_ref excludes synthetic cards
+        # follow). list_chunks_for_ref excludes synthetic cards
         # (ord<0) so the count is exactly the body + comment count.
-        existing = self.store.blocks.list_blocks_for_ref(ref.id)
+        existing = self.store.chunks.list_chunks_for_ref(ref.id)
         next_pos = len(existing)
         try:
             with self.store.tx() as conn:
-                self.store.blocks.insert_blocks(
+                self.store.chunks.insert_chunks(
                     ref.id,
                     [
-                        BlockInsert(
-                            pos=next_pos,
+                        ChunkInsert(
+                            ord=next_pos,
                             text=text,
                             meta={"chunk_kind": _COMMENT_KIND},
                         )
@@ -330,7 +330,7 @@ class GripeHandler(NumericRefHandler):
         if kind == _BODY_KIND:
             label = f"{self._sense()} {ref.id}"
         elif kind == _COMMENT_KIND:
-            label = f"{self._sense()} {ref.id} (comment {block.pos})"
+            label = f"{self._sense()} {ref.id} (comment {block.ord})"
         else:
             label = f"{self._sense()} {ref.id} ({kind})"
         return f"\n## {label}  (rank={rank:.2f})\n{self._snippet(block.text)}"
@@ -338,7 +338,7 @@ class GripeHandler(NumericRefHandler):
     # ── rendering: body + comment timeline ──────────────────────────
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         lines = [f"# {self._sense()} {ref.id}"]
         if ref.set_by:
             lines.append(f"filed by: {ref.set_by}")
@@ -355,7 +355,7 @@ class GripeHandler(NumericRefHandler):
                 continue
             if kind == _COMMENT_KIND:
                 lines.append("")
-                lines.append(f"## comment {block.pos}")
+                lines.append(f"## comment {block.ord}")
                 lines.append(block.text)
         if not body_rendered:
             # Pre-migration gripes had no body chunk; fall back to

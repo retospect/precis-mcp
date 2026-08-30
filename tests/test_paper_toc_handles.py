@@ -15,7 +15,7 @@ import re
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers.paper import PaperHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
 
 
@@ -28,10 +28,10 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
     """
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
     e = MockEmbedder(dim=1024)
-    blocks = store.blocks.insert_blocks(
+    blocks = store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(pos=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))
+            ChunkInsert(ord=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))
             for i in range(n)
         ],
     )

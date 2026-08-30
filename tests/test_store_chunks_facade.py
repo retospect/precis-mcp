@@ -1,4 +1,4 @@
-"""Pins the ``store.blocks`` (:class:`BlockStore`) carve finished in
+"""Pins the ``store.chunks`` (:class:`ChunkStore`) carve finished in
 ``docs/backlog/codereview-store-decomposition.md``.
 
 Not a test of block *semantics* (``test_blocks.py`` owns that) — just
@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import inspect
 
-from precis.store._blocks_ops import BlockStore
+from precis.store._chunks_ops import ChunkStore
 from precis.store.store import Store
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 
 def _public_callables(cls: type) -> set[str]:
     """Public, non-underscore, non-``object``-inherited callables on
-    ``cls`` — the ``BlockStore`` domain surface."""
+    ``cls`` — the ``ChunkStore`` domain surface."""
     names: set[str] = set()
     for name in dir(cls):
         if name.startswith("_") or name in ("pool", "tx"):
@@ -34,23 +34,23 @@ def _public_callables(cls: type) -> set[str]:
 
 
 def test_store_no_longer_mixes_blocks_into_its_own_mro() -> None:
-    """The carve: ``blocks`` is composed (``store.blocks``), not mixed
+    """The carve: ``blocks`` is composed (``store.chunks``), not mixed
     into ``Store``'s bases — no blocks mixin may reappear in
     ``Store.__mro__``."""
     mro_names = {c.__name__ for c in Store.__mro__}
     assert "BlocksMixin" not in mro_names
-    assert "BlockStore" not in mro_names
+    assert "ChunkStore" not in mro_names
 
 
 def test_no_flat_block_delegations_remain_on_store() -> None:
-    """Block ops are reached only as ``store.blocks.*``: no public
-    ``BlockStore`` method may (re)appear under its flat historical name on
+    """Chunk ops are reached only as ``store.chunks.*``: no public
+    ``ChunkStore`` method may (re)appear under its flat historical name on
     ``Store`` — a same-named method sneaking back in would silently shadow
     the sub-store and resurrect the flat-namespace collision class the
     decomposition exists to kill."""
-    blockstore_methods = _public_callables(BlockStore)
+    blockstore_methods = _public_callables(ChunkStore)
     assert len(blockstore_methods) > 30, (
-        "sanity check — expected dozens of BlockStore methods, got "
+        "sanity check — expected dozens of ChunkStore methods, got "
         f"{len(blockstore_methods)}; did the reflection break?"
     )
     leaked = sorted(n for n in blockstore_methods if hasattr(Store, n))
@@ -58,7 +58,7 @@ def test_no_flat_block_delegations_remain_on_store() -> None:
 
 
 def test_blocks_substore_reads_its_own_writes(store: Store) -> None:
-    """A tiny live smoke test: ``store.blocks`` writes and reads through
+    """A tiny live smoke test: ``store.chunks`` writes and reads through
     the shared :class:`~precis.store.core.StoreCore` (same pool as the
     host)."""
     ref = store.insert_ref(
@@ -66,9 +66,9 @@ def test_blocks_substore_reads_its_own_writes(store: Store) -> None:
         slug="blocks-facade-smoke-ref",
         title="blocks-facade-smoke-ref",
     )
-    [block] = store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=0, text="written through store.blocks")]
+    [block] = store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text="written through store.chunks")]
     )
-    got = store.blocks.get_block(ref.id, pos=block.pos)
+    got = store.chunks.get_chunk(ref.id, pos=block.ord)
     assert got is not None
-    assert got.text == "written through store.blocks"
+    assert got.text == "written through store.chunks"

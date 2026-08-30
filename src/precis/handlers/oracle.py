@@ -61,7 +61,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, Block, Ref
+from precis.store import SEMANTIC_DISTANCE_FLOOR, ChunkRow, Ref
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.next_block import render_next_section
@@ -73,7 +73,7 @@ from precis.utils.search_merge import (
 )
 from precis.utils.text import excerpt as _excerpt
 
-# Block-selector views accepted on ``id=<slug>/<view>`` or
+# ChunkRow-selector views accepted on ``id=<slug>/<view>`` or
 # ``view=<view>``. ``index`` is the escape hatch for callers who want
 # the full catalog before picking an entry.
 _ORACLE_VIEWS: tuple[str, ...] = ("index",)
@@ -143,7 +143,7 @@ class OracleHandler(Handler):
 
         ref = resolve_live_slug_ref(self.store, kind="oracle", id=slug)
         handle = handle_registry.format_handle("oracle", ref.id)
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
 
         # Empty oracle — no blocks, body lives in the title only.
         if not blocks:
@@ -197,7 +197,7 @@ class OracleHandler(Handler):
 
         Oracle wisdom (hexagrams, Stoic quotes, proverbs) lives in the
         per-entry blocks, so this routes through the shared block search
-        (``store.search_blocks``): hybrid lexical+semantic by default,
+        (``store.search_chunks``): hybrid lexical+semantic by default,
         degrading to lexical-only when the embedder is absent or failing
         (``query_vec_for`` → ``None``). Each hit is rendered as a
         deterministic ``oracle <slug>~<pos>`` entry the caller can fetch
@@ -223,7 +223,7 @@ class OracleHandler(Handler):
             scope_ref_id = scope_ref.id
 
         query_vec = query_vec_for(self.embedder, q, mode)
-        hits = self.store.blocks.search_blocks(
+        hits = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -248,7 +248,7 @@ class OracleHandler(Handler):
             )
             return Response(body=body)
 
-        total = self.store.blocks.count_blocks_lexical(
+        total = self.store.chunks.count_chunks_lexical(
             q=q, kind="oracle", scope_ref_id=scope_ref_id
         )
         lines = [
@@ -263,9 +263,9 @@ class OracleHandler(Handler):
             slug = ref.slug or "???"
             handle = (
                 handle_registry.try_format(ref.kind, block.id, chunk=True)
-                or f"{slug}~{block.pos}"
+                or f"{slug}~{block.ord}"
             )
-            title = _entry_title(block) or f"entry {block.pos}"
+            title = _entry_title(block) or f"entry {block.ord}"
             lines.append(f"\n## oracle {handle}  (score={score:.4f})")
             lines.append(f"_{ref.title} - {title}_")
             lines.append(_excerpt(block.text))
@@ -282,7 +282,7 @@ class OracleHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
-        """Block-level content search returned as ``SearchHit``s.
+        """ChunkRow-level content search returned as ``SearchHit``s.
 
         Oracle bodies live in per-entry blocks; this searches that body
         text (hybrid lexical+semantic, degrading to lexical when the
@@ -297,7 +297,7 @@ class OracleHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.blocks.search_blocks(
+        triples = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -427,10 +427,10 @@ class OracleHandler(Handler):
         ref, block = draw.ref, draw.block
         slug = ref.slug or "???"
         handle = handle_registry.format_handle("oracle", ref.id)
-        title = _entry_title(block) or f"entry {block.pos}"
+        title = _entry_title(block) or f"entry {block.ord}"
         lens_label = ", ".join(names)
         body = (
-            f"# oracle {slug}~{block.pos}  (lens: {lens_label})\n"
+            f"# oracle {slug}~{block.ord}  (lens: {lens_label})\n"
             f"_{ref.title} - {title}_\n\n{block.text}"
         )
         body += render_next_section(
@@ -440,7 +440,7 @@ class OracleHandler(Handler):
                     "consult again under the same lens",
                 ),
                 (
-                    f"get(kind='oracle', id='{slug}~{block.pos}')",
+                    f"get(kind='oracle', id='{slug}~{block.ord}')",
                     "fetch THIS entry deterministically",
                 ),
                 (
@@ -451,7 +451,7 @@ class OracleHandler(Handler):
         )
         return Response(body=body)
 
-    def _render_random_entry(self, ref: Ref, blocks: list[Block]) -> Response:
+    def _render_random_entry(self, ref: Ref, blocks: list[ChunkRow]) -> Response:
         """Pick one entry at random; render it with catalog hints.
 
         Uses ``secrets.randbelow`` (CSPRNG) for unbiased selection —
@@ -463,8 +463,8 @@ class OracleHandler(Handler):
         block = blocks[idx]
         slug = ref.slug or "???"
         handle = handle_registry.format_handle("oracle", ref.id)
-        title = _entry_title(block) or f"entry {block.pos}"
-        body = f"# oracle {slug}~{block.pos}\n_{ref.title} - {title}_\n\n{block.text}"
+        title = _entry_title(block) or f"entry {block.ord}"
+        body = f"# oracle {slug}~{block.ord}\n_{ref.title} - {title}_\n\n{block.text}"
         body += render_next_section(
             [
                 (
@@ -476,29 +476,29 @@ class OracleHandler(Handler):
                     f"see all {len(blocks)} entries",
                 ),
                 (
-                    f"get(kind='oracle', id='{slug}~{block.pos}')",
+                    f"get(kind='oracle', id='{slug}~{block.ord}')",
                     "fetch THIS entry deterministically",
                 ),
             ]
         )
         return Response(body=body)
 
-    def _render_entry(self, ref: Ref, blocks: list[Block], pos: int) -> Response:
+    def _render_entry(self, ref: Ref, blocks: list[ChunkRow], pos: int) -> Response:
         """Render the entry at ``pos`` (deterministic).
 
-        Block positions are **1-indexed** for the ``oracle`` kind
+        ChunkRow positions are **1-indexed** for the ``oracle`` kind
         (see ``ingest_oracles.py``) so I-Ching ``iching~49`` maps
         to Hexagram 49 verbatim. The valid-range hint is derived
         from the actual min/max ``pos`` rather than hard-coded so
         any future tradition with a sparse or offset numbering
         scheme keeps an honest error message.
         """
-        block = next((b for b in blocks if b.pos == pos), None)
+        block = next((b for b in blocks if b.ord == pos), None)
         slug = ref.slug or "???"
         handle = handle_registry.format_handle("oracle", ref.id)
         if block is None:
-            lo = min(b.pos for b in blocks)
-            hi = max(b.pos for b in blocks)
+            lo = min(b.ord for b in blocks)
+            hi = max(b.ord for b in blocks)
             range_hint = f"{lo}..{hi}" if lo != hi else f"{lo}"
             raise NotFound(
                 f"oracle {slug!r} has no entry at position {pos} "
@@ -509,14 +509,14 @@ class OracleHandler(Handler):
         body = f"# oracle {slug}~{pos}\n_{ref.title} - {title}_\n\n{block.text}"
         # Prev/next affordances are cheap and obvious.
         nav: list[tuple[str, str]] = []
-        if pos > 0 and any(b.pos == pos - 1 for b in blocks):
+        if pos > 0 and any(b.ord == pos - 1 for b in blocks):
             nav.append(
                 (
                     f"get(kind='oracle', id='{slug}~{pos - 1}')",
                     "previous entry",
                 )
             )
-        if any(b.pos == pos + 1 for b in blocks):
+        if any(b.ord == pos + 1 for b in blocks):
             nav.append(
                 (
                     f"get(kind='oracle', id='{slug}~{pos + 1}')",
@@ -538,7 +538,7 @@ class OracleHandler(Handler):
         body += render_next_section(nav)
         return Response(body=body)
 
-    def _render_index(self, ref: Ref, blocks: list[Block]) -> Response:
+    def _render_index(self, ref: Ref, blocks: list[ChunkRow]) -> Response:
         """Numbered catalog of every entry — title + first-line preview.
 
         This is the critic's preferred "always-bounded" shape. Rough
@@ -554,16 +554,16 @@ class OracleHandler(Handler):
             f"\n{len(blocks)} entries:",
         ]
         for block in blocks:
-            title = _entry_title(block) or f"(entry {block.pos})"
+            title = _entry_title(block) or f"(entry {block.ord})"
             preview = _first_line(block.text)
             handle = (
                 handle_registry.try_format(ref.kind, block.id, chunk=True)
-                or f"{slug}~{block.pos}"
+                or f"{slug}~{block.ord}"
             )
             if preview and preview != title:
-                lines.append(f"- **{block.pos}. {title}** - {preview}  `{handle}`")
+                lines.append(f"- **{block.ord}. {title}** - {preview}  `{handle}`")
             else:
-                lines.append(f"- **{block.pos}. {title}**  `{handle}`")
+                lines.append(f"- **{block.ord}. {title}**  `{handle}`")
         body = "\n".join(lines)
         body += render_next_section(
             [
@@ -611,7 +611,7 @@ def _parse_oracle_id(id_str: str) -> tuple[str, str | None, str | None]:
     return id_str, None, None
 
 
-def _entry_title(block: Block) -> str | None:
+def _entry_title(block: ChunkRow) -> str | None:
     """Extract a human-readable title for an oracle entry.
 
     Oracle ingest (see ``jobs/ingest_oracles.py``) stores the entry

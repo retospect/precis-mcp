@@ -477,7 +477,7 @@ def _render_detail(
     has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
     verified_at = getattr(ref, "human_verified_at", None)
     stamps = store.ingest_timestamps(ref_id)
-    n_chunks = store.blocks.count_blocks(ref_id)
+    n_chunks = store.chunks.count_chunks(ref_id)
     tags = _detail_tags(store, ref_id)
     initial_tab = initial_tab or ("Meta" if has_triage else "Navigate")
     # Suggest a real cite_key from the (fixed) author + year. Pre-fill the
@@ -759,7 +759,7 @@ async def detail(
     # a bump failure must never 500 the reader. Skipped on the id→slug
     # redirect above (the follow-up slug request does the bump).
     try:
-        store.blocks.bump_salience_for_ref(ref.id)
+        store.chunks.bump_salience_for_ref(ref.id)
         # Also stamp refs.last_viewed_at — a clean, search-hit-free open signal
         # (chunks.last_seen is bumped by search too) that the reading-brief's
         # "reading" lane can migrate onto once enough history has accumulated.
@@ -809,29 +809,29 @@ async def search_in_paper(
         embedder = getattr(hub, "embedder", None)
         vec = embed_query(embedder, q)
         if vec is not None:
-            hits = store.blocks.search_blocks_semantic(
+            hits = store.chunks.search_chunks_semantic(
                 query_vec=vec, scope_ref_id=ref.id, limit=_NAV_LIMIT, max_distance=None
             )
         else:
             m = "keyword"  # embedder down → degrade to a lexical find
     if m != "semantic":
         m = "keyword"
-        hits = store.blocks.search_blocks_lexical(
+        hits = store.chunks.search_chunks_lexical(
             q=q, scope_ref_id=ref.id, limit=_NAV_LIMIT
         )
 
-    ords = [b.pos for b, _r, _s in hits]
-    pages = store.blocks.chunk_pages(ref.id, ords)
+    ords = [b.ord for b, _r, _s in hits]
+    pages = store.chunks.chunk_pages(ref.id, ords)
     # llm-v1 summary per hit for the Semantic-mode row (falls back to the
     # keyword chips client-side when a chunk hasn't been summarised yet).
-    summaries = store.blocks.chunk_summaries_for(ref.id, ords)
+    summaries = store.chunks.chunk_summaries_for(ref.id, ords)
     is_sem = m == "semantic"
     results = [
         {
-            "ord": b.pos,
-            "page": pages.get(b.pos),
+            "ord": b.ord,
+            "page": pages.get(b.ord),
             "text": _nav_snippet(b.text),
-            "summary": summaries.get(b.pos, ""),
+            "summary": summaries.get(b.ord, ""),
             "keywords": b.keywords or [],
             # Semantic: report cosine *similarity* (1 - distance, higher =
             # better) so the best-first ordering reads naturally; keyword:
@@ -880,7 +880,7 @@ async def toc_in_paper(
     segments = build_toc_segments(
         store=store, ref_id=ref.id, handle=handle, scope=scope
     )
-    pages = store.blocks.chunk_pages(ref.id, [seg["lo"] for seg in segments])
+    pages = store.chunks.chunk_pages(ref.id, [seg["lo"] for seg in segments])
     for seg in segments:
         seg["page"] = pages.get(seg["lo"])
     return JSONResponse({"segments": segments})
@@ -900,7 +900,7 @@ async def chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"chunks": []})
-    return JSONResponse({"chunks": store.blocks.chunk_llm_summaries_for_ref(ref.id)})
+    return JSONResponse({"chunks": store.chunks.chunk_llm_summaries_for_ref(ref.id)})
 
 
 @router.get("/{ref_id}/rawchunks")
@@ -911,7 +911,7 @@ async def raw_chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     ``{ord, page, chunk_kind, text}``. For a chunks-only ingest with no
     PDF on disk (e.g. ``heminamino26``) this is the only way to read the
     source text in the UI — Semantic/Keyword/TOC all key off a summary or
-    cluster, never the verbatim body. Reuses ``list_blocks_for_ref`` (the
+    cluster, never the verbatim body. Reuses ``list_chunks_for_ref`` (the
     same store helper the MCP chunk-range reader calls) rather than a new
     chunk-listing query.
     """
@@ -919,14 +919,14 @@ async def raw_chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"chunks": []})
-    blocks = store.blocks.list_blocks_for_ref(ref.id)
-    pages = store.blocks.chunk_pages(ref.id, [b.pos for b in blocks])
+    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    pages = store.chunks.chunk_pages(ref.id, [b.ord for b in blocks])
     return JSONResponse(
         {
             "chunks": [
                 {
-                    "ord": b.pos,
-                    "page": pages.get(b.pos),
+                    "ord": b.ord,
+                    "page": pages.get(b.ord),
                     "chunk_kind": b.chunk_kind,
                     "text": b.text,
                 }

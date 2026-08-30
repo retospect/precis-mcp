@@ -25,7 +25,7 @@ from precis.cli.verify import _resolve_finding_ref_id
 from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers.finding import FindingHandler
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 
 # ── plumbing ────────────────────────────────────────────────────────
 
@@ -38,8 +38,8 @@ def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
     ref = store.insert_ref(
         kind="paper", slug=cite_key, title=f"paper {cite_key}", meta={}
     )
-    store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=0, text=f"body of {cite_key}", meta={})]
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text=f"body of {cite_key}", meta={})]
     )
     return ref.id
 

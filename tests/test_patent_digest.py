@@ -42,9 +42,9 @@ class _Chunk:
 
 
 class _FakeStore:
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
     drafts = property(
         lambda self: self
     )  # sub-store facade shim (see conftest FakeStore)
@@ -65,7 +65,7 @@ class _FakeStore:
         self._styles = styles or {}
         self.stamped: list[tuple[int, dict[str, Any]]] = []
 
-    def list_blocks_for_ref(self, ref_id: int) -> list[_Block]:
+    def list_chunks_for_ref(self, ref_id: int) -> list[_Block]:
         return self._blocks.get(ref_id, [])
 
     def stamp_ref_meta(self, ref_id: int, patch: dict[str, Any]) -> None:

@@ -246,10 +246,10 @@ def test_work_item_from_gripe_maps_fields() -> None:
 # ── gripe intake: gripe_items (fake store, no real DB) ───────────────
 
 
-class _FakeBlock:
-    def __init__(self, chunk_kind: str, pos: int, text: str) -> None:
+class _FakeChunk:
+    def __init__(self, chunk_kind: str, ord_: int, text: str) -> None:
         self.chunk_kind = chunk_kind
-        self.pos = pos
+        self.ord = ord_
         self.text = text
 
 
@@ -261,12 +261,12 @@ class _FakeRef:
 
 
 class _FakeStore:
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(
-        self, refs: list[_FakeRef], blocks_by_ref: dict[int, list[_FakeBlock]]
+        self, refs: list[_FakeRef], blocks_by_ref: dict[int, list[_FakeChunk]]
     ) -> None:
         self.refs = refs
         self.blocks_by_ref = blocks_by_ref
@@ -277,7 +277,7 @@ class _FakeStore:
         self.list_refs_kwargs = kwargs
         return self.refs
 
-    def list_blocks_for_ref(self, ref_id: int) -> list[_FakeBlock]:
+    def list_chunks_for_ref(self, ref_id: int) -> list[_FakeChunk]:
         return self.blocks_by_ref.get(ref_id, [])
 
     def close(self) -> None:
@@ -291,10 +291,10 @@ def test_gripe_items_promotes_diagnosed_and_skips_undiagnosed(
     undiagnosed = _FakeRef(id=200, title="Also bad", prio=5)
     blocks = {
         100: [
-            _FakeBlock("gripe_body", 0, "It broke."),
-            _FakeBlock("gripe_comment", 1, "DIAGNOSIS (auto): root cause is X."),
+            _FakeChunk("gripe_body", 0, "It broke."),
+            _FakeChunk("gripe_comment", 1, "DIAGNOSIS (auto): root cause is X."),
         ],
-        200: [_FakeBlock("gripe_body", 0, "Not diagnosed yet.")],
+        200: [_FakeChunk("gripe_body", 0, "Not diagnosed yet.")],
     }
     fake = _FakeStore([diagnosed, undiagnosed], blocks)
 

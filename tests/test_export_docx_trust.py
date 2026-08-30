@@ -13,7 +13,7 @@ from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
 from precis.handlers.finding import FindingHandler
 from precis.handlers.todo import TodoHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.store.types import Tag
 from precis.utils import handle_registry
 
@@ -26,8 +26,8 @@ def _seed_paper(store: Store, slug: str, title: str = "a paper") -> None:
     store.insert_ref(kind="paper", slug=slug, title=title, provider="manual")
     paper_ref = store.get_ref(kind="paper", id=slug)
     assert paper_ref is not None
-    store.blocks.insert_blocks(
-        paper_ref.id, [BlockInsert(pos=0, text="body", slug="b0")]
+    store.chunks.insert_chunks(
+        paper_ref.id, [ChunkInsert(ord=0, text="body", slug="b0")]
     )
 
 

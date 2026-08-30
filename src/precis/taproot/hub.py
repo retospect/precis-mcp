@@ -34,7 +34,7 @@ from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.ingest.provenance import check_ref_retraction
-from precis.store.types import ActorSlug, BlockInsert, Tag
+from precis.store.types import ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
     STATUS_CANONICAL,
     STATUS_NAMESPACE,
@@ -367,11 +367,11 @@ def mint_hub(
             conn=c,
         )
         _assert_title_round_trip(c, ref.id, intended_title, op="mint_hub")
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0,
+                ChunkInsert(
+                    ord=0,
                     text=claim.sentence.strip(),
                     meta={"chunk_kind": "finding_body"},
                 )
@@ -529,7 +529,7 @@ def refine_claim_sentence(
         _assert_title_round_trip(c, hub_ref_id, new_title, op="refine_claim_sentence")
 
         # (2) finding_body chunk — DELETE+INSERT at ord=0.
-        store.blocks.replace_body_chunk(
+        store.chunks.replace_body_chunk(
             hub_ref_id, stripped, chunk_kind="finding_body", source=set_by, conn=c
         )
 

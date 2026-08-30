@@ -47,4 +47,4 @@ def apply_fold_result(
             },
             conn=conn,
         )
-        store.blocks.upsert_card_combined(protein_ref_id, fold.card_text(), conn=conn)
+        store.chunks.upsert_card_combined(protein_ref_id, fold.card_text(), conn=conn)

@@ -75,7 +75,7 @@ def test_pass_remarks_existing_patent(
     # Markers are back on the chunks.
     kinds = [
         (b.meta or {}).get("patent_block")
-        for b in store.blocks.list_blocks_for_ref(ref_id)
+        for b in store.chunks.list_chunks_for_ref(ref_id)
     ]
     assert kinds == ["description"] * 4 + ["claim"] * 3
 
@@ -97,7 +97,7 @@ def test_dry_run_mutates_nothing(
     assert len(fake_ops.calls) == calls_before
     kinds = [
         (b.meta or {}).get("patent_block")
-        for b in store.blocks.list_blocks_for_ref(ref_id)
+        for b in store.chunks.list_chunks_for_ref(ref_id)
     ]
     assert all(k is None for k in kinds)
 

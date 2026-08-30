@@ -14,7 +14,7 @@ What this module does **not** do:
   pass that landed this module.
 - It does not resolve the selector against a file — ``_find_block`` /
   ``_find_block_by_lines`` live in the handler and know the handler's
-  block type (``MdBlock`` / ``PlaintextBlock`` / ``TexBlock``).
+  block type (``MdChunk`` / ``PlaintextChunk`` / ``TexChunk``).
 - It does not walk the filesystem — the handler owns the root-aware
   path resolution.
 """

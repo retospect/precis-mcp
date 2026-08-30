@@ -19,7 +19,7 @@ from precis.handlers.draft import DraftHandler
 from precis.handlers.folder import FolderHandler
 from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.utils import handle_registry
@@ -38,8 +38,8 @@ def _proj(hub: Hub) -> int:
 def _mk_paper(store: Store, *, slug: str, title: str, text: str) -> tuple[int, int]:
     """Insert a paper with one searchable body chunk. Returns (ref_id, chunk_id)."""
     ref = store.insert_ref(kind="paper", slug=slug, title=title)
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text)])
-    chunk_id = store.blocks.list_blocks_for_ref(ref.id)[0].id
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text)])
+    chunk_id = store.chunks.list_chunks_for_ref(ref.id)[0].id
     return ref.id, chunk_id
 
 

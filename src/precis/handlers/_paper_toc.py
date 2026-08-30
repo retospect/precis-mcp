@@ -18,7 +18,7 @@ Output mirrors v1's structured TOC style — see the live diff in the
 phase 3.5 plan. Range-scoped TOCs (``slug~46..105/toc``) call the
 same renderer with a ``pos_filter`` so drill-down is recursive.
 
-Pure logic — no DB, no IO. The Store hands us a list of ``Block``
+Pure logic — no DB, no IO. The Store hands us a list of ``ChunkRow``
 objects; we slice + render.
 """
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from precis.store.types import Block
+from precis.store.types import ChunkRow
 from precis.utils.next_block import format_next_block
 
 # ---------------------------------------------------------------------------
@@ -165,12 +165,12 @@ def _is_metadata_title(title: str) -> bool:
 class HeadingHit:
     """A detected heading."""
 
-    pos: int  # block.pos
+    pos: int  # block.ord
     title: str
     level: int  # 1 = section, 2 = subsection
 
 
-def detect_heading(block: Block) -> HeadingHit | None:
+def detect_heading(block: ChunkRow) -> HeadingHit | None:
     """Classify a block as H1 / H2 / not-a-heading.
 
     Multi-line blocks are never treated as headings — real headings
@@ -195,7 +195,7 @@ def detect_heading(block: Block) -> HeadingHit | None:
         title = m.group(1).strip()
         if _is_metadata_title(title):
             return None
-        return HeadingHit(pos=block.pos, title=title, level=level)
+        return HeadingHit(pos=block.ord, title=title, level=level)
     return None
 
 
@@ -215,10 +215,10 @@ class Section:
     """1 = section, 2 = subsection. 0 = implicit (no heading)."""
 
     start: int
-    """First ``block.pos`` covered, inclusive."""
+    """First ``block.ord`` covered, inclusive."""
 
     end: int
-    """Last ``block.pos`` covered, inclusive."""
+    """Last ``block.ord`` covered, inclusive."""
 
     children: tuple[Section, ...] = ()
     """Subsections under this section (level=2 under a level=1)."""
@@ -228,7 +228,7 @@ class Section:
         return self.end - self.start + 1
 
 
-def build_toc(blocks: list[Block]) -> list[Section]:
+def build_toc(blocks: list[ChunkRow]) -> list[Section]:
     """Group ``blocks`` into a hierarchical TOC.
 
     Returns a list of top-level :class:`Section` objects. H2 headings
@@ -257,8 +257,8 @@ def build_toc(blocks: list[Block]) -> list[Section]:
             Section(
                 title="",
                 level=0,
-                start=blocks[0].pos,
-                end=blocks[-1].pos,
+                start=blocks[0].ord,
+                end=blocks[-1].ord,
             )
         ]
 
@@ -266,17 +266,17 @@ def build_toc(blocks: list[Block]) -> list[Section]:
     # section is one before the next heading at the same-or-higher
     # level. We do this for level=1 first, then assign level=2s into
     # their parent section.
-    last_pos = blocks[-1].pos
+    last_pos = blocks[-1].ord
 
     # Untitled leading section, if any blocks precede the first heading.
     sections: list[Section] = []
     first_h_pos = headings[0].pos
-    if first_h_pos > blocks[0].pos:
+    if first_h_pos > blocks[0].ord:
         sections.append(
             Section(
                 title="",
                 level=0,
-                start=blocks[0].pos,
+                start=blocks[0].ord,
                 end=first_h_pos - 1,
             )
         )
@@ -391,7 +391,7 @@ def render_toc(
     slug: str,
     toc: list[Section],
     total_blocks: int,
-    blocks_by_pos: dict[int, Block] | None = None,
+    blocks_by_pos: dict[int, ChunkRow] | None = None,
     range_label: str | None = None,
 ) -> str:
     """Render a hierarchical TOC as text.
@@ -400,7 +400,7 @@ def render_toc(
         slug:           paper slug (for header + drill-down hint calls)
         toc:            output of :func:`build_toc` (optionally clipped)
         total_blocks:   block count for the *whole* paper (header line)
-        blocks_by_pos:  optional ``{pos: Block}`` lookup so we can
+        blocks_by_pos:  optional ``{pos: ChunkRow}`` lookup so we can
                         render a short preview from the *first body
                         block of each section. When ``None``, sections
                         render with title only.
@@ -532,7 +532,7 @@ def _collect_rows(
     s: Section,
     *,
     depth: int,
-    blocks_by_pos: dict[int, Block] | None,
+    blocks_by_pos: dict[int, ChunkRow] | None,
 ) -> list[tuple[int, str, str, str]]:
     """Flatten the section tree into row tuples for column alignment."""
     rng = _format_block_range(s.start, s.end)
@@ -547,7 +547,7 @@ def _collect_rows(
 def _section_label(
     s: Section,
     *,
-    blocks_by_pos: dict[int, Block] | None,
+    blocks_by_pos: dict[int, ChunkRow] | None,
 ) -> str:
     """Render the title column for a section row.
 

@@ -66,7 +66,7 @@ from precis.format import render_agent_table
 from precis.utils.segmentation import Segment, segment_dp
 
 if TYPE_CHECKING:
-    from precis.store.protocols import BlockListingStore
+    from precis.store.protocols import ChunkListingStore
 
 #: Below this chunk count, a *top-level* TOC (no scope) renders per-chunk
 #: keywords directly instead of clustering — a short paper is scannable
@@ -116,7 +116,7 @@ _TOPICS_TOP_K = 5
 
 def render_from_store(
     *,
-    store: BlockListingStore,
+    store: ChunkListingStore,
     ref_id: int,
     handle: str,
     kind: str,
@@ -135,7 +135,7 @@ def render_from_store(
     followed by a ``Next:`` drill-in block.
     """
     pos_range = scope
-    blocks = store.blocks.list_blocks_for_ref(ref_id, pos_range=pos_range)
+    blocks = store.chunks.list_chunks_for_ref(ref_id, pos_range=pos_range)
     if not blocks:
         return _empty_body(handle=handle, kind=kind, scope=scope)
 
@@ -158,8 +158,8 @@ def render_from_store(
         bucket = blocks[seg.start : seg.end + 1]
         if not bucket:
             continue
-        lo_pos = bucket[0].pos
-        hi_pos = bucket[-1].pos
+        lo_pos = bucket[0].ord
+        hi_pos = bucket[-1].ord
         row_handle = (
             f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
@@ -191,7 +191,7 @@ def render_from_store(
 
 def build_toc_segments(
     *,
-    store: BlockListingStore,
+    store: ChunkListingStore,
     ref_id: int,
     handle: str,
     scope: tuple[int, int] | None = None,
@@ -217,7 +217,7 @@ def build_toc_segments(
     segment's ``lo`` chunk (a separate ``chunk_pages`` lookup) so a row
     click can jump the viewer. Returns ``[]`` for an empty range.
     """
-    blocks = store.blocks.list_blocks_for_ref(ref_id, pos_range=scope)
+    blocks = store.chunks.list_chunks_for_ref(ref_id, pos_range=scope)
     if not blocks:
         return []
 
@@ -225,9 +225,9 @@ def build_toc_segments(
     if not _should_cluster(n, scope):
         return [
             {
-                "handle": f"{handle}~{b.pos}",
-                "lo": b.pos,
-                "hi": b.pos,
+                "handle": f"{handle}~{b.ord}",
+                "lo": b.ord,
+                "hi": b.ord,
                 "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
                 "n": 1,
             }
@@ -238,9 +238,9 @@ def build_toc_segments(
     if not distances:
         return [
             {
-                "handle": f"{handle}~{b.pos}",
-                "lo": b.pos,
-                "hi": b.pos,
+                "handle": f"{handle}~{b.ord}",
+                "lo": b.ord,
+                "hi": b.ord,
                 "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
                 "n": 1,
             }
@@ -255,8 +255,8 @@ def build_toc_segments(
         bucket = blocks[seg.start : seg.end + 1]
         if not bucket:
             continue
-        lo_pos = bucket[0].pos
-        hi_pos = bucket[-1].pos
+        lo_pos = bucket[0].ord
+        hi_pos = bucket[-1].ord
         seg_handle = (
             f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
@@ -488,7 +488,7 @@ def _render_per_chunk(
     for block in blocks:
         rows.append(
             {
-                "handle": f"{handle}~{block.pos}",
+                "handle": f"{handle}~{block.ord}",
                 "keywords": ", ".join(_top_keywords([block], top_k=_LABEL_TOP_K)),
             }
         )

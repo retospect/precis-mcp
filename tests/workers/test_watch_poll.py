@@ -30,7 +30,7 @@ def _seed_paper(store: Store, doi: str) -> tuple[int, int]:
         identifiers=[("doi", doi)], title="Seed paper", set_by="system"
     )
     cid = _mk_chunk(store, ref_id, "seed body")
-    store.blocks.bump_salience([cid])  # make it the most-due watch seed
+    store.chunks.bump_salience([cid])  # make it the most-due watch seed
     return ref_id, cid
 
 
@@ -87,7 +87,7 @@ def test_idempotent_no_dup_stubs(store: Store) -> None:
     cited = [{"doi": "10.cite/9", "title": "Citer", "year": 2025}]
     assert run_watch_pass(store, fetch_cited_by=lambda _i: cited)["ok"] == 1
     # Re-heat the seed so it's selectable again; same cited_by → no new stub.
-    store.blocks.bump_salience([cid])
+    store.chunks.bump_salience([cid])
     assert run_watch_pass(store, fetch_cited_by=lambda _i: cited)["ok"] == 0
 
 
@@ -95,7 +95,7 @@ def test_seed_rotates_after_poll(store: Store) -> None:
     _, cid = _seed_paper(store, "10.seed/3")
     # Before: due (bumped, so last_seen > last_watched).
     assert _watch_score(store, cid) > 0
-    assert store.blocks.select_salient("watch", kinds=("paper",))[0] == cid
+    assert store.chunks.select_salient("watch", kinds=("paper",))[0] == cid
     run_watch_pass(store, fetch_cited_by=lambda _i: [])
     # After: rotated out (last_watched advanced past last_seen → score <= 0).
     assert _watch_score(store, cid) <= 0

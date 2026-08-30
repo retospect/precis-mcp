@@ -68,7 +68,7 @@ class TestGraduation:
         assert any(str(t) == "needs-experiment" for t in store.tags_for(sid))
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any(
@@ -196,7 +196,7 @@ class TestBarrierQualityGate:
         assert not any(str(t) == "needs-experiment" for t in store.tags_for(sid))
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any(
@@ -285,7 +285,7 @@ class TestTierLadderGraduationGate:
         assert not any(str(t) == "needs-experiment" for t in store.tags_for(sid))
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any(

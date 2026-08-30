@@ -309,7 +309,7 @@ class CitationHandler(NumericRefHandler):
             # copy of the span at source_handle (paper:<slug>~N), which is
             # already an embedded chunk — re-embedding it would just
             # duplicate that vector.
-            self.store.blocks.upsert_card_combined(ref.id, text.strip(), conn=conn)
+            self.store.chunks.upsert_card_combined(ref.id, text.strip(), conn=conn)
             apply_tag_ops(
                 self.store, self.kind, ref.id, tags=tags, untags=None, conn=conn
             )

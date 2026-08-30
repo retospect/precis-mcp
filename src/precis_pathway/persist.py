@@ -127,7 +127,7 @@ def persist_result(
 
     def _do(c: Any) -> None:
         store.stamp_ref_meta(ref_id, meta, conn=c)
-        store.blocks.replace_body_chunk(
+        store.chunks.replace_body_chunk(
             ref_id, artifact["methods_md"], chunk_kind=BODY_KIND, conn=c
         )
 

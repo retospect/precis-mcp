@@ -1604,20 +1604,20 @@ def _auto_close_marker_gripe(
     then soft-delete. Mirrors ``handlers/gripe.py``'s ``_append_comment``
     (next_pos computed before the write tx) + delete path at the SQL
     level."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
-    existing = store.blocks.list_blocks_for_ref(gripe_id)
+    existing = store.chunks.list_chunks_for_ref(gripe_id)
     next_pos = len(existing)
     comment = (
         f"auto-closed by health_digest: condition {fingerprint} returned "
         f"fresh at {datetime.now(UTC).isoformat()}"
     )
     with store.tx() as conn:
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             gripe_id,
             [
-                BlockInsert(
-                    pos=next_pos, text=comment, meta={"chunk_kind": "gripe_comment"}
+                ChunkInsert(
+                    ord=next_pos, text=comment, meta={"chunk_kind": "gripe_comment"}
                 )
             ],
             conn=conn,
@@ -1648,7 +1648,7 @@ def _file_router_gripe(
     worker-side ref-creation pattern (not ``file_gripe_readonly`` — that
     SQL function exists so an ``agent_ro`` connection can still file a
     gripe; this background pass already runs write-capable)."""
-    from precis.store.types import BlockInsert, Tag
+    from precis.store.types import ChunkInsert, Tag
 
     cls = _router_class(group)
     nudge = _router_nudge(store, cls, fingerprint)
@@ -1667,9 +1667,9 @@ def _file_router_gripe(
         ref = store.insert_ref(
             kind="gripe", slug=None, title=gripe_title, meta={}, conn=conn
         )
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
-            [BlockInsert(pos=0, text=body, meta={"chunk_kind": "gripe_body"})],
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "gripe_body"})],
             conn=conn,
         )
         store.add_tag(

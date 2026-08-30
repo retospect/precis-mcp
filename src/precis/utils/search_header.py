@@ -17,7 +17,7 @@ Usage::
 
     line = format_search_headline(
         n_returned=len(hits),
-        total=store.blocks.count_blocks_lexical(q=q, kind='paper', ...),
+        total=store.chunks.count_chunks_lexical(q=q, kind='paper', ...),
         noun='paper hit',
         query=q,
     )

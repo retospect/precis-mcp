@@ -265,7 +265,7 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
                 f"link target {target!r} has negative block pos {candidate}",
                 next="block positions are zero-indexed non-negative ints",
             )
-        block = store.blocks.get_block(ref.id, pos=candidate)
+        block = store.chunks.get_chunk(ref.id, pos=candidate)
         if block is None:
             raise NotFound(
                 f"link target {target!r} - no block at pos={candidate} in {kind}:{identifier}",
@@ -275,14 +275,14 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
     else:
         # Block slug. Block slugs are unique within a ref
         # (UNIQUE constraint on `(ref_id, slug)`).
-        block = store.blocks.get_block(ref.id, slug=selector)
+        block = store.chunks.get_chunk(ref.id, slug=selector)
         if block is None:
             raise NotFound(
                 f"link target {target!r} - no block with slug={selector!r} "
                 f"in {kind}:{identifier}",
                 next=f"check available blocks: get(kind={kind!r}, id={identifier!r})",
             )
-        pos = block.pos
+        pos = block.ord
 
     return LinkTarget(
         ref_id=ref.id, pos=pos, kind=kind, raw=target, redirected_from=redirected_from

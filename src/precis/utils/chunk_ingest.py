@@ -1,11 +1,11 @@
-"""Shared *parsed-blocks → BlockInsert with embeddings* pipeline.
+"""Shared *parsed-blocks → ChunkInsert with embeddings* pipeline.
 
 Two parser families produce parsed blocks today:
 
-- :func:`precis.utils.md_parse.parse_markdown` → :class:`MdBlock`
+- :func:`precis.utils.md_parse.parse_markdown` → :class:`MdChunk`
   (typed structure: heading / paragraph / list / table / code).
 - :func:`precis.utils.plaintext_parse.parse_plaintext` →
-  :class:`PlaintextBlock` (paragraph splitting only).
+  :class:`PlaintextChunk` (paragraph splitting only).
 
 Three handlers feed those into the store today:
 
@@ -14,7 +14,7 @@ Three handlers feed those into the store today:
 - :class:`_PerplexityBase` (API / imported markdown body → blocks).
 
 Before this module each handler had its own *embed-then-build-
-BlockInsert-list* glue (~30 lines × 4 sites). This helper owns
+ChunkInsert-list* glue (~30 lines × 4 sites). This helper owns
 that step so each call site stays focused on its own parsing +
 meta-extraction.
 
@@ -46,15 +46,15 @@ from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from precis.embedder import Embedder
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 
-class ParsedTextBlock(Protocol):
+class ParsedTextChunk(Protocol):
     """Structural protocol for any parsed-block type that this helper
     can ingest.
 
-    Both :class:`precis.utils.md_parse.MdBlock` and
-    :class:`precis.utils.plaintext_parse.PlaintextBlock` satisfy this
+    Both :class:`precis.utils.md_parse.MdChunk` and
+    :class:`precis.utils.plaintext_parse.PlaintextChunk` satisfy this
     protocol structurally — no explicit inheritance needed. Declared as
     read-only properties (not plain attributes) because both concrete
     block types are frozen dataclasses; a plain-attribute protocol
@@ -72,31 +72,31 @@ class ParsedTextBlock(Protocol):
 
 
 # Bound type param so ``meta_for`` stays in agreement with the concrete
-# block type passed in.  Without this, ``Callable[[ParsedTextBlock],
+# block type passed in.  Without this, ``Callable[[ParsedTextChunk],
 # ...]`` is contravariant on input and *rejects* per-kind closures
-# like ``Callable[[MdBlock], ...]`` even though every MdBlock *is* a
-# ParsedTextBlock.
-def to_block_inserts[BlockT: ParsedTextBlock](
+# like ``Callable[[MdChunk], ...]`` even though every MdChunk *is* a
+# ParsedTextChunk.
+def to_chunk_inserts[BlockT: ParsedTextChunk](
     blocks: Sequence[BlockT],
     *,
     embedder: Embedder | None,
     meta_for: Callable[[BlockT], dict[str, Any]] | None = None,
-) -> list[BlockInsert]:
-    """Convert parsed text blocks into :class:`BlockInsert` payloads.
+) -> list[ChunkInsert]:
+    """Convert parsed text blocks into :class:`ChunkInsert` payloads.
 
     Args:
         blocks: Sequence of parsed blocks. Each must expose ``pos``,
-            ``slug`` and ``text`` (see :class:`ParsedTextBlock`).
+            ``slug`` and ``text`` (see :class:`ParsedTextChunk`).
         embedder: Active embedder, or ``None``. When ``None``,
-            :class:`BlockInsert` rows are produced with
+            :class:`ChunkInsert` rows are produced with
             ``embedding=None`` so callers / tests that don't need
             vectors can skip the cost.
         meta_for: Optional per-block metadata builder. Called with
             each parsed block; the returned dict lands on
-            :attr:`BlockInsert.meta`. When ``None``, meta is ``{}``.
+            :attr:`ChunkInsert.meta`. When ``None``, meta is ``{}``.
 
     Returns:
-        A list of :class:`BlockInsert` rows in the same order as
+        A list of :class:`ChunkInsert` rows in the same order as
         the input. Empty input → empty list (no embedder call).
     """
     if not blocks:
@@ -109,8 +109,8 @@ def to_block_inserts[BlockT: ParsedTextBlock](
         embeddings = embedder.embed([b.text for b in blocks])
 
     return [
-        BlockInsert(
-            pos=b.pos,
+        ChunkInsert(
+            ord=b.pos,
             slug=b.slug,
             text=b.text,
             embedding=embeddings[i] if embeddings else None,
@@ -120,4 +120,4 @@ def to_block_inserts[BlockT: ParsedTextBlock](
     ]
 
 
-__all__ = ["ParsedTextBlock", "to_block_inserts"]
+__all__ = ["ParsedTextChunk", "to_chunk_inserts"]

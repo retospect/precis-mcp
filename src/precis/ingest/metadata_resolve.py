@@ -200,7 +200,7 @@ def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
     t = (ref.title or "").strip()
     if t and not is_garbage_title(t) and not is_pii(t):
         return [t], True
-    blocks = store.blocks.list_blocks_for_ref(
+    blocks = store.chunks.list_chunks_for_ref(
         ref.id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1)
     )
     seen: set[str] = set()

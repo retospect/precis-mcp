@@ -2,7 +2,7 @@
 
 Pure logic. No DB, no IO.
 
-Builds a synthetic list of `Block` rows (different heading patterns,
+Builds a synthetic list of `ChunkRow` rows (different heading patterns,
 different orderings) and verifies the section tree + rendering.
 """
 
@@ -17,22 +17,22 @@ from precis.handlers._paper_toc import (
     filter_toc_to_range,
     render_toc,
 )
-from precis.store.types import Block
+from precis.store.types import ChunkRow
 
 
-def _make_block(pos: int, text: str) -> Block:
-    """Construct a minimal Block for testing.
+def _make_block(pos: int, text: str) -> ChunkRow:
+    """Construct a minimal ChunkRow for testing.
 
-    All other Block fields are required by the dataclass but not by the
+    All other ChunkRow fields are required by the dataclass but not by the
     TOC code; we fill plausible placeholders.
     """
     from datetime import datetime
 
     now = datetime.now(UTC)
-    return Block(
+    return ChunkRow(
         id=pos + 1,
         ref_id=1,
-        pos=pos,
+        ord=pos,
         slug=None,
         text=text,
         token_count=len(text.split()),
@@ -378,7 +378,7 @@ class TestRenderToc:
             slug="x",
             toc=toc,
             total_blocks=4,
-            blocks_by_pos={b.pos: b for b in blocks},
+            blocks_by_pos={b.ord: b for b in blocks},
         )
         # The implicit leading section's row should include a preview
         # from block 0.

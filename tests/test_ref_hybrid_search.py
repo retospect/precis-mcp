@@ -22,7 +22,7 @@ from typing import Any
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers.finding import FindingHandler
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils.ref_hybrid import fused_ref_hits
 
 
@@ -37,9 +37,9 @@ def _seed_finding(store, *, title: str, body: str) -> int:
     produced a hit.
     """
     ref = store.insert_ref(kind="finding", slug=None, title=title, meta={})
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=body, meta={"chunk_kind": "finding_body"})],
+        [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "finding_body"})],
     )
     return ref.id
 

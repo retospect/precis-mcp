@@ -7,7 +7,8 @@ Three independent checks:
    sections resolves to a real file (a dead pointer is worse than none —
    it sends the reader nowhere and nobody notices until they follow it).
 2. A reserved homonym (``Tier``/``Finding``/``Candidate``/``Hub``/``Block``/
-   ``GateResult``) may only be a ``class`` name in its allowlisted module(s)
+   ``Chunk``/``ChunkRow``/``GateResult``) may only be a ``class`` name in
+   its allowlisted module(s)
    — new code should coin a fresh word rather than collide with one the
    glossary already routes.
 3. A retired identifier/phrase (superseded by the vocab-compaction stages)
@@ -113,9 +114,16 @@ _RESERVED_CLASS_ALLOWLIST: dict[str, set[str]] = {
     "Finding": set(),  # the `finding` ref kind owns the word outright
     "Candidate": {"src/precis/quest/frontier.py"},
     "Hub": {"src/precis/dispatch.py"},
-    # legacy-until-stage-B (store.blocks -> chunks); prompt Block is a
-    # separate pending rename decision, not yet folded into stage B.
-    "Block": {"src/precis/store/types.py", "src/precis/utils/prompt/model.py"},
+    # stage B (store.blocks -> chunks) renamed the store type to `ChunkRow`;
+    # prompt Block is a separate pending rename decision, not folded in.
+    "Block": {"src/precis/utils/prompt/model.py"},
+    # parse-fragment types, pre-existing (not part of stage B's chunk facade
+    # rename — see docs/backlog/vocab-compaction-stages.md stage B note).
+    "Chunk": {
+        "src/precis/skill_index/chunker.py",
+        "src/precis/draftimport/tex.py",
+    },
+    "ChunkRow": {"src/precis/store/types.py"},
     # known pair, grandfathered — a future pass splits narrative_budget's
     # rewrite-gate result from the python-write-tool's edit-gate result.
     "GateResult": {

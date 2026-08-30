@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from precis.workers.base import ChunkRow
+from precis.workers.base import ClaimedChunk
 from precis.workers.embed import EmbedHandler
 from precis.workers.runner import (
     DRAIN_FILE_ENV,
@@ -47,14 +47,14 @@ class _CountingEmbedHandler(EmbedHandler):
         self.failures: list[int] = []
         self._fail_on = fail_on or set()
 
-    def process(self, row: ChunkRow) -> list[float]:
+    def process(self, row: ClaimedChunk) -> list[float]:
         self.processed.append(row.chunk_id)
         if row.chunk_id in self._fail_on:
             self.failures.append(row.chunk_id)
             raise RuntimeError(f"forced failure on chunk {row.chunk_id}")
         return super().process(row)
 
-    def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+    def process_batch(self, rows: list[ClaimedChunk]) -> list[object]:
         # Per-row dispatch so the test handler's `process` override
         # observes every claimed chunk (the bulk embed path would
         # never call it).
@@ -144,7 +144,7 @@ class TestRunHandlerOnce:
             def __init__(self) -> None:
                 super().__init__(make_mock_bge_m3())
 
-            def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+            def process_batch(self, rows: list[ClaimedChunk]) -> list[object]:
                 raise EmbedderUnavailable("all embedder endpoints failed")
 
         h = _DownHandler()

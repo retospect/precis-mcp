@@ -26,7 +26,7 @@ import pytest
 
 from precis.runtime import PrecisRuntime
 from precis.store import Store
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.tools import core as tools_core
 
 
@@ -51,11 +51,11 @@ def _mint_provenance_handle(store: Store) -> str:
         ref = store.insert_ref(
             kind="memory", slug=None, title="provenance note", meta={}, conn=conn
         )
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0,
+                ChunkInsert(
+                    ord=0,
                     text="the note this claim came from",
                     meta={"chunk_kind": "memory_body"},
                 )

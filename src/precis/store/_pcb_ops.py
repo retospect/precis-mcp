@@ -47,7 +47,7 @@ class PcbMixin:
     insert_ref: Any
     get_ref: Any
     soft_delete_ref: Any  # RefsMixin — the shared ref soft-delete
-    blocks: Any  # BlockStore sub-store — the shared card_combined write
+    chunks: Any  # ChunkStore sub-store — the shared card_combined write
 
     # -- write ----------------------------------------------------------
     def pcb_apply(
@@ -206,7 +206,7 @@ class PcbMixin:
             self._pcb_insert_feature(conn, ref.id, board_id, ft)
             counts["features"] += 1
 
-        self.blocks._replace_card_combined(
+        self.chunks._replace_card_combined(
             conn,
             ref_id=ref.id,
             card_text=self._pcb_card_text(conn, ref.id, title),

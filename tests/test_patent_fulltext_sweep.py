@@ -152,7 +152,7 @@ class TestSweepSuccess:
         tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
         assert AWAITING_FULLTEXT_TAG not in tag_values
         # Blocks actually landed.
-        assert store.blocks.count_blocks(ref.id) == o.blocks_added
+        assert store.chunks.count_chunks(ref.id) == o.blocks_added
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +354,7 @@ class TestSweepDryRun:
         assert ref_after.meta.get("has_description") is False
         assert ref_after.meta.get("has_claims") is False
         assert ref_after.meta.get("fulltext_retry_count") == retry_count_before
-        assert store.blocks.count_blocks(ref_after.id) == 0
+        assert store.chunks.count_chunks(ref_after.id) == 0
 
 
 # ---------------------------------------------------------------------------

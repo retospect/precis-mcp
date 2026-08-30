@@ -140,7 +140,7 @@ class ChunksForToc:
     back to H2 structure or a flat listing in that case.
 
     ``positions`` is the canonical address that each chunk has on
-    the kind's surface — for papers, ``block.pos``; for skills,
+    the kind's surface — for papers, ``block.ord``; for skills,
     just the 0-based list index. Used by the renderer to emit
     ``slug~N`` handles that resolve correctly through the kind's
     ``get(id=...)``. Defaults to ``0..N-1`` when omitted, which

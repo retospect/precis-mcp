@@ -49,7 +49,7 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.store.types import Tag
 from precis.utils import handle_registry
-from precis.utils.block_ingest import to_block_inserts
+from precis.utils.chunk_ingest import to_chunk_inserts
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -73,7 +73,7 @@ from precis.utils.md_parse import (
 )
 from precis.utils.next_block import render_next_section
 from precis.utils.plaintext_parse import (
-    PlaintextBlock,
+    PlaintextChunk,
     parse_plaintext,
 )
 from precis.utils.search_header import detect_score_cliff, format_search_headline
@@ -261,19 +261,19 @@ class PlaintextHandler(Handler):
     _SUPPORTED_VIEWS: ClassVar[tuple[str, ...]] = ("raw",)
 
     # ── parser hooks (overrideable by subclasses) ─────────────────
-    def _parse_blocks(self, content: str) -> list[PlaintextBlock]:
+    def _parse_blocks(self, content: str) -> list[PlaintextChunk]:
         """Parse ``content`` into a list of paragraph-shaped blocks.
 
         Plaintext: blank-line splitting via
         :func:`precis.utils.plaintext_parse.parse_plaintext`. Subclasses
         (e.g. :class:`TexHandler`) override to inject their own block
         grammar; the return type may widen to a subclass of
-        :class:`PlaintextBlock` as long as the new fields are
+        :class:`PlaintextChunk` as long as the new fields are
         additive.
         """
         return parse_plaintext(content)
 
-    def _block_meta(self, block: PlaintextBlock) -> dict[str, Any]:
+    def _block_meta(self, block: PlaintextChunk) -> dict[str, Any]:
         """Per-block metadata stored on the row's ``meta`` JSON.
 
         Plaintext records only the line span; subclasses extend with
@@ -335,7 +335,7 @@ class PlaintextHandler(Handler):
             lines.append("## Paragraphs (first few)")
             for b in blocks[:5]:
                 preview = _excerpt(b.text, limit=60)
-                lines.append(f"- ~{b.slug or b.pos}: {preview}")
+                lines.append(f"- ~{b.slug or b.ord}: {preview}")
             if len(blocks) > 5:
                 lines.append(f"  … and {len(blocks) - 5} more (see /raw)")
         return lines
@@ -491,7 +491,7 @@ class PlaintextHandler(Handler):
 
         query_vec = query_vec_for(self.embedder, q, mode)
 
-        hits = self.store.blocks.search_blocks(
+        hits = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -517,7 +517,7 @@ class PlaintextHandler(Handler):
             )
             return Response(body=body)
 
-        total = self.store.blocks.count_blocks_lexical(
+        total = self.store.chunks.count_chunks_lexical(
             q=q, kind=self._KIND, scope_ref_id=scope_ref_id
         )
         # Detect a score cliff — unique-literal queries
@@ -540,7 +540,7 @@ class PlaintextHandler(Handler):
             slug = ref.slug or "???"
             handle = (
                 handle_registry.try_format(ref.kind, block.id, chunk=True)
-                or f"{slug}~{block.slug or block.pos}"
+                or f"{slug}~{block.slug or block.ord}"
             )
             preview = _excerpt(block.text)
             lines.append(f"\n## {handle}  (score={score:.4f})")
@@ -567,7 +567,7 @@ class PlaintextHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.blocks.search_blocks(
+        triples = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -762,7 +762,7 @@ class PlaintextHandler(Handler):
         assert ref is not None
         if tags:
             apply_tag_ops(self.store, self._KIND, ref.id, tags=tags, untags=None)
-        n = self.store.blocks.count_blocks(ref.id)
+        n = self.store.chunks.count_chunks(ref.id)
         suffix = f" [commit={commit_sha[:8]}]" if commit_sha else ""
         return Response(
             body=f"created {self._KIND} {slug!r} ({n} paragraph(s)){suffix}"
@@ -837,12 +837,12 @@ class PlaintextHandler(Handler):
         # Unified response — name slug, block pos, block slug, and
         # line range so chained edits don't need a follow-up
         # /toc round-trip (MCP critic MAJOR-C 2026-05-02).
-        last = _last_block(self.store.blocks.list_blocks_for_ref(ref.id))
+        last = _last_block(self.store.chunks.list_chunks_for_ref(ref.id))
         return Response(
             body=format_write_result(
                 verb="appended",
                 file_slug=slug,
-                block_pos=last.pos if last else None,
+                block_pos=last.ord if last else None,
                 block_slug=last.slug if last else None,
                 line_start=(last.meta or {}).get("line_start") if last else None,
                 line_end=(last.meta or {}).get("line_end") if last else None,
@@ -906,7 +906,7 @@ class PlaintextHandler(Handler):
         # Recover (slug, pos, lines) of the post-replace block —
         # line_start survives equal/shorter splices; pos is the
         # fallback.
-        fresh = self.store.blocks.list_blocks_for_ref(ref.id)
+        fresh = self.store.chunks.list_chunks_for_ref(ref.id)
         new_block = _block_at_line(fresh, target.line_start) or _block_at_pos(
             fresh, target.pos
         )
@@ -914,7 +914,7 @@ class PlaintextHandler(Handler):
             body=format_write_result(
                 verb="replaced",
                 file_slug=slug,
-                block_pos=new_block.pos if new_block else target.pos,
+                block_pos=new_block.ord if new_block else target.pos,
                 block_slug=new_block.slug if new_block else target.slug,
                 line_start=(new_block.meta or {}).get("line_start")
                 if new_block
@@ -1100,7 +1100,7 @@ class PlaintextHandler(Handler):
         # multiple locations that may cross block boundaries.
         spans = result.edited_spans or ()
         verb = "edited" if op_kind == "edit" else "inserted"
-        fresh = self.store.blocks.list_blocks_for_ref(ref.id)
+        fresh = self.store.chunks.list_chunks_for_ref(ref.id)
         if spans:
             first_line = spans[0][0]
             last_line = spans[-1][1]
@@ -1113,7 +1113,7 @@ class PlaintextHandler(Handler):
             body=format_write_result(
                 verb=verb,
                 file_slug=slug,
-                block_pos=anchor_block.pos if anchor_block else None,
+                block_pos=anchor_block.ord if anchor_block else None,
                 block_slug=anchor_block.slug if anchor_block else None,
                 line_start=first_line or None,
                 line_end=last_line or None,
@@ -1411,7 +1411,7 @@ class PlaintextHandler(Handler):
             "size": st.st_size,
         }
 
-        inserts = to_block_inserts(
+        inserts = to_chunk_inserts(
             pt_blocks, embedder=self.embedder, meta_for=self._block_meta
         )
 
@@ -1427,7 +1427,7 @@ class PlaintextHandler(Handler):
             else:
                 self.store.update_ref(ref.id, title=title, meta_patch=new_meta)
 
-            self.store.blocks.insert_blocks(ref.id, inserts, replace=True, conn=conn)
+            self.store.chunks.insert_chunks(ref.id, inserts, replace=True, conn=conn)
 
         fresh = self.store.get_ref(kind=self._KIND, id=slug)
         if fresh is not None:
@@ -1532,7 +1532,7 @@ class PlaintextHandler(Handler):
 
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
-        n_blocks = self.store.blocks.count_blocks(ref.id)
+        n_blocks = self.store.chunks.count_chunks(ref.id)
         rel = meta.get("path", "?")
         size = meta.get("size") or "?"
         # "paragraphs" is the plaintext-native noun. Subclasses that
@@ -1552,7 +1552,7 @@ class PlaintextHandler(Handler):
             lines.append(f"mtime:       {meta['mtime_iso']}")
 
         # Block-preview pane — subclasses can inject headings / TOC.
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         lines.extend(self._overview_body_extras(ref, blocks))
 
         body = "\n".join(lines)
@@ -1594,7 +1594,7 @@ class PlaintextHandler(Handler):
                     f"unparseable pos selector: {sel.value!r}",
                     next=f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
                 ) from exc
-            block = self.store.blocks.get_block(ref.id, pos=pos)
+            block = self.store.chunks.get_chunk(ref.id, pos=pos)
             if block is None:
                 raise NotFound(
                     f"no {self._block_noun()} at ~{pos} in {ref.slug!r}",
@@ -1603,12 +1603,12 @@ class PlaintextHandler(Handler):
                     ),
                 )
         else:
-            block = self.store.blocks.get_block(ref.id, slug=sel.value)
+            block = self.store.chunks.get_chunk(ref.id, slug=sel.value)
             if block is None:
                 # Fallback 1: unique prefix shorthand — recover from
                 # ``inserted-by-probe-marker`` → full hash-suffixed
                 # slug (MCP critic MINOR-C 2026-05-02).
-                all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+                all_blocks = self.store.chunks.list_chunks_for_ref(ref.id)
                 prefix_hits = _prefix_shorthand_matches(all_blocks, sel.value)
                 if len(prefix_hits) == 1:
                     block = next(b for b in all_blocks if b.slug == prefix_hits[0])
@@ -1640,7 +1640,7 @@ class PlaintextHandler(Handler):
                     )
         handle = (
             handle_registry.try_format(self._KIND, block.id, chunk=True)
-            or f"{ref.slug}~{block.slug or block.pos}"
+            or f"{ref.slug}~{block.slug or block.ord}"
         )
         record_handle = handle_registry.format_handle(self._KIND, ref.id)
         body = f"# {handle}\n{block.text}"
@@ -1681,7 +1681,7 @@ class PlaintextHandler(Handler):
         2026-05-02). Each matching block's header cites the
         canonical slug so follow-up calls can move to Track B.
         """
-        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         matched: list[Any] = []
         for b in all_blocks:
             meta = b.meta or {}
@@ -1701,16 +1701,16 @@ class PlaintextHandler(Handler):
             meta = b.meta or {}
             b_start = int(meta.get("line_start") or 0)
             b_end = int(meta.get("line_end") or 0)
-            name = b.slug or str(b.pos)
+            name = b.slug or str(b.ord)
             line_str = f"L{b_start}-{b_end}" if b_end != b_start else f"L{b_start}"
             handle = (
                 handle_registry.try_format(self._KIND, b.id, chunk=True)
                 or f"{ref.slug}~{name}"
             )
-            pieces.append(f"# {handle}  (block {b.pos}, {line_str})\n{b.text}")
+            pieces.append(f"# {handle}  (block {b.ord}, {line_str})\n{b.text}")
         body = "\n\n".join(pieces)
         first = matched[0]
-        first_name = first.slug or str(first.pos)
+        first_name = first.slug or str(first.ord)
         body += render_next_section(
             [
                 (
@@ -1974,8 +1974,8 @@ def _find_block(blocks: Sequence[Any], sel: _BlockSel) -> Any | None:
     """Find a block matching ``sel`` in ``blocks``.
 
     Accepts any block dataclass with ``pos`` / ``slug`` / ``line_start`` /
-    ``line_end`` fields (``PlaintextBlock``, ``TexBlock``,
-    :class:`precis.utils.md_parse.MdBlock`) so the same helper covers
+    ``line_end`` fields (``PlaintextChunk``, ``TexChunk``,
+    :class:`precis.utils.md_parse.MdChunk`) so the same helper covers
     every prose-file subclass.
 
     Slug resolution order (shortest-works-first for small models):
@@ -2038,10 +2038,10 @@ def _intersects(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
 
 
 def _last_block(blocks: Sequence[Any]) -> Any | None:
-    """Highest-pos block, or ``None`` if the list is empty."""
+    """Highest-ord block, or ``None`` if the list is empty."""
     if not blocks:
         return None
-    return max(blocks, key=lambda b: b.pos)
+    return max(blocks, key=lambda b: b.ord)
 
 
 def _block_at_line(blocks: Sequence[Any], line: int) -> Any | None:
@@ -2063,14 +2063,14 @@ def _block_at_line(blocks: Sequence[Any], line: int) -> Any | None:
 
 
 def _block_at_pos(blocks: Sequence[Any], pos: int) -> Any | None:
-    """Block with exact ``pos``, or ``None``."""
+    """Block with exact ``ord``, or ``None``."""
     for b in blocks:
-        if b.pos == pos:
+        if b.ord == pos:
             return b
     return None
 
 
-def _derive_title(blocks: list[PlaintextBlock], *, fallback: str) -> str:
+def _derive_title(blocks: list[PlaintextChunk], *, fallback: str) -> str:
     """Title is the first line of the first paragraph, truncated."""
     if not blocks:
         return fallback

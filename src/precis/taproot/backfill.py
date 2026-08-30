@@ -610,7 +610,7 @@ def _plan_pa_group(
       whole-paper claims with no single grounding passage.
     """
     fetched = [
-        (h, rid) for (h, rid) in supporters if store.blocks.count_blocks(rid) > 0
+        (h, rid) for (h, rid) in supporters if store.chunks.count_chunks(rid) > 0
     ]
     if len(fetched) < len(supporters):
         # All stubs, or a mixed run — either way skip with no write (a mixed

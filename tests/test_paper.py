@@ -13,7 +13,7 @@ from precis.handlers.draft import DraftHandler
 from precis.handlers.paper import PaperHandler, _maybe_resolve_doi, _parse_paper_id
 from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.store.types import Tag
 from precis.utils import handle_registry
 from tests.conftest import chunk_handle, record_handle
@@ -216,10 +216,10 @@ def _seed_paper(
         store.insert_ref_identifiers(ref.id, [("doi", doi, "manual")])
     if blocks is None:
         blocks = ["Introduction.", "Methods.", "Results.", "Discussion."]
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(pos=i, text=t, embedding=e.embed_one(t))
+            ChunkInsert(ord=i, text=t, embedding=e.embed_one(t))
             for i, t in enumerate(blocks)
         ],
     )

@@ -14,11 +14,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from precis.utils.block_slug import mint_block_slug
+from precis.utils.chunk_slug import mint_chunk_slug
 
 
 @dataclass(frozen=True, slots=True)
-class PlaintextBlock:
+class PlaintextChunk:
     """One paragraph in a plaintext file."""
 
     pos: int
@@ -37,7 +37,7 @@ class PlaintextBlock:
     """1-indexed source line where this paragraph ends (inclusive)."""
 
 
-def parse_plaintext(content: str) -> list[PlaintextBlock]:
+def parse_plaintext(content: str) -> list[PlaintextChunk]:
     """Split a plaintext file into paragraph blocks.
 
     Rules:
@@ -52,7 +52,7 @@ def parse_plaintext(content: str) -> list[PlaintextBlock]:
     """
     lines = content.splitlines()
     n = len(lines)
-    out: list[PlaintextBlock] = []
+    out: list[PlaintextChunk] = []
     taken: set[str] = set()
     i = 0
     pos = 0
@@ -72,7 +72,7 @@ def parse_plaintext(content: str) -> list[PlaintextBlock]:
         text = "\n".join(para_lines)
         slug = _mint_slug(text, taken)
         out.append(
-            PlaintextBlock(
+            PlaintextChunk(
                 pos=pos,
                 slug=slug,
                 text=text,
@@ -88,15 +88,15 @@ def parse_plaintext(content: str) -> list[PlaintextBlock]:
 def _mint_slug(text: str, taken: set[str]) -> str:
     """Return a stable, unique slug for a paragraph.
 
-    Thin adapter over :func:`precis.utils.block_slug.mint_block_slug`
+    Thin adapter over :func:`precis.utils.chunk_slug.mint_chunk_slug`
     (first 5 words + 6-char content hash) — same shape as markdown's
     paragraph slug minter so downstream code and agent muscle memory
     carry over.
     """
-    return mint_block_slug(text, taken)
+    return mint_chunk_slug(text, taken)
 
 
-__all__ = ["PlaintextBlock", "parse_plaintext"]
+__all__ = ["PlaintextChunk", "parse_plaintext"]
 
 
 # ---------------------------------------------------------------------------

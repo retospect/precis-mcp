@@ -16,7 +16,7 @@ Drives the fetch-as-ingest flow:
         ↓
     Store.insert_ref('patent', slug=..., title=...)
         ↓
-    Store.blocks.insert_blocks([description blocks, claim blocks])  ← FULL path only,
+    Store.chunks.insert_chunks([description blocks, claim blocks])  ← FULL path only,
         embedding=None on every block; the embed:bge-m3 worker fills
         chunks.embedding lazily off the derived queue (ingest never embeds
         inline — see AGENTS.md's ingest guarantees)
@@ -79,7 +79,7 @@ from precis.handlers._patent_slug import DocDbId, parse_docdb_id
 from precis.handlers._patent_xml import ParsedPatent, parse_patent
 from precis.ingest.blocks import ParsedBlock, classify_density
 from precis.store import Ref, Store, Tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 log = logging.getLogger(__name__)
 
@@ -289,7 +289,7 @@ def ingest_patent(
                       matches the rest of the kinds.
         force:        Re-fetch and **re-ingest an existing** patent —
                       re-run OPS + ``parse_patent`` and DELETE+re-INSERT
-                      the ref's blocks (``insert_blocks(replace=True)``)
+                      the ref's blocks (``insert_chunks(replace=True)``)
                       so they carry the current block metadata, notably
                       the slice-1 ``patent_block`` claim markers the
                       freedom-to-operate digest reads
@@ -317,7 +317,7 @@ def ingest_patent(
             ref_id=existing.id,
             slug=slug,
             docdb=parsed_id,
-            block_count=store.blocks.count_blocks(existing.id),
+            block_count=store.chunks.count_chunks(existing.id),
             inserted=False,
             bytes_fetched=0,
         )
@@ -506,7 +506,7 @@ def ingest_patent(
             ref_id=existing.id,  # type: ignore[union-attr]
             slug=slug,
             docdb=parsed_id,
-            block_count=store.blocks.count_blocks(existing.id),  # type: ignore[union-attr]
+            block_count=store.chunks.count_chunks(existing.id),  # type: ignore[union-attr]
             inserted=False,
             bytes_fetched=bytes_fetched,
         )
@@ -557,8 +557,8 @@ def ingest_patent(
             ref_id = ref.id
         if block_seeds:
             inserts = [
-                BlockInsert(
-                    pos=i,
+                ChunkInsert(
+                    ord=i,
                     text=b.text,
                     embedding=b.embedding,
                     density=b.density,
@@ -572,7 +572,7 @@ def ingest_patent(
             # embed / keyword / classify workers re-derive over the newly
             # marked blocks — an in-place marker patch would leave stale
             # derived rows (AGENTS.md "don't mutate body chunks").
-            store.blocks.insert_blocks(ref_id, inserts, replace=reingest, conn=conn)
+            store.chunks.insert_chunks(ref_id, inserts, replace=reingest, conn=conn)
 
     # Auto-tags. Lowercase open prefixes — see
     # store/types.py::Tag.open() for the storage rule.

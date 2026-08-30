@@ -892,7 +892,7 @@ class PaperHandler(Handler):
         # Opt the title/meta card in (same as :meth:`search`) so a paper
         # is reachable by title in the cross-kind merge too, then dedup
         # so a body hit wins over its own card.
-        triples = self.store.blocks.search_blocks(
+        triples = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -905,7 +905,7 @@ class PaperHandler(Handler):
         )
         triples = _dedup_card_hits(triples)
         # Salience bump (block-level); no-op for dream-actor reads.
-        self.store.blocks.bump_salience([block.id for block, _ref, _score in triples])
+        self.store.chunks.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind=self.spec.kind)
 
     # -- seven-verb surface --------------------------------------------------
@@ -1306,7 +1306,7 @@ class PaperHandler(Handler):
         authors_raw = meta.get("authors")
         authors = _format_authors(authors_raw)
         journal = _clean_inline_text(str(meta.get("journal") or ""))
-        n_blocks = self.store.blocks.count_blocks(ref.id)
+        n_blocks = self.store.chunks.count_chunks(ref.id)
 
         lines: list[str] = []
         banner = _retraction_banner(ref)
@@ -1780,7 +1780,7 @@ class PaperHandler(Handler):
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id, pos_range=(lo, hi))
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
             raise NotFound(
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
@@ -1795,12 +1795,12 @@ class PaperHandler(Handler):
         # (MCP critic MAJOR — figure block returns image marker with no
         # caption.)
         if len(blocks) == 1 and lo == hi and _is_image_only_block(blocks[0].text):
-            tail = self.store.blocks.list_blocks_for_ref(
+            tail = self.store.chunks.list_chunks_for_ref(
                 ref.id, pos_range=(hi + 1, hi + 1)
             )
             if tail and _looks_like_caption(tail[0].text):
                 blocks = [*blocks, *tail]
-                hi = tail[0].pos
+                hi = tail[0].ord
 
         lines: list[str] = []
         banner = _retraction_banner(ref)
@@ -1812,10 +1812,10 @@ class PaperHandler(Handler):
             # the legacy ``slug~pos`` stays only for a kind with no chunk code.
             b_handle = (
                 handle_registry.try_format(ref.kind, b.id, chunk=True)
-                or f"{ref.slug}~{b.pos}"
+                or f"{ref.slug}~{b.ord}"
             )
             lines.append(f"# {b_handle}")
-            lines.append(_render_block_body(ref.slug or "???", b.pos, b.text))
+            lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
             # sidecars of this chunk's verified `cites` verdicts, when any
             # exist — outbound ("this chunk cites …", src_pos) and inbound
@@ -1831,10 +1831,10 @@ class PaperHandler(Handler):
                     render_citer_sidecar,
                 )
 
-                sidecar = render_citer_sidecar(self.store, ref, b.pos)
+                sidecar = render_citer_sidecar(self.store, ref, b.ord)
                 if sidecar:
                     lines.append(sidecar.lstrip("\n"))
-                cited_by_sidecar = render_cited_by_sidecar(self.store, ref, b.pos)
+                cited_by_sidecar = render_cited_by_sidecar(self.store, ref, b.ord)
                 if cited_by_sidecar:
                     lines.append(cited_by_sidecar.lstrip("\n"))
             lines.append("")
@@ -1855,7 +1855,7 @@ class PaperHandler(Handler):
         # finished in one).  The promoted "navigate via TOC" hint
         # comes first in single-block mode, since paging-by-block is
         # almost never the right strategy when scanning a paper.
-        total = self.store.blocks.count_blocks(ref.id)
+        total = self.store.chunks.count_chunks(ref.id)
         nav: list[tuple[str, str]] = []
         single_block = lo == hi
 
@@ -1954,7 +1954,7 @@ class PaperHandler(Handler):
         """
         from precis.handlers._paper_toc import detect_heading
 
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id, with_embedding=True)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id, with_embedding=True)
         if not blocks:
             return ChunksForToc(
                 chunks_text=(),
@@ -1962,13 +1962,13 @@ class PaperHandler(Handler):
                 h2_boundaries=(),
             )
         # Sort by pos to guarantee reading order.
-        blocks = sorted(blocks, key=lambda b: b.pos)
+        blocks = sorted(blocks, key=lambda b: b.ord)
         chunks_text = tuple(b.text for b in blocks)
-        # Canonical positions = block.pos so TOC handles (slug~N)
+        # Canonical positions = block.ord so TOC handles (slug~N)
         # resolve via ``get(id='slug~<pos>')``. Skipping this would
         # leave handles using list indices and break search-hit
-        # cluster lookups when block.pos has gaps.
-        positions = tuple(b.pos for b in blocks)
+        # cluster lookups when block.ord has gaps.
+        positions = tuple(b.ord for b in blocks)
 
         # Per-block embeddings — None when any block lacks one
         # (mixed corpus or partial reingest). The renderer falls
@@ -2001,11 +2001,11 @@ class PaperHandler(Handler):
                 continue
             if _is_journal_template_heading(h.title):
                 continue
-            headings.append((b.pos, h.title))
+            headings.append((b.ord, h.title))
 
         h2_boundaries: list[tuple[int, int, str]] = []
         for i, (start, title) in enumerate(headings):
-            end = headings[i + 1][0] - 1 if i + 1 < len(headings) else blocks[-1].pos
+            end = headings[i + 1][0] - 1 if i + 1 < len(headings) else blocks[-1].ord
             h2_boundaries.append((start, end, title))
 
         return ChunksForToc(
@@ -2031,7 +2031,7 @@ class PaperHandler(Handler):
         fallback the reader falls back to. For a clustered overview use
         ``view='toc'``; for a chunk's full text use ``get(id='pa<id>~N')``.
         """
-        summaries = self.store.blocks.chunk_llm_summaries_for_ref(ref.id)
+        summaries = self.store.chunks.chunk_llm_summaries_for_ref(ref.id)
         if not summaries:
             return Response(
                 body=(
@@ -2109,7 +2109,7 @@ class PaperHandler(Handler):
         suffix = "" if total <= limit else f" of {total}"
         # Surface total corpus depth so the agent doesn't have to
         # estimate chunk volume from per-paper counts (#38683).
-        total_chunks = self.store.blocks.count_chunks_for_kind("paper")
+        total_chunks = self.store.chunks.count_chunks_for_kind("paper")
         lines = [
             f"# {len(refs)} paper{'s' if len(refs) != 1 else ''}{suffix}"
             f"  ({total_chunks} chunks)"

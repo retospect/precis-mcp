@@ -10,7 +10,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
-from precis.store import BlockInsert
+from precis.store import ChunkInsert
 from precis.store._draft_ops import DraftChunk, content_sha
 from precis.store.store import Store
 
@@ -67,8 +67,8 @@ def test_record_review_rejects_body_chunk(store: Store) -> None:
     only; recording a review for it must raise BadInput, not silently
     write a row that can never go dirty."""
     ref = store.insert_ref(kind="paper", slug="rv-body", title="Body")
-    store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=0, text="body text", embedding=None)]
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text="body text", embedding=None)]
     )
     with store.pool.connection() as conn:
         chunk_row = conn.execute(

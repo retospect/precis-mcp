@@ -41,7 +41,7 @@ from precis.handlers.skill import (
     _availability_gap,
 )
 from precis.runtime import PrecisRuntime
-from precis.store import BlockInsert, Store, Tag
+from precis.store import ChunkInsert, Store, Tag
 from tests.conftest import id_of
 
 # ── helpers ────────────────────────────────────────────────────────
@@ -56,10 +56,10 @@ def _seed_paper(store: Store, slug: str = "wang2020state", n_blocks: int = 4) ->
         meta={},
     )
     if n_blocks:
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(pos=i, text=f"block {i} content text", slug=f"b{i}")
+                ChunkInsert(ord=i, text=f"block {i} content text", slug=f"b{i}")
                 for i in range(n_blocks)
             ],
         )
@@ -277,16 +277,16 @@ class TestPaperOverviewStripsJats:
 class TestSearchNoiseFloor:
     def test_short_blocks_excluded_from_lexical(self, store: Store) -> None:
         ref = store.insert_ref(kind="paper", slug="p", title="P")
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(pos=0, text="."),
-                BlockInsert(pos=1, text=","),
-                BlockInsert(pos=2, text="abc"),
-                BlockInsert(pos=3, text="real content with words"),
+                ChunkInsert(ord=0, text="."),
+                ChunkInsert(ord=1, text=","),
+                ChunkInsert(ord=2, text="abc"),
+                ChunkInsert(ord=3, text="real content with words"),
             ],
         )
-        hits = store.blocks.search_blocks_lexical(q="content", kind="paper")
+        hits = store.chunks.search_chunks_lexical(q="content", kind="paper")
         for block, _ref, _rank in hits:
             assert len(block.text.strip()) >= 4
 
@@ -540,10 +540,10 @@ class TestSlugKindInference:
 
     def _seed_paper(self, store: Store, slug: str) -> None:
         ref = store.insert_ref(kind="paper", slug=slug, title="P", provider="manual")
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(pos=i, text=f"block {i} text", slug=f"b{i}")
+                ChunkInsert(ord=i, text=f"block {i} text", slug=f"b{i}")
                 for i in range(4)
             ],
         )

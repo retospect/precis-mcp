@@ -113,7 +113,7 @@ class TestMomentum:
     def test_entries_short_circuit_matches_default(self, store: Any) -> None:
         """Passing precomputed ``entries=`` (the quest-hub route's own
         already-fetched logbook blocks) skips the internal
-        ``list_blocks_for_ref`` re-query but yields the same momentum —
+        ``list_chunks_for_ref`` re-query but yields the same momentum —
         the shape the web dashboard route relies on to avoid a duplicate
         query per page load."""
         from precis.quest.logbook import LOG_KIND
@@ -123,7 +123,7 @@ class TestMomentum:
         for i in range(3):
             h.put(id=qid, text=f"observation {i}", entry="observation")
         log_entries = [
-            b for b in store.blocks.list_blocks_for_ref(qid) if b.chunk_kind == LOG_KIND
+            b for b in store.chunks.list_chunks_for_ref(qid) if b.chunk_kind == LOG_KIND
         ]
         assert len(log_entries) == 3
         m_default = quest_momentum(store, qid)

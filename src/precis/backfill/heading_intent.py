@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -119,9 +119,9 @@ def set_intent(
             title=title or _derive_title(text),
             meta_patch={"anchor": heading_handle, _META_KEY: strength},
         )
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             existing,
-            [BlockInsert(pos=0, text=text, meta={"chunk_kind": _BODY_KIND})],
+            [ChunkInsert(ord=0, text=text, meta={"chunk_kind": _BODY_KIND})],
             replace=True,
         )
         return existing
@@ -131,9 +131,9 @@ def set_intent(
         title=title or _derive_title(text),
         meta={"anchor": heading_handle, _META_KEY: strength},
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=text, meta={"chunk_kind": _BODY_KIND})],
+        [ChunkInsert(ord=0, text=text, meta={"chunk_kind": _BODY_KIND})],
     )
     return int(ref.id)
 

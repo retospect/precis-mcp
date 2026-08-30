@@ -236,7 +236,7 @@ def _fisheye_split(
         (
             i
             for i, (bucket, _) in enumerate(clusters)
-            if bucket and bucket[0].pos <= eye_ord <= bucket[-1].pos
+            if bucket and bucket[0].ord <= eye_ord <= bucket[-1].ord
         ),
         None,
     )
@@ -251,14 +251,14 @@ def _fisheye_split(
     lines.append("— cluster —")
     # A forward-biased window around the eye within its cluster; the far tail of
     # a big keyword-homogeneous section collapses rather than dumping every line.
-    eye_i = next((i for i, b in enumerate(home_bucket) if b.pos == eye_ord), 0)
+    eye_i = next((i for i, b in enumerate(home_bucket) if b.ord == eye_ord), 0)
     lo = max(0, eye_i - _HOME_BACK)
     hi = min(len(home_bucket), eye_i + _HOME_FWD + 1)
     if lo > 0:
         lines.append(f"  ⋯ {lo} more ⋯")
     for b in home_bucket[lo:hi]:
         h = _chunk_handle(kind, b)
-        if b.pos == eye_ord:
+        if b.ord == eye_ord:
             if ext is Extent.SUMMARY:
                 lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
             else:
@@ -291,7 +291,7 @@ def _render_doc_eye(
     if ext <= Extent.TOC:
         return f"· {head}"
 
-    blocks = store.blocks.list_blocks_for_ref(ref_id)
+    blocks = store.chunks.list_chunks_for_ref(ref_id)
     if blocks:
         from precis.utils.toc_db import cluster_blocks
 

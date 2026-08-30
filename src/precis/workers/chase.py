@@ -679,7 +679,7 @@ def _select_grounding_chunk(
     """Pick the chunk in a freshly-grounded stub that best supports the
     claim: ``(chunk_id, ord, text)``.
 
-    Claim-text embedding search (:meth:`~precis.store.Store.search_blocks`
+    Claim-text embedding search (:meth:`~precis.store.Store.search_chunks`
     ``mode='semantic'``, scoped to the stub) over the paper's own chunks
     when ``embedder`` is available — the "existing grounding machinery"
     the acquisition-mode design calls for. Degrades to the same
@@ -691,7 +691,7 @@ def _select_grounding_chunk(
     if embedder is not None and claim_text.strip():
         try:
             query_vec = embedder.embed_one(claim_text)
-            hits = store.blocks.search_blocks(
+            hits = store.chunks.search_chunks(
                 q=claim_text,
                 query_vec=query_vec,
                 mode="semantic",

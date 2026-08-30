@@ -155,7 +155,7 @@ def test_status_tick_events_from_coordinator_job(store: Any) -> None:
     """The autonomous loop's own `quest_tick` coordinator job's `job_event`
     chunks — identified by ``meta.params.quest_id``, not parent_id (the
     coordinator job type isn't yet wired to parent on the quest itself)."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     qid = _mk_quest(store, "A striving")
     todo = store.insert_ref(kind="todo", slug=None, title="drive the quest")
@@ -171,16 +171,16 @@ def test_status_tick_events_from_coordinator_job(store: Any) -> None:
         parent_id=todo.id,
     )
     with store.tx() as conn:
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             job.id,
             [
-                BlockInsert(
-                    pos=0,
+                ChunkInsert(
+                    ord=0,
                     text="tick 1: proposed 3 candidates",
                     meta={"chunk_kind": "job_event"},
                 ),
-                BlockInsert(
-                    pos=1, text="awaiting sims", meta={"chunk_kind": "job_event"}
+                ChunkInsert(
+                    ord=1, text="awaiting sims", meta={"chunk_kind": "job_event"}
                 ),
             ],
             conn=conn,

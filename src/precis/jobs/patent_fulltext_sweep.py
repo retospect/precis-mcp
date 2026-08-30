@@ -62,7 +62,7 @@ from precis.jobs.patent_watch import (
     compute_rolling_fair_use_bytes,
 )
 from precis.store import Tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 if TYPE_CHECKING:
     from precis.embedder import Embedder
@@ -343,10 +343,10 @@ def _retry_one_ref(
 
     # Block positions follow the existing block count so a partial
     # earlier ingest (unlikely, but defensive) doesn't collide.
-    offset = store.blocks.count_blocks(ref_id)
+    offset = store.chunks.count_chunks(ref_id)
     inserts = [
-        BlockInsert(
-            pos=offset + i,
+        ChunkInsert(
+            ord=offset + i,
             text=b.text,
             embedding=b.embedding,
             density=b.density,
@@ -355,7 +355,7 @@ def _retry_one_ref(
         for i, b in enumerate(seeds)
     ]
     if inserts:
-        store.blocks.insert_blocks(ref_id, inserts)
+        store.chunks.insert_chunks(ref_id, inserts)
 
     # Update meta: flip has_description / has_claims, clear retry
     # bookkeeping. Accumulate fair_use_bytes so the rolling-window

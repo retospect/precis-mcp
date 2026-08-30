@@ -43,7 +43,7 @@ from precis.handlers._cache_base import (
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store._tag_filter import WIKI_TAG, is_wiki_tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils.http import http_client, require_httpx
 from precis.utils.slug import slug_from_text
 
@@ -192,7 +192,7 @@ class WikipediaHandler(CacheBackedHandler):
             # One block; the base-class auto-chunker splits it at
             # ~800 chars and the embed worker vectorizes per the derived queue
             # (ingest writes embedding NULL; the worker fills it).
-            body_blocks=[BlockInsert(pos=0, text=body)],
+            body_blocks=[ChunkInsert(ord=0, text=body)],
             cost_usd=None,  # free, bandwidth only
             meta={
                 "query": key,
@@ -299,8 +299,8 @@ def _no_results(query: str, lang: str) -> FetchResult:
     return FetchResult(
         title=f"Wikipedia: no match for {query!r}",
         body_blocks=[
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text=(
                     f"No {lang}.wikipedia.org article matched {query!r}. "
                     "Try different terms, or a more specific entity name."

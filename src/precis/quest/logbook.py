@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -89,13 +89,13 @@ def append_entry(
     if extra_meta:
         for k, v in extra_meta.items():
             entry_meta.setdefault(k, v)
-    # Next pos = current chunk count. list_blocks_for_ref excludes the synthetic
+    # Next pos = current chunk count. list_chunks_for_ref excludes the synthetic
     # card (ord=-1), so the first logbook entry lands at pos=0.
-    next_pos = len(store.blocks.list_blocks_for_ref(quest_id))
+    next_pos = len(store.chunks.list_chunks_for_ref(quest_id))
     with store.tx() as conn:
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             quest_id,
-            [BlockInsert(pos=next_pos, text=text, meta=entry_meta)],
+            [ChunkInsert(ord=next_pos, text=text, meta=entry_meta)],
             conn=conn,
         )
     return next_pos + 1

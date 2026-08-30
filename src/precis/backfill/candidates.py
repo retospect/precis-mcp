@@ -273,7 +273,7 @@ def _text_lens(
             query_vecs.append(vec)
     if not (q_texts or query_vecs):
         return []
-    hits = store.blocks.search_blocks_multi(
+    hits = store.chunks.search_chunks_multi(
         q_texts=q_texts,
         query_vecs=query_vecs,
         mode="hybrid",

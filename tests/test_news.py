@@ -149,7 +149,7 @@ class _FakeConn:
 
 class _FakeDeliverStore:
     def __init__(self, existing: tuple | None = None) -> None:
-        self.blocks = self  # blocks carve: flat fake doubles as its own sub-store
+        self.chunks = self  # chunks carve: flat fake doubles as its own sub-store
         self.conn = _FakeConn(existing)
         self.inserted: list[dict] = []
         self.inserted_blocks: list[tuple] = []
@@ -167,7 +167,7 @@ class _FakeDeliverStore:
         self.inserted.append(kw)
         return _FakeRef()
 
-    def insert_blocks(
+    def insert_chunks(
         self, ref_id: object, blocks: object, conn: object = None
     ) -> None:
         self.inserted_blocks.append((ref_id, blocks))

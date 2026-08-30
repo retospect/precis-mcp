@@ -297,12 +297,12 @@ async def detail(request: Request, id: int) -> HTMLResponse:
     # _render_one uses).
     body_text = ref.title or ""
     comments: list[dict[str, Any]] = []
-    for b in store.blocks.list_blocks_for_ref(ref.id):
+    for b in store.chunks.list_chunks_for_ref(ref.id):
         chunk_kind = getattr(b, "chunk_kind", None)
         if chunk_kind == _BODY_KIND:
             body_text = b.text or body_text
         elif chunk_kind == _COMMENT_KIND:
-            comments.append({"pos": b.pos, "text": b.text or ""})
+            comments.append({"pos": b.ord, "text": b.text or ""})
 
     tags = store.tags_for(ref.id)
     status = _status_of(tags)

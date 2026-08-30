@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from precis.utils.rake import _candidate_phrases, extract_keywords
-from precis.workers.base import ChunkRow
+from precis.workers.base import ClaimedChunk
 from precis.workers.summarize import RakeLemmaHandler
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ class TestRakeLemmaHandlerPure:
 
     def test_process_returns_joined_keywords(self):
         h = RakeLemmaHandler(max_keywords=3)
-        row = ChunkRow(
+        row = ClaimedChunk(
             chunk_id=1,
             text="Surface codes for quantum computing. Surface codes scale.",
         )
@@ -200,12 +200,12 @@ class TestRakeLemmaHandlerPure:
 
     def test_process_empty_text_returns_empty(self):
         h = RakeLemmaHandler()
-        row = ChunkRow(chunk_id=1, text="")
+        row = ClaimedChunk(chunk_id=1, text="")
         assert h.process(row) == ""
 
     def test_process_honours_max_keywords(self):
         h = RakeLemmaHandler(max_keywords=2)
-        row = ChunkRow(
+        row = ClaimedChunk(
             chunk_id=1,
             text=("Alpha beta. Gamma delta. Epsilon zeta. Eta theta. Iota kappa."),
         )

@@ -379,17 +379,17 @@ def test_attention_view_lists_child_failed_parents(
     rid = id_of(r.body)
     store.add_tag(rid, Tag.open("child-failed:143"), set_by="system")
     # Add a job_event so the digest can quote a reason.
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     job = store.insert_ref(
         kind="job", slug=None, title="fix attempt", meta={}, parent_id=rid
     )
     # Use the store's chunk-insert path so chunk_kind lands correctly.
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         job.id,
         [
-            BlockInsert(
-                pos=0, text="claude -p exited 2", meta={"chunk_kind": "job_event"}
+            ChunkInsert(
+                ord=0, text="claude -p exited 2", meta={"chunk_kind": "job_event"}
             )
         ],
     )

@@ -1139,7 +1139,7 @@ class DispatchMixin(RuntimeShape):
         if self.store is None:
             return False
         try:
-            resolved = self.store.blocks.resolve_relative(ident)
+            resolved = self.store.chunks.resolve_relative(ident)
         except Exception:  # pragma: no cover — store outage etc.
             log.exception("resolve_relative lookup failed")
             return False
@@ -1191,7 +1191,7 @@ class DispatchMixin(RuntimeShape):
             return False
         if resolved.chunk_id is not None:
             # Chunk handle → per-kind chunk selector. Slug-document kinds take
-            # ``slug~ord`` (Block.pos == chunks.ord). Numeric-chunk kinds
+            # ``slug~ord`` (ChunkRow.ord == chunks.ord). Numeric-chunk kinds
             # (gripe/message/…) have no ``~ord`` selector yet, so fall through
             # (a chunk handle has no slug match → natural NotFound). A chunk
             # handle takes no further selector.

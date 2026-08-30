@@ -25,7 +25,7 @@ from precis.cli.stats import (
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.handlers.memory import MemoryHandler
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from tests.conftest import id_of
 
 
@@ -41,9 +41,9 @@ def _seed_paper(store, *, cite_key: str, pdf_sha256: str | None = None) -> int:
         title=f"Test paper {cite_key}",
         meta={},
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=f"Body of {cite_key}.", meta={})],
+        [ChunkInsert(ord=0, text=f"Body of {cite_key}.", meta={})],
     )
     if pdf_sha256 is not None:
         with store.pool.connection() as conn:

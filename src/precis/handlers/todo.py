@@ -62,7 +62,7 @@ from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -627,11 +627,11 @@ class TodoHandler(NumericRefHandler):
             # free ord). Additive: the task line stays in refs.title; the
             # body is extra prose, embedded + keyworded by the workers.
             if self._pending_body:
-                self.store.blocks.insert_blocks(
+                self.store.chunks.insert_chunks(
                     ref.id,
                     [
-                        BlockInsert(
-                            pos=0,
+                        ChunkInsert(
+                            ord=0,
                             text=self._pending_body,
                             meta={"chunk_kind": _BODY_KIND},
                         )
@@ -666,7 +666,7 @@ class TodoHandler(NumericRefHandler):
                     conn=conn,
                 )
             if self.emits_card:
-                self.store.blocks.upsert_card_combined(ref.id, text, conn=conn)
+                self.store.chunks.upsert_card_combined(ref.id, text, conn=conn)
         # Soft reminder: a rotation_root todo with no auto-run signal
         # (meta.llm_tier / executor:* tag / meta.executor) will never be
         # picked up by the dispatch worker, so it spawns no children and
@@ -763,10 +763,10 @@ class TodoHandler(NumericRefHandler):
                     ref.id, text, source=guards._caller_source(), conn=conn
                 )
                 if self.emits_card:
-                    self.store.blocks.upsert_card_combined(ref.id, text, conn=conn)
+                    self.store.chunks.upsert_card_combined(ref.id, text, conn=conn)
             if has_body:
                 assert body is not None
-                self.store.blocks.replace_body_chunk(
+                self.store.chunks.replace_body_chunk(
                     ref.id,
                     body,
                     chunk_kind=_BODY_KIND,
@@ -1069,7 +1069,7 @@ class TodoHandler(NumericRefHandler):
     def _body_text(self, ref: Ref) -> str | None:
         """The todo's optional details body from its ``todo_body`` chunk,
         or ``None`` when it has none (the common case)."""
-        for block in self.store.blocks.list_blocks_for_ref(ref.id):
+        for block in self.store.chunks.list_chunks_for_ref(ref.id):
             if block.chunk_kind == _BODY_KIND:
                 return block.text
         return None

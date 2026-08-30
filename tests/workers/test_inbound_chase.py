@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.workers.inbound_chase import (
     inbound_chase_enabled,
     mark_paper_active,
@@ -34,9 +34,9 @@ def _seed_paper(
         meta={"abstract": abstract} if abstract else {},
     )
     if blocks:
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
-            [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)],
+            [ChunkInsert(ord=i, text=t, meta={}) for i, t in enumerate(blocks)],
         )
     if identifiers:
         with store.pool.connection() as conn:
@@ -164,7 +164,7 @@ def test_sweep_stub_citer_links_paper_level_only(store) -> None:
     assert citer_ref_id is not None
     links = _cites_links(store, src=citer_ref_id, dst=y)
     assert len(links) == 1
-    assert links[0].src_pos is None  # ref-level, no chunks to resolve yet
+    assert links[0].src_ord is None  # ref-level, no chunks to resolve yet
 
 
 def test_sweep_minted_citer_has_no_s2_enriched_stamp_without_extra_s2_fields(
@@ -268,8 +268,8 @@ def test_sweep_resolves_chunk_level_when_citer_already_has_chunks(store) -> None
 
     links = _cites_links(store, src=citer_ref_id, dst=y)
     assert len(links) == 2  # ref-level + the new chunk-scoped resolution
-    chunk_link = next(lk for lk in links if lk.src_pos is not None)
-    assert chunk_link.src_pos == 1  # the nanowire paragraph, not ord 0
+    chunk_link = next(lk for lk in links if lk.src_ord is not None)
+    assert chunk_link.src_ord == 1  # the nanowire paragraph, not ord 0
     assert "supports" not in chunk_link.meta  # with_llm=False → no verdict
 
 
@@ -325,14 +325,14 @@ def test_followup_resolves_once_citer_stub_lands_chunks(store) -> None:
 
     citer_ref_id = _ref_id_by_doi(store, "10.1/citer1")
     assert citer_ref_id is not None
-    assert _cites_links(store, src=citer_ref_id, dst=y)[0].src_pos is None
+    assert _cites_links(store, src=citer_ref_id, dst=y)[0].src_ord is None
 
     # The PDF lands later (fetch_oa or similar) — chunks appear.
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         citer_ref_id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text="We measured graphene field-effect transistor mobility.",
                 meta={},
             )
@@ -344,7 +344,7 @@ def test_followup_resolves_once_citer_stub_lands_chunks(store) -> None:
 
     links = _cites_links(store, src=citer_ref_id, dst=y)
     assert len(links) == 2  # ref-level (unchanged) + new chunk-scoped
-    assert any(lk.src_pos == 0 for lk in links)
+    assert any(lk.src_ord == 0 for lk in links)
 
 
 def test_followup_no_pairs_is_a_noop(store) -> None:
@@ -399,7 +399,7 @@ def test_sweep_records_llm_verdict_when_with_llm(store) -> None:
 
     links = _cites_links(store, src=citer_ref_id, dst=y)
     assert len(links) == 2  # ref-level + the LLM-verified chunk-scoped edge
-    chunk_link = next(lk for lk in links if lk.src_pos is not None)
+    chunk_link = next(lk for lk in links if lk.src_ord is not None)
     assert chunk_link.meta.get("supports") == "yes"
     assert chunk_link.meta.get("caveats") == ["only tested at room temperature"]
 
@@ -452,9 +452,9 @@ def test_dst_pos_populated_on_confident_second_locate(store) -> None:
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
 
     links = _cites_links(store, src=citer_ref_id, dst=y)
-    chunk_link = next(lk for lk in links if lk.src_pos is not None)
-    assert chunk_link.src_pos == 1  # citer's nanowire paragraph
-    assert chunk_link.dst_pos == 1  # Y's own nanowire paragraph
+    chunk_link = next(lk for lk in links if lk.src_ord is not None)
+    assert chunk_link.src_ord == 1  # citer's nanowire paragraph
+    assert chunk_link.dst_ord == 1  # Y's own nanowire paragraph
 
 
 def test_dst_pos_unset_when_second_locate_has_no_confident_match(store) -> None:
@@ -506,9 +506,9 @@ def test_dst_pos_unset_when_second_locate_has_no_confident_match(store) -> None:
     assert len(calls) == 2  # both locate passes attempted
 
     links = _cites_links(store, src=citer_ref_id, dst=y)
-    chunk_link = next(lk for lk in links if lk.src_pos is not None)
-    assert chunk_link.src_pos == 0
-    assert chunk_link.dst_pos is None
+    chunk_link = next(lk for lk in links if lk.src_ord is not None)
+    assert chunk_link.src_ord == 0
+    assert chunk_link.dst_ord is None
 
 
 def test_dst_pos_never_attempted_without_llm(store) -> None:
@@ -539,8 +539,8 @@ def test_dst_pos_never_attempted_without_llm(store) -> None:
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
 
     links = _cites_links(store, src=citer_ref_id, dst=y)
-    chunk_link = next(lk for lk in links if lk.src_pos is not None)
-    assert chunk_link.dst_pos is None
+    chunk_link = next(lk for lk in links if lk.src_ord is not None)
+    assert chunk_link.dst_ord is None
 
 
 # ── import-time dependency guard ────────────────────────────────────

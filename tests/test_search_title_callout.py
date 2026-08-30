@@ -22,7 +22,7 @@ from __future__ import annotations
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers.paper import PaperHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
 
 _TITLE = "Attention is All you Need"
@@ -43,9 +43,9 @@ def _seed(
         authors=[{"family": "Vaswani", "given": "Ashish"}],
         year=2017,
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=text, embedding=embedder.embed_one(text))],
+        [ChunkInsert(ord=0, text=text, embedding=embedder.embed_one(text))],
     )
     return ref.id
 

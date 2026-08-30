@@ -79,7 +79,7 @@ def _section_centroids(store: Store, dossier_ref_id: int) -> list[_SectionCentro
         vecs = [
             v
             for cid in member_ids
-            if (v := store.blocks.get_chunk_vector(cid)) is not None
+            if (v := store.chunks.get_chunk_vector(cid)) is not None
         ]
         if not vecs:
             continue
@@ -134,9 +134,9 @@ def place_papers(
     for paper_ref_id in paper_ref_ids:
         rows: list[dict[str, Any]] = []
         if centroids:
-            seed_cid = store.blocks.seed_chunk_for_ref(paper_ref_id)
+            seed_cid = store.chunks.seed_chunk_for_ref(paper_ref_id)
             vec = (
-                store.blocks.get_chunk_vector(seed_cid)
+                store.chunks.get_chunk_vector(seed_cid)
                 if seed_cid is not None
                 else None
             )

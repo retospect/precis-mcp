@@ -389,7 +389,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.set_status("cancelled")
         return
 
-    blocks = ctx.store.blocks.list_blocks_for_ref(gripe_id)
+    blocks = ctx.store.chunks.list_chunks_for_ref(gripe_id)
     if not blocks:
         ctx.record_failure(f"diagnose_gripe: gripe id={gripe_id} has no body chunk")
         return

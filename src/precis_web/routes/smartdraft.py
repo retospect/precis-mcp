@@ -242,7 +242,7 @@ async def reader(
     # placeholder rows (inert scroll spacers, see ``assemble_view`` — they
     # never reach ``sd_review_widget``), so those are excluded here too —
     # otherwise a huge draft's per-cited-paper integrity check
-    # (``cite_integrity_ok``'s ``resolve_handle``/``count_blocks`` calls)
+    # (``cite_integrity_ok``'s ``resolve_handle``/``count_chunks`` calls)
     # would run over EVERY node, not just the ones a template actually
     # renders. ``/blocks`` hydration threads the same helper over its own
     # hydrated window (see ``blocks`` below), which never carries ``skel``

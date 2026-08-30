@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from precis.embedder import MockEmbedder
-from precis.workers.base import ChunkRow
+from precis.workers.base import ClaimedChunk
 from precis.workers.embed import EmbedHandler
 from tests.workers._helpers import make_mock_bge_m3, seed_chunks
 
@@ -79,7 +79,7 @@ class TestEmbedHandlerPure:
     def test_process_returns_vector(self):
         emb = make_mock_bge_m3()
         h = EmbedHandler(emb)
-        row = ChunkRow(chunk_id=1, text="surface code")
+        row = ClaimedChunk(chunk_id=1, text="surface code")
         vec = h.process(row)
         assert isinstance(vec, list)
         assert len(vec) == 1024
@@ -89,7 +89,7 @@ class TestEmbedHandlerPure:
     def test_process_empty_text_still_returns_vector(self):
         # Empty text is *not* a special case — caller policy.
         h = EmbedHandler(make_mock_bge_m3())
-        vec = h.process(ChunkRow(chunk_id=1, text=""))
+        vec = h.process(ClaimedChunk(chunk_id=1, text=""))
         assert len(vec) == 1024
 
 
@@ -143,7 +143,7 @@ class TestEmbedHandlerWrites:
         _ref_id, [chunk_id] = seed_chunks(store, ["one chunk of text"])
 
         h = EmbedHandler(make_mock_bge_m3())
-        vec = h.process(ChunkRow(chunk_id=chunk_id, text="one chunk of text"))
+        vec = h.process(ClaimedChunk(chunk_id=chunk_id, text="one chunk of text"))
         with store.pool.connection() as conn:
             h.write_ok(conn, chunk_id, vec)
             conn.commit()
@@ -158,7 +158,7 @@ class TestEmbedHandlerWrites:
     def test_write_ok_idempotent_on_conflict_updates(self, store):
         _ref_id, [chunk_id] = seed_chunks(store, ["text"])
         h = EmbedHandler(make_mock_bge_m3())
-        vec = h.process(ChunkRow(chunk_id=chunk_id, text="text"))
+        vec = h.process(ClaimedChunk(chunk_id=chunk_id, text="text"))
         with store.pool.connection() as conn:
             h.write_ok(conn, chunk_id, vec)
             h.write_ok(conn, chunk_id, vec)
@@ -213,7 +213,7 @@ class TestEmbedHandlerWrites:
         h = EmbedHandler(make_mock_bge_m3())
         with store.pool.connection() as conn:
             h.write_failed(conn, chunk_id, "transient")
-            vec = h.process(ChunkRow(chunk_id=chunk_id, text="text"))
+            vec = h.process(ClaimedChunk(chunk_id=chunk_id, text="text"))
             h.write_ok(conn, chunk_id, vec)
             conn.commit()
 
@@ -272,7 +272,7 @@ class TestEmbedHandlerReferencesSkip:
             store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="body text"
         )
         h = EmbedHandler(make_mock_bge_m3())
-        vec = h.process(ChunkRow(chunk_id=chunk_id, text="body text"))
+        vec = h.process(ClaimedChunk(chunk_id=chunk_id, text="body text"))
 
         with store.pool.connection() as conn:
             # Simulate the race: another pass retags the chunk between
@@ -302,7 +302,7 @@ class TestEmbedHandlerReferencesSkip:
             store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="body text"
         )
         h = EmbedHandler(make_mock_bge_m3())
-        vec = h.process(ChunkRow(chunk_id=chunk_id, text="body text"))
+        vec = h.process(ClaimedChunk(chunk_id=chunk_id, text="body text"))
 
         with store.pool.connection() as conn:
             h.write_ok(conn, chunk_id, vec)

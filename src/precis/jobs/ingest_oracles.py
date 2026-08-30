@@ -46,7 +46,7 @@ import yaml
 
 from precis.embedder import Embedder
 from precis.store import Store
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -260,8 +260,8 @@ def ingest_paper(
     # so 1-indexing is harmless there — and uniform across the kind
     # is cheaper to remember than per-tradition exceptions.
     inserts = [
-        BlockInsert(
-            pos=i + 1,
+        ChunkInsert(
+            ord=i + 1,
             text=text,
             embedding=emb,
             token_count=len(text.split()),
@@ -303,7 +303,7 @@ def ingest_paper(
                 conn=c,
             )
             ref_id = ref.id
-        store.blocks.insert_blocks(ref_id, inserts, conn=c)
+        store.chunks.insert_chunks(ref_id, inserts, conn=c)
         for tag_str in open_tags:
             store.add_tag(ref_id, Tag.open(tag_str), set_by="system", conn=c)
 

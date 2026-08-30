@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
-    from precis.store.types import Block
+    from precis.store.types import ChunkRow
 
 # ── tunables ──────────────────────────────────────────────────────────
 
@@ -215,7 +215,7 @@ def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
     """Hypothesis logbook entries with no later result / dead-end entry."""
     blocks = [
         b
-        for b in store.blocks.list_blocks_for_ref(quest_id)
+        for b in store.chunks.list_chunks_for_ref(quest_id)
         if b.chunk_kind == _LOG_KIND
     ]
     if not blocks:
@@ -247,14 +247,14 @@ def quest_momentum(
     quest_id: int,
     *,
     servers: list[Ref] | None = None,
-    entries: list[Block] | None = None,
+    entries: list[ChunkRow] | None = None,
 ) -> Momentum:
     """Are deeds + knowledge flowing in? A mechanical read, no % done.
 
     ``servers`` and ``entries`` are optional precomputed short-circuits for
     callers (the quest dashboard route) that already fetched the live
     servers / logbook blocks for this quest — passing them saves a
-    redundant ``list_blocks_for_ref`` / ``_live_servers`` query per call.
+    redundant ``list_chunks_for_ref`` / ``_live_servers`` query per call.
     """
     live = _live_servers(store, quest_id) if servers is None else servers
     since = datetime.now(UTC) - timedelta(days=MOMENTUM_WINDOW_DAYS)
@@ -266,7 +266,7 @@ def quest_momentum(
     log_blocks = (
         [
             b
-            for b in store.blocks.list_blocks_for_ref(quest_id)
+            for b in store.chunks.list_chunks_for_ref(quest_id)
             if b.chunk_kind == _LOG_KIND
         ]
         if entries is None
@@ -356,7 +356,7 @@ def quest_alignment(
     live = _live_servers(store, quest_id) if servers is None else servers
     if not live:
         return [], 0
-    qblock = store.blocks.get_block(quest_id, pos=-1, with_embedding=True)
+    qblock = store.chunks.get_chunk(quest_id, pos=-1, with_embedding=True)
     qvec = getattr(qblock, "embedding", None) if qblock is not None else None
     if not qvec:
         return [], 0
@@ -364,7 +364,7 @@ def quest_alignment(
     flags: list[AlignmentFlag] = []
     checked = 0
     for r in live[:_ALIGN_MAX_SERVERS]:
-        sb = store.blocks.get_block(r.id, pos=-1, with_embedding=True)
+        sb = store.chunks.get_chunk(r.id, pos=-1, with_embedding=True)
         svec = getattr(sb, "embedding", None) if sb is not None else None
         if not svec:
             continue

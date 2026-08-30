@@ -19,15 +19,15 @@ from precis.handlers._paper_toc import (
     build_toc,
     detect_heading,
 )
-from precis.store.types import Block
+from precis.store.types import ChunkRow
 
 
-def _block(pos: int, text: str) -> Block:
+def _block(pos: int, text: str) -> ChunkRow:
     now = datetime.now(UTC)
-    return Block(
+    return ChunkRow(
         id=pos + 1,
         ref_id=1,
-        pos=pos,
+        ord=pos,
         slug=None,
         text=text,
         token_count=len(text.split()),
@@ -178,7 +178,7 @@ def test_toc_does_not_swallow_real_sections_under_metadata_block() -> None:
     ``DOI:``; post-fix we expect exactly two sections — the abstract
     H2 (top-level since no H1 precedes it) plus the INTRODUCTION H1.
     """
-    blocks: list[Block] = []
+    blocks: list[ChunkRow] = []
     blocks.append(_block(0, "**DOI: 10.1002/anie.202405123**"))
     blocks.append(_block(1, "**Keywords: photocatalysis, NOx**"))
     blocks.append(_block(2, "**Authors: A. Clark, D. Chalmers**"))

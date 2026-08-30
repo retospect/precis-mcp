@@ -30,7 +30,7 @@ Claimed off a **due-set**, never a blind periodic rescan
    (a) semantic ANN over paper **and patent** body chunks for the claim
    sentence, top-``PRECIS_TAPROOT_REFINE_TOPK`` — *not*
    ``taproot.canon.block`` (that's hub-card dedup); this is the
-   ``store.search_blocks`` chunk-neighbour engine ``PaperHandler.search``
+   ``store.search_chunks`` chunk-neighbour engine ``PaperHandler.search``
    uses, ``mode='semantic'`` so ``PRECIS_TAPROOT_REFINE_MIN_SIM`` applies.
    Paper and patent legs are separate calls merged by score and truncated
    back to ``topk`` (a second kind doesn't grow the spend bound). Patent
@@ -734,7 +734,7 @@ def _citation_candidates(
             # one passage per cited paper), so rank just that — not topk.
             # No max_distance floor: we verify against what the author cited
             # even at low corpus-wide similarity (the verify step backstops).
-            hits = store.blocks.search_blocks(
+            hits = store.chunks.search_chunks(
                 q=claim_sentence,
                 query_vec=query_vec,
                 mode="semantic",
@@ -773,7 +773,7 @@ _PATENT_CLAIM_BLOCK = "claim"
 def _drop_patent_claim_blocks(
     hits: list[tuple[Any, Any, float]],
 ) -> list[tuple[Any, Any, float]]:
-    """Filter a ``store.search_blocks`` hit list, dropping patent
+    """Filter a ``store.search_chunks`` hit list, dropping patent
     legal-claim-section blocks so they never become grounding candidates."""
     return [
         (block, ref, score)
@@ -1284,7 +1284,7 @@ def _external_candidates(
     for ref_id in sorted(set(held_by_doi.values())):
         if ref_id == hub_ref_id:
             continue
-        hits = store.blocks.search_blocks(
+        hits = store.chunks.search_chunks(
             q=claim_sentence,
             query_vec=query_vec,
             mode="semantic",
@@ -1684,7 +1684,7 @@ def _audit_edges(
 # ── stage 3: same-paper deeper-chunk re-discovery ───────────────────
 
 #: The evidence-source kinds :func:`_same_paper_candidates` can run a
-#: ``store.search_blocks`` leg against. A subset of
+#: ``store.search_chunks`` leg against. A subset of
 #: ``taproot.hub.EVIDENCE_SRC_KINDS`` on purpose — the same two kinds the
 #: enrichment semantic source already searches.
 _SEARCHABLE_SRC_KINDS = frozenset({"paper", "patent"})
@@ -1709,7 +1709,7 @@ def _same_paper_candidates(
     the lowest-risk and highest-yield source, so its candidates are
     offered *first*, ahead of citation-following and the corpus-wide ANN.
 
-    A paper-scoped ``store.search_blocks`` per attached source, with no
+    A paper-scoped ``store.search_chunks`` per attached source, with no
     ``max_distance`` floor — the corpus-wide floor governs *discovery of
     new papers*; inside a paper we already accepted, the strict judge is
     the gate.
@@ -1719,10 +1719,10 @@ def _same_paper_candidates(
         if ref_id == hub_ref_id or kind not in _SEARCHABLE_SRC_KINDS:
             # ``edgar``/``datasheet`` are evidence-source kinds
             # (``taproot.hub.EVIDENCE_SRC_KINDS``) but have no
-            # ``search_blocks`` leg here; their edges are still audited,
+            # ``search_chunks`` leg here; their edges are still audited,
             # they just get no deeper-passage re-discovery.
             continue
-        hits = store.blocks.search_blocks(
+        hits = store.chunks.search_chunks(
             q=claim_sentence,
             query_vec=query_vec,
             mode="semantic",
@@ -1741,7 +1741,7 @@ def _same_paper_candidates(
 def _attached_source_refs(conn: Connection, hub_ref_id: int) -> list[tuple[int, str]]:
     """``(ref_id, kind)`` for every source already carrying an evidence
     edge on this hub — the input to :func:`_same_paper_candidates`, and
-    the reason it needs the kind: ``store.search_blocks``' mode-dispatched
+    the reason it needs the kind: ``store.search_chunks``' mode-dispatched
     wrapper takes one ``kind=`` string, and a patent must be searched as a
     patent (so :func:`_drop_patent_claim_blocks` still applies)."""
     rows = conn.execute(
@@ -2409,8 +2409,8 @@ def _reground_verify_candidate(
     chunk_id = int(block.id)
     handle = handle_registry.try_format(ref.kind, chunk_id, chunk=True)
     # ``section_path`` is a first-class ``chunks`` column, popped out of
-    # ``BlockInsert.meta`` at insert time — so a ``Block`` read back from
-    # ``search_blocks`` does NOT carry it, and the depth-policy filter has
+    # ``ChunkInsert.meta`` at insert time — so a ``ChunkRow`` read back from
+    # ``search_chunks`` does NOT carry it, and the depth-policy filter has
     # to read it here rather than off ``block.meta``. The sibling count
     # rides along: the depth refusal only makes sense when this source has
     # somewhere deeper to go.
@@ -2427,7 +2427,7 @@ def _reground_verify_candidate(
         claim=claim_sentence,
         scope=scope,
         cite_key=ref.slug or f"ref:{source_ref_id}",
-        chunk_ord=block.pos,
+        chunk_ord=block.ord,
         chunk_text=block.text,
         source_kind=ref.kind,
         depth_policy=depth_policy,
@@ -2455,7 +2455,7 @@ def _reground_verify_candidate(
         and depth_policy == DEPTH_BODY_REQUIRED
         and n_body_chunks > 1
     ):
-        if is_front_matter(chunk_ord=block.pos, section_path=section_path):
+        if is_front_matter(chunk_ord=block.ord, section_path=section_path):
             plan.log.append(
                 reground_log_entry(
                     src_ref_id=source_ref_id,
@@ -2813,7 +2813,7 @@ def _refine_one_hub(
 
         # Discover source 2 (existing, now two kind-scoped legs): corpus-wide
         # semantic ANN over paper chunks, plus a patent leg (docs/backlog/
-        # patent-evidence-parity.md). ``store.search_blocks``'s mode-
+        # patent-evidence-parity.md). ``store.search_chunks``'s mode-
         # dispatched wrapper takes one ``kind=`` string, not a list, so this
         # is two calls merged by score (ascending cosine distance) and
         # truncated back to ``topk`` -- the bounded-spend guarantee doesn't
@@ -2835,7 +2835,7 @@ def _refine_one_hub(
         # authority — the citation leg is deliberately unfiltered, and
         # verdicts land mid-loop.
         settled_ref_ids = sorted(attached | _rejected_source_ids(rejected))
-        paper_hits = store.blocks.search_blocks(
+        paper_hits = store.chunks.search_chunks(
             q=claim_sentence,
             query_vec=query_vec,
             mode="semantic",
@@ -2845,7 +2845,7 @@ def _refine_one_hub(
             exclude_ref_ids=settled_ref_ids,
         )
         patent_hits = _drop_patent_claim_blocks(
-            store.blocks.search_blocks(
+            store.chunks.search_chunks(
                 q=claim_sentence,
                 query_vec=query_vec,
                 mode="semantic",
@@ -2973,7 +2973,7 @@ def _refine_one_hub(
                 claim=claim_sentence,
                 scope=scope,
                 target_cite_key=ref.slug or f"ref:{source_ref_id}",
-                target_chunk_ord=block.pos,
+                target_chunk_ord=block.ord,
                 target_chunk_text=block.text,
                 source_kind=ref.kind,
             )
@@ -3201,7 +3201,7 @@ def run_hub_refine_pass(
     are even claimed, since discovery has nothing to search with. This
     mirrors the forward bridge's (``workers/chase.py``) own
     embedder-unavailable degrade rather than silently falling through to
-    ``store.search_blocks``'s internal lexical fallback, which would
+    ``store.search_chunks``'s internal lexical fallback, which would
     quietly turn "ANN over paper chunks" into a much weaker keyword
     match without ever telling the operator.
 

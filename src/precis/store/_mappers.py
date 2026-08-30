@@ -21,8 +21,8 @@ from psycopg import Connection
 
 from precis.store.types import (
     BibEntry,
-    Block,
     CacheEntry,
+    ChunkRow,
     Link,
     Ref,
     S2Neighbor,
@@ -38,7 +38,7 @@ def _coerce_vector(value: Any) -> list[float] | None:
     ``map``) — plus a ``"[..]"`` string when the type isn't registered at all.
     Every raw-vector read routes through here so a library bump can't silently
     break one call site: the >=0.5 ``Vector`` regressed ``get_chunk_vector``
-    (a bare ``[float(x) for x in row[0]]``) while the Block mapper, which
+    (a bare ``[float(x) for x in row[0]]``) while the ChunkRow mapper, which
     already coerced, kept working. ``None`` passes through unchanged.
     """
     if value is None or isinstance(value, list):
@@ -152,13 +152,13 @@ SEMANTIC_DISTANCE_FLOOR = 0.65
 #                       them through) but carry zero semantic content.
 #
 # Both predicates appear in every block-search SQL clause via
-# :func:`_block_noise_clauses` so any new search method picks them up
+# :func:`_chunk_noise_clauses` so any new search method picks them up
 # uniformly. (Critic MAJOR #11 + MINOR #10.)
 _MIN_BLOCK_CHARS = 4
 _MARKUP_ONLY_BLOCK = r"^[[:space:]]*<span[^>]*></span>[[:space:]]*$"
 
 
-def _block_noise_clauses(text_alias: str = "b.text") -> list[str]:
+def _chunk_noise_clauses(text_alias: str = "b.text") -> list[str]:
     """SQL predicates that drop blocks unfit for agent consumption.
 
     Returned as a plain list of WHERE-clause fragments (no leading
@@ -191,8 +191,8 @@ def _pos_to_db(pos: int | None) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _row_to_block(row: tuple) -> Block:
-    """Map a v2 chunks row tuple onto the Block dataclass.
+def _row_to_chunk(row: tuple) -> ChunkRow:
+    """Map a v2 chunks row tuple onto the ChunkRow dataclass.
 
     Tuple layout (matches :data:`_CHUNKS_COLS` /
     :data:`_CHUNKS_COLS_ALIASED`):
@@ -217,7 +217,7 @@ def _row_to_block(row: tuple) -> Block:
     # paper TOC fallback, …), surface the array back into the meta
     # dict so consumers don't have to learn the column split.
     meta = dict(row[8] or {})
-    # ``section_path`` is appended to the projection by every Block-
+    # ``section_path`` is appended to the projection by every ChunkRow-
     # producing SELECT in this module. Defensively check the type:
     # a caller that hand-rolls a projection without the column will
     # pass row[:11] (no 12th elem) and the .get-style branch falls
@@ -232,10 +232,10 @@ def _row_to_block(row: tuple) -> Block:
     keywords = row[13] if len(row) > 13 else None
     if keywords is not None and not isinstance(keywords, list):
         keywords = list(keywords)
-    return Block(
+    return ChunkRow(
         id=row[0],
         ref_id=row[1],
-        pos=row[2],
+        ord=row[2],
         slug=row[3],
         text=row[4],
         token_count=row[5],
@@ -250,7 +250,7 @@ def _row_to_block(row: tuple) -> Block:
 
 
 # v2 chunk-column projection. Used by every SELECT that produces a
-# tuple consumed by :func:`_row_to_block`. The slug, embedding, and
+# tuple consumed by :func:`_row_to_chunk`. The slug, embedding, and
 # density columns are virtual:
 #  - slug comes from ``chunks.meta->>'slug'`` (prose handlers store
 #    their stable citation handle there; non-prose chunks just return
@@ -351,7 +351,7 @@ _REFS_COLS_ALIASED = (
     "r.doi_status, r.doi_validated_at"
 )
 #: Column count produced by ``_REFS_COLS`` / ``_REFS_COLS_ALIASED``.
-#: Joined-projection slicers (chunks ⋈ refs in ``_blocks_ops``)
+#: Joined-projection slicers (chunks ⋈ refs in ``_chunks_ops``)
 #: reference this so adding a column to the projection list above
 #: doesn't silently drift the downstream row layout.
 _REFS_COLS_LEN = 32
@@ -436,7 +436,7 @@ def _row_to_ref(row: tuple) -> Ref:
 
 def _row_to_link(row: tuple) -> Link:
     """Map a v2 links row tuple in the order:
-    (id, src_ref_id, src_pos, dst_ref_id, dst_pos,
+    (id, src_ref_id, src_ord, dst_ref_id, dst_ord,
      relation, set_by, meta, created_at, src_chunk_id, dst_chunk_id)
 
     v2 schema uses ``links.link_id`` (aliased to id in the SELECT)
@@ -454,9 +454,9 @@ def _row_to_link(row: tuple) -> Link:
     return Link(
         id=row[0],
         src_ref_id=row[1],
-        src_pos=row[2],
+        src_ord=row[2],
         dst_ref_id=row[3],
-        dst_pos=row[4],
+        dst_ord=row[4],
         relation=row[5],
         set_by=row[6],
         meta=row[7] or {},
@@ -529,11 +529,11 @@ __all__ = [
     "_REFS_COLS_ALIASED",
     "_REF_LEVEL_POS",
     "_SYSTEM_WRITABLE_PREFIXES",
-    "_block_noise_clauses",
+    "_chunk_noise_clauses",
     "_pos_to_db",
     "_row_to_bib_entry",
-    "_row_to_block",
     "_row_to_cache_entry",
+    "_row_to_chunk",
     "_row_to_link",
     "_row_to_ref",
     "_row_to_s2_neighbor",

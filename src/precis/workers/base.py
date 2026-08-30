@@ -25,7 +25,7 @@ from psycopg import Connection
 
 
 @dataclass(frozen=True)
-class ChunkRow:
+class ClaimedChunk:
     """A chunk claimed for processing.
 
     Carries only the columns a handler needs to do its job (text)
@@ -99,7 +99,7 @@ class WorkerHandler(ABC):
     # Claim — lease via the shared ``chunk_claims`` table
     # ------------------------------------------------------------------
 
-    def claim_batch(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
+    def claim_batch(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
         """Lease up to ``limit`` chunks needing this artifact.
 
         Writes a ``chunk_claims`` row (``artifact = model_name``) for each
@@ -130,7 +130,7 @@ class WorkerHandler(ABC):
             return "", []
         return f"AND {alias}.chunk_kind <> ALL(%(skip_kinds)s)", list(skip)
 
-    def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
+    def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
         # A chunk needs work when it has no *current, non-failed* artifact row:
         # no row at all, or a row built against a stale content_sha (re-derive
         # edited `draft` chunks — drafts edit in place; papers leave content_sha NULL so
@@ -173,9 +173,9 @@ class WorkerHandler(ABC):
         if skip_kinds:
             params["skip_kinds"] = skip_kinds
         rows = conn.execute(sql, params).fetchall()
-        return [ChunkRow(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
+        return [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
 
-    def _claim_reclaim(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
+    def _claim_reclaim(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
         skip_clause, skip_kinds = self._skip_clause("c")
         sql = f"""
             WITH cand AS (
@@ -207,7 +207,7 @@ class WorkerHandler(ABC):
         if skip_kinds:
             params["skip_kinds"] = skip_kinds
         rows = conn.execute(sql, params).fetchall()
-        return [ChunkRow(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
+        return [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
 
     def release_claims(self, conn: Connection, chunk_ids: list[int]) -> None:
         """Drop the ``chunk_claims`` rows for ``chunk_ids`` (this artifact).
@@ -228,7 +228,7 @@ class WorkerHandler(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def process(self, row: ChunkRow) -> object:
+    def process(self, row: ClaimedChunk) -> object:
         """Compute the artifact for ``row``. May raise on failure.
 
         Must be pure: no DB access, no filesystem writes. The
@@ -236,7 +236,7 @@ class WorkerHandler(ABC):
         :meth:`write_failed` (exception) after this returns.
         """
 
-    def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+    def process_batch(self, rows: list[ClaimedChunk]) -> list[object]:
         """Compute artifacts for a whole claimed batch.
 
         Returns a list parallel to ``rows`` where each element is
@@ -339,4 +339,4 @@ class WorkerHandler(ABC):
         )
 
 
-__all__ = ["ArtifactStatus", "ChunkRow", "WorkerHandler"]
+__all__ = ["ArtifactStatus", "ClaimedChunk", "WorkerHandler"]

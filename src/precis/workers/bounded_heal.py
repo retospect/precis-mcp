@@ -132,7 +132,7 @@ def _age_s(state: dict) -> float | None:
 def _file_cap_gripe(store: Store, spec: HealSpec, attempts: int) -> int | None:
     """One human-handoff gripe when the cap latches (mirrors the
     health_digest router's direct insert-ref shape). Best-effort."""
-    from precis.store.types import BlockInsert, Tag
+    from precis.store.types import ChunkInsert, Tag
 
     body = (
         f"bounded_heal: {spec.key}\n"
@@ -150,9 +150,9 @@ def _file_cap_gripe(store: Store, spec: HealSpec, attempts: int) -> int | None:
             ref = store.insert_ref(
                 kind="gripe", slug=None, title=title, meta={}, conn=conn
             )
-            store.blocks.insert_blocks(
+            store.chunks.insert_chunks(
                 ref.id,
-                [BlockInsert(pos=0, text=body, meta={"chunk_kind": "gripe_body"})],
+                [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "gripe_body"})],
                 conn=conn,
             )
             store.add_tag(

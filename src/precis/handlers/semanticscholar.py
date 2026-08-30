@@ -41,7 +41,7 @@ from precis.handlers._cache_base import CacheBackedHandler, FetchResult, _cite_p
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.http import http_client, require_httpx
 from precis.utils.slug import slug_from_text
@@ -494,14 +494,14 @@ class SemanticScholarHandler(CacheBackedHandler):
             text = f"No authors found for {ident} on Semantic Scholar."
             return FetchResult(
                 title=f"S2 authors: {ident}",
-                body_blocks=[BlockInsert(pos=0, text=text)],
+                body_blocks=[ChunkInsert(ord=0, text=text)],
                 cost_usd=None,
                 meta={"key": key, "nav": "authors", "paper": ident, "result_count": 0},
             )
         n = len(authors)
         blocks = [
-            BlockInsert(
-                pos=i,
+            ChunkInsert(
+                ord=i,
                 text=_format_author(a, position=i, n_authors=n),
             )
             for i, a in enumerate(authors)
@@ -530,7 +530,7 @@ class SemanticScholarHandler(CacheBackedHandler):
             text = f"No papers found for author {author_id} on Semantic Scholar."
             return FetchResult(
                 title=f"S2 author papers: {author_id}",
-                body_blocks=[BlockInsert(pos=0, text=text)],
+                body_blocks=[ChunkInsert(ord=0, text=text)],
                 cost_usd=None,
                 meta={
                     "key": key,
@@ -540,7 +540,7 @@ class SemanticScholarHandler(CacheBackedHandler):
                 },
             )
         blocks = [
-            BlockInsert(pos=i, text=_format_paper(p)) for i, p in enumerate(papers)
+            ChunkInsert(ord=i, text=_format_paper(p)) for i, p in enumerate(papers)
         ]
         capped = len(papers) >= _AUTHOR_PAPERS_LIMIT
         suffix = f" ({len(papers)} shown" + (", capped" if capped else "") + ")"
@@ -619,7 +619,7 @@ class SemanticScholarHandler(CacheBackedHandler):
             text = f'No Semantic Scholar results for "{key}".'
             return FetchResult(
                 title=f"Semantic Scholar: {key}",
-                body_blocks=[BlockInsert(pos=0, text=text)],
+                body_blocks=[ChunkInsert(ord=0, text=text)],
                 cost_usd=None,
                 meta={"key": key, "query": key, "result_count": 0, "papers": []},
             )
@@ -632,9 +632,9 @@ class SemanticScholarHandler(CacheBackedHandler):
         # surface (base class) and the injection scan; the agent-facing
         # `get()` render instead reads ``meta['papers']`` (below) so the
         # corpus-diff flags stay live across cache hits.
-        blocks: list[BlockInsert] = []
+        blocks: list[ChunkInsert] = []
         for i, p in enumerate(papers):
-            blocks.append(BlockInsert(pos=i, text=_format_paper(p)))
+            blocks.append(ChunkInsert(ord=i, text=_format_paper(p)))
 
         return FetchResult(
             title=f"Semantic Scholar: {key}",
@@ -678,13 +678,13 @@ class SemanticScholarHandler(CacheBackedHandler):
             text = f"No {endpoint} found for {ident} on Semantic Scholar."
             return FetchResult(
                 title=f"S2 {endpoint}: {ident}",
-                body_blocks=[BlockInsert(pos=0, text=text)],
+                body_blocks=[ChunkInsert(ord=0, text=text)],
                 cost_usd=None,
                 meta={"key": key, "nav": mode, "paper": ident, "result_count": 0},
             )
 
         blocks = [
-            BlockInsert(pos=i, text=_format_paper(p)) for i, p in enumerate(papers)
+            ChunkInsert(ord=i, text=_format_paper(p)) for i, p in enumerate(papers)
         ]
         # Title says which way the hop runs + how many we kept, so a
         # capped page reads as "first N", not "the complete list".

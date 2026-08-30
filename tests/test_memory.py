@@ -251,8 +251,8 @@ def test_upsert_card_combined_is_idempotent(store: Store) -> None:
     """Re-emitting replaces (DELETE+INSERT), never duplicates: a memory
     keeps exactly one ``ord=-1`` card, with the latest text."""
     ref = store.insert_ref(kind="memory", slug=None, title="first", meta={})
-    store.blocks.upsert_card_combined(ref.id, "first")
-    store.blocks.upsert_card_combined(ref.id, "second")
+    store.chunks.upsert_card_combined(ref.id, "first")
+    store.chunks.upsert_card_combined(ref.id, "second")
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ord, text FROM chunks WHERE ref_id = %s ORDER BY ord",
@@ -362,7 +362,7 @@ def test_supersede_caps_merge_count(handler: MemoryHandler) -> None:
 
 
 def _card_last_seen(store: Store, ref_id: int) -> datetime:
-    cids = store.blocks.card_chunk_ids([ref_id])
+    cids = store.chunks.card_chunk_ids([ref_id])
     assert len(cids) == 1
     with store.pool.connection() as conn:
         row = conn.execute(

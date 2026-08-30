@@ -3,7 +3,7 @@ carve-out.
 
 ``GripeHandler._create`` (``handlers/gripe.py``) now routes its base insert
 through this SECURITY DEFINER SQL function instead of hand-rolled insert_ref/
-insert_blocks/add_tag calls, so the function is exercised by the ordinary
+insert_chunks/add_tag calls, so the function is exercised by the ordinary
 ``TestGripe`` suite in ``test_state_kinds.py`` on every gripe creation. These
 tests pin the function's own contract directly against the DB: exactly one
 gripe (ref + gripe_body chunk + STATUS:open tag) and nothing else, and that a
@@ -36,7 +36,7 @@ def test_inserts_ref_body_chunk_and_status_open_tag(store: Store) -> None:
     assert ref.kind == "gripe"
     assert ref.title == "the search page 500s on a percent sign"
 
-    blocks = store.blocks.list_blocks_for_ref(ref_id)
+    blocks = store.chunks.list_chunks_for_ref(ref_id)
     assert len(blocks) == 1
     assert blocks[0].chunk_kind == "gripe_body"
     assert blocks[0].text == "the search page 500s on a percent sign"
@@ -57,8 +57,8 @@ def test_two_calls_create_two_independent_gripes(store: Store) -> None:
     first = _call(store, "first friction report")
     second = _call(store, "second friction report")
     assert first != second
-    assert len(store.blocks.list_blocks_for_ref(first)) == 1
-    assert len(store.blocks.list_blocks_for_ref(second)) == 1
+    assert len(store.chunks.list_chunks_for_ref(first)) == 1
+    assert len(store.chunks.list_chunks_for_ref(second)) == 1
 
 
 def test_security_definer_survives_a_role_with_no_table_grants(store: Store) -> None:
@@ -80,6 +80,6 @@ def test_security_definer_survives_a_role_with_no_table_grants(store: Store) -> 
         conn.commit()
     assert row is not None
     ref_id = int(row[0])
-    blocks = store.blocks.list_blocks_for_ref(ref_id)
+    blocks = store.chunks.list_chunks_for_ref(ref_id)
     assert len(blocks) == 1
     assert blocks[0].chunk_kind == "gripe_body"

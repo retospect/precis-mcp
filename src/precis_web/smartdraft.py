@@ -339,7 +339,7 @@ def build_nodes(
 
 def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
     """The actual build — one join over reading-order (structure) +
-    `list_blocks_for_ref` (keywords) + `block_views` (llm summary) + chunk tags.
+    `list_chunks_for_ref` (keywords) + `block_views` (llm summary) + chunk tags.
     Pins/locks are left False; :func:`_apply_marks` overlays them per request."""
     # Lazy import: `routes.drafts` imports FROM this module (top-level
     # `precis_web.smartdraft`) via `routes.smartdraft` — an eager module-level
@@ -351,7 +351,7 @@ def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
     # NB: do NOT load embeddings here — for a 10k-chunk draft that fetches ~10M
     # floats and (with a python cosine) blocks the page for seconds. Semantic is
     # served by the HNSW index at query time (`semantic_ranks`), not a full scan.
-    blocks = {b.id: b for b in store.blocks.list_blocks_for_ref(ref_id)}
+    blocks = {b.id: b for b in store.chunks.list_chunks_for_ref(ref_id)}
     views = store.drafts.block_views(ref_id)
     tag_map = _load_chunk_tags(store, ref_id)
     nodes: list[ChunkNode] = []
@@ -1074,7 +1074,7 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
     computational-evidence handle (:data:`precis.utils.mentions.
     COMPUTED_EVIDENCE_KINDS`, e.g. ``[st12]``): its cited ref must simply
     exist (right kind, not deleted) — these kinds have no fetch/body-block
-    lifecycle, so the "held" (``count_blocks > 0``) check doesn't apply to
+    lifecycle, so the "held" (``count_chunks > 0``) check doesn't apply to
     them. Deliberately read-time, NOT sha-pinned: a paper can vanish from
     the corpus without the paragraph's own text changing, so a ledger
     checker would rot silently — this is recomputed on every render
@@ -1122,7 +1122,7 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
             ref_id = pk
         held = cache.get(ref_id)
         if held is None:
-            held = store.blocks.count_blocks(ref_id) > 0
+            held = store.chunks.count_chunks(ref_id) > 0
             cache[ref_id] = held
         if not held:
             return False  # cited paper isn't held (a stub)

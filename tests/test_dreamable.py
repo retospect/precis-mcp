@@ -68,7 +68,7 @@ def _set_score(store: Store, chunk_id: int, score_seconds: float) -> None:
 
 
 def test_dreamable_empty_corpus(store: Store) -> None:
-    assert store.blocks.dreamable_region() == (None, [])
+    assert store.chunks.dreamable_region() == (None, [])
 
 
 def test_dreamable_seed_is_most_due(store: Store) -> None:
@@ -78,7 +78,7 @@ def test_dreamable_seed_is_most_due(store: Store) -> None:
     _embed_chunk(store, p2.id, 0, "palladium hydrogen absorption")
     _set_score(store, seed, 100)  # most due
 
-    seed_id, region = store.blocks.dreamable_region(n=5)
+    seed_id, region = store.chunks.dreamable_region(n=5)
     assert seed_id == seed
     assert region  # non-empty
     # the seed itself is its own nearest neighbour → first member
@@ -92,7 +92,7 @@ def test_dreamable_excludes_non_target_kinds(store: Store) -> None:
     todo = store.insert_ref(kind="todo", slug=None, title="t", meta={})
     _embed_chunk(store, todo.id, 0, "shared text")  # near-identical vec
 
-    _seed_id, region = store.blocks.dreamable_region(n=10)
+    _seed_id, region = store.chunks.dreamable_region(n=10)
     assert all(ref.kind in ("paper", "memory") for _b, ref, _c in region)
 
 
@@ -108,7 +108,7 @@ def test_dreamable_seed_skips_unembedded_most_due(store: Store) -> None:
     embedded = _embed_chunk(store, other.id, 0, "embedded but less due")
     _set_score(store, embedded, 50)
 
-    seed_id, region = store.blocks.dreamable_region()
+    seed_id, region = store.chunks.dreamable_region()
     assert seed_id == embedded  # skipped the bare most-due chunk
     assert region  # non-empty
     assert region[0][0].id == embedded
@@ -121,7 +121,7 @@ def test_dreamable_n_limits_region(store: Store) -> None:
         _embed_chunk(store, paper.id, i, f"neighbour {i}")
     _set_score(store, seed, 100)
 
-    _seed_id, region = store.blocks.dreamable_region(n=2)
+    _seed_id, region = store.chunks.dreamable_region(n=2)
     assert len(region) == 2
 
 
@@ -130,9 +130,9 @@ def test_dreamable_region_is_side_effect_free(store: Store) -> None:
     seed = _embed_chunk(store, paper.id, 0, "anchor")
     _set_score(store, seed, 100)
 
-    store.blocks.dreamable_region()  # pure read — must not stamp last_dreamt
+    store.chunks.dreamable_region()  # pure read — must not stamp last_dreamt
     # seed still most-due (score unchanged) → still selected
-    assert store.blocks.select_dream_seed() == seed
+    assert store.chunks.select_dream_seed() == seed
 
 
 # ── dispatch: search(view='dreamable') ──────────────────────────────
@@ -148,7 +148,7 @@ def _put_memory(rt: PrecisRuntime, text: str) -> int:
 def _embed_card(rt: PrecisRuntime, ref_id: int, text: str) -> int:
     store = rt.hub.live_store
     assert store is not None
-    (cid,) = store.blocks.card_chunk_ids([ref_id])
+    (cid,) = store.chunks.card_chunk_ids([ref_id])
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, attempts) "
@@ -191,4 +191,4 @@ def test_dreamable_stamps_rotation(runtime_with_store: PrecisRuntime) -> None:
     out = rt.dispatch("search", {"view": "dreamable", "n": 1})
     assert f"#{a}" in out
     # a now dreamt → its score drops below b → next seed rotates to b
-    assert store.blocks.select_dream_seed() == cb
+    assert store.chunks.select_dream_seed() == cb

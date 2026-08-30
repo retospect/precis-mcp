@@ -160,7 +160,7 @@ class TestWeaveApplies:
         heading_ord = _heading_ord(store, heading.chunk_id)
         links = store.links_for(dossier_id, direction="in", relation="cited-in")
         assert any(
-            link.src_ref_id == paper_id and link.dst_pos == heading_ord
+            link.src_ref_id == paper_id and link.dst_ord == heading_ord
             for link in links
         )
 
@@ -307,7 +307,7 @@ class TestDispositions:
         heading_ord = _heading_ord(store, heading.chunk_id)
         links = store.links_for(dossier_id, direction="in", relation="off-topic-for")
         assert any(
-            link.src_ref_id == paper_id and link.dst_pos == heading_ord
+            link.src_ref_id == paper_id and link.dst_ord == heading_ord
             for link in links
         )
 
@@ -345,7 +345,7 @@ class TestDispositions:
         heading_ord = _heading_ord(store, heading.chunk_id)
         links = store.links_for(dossier_id, direction="in", relation="superseded-in")
         assert any(
-            link.src_ref_id == paper_id and link.dst_pos == heading_ord
+            link.src_ref_id == paper_id and link.dst_ord == heading_ord
             for link in links
         )
 

@@ -28,7 +28,7 @@ def _auto_links(hub: Hub, slug: str) -> set[tuple[int, int | None]]:
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
     return {
-        (link.dst_ref_id, link.dst_pos)
+        (link.dst_ref_id, link.dst_ord)
         for link in hub.live_store.links_for(
             ref.id, direction="out", relation="related-to"
         )
@@ -132,7 +132,7 @@ def _cite_links(hub: Hub, slug: str) -> set[tuple[int, int | None]]:
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
     return {
-        (link.dst_ref_id, link.dst_pos)
+        (link.dst_ref_id, link.dst_ord)
         for link in hub.live_store.links_for(ref.id, direction="out", relation="cites")
         if (link.meta or {}).get("auto") == "mention"
     }
@@ -145,11 +145,11 @@ def test_paper_chunk_ref_is_a_cites_edge_not_related_to(
     CITATION — it materialises a ``cites`` edge, not ``related-to``. A
     memory reference in the same draft stays ``related-to`` (citations
     are to the literature; links are to our own notes)."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    hub.live_store.blocks.insert_blocks(
-        paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
+    hub.live_store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text="We measured 12% FE.", meta={})]
     )
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(
@@ -189,11 +189,11 @@ def test_cites_edge_grounds_at_source_draft_chunk(
     reader / the citation tree can resolve back to the originating
     paragraph. Before grounding, every draft cite landed ref-level
     (``src_pos is None``)."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug="wu2022a", title="Paper")
-    hub.live_store.blocks.insert_blocks(
-        paper.id, [BlockInsert(pos=0, text="Rotaxane nanomachines.", meta={})]
+    hub.live_store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text="Rotaxane nanomachines.", meta={})]
     )
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(
@@ -225,7 +225,7 @@ def test_cites_edge_grounds_at_source_draft_chunk(
         if (link.meta or {}).get("auto") == "mention"
     ]
     assert len(cites) == 1
-    assert cites[0].src_pos == para_ord  # grounded at the paragraph…
+    assert cites[0].src_ord == para_ord  # grounded at the paragraph…
     assert cites[0].src_chunk_id == para.chunk_id  # …not ref-level (None)
 
 
@@ -235,11 +235,11 @@ def test_same_ref_cited_from_two_chunks_is_two_edges(
     """Two different paragraphs each citing the same paper chunk yield two
     distinct chunk-grounded edges (one per citing paragraph), not one
     collapsed ref-level edge — each passage keeps its own provenance."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    hub.live_store.blocks.insert_blocks(
-        paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
+    hub.live_store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text="We measured 12% FE.", meta={})]
     )
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(

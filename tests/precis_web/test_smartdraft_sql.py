@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from precis.store import BlockInsert
+from precis.store import ChunkInsert
 from precis.store.types import Tag
 from precis_web.app import create_app
 from precis_web.config import WebConfig
@@ -28,7 +28,7 @@ def test_tag_suggest_treats_percent_literally(store) -> None:
     ``%`` would turn it into a "t, anything, t" wildcard and wrongly pull
     in the latter too (and must not 500)."""
     ref = store.insert_ref(kind="draft", slug="sql-tagsuggest", title="t")
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text="body")])
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="body")])
     store.add_tag(ref.id, Tag.open("pct%tag"), pos=0)
     store.add_tag(ref.id, Tag.open("tXt-plain"), pos=0)
 

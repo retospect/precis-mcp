@@ -611,7 +611,7 @@ def _select_lens_block(store: Store) -> tuple[str, str] | None:
     if draw is None:
         log.info("dream_agent: no oracle traditions loaded; running unlensed")
         return None
-    lens_id = f"oracle:{draw.ref.slug}~{draw.block.pos}"
+    lens_id = f"oracle:{draw.ref.slug}~{draw.block.ord}"
     log.info("dream_agent: lens=%s", lens_id)
     return render_lens_block_from_draw(draw), lens_id
 

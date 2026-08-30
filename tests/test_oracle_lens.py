@@ -33,7 +33,7 @@ from tests._fakes import FakeStore as _FakeStoreBase
 class FakeStore(_FakeStoreBase):
     """Minimal store exposing just the two methods ``draw_lens_entry`` calls.
 
-    ``list_blocks_for_ref`` is inherited from the shared base — it reads
+    ``list_chunks_for_ref`` is inherited from the shared base — it reads
     the same ``self._blocks`` map populated below.
     """
 
@@ -47,7 +47,7 @@ class FakeStore(_FakeStoreBase):
             self._blocks[i] = [
                 SimpleNamespace(
                     id=i * 100 + pos,
-                    pos=pos,
+                    ord=pos,
                     text=f"{title} body",
                     meta={"section_path": [title]},
                 )

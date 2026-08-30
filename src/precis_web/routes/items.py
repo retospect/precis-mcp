@@ -124,7 +124,7 @@ def _run_search(
             query_vec = embedder.embed_one(q)
         except Exception:
             query_vec = None
-    hits = store.blocks.search_chunks_across_kinds(
+    hits = store.chunks.search_chunks_across_kinds(
         kinds=kinds,
         q=q,
         query_vec=query_vec,
@@ -142,8 +142,8 @@ def _run_search(
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     tags_bulk = store.ref_tags_bulk(ref_ids)
     idents = store.paper_identifiers(ref_ids)
-    summaries = store.blocks.chunk_summaries_bulk(
-        [(ref.id, block.pos) for block, ref, _ in hits]
+    summaries = store.chunks.chunk_summaries_bulk(
+        [(ref.id, block.ord) for block, ref, _ in hits]
     )
     # A search hit matched a chunk, so the ref is ingested by definition.
     rows = [
@@ -155,7 +155,7 @@ def _run_search(
             has_chunks=True,
             tags=tags_bulk.get(ref.id),
             identifier=idents.get(ref.id),
-            summary=summaries.get((ref.id, block.pos)),
+            summary=summaries.get((ref.id, block.ord)),
         )
         for block, ref, score in hits
     ]

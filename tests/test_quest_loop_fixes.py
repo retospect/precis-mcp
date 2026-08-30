@@ -145,7 +145,7 @@ class TestTickGrounding:
             entry_type="hypothesis",
             by="agent",
         )
-        before = len(store.blocks.list_blocks_for_ref(qid))
+        before = len(store.chunks.list_chunks_for_ref(qid))
         payload = {
             "logbook": [
                 {
@@ -160,7 +160,7 @@ class TestTickGrounding:
         # +1, not +0: a successful tick always writes one chars-metered `cost`
         # deed now (gripe 162594), independent of whether the duplicate
         # hypothesis itself was dropped.
-        assert len(store.blocks.list_blocks_for_ref(qid)) == before + 1
+        assert len(store.chunks.list_chunks_for_ref(qid)) == before + 1
 
     def test_distinct_hypothesis_is_kept(self, store: Any) -> None:
         qid = _mk_quest(store, "A quest")

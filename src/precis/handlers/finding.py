@@ -101,7 +101,7 @@ from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert, Ref, Tag
+from precis.store.types import ChunkInsert, Ref, Tag
 from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
@@ -566,11 +566,11 @@ class FindingHandler(NumericRefHandler):
                 )
                 # finding_body chunk at ord=0 (Path B: one body
                 # chunk; setup folded into prose).
-                self.store.blocks.insert_blocks(
+                self.store.chunks.insert_chunks(
                     ref.id,
                     [
-                        BlockInsert(
-                            pos=0,
+                        ChunkInsert(
+                            ord=0,
                             text=body_clean,
                             meta={"chunk_kind": "finding_body"},
                         )
@@ -1454,7 +1454,7 @@ class FindingHandler(NumericRefHandler):
             for link in misattrib:
                 target = self._fetch_ref_any_kind(link.dst_ref_id)
                 legacy = target.slug or f"ref:{link.dst_ref_id}"
-                pos = link.dst_pos
+                pos = link.dst_ord
                 # ref-level → record universal handle; block-level
                 # keeps the legacy ``slug~pos`` (chunk_id unavailable here).
                 if pos is None:

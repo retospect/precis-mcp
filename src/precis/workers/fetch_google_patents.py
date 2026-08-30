@@ -53,7 +53,7 @@ from precis.handlers._patent_ingest import (
     FULLTEXT_UNAVAILABLE_TAG as _UNAVAILABLE_TAG,
 )
 from precis.store import Tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -616,7 +616,7 @@ def _fetch_and_ingest(
         )
         return outcome
 
-    # Build BlockInsert list. Description blocks land first (chunk_kind=
+    # Build ChunkInsert list. Description blocks land first (chunk_kind=
     # 'patent_section'), then claims (chunk_kind='patent_claim'). The
     # abstract goes into meta rather than as a chunk — the existing
     # OPS biblio meta column already houses it and the patent renderer
@@ -631,13 +631,13 @@ def _fetch_and_ingest(
         )
         return outcome
 
-    offset = store.blocks.count_blocks(ref.id)
-    inserts: list[BlockInsert] = []
+    offset = store.chunks.count_chunks(ref.id)
+    inserts: list[ChunkInsert] = []
 
     for i, text in enumerate(parsed.description_paragraphs):
         inserts.append(
-            BlockInsert(
-                pos=offset + i,
+            ChunkInsert(
+                ord=offset + i,
                 text=text,
                 meta={"chunk_kind": "patent_section", "source": "patents.google.com"},
             )
@@ -645,15 +645,15 @@ def _fetch_and_ingest(
     desc_count = len(parsed.description_paragraphs)
     for j, text in enumerate(parsed.claim_texts):
         inserts.append(
-            BlockInsert(
-                pos=offset + desc_count + j,
+            ChunkInsert(
+                ord=offset + desc_count + j,
                 text=text,
                 meta={"chunk_kind": "patent_claim", "source": "patents.google.com"},
             )
         )
 
     if inserts:
-        store.blocks.insert_blocks(ref.id, inserts)
+        store.chunks.insert_chunks(ref.id, inserts)
 
     # Update meta with the abstract (only if longer than what OPS gave
     # us) + the has_* flags.

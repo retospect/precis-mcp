@@ -151,7 +151,7 @@ class TestIngestPaper:
         assert ref.meta["tradition"] == "minitest"
         assert "ingested_at" in ref.meta
 
-        blocks = store.blocks.list_blocks_for_ref(ref.id)
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
         assert len(blocks) == 2
         assert blocks[0].text.startswith("The first lesson.")
         assert "_source_: test/1" in blocks[0].text
@@ -235,7 +235,7 @@ class TestIngestPaper:
         ref = store.get_ref(kind="oracle", id="minitest")
         assert ref is not None
         assert ref.title == "Mini Test (v2)"
-        blocks = store.blocks.list_blocks_for_ref(ref.id)
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].text.startswith("Replaced.")
 
@@ -513,14 +513,14 @@ class TestBundledIngest:
         )
         ref = store.get_ref(kind="oracle", id="iching")
         assert ref is not None
-        blocks = store.blocks.list_blocks_for_ref(ref.id)
-        positions = sorted(b.pos for b in blocks)
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
+        positions = sorted(b.ord for b in blocks)
         assert positions == list(range(1, 65)), (
             "I-Ching positions must be 1..64 inclusive; got "
             f"{positions[:3]}..{positions[-3:]}"
         )
         # And the entry at pos=49 must be the title-named "Hexagram 49".
-        block_49 = next(b for b in blocks if b.pos == 49)
+        block_49 = next(b for b in blocks if b.ord == 49)
         section_path = block_49.meta.get("section_path", [])
         assert section_path, "block.meta.section_path missing"
         assert "Hexagram 49" in section_path[0], (
@@ -542,5 +542,5 @@ class TestBundledIngest:
         )
         ref = store.get_ref(kind="oracle", id="minitest")
         assert ref is not None
-        blocks = store.blocks.list_blocks_for_ref(ref.id)
-        assert sorted(b.pos for b in blocks) == [1, 2]
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
+        assert sorted(b.ord for b in blocks) == [1, 2]

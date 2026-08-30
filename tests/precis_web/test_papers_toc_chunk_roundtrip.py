@@ -7,7 +7,7 @@ Regression for the paper-viewer chunk-anchoring gap: the TOC shows a segment's
 nothing in the UI actually accepted those forms before this slice — a row
 click, or a pasted handle, was a dead end. This drives the real
 ``build_toc_segments`` clustering against a fake store shared by both
-halves (``list_blocks_for_ref`` for the TOC, ``pool.connection`` for the
+halves (``list_chunks_for_ref`` for the TOC, ``pool.connection`` for the
 chunk lookup), so a segment's own ``lo`` is fed straight back into the
 resolver, same as a TOC click does.
 """
@@ -26,14 +26,14 @@ from precis_web.routes.papers import _cited_chunk
 
 
 class _Store:
-    """Backs both ``list_blocks_for_ref`` (TOC clustering) and
+    """Backs both ``list_chunks_for_ref`` (TOC clustering) and
     ``pool.connection`` (``_cited_chunk``'s raw chunk lookup) off the same
     seeded ``{pos: (chunk_id, text, page)}`` rows — the 3-column shape
     ``_cited_chunk`` now selects (``chunk_id`` drives the ``pc<id>`` handle)."""
 
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(self, rows: dict[int, tuple[int, str, int]]) -> None:
         self._rows = rows
@@ -54,7 +54,7 @@ class _Store:
 
         self.pool = type("P", (), {"connection": staticmethod(_conn)})()
 
-    def list_blocks_for_ref(self, ref_id: int, *, pos_range=None):
+    def list_chunks_for_ref(self, ref_id: int, *, pos_range=None):
         items = sorted(self._rows.items())
         if pos_range is not None:
             lo, hi = pos_range
@@ -65,7 +65,7 @@ class _Store:
         half = len(self._rows) // 2
         return [
             SimpleNamespace(
-                pos=p, keywords=["alpha", "beta"] if p < half else ["gamma", "delta"]
+                ord=p, keywords=["alpha", "beta"] if p < half else ["gamma", "delta"]
             )
             for p, _r in items
         ]

@@ -14,9 +14,9 @@ from domain mixins, each owning one slice of the persistence surface:
 ``drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the first
 domain carved *out* of the mixin stack into a composed sub-store —
 reached **only** as ``store.drafts.*``; the flat delegations are gone
-(see ``docs/backlog/codereview-store-decomposition.md``). ``blocks``
-(:class:`precis.store._blocks_ops.BlockStore`) is the second —
-reached **only** as ``store.blocks.*``.
+(see ``docs/backlog/codereview-store-decomposition.md``). ``chunks``
+(:class:`precis.store._chunks_ops.ChunkStore`) is the second —
+reached **only** as ``store.chunks.*``.
 
 The public API is unchanged: callers that previously imported
 ``Store`` and called ``store.get_ref(...)`` / ``store.add_tag(...)``
@@ -51,9 +51,9 @@ from psycopg_pool import ConnectionPool
 from precis.errors import BadInput
 from precis.hints import Hint, HintBus
 from precis.store._argument_ops import ArgumentGraphMixin
-from precis.store._blocks_ops import BlockStore
 from precis.store._cache_ops import CacheMixin
 from precis.store._cad_ops import CadMixin
+from precis.store._chunks_ops import ChunkStore
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._component_ops import ComponentMixin
 from precis.store._draft_ops import DraftStore
@@ -71,10 +71,10 @@ from precis.store._mappers import (
     _REF_LEVEL_POS,
     _SYSTEM_WRITABLE_PREFIXES,
     SEMANTIC_DISTANCE_FLOOR,
-    _block_noise_clauses,
+    _chunk_noise_clauses,
     _pos_to_db,
-    _row_to_block,
     _row_to_cache_entry,
+    _row_to_chunk,
     _row_to_link,
     _row_to_ref,
 )
@@ -128,9 +128,9 @@ class Store(
 
     Composed from domain mixins — see module docstring. Mixin order
     is alphabetical by domain; Python's MRO resolves cleanly because
-    none of them collide on method names. ``drafts`` and ``blocks``
+    none of them collide on method names. ``drafts`` and ``chunks``
     are composed rather than mixed in — see :attr:`drafts` /
-    :attr:`blocks`.
+    :attr:`chunks`.
     """
 
     def __init__(self, pool: ConnectionPool, *, dsn: str | None = None) -> None:
@@ -171,10 +171,10 @@ class Store(
         return DraftStore(self.core, host=self)
 
     @cached_property
-    def blocks(self) -> BlockStore:
-        """The blocks (chunks) domain, composed rather than mixed in —
+    def chunks(self) -> ChunkStore:
+        """The chunks domain, composed rather than mixed in —
         same carve pattern as :attr:`drafts`."""
-        return BlockStore(self.core, host=self)
+        return ChunkStore(self.core, host=self)
 
     def emit_hint(self, hint: Hint) -> None:
         """Emit a non-breaking agent hint if a bus is wired and we're inside a
@@ -350,10 +350,10 @@ __all__ = [
     # Psycopg re-export used by some tests that patch Jsonb coercion.
     "Jsonb",
     "Store",
-    "_block_noise_clauses",
+    "_chunk_noise_clauses",
     "_pos_to_db",
-    "_row_to_block",
     "_row_to_cache_entry",
+    "_row_to_chunk",
     "_row_to_link",
     "_row_to_ref",
 ]

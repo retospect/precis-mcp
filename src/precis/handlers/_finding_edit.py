@@ -237,7 +237,7 @@ def edit(
             chain[-1] = {
                 "ref_id": picked_link.dst_ref_id,
                 "chunk_id": None,
-                "ord": picked_link.dst_pos,
+                "ord": picked_link.dst_ord,
             }
             store.update_ref(finding_ref_id, meta_patch={"chain": chain}, conn=conn)
 

@@ -26,7 +26,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers.memory import MemoryHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 from precis.store.types import Relation
 from precis.utils import handle_registry
 from tests.conftest import id_of
@@ -54,9 +54,9 @@ def _seed_paper_with_blocks(
     store: Store, slug: str = "wang2020state", n_blocks: int = 3
 ) -> int:
     ref_id = _seed_paper(store, slug=slug)
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref_id,
-        [BlockInsert(pos=i, text=f"block {i}", slug=f"b{i}") for i in range(n_blocks)],
+        [ChunkInsert(ord=i, text=f"block {i}", slug=f"b{i}") for i in range(n_blocks)],
     )
     return ref_id
 
@@ -176,8 +176,8 @@ class TestStoreLinkCRUD:
         link = store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
         assert link.src_ref_id == a
         assert link.dst_ref_id == b
-        assert link.src_pos is None
-        assert link.dst_pos is None
+        assert link.src_ord is None
+        assert link.dst_ord is None
         assert link.relation == "related-to"
 
     def test_add_link_idempotent(self, store: Store) -> None:
@@ -215,8 +215,8 @@ class TestStoreLinkCRUD:
             dst_pos=7,
             relation="see-also",
         )
-        assert link.src_pos == 5
-        assert link.dst_pos == 7
+        assert link.src_ord == 5
+        assert link.dst_ord == 7
 
     def test_remove_link_specific_relation(self, store: Store) -> None:
         a = _seed_memory(store)
@@ -299,7 +299,7 @@ class TestStoreLinkCRUD:
         assert link.src_chunk_id == _chunk_id_at(paper, 5)
         assert link.dst_chunk_id == _chunk_id_at(paper, 7)
         # … and travel together with the ord projection, not instead of it.
-        assert link.src_pos == 5 and link.dst_pos == 7
+        assert link.src_ord == 5 and link.dst_ord == 7
 
         # a ref-level edge (no pos on either side) has NULL chunk ids.
         m = _seed_memory(store)
@@ -554,7 +554,7 @@ class TestMemoryHandlerLink:
         new_id = id_of(out.body)
         links = store.links_for(new_id, direction="out")
         assert links[0].dst_ref_id == target
-        assert links[0].dst_pos == 3
+        assert links[0].dst_ord == 3
 
     def test_link_on_update(self, memory_handler: MemoryHandler, store: Store) -> None:
         _seed_paper(store)

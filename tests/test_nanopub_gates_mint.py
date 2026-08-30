@@ -476,7 +476,7 @@ def test_reword_cannot_launder_the_structural_arms(store: Any) -> None:
     citing, chunk, sha = _seed_paper(store)
     hub = _seed_hub(store, "DFT shows the laundered claim holds.", citing, chunk)
     stub = _await_stub(store, hub, "The primary a reword cannot hide")
-    store.blocks.replace_body_chunk(
+    store.chunks.replace_body_chunk(
         hub,
         "DFT shows the laundered claim holds. Paper not in corpus — needs acquisition.",
         chunk_kind="finding_body",
@@ -485,7 +485,7 @@ def test_reword_cannot_launder_the_structural_arms(store: Any) -> None:
     assert evidence.ACQUISITION_MARKER.search(evidence.hub_body(store, hub))
 
     # The reword the retitle door performs: body replaced, marker gone.
-    store.blocks.replace_body_chunk(
+    store.chunks.replace_body_chunk(
         hub,
         "DFT shows the reworded claim holds.",
         chunk_kind="finding_body",
@@ -507,7 +507,7 @@ def test_backfill_moves_the_prose_marker_onto_the_declared_flag(
     marked = _seed_hub(store, "DFT shows the legacy claim holds.", citing, chunk)
     clean = _seed_hub(store, "DFT shows the tidy claim holds.", citing, chunk)
     body = "DFT shows the legacy claim holds. Paper not in corpus — needs acquisition."
-    store.blocks.replace_body_chunk(
+    store.chunks.replace_body_chunk(
         marked, body, chunk_kind="finding_body", source="agent"
     )
 
@@ -541,7 +541,7 @@ def test_backfill_sees_marked_findings_that_are_not_canonical_hubs(
     left, retirable" while their acquisition state lived only in prose."""
     citing, chunk, _sha = _seed_paper(store)
     chased = _seed_hub(store, "DFT shows the chased claim holds.", citing, chunk)
-    store.blocks.replace_body_chunk(
+    store.chunks.replace_body_chunk(
         chased,
         "DFT shows the chased claim holds. Paper not in corpus — needs acquisition.",
         chunk_kind="finding_body",
@@ -882,7 +882,7 @@ def test_approve_reword_cannot_launder_the_acquisition_marker(store: Any) -> Non
     paper, chunk, sha = _seed_paper(store)
     hub = _seed_hub(store, "DFT shows the pre-review sentence holds.", paper, chunk)
     # Chase-born shape: the body is harvester prose, not a sentence copy.
-    store.blocks.replace_body_chunk(
+    store.chunks.replace_body_chunk(
         hub,
         "DFT shows the pre-review sentence holds. Paper not in corpus — "
         "needs acquisition.",
@@ -917,7 +917,7 @@ def test_approve_retry_after_a_marker_refusal_still_refuses(store: Any) -> None:
         "DFT shows the pre-review sentence holds. Paper not in corpus — "
         "needs acquisition."
     )
-    store.blocks.replace_body_chunk(
+    store.chunks.replace_body_chunk(
         hub, marked, chunk_kind="finding_body", source="test"
     )
     reworded = "DFT shows MOFs can be anisotropic up to 400:1."

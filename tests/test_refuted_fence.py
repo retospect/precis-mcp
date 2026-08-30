@@ -12,8 +12,8 @@ fence-decision helper, mirroring ``test_speculative_fence.py`` /
 from __future__ import annotations
 
 from precis.embedder import MockEmbedder
-from precis.store import BlockInsert, Store
-from precis.store._blocks_ops import BlockStore
+from precis.store import ChunkInsert, Store
+from precis.store._chunks_ops import ChunkStore
 from precis.store._tag_filter import REFUTED_TAG, is_refuted_tag, refuted_fence
 from precis.store.types import Tag
 
@@ -22,9 +22,9 @@ _EMB = MockEmbedder(dim=1024)
 
 def _finding(store: Store, text: str, *, refuted: bool) -> int:
     ref = store.insert_ref(kind="finding", slug=None, title=text[:60])
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=text, embedding=_EMB.embed_one(text))],
+        [ChunkInsert(ord=0, text=text, embedding=_EMB.embed_one(text))],
     )
     if refuted:
         store.add_tag(ref.id, Tag.closed("STATUS", "refuted"), replace_prefix=True)
@@ -54,7 +54,7 @@ def test_refuted_fence_is_parameterless_not_exists() -> None:
 
 
 def test_fence_decision() -> None:
-    decide = BlockStore._fence_refuted
+    decide = ChunkStore._fence_refuted
     assert decide(None) is True
     assert decide(["topic:x"]) is True
     assert decide([REFUTED_TAG]) is False  # explicit opt-in
@@ -66,7 +66,7 @@ def test_fence_decision() -> None:
 def test_lexical_fences_refuted_by_default(store: Store) -> None:
     live = _finding(store, "gate dielectric withstands 2.4 kV", refuted=False)
     dead = _finding(store, "gate dielectric fails above 2.4 kV", refuted=True)
-    ids = {ref.id for _b, ref, _s in store.blocks.search_blocks_lexical(q="dielectric")}
+    ids = {ref.id for _b, ref, _s in store.chunks.search_chunks_lexical(q="dielectric")}
     assert live in ids
     assert dead not in ids
 
@@ -76,7 +76,7 @@ def test_lexical_shows_refuted_on_explicit_tag(store: Store) -> None:
     _finding(store, "gate dielectric withstands 2.4 kV", refuted=False)
     ids = {
         ref.id
-        for _b, ref, _s in store.blocks.search_blocks_lexical(
+        for _b, ref, _s in store.chunks.search_chunks_lexical(
             q="dielectric", tags=[REFUTED_TAG]
         )
     }
@@ -96,7 +96,7 @@ def test_keywords_fences_refuted_by_default(store: Store) -> None:
         )
     ids = {
         ref.id
-        for _b, ref, _s in store.blocks.search_blocks_keywords(terms=["annealing"])
+        for _b, ref, _s in store.chunks.search_chunks_keywords(terms=["annealing"])
     }
     assert live in ids
     assert dead not in ids
@@ -111,7 +111,7 @@ def test_semantic_fences_refuted_by_default(store: Store) -> None:
     qv = _EMB.embed_one("quantum annealing fidelity")
     ids = {
         ref.id
-        for _b, ref, _s in store.blocks.search_blocks_semantic(
+        for _b, ref, _s in store.chunks.search_chunks_semantic(
             query_vec=qv, max_distance=None
         )
     }
@@ -124,7 +124,7 @@ def test_semantic_shows_refuted_on_explicit_tag(store: Store) -> None:
     qv = _EMB.embed_one("quantum annealing fidelity")
     ids = {
         ref.id
-        for _b, ref, _s in store.blocks.search_blocks_semantic(
+        for _b, ref, _s in store.chunks.search_chunks_semantic(
             query_vec=qv, max_distance=None, tags=[REFUTED_TAG]
         )
     }
@@ -140,7 +140,7 @@ def test_fused_fences_refuted_by_default(store: Store) -> None:
     qv = _EMB.embed_one("barrier height")
     ids = {
         ref.id
-        for _b, ref, _s in store.blocks.search_blocks_fused(q="barrier", query_vec=qv)
+        for _b, ref, _s in store.chunks.search_chunks_fused(q="barrier", query_vec=qv)
     }
     assert live in ids
     assert dead not in ids
@@ -152,14 +152,14 @@ def test_fused_shows_refuted_on_explicit_tag(store: Store) -> None:
     qv = _EMB.embed_one("barrier height")
     ids = {
         ref.id
-        for _b, ref, _s in store.blocks.search_blocks_fused(
+        for _b, ref, _s in store.chunks.search_chunks_fused(
             q="barrier", query_vec=qv, tags=[REFUTED_TAG]
         )
     }
     assert ids == {dead}
 
 
-# ── cross-kind fan-out (search_blocks_multi / search_chunks_across_kinds
+# ── cross-kind fan-out (search_chunks_multi / search_chunks_across_kinds
 #    both reuse the single-leg lexical/semantic methods, so they inherit
 #    the fence transitively — no separate splice site to wire) ─────────
 
@@ -168,7 +168,7 @@ def test_cross_kind_fanout_fences_refuted_by_default(store: Store) -> None:
     live = _finding(store, "photocatalytic rate unaffected by pH", refuted=False)
     dead = _finding(store, "photocatalytic rate not affected by pH", refuted=True)
     qv = _EMB.embed_one("photocatalytic rate pH")
-    hits = store.blocks.search_chunks_across_kinds(
+    hits = store.chunks.search_chunks_across_kinds(
         kinds=["finding"], q="photocatalytic", query_vec=qv
     )
     ids = {ref.id for _b, ref, _s in hits}

@@ -567,7 +567,7 @@ def test_has_plan_and_plan_ledger_block(hub: Hub) -> None:
 
 #: Distinctive terms shared with the matching paper chunk below, so the
 #: lexical recall leg (no embedder configured in the test env) finds a
-#: real hit via ``websearch_to_tsquery`` — no ``search_blocks_multi``
+#: real hit via ``websearch_to_tsquery`` — no ``search_chunks_multi``
 #: monkeypatch needed.
 _SECTION_TEXT = (
     "Piezo oscillator thermal drift calibration routine for the "
@@ -608,11 +608,11 @@ def _paper_with_matching_chunk(hub: Hub, *, slug: str) -> tuple[int, str]:
     """A real paper ref with one body chunk whose text overlaps
     :data:`_SECTION_TEXT`'s distinctive terms. Returns ``(paper_ref_id,
     chunk_text)``."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug=slug, title="Cartridge Paper")
-    hub.live_store.blocks.insert_blocks(
-        paper.id, [BlockInsert(pos=0, text=_PAPER_CHUNK_TEXT)]
+    hub.live_store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text=_PAPER_CHUNK_TEXT)]
     )
     return paper.id, _PAPER_CHUNK_TEXT
 

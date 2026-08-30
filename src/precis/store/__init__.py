@@ -4,7 +4,7 @@ Public surface:
     Store              — high-level store handle, owns the psycopg pool
     Migrator           — forward-only migration runner
 
-    Ref, Block, Link, Tag, CacheEntry, BlockInsert  — frozen row types
+    Ref, ChunkRow, Link, Tag, CacheEntry, ChunkInsert  — frozen row types
     Density, CacheFreshness, Namespace, Relation, ActorSlug  — type aliases
 
 Typing the seam: functions that need only a sliver of the Store take a
@@ -35,10 +35,10 @@ from precis.store.store import SEMANTIC_DISTANCE_FLOOR, Store
 from precis.store.types import (
     ActorSlug,
     BibEntry,
-    Block,
-    BlockInsert,
     CacheEntry,
     CacheFreshness,
+    ChunkInsert,
+    ChunkRow,
     Density,
     Link,
     Namespace,
@@ -53,10 +53,10 @@ __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
     "ActorSlug",
     "BibEntry",
-    "Block",
-    "BlockInsert",
     "CacheEntry",
     "CacheFreshness",
+    "ChunkInsert",
+    "ChunkRow",
     "Density",
     "Link",
     "Migrator",

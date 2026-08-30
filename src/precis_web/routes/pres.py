@@ -72,11 +72,11 @@ async def detail(request: Request, slug: str) -> HTMLResponse:
     if ref is None:
         raise NotFound(f"presentation {slug!r} not found")
 
-    blocks = store.blocks.list_blocks_for_ref(ref.id)
+    blocks = store.chunks.list_chunks_for_ref(ref.id)
     slides = [
         {
-            "pos": b.pos,
-            "title": (b.meta or {}).get("slide_title") or f"Slide {b.pos + 1}",
+            "pos": b.ord,
+            "title": (b.meta or {}).get("slide_title") or f"Slide {b.ord + 1}",
         }
         for b in blocks
     ]

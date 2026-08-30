@@ -217,7 +217,7 @@ def _conv_turns(store: Store, ref_id: int) -> list[dict[str, Any]]:
     into the MCP get(view='last-meta').
     """
     turns: list[dict[str, Any]] = []
-    for b in store.blocks.list_blocks_for_ref(ref_id):
+    for b in store.chunks.list_chunks_for_ref(ref_id):
         meta = getattr(b, "meta", None) or {}
         author = meta.get("author") or "?"
         extra = [
@@ -227,7 +227,7 @@ def _conv_turns(store: Store, ref_id: int) -> list[dict[str, Any]]:
         ]
         turns.append(
             {
-                "pos": b.pos,
+                "pos": b.ord,
                 "author": author,
                 "dot": _author_dot(author),
                 "ts": _fmt_turn_ts(meta.get("ts")),
@@ -269,8 +269,8 @@ def _followup_discussions(store: Store, ref_id: int) -> list[dict[str, Any]]:
                 "id": conv.id,
                 "title": (conv.title or "(untitled)").split("\n", 1)[0][:120],
                 "url": f"/refs/conv/{conv.id}",
-                "turns": store.blocks.count_blocks(conv.id),
-                "chunk": lnk.dst_pos,
+                "turns": store.chunks.count_chunks(conv.id),
+                "chunk": lnk.dst_ord,
             }
         )
     return rows
@@ -553,7 +553,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
 
     entries = [
         b
-        for b in store.blocks.list_blocks_for_ref(qid)
+        for b in store.chunks.list_chunks_for_ref(qid)
         if getattr(b, "chunk_kind", None) == LOG_KIND
     ]
     momentum = quest_momentum(store, qid, servers=live_servers, entries=entries)
@@ -825,7 +825,7 @@ async def quest_logbook(request: Request, qid: int, page: int = 1) -> HTMLRespon
 
     entries = [
         b
-        for b in store.blocks.list_blocks_for_ref(qid)
+        for b in store.chunks.list_chunks_for_ref(qid)
         if getattr(b, "chunk_kind", None) == LOG_KIND
     ]
     entries.reverse()  # newest-first, same order as the hub's tail
@@ -1911,7 +1911,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     # the generic detail body renders a markdown-ish chunk (linkify_toon
     # in the template) — no second markdown renderer to drift.
     body_text = ""
-    for b in store.blocks.list_blocks_for_ref(ref.id):
+    for b in store.chunks.list_chunks_for_ref(ref.id):
         if getattr(b, "chunk_kind", None) == "pathway_body":
             body_text = b.text or ""
             break
@@ -2254,9 +2254,9 @@ def _expand_handle(
     if chunk and chunk.startswith("~") and chunk[1:].isdigit():
         ord_pos = int(chunk[1:])
         try:
-            blocks = store.blocks.list_blocks_for_ref(ref.id)
+            blocks = store.chunks.list_chunks_for_ref(ref.id)
             for b in blocks:
-                if getattr(b, "pos", -1) == ord_pos:
+                if getattr(b, "ord", -1) == ord_pos:
                     preview = (b.text or "")[:400].rstrip()
                     if len(b.text or "") > 400:
                         preview += "…"
@@ -2267,7 +2267,7 @@ def _expand_handle(
     if not preview:
         # Fall back to the first block (or the title-derived hint).
         try:
-            blocks = store.blocks.list_blocks_for_ref(ref.id)
+            blocks = store.chunks.list_chunks_for_ref(ref.id)
             if blocks:
                 has_chunks = True
                 preview = (blocks[0].text or "")[:400].rstrip()
@@ -2728,7 +2728,7 @@ async def detail(
     # it. Tag the response so the template can show a quiet banner.
     body_disabled_notice: str | None = None
     if is_error and "disabled in this build" in (body or ""):
-        cached_chunks = list(store.blocks.list_blocks_for_ref(ref.id))
+        cached_chunks = list(store.chunks.list_chunks_for_ref(ref.id))
         if cached_chunks:
             cached_text = "\n\n".join(
                 (b.text or "").strip() for b in cached_chunks if b.text
@@ -2748,10 +2748,10 @@ async def detail(
     # + claims) as one row per chunk — what's actually in the corpus.
     chunks: list[dict[str, Any]] = []
     if kind == "patent":
-        for b in store.blocks.list_blocks_for_ref(ref.id):
+        for b in store.chunks.list_chunks_for_ref(ref.id):
             chunks.append(
                 {
-                    "pos": b.pos,
+                    "pos": b.ord,
                     "chunk_kind": getattr(b, "chunk_kind", "paragraph"),
                     "slug": b.slug or "",
                     "text": b.text or "",
@@ -2990,12 +2990,12 @@ async def _run_followup(
         src_body = source.title or ""
     focus_text: str | None = None
     if chunk_pos is not None:
-        for b in store.blocks.list_blocks_for_ref(
+        for b in store.chunks.list_chunks_for_ref(
             source_ref_id, pos_range=(chunk_pos, chunk_pos)
         ):
             focus_text = b.text or ""
             break
-    all_turns = store.blocks.list_blocks_for_ref(conv.id)
+    all_turns = store.chunks.list_chunks_for_ref(conv.id)
     prior = [
         ((b.meta or {}).get("author") or "?", b.text or "") for b in all_turns[:-1]
     ]

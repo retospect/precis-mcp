@@ -333,7 +333,7 @@ def test_fetch_produces_multiple_blocks(handler: WebHandler) -> None:
     )
     assert cached is not None
     ref, _ = cached
-    blocks = handler.store.blocks.list_blocks_for_ref(ref.id)
+    blocks = handler.store.chunks.list_chunks_for_ref(ref.id)
     # The sample HTML has a heading + three paragraphs → at least
     # three text blocks (trafilatura may fold tighter, but not
     # into one).
@@ -350,7 +350,7 @@ def test_fetched_blocks_are_embedded(handler: WebHandler) -> None:
     )
     assert cached is not None
     ref, _ = cached
-    blocks = handler.store.blocks.list_blocks_for_ref(ref.id, with_embedding=True)
+    blocks = handler.store.chunks.list_chunks_for_ref(ref.id, with_embedding=True)
     # At least one block must carry a vector — the fallback
     # "couldn't parse" branch stores un-embedded blocks, so we
     # don't require every block to be embedded (parser may drop a

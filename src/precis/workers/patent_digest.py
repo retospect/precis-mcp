@@ -60,7 +60,7 @@ def _claim_eyes(
     """
     eyes: list[dict[str, str]] = []
     for rid in patent_ref_ids:
-        for b in store.blocks.list_blocks_for_ref(rid):
+        for b in store.chunks.list_chunks_for_ref(rid):
             meta = getattr(b, "meta", None) or {}
             is_ops_claim = meta.get("patent_block") == "claim"
             is_google_claim = getattr(b, "chunk_kind", None) == "patent_claim"

@@ -539,7 +539,7 @@ def test_select_lens_block_oracle_branch(
     from types import SimpleNamespace
     from typing import cast
 
-    from precis.store import Block, Ref
+    from precis.store import ChunkRow, Ref
     from precis.utils.oracle_lens import LensDraw
     from precis.workers import dream_agent as da
 
@@ -547,10 +547,10 @@ def test_select_lens_block_oracle_branch(
     fake = LensDraw(
         ref=cast(Ref, SimpleNamespace(id=1, slug="scientists", title="Scientists")),
         block=cast(
-            Block,
+            ChunkRow,
             SimpleNamespace(
                 id=11,
-                pos=6,
+                ord=6,
                 text="Take Shannon's stance.",
                 meta={"section_path": ["Shannon"]},
             ),

@@ -29,16 +29,16 @@ from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers._paper_search import _apply_retraction_downrank, _retraction_flag
 from precis.handlers.paper import PaperHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 
 _HANDLE_RE = re.compile(r"\bpc\d+\b")
 
 
 def _seed(store: Store, *, slug: str, text: str, embedder: MockEmbedder) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=text, embedding=embedder.embed_one(text))],
+        [ChunkInsert(ord=0, text=text, embedding=embedder.embed_one(text))],
     )
     return ref.id
 

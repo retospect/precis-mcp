@@ -578,7 +578,7 @@ def queue_ops_message(store: Store, title: str, body: str, *, reason: str = "") 
     critical nursery finding) and ``health_digest``'s daily/on-degradation
     digest (§D) — one delivery path, two callers.
     """
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     target = _ops_alert_target().strip()
     if not target:
@@ -599,9 +599,9 @@ def queue_ops_message(store: Store, title: str, body: str, *, reason: str = "") 
                 meta=meta,
                 conn=conn,
             )
-            store.blocks.insert_blocks(
+            store.chunks.insert_chunks(
                 ref.id,
-                [BlockInsert(pos=0, text=body, meta={"chunk_kind": "message_body"})],
+                [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "message_body"})],
                 conn=conn,
             )
             conn.execute(

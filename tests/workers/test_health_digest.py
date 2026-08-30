@@ -1001,7 +1001,7 @@ def test_router_files_exactly_one_gripe_and_dedups_on_second_eval(store) -> None
 
     gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
     assert len(gripes) == 1
-    body = store.blocks.list_blocks_for_ref(gripes[0].id)[0].text
+    body = store.chunks.list_chunks_for_ref(gripes[0].id)[0].text
     assert body.startswith("watchdog-condition: watchdog:coherence/some-pass")
     assert "STATUS:open" in " ".join(str(t) for t in store.tags_for(gripes[0].id))
 
@@ -1034,7 +1034,7 @@ def test_router_never_gripe_group_stays_silent_regardless_of_age(store) -> None:
 
 def test_router_auto_closes_when_condition_clears(store) -> None:
     from precis.alerts import resolve_alert
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     alert_id = _seed_watchdog_alert(
         store, group="coherence", name="some-pass", hours_old=30
@@ -1046,11 +1046,11 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
 
     # A plain, non-watchdog gripe must be untouched by the auto-close sweep.
     other = store.insert_ref(kind="gripe", slug=None, title="unrelated", meta={})
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         other.id,
         [
-            BlockInsert(
-                pos=0, text="an ordinary gripe", meta={"chunk_kind": "gripe_body"}
+            ChunkInsert(
+                ord=0, text="an ordinary gripe", meta={"chunk_kind": "gripe_body"}
             )
         ],
     )
@@ -1162,7 +1162,7 @@ def test_nursery_backlog_non_draining_files_one_aggregate_gripe(store) -> None:
 
     gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
     assert len(gripes) == 1
-    body = store.blocks.list_blocks_for_ref(gripes[0].id)[0].text
+    body = store.chunks.list_chunks_for_ref(gripes[0].id)[0].text
     assert body.startswith("watchdog-condition: nursery:orphan/backlog")
     assert "297" in body
 
@@ -1238,7 +1238,7 @@ def test_watchdog_routing_unchanged_alongside_nursery_backlog(store) -> None:
 
     gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
     assert len(gripes) == 2
-    bodies = [store.blocks.list_blocks_for_ref(g.id)[0].text for g in gripes]
+    bodies = [store.chunks.list_chunks_for_ref(g.id)[0].text for g in gripes]
     assert any(
         b.startswith("watchdog-condition: watchdog:coherence/some-pass") for b in bodies
     )
@@ -1279,7 +1279,7 @@ def test_diagnose_embed_queued_jobs_but_no_embedder_slots(store) -> None:
 def test_diagnose_embed_jobs_claimed_but_failing(store) -> None:
     """(c) A job was minted and reached a terminal ``failed`` status with
     no successes in the window — stage 3 fires, with the error snippet."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     ref = store.insert_ref(
         kind="job",
@@ -1290,11 +1290,11 @@ def test_diagnose_embed_jobs_claimed_but_failing(store) -> None:
     store.add_tag(
         ref.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text="embed_batch: embedder unreachable: boom",
                 meta={"chunk_kind": "job_event"},
             )

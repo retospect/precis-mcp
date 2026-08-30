@@ -596,7 +596,7 @@ class JobHandler(NumericRefHandler):
         if ref.title:
             lines.append(ref.title)
 
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         for block in blocks:
             kind = block.chunk_kind
             if kind == _JOB_SUMMARY_KIND:
@@ -605,7 +605,7 @@ class JobHandler(NumericRefHandler):
                 lines.append(block.text)
             elif kind == _JOB_EVENT_KIND:
                 lines.append("")
-                lines.append(f"## event {block.pos}")
+                lines.append(f"## event {block.ord}")
                 lines.append(block.text)
         return "\n".join(lines)
 

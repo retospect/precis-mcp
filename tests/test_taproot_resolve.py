@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.taproot.resolve import BibResolution, resolve_citation
 
 
@@ -21,7 +21,7 @@ def _seed_paper(store: Any, *, slug: str) -> int:
 
 
 def _seed_chunk(store: Any, ref_id: int, text: str) -> int:
-    store.blocks.insert_blocks(ref_id, [BlockInsert(pos=0, text=text, meta={})])
+    store.chunks.insert_chunks(ref_id, [ChunkInsert(ord=0, text=text, meta={})])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref_id,)

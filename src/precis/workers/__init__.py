@@ -197,7 +197,7 @@ and falling back in-process on infra failure.
 
 from precis.workers.base import (
     ArtifactStatus,
-    ChunkRow,
+    ClaimedChunk,
     WorkerHandler,
 )
 from precis.workers.embed import EmbedHandler
@@ -211,7 +211,7 @@ from precis.workers.summarize import RakeLemmaHandler
 __all__ = [
     "ArtifactStatus",
     "BatchResult",
-    "ChunkRow",
+    "ClaimedChunk",
     "EmbedHandler",
     "RakeLemmaHandler",
     "WorkerHandler",

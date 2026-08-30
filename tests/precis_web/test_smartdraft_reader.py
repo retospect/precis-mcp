@@ -422,7 +422,7 @@ def test_smartdraft_full_doc_review_payload_skips_skel_placeholders(
 ) -> None:
     """item 1: full-document (📄) mode's review-payload build must scope the
     citation-integrity check (``cite_integrity_ok``, which calls
-    ``store.resolve_handle``/``store.count_blocks`` per cited paper) to what
+    ``store.resolve_handle``/``store.count_chunks`` per cited paper) to what
     actually RENDERS (the ``full``/``doc``/``tail``/``head`` middle rows),
     not the whole ``view.middle`` list — the ``skel`` placeholder rows
     (inert scroll spacers, ~60 of the 101 chunks here) never reach

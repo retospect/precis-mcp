@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 import precis.workers.bib_mark as bib_mark
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.workers.bib_mark import BIBMARK_VERSION, _extract_markers, run_bib_mark_pass
 
 # ── _extract_markers (unit) ──────────────────────────────────────────
@@ -80,7 +80,7 @@ def _seed_entry(store: Any, ref_id: int, marker: int) -> int:
 
 
 def _seed_chunk(store: Any, ref_id: int, ord_: int, text: str) -> int:
-    store.blocks.insert_blocks(ref_id, [BlockInsert(pos=ord_, text=text, meta={})])
+    store.chunks.insert_chunks(ref_id, [ChunkInsert(ord=ord_, text=text, meta={})])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = %s", (ref_id, ord_)

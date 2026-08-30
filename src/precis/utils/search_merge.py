@@ -4,7 +4,7 @@ Two distinct search shapes share the same "rank, dedupe, label, render"
 pipeline:
 
 1. **Multi-source for one kind.** Patents merge a local DB leg
-   (``store.search_blocks_fused``) with a remote OPS leg
+   (``store.search_chunks_fused``) with a remote OPS leg
    (``ops.search``). Each stream produces hits; local takes priority,
    remote augments, slugs already seen locally are dropped.
 
@@ -46,7 +46,7 @@ from precis.utils.search_header import format_search_headline
 # Reciprocal-rank-fusion constant.  60 is the value Cormack et al.
 # settled on as a robust default across IR benchmarks; precis uses
 # the same constant for the lex+sem fusion inside
-# ``store.search_blocks_fused`` so it's also the value agents
+# ``store.search_chunks_fused`` so it's also the value agents
 # implicitly already pay for.
 _RRF_K: int = 60
 
@@ -639,9 +639,9 @@ def block_hits_to_search_hits(
     searches where the store returns ``list[tuple[Block, Ref, float]]``.
 
     Args:
-        triples: Output of ``store.search_blocks_fused`` /
-            ``store.search_blocks_lexical`` /
-            ``store.search_blocks_semantic``.
+        triples: Output of ``store.search_chunks_fused`` /
+            ``store.search_chunks_lexical`` /
+            ``store.search_chunks_semantic``.
         kind: Owning kind, used as the per-hit label fallback.
         source: Optional override for the per-hit ``source`` field
             — set this when the producer is one of multiple
@@ -673,7 +673,7 @@ def block_hits_to_search_hits(
         text = (getattr(block, "text", None) or "").strip()
         preview = text if len(text) <= excerpt else text[: excerpt - 1].rstrip() + "…"
         slug = getattr(ref, "slug", None)
-        pos = getattr(block, "pos", None)
+        pos = getattr(block, "ord", None)
         extras: tuple[str, ...] = ()
         if extra_lines_for is not None:
             try:

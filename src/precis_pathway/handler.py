@@ -28,7 +28,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -252,11 +252,11 @@ class PathwayHandler(Handler):
                     meta=seed_meta,
                     conn=conn,
                 )
-                store.blocks.insert_blocks(
+                store.chunks.insert_chunks(
                     ref.id,
                     [
-                        BlockInsert(
-                            pos=0, text=placeholder, meta={"chunk_kind": BODY_KIND}
+                        ChunkInsert(
+                            ord=0, text=placeholder, meta={"chunk_kind": BODY_KIND}
                         )
                     ],
                     conn=conn,
@@ -332,7 +332,7 @@ class PathwayHandler(Handler):
         if v == "config":
             return Response(body=meta.get("config_snapshot_yaml", "(no config)"))
         if v == "methods":
-            blocks = store.blocks.list_blocks_for_ref(ref.id)
+            blocks = store.chunks.list_chunks_for_ref(ref.id)
             body = "\n\n".join(b.text for b in blocks if b.text)
             return Response(body=body or "(no methods)")
         if v == "mermaid":
@@ -504,16 +504,16 @@ class PathwayHandler(Handler):
                 ref = store.insert_ref(
                     kind="pathway", slug=slug, title=title, meta=seed_meta, conn=conn
                 )
-                store.blocks.insert_blocks(
+                store.chunks.insert_chunks(
                     ref.id,
-                    [BlockInsert(pos=0, text=body, meta={"chunk_kind": BODY_KIND})],
+                    [ChunkInsert(ord=0, text=body, meta={"chunk_kind": BODY_KIND})],
                     conn=conn,
                 )
                 ref_id = ref.id
             else:
                 ref_id = existing.id
                 store.stamp_ref_meta(ref_id, seed_meta, conn=conn)
-                store.blocks.replace_body_chunk(
+                store.chunks.replace_body_chunk(
                     ref_id, body, chunk_kind=BODY_KIND, conn=conn
                 )
             for t in tags or []:

@@ -42,8 +42,8 @@ from precis.handlers._cache_base import (
 )
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert
-from precis.utils.block_ingest import to_block_inserts
+from precis.store.types import ChunkInsert
+from precis.utils.chunk_ingest import to_chunk_inserts
 from precis.utils.http import http_client, require_httpx
 from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.optional_deps import require_optional
@@ -115,8 +115,8 @@ def canonical_url(url: str) -> str:
     )
 
 
-def article_blocks(body_text: str, *, embedder: Any) -> list[BlockInsert]:
-    """Markdown body → embedded ``BlockInsert`` rows (shared ingest path).
+def article_blocks(body_text: str, *, embedder: Any) -> list[ChunkInsert]:
+    """Markdown body → embedded ``ChunkInsert`` rows (shared ingest path).
 
     Mirrors :meth:`CacheBackedHandler._blocks_from_report` but as a free
     function so the poller can build blocks without a handler instance.
@@ -126,8 +126,8 @@ def article_blocks(body_text: str, *, embedder: Any) -> list[BlockInsert]:
     """
     md_blocks = parse_markdown(body_text)
     if not md_blocks:
-        return [BlockInsert(pos=0, text=body_text)]
-    return to_block_inserts(md_blocks, embedder=embedder, meta_for=block_meta)
+        return [ChunkInsert(ord=0, text=body_text)]
+    return to_chunk_inserts(md_blocks, embedder=embedder, meta_for=block_meta)
 
 
 def fetch_article(url: str, *, embedder: Any = None) -> FetchResult:

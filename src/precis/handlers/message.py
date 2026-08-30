@@ -40,7 +40,7 @@ from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils.next_block import render_next_section
 
 # Transports we accept on a target=. v1: discord only. The validator
@@ -230,11 +230,11 @@ class MessageHandler(NumericRefHandler):
                 meta=meta,
                 conn=conn,
             )
-            self.store.blocks.insert_blocks(
+            self.store.chunks.insert_chunks(
                 ref.id,
                 [
-                    BlockInsert(
-                        pos=0,
+                    ChunkInsert(
+                        ord=0,
                         text=text_str,
                         meta={"chunk_kind": "message_body"},
                     )

@@ -3,7 +3,7 @@
 Three layers, per the design doc §Testing:
 
 1. **Phase machine** (``good_search._dispatch``) with a fake ctx +
-   stubbed ``search_blocks_multi`` / ``spawn_child`` / child
+   stubbed ``search_chunks_multi`` / ``spawn_child`` / child
    ``job_result`` rows — plan→triage Yield shape, empty-pool Done,
    heartbeat re-yield, gather on all-terminal, deadline / slice-cap
    force-complete, all-children-failed, cancel.
@@ -38,7 +38,7 @@ from tests._fakes import FakeStore as _FakeStoreBase
 def _hit(slug: str, pos: int, text: str = "chunk text") -> tuple[Any, Any, float]:
     block = SimpleNamespace(
         id=abs(hash((slug, pos))) % 100_000,
-        pos=pos,
+        ord=pos,
         text=text,
         chunk_kind="paragraph",
     )
@@ -48,17 +48,17 @@ def _hit(slug: str, pos: int, text: str = "chunk text") -> tuple[Any, Any, float
 
 def _result_block(verdicts: list[dict[str, Any]]) -> Any:
     return SimpleNamespace(
-        chunk_kind="job_result", pos=0, text=json.dumps({"verdicts": verdicts})
+        chunk_kind="job_result", ord=0, text=json.dumps({"verdicts": verdicts})
     )
 
 
 class FakeStore(_FakeStoreBase):
-    """``list_blocks_for_ref`` is inherited from the shared base — it
+    """``list_chunks_for_ref`` is inherited from the shared base — it
     reads the same ``self._blocks`` map populated below."""
 
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(
         self,
@@ -70,7 +70,7 @@ class FakeStore(_FakeStoreBase):
         self._blocks = blocks or {}
         self.multi_calls: list[dict[str, Any]] = []
 
-    def search_blocks_multi(self, **kw: Any) -> list[tuple[Any, Any, float]]:
+    def search_chunks_multi(self, **kw: Any) -> list[tuple[Any, Any, float]]:
         self.multi_calls.append(kw)
         return self.hits
 
@@ -734,11 +734,11 @@ print(json.dumps({"verdicts": verdicts}))
 
 
 def _seed_paper(store: Any, slug: str, blocks: list[str]) -> None:
-    from precis.store import BlockInsert
+    from precis.store import ChunkInsert
 
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
-    store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=i, text=t) for i, t in enumerate(blocks)]
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=i, text=t) for i, t in enumerate(blocks)]
     )
 
 
@@ -808,6 +808,6 @@ class TestEndToEnd:
         assert result["children_failed"] == 0
         assert result["timed_out"] is False
         # The merged verdict is on the job as a job_summary chunk.
-        blocks = store.blocks.list_blocks_for_ref(job_id)
+        blocks = store.chunks.list_chunks_for_ref(job_id)
         summaries = [b.text for b in blocks if b.chunk_kind == "job_summary"]
         assert summaries and "deep search: kept" in summaries[-1]

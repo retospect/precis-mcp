@@ -35,7 +35,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
@@ -157,7 +157,7 @@ class ConversationHandler(Handler):
                 next_hint="search(kind='conv', q='...')",
             )
             scope_ref_id = scope_ref.id
-        hits = self.store.blocks.search_blocks_fused(
+        hits = self.store.chunks.search_chunks_fused(
             q=q,
             query_vec=None,  # phase 5 — lexical only for state kinds
             kind="conv",
@@ -166,7 +166,7 @@ class ConversationHandler(Handler):
         )
         if not hits:
             return Response(body=f"no conv turns match {q!r}")
-        total = self.store.blocks.count_blocks_lexical(
+        total = self.store.chunks.count_chunks_lexical(
             q=q, kind="conv", scope_ref_id=scope_ref_id
         )
         lines = [
@@ -182,7 +182,7 @@ class ConversationHandler(Handler):
             preview = (block.text[:160] + "…") if len(block.text) > 160 else block.text
             handle = (
                 handle_registry.try_format(ref.kind, block.id, chunk=True)
-                or f"{slug}~{block.pos}"
+                or f"{slug}~{block.ord}"
             )
             lines.append(f"\n## {handle}  (score={score:.4f})")
             lines.append(f"_{ref.title}_")
@@ -206,7 +206,7 @@ class ConversationHandler(Handler):
         """
         if not (q and q.strip()):
             return []
-        triples = self.store.blocks.search_blocks_fused(
+        triples = self.store.chunks.search_chunks_fused(
             q=q,
             query_vec=None,
             kind="conv",
@@ -315,21 +315,21 @@ class ConversationHandler(Handler):
         # after a reconnect. Cheap per-ref scan — turns counts cap in
         # the low thousands per conv even for long threads.
         if msg_id_s is not None:
-            existing = self.store.blocks.list_blocks_for_ref(ref.id)
+            existing = self.store.chunks.list_chunks_for_ref(ref.id)
             for b in existing:
                 if (b.meta or {}).get("msg_id") == msg_id_s:
                     handle = (
                         handle_registry.try_format("conv", b.id, chunk=True)
-                        or f"{slug}~{b.pos}"
+                        or f"{slug}~{b.ord}"
                     )
                     return Response(
                         body=(
                             f"{handle}: already captured (msg_id={msg_id_s!r}); no-op"
                         )
                     )
-            next_pos = (existing[-1].pos + 1) if existing else 0
+            next_pos = (existing[-1].ord + 1) if existing else 0
         else:
-            next_pos = self.store.blocks.count_blocks(ref.id)
+            next_pos = self.store.chunks.count_chunks(ref.id)
 
         block_meta: dict[str, Any] = dict(meta or {})
         block_meta["author"] = author_s
@@ -341,15 +341,15 @@ class ConversationHandler(Handler):
         # (0001_initial.sql line 1578).
         block_meta.setdefault("chunk_kind", "conv_message")
 
-        inserted = self.store.blocks.insert_blocks(
+        inserted = self.store.chunks.insert_chunks(
             ref.id,
-            [BlockInsert(pos=next_pos, text=body, meta=block_meta)],
+            [ChunkInsert(ord=next_pos, text=body, meta=block_meta)],
         )
-        assert inserted, "insert_blocks returned no rows"
+        assert inserted, "insert_chunks returned no rows"
         verb = "created + appended" if created else "appended"
         handle = (
             handle_registry.try_format("conv", inserted[0].id, chunk=True)
-            or f"{slug}~{inserted[0].pos}"
+            or f"{slug}~{inserted[0].ord}"
         )
         return Response(
             body=(
@@ -437,7 +437,7 @@ class ConversationHandler(Handler):
         )
 
     def _render_overview(self, slug: str, ref: Any) -> Response:
-        n_blocks = self.store.blocks.count_blocks(ref.id)
+        n_blocks = self.store.chunks.count_chunks(ref.id)
         meta = ref.meta or {}
         participants = meta.get("participants") or []
         handle = handle_registry.format_handle("conv", ref.id)
@@ -463,19 +463,19 @@ class ConversationHandler(Handler):
         return Response(body=body)
 
     def _render_transcript(self, slug: str, ref: Any) -> Response:
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{slug}: no turns")
         handle = handle_registry.format_handle("conv", ref.id)
         lines = [f"# {handle} - transcript", f"_{ref.title}_", ""]
         for b in blocks:
-            lines.append(f"## turn ~{b.pos}")
+            lines.append(f"## turn ~{b.ord}")
             lines.append(b.text)
             lines.append("")
         return Response(body="\n".join(lines).rstrip())
 
     def _render_turn(self, slug: str, ref_id: int, pos: int) -> Response:
-        blocks = self.store.blocks.list_blocks_for_ref(ref_id, pos_range=(pos, pos))
+        blocks = self.store.chunks.list_chunks_for_ref(ref_id, pos_range=(pos, pos))
         if not blocks:
             raise NotFound(
                 f"no turn at ~{pos} in conv {slug!r}",
@@ -501,7 +501,7 @@ class ConversationHandler(Handler):
         """
         if n <= 0:
             return Response(body=f"{slug}: no turns inlined (recent=0)")
-        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if not all_blocks:
             return Response(body=f"{slug}: no turns")
         tail = all_blocks[-n:]
@@ -515,7 +515,7 @@ class ConversationHandler(Handler):
             meta = b.meta or {}
             author = _author_label(meta)
             lines.append(
-                f"{handle_registry.try_format('conv', b.id, chunk=True) or f'~{b.pos}'}"
+                f"{handle_registry.try_format('conv', b.id, chunk=True) or f'~{b.ord}'}"
                 f" [{author}]"
             )
             lines.append(b.text)
@@ -549,7 +549,7 @@ class ConversationHandler(Handler):
         """
         if n <= 0:
             return Response(body=f"{slug}: digest empty (digest=0)")
-        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if not all_blocks:
             return Response(body=f"{slug}: no turns")
         # Window: drop the trailing skip_recent, then take the last n
@@ -563,7 +563,7 @@ class ConversationHandler(Handler):
             return Response(body=f"{slug}: digest empty")
         handle = handle_registry.format_handle("conv", ref.id)
         lines = [
-            f"# {handle} - digest of turns ~{window[0].pos}..~{window[-1].pos}",
+            f"# {handle} - digest of turns ~{window[0].ord}..~{window[-1].ord}",
             f"_{ref.title}_",
             "",
         ]
@@ -573,7 +573,7 @@ class ConversationHandler(Handler):
             kws = b.keywords or []
             if kws:
                 kw_str = ", ".join(kws[:8])
-                lines.append(f'~{b.pos} [{author}]: "{kw_str}"')
+                lines.append(f'~{b.ord} [{author}]: "{kw_str}"')
             else:
                 # Worker hasn't populated keywords yet — show a short
                 # text preview so the renderer doesn't silently elide
@@ -581,7 +581,7 @@ class ConversationHandler(Handler):
                 preview = b.text[:80].replace("\n", " ")
                 if len(b.text) > 80:
                     preview += "…"
-                lines.append(f'~{b.pos} [{author}]: "{preview}"  (keywords pending)')
+                lines.append(f'~{b.ord} [{author}]: "{preview}"  (keywords pending)')
         return Response(body="\n".join(lines))
 
     def _render_last_meta(self, slug: str, ref: Any) -> Response:
@@ -595,7 +595,7 @@ class ConversationHandler(Handler):
         just emits it as code-block markdown so asa_bot can parse
         without ambiguity).
         """
-        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if not all_blocks:
             return Response(body=f"{slug}: no turns yet")
         last = all_blocks[-1]
@@ -603,7 +603,7 @@ class ConversationHandler(Handler):
         import json
 
         payload = {
-            "pos": last.pos,
+            "pos": last.ord,
             "author": meta.get("author"),
             "msg_id": meta.get("msg_id"),
             "stop_reason": meta.get("stop_reason"),

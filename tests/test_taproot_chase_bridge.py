@@ -30,7 +30,7 @@ from unittest.mock import patch
 
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.seniority import derive_evidence
 from precis.workers.chase import FindingRow, advance_finding, run_finding_chase_pass
@@ -76,8 +76,8 @@ def _seed_paper(
         kind="paper", slug=cite_key, title=f"Test paper {cite_key}", meta={}
     )
     if blocks:
-        store.blocks.insert_blocks(
-            ref.id, [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)]
+        store.chunks.insert_chunks(
+            ref.id, [ChunkInsert(ord=i, text=t, meta={}) for i, t in enumerate(blocks)]
         )
     return ref.id
 

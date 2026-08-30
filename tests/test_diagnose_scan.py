@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from precis.store import Store
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.workers.diagnose_scan import _CAP, run_diagnose_scan_pass
 
 pytestmark = pytest.mark.db
@@ -29,11 +29,11 @@ def _open_gripe(store: Store, title: str, *, prio: int | None = None) -> int:
 
 def _mark_diagnosed(store: Store, gripe_id: int) -> None:
     """Append a DIAGNOSIS (auto...) comment — the marker diagnose_scan skips."""
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         gripe_id,
         [
-            BlockInsert(
-                pos=1,
+            ChunkInsert(
+                ord=1,
                 text="DIAGNOSIS (auto, job 1):\nRoot cause: x\nConfidence: 0.9",
                 meta={"chunk_kind": "gripe_comment"},
             )

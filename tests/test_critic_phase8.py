@@ -23,15 +23,15 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
-from precis.store import BlockInsert, Store, Tag
+from precis.store import ChunkInsert, Store, Tag
 
 
 def _seed_memory_with_body(store: Store, text: str) -> int:
     """Insert a memory whose prose lives in a ``memory_body`` chunk
     (migration 0050) — memory search matches the chunk, not ``refs.title``."""
     ref = store.insert_ref(kind="memory", slug=None, title=text)
-    store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=0, text=text, meta={"chunk_kind": "memory_body"})]
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text=text, meta={"chunk_kind": "memory_body"})]
     )
     return ref.id
 
@@ -299,15 +299,15 @@ class TestTotalHitsHeader:
     def test_count_blocks_lexical_matches_search(self, store: Store) -> None:
         """Same shape for blocks — counts must agree with searches."""
         ref = store.insert_ref(kind="paper", slug="p", title="P")
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(pos=i, text=f"photocatalysis sample text {i}")
+                ChunkInsert(ord=i, text=f"photocatalysis sample text {i}")
                 for i in range(8)
             ],
         )
-        total = store.blocks.count_blocks_lexical(q="photocatalysis", kind="paper")
-        all_hits = store.blocks.search_blocks_lexical(
+        total = store.chunks.count_chunks_lexical(q="photocatalysis", kind="paper")
+        all_hits = store.chunks.search_chunks_lexical(
             q="photocatalysis", kind="paper", limit=100
         )
         assert total == len(all_hits) == 8

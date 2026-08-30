@@ -913,7 +913,7 @@ def test_resolve_ask_question_resolves_see_chunk_overflow(hub: Hub) -> None:
     read the chunk back so the UI shows the real question, not the opaque
     "see chunk 0" slug. Short inline questions and the bare marker pass
     through unchanged."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     store = hub.live_store
     todo = store.insert_ref(kind="todo", slug=None, title="fix bolding")
@@ -921,11 +921,11 @@ def test_resolve_ask_question_resolves_see_chunk_overflow(hub: Hub) -> None:
         "Which did you mean? (A) fold the ~100 label-headings back inline "
         "(B) point me at a specific chunk (C) a renderer/export setting."
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         todo.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text=f"ask-user: {q}",
                 meta={"chunk_kind": "tag_overflow", "tag_namespace": "ask-user"},
             )
@@ -944,7 +944,7 @@ def test_requests_by_handle_surfaces_question_and_fail_reason(
     (resolving a see-chunk redirect) and *why* a child job failed (its
     job_summary), so the operator never sees a bare "see chunk 0" / "failed".
     """
-    from precis.store.types import BlockInsert, Tag
+    from precis.store.types import ChunkInsert, Tag
     from precis_web.routes.drafts import _requests_by_handle
 
     store = hub.live_store
@@ -959,11 +959,11 @@ def test_requests_by_handle_surfaces_question_and_fail_reason(
         "Which did you mean? (A) fold the label-headings back inline "
         "(B) point me at a specific chunk (C) a renderer/export setting."
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         asking.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text=f"ask-user: {q}",
                 meta={"chunk_kind": "tag_overflow", "tag_namespace": "ask-user"},
             )
@@ -980,11 +980,11 @@ def test_requests_by_handle_surfaces_question_and_fail_reason(
     store.add_tag(
         job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         job.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text="API Error: violates our Usage Policy. Try rephrasing.",
                 meta={"chunk_kind": "job_summary"},
             )
@@ -1010,7 +1010,7 @@ def test_requests_by_handle_fail_reason_falls_back_to_job_event(
     write ``job_summary`` only on their SUCCESS tail), ``fail_reason``
     still surfaces something instead of blank: the first line of the
     latest ``job_event`` chunk."""
-    from precis.store.types import BlockInsert, Tag
+    from precis.store.types import ChunkInsert, Tag
     from precis_web.routes.drafts import _requests_by_handle
 
     store = hub.live_store
@@ -1026,11 +1026,11 @@ def test_requests_by_handle_fail_reason_falls_back_to_job_event(
     store.add_tag(
         job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         job.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text=(
                     "runner: killed at wall-clock deadline (handle {...})\n"
                     "--- tail ---\nraw subprocess output, not for the UI"

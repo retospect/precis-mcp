@@ -24,7 +24,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from precis.md_index.types import MdBlockEntry, MdFileEntry, MdRepoIndex
-from precis.utils.md_parse import MdBlock, parse_markdown
+from precis.utils.md_parse import MdChunk, parse_markdown
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ def index_file(path: Path, *, file_relative: str) -> MdFileEntry:
 # ---------------------------------------------------------------------------
 
 
-def _build_entries(blocks: list[MdBlock], *, file_relative: str) -> list[MdBlockEntry]:
+def _build_entries(blocks: list[MdChunk], *, file_relative: str) -> list[MdBlockEntry]:
     """Turn `md_parse` blocks into `MdBlockEntry` rows, computing each
     block's heading breadcrumb along the way.
 
@@ -153,7 +153,7 @@ def _build_entries(blocks: list[MdBlock], *, file_relative: str) -> list[MdBlock
 
 
 def _entry_from_block(
-    mb: MdBlock,
+    mb: MdChunk,
     *,
     file_relative: str,
     title: str | None,

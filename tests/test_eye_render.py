@@ -12,7 +12,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.plan import PlanHandler
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.eye_render import _cluster_map, _fisheye_split, render_eye
 from precis.utils.toc_db import cluster_blocks
@@ -28,11 +28,11 @@ def _pe(body: str) -> str:
 
 @dataclass
 class _B:
-    """A minimal Block stand-in for the pure cluster-render helpers — they read
-    ``id`` / ``pos`` / ``keywords`` / ``text`` / ``chunk_kind`` only."""
+    """A minimal ChunkRow stand-in for the pure cluster-render helpers — they read
+    ``id`` / ``ord`` / ``keywords`` / ``text`` / ``chunk_kind`` only."""
 
     id: int
-    pos: int
+    ord: int
     keywords: list[str] = field(default_factory=list)
     text: str = ""
     chunk_kind: str = "paragraph"
@@ -132,7 +132,7 @@ def test_doc_eye_empty_paper_renders_the_head(hub: Hub) -> None:
 
 
 def test_cluster_blocks_short_body_is_one_cluster_per_block() -> None:
-    blocks = [_B(id=100 + i, pos=i, keywords=[f"k{i}"], text=f"t{i}") for i in range(5)]
+    blocks = [_B(id=100 + i, ord=i, keywords=[f"k{i}"], text=f"t{i}") for i in range(5)]
     clusters = cluster_blocks(blocks)
     assert len(clusters) == 5
     assert all(len(bucket) == 1 for bucket, _ in clusters)
@@ -144,7 +144,7 @@ def test_cluster_blocks_groups_a_long_body_by_keyword_regime() -> None:
     blocks = [
         _B(
             id=200 + i,
-            pos=i,
+            ord=i,
             keywords=(["alpha", "beta"] if i < 20 else ["gamma", "delta"]),
             text="x",
         )
@@ -152,13 +152,13 @@ def test_cluster_blocks_groups_a_long_body_by_keyword_regime() -> None:
     ]
     clusters = cluster_blocks(blocks)
     assert len(clusters) >= 2
-    flat = [b.pos for bucket, _ in clusters for b in bucket]
+    flat = [b.ord for bucket, _ in clusters for b in bucket]
     assert flat == list(range(40))
 
 
 def test_cluster_map_is_pc_addressed_with_no_verbatim() -> None:
     blocks = [
-        _B(id=300 + i, pos=i, keywords=[f"k{i}"], text=f"BODYTEXT{i}") for i in range(5)
+        _B(id=300 + i, ord=i, keywords=[f"k{i}"], text=f"BODYTEXT{i}") for i in range(5)
     ]
     out = _cluster_map("paper", cluster_blocks(blocks))
     assert "clusters" in out
@@ -171,7 +171,7 @@ def test_fisheye_split_opens_the_eye_chunk_within_its_cluster() -> None:
     blocks = [
         _B(
             id=400 + i,
-            pos=i,
+            ord=i,
             keywords=(["alpha"] if i < 20 else ["gamma"]),
             text=f"VERBATIM{i}",
         )
@@ -195,7 +195,7 @@ def test_fisheye_split_collapses_a_big_home_clusters_far_tail() -> None:
     # A keyword-homogeneous section clusters into one big bucket; eyeing into it
     # windows around the eye and collapses the far tail to a ⋯ marker.
     blocks = [
-        _B(id=600 + i, pos=i, keywords=["alpha"], text=f"t{i}") for i in range(40)
+        _B(id=600 + i, ord=i, keywords=["alpha"], text=f"t{i}") for i in range(40)
     ]
     clusters = cluster_blocks(blocks)
     # one dominant cluster (all keywords identical → distance 0 everywhere)
@@ -208,7 +208,7 @@ def test_fisheye_split_collapses_a_big_home_clusters_far_tail() -> None:
 
 def test_fisheye_split_summary_eye_is_a_summary_not_verbatim() -> None:
     blocks = [
-        _B(id=500 + i, pos=i, keywords=["alpha"], text=f"VERBATIM{i}") for i in range(6)
+        _B(id=500 + i, ord=i, keywords=["alpha"], text=f"VERBATIM{i}") for i in range(6)
     ]
     clusters = cluster_blocks(blocks)
     out = _fisheye_split("paper", clusters, eye_ord=2, ext=Extent.SUMMARY)
@@ -222,9 +222,9 @@ def _seed_paper_with_keyworded_body(
     """Insert a paper + one body chunk per keyword set, stamping the keywords the
     ``chunk_keywords`` worker would (it doesn't run in tests). Returns ref_id."""
     ref = store.insert_ref(kind="paper", slug=slug, title=title)
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=i, text=f"body of chunk {i}") for i in range(len(regimes))],
+        [ChunkInsert(ord=i, text=f"body of chunk {i}") for i in range(len(regimes))],
     )
     with store.pool.connection() as conn:
         for i, kws in enumerate(regimes):
@@ -259,7 +259,7 @@ def test_doc_eye_chunk_handle_opens_that_chunk(hub: Hub) -> None:
         regimes=[["a"], ["a"], ["a"], ["a"], ["a"]],
     )
     # resolve the ord=2 chunk's universal pc handle, then eye it
-    blocks = store.blocks.list_blocks_for_ref(ref_id)
+    blocks = store.chunks.list_chunks_for_ref(ref_id)
     eye = blocks[2]
     pc = handle_registry.format_handle("paper", eye.id, chunk=True)
     out = render_eye(store, pc, "verbatim")

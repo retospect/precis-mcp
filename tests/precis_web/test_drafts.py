@@ -94,9 +94,9 @@ class _WorkspacePool:
 
 
 class DraftFakeStore(FakeStore):
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(self) -> None:
         super().__init__()
@@ -195,7 +195,7 @@ class DraftFakeStore(FakeStore):
         self.soft_deleted_drafts.append(ref_id)
         return len(self._chunks)
 
-    def search_blocks_semantic(
+    def search_chunks_semantic(
         self, *, query_vec, scope_ref_id=None, limit=None, max_distance=None, **kw
     ):
         # Rank the heading ahead of the intro para (best-first), keyed by

@@ -273,7 +273,7 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
     TypeError.
     """
     from precis.embedder import MockEmbedder
-    from precis.store import BlockInsert
+    from precis.store import ChunkInsert
     from precis.utils import handle_registry
 
     e = MockEmbedder(dim=store.embedding_dim())
@@ -283,11 +283,11 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
         slug="paper-a",
         title="A",
     )
-    blocks = store.blocks.insert_blocks(
+    blocks = store.chunks.insert_chunks(
         paper.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text="qabsent unique-marker xyz",
                 embedding=e.embed_one("qabsent unique-marker xyz"),
             ),
@@ -796,7 +796,7 @@ class TestTransactionalPut:
 
 
 class TestSemanticRelevanceFloor:
-    """``search_blocks_fused(max_distance=...)`` enforces a cosine-
+    """``search_chunks_fused(max_distance=...)`` enforces a cosine-
     distance floor on the semantic CTE. The MCP critic flagged
     that a query like ``'xyzzy frobnicate quux'`` returned ranked
     semantic-only hits because pgvector ``<=>`` always finds
@@ -807,27 +807,27 @@ class TestSemanticRelevanceFloor:
     def test_gibberish_query_drops_distant_blocks(self, store: Store) -> None:
         from precis.embedder import MockEmbedder
         from precis.handlers.paper import PaperHandler
-        from precis.store import BlockInsert
+        from precis.store import ChunkInsert
 
         e = MockEmbedder(dim=1024)
         ref = store.insert_ref(kind="paper", slug="p", title="P")
         # Three blocks of meaningful text — none lexically or
         # semantically close to the gibberish query.
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0,
+                ChunkInsert(
+                    ord=0,
                     text="alpha beta gamma",
                     embedding=e.embed_one("alpha beta gamma"),
                 ),
-                BlockInsert(
-                    pos=1,
+                ChunkInsert(
+                    ord=1,
                     text="delta epsilon zeta",
                     embedding=e.embed_one("delta epsilon zeta"),
                 ),
-                BlockInsert(
-                    pos=2,
+                ChunkInsert(
+                    ord=2,
                     text="eta theta iota",
                     embedding=e.embed_one("eta theta iota"),
                 ),
@@ -1705,17 +1705,17 @@ def test_paper_search_preview_strips_image_markers(store: Store) -> None:
         title="Search-preview marker leak regression",
         meta={"abstract": "minimal corpus to drive the search() render path"},
     )
-    from precis.store import BlockInsert
+    from precis.store import ChunkInsert
 
     image_block_text = (
         '<span id="page-3-0"></span>![](_page_3_Figure_3.jpeg) photocatalytic'
     )
     caption_block_text = "**Fig. 3.** Photocatalytic NOx reduction mechanism on Cu/ZnO."
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(pos=10, text=image_block_text),
-            BlockInsert(pos=11, text=caption_block_text),
+            ChunkInsert(ord=10, text=image_block_text),
+            ChunkInsert(ord=11, text=caption_block_text),
         ],
     )
 

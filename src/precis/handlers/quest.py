@@ -61,7 +61,7 @@ from precis.quest.logbook import (
 from precis.quest.logbook import append_entry as _append_logbook_entry
 from precis.response import Response
 from precis.store import Ref, Tag
-from precis.store.types import Block
+from precis.store.types import ChunkRow
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -405,7 +405,7 @@ class QuestHandler(NumericRefHandler):
                 # Re-embed the card so search/alignment reads the rewritten
                 # statement, not the stale one (DELETE+INSERT re-enters the
                 # embed worker's queue).
-                self.store.blocks.upsert_card_combined(ref.id, text, conn=conn)
+                self.store.chunks.upsert_card_combined(ref.id, text, conn=conn)
         old_words = len((old_text or "").split())
         new_words = len(text.split())
         return Response(
@@ -570,21 +570,21 @@ class QuestHandler(NumericRefHandler):
 
     # ── rendering ────────────────────────────────────────────────────
 
-    def _log_entries(self, ref_id: int) -> list[Block]:
+    def _log_entries(self, ref_id: int) -> list[ChunkRow]:
         """The logbook chunks (quest_log) in append order."""
         return [
             b
-            for b in self.store.blocks.list_blocks_for_ref(ref_id)
+            for b in self.store.chunks.list_chunks_for_ref(ref_id)
             if b.chunk_kind == _LOG_KIND
         ]
 
     @staticmethod
-    def _tote(entries: list[Block]) -> float:
+    def _tote(entries: list[ChunkRow]) -> float:
         """Lifetime spend sunk into the quest — the sum of entry costs."""
         return sum(float((b.meta or {}).get("cost", 0) or 0) for b in entries)
 
     def _render_header(
-        self, ref: Ref, tags: list[Tag], entries: list[Block]
+        self, ref: Ref, tags: list[Tag], entries: list[ChunkRow]
     ) -> list[str]:
         """Header/meta/statement + logbook counts line — shared by the default
         digest (tail) and ``view='logbook'`` (full), so the two can't drift.
@@ -617,7 +617,7 @@ class QuestHandler(NumericRefHandler):
         return lines
 
     @staticmethod
-    def _render_log_entries(entries: list[Block]) -> list[str]:
+    def _render_log_entries(entries: list[ChunkRow]) -> list[str]:
         """Render a slice of logbook entries in the standard entry format
         (entry_type · timestamp · by · cost, then text) — used both by the
         default digest's tail and ``view='logbook'``'s full listing.

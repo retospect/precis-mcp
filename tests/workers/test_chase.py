@@ -37,7 +37,7 @@ from unittest.mock import patch
 
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.workers.chase import (
     _fetch_ref,
     _waiting_run_stats,
@@ -67,9 +67,9 @@ def _seed_paper(
         meta={},
     )
     if blocks:
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
-            [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)],
+            [ChunkInsert(ord=i, text=t, meta={}) for i, t in enumerate(blocks)],
         )
     if identifiers:
         with store.pool.connection() as conn:
@@ -703,7 +703,7 @@ def test_card_combined_reemits_at_chain_termination(store) -> None:
 
 def _seed_memory(store, *, text: str = "a research note") -> int:
     ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, meta={})])
     return ref.id
 
 
@@ -777,9 +777,9 @@ def test_acquiring_finding_grounds_once_stub_gains_chunks(store) -> None:
 
     # The stub "lands a PDF": give it a body chunk (what fetch_oa +
     # ingest would have done).
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         stub_id,
-        [BlockInsert(pos=0, text=f"{claim_text}, stated directly.", meta={})],
+        [ChunkInsert(ord=0, text=f"{claim_text}, stated directly.", meta={})],
     )
 
     result = run_finding_chase_pass(store, limit=10)
@@ -915,9 +915,9 @@ def test_acquiring_stays_acquiring_when_fetch_ok_pending_ingest_past_grace(
         conn.commit()
 
     # Ingest lands the chunks on a later pass -- grounds normally.
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         stub_id,
-        [BlockInsert(pos=0, text=f"{claim_text}, stated directly.", meta={})],
+        [ChunkInsert(ord=0, text=f"{claim_text}, stated directly.", meta={})],
     )
     result2 = run_finding_chase_pass(store, limit=10)
     assert result2 == {"claimed": 1, "ok": 1, "failed": 0}

@@ -82,19 +82,19 @@ def run_watch_pass(
     # All reads in this block are the watcher's own — suppress self-heat
     # so polling a paper doesn't make it look more salient next pass.
     with as_background_actor("watch"):
-        seed_chunks = store.blocks.select_salient(
+        seed_chunks = store.chunks.select_salient(
             "watch", kinds=("paper",), limit=limit
         )
         for chunk_id in seed_chunks:
             seed = _seed_for_chunk(store, chunk_id)
             if seed is None:
                 # Chunk's ref vanished mid-pass; rotate so we don't spin.
-                store.blocks.touch_attended("watch", [chunk_id])
+                store.chunks.touch_attended("watch", [chunk_id])
                 continue
             seed_ref_id, seed_slug, identifier = seed
             if identifier is None:
                 # No usable id to query S2 with — rotate and move on.
-                store.blocks.touch_attended("watch", [chunk_id])
+                store.chunks.touch_attended("watch", [chunk_id])
                 continue
             claimed += 1
             try:
@@ -107,7 +107,7 @@ def run_watch_pass(
                     exc_info=True,
                 )
                 failed += 1
-                store.blocks.touch_attended("watch", [chunk_id])
+                store.chunks.touch_attended("watch", [chunk_id])
                 continue
 
             if len(cited) > max_per_seed:
@@ -124,7 +124,7 @@ def run_watch_pass(
                     minted += 1
             # Rotate the seed out so the next pass picks a different
             # salient paper — the dreamer's anti-repeat, reused.
-            store.blocks.touch_attended("watch", [chunk_id])
+            store.chunks.touch_attended("watch", [chunk_id])
 
     return {"claimed": claimed, "ok": minted, "failed": failed}
 

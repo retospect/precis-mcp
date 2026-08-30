@@ -93,7 +93,7 @@ def test_drafts_review_is_composed_not_mixed_in() -> None:
 def test_drafts_review_property_is_cached(store: Store) -> None:
     """``store.drafts.review`` returns the same :class:`DraftReviewStore`
     instance on every access, same caching contract as :attr:`Store.drafts`
-    / :attr:`Store.blocks` themselves."""
+    / :attr:`Store.chunks` themselves."""
     assert isinstance(store.drafts.review, DraftReviewStore)
     assert store.drafts.review is store.drafts.review
 

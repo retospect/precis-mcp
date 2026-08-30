@@ -1,13 +1,13 @@
 """Unit tests for the abstract-preview chunk picker (no DB).
 
 Exercises the pure ``_pick_abstract_text`` heuristic used by
-``BlockStore.abstract_previews`` to populate the web papers hover
+``ChunkStore.abstract_previews`` to populate the web papers hover
 card from leading body chunks.
 """
 
 from __future__ import annotations
 
-from precis.store._blocks_ops import (
+from precis.store._chunks_ops import (
     _looks_like_abstract,
     _pick_abstract_text,
     _strip_abstract_label,

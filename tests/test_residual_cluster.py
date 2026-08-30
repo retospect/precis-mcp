@@ -61,7 +61,7 @@ def _paper(
 ) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=f"Title of {slug}", meta={})
     if vec is not None:
-        cid = store.blocks.upsert_card_combined(ref.id, "gist")
+        cid = store.chunks.upsert_card_combined(ref.id, "gist")
         _embed(store, cid, vec)
     if keywords is not None:
         _body_chunk_with_keywords(store, ref.id, 0, keywords)

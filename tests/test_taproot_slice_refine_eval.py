@@ -81,9 +81,9 @@ class FakeStore:
     writing fails the test immediately instead of silently mutating a
     fake (or, worse, a real store)."""
 
-    blocks = property(
+    chunks = property(
         lambda self: self
-    )  # blocks carve: flat fake doubles as its own sub-store
+    )  # chunks carve: flat fake doubles as its own sub-store
 
     def __init__(
         self, conn: FakeConn, candidates: list[tuple[Any, Any, float]]
@@ -91,7 +91,7 @@ class FakeStore:
         self.pool = FakePool(conn)
         self._candidates = candidates
 
-    def search_blocks(self, **kwargs: Any) -> list[tuple[Any, Any, float]]:
+    def search_chunks(self, **kwargs: Any) -> list[tuple[Any, Any, float]]:
         return self._candidates
 
     def attach_evidence(self, *args: Any, **kwargs: Any) -> None:
@@ -115,7 +115,7 @@ class FakeRef:
 @dataclass(frozen=True)
 class FakeBlock:
     id: int
-    pos: int
+    ord: int
     text: str
 
 
@@ -163,31 +163,31 @@ def _make_store_and_candidates() -> tuple[FakeStore, list[str]]:
 
     candidates = [
         # already attached -> skipped_attached, never verified
-        (FakeBlock(id=100, pos=0, text="ATTACHED"), FakeRef(id=10, slug="ref-10"), 0.1),
+        (FakeBlock(id=100, ord=0, text="ATTACHED"), FakeRef(id=10, slug="ref-10"), 0.1),
         # in the rejection memo -> skipped_rejected, never verified
         (
-            FakeBlock(id=101, pos=1, text="REJECTEDMEMO"),
+            FakeBlock(id=101, ord=1, text="REJECTEDMEMO"),
             FakeRef(id=77, slug="ref-77"),
             0.2,
         ),
         # verifies "yes" -> would_attach
-        (FakeBlock(id=102, pos=2, text="SUPPORTS"), FakeRef(id=20, slug="ref-20"), 0.3),
+        (FakeBlock(id=102, ord=2, text="SUPPORTS"), FakeRef(id=20, slug="ref-20"), 0.3),
         # same paper resurfacing on a different chunk -> deduped, verify_fn
         # called only once for ref-20
         (
-            FakeBlock(id=103, pos=9, text="SUPPORTS"),
+            FakeBlock(id=103, ord=9, text="SUPPORTS"),
             FakeRef(id=20, slug="ref-20"),
             0.35,
         ),
         # verifies "no" -> would_reject
-        (FakeBlock(id=104, pos=3, text="REJECT"), FakeRef(id=30, slug="ref-30"), 0.4),
+        (FakeBlock(id=104, ord=3, text="REJECT"), FakeRef(id=30, slug="ref-30"), 0.4),
         # verify_fn returns None (transient) -> verify_failed
-        (FakeBlock(id=105, pos=4, text="FAIL"), FakeRef(id=40, slug="ref-40"), 0.5),
+        (FakeBlock(id=105, ord=4, text="FAIL"), FakeRef(id=40, slug="ref-40"), 0.5),
         # verdict outside {yes,partial,no} -> unexpected
-        (FakeBlock(id=106, pos=5, text="UNKNOWN"), FakeRef(id=50, slug="ref-50"), 0.6),
+        (FakeBlock(id=106, ord=5, text="UNKNOWN"), FakeRef(id=50, slug="ref-50"), 0.6),
         # the hub itself surfacing in its own search -> skipped outright
         (
-            FakeBlock(id=107, pos=6, text="SELF"),
+            FakeBlock(id=107, ord=6, text="SELF"),
             FakeRef(id=_HUB_ID, slug="hub-slug"),
             0.05,
         ),

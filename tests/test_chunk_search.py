@@ -1,9 +1,9 @@
-"""Block-level search tests: lexical / semantic / RRF-fused."""
+"""Chunk-level search tests: lexical / semantic / RRF-fused."""
 
 from __future__ import annotations
 
 from precis.embedder import MockEmbedder
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 
 
 def _seed_paper(
@@ -21,8 +21,8 @@ def _seed_paper(
     rows = []
     for i, t in enumerate(blocks):
         emb = e.embed_one(t) if embed else None
-        rows.append(BlockInsert(pos=i, text=t, embedding=emb))
-    store.blocks.insert_blocks(ref.id, rows)
+        rows.append(ChunkInsert(ord=i, text=t, embedding=emb))
+    store.chunks.insert_chunks(ref.id, rows)
     return ref.id
 
 
@@ -43,7 +43,7 @@ class TestSearchBlocksLexical:
                 "Catalysts for nitrogen oxides reduction.",
             ],
         )
-        hits = store.blocks.search_blocks_lexical(q="nitrate copper", kind="paper")
+        hits = store.chunks.search_chunks_lexical(q="nitrate copper", kind="paper")
         assert len(hits) >= 1
         block, ref, rank = hits[0]
         assert "nitrate" in block.text.lower()
@@ -60,11 +60,11 @@ class TestSearchBlocksLexical:
         )
         # Memory ref with same word — should be excluded by kind filter.
         mem = store.insert_ref(kind="memory", slug=None, title="M")
-        store.blocks.insert_blocks(
-            mem.id, [BlockInsert(pos=0, text="nitrate is in memory too")]
+        store.chunks.insert_chunks(
+            mem.id, [ChunkInsert(ord=0, text="nitrate is in memory too")]
         )
 
-        hits = store.blocks.search_blocks_lexical(q="nitrate", kind="paper")
+        hits = store.chunks.search_chunks_lexical(q="nitrate", kind="paper")
         assert all(ref.kind == "paper" for _, ref, _ in hits)
 
     def test_scope_ref_id(self, store: Store) -> None:
@@ -82,7 +82,7 @@ class TestSearchBlocksLexical:
             blocks=["nitrate cycling biology"],
             embed=False,
         )
-        hits = store.blocks.search_blocks_lexical(
+        hits = store.chunks.search_chunks_lexical(
             q="nitrate", kind="paper", scope_ref_id=rid_a
         )
         assert len(hits) == 1
@@ -97,7 +97,7 @@ class TestSearchBlocksLexical:
             embed=False,
         )
         store.soft_delete_ref(rid)
-        hits = store.blocks.search_blocks_lexical(q="xenophilus", kind="paper")
+        hits = store.chunks.search_chunks_lexical(q="xenophilus", kind="paper")
         assert hits == []
 
     def test_no_matches_returns_empty(self, store: Store) -> None:
@@ -108,7 +108,7 @@ class TestSearchBlocksLexical:
             blocks=["alpha"],
             embed=False,
         )
-        hits = store.blocks.search_blocks_lexical(q="zzqqxx", kind="paper")
+        hits = store.chunks.search_chunks_lexical(q="zzqqxx", kind="paper")
         assert hits == []
 
 
@@ -134,7 +134,7 @@ class TestSearchBlocksSemantic:
         # Query with the first block's exact text — distance should be ~0
         # for that block.
         qv = e.embed_one("alpha beta gamma")
-        hits = store.blocks.search_blocks_semantic(query_vec=qv, kind="paper")
+        hits = store.chunks.search_chunks_semantic(query_vec=qv, kind="paper")
         assert len(hits) == 3
         # Top hit must be the matching block (distance ~0).
         assert hits[0][0].text == "alpha beta gamma"
@@ -146,19 +146,19 @@ class TestSearchBlocksSemantic:
         # ``has`` is 3 chars and now filtered by the noise-floor guard
         # (MCP critic MAJOR #11). Use a longer phrase so the test
         # exercises only the embedding-presence filter it cares about.
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0,
+                ChunkInsert(
+                    ord=0,
                     text="has-an-embedding",
                     embedding=e.embed_one("has-an-embedding"),
                 ),
-                BlockInsert(pos=1, text="missing-an-embedding"),
+                ChunkInsert(ord=1, text="missing-an-embedding"),
             ],
         )
         qv = e.embed_one("has-an-embedding")
-        hits = store.blocks.search_blocks_semantic(query_vec=qv, kind="paper")
+        hits = store.chunks.search_chunks_semantic(query_vec=qv, kind="paper")
         assert {b.text for b, _, _ in hits} == {"has-an-embedding"}
 
     def test_scope_ref_id(self, store: Store) -> None:
@@ -178,7 +178,7 @@ class TestSearchBlocksSemantic:
             embedder=e,
         )
         qv = e.embed_one("target text")
-        hits = store.blocks.search_blocks_semantic(
+        hits = store.chunks.search_chunks_semantic(
             query_vec=qv, kind="paper", scope_ref_id=rid_a
         )
         assert all(ref.id == rid_a for _, ref, _ in hits)
@@ -198,7 +198,7 @@ class TestSearchBlocksFused:
             blocks=["nitrate reduction"],
             embed=False,
         )
-        hits = store.blocks.search_blocks_fused(q="nitrate", kind="paper")
+        hits = store.chunks.search_chunks_fused(q="nitrate", kind="paper")
         assert len(hits) == 1
         assert "nitrate" in hits[0][0].text
 
@@ -216,7 +216,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("alpha beta gamma")
-        hits = store.blocks.search_blocks_fused(q="nitrate", query_vec=qv, kind="paper")
+        hits = store.chunks.search_chunks_fused(q="nitrate", query_vec=qv, kind="paper")
         # Both the lex-matching and the sem-matching block should
         # surface; unrelated text scores 0.
         texts = [b.text for b, _, _ in hits]
@@ -233,7 +233,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("one two three")
-        hits = store.blocks.search_blocks_fused(q="one two", query_vec=qv, kind="paper")
+        hits = store.chunks.search_chunks_fused(q="one two", query_vec=qv, kind="paper")
         scores = [s for _, _, s in hits]
         assert scores == sorted(scores, reverse=True)
 
@@ -254,7 +254,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("nitrate cycle")
-        hits = store.blocks.search_blocks_fused(
+        hits = store.chunks.search_chunks_fused(
             q="nitrate", query_vec=qv, kind="paper", scope_ref_id=rid_a
         )
         assert all(ref.id == rid_a for _, ref, _ in hits)
@@ -292,7 +292,7 @@ class TestSearchBlocksFused:
         )
         qv = e.embed_one("nitrate reduction")
         # No exclude: all three refs surface.
-        hits_all = store.blocks.search_blocks_fused(
+        hits_all = store.chunks.search_chunks_fused(
             q="nitrate",
             query_vec=qv,
             kind="paper",
@@ -301,7 +301,7 @@ class TestSearchBlocksFused:
         slugs_all = {ref.slug for _b, ref, _s in hits_all}
         assert slugs_all == {"a", "b", "c"}
         # Exclude two; only the third remains.
-        hits_excluded = store.blocks.search_blocks_fused(
+        hits_excluded = store.chunks.search_chunks_fused(
             q="nitrate",
             query_vec=qv,
             kind="paper",
@@ -344,7 +344,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("nitrate")
-        hits = store.blocks.search_blocks_fused(
+        hits = store.chunks.search_chunks_fused(
             q="nitrate",
             query_vec=qv,
             kind="paper",
@@ -357,7 +357,7 @@ class TestSearchBlocksFused:
 
     def test_exclude_ref_ids_lex_only_path(self, store: Store) -> None:
         """``exclude_ref_ids`` flows through the ``query_vec=None``
-        fallback to :meth:`search_blocks_lexical` (no embedder
+        fallback to :meth:`search_chunks_lexical` (no embedder
         path)."""
         rid_a = _seed_paper(
             store,
@@ -373,13 +373,13 @@ class TestSearchBlocksFused:
             blocks=["alpha topic"],
             embed=False,
         )
-        hits = store.blocks.search_blocks_fused(
+        hits = store.chunks.search_chunks_fused(
             q="alpha", kind="paper", exclude_ref_ids=[rid_a]
         )
         assert {ref.slug for _b, ref, _s in hits} == {"b"}
 
     def test_exclude_count_lexical_post_exclude(self, store: Store) -> None:
-        """``count_blocks_lexical`` honours ``exclude_ref_ids`` so the
+        """``count_chunks_lexical`` honours ``exclude_ref_ids`` so the
         ``N of K`` header in handler renderings stays honest under
         exclusion."""
         rid_a = _seed_paper(
@@ -396,8 +396,8 @@ class TestSearchBlocksFused:
             blocks=["alpha topic"],
             embed=False,
         )
-        total_full = store.blocks.count_blocks_lexical(q="alpha", kind="paper")
-        total_excl = store.blocks.count_blocks_lexical(
+        total_full = store.chunks.count_chunks_lexical(q="alpha", kind="paper")
+        total_excl = store.chunks.count_chunks_lexical(
             q="alpha", kind="paper", exclude_ref_ids=[rid_a]
         )
         assert total_full == 2

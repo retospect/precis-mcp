@@ -18,13 +18,13 @@ from precis.backfill import candidates as candmod
 from precis.backfill import citation_recall as cl
 from precis.backfill.candidates import LENS_CITATION, LENS_TEXT, RecallCandidate
 from precis.dispatch import Hub
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 
 def _paper(store, slug: str, *, body: bool = True) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=f"Paper {slug}")
     if body:
-        store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=f"body of {slug}")])
+        store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=f"body of {slug}")])
     return int(ref.id)
 
 

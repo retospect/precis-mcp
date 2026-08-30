@@ -14,7 +14,7 @@ Phase-6 v2 design. Much smaller than v1's 360 LOC parser:
   paragraph slugs from a 6-char content hash.
 
 The parser is pure: input is text, output is a list of
-:class:`MdBlock`. No DB, no IO. The handler wraps it.
+:class:`MdChunk`. No DB, no IO. The handler wraps it.
 
 Front-matter, footnotes, and embedded images are left in their
 home block (not split out) — phase 6's job is *useful*
@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from precis.utils.block_slug import mint_block_slug
+from precis.utils.chunk_slug import mint_chunk_slug
 
 BlockKind = Literal["heading", "paragraph", "code", "list", "table"]
 
@@ -56,7 +56,7 @@ _THEMATIC_BREAK_RE = re.compile(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$")
 
 
 @dataclass(frozen=True, slots=True)
-class MdBlock:
+class MdChunk:
     """A single addressable chunk of a markdown file."""
 
     pos: int
@@ -84,9 +84,9 @@ class MdBlock:
     """Per-kind metadata (e.g. ``{'lang': 'python'}`` for code blocks)."""
 
 
-def block_meta(mb: MdBlock) -> dict[str, Any]:
-    """Render an :class:`MdBlock` as the dict shape the store expects on
-    :attr:`BlockInsert.meta`.
+def block_meta(mb: MdChunk) -> dict[str, Any]:
+    """Render an :class:`MdChunk` as the dict shape the store expects on
+    :attr:`ChunkInsert.meta`.
 
     Promoted from a private helper in ``handlers/markdown.py`` so the
     Perplexity handler (and any future markdown-fed kind) can share
@@ -104,7 +104,7 @@ def block_meta(mb: MdBlock) -> dict[str, Any]:
     return out
 
 
-def parse_markdown(content: str) -> list[MdBlock]:
+def parse_markdown(content: str) -> list[MdChunk]:
     """Split a markdown document into typed blocks.
 
     Idempotent: parsing the same content twice yields the same blocks
@@ -112,7 +112,7 @@ def parse_markdown(content: str) -> list[MdBlock]:
     """
     lines = content.splitlines()
     n = len(lines)
-    out: list[MdBlock] = []
+    out: list[MdChunk] = []
     taken: set[str] = set()
     i = 0
     pos = 0
@@ -138,7 +138,7 @@ def parse_markdown(content: str) -> list[MdBlock]:
             title = m_h.group(2).strip()
             slug = _mint_slug(title, "heading", taken)
             out.append(
-                MdBlock(
+                MdChunk(
                     pos=pos,
                     slug=slug,
                     text=raw,
@@ -174,7 +174,7 @@ def parse_markdown(content: str) -> list[MdBlock]:
             text = "\n".join(collected)
             slug = _mint_slug(text, "code", taken)
             out.append(
-                MdBlock(
+                MdChunk(
                     pos=pos,
                     slug=slug,
                     text=text,
@@ -203,7 +203,7 @@ def parse_markdown(content: str) -> list[MdBlock]:
                 text = "\n".join(table_lines)
                 slug = _mint_slug(text, "table", taken)
                 out.append(
-                    MdBlock(
+                    MdChunk(
                         pos=pos,
                         slug=slug,
                         text=text,
@@ -237,7 +237,7 @@ def parse_markdown(content: str) -> list[MdBlock]:
             text = "\n".join(list_lines)
             slug = _mint_slug(text, "list", taken)
             out.append(
-                MdBlock(
+                MdChunk(
                     pos=pos,
                     slug=slug,
                     text=text,
@@ -272,7 +272,7 @@ def parse_markdown(content: str) -> list[MdBlock]:
         text = "\n".join(para_lines)
         slug = _mint_slug(text, "paragraph", taken)
         out.append(
-            MdBlock(
+            MdChunk(
                 pos=pos,
                 slug=slug,
                 text=text,
@@ -294,9 +294,9 @@ def _mint_slug(text: str, kind: BlockKind, taken: set[str]) -> str:
 
     Headings use a slugified title. Other kinds use 5 leading words +
     a 6-char content hash, with markdown decoration stripped first.
-    Thin adapter over :func:`precis.utils.block_slug.mint_block_slug`.
+    Thin adapter over :func:`precis.utils.chunk_slug.mint_chunk_slug`.
     """
-    return mint_block_slug(
+    return mint_chunk_slug(
         text,
         taken,
         heading=(kind == "heading"),

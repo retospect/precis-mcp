@@ -31,8 +31,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from precis.utils.block_slug import mint_block_slug
-from precis.utils.plaintext_parse import PlaintextBlock
+from precis.utils.chunk_slug import mint_chunk_slug
+from precis.utils.plaintext_parse import PlaintextChunk
 
 # Canonical LaTeX sectioning levels (lower = outer). Mirrors
 # ``\documentclass{book}``'s default depth ordering. ``\part`` and
@@ -71,10 +71,10 @@ _INPUT_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
 
 
 @dataclass(frozen=True, slots=True)
-class TexBlock(PlaintextBlock):
+class TexChunk(PlaintextChunk):
     """One block in a ``.tex`` file.
 
-    Inherits :class:`PlaintextBlock`'s shape (``pos``, ``slug``,
+    Inherits :class:`PlaintextChunk`'s shape (``pos``, ``slug``,
     ``text``, ``line_start``, ``line_end``) and adds tex-specific
     structural metadata. All extras are optional — a paragraph that
     isn't a section heading and contains no ``\\input{}`` simply has
@@ -99,7 +99,7 @@ class TexBlock(PlaintextBlock):
     found in this block's text. Order preserved."""
 
 
-def parse_tex(content: str) -> list[TexBlock]:
+def parse_tex(content: str) -> list[TexChunk]:
     """Split a ``.tex`` buffer into section-aware paragraph blocks.
 
     Boundaries:
@@ -112,7 +112,7 @@ def parse_tex(content: str) -> list[TexBlock]:
     """
     lines = content.splitlines()
     n = len(lines)
-    out: list[TexBlock] = []
+    out: list[TexChunk] = []
     taken: set[str] = set()
     i = 0
     pos = 0
@@ -170,7 +170,7 @@ def parse_tex(content: str) -> list[TexBlock]:
         inputs = tuple(_INPUT_RE.findall(text))
 
         out.append(
-            TexBlock(
+            TexChunk(
                 pos=pos,
                 slug=slug,
                 text=text,
@@ -190,11 +190,11 @@ def parse_tex(content: str) -> list[TexBlock]:
 def _mint_slug(text: str, taken: set[str]) -> str:
     """Stable, unique slug for a block (same shape as plaintext).
 
-    Thin adapter over :func:`precis.utils.block_slug.mint_block_slug`
+    Thin adapter over :func:`precis.utils.chunk_slug.mint_chunk_slug`
     (first 5 words + 6-char content hash) so downstream code (anchored
     edit, search-result rendering) doesn't have to branch by kind.
     """
-    return mint_block_slug(text, taken)
+    return mint_chunk_slug(text, taken)
 
 
 def extract_inputs(content: str) -> list[str]:
@@ -207,7 +207,7 @@ def extract_inputs(content: str) -> list[str]:
 __all__ = [
     "TEX_SECTION_LEVELS",
     "TEX_SECTION_NAMES",
-    "TexBlock",
+    "TexChunk",
     "extract_inputs",
     "parse_tex",
 ]

@@ -14,7 +14,7 @@ search weight a hit by the section it lives under without re-walking
 the file at query time.
 
 Line numbers are 1-indexed and inclusive on both ends, matching
-`precis.utils.md_parse.MdBlock` and the unified addressing convention
+`precis.utils.md_parse.MdChunk` and the unified addressing convention
 used elsewhere (see `precis.python_index.types`).
 """
 
@@ -32,7 +32,7 @@ class MdBlockEntry:
 
     `file` is the path relative to the repo root, forward-slashed.
     `pos` is the block's 0-indexed sequential position within the file
-    (matches `MdBlock.pos`). `slug` is the stable, content-derived
+    (matches `MdChunk.pos`). `slug` is the stable, content-derived
     per-file block slug minted by `md_parse` — unique within `file`.
 
     `title` is set only for `kind == 'heading'`: the heading text with

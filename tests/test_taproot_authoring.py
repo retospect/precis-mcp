@@ -157,11 +157,11 @@ def test_source_handle_grounds_edge_at_paper_chunk(store: Any) -> None:
     """A supporter whose ``source_handle`` resolves to a real paper chunk
     lands on the edge as ``src_chunk_id`` — the edge cites the passage
     (``pc<id>``), not just the paper (ref-level ``pa<id>``)."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.blocks.insert_blocks(
-        paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})]
+    store.chunks.insert_chunks(
+        paper, [ChunkInsert(ord=0, text="Rotaxane passage.", meta={})]
     )
     with store.pool.connection() as conn:
         chunk_id = int(
@@ -189,14 +189,14 @@ def test_two_passages_of_one_paper_are_two_edges(store: Any) -> None:
     """Two supporters, same paper, different grounding chunks → two edges
     (the ``set of chunks that support this point``), not one collapsed
     ref-level edge. The dedup key now includes the grounding chunk."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         paper,
         [
-            BlockInsert(pos=0, text="First supporting passage.", meta={}),
-            BlockInsert(pos=1, text="Second supporting passage.", meta={}),
+            ChunkInsert(ord=0, text="First supporting passage.", meta={}),
+            ChunkInsert(ord=1, text="Second supporting passage.", meta={}),
         ],
     )
     with store.pool.connection() as conn:
@@ -808,11 +808,11 @@ def test_backfill_grounding_part_b_grounds_paper_evidence_edge(store: Any) -> No
     ``source_handle`` gets its ``src_chunk_id`` set to the referenced
     chunk."""
     from precis.cli.taproot import _backfill_grounding
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.blocks.insert_blocks(
-        paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})]
+    store.chunks.insert_chunks(
+        paper, [ChunkInsert(ord=0, text="Rotaxane passage.", meta={})]
     )
     with store.pool.connection() as conn:
         chunk_id = int(
@@ -860,11 +860,11 @@ def test_backfill_grounding_part_a_resyncs_draft_cites_edge(store: Any) -> None:
     by nulling ``src_chunk_id``, then confirm the backfill's resync
     restores the grounding at the citing paragraph."""
     from precis.cli.taproot import _backfill_grounding
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.blocks.insert_blocks(
-        paper, [BlockInsert(pos=0, text="Rotaxane nanomachines.", meta={})]
+    store.chunks.insert_chunks(
+        paper, [ChunkInsert(ord=0, text="Rotaxane nanomachines.", meta={})]
     )
     with store.pool.connection() as conn:
         chunk_id = int(
@@ -921,11 +921,11 @@ def test_backfill_grounding_part_a_resyncs_draft_cites_edge(store: Any) -> None:
 
 def test_backfill_grounding_dry_run_writes_nothing(store: Any) -> None:
     from precis.cli.taproot import _backfill_grounding
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.blocks.insert_blocks(
-        paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})]
+    store.chunks.insert_chunks(
+        paper, [ChunkInsert(ord=0, text="Rotaxane passage.", meta={})]
     )
     with store.pool.connection() as conn:
         chunk_id = int(

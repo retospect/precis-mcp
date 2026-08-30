@@ -38,7 +38,7 @@ from precis.response import Response
 from precis.store import Ref
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
-from precis.utils.tex_parse import TEX_SECTION_NAMES, TexBlock, parse_tex
+from precis.utils.tex_parse import TEX_SECTION_NAMES, TexChunk, parse_tex
 
 
 class TexHandler(PlaintextHandler):
@@ -83,10 +83,10 @@ class TexHandler(PlaintextHandler):
 
     # ── parser hooks (override PlaintextHandler) ──────────────────────
 
-    def _parse_blocks(self, content: str) -> list[TexBlock]:  # type: ignore[override]
+    def _parse_blocks(self, content: str) -> list[TexChunk]:  # type: ignore[override]
         return parse_tex(content)
 
-    def _block_meta(self, block: TexBlock) -> dict[str, Any]:  # type: ignore[override]
+    def _block_meta(self, block: TexChunk) -> dict[str, Any]:  # type: ignore[override]
         meta: dict[str, Any] = {
             "line_start": block.line_start,
             "line_end": block.line_end,
@@ -165,7 +165,7 @@ class TexHandler(PlaintextHandler):
         # Pull this file's blocks in pos order. We need both their
         # section meta and their raw text (to scan for \input{} that
         # appear in non-section blocks).
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         n_emitted = 0
         # Compute the depth of the outermost section in this file so we
         # can render its hierarchy starting at the current indent.

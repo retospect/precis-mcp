@@ -178,7 +178,7 @@ class TestTickCascade:
         assert out.escalated is True and out.mode == "frontier-review"
         logs = [
             b
-            for b in store.blocks.list_blocks_for_ref(qid)
+            for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
         assert any(

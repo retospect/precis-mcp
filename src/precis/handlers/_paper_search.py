@@ -190,7 +190,7 @@ def _coerce_search_year(value: int | str | None, param: str) -> int | None:
 
     Returns ``None`` when unset, else an int in 1500..2100. A
     non-integer or out-of-range value raises :class:`BadInput` at the
-    agent boundary (the store-side guard in ``_blocks_ops`` re-checks).
+    agent boundary (the store-side guard in ``_chunks_ops`` re-checks).
     Year-grained because the corpus stores ``refs.year``, not full
     dates; a ``'2019-03'`` string keeps only the leading year via int().
     """
@@ -540,11 +540,11 @@ class FusedBlockSearch:
                     continue
                 if ref is None:
                     continue
-                block = self.store.blocks.get_block(
+                block = self.store.chunks.get_chunk(
                     rid, pos=0
-                ) or self.store.blocks.get_block(rid, pos=-1)
+                ) or self.store.chunks.get_chunk(rid, pos=-1)
                 if block is None:
-                    body = self.store.blocks.list_blocks_for_ref(rid)
+                    body = self.store.chunks.list_chunks_for_ref(rid)
                     block = body[0] if body else None
                 if block is None:
                     continue
@@ -709,7 +709,7 @@ class FusedBlockSearch:
                 )
             # Probe one row past the page so ``broad_has_more`` is exact
             # for the next-page trailer, then slice back to page_size.
-            probe = self.store.blocks.search_blocks_multi(
+            probe = self.store.chunks.search_chunks_multi(
                 q_texts=q_texts,
                 query_vecs=query_vecs,
                 mode=mode,
@@ -735,7 +735,7 @@ class FusedBlockSearch:
             # explicit mode='semantic' with a failing embedder raises
             # instead (gripe #254606). See :func:`query_vec_for`.
             query_vec = query_vec_for(self.embedder, q, mode)
-            hits = self.store.blocks.search_blocks(
+            hits = self.store.chunks.search_chunks(
                 q=q,
                 query_vec=query_vec,
                 mode=mode,
@@ -783,7 +783,7 @@ class FusedBlockSearch:
         # real cause is missing metadata (the corpus has many such rows).
         year_notice = ""
         if year_from is not None or year_to is not None:
-            omitted = self.store.blocks.count_paper_yearless_matches(
+            omitted = self.store.chunks.count_paper_yearless_matches(
                 q=q,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
@@ -803,7 +803,7 @@ class FusedBlockSearch:
         if hits:
             # Salience: heat the chunks this page surfaced (block-level).
             # One set-based bump; no-op for dream-actor reads.
-            self.store.blocks.bump_salience([block.id for block, _ref, _score in hits])
+            self.store.chunks.bump_salience([block.id for block, _ref, _score in hits])
 
             # Total-hits header: count blocks the lexical filter would
             # match without the LIMIT, so the agent sees "10 of K" when
@@ -827,7 +827,7 @@ class FusedBlockSearch:
             # total=None (headline renders the plain count, no "of K") and
             # gate the nav on ``broad_has_more`` instead.
             if not broad:
-                total = self.store.blocks.count_blocks_lexical(
+                total = self.store.chunks.count_chunks_lexical(
                     q=q,
                     kind=self.kind,
                     scope_ref_id=scope_ref_id,
@@ -1006,7 +1006,7 @@ class PaperSearchResultRenderer:
             # a kind with no chunk code.
             handle = (
                 handle_registry.try_format(ref.kind, block.id, chunk=True)
-                or f"{slug}~{block.pos}"
+                or f"{slug}~{block.ord}"
             )
             kw_list = block.keywords or []
             if kw_list:
@@ -1077,7 +1077,7 @@ class PaperSearchResultRenderer:
             # point at the top hit by its computed chunk handle.
             first_handle = (
                 handle_registry.try_format(hits[0][1].kind, hits[0][0].id, chunk=True)
-                or f"{hits[0][1].slug or '???'}~{hits[0][0].pos}"
+                or f"{hits[0][1].slug or '???'}~{hits[0][0].ord}"
             )
             nav.append(
                 (

@@ -12,7 +12,7 @@ Two job_types live here:
   ``ctx.meta['coordinator_state']['phase']``:
 
   * **plan** (first slice): run Tier-1 fusion via
-    ``ctx.store.search_blocks_multi`` over ``q`` + caller-supplied
+    ``ctx.store.search_chunks_multi`` over ``q`` + caller-supplied
     ``queries``/``answers`` (lexical legs only — the worker slice has
     no embedder handle; see the module note below), build a candidate
     pool, partition into triage batches, ``ctx.spawn_child`` one
@@ -44,7 +44,7 @@ Two job_types live here:
 path embeds ``q``/``queries``/``answers`` via a degrade-safe batch
 call; the coordinator pass only receives a ``store`` (no embedder
 handle), so the plan phase runs **lexical legs only** —
-``search_blocks_multi(mode='lexical')`` with ``answers`` folded in as
+``search_chunks_multi(mode='lexical')`` with ``answers`` folded in as
 extra lexical legs. The RRF fusion across phrasings still applies;
 semantic legs ride in when the executor grows an embedder seam.
 """
@@ -220,7 +220,7 @@ def _phase_plan(ctx: Any) -> Any:
     # handle on the worker pass — see the module docstring); the HyDE
     # ``answers`` still contribute as extra lexical legs. Leg count is
     # bounded at 1 + 8 + 8 = 17, under the store's hard cap of 32.
-    hits = ctx.store.blocks.search_blocks_multi(
+    hits = ctx.store.chunks.search_chunks_multi(
         q_texts=[q, *queries, *answers],
         query_vecs=[],
         mode="lexical",
@@ -259,7 +259,7 @@ def _phase_plan(ctx: Any) -> Any:
     pool: dict[str, dict[str, Any]] = {}
     for rank, (block, ref, _score) in enumerate(hits):
         paper = ref.slug or str(ref.id)
-        handle = f"{paper}~{block.pos}"
+        handle = f"{paper}~{block.ord}"
         if handle in pool:  # defensive: fusion output is unique per chunk
             continue
         pool[handle] = {"rank": rank, "paper": paper}
@@ -363,7 +363,7 @@ def _read_child_verdicts(store: Store, child_id: int) -> list[dict[str, Any]] | 
     caller counts the child as failed).
     """
     try:
-        blocks = store.blocks.list_blocks_for_ref(child_id)
+        blocks = store.chunks.list_chunks_for_ref(child_id)
     except Exception:  # pragma: no cover — defensive
         log.warning("good_search: reading child %d blocks failed", child_id)
         return None

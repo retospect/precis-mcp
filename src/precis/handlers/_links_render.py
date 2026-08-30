@@ -156,11 +156,11 @@ def render_links_section(
 
     for link, direction in combined:
         if direction == "out":
-            other_id, other_pos = link.dst_ref_id, link.dst_pos
+            other_id, other_pos = link.dst_ref_id, link.dst_ord
             other_chunk_id = link.dst_chunk_id
             rel_marker = _format_outbound_rel(link.relation)
         else:
-            other_id, other_pos = link.src_ref_id, link.src_pos
+            other_id, other_pos = link.src_ref_id, link.src_ord
             other_chunk_id = link.src_chunk_id
             rel_marker = _format_inbound_rel(link.relation)
         target = _format_target_handle(other_id, other_pos, other_chunk_id, endpoints)

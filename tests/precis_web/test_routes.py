@@ -755,7 +755,7 @@ def test_drive_pager_preserves_paper_chunks(runtime, client) -> None:
     from .conftest import make_ref
 
     pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
-    blk = SimpleNamespace(id=1001, pos=0, text="passage about the query")
+    blk = SimpleNamespace(id=1001, ord=0, text="passage about the query")
     runtime.store.cross_kind_hits = [(blk, pref, 0.9)] * 31
 
     resp = client.get("/drive?q=query&submitted=1&k=paper&paper_chunks=with")
@@ -827,7 +827,7 @@ def test_drive_search_row_shows_pdf_badge(runtime, client) -> None:
     pref = make_ref(
         id=10, kind="paper", slug="smith2024", title="A paper", pdf_sha256="abc123"
     )
-    blk = SimpleNamespace(id=1001, pos=0, text="passage about the query")
+    blk = SimpleNamespace(id=1001, ord=0, text="passage about the query")
     runtime.store.cross_kind_hits = [(blk, pref, 0.9)]
 
     resp = client.get("/drive?q=query")
@@ -1006,7 +1006,7 @@ def test_drive_has_next_shows_next_link_with_filters_preserved(runtime, client) 
     from .conftest import make_ref
 
     pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
-    blk = SimpleNamespace(id=1001, pos=0, text="passage about the query")
+    blk = SimpleNamespace(id=1001, ord=0, text="passage about the query")
     # One more than a full page so the +1-over-fetch probe reports a next page.
     runtime.store.cross_kind_hits = [(blk, pref, 0.9)] * (_PAGE_SIZE + 1)
 
@@ -1155,7 +1155,7 @@ def test_drive_thumbnail_renders_for_youtube_row(runtime, client) -> None:
     from .conftest import make_ref
 
     yref = make_ref(id=99, kind="youtube", slug="abc123", title="A video")
-    blk = SimpleNamespace(id=2001, pos=0, text="a caption")
+    blk = SimpleNamespace(id=2001, ord=0, text="a caption")
     runtime.store.cross_kind_hits = [(blk, yref, 0.5)]
 
     resp = client.get("/drive?q=query&k=youtube")
@@ -3029,11 +3029,11 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
     """
     from types import SimpleNamespace
 
-    original_blocks = runtime.store.list_blocks_for_ref
+    original_blocks = runtime.store.list_chunks_for_ref
 
     fake_turns = [
         SimpleNamespace(
-            pos=0,
+            ord=0,
             text="user said hi",
             chunk_kind="conv_message",
             meta={
@@ -3044,7 +3044,7 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
             },
         ),
         SimpleNamespace(
-            pos=1,
+            ord=1,
             text="assistant replied",
             chunk_kind="conv_message",
             meta={
@@ -3064,11 +3064,11 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
             return list(fake_turns)
         return original_blocks(ref_id, **kw)
 
-    runtime.store.list_blocks_for_ref = blocks
+    runtime.store.list_chunks_for_ref = blocks
     try:
         resp = client.get("/refs/conv/40")
     finally:
-        runtime.store.list_blocks_for_ref = original_blocks
+        runtime.store.list_chunks_for_ref = original_blocks
 
     assert resp.status_code == 200
     # chunk_kind badge per turn.
@@ -3447,7 +3447,7 @@ def test_job_notes_includes_result() -> None:
 
 def test_job_notes_reads_chunk_kind_column_not_meta_mirror(store) -> None:
     """Regression (real PG): job forensics chunks set the ``chunk_kind``
-    *column* — ``insert_blocks`` pops it out of meta — so
+    *column* — ``insert_chunks`` pops it out of meta — so
     ``meta->>'chunk_kind'`` is NULL. ``_job_notes`` must read the column,
     else the failure reason + hover tooltip come back empty (the exact bug
     that made a child-failed row show 'open to debug' instead of the real
@@ -5229,7 +5229,7 @@ def test_patent_detail_renders_chunks(client, runtime) -> None:
 
     The handler's overview is just bibliographic header + abstract;
     body text lives in chunks. The detail view fetches them via
-    ``Store.list_blocks_for_ref`` and renders one card per chunk
+    ``Store.list_chunks_for_ref`` and renders one card per chunk
     showing ``~pos``, the chunk_kind badge, and the full text.
     """
     from types import SimpleNamespace
@@ -5241,7 +5241,7 @@ def test_patent_detail_renders_chunks(client, runtime) -> None:
     ]
     # Hook the fake's fetch + blocks for patent 6172.
     original_fetch = runtime.store.fetch_refs_by_ids
-    original_blocks = runtime.store.list_blocks_for_ref
+    original_blocks = runtime.store.list_chunks_for_ref
 
     def fetch(ids, *, include_deleted=False):
         out = original_fetch(ids, include_deleted=include_deleted)
@@ -5252,14 +5252,14 @@ def test_patent_detail_renders_chunks(client, runtime) -> None:
 
     fake_blocks = [
         SimpleNamespace(
-            pos=0,
+            ord=0,
             slug="cn112562800a~p0",
             text="First chunk text.",
             meta={},
             chunk_kind="paragraph",
         ),
         SimpleNamespace(
-            pos=1,
+            ord=1,
             slug=None,
             text="Second chunk has more text\nover multiple lines.",
             meta={},
@@ -5273,12 +5273,12 @@ def test_patent_detail_renders_chunks(client, runtime) -> None:
         return original_blocks(ref_id, **kw)
 
     runtime.store.fetch_refs_by_ids = fetch
-    runtime.store.list_blocks_for_ref = blocks
+    runtime.store.list_chunks_for_ref = blocks
     try:
         resp = client.get("/refs/patent/6172")
     finally:
         runtime.store.fetch_refs_by_ids = original_fetch
-        runtime.store.list_blocks_for_ref = original_blocks
+        runtime.store.list_chunks_for_ref = original_blocks
 
     assert resp.status_code == 200
     assert "Chunks" in resp.text

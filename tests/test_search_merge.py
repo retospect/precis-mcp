@@ -214,7 +214,7 @@ def test_page_size_caps_rendered_hits() -> None:
 @dataclass
 class FakeBlock:
     text: str
-    pos: int
+    ord: int
 
 
 @dataclass
@@ -312,14 +312,14 @@ def test_ref_helper_preview_callable() -> None:
 @dataclass
 class _FakeBlockKw:
     text: str
-    pos: int
+    ord: int
     keywords: tuple[str, ...] = ()
 
 
 def test_block_adapter_propagates_block_keywords_to_hit() -> None:
     """The adapter must pass ``block.keywords`` through to the SearchHit
     so the keywords renderer has something to project."""
-    block = _FakeBlockKw(text="body", pos=3, keywords=("photocatalysis", "tio2"))
+    block = _FakeBlockKw(text="body", ord=3, keywords=("photocatalysis", "tio2"))
     ref = FakeRef("Title", "abc", id=10)
     [hit] = block_hits_to_search_hits([(block, ref, 0.5)], kind="paper")
     assert hit.keywords == ("photocatalysis", "tio2")
@@ -328,7 +328,7 @@ def test_block_adapter_propagates_block_keywords_to_hit() -> None:
 def test_block_adapter_defaults_to_empty_keywords_tuple() -> None:
     """Producers that don't populate keywords still produce valid hits;
     the keywords cell renders empty."""
-    block = _FakeBlockKw(text="body", pos=3)
+    block = _FakeBlockKw(text="body", ord=3)
     ref = FakeRef("Title", "abc", id=10)
     [hit] = block_hits_to_search_hits([(block, ref, 0.5)], kind="paper")
     assert hit.keywords == ()

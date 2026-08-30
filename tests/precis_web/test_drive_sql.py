@@ -92,13 +92,13 @@ def test_recent_refs_has_chunks_filter(store):
     """``has_chunks`` narrows ``/drive``'s ``state=chunked``/``unchunked``
     facet to refs with (or without) a body chunk (``ord >= 0``)."""
     from precis.embedder import MockEmbedder
-    from precis.store import BlockInsert
+    from precis.store import ChunkInsert
 
     emb = MockEmbedder(dim=store.embedding_dim())
     with_chunk = store.insert_ref(kind="web", slug="has-a-chunk", title="chunked")
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         with_chunk.id,
-        [BlockInsert(pos=0, text="some body text", embedding=emb.embed_one("x"))],
+        [ChunkInsert(ord=0, text="some body text", embedding=emb.embed_one("x"))],
     )
     without_chunk = store.insert_ref(kind="web", slug="no-chunk", title="unchunked")
 
@@ -199,14 +199,14 @@ def test_count_recent_refs_matches_list_under_same_filters(store):
     """``count_recent_refs`` is the exact denominator for the ``/drive``
     browse — same filter set as ``recent_refs``, so "N of K" never lies."""
     from precis.embedder import MockEmbedder
-    from precis.store import BlockInsert
+    from precis.store import ChunkInsert
 
     emb = MockEmbedder(dim=store.embedding_dim())
     # Two chunked, one stub (no PDF, no chunk) — distinct kind to isolate.
     for slug in ("cnt-chunked-1", "cnt-chunked-2"):
         r = store.insert_ref(kind="wikipedia", slug=slug, title=slug)
-        store.blocks.insert_blocks(
-            r.id, [BlockInsert(pos=0, text="body", embedding=emb.embed_one("x"))]
+        store.chunks.insert_chunks(
+            r.id, [ChunkInsert(ord=0, text="body", embedding=emb.embed_one("x"))]
         )
     store.insert_ref(kind="wikipedia", slug="cnt-bare", title="bare")
 
@@ -313,12 +313,12 @@ def test_recent_refs_untried_composes_with_has_chunks_filter(store):
     manual-open history, and untried-first ordering still applies among
     the chunk-less survivors."""
     from precis.embedder import MockEmbedder
-    from precis.store import BlockInsert
+    from precis.store import ChunkInsert
 
     emb = MockEmbedder(dim=store.embedding_dim())
     chunked = store.insert_ref(kind="paper", slug="ut-hc-chunked", title="Chunked")
-    store.blocks.insert_blocks(
-        chunked.id, [BlockInsert(pos=0, text="body", embedding=emb.embed_one("x"))]
+    store.chunks.insert_chunks(
+        chunked.id, [ChunkInsert(ord=0, text="body", embedding=emb.embed_one("x"))]
     )
     untried_stub = store.insert_ref(kind="paper", slug="ut-hc-untried", title="Untried")
     tried_stub = store.insert_ref(kind="paper", slug="ut-hc-tried", title="Tried")
@@ -370,7 +370,7 @@ def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
     is the row preview, and the row opens the transcript at
     ``/refs/conv/{id}``. Guards ``conv`` being a first-class source kind."""
     from precis.embedder import MockEmbedder
-    from precis.store import BlockInsert
+    from precis.store import ChunkInsert
     from precis_web.routes.items import _run_search
 
     emb = MockEmbedder(dim=store.embedding_dim())
@@ -378,11 +378,11 @@ def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
         ref = store.insert_ref(
             kind="conv", slug="discord/1/2/3", title="#general", meta={}, conn=conn
         )
-        store.blocks.insert_blocks(
+        store.chunks.insert_chunks(
             ref.id,
             [
-                BlockInsert(
-                    pos=0,
+                ChunkInsert(
+                    ord=0,
                     text="did the reingest finish yet?",
                     meta={"author": "alice"},
                     embedding=emb.embed_one("reingest"),
@@ -412,8 +412,8 @@ def test_search_with_kind_chip_renders(drive_client, store):
     """A submitted search with a kind chip selected returns 200.
 
     Regression for the store-decomposition carve (33985c3f): the header's
-    "showing N of ~K" total calls ``count_blocks_lexical``, which lives on
-    the composed :class:`BlockStore` (``store.blocks``), not on ``Store``.
+    "showing N of ~K" total calls ``count_chunks_lexical``, which lives on
+    the composed :class:`ChunkStore` (``store.chunks``), not on ``Store``.
     ``store`` is untyped ``Any`` in the web routes, so mypy can't see the
     missing attribute — only a request through the real store does. The
     FakeStore suite can't catch it either (it answers any attribute).

@@ -39,7 +39,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref
 from precis.utils import handle_registry
-from precis.utils.md_parse import MdBlock, block_meta, parse_markdown
+from precis.utils.md_parse import MdChunk, block_meta, parse_markdown
 from precis.utils.next_block import render_next_section
 
 
@@ -75,13 +75,13 @@ class MarkdownHandler(PlaintextHandler):
 
     # ── parser hooks (override PlaintextHandler) ─────────────────────
 
-    def _parse_blocks(self, content: str) -> list[MdBlock]:  # type: ignore[override]
+    def _parse_blocks(self, content: str) -> list[MdChunk]:  # type: ignore[override]
         """Markdown block grammar: headings, paragraphs, fenced code,
         lists, tables. See :func:`precis.utils.md_parse.parse_markdown`.
         """
         return parse_markdown(content)
 
-    def _block_meta(self, block: MdBlock) -> dict[str, Any]:  # type: ignore[override]
+    def _block_meta(self, block: MdChunk) -> dict[str, Any]:  # type: ignore[override]
         """Store per-block metadata — the :func:`block_meta` helper in
         :mod:`precis.utils.md_parse` packs ``kind`` /
         ``heading_level`` / ``line_start`` / ``line_end`` /
@@ -128,14 +128,14 @@ class MarkdownHandler(PlaintextHandler):
         patent overviews use) so the ``/toc`` view looks consistent
         across every slug-addressed block-bearing kind.
         """
-        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{ref.slug}: no blocks indexed")
         handle = handle_registry.format_handle(self._KIND, ref.id)
         toc = build_toc(blocks)
         if not toc or not any(s.title for s in toc):
             return Response(body=f"# {handle}\n_{ref.title}_\n\nno headings")
-        blocks_by_pos = {b.pos: b for b in blocks}
+        blocks_by_pos = {b.ord: b for b in blocks}
         body = render_toc(
             slug=ref.slug or "?",
             toc=toc,

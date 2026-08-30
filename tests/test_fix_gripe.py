@@ -802,9 +802,9 @@ class TestRunExceptionMapping:
             id: int = 42
 
         class _Store:
-            blocks = property(
+            chunks = property(
                 lambda self: self
-            )  # blocks carve: flat fake doubles as its own sub-store
+            )  # chunks carve: flat fake doubles as its own sub-store
 
             def get_ref(self, **_kw: object) -> _Ref:
                 return _Ref()
@@ -812,7 +812,7 @@ class TestRunExceptionMapping:
             def tags_for(self, _ref_id: int) -> list[str]:
                 return []
 
-            def list_blocks_for_ref(self, _ref_id: int) -> list[object]:
+            def list_chunks_for_ref(self, _ref_id: int) -> list[object]:
                 return [_FakeBlock("body text")]
 
         return _Store()

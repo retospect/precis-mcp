@@ -12,7 +12,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
 from precis.handlers.todo import TodoHandler
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 
 docx = pytest.importorskip("docx")  # python-docx (the `docx` extra)
 
@@ -23,9 +23,9 @@ def _seed_paper(store: Store, slug: str, title: str, year: int) -> None:
     store.insert_ref(kind="paper", slug=slug, title=title, year=year, provider="manual")
     paper_ref = store.get_ref(kind="paper", id=slug)
     assert paper_ref is not None
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         paper_ref.id,
-        [BlockInsert(pos=0, text="body", slug="b0")],
+        [ChunkInsert(ord=0, text="body", slug="b0")],
     )
 
 
@@ -497,7 +497,7 @@ def test_endnote_pc_citation_embeds_cited_passage(
     pref = store.get_ref(kind="paper", id="nas07")
     assert pref is not None
     passage = "The exact cited passage about sp3 rehybridization at junctions."
-    store.blocks.insert_blocks(pref.id, [BlockInsert(pos=0, text=passage, slug="b0")])
+    store.chunks.insert_chunks(pref.id, [ChunkInsert(ord=0, text=passage, slug="b0")])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord >= 0 "

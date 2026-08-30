@@ -50,7 +50,7 @@ from precis.quest.dossier import (
     dossier_ref_id,
 )
 from precis.quest.logbook import MEASURED_BY, append_entry
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -158,9 +158,9 @@ def _mint_ruling_finding(
             "tier": tier,
         },
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
-        [BlockInsert(pos=0, text=body, meta={"chunk_kind": "finding_body"})],
+        [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "finding_body"})],
     )
     return int(ref.id)
 

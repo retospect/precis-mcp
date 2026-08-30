@@ -90,7 +90,7 @@ def redirect_long_tag_values(
     to ``see-chunk-N`` trips neither the length nor whitespace test, so a
     second pass is a no-op (no duplicate chunk).
     """
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     rewritten: list[str] = []
     chunk_ids: list[int] = []
@@ -111,11 +111,11 @@ def redirect_long_tag_values(
                 (ref_id,),
             ).fetchone()
             next_pos = int(row[0]) if row and row[0] is not None else 0
-            store.blocks.insert_blocks(
+            store.chunks.insert_chunks(
                 ref_id,
                 [
-                    BlockInsert(
-                        pos=next_pos,
+                    ChunkInsert(
+                        ord=next_pos,
                         text=text,
                         meta={"chunk_kind": "tag_overflow", "tag_namespace": ns},
                     )

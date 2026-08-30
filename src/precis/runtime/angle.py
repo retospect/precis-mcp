@@ -66,7 +66,7 @@ class AngleMixin(RuntimeShape):
             raise BadInput("n must be >= 1", next="search(view='dreamable', n=12)")
 
         kinds = self._angle_target_kinds(kind)
-        seed_id, region = store.blocks.dreamable_region(kinds=kinds, n=n)
+        seed_id, region = store.chunks.dreamable_region(kinds=kinds, n=n)
 
         # The rotation: surfacing a region IS dreaming it. Stamp the
         # seed and every surfaced chunk so the next run picks elsewhere.
@@ -74,7 +74,7 @@ class AngleMixin(RuntimeShape):
         if seed_id is not None and seed_id not in touched:
             touched.append(seed_id)
         if touched:
-            store.blocks.touch_last_dreamt(touched)
+            store.chunks.touch_last_dreamt(touched)
 
         stream = [
             SearchHit(
@@ -83,7 +83,7 @@ class AngleMixin(RuntimeShape):
                 title=ref.title or (ref.slug or f"#{ref.id}"),
                 preview=_angle_excerpt(block.text),
                 slug=ref.slug,
-                pos=block.pos if block.pos is not None and block.pos >= 0 else None,
+                pos=block.ord if block.ord is not None and block.ord >= 0 else None,
                 ref_id=ref.id,
                 dedupe_key=f"{ref.kind}:{block.id}",
             )
@@ -133,13 +133,13 @@ class AngleMixin(RuntimeShape):
         )
 
         exclude = [seed_chunk_id] if seed_chunk_id is not None else None
-        hits = store.blocks.angle_neighbours(
+        hits = store.chunks.angle_neighbours(
             seed_vec, angle=angle, n=n, kinds=kinds, exclude_chunk_ids=exclude
         )
         # Surfacing is an external access → heat the snapped chunks
         # (no-op inside as_dream_actor); the dreamer stamps last_dreamt
         # itself at run end.
-        store.blocks.bump_salience([block.id for block, _ref, _score in hits])
+        store.chunks.bump_salience([block.id for block, _ref, _score in hits])
 
         stream = [
             SearchHit(
@@ -148,7 +148,7 @@ class AngleMixin(RuntimeShape):
                 title=ref.title or (ref.slug or f"#{ref.id}"),
                 preview=_angle_excerpt(block.text),
                 slug=ref.slug,
-                pos=block.pos if block.pos is not None and block.pos >= 0 else None,
+                pos=block.ord if block.ord is not None and block.ord >= 0 else None,
                 ref_id=ref.id,
                 dedupe_key=f"{ref.kind}:{block.id}",
             )
@@ -212,12 +212,12 @@ class AngleMixin(RuntimeShape):
 
             tgt = parse_link_target(str(like), store=store)
             if tgt.pos is None:
-                chunk_id = store.blocks.seed_chunk_for_ref(tgt.ref_id)
+                chunk_id = store.chunks.seed_chunk_for_ref(tgt.ref_id)
             else:
-                block = store.blocks.get_block(tgt.ref_id, pos=tgt.pos)
+                block = store.chunks.get_chunk(tgt.ref_id, pos=tgt.pos)
                 chunk_id = block.id if block is not None else None
             vec = (
-                store.blocks.get_chunk_vector(chunk_id)
+                store.chunks.get_chunk_vector(chunk_id)
                 if chunk_id is not None
                 else None
             )

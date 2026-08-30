@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.utils import handle_registry
@@ -93,7 +93,7 @@ def _seed_paper_chunk(
     ref = store.insert_ref(
         kind="paper", slug=cite_key, title=f"Test paper {cite_key}", meta={}
     )
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, meta={})])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref.id,)
@@ -124,7 +124,7 @@ def _seed_patent_block(
     ref = store.insert_ref(
         kind="patent", slug=cite_key, title=f"Test patent {cite_key}", meta={}
     )
-    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta=block_meta)])
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, meta=block_meta)])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref.id,)
@@ -519,11 +519,11 @@ def test_edge_exists_precheck_skips_verify_for_a_pre_attached_paper(store: Any) 
 
 
 def _search_spy(store: Any) -> Any:
-    """Patch ``store.blocks.search_blocks`` with a pass-through spy, so a
+    """Patch ``store.chunks.search_chunks`` with a pass-through spy, so a
     test can read the kwargs the widening legs were called with.
-    ``Store.blocks`` is a ``cached_property``, so the instance patched here
+    ``Store.chunks`` is a ``cached_property``, so the instance patched here
     is the one hub-refine reaches."""
-    return patch.object(store.blocks, "search_blocks", wraps=store.blocks.search_blocks)
+    return patch.object(store.chunks, "search_chunks", wraps=store.chunks.search_chunks)
 
 
 def _semantic_exclusions(spy: Any) -> list[Any]:
@@ -628,15 +628,15 @@ def test_exclusion_is_ref_grained_so_a_sibling_chunk_is_excluded_too(
     held = store.insert_ref(
         kind="paper", slug="two-chunk", title="Test paper two-chunk", meta={}
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         held.id,
         [
-            BlockInsert(
-                pos=0, text="The passage the evidence edge is grounded at.", meta={}
+            ChunkInsert(
+                ord=0, text="The passage the evidence edge is grounded at.", meta={}
             ),
             # Sibling chunk, unattached and verbatim-nearest: without the
             # ref-grained exclusion it wins the single discovery slot.
-            BlockInsert(pos=1, text=claim, meta={}),
+            ChunkInsert(ord=1, text=claim, meta={}),
         ],
     )
     with store.pool.connection() as conn:
@@ -919,7 +919,7 @@ def test_ac4_paper_reached_by_both_sources_is_verified_once(store: Any) -> None:
     # Precondition: the SEMANTIC source alone ALSO surfaces the cited paper,
     # so a single verify proves the shared dedup did the work — not that the
     # semantic source simply missed it.
-    sem = store.blocks.search_blocks(
+    sem = store.chunks.search_chunks(
         q=claim,
         query_vec=embedder.embed_one(claim),
         mode="semantic",
@@ -1008,7 +1008,7 @@ def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
 # Phase 1) ─────────────────────────────────────────────────────────
 #
 # The semantic-ANN discover source now runs a second, patent-scoped leg
-# beside the paper leg (two ``store.search_blocks`` calls, merged by score
+# beside the paper leg (two ``store.search_chunks`` calls, merged by score
 # and truncated back to ``topk`` -- the wrapper takes one ``kind=`` string,
 # not a list). Grounding policy: a patent's *claims*-section blocks are
 # legal scope, not empirical support, and are dropped before Verify ever

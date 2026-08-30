@@ -1167,7 +1167,7 @@ def _candidate_sources_block(store: Store, draft_ref_id: int) -> str:
         lines.append(f"{glyph} {handle} · {tier} · {lens}{where} · {title}")
         if not cand.is_ref_level:
             text = " ".join(
-                (store.blocks.chunk_text_by_id(cand.chunk_id) or "").split()
+                (store.chunks.chunk_text_by_id(cand.chunk_id) or "").split()
             )
             if len(text) > _SOURCES_EXCERPT_CAP:
                 text = text[:_SOURCES_EXCERPT_CAP].rstrip() + "…"

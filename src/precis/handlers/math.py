@@ -27,7 +27,7 @@ from urllib.parse import quote_plus
 from precis.errors import Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.utils.http import http_client
 
 log = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ class MathHandler(CacheBackedHandler):
         body = _format_doc(doc, key)
         return FetchResult(
             title=key,
-            body_blocks=[BlockInsert(pos=0, text=body)],
+            body_blocks=[ChunkInsert(ord=0, text=body)],
             model="wolfram-alpha-v2",
             cost_usd=self._COST_PER_CALL,
             meta={"input_query": key},

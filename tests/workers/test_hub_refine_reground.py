@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from precis.errors import BadInput
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import (
     META_REGROUND_LOG,
@@ -67,8 +67,8 @@ def _seed_paper(
     ref = store.insert_ref(
         kind="paper", slug=cite_key, title=f"Test paper {cite_key}", meta={}
     )
-    store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(texts)]
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=i, text=t, meta={}) for i, t in enumerate(texts)]
     )
     chunk_ids: list[int] = []
     with store.pool.connection() as conn:
@@ -911,7 +911,7 @@ def test_external_stage_mines_reference_dois(store: Any) -> None:
         deeper_topk=8,
         external_probe_fn=lambda _q: [],
     )
-    with patch.object(store.blocks, "search_blocks", side_effect=_only_scoped(store)):
+    with patch.object(store.chunks, "search_chunks", side_effect=_only_scoped(store)):
         res = reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
 
     assert res.confirmed_adds == 1
@@ -923,11 +923,11 @@ def test_external_stage_mines_reference_dois(store: Any) -> None:
 
 
 def _only_scoped(store: Any) -> Any:
-    """A ``search_blocks`` wrapper that answers only *scoped* (per-paper)
+    """A ``search_chunks`` wrapper that answers only *scoped* (per-paper)
     searches, so the corpus-wide discovery legs come back empty and the
     external last resort is the only source left."""
-    real = store.blocks.__class__.search_blocks
-    blocks = store.blocks
+    real = store.chunks.__class__.search_chunks
+    blocks = store.chunks
 
     def _wrapped(**kwargs: Any) -> Any:
         if kwargs.get("scope_ref_id") is None:

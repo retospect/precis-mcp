@@ -705,12 +705,12 @@ def test_live_paper_cites_splits_local_vs_external(store: Store) -> None:
     to a live paper we hold come back (slug cite_key, ``pc`` chunk handle,
     ``pa`` record handle); unknown, non-paper, and soft-deleted targets are
     external. Mirrors ``§slug`` / ``[pc..]`` / ``[pa..]`` inline forms."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
     from precis.utils import handle_registry
 
     paper = store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    store.blocks.insert_blocks(
-        paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
+    store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text="We measured 12% FE.", meta={})]
     )
     with store.pool.connection() as conn:
         chunk_row = conn.execute(
@@ -767,7 +767,7 @@ def test_search_excludes_retired_draft_chunk(store: Store) -> None:
     )[0]
     texts = {
         b.text
-        for b, _r, _s in store.blocks.search_blocks_lexical(
+        for b, _r, _s in store.chunks.search_chunks_lexical(
             q="xenophilus", kind="draft"
         )
     }
@@ -778,7 +778,7 @@ def test_search_excludes_retired_draft_chunk(store: Store) -> None:
     )  # p1 now retired (p2 keeps the draft non-empty)
     texts2 = {
         b.text
-        for b, _r, _s in store.blocks.search_blocks_lexical(
+        for b, _r, _s in store.chunks.search_chunks_lexical(
             q="xenophilus", kind="draft"
         )
     }
@@ -845,14 +845,14 @@ def test_job_fail_reason_falls_back_to_job_event(store: Store) -> None:
     ``None``: the first line of the latest ``job_event`` chunk. The
     event's multi-line ``--- tail ---`` block of raw subprocess output
     must be dropped, not surfaced in the UI reason."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         job.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text=(
                     "autocatpath_seed: run failed: child process exited "
                     "without writing result.json\n"
@@ -875,19 +875,19 @@ def test_job_fail_reason_falls_back_to_job_event(store: Store) -> None:
 def test_job_fail_reason_prefers_job_summary_over_job_event(store: Store) -> None:
     """A ``job_summary`` chunk still wins when both exist — ``job_event``
     is only a fallback for a job that never got a summary."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         job.id,
         [
-            BlockInsert(
-                pos=0,
+            ChunkInsert(
+                ord=0,
                 text="runner: killed at wall-clock deadline",
                 meta={"chunk_kind": "job_event"},
             ),
-            BlockInsert(
-                pos=1,
+            ChunkInsert(
+                ord=1,
                 text="API Error: unable to respond",
                 meta={"chunk_kind": "job_summary"},
             ),
@@ -899,17 +899,17 @@ def test_job_fail_reason_prefers_job_summary_over_job_event(store: Store) -> Non
 def test_job_fail_reason_picks_latest_job_event(store: Store) -> None:
     """With several ``job_event`` chunks and no ``job_summary``, the
     LATEST one (highest ``ord``) is used, not the first."""
-    from precis.store.types import BlockInsert
+    from precis.store.types import ChunkInsert
 
     job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         job.id,
         [
-            BlockInsert(
-                pos=0, text="first attempt died", meta={"chunk_kind": "job_event"}
+            ChunkInsert(
+                ord=0, text="first attempt died", meta={"chunk_kind": "job_event"}
             ),
-            BlockInsert(
-                pos=1, text="second attempt died", meta={"chunk_kind": "job_event"}
+            ChunkInsert(
+                ord=1, text="second attempt died", meta={"chunk_kind": "job_event"}
             ),
         ],
     )

@@ -310,7 +310,7 @@ def test_put_replace_block(handler: MarkdownHandler, md_root: Path) -> None:
     # Find the slug for the "Original paragraph" block.
     ref = handler.store.get_ref(kind="markdown", id="doc")
     assert ref is not None
-    blocks = handler.store.blocks.list_blocks_for_ref(ref.id)
+    blocks = handler.store.chunks.list_chunks_for_ref(ref.id)
     para = next(b for b in blocks if b.text.startswith("Original"))
 
     handler.edit(
@@ -353,7 +353,7 @@ def test_put_delete_block(handler: MarkdownHandler, md_root: Path) -> None:
     handler.get(id="doc")
     ref = handler.store.get_ref(kind="markdown", id="doc")
     assert ref is not None
-    blocks = handler.store.blocks.list_blocks_for_ref(ref.id)
+    blocks = handler.store.chunks.list_chunks_for_ref(ref.id)
     target = next(b for b in blocks if b.text.startswith("Delete"))
 
     handler.delete(id=f"doc~{target.slug}")
@@ -406,7 +406,7 @@ def test_put_edit_swaps_token_in_block(handler: MarkdownHandler, md_root: Path) 
     handler.get(id="doc")
     ref = handler.store.get_ref(kind="markdown", id="doc")
     assert ref is not None
-    blocks = handler.store.blocks.list_blocks_for_ref(ref.id)
+    blocks = handler.store.chunks.list_chunks_for_ref(ref.id)
     para = next(b for b in blocks if "fox" in b.text)
 
     handler.edit(
@@ -670,7 +670,7 @@ def test_put_edit_dry_run_block_scoped(handler: MarkdownHandler, md_root: Path) 
     handler.get(id="doc")  # ingest first
     ref = handler.store.get_ref(kind="markdown", id="doc")
     assert ref is not None
-    blocks = handler.store.blocks.list_blocks_for_ref(ref.id)
+    blocks = handler.store.chunks.list_chunks_for_ref(ref.id)
     para = next(b for b in blocks if "fox" in b.text)
 
     out = handler.edit(
@@ -722,7 +722,7 @@ def test_put_edit_dry_run_rejects_unknown_mode(
 #
 # A body edit must never leave a stale chunk_embeddings/chunk_summaries
 # row pointing at superseded text (CLAUDE.md "Don't mutate body chunks").
-# For file kinds the re-ingest path (``insert_blocks(replace=True)``)
+# For file kinds the re-ingest path (``insert_chunks(replace=True)``)
 # DELETEs the ref's chunks and re-INSERTs fresh rows; the FK's
 # ``ON DELETE CASCADE`` takes chunk_embeddings/chunk_summaries with it,
 # and the new chunk starts with no embedding — the worker will refill it.
@@ -742,7 +742,7 @@ def test_put_edit_cascades_stale_embedding_away(
     ref = handler.store.get_ref(kind="markdown", id="doc")
     assert ref is not None
     old_block = next(
-        b for b in handler.store.blocks.list_blocks_for_ref(ref.id) if "fox" in b.text
+        b for b in handler.store.chunks.list_chunks_for_ref(ref.id) if "fox" in b.text
     )
     with handler.store.pool.connection() as conn:
         old_vector = conn.execute(
@@ -774,7 +774,7 @@ def test_put_edit_cascades_stale_embedding_away(
     assert fresh_ref is not None
     new_block = next(
         b
-        for b in handler.store.blocks.list_blocks_for_ref(fresh_ref.id)
+        for b in handler.store.chunks.list_chunks_for_ref(fresh_ref.id)
         if "cat" in b.text
     )
     assert new_block.id != old_block.id

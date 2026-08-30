@@ -6,22 +6,22 @@ Real-PG: validates the ``= ANY`` lookup and the NULL-page omission
 
 from __future__ import annotations
 
-from precis.store import BlockInsert, Store
+from precis.store import ChunkInsert, Store
 
 
 def test_chunk_pages_maps_ords_and_omits_null_pages(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="cp-pages", title="CP")
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         ref.id,
         [
-            BlockInsert(pos=0, text="alpha alpha"),
-            BlockInsert(pos=1, text="beta beta"),
-            BlockInsert(pos=2, text="gamma gamma"),
+            ChunkInsert(ord=0, text="alpha alpha"),
+            ChunkInsert(ord=1, text="beta beta"),
+            ChunkInsert(ord=2, text="gamma gamma"),
         ],
     )
-    # page_first defaults to NULL on the BlockInsert path -> all omitted.
-    assert store.blocks.chunk_pages(ref.id, [0, 1, 2]) == {}
-    assert store.blocks.chunk_pages(ref.id, []) == {}
+    # page_first defaults to NULL on the ChunkInsert path -> all omitted.
+    assert store.chunks.chunk_pages(ref.id, [0, 1, 2]) == {}
+    assert store.chunks.chunk_pages(ref.id, []) == {}
 
     # Stamp pages on two of the three chunks; the un-stamped one (ord 1)
     # must drop out of the map rather than surface a None page.
@@ -34,4 +34,4 @@ def test_chunk_pages_maps_ords_and_omits_null_pages(store: Store) -> None:
             "UPDATE chunks SET page_first = %s WHERE ref_id = %s AND ord = %s",
             (5, ref.id, 2),
         )
-    assert store.blocks.chunk_pages(ref.id, [0, 1, 2]) == {0: 3, 2: 5}
+    assert store.chunks.chunk_pages(ref.id, [0, 1, 2]) == {0: 3, 2: 5}

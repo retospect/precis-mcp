@@ -7,7 +7,7 @@ compilable LaTeX project (mirroring ``precis.export.latex.export_draft``'s
 project shape) with three parts, in order:
 
 1. **Easy-read body** — the source's own body chunks
-   (``store.blocks.list_blocks_for_ref``, ``ord >= 0``, reading order) at
+   (``store.chunks.list_chunks_for_ref``, ``ord >= 0``, reading order) at
    reMarkable page geometry, with section headings reconstructed from each
    chunk's ``meta['section_path']``.
 2. **Claims appendix** — every Taproot claim hub grounded in this source
@@ -85,7 +85,7 @@ def _render_body_tex(
     figure itself isn't served here. Everything else is scrubbed
     (:func:`~precis.handlers._paper_text._scrub_block_text`, which strips
     page-anchor spans) then LaTeX-escaped."""
-    blocks = store.blocks.list_blocks_for_ref(source_ref.id)
+    blocks = store.chunks.list_chunks_for_ref(source_ref.id)
     lines: list[str] = []
     prev_path: list[str] | None = None
     for b in blocks:

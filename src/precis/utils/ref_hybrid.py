@@ -8,7 +8,7 @@ survivable for a kind whose refs are one short line, and badly wrong for
 ``finding``, where the ref title *is* a claim sentence and the caller is
 usually asking "do we already have a claim like this?".
 
-The fix is not a new search primitive — ``search_blocks_fused`` already does
+The fix is not a new search primitive — ``search_chunks_fused`` already does
 RRF over a lexical and a semantic leg. It was simply never called from the
 ref-level paths. This module fuses that block leg back onto the title leg.
 
@@ -20,10 +20,10 @@ candidates, never remove them.
 Three legs, fused by reciprocal rank:
 
 1. **title lexical** — ``search_refs_lexical`` (unchanged behaviour).
-2. **block hybrid** — ``blocks.search_blocks_fused`` with a query vector from
+2. **block hybrid** — ``blocks.search_chunks_fused`` with a query vector from
    :func:`~precis.utils.embed_query.query_vec_for`, which honours ``mode=``
    (``'lexical'``/``'verbatim'`` skip the embed) and returns ``None`` when the
-   embedder is missing or raising. ``search_blocks_fused`` then degrades to
+   embedder is missing or raising. ``search_chunks_fused`` then degrades to
    lexical-only by itself, so an embedder outage costs recall, not a 500.
 3. **notation-normalized lexical** — when
    ``normalize_notation(q)`` changes the query, legs 1 and 2 are re-run on the
@@ -48,7 +48,7 @@ from precis.taproot.notation import normalize_notation
 from precis.utils.embed_query import query_vec_for
 
 #: Standard RRF damping constant, matching ``search_merge._merge_rrf`` and
-#: ``search_blocks_fused``. A hit at rank *r* contributes ``1/(60+r)``.
+#: ``search_chunks_fused``. A hit at rank *r* contributes ``1/(60+r)``.
 RRF_K = 60
 
 #: Block-leg over-fetch. One ref can own many matching chunks, so the block
@@ -88,7 +88,7 @@ def _block_leg(
     chunk_kinds: list[str] | None,
 ) -> list[Ref]:
     """Block-level hits collapsed to one ref each, best rank first."""
-    raw = store.blocks.search_blocks_fused(
+    raw = store.chunks.search_chunks_fused(
         q=q,
         query_vec=query_vec,
         kind=kind,

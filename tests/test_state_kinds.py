@@ -18,7 +18,7 @@ from precis.handlers.job import JobHandler
 from precis.handlers.oracle import OracleHandler
 from precis.handlers.presentation import PresentationHandler
 from precis.store import Store, Tag
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 from tests.conftest import chunk_handle, record_handle
 
 # ── GripeHandler — first-class bug tracker ──────────────────────────
@@ -45,7 +45,7 @@ class TestGripe:
         ref = next(r for r in refs if "VS Code" in r.title)
         # Body materialises as a chunk so the embed + chunk_keywords
         # workers can index it for search.
-        blocks = gripe.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = gripe.store.chunks.list_chunks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].chunk_kind == "gripe_body"
         assert "VS Code" in blocks[0].text
@@ -62,7 +62,7 @@ class TestGripe:
         refs = gripe.store.list_refs(kind="gripe", limit=10)
         gripe_id = refs[0].id
         gripe.put(id=gripe_id, text="only triggers when the slug has a hyphen")
-        blocks = gripe.store.blocks.list_blocks_for_ref(gripe_id)
+        blocks = gripe.store.chunks.list_chunks_for_ref(gripe_id)
         assert len(blocks) == 2
         assert blocks[0].chunk_kind == "gripe_body"
         assert blocks[1].chunk_kind == "gripe_comment"
@@ -393,8 +393,8 @@ class TestOracle:
                 meta={},
                 conn=conn,
             )
-            store.blocks.insert_blocks(
-                ref.id, [BlockInsert(pos=0, text=body_text)], conn=conn
+            store.chunks.insert_chunks(
+                ref.id, [ChunkInsert(ord=0, text=body_text)], conn=conn
             )
         return ref.id
 
@@ -449,14 +449,14 @@ class TestOracle:
             # path (see ``ingest_oracles.ingest_paper``) so I-Ching
             # ``iching~49`` resolves to Hexagram 49 verbatim.
             inserts = [
-                BlockInsert(
-                    pos=i + 1,
+                ChunkInsert(
+                    ord=i + 1,
                     text=body,
                     meta={"section_path": [entry_title]},
                 )
                 for i, (entry_title, body) in enumerate(entries)
             ]
-            store.blocks.insert_blocks(ref.id, inserts, conn=conn)
+            store.chunks.insert_chunks(ref.id, inserts, conn=conn)
         return ref.id
 
     def test_multi_entry_get_returns_one_random(self, oracle: OracleHandler) -> None:
@@ -630,9 +630,9 @@ class TestConversation:
                 meta={"participants": ["agent", "user"]},
                 conn=conn,
             )
-            store.blocks.insert_blocks(
+            store.chunks.insert_chunks(
                 ref.id,
-                [BlockInsert(pos=i, text=t) for i, t in enumerate(turns)],
+                [ChunkInsert(ord=i, text=t) for i, t in enumerate(turns)],
                 conn=conn,
             )
         return ref.id
@@ -725,7 +725,7 @@ class TestConversation:
         assert ref is not None
         assert ref.title == "kickoff"
         assert ref.meta.get("platform") == "discord"
-        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = conv.store.chunks.list_chunks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].text == "hi there"
         assert blocks[0].meta.get("author") == "alice"
@@ -737,9 +737,9 @@ class TestConversation:
         conv.put(id="t1", text="three", author="alice", msg_id="m3")
         ref = conv.store.get_ref(kind="conv", id="t1")
         assert ref is not None
-        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = conv.store.chunks.list_chunks_for_ref(ref.id)
         assert [b.text for b in blocks] == ["one", "two", "three"]
-        assert [b.pos for b in blocks] == [0, 1, 2]
+        assert [b.ord for b in blocks] == [0, 1, 2]
 
     def test_put_is_idempotent_on_msg_id(self, conv: ConversationHandler) -> None:
         conv.put(id="t1", text="one", author="alice", msg_id="m1")
@@ -747,7 +747,7 @@ class TestConversation:
         assert "already captured" in out.body
         ref = conv.store.get_ref(kind="conv", id="t1")
         assert ref is not None
-        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = conv.store.chunks.list_chunks_for_ref(ref.id)
         # No duplicate. Replay text is ignored.
         assert len(blocks) == 1
         assert blocks[0].text == "one"
@@ -757,7 +757,7 @@ class TestConversation:
         conv.put(id="t1", text="two", author="bob")
         ref = conv.store.get_ref(kind="conv", id="t1")
         assert ref is not None
-        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = conv.store.chunks.list_chunks_for_ref(ref.id)
         assert len(blocks) == 2
         # No msg_id idempotency key on either block.
         assert "msg_id" not in (blocks[0].meta or {})
@@ -801,7 +801,7 @@ class TestPresentation:
         assert ref is not None
         assert ref.title == "Talk Foo"
         assert ref.meta.get("venue") == "demo day"
-        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = pres.store.chunks.list_chunks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].text == "Title slide"
         assert blocks[0].chunk_kind == "pres_slide"
@@ -812,9 +812,9 @@ class TestPresentation:
         pres.put(id="d", text="slide 2")
         ref = pres.store.get_ref(kind="pres", id="d")
         assert ref is not None
-        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = pres.store.chunks.list_chunks_for_ref(ref.id)
         assert [b.text for b in blocks] == ["slide 0", "slide 1", "slide 2"]
-        assert [b.pos for b in blocks] == [0, 1, 2]
+        assert [b.ord for b in blocks] == [0, 1, 2]
 
     def test_put_overwrites_at_explicit_pos(self, pres: PresentationHandler) -> None:
         pres.put(id="d", text="original slide 0", pos=0)
@@ -823,10 +823,10 @@ class TestPresentation:
         assert "overwrote" in out.body
         ref = pres.store.get_ref(kind="pres", id="d")
         assert ref is not None
-        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
-        assert [b.pos for b in blocks] == [0, 1]
+        blocks = pres.store.chunks.list_chunks_for_ref(ref.id)
+        assert [b.ord for b in blocks] == [0, 1]
         # Block 0 holds the new text; block 1 untouched.
-        by_pos = {b.pos: b.text for b in blocks}
+        by_pos = {b.ord: b.text for b in blocks}
         assert by_pos[0] == "fixed slide 0"
         assert by_pos[1] == "original slide 1"
 
@@ -842,7 +842,7 @@ class TestPresentation:
         )
         ref = pres.store.get_ref(kind="pres", id="postmortem")
         assert ref is not None
-        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
+        blocks = pres.store.chunks.list_chunks_for_ref(ref.id)
         assert blocks[0].chunk_kind == "paragraph"
 
     def test_get_overview_lists_block_count(self, pres: PresentationHandler) -> None:

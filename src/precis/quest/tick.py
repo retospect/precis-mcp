@@ -345,7 +345,7 @@ def _logbook_tail(store: Store, quest_id: int, n: int = _LOGBOOK_TAIL) -> list[s
     """
     entries = [
         b
-        for b in store.blocks.list_blocks_for_ref(quest_id)
+        for b in store.chunks.list_chunks_for_ref(quest_id)
         if b.chunk_kind == LOG_KIND
     ]
     lines: list[str] = []
@@ -414,7 +414,7 @@ def _paper_abstract_snippet(store: Store, ref: Ref) -> str:
     text = abstract.strip() if isinstance(abstract, str) else ""
     if not text:
         try:
-            blocks = store.blocks.list_blocks_for_ref(ref.id)
+            blocks = store.chunks.list_chunks_for_ref(ref.id)
         except Exception:
             blocks = []
         for b in blocks:
@@ -448,7 +448,7 @@ def _paper_citable_handle(store: Store, ref: Ref) -> str | None:
     export/bibliography materializer already recognizes it inline.
     """
     try:
-        blocks = store.blocks.list_blocks_for_ref(ref.id)
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
     except Exception:
         return None
     for b in blocks:
@@ -500,9 +500,9 @@ def _rank_papers_by_relevance(
     accumulate/cut loop itself lives in :func:`_served_papers_detail`.
     """
     del budget_tokens  # not consulted for ordering — see docstring
-    seed_cid = store.blocks.seed_chunk_for_ref(quest_id)
+    seed_cid = store.chunks.seed_chunk_for_ref(quest_id)
     quest_vec = (
-        store.blocks.get_chunk_vector(seed_cid) if seed_cid is not None else None
+        store.chunks.get_chunk_vector(seed_cid) if seed_cid is not None else None
     )
     quest_arr = (
         np.asarray(quest_vec, dtype=np.float64) if quest_vec is not None else None
@@ -517,9 +517,9 @@ def _rank_papers_by_relevance(
         score = 0.0
         has_vec = False
         if quest_arr is not None:
-            paper_seed_cid = store.blocks.seed_chunk_for_ref(r.id)
+            paper_seed_cid = store.chunks.seed_chunk_for_ref(r.id)
             paper_vec = (
-                store.blocks.get_chunk_vector(paper_seed_cid)
+                store.chunks.get_chunk_vector(paper_seed_cid)
                 if paper_seed_cid is not None
                 else None
             )

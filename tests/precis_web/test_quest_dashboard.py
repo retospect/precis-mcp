@@ -104,21 +104,21 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     now = datetime.now(UTC)
     store._conv_blocks[97] = [
         SimpleNamespace(
-            pos=0,
+            ord=0,
             text="Started thinking about this.",
             chunk_kind="quest_log",
             meta={"entry_type": "note", "by": "human"},
             created_at=now - timedelta(days=3),
         ),
         SimpleNamespace(
-            pos=1,
+            ord=1,
             text="Proposed candidate Fe-N4.",
             chunk_kind="quest_log",
             meta={"entry_type": "observation", "by": "agent"},
             created_at=now - timedelta(days=2),
         ),
         SimpleNamespace(
-            pos=2,
+            ord=2,
             text="Relax converged at -4.2 eV.",
             chunk_kind="quest_log",
             meta={"entry_type": "result", "by": "system", "cost": 0.42},
@@ -209,7 +209,7 @@ def test_quest_logbook_renders_and_paginates(client, runtime) -> None:
     # 55 entries: enough to force a second page at the 50/page size.
     store._conv_blocks[97] = [
         SimpleNamespace(
-            pos=i,
+            ord=i,
             text=f"entry number {i}",
             chunk_kind="quest_log",
             meta={"entry_type": "note", "by": "human"},

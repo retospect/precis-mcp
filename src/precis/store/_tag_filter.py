@@ -235,7 +235,7 @@ def wiki_fence(ref_alias: str = "r") -> str:
     encyclopedic fetches never compete with the curated corpus for top-k
     slots; the fence is a no-op for every kind that never carries the
     tag. Callers lift it for an explicit ``kind='wikipedia'`` scope or an
-    ``ORIGIN:wikipedia`` opt-in (see ``_blocks_ops._fence_wiki``).
+    ``ORIGIN:wikipedia`` opt-in (see ``_chunks_ops._fence_wiki``).
     """
     return (
         "NOT EXISTS ("

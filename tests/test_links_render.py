@@ -62,21 +62,21 @@ class TestRenderLinksSection:
         that lets the citation tree resolve to the supporting passage.
         The ``how to get`` column is chunk-scoped too: ``slug~ord`` for a
         paper, the ``dc<id>`` handle for a draft."""
-        from precis.store.types import BlockInsert
+        from precis.store.types import ChunkInsert
 
         fin = store.insert_ref(kind="finding", slug=None, title="a canonical claim")
         # paper chunk (ord 0) --corroborates--> finding
         paper = store.insert_ref(kind="paper", slug="wu2022a", title="Rotaxane paper")
-        store.blocks.insert_blocks(
-            paper.id, [BlockInsert(pos=0, text="the supporting passage", meta={})]
+        store.chunks.insert_chunks(
+            paper.id, [ChunkInsert(ord=0, text="the supporting passage", meta={})]
         )
         store.add_link(
             src_ref_id=paper.id, src_pos=0, dst_ref_id=fin.id, relation="corroborates"
         )
         # draft chunk (ord 0) --cites--> finding
         dref = store.insert_ref(kind="draft", slug="nano-computer", title="A draft")
-        store.blocks.insert_blocks(
-            dref.id, [BlockInsert(pos=0, text="cites the claim", meta={})]
+        store.chunks.insert_chunks(
+            dref.id, [ChunkInsert(ord=0, text="cites the claim", meta={})]
         )
         store.add_link(
             src_ref_id=dref.id, src_pos=0, dst_ref_id=fin.id, relation="cites"

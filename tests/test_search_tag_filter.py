@@ -5,9 +5,9 @@ The filter lives in :mod:`precis.store._tag_filter` and is wired into:
   * ``Store.list_refs``
   * ``Store.count_refs``
   * ``Store.search_refs_lexical``
-  * ``Store.search_blocks_lexical``
-  * ``Store.search_blocks_semantic``
-  * ``Store.search_blocks_fused``
+  * ``Store.search_chunks_lexical``
+  * ``Store.search_chunks_semantic``
+  * ``Store.search_chunks_fused``
 
 Plus runtime validation via ``Tag.normalize_filter`` in:
 
@@ -28,7 +28,7 @@ from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.paper import PaperHandler
-from precis.store import BlockInsert, Store, Tag
+from precis.store import ChunkInsert, Store, Tag
 from precis.store._tag_filter import build_tag_filter
 from tests.conftest import chunk_handle
 
@@ -104,13 +104,13 @@ def _seed_two_memories(store: Store) -> tuple[int, int]:
     # A memory's body prose lives in a memory_body chunk (migration 0050),
     # and memory search matches that chunk — seed one per ref so the shared
     # 'precis' keyword is lexically searchable.
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         a.id,
-        [BlockInsert(pos=0, text="precis on co2", meta={"chunk_kind": "memory_body"})],
+        [ChunkInsert(ord=0, text="precis on co2", meta={"chunk_kind": "memory_body"})],
     )
-    store.blocks.insert_blocks(
+    store.chunks.insert_chunks(
         b.id,
-        [BlockInsert(pos=0, text="precis on nox", meta={"chunk_kind": "memory_body"})],
+        [ChunkInsert(ord=0, text="precis on nox", meta={"chunk_kind": "memory_body"})],
     )
     store.add_tag(a.id, Tag.open("topic-co2-capture"))
     store.add_tag(a.id, Tag.closed("PRIO", "high"))
@@ -185,11 +185,11 @@ def _seed_two_papers_with_blocks(
     a = store.insert_ref(kind="paper", slug="paper-a", title="A study")
     b = store.insert_ref(kind="paper", slug="paper-b", title="B study")
     text = "photocatalysis under visible light improves selectivity"
-    store.blocks.insert_blocks(
-        a.id, [BlockInsert(pos=0, text=text, embedding=e.embed_one(text))]
+    store.chunks.insert_chunks(
+        a.id, [ChunkInsert(ord=0, text=text, embedding=e.embed_one(text))]
     )
-    store.blocks.insert_blocks(
-        b.id, [BlockInsert(pos=0, text=text, embedding=e.embed_one(text))]
+    store.chunks.insert_chunks(
+        b.id, [ChunkInsert(ord=0, text=text, embedding=e.embed_one(text))]
     )
     store.add_tag(a.id, Tag.open("topic-co2-capture"))
     store.add_tag(b.id, Tag.open("topic-nox-reduction"))
@@ -199,12 +199,12 @@ def _seed_two_papers_with_blocks(
 class TestSearchBlocksTagFilter:
     def test_lexical_unfiltered_returns_both(self, store: Store) -> None:
         _seed_two_papers_with_blocks(store)
-        hits = store.blocks.search_blocks_lexical(q="photocatalysis", kind="paper")
+        hits = store.chunks.search_chunks_lexical(q="photocatalysis", kind="paper")
         assert len(hits) == 2
 
     def test_lexical_filtered(self, store: Store) -> None:
         a, _ = _seed_two_papers_with_blocks(store)
-        hits = store.blocks.search_blocks_lexical(
+        hits = store.chunks.search_chunks_lexical(
             q="photocatalysis", kind="paper", tags=["topic-co2-capture"]
         )
         assert len(hits) == 1
@@ -213,7 +213,7 @@ class TestSearchBlocksTagFilter:
     def test_semantic_filtered(self, store: Store) -> None:
         a, _ = _seed_two_papers_with_blocks(store)
         e = MockEmbedder(dim=1024)
-        hits = store.blocks.search_blocks_semantic(
+        hits = store.chunks.search_chunks_semantic(
             query_vec=e.embed_one("photocatalysis"),
             kind="paper",
             tags=["topic-co2-capture"],
@@ -232,7 +232,7 @@ class TestSearchBlocksTagFilter:
         """
         a, b = _seed_two_papers_with_blocks(store)
         e = MockEmbedder(dim=1024)
-        hits = store.blocks.search_blocks_fused(
+        hits = store.chunks.search_chunks_fused(
             q="photocatalysis",
             query_vec=e.embed_one("photocatalysis"),
             kind="paper",
@@ -329,7 +329,7 @@ class TestPosBoundary:
         chunk-level tags live in ``chunk_tags``; the ref-level filter
         routes through ``ref_tags`` and therefore can't see them."""
         ref = store.insert_ref(kind="memory", slug=None, title="x")
-        store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text="x")])
+        store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="x")])
         # Chunk-level tag on pos=0 (writes ``chunk_tags`` only).
         store.add_tag(ref.id, Tag.open("scratch"), pos=0)
         # Ref-level filter (routes through ``ref_tags``) must NOT

@@ -32,7 +32,7 @@ what lets a caller report partial "semantic: NN% indexed" coverage
 without the search itself erroring. `fuse_blocks` combines a lexical
 and a semantic hit list into one ranking via reciprocal rank fusion,
 the same formula and `k=60` default as
-`precis.store._blocks_ops.BlockStore.search_blocks_fused`.
+`precis.store._chunks_ops.ChunkStore.search_chunks_fused`.
 """
 
 from __future__ import annotations
@@ -178,7 +178,7 @@ def fuse_blocks(
     ``score = 1/(k + lex_rank) + 1/(k + sem_rank)`` over 1-indexed
     ranks; a block absent from one leg contributes 0 for that leg —
     same formula and default ``k=60`` as
-    `precis.store._blocks_ops.BlockStore.search_blocks_fused`. Either
+    `precis.store._chunks_ops.ChunkStore.search_chunks_fused`. Either
     input may be empty (e.g. the semantic leg is still warming, or a
     caller passed ``mode='lexical'``): fusion then degrades to a
     straight re-ranking of whichever leg is populated.

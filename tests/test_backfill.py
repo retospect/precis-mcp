@@ -150,7 +150,7 @@ def test_find_candidates_broadens_kinds_and_weights_by_tier(
         ref = NS(id=42, kind="datasheet", title="A datasheet")
         return [(block, ref, 1.0)]
 
-    monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
 
     out = find_candidates(store, None, [tc], kind="plan", limit=5)
     # the sweep scopes across the source kinds, not a hard-coded 'paper'
@@ -198,7 +198,7 @@ def test_find_candidates_surfaces_memory_as_ref_level_lead(
         ref = NS(id=7, kind="memory", title="my own synthesis")
         return [(block, ref, 1.0)]
 
-    monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
 
     out = find_candidates(store, None, [tc], kind="plan", limit=5)
     assert len(out) == 1
@@ -489,7 +489,7 @@ def test_find_candidates_topic_gate_demotes_off_domain_hit(
             (NS(id=202), on_domain, 0.5),  # lower raw score, on-domain
         ]
 
-    monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
     tc = store.drafts.get_draft_chunk(sec, kind="plan")
 
     out = find_candidates(
@@ -522,7 +522,7 @@ def test_find_candidates_topic_gate_noop_without_draft_topics(
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
         return [(NS(id=301), off_domain, 1.0)]
 
-    monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
     tc = store.drafts.get_draft_chunk(sec, kind="plan")
 
     out = find_candidates(
@@ -557,7 +557,7 @@ def test_find_candidates_topic_gate_covers_citation_lens_only_hit(
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
         return []  # the text lens finds nothing — this hit is citation-only
 
-    monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
 
     cite_cand = RecallCandidate(
         ref_id=off_domain.id,
@@ -630,7 +630,7 @@ def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
         return [(NS(id=555), cand, 1.0)]
 
-    monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
 
     n_sections = sum(1 for e in store.drafts.draft_toc(ref.id) if e.depth == 0)
     out = draft.get(id="wd", view="backfill").body
@@ -666,7 +666,7 @@ def test_assemble_draft_notes_truncation_not_a_silent_drop(
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
         return [(NS(id=900 + i), p, 1.0 - i * 0.01) for i, p in enumerate(papers)]
 
-    monkeypatch.setattr(store.blocks, "search_blocks_multi", fake_search)
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
 
     candidates, _cited, _sections, truncated = assemble_draft(
         store, hub.embedder, ref.id, max_candidates=2

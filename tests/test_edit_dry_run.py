@@ -33,7 +33,7 @@ from precis.handlers.folder import FolderHandler
 from precis.handlers.paper import PaperHandler
 from precis.handlers.structure import StructureHandler
 from precis.handlers.todo import TodoHandler
-from precis.store.types import BlockInsert
+from precis.store.types import ChunkInsert
 
 # ── honour: no write, returns a preview ──────────────────────────────
 
@@ -83,8 +83,8 @@ def _seed_paper_ref(
         year=kw.pop("year", 2020),
         meta=kw.pop("meta", {"abstract": "Original abstract."}),
     )
-    hub.live_store.blocks.insert_blocks(
-        ref.id, [BlockInsert(pos=0, text="Body chunk.", meta={})]
+    hub.live_store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text="Body chunk.", meta={})]
     )
     return ref.id
 

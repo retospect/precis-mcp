@@ -21,7 +21,7 @@ from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.response import Response
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -254,11 +254,11 @@ def put_acquiring(
                 "VALUES (%s, %s, %s, %s)",
                 ("pub_id", pub_id, ref.id, "agent"),
             )
-            store.blocks.insert_blocks(
+            store.chunks.insert_chunks(
                 ref.id,
                 [
-                    BlockInsert(
-                        pos=0,
+                    ChunkInsert(
+                        ord=0,
                         text=body_clean,
                         meta={"chunk_kind": "finding_body"},
                     )

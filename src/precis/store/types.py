@@ -465,7 +465,7 @@ class ResolvedHandle:
     (slug for slug kinds, ``str(ref_id)`` for numeric), so the runtime
     can translate a handle to ``(kind, id)`` with zero handler changes.
     For a chunk handle, ``chunk_id`` is set and ``chunk_ord`` carries the
-    chunk's ordinal (== ``Block.pos``), so the surface can build the
+    chunk's ordinal (== ``ChunkRow.ord``), so the surface can build the
     per-kind selector ``public_id~chunk_ord``.
     """
 
@@ -482,13 +482,12 @@ class ResolvedHandle:
 
 
 @dataclass(frozen=True, slots=True)
-class Block:
-    """A chunk row from the `chunks` table. ("Block" is the legacy v1 name
-    of this Python type.)"""
+class ChunkRow:
+    """A chunk row from the `chunks` table."""
 
     id: int
     ref_id: int
-    pos: int  # 0-based, renumberable
+    ord: int  # 0-based, renumberable
     slug: str | None  # stable citation handle
     text: str
     token_count: int | None
@@ -499,7 +498,7 @@ class Block:
     updated_at: datetime
     # F19a + F20: extras appended at the end so existing tuple-indexed
     # callsites stay unaffected. Optional with sensible defaults so test
-    # fixtures that construct Blocks by hand don't all need updates.
+    # fixtures that construct ChunkRows by hand don't all need updates.
     chunk_kind: str = "paragraph"
     keywords: list[str] | None = None  # NULL until the chunk_keywords worker runs
 
@@ -510,15 +509,15 @@ class Link:
 
     id: int
     src_ref_id: int
-    src_pos: int | None
+    src_ord: int | None
     dst_ref_id: int
-    dst_pos: int | None
+    dst_ord: int | None
     relation: Relation
     set_by: ActorSlug
     meta: dict[str, Any]
     created_at: datetime
-    #: Raw chunk-id endpoints (``None`` for a ref-level edge). ``src_pos`` /
-    #: ``dst_pos`` above carry the *ord* (a per-ref position); these carry the
+    #: Raw chunk-id endpoints (``None`` for a ref-level edge). ``src_ord`` /
+    #: ``dst_ord`` above carry the *ord* (a per-ref position); these carry the
     #: identity that maps into the reading-order tree — the address the
     #: link-rollup overlay (source-backfill 8a) walks up to a visible ancestor.
     src_chunk_id: int | None = None
@@ -978,7 +977,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     "DREAM": frozenset({"consolidated", "speculative", "acquire"}),
     # Chunk-level information density (broad-pass usability finding #4).
     # Written by the chunk pipeline into ``chunk_tags`` (see
-    # ``_blocks_ops.py`` — namespace='DENSITY' tags on chunks). Registered
+    # ``_chunks_ops.py`` — namespace='DENSITY' tags on chunks). Registered
     # here so the namespace is known to the validation layer — an agent
     # tagging a ref with ``DENSITY:dense`` now gets "axis 'DENSITY' not
     # allowed on kind X" (via ``_KIND_ALLOWED_AXES``) instead of the
@@ -1165,11 +1164,11 @@ class CacheEntry:
 
 
 @dataclass
-class BlockInsert:
-    """Payload for inserting a block. Mutable on purpose — callers build
+class ChunkInsert:
+    """Payload for inserting a chunk. Mutable on purpose — callers build
     these incrementally during ingestion."""
 
-    pos: int
+    ord: int
     text: str
     slug: str | None = None
     token_count: int | None = None
