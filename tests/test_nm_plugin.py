@@ -17,11 +17,12 @@ from pathlib import Path
 import pytest
 
 import precis_nm
+import precis_nm.validate as nm_validate
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.store import Store
 from precis_nm.handler import NmHandler, _render_tree
-from precis_nm.ops import BlockNode, BlockTree
+from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec
 
 _MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
 
@@ -354,3 +355,359 @@ def test_search_finds_design_by_description_word(handler: NmHandler) -> None:
 def test_search_requires_q(handler: NmHandler) -> None:
     with pytest.raises(BadInput):
         handler.search()
+
+
+# ── round 2: ports + connects + validate ─────────────────────────────────
+# docs/backlog/nm-kind.md "Slice 3 design" / "Round-2 constraint" /
+# "Transferred from pcb-component-model.md". Ports/connects persist in
+# lockstep with the block tree (persist.py's module docstring) — the
+# id-rebuild landmine tests below exercise that directly.
+
+
+def test_migration_0002_creates_connects_table(
+    handler: NmHandler, store: Store
+) -> None:
+    with store.pool.connection() as c:
+        row = c.execute("SELECT to_regclass('public.nm_connects')").fetchone()
+    assert row is not None and row[0] is not None
+
+
+_BOND_TREE_OPS: list[dict[str, object]] = [
+    {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+    {"op": "add_block", "name": "b", "envelope": "sphere:r2"},
+    {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
+    {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
+    {"op": "connect", "a": "a.p1", "b": "b.p1"},
+]
+
+
+def test_add_port_on_instance_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+        {"op": "add_port", "block": "inst", "name": "p1", "roles": ["covalent"]},
+    ]
+    with pytest.raises(BadInput, match="instance"):
+        handler.put(id="portinst1", text=json.dumps({"ops": ops}))
+
+
+def test_duplicate_port_name_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a"},
+        {"op": "add_port", "block": "a", "name": "p1", "roles": []},
+        {"op": "add_port", "block": "a", "name": "p1", "roles": []},
+    ]
+    with pytest.raises(BadInput, match="duplicate"):
+        handler.put(id="portdup1", text=json.dumps({"ops": ops}))
+
+
+def test_zero_direction_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a"},
+        {
+            "op": "add_port",
+            "block": "a",
+            "name": "p1",
+            "roles": [],
+            "direction": [0, 0, 0],
+        },
+    ]
+    with pytest.raises(BadInput, match="nonzero"):
+        handler.put(id="portzero1", text=json.dumps({"ops": ops}))
+
+
+def test_connect_round_trips_through_a_second_save(
+    handler: NmHandler, store: Store
+) -> None:
+    # The id-rebuild landmine: save_tree retires+reinserts every nm_blocks
+    # row on *every* save, so ports/connects must survive a SECOND save
+    # keyed by name, not by the block id minted on the first save.
+    handler.put(id="bond1", text=json.dumps({"ops": _BOND_TREE_OPS}))
+    handler.edit(id="bond1", ops=[{"op": "add_block", "name": "unrelated"}])
+
+    block_a = handler.get(id="bond1", view="block", args={"name": "a"})
+    assert "p1" in block_a.body and "covalent" in block_a.body
+    assert "b.p1" in block_a.body  # the connect touching 'a' is listed
+
+    ports = handler.get(id="bond1", view="ports")
+    assert "a" in ports.body and "b" in ports.body and "p1" in ports.body
+
+    validation = handler.get(id="bond1", view="validate")
+    assert "dangling_connect" not in validation.body
+    assert "port_capability" not in validation.body
+
+
+def test_connect_onto_instance_endpoint_resolves_template_port(
+    handler: NmHandler,
+) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+        {"op": "add_block", "name": "other", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "other", "name": "p1", "roles": ["covalent"]},
+        {"op": "connect", "a": "inst.p1", "b": "other.p1"},
+    ]
+    resp = handler.put(id="instconn1", text=json.dumps({"ops": ops}))
+    assert "created" in resp.body
+
+    inst_block = handler.get(id="instconn1", view="block", args={"name": "inst"})
+    assert "p1" in inst_block.body  # resolved via the template
+
+
+def test_connect_missing_role_rejected_naming_actual_roles(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a"},
+        {"op": "add_block", "name": "b"},
+        {"op": "add_port", "block": "a", "name": "p1", "roles": ["coordination"]},
+        {"op": "add_port", "block": "b", "name": "p1", "roles": ["coordination"]},
+        {"op": "connect", "a": "a.p1", "b": "b.p1"},  # default kind='bond'
+    ]
+    with pytest.raises(BadInput) as excinfo:
+        handler.put(id="capgate1", text=json.dumps({"ops": ops}))
+    msg = str(excinfo.value)
+    assert "covalent" in msg
+    assert "coordination" in msg
+
+
+def test_connect_objectives_role_override_gates_on_named_role(
+    handler: NmHandler,
+) -> None:
+    ops = [
+        {"op": "add_block", "name": "a"},
+        {"op": "add_block", "name": "b"},
+        {"op": "add_port", "block": "a", "name": "p1", "roles": ["pi_stack"]},
+        {"op": "add_port", "block": "b", "name": "p1", "roles": ["pi_stack"]},
+        {
+            "op": "connect",
+            "a": "a.p1",
+            "b": "b.p1",
+            "objectives": {"role": "pi_stack"},
+        },
+    ]
+    resp = handler.put(id="capgate2", text=json.dumps({"ops": ops}))
+    assert "created" in resp.body
+
+
+def test_disconnect_removes_the_connect(handler: NmHandler) -> None:
+    handler.put(id="disc1", text=json.dumps({"ops": _BOND_TREE_OPS}))
+    handler.edit(id="disc1", ops=[{"op": "disconnect", "a": "a.p1", "b": "b.p1"}])
+    block_a = handler.get(id="disc1", view="block", args={"name": "a"})
+    assert "b.p1" not in block_a.body
+
+
+def test_disconnect_missing_pair_raises(handler: NmHandler) -> None:
+    handler.put(
+        id="disc2",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "a"},
+                    {"op": "add_block", "name": "b"},
+                ]
+            }
+        ),
+    )
+    with pytest.raises(BadInput, match="no such connect"):
+        handler.edit(id="disc2", ops=[{"op": "disconnect", "a": "a.p1", "b": "b.p1"}])
+
+
+def test_remove_port_with_live_connect_refused(handler: NmHandler) -> None:
+    handler.put(id="rmport1", text=json.dumps({"ops": _BOND_TREE_OPS}))
+    with pytest.raises(BadInput, match="a.p1"):
+        handler.edit(
+            id="rmport1", ops=[{"op": "remove_port", "block": "a", "name": "p1"}]
+        )
+
+
+def test_remove_port_blocked_by_instance_mediated_connect(handler: NmHandler) -> None:
+    # The reviewer's exact repro: a connect stored against an INSTANCE's
+    # block name resolves to the TEMPLATE's port at connect time
+    # (effective_ports) — remove_port on the template must still see it.
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+        {"op": "add_block", "name": "other", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "other", "name": "p1", "roles": ["covalent"]},
+        {"op": "connect", "a": "inst.p1", "b": "other.p1"},
+    ]
+    handler.put(id="rmport2", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="inst.p1") as excinfo:
+        handler.edit(
+            id="rmport2", ops=[{"op": "remove_port", "block": "tmpl", "name": "p1"}]
+        )
+    assert "inst.p1" in str(excinfo.value)
+
+
+def test_add_port_dotted_name_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a"},
+        {"op": "add_port", "block": "a", "name": "foo.bar", "roles": []},
+    ]
+    with pytest.raises(BadInput, match=r"\."):
+        handler.put(id="dotport1", text=json.dumps({"ops": ops}))
+
+
+# ── remove_block auto-retires touching connects (vacancy precedent) ─────
+
+
+def test_remove_block_drops_touching_connects(handler: NmHandler) -> None:
+    handler.put(id="rmblk1", text=json.dumps({"ops": _BOND_TREE_OPS}))
+    handler.edit(id="rmblk1", ops=[{"op": "remove_block", "block": "b"}])
+    validation = handler.get(id="rmblk1", view="validate")
+    assert "dangling_connect" not in validation.body
+    remaining = handler.get(id="rmblk1", view="block", args={"name": "a"})
+    assert "b.p1" not in remaining.body
+
+
+def test_remove_block_on_instance_endpoint_drops_touching_connects(
+    handler: NmHandler,
+) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+        {"op": "add_block", "name": "other", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "other", "name": "p1", "roles": ["covalent"]},
+        {"op": "connect", "a": "inst.p1", "b": "other.p1"},
+    ]
+    handler.put(id="rmblk2", text=json.dumps({"ops": ops}))
+    # removing the INSTANCE (not the template) — the connect's stored
+    # endpoint is the instance's own name, so its removal is what must
+    # trigger the drop.
+    handler.edit(id="rmblk2", ops=[{"op": "remove_block", "block": "inst"}])
+    validation = handler.get(id="rmblk2", view="validate")
+    assert "dangling_connect" not in validation.body
+
+
+# ── instance envelope inheritance (rendering) ────────────────────────────
+
+
+def test_instance_tree_line_shows_inherited_envelope(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "cyl:r5h2"},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+    ]
+    handler.put(id="envinherit1", text=json.dumps({"ops": ops}))
+    toc = handler.get(id="envinherit1")
+    inst_line = next(ln for ln in toc.body.splitlines() if "inst" in ln and "- " in ln)
+    assert "cyl:r5h2" in inst_line
+    assert "from tmpl" in inst_line
+
+    block = handler.get(id="envinherit1", view="block", args={"name": "inst"})
+    assert "cyl:r5h2" in block.body
+    assert "from tmpl" in block.body
+
+
+# ── validate view ─────────────────────────────────────────────────────
+
+
+def test_validate_view_clean_design(handler: NmHandler) -> None:
+    handler.put(id="clean1", text=json.dumps({"ops": _BOND_TREE_OPS}))
+    resp = handler.get(id="clean1", view="validate")
+    assert "no validator findings" in resp.body
+
+
+def test_validate_unconnected_port_warns_then_clears(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
+    ]
+    handler.put(id="loose1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="loose1", view="validate")
+    assert "unconnected_port" in resp.body
+    assert "a.p1" in resp.body
+
+    handler.edit(
+        id="loose1",
+        ops=[
+            {"op": "add_block", "name": "b", "envelope": "sphere:r2"},
+            {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
+            {"op": "connect", "a": "a.p1", "b": "b.p1"},
+        ],
+    )
+    resp2 = handler.get(id="loose1", view="validate")
+    assert "unconnected_port" not in resp2.body
+
+
+def test_validate_blocks_without_envelope_warns(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a"},  # no envelope
+        {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
+    ]
+    handler.put(id="noenv1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="noenv1", view="validate")
+    assert "blocks_without_envelope" in resp.body
+
+
+def test_validate_dangling_connect_from_hand_corrupted_tree() -> None:
+    # Same shape as test_render_tree_terminates_and_warns_on_injected_cycle:
+    # build a tree directly, bypassing ops.py's validation entirely — a
+    # connect whose block was hand-removed after the fact (or corrupted
+    # data / a future bug elsewhere) must still be caught here, loudly.
+    tree = BlockTree()
+    tree.blocks["a"] = BlockNode(
+        name="a", ports={"p1": PortSpec(name="p1", roles=["covalent"])}
+    )
+    tree.connects.append(
+        ConnectSpec(a_block="a", a_port="p1", b_block="ghost", b_port="p1")
+    )
+    findings = nm_validate.validate(tree)
+    rules = {f.rule for f in findings}
+    assert "dangling_connect" in rules
+    dangling = next(f for f in findings if f.rule == "dangling_connect")
+    assert dangling.severity == "error"
+    assert "ghost" in dangling.detail
+
+
+def test_validate_port_capability_defense_in_depth() -> None:
+    # A stored connect that violates the capability gate despite never
+    # having gone through ops.py's _op_connect (which would have rejected
+    # it) — the same "op-time gate + read-time re-check" pattern as the
+    # instance-cycle render guard.
+    tree = BlockTree()
+    tree.blocks["a"] = BlockNode(name="a", ports={"p1": PortSpec(name="p1", roles=[])})
+    tree.blocks["b"] = BlockNode(name="b", ports={"p1": PortSpec(name="p1", roles=[])})
+    tree.connects.append(
+        ConnectSpec(a_block="a", a_port="p1", b_block="b", b_port="p1", kind="bond")
+    )
+    findings = nm_validate.validate(tree)
+    rules = {f.rule for f in findings}
+    assert "port_capability" in rules
+
+
+# ── ports view ────────────────────────────────────────────────────────
+
+
+def test_ports_view_renders(handler: NmHandler) -> None:
+    handler.put(id="portsview1", text=json.dumps({"ops": _BOND_TREE_OPS}))
+    resp = handler.get(id="portsview1", view="ports")
+    assert "a" in resp.body and "b" in resp.body
+    assert "p1" in resp.body
+    assert "covalent" in resp.body
+
+
+def test_ports_view_marks_instance_rows(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+    ]
+    handler.put(id="portsview2", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="portsview2", view="ports")
+    assert "via" in resp.body and "tmpl" in resp.body
+
+
+def test_ports_view_empty_design(handler: NmHandler) -> None:
+    handler.put(
+        id="portsview3", text=json.dumps({"ops": [{"op": "add_block", "name": "a"}]})
+    )
+    resp = handler.get(id="portsview3", view="ports")
+    assert "no ports" in resp.body.lower()
+
+
+def test_tree_view_shows_port_count_suffix(handler: NmHandler) -> None:
+    handler.put(id="portcount1", text=json.dumps({"ops": _BOND_TREE_OPS}))
+    toc = handler.get(id="portcount1")
+    assert "[1 port]" in toc.body

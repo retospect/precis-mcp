@@ -2,23 +2,27 @@
 
 A ``nm`` design is a slug-addressed ref whose content is a **block tree**
 (:mod:`precis_nm.ops`/:mod:`precis_nm.persist`) — nested building blocks
-with spatial envelopes, poses, and optional declared DOF. Maps onto four of
-the seven verbs this round (ports/topology/clearance/bind_structure are
+with spatial envelopes, poses, optional declared DOF, per-block **ports**
+(capability-gated attachment points) and port↔port **connects**. Maps onto
+five of the seven verbs this round (topology/clearance/bind_structure are
 later rounds, docs/backlog/nm-kind.md "Slice 3 design"):
 
 - ``put``    — create/replace a design from a JSON payload
   ``{description?, ops: [...]}`` (``id=`` the design slug). A re-put
-  soft-retires the prior blocks and reinserts the new tree, the
-  ``structure``/``cad`` re-put shape.
+  soft-retires the prior blocks/ports/connects and reinserts the new tree,
+  the ``structure``/``cad`` re-put shape.
 - ``edit``   — apply more ops (``ops=`` or ``text=`` JSON) to an existing
   design's live tree.
 - ``get``    — list designs (no ``id``), or a design's nested tree TOC
-  (``id=slug``, the default view), or one block's full record
-  (``view='block'``, ``args={'name': ...}``).
-- ``delete`` — soft-retire a whole design (the ref + every live block).
+  (``id=slug``, the default view), one block's full record
+  (``view='block'``, ``args={'name': ...}``), every block's ports
+  (``view='ports'``), or L0 feasibility findings (``view='validate'``).
+- ``delete`` — soft-retire a whole design (the ref + every live block/port/
+  connect).
 - ``search`` — find designs by intent over each design's one
-  ``card_combined`` chunk (title + description + block names/desc/use);
-  ``search_hits`` opts into the cross-kind fan-out (``kind='*'``).
+  ``card_combined`` chunk (title + description + block names/desc/use +
+  port names/roles); ``search_hits`` opts into the cross-kind fan-out
+  (``kind='*'``).
 
 Ships **dark** behind the ``nm.enabled`` setting (``KindSpec.
 requires_setting``; DB row → ``PRECIS_NM_ENABLED`` env → unset/off), the
@@ -40,13 +44,22 @@ from psycopg.types.json import Jsonb
 from precis import settings as _settings
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
+from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
 from precis_nm import persist
-from precis_nm.ops import BlockNode, BlockTree, OpError, apply_ops
+from precis_nm import validate as nm_validate
+from precis_nm.ops import (
+    BlockNode,
+    BlockTree,
+    OpError,
+    apply_ops,
+    effective_envelope,
+    effective_ports,
+)
 
 #: Registered at import time, before ``NmHandler.spec`` is consumed by the
 #: kind gate — mirrors ``precis_chem.route``'s ``chem.enabled`` registration.
@@ -68,15 +81,16 @@ class NmHandler(Handler):
         title="Nanomachine",
         description=(
             "A hierarchical molecular-machine design (precis-nm plugin): "
-            "nested building blocks with spatial envelopes, poses, and "
-            "declared DOF. put(id='<slug>', text='{\"ops\": [...]}') creates/"
-            "replaces a design from typed ops (add_block/instance_block/"
-            "set_pose/remove_block); edit(id, ops=[...]) applies more ops; "
-            "get lists designs or renders one design's block tree (id=slug), "
-            "or a single block's record (view='block', args={'name':...}); "
-            "delete soft-retires; search finds designs by intent. Envelopes "
-            "reuse the cad mini-DSL (e.g. 'cyl:r5h2') at Angstrom scale. "
-            "The LLM traverses a block tree, never atoms directly."
+            "nested blocks with envelopes, poses, DOF, capability-gated "
+            "ports, and port-to-port connects. put/edit take typed ops "
+            "(add_block/instance_block/set_pose/remove_block/add_port/"
+            "remove_port/connect/disconnect); get lists designs or renders "
+            "one (view='tree'|'block'|'ports'|'validate'; block/ports take "
+            "args={'name':...}); delete soft-retires; search finds by "
+            "intent. Envelopes reuse the cad mini-DSL (e.g. 'cyl:r5h2') at "
+            "Angstrom scale. A bond connect needs both ports to share a "
+            "role (default 'covalent'). The LLM traverses a block tree, "
+            "never atoms directly."
         ),
         supports_get=True,
         supports_put=True,
@@ -89,7 +103,7 @@ class NmHandler(Handler):
         placement="artifact",
         corpus_role="none",
         can_own_jobs=False,
-        views=("tree", "block"),
+        views=("tree", "block", "ports", "validate"),
         # Dark-ship: hidden until the `nm.enabled` setting resolves.
         requires_setting=("nm.enabled",),
     )
@@ -232,10 +246,15 @@ class NmHandler(Handler):
             node = tree.blocks.get(block_name)
             if node is None:
                 raise NotFound(_block_not_found(tree, block_name))
-            return Response(body=_render_block(node))
+            return Response(body=_render_block(tree, node))
+        if v == "ports":
+            return Response(body=_render_ports(tree))
+        if v == "validate":
+            return Response(body=_render_validate(tree))
         raise BadInput(
             f"unknown nm view {view!r}",
-            next="view='tree' (default, nested TOC) | view='block' (args={'name':...})",
+            next="view='tree' (default, nested TOC) | view='block' "
+            "(args={'name':...}) | view='ports' | view='validate'",
         )
 
     # ── delete ───────────────────────────────────────────────────────
@@ -365,31 +384,48 @@ def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
 
 def _card_text(title: str, description: str, tree: BlockTree) -> str:
     """The one embeddable summary per design — title + block names + every
-    block's desc/use text + the design's own description, so
-    ``search(kind='nm')`` lands on intent."""
+    block's desc/use text + port names/roles + the design's own
+    description, so ``search(kind='nm')`` lands on intent (e.g. a design
+    described only by its ports' 'covalent'/'coordination' roles is still
+    findable by that vocabulary)."""
     names = ", ".join(sorted(tree.blocks)) or "(no blocks yet)"
     bits = [b.descr for b in tree.blocks.values() if b.descr]
     bits += [b.use for b in tree.blocks.values() if b.use]
+    port_bits = [
+        f"{port.name}({', '.join(port.roles)})" if port.roles else port.name
+        for block in tree.blocks.values()
+        for port in block.ports.values()
+    ]
     intent = f" {description}" if description else ""
     body = f" {' '.join(bits)}" if bits else ""
-    return f"{title} (nanomachine design).{intent} Blocks: {names}.{body}"
+    ports = f" Ports: {', '.join(port_bits)}." if port_bits else ""
+    return f"{title} (nanomachine design).{intent} Blocks: {names}.{body}{ports}"
 
 
 def _fmt3(v: list[float]) -> str:
     return ", ".join(f"{x:g}" for x in v)
 
 
-def _block_line(node: BlockNode) -> str:
+def _block_line(tree: BlockTree, node: BlockNode) -> str:
     parts = [node.name]
     if node.template:
         parts.append(f"(instance of {node.template})")
-    if node.envelope:
-        parts.append(f"env={node.envelope}")
+    # An instance's own ``envelope`` field is always None (see
+    # _op_instance_block's rejection of that key) — resolve it the same
+    # way ports already do (effective_ports), marked as inherited so it
+    # doesn't read as declared directly on the instance.
+    env = effective_envelope(tree, node)
+    if env:
+        marker = f" (from {node.template})" if node.template else ""
+        parts.append(f"env={env}{marker}")
     parts.append(f"pose=[{_fmt3(node.pose)}]")
     if any(node.rot):
         parts.append(f"rot=[{_fmt3(node.rot)}]")
     if node.dof:
         parts.append("dof")
+    n_ports = len(effective_ports(tree, node))
+    if n_ports:
+        parts.append(f"[{n_ports} port{'s' if n_ports != 1 else ''}]")
     if node.descr:
         parts.append(f"— {node.descr}")
     return "  ".join(parts)
@@ -410,7 +446,7 @@ def _render_tree(tree: BlockTree, title: str, description: str) -> str:
 
     def _walk(name: str, depth: int, path: tuple[str, ...]) -> None:
         node = tree.blocks[name]
-        lines.append(f"{'  ' * depth}- {_block_line(node)}")
+        lines.append(f"{'  ' * depth}- {_block_line(tree, node)}")
         # An instance's subtree is the template's, resolved here at read
         # time — never copied onto the instance row (module docstring).
         # ``path`` is every "expansion source" (template, or the plain
@@ -438,18 +474,122 @@ def _render_tree(tree: BlockTree, title: str, description: str) -> str:
     return "\n".join(lines)
 
 
-def _render_block(node: BlockNode) -> str:
+def _fmt_expected(element: str | None, hybridization: str | None) -> str:
+    bits = [b for b in (element, hybridization) if b]
+    return " ".join(bits) if bits else "—"
+
+
+def _fmt_direction(direction: list[float] | None) -> str:
+    return f"[{_fmt3(direction)}]" if direction is not None else "—"
+
+
+def _render_block(tree: BlockTree, node: BlockNode) -> str:
     lines = [f"# block '{node.name}'"]
     if node.template:
         lines.append(f"instance of: {node.template}")
     lines.append(f"parent: {node.parent or '(root)'}")
     lines.append(f"pose: [{_fmt3(node.pose)}] Å")
     lines.append(f"rot: [{_fmt3(node.rot)}] deg")
-    lines.append(f"envelope: {node.envelope or '—'}")
+    if node.template:
+        # desc/use/dof stay raw (an instance genuinely has none — those
+        # keys are rejected at instance_block time); envelope resolves via
+        # the template like ports do, marked as inherited.
+        env = effective_envelope(tree, node)
+        marker = f" (from {node.template})" if env else ""
+        lines.append(f"envelope: {env or '—'}{marker}")
+    else:
+        lines.append(f"envelope: {node.envelope or '—'}")
     lines.append(f"desc: {node.descr or '—'}")
     lines.append(f"use: {node.use or '—'}")
     lines.append(f"dof: {json.dumps(node.dof) if node.dof else '—'}")
+
+    ports = effective_ports(tree, node)
+    lines.append("")
+    if ports:
+        via = f" (resolved via template {node.template!r})" if node.template else ""
+        lines.append(f"## ports{via}")
+        rows = [
+            {
+                "port": p.name,
+                "roles": ", ".join(p.roles) or "—",
+                "direction": _fmt_direction(p.direction),
+                "expected": _fmt_expected(p.expected_element, p.expected_hybridization),
+            }
+            for p in ports.values()
+        ]
+        lines.append(
+            render_agent_table(rows, schema=["port", "roles", "direction", "expected"])
+        )
+    else:
+        lines.append("## ports\n(none)")
+
+    touching = [c for c in tree.connects if node.name in (c.a_block, c.b_block)]
+    lines.append("")
+    if touching:
+        lines.append("## connects")
+        rows = [
+            {
+                "a": f"{c.a_block}.{c.a_port}",
+                "b": f"{c.b_block}.{c.b_port}",
+                "kind": c.kind,
+                "objectives": json.dumps(c.objectives) if c.objectives else "—",
+            }
+            for c in touching
+        ]
+        lines.append(render_agent_table(rows, schema=["a", "b", "kind", "objectives"]))
+    else:
+        lines.append("## connects\n(none)")
     return "\n".join(lines)
+
+
+def _render_ports(tree: BlockTree) -> str:
+    """``view='ports'`` — every block's live ports; an instance's row
+    resolves from its template (:func:`effective_ports`) and is marked."""
+    rows = []
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        ports = effective_ports(tree, node)
+        block_label = f"{name} (via {node.template})" if node.template else name
+        for p in ports.values():
+            rows.append(
+                {
+                    "block": block_label,
+                    "port": p.name,
+                    "roles": ", ".join(p.roles) or "—",
+                    "direction": _fmt_direction(p.direction),
+                    "expected": _fmt_expected(
+                        p.expected_element, p.expected_hybridization
+                    ),
+                }
+            )
+    if not rows:
+        return "# nm ports\n\n(no ports declared yet)"
+    return f"# {len(rows)} port(s)\n" + render_agent_table(
+        rows, schema=["block", "port", "roles", "direction", "expected"]
+    )
+
+
+def _render_validate(tree: BlockTree) -> str:
+    """``view='validate'`` — L0 feasibility findings, the
+    ``structure.validate`` error/warn-tier shape (:mod:`precis_nm.validate`'s
+    module docstring)."""
+    findings = nm_validate.validate(tree)
+    if not findings:
+        return "✓ no validator findings"
+    n_error = sum(1 for f in findings if f.severity == "error")
+    n_warn = sum(1 for f in findings if f.severity == "warn")
+    rows = [
+        {
+            "severity": f.severity,
+            "rule": f.rule,
+            "subject": f.subject,
+            "detail": f.detail,
+        }
+        for f in findings
+    ]
+    return f"# {n_error} error(s), {n_warn} warning(s)\n" + render_agent_table(
+        rows, schema=["severity", "rule", "subject", "detail"]
+    )
 
 
 def _block_not_found(tree: BlockTree, name: str) -> str:

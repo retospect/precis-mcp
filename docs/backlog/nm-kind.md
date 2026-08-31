@@ -171,9 +171,16 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    alignment, MIC-correct bond images), handler-level `import_fragment`
    with label-mapping echo, `from_smiles` (lazy rdkit behind `[chem]`,
    seeded ETKDG). Port *metadata* is slice 3's (plugin-owned).
-3. **The new plugin kind (L0–L2)** — nested components + envelopes +
-   ports + declared DOF + topology invariants; bindings to structure
-   designs; tree/TOC views; envelope clearance via cad SDF.
+3. **The new plugin kind (L0–L2)** — IN PROGRESS. Round 1 SHIPPED
+   618d516d (2026-08-31): plugin skeleton, 0001 migration (all three
+   tables), block tree + instancing (read-time template resolution,
+   expansion-cycle guard at op AND render time), cad-DSL envelope
+   validation, tree/block views, search card, dark behind `nm.enabled`.
+   Side-fix that ship forced: `tools/core.py::edit` now declares +
+   forwards `ops=`/`args=` (ratchet entries ("structure","edit","ops"/
+   "args") retired; doors round-trip test added). Remaining rounds:
+   ports+connects+validate → envelope clearance (cad SDF) →
+   bind_structure + DOF/topology invariants.
 4. **Fill loop wiring** — propose jobs, lit-search integration,
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.
 5. **Synthesizability + charge/optical panels.**

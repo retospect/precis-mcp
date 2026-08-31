@@ -22,14 +22,20 @@ reinsert-all, identity is the label" discipline
 a design-sized tree; a version-stamped incremental save is a later
 refinement if trees ever get large enough to matter.
 
-**Round-2 landmine**: ``save_tree`` rebuilds *every* ``nm_blocks.id`` on
-every save (retire the old rows, INSERT fresh ones with new ids) — so a
-future ``nm_ports`` row keyed by ``block_id`` (a raw row id) would silently
-strand on the very next save of that design, pointing at a retired block
-forever. Round 2 must persist ports **in lockstep** with the block tree,
-keyed by ``(block name, port name)`` — never by ``nm_ports.block_id``
-alone across saves — mirroring how this module already treats
-``nm_blocks.name`` (not ``id``) as the stable identity.
+**Round-2 landmine** (now resolved, kept as the lockstep discipline going
+forward): ``save_tree`` rebuilds *every* ``nm_blocks.id`` on every save
+(retire the old rows, INSERT fresh ones with new ids) — so a ``nm_ports``
+row keyed by ``block_id`` (a raw row id, per 0001's already-sealed schema)
+would silently strand on the very next save of that design, pointing at a
+retired block forever. This module persists ports **in lockstep** with the
+block tree, in the *same* pass that builds ``name_to_id`` from the fresh
+INSERTs, so a port row is always written against the block id that save
+just minted — never a stale one. ``nm_connects`` (0002) sidesteps the
+problem entirely by not having a ``block_id`` at all — its endpoints are
+``ref_id`` + block/port *names* (0002's header) — but this module still
+retires and reinserts every live connect on each save, in the same
+transaction as the blocks/ports, purely to keep its bookkeeping in step
+with the rest of the design.
 """
 
 from __future__ import annotations
@@ -40,24 +46,48 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from precis_nm.ops import BlockNode, BlockTree
+from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec
 
 _BLOCK_COLS = (
     "id, parent_block_id, template_block_id, name, pose_xyz, pose_rot, "
     "envelope, descr, use_, dof"
 )
+_PORT_COLS = (
+    "block_id, name, roles, direction, expected_element, expected_hybridization"
+)
+_CONNECT_COLS = "a_block, a_port, b_block, b_port, kind, objectives"
 
 
 def load_tree(store: Any, ref_id: int) -> BlockTree:
-    """Load a design's live block tree, keyed by name."""
+    """Load a design's live block tree, keyed by name, with its live ports
+    (per owning block) and connects (per ref, name-keyed — see this
+    module's docstring)."""
     with store.pool.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"SELECT {_BLOCK_COLS} FROM nm_blocks "
-                "WHERE ref_id = %s AND retired_at IS NULL",
+                "WHERE ref_id = %s AND retired_at IS NULL "
+                "ORDER BY id ASC",
                 (ref_id,),
             )
             rows = cur.fetchall()
+            block_ids = [r["id"] for r in rows]
+            port_rows: list[dict[str, Any]] = []
+            if block_ids:
+                cur.execute(
+                    f"SELECT {_PORT_COLS} FROM nm_ports "
+                    "WHERE retired_at IS NULL AND block_id = ANY(%s) "
+                    "ORDER BY id ASC",
+                    (block_ids,),
+                )
+                port_rows = cur.fetchall()
+            cur.execute(
+                f"SELECT {_CONNECT_COLS} FROM nm_connects "
+                "WHERE ref_id = %s AND retired_at IS NULL "
+                "ORDER BY id ASC",
+                (ref_id,),
+            )
+            connect_rows = cur.fetchall()
     by_id = {r["id"]: r for r in rows}
     tree = BlockTree()
     for r in rows:
@@ -73,6 +103,29 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
             descr=r["descr"],
             use=r["use_"],
             dof=r["dof"],
+        )
+    for p in port_rows:
+        block_row = by_id.get(p["block_id"])
+        if block_row is None:  # pragma: no cover — defensive only
+            continue
+        node = tree.blocks[block_row["name"]]
+        node.ports[p["name"]] = PortSpec(
+            name=p["name"],
+            roles=list(p["roles"] or []),
+            direction=list(p["direction"]) if p["direction"] is not None else None,
+            expected_element=p["expected_element"],
+            expected_hybridization=p["expected_hybridization"],
+        )
+    for c in connect_rows:
+        tree.connects.append(
+            ConnectSpec(
+                a_block=c["a_block"],
+                a_port=c["a_port"],
+                b_block=c["b_block"],
+                b_port=c["b_port"],
+                kind=c["kind"],
+                objectives=dict(c["objectives"] or {}),
+            )
         )
     return tree
 
@@ -125,6 +178,21 @@ def save_tree(
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         )
+        # Ports have no ref_id of their own (0001's schema) — reach them
+        # through the blocks they belong to. Retiring by block_id here
+        # (rather than only the blocks just retired above) also mops up
+        # any port left live by an interrupted prior save.
+        c.execute(
+            "UPDATE nm_ports SET retired_at = now() "
+            "WHERE retired_at IS NULL AND block_id IN "
+            "(SELECT id FROM nm_blocks WHERE ref_id = %s)",
+            (ref_id,),
+        )
+        c.execute(
+            "UPDATE nm_connects SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
         name_to_id: dict[str, int] = {}
         for name in _topo_order(tree):
             node = tree.blocks[name]
@@ -150,6 +218,48 @@ def save_tree(
             ).fetchone()
             assert row is not None
             name_to_id[name] = int(row[0])
+            # Ports in lockstep, right here — the block id this row just
+            # got from Postgres is the only one that will ever be valid
+            # for this save (module docstring's "Round-2 landmine").
+            for port in node.ports.values():
+                c.execute(
+                    "INSERT INTO nm_ports "
+                    "(block_id, name, roles, direction, expected_element, "
+                    " expected_hybridization) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (
+                        name_to_id[name],
+                        port.name,
+                        port.roles,
+                        port.direction,
+                        port.expected_element,
+                        port.expected_hybridization,
+                    ),
+                )
+        for conn_spec in tree.connects:
+            # Canonicalize the endpoint order so the unordered-pair
+            # uniqueness ops.py promises (`_connects_endpoint_pair`) is
+            # exactly what 0002's ordered-tuple unique index enforces (see
+            # 0002_nm_connects.sql's index comment).
+            a, b = sorted(
+                (
+                    (conn_spec.a_block, conn_spec.a_port),
+                    (conn_spec.b_block, conn_spec.b_port),
+                )
+            )
+            c.execute(
+                "INSERT INTO nm_connects "
+                "(ref_id, a_block, a_port, b_block, b_port, kind, objectives) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    ref_id,
+                    a[0],
+                    a[1],
+                    b[0],
+                    b[1],
+                    conn_spec.kind,
+                    Jsonb(conn_spec.objectives) if conn_spec.objectives else None,
+                ),
+            )
         store.chunks.upsert_card_combined(ref_id, card_text, conn=c)
 
     if conn is not None:
@@ -160,10 +270,21 @@ def save_tree(
 
 
 def retire_design(store: Any, ref_id: int) -> int:
-    """Soft-retire the ref and every live block under it. Returns the
-    number of blocks retired."""
+    """Soft-retire the ref and every live block (+ its ports) and connect
+    under it. Returns the number of blocks retired."""
     with store.tx() as conn:
         store.retire_ref(ref_id, conn=conn)
+        conn.execute(
+            "UPDATE nm_ports SET retired_at = now() "
+            "WHERE retired_at IS NULL AND block_id IN "
+            "(SELECT id FROM nm_blocks WHERE ref_id = %s)",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE nm_connects SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
         rows = conn.execute(
             "UPDATE nm_blocks SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL "

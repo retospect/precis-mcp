@@ -157,11 +157,19 @@ def test_tools_list_under_byte_budget() -> None:
     Both handlers already accepted these; only the wire schema was missing
     them, so a strict-schema client silently dropped the call. Schema-side
     growth only, same shape as the prior bumps.
+
+    2026-08-31: cap raised from 23 KB → 24 KB to absorb ``ops=``/``args=``
+    on ``edit`` — the typed-graph-op door for ``structure``/``nm``
+    (retired the ("structure","edit","ops")/("structure","edit","args")
+    kwarg-parity ratchet entries; previously reachable only via the
+    lenient ``__extras__`` channel, so a strict-schema client's op edits
+    silently no-opped). ~380 B of list/dict input-schema + short param
+    comments. Schema-side growth only, same shape as the prior bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 23 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 23 KB). "
+    assert size < 24 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 24 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."
