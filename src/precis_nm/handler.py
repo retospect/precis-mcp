@@ -391,15 +391,15 @@ class NmHandler(Handler):
         :meth:`_finish_generate`, called only after every op in the whole
         list has validated (see :meth:`_apply_ops_with_bindings`'s
         docstring, "orphan on partial failure") — this method never writes
-        to the store. A generated bond is declared aromatic order 1.5 (the
-        ``ring`` template's ``aromatic=true`` convention,
-        ``structure/ops.py``) and every atom's ``hybridization`` is set to
-        ``'sp2'`` (both round-1 families are pure sp² carbon) — data the
-        generator itself doesn't carry (its ``(i, j, order)`` bond triples
-        already fix the order; hybridization is uniform across both
-        families this round, so it's set here rather than threaded through
-        :class:`~precis_nm.generators.GeneratedBlock`). Returns the
-        caller-facing echo string plus the deferred write."""
+        to the store. A generated bond's order/kind come straight from the
+        generator's own ``(i, j, order, kind)`` bond quadruples — never a
+        hardcoded single aromatic order for every family (gripe 279306: an
+        all-``order=1.5`` assignment over-sums an all-sp² atom's declared
+        valence budget, 3 × 1.5 = 4.5 > carbon's max valence of 4). Every
+        atom's ``hybridization`` is set to ``'sp2'`` here (every round-1/2
+        family is pure sp² carbon, so it's set uniformly rather than
+        threaded through :class:`~precis_nm.generators.GeneratedBlock`).
+        Returns the caller-facing echo string plus the deferred write."""
         gen_name = op.get("generator")
         if not gen_name or not str(gen_name).strip():
             raise BadInput("generate needs 'generator'")
@@ -482,9 +482,9 @@ class NmHandler(Handler):
                 label=label, element=element, frac=frac, hybridization="sp2"
             )
             labels.append(label)
-        for i, j, order in block.bonds:
+        for i, j, order, kind in block.bonds:
             scene.bonds.append(
-                StructBond(i=labels[i], j=labels[j], order=order, kind="aromatic")
+                StructBond(i=labels[i], j=labels[j], order=order, kind=kind)
             )
 
         # Port -> atom element gate, run here against the in-memory atoms

@@ -176,7 +176,10 @@ the block (envelope + ports + topology facts), mints a `structure` design
 at `<design>-<block name>` holding the generated atoms, and binds it —
 the echo names the minted slug. `cnt` (chiral index `n ≥ m ≥ 0`, radius
 `a√(n²+nm+m²)/2π`; rim atoms become `sp2-rim` ports), `fullerene`
-(`atoms: 60` only so far — truncated icosahedron, 12 pentagons). Param
+(`atoms: 60` only so far — truncated icosahedron, 12 pentagons, Kekulé
+bond orders), `cone` (`pentagons: 1–5` apex disclinations, opening angle
+`sin(θ/2) = 1 − P/6`; honest *open* frustum — the apex is truncated at a
+derived floor, both rims get ports). Param
 validation is theorem-loud (impossible chirality/size is rejected at op
 time), an unknown generator lists the registered ones, and a `structure`
 design already living at the target slug is a loud rejection — generate

@@ -567,6 +567,53 @@ def test_validate_valence_budget_allows_aromatic_fractional_sum() -> None:
     assert not any(f.rule == "valence_budget_exceeded" for f in validate(scene))
 
 
+def test_validate_valence_budget_tolerates_float32_pauling_roundtrip() -> None:
+    # gripe 279306: a Pauling order 4/3 round-tripped through the ``real``
+    # (float32) ``struct_bonds.bond_order`` storage column comes back as
+    # float32's nearest representable value, not float64's exact
+    # 1.3333333333333333 — simulate that round-trip directly rather than
+    # going through the store, so this test still fails loud if the
+    # epsilon regresses without needing a live DB.
+    order = float(np.float32(4.0 / 3.0))
+    assert order > 4.0 / 3.0  # sanity: the round-trip really did drift up
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.64, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.36, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.61, 0.5]},
+            {"op": "add_bond", "i": "aC1", "j": "aC2", "order": order},
+            {"op": "add_bond", "i": "aC1", "j": "aC3", "order": order},
+            {"op": "add_bond", "i": "aC1", "j": "aC4", "order": order},
+        ],
+    )
+    assert not any(f.rule == "valence_budget_exceeded" for f in validate(scene))
+
+
+def test_validate_valence_budget_still_flags_three_aromatic_1_5_bonds() -> None:
+    # The epsilon must not swallow a genuine over-valence: 3 x 1.5 = 4.5 is
+    # well past both C's max valence 4 and the float32-roundtrip epsilon.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.64, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.36, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.61, 0.5]},
+            {"op": "add_bond", "i": "aC1", "j": "aC2", "order": 1.5},
+            {"op": "add_bond", "i": "aC1", "j": "aC3", "order": 1.5},
+            {"op": "add_bond", "i": "aC1", "j": "aC4", "order": 1.5},
+        ],
+    )
+    findings = [f for f in validate(scene) if f.rule == "valence_budget_exceeded"]
+    assert len(findings) == 1
+    assert findings[0].atoms == ["aC1"]
+    assert findings[0].measured == 4.5
+
+
 def test_validate_valence_budget_defers_to_single_bond_finding() -> None:
     # A lone order-3 bond on O already fires bond_order_exceeds_valence;
     # the budget rule must not double-report the same root cause.

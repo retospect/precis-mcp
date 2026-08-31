@@ -268,10 +268,25 @@ reality.
    **4a — generators (IN FLIGHT).** `generate` op + registry
    (`precis_nm/generators/`), per the Generators section above. Build
    order: (i) framework + cnt + fullerene (deterministic L5 via chiral
-   rolling / Goldberg), (ii) cone/nanohorn + nanobud fusion +
-   cyclodextrin, (iii) L4 mechanics ceilings (min-cut tensile, Euler
-   buckling, strain energy) as warn-tier metrics. Theorem-loud param
-   validation; provenance cites on every generator.
+   rolling / Goldberg) — **SHIPPED round 1, 7afb8848**; (ii) cone/nanohorn
+   — **SHIPPED round 2** (wrapped-sheet disclination construction,
+   `precis_nm/generators/sp2.py::build_cone`; the isometric-unroll
+   chord-vs-strain distortion near the apex is truncated away past a
+   derived `ρ_min` floor, honestly documented in the module docstring) —
+   **+ cyclodextrin** (not started) **+ nanobud fusion — SCOPE-CHECKED
+   round 2 and SKIPPED** (design note: `precis_nm/generators/sp2.py`'s
+   "nanobud fusion op" comment block, end of file — three real blockers:
+   no rotation-capable cross-design merge primitive exists yet, fusion
+   site selection is a chemistry judgment call not a mechanical one, and
+   `nm_topology`'s schema has nowhere to record a fusion's pentagon/
+   hexagon disclination budget); (iii) L4 mechanics ceilings (min-cut
+   tensile, Euler buckling, strain energy) as warn-tier metrics
+   (not started). Theorem-loud param validation; provenance cites on
+   every generator. Round 2 also fixed gripe 279306 (honest per-family
+   bond orders — fullerene Kekulé single/double, CNT/cone Pauling 4/3 —
+   replacing the hardcoded aromatic-1.5 that over-summed valence; plus a
+   float32-storage epsilon on `structure/validate.py`'s valence_budget
+   rule).
 
    **4b — LLM fill loop** — propose jobs, lit-search integration,
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.

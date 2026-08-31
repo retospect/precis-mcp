@@ -67,7 +67,16 @@ class GeneratedBlock:
     ``elements``/``coords``/``bonds`` are the realized L5 atoms —
     ``coords`` a ``(N, 3)`` float64 Å array (ordinal index = array
     position = :attr:`GeneratedPort.atom_index`'s target), ``bonds`` a
-    list of ``(i, j, order)`` index triples into ``elements``/``coords``.
+    list of ``(i, j, order, kind)`` index quadruples into
+    ``elements``/``coords`` — **order and kind are authoritative** (gripe
+    279306): the handler-level ``generate`` op stores them verbatim on the
+    minted :class:`~precis.structure.scene.Bond` rather than hardcoding a
+    single aromatic order for every family. Each generator picks the
+    chemically honest assignment for its own bond topology — see
+    :mod:`precis_nm.generators.sp2`'s module docstring for the fullerene
+    Kekule split and the CNT Pauling-order derivation — never a single
+    "aromatic 1.5" guess that silently over-sums an all-sp² atom's valence
+    budget (3 bonds × 1.5 = 4.5 > carbon's max valence of 4).
     """
 
     envelope: str
@@ -76,4 +85,4 @@ class GeneratedBlock:
     provenance: str
     elements: list[str]
     coords: np.ndarray
-    bonds: list[tuple[int, int, float]]
+    bonds: list[tuple[int, int, float, str]]

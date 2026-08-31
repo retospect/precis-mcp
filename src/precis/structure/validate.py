@@ -32,6 +32,20 @@ OVERLAP_FRACTION = 0.6
 #: atom, wrong periodic image, a fractional-coordinate typo.
 BOND_LENGTH_FACTOR = 1.3
 
+#: Per-atom valence-budget tolerance (gripe 279306): declared bond orders
+#: round-trip through the ``real`` (float32) ``struct_bonds.bond_order``
+#: storage column, so an exact fractional order like the Pauling estimate
+#: 4/3 comes back as ``1.3333334...`` (float32's nearest representable
+#: value), not float64's ``1.3333333333333333`` — three of those sum to
+#: ``4.0000001192...``, a ``~1.19e-7`` excess over an atom's max valence of
+#: 4 (measured: ``3 * float(np.float32(4/3)) - 4.0``). Without this slack,
+#: a legitimately exact-valence all-sp² network (every generated fullerene/
+#: nanotube atom) false-flags on nothing but storage round-off.
+#: ``1e-5`` keeps ~100x headroom over that measured excess while staying
+#: tight enough that a genuine (if small) overage still flags — a genuine
+#: over-valence bond (e.g. 3 × 1.5 = 4.5) flags outright either way.
+VALENCE_BUDGET_EPSILON = 1e-5
+
 
 @dataclass
 class ValidationIssue:
@@ -178,7 +192,7 @@ def validate(scene: Scene) -> list[ValidationIssue]:
                 budgets[label] = budgets.get(label, 0.0) + bond.order
     for label, total in budgets.items():
         mv = elements.max_valence(scene.atoms[label].element)
-        if mv is None or total <= mv:
+        if mv is None or total <= mv + VALENCE_BUDGET_EPSILON:
             continue
         incident = [
             b for b in scene.bonds if b.provenance == "declared" and label in (b.i, b.j)

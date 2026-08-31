@@ -33,9 +33,11 @@ note (the formula/construction used) into the returned block's
 :data:`GENERATORS` is the name → builder registry the ``generate`` op
 looks up. Round 1 (slice 4a, build order (i)): ``cnt`` (single-wall carbon
 nanotube, chiral rolling) and ``fullerene`` (C60, truncated icosahedron) —
-both in :mod:`precis_nm.generators.sp2`. Cone/nanohorn, nanobud fusion, and
-cyclodextrin are build order (ii); L4 mechanics-ceiling metrics are build
-order (iii) (nm-kind.md's slice 4a entry).
+both in :mod:`precis_nm.generators.sp2`. Round 2 (build order (ii)):
+``cone`` (nanohorn, wrapped-sheet disclination — also
+:mod:`precis_nm.generators.sp2`). Nanobud fusion and cyclodextrin remain
+build order (ii); L4 mechanics-ceiling metrics are build order (iii)
+(nm-kind.md's slice 4a entry).
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ from collections.abc import Callable
 from typing import Any
 
 from precis_nm.generators._types import GeneratedBlock, GeneratedPort, GeneratorError
-from precis_nm.generators.sp2 import build_cnt, build_fullerene
+from precis_nm.generators.sp2 import build_cnt, build_cone, build_fullerene
 
 Generator = Callable[[dict[str, Any]], GeneratedBlock]
 
@@ -55,6 +57,7 @@ Generator = Callable[[dict[str, Any]], GeneratedBlock]
 GENERATORS: dict[str, Generator] = {
     "cnt": build_cnt,
     "fullerene": build_fullerene,
+    "cone": build_cone,
 }
 
 __all__ = [
