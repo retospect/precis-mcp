@@ -76,6 +76,7 @@ from precis.structure import Scene as StructScene
 from precis.structure.cell import Cell as StructCell
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis_nm import mechanics as nm_mechanics
 from precis_nm import persist
 from precis_nm import validate as nm_validate
 from precis_nm.generators import GENERATORS, GeneratorError
@@ -134,19 +135,25 @@ class NmHandler(Handler):
             "connect/disconnect/declare_dof/clear_dof/declare_threading/"
             "remove_threading/bind_structure/unbind_structure/generate); "
             "get lists designs or renders one (view='tree'|'block'|'ports'|"
-            "'validate'|'clearance'|'topology'; block/ports take "
-            "args={'name':...}, clearance takes args={'a':...,'b':...}); "
-            "delete soft-retires; search finds by intent. Envelopes reuse "
-            "the cad mini-DSL (e.g. 'cyl:r5h2') at Angstrom scale — "
-            "view='clearance' runs the cad kernel's signed-distance gap "
-            "between two blocks' envelopes. A bond connect needs both "
-            "ports to share a role (default 'covalent'). bind_structure "
-            "maps ports to atoms in a real structure design, gated by each "
-            "port's expected_element. generate runs a parametric block "
-            "factory (generator='cnt'|'fullerene', params={...}, name=<new "
-            "block>) — deterministic geometry, no LLM guessing: mints and "
-            "binds the structure design itself. The LLM traverses a block "
-            "tree, never atoms directly."
+            "'validate'|'clearance'|'topology'|'mechanics'; block/ports "
+            "take args={'name':...}, clearance takes "
+            "args={'a':...,'b':...}); delete soft-retires; search finds by "
+            "intent. Envelopes reuse the cad mini-DSL (e.g. 'cyl:r5h2') at "
+            "Angstrom scale — view='clearance' runs the cad kernel's "
+            "signed-distance gap between two blocks' envelopes. A bond "
+            "connect needs both ports to share a role (default "
+            "'covalent'). bind_structure maps ports to atoms in a real "
+            "structure design, gated by each port's expected_element. "
+            "generate runs a parametric block factory "
+            "(generator='cnt'|'fullerene'|'cone'|'cyclodextrin', "
+            "params={...}, name=<new block>) — deterministic geometry, no "
+            "LLM guessing: mints and binds the structure design itself. "
+            "view='mechanics' renders advisory (never-gating) L4 ceilings: "
+            "min-cut tensile between bond-connected blocks, Euler buckling "
+            "for tube-shaped generated blocks, harmonic strain energy vs "
+            "VSEPR ideal angles — all defect-free continuum estimates, "
+            "never validate findings. The LLM traverses a block tree, "
+            "never atoms directly."
         ),
         supports_get=True,
         supports_put=True,
@@ -159,7 +166,15 @@ class NmHandler(Handler):
         placement="artifact",
         corpus_role="none",
         can_own_jobs=False,
-        views=("tree", "block", "ports", "validate", "clearance", "topology"),
+        views=(
+            "tree",
+            "block",
+            "ports",
+            "validate",
+            "clearance",
+            "topology",
+            "mechanics",
+        ),
         # Dark-ship: hidden until the `nm.enabled` setting resolves.
         requires_setting=("nm.enabled",),
     )
@@ -396,9 +411,10 @@ class NmHandler(Handler):
         hardcoded single aromatic order for every family (gripe 279306: an
         all-``order=1.5`` assignment over-sums an all-sp² atom's declared
         valence budget, 3 × 1.5 = 4.5 > carbon's max valence of 4). Every
-        atom's ``hybridization`` is set to ``'sp2'`` here (every round-1/2
-        family is pure sp² carbon, so it's set uniformly rather than
-        threaded through :class:`~precis_nm.generators.GeneratedBlock`).
+        atom's ``hybridization`` is set uniformly from
+        :attr:`~precis_nm.generators.GeneratedBlock.hybridization` (every
+        round-1/2 sp² carbon family defaults it to ``'sp2'``; the sugars
+        family sets ``'sp3'``).
         Returns the caller-facing echo string plus the deferred write."""
         gen_name = op.get("generator")
         if not gen_name or not str(gen_name).strip():
@@ -479,7 +495,10 @@ class NmHandler(Handler):
                 scene.cell.cart_to_frac(np.asarray(cart, dtype=float))
             )
             scene.atoms[label] = StructAtom(
-                label=label, element=element, frac=frac, hybridization="sp2"
+                label=label,
+                element=element,
+                frac=frac,
+                hybridization=block.hybridization,
             )
             labels.append(label)
         for i, j, order, kind in block.bonds:
@@ -610,6 +629,159 @@ class NmHandler(Handler):
         return f"# {n_error} error(s), {n_warn} warning(s)\n" + render_agent_table(
             rows, schema=["severity", "rule", "subject", "detail"]
         )
+
+    def _render_mechanics(self, tree: BlockTree) -> str:
+        """``view='mechanics'`` — advisory (never-gating) L4 ceilings
+        (:mod:`precis_nm.mechanics`'s module docstring): per-block Euler
+        buckling (tube-shaped blocks only) + harmonic strain energy, and
+        per-bond-connect min-cut tensile ceiling. Hydrates every referenced
+        structure design once (the same "assemble in the view path, keep
+        the checker pure" split :meth:`_render_validate` already uses) —
+        ``mechanics.py`` stays store-free. A block with no bound structure
+        renders ``unfilled`` in every numeric column (never ``0`` — the
+        maze.py filled-fraction honesty rule: an empty scaffold must never
+        read as "zero strain, zero risk")."""
+        slugs = {n.bound_design for n in tree.blocks.values() if n.bound_design}
+        slugs |= {
+            p.bound_design
+            for n in tree.blocks.values()
+            for p in n.ports.values()
+            if p.bound_design
+        }
+        scenes: dict[str, StructScene] = {}
+        for slug in slugs:
+            ref = self.store.get_ref(kind="structure", id=slug)
+            if ref is None:
+                continue
+            scene, _handles = self.store.structure_load(ref.id)
+            scenes[slug] = scene
+
+        lines = ["# nm mechanics", "", nm_mechanics.HONESTY_NOTE, ""]
+
+        lines.append("## per-block (Euler buckling + harmonic strain energy)")
+        block_rows: list[dict[str, Any]] = []
+        for name in sorted(tree.blocks):
+            node = tree.blocks[name]
+            bd = node.bound_design  # instances are never independently bound
+            block_scene = scenes.get(bd) if bd else None
+            if block_scene is None:
+                block_rows.append(
+                    {
+                        "block": name,
+                        "buckling_ceiling_nN": "unfilled",
+                        "strain_energy_eV": "unfilled",
+                        "note": "no bound structure"
+                        if not bd
+                        else "bound design missing",
+                    }
+                )
+                continue
+            env = effective_envelope(tree, node)
+            geom = nm_mechanics.tube_geometry_from_envelope(env)
+            buckling = (
+                f"{nm_mechanics.euler_buckling_ceiling_nN(*geom):.4g}"
+                if geom
+                else "n/a (not a tube envelope)"
+            )
+            strain_eV, n_tri = nm_mechanics.harmonic_strain_energy_eV(block_scene)
+            block_rows.append(
+                {
+                    "block": name,
+                    "buckling_ceiling_nN": buckling,
+                    "strain_energy_eV": f"{strain_eV:.4g} ({n_tri} angle(s))",
+                    "note": "",
+                }
+            )
+        lines.append(
+            render_agent_table(
+                block_rows,
+                schema=["block", "buckling_ceiling_nN", "strain_energy_eV", "note"],
+            )
+        )
+
+        lines.append("")
+        lines.append("## min-cut tensile ceiling (per bond connect)")
+        connect_rows: list[dict[str, Any]] = []
+        for c in tree.connects:
+            if c.kind != "bond":
+                continue
+            subject_a, subject_b = f"{c.a_block}.{c.a_port}", f"{c.b_block}.{c.b_port}"
+            a_node, b_node = tree.blocks.get(c.a_block), tree.blocks.get(c.b_block)
+            a_port = effective_ports(tree, a_node).get(c.a_port) if a_node else None
+            b_port = effective_ports(tree, b_node).get(c.b_port) if b_node else None
+            row_base = {"a": subject_a, "b": subject_b}
+            if (
+                a_port is None
+                or b_port is None
+                or not a_port.bound_design
+                or not a_port.bound_atom
+                or not b_port.bound_design
+                or not b_port.bound_atom
+            ):
+                connect_rows.append(
+                    {
+                        **row_base,
+                        "min_cut_bonds": "unfilled",
+                        "tensile_ceiling_nN": "unfilled",
+                        "note": "one or both ports unbound",
+                    }
+                )
+                continue
+            if a_port.bound_design != b_port.bound_design:
+                # Distinct honest state, not a bare 0 (the unfilled-not-zero
+                # rule, round-3 review finding): "0" reads as "measured and
+                # found to be zero tensile capacity", but two ports bound to
+                # two SEPARATE structure designs were never fused into one
+                # bond graph in the first place — there is no min-cut to
+                # compute at all, a different situation from a real,
+                # disconnected-but-shared scene (that genuinely reports 0,
+                # see the branch below).
+                connect_rows.append(
+                    {
+                        **row_base,
+                        "min_cut_bonds": "not fused",
+                        "tensile_ceiling_nN": "not fused",
+                        "note": (
+                            "ports bound to different structure designs — "
+                            "never fused into one bond graph, not measured "
+                            "as zero"
+                        ),
+                    }
+                )
+                continue
+            connect_scene = scenes.get(a_port.bound_design)
+            if connect_scene is None:
+                connect_rows.append(
+                    {
+                        **row_base,
+                        "min_cut_bonds": "unfilled",
+                        "tensile_ceiling_nN": "unfilled",
+                        "note": f"bound design {a_port.bound_design!r} no longer resolves",
+                    }
+                )
+                continue
+            cut, ceiling = nm_mechanics.min_cut(
+                connect_scene, a_port.bound_atom, b_port.bound_atom
+            )
+            note = "" if cut else "no bond path between the two ports (disconnected)"
+            connect_rows.append(
+                {
+                    **row_base,
+                    "min_cut_bonds": cut,
+                    "tensile_ceiling_nN": f"{ceiling:.4g}",
+                    "note": note,
+                }
+            )
+        if connect_rows:
+            lines.append(
+                render_agent_table(
+                    connect_rows,
+                    schema=["a", "b", "min_cut_bonds", "tensile_ceiling_nN", "note"],
+                )
+            )
+        else:
+            lines.append("(no bond connects declared)")
+        return "\n".join(lines)
 
     # ── put ──────────────────────────────────────────────────────────
     def put(
@@ -748,11 +920,14 @@ class NmHandler(Handler):
             return Response(body=_render_clearance(tree, args))
         if v == "topology":
             return Response(body=_render_topology(tree))
+        if v == "mechanics":
+            return Response(body=self._render_mechanics(tree))
         raise BadInput(
             f"unknown nm view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='ports' | view='validate' | "
-            "view='clearance' (args={'a':...,'b':...}) | view='topology'",
+            "view='clearance' (args={'a':...,'b':...}) | view='topology' | "
+            "view='mechanics'",
         )
 
     # ── delete ───────────────────────────────────────────────────────

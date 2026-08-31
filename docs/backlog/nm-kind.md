@@ -269,24 +269,71 @@ reality.
    (`precis_nm/generators/`), per the Generators section above. Build
    order: (i) framework + cnt + fullerene (deterministic L5 via chiral
    rolling / Goldberg) — **SHIPPED round 1, 7afb8848**; (ii) cone/nanohorn
-   — **SHIPPED round 2** (wrapped-sheet disclination construction,
+   — **SHIPPED round 2, 0186c651** (wrapped-sheet disclination construction,
    `precis_nm/generators/sp2.py::build_cone`; the isometric-unroll
    chord-vs-strain distortion near the apex is truncated away past a
    derived `ρ_min` floor, honestly documented in the module docstring) —
-   **+ cyclodextrin** (not started) **+ nanobud fusion — SCOPE-CHECKED
-   round 2 and SKIPPED** (design note: `precis_nm/generators/sp2.py`'s
-   "nanobud fusion op" comment block, end of file — three real blockers:
-   no rotation-capable cross-design merge primitive exists yet, fusion
-   site selection is a chemistry judgment call not a mechanical one, and
-   `nm_topology`'s schema has nowhere to record a fusion's pentagon/
-   hexagon disclination budget); (iii) L4 mechanics ceilings (min-cut
-   tensile, Euler buckling, strain energy) as warn-tier metrics
-   (not started). Theorem-loud param validation; provenance cites on
-   every generator. Round 2 also fixed gripe 279306 (honest per-family
-   bond orders — fullerene Kekulé single/double, CNT/cone Pauling 4/3 —
-   replacing the hardcoded aromatic-1.5 that over-summed valence; plus a
-   float32-storage epsilon on `structure/validate.py`'s valence_budget
-   rule).
+   **+ cyclodextrin — SHIPPED round 3** (two-path generator,
+   `precis_nm/generators/sugars.py::build_cyclodextrin`: seeded-rdkit
+   ETKDGv3+MMFF conformer with a loud, re-derived-from-coordinates check,
+   falling back to a Cn-symmetric idealized-glucopyranose template —
+   glycosidic bridging oxygens pinned exactly at the target ring radius,
+   every other atom built from bond lengths/angles plus a bond-spring/
+   non-bond-repulsion/angle-restoring relax pass — whenever rdkit is
+   unavailable or the conformer fails that check; either path stamps
+   which one ran into the block's `provenance`. Torus envelope (the cad
+   DSL already has one). One port per primary-rim/secondary-rim hydroxyl
+   oxygen per unit. Two real correctness traps surfaced and fixed:
+   (1, initial build) the SMILES construction reused one ring-closure
+   digit across all units assuming "closes before the next unit reopens
+   it" — wrong, SMILES pairs a digit's first two TEXTUAL occurrences
+   regardless of nesting depth, so it silently wired every unit's C4 to
+   the next unit's C4 instead of closing its own hexagon (same atom/bond
+   counts, so formula/embed checks alone didn't catch it — only an
+   independent ring-finding check did); fixed with a unique per-unit
+   digit. (2, round-3 reviewer) the cavity check compared an atom-CENTER
+   measurement (the O4/glycosidic-oxygen ring diameter) against a van-der-
+   Waals-corrected literature CAVITY number — an apples-to-oranges bug
+   that was rejecting real, topologically-correct rdkit conformers as
+   "too open"; fixed by gating on O4-ring-diameter targets (α/β/γ ≈
+   8.5/10.0/11.5 Å, cross-checked against this generator's own rdkit
+   measurements) and reporting the vdW-derived estimate as a SEPARATE,
+   informational `cavity_diameter_A` fact — the rdkit path now passes at
+   the default seed for all three variants, genuinely the primary path in
+   practice. The reviewer also found the fallback's baked-in bond angles
+   badly strained (149-201 `vsepr.angle_strain` findings, mean ~34°,
+   worst 72.8°) — fixed with an angle-restoring term in the relax pass
+   (the analytic MM angle-bending gradient) plus replacing three
+   substituent placements that had a fully- or mostly-determined analytic
+   answer (`_place_tetrahedral_single`/`_pair`/`_trio`) with exact
+   construction instead of an approximate sphere search — now mean ~3.5°,
+   worst ~15°, zero findings, for both paths.
+   + nanobud fusion — SCOPE-CHECKED round 2 and SKIPPED** (design note:
+   `precis_nm/generators/sp2.py`'s "nanobud fusion op" comment block, end
+   of file — three real blockers: no rotation-capable cross-design merge
+   primitive exists yet, fusion site selection is a chemistry judgment
+   call not a mechanical one, and `nm_topology`'s schema has nowhere to
+   record a fusion's pentagon/hexagon disclination budget); (iii) L4
+   mechanics ceilings — **SHIPPED round 3** (`precis_nm/mechanics.py` +
+   `view='mechanics'`: min-cut tensile ceiling via a pure-Python max-flow/
+   min-cut, unit capacity per bond, × the AFM-cited 5 nN C-C rupture
+   force — two ports bound to two DIFFERENT structure designs render
+   `"not fused"`, not a bare `0` (round-3 reviewer finding: a measured
+   zero and "never shared a bond graph" are different honest states);
+   Euler buckling for `cyl`-envelope generated blocks (chiral_index itself
+   isn't persisted this round, so tube radius/length are re-derived from
+   the stored envelope minus the generators' own VDW margin); harmonic
+   strain energy vs VSEPR ideal angles with a generic k_θ ≈ 0.5 eV/rad².
+   All advisory (never gate), rendered with a one-line honesty caveat;
+   unbound blocks render `unfilled`, never `0`). Theorem-loud param
+   validation; provenance cites on every generator. Round 2 also fixed
+   gripe 279306 (honest per-family bond orders — fullerene Kekulé single/
+   double, CNT/cone Pauling 4/3 — replacing the hardcoded aromatic-1.5
+   that over-summed valence; plus a float32-storage epsilon on
+   `structure/validate.py`'s valence_budget rule).
+   Live viewer demos minted 2026-08-31 (ordinary prod `structure`
+   designs, pre-deploy): `nm-demo-c60` (st279263), `nm-demo-cnt-6-6`
+   (st279304), `nm-demo-dumbbell` (st279305) — all validate clean.
 
    **4b — LLM fill loop** — propose jobs, lit-search integration,
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.

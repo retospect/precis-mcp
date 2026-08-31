@@ -476,7 +476,7 @@ def test_cone_missing_params_rejected() -> None:
 
 
 def test_registry_has_round_1_and_round_2_generators() -> None:
-    assert set(GENERATORS) == {"cnt", "fullerene", "cone"}
+    assert set(GENERATORS) == {"cnt", "fullerene", "cone", "cyclodextrin"}
     for builder in GENERATORS.values():
         assert callable(builder)
 

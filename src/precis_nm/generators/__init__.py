@@ -35,9 +35,14 @@ looks up. Round 1 (slice 4a, build order (i)): ``cnt`` (single-wall carbon
 nanotube, chiral rolling) and ``fullerene`` (C60, truncated icosahedron) —
 both in :mod:`precis_nm.generators.sp2`. Round 2 (build order (ii)):
 ``cone`` (nanohorn, wrapped-sheet disclination — also
-:mod:`precis_nm.generators.sp2`). Nanobud fusion and cyclodextrin remain
-build order (ii); L4 mechanics-ceiling metrics are build order (iii)
-(nm-kind.md's slice 4a entry).
+:mod:`precis_nm.generators.sp2`); nanobud fusion scope-checked and skipped
+(design note at the end of that module). Round 3 (build order (ii)
+continued): ``cyclodextrin`` (alpha/beta/gamma-CD,
+:mod:`precis_nm.generators.sugars`) — a two-path generator (rdkit conformer
++ a loud cavity-diameter check, falling back to a Cn-symmetric idealized
+template) rather than the closed-form-only construction the sp² family
+uses; L4 mechanics-ceiling metrics (build order (iii)) live in
+:mod:`precis_nm.mechanics`, not this registry.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ from typing import Any
 
 from precis_nm.generators._types import GeneratedBlock, GeneratedPort, GeneratorError
 from precis_nm.generators.sp2 import build_cnt, build_cone, build_fullerene
+from precis_nm.generators.sugars import build_cyclodextrin
 
 Generator = Callable[[dict[str, Any]], GeneratedBlock]
 
@@ -58,6 +64,7 @@ GENERATORS: dict[str, Generator] = {
     "cnt": build_cnt,
     "fullerene": build_fullerene,
     "cone": build_cone,
+    "cyclodextrin": build_cyclodextrin,
 }
 
 __all__ = [

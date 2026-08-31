@@ -179,7 +179,15 @@ the echo names the minted slug. `cnt` (chiral index `n ≥ m ≥ 0`, radius
 (`atoms: 60` only so far — truncated icosahedron, 12 pentagons, Kekulé
 bond orders), `cone` (`pentagons: 1–5` apex disclinations, opening angle
 `sin(θ/2) = 1 − P/6`; honest *open* frustum — the apex is truncated at a
-derived floor, both rims get ports). Param
+derived floor, both rims get ports), `cyclodextrin` (`variant:
+alpha|beta|gamma` — 6/7/8 glucose units, real rotaxane macrocycles;
+seeded-rdkit conformer gated by an O4-ring diameter check, `cd-primary-rim`
+/ `cd-secondary-rim` ports, topology carries measured `o4_ring_diameter_A`
++ derived `cavity_diameter_A` + `b1: 1`). `view='mechanics'` renders
+advisory defect-free ceilings per block — min-cut tensile (bond-graph
+max-flow × ~5 nN/bond), Euler buckling for tubes, harmonic angle strain —
+never a gate; unbound blocks read `unfilled`, cross-design connects read
+`not fused`, and every number carries the pristine-lattice caveat. Param
 validation is theorem-loud (impossible chirality/size is rejected at op
 time), an unknown generator lists the registered ones, and a `structure`
 design already living at the target slug is a loud rejection — generate

@@ -86,3 +86,10 @@ class GeneratedBlock:
     elements: list[str]
     coords: np.ndarray
     bonds: list[tuple[int, int, float, str]]
+    #: Uniform ``Atom.hybridization`` tag the handler stamps on every
+    #: realized atom (:meth:`precis_nm.handler.NmHandler._prepare_generate`)
+    #: — round 1/2's sp² carbon families all hardcoded ``"sp2"`` before this
+    #: field existed, so that stays the default; the sugars family
+    #: (:mod:`precis_nm.generators.sugars`) is the first sp³ family and
+    #: sets ``"sp3"``.
+    hybridization: str = "sp2"
