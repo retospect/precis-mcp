@@ -56,6 +56,15 @@ ports/topology tables; ``0002_nm_connects.sql``; ``0003_nm_bindings.sql``
 (``get(view='clearance')``) reuses the ``cad`` kernel's exact-sign SDF
 (``cad/relate.py::component_sdf``/``clearance``) directly, at Å.
 
+Slice 4a adds :mod:`precis_nm.generators` — parametric block factories
+(the IC-design PCell: ``params → block``, the *deterministic* fill path;
+spec section "Generators" in the backlog doc). A ``generate`` op runs a
+registered generator (``cnt``, ``fullerene``), adds the block with ports +
+topology facts, mints a ``structure`` design holding the math-derived
+atoms, and binds it — prepare (pure, validates everything in-memory)
+is split from finish (the only store write, run after the whole op list
+has validated, so a later failing op cannot orphan a minted design).
+
 Ships **dark** behind the ``nm.enabled`` setting (the ``nm`` kind's
 ``requires_setting``; DB row → ``PRECIS_NM_ENABLED`` env fallback) — the
 kind is hidden from the catalogue/dispatcher until the flag is set. See

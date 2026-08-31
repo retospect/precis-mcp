@@ -12,9 +12,15 @@ docs/backlog/nm-kind.md "Slice 3 design"):
   ``{description?, ops: [...]}`` (``id=`` the design slug). A re-put
   soft-retires the prior blocks/ports/connects/threading and reinserts the
   new tree, the ``structure``/``cad`` re-put shape. ``bind_structure``/
-  ``unbind_structure`` are intercepted here (store-aware, the
+  ``unbind_structure``/``generate`` are intercepted here (store-aware, the
   ``import_fragment`` precedent — :meth:`NmHandler._apply_ops_with_bindings`)
   before every other op runs through the pure :func:`~precis_nm.ops.apply_ops`.
+  ``generate`` (slice 4a, docs/backlog/nm-kind.md "Generators") runs a
+  parametric block factory (:mod:`precis_nm.generators`) — a
+  ``(n, m)`` nanotube or a C60 fullerene, round 1 — and does everything
+  the pure builder can't: adds the block + its ports, mints a fresh
+  ``structure`` design holding the realized atoms/bonds, and binds it
+  (:meth:`NmHandler._prepare_generate`/:meth:`NmHandler._finish_generate`).
 - ``edit``   — apply more ops (``ops=`` or ``text=`` JSON) to an existing
   design's live tree.
 - ``get``    — list designs (no ``id``), or a design's nested tree TOC
@@ -46,8 +52,10 @@ surface.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
+import numpy as np
 from psycopg.types.json import Jsonb
 
 from precis import settings as _settings
@@ -62,10 +70,15 @@ from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.structure import Atom as StructAtom
+from precis.structure import Bond as StructBond
+from precis.structure import Scene as StructScene
+from precis.structure.cell import Cell as StructCell
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
 from precis_nm import persist
 from precis_nm import validate as nm_validate
+from precis_nm.generators import GENERATORS, GeneratorError
 from precis_nm.ops import (
     BlockNode,
     BlockTree,
@@ -90,6 +103,24 @@ _settings.register(
 )
 
 
+@dataclass
+class _PendingGenerate:
+    """A ``generate`` op's deferred store write (:meth:`NmHandler.
+    _prepare_generate`'s docstring, "orphan on partial failure") — every-
+    thing needed to mint the structure design and wire the block/ports'
+    ``bound_design``/``bound_atom`` directly, with no re-validation needed
+    at that point: the port→atom element gate already ran, against the
+    in-memory generated atoms, before this was built."""
+
+    block_name: str
+    struct_slug: str
+    title: str
+    scene: StructScene
+    card_text: str
+    provenance: str
+    ports_map: dict[str, str]
+
+
 class NmHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="nm",
@@ -101,8 +132,8 @@ class NmHandler(Handler):
             "to structure designs. put/edit take typed ops (add_block/"
             "instance_block/set_pose/remove_block/add_port/remove_port/"
             "connect/disconnect/declare_dof/clear_dof/declare_threading/"
-            "remove_threading/bind_structure/unbind_structure); get lists "
-            "designs or renders one (view='tree'|'block'|'ports'|"
+            "remove_threading/bind_structure/unbind_structure/generate); "
+            "get lists designs or renders one (view='tree'|'block'|'ports'|"
             "'validate'|'clearance'|'topology'; block/ports take "
             "args={'name':...}, clearance takes args={'a':...,'b':...}); "
             "delete soft-retires; search finds by intent. Envelopes reuse "
@@ -111,8 +142,11 @@ class NmHandler(Handler):
             "between two blocks' envelopes. A bond connect needs both "
             "ports to share a role (default 'covalent'). bind_structure "
             "maps ports to atoms in a real structure design, gated by each "
-            "port's expected_element. The LLM traverses a block tree, "
-            "never atoms directly."
+            "port's expected_element. generate runs a parametric block "
+            "factory (generator='cnt'|'fullerene', params={...}, name=<new "
+            "block>) — deterministic geometry, no LLM guessing: mints and "
+            "binds the structure design itself. The LLM traverses a block "
+            "tree, never atoms directly."
         ),
         supports_get=True,
         supports_put=True,
@@ -138,18 +172,48 @@ class NmHandler(Handler):
 
     # ── bindings (store-aware ops, intercepted before apply_ops) ───────
     def _apply_ops_with_bindings(
-        self, tree: BlockTree, ops: list[dict[str, Any]]
+        self, tree: BlockTree, ops: list[dict[str, Any]], *, design_slug: str
     ) -> str | None:
         """Walk ``ops`` in order, applying ``bind_structure``/
-        ``unbind_structure`` here (store-aware; ``ops.py`` never sees them —
-        the ``import_fragment`` precedent,
+        ``unbind_structure``/``generate`` here (store-aware; ``ops.py``
+        never sees any of the three — the ``import_fragment`` precedent,
         ``handlers/structure.py::_apply_ops_with_imports``) and everything
         else through the ordinary :func:`~precis_nm.ops.apply_ops`, one op
-        at a time, so a ``bind_structure`` sharing a call with an earlier
-        ``add_block``/``add_port`` sees exactly what that op already
-        placed. Returns a compact echo of every binding op (for the
+        at a time, so a ``bind_structure``/``generate`` sharing a call with
+        an earlier ``add_block``/``add_port`` sees exactly what that op
+        already placed. ``design_slug`` (the nm design's own slug) names
+        every ``generate``-minted structure design (:meth:`_prepare_generate`)
+        — threaded through here rather than read off ``self`` because
+        ``put`` knows it before the ref exists yet (a fresh design has no
+        row to read it back from).
+
+        **``generate`` is store-write-deferred, everything else isn't**
+        (reviewer round-1 finding, "orphan on partial failure"):
+        ``bind_structure``/``unbind_structure`` only ever mutate the
+        in-memory ``tree`` (their store use is read-only —
+        ``get_ref``/``structure_load`` to validate against), so a later
+        op's failure never strands a partial write from either of them —
+        the caller's own ``persist.save_tree`` is the only commit either
+        one is part of. ``generate`` is different: it mints a brand-new
+        ``structure`` design, and ``structure_save`` commits on its own
+        (:meth:`_finish_generate`'s docstring — ``store.tx()`` opens a
+        fresh connection per call, it does not nest with the caller's own
+        transaction). Left synchronous, a *later* op in the same list
+        failing would leave that minted design permanently committed with
+        no block ever pointing at it. So ``generate`` runs in two halves:
+        :meth:`_prepare_generate` (pure/in-memory — runs the generator,
+        adds the block + ports, builds the Scene, validates the port
+        element gate) happens here, immediately, like every other op;
+        every deferred write (:meth:`_finish_generate` — the actual
+        ``structure_save`` + binding) only runs in the loop below, after
+        the *entire* ops list has validated with no exception — closing
+        the orphan window for every case except a genuine crash in that
+        narrow final gap (documented on :meth:`_finish_generate`).
+
+        Returns a compact echo of every binding/generate op (for the
         caller's response), or ``None`` when there were none."""
         echoes: list[str] = []
+        pending_generates: list[_PendingGenerate] = []
         for op in ops:
             if not isinstance(op, dict) or "op" not in op:
                 raise BadInput(f"op missing 'op' key: {op!r}")
@@ -160,10 +224,17 @@ class NmHandler(Handler):
             if name == "unbind_structure":
                 echoes.append(self._unbind_structure(tree, op))
                 continue
+            if name == "generate":
+                echo, pending = self._prepare_generate(tree, op, design_slug)
+                echoes.append(echo)
+                pending_generates.append(pending)
+                continue
             try:
                 apply_ops(tree, [op])
             except OpError as exc:
                 raise BadInput(str(exc)) from exc
+        for pending in pending_generates:
+            self._finish_generate(tree, pending)
         return "\n".join(echoes) if echoes else None
 
     def _bind_structure(self, tree: BlockTree, op: dict[str, Any]) -> str:
@@ -299,6 +370,204 @@ class NmHandler(Handler):
                 cleared += 1
         return f"unbound block {block_name!r} ({cleared} port binding(s) cleared)"
 
+    def _prepare_generate(
+        self, tree: BlockTree, op: dict[str, Any], design_slug: str
+    ) -> tuple[str, _PendingGenerate]:
+        """``{"op": "generate", "generator": <name>, "params": {...},
+        "name": <new block name>, "parent"?/"pose"?/"rot"?: ...}`` — the
+        pure/in-memory half of the deterministic fill path
+        (docs/backlog/nm-kind.md "Generators"): runs a pure
+        :mod:`precis_nm.generators` builder (params → a
+        :class:`~precis_nm.generators.GeneratedBlock`), does everything
+        that builder can't *except touch the store* — ``add_block`` with
+        the generated envelope + provenance note as ``desc``, ``add_port``
+        for every generated port, builds the ``structure`` Scene the block
+        will eventually own (atoms/bonds, in memory), and validates the
+        port→atom element gate against those in-memory atoms directly (no
+        need to read anything back — the same check ``bind_structure``
+        would run, done early so the deferred write in
+        :meth:`_finish_generate` can never fail *validation*, only a raw
+        DB error). The actual ``structure_save``/bind is deferred to
+        :meth:`_finish_generate`, called only after every op in the whole
+        list has validated (see :meth:`_apply_ops_with_bindings`'s
+        docstring, "orphan on partial failure") — this method never writes
+        to the store. A generated bond is declared aromatic order 1.5 (the
+        ``ring`` template's ``aromatic=true`` convention,
+        ``structure/ops.py``) and every atom's ``hybridization`` is set to
+        ``'sp2'`` (both round-1 families are pure sp² carbon) — data the
+        generator itself doesn't carry (its ``(i, j, order)`` bond triples
+        already fix the order; hybridization is uniform across both
+        families this round, so it's set here rather than threaded through
+        :class:`~precis_nm.generators.GeneratedBlock`). Returns the
+        caller-facing echo string plus the deferred write."""
+        gen_name = op.get("generator")
+        if not gen_name or not str(gen_name).strip():
+            raise BadInput("generate needs 'generator'")
+        gen_name = str(gen_name).strip()
+        builder = GENERATORS.get(gen_name)
+        if builder is None:
+            known = ", ".join(sorted(GENERATORS))
+            raise BadInput(f"unknown generator {gen_name!r}; known: {known}")
+        block_name = op.get("name")
+        if not block_name or not str(block_name).strip():
+            raise BadInput("generate needs 'name' (the new block's name)")
+        block_name = str(block_name).strip()
+        if block_name in tree.blocks:
+            raise BadInput(
+                f"duplicate block name: {block_name!r} (names are unique per design)"
+            )
+        params = op.get("params") or {}
+        if not isinstance(params, dict):
+            raise BadInput("generate 'params' must be a JSON object")
+        try:
+            block = builder(params)
+        except GeneratorError as exc:
+            raise BadInput(f"generate({gen_name!r}): {exc}") from exc
+
+        # Slug-collision preflight (reviewer round-1 finding): structure_save
+        # is create-or-replace, and "axle"-style block names are exactly the
+        # shared vocabulary a hand-authored structure design might already
+        # use at this slug — generate must never silently retire an
+        # unrelated design's atoms. Always reject on collision (no
+        # byte-identical-retry carve-out: nothing here can safely tell a
+        # genuine re-generate apart from a name clash against someone
+        # else's design, so don't guess).
+        struct_slug = f"{design_slug}-{block_name}"
+        if self.store.get_ref(kind="structure", id=struct_slug) is not None:
+            raise BadInput(
+                f"generate: a structure design already exists at "
+                f"{struct_slug!r} — generate never overwrites an existing "
+                "design (the minted slug is always "
+                f"'{design_slug}-<block name>'); pick a different block "
+                "'name', or delete(kind='structure', id="
+                f"{struct_slug!r}) first if this is a genuine re-generate"
+            )
+
+        add_op: dict[str, Any] = {
+            "op": "add_block",
+            "name": block_name,
+            "envelope": block.envelope,
+            "desc": block.provenance,
+        }
+        for passthrough in ("parent", "pose", "rot"):
+            if op.get(passthrough) is not None:
+                add_op[passthrough] = op[passthrough]
+        try:
+            apply_ops(tree, [add_op])
+            for port in block.ports:
+                apply_ops(
+                    tree,
+                    [
+                        {
+                            "op": "add_port",
+                            "block": block_name,
+                            "name": port.name,
+                            "roles": port.roles,
+                            "direction": port.direction,
+                            "expected_element": port.expected_element,
+                        }
+                    ],
+                )
+        except OpError as exc:
+            raise BadInput(str(exc)) from exc
+
+        scene = StructScene(cell=_generated_cell(block.coords))
+        labels: list[str] = []
+        for element, cart in zip(block.elements, block.coords, strict=True):
+            label = scene.next_label(element)
+            frac = scene.cell.wrap(
+                scene.cell.cart_to_frac(np.asarray(cart, dtype=float))
+            )
+            scene.atoms[label] = StructAtom(
+                label=label, element=element, frac=frac, hybridization="sp2"
+            )
+            labels.append(label)
+        for i, j, order in block.bonds:
+            scene.bonds.append(
+                StructBond(i=labels[i], j=labels[j], order=order, kind="aromatic")
+            )
+
+        # Port -> atom element gate, run here against the in-memory atoms
+        # (the exact check ``bind_structure`` runs, moved earlier so
+        # ``_finish_generate`` can never fail on *validation* — only a raw
+        # DB error, the documented residual).
+        ports_map: dict[str, str] = {}
+        for port in block.ports:
+            atom_label = labels[port.atom_index]
+            element = block.elements[port.atom_index]
+            if port.expected_element and port.expected_element != element:
+                raise BadInput(
+                    f"generate({gen_name!r}): port {block_name}.{port.name} "
+                    f"expects element {port.expected_element!r}, but the "
+                    f"generated atom is {element!r} (generator bug — file "
+                    "a gripe)"
+                )
+            ports_map[port.name] = atom_label
+
+        title = f"{block_name} ({gen_name} generator)"
+        card_text = (
+            f"{title} (atomistic structure). {block.provenance} "
+            f"{len(scene.atoms)} atoms, {len(scene.bonds)} bonds."
+        )
+        pending = _PendingGenerate(
+            block_name=block_name,
+            struct_slug=struct_slug,
+            title=title,
+            scene=scene,
+            card_text=card_text,
+            provenance=block.provenance,
+            ports_map=ports_map,
+        )
+        topo = ", ".join(f"{k}={v}" for k, v in block.topology.items())
+        echo = (
+            f"generated block {block_name!r} via {gen_name!r}: "
+            f"{len(scene.atoms)} atom(s), {len(scene.bonds)} bond(s), "
+            f"{len(block.ports)} port(s), bound to structure {struct_slug!r} "
+            f"({topo})"
+        )
+        return echo, pending
+
+    def _finish_generate(self, tree: BlockTree, pending: _PendingGenerate) -> None:
+        """The store-touching half of a ``generate`` op
+        (:meth:`_prepare_generate`'s docstring) — called by
+        :meth:`_apply_ops_with_bindings` only after every op in the whole
+        list has validated cleanly, immediately before the caller's own
+        ``persist.save_tree`` (``put``/``edit``). Deferring past the whole
+        ops list closes the "orphan on partial failure" window (reviewer
+        round-1 finding): a later op failing can no longer leave a minted
+        structure design with no block pointing at it, because nothing is
+        minted until every op — including any later ones — has already
+        proven itself valid. The one residual: a hard crash between this
+        method's ``structure_save`` and the caller's ``persist.save_tree``
+        (two separate transactions — ``store.tx()`` opens a fresh
+        connection per call, it does not nest, so ``structure_save`` can't
+        join the tree's own transaction without changing its signature)
+        would leave a real, valid structure design that this call's tree
+        edit never got to reference — not a dangling pointer (nothing
+        points at it yet), just a design an operator would need to notice
+        and clean up by hand. Skips entirely (no mint at all) if a *later*
+        op in the same list already removed the block or port this pending
+        write was for — never mint something the caller's own later op
+        just undid."""
+        node = tree.blocks.get(pending.block_name)
+        if node is None:
+            return
+        self.store.structure_save(
+            slug=pending.struct_slug,
+            title=pending.title,
+            scene=pending.scene,
+            version=1,
+            card_text=pending.card_text,
+            description=pending.provenance,
+        )
+        node.bound_design = pending.struct_slug
+        for port_name, atom_label in pending.ports_map.items():
+            p = node.ports.get(port_name)
+            if p is None:
+                continue
+            p.bound_design = pending.struct_slug
+            p.bound_atom = atom_label
+
     def _render_validate(self, tree: BlockTree) -> str:
         """``view='validate'`` — L0-L2 feasibility findings
         (:mod:`precis_nm.validate`'s module docstring). Hydrates every
@@ -366,7 +635,7 @@ class NmHandler(Handler):
             raise BadInput("put(kind='nm') 'ops' must be a list of typed ops")
         description = str(payload.get("description") or "").strip()
         tree = BlockTree()
-        echo = self._apply_ops_with_bindings(tree, ops)
+        echo = self._apply_ops_with_bindings(tree, ops, design_slug=slug)
         ttl = (title or slug).strip() or slug
         existing = self.store.get_ref(kind="nm", id=slug)
         meta = {"description": description}
@@ -423,7 +692,7 @@ class NmHandler(Handler):
                 "ops=[{'op':'add_block','name':'fork','parent':'axle'}])",
             )
         tree = persist.load_tree(self.store, ref.id)
-        echo = self._apply_ops_with_bindings(tree, op_list)
+        echo = self._apply_ops_with_bindings(tree, op_list, design_slug=str(ref.slug))
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
         persist.save_tree(
@@ -595,6 +864,18 @@ class NmHandler(Handler):
 
 
 # ── payload / rendering (module-level, no store access) ────────────────
+
+
+def _generated_cell(coords: np.ndarray) -> StructCell:
+    """A non-periodic (``pbc=(F,F,F)``) cube cell sized to comfortably
+    contain a generator's realized atoms — ``structure``'s molecule mode
+    (``docs/backlog/nm-kind.md``'s reuse map: "Atom fill layer, molecule
+    mode", ``pbc=(F,F,F)``). Non-periodic axes never wrap
+    (``Cell.wrap``), so the exact size only has to avoid a degenerate
+    (zero-volume) lattice — it is not a physical boundary."""
+    extent = float(np.max(np.abs(coords))) if coords.size else 1.0
+    size = 2.0 * extent + 20.0
+    return StructCell.from_lengths_angles(size, size, size, pbc=(False, False, False))
 
 
 def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:

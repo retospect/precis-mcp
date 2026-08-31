@@ -160,6 +160,29 @@ false `dangling_binding`). `unbind_structure` clears a block's binding and
 every one of its ports'. Both only ever target an ordinary block — bind via
 the template for an instance.
 
+## Generate — parametric block factories (deterministic fill)
+
+```python
+put(kind="nm", id="tube1", text='''{"ops": [
+    {"op": "generate", "generator": "cnt",
+     "params": {"n": 10, "m": 10, "length_A": 40}, "name": "axle"},
+    {"op": "generate", "generator": "fullerene", "params": {"atoms": 60},
+     "name": "stopper"}
+]}''')
+```
+
+One op = a canonical block whose atoms follow from math, no LLM: it adds
+the block (envelope + ports + topology facts), mints a `structure` design
+at `<design>-<block name>` holding the generated atoms, and binds it —
+the echo names the minted slug. `cnt` (chiral index `n ≥ m ≥ 0`, radius
+`a√(n²+nm+m²)/2π`; rim atoms become `sp2-rim` ports), `fullerene`
+(`atoms: 60` only so far — truncated icosahedron, 12 pentagons). Param
+validation is theorem-loud (impossible chirality/size is rejected at op
+time), an unknown generator lists the registered ones, and a `structure`
+design already living at the target slug is a loud rejection — generate
+never overwrites. Prefer a generator over hand ops or LLM fill whenever
+the family has one.
+
 ## Remove ops — the guard behaviors
 
 `remove_block` refuses while any live block elsewhere instances it (or a
