@@ -123,3 +123,33 @@ def test_edit_paper_doi_upgrades_a_title_only_stub_over_the_mcp_door(
     assert "doi" in out
     identifiers = store.identifiers_for_refs([ref_id]).get(ref_id, {})
     assert identifiers.get("doi") == "10.1234/upgrade-door-test"
+
+
+def test_edit_structure_ops_reach_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+) -> None:
+    """``edit(kind='structure', ops=[...])`` through the real MCP callable
+    applies the typed op — pinning the forwarded-into-dispatch-payload half
+    of the 2026-08-31 ``ops=``/``args=`` edit wiring (which retired the
+    ("structure","edit","ops")/("structure","edit","args") ratchet entries).
+    Before it, ops= reached the handler only via the lenient ``__extras__``
+    channel; a strict-schema client's edit silently no-opped."""
+    tools_core.put(
+        kind="structure",
+        id="ops-door-test",
+        text=(
+            '{"cell": {"a": 10, "b": 10, "c": 10, '
+            '"pbc": [false, false, false]}, "ops": ['
+            '{"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]}]}'
+        ),
+    )
+
+    out = tools_core.edit(
+        kind="structure",
+        id="ops-door-test",
+        ops=[{"op": "add_atom", "element": "O", "frac": [0.6, 0.5, 0.5]}],
+    )
+
+    # The edited TOC reflects the op having been applied: two atoms, the O
+    # among them — a dropped ops= would leave the design at one C atom.
+    assert "aO1" in out, out

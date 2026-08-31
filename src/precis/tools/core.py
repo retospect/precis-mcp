@@ -1165,6 +1165,15 @@ def edit(
     # ``apply`` commits an otherwise-preview op: the draft regex substitute
     # (sub=) previews by default and writes only when apply=True.
     apply: bool | None = None,
+    # structure/nm typed graph ops (see precis-structure-help): edit(kind=
+    # 'structure'|'nm', ops=[{...}, ...]) applies the kind's op vocabulary.
+    # Declared at the verb level (the gr262482 pattern) so strict-schema MCP
+    # clients don't strip it — previously reachable only via the lenient
+    # ``__extras__`` channel (ratchet entries ("structure","edit","ops")/
+    # ("structure","edit","args"), retired by this wiring).
+    ops: list[dict[str, Any]] | None = None,
+    # Mirrors ``put``'s ``args=`` — kind-specific op payloads on edit.
+    args: dict[str, Any] | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -1228,6 +1237,8 @@ def edit(
         "notes": notes,
         "viewbox": viewbox,
         "apply": apply,
+        "ops": ops,
+        "args": args,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)

@@ -129,10 +129,11 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         # `put(args=)` was closed 2026-08-28 (gr267461): every pcb write
         # op — place, route, plane_net, pin_side — travels through `args`,
         # so the whole pcb write surface was unreachable from the MCP
-        # tool. `edit` still has no tunnel; it is a smaller hole (no verb
-        # currently needs it) but is left ON the ledger rather than
-        # exempted, so wiring it stays a deliberate act.
-        ("structure", "edit", "args"),
+        # tool. edit's args/ops tunnel was wired through 2026-08-31 when
+        # the nm kind's edit surface would otherwise have grown two NEW
+        # copies of the same gap — ("structure","edit","args") and
+        # ("structure","edit","ops") left this ledger by being fixed
+        # (tools/core.py::edit now declares + forwards both).
         # -- put: in-process planner state ---------------------------------
         ("plan", "put", "belief"),
         ("plan", "put", "status"),
@@ -182,8 +183,6 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         ("plan", "edit", "belief"),
         ("plan", "edit", "cursor"),
         ("plan", "edit", "status"),
-        # -- edit: structure ops -------------------------------------------
-        ("structure", "edit", "ops"),
     }
 )
 

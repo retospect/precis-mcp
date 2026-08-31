@@ -166,12 +166,11 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    `structure`: `vsepr.py` warn tier (hybridization inference, angle
    strain, π-twist, small-ring, hybridization conflict), two-tier
    `validate` view, Br/I elements. Warn tier never gates a relax.
-2. **SHIPPED 5bae2429 (2026-08-31), SMILES arm in flight** — fragment
+2. **SHIPPED 5bae2429 + 2c7e46f8 (2026-08-31), complete** — fragment
    ops in `structure`: `ring` template, rigid-body `attach` (open-valence
    alignment, MIC-correct bond images), handler-level `import_fragment`
-   with label-mapping echo. Remaining in this slice: `from_smiles` op
-   (lazy rdkit behind `[chem]`, ETKDG embed); port *metadata* moves to
-   slice 3 (plugin-owned).
+   with label-mapping echo, `from_smiles` (lazy rdkit behind `[chem]`,
+   seeded ETKDG). Port *metadata* is slice 3's (plugin-owned).
 3. **The new plugin kind (L0–L2)** — nested components + envelopes +
    ports + declared DOF + topology invariants; bindings to structure
    designs; tree/TOC views; envelope clearance via cad SDF.
@@ -214,6 +213,13 @@ dark flag + empty handler registering) → block tree + ops + tree view →
 ports + connect + validate → envelope clearance via cad kernel →
 bind_structure. Each lands green; skill file only at the end (write no
 skills until the slice ships).
+
+**Round-2 constraint (reviewer, 2026-08-31)**: `save_tree` is
+retire-all/reinsert-all, so every save rebuilds `nm_blocks.id` — ports
+MUST persist in lockstep keyed by (block name, port name), never by
+block row id, or every save silently strands the port rows (soft-retire
+means no FK error fires). Instance-expansion cycles are guarded at op
+time AND at render time (render never trusts stored data to be acyclic).
 
 ## Open questions
 

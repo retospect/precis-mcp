@@ -436,11 +436,16 @@ asa-slack = "asa_slack.__main__:main"
 # the `autocatpath` namespace (matches the value already applied in prod from
 # when the glue lived in the external autocatpath package), dark behind
 # PRECIS_AUTOCATPATH_ENABLED.
+# `precis_nm` is the fourth keystone kind (docs/backlog/nm-kind.md): the
+# `nm` (nanomachine) kind — hierarchical building blocks with spatial
+# envelopes, dark behind PRECIS_NM_ENABLED. Slice 3 round 1 ships the
+# plugin skeleton + block tree only; no job_type yet.
 [project.entry-points."precis.handlers"]
 route = "precis_chem.route:RouteHandler"
 protein = "precis_bio.protein:ProteinHandler"
 pathway = "precis_pathway.handler:PathwayHandler"
 estimate = "precis_estimate.handler:EstimateHandler"
+nm = "precis_nm.handler:NmHandler"
 
 [project.entry-points."precis.job_types"]
 retrosynth = "precis_chem.jobs:RETROSYNTH_SPEC"
@@ -458,6 +463,7 @@ precis_chem = "precis_chem.migrations"
 precis_bio = "precis_bio.migrations"
 autocatpath = "precis_pathway.migrations"
 precis_estimate = "precis_estimate.migrations"
+precis_nm = "precis_nm.migrations"
 
 [project.entry-points."precis.handle_codes"]
 pathway = "precis_pathway.handles"
@@ -519,7 +525,7 @@ dev = [
 autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_nm"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
