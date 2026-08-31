@@ -106,6 +106,7 @@ put(
 | `ring` | `element`, `n:3-12`, `aromatic?`, `center?:[x,y,z]`, `normal?:[nx,ny,nz]`, `bond_length?` | mint a regular n-gon ring (Cartesian plane through `center` ⟂ `normal`); `aromatic:true` → order-1.5 aromatic bonds + `hybridization:sp2` on each atom, else order-1 pairwise bonds |
 | `attach` | `from`, `to`, `order?`, `distance?`, `direction?:[x,y,z]`, `from_direction?:[x,y,z]` | rigidly move the whole fragment containing `from` so it bonds to `to` (aligned to `to`'s open coordination direction); `from`/`to` already in the same fragment is rejected — use `add_bond` for a ring closure |
 | `import_fragment` | `design`, `offset?:[x,y,z]` | copy another design's atoms + declared bonds in as a positioned fragment (handler-level; response echoes the old→new label mapping so a follow-up `attach` can reference the new labels) |
+| `from_smiles` | `smiles`, `offset?:[x,y,z]`, `seed?` | mint a whole organic fragment from a SMILES string via rdkit's ETKDG 3D embedder (needs `precis-mcp[chem]`); deterministic per `(smiles, seed)`; aromatic atoms get `hybridization:sp2` and order-1.5 `aromatic` bonds, others order 1/2/3 `pairwise`; a best-effort MMFF cleanup runs but never fails the op; v1 carries geometry only — no formal charges/stereo beyond what ETKDG encodes |
 | `relax` | `fidelity?`, `steps?`, `model?` | terminal op — see the ladder below |
 
 **Bonds are intent, not a DFT input.** Declare the bonds you mean; the

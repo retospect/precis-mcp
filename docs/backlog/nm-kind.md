@@ -166,9 +166,12 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    `structure`: `vsepr.py` warn tier (hybridization inference, angle
    strain, π-twist, small-ring, hybridization conflict), two-tier
    `validate` view, Br/I elements. Warn tier never gates a relax.
-2. **Molecule-mode fragment library + `attach`** — fragment templates as
-   structure designs with port metadata; SMILES→3D realization job;
-   attach-at-port op with alignment.
+2. **SHIPPED 5bae2429 (2026-08-31), SMILES arm in flight** — fragment
+   ops in `structure`: `ring` template, rigid-body `attach` (open-valence
+   alignment, MIC-correct bond images), handler-level `import_fragment`
+   with label-mapping echo. Remaining in this slice: `from_smiles` op
+   (lazy rdkit behind `[chem]`, ETKDG embed); port *metadata* moves to
+   slice 3 (plugin-owned).
 3. **The new plugin kind (L0–L2)** — nested components + envelopes +
    ports + declared DOF + topology invariants; bindings to structure
    designs; tree/TOC views; envelope clearance via cad SDF.
@@ -176,6 +179,41 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.
 5. **Synthesizability + charge/optical panels.**
 6. **Mechanism (torsion scans, interlock proof), then dynamics.**
+
+## Slice 3 design (drafted 2026-08-31, pre-build)
+
+**Package**: `src/precis_nm/` (Route B plugin) — `precis_nm.handler:NmHandler`
+(kind `nm`), entry points in pyproject (`precis.handlers`,
+`precis.migrations` → `precis_nm.migrations`, own 0001), dark behind
+`requires_setting=("nm.enabled",)` — the `precis_chem` skeleton verbatim.
+
+**Storage** (0041 rule: ONE `card_combined` chunk per design for intent
+search; geometry/graph in dedicated tables, never chunks):
+- `nm_blocks` — ref_id · parent_block_id (tree, cycle-checked) ·
+  template_block_id (instances — define a sugar once) · name · pose
+  (xyz Å + rot deg) · envelope (cad mini-DSL config string, Å units —
+  reuse `precis.cad.dsl` + primitives; one grammar, two kinds) ·
+  desc/use · dof JSON (`{"kind":"rotational","axis_ports":[…]}`).
+- `nm_ports` — block_id · name · roles text[] (capability set) · bond
+  vector · expected element/hybridization · bound atom (structure slug +
+  atom label, NULL until filled — the one-fact-two-projections port).
+- `nm_topology` — L2 invariants stored explicitly, never re-derived:
+  threading (A through B), chirality marks.
+
+**Verbs** (no new ones): put/edit take typed ops (structure-style JSON):
+`add_block · instance_block · add_port · connect` (port↔port intent
+edge with objective vector) `· declare_dof · declare_threading ·
+bind_structure` (+ removals). get: `view='tree'` (nested TOC) ·
+`'ports'` · `'clearance'` (two blocks, envelope SDF via
+`cad/relate.py::component_sdf` at Å) · `'validate'` (L0–L2 feasibility:
+port-capability match on connects, tree cycles, envelope overlap beyond
+declared contact — error/warn tiers like structure). search: one card.
+
+**Build order within the slice**: scaffold (plugin skeleton + migration +
+dark flag + empty handler registering) → block tree + ops + tree view →
+ports + connect + validate → envelope clearance via cad kernel →
+bind_structure. Each lands green; skill file only at the end (write no
+skills until the slice ships).
 
 ## Open questions
 

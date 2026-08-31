@@ -21,8 +21,10 @@ validation path for both raw and site-symbolic placement.
 fragment library): ``ring`` mints a regular n-gon of one element (the aromatic
 6-ring template most callers reach for); ``attach`` rigidly bonds two
 fragments together, moving the entire fragment containing ``from`` so it
-bonds to ``to``. Both are pure (no store access). ``import_fragment`` (copy a
-whole other design's atoms/bonds in as a positioned fragment) needs the
+bonds to ``to``; ``from_smiles`` mints a whole organic fragment from a SMILES
+string via rdkit's ETKDG 3D embedder (the ``[chem]`` extra, lazy-imported —
+never at module level). All three are pure (no store access). ``import_fragment``
+(copy a whole other design's atoms/bonds in as a positioned fragment) needs the
 store to hydrate a source design, so it is **not** in this module — it's a
 handler-level expansion into ``add_atom``/``add_bond`` ops
 (``handlers/structure.py``).
@@ -805,6 +807,128 @@ def _op_attach(scene: Scene, op: dict[str, Any]) -> None:
     )
 
 
+def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
+    """Mint a whole organic fragment from a SMILES string (§ molecule-mode
+    fragment library, nm-kind.md slice 2 — the rdkit-embedded complement to
+    the hand-built ``ring``/``attach`` primitives).
+
+    ``{"op": "from_smiles", "smiles": "c1ccccc1O", "offset": [x,y,z]
+    (Cartesian Å, optional, default origin), "seed": <int, optional,
+    default 0>}``.
+
+    Needs rdkit (the ``[chem]`` extra) — imported lazily, here, only when
+    this op actually runs; a missing rdkit raises a clean, retryable
+    ``OpError`` naming the extra, never a bare ``ImportError``. The SMILES is
+    parsed (``Chem.MolFromSmiles``), hydrogenated (``Chem.AddHs``), and
+    embedded into 3D with ``AllChem.EmbedMolecule`` under ETKDGv3 params
+    seeded from ``seed`` — same ``(smiles, seed)`` in, bit-identical geometry
+    out (rdkit's embedder is deterministic per seed). A follow-up MMFF
+    force-field cleanup (``AllChem.MMFFOptimizeMolecule``) is attempted but
+    **best-effort**: any failure (missing MMFF params for an exotic atom,
+    non-convergence) is swallowed — the raw ETKDG geometry is acceptable on
+    its own.
+
+    One scene atom per rdkit atom (element = ``GetSymbol()``, position = the
+    embedded conformer + ``offset``); an aromatic atom gets
+    ``hybridization="sp2"``. One declared bond per rdkit bond: an
+    ``AROMATIC`` rdkit bond → order 1.5, kind ``aromatic``; anything else →
+    order = ``GetBondTypeAsDouble()`` (1/2/3), kind ``pairwise``. Each bond's
+    periodic image is set via ``scene.cell.mic`` (the ``ring``/``attach``
+    discipline — ``wrap()`` may split the fragment across a cell wall).
+
+    v1 scope: geometry only. Formal charges, stereochemistry, and anything
+    else beyond what ETKDG's distance-geometry embedding encodes are not
+    carried into the scene.
+    """
+    smiles = op.get("smiles")
+    if not smiles:
+        raise OpError("from_smiles needs a 'smiles' string")
+    smiles = str(smiles)
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except ImportError as exc:  # pragma: no cover - rdkit is the [chem] extra
+        raise OpError(
+            "from_smiles needs rdkit (the [chem] extra) to parse SMILES and "
+            "embed 3D geometry"
+        ) from exc
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise OpError(f"{smiles!r} is not parseable as SMILES")
+    mol = Chem.AddHs(mol)
+
+    seed_raw = op.get("seed", 0)
+    try:
+        seed = int(seed_raw) if seed_raw is not None else 0
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"from_smiles 'seed' must be an integer, got {seed_raw!r}"
+        ) from exc
+
+    # The installed `rdkit-stubs` package's AllChem.pyi doesn't re-export
+    # these three (they live in rdDistGeom/rdForceFieldHelpers at runtime,
+    # via AllChem's real `from .rdDistGeom import *` — the stub just misses
+    # the wildcard) — real, present attributes at runtime; a stub gap only.
+    params = AllChem.ETKDGv3()  # type: ignore[attr-defined]
+    params.randomSeed = seed
+    embed_fail_msg = (
+        "3D embedding failed — the SMILES may be valid but geometrically "
+        "pathological; try a different seed"
+    )
+    try:
+        embed_status = AllChem.EmbedMolecule(mol, params)  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise OpError(embed_fail_msg) from exc
+    if embed_status != 0:
+        raise OpError(embed_fail_msg)
+
+    try:
+        AllChem.MMFFOptimizeMolecule(mol)  # type: ignore[attr-defined]
+    except Exception:
+        pass  # best-effort cleanup only — raw ETKDG geometry is acceptable
+
+    offset = _as_vec3(op.get("offset"), np.zeros(3), "from_smiles 'offset'")
+
+    conf = mol.GetConformer()
+    labels: list[str] = [""] * mol.GetNumAtoms()
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        pos = conf.GetAtomPosition(idx)
+        cart = np.array([pos.x, pos.y, pos.z]) + offset
+        element = atom.GetSymbol()
+        label = scene.next_label(element)
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(cart))
+        scene.atoms[label] = Atom(
+            label=label,
+            element=element,
+            frac=frac,
+            hybridization="sp2" if atom.GetIsAromatic() else None,
+        )
+        labels[idx] = label
+
+    for bond in mol.GetBonds():
+        i_label = labels[bond.GetBeginAtomIdx()]
+        j_label = labels[bond.GetEndAtomIdx()]
+        if bond.GetBondType() == Chem.BondType.AROMATIC:
+            order, kind = 1.5, "aromatic"
+        else:
+            order, kind = float(bond.GetBondTypeAsDouble()), "pairwise"
+        # wrap() may split the fragment across a cell wall — carry each
+        # bond's MIC image (the ring/attach discipline).
+        _, img = scene.cell.mic(scene.atoms[i_label].frac, scene.atoms[j_label].frac)
+        scene.bonds.append(
+            Bond(
+                i=i_label,
+                j=j_label,
+                order=order,
+                kind=kind,
+                provenance="declared",
+                image=img,
+            )
+        )
+
+
 _OPS = {
     "set_cell": _op_set_cell,
     "slab": _op_slab,
@@ -822,4 +946,5 @@ _OPS = {
     "remove_measure": _op_remove_measure,
     "ring": _op_ring,
     "attach": _op_attach,
+    "from_smiles": _op_from_smiles,
 }

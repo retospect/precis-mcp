@@ -1,18 +1,25 @@
 """Unit tests for the fragment-building ops (nm-kind.md slice 2): the pure
-``ring``/``attach`` ops (:mod:`precis.structure.ops`) and the handler-level
-``import_fragment`` expansion (:mod:`precis.handlers.structure`).
+``ring``/``attach``/``from_smiles`` ops (:mod:`precis.structure.ops`) and the
+handler-level ``import_fragment`` expansion (:mod:`precis.handlers.structure`).
 
-Kernel-level (``ring``/``attach``) fixtures are DB-free, molecule-mode
-(non-periodic) Cartesian geometry — same style as ``test_structure_vsepr.py``
-— except one dedicated ``attach`` test under a periodic cell, exercising the
-MIC unwrap. ``import_fragment`` needs the store, so its tests are handler-level
-(same fixture pattern as ``test_structure_handler.py``).
+Kernel-level (``ring``/``attach``/``from_smiles``) fixtures are DB-free,
+molecule-mode (non-periodic) Cartesian geometry — same style as
+``test_structure_vsepr.py`` — except one dedicated ``attach`` test under a
+periodic cell, exercising the MIC unwrap. ``import_fragment`` needs the
+store, so its tests are handler-level (same fixture pattern as
+``test_structure_handler.py``). Every ``from_smiles`` test that actually
+embeds a molecule is gated ``pytest.importorskip("rdkit")`` — the ``[chem]``
+extra may be absent from a given test environment — except the dedicated
+no-rdkit path, which fakes the ImportError via ``sys.modules`` poisoning
+(the ``mendeleev``/``test_estimate_plugin.py`` precedent) so it's meaningful
+even when rdkit genuinely is installed.
 """
 
 from __future__ import annotations
 
 import itertools
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -272,6 +279,135 @@ def test_attach_under_pbc_declares_bond_with_mic_image() -> None:
     assert float(np.linalg.norm(pj - pi)) == pytest.approx(
         2.0 * covalent_radius("C"), abs=1e-6
     )
+
+
+# -- from_smiles ---------------------------------------------------------
+
+
+def test_from_smiles_benzene_geometry() -> None:
+    pytest.importorskip("rdkit")
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "from_smiles", "smiles": "c1ccccc1"}])
+
+    counts: dict[str, int] = {}
+    for atom in scene.atoms.values():
+        counts[atom.element] = counts.get(atom.element, 0) + 1
+    assert counts == {"C": 6, "H": 6}
+
+    aromatic_c = [
+        lb
+        for lb, atom in scene.atoms.items()
+        if atom.element == "C" and atom.hybridization == "sp2"
+    ]
+    assert len(aromatic_c) == 6
+
+    aromatic_bonds = [b for b in scene.bonds if b.kind == "aromatic"]
+    assert len(aromatic_bonds) == 6
+    for b in aromatic_bonds:
+        assert b.order == 1.5
+        assert probe.distance(scene, b.i, b.j) == pytest.approx(1.39, abs=0.05)
+
+    # ETKDG benzene should be clean against our own warn tier.
+    findings = vsepr.advisories(scene)
+    rules = {f.rule for f in findings}
+    assert "angle_strain" not in rules
+
+
+def test_from_smiles_ethanol_all_single_bonds_and_oxygen_coordination() -> None:
+    pytest.importorskip("rdkit")
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "from_smiles", "smiles": "CCO"}])
+
+    assert len(scene.atoms) == 9  # C2H6O: 2 C, 1 O, 6 H
+    assert all(b.kind == "pairwise" and b.order == 1.0 for b in scene.bonds)
+
+    o_label = next(lb for lb, a in scene.atoms.items() if a.element == "O")
+    o_neighbors = [b for b in scene.bonds if o_label in (b.i, b.j)]
+    assert len(o_neighbors) == 2
+
+
+def test_from_smiles_deterministic_per_seed() -> None:
+    pytest.importorskip("rdkit")
+    scene1 = Scene(cell=_molecule_cell())
+    scene2 = Scene(cell=_molecule_cell())
+    apply_ops(scene1, [{"op": "from_smiles", "smiles": "CCO", "seed": 7}])
+    apply_ops(scene2, [{"op": "from_smiles", "smiles": "CCO", "seed": 7}])
+
+    carts1 = sorted(
+        tuple(round(x, 9) for x in scene1.cell.frac_to_cart(a.frac))
+        for a in scene1.atoms.values()
+    )
+    carts2 = sorted(
+        tuple(round(x, 9) for x in scene2.cell.frac_to_cart(a.frac))
+        for a in scene2.atoms.values()
+    )
+    assert len(carts1) == len(carts2)
+    for c1, c2 in zip(carts1, carts2):
+        assert np.allclose(c1, c2, atol=1e-6)
+
+
+def test_from_smiles_offset_honored() -> None:
+    pytest.importorskip("rdkit")
+    scene_a = Scene(cell=_molecule_cell())
+    scene_b = Scene(cell=_molecule_cell())
+    offset = np.array([5.0, -2.0, 1.0])
+    apply_ops(scene_a, [{"op": "from_smiles", "smiles": "CCO", "seed": 3}])
+    apply_ops(
+        scene_b,
+        [{"op": "from_smiles", "smiles": "CCO", "seed": 3, "offset": offset.tolist()}],
+    )
+
+    # same smiles/seed mints the same labels in the same order — compare
+    # label-for-label rather than re-sorting (offset shifts x/y/z unevenly).
+    assert set(scene_a.atoms) == set(scene_b.atoms)
+    for label in scene_a.atoms:
+        cart_a = scene_a.cell.frac_to_cart(scene_a.atoms[label].frac)
+        cart_b = scene_b.cell.frac_to_cart(scene_b.atoms[label].frac)
+        assert np.allclose(cart_b - cart_a, offset, atol=1e-6)
+
+
+def test_from_smiles_bad_smiles_raises() -> None:
+    pytest.importorskip("rdkit")
+    scene = Scene(cell=_molecule_cell())
+    with pytest.raises(OpError, match="not parseable as SMILES"):
+        apply_ops(scene, [{"op": "from_smiles", "smiles": "not_a_smiles((("}])
+
+
+def test_from_smiles_without_chem_extra_raises_clean_operror(monkeypatch) -> None:
+    """Poison ``sys.modules['rdkit']`` (the ``mendeleev`` precedent in
+    ``test_estimate_plugin.py``) so ``import rdkit`` raises ``ImportError``
+    regardless of whether the real package is installed in this environment
+    — the op must surface a clean, retryable ``OpError`` naming the
+    ``[chem]`` extra, never a bare traceback."""
+    monkeypatch.setitem(sys.modules, "rdkit", None)
+    scene = Scene(cell=_molecule_cell())
+    with pytest.raises(OpError, match=r"\[chem\]"):
+        apply_ops(scene, [{"op": "from_smiles", "smiles": "c1ccccc1"}])
+
+
+def test_from_smiles_composes_with_attach() -> None:
+    """The two slice-2 features compose: mint benzene, free up one ring
+    carbon's valence (vacancy its H), then rigidly attach a hand-built CH3
+    tripod fragment onto it."""
+    pytest.importorskip("rdkit")
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "from_smiles", "smiles": "c1ccccc1"}])
+
+    c_label = next(lb for lb, a in scene.atoms.items() if a.element == "C")
+    h_label = next(
+        (b.j if b.i == c_label else b.i)
+        for b in scene.bonds
+        if c_label in (b.i, b.j)
+        and scene.atoms[b.j if b.i == c_label else b.i].element == "H"
+    )
+    apply_ops(scene, [{"op": "vacancy", "atom": h_label}])
+
+    ch3_c, _h_labels = _add_ch3(
+        scene, np.array([20.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0])
+    )
+    apply_ops(scene, [{"op": "attach", "from": ch3_c, "to": c_label}])
+
+    assert any({b.i, b.j} == {ch3_c, c_label} for b in scene.bonds)
 
 
 # -- import_fragment (handler-level; needs the store) ------------------

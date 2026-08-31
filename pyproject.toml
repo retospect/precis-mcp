@@ -731,6 +731,8 @@ module = [
     "pymatgen",
     "pymatgen.*",
     "pysbd",
+    "rdkit",
+    "rdkit.*",
     "semanticscholar",
     "sklearn.*",
     "soundfile",
