@@ -192,6 +192,41 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    rows, `precis_nm` package/handler docstring currency.
 4. **Fill loop wiring** — propose jobs, lit-search integration,
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.
+   **Design drafted 2026-08-31 (code NOT started — awaiting Reto's
+   reaction to the shipped slice-3 surface first):**
+   - **`nm_propose` job** (plugin job-type entry point; the
+     cad_propose/structure_propose propose-only pattern: tool-less
+     `claude -p`, dry-run-validated before anyone sees it). Input: one
+     TARGET BLOCK (per-block proposals, small blast radius — not
+     whole-design) + the design's tree/ports/topology/validate views +
+     objective vectors + optional caller steer. Output: a structured
+     proposal — candidate fragment identity (SMILES or existing
+     structure slug + provenance note), a structure-kind op script
+     (from_smiles/ring/attach/…) realizing it, and the port→atom map.
+     Dry run: apply ops to a scratch Scene, run structure validate +
+     vsepr advisories + the envelope fit-check; only a clean (or
+     warn-only) proposal is presented. Apply: mint the structure design,
+     `derived-from` lineage, then bind_structure.
+   - **`view='literature'` for nm** — deterministic (the structure
+     precedent): query assembled from the target block's desc/use +
+     objective vocabulary, run against the paper corpus; hits feed the
+     proposal prompt; chosen sources become paper-provenance links with
+     rationale notes.
+   - **`envelope_fit` check** (bind preflight + validate warn): bound
+     scene's atoms vs the block's envelope + margin via the cad SDF —
+     the L1↔L5 agreement check (model the agreement, not the two
+     sides).
+   - **Objective verdicts**: distance/geometry objectives compile to
+     `structure` measures on the bound scene (verdict machinery already
+     exists); non-measurable ones (low_rotational_barrier) render as
+     `deferred: slice 6` rather than silently passing.
+   - **Filled-fraction honesty**: validate header counts bound/unbound
+     blocks (the maze.py lesson — zero findings on an empty design must
+     read as unfilled, not done).
+   - Open for Reto: does Apply auto-run a `clean` relax on the minted
+     structure (leaning yes); may a proposal target multiple blocks
+     when they share a template (leaning: template once, instances
+     inherit).
 5. **Synthesizability + charge/optical panels.**
 6. **Mechanism (torsion scans, interlock proof), then dynamics.**
 
