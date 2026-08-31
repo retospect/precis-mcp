@@ -26,13 +26,16 @@ Two cohorts, same verify, different write:
   (:func:`count_passageless_edges`), never verified here. A non-corroborating
   verdict is reported for reground/human follow-up; nothing is written.
 * **unverified-stamped** (``--unverified-stamped``,
-  :func:`select_unverified_stamped_edges`): ``support`` present but no
-  ``verified_by`` — the born-released cohort: three attach paths wrote a
-  default ``support: "yes"`` at mint time that nothing ever read (1252 of
-  1461 stamped edges, measured 2026-08-21), and a 2026-08-27 external review
-  requires re-verifying them. A corroborating verdict OVERWRITES the stamp
-  with the real one; a non-corroborating verdict STRIPS the ``support`` key,
-  returning the edge to withheld behind the publish gate.
+  :func:`select_unverified_stamped_edges`): ``support`` present but not
+  trustworthy — either no ``verified_by`` (the born-released cohort: three
+  attach paths wrote a default ``support: "yes"`` at mint time that nothing
+  ever read, 1252 of 1461 stamped edges measured 2026-08-21, which a
+  2026-08-27 external review requires re-verifying) or a ``verified_by``
+  with no ``verified_claim_sha`` (verified before the stamp existed, so the
+  sentence it judged is unknown — 311 edges over 186 hubs, measured
+  2026-08-31). A corroborating verdict OVERWRITES the stamp with the real
+  one; a non-corroborating verdict STRIPS the ``support`` key, returning
+  the edge to withheld behind the publish gate.
 
 The stamp (:func:`verify_edge` with ``apply=True``, corroborating only)
 jsonb-merges ``support`` / ``support_reason`` / ``caveats`` /
@@ -177,11 +180,32 @@ _WITHHELD_CLAUSE = """
        AND l.meta->'publish_signoff' IS NULL
 """
 
-#: The born-released shape — a ``support`` stamp nothing ever verified
-#: (mint-time default; no ``verified_by`` fingerprint).
+#: The untrustworthy-stamp shape — a ``support`` value this sweep cannot
+#: stand behind, in either of two ways:
+#:
+#: * no ``verified_by`` at all — the born-released cohort (a mint-time
+#:   default ``support: "yes"`` that nothing ever read);
+#: * a ``verified_by`` but no ``verified_claim_sha`` — verified by a pass
+#:   that predates the stamp, so *which sentence* was verified is unknown.
+#:
+#: The second arm was added 2026-08-31. Without it those edges were
+#: unreachable by any cohort: the withheld clause excludes them
+#: (``support`` is present) and this one excluded them (``verified_by`` is
+#: present), while ``nanopub/preflight.py::withheld_edges`` withholds them
+#: forever because a NULL sha can never equal the live title's. Measured on
+#: prod that day: 311 edges over 186 live claim hubs, from
+#: ``opus-5/retro-verify`` (207), ``agent:ga3-grounding-audit-step3`` (66)
+#: and ``opus-5/autoyes-pushback`` (38).
+#:
+#: They belong in THIS cohort rather than the withheld one because the
+#: strip-on-non-corroboration write is the correct treatment: there is a
+#: live ``support`` value asserting something, and if it no longer holds it
+#: must come off. Backfilling the sha instead would assert that a verdict
+#: on an unknown earlier sentence applies to today's — exactly the
+#: staleness the sha exists to catch.
 _UNVERIFIED_STAMPED_CLAUSE = """
        AND l.meta->>'support' IS NOT NULL
-       AND NOT (l.meta ? 'verified_by')
+       AND NOT (l.meta ? 'verified_by' AND l.meta ? 'verified_claim_sha')
 """
 
 #: Live strict claim hub, alias ``h``. NOT
@@ -305,9 +329,11 @@ def select_withheld_edges(
 def select_unverified_stamped_edges(
     store: Store, *, hub_ref_id: int | None = None, limit: int | None = None
 ) -> list[CandidateEdge]:
-    """The ``--unverified-stamped`` cohort: pinned edges whose ``support``
-    was written at mint time and never verified (no ``verified_by``), on
-    live strict claim hubs. Same ordering/scoping as
+    """The ``--unverified-stamped`` cohort: pinned edges on live strict
+    claim hubs carrying a ``support`` value this sweep cannot stand behind
+    — written at mint time and never verified (no ``verified_by``), or
+    verified before ``verified_claim_sha`` existed (no sha, so the sentence
+    judged is unknown). Same ordering/scoping as
     :func:`select_withheld_edges`."""
     return _select_cohort(
         store, _UNVERIFIED_STAMPED_CLAUSE, hub_ref_id=hub_ref_id, limit=limit

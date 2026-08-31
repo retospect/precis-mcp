@@ -461,13 +461,58 @@ five whose sentences I just reworded — so those rewords cannot be
 re-verified until this ships. Only fi269509 was reachable, and it came
 back `supports: yes`, stamped.
 
-Spec: `docs/backlog/verify-edges-cannot-reach-sha-less-verified-edges.md`.
-**This is the next code change**, ahead of the artifact-type work: it
-gates the remediation's own verification step.
+FIXED 2026-08-31. `_UNVERIFIED_STAMPED_CLAUSE` now reads "a `support`
+value this sweep cannot stand behind" — no `verified_by` **or** no
+`verified_claim_sha`:
+
+```sql
+AND l.meta->>'support' IS NOT NULL
+AND NOT (l.meta ? 'verified_by' AND l.meta ? 'verified_claim_sha')
+```
+
+They belong in that cohort rather than the default one because
+strip-on-non-corroboration is the correct write: a live `support` value
+is asserting something, and if it no longer holds it must come off.
+Backfilling the sha instead would assert that a verdict on an unknown
+earlier sentence applies to today's — the exact staleness the sha exists
+to catch.
+
+`taproot/authoring.py` *does* stamp `verified_claim_sha` on its
+mint-time trio, so this is a historical cohort, not an ongoing leak — no
+backfill guard needed once these 311 are re-verified.
+
+Re-verified 2026-08-31 immediately after the fix, all six reachable:
+
+| hub | verdict | note |
+|---|---|---|
+| fi189542 | `yes` | stamped |
+| fi190987 | `yes` | energies match the figure caption exactly |
+| fi191318 | `yes` | stamped |
+| fi192836 | `yes` | verbatim numeric match |
+| fi269509 | `yes` | stamped (reached before the fix) |
+| fi189543 | `partial` | paper says θ≈20°, the sentence says 19° |
+| **fi189536** | **`no`** | **support STRIPPED** |
+
+### fi189536 overreaches its passage — open
+
+The sentence asserts that C₆₀ adsorbs *noncovalently* onto graphene
+"without site-specific covalent attachment". The verifier: pc2412082
+"describes the SCC-DFTB study of C₆₀-graphene adsorption and measurement
+objectives but does not state the bonding nature". The support was
+stripped, so the hub is back behind the publish gate — correctly.
+
+This is a claim written to satisfy a *lint*, not to match its evidence.
+It is lint-clean and unsupported, which is the worse failure of the two.
+Fix by narrowing to what pc2412082 does state, or by attaching a passage
+from paper 170574 that actually reports the bonding character. Do not
+re-stamp it by hand.
+
+The θ≈20°/19° gap on fi189543 is smaller but the same species: 19° came
+from fi189542's paper (783), not from fi189543's own (5828). A claim
+sentence should carry the number its *own* pinned passage carries.
 
 (This also subsumes the old "fi189536 is born-stamped" note — that
-diagnosis was wrong. `--unverified-stamped` does not reach it either;
-the edge is sha-less, not born-stamped.)
+diagnosis was wrong. The edge is sha-less, not born-stamped.)
 
 ### BLOCKER 2 — fi269509 cites the wrong paper
 

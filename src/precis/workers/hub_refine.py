@@ -2585,8 +2585,10 @@ def _reverify_pinned_edges(
 
     Two cohorts (``taproot.verify_edges``'s hub-scoped selectors):
     **withheld** (no ``support``, no ``publish_signoff``) and
-    **unverified-stamped** (``support`` present, no ``verified_by`` —
-    mint-time default). Each is re-read by the minter's own verifier
+    **unverified-stamped** (``support`` present but not trustworthy: no
+    ``verified_by``, the mint-time default, or no ``verified_claim_sha``,
+    a verdict from before that stamp existed). Each is re-read by the
+    minter's own verifier
     (:func:`~precis.workers._chase_llm._verify_support_with_caveats`):
 
     * corroborating → stamped in the six-key shape

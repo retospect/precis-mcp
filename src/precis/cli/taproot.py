@@ -284,10 +284,12 @@ def add_parser(subparsers: Any) -> None:
     ve.add_argument(
         "--unverified-stamped",
         action="store_true",
-        help="Select the born-released cohort instead: edges whose support "
-        "stamp was written at mint time and never verified (support set, "
-        "no verified_by). On --apply a corroborating verdict OVERWRITES "
-        "the stamp with the real one; a non-corroborating verdict STRIPS "
+        help="Select the untrustworthy-stamp cohort instead: edges carrying "
+        "a support value this sweep cannot stand behind -- written at mint "
+        "time and never verified (no verified_by), or verified before "
+        "verified_claim_sha existed (no sha, so the sentence judged is "
+        "unknown). On --apply a corroborating verdict OVERWRITES the stamp "
+        "with the real one; a non-corroborating verdict STRIPS "
         "meta.support, returning the edge to withheld behind the publish "
         "gate.",
     )

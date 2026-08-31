@@ -227,13 +227,14 @@ def test_hub_filter_and_limit_are_respected(store: Any) -> None:
     assert [e.link_id for e in select_withheld_edges(store, limit=1)] == [link_a]
 
 
-def test_unverified_stamped_cohort_selects_only_the_born_released_shape(
+def test_unverified_stamped_cohort_selects_only_untrustworthy_stamps(
     store: Any,
 ) -> None:
     _h, _p, _c, born = _seed_edge(store, meta=dict(_BORN_RELEASED_META))
     # Withheld (no stamp at all) -- the DEFAULT cohort's row, not this one's.
     _seed_edge(store, claim=_OTHER_CLAIM, passage=_OTHER_CLAIM)
-    # Already carries a real verdict -- nothing to re-verify.
+    # A settled verdict: verified AND sha-stamped, so the sentence it judged
+    # is known. Nothing to re-verify.
     _seed_edge(
         store,
         claim=_THIRD_CLAIM,
@@ -242,10 +243,39 @@ def test_unverified_stamped_cohort_selects_only_the_born_released_shape(
             "support": "yes",
             "support_reason": "verified elsewhere",
             "verified_by": "verify-edges",
+            "verified_claim_sha": "0" * 64,
         },
     )
 
     assert [e.link_id for e in select_unverified_stamped_edges(store)] == [born]
+
+
+def test_unverified_stamped_cohort_reaches_a_verified_edge_with_no_sha(
+    store: Any,
+) -> None:
+    """Regression: a verdict written before ``verified_claim_sha`` existed.
+
+    It has a ``verified_by``, so this cohort used to exclude it; it has a
+    ``support``, so the withheld cohort excludes it too. That left 311 prod
+    edges over 186 live hubs (2026-08-31) permanently withheld by
+    ``preflight.withheld_edges`` -- a NULL sha never equals the live
+    title's -- with no CLI path to re-stamp them, and a ``--hub`` run
+    reporting a bare ``0 edge(s) processed``.
+    """
+    _h, _p, _c, sha_less = _seed_edge(
+        store,
+        meta={
+            "support": "partial",
+            "support_reason": "judged against an unknown earlier sentence",
+            "verified_by": "opus-5/retro-verify",
+        },
+    )
+
+    assert [e.link_id for e in select_unverified_stamped_edges(store)] == [sha_less]
+    # And it must NOT leak into the default cohort: it carries a support
+    # value, so the strip-on-non-corroboration write is the right treatment.
+    assert [e.link_id for e in select_withheld_edges(store)] == []
+    assert sha_less is not None
 
 
 # ── verify_edge -- the write path ────────────────────────────────────────

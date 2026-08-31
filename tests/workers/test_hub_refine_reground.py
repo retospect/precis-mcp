@@ -101,6 +101,10 @@ def _attach(store: Any, *, hub: int, paper: int, chunk_id: int, role: str) -> No
             "support": "yes",
             "source_handle": f"pc{chunk_id}",
             "verified_by": "test-seed",
+            # A settled verdict carries BOTH keys. Without the sha the edge
+            # is an untrustworthy stamp and re-enters the
+            # unverified-stamped cohort by design (2026-08-31).
+            "verified_claim_sha": "0" * 64,
         },
         set_by="system",
         check_retraction=False,

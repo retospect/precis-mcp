@@ -497,6 +497,10 @@ def test_edge_exists_precheck_skips_verify_for_a_pre_attached_paper(store: Any) 
             "caveats": [],
             "source_handle": f"pc{chunk_id}",
             "verified_by": "test-seed",
+            # A settled verdict carries BOTH keys. Without the sha the edge
+            # is an untrustworthy stamp and re-enters the
+            # unverified-stamped cohort by design (2026-08-31).
+            "verified_claim_sha": "0" * 64,
         },
         set_by="agent",
     )
@@ -557,6 +561,10 @@ def test_attached_source_never_occupies_a_widening_slot(store: Any) -> None:
             "caveats": [],
             "source_handle": f"pc{held_chunk}",
             "verified_by": "test-seed",
+            # A settled verdict carries BOTH keys. Without the sha the edge
+            # is an untrustworthy stamp and re-enters the
+            # unverified-stamped cohort by design (2026-08-31).
+            "verified_claim_sha": "0" * 64,
         },
         set_by="agent",
     )
@@ -662,6 +670,10 @@ def test_exclusion_is_ref_grained_so_a_sibling_chunk_is_excluded_too(
             "caveats": [],
             "source_handle": f"pc{grounding_chunk}",
             "verified_by": "test-seed",
+            # A settled verdict carries BOTH keys. Without the sha the edge
+            # is an untrustworthy stamp and re-enters the
+            # unverified-stamped cohort by design (2026-08-31).
+            "verified_claim_sha": "0" * 64,
         },
         set_by="agent",
     )
@@ -845,6 +857,10 @@ def _seed_citation_scenario(
             "caveats": [],
             "source_handle": f"pc{citing_chunk}",
             "verified_by": "test-seed",
+            # A settled verdict carries BOTH keys. Without the sha the edge
+            # is an untrustworthy stamp and re-enters the
+            # unverified-stamped cohort by design (2026-08-31).
+            "verified_claim_sha": "0" * 64,
         },
         set_by="system",
     )
@@ -1131,6 +1147,10 @@ def test_attached_patent_is_not_reverified_next_pass(store: Any) -> None:
             "caveats": [],
             "source_handle": f"pc{chunk_id}",
             "verified_by": "test-seed",
+            # A settled verdict carries BOTH keys. Without the sha the edge
+            # is an untrustworthy stamp and re-enters the
+            # unverified-stamped cohort by design (2026-08-31).
+            "verified_claim_sha": "0" * 64,
         },
         set_by="agent",
     )
