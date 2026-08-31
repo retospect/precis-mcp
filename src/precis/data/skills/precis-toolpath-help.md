@@ -125,6 +125,7 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | `.tex` file store | `kind='tex'` (section-aware blocks) | `precis-tex-help` |
 | Parametric solid model | `kind='cad'` (node-list, analytic probes) | `precis-cad-help` |
 | Atomistic cell + bonds | `kind='structure'` (DFT ladder) | `precis-structure-help` |
+| Molecular-machine block tree (rotaxane, motor) — dark, needs `nm.enabled` | `kind='nm'` (nested blocks, ports, connects, threading, `bind_structure` into a `structure` design) | `precis-nm-help` |
 | PCB netlist + placement | `kind='pcb'` + `kind='part'` / `kind='datasheet'` | `precis-pcb-help` |
 | Sourced material property (density, yield strength, ...) | `put(kind='material', id='<slug>', property='<prop_id>', value=..., unit='<canonical unit>')` — entity first, canonical units only | `precis-material-help` |
 | Materials with property in a range | `search(kind='material', property='thermal_conductivity', max=0.05)` | `precis-material-help` |

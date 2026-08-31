@@ -171,7 +171,7 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    alignment, MIC-correct bond images), handler-level `import_fragment`
    with label-mapping echo, `from_smiles` (lazy rdkit behind `[chem]`,
    seeded ETKDG). Port *metadata* is slice 3's (plugin-owned).
-3. **The new plugin kind (L0–L2)** — IN PROGRESS. Round 1 SHIPPED
+3. **The new plugin kind (L0–L2)** — SHIPPED (slice complete). Round 1 SHIPPED
    618d516d (2026-08-31): plugin skeleton, 0001 migration (all three
    tables), block tree + instancing (read-time template resolution,
    expansion-cycle guard at op AND render time), cad-DSL envelope
@@ -183,9 +183,13 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    730d6a93: ports with capability roles (declared-intent trust model),
    name-keyed connects + objectives slot, capability gate at op time,
    L0 validate view (2 tiers), lockstep persistence, instance-mediated
-   guard fixes. Remaining: round 3 = envelope clearance (cad SDF) +
-   bind_structure + declare_dof/declare_threading; then the closing
-   round (skill file + overview row) ships the slice.
+   guard fixes. Round 3 SHIPPED 026a673a: view='clearance' (cad SDF at
+   Å, pose/rotation verified), bind_structure/unbind (element gate at
+   bind time; rebind to a different design clears stale port bindings),
+   declare_threading (mutual pair rejected) + declare_dof, 0003
+   migration, four new validate rules, topology view. Closing docs round
+   SHIPPED: `precis-nm-help` skill, `precis-overview`/`precis-toolpath-help`
+   rows, `precis_nm` package/handler docstring currency.
 4. **Fill loop wiring** — propose jobs, lit-search integration,
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.
 5. **Synthesizability + charge/optical panels.**

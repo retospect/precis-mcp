@@ -468,6 +468,7 @@ precis_nm = "precis_nm.migrations"
 [project.entry-points."precis.handle_codes"]
 pathway = "precis_pathway.handles"
 estimate = "precis_estimate.handles"
+nm = "precis_nm.handles"
 
 [dependency-groups]
 dev = [

@@ -38,8 +38,9 @@ requires_setting``; DB row → ``PRECIS_NM_ENABLED`` env → unset/off), the
 and the dispatcher until enabled. Direct construction (as in tests) is
 unaffected by the flag; it only gates the registry.
 
-See ``docs/backlog/nm-kind.md`` (unshipped — no ``nm`` skill exists yet;
-write one only once the slice ships, per that doc's closing note).
+See ``docs/backlog/nm-kind.md`` for the full design and
+``src/precis/data/skills/precis-nm-help.md`` for the agent-facing call
+surface.
 """
 
 from __future__ import annotations
