@@ -87,6 +87,29 @@ lands round 3):
 - ``disconnect``      — remove a live connect by its unordered endpoint
   pair; a missing pair is a retryable :class:`OpError` listing what *is*
   live.
+- ``declare_threading`` — record an L2 topology invariant: ``a`` is
+  threaded through ``b`` (the rotaxane macrocycle-on-axle relation),
+  **stored explicitly, never re-derived from geometry** (nm-kind.md's L2
+  rule). Directional (``a``/``b`` are not interchangeable) and per-pair —
+  ``a == b``, a duplicate live ``(a, b)`` pair, and a live opposite-
+  direction ``(b, a)`` pair are all rejected (mutual threading — each
+  block inside the other — is physically impossible; the rejection names
+  ``remove_threading`` for a genuinely wrong-direction declaration).
+  ``bind_structure``/``declare_dof`` are handler-level (they need the
+  store or are set directly on a block field); this module only owns the
+  pure threading/dof-shape checks.
+- ``remove_threading``  — drop a live threading pair; a missing pair is a
+  retryable :class:`OpError` listing what *is* live.
+- ``declare_dof``       — set a block's declared degree of freedom
+  (``kind='rotational'|'translational'``, ``axis_ports`` = exactly two
+  port names on the block). Only an ordinary (non-instance) block owns a
+  dof — same rule ``add_port`` already applies to ports, rejected with
+  that explanation rather than silently landing on the wrong row — and
+  both ``axis_ports`` must resolve on the block's *own* ports (not through
+  a template: an instance never reaches this op at all). Persists on the
+  existing ``nm_blocks.dof`` jsonb column (no new storage).
+- ``clear_dof``         — clear a block's declared dof (same instance
+  rejection as ``declare_dof``).
 """
 
 from __future__ import annotations
@@ -118,6 +141,12 @@ class PortSpec:
     direction: list[float] | None = None
     expected_element: str | None = None
     expected_hybridization: str | None = None
+    #: The atom-side projection of this one port fact (structure design
+    #: slug + atom label within it), set by the handler-level
+    #: ``bind_structure`` op (needs the store — see ``precis_nm.handler``).
+    #: NULL until filled. Always set together (both or neither).
+    bound_design: str | None = None
+    bound_atom: str | None = None
 
 
 @dataclass
@@ -134,6 +163,17 @@ class ConnectSpec:
     b_port: str
     kind: str = "bond"
     objectives: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ThreadingSpec:
+    """One L2 threading invariant: ``a`` is threaded through ``b`` (e.g. a
+    macrocycle ``a`` on an axle ``b``) — directional, name-keyed (see the
+    module docstring's ``declare_threading`` entry). Stored explicitly,
+    never re-derived from geometry."""
+
+    a: str
+    b: str
 
 
 @dataclass
@@ -154,17 +194,24 @@ class BlockNode:
     use: str | None = None
     dof: dict[str, Any] | None = None
     ports: dict[str, PortSpec] = field(default_factory=dict)
+    #: The L5 block-level binding (structure design slug), set by the
+    #: handler-level ``bind_structure`` op. Always ``None`` on an instance —
+    #: ``bind_structure`` rejects an instance block the same way
+    #: ``add_port``/``declare_dof`` do (bind via the template instead).
+    bound_design: str | None = None
 
 
 @dataclass
 class BlockTree:
-    """A design's live blocks, keyed by name, plus its live ``connects``.
-    Insertion order is not significant — renderers/persisters compute their
-    own (tree / topological) order from ``parent``/``template``; ``connects``
-    is an unordered list (endpoint-pair identity, not position)."""
+    """A design's live blocks, keyed by name, plus its live ``connects``
+    and ``threading`` invariants. Insertion order is not significant —
+    renderers/persisters compute their own (tree / topological) order from
+    ``parent``/``template``; ``connects``/``threading`` are unordered lists
+    (pair identity, not position)."""
 
     blocks: dict[str, BlockNode] = field(default_factory=dict)
     connects: list[ConnectSpec] = field(default_factory=list)
+    threading: list[ThreadingSpec] = field(default_factory=list)
 
 
 def apply_ops(tree: BlockTree, ops: list[dict[str, Any]]) -> BlockTree:
@@ -327,6 +374,20 @@ def effective_envelope(tree: BlockTree, node: BlockNode) -> str | None:
         template_node = tree.blocks.get(node.template)
         return template_node.envelope if template_node is not None else None
     return node.envelope
+
+
+def effective_dof(tree: BlockTree, node: BlockNode) -> dict[str, Any] | None:
+    """The dof "seen" at ``node`` for render purposes — its own, or — when
+    ``node`` is an instance — its template's (an instance's own ``dof``
+    field is always ``None``, see ``_op_instance_block``'s rejection of
+    that key; ``declare_dof`` also only ever writes to an ordinary block).
+    A physically real degree of freedom on a template block genuinely
+    applies to every instance of it, so this mirrors
+    :func:`effective_envelope`'s instance→template resolution."""
+    if node.template is not None:
+        template_node = tree.blocks.get(node.template)
+        return template_node.dof if template_node is not None else None
+    return node.dof
 
 
 def _unit_vec(vec: list[float], *, what: str) -> list[float]:
@@ -524,11 +585,18 @@ def _op_remove_block(tree: BlockTree, op: dict[str, Any]) -> None:
     # the *instance's* name, not the template's, when the endpoint sits on
     # an instance — so "touching the removed subtree" means either
     # endpoint's block name is in ``subtree`` exactly as stored, no
-    # template resolution needed here.
+    # template resolution needed here. Threading is name-keyed the same
+    # way (module docstring), so the same rule drops any threading pair
+    # touching the removed subtree too — ``validate``'s ``dangling_threading``
+    # exists precisely to catch cases where this *doesn't* run (hand-
+    # corrupted data), exactly like ``dangling_connect`` above.
     tree.connects = [
         c
         for c in tree.connects
         if c.a_block not in subtree and c.b_block not in subtree
+    ]
+    tree.threading = [
+        t for t in tree.threading if t.a not in subtree and t.b not in subtree
     ]
     for n in subtree:
         del tree.blocks[n]
@@ -613,6 +681,17 @@ def _op_remove_port(tree: BlockTree, op: dict[str, Any]) -> None:
         raise OpError(
             f"port {block}.{name} is used by live connect(s) {names} — disconnect first"
         )
+    # A port named as one of the block's own declared dof axis_ports would
+    # otherwise leave dof pointing at a vanished port name (a dangling
+    # reference no validator currently checks for, since dof — unlike
+    # connects — has no dedicated defense-in-depth re-check yet) — refuse
+    # up front instead, the same "block first" discipline as the connect
+    # guard above.
+    if node.dof and name in (node.dof.get("axis_ports") or ()):
+        raise OpError(
+            f"port {block}.{name} is used by declared dof (axis_ports) — "
+            "clear_dof first"
+        )
     del node.ports[name]
 
 
@@ -683,6 +762,97 @@ def _op_disconnect(tree: BlockTree, op: dict[str, Any]) -> None:
     )
 
 
+def _op_declare_threading(tree: BlockTree, op: dict[str, Any]) -> None:
+    a = _require_name(op, "a", "declare_threading")
+    b = _require_name(op, "b", "declare_threading")
+    if a == b:
+        raise OpError(f"declare_threading: 'a' and 'b' must differ, got {a!r} twice")
+    if a not in tree.blocks:
+        raise OpError(_no_block_msg(tree, a, what="a"))
+    if b not in tree.blocks:
+        raise OpError(_no_block_msg(tree, b, what="b"))
+    for t in tree.threading:
+        if t.a == a and t.b == b:
+            raise OpError(
+                f"declare_threading: {a!r} is already declared threaded through {b!r}"
+            )
+        # Mutual threading is physically impossible (reviewer decision,
+        # nm-kind.md round 3): a threaded through b and b threaded through
+        # a at once would mean each is inside the other. Reject the
+        # opposite-direction row too, naming remove_threading as the fix
+        # for a genuinely wrong-direction declaration.
+        if t.a == b and t.b == a:
+            raise OpError(
+                f"declare_threading: {b!r} is already threaded through {a!r} "
+                "— mutual threading is physically impossible; "
+                "remove_threading first if the direction was wrong"
+            )
+    tree.threading.append(ThreadingSpec(a=a, b=b))
+
+
+def _op_remove_threading(tree: BlockTree, op: dict[str, Any]) -> None:
+    a = _require_name(op, "a", "remove_threading")
+    b = _require_name(op, "b", "remove_threading")
+    for i, t in enumerate(tree.threading):
+        if t.a == a and t.b == b:
+            del tree.threading[i]
+            return
+    live = ", ".join(f"{t.a}→{t.b}" for t in tree.threading) or "(none)"
+    raise OpError(f"no such threading {a!r} through {b!r}. Live threading: {live}")
+
+
+_DOF_KINDS = ("rotational", "translational")
+
+
+def _op_declare_dof(tree: BlockTree, op: dict[str, Any]) -> None:
+    block = _require_name(op, "block", "declare_dof")
+    node = tree.blocks.get(block)
+    if node is None:
+        raise OpError(_no_block_msg(tree, block, what="block"))
+    if node.template is not None:
+        raise OpError(
+            f"block {block!r} is an instance (of {node.template!r}) — an "
+            "instance resolves dof from its template at read time (same "
+            f"rule as envelope/desc/use/ports); declare_dof on "
+            f"{node.template!r} instead"
+        )
+    kind = _require_name(op, "kind", "declare_dof")
+    if kind not in _DOF_KINDS:
+        raise OpError(f"declare_dof 'kind' must be one of {_DOF_KINDS}, got {kind!r}")
+    axis_raw = op.get("axis_ports")
+    if (
+        not isinstance(axis_raw, list)
+        or len(axis_raw) != 2
+        or not all(isinstance(p, str) and p.strip() for p in axis_raw)
+    ):
+        raise OpError(
+            "declare_dof needs 'axis_ports' as a list of exactly 2 port "
+            f"names, got {axis_raw!r}"
+        )
+    axis_ports = [p.strip() for p in axis_raw]
+    for p in axis_ports:
+        if p not in node.ports:
+            roster = ", ".join(sorted(node.ports)) if node.ports else "(none)"
+            raise OpError(
+                f"declare_dof: no such port on block {block!r}: {p!r}. "
+                f"Available ports: {roster}"
+            )
+    node.dof = {"kind": kind, "axis_ports": axis_ports}
+
+
+def _op_clear_dof(tree: BlockTree, op: dict[str, Any]) -> None:
+    block = _require_name(op, "block", "clear_dof")
+    node = tree.blocks.get(block)
+    if node is None:
+        raise OpError(_no_block_msg(tree, block, what="block"))
+    if node.template is not None:
+        raise OpError(
+            f"block {block!r} is an instance (of {node.template!r}) — dof "
+            f"lives on the template; clear_dof on {node.template!r} instead"
+        )
+    node.dof = None
+
+
 _OPS = {
     "add_block": _op_add_block,
     "instance_block": _op_instance_block,
@@ -692,4 +862,8 @@ _OPS = {
     "remove_port": _op_remove_port,
     "connect": _op_connect,
     "disconnect": _op_disconnect,
+    "declare_threading": _op_declare_threading,
+    "remove_threading": _op_remove_threading,
+    "declare_dof": _op_declare_dof,
+    "clear_dof": _op_clear_dof,
 }

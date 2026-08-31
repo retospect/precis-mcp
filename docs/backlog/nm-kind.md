@@ -178,9 +178,14 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    validation, tree/block views, search card, dark behind `nm.enabled`.
    Side-fix that ship forced: `tools/core.py::edit` now declares +
    forwards `ops=`/`args=` (ratchet entries ("structure","edit","ops"/
-   "args") retired; doors round-trip test added). Remaining rounds:
-   ports+connects+validate → envelope clearance (cad SDF) →
-   bind_structure + DOF/topology invariants.
+   "args") retired; doors round-trip test added; tools/list cap 23→24 KB
+   with ledger entry; testmon selection gap → gr277298). Round 2 SHIPPED
+   730d6a93: ports with capability roles (declared-intent trust model),
+   name-keyed connects + objectives slot, capability gate at op time,
+   L0 validate view (2 tiers), lockstep persistence, instance-mediated
+   guard fixes. Remaining: round 3 = envelope clearance (cad SDF) +
+   bind_structure + declare_dof/declare_threading; then the closing
+   round (skill file + overview row) ships the slice.
 4. **Fill loop wiring** — propose jobs, lit-search integration,
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.
 5. **Synthesizability + charge/optical panels.**

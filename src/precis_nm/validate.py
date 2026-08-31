@@ -10,13 +10,22 @@ went through ``apply_ops``; a row that got there some other way (hand
 correction, a future bug, direct persist-layer manipulation) must still be
 caught, loudly, the next time anyone looks. Nothing here mutates or gates a
 write; it only reports.
+
+**Round 3** adds threading/binding findings. ``dangling_binding``/
+``binding_element_mismatch`` need to know whether a bound structure design
+still resolves and what element its bound atoms are — this module stays
+store-free (module docstring above), so the handler hydrates that once (a
+``bound_scenes`` mapping: design slug → ``{atom_label: element}``, or
+``None`` for a slug that no longer resolves) and passes it into
+:func:`validate`, the same "assemble in the view path, keep the checker
+pure" split ``_render_validate`` already uses for tree data.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from precis_nm.ops import BlockTree, connect_role, effective_ports
+from precis_nm.ops import BlockTree, connect_role, effective_envelope, effective_ports
 
 
 @dataclass
@@ -34,9 +43,18 @@ class ValidationIssue:
     severity: str = "error"
 
 
-def validate(tree: BlockTree) -> list[ValidationIssue]:
-    """Return all L0 findings (empty = clean). Pure read over ``tree``."""
+def validate(
+    tree: BlockTree,
+    *,
+    bound_scenes: dict[str, dict[str, str] | None] | None = None,
+) -> list[ValidationIssue]:
+    """Return all L0(-ish; threading/binding are L2/L5) findings (empty =
+    clean). Pure read over ``tree`` plus the optional pre-hydrated
+    ``bound_scenes`` (module docstring) — omitted or missing a slug simply
+    skips the checks that need it, rather than raising, so a caller that
+    hasn't wired binding validation yet still gets every other finding."""
     findings: list[ValidationIssue] = []
+    bound_scenes = bound_scenes or {}
 
     # 1/2. dangling_connect (error) + port_capability (error, defense in
     # depth — ops.py's connect op already gates this at write time; this
@@ -152,5 +170,111 @@ def validate(tree: BlockTree) -> list[ValidationIssue]:
                     severity="warn",
                 )
             )
+
+    # 5. dangling_threading (error) — a threading row naming a block that
+    # no longer exists. ``_op_remove_block`` already drops threading
+    # touching a removed subtree (ops.py's vacancy-precedent extension),
+    # so a live finding here means the row got here some other way (hand
+    # correction, a future bug) — the same defense-in-depth shape as
+    # ``dangling_connect`` above.
+    for t in tree.threading:
+        missing = [n for n in (t.a, t.b) if n not in tree.blocks]
+        if missing:
+            findings.append(
+                ValidationIssue(
+                    rule="dangling_threading",
+                    subject=f"{t.a}→{t.b}",
+                    detail=(
+                        f"block(s) {', '.join(missing)} no longer exist — "
+                        "remove_threading it, or restore the block"
+                    ),
+                    severity="error",
+                )
+            )
+
+    # 6. threaded_without_envelope (warn) — a threading pair where either
+    # endpoint has no effective envelope, so the interlock this pair
+    # asserts can never be verified geometrically (get(view='clearance')
+    # needs an envelope on both sides).
+    for t in tree.threading:
+        a_node = tree.blocks.get(t.a)
+        b_node = tree.blocks.get(t.b)
+        if a_node is None or b_node is None:
+            continue  # already reported as dangling_threading
+        missing_env = [
+            n
+            for n, node in ((t.a, a_node), (t.b, b_node))
+            if not effective_envelope(tree, node)
+        ]
+        if missing_env:
+            findings.append(
+                ValidationIssue(
+                    rule="threaded_without_envelope",
+                    subject=f"{t.a}→{t.b}",
+                    detail=(
+                        f"block(s) {', '.join(missing_env)} have no "
+                        "envelope — the interlock can never be verified "
+                        "geometrically until one is set"
+                    ),
+                    severity="warn",
+                )
+            )
+
+    # 7/8. dangling_binding (error) + binding_element_mismatch (warn) — the
+    # bind-time capability gate (handler's bind_structure) re-checked
+    # against currently-hydrated scene data, defense in depth like
+    # port_capability above. An instance never owns a binding of its own
+    # (bind_structure rejects it — bind via the template), so only an
+    # ordinary block's own ``bound_design``/ports are ever the subject here.
+    for node in tree.blocks.values():
+        if node.template is not None or node.bound_design is None:
+            continue
+        if node.bound_design not in bound_scenes:
+            continue  # caller didn't hydrate this slug — skip, don't guess
+        atoms = bound_scenes[node.bound_design]
+        if atoms is None:
+            findings.append(
+                ValidationIssue(
+                    rule="dangling_binding",
+                    subject=node.name,
+                    detail=(
+                        f"block {node.name!r} is bound to structure design "
+                        f"{node.bound_design!r}, which no longer resolves — "
+                        "bind_structure again, or unbind_structure"
+                    ),
+                    severity="error",
+                )
+            )
+            continue
+        for port in node.ports.values():
+            if port.bound_atom is None:
+                continue
+            element = atoms.get(port.bound_atom)
+            if element is None:
+                findings.append(
+                    ValidationIssue(
+                        rule="dangling_binding",
+                        subject=f"{node.name}.{port.name}",
+                        detail=(
+                            f"bound atom {port.bound_atom!r} no longer "
+                            f"exists in structure design {port.bound_design!r} "
+                            "— rebind, or unbind_structure"
+                        ),
+                        severity="error",
+                    )
+                )
+                continue
+            if port.expected_element and port.expected_element != element:
+                findings.append(
+                    ValidationIssue(
+                        rule="binding_element_mismatch",
+                        subject=f"{node.name}.{port.name}",
+                        detail=(
+                            f"port expects element {port.expected_element!r}, "
+                            f"bound atom {port.bound_atom!r} is {element!r}"
+                        ),
+                        severity="warn",
+                    )
+                )
 
     return findings

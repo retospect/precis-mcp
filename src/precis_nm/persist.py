@@ -1,5 +1,19 @@
 """Store write-back for the nm block tree — shared by ``put``/``edit``.
 
+**Round-3 addition** — threading (``nm_topology``) rides the same
+retire-all/reinsert-all pass as blocks/ports/connects, in the same
+transaction, purely to keep its ``retired_at`` bookkeeping in step with the
+rest of the design (mirrors ``nm_connects``'s reasoning in this module's
+own docstring below). It is written NAME-keyed
+(``subject_name``/``object_name``, migration ``0003_nm_bindings.sql``) —
+never the id-keyed ``subject_block``/``object_block`` columns 0001
+originally gave it, which would strand on the very next save exactly like
+an id-keyed port would (this module's "Round-2 landmine" note); those two
+columns are simply never populated by this module. ``bound_design``
+(blocks) and ``bound_design``/``bound_atom`` (ports, already declared by
+0001) round-trip as plain scalar columns — no lockstep concern, they carry
+no id reference of their own.
+
 ``precis_nm`` owns dedicated tables (``nm_blocks``/``nm_ports``/
 ``nm_topology``, migration ``0001_nm_kind.sql``) rather than folding
 everything into ``refs.meta`` the way the lighter plugins (``route``,
@@ -46,16 +60,18 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec
+from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec, ThreadingSpec
 
 _BLOCK_COLS = (
     "id, parent_block_id, template_block_id, name, pose_xyz, pose_rot, "
-    "envelope, descr, use_, dof"
+    "envelope, descr, use_, dof, bound_design"
 )
 _PORT_COLS = (
-    "block_id, name, roles, direction, expected_element, expected_hybridization"
+    "block_id, name, roles, direction, expected_element, "
+    "expected_hybridization, bound_design, bound_atom"
 )
 _CONNECT_COLS = "a_block, a_port, b_block, b_port, kind, objectives"
+_THREADING_COLS = "subject_name, object_name"
 
 
 def load_tree(store: Any, ref_id: int) -> BlockTree:
@@ -88,6 +104,13 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
                 (ref_id,),
             )
             connect_rows = cur.fetchall()
+            cur.execute(
+                f"SELECT {_THREADING_COLS} FROM nm_topology "
+                "WHERE ref_id = %s AND retired_at IS NULL AND kind = 'threading' "
+                "ORDER BY id ASC",
+                (ref_id,),
+            )
+            threading_rows = cur.fetchall()
     by_id = {r["id"]: r for r in rows}
     tree = BlockTree()
     for r in rows:
@@ -103,6 +126,7 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
             descr=r["descr"],
             use=r["use_"],
             dof=r["dof"],
+            bound_design=r["bound_design"],
         )
     for p in port_rows:
         block_row = by_id.get(p["block_id"])
@@ -115,6 +139,8 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
             direction=list(p["direction"]) if p["direction"] is not None else None,
             expected_element=p["expected_element"],
             expected_hybridization=p["expected_hybridization"],
+            bound_design=p["bound_design"],
+            bound_atom=p["bound_atom"],
         )
     for c in connect_rows:
         tree.connects.append(
@@ -127,6 +153,8 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
                 objectives=dict(c["objectives"] or {}),
             )
         )
+    for t in threading_rows:
+        tree.threading.append(ThreadingSpec(a=t["subject_name"], b=t["object_name"]))
     return tree
 
 
@@ -193,6 +221,11 @@ def save_tree(
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         )
+        c.execute(
+            "UPDATE nm_topology SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL AND kind = 'threading'",
+            (ref_id,),
+        )
         name_to_id: dict[str, int] = {}
         for name in _topo_order(tree):
             node = tree.blocks[name]
@@ -201,8 +234,9 @@ def save_tree(
             row = c.execute(
                 "INSERT INTO nm_blocks "
                 "(ref_id, parent_block_id, template_block_id, name, "
-                " pose_xyz, pose_rot, envelope, descr, use_, dof) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                " pose_xyz, pose_rot, envelope, descr, use_, dof, "
+                " bound_design) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     ref_id,
                     parent_id,
@@ -214,6 +248,7 @@ def save_tree(
                     node.descr,
                     node.use,
                     Jsonb(node.dof) if node.dof is not None else None,
+                    node.bound_design,
                 ),
             ).fetchone()
             assert row is not None
@@ -225,7 +260,8 @@ def save_tree(
                 c.execute(
                     "INSERT INTO nm_ports "
                     "(block_id, name, roles, direction, expected_element, "
-                    " expected_hybridization) VALUES (%s,%s,%s,%s,%s,%s)",
+                    " expected_hybridization, bound_design, bound_atom) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         name_to_id[name],
                         port.name,
@@ -233,6 +269,8 @@ def save_tree(
                         port.direction,
                         port.expected_element,
                         port.expected_hybridization,
+                        port.bound_design,
+                        port.bound_atom,
                     ),
                 )
         for conn_spec in tree.connects:
@@ -260,6 +298,14 @@ def save_tree(
                     Jsonb(conn_spec.objectives) if conn_spec.objectives else None,
                 ),
             )
+        for t in tree.threading:
+            # NAME-keyed only (this module's docstring / 0003's header) —
+            # subject_block/object_block are left NULL.
+            c.execute(
+                "INSERT INTO nm_topology (ref_id, kind, subject_name, object_name) "
+                "VALUES (%s, 'threading', %s, %s)",
+                (ref_id, t.a, t.b),
+            )
         store.chunks.upsert_card_combined(ref_id, card_text, conn=c)
 
     if conn is not None:
@@ -282,6 +328,11 @@ def retire_design(store: Any, ref_id: int) -> int:
         )
         conn.execute(
             "UPDATE nm_connects SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE nm_topology SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         )

@@ -1,7 +1,6 @@
-"""precis_nm `nm` kind — slice 3 round 1 (plugin skeleton + block tree,
-docs/backlog/nm-kind.md "Slice 3 design"). Ports/topology/clearance/
-bind_structure are unwired this round; only add_block/instance_block/
-set_pose/remove_block + the tree TOC + search are exercised here.
+"""precis_nm `nm` kind — slice 3 (plugin skeleton + block tree + ports +
+connects + envelope clearance + bind_structure + topology,
+docs/backlog/nm-kind.md "Slice 3 design").
 
 The shared test DB template carries only core migrations (``tests/
 conftest.py``'s ``_initialise_test_db``), so this module seeds the plugin's
@@ -20,9 +19,11 @@ import precis_nm
 import precis_nm.validate as nm_validate
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
+from precis.handlers.structure import StructureHandler
 from precis.store import Store
-from precis_nm.handler import NmHandler, _render_tree
-from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec
+from precis_nm import persist
+from precis_nm.handler import NmHandler, _render_clearance, _render_tree
+from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec, ThreadingSpec
 
 _MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
 
@@ -711,3 +712,737 @@ def test_tree_view_shows_port_count_suffix(handler: NmHandler) -> None:
     handler.put(id="portcount1", text=json.dumps({"ops": _BOND_TREE_OPS}))
     toc = handler.get(id="portcount1")
     assert "[1 port]" in toc.body
+
+
+# ── round 3: envelope clearance (cad kernel) ─────────────────────────────
+# docs/backlog/nm-kind.md "Slice 3 design" — get(view='clearance',
+# args={'a':..., 'b':...}) builds a two-component cad Design in memory
+# (each block's effective envelope, placed at its pose) and reuses
+# precis.cad.relate.clearance (the exact-sign CSG SDF, Å).
+
+
+def test_clearance_separated_boxes_positive_gap(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "box:w2d2h2"},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": "box:w2d2h2",
+            "pose": [10, 0, 0],
+        },
+    ]
+    handler.put(id="clr1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="clr1", view="clearance", args={"a": "a", "b": "b"})
+    # boxes are 2 wide (±1 from center); centers 10 apart → gap = 10-1-1 = 8
+    gap_line = next(ln for ln in resp.body.splitlines() if ln.startswith("gap:"))
+    gap_val = float(gap_line.split()[1])
+    assert gap_val == pytest.approx(8.0, abs=1e-2)
+    assert "(clear)" in resp.body
+
+
+def test_clearance_overlapping_boxes_negative_gap(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "box:w4d4h4"},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": "box:w4d4h4",
+            "pose": [1, 0, 0],
+        },
+    ]
+    handler.put(id="clr2", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="clr2", view="clearance", args={"a": "a", "b": "b"})
+    assert "interference" in resp.body
+    gap_line = next(ln for ln in resp.body.splitlines() if ln.startswith("gap:"))
+    gap_val = float(gap_line.split()[1])
+    assert gap_val < 0
+
+
+def test_clearance_missing_envelope_raises_badinput(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "box:w2d2h2"},
+        {"op": "add_block", "name": "b"},  # no envelope
+    ]
+    handler.put(id="clr3", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="no effective envelope"):
+        handler.get(id="clr3", view="clearance", args={"a": "a", "b": "b"})
+
+
+def test_clearance_instance_uses_template_envelope(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "box:w2d2h2"},
+        {
+            "op": "instance_block",
+            "name": "inst",
+            "template": "tmpl",
+            "pose": [10, 0, 0],
+        },
+        {"op": "add_block", "name": "other", "envelope": "box:w2d2h2"},
+    ]
+    handler.put(id="clr4", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="clr4", view="clearance", args={"a": "inst", "b": "other"})
+    gap_line = next(ln for ln in resp.body.splitlines() if ln.startswith("gap:"))
+    gap_val = float(gap_line.split()[1])
+    assert gap_val == pytest.approx(8.0, abs=1e-2)
+
+
+def test_clearance_children_note_appears(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "box:w2d2h2"},
+        {"op": "add_block", "name": "child", "parent": "a", "envelope": "sphere:r1"},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": "box:w2d2h2",
+            "pose": [10, 0, 0],
+        },
+    ]
+    handler.put(id="clr5", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="clr5", view="clearance", args={"a": "a", "b": "b"})
+    assert "note:" in resp.body
+    assert "'a'" in resp.body and "child" in resp.body
+
+
+def test_clearance_unknown_block_raises(handler: NmHandler) -> None:
+    handler.put(id="clr6", text=json.dumps({"ops": [{"op": "add_block", "name": "a"}]}))
+    with pytest.raises(NotFound):
+        handler.get(id="clr6", view="clearance", args={"a": "a", "b": "ghost"})
+
+
+def test_clearance_same_block_rejected(handler: NmHandler) -> None:
+    handler.put(
+        id="clr7",
+        text=json.dumps(
+            {"ops": [{"op": "add_block", "name": "a", "envelope": "sphere:r1"}]}
+        ),
+    )
+    with pytest.raises(BadInput, match="must differ"):
+        handler.get(id="clr7", view="clearance", args={"a": "a", "b": "a"})
+
+
+def test_clearance_hand_corrupted_envelope_raises_badinput() -> None:
+    # A stored-but-now-invalid envelope (bypassing ops.py's write-time
+    # cad_dsl.parse validation entirely — hand-corrupted data, or a future
+    # bug elsewhere) must surface as a legible BadInput, not a raw
+    # traceback from the cad kernel's DslError.
+    tree = BlockTree()
+    tree.blocks["a"] = BlockNode(name="a", envelope="cyl:r2h5")
+    tree.blocks["b"] = BlockNode(name="b", envelope="not-a-real-shape")
+    with pytest.raises(BadInput, match="invalid envelope"):
+        _render_clearance(tree, {"a": "a", "b": "b"})
+
+
+# ── round 3: bind_structure / unbind_structure ───────────────────────────
+
+
+@pytest.fixture
+def structure(store: Store) -> StructureHandler:
+    return StructureHandler(hub=Hub(store=store))
+
+
+def _mol_cell_payload(size: float = 20.0) -> dict[str, object]:
+    return {"a": size, "b": size, "c": size, "pbc": [False, False, False]}
+
+
+def _make_structure(structure: StructureHandler, slug: str) -> tuple[str, str]:
+    """A tiny two-carbon structure design; returns its two atom labels."""
+    structure.put(
+        id=slug,
+        text=json.dumps(
+            {
+                "cell": _mol_cell_payload(),
+                "ops": [
+                    {"op": "add_atom", "element": "C", "cart": [0.0, 0.0, 0.0]},
+                    {"op": "add_atom", "element": "N", "cart": [1.3, 0.0, 0.0]},
+                ],
+            }
+        ),
+    )
+    return "aC1", "aN1"
+
+
+def test_bind_structure_happy_path(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    c_label, n_label = _make_structure(structure, "frag1")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag1",
+            "ports": {"p1": c_label},
+        },
+    ]
+    resp = handler.put(id="bind1", text=json.dumps({"ops": ops}))
+    assert "bound block 'hub' to structure 'frag1'" in resp.body
+    assert f"p1→{c_label}" in resp.body
+
+    block = handler.get(id="bind1", view="block", args={"name": "hub"})
+    assert "bound_design: frag1" in block.body
+    assert f"frag1:{c_label}" in block.body
+
+    toc = handler.get(id="bind1")
+    assert "⇒ st:frag1" in toc.body
+
+
+def test_bind_structure_port_atom_map_persists_across_second_save(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    # The landmine test (mirrors test_connect_round_trips_through_a_second_
+    # save): nm_blocks.id is rebuilt every save_tree, so the binding must
+    # survive a second save keyed by name/design/atom, not by row id.
+    c_label, _n = _make_structure(structure, "frag2")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag2",
+            "ports": {"p1": c_label},
+        },
+    ]
+    handler.put(id="bind2", text=json.dumps({"ops": ops}))
+    handler.edit(id="bind2", ops=[{"op": "add_block", "name": "unrelated"}])
+
+    block = handler.get(id="bind2", view="block", args={"name": "hub"})
+    assert "bound_design: frag2" in block.body
+    assert f"frag2:{c_label}" in block.body
+
+
+def test_bind_structure_rebind_different_design_clears_stale_ports(
+    handler: NmHandler, structure: StructureHandler, store: Store
+) -> None:
+    # The reviewer's bug: rebinding to a DIFFERENT design used to leave
+    # other ports' bindings pointing at the OLD design's atom labels. Since
+    # structure's label minting restarts at "aC1" for every fresh design,
+    # fragB genuinely has an atom labelled the same as fragA's — so a
+    # stale binding wouldn't even raise, it would silently resolve to the
+    # WRONG atom. This test relies on exactly that label collision.
+    c_a, _n_a = _make_structure(structure, "fragA")
+    c_b, _n_b = _make_structure(structure, "fragB")
+    assert c_a == c_b  # the label-collision precondition this test needs
+
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {"op": "add_port", "block": "hub", "name": "p2"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "fragA",
+            "ports": {"p1": c_a},
+        },
+    ]
+    handler.put(id="bind10", text=json.dumps({"ops": ops}))
+    handler.edit(
+        id="bind10",
+        ops=[
+            {
+                "op": "bind_structure",
+                "block": "hub",
+                "design": "fragB",
+                "ports": {"p2": c_b},
+            }
+        ],
+    )
+
+    ref = store.get_ref(kind="nm", id="bind10")
+    assert ref is not None
+    tree = persist.load_tree(store, ref.id)
+    hub = tree.blocks["hub"]
+    assert hub.bound_design == "fragB"
+    assert hub.ports["p2"].bound_design == "fragB"
+    assert hub.ports["p2"].bound_atom == c_b
+    # p1's stale fragA binding is cleared, not left pointing at a label
+    # that (by minting convention) collides with a real fragB atom.
+    assert hub.ports["p1"].bound_design is None
+    assert hub.ports["p1"].bound_atom is None
+
+    resp = handler.get(id="bind10", view="validate")
+    assert "dangling_binding" not in resp.body
+    assert "binding_element_mismatch" not in resp.body
+
+
+def test_bind_structure_same_design_rebind_is_incremental(
+    handler: NmHandler, structure: StructureHandler, store: Store
+) -> None:
+    c_label, n_label = _make_structure(structure, "fragC")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {"op": "add_port", "block": "hub", "name": "p2"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "fragC",
+            "ports": {"p1": c_label},
+        },
+    ]
+    handler.put(id="bind11", text=json.dumps({"ops": ops}))
+    handler.edit(
+        id="bind11",
+        ops=[
+            {
+                "op": "bind_structure",
+                "block": "hub",
+                "design": "fragC",
+                "ports": {"p2": n_label},
+            }
+        ],
+    )
+    ref = store.get_ref(kind="nm", id="bind11")
+    assert ref is not None
+    tree = persist.load_tree(store, ref.id)
+    hub = tree.blocks["hub"]
+    # a same-design rebind is incremental — the earlier call's mapping
+    # survives a later call that only maps additional ports.
+    assert hub.ports["p1"].bound_design == "fragC"
+    assert hub.ports["p1"].bound_atom == c_label
+    assert hub.ports["p2"].bound_design == "fragC"
+    assert hub.ports["p2"].bound_atom == n_label
+
+
+def test_bind_structure_expected_element_mismatch_rejected(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    c_label, _n = _make_structure(structure, "frag3")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "O"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag3",
+            "ports": {"p1": c_label},
+        },
+    ]
+    with pytest.raises(BadInput, match="expects element"):
+        handler.put(id="bind3", text=json.dumps({"ops": ops}))
+
+
+def test_bind_structure_unknown_design_raises(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "bind_structure", "block": "hub", "design": "no-such-design"},
+    ]
+    with pytest.raises(NotFound, match="no structure design"):
+        handler.put(id="bind4", text=json.dumps({"ops": ops}))
+
+
+def test_bind_structure_unknown_port_raises(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    c_label, _n = _make_structure(structure, "frag5")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag5",
+            "ports": {"ghost": c_label},
+        },
+    ]
+    with pytest.raises(NotFound, match="no such port"):
+        handler.put(id="bind5", text=json.dumps({"ops": ops}))
+
+
+def test_bind_structure_unknown_atom_raises(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    _c, _n = _make_structure(structure, "frag6")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag6",
+            "ports": {"p1": "ghost_atom"},
+        },
+    ]
+    with pytest.raises(NotFound, match="no such atom"):
+        handler.put(id="bind6", text=json.dumps({"ops": ops}))
+
+
+def test_bind_structure_on_instance_rejected(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    _make_structure(structure, "frag7")
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+        {"op": "bind_structure", "block": "inst", "design": "frag7"},
+    ]
+    with pytest.raises(BadInput, match="instance"):
+        handler.put(id="bind7", text=json.dumps({"ops": ops}))
+
+
+def test_unbind_structure_clears(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    c_label, _n = _make_structure(structure, "frag8")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag8",
+            "ports": {"p1": c_label},
+        },
+    ]
+    handler.put(id="bind8", text=json.dumps({"ops": ops}))
+    handler.edit(id="bind8", ops=[{"op": "unbind_structure", "block": "hub"}])
+    block = handler.get(id="bind8", view="block", args={"name": "hub"})
+    assert "bound_design: —" in block.body
+    assert "frag8" not in block.body
+
+
+# ── round 3: topology (threading + dof) ──────────────────────────────────
+
+
+def test_declare_and_remove_threading(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle", "envelope": "cyl:r2h20"},
+        {"op": "add_block", "name": "ring", "envelope": "torus:R5r1"},
+        {"op": "declare_threading", "a": "ring", "b": "axle"},
+    ]
+    handler.put(id="topo1", text=json.dumps({"ops": ops}))
+    topo = handler.get(id="topo1", view="topology")
+    assert "ring threaded through axle" in topo.body
+
+    handler.edit(id="topo1", ops=[{"op": "remove_threading", "a": "ring", "b": "axle"}])
+    topo2 = handler.get(id="topo1", view="topology")
+    assert "ring threaded through axle" not in topo2.body
+
+
+def test_declare_threading_self_rejected(handler: NmHandler) -> None:
+    handler.put(
+        id="topo2", text=json.dumps({"ops": [{"op": "add_block", "name": "a"}]})
+    )
+    with pytest.raises(BadInput, match="must differ"):
+        handler.edit(id="topo2", ops=[{"op": "declare_threading", "a": "a", "b": "a"}])
+
+
+def test_declare_threading_duplicate_pair_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a"},
+        {"op": "add_block", "name": "b"},
+        {"op": "declare_threading", "a": "a", "b": "b"},
+    ]
+    with pytest.raises(BadInput, match="already declared"):
+        handler.put(
+            id="topo3",
+            text=json.dumps(
+                {"ops": [*ops, {"op": "declare_threading", "a": "a", "b": "b"}]}
+            ),
+        )
+
+
+def test_declare_threading_mutual_rejected_both_orders(handler: NmHandler) -> None:
+    # Mutual threading is physically impossible: a threaded through b AND
+    # b threaded through a at once would mean each is inside the other.
+    ops_ab = [
+        {"op": "add_block", "name": "a"},
+        {"op": "add_block", "name": "b"},
+        {"op": "declare_threading", "a": "a", "b": "b"},
+    ]
+    with pytest.raises(BadInput, match="mutual threading is physically impossible"):
+        handler.put(
+            id="topo3b",
+            text=json.dumps(
+                {"ops": [*ops_ab, {"op": "declare_threading", "a": "b", "b": "a"}]}
+            ),
+        )
+
+    ops_ba = [
+        {"op": "add_block", "name": "a"},
+        {"op": "add_block", "name": "b"},
+        {"op": "declare_threading", "a": "b", "b": "a"},
+    ]
+    with pytest.raises(BadInput, match="mutual threading is physically impossible"):
+        handler.put(
+            id="topo3c",
+            text=json.dumps(
+                {"ops": [*ops_ba, {"op": "declare_threading", "a": "a", "b": "b"}]}
+            ),
+        )
+
+
+def test_remove_threading_missing_pair_raises(handler: NmHandler) -> None:
+    ops = [{"op": "add_block", "name": "a"}, {"op": "add_block", "name": "b"}]
+    handler.put(id="topo4", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="no such threading"):
+        handler.edit(id="topo4", ops=[{"op": "remove_threading", "a": "a", "b": "b"}])
+
+
+def test_threading_persists_across_second_save(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},
+        {"op": "add_block", "name": "ring"},
+        {"op": "declare_threading", "a": "ring", "b": "axle"},
+    ]
+    handler.put(id="topo5", text=json.dumps({"ops": ops}))
+    handler.edit(id="topo5", ops=[{"op": "add_block", "name": "unrelated"}])
+    topo = handler.get(id="topo5", view="topology")
+    assert "ring threaded through axle" in topo.body
+
+
+def test_declare_dof_and_view(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle", "envelope": "cyl:r2h20"},
+        {"op": "add_port", "block": "axle", "name": "p1"},
+        {"op": "add_port", "block": "axle", "name": "p2"},
+        {
+            "op": "declare_dof",
+            "block": "axle",
+            "kind": "rotational",
+            "axis_ports": ["p1", "p2"],
+        },
+    ]
+    handler.put(id="dof1", text=json.dumps({"ops": ops}))
+    toc = handler.get(id="dof1")
+    assert "[rot]" in toc.body
+
+    block = handler.get(id="dof1", view="block", args={"name": "axle"})
+    assert "rotational" in block.body
+
+    topo = handler.get(id="dof1", view="topology")
+    assert "axle" in topo.body and "rotational" in topo.body
+
+    handler.edit(id="dof1", ops=[{"op": "clear_dof", "block": "axle"}])
+    block2 = handler.get(id="dof1", view="block", args={"name": "axle"})
+    assert "dof: —" in block2.body
+
+
+def test_declare_dof_bad_axis_port_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},
+        {"op": "add_port", "block": "axle", "name": "p1"},
+    ]
+    handler.put(id="dof2", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="no such port"):
+        handler.edit(
+            id="dof2",
+            ops=[
+                {
+                    "op": "declare_dof",
+                    "block": "axle",
+                    "kind": "rotational",
+                    "axis_ports": ["p1", "ghost"],
+                }
+            ],
+        )
+
+
+def test_declare_dof_bad_kind_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},
+        {"op": "add_port", "block": "axle", "name": "p1"},
+        {"op": "add_port", "block": "axle", "name": "p2"},
+    ]
+    handler.put(id="dof3", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="rotational"):
+        handler.edit(
+            id="dof3",
+            ops=[
+                {
+                    "op": "declare_dof",
+                    "block": "axle",
+                    "kind": "wobbly",
+                    "axis_ports": ["p1", "p2"],
+                }
+            ],
+        )
+
+
+def test_declare_dof_on_instance_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl"},
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+    ]
+    handler.put(id="dof4", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="instance"):
+        handler.edit(
+            id="dof4",
+            ops=[
+                {
+                    "op": "declare_dof",
+                    "block": "inst",
+                    "kind": "rotational",
+                    "axis_ports": ["p1", "p2"],
+                }
+            ],
+        )
+
+
+def test_dof_persists_across_second_save(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},
+        {"op": "add_port", "block": "axle", "name": "p1"},
+        {"op": "add_port", "block": "axle", "name": "p2"},
+        {
+            "op": "declare_dof",
+            "block": "axle",
+            "kind": "translational",
+            "axis_ports": ["p1", "p2"],
+        },
+    ]
+    handler.put(id="dof5", text=json.dumps({"ops": ops}))
+    handler.edit(id="dof5", ops=[{"op": "add_block", "name": "unrelated"}])
+    block = handler.get(id="dof5", view="block", args={"name": "axle"})
+    assert "translational" in block.body
+
+
+def test_dof_instance_tree_line_shows_inherited_marker(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "tmpl"},
+        {"op": "add_port", "block": "tmpl", "name": "p1"},
+        {"op": "add_port", "block": "tmpl", "name": "p2"},
+        {
+            "op": "declare_dof",
+            "block": "tmpl",
+            "kind": "rotational",
+            "axis_ports": ["p1", "p2"],
+        },
+        {"op": "instance_block", "name": "inst", "template": "tmpl"},
+    ]
+    handler.put(id="dof6", text=json.dumps({"ops": ops}))
+    toc = handler.get(id="dof6")
+    inst_line = next(ln for ln in toc.body.splitlines() if "inst" in ln and "- " in ln)
+    assert "[rot]" in inst_line
+    assert "from tmpl" in inst_line
+
+
+def test_remove_port_used_by_dof_refused(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},
+        {"op": "add_port", "block": "axle", "name": "p1"},
+        {"op": "add_port", "block": "axle", "name": "p2"},
+        {
+            "op": "declare_dof",
+            "block": "axle",
+            "kind": "rotational",
+            "axis_ports": ["p1", "p2"],
+        },
+    ]
+    handler.put(id="dof7", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="declared dof"):
+        handler.edit(
+            id="dof7", ops=[{"op": "remove_port", "block": "axle", "name": "p1"}]
+        )
+
+
+def test_remove_block_drops_touching_threading(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},
+        {"op": "add_block", "name": "ring"},
+        {"op": "declare_threading", "a": "ring", "b": "axle"},
+    ]
+    handler.put(id="topo6", text=json.dumps({"ops": ops}))
+    handler.edit(id="topo6", ops=[{"op": "remove_block", "block": "ring"}])
+    validation = handler.get(id="topo6", view="validate")
+    assert "dangling_threading" not in validation.body
+    topo = handler.get(id="topo6", view="topology")
+    assert "threaded through" not in topo.body
+
+
+# ── round 3: validate additions ───────────────────────────────────────
+
+
+def test_validate_threaded_without_envelope_warns(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},  # no envelope
+        {"op": "add_block", "name": "ring"},  # no envelope
+        {"op": "declare_threading", "a": "ring", "b": "axle"},
+    ]
+    handler.put(id="topo7", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="topo7", view="validate")
+    assert "threaded_without_envelope" in resp.body
+
+
+def test_validate_threaded_without_envelope_clean_via_instance_envelope(
+    handler: NmHandler,
+) -> None:
+    # An instance's own envelope field is always None — threaded_without_
+    # envelope must resolve it via the template (effective_envelope), the
+    # same rule the tree/block views already apply, not just check the
+    # instance's own (always-empty) envelope field.
+    ops = [
+        {"op": "add_block", "name": "tmpl", "envelope": "cyl:r2h20"},
+        {"op": "instance_block", "name": "axle", "template": "tmpl"},
+        {"op": "add_block", "name": "ring", "envelope": "torus:R5r1"},
+        {"op": "declare_threading", "a": "ring", "b": "axle"},
+    ]
+    handler.put(id="topo8", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="topo8", view="validate")
+    assert "threaded_without_envelope" not in resp.body
+
+
+def test_validate_dangling_threading_from_hand_corrupted_tree() -> None:
+    tree = BlockTree()
+    tree.blocks["a"] = BlockNode(name="a")
+    tree.threading.append(ThreadingSpec(a="a", b="ghost"))
+    findings = nm_validate.validate(tree)
+    rules = {f.rule for f in findings}
+    assert "dangling_threading" in rules
+    finding = next(f for f in findings if f.rule == "dangling_threading")
+    assert finding.severity == "error"
+    assert "ghost" in finding.detail
+
+
+def test_validate_binding_element_mismatch_defense_in_depth() -> None:
+    tree = BlockTree()
+    tree.blocks["hub"] = BlockNode(
+        name="hub",
+        bound_design="frag",
+        ports={
+            "p1": PortSpec(
+                name="p1",
+                expected_element="O",
+                bound_design="frag",
+                bound_atom="aC1",
+            )
+        },
+    )
+    findings = nm_validate.validate(tree, bound_scenes={"frag": {"aC1": "C"}})
+    rules = {f.rule for f in findings}
+    assert "binding_element_mismatch" in rules
+    finding = next(f for f in findings if f.rule == "binding_element_mismatch")
+    assert finding.severity == "warn"
+
+
+def test_validate_dangling_binding_when_scene_slug_unresolved() -> None:
+    tree = BlockTree()
+    tree.blocks["hub"] = BlockNode(name="hub", bound_design="ghost_design")
+    findings = nm_validate.validate(tree, bound_scenes={"ghost_design": None})
+    rules = {f.rule for f in findings}
+    assert "dangling_binding" in rules
+    finding = next(f for f in findings if f.rule == "dangling_binding")
+    assert finding.severity == "error"
+
+
+def test_validate_dangling_binding_when_structure_deleted(
+    handler: NmHandler, structure: StructureHandler
+) -> None:
+    c_label, _n = _make_structure(structure, "frag9")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag9",
+            "ports": {"p1": c_label},
+        },
+    ]
+    handler.put(id="bind9", text=json.dumps({"ops": ops}))
+    clean = handler.get(id="bind9", view="validate")
+    assert "dangling_binding" not in clean.body
+
+    structure.delete(id="frag9")
+    dirty = handler.get(id="bind9", view="validate")
+    assert "dangling_binding" in dirty.body
