@@ -353,8 +353,8 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 
 #: `hyphen-numeric-range`: two bare numbers joined by an ASCII hyphen,
 #: immediately (optionally through one space) followed by a unit-ish
-#: token -- `300-800 mg/g`, `10-20 Mt`, `0.7-0.9`. Three guards keep
-#: nomenclature hyphens out, found by a corpus dry run:
+#: token -- `300-800 mg/g`, `10-20 Mt`, `0.7-0.9`. Four guards keep
+#: nomenclature hyphens out, each found by a corpus dry run:
 #: `(?<![-A-Za-z\d])` before the first number excludes a hyphen/letter/
 #: digit immediately to its left, so a *named-method* hyphen (`M06-2X`,
 #: a DFT functional) never fires (the `06` would otherwise read as the
@@ -366,8 +366,24 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: `HKUST-1`) already fail to match because they never have a digit on
 #: *both* sides of the relevant hyphen. `10-100x` (a ratio range) still
 #: fires -- `x` is itself a unit-ish token here -- correctly, per canon.
+#: A fourth guard, `(?![3-6]-\d{2,3}G(?![A-Za-z]))`, excludes a Pople
+#: basis set (`3-21G`, `4-31G`, `6-31G`, `6-311G(d,p)`) -- the same class
+#: of nomenclature hyphen as `M06-2X`, missed when the first three were
+#: derived. It matches the *whole* Pople shape rather than just the
+#: trailing `G`, because a bare `G` guard also suppressed a real range:
+#: the 2026-08-31 dry run (119,279 corpus sentences) turned up
+#: `24-25G` of memory, which must keep firing. Hence the leading
+#: `[3-6]` (a Pople set names 3-6 core primitives) and the 2-3 digit
+#: valence group. A range before a G-*unit* (`5-10 GPa`, `1-2 Gt`) was
+#: never at risk: those have a space, and their `G` is followed by a
+#: letter. The decorated forms (`6-311++G`, `6-31+G*`) never matched in
+#: the first place -- a `+` fails the unit-ish lookahead. Matters doubly
+#: because `normalize_notation` shares this pattern: an unguarded match
+#: does not merely lint, it rewrites `6-311G` to `6–311G` and corrupts
+#: the basis set.
 _HYPHEN_NUMERIC_RANGE_RE = re.compile(
-    r"(?<![-A-Za-z\d])(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?!-\d)(?=\s?[A-Za-zµ°%])"
+    r"(?<![-A-Za-z\d])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
+    r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?!-\d)(?=\s?[A-Za-zµ°%])"
 )
 
 #: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit,

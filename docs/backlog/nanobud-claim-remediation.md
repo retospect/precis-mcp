@@ -210,6 +210,277 @@ synthesis/CVD term, so a synthesis claim needs `experiments`/`analysis`/
 `imaging` to satisfy `no-epistemic-mode`. `past-tense` is advisory;
 `past-passive` is blocking.
 
+## Phase 1 RESULT 2026-08-30 — the sweep is the wrong instrument here
+
+Ran the full 18-hub dry sweep locally (see *Running it* below). Tally:
+
+| status | n |
+|---|---|
+| `no-reword` | 11 |
+| `rejected` | 3 |
+| `reworded` | 4 |
+
+**Only 1 of the 4 proposals was faithful.** Reviewed individually:
+
+- **fi191307 — CORRUPTION, do not apply.** "Fixed" `hyphen-numeric-range`
+  by swapping the ASCII hyphen for an en-dash: `B3LYP/6-311G(d,p)` →
+  `B3LYP/6–311G(d,p)`. That is not a valid basis-set designation. It
+  passes `_post_validate` because numerics survive and the lint clears —
+  the validator cannot know a proper noun was mangled to satisfy a false
+  positive. See
+  `docs/backlog/hyphen-numeric-range-fires-on-pople-basis-sets.md`.
+- **fi269510** — flattened "the size distribution also *suggesting the
+  presence of* C₂₀" into a bare assertion, dropping the hedge.
+  Rewritten by hand to keep it; applied.
+- **fi269543** — silently dropped the whole trailing clause ("bond-to-ring
+  binding likewise becoming less favourable as fullerene size
+  increases"). Legitimate as single-assertion narrowing, but the dropped
+  finding then has no hub. **Left alone**; wants splitting into two hubs.
+- **fi269548** — faithful; applied verbatim.
+
+### Why 11 refused, and why that is correct
+
+Every `no-reword` reason is the same shape: *"No method or technique is
+named in the sentence or scope; cannot assign an evidence verb without
+inventing the epistemic mode."* The model is right to refuse.
+
+The structural cause: `reword.py::propose_reword` is handed only
+`(sentence, scope, lint_codes)`. But `no-epistemic-mode` — the dominant
+failure, 14 of 18 — can only be fixed by naming the **method**, which
+lives in the hub's *evidence chunk*, which the prompt never sees. **The
+sweep is constitutionally unable to fix its own most common lint.** The 3
+`rejected` rows are the model guessing anyway ("Structural and energetic
+mapping", "via conversion") and failing, because invented phrases are not
+in `EPISTEMIC_MODE_TOKENS` (66 entries, no synthesis/CVD term).
+
+Fixing these properly = read each hub's corroborating passage, name the
+actual technique, validate locally. That is what was done for fi272040.
+
+fi191169 ("Canatu Oyj supplies carbon NanoBud™ films to major OEMs")
+surfaced a different question: it is a supply-chain statement, not an
+empirical claim, and arguably should not be a claim hub at all.
+
+### `--apply` re-rolls — never use it to write a reviewed sentence
+
+`_reword_one` calls `propose_fn` unconditionally *then* writes, so
+`reword-sweep --apply` re-runs the MEDIUM proposal and may write a
+different sentence than the dry run showed — the same trap as
+`direct-mint-apply-rerolls-the-reviewed-sentence.md`. Apply reviewed text
+through `refine_claim_sentence` directly (`/tmp/apply_reword.py` pattern:
+read the DSN as `scripts/prod-precis` does, `Store.connect`, call the
+door). Both writes returned `alias_kept=True`.
+
+### Running it — `scripts/prod-precis`, not ssh
+
+`scripts/prod-precis` reads the DSN from
+`~/.secrets/pw/PRECIS_DATABASE_URL` in-process and runs `uv run precis`
+**locally**, where `claude` is authenticated — so it sidesteps melchior's
+keychain entirely. That file was absent on this workstation; populate it
+from the `com.precis.web` plist (mode 600). **Sync the worktree first**:
+a stale tree predating `c6c386a3` queries `refs.deleted_at`, which prod
+no longer has.
+
+## Phase 2 DONE for the two reworded hubs (2026-08-30)
+
+`verify-edges --apply` re-stamped both after the reword invalidated their
+`verified_claim_sha`. Both `supports: yes`, `contradicts: false`,
+`action: stamped`.
+
+- **fi269510** (link 1599156 ← pc209498) — the verdict text independently
+  confirms the hedge was worth preserving: *"explicitly states the size
+  distribution **suggests** C₂₀"*. The sweep's proposal had flattened
+  that into a bare assertion; the hand-written sentence kept it.
+- **fi269548** (link 1600554 ← pc35564) — right verdict, **wrong reason**.
+  The chunk is OCR-corrupted (`V/ mm` for `V/µm`), so the verifier
+  computed a threshold 1000× too small and reasoned *"0.001 V/µm, well
+  below the claimed 1 V/µm"*. The claim is the faithful reading; the
+  corrupted reason is now durable provenance on the edge. Filed as
+  `docs/backlog/pdf-extraction-drops-micro-sign-in-units.md`.
+
+## Hand-fix pass 2026-08-30 — 18 failing → 11
+
+Fixed by naming the method from each hub's OWN evidence, written by hand,
+`_post_validate`-checked locally, applied through `refine_claim_sentence`
+(all `alias_kept=True`):
+
+| hub | what changed |
+|---|---|
+| fi189536 | SCC-DFTB named (pc2412082). **Narrowed** — the old sentence asserted bilayer-film deposition and physical blending, which its adsorption evidence never supported. |
+| fi211522 | compound: unclosed paren + missing period fixed, method (nanoindentation/AFM) pulled from its own conjunct atoms; `~` → `≈` on a notation advisory. |
+| fi269443 | mass spectroscopy / infrared spectroscopy / X-ray diffraction named (pc3119725). |
+| fi269510 | HR-TEM named, C₂₀ hedge preserved. |
+| fi269548 | applied verbatim from the sweep (the one faithful proposal). |
+| fi269543 | em-dashes stripped, fits the 250-char budget. |
+| fi191014 | retired (orphaned, wrong figure, superseded by fi269510). |
+
+### The premise that failed: evidence often does NOT name a method
+
+The plan assumed every hub's corroborating passage names the technique,
+so `no-epistemic-mode` could always be fixed faithfully. **Measured, that
+holds for only some.** Of five checked:
+
+- pc2412082 → SCC-DFTB ✓
+- pc3119725 → mass spec / IR / electron + X-ray diffraction ✓
+- **pc972025 (fi189543), pc404391 (fi190987), pc279174 (fi269509) → NO
+  METHOD NAMED.** Each of those hubs has exactly one evidence edge, so
+  there is no other passage to consult. The sources report procedures and
+  results without naming an analytical technique.
+
+For those three the lint is **unsatisfiable without inventing a method** —
+precisely the false attribution `_ARTIFACT_LINT_EXEMPTIONS` cites as its
+reason for exempting `hypothesis`.
+
+**Sampling trap:** fi269443 first looked method-less because only one of
+its four evidence chunks was read, and that one was procedural. Read
+*every* evidence chunk before concluding a hub has no method.
+
+## Remaining 11, by why they fail
+
+1. **No method in their own evidence** — fi189543, fi190987, fi269509.
+   Cannot be fixed by rewording. Needs the artifact-exemption route or a
+   `repair-evidence` pass that attaches a passage naming the technique.
+2. **Not empirical claims at all** — fi189535 (definition), fi191169 and
+   fi191260 (commercial/supply-chain), fi192855 (vague generalization).
+   Wrong *shape* for an empirical-claim lint.
+3. **Needs an evidence read before deciding** — fi189542, fi191318,
+   fi192836.
+4. **Detector bug** — fi191307. FIXED 2026-08-31: the
+   `hyphen-numeric-range` regex now carries a fourth guard for Pople
+   basis sets, verified by a 119,279-sentence corpus dry run.
+
+## The artifact-exemption route is bigger than one line
+
+`resolve_artifact_type` returns a closed set of three
+(`claim | compound | hypothesis`); `claim`/`compound` derive from edges,
+`hypothesis` from the mint payload. A new `definition`/`context` type
+needs: the exemption entry, `resolve_artifact_type` support, a persisted
+marker, `reword.py::_blocking_codes` to stop hardcoding
+`artifact_type="claim"`, and a cohort-SQL exclusion beside
+`_NOT_HYPOTHESIS_SQL`.
+
+The gates docstring also sets a bar: `compound` was deliberately left
+strict "pending a decision, because ... the failure mode of exempting it
+has not been measured against the corpus." A new type inherits that bar —
+measure first, then ship. It is its own change, not part of this pass.
+
+## Phase 2 owed again
+
+fi189536, fi211522, fi269443 and fi269543 were reworded after their last
+verification, so their `verified_claim_sha` is stale. `verify-edges`
+those four. (fi269510/fi269548 were re-stamped already.)
+
+## RESUME HERE (2026-08-31, second pass)
+
+State: **18 blocking-lint failures → 4**; 12 hubs fixed, fi191014 retired,
+fi272040 minted.
+
+The four that remain are exactly the non-empirical bucket — fi189535
+(definition), fi191169 and fi191260 (commercial/supply-chain), fi192855
+(vague generalization). No reword can fix them honestly, because the
+lint asks for an epistemic mode a non-empirical sentence does not have.
+They are step 4 below.
+
+**The lint axis is no longer the blocker. Two data/code defects are.**
+
+**1. ~~Ship the `hyphen-numeric-range` detector fix~~ — DONE 2026-08-31.**
+The guard is `(?![3-6]-\d{2,3}G(?![A-Za-z]))`, matching the whole Pople
+shape rather than the trailing `G`: the corpus dry run (119,279
+sentences) showed a bare-`G` guard also swallowed a real `24-25G` memory
+range. Two rows changed verdict, both fi191307's. The same regex backs
+`normalize_notation`, so this also stopped the canon rewriter silently
+corrupting `6-311G` to `6–311G`.
+
+**2. ~~Read the evidence~~ / ~~try repair-evidence before exemption~~ —
+DONE 2026-08-31. All six were fixable, none needed an exemption.**
+The premise held: every source paper named a way of knowing somewhere,
+even when the *pinned* passage did not. Sourced by reading the pinned
+chunk plus a keyword sweep over the same paper's other chunks:
+
+| hub | mode found | where |
+|---|---|---|
+| fi189542 | cone-wall **modelling** | pinned chunk itself |
+| fi189543 | Euler's-rule **analysis** | pinned chunk itself |
+| fi190987 | **molecular dynamics** simulations (AI-REBO) | pc404380/86/87 |
+| fi191318 | **density functional theory** | pc379916 |
+| fi192836 | transmission/sheet-resistivity **measurements** | pc172364/67 |
+| fi269509 | **TEM** ("Philips CM200 FEG") | pc279168 |
+
+Two lessons worth keeping. First, `EPISTEMIC_MODE_TOKENS` accepts
+generic heads (`analysis`, `calculations`, `measurements`, `modelling`,
+`imaging`), so a claim whose paper is theoretical or industrial can
+still be attributed honestly without naming an instrument that was
+never used. Second, `report` is **not** an accepted evidence verb —
+`show` is; that cost one dry-run round trip.
+
+Three sentences deliberately dropped an unsupported trailing clause
+(fi190987's mechanical-behaviour claim, fi192836's touch-sensor
+application, fi191318's "tunable electronic character"). Each is a
+separate mint job, listed below — the old sentences were multi-assertion,
+so splitting is the correct shape, not a loss.
+
+**4. Then the artifact-type change for the four non-empirical hubs**
+(fi189535 definition, fi191169/fi191260 commercial, fi192855
+generalization) — with the corpus measurement the gates docstring
+demands. Its own change, its own `/go`. Design sketch above.
+
+### Mint jobs these passes created
+
+From the 2026-08-31 second pass, each a real finding dropped from a
+multi-assertion sentence:
+
+- **fi190987** — the mechanical behaviour of the C₆₀-bombardment hybrid
+  nanostructures (paper 3479 examines it; the pinned passage does not).
+- **fi192836** — Carbon NanoBud films applied in projected-capacitive
+  touch sensors with low haze and reflectivity (paper 1771 §3.1).
+- **fi191318** — the interpretive step from size-dependent binding
+  energies to a *tunable* electronic character. Check whether the draft
+  prose leans on this before minting; it may be an assertion to soften
+  rather than a claim to support.
+
+From the first pass:
+
+- **fi269543's dropped clause** ("bond-to-ring binding likewise becoming
+  less favourable as fullerene size increases") has no hub. It was a real
+  finding in the old multi-assertion sentence.
+- **fi269443 should split.** Naming three analytical techniques *and* the
+  synthesis parameters in one sentence means no single passage supports
+  all of it: `verify-edges` returned `partial` on pc3119725 and pc3119715
+  and **`no` on pc3119709**. Two hubs (synthesis route; identification
+  methods) would each verify cleanly. Lesson: a claim sentence should
+  name the method(s) its *own pinned passage* carries.
+
+### BLOCKER 1 — 186 hubs cannot be re-verified at all
+
+`verify-edges` has no cohort for an edge that carries a `verified_by`
+but **no** `verified_claim_sha`, so it reports a bare `0 edge(s)
+processed`. Corpus-wide that is **311 edges across 186 live claim
+hubs**, permanently withheld with no CLI path to re-stamp them.
+
+Six of the seven nanobud hubs re-checked today are in it, including all
+five whose sentences I just reworded — so those rewords cannot be
+re-verified until this ships. Only fi269509 was reachable, and it came
+back `supports: yes`, stamped.
+
+Spec: `docs/backlog/verify-edges-cannot-reach-sha-less-verified-edges.md`.
+**This is the next code change**, ahead of the artifact-type work: it
+gates the remediation's own verification step.
+
+(This also subsumes the old "fi189536 is born-stamped" note — that
+diagnosis was wrong. `--unverified-stamped` does not reach it either;
+the edge is sha-less, not born-stamped.)
+
+### BLOCKER 2 — fi269509 cites the wrong paper
+
+`ref 2615` binds an aerosol-CVD NanoBud paper's chunks to a 2022
+mining-engineering DOI, and carries two different `pdf_sha256` values.
+fi269509 is lint-clean and verified `yes`, but publishing it would emit
+a false citation. Spec: `docs/backlog/ref-2615-is-a-mis-bound-record.md`.
+
+### Also open
+- Phase 5 (adversarial pass for uncited assertions) never started.
+- `docs/backlog/pdf-extraction-drops-micro-sign-in-units.md` and
+  `compound-hub-posture-ignores-conjunct-evidence.md` are unshipped.
+
 ## Blocker — `claude` on melchior is logged out
 
 The 18-hub `reword-sweep --dry-run` **ran** on 2026-08-30 (the classifier

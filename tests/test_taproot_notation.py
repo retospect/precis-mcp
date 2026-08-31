@@ -283,6 +283,52 @@ def test_hyphen_numeric_range_does_not_fire_on_named_method() -> None:
     assert not any("hyphen-numeric-range" in w for w in warnings)
 
 
+# Pople basis sets are nomenclature hyphens, not ranges. Found on
+# fi191307, which no reword could clear: keeping the basis set kept the
+# lint, dropping it failed numeric-token preservation
+# (docs/backlog/hyphen-numeric-range-fires-on-pople-basis-sets.md).
+_POPLE_BASIS_SENTENCES: list[str] = [
+    "DFT calculations at the B3LYP/6-311G(d,p) level identify fused nanobuds.",
+    "Geometries were optimized with HF/3-21G before refinement.",
+    "Single-point energies used MP2/6-31G* on the relaxed structures.",
+    "The 4-31G basis reproduces the measured barrier within 0.1 eV.",
+    "Frequencies were computed at 6-31G** and scaled by 0.96.",
+]
+
+
+@pytest.mark.parametrize("sentence", _POPLE_BASIS_SENTENCES)
+def test_hyphen_numeric_range_does_not_fire_on_pople_basis(
+    sentence: str,
+) -> None:
+    warnings = lint_notation(sentence)
+    assert not any("hyphen-numeric-range" in w for w in warnings), warnings
+
+
+@pytest.mark.parametrize("sentence", _POPLE_BASIS_SENTENCES)
+def test_pople_basis_survives_normalize_notation_unchanged(
+    sentence: str,
+) -> None:
+    # normalize_notation shares the detector's regex, so an unguarded
+    # match would rewrite '6-311G' to '6\u2013311G' and corrupt the basis set.
+    out, codes = normalize_notation(sentence)
+    assert "hyphen-numeric-range" not in codes, codes
+    assert "\u2013" not in out, out
+
+
+def test_hyphen_numeric_range_still_fires_on_memory_size_range() -> None:
+    # The Pople guard must not swallow a real range that happens to abut a
+    # bare 'G'. '24-25G' of memory is the one such corpus hit (2026-08-31
+    # dry run over 119,279 sentences), which is why the guard matches the
+    # whole Pople shape rather than just the trailing 'G'.
+    warnings = lint_notation("Wired memory flapped between 24-25G for 20 min.")
+    assert any("hyphen-numeric-range" in w for w in warnings), warnings
+
+
+def test_hyphen_numeric_range_still_fires_before_g_unit() -> None:
+    warnings = lint_notation("The measured modulus spans 5-10 GPa.")
+    assert any("hyphen-numeric-range" in w for w in warnings), warnings
+
+
 def test_ascii_x_multiplier_fires() -> None:
     warnings = lint_notation("Antennae provide a 1.61x U/V selectivity gain.")
     assert any("ascii-x-multiplier" in w for w in warnings)
