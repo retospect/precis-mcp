@@ -83,6 +83,18 @@ level-k object; a move at level k dirties only levels above.
   rotational DOF about the port–port axis), chirality. A rotaxane's
   threading is a topological invariant — it must never be re-derived from
   L3 coordinates, exactly the pcb L2 rule.
+  **Growth path (decided 2026-08-31, schema-shape only for now):**
+  threading is the first member of a small integer-invariant set, not a
+  special case. The set: **linking numbers** (catenane = link, rotaxane =
+  pre-link trapped by stoppers; Gauss linking integral verifies at L5),
+  **Betti numbers of the bond complex** (b₁ = channels/tunnels, b₂ =
+  enclosed cavities — MOF channels, clathrate cages; alpha-complex
+  homology on coordinates verifies at L5), **disclination content**
+  (2D: pentagon/heptagon counts per Euler/Gauss–Bonnet; 3D: curvature
+  lives on *lines* — Frank–Kasper/clathrate territory). Note the trap
+  that motivates this: χ ≡ 0 for every closed 3-manifold, so "genus"
+  does not generalize — the usable 3D invariants are exactly this set.
+  All declared-first, L5-verified, loud on mismatch.
 - **L3 — fragment placement.** Chosen chemical fragments posed inside
   envelopes, ports mapped to real attachment atoms.
 - **L4 — metric annotations.** Measure values, charge estimates, strain.
@@ -128,6 +140,65 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
   `validate.py` findings shape; resolved through one resolver
   (rules.py pattern). Extend the 16-element Cordero table as needed
   (Br, I at minimum).
+
+## Generators — parametric block factories (added 2026-08-31, Reto)
+
+The IC-design PCell, imported: a **generator** is a pure function
+`params → block` emitting a canonical configurable block (envelope +
+capability-role ports + stored L2 topology + optionally a bound
+structure). It is the *deterministic* fill path — for families where the
+math fixes the atoms, no LLM and no guessing: a `(n,m)` tube's radius is
+`a√(n²+nm+m²)/2π` from two integers, a fullerene's atoms follow from
+Goldberg construction, cone opening angles obey `sin(θ/2) = 1 − P/6`
+(P = apex pentagons; the nanobuds draft carries this cited —
+draft dr173020 / pc64732 — generators link that provenance).
+**Param validation is theorems failing loudly**: Euler counting rejects
+"closed sp² cage with 11 pentagons" at op time, before any geometry.
+Surface: a `generate` op
+(`{"op":"generate","generator":"cnt","params":{…},"name":"axle"}`),
+registry in `precis_nm/generators/`, each generator declaring a param
+schema + provenance cites.
+
+**Three fill paths, preferred in this order**: (1) generator
+(math-derived, deterministic), (2) `nm_propose` LLM job (creative
+connective tissue no formula covers), (3) hand ops. Generators shrink
+what the LLM must invent.
+
+**Family roster (triaged 2026-08-31):**
+- *First*: sp² carbon — fullerene (12 pentagons; IPR as warn-tier rule),
+  SWCNT/MWCNT (chiral index), cone/nanohorn (P = 1–5), nanobud as a
+  *fusion op* between generated blocks (fusion port declares its
+  pentagon/heptagon budget — the draft's disclination-balance framing).
+- *First*: cyclodextrins (α/β/γ-CD, cavity ⌀ 4.7–8.3 Å — real rotaxane
+  macrocycles; upgrades the standing photo-rotor sketch to synthesizable
+  chemistry immediately).
+- *Early*: benzene/PAH with substitution-pattern ports (o/m/p as port
+  geometry); polymer repeat — monomer block with two complementary-role
+  ports (`amide-condensation`, `acrylate-radical`, …) + `repeat(monomer,
+  n)`; helix rise/pitch closed-form, persistence length as L4 metric;
+  site *spacing* = parametric port placement. Reaction kinetics out of
+  scope — the existing port capability gate is the compatibility check.
+- *Model now, animate later (slice 6)*: lipids/amphiphiles — packing
+  parameter `v/(a₀·l_c)` (micelle/bilayer/vesicle predictor) as an L4
+  metric; self-assembly is dynamics.
+- *3D frameworks (after the surface families)*: clathrate/zeolite cages
+  (Frank–Kasper disclination-line networks — the sp³ space-filling
+  counterpart of fullerenes), schwarzite/gyroid (negative-curvature sp²,
+  genus-per-unit-cell), catenane (two macrocycles, linking number 1).
+- *Parked with limitation note*: boron (borophene, B₄₀) — 3c-2e
+  multicenter bonds break the 2-center bond graph; vsepr would misfire
+  (reuse its metal-ring escape hatch when unparked).
+
+**Mechanics ceilings (L4 warn-tier, closed-form, never a gate):**
+"many bonds tougher than few" is literally graph theory — tensile
+ceiling between two ports = **min-cut of the bond graph × per-bond
+rupture force** (~4–6 nN AFM-measured C–C). Plus Euler buckling of a
+tube as a hollow beam (`P_cr = π²EI/L²`, E ≈ 1 TPa sp²) and harmonic
+strain energy from vsepr force constants (add k_θ/k_r to the table).
+All reported as **defect-free ceilings** with a provenance tag
+("continuum estimate, pristine lattice") — real strength is
+defect-dominated (Griffith); the literature layer supplies measured
+reality.
 
 ## The fill loop
 
@@ -190,10 +261,21 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
    migration, four new validate rules, topology view. Closing docs round
    SHIPPED: `precis-nm-help` skill, `precis-overview`/`precis-toolpath-help`
    rows, `precis_nm` package/handler docstring currency.
-4. **Fill loop wiring** — propose jobs, lit-search integration,
+4. **Fill — split 2026-08-31 (Reto: "go"): 4a generators ship BEFORE
+   4b LLM fill**, because generators make the smoke rotaxane chemically
+   real and shrink what the LLM must propose.
+
+   **4a — generators (IN FLIGHT).** `generate` op + registry
+   (`precis_nm/generators/`), per the Generators section above. Build
+   order: (i) framework + cnt + fullerene (deterministic L5 via chiral
+   rolling / Goldberg), (ii) cone/nanohorn + nanobud fusion +
+   cyclodextrin, (iii) L4 mechanics ceilings (min-cut tensile, Euler
+   buckling, strain energy) as warn-tier metrics. Theorem-loud param
+   validation; provenance cites on every generator.
+
+   **4b — LLM fill loop** — propose jobs, lit-search integration,
    level-scoped DRC, objective-vector verdicts, filled-fraction honesty.
-   **Design drafted 2026-08-31 (code NOT started — awaiting Reto's
-   reaction to the shipped slice-3 surface first):**
+   **Design drafted 2026-08-31 (code NOT started):**
    - **`nm_propose` job** (plugin job-type entry point; the
      cad_propose/structure_propose propose-only pattern: tool-less
      `claude -p`, dry-run-validated before anyone sees it). Input: one
