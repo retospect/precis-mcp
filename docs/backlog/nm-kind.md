@@ -162,9 +162,10 @@ transfers verbatim: **zero DRC is trivially achievable by filling nothing**
 
 ## Slices (ordered, each independently valuable)
 
-1. **Chemistry DRC deepening in `structure`** — hybridization inference +
-   VSEPR angle + torsion + ring-strain rules in `validate.py` shape.
-   No new kind needed; immediately improves existing structure work.
+1. **SHIPPED 6389cb66 (2026-08-31)** — chemistry DRC deepening in
+   `structure`: `vsepr.py` warn tier (hybridization inference, angle
+   strain, π-twist, small-ring, hybridization conflict), two-tier
+   `validate` view, Br/I elements. Warn tier never gates a relax.
 2. **Molecule-mode fragment library + `attach`** — fragment templates as
    structure designs with port metadata; SMILES→3D realization job;
    attach-at-port op with alignment.

@@ -1,0 +1,362 @@
+"""Unit tests for the fragment-building ops (nm-kind.md slice 2): the pure
+``ring``/``attach`` ops (:mod:`precis.structure.ops`) and the handler-level
+``import_fragment`` expansion (:mod:`precis.handlers.structure`).
+
+Kernel-level (``ring``/``attach``) fixtures are DB-free, molecule-mode
+(non-periodic) Cartesian geometry — same style as ``test_structure_vsepr.py``
+— except one dedicated ``attach`` test under a periodic cell, exercising the
+MIC unwrap. ``import_fragment`` needs the store, so its tests are handler-level
+(same fixture pattern as ``test_structure_handler.py``).
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+
+import numpy as np
+import pytest
+
+from precis.dispatch import Hub
+from precis.errors import NotFound
+from precis.handlers.structure import StructureHandler
+from precis.structure import OpError, Scene, apply_ops, probe, vsepr
+from precis.structure.cell import Cell
+from precis.structure.elements import covalent_radius
+
+# -- shared geometry helpers ---------------------------------------------
+
+
+def _molecule_cell(size: float = 20.0) -> Cell:
+    return Cell(np.eye(3) * size, pbc=(False, False, False))
+
+
+#: The ideal tetrahedral angle (deg) between any two of a tripod's three
+#: bonds, and between each bond and the tripod's open (4th) valence axis.
+_TETRA = np.radians(109.47)
+
+
+def _tripod_offsets(axis: np.ndarray) -> list[np.ndarray]:
+    """Three unit vectors at the tetrahedral angle from ``axis`` (120° apart
+    azimuthally), such that the sum of the three equals exactly ``-axis`` —
+    so a fragment built from them has its "open" 4th valence pointing along
+    ``+axis`` (attach's own ``-normalize(sum)`` construction recovers it)."""
+    axis = axis / np.linalg.norm(axis)
+    seed = (
+        np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    )
+    u = seed - (seed @ axis) * axis
+    u = u / np.linalg.norm(u)
+    v = np.cross(axis, u)
+    offsets = []
+    for k in range(3):
+        phi = 2.0 * np.pi * k / 3.0
+        d = np.cos(_TETRA) * axis + np.sin(_TETRA) * (np.cos(phi) * u + np.sin(phi) * v)
+        offsets.append(d)
+    return offsets
+
+
+def _mint_atom(scene: Scene, element: str, cart: np.ndarray) -> str:
+    """Apply one ``add_atom`` and return the freshly minted label."""
+    before = set(scene.atoms)
+    apply_ops(scene, [{"op": "add_atom", "element": element, "cart": cart.tolist()}])
+    (new_label,) = set(scene.atoms) - before
+    return new_label
+
+
+def _add_ch3(
+    scene: Scene, center: np.ndarray, axis: np.ndarray, bond_length: float = 1.09
+) -> tuple[str, list[str]]:
+    """Mint a tripod "CH3"-like fragment: a C at ``center`` with 3 declared
+    C-H bonds, its open (4th, un-substituted) valence pointing along
+    ``axis``. Returns ``(c_label, [h_label, h_label, h_label])``."""
+    c_label = _mint_atom(scene, "C", center)
+    h_labels = []
+    for offset in _tripod_offsets(np.asarray(axis, dtype=float)):
+        h_label = _mint_atom(scene, "H", center + bond_length * offset)
+        apply_ops(scene, [{"op": "add_bond", "i": c_label, "j": h_label, "order": 1}])
+        h_labels.append(h_label)
+    return c_label, h_labels
+
+
+# -- ring -------------------------------------------------------------------
+
+
+def test_ring_hexagon_aromatic_geometry() -> None:
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "ring", "element": "C", "n": 6, "aromatic": True}])
+    labels = sorted(scene.atoms, key=lambda lb: int(lb[2:]))
+    assert len(labels) == 6
+
+    expected_l = 2.0 * covalent_radius("C") * 0.915
+    for k in range(6):
+        i, j = labels[k], labels[(k + 1) % 6]
+        assert probe.distance(scene, i, j) == pytest.approx(expected_l, abs=1e-6)
+
+    for k in range(6):
+        a, b, c = labels[(k - 1) % 6], labels[k], labels[(k + 1) % 6]
+        assert probe.angle(scene, a, b, c) == pytest.approx(120.0, abs=1e-6)
+
+    assert len(scene.bonds) == 6
+    for bond in scene.bonds:
+        assert bond.order == 1.5
+        assert bond.kind == "aromatic"
+        assert bond.provenance == "declared"
+    for atom in scene.atoms.values():
+        assert atom.hybridization == "sp2"
+
+
+def test_ring_explicit_center_and_normal_lands_in_plane() -> None:
+    scene = Scene(cell=_molecule_cell())
+    center = np.array([2.0, -1.0, 3.0])
+    normal = np.array([1.0, 1.0, 1.0])
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "ring",
+                "element": "C",
+                "n": 6,
+                "aromatic": True,
+                "center": center.tolist(),
+                "normal": normal.tolist(),
+            }
+        ],
+    )
+    n_hat = normal / np.linalg.norm(normal)
+    for atom in scene.atoms.values():
+        cart = scene.cell.frac_to_cart(atom.frac)
+        signed = float((cart - center) @ n_hat)
+        assert signed == pytest.approx(0.0, abs=1e-6)
+
+
+def test_ring_rejects_out_of_range_n() -> None:
+    scene = Scene(cell=_molecule_cell())
+    with pytest.raises(OpError, match=r"\[3, 12\]"):
+        apply_ops(scene, [{"op": "ring", "element": "C", "n": 2}])
+    with pytest.raises(OpError, match=r"\[3, 12\]"):
+        apply_ops(scene, [{"op": "ring", "element": "C", "n": 13}])
+
+
+def test_ring_passes_vsepr_advisories_with_no_strain_or_twist() -> None:
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "ring", "element": "C", "n": 6, "aromatic": True}])
+    findings = vsepr.advisories(scene)
+    rules = {f.rule for f in findings}
+    assert "angle_strain" not in rules
+    assert "pi_twist" not in rules
+    assert findings == []  # the template must coexist cleanly with the warn tier
+
+
+# -- attach -------------------------------------------------------------
+
+
+def test_attach_two_fragments_correct_distance_and_far_side_angle() -> None:
+    scene = Scene(cell=_molecule_cell())
+    c1, h1s = _add_ch3(scene, np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+    c2, _h2s = _add_ch3(scene, np.array([10.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+
+    apply_ops(scene, [{"op": "attach", "from": c1, "to": c2, "order": 1}])
+
+    expected_dist = 2.0 * covalent_radius("C")
+    assert probe.distance(scene, c1, c2) == pytest.approx(expected_dist, abs=1e-6)
+    new_bond = next(b for b in scene.bonds if {b.i, b.j} == {c1, c2})
+    assert new_bond.order == 1.0
+    assert new_bond.provenance == "declared"
+
+    # from's other neighbours (its 3 H's) stay on the far side of the new bond
+    for h in h1s:
+        ang = probe.angle(scene, h, c1, c2)
+        assert ang > 90.0
+        assert ang == pytest.approx(109.47, abs=0.5)
+
+
+def test_attach_moves_the_whole_fragment_rigidly() -> None:
+    scene = Scene(cell=_molecule_cell())
+    c1, h1s = _add_ch3(scene, np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+    c2, _h2s = _add_ch3(scene, np.array([8.0, 3.0, -2.0]), np.array([0.0, 1.0, 0.0]))
+
+    internal_pairs = [(c1, h) for h in h1s] + list(itertools.combinations(h1s, 2))
+    before = {p: probe.distance(scene, *p) for p in internal_pairs}
+
+    apply_ops(scene, [{"op": "attach", "from": c1, "to": c2}])
+
+    for pair, dist in before.items():
+        assert probe.distance(scene, *pair) == pytest.approx(dist, abs=1e-6)
+
+
+def test_attach_same_fragment_is_rejected() -> None:
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "cart": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "H", "cart": [1.09, 0.0, 0.0]},
+            {"op": "add_bond", "i": "aC1", "j": "aH1", "order": 1},
+        ],
+    )
+    with pytest.raises(OpError, match="two fragments"):
+        apply_ops(scene, [{"op": "attach", "from": "aC1", "to": "aH1"}])
+
+
+def test_attach_to_isolated_atom_without_direction_raises() -> None:
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "add_atom", "element": "Na", "cart": [30.0, 30.0, 30.0]}])
+    c1, _h1s = _add_ch3(scene, np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+    with pytest.raises(OpError, match="direction"):
+        apply_ops(scene, [{"op": "attach", "from": c1, "to": "aNa1"}])
+
+
+def test_attach_to_isolated_atom_explicit_direction_works() -> None:
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "add_atom", "element": "Na", "cart": [30.0, 30.0, 30.0]}])
+    c1, _h1s = _add_ch3(scene, np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+
+    apply_ops(
+        scene,
+        [{"op": "attach", "from": c1, "to": "aNa1", "direction": [0.0, 0.0, 1.0]}],
+    )
+
+    expected_dist = covalent_radius("C") + covalent_radius("Na")
+    to_cart = scene.cell.frac_to_cart(scene.atoms["aNa1"].frac)
+    from_cart = scene.cell.frac_to_cart(scene.atoms[c1].frac)
+    assert np.allclose(from_cart - to_cart, [0.0, 0.0, expected_dist], atol=1e-6)
+
+
+def test_attach_under_pbc_unwraps_the_straddling_fragment() -> None:
+    # A cell small enough (5 Å) that a tripod anchored near the x=0 wall,
+    # pointing -x, wraps some of its H's clear across to x~5 — attach must
+    # unwrap the fragment before rotating/translating, and the resulting
+    # geometry (measured via MIC) must be unchanged.
+    cell = Cell(np.eye(3) * 5.0, pbc=(True, True, True))
+    scene = Scene(cell=cell)
+    c1, h1s = _add_ch3(scene, np.array([0.3, 2.5, 2.5]), np.array([1.0, 0.0, 0.0]))
+    c2, _h2s = _add_ch3(scene, np.array([2.5, 2.5, 2.5]), np.array([1.0, 0.0, 0.0]))
+
+    internal_pairs = [(c1, h) for h in h1s]
+    before = {p: probe.distance(scene, *p) for p in internal_pairs}
+
+    apply_ops(scene, [{"op": "attach", "from": c1, "to": c2}])
+
+    expected_dist = 2.0 * covalent_radius("C")
+    assert probe.distance(scene, c1, c2) == pytest.approx(expected_dist, abs=1e-6)
+    for pair, dist in before.items():
+        assert probe.distance(scene, *pair) == pytest.approx(dist, abs=1e-6)
+
+
+def test_attach_under_pbc_declares_bond_with_mic_image() -> None:
+    """Regression (reviewer finding, 2026-08-31): the new attach bond must
+    carry its MIC image, not a blind (0,0,0) — image-trusting probes
+    (bonds_through_plane) evaluate the bond at ``j.frac + image``, so the
+    declared-image segment length must equal the attach distance even when
+    the wrapped ``from`` lands across a cell wall from ``to``."""
+    cell = Cell(np.eye(3) * 5.0, pbc=(True, True, True))
+    scene = Scene(cell=cell)
+    # `to` hugs the x=0 wall with its one neighbour at +x, so d_to points -x
+    # and the attached fragment wraps to x~5 — a genuine wall-crossing bond.
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "cart": [0.2, 2.5, 2.5]},
+            {"op": "add_atom", "element": "C", "cart": [1.74, 2.5, 2.5]},
+            {"op": "add_bond", "i": "aC1", "j": "aC2", "order": 1},
+            {"op": "add_atom", "element": "C", "cart": [3.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "H", "cart": [4.59, 0.5, 0.5]},
+            {"op": "add_bond", "i": "aC3", "j": "aH1", "order": 1},
+        ],
+    )
+    apply_ops(scene, [{"op": "attach", "from": "aC3", "to": "aC1"}])
+    bond = next(b for b in scene.bonds if {b.i, b.j} == {"aC3", "aC1"})
+    pi = scene.cell.frac_to_cart(scene.atoms[bond.i].frac)
+    pj = scene.cell.frac_to_cart(scene.atoms[bond.j].frac + np.array(bond.image))
+    assert float(np.linalg.norm(pj - pi)) == pytest.approx(
+        2.0 * covalent_radius("C"), abs=1e-6
+    )
+
+
+# -- import_fragment (handler-level; needs the store) ------------------
+
+
+@pytest.fixture
+def structure(store):
+    return StructureHandler(hub=Hub(store=store))
+
+
+def _mol_cell_payload(size: float = 20.0) -> dict:
+    return {"a": size, "b": size, "c": size, "pbc": [False, False, False]}
+
+
+def test_import_fragment_maps_labels_and_preserves_bonds(structure, store) -> None:
+    structure.put(
+        id="frag_src",
+        text=json.dumps(
+            {
+                "cell": _mol_cell_payload(),
+                "ops": [
+                    {"op": "add_atom", "element": "C", "cart": [0.0, 0.0, 0.0]},
+                    {"op": "add_atom", "element": "C", "cart": [1.33, 0.0, 0.0]},
+                    {"op": "add_bond", "i": "aC1", "j": "aC2", "order": 2},
+                ],
+            }
+        ),
+    )
+    structure.put(
+        id="target1",
+        text=json.dumps(
+            {
+                "cell": _mol_cell_payload(),
+                "ops": [{"op": "add_atom", "element": "C", "cart": [10.0, 10.0, 10.0]}],
+            }
+        ),
+    )
+
+    resp = structure.edit(
+        id="target1", ops=[{"op": "import_fragment", "design": "frag_src"}]
+    )
+    assert "imported 2 atom(s) from frag_src" in resp.body
+    assert "aC1→aC2" in resp.body
+    assert "aC2→aC3" in resp.body
+
+    ref = store.get_ref(kind="structure", id="target1")
+    scene, _ = store.structure_load(ref.id)
+    assert scene.composition() == {"C": 3}
+    bond = next(b for b in scene.bonds if {b.i, b.j} == {"aC2", "aC3"})
+    assert bond.order == 2.0
+    assert bond.provenance == "declared"
+
+    # follow-up attach by the mapped labels
+    follow = structure.edit(
+        id="target1",
+        ops=[
+            {"op": "attach", "from": "aC2", "to": "aC1", "direction": [1.0, 0.0, 0.0]}
+        ],
+    )
+    assert "edited" in follow.body
+    scene2, _ = store.structure_load(ref.id)
+    assert any({b.i, b.j} == {"aC1", "aC2"} for b in scene2.bonds)
+
+
+def test_import_fragment_unknown_design_is_not_found(structure) -> None:
+    structure.put(
+        id="target2", text=json.dumps({"cell": _mol_cell_payload(), "ops": []})
+    )
+    with pytest.raises(NotFound):
+        structure.edit(
+            id="target2", ops=[{"op": "import_fragment", "design": "no-such-design"}]
+        )
+
+
+def test_import_fragment_into_itself_duplicates(structure, store) -> None:
+    structure.put(
+        id="selfy",
+        text=json.dumps(
+            {
+                "cell": _mol_cell_payload(),
+                "ops": [{"op": "add_atom", "element": "C", "cart": [0.0, 0.0, 0.0]}],
+            }
+        ),
+    )
+    structure.edit(id="selfy", ops=[{"op": "import_fragment", "design": "selfy"}])
+    ref = store.get_ref(kind="structure", id="selfy")
+    scene, _ = store.structure_load(ref.id)
+    assert scene.composition() == {"C": 2}

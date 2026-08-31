@@ -40,7 +40,7 @@ import logging
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
@@ -60,6 +60,8 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.structure import (
+    Atom,
+    Bond,
     OpError,
     RelaxUnsupported,
     Scene,
@@ -588,7 +590,8 @@ class StructureHandler(Handler):
             "when ops start with a `slab` bulk template); edit applies "
             "more ops (slab/set_cell/add_atom/set_element/vacancy/displace/add_bond/"
             "remove_bond/constrain, plus eye/measure/unmark/remove_measure "
-            "markers); get lists designs, shows a TOC (id=slug), or probes "
+            "markers, plus the fragment-building ops ring/attach/import_fragment); "
+            "get lists designs, shows a TOC (id=slug), or probes "
             "(view='atom|neighborhood|bonds|find|validate|markers', args={...}); "
             "view='literature' assembles a deterministic paper-search query "
             "from the design's own composition/description (no LLM) and runs "
@@ -674,7 +677,8 @@ class StructureHandler(Handler):
                 "put(kind='structure') payload needs a 'cell' (or a "
                 "cell-establishing op like 'slab')"
             )
-        res = self._run_ops(scene, payload.get("ops", []))
+        relax_ops, import_echo = self._apply_ops_with_imports(scene, ops)
+        res = self._run_ops(scene, relax_ops)
         if isinstance(res, _NeedsDispatch):
             # The preflight clean/emt pre-relax already ran (mutating
             # ``scene``) as part of staging the dispatch — carry its result
@@ -705,11 +709,16 @@ class StructureHandler(Handler):
         )
         self._record_run(ref.id, relax_result, version)
         if dispatch is not None:
-            return self._dispatch_relax(ref, version, dispatch)
+            return self._with_echo(
+                self._dispatch_relax(ref, version, dispatch), import_echo
+            )
         _scene, handles = self.store.structure_load(ref.id)
         verb = "created" if created else "updated"
-        return self._toc_response(
-            _scene, ref, handles, head_verb=verb, relax_summary=relax_summary
+        return self._with_echo(
+            self._toc_response(
+                _scene, ref, handles, head_verb=verb, relax_summary=relax_summary
+            ),
+            import_echo,
         )
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -753,7 +762,8 @@ class StructureHandler(Handler):
                 "ops=[{'op':'add_atom','element':'O','frac':[0.33,0.33,0.55]}])",
             )
         scene, _ = self.store.structure_load(ref.id)
-        res = self._run_ops(scene, op_list)
+        relax_ops, import_echo = self._apply_ops_with_imports(scene, op_list)
+        res = self._run_ops(scene, relax_ops)
         if isinstance(res, _NeedsDispatch):
             # See put()'s matching branch: the preflight relax already ran
             # as part of staging the dispatch, so its result rides the
@@ -780,10 +790,15 @@ class StructureHandler(Handler):
         )
         self._record_run(ref.id, relax_result, version)
         if dispatch is not None:
-            return self._dispatch_relax(ref, version, dispatch)
+            return self._with_echo(
+                self._dispatch_relax(ref, version, dispatch), import_echo
+            )
         _scene, handles = self.store.structure_load(ref.id)
-        return self._toc_response(
-            _scene, ref, handles, head_verb="edited", relax_summary=relax_summary
+        return self._with_echo(
+            self._toc_response(
+                _scene, ref, handles, head_verb="edited", relax_summary=relax_summary
+            ),
+            import_echo,
         )
 
     # ── derive ───────────────────────────────────────────────────────
@@ -814,10 +829,9 @@ class StructureHandler(Handler):
         op_list = ops or []
         if any(o.get("op") == "relax" for o in op_list):
             raise BadInput("derive applies graph/marker ops only (no relax)")
-        try:
-            apply_ops(scene, op_list)
-        except OpError as exc:
-            raise BadInput(f"op error: {exc}") from exc
+        # Same interception as put/edit so import_fragment works in a derive
+        # too (relax was rejected above, so the returned relax tail is empty).
+        _relax_tail, import_echo = self._apply_ops_with_imports(scene, op_list)
         ttl = (title or to_slug).strip() or to_slug
         ref, _created = self.store.structure_save(
             slug=to_slug,
@@ -831,7 +845,10 @@ class StructureHandler(Handler):
             src_ref_id=ref.id, dst_ref_id=parent.id, relation="derived-from"
         )
         _scene, handles = self.store.structure_load(ref.id)
-        return self._toc_response(_scene, ref, handles, head_verb="derived")
+        return self._with_echo(
+            self._toc_response(_scene, ref, handles, head_verb="derived"),
+            import_echo,
+        )
 
     # ── get ──────────────────────────────────────────────────────────
     def get(
@@ -1367,14 +1384,147 @@ class StructureHandler(Handler):
         return Response(body=f"retired structure {ref.slug} ({n} atom(s))")
 
     # ── helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _with_echo(resp: Response, echo: str | None) -> Response:
+        """Append an ``import_fragment`` label-mapping echo (if any) to an
+        already-built response body — used by both the ordinary TOC-response
+        path and the relax-dispatch path in ``put``/``edit``."""
+        if not echo:
+            return resp
+        # dataclasses.replace, not a hand-rebuilt Response — a re-listed field
+        # set silently drops any field added to Response later.
+        return replace(resp, body=resp.body + "\n\n" + echo)
+
+    def _default_import_offset(self, scene: Scene) -> np.ndarray:
+        """Default ``import_fragment`` offset (Cartesian, Å): past the
+        scene's current max x-coordinate + 5 Å, so an imported fragment
+        never lands overlapping the existing atoms. The origin, for an
+        empty scene."""
+        if not scene.atoms:
+            return np.zeros(3)
+        max_x = max(
+            float(scene.cell.frac_to_cart(a.frac)[0]) for a in scene.atoms.values()
+        )
+        return np.array([max_x + 5.0, 0.0, 0.0])
+
+    def _import_fragment(self, scene: Scene, op: dict[str, Any]) -> str:
+        """Handler-level expansion of ``import_fragment`` — ``ops.py`` has no
+        store access, so this hydration + mint lives here, intercepted
+        before ``apply_ops`` ever sees the op (:func:`_apply_ops_with_imports`).
+
+        ``{"op": "import_fragment", "design": "<slug>", "offset": [x,y,z]
+        (Cartesian, optional — default :meth:`_default_import_offset`)}``.
+        Loads the source design via the same load path this handler uses
+        for the target, mints one fresh atom per source atom (element,
+        cart = source cart + offset, carrying hybridization/magmom/
+        oxidation) with freshly minted TARGET-scene labels, then one bond
+        per source DECLARED bond (mapped labels, order/kind carried,
+        periodic images dropped — the import is geometric only). Measures
+        do not import. Importing a design into itself is fine (duplicates
+        the fragment with fresh labels) — but note the source is hydrated
+        from the store, i.e. the design's last-SAVED state: a self-import
+        sharing one edit() call with earlier ops sees the pre-edit
+        fragment, not those ops' in-memory mutations. Returns a compact
+        echo line naming the label mapping, for the caller's response."""
+        design = op.get("design")
+        if not design:
+            raise BadInput("import_fragment needs 'design' (the source slug)")
+        src_ref = self.store.get_ref(kind="structure", id=str(design).strip())
+        if src_ref is None:
+            roster = ", ".join(
+                r.slug
+                for r in self.store.list_refs(
+                    kind="structure", order_by="id_desc", limit=8
+                )
+                if r.slug
+            )
+            raise NotFound(
+                f"no structure design {design!r}",
+                next=(
+                    f"known designs: {roster}"
+                    if roster
+                    else "put(kind='structure', id=..., ...) to create one first"
+                ),
+            )
+        src_scene, _ = self.store.structure_load(src_ref.id)
+        offset = _vec(op, "offset")
+        if offset is None:
+            offset = self._default_import_offset(scene)
+        label_map: dict[str, str] = {}
+        for label, atom in src_scene.atoms.items():
+            new_cart = src_scene.cell.frac_to_cart(atom.frac) + offset
+            new_label = scene.next_label(atom.element)
+            frac = scene.cell.wrap(scene.cell.cart_to_frac(new_cart))
+            scene.atoms[new_label] = Atom(
+                label=new_label,
+                element=atom.element,
+                frac=frac,
+                magmom=atom.magmom,
+                oxidation=atom.oxidation,
+                hybridization=atom.hybridization,
+            )
+            label_map[label] = new_label
+        for bond in src_scene.bonds:
+            if bond.provenance != "declared":
+                continue
+            if bond.i not in label_map or bond.j not in label_map:
+                continue
+            scene.bonds.append(
+                Bond(
+                    i=label_map[bond.i],
+                    j=label_map[bond.j],
+                    order=bond.order,
+                    kind=bond.kind,
+                    provenance="declared",
+                )
+            )
+        mapping = ", ".join(f"{old}→{new}" for old, new in label_map.items())
+        return f"imported {len(label_map)} atom(s) from {src_ref.slug}: {mapping}"
+
+    def _apply_ops_with_imports(
+        self, scene: Scene, ops: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Walk ``ops`` in order, applying every non-``relax`` op to
+        ``scene`` immediately — ``import_fragment`` (store-aware; ``ops.py``
+        never sees it) is hydrated + expanded here into real ``add_atom``/
+        ``add_bond`` mutations (:meth:`_import_fragment`), and every other
+        graph op runs through the ordinary :func:`apply_ops`, one op at a
+        time, so an ``import_fragment`` sharing a call with an earlier
+        label-minting op sees exactly what that op already placed (the same
+        ordering ``apply_ops`` would give a plain op list). Returns the
+        (untouched) list of any ``relax`` op(s) for the caller's
+        ``_run_ops`` to process as usual, plus an echo string naming every
+        import's label mapping (``None`` when there were none)."""
+        relax_ops: list[dict[str, Any]] = []
+        echoes: list[str] = []
+        for op in ops:
+            if not isinstance(op, dict) or "op" not in op:
+                raise BadInput(f"op missing 'op' key: {op!r}")
+            name = op["op"]
+            if name == "relax":
+                relax_ops.append(op)
+                continue
+            if name != "import_fragment":
+                try:
+                    apply_ops(scene, [op])
+                except OpError as exc:
+                    raise BadInput(f"op error: {exc}") from exc
+                continue
+            echoes.append(self._import_fragment(scene, op))
+        return relax_ops, ("\n".join(echoes) if echoes else None)
+
     def _run_ops(
         self, scene: Scene, ops: list[dict[str, Any]]
     ) -> RelaxResult | _NeedsDispatch | None:
-        """Apply graph ops, then an optional terminal ``relax`` op. Returns the
-        :class:`RelaxResult` (or None), or a :class:`_NeedsDispatch` when an
-        energy rung missed the cache and has no local backend (the caller mints
-        a ``struct_relax`` job). A graph edit invalidates any prior relax; the
-        caller persists the run (§9 system-of-record)."""
+        """Run the relax tail of an op list. Callers apply graph ops via
+        :meth:`_apply_ops_with_imports` first and pass only the relax op(s)
+        here (the graph-op filter below is defensive, normally a no-op).
+        Returns the :class:`RelaxResult` (or None), or a
+        :class:`_NeedsDispatch` when an energy rung missed the cache and has
+        no local backend (the caller mints a ``struct_relax`` job). A graph
+        edit invalidates any prior relax; the caller persists the run (§9
+        system-of-record)."""
         graph_ops = [o for o in ops if o.get("op") != "relax"]
         relax_ops = [o for o in ops if o.get("op") == "relax"]
         try:

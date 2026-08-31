@@ -16,6 +16,16 @@ site (top/bridge/hollow over existing atom labels) instead of guessing
 fractional coordinates. :func:`_resolve_site` turns the name into exact
 coordinates and delegates to :func:`_op_add_atom` — one label-minting/
 validation path for both raw and site-symbolic placement.
+
+**Fragment-building ops** (``docs/backlog/nm-kind.md`` slice 2 — molecule-mode
+fragment library): ``ring`` mints a regular n-gon of one element (the aromatic
+6-ring template most callers reach for); ``attach`` rigidly bonds two
+fragments together, moving the entire fragment containing ``from`` so it
+bonds to ``to``. Both are pure (no store access). ``import_fragment`` (copy a
+whole other design's atoms/bonds in as a positioned fragment) needs the
+store to hydrate a source design, so it is **not** in this module — it's a
+handler-level expansion into ``add_atom``/``add_bond`` ops
+(``handlers/structure.py``).
 """
 
 from __future__ import annotations
@@ -25,6 +35,7 @@ from typing import Any
 
 import numpy as np
 
+from . import elements
 from .cell import Cell
 from .measures import _MEASURE_ARITY, _MEASURE_KINDS
 from .scene import FIX_ALL, FIX_X, FIX_Y, FIX_Z, Atom, Bond, Measure, Scene
@@ -458,6 +469,342 @@ def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
         )
 
 
+def _as_vec3(value: Any, default: np.ndarray, what: str) -> np.ndarray:
+    """Defensive 3-vector coercion (mirrors ``_op_slab``'s numeric coercion
+    discipline): ``None``/absent → ``default``; anything else must reshape to
+    a length-3 float array, else a retryable ``OpError``."""
+    if value is None:
+        return np.array(default, dtype=float)
+    try:
+        return np.asarray(value, dtype=float).reshape(3)
+    except (TypeError, ValueError) as exc:
+        raise OpError(f"{what} must be a 3-vector [x, y, z], got {value!r}") from exc
+
+
+def _plane_basis_uv(normal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Two orthonormal in-plane axes for a unit ``normal`` — mirrors
+    ``probe._plane_basis``'s construction (seed off the axis least aligned
+    with ``normal``, Gram-Schmidt, cross for the second axis), returning
+    just the ``(u, v)`` pair this module needs."""
+    seed = (
+        np.array([1.0, 0.0, 0.0]) if abs(normal[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    )
+    u = seed - (seed @ normal) * normal
+    u = u / np.linalg.norm(u)
+    v = np.cross(normal, u)
+    return u, v
+
+
+def _op_ring(scene: Scene, op: dict[str, Any]) -> None:
+    """Mint a regular n-gon ring of one element (§ molecule-mode fragment
+    library, nm-kind.md slice 2 — the aromatic 6-ring template).
+
+    ``{"op": "ring", "element": "C", "n": 6, "aromatic": true, "center":
+    [x,y,z], "normal": [nx,ny,nz], "bond_length": <Å, optional>}``.
+
+    Atoms land in the plane through ``center`` (Cartesian, default the
+    origin) perpendicular to ``normal`` (default ``+z``), evenly spaced on a
+    circle of circumradius ``r = L / (2 sin(pi/n))`` where ``L`` is
+    ``bond_length`` (default ``2 * covalent_radius(element) * 0.915`` — the
+    0.915 factor shrinks the raw single-bond radius sum toward the shorter
+    delocalized/aromatic bond length; for carbon this gives ~1.39 Å, the
+    textbook benzene C-C bond). Consecutive atoms (ring closes last→first)
+    get a declared bond: ``aromatic=true`` → order 1.5, kind ``aromatic``,
+    and each atom's ``hybridization`` is set to ``sp2``; ``aromatic=false``
+    → order 1, kind ``pairwise``, no hybridization declared. Labels mint via
+    :meth:`Scene.next_label` in polygon order.
+    """
+    element = op.get("element")
+    if not element:
+        raise OpError("ring needs an 'element'")
+    element = str(element)
+    n_raw = op.get("n")
+    if n_raw is None:
+        raise OpError("ring needs an 'n' (ring size, 3-12)")
+    try:
+        n = int(n_raw)
+    except (TypeError, ValueError) as exc:
+        raise OpError(f"ring 'n' must be an integer, got {n_raw!r}") from exc
+    if not (3 <= n <= 12):
+        raise OpError(f"ring 'n' must be in [3, 12] (a ring needs 3-12 atoms), got {n}")
+    aromatic = bool(op.get("aromatic", False))
+    center = _as_vec3(op.get("center"), np.zeros(3), "ring 'center'")
+    normal_raw = op.get("normal")
+    normal = _as_vec3(normal_raw, np.array([0.0, 0.0, 1.0]), "ring 'normal'")
+    nnorm = float(np.linalg.norm(normal))
+    if nnorm < 1e-9:
+        raise OpError(f"ring 'normal' must be a nonzero vector, got {normal_raw!r}")
+    normal = normal / nnorm
+    bl_raw = op.get("bond_length")
+    if bl_raw is None:
+        bond_length = 2.0 * elements.covalent_radius(element) * 0.915
+    else:
+        try:
+            bond_length = float(bl_raw)
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"ring 'bond_length' must be a number, got {bl_raw!r}"
+            ) from exc
+        if bond_length <= 0:
+            raise OpError(f"ring 'bond_length' must be positive, got {bond_length!r}")
+    radius = bond_length / (2.0 * np.sin(np.pi / n))
+    u, v = _plane_basis_uv(normal)
+    labels: list[str] = []
+    for k in range(n):
+        theta = 2.0 * np.pi * k / n
+        cart = center + radius * (np.cos(theta) * u + np.sin(theta) * v)
+        label = scene.next_label(element)
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(cart))
+        scene.atoms[label] = Atom(
+            label=label,
+            element=element,
+            frac=frac,
+            hybridization="sp2" if aromatic else None,
+        )
+        labels.append(label)
+    order = 1.5 if aromatic else 1.0
+    kind = "aromatic" if aromatic else "pairwise"
+    for k in range(n):
+        i, j = labels[k], labels[(k + 1) % n]
+        # wrap() may split a ring across a cell wall — carry each bond's MIC
+        # image so image-trusting probes (bonds_through_plane) stay exact.
+        _, img = scene.cell.mic(scene.atoms[i].frac, scene.atoms[j].frac)
+        scene.bonds.append(
+            Bond(i=i, j=j, order=order, kind=kind, provenance="declared", image=img)
+        )
+
+
+def _combined_adjacency(scene: Scene) -> dict[str, set[str]]:
+    """Bond-graph adjacency over DECLARED + geometrically-INFERRED bonds —
+    the "physically attached atoms must move together" definition of a
+    fragment for :func:`_op_attach` (broader than the pure declared-only
+    graph :mod:`.probe`/:mod:`.vsepr` use, since a fragment straddling a
+    close but never-``add_bond``-ed contact still has to move as one rigid
+    body)."""
+    adj: dict[str, set[str]] = {label: set() for label in scene.atoms}
+    for b in scene.bonds:
+        if b.i in adj and b.j in adj:
+            adj[b.i].add(b.j)
+            adj[b.j].add(b.i)
+    from . import probe  # local import: probe.py doesn't import ops.py, safe
+
+    for b in probe.detect_bonds(scene):
+        if b.i in adj and b.j in adj:
+            adj[b.i].add(b.j)
+            adj[b.j].add(b.i)
+    return adj
+
+
+def _fragment_labels(adj: dict[str, set[str]], start: str) -> set[str]:
+    """The connected component containing ``start`` over ``adj`` (BFS/DFS,
+    order doesn't matter — a plain set)."""
+    seen = {start}
+    stack = [start]
+    while stack:
+        cur = stack.pop()
+        for nxt in adj.get(cur, ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def _neighbor_unit_sum(
+    scene: Scene, adj: dict[str, set[str]], label: str
+) -> np.ndarray | None:
+    """Sum of unit vectors from ``label`` to its bond-graph neighbours
+    (:func:`_combined_adjacency`), each MIC-unwrapped relative to ``label``
+    first (the ``_resolve_site`` discipline — a neighbour across a cell wall
+    isn't averaged from its wrapped-away image). ``None`` if ``label`` has
+    no neighbours."""
+    neighbors = adj.get(label, set())
+    if not neighbors:
+        return None
+    atom = scene.atoms[label]
+    total = np.zeros(3)
+    for other_label in neighbors:
+        other = scene.atoms[other_label]
+        _, img = scene.cell.mic(atom.frac, other.frac)
+        vec = scene.cell.frac_to_cart(
+            other.frac + np.array(img, dtype=float) - atom.frac
+        )
+        norm = float(np.linalg.norm(vec))
+        if norm > 1e-9:
+            total += vec / norm
+    return total
+
+
+def _attach_direction(op: dict[str, Any], key: str, atom_label: str) -> np.ndarray:
+    """The explicit ``direction``/``from_direction`` fallback arg (unit
+    vector), for when a bonding-direction sum is unavailable or degenerate.
+    Raises a retryable ``OpError`` naming the atom and the arg when absent."""
+    raw = op.get(key)
+    if raw is None:
+        raise OpError(
+            f"attach can't find a bonding direction at {atom_label!r} — it has "
+            f"no bonded neighbours (or their directions cancel out, e.g. "
+            f"perfectly linear/symmetric surroundings); pass an explicit "
+            f"{key!r}: [x, y, z]"
+        )
+    try:
+        vec = np.asarray(raw, dtype=float).reshape(3)
+    except (TypeError, ValueError) as exc:
+        raise OpError(f"attach {key!r} must be a 3-vector, got {raw!r}") from exc
+    norm = float(np.linalg.norm(vec))
+    if norm < 1e-9:
+        raise OpError(f"attach {key!r} must be a nonzero vector, got {raw!r}")
+    return vec / norm
+
+
+def _rotation_aligning(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rotation matrix ``R`` such that ``R @ normalize(a) == normalize(b)``
+    (Rodrigues' formula). Antiparallel inputs (``sin(theta) ~ 0``, ``cos ~
+    -1``) get a stable 180°-about-a-perpendicular-axis rotation instead of
+    dividing by zero; parallel inputs (``cos ~ 1``) get the identity."""
+    a_hat = a / np.linalg.norm(a)
+    b_hat = b / np.linalg.norm(b)
+    cross = np.cross(a_hat, b_hat)
+    s = float(np.linalg.norm(cross))
+    c = float(a_hat @ b_hat)
+    if s < 1e-9:
+        if c > 0:
+            return np.eye(3)
+        seed = (
+            np.array([1.0, 0.0, 0.0])
+            if abs(a_hat[0]) < 0.9
+            else np.array([0.0, 1.0, 0.0])
+        )
+        perp = seed - (seed @ a_hat) * a_hat
+        perp = perp / np.linalg.norm(perp)
+        return 2.0 * np.outer(perp, perp) - np.eye(3)
+    vx = np.array(
+        [
+            [0.0, -cross[2], cross[1]],
+            [cross[2], 0.0, -cross[0]],
+            [-cross[1], cross[0], 0.0],
+        ]
+    )
+    return np.eye(3) + vx + vx @ vx * ((1.0 - c) / (s * s))
+
+
+def _op_attach(scene: Scene, op: dict[str, Any]) -> None:
+    """Rigidly attach one fragment to another by bonding ``from`` to ``to``
+    (§ molecule-mode fragment library, nm-kind.md slice 2).
+
+    ``{"op": "attach", "from": "aC7", "to": "aC1", "order": 1, "distance":
+    <Å, optional>, "direction": [x,y,z] (optional, 'to' fallback),
+    "from_direction": [x,y,z] (optional, 'from' fallback)}``.
+
+    Moves the ENTIRE fragment containing ``from`` (the connected component
+    over declared + inferred bonds, :func:`_combined_adjacency` — physically
+    attached atoms must move together) so ``from`` bonds to ``to``, then
+    declares the new bond. ``from``/``to`` already in the same fragment is
+    rejected — that's a ring closure, not an attach.
+
+    Geometry: at ``to``, ``d_to = -normalize(sum of unit vectors from 'to'
+    to each of its bond-graph neighbours)`` — the open coordination
+    direction away from ``to``'s existing bonds. Same construction for
+    ``d_from`` at ``from`` within its own fragment. A degenerate/absent sum
+    falls back to the ``direction``/``from_direction`` arg, else raises.
+    The fragment is rotated (Rodrigues, about ``from``'s position) so
+    ``d_from`` maps to ``-d_to``, then translated so
+    ``from's position = to's position + distance * d_to`` (``distance``
+    defaults to the sum of covalent radii). Under pbc, the fragment is
+    unwrapped to the MIC image nearest ``from`` (the ``_resolve_site``
+    per-atom-relative-to-one-reference discipline, not a bond-graph walk)
+    before the rotation — exact for a compact fragment, and exact by
+    construction in molecule mode (pbc all-False).
+
+    No torsional choice is made — the dihedral about the new bond is
+    arbitrary; ``relax``/``vsepr.advisories`` (``pi_twist``) handle it
+    downstream.
+    """
+    from_label = op.get("from")
+    to_label = op.get("to")
+    if not from_label or not to_label:
+        raise OpError("attach needs 'from' and 'to' atom labels")
+    from_label = str(from_label)
+    to_label = str(to_label)
+    from_atom = _require_atom(scene, from_label)
+    to_atom = _require_atom(scene, to_label)
+
+    adj = _combined_adjacency(scene)
+    from_frag = _fragment_labels(adj, from_label)
+    if to_label in from_frag:
+        raise OpError(
+            "attach joins two fragments — for a ring closure within one "
+            "fragment, declare the bond with add_bond instead"
+        )
+
+    order_raw = op.get("order", 1.0)
+    try:
+        order = float(order_raw)
+    except (TypeError, ValueError) as exc:
+        raise OpError(f"attach 'order' must be a number, got {order_raw!r}") from exc
+
+    dist_raw = op.get("distance")
+    if dist_raw is None:
+        distance = elements.covalent_radius(
+            from_atom.element
+        ) + elements.covalent_radius(to_atom.element)
+    else:
+        try:
+            distance = float(dist_raw)
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"attach 'distance' must be a number, got {dist_raw!r}"
+            ) from exc
+
+    to_sum = _neighbor_unit_sum(scene, adj, to_label)
+    if to_sum is None or float(np.linalg.norm(to_sum)) < 1e-6:
+        d_to = _attach_direction(op, "direction", to_label)
+    else:
+        d_to = -to_sum / float(np.linalg.norm(to_sum))
+
+    from_sum = _neighbor_unit_sum(scene, adj, from_label)
+    if from_sum is None or float(np.linalg.norm(from_sum)) < 1e-6:
+        d_from = _attach_direction(op, "from_direction", from_label)
+    else:
+        d_from = -from_sum / float(np.linalg.norm(from_sum))
+
+    # unwrap the fragment relative to `from` (per-atom MIC against one fixed
+    # reference — the `_resolve_site` discipline; exact in molecule mode).
+    from_frac = from_atom.frac
+    unwrapped: dict[str, np.ndarray] = {}
+    for label in from_frag:
+        atom = scene.atoms[label]
+        _, img = scene.cell.mic(from_frac, atom.frac)
+        unwrapped[label] = scene.cell.frac_to_cart(
+            atom.frac + np.array(img, dtype=float)
+        )
+
+    pivot = unwrapped[from_label]
+    rot = _rotation_aligning(d_from, -d_to)
+    to_cart = scene.cell.frac_to_cart(to_atom.frac)
+    target_from_cart = to_cart + distance * d_to
+
+    for label in from_frag:
+        rel = unwrapped[label] - pivot
+        new_cart = target_from_cart + rot @ rel
+        scene.atoms[label].frac = scene.cell.wrap(scene.cell.cart_to_frac(new_cart))
+
+    # The wrapped target position may sit in a different periodic image than
+    # `to` (a wall-adjacent `to` with d_to pointing across it) — declare the
+    # bond with its MIC image, not a blind (0,0,0), for the image-trusting
+    # probes (bonds_through_plane / bonds_in_sphere).
+    _, img = scene.cell.mic(scene.atoms[from_label].frac, to_atom.frac)
+    scene.bonds.append(
+        Bond(
+            i=from_label,
+            j=to_label,
+            order=order,
+            kind=str(op.get("kind", "pairwise")),
+            provenance="declared",
+            image=img,
+        )
+    )
+
+
 _OPS = {
     "set_cell": _op_set_cell,
     "slab": _op_slab,
@@ -473,4 +820,6 @@ _OPS = {
     "measure": _op_measure,
     "unmark": _op_unmark,
     "remove_measure": _op_remove_measure,
+    "ring": _op_ring,
+    "attach": _op_attach,
 }
