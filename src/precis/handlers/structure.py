@@ -8,7 +8,9 @@ the seven-verb surface:
 - ``put``    — create/replace from a JSON spec ``{cell, ops}`` (``id=`` slug).
 - ``edit``   — apply more ops to an existing design (``ops=`` or ``text=`` JSON).
 - ``get``    — list designs, a design's TOC (``id=slug``), a probe
-  (``view='atom'|'neighborhood'|'bonds'|'find'|'validate'``), a navigation
+  (``view='atom'|'neighborhood'|'bonds'|'find'|'validate'`` — the hard-reject
+  gate findings plus the never-gating VSEPR/hybridization advisory tier), a
+  navigation
   probe (``view='line'|'plane'|'bonds_through_plane'|'bonds_in_sphere'|'path'|
   'rings'|'fragments'|'diff'|'pov'``), or an export — all with ``args=``.
 - ``delete`` — soft-retire a whole design.
@@ -66,6 +68,7 @@ from precis.structure import (
     export,
     probe,
     validate,
+    vsepr,
 )
 from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
@@ -2035,12 +2038,17 @@ class StructureHandler(Handler):
                 undercoordinated=bool(args.get("undercoordinated", False)),
             )
             return Response(body="# found: " + (", ".join(labels) or "(none)"))
-        # validate
-        findings = validate(scene)
+        # validate — the hard-reject gate (error) plus the advisory VSEPR/
+        # hybridization tier (warn); the latter never blocks anything, it's
+        # display-only here (see vsepr.py's module docstring).
+        findings = validate(scene) + vsepr.advisories(scene)
         if not findings:
             return Response(body="✓ no validator findings")
+        n_error = sum(1 for f in findings if f.severity == "error")
+        n_warn = sum(1 for f in findings if f.severity == "warn")
         rows = [
             {
+                "severity": f.severity,
                 "rule": f.rule,
                 "atoms": ",".join(f.atoms),
                 "measured": f"{f.measured}",
@@ -2050,9 +2058,10 @@ class StructureHandler(Handler):
             for f in findings
         ]
         return Response(
-            body=f"# {len(findings)} validator finding(s)\n"
+            body=f"# {n_error} error(s), {n_warn} warning(s)\n"
             + render_agent_table(
-                rows, schema=["rule", "atoms", "measured", "expected", "fix"]
+                rows,
+                schema=["severity", "rule", "atoms", "measured", "expected", "fix"],
             )
         )
 

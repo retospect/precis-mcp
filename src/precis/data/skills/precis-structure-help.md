@@ -181,7 +181,9 @@ get(
 )  # select atoms by predicate
 get(
     ..., view="validate"
-)  # the DRC gate: overlaps + over-valence + too-long bonds + fixes
+)  # DRC, two tiers: errors (overlaps/valence/bond length — these gate a
+#    cloud relax) + advisory warnings (VSEPR angle strain, twisted π bond,
+#    3-/4-ring, hybridization conflict — never block anything)
 ```
 
 ### Spatial — the CAD ray / plane, retargeted to atoms

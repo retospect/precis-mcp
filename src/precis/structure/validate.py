@@ -8,7 +8,8 @@ Each finding names
 the rule, the offending value, and a ``suggested_fix`` in the op vocabulary
 (considerata §22-B). This is the DRC-lite read run as a *gate*; it is also the
 hard-reject step ahead of a cloud relax dispatch (gripe 51393) — a design with
-any finding here never reaches the GPU node.
+any finding here never reaches the GPU node. The advisory (never-gating) warn
+tier — hybridization/VSEPR/ring strain — is :mod:`vsepr`, not this module.
 """
 
 from __future__ import annotations
@@ -41,6 +42,10 @@ class ValidationIssue:
     measured: float
     expected: float
     suggested_fix: str
+    #: 'error' (this module's hard-reject gate) or 'warn' (:mod:`vsepr`'s
+    #: advisory tier). Defaults to 'error' so every existing construction
+    #: here stays valid without naming it.
+    severity: str = "error"
 
 
 def validate(scene: Scene) -> list[ValidationIssue]:
