@@ -157,6 +157,15 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Compile the reMarkable PDF but do not upload it.",
     )
     rm.add_argument(
+        "--user",
+        default=None,
+        help=(
+            "Web login whose /account device pairing to upload with "
+            "(REMARKABLE_RMAPI_CONFIG:<login> in the vault); default: the "
+            "deployment-wide credential."
+        ),
+    )
+    rm.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -323,7 +332,7 @@ def _run_remarkable(args: argparse.Namespace) -> None:
         if ref is None:
             print(f"draft remarkable: no draft {args.slug!r}", file=sys.stderr)
             sys.exit(2)
-        if not args.dry_run and not remarkable_configured(store):
+        if not args.dry_run and not remarkable_configured(store, login=args.user):
             print(
                 "draft remarkable: no device credential — set "
                 "REMARKABLE_RMAPI_CONFIG or REMARKABLE_TOKEN (or use --dry-run).",
@@ -344,7 +353,13 @@ def _run_remarkable(args: argparse.Namespace) -> None:
         if args.dry_run:
             print("draft remarkable: --dry-run, not uploading.", file=sys.stderr)
             return
-        sres = send_pdf(cres.pdf, folder=args.folder, display_name=title, store=store)
+        sres = send_pdf(
+            cres.pdf,
+            folder=args.folder,
+            display_name=title,
+            store=store,
+            login=args.user,
+        )
         if not sres.ok:
             print(
                 f"draft remarkable: upload FAILED — {sres.error}\n{sres.output}",

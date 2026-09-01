@@ -696,6 +696,134 @@ def test_footnote_excerpt_trims_to_a_boundary() -> None:
     assert r"\textellipsis" in out and len(out) < len(long_text)
 
 
+def test_footnote_mode_hub_renders_rich_claim_footnote(store) -> None:
+    """A [fi<id>] claim-hub cite in reMarkable mode becomes ONE
+    self-contained footnote: the claim sentence, the publish ladder with
+    the current rung bolded (no publish row = candidate), each supporting
+    citation's grounding pc handle + the paper title in bold + its
+    bibliography number + the FULL grounding passage text, and the papers
+    registered for the end bibliography."""
+    hub = mint_hub(store, _HUB_CLAIM)
+    origin = store.insert_ref(
+        kind="paper", slug="latxh01", title="Original report", year=2001, meta={}
+    ).id
+    follow = store.insert_ref(
+        kind="paper", slug="latxh02", title="Follow-up study", year=2005, meta={}
+    ).id
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES "
+            "(%s, 0, 'paragraph', 'Coupling proceeds at room temperature.') "
+            "RETURNING chunk_id",
+            (origin,),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    origin_pc = f"pc{int(row[0])}"
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=origin,
+        role="corroborates",
+        meta={"source_handle": origin_pc},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=follow,
+        role="corroborates",
+        meta={"source_handle": "pc9002"},
+    )
+    store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+
+    ctx = _fn_ctx(store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx)
+
+    assert out.count(r"\footnote{") == 1  # one rich footnote, not one per key
+    assert f"Claim fi{hub}" in out
+    assert r"\textbf{candidate} $\to$ reviewed $\to$ signed" in out
+    assert "Pd/C catalyzes Suzuki coupling" in out  # the nanopub statement
+    assert r"\textbf{Original report}" in out and "(2001)" in out
+    assert r"\textbf{Follow-up study}" in out and "(2005)" in out
+    assert origin_pc in out and "pc9002" in out
+    # The held grounding chunk's FULL passage is quoted under its handle;
+    # a handle this host has no chunk for quotes nothing (no empty shell).
+    assert "Coupling proceeds at room temperature." in out
+    assert "pc9002: ``''" not in out
+    assert r"\cite{latxh01}" in out and r"\cite{latxh02}" in out
+    assert set(ctx.cited) == {"latxh01", "latxh02"}
+
+
+def test_footnote_mode_hub_bolds_reviewed_rung_and_frozen_statement(store) -> None:
+    """An approved hub's footnote bolds the reviewed rung and quotes the
+    FROZEN approved title (what a signature would cover), not the live hub
+    wording."""
+    hub = _hub_with_derived_originator(
+        store, origin_key="latxh03", follow_key="latxh04"
+    )
+    row = store.nanopub_create_publish_row(hub)
+    assert store.nanopub_approve(
+        row.id,
+        approved_title="Frozen approved claim sentence.",
+        claim_sha="0" * 64,
+        aida_uri="http://purl.org/aida/x",
+        grounding={},
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert r"candidate $\to$ \textbf{reviewed} $\to$ signed" in out
+    assert "Frozen approved claim sentence." in out
+
+
+def test_footnote_mode_hub_lists_dispute_and_citation_miss(store) -> None:
+    """Validation issues on record — a contradicts edge and a
+    meta.citation_misses entry — surface in the footnote's Issues run,
+    the disputing paper's title in bold."""
+    hub = _hub_with_derived_originator(
+        store, origin_key="latxh05", follow_key="latxh06"
+    )
+    disputer = store.insert_ref(
+        kind="paper", slug="latxh07", title="Contrary evidence", year=2010, meta={}
+    ).id
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=disputer, role="contradicts")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            ('{"citation_misses": [{"marker": 126, "cited_ref": 5}]}', hub),
+        )
+        conn.commit()
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert r"\emph{Issues:}" in out
+    assert r"disputed by \textbf{Contrary evidence}" in out
+    assert "citation miss" in out and "126" in out
+
+
+def test_footnote_mode_hub_trust_marked_once_inside_footnote(store) -> None:
+    """A non-clean hub's trust text appears exactly once — on the footnote's
+    Issues line — with NO duplicate inline mark trailing the footnote (the
+    non-footnote path's \\textsuperscript chrome). Non-clean forced via the
+    hub-harden rule: every grounding paper declared unacquirable."""
+    hub = _hub_with_derived_originator(
+        store, origin_key="latxh08", follow_key="latxh09"
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id IN "
+            "(SELECT ref_id FROM refs WHERE kind='paper' "
+            " AND ref_id IN (SELECT src_ref_id FROM links WHERE dst_ref_id=%s))",
+            ('{"unacquirable_override": {"note": "paywalled", "by": "t"}}', hub),
+        )
+        conn.commit()
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert out.count("unverified") == 1  # Issues line only
+    assert r"\textsuperscript{?}" not in out  # no trailing inline mark
+
+
 def test_assemble_document_injects_remarkable_geometry() -> None:
     """remarkable=True stamps the RM2 page geometry after the preamble;
     the default export leaves the standard 1in margins untouched."""

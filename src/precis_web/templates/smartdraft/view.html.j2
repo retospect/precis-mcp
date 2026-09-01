@@ -1134,7 +1134,13 @@
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="typeset each cited source as a tablet-sized reading edition (body + claims + original) and send it">reading → reMarkable</button>
           </form>
+          {% else %}
+          <span class="text-slate-400" title="no device credential found">reMarkable: pair a tablet at <a href="/account" class="underline">/account</a></span>
           {% endif %}
+          {# Job-endpoint outcome line — the fetch()-intercepted forms above
+             report here (an enqueue is otherwise invisible, and a 400 was
+             silently swallowed before). #}
+          <span id="sd-export-status" class="text-[11px]"></span>
         </div>
       </div>
 
@@ -1666,9 +1672,32 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     if (f.closest('#sd-content') && inPlace.some((ep) => act === `/drafts/${IDENT}/${ep}`)) {
       if (e.defaultPrevented) return;
       e.preventDefault();
+      // Job-starting endpoints report into #sd-export-status (an enqueue is
+      // otherwise invisible) and skip the panel refresh (enqueuing changes
+      // nothing in the document — the old refresh double-rendered for naught).
+      const jobish = ['export.pdf', 'remarkable', 'remarkable-papers', 'remarkable-reading']
+        .some((ep) => act === `/drafts/${IDENT}/${ep}`);
+      const say = (msg, bad) => {
+        const el = document.getElementById('sd-export-status');
+        if (el) { el.textContent = msg; el.className = 'text-[11px] ' + (bad ? 'text-red-600' : 'text-emerald-700'); }
+      };
+      if (jobish) say('working…', false);
       fetch(act, { method: 'POST', body: new FormData(f) })
-        .then(() => window.__sdRefresh())
-        .catch(() => window.alert('network error — not saved'));
+        .then(async (res) => {
+          if (!res.ok) {
+            // redirect_or_error renders the error page with a 4xx — fetch()
+            // does not reject on that, so surface its text instead of
+            // silently pretending success (the old behaviour).
+            const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+            const msg = (doc.body ? doc.body.textContent : '').replace(/\s+/g, ' ').trim().slice(0, 300);
+            if (jobish) say(msg || `failed (HTTP ${res.status})`, true);
+            else window.alert(msg || `failed (HTTP ${res.status})`);
+            return;
+          }
+          if (jobish) { say('✓ job enqueued — progress lands on the project todo', false); return; }
+          window.__sdRefresh();
+        })
+        .catch(() => { if (jobish) say('network error', true); else window.alert('network error — not saved'); });
     }
   });
   // The hover-preview card escaping smartdraft's overflow-clipped panes is

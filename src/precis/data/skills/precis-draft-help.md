@@ -763,11 +763,19 @@ of a held paper) or the export marks a stub + warns.
 - **Word/.docx** — toolchain-free and **synchronous**, with render-time
   acronym first-use expansion + an auto acronyms list.
 - **reMarkable** (`precis draft remarkable`, needs a device credential —
-  the signed-in user's own `/account` pairing, else the deployment-wide
-  vault secret `REMARKABLE_RMAPI_CONFIG`) uploads a reMarkable-mode PDF:
-  RM2 page geometry, and every citation renders as a numbered `\footnote`
-  — cite + bibliography number + the referenced chunk excerpt — instead
-  of a bare `\cite`, so you read the source inline. Destination =
+  the signed-in user's own `/account` pairing (`--user <login>` on the
+  CLI), else the deployment-wide vault secret `REMARKABLE_RMAPI_CONFIG`)
+  uploads a reMarkable-mode PDF: RM2 page geometry, and every citation
+  renders as a numbered `\footnote` instead of a bare `\cite`, so you
+  read the source inline. A paper/patent cite footnotes the human cite +
+  bibliography number + the referenced chunk excerpt; a **claim-hub**
+  `[fi<id>]` cite footnotes the claim itself — the nanopub statement
+  (frozen approved sentence once reviewed), the publish ladder with the
+  current rung bolded, each supporting citation's grounding `pc<id>` +
+  the source paper's title in bold + its bibliography number, and any
+  recorded validation issues (trust label, citation misses, disputes,
+  source integrity flags). Cites inside figure captions and headings
+  stay plain `\cite` (LaTeX forbids a footnote there). Destination =
   `remarkable.target_folder` app_setting (default `/Precis`).
 - **Cited sources → reMarkable**
   (`put(kind='job', job_type='remarkable_papers_send',

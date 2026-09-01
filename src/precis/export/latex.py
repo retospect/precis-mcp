@@ -81,7 +81,7 @@ _PATENT_DOC_TYPE = "patent"
 _REMARKABLE_GEOMETRY = (
     "% ── reMarkable 2 page profile (send-to-tablet export) ──\n"
     "\\geometry{paperwidth=157.6mm,paperheight=209.6mm,"
-    "top=10mm,bottom=14mm,left=12mm,right=22mm,heightrounded}\n"
+    "top=10mm,bottom=14mm,left=22mm,right=2mm,heightrounded}\n"
     "\\linespread{1.08}"
 )
 
@@ -554,6 +554,15 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
             ctx.warnings.append(
                 f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
             )
+    if ctx.footnote_refs and fc.is_hub and fc.evidence is not None:
+        # The rich footnote carries the trust state on its own Issues line
+        # (and its internal ctx.trust.resolve keeps the end-matter list /
+        # override audit in sync) — appending the inline mark too would
+        # print the same trust text twice. A pin, when present, adjusted
+        # the *citation* keys above; the footnote deliberately still lists
+        # the hub's full derived evidence — a pin overrides what gets
+        # cited, never what the evidence graph holds.
+        return _hub_footnote(pk, fc.evidence, ctx)
     return _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
 
 
@@ -792,7 +801,190 @@ def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
     exc = _footnote_excerpt(excerpt, ctx)
     if exc:
         body += f"\\\\ {exc}"
-    return f"\\footnote{{{body}}}"
+    return f"\\footnote{{{body}}}\x02"  # \x02: adjacency sentinel, see _render_inline
+
+
+#: The nanopub publish ladder's core rungs, rendered in every hub footnote.
+#: A state past ``signed`` (anchored/published) or a terminal one
+#: (rejected/superseded/retracted) is appended as an extra bolded rung —
+#: the reader still sees the canonical ladder plus where the claim actually
+#: sits.
+_PUBLISH_RUNGS = ("candidate", "reviewed", "signed")
+
+
+def _publish_ladder_tex(state: str) -> str:
+    rungs = list(_PUBLISH_RUNGS)
+    if state not in rungs:
+        rungs.append(state)
+    return " $\\to$ ".join(
+        f"\\textbf{{{_tex(r)}}}" if r == state else _tex(r) for r in rungs
+    )
+
+
+def _hub_publish_info(pk: int, ctx: _Ctx) -> tuple[str, str | None]:
+    """``(publish_state, frozen_statement)`` for a claim hub. No publish row
+    (nanopub work not started) reads as ``candidate``; the frozen statement is
+    the approve-time ``approved_title`` when one exists (what a signature
+    covers), else ``None`` and the caller falls back to the live hub title."""
+    row = None
+    fn = getattr(ctx.store, "nanopub_publish_row", None)
+    if callable(fn):
+        try:
+            row = fn(pk)
+        except Exception:  # pragma: no cover — store hiccup
+            row = None
+    if row is None:
+        return "candidate", None
+    return str(row.state), (getattr(row, "approved_title", None) or None)
+
+
+def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
+    """reMarkable mode: render a Taproot claim-hub cite as ONE self-contained
+    footnote — the nanopub statement, the publish ladder with the current
+    rung bolded, every supporting citation (grounding ``pc<id>`` handles +
+    the source paper's title in bold + its bibliography number), and any
+    validation issues on record (trust label, citation misses, disputed /
+    integrity-flagged sources) — so the claim's full standing reads offline
+    on the tablet.
+
+    Follows the ``_source_footnote`` degrade policy: any per-part store
+    hiccup drops that part rather than aborting an export that previously
+    worked."""
+    hub_ref = None
+    if ctx.store is not None:
+        try:
+            hub_ref = ctx.store.fetch_refs_by_ids([pk]).get(pk)
+        except Exception:  # pragma: no cover — store hiccup
+            hub_ref = None
+    state, frozen = _hub_publish_info(pk, ctx)
+    statement = frozen or (getattr(hub_ref, "title", None) or f"finding {pk}")
+    # _render_gap, not _tex: a claim sentence / paper title may carry inline
+    # math ($C_{60}$) that must pass through, not be escaped to literals.
+    statement = _render_gap(" ".join(statement.split()), ctx)
+
+    # Grounding pc handles, one list per source paper (a paper grounding the
+    # claim at two passages shows both handles on its line).
+    handles_by_paper: dict[int, list[str]] = {}
+    for g in getattr(evidence, "grounding", None) or []:
+        bucket = handles_by_paper.setdefault(g.paper_ref_id, [])
+        if g.source_handle and g.source_handle not in bucket:
+            bucket.append(g.source_handle)
+
+    lines: list[str] = []
+    issues: list[str] = []
+    seen_papers: set[int] = set()
+    for edge in (*evidence.originators, *evidence.corroborators):
+        if edge.paper_ref_id in seen_papers:
+            continue
+        seen_papers.add(edge.paper_ref_id)
+        handles = handles_by_paper.get(edge.paper_ref_id) or (
+            [edge.source_handle] if edge.source_handle else []
+        )
+        parts = []
+        if handles:
+            parts.append(_tex(", ".join(handles)) + " — ")
+        title_tex = _render_gap(edge.title or f"paper {edge.paper_ref_id}", ctx)
+        parts.append(f"\\textbf{{{title_tex}}}")
+        if edge.year:
+            parts.append(f" ({edge.year})")
+        key = _hub_paper_cite_key(edge.paper_ref_id, ctx)
+        if key:
+            parts.append(f"~\\cite{{{key}}}")
+        lines.append("".join(parts))
+        # The full grounding passage under each pc handle — the tablet
+        # reader sees the exact supporting text, not just its address.
+        for h in handles:
+            passage = _hub_passage_text(h, ctx)
+            if passage:
+                lines.append(f"\\emph{{{_tex(h)}: ``{_render_gap(passage, ctx)}''}}")
+        # Per-edge chase *caveats* are scope notes, not validation issues —
+        # a well-supported hub carries a dozen and they'd drown the real
+        # flags below, so they stay out of the footnote.
+        if edge.integrity and edge.integrity != "clean":
+            issues.append(
+                f"source \\textbf{{{_tex(edge.title)}}} flagged: {_tex(edge.integrity)}"
+            )
+
+    # Trust label (the ONE shared derivation both exporters read) — only a
+    # non-clean label is an issue worth a line.
+    if ctx.trust is not None:
+        try:
+            tstate = ctx.trust.resolve(pk)
+        except Exception:  # pragma: no cover — store hiccup / malformed meta
+            tstate = None
+        if tstate is not None and tstate.label != "clean":
+            text = (
+                UNSUPPORTED_MARK_TEXT
+                if tstate.label == "unsupported"
+                else mark_text(tstate)
+            )
+            issues.append(_tex(text.strip("[]")))
+
+    for miss in (getattr(hub_ref, "meta", None) or {}).get("citation_misses") or []:
+        if isinstance(miss, dict) and miss.get("marker"):
+            issues.append(
+                f"citation miss: cited content not found at {_tex(str(miss['marker']))}"
+            )
+    for edge in getattr(evidence, "contradictors", None) or []:
+        issues.append(f"disputed by \\textbf{{{_tex(edge.title or '?')}}}")
+
+    label = handle_registry.format_handle("finding", pk)
+    body = f"Claim {_tex(label)} [{_publish_ladder_tex(state)}]: "
+    body += f"``{statement}''"
+    if lines:
+        # One line per evidence entry / passage quote (a "; " run would
+        # wall-of-text once full passages ride along).
+        body += "\\\\ " + "\\\\ ".join(lines)
+    if issues:
+        body += "\\\\ \\emph{Issues:} " + "; ".join(issues)
+    return f"\\footnote{{{body}}}\x02"  # \x02: adjacency sentinel, see _render_inline
+
+
+def _hub_passage_text(handle: str, ctx: _Ctx) -> str:
+    """The full text of a grounding chunk (``pc<id>``), whitespace-collapsed
+    and passage-sanitized. Empty for a fake store, a legacy ``slug~ord``
+    handle the universal resolver doesn't take, or a chunk this host doesn't
+    hold.
+
+    Sanitize: ingest sometimes wraps mangled table fragments in ``$…$``
+    (``$\\begin{tabular}… & …$``), which the math passthrough would carry
+    verbatim into the footnote and break the compile (alignment tabs outside
+    a tabular). A quoted passage is for *reading*, so a math span carrying
+    an environment, an alignment tab, or a line break is replaced with an
+    ellipsis; ordinary inline math survives."""
+    drafts = getattr(ctx.store, "drafts", None)
+    fn = getattr(drafts, "universal_chunk", None)
+    if not callable(fn):
+        return ""
+    try:
+        uc = fn(handle)
+    except Exception:  # pragma: no cover — store hiccup / legacy handle
+        return ""
+    text = " ".join(((uc or {}).get("text") or "").split())
+    return _MATH.sub(
+        lambda m: "…" if re.search(r"\\begin\b|&|\\\\", m.group(0)) else m.group(0),
+        text,
+    )
+
+
+def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
+    """A supporter paper's bibliography key, registered on ``ctx.cited`` so
+    the end bibliography carries the entry the footnote's ``[N]`` points at.
+    ``None`` (no key, or a fake store without the method) drops the number,
+    keeping the bold title line."""
+    fn = getattr(ctx.store, "ref_cite_keys", None)
+    if not callable(fn):
+        return None
+    try:
+        aliases = fn(paper_ref_id)
+    except Exception:  # pragma: no cover — store hiccup
+        return None
+    if not aliases:
+        return None
+    key = str(aliases[0])
+    if key not in ctx.cited:
+        ctx.cited.append(key)
+    return key
 
 
 #: A run of directly-adjacent ``\cite{…}`` (no separator) → one grouped
@@ -823,7 +1015,15 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
         out.append(_render_reference(m, ctx))
         last = m.end()
     out.append(_render_gap(text[last:], ctx))
-    return _merge_adjacent_cites("".join(out))
+    s = _merge_adjacent_cites("".join(out))
+    # Directly-adjacent footnote markers print as one number ("23" for 2
+    # then 3). Each emitted footnote carries a trailing \x02 sentinel; a
+    # sentinel touching the next \footnote marks true adjacency (anything
+    # in between — even a space — breaks the pair), and gets a
+    # superscript-comma separator. Renderer-side because footmisc's
+    # [multiple] stays inert under this preamble's hyperref.
+    s = s.replace("\x02\\footnote{", "\\textsuperscript{,}\\footnote{")
+    return s.replace("\x02", "")
 
 
 def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
@@ -926,7 +1126,7 @@ def render_body(
             lines.extend(_render_figure(c, ctx, label))
         elif c.chunk_kind == "heading":
             cmd = _SECTION_CMD[min(c.depth, len(_SECTION_CMD) - 1)]
-            title = _render_inline(c.text or "", ctx)
+            title = _render_moving_arg(c.text or "", ctx)
             lines.append(f"\\{cmd}{{{title}}}{label}")
         elif c.chunk_kind in ("listing", "code"):
             # Code is verbatim — no inline rendering / escaping.
@@ -955,6 +1155,21 @@ def render_body(
     )
 
 
+def _render_moving_arg(text: str, ctx: _Ctx) -> str:
+    """Render prose destined for a *moving argument* (``\\caption`` /
+    ``\\section``): footnote mode is suppressed for the span — a
+    ``\\footnote`` there doesn't render (floats) or breaks outright under
+    hyperref — so a cite stays a plain ``\\cite`` whose [N] still resolves
+    in the end bibliography."""
+    if not ctx.footnote_refs:
+        return _render_inline(text, ctx)
+    ctx.footnote_refs = False
+    try:
+        return _render_inline(text, ctx)
+    finally:
+        ctx.footnote_refs = True
+
+
 def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
     """Render a ``chunk_kind='figure'`` chunk as a LaTeX ``figure`` float. The image asset is resolved to bytes+ext and recorded
     on ``ctx.figures`` for the caller to write under ``pics/``; the caption is
@@ -962,7 +1177,7 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
     gate first) emits a visible placeholder + a warning rather than vanishing."""
     from precis.utils.figure_source import figure_export_asset
 
-    caption = _render_inline(c.text or "", ctx)
+    caption = _render_moving_arg(c.text or "", ctx)
     asset = figure_export_asset(ctx.store, c)
     if asset is None:
         ctx.warnings.append(f"figure {c.dc} has no exportable image — placeholder used")
