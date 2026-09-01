@@ -134,3 +134,15 @@ The **DRC and MLIP gaps** this slice depends on are filed as gripes
 **gr285775** (no formal charge; metal coordination unchecked). Face-code
 *binding energies* are meaningless until at least the dispersion gap is
 closed, so do not compute motif tables before then.
+
+**Dispersion half of gr285774: CLOSED 2026-09-01.** `relax(…,
+dispersion=True)` on the `ml` rung now adds DFT-D3 (`torch-dftd`, in the
+`dft-ml` extra), folds into the run-cube cache key so a corrected run can
+never collide with a bare one, and is local-only — the GPU container
+contract carries no dispersion flag, so a dispatch that would compute
+D3-free under a `dispersion=True` key is refused rather than minted. **Motif
+tables must pass `dispersion=True`**; the default is still off for
+compatibility, so an unqualified `fidelity='ml'` is still the under-bound
+number. Still open in gr285774: preflight gates *elements*, not chemistry —
+a charged organic cage passes `MACE_MP_ELEMENTS` silently, and the
+organic-domain-model question (MACE-OFF class vs `mace_mp`) is untouched.

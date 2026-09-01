@@ -107,7 +107,7 @@ put(
 | `attach` | `from`, `to`, `order?`, `distance?`, `direction?:[x,y,z]`, `from_direction?:[x,y,z]` | rigidly move the whole fragment containing `from` so it bonds to `to` (aligned to `to`'s open coordination direction); `from`/`to` already in the same fragment is rejected — use `add_bond` for a ring closure |
 | `import_fragment` | `design`, `offset?:[x,y,z]` | copy another design's atoms + declared bonds in as a positioned fragment (handler-level; response echoes the old→new label mapping so a follow-up `attach` can reference the new labels) |
 | `from_smiles` | `smiles`, `offset?:[x,y,z]`, `seed?` | mint a whole organic fragment from a SMILES string via rdkit's ETKDG 3D embedder (needs `precis-mcp[chem]`); deterministic per `(smiles, seed)`; aromatic atoms get `hybridization:sp2` and order-1.5 `aromatic` bonds, others order 1/2/3 `pairwise`; a best-effort MMFF cleanup runs but never fails the op; v1 carries geometry only — no formal charges/stereo beyond what ETKDG encodes |
-| `relax` | `fidelity?`, `steps?`, `model?` | terminal op — see the ladder below |
+| `relax` | `fidelity?`, `steps?`, `model?`, `dispersion?` | terminal op — see the ladder below |
 
 **Bonds are intent, not a DFT input.** Declare the bonds you mean; the
 geometry gets fixed by `relax`, and DFT consumes positions + cell (bonds are
@@ -357,6 +357,26 @@ return real energy + forces. A rung whose backend isn't installed **on this
 host** doesn't crash — it dispatches to the GPU node as a `struct_relax` job
 (see "Energy rungs run on the GPU node" below), never a bare error. `relax`
 honours `fixed` constraints — a frozen atom never moves.
+
+**`dispersion=True` on the `ml` rung** adds a DFT-D3 correction on top of the
+MLIP. Default off (unchanged), but turn it **on for anything held together by
+van der Waals contact** rather than covalent bonds — a host–guest complex, an
+interlocked mechanical bond, stacked aromatic faces. The MLIP's receptive
+field is a few Å, so without D3 those contacts read as barely bound and a
+sloppy design scores as well as a good one. It is part of the calculator's
+identity: the run-cube keys on it, so a D3 run never collides with a bare one,
+and `view='runs'` shows `dispersion=True` in the `calc:` header. Local-only —
+the GPU container contract carries no dispersion flag, so a host without
+`[dft-ml]` gets a clean `Unsupported` instead of a silently uncorrected
+dispatch. `model='chgnet'` has no D3 and rejects the flag.
+
+```python
+edit(
+    kind="structure",
+    id="rotaxane",
+    ops=[{"op": "relax", "fidelity": "ml", "dispersion": True}],
+)
+```
 
 ```python
 get(

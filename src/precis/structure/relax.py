@@ -116,6 +116,11 @@ class RelaxResult:
     forces_source: str | None = (
         None  # 'emt' (rung 1, or the clean estimate) or an MLIP name
     )
+    # Whether an explicit dispersion (DFT-D3) correction was added on top of
+    # the MLIP. Part of the calculator's *identity*, not bookkeeping: the same
+    # model with and without D3 gives different energies, so the handler folds
+    # it into the run-cube cache key and the recorded params.
+    dispersion: bool = False
     # ── run-cube cache plumbing — populated by the *handler*, not
     # the pure compute: the content address of this relax, and, on a cache hit,
     # the fact that no compute ran. ``relax()`` itself never sets these.
@@ -144,6 +149,7 @@ def relax(
     tol: float = 1e-3,
     model: str = "mace_mp",
     cell: str | None = None,
+    dispersion: bool = False,
 ) -> RelaxResult:
     """Relax ``scene`` at the given ``fidelity`` rung (mutates in place).
 
@@ -152,6 +158,14 @@ def relax(
     c-axis / vacuum pinned), ``"full"`` relaxes all six strain components. It is
     only meaningful for an energy rung — the ``clean`` geometry repair has no
     stress, so requesting a cell relax there raises.
+
+    ``dispersion`` adds an explicit DFT-D3 correction on top of the MLIP. It
+    defaults **off**, matching the historical behaviour, but any design held
+    together by van der Waals contact rather than covalent bonds — a host-guest
+    complex, an interlocked mechanical bond, two stacked aromatic faces — is
+    badly under-bound without it: the MLIP's short receptive field simply does
+    not see the attraction. Only rung ``ml`` has a dispersion correction to add;
+    asking for one at ``clean``/``emt`` raises rather than being ignored.
     """
     if cell not in CELL_MODES:
         raise RelaxUnsupported(
@@ -167,12 +181,24 @@ def relax(
         raise RelaxUnsupported(
             "variable-cell relax isn't supported at rung 'emt' — use fidelity='ml'"
         )
+    if dispersion and fidelity not in ("ml",):
+        raise RelaxUnsupported(
+            f"dispersion=True needs an MLIP rung (fidelity='ml'); rung "
+            f"{fidelity!r} has no potential to correct"
+        )
     if fidelity in ("clean", "0"):
         return _relax_clean(scene, steps=steps, tol=tol)
     if fidelity == "emt":
         return _relax_emt(scene, steps=steps, tol=tol)
     if fidelity == "ml":
-        return _relax_ml(scene, steps=steps, tol=tol, model=model, cell=cell_mode)
+        return _relax_ml(
+            scene,
+            steps=steps,
+            tol=tol,
+            model=model,
+            cell=cell_mode,
+            dispersion=dispersion,
+        )
     if fidelity in _RENTED_RUNGS:
         raise RelaxUnsupported(
             f"relax rung {fidelity!r} needs a rented backend "
@@ -317,11 +343,18 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     )
 
 
-def _ml_calculator(model: str):
+def _ml_calculator(model: str, *, dispersion: bool = False):
     """Instantiate an ASE calculator for an MLIP, or raise RelaxUnsupported.
 
     The import is isolated here so a missing backend gives one clean
     ``RelaxUnsupported`` with an install hint, never a stray ImportError.
+
+    ``dispersion`` asks MACE to add a DFT-D3 correction, which needs
+    ``torch-dftd`` alongside the MLIP itself. That import is probed *here*,
+    before the model loads, so a missing D3 backend is one clean
+    ``RelaxUnsupported`` rather than either a stray ImportError deep inside
+    ``mace_mp`` or — far worse — a silently uncorrected relax reported as a
+    dispersion-corrected one.
     """
     name = (model or "mace_mp").lower().replace("-", "_")
     if name in ("mace", "mace_mp", "mace_mp_0"):
@@ -332,8 +365,21 @@ def _ml_calculator(model: str):
                 "relax rung 'ml' (MACE) needs the [dft-ml] extra — "
                 "pip install 'precis-mcp[dft-ml]'"
             ) from exc
-        return mace_mp(default_dtype="float64", dispersion=False)
+        if dispersion:
+            try:
+                import torch_dftd  # noqa: F401
+            except ImportError as exc:
+                raise RelaxUnsupported(
+                    "dispersion=True (DFT-D3 on top of MACE) needs torch-dftd — "
+                    "pip install 'precis-mcp[dft-ml]'"
+                ) from exc
+        return mace_mp(default_dtype="float64", dispersion=dispersion)
     if name == "chgnet":
+        if dispersion:
+            raise RelaxUnsupported(
+                "CHGNet has no dispersion correction — use model='mace_mp' "
+                "for a dispersion-corrected relax"
+            )
         try:
             from chgnet.model.dynamics import CHGNetCalculator
         except ImportError as exc:
@@ -365,7 +411,13 @@ def _cell_filter(atoms, cell: str):
 
 
 def _relax_ml(
-    scene: Scene, *, steps: int, tol: float, model: str, cell: str | None = None
+    scene: Scene,
+    *,
+    steps: int,
+    tol: float,
+    model: str,
+    cell: str | None = None,
+    dispersion: bool = False,
 ) -> RelaxResult:
     """Rung 3: relax on a machine-learned interatomic potential (ASE + MLIP).
 
@@ -378,6 +430,10 @@ def _relax_ml(
     ``cell`` (``"inplane"`` / ``"full"``, see :data:`CELL_MODES`) wraps the atoms
     in a masked ASE cell filter so the box relaxes with the atoms; the relaxed
     lattice is written back onto ``scene.cell``.
+
+    ``dispersion`` adds DFT-D3 on top of the MLIP (see :func:`_ml_calculator`)
+    and is recorded on the result, since it changes the energy the run-cube
+    caches under.
     """
     if not export.ase_available():
         raise RelaxUnsupported(
@@ -386,7 +442,8 @@ def _relax_ml(
     from ase.constraints import FixCartesian
     from ase.optimize import BFGS
 
-    calc = _ml_calculator(model)  # raises RelaxUnsupported if the MLIP is absent
+    # raises RelaxUnsupported if the MLIP (or, with dispersion, D3) is absent
+    calc = _ml_calculator(model, dispersion=dispersion)
     atoms = export._to_ase(scene)
     labels = list(scene.atoms)
     before = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
@@ -441,4 +498,5 @@ def _relax_ml(
         forces=per_atom_forces,
         forces_approx=False,
         forces_source=model,
+        dispersion=dispersion,
     )

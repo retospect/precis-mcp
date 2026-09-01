@@ -728,7 +728,7 @@ def test_relax_rented_rungs_are_gated(monkeypatch) -> None:
     # shadowing the submodule name — reach the module via importlib.
     relax_mod = importlib.import_module("precis.structure.relax")
 
-    def _no_mlip(model):
+    def _no_mlip(model, **_kw):
         raise RelaxUnsupported("no MLIP backend (test)")
 
     monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
@@ -837,7 +837,7 @@ def test_relax_ml_records_real_per_atom_forces(monkeypatch) -> None:
     from ase.calculators.emt import EMT
 
     relax_mod = importlib.import_module("precis.structure.relax")
-    monkeypatch.setattr(relax_mod, "_ml_calculator", lambda model: EMT())
+    monkeypatch.setattr(relax_mod, "_ml_calculator", lambda model, **_kw: EMT())
 
     scene = Scene(cell=_cubic(10.0))
     apply_ops(scene, [{"op": "add_atom", "element": "Cu", "frac": [0.0, 0.0, 0.0]}])
@@ -922,7 +922,7 @@ def test_relax_ml_inplane_relaxes_the_box_but_pins_the_vacuum(monkeypatch) -> No
     from ase.calculators.emt import EMT
 
     relax_mod = importlib.import_module("precis.structure.relax")
-    monkeypatch.setattr(relax_mod, "_ml_calculator", lambda model: EMT())
+    monkeypatch.setattr(relax_mod, "_ml_calculator", lambda model, **_kw: EMT())
 
     scene = Scene(cell=Cell(np.diag([5.0, 5.0, 12.0]), pbc=(True, True, False)))
     apply_ops(scene, [{"op": "add_atom", "element": "Cu", "frac": [0.0, 0.0, 0.5]}])
@@ -933,6 +933,74 @@ def test_relax_ml_inplane_relaxes_the_box_but_pins_the_vacuum(monkeypatch) -> No
     assert float(scene.cell.lattice[2][2]) == pytest.approx(c_before)  # vacuum pinned
     # the in-plane vectors moved off the strained 5.0 Å (the box relaxed)
     assert float(scene.cell.lattice[0][0]) != pytest.approx(5.0)
+
+
+def test_relax_dispersion_needs_the_ml_rung() -> None:
+    """D3 corrects a *potential*; the geometry-repair and EMT rungs have none,
+    so asking there raises rather than being silently dropped."""
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    for rung in ("clean", "emt"):
+        with pytest.raises(RelaxUnsupported):
+            relax(scene, fidelity=rung, dispersion=True)
+
+
+def test_relax_dispersion_reaches_the_calculator_and_is_recorded(monkeypatch) -> None:
+    """``dispersion`` is threaded to ``_ml_calculator`` (not dropped between
+    the public signature and the backend) and stamped on the result, which is
+    what the handler keys the run-cube on."""
+    pytest.importorskip("ase")
+    import importlib
+
+    from ase.calculators.emt import EMT
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+    seen: list[bool] = []
+
+    def _spy(model, *, dispersion=False):
+        seen.append(dispersion)
+        return EMT()
+
+    monkeypatch.setattr(relax_mod, "_ml_calculator", _spy)
+
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Cu", "frac": [0, 0, 0]}])
+    res = relax(scene, fidelity="ml", dispersion=True, steps=5)
+    assert seen == [True]
+    assert res.dispersion is True
+
+    res_off = relax(scene, fidelity="ml", steps=5)
+    assert seen == [True, False]  # default stays off
+    assert res_off.dispersion is False
+
+
+def test_ml_calculator_dispersion_needs_torch_dftd(monkeypatch) -> None:
+    """Without ``torch-dftd`` a dispersion request is one clean
+    RelaxUnsupported — never a relax that quietly ran uncorrected."""
+    import builtins
+    import importlib
+
+    pytest.importorskip("mace")
+    relax_mod = importlib.import_module("precis.structure.relax")
+    real_import = builtins.__import__
+
+    def _no_dftd(name, *args, **kwargs):
+        if name == "torch_dftd":
+            raise ImportError("no torch_dftd (test)")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_dftd)
+    with pytest.raises(RelaxUnsupported, match="torch-dftd"):
+        relax_mod._ml_calculator("mace_mp", dispersion=True)
+
+
+def test_ml_calculator_chgnet_rejects_dispersion() -> None:
+    """CHGNet has no D3 to add — say so instead of ignoring the flag."""
+    import importlib
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+    with pytest.raises(RelaxUnsupported, match="no dispersion"):
+        relax_mod._ml_calculator("chgnet", dispersion=True)
 
 
 # -- nav probes: spatial (line / plane / sphere, §6.2) -----------------------

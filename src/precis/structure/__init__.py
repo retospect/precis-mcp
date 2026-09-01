@@ -14,6 +14,9 @@ Compute-adjacent seams, each with its own module docstring:
 
 - `relax` — the rented fidelity ladder (``clean``/``emt`` ours, always-on;
   higher rungs extras-gated, GPU-dispatched via the compute job lane).
+  ``dispersion=True`` adds DFT-D3 on the ``ml`` rung — off by default, but
+  load-bearing for van-der-Waals-bound designs, and local-only (the GPU
+  container contract has no dispersion flag).
 - `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
   spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
   faults, never physical verdicts.

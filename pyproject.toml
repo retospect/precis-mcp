@@ -312,7 +312,7 @@ paper = [
 # learned potential (MACE-MP-0). torch is heavy — gated out of the default
 # install; rung-0 `clean` geometry repair needs none of this. GPAW/DFT
 # (`dft-gpaw`) runs as a cluster job, not inline.
-dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
+dft-ml = ["ase>=3.22", "mace-torch>=0.3", "torch-dftd>=0.4"]
 # Catalyst reaction-pathway plugin (bundle-pathway-in-tree proposal): the
 # `pathway` kind's KIND SURFACE — the `precis_pathway` glue imports the pure
 # `autocatpath` engine (numpy/scipy/ase/rdkit, no ML backend). Split from the
@@ -748,6 +748,8 @@ module = [
     "sympy.*",
     "tblite",
     "tblite.*",
+    "torch_dftd",
+    "torch_dftd.*",
     "wolframalpha",
 ]
 ignore_missing_imports = true

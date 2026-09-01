@@ -226,7 +226,13 @@ def _run_preflight_gate(scene: Scene) -> None:
 
 
 def _relax_cache_address(
-    scene: Scene, *, fidelity: str, model: str, steps: int, cell_mode: str | None
+    scene: Scene,
+    *,
+    fidelity: str,
+    model: str,
+    steps: int,
+    cell_mode: str | None,
+    dispersion: bool = False,
 ) -> tuple[str, str, list[str]]:
     """The ``(cache_key, structure_sha, canonical_order)`` triple addressing a
     relax of ``scene`` at this fidelity/model/params.
@@ -239,12 +245,31 @@ def _relax_cache_address(
     params: dict[str, Any] = {"steps": steps}
     if cell_mode is not None:
         params["cell"] = cell_mode
+    # Dispersion is part of the calculator's identity, not a display flag: the
+    # same model with D3 on and off returns different energies for the same
+    # geometry. Keyed in only when ON, so every pre-existing (dispersion-free)
+    # run-cube row stays a hit rather than being orphaned by a key change.
+    if dispersion:
+        params["dispersion"] = True
     cache_key = relax_cache.run_cache_key(
         scene, fidelity=fidelity, model=model, params=params
     )
     structure_sha = relax_cache.structure_sha(scene)
     order = relax_cache.canonical_order(scene)
     return cache_key, structure_sha, order
+
+
+def _run_params(res: RelaxResult) -> dict[str, Any] | None:
+    """The ``params`` jsonb for a ``struct_runs`` row — audit bookkeeping
+    (``cached``) plus the bits of calculator identity that live outside the
+    typed columns (``dispersion``). ``None`` when there's nothing to say, so
+    the common row keeps its historically-empty params."""
+    params: dict[str, Any] = {}
+    if res.from_cache:
+        params["cached"] = True
+    if res.dispersion:
+        params["dispersion"] = True
+    return params or None
 
 
 def _preflight_relax(
@@ -431,7 +456,15 @@ def _method_key(run: Mapping[str, Any]) -> tuple[str, Any]:
 #: lands in ``params`` today (e.g. ``cached``) is audit bookkeeping, not
 #: part of the calculator's identity, and the column is otherwise a
 #: free-form jsonb blob not worth dumping wholesale.
-_CALC_PARAM_DIGEST_KEYS = ("steps", "fmax", "cutoff_eV", "kmesh", "spin", "cell")
+_CALC_PARAM_DIGEST_KEYS = (
+    "steps",
+    "fmax",
+    "cutoff_eV",
+    "kmesh",
+    "spin",
+    "cell",
+    "dispersion",
+)
 
 
 def _format_params_digest(params: Mapping[str, Any] | None) -> str:
@@ -1554,6 +1587,18 @@ class StructureHandler(Handler):
                 "variable-cell relax (cell=…) needs fidelity='ml'; the 'clean' "
                 "geometry repair has no stress to relax the cell against"
             )
+        # Optional DFT-D3 on top of the MLIP. Off by default (the historical
+        # behaviour), but load-bearing for anything held together by van der
+        # Waals contact — a host-guest complex or an interlocked ring reads as
+        # barely bound without it. Validated here so a wrong rung is a
+        # retryable BadInput rather than a RelaxUnsupported swallowed into the
+        # cloud-dispatch path below.
+        dispersion = bool(ro.get("dispersion", False))
+        if dispersion and fidelity != "ml":
+            raise BadInput(
+                f"dispersion=True needs fidelity='ml'; rung {fidelity!r} has no "
+                "potential to correct"
+            )
 
         # Cache-first for the expensive energy rungs. The rung-0
         # ``clean`` repair is instant + pure + energy-free, so it is never
@@ -1568,20 +1613,31 @@ class StructureHandler(Handler):
             # asked for — an atoms-only relax keeps its historical key so the
             # existing run-cube stays a hit (a bare {"steps"} vs {"steps","cell"}).
             cache_key, structure_sha, order = _relax_cache_address(
-                scene, fidelity=fidelity, model=model, steps=steps, cell_mode=cell_mode
+                scene,
+                fidelity=fidelity,
+                model=model,
+                steps=steps,
+                cell_mode=cell_mode,
+                dispersion=dispersion,
             )
             hit_result = self._cache_hit_result(
                 scene,
                 cache_key=cache_key,
                 structure_sha=structure_sha,
                 fidelity=fidelity,
+                dispersion=dispersion,
             )
             if hit_result is not None:
                 return hit_result
 
         try:
             res = run_relax(
-                scene, fidelity=fidelity, steps=steps, model=model, cell=cell_mode
+                scene,
+                fidelity=fidelity,
+                steps=steps,
+                model=model,
+                cell=cell_mode,
+                dispersion=dispersion,
             )
             # Per-atom forces (gripe 161576), label-paired for storage (FIX 1
             # — never canonical-rank-indexed, see serialize_forces) —
@@ -1597,6 +1653,21 @@ class StructureHandler(Handler):
             # No local backend for this energy rung. If the caller named a
             # parent todo we dispatch it to the GPU node (§23.12); otherwise
             # the caller turns this into an Unsupported with the exact call.
+            #
+            # Except with dispersion on: the precis-dft container contract
+            # (POSCAR + params.json) has no dispersion field, and that
+            # container is built from another repo — so a dispatched job would
+            # compute D3-*free* and sink it into the run-cube under a
+            # dispersion=True cache key, quietly poisoning every later hit.
+            # Refuse rather than dispatch a lie.
+            if dispersion:
+                raise Unsupported(
+                    f"{exc} — dispersion=True runs locally only; the GPU "
+                    "container contract does not carry a dispersion flag, so "
+                    "this relax cannot be dispatched",
+                    next="install the [dft-ml] extra locally, or re-run with "
+                    "dispersion omitted to use the cluster",
+                ) from exc
             if cache_key is None:  # defensive — clean never reaches here
                 raise Unsupported(
                     str(exc),
@@ -1643,14 +1714,25 @@ class StructureHandler(Handler):
             # still be a zero-compute hit here too — the earlier lookup ran
             # against the as-authored (pre-preflight) geometry and can't
             # have caught this.
+            #
+            # ``dispersion`` is threaded explicitly even though the guard above
+            # means it is always False here: stating it keeps this address
+            # honest if that early raise is ever relaxed, rather than silently
+            # minting a dispersion-free key for a dispersion-on relax.
             cache_key, structure_sha, order = _relax_cache_address(
-                scene, fidelity=fidelity, model=model, steps=steps, cell_mode=cell_mode
+                scene,
+                fidelity=fidelity,
+                model=model,
+                steps=steps,
+                cell_mode=cell_mode,
+                dispersion=dispersion,
             )
             hit_result = self._cache_hit_result(
                 scene,
                 cache_key=cache_key,
                 structure_sha=structure_sha,
                 fidelity=fidelity,
+                dispersion=dispersion,
             )
             if hit_result is not None:
                 return hit_result
@@ -1684,7 +1766,13 @@ class StructureHandler(Handler):
         return res
 
     def _cache_hit_result(
-        self, scene: Scene, *, cache_key: str, structure_sha: str, fidelity: str
+        self,
+        scene: Scene,
+        *,
+        cache_key: str,
+        structure_sha: str,
+        fidelity: str,
+        dispersion: bool = False,
     ) -> RelaxResult | None:
         """The run-cube lookup, shared by both cache-check sites
         in ``_run_ops``: the early check over the as-authored geometry, and
@@ -1693,7 +1781,12 @@ class StructureHandler(Handler):
         be a zero-compute hit too, not a fresh cloud dispatch.
 
         On a hit, applies the cached geometry onto ``scene`` and returns the
-        stored envelope as a :class:`RelaxResult`; ``None`` on a miss."""
+        stored envelope as a :class:`RelaxResult`; ``None`` on a miss.
+
+        ``dispersion`` is echoed onto the returned envelope rather than read
+        back off the row: it is already folded into ``cache_key``, so a hit
+        *is* a run with this setting — echoing it keeps the fresh audit row
+        this hit writes labelled with the same calculator identity."""
         hit = self.store.structure_find_cached_run(cache_key)
         if hit is None:
             return None
@@ -1721,6 +1814,7 @@ class StructureHandler(Handler):
             forces_vectors=forces_blob.get("vectors"),
             forces_approx=bool(forces_blob.get("approx", False)),
             forces_source=forces_blob.get("source"),
+            dispersion=dispersion,
         )
 
     @staticmethod
@@ -1740,6 +1834,8 @@ class StructureHandler(Handler):
             out["max_force"] = res.max_force
         if res.model is not None:
             out["model"] = res.model
+        if res.dispersion:
+            out["dispersion"] = True
         return out
 
     def _record_run(self, ref_id: int, res: RelaxResult | None, version: int) -> None:
@@ -1781,7 +1877,12 @@ class StructureHandler(Handler):
             # charges: always None today — no backend produces partial
             # charges yet (never fabricated); the column exists for a future
             # charge-bearing rung (DFT+Bader).
-            params={"cached": True} if res.from_cache else None,
+            #
+            # ``dispersion`` rides in params (not a column) because it is part
+            # of the calculator's identity: format_calc_identity surfaces it in
+            # the ``calc:`` header so a D3-corrected energy is never read as a
+            # bare-MLIP one.
+            params=_run_params(res),
         )
 
     def _dispatch_relax(self, ref: Any, version: int, nd: _NeedsDispatch) -> Response:

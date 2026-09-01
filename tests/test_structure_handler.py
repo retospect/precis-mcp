@@ -48,7 +48,7 @@ def no_local_mlip(monkeypatch):
     # shadowing the submodule name — reach the module via importlib.
     relax_mod = importlib.import_module("precis.structure.relax")
 
-    def _no_mlip(model):
+    def _no_mlip(model, **_kw):
         raise relax_mod.RelaxUnsupported("no MLIP backend (test)")
 
     monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
@@ -819,6 +819,66 @@ def test_relax_unknown_cell_mode_is_bad_input(structure):
     with pytest.raises(BadInput):
         structure.edit(
             id="pd_pair", ops=[{"op": "relax", "fidelity": "ml", "cell": "sideways"}]
+        )
+
+
+def test_relax_dispersion_folds_into_the_cache_key(structure):
+    """The subtle one: D3 changes the energy, so a dispersion-corrected relax
+    must NOT collide with a bare-MLIP run of the same geometry. Keyed in only
+    when on, so every pre-existing (dispersion-free) run-cube row stays a hit."""
+    from precis.handlers.structure import _relax_cache_address
+    from precis.structure import Scene
+    from precis.structure.cell import Cell
+    from precis.structure.ops import apply_ops
+
+    scene = Scene(cell=Cell(np.diag([10.0, 10.0, 10.0]), pbc=(True, True, False)))
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]}])
+    key_off, _, _ = _relax_cache_address(
+        scene, fidelity="ml", model="mace_mp", steps=200, cell_mode=None
+    )
+    key_on, _, _ = _relax_cache_address(
+        scene,
+        fidelity="ml",
+        model="mace_mp",
+        steps=200,
+        cell_mode=None,
+        dispersion=True,
+    )
+    assert key_on != key_off
+    # dispersion=False is byte-identical to omitting it — historical keys hold
+    key_explicit_off, _, _ = _relax_cache_address(
+        scene,
+        fidelity="ml",
+        model="mace_mp",
+        steps=200,
+        cell_mode=None,
+        dispersion=False,
+    )
+    assert key_explicit_off == key_off
+
+
+def test_relax_dispersion_refuses_to_dispatch(structure, store, no_local_mlip):
+    """The GPU container contract carries no dispersion flag, so a dispatched
+    job would compute D3-free and sink it under a dispersion=True cache key.
+    Refuse with Unsupported instead of minting a job that would lie."""
+    from precis.errors import Unsupported
+
+    structure.put(id="pd_disp", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="pd_disp")
+    with pytest.raises(Unsupported, match="dispatched"):
+        structure.edit(
+            id="pd_disp",
+            ops=[{"op": "relax", "fidelity": "ml", "dispersion": True}],
+        )
+    assert _child_jobs(store, ref.id) == []  # nothing was staged
+
+
+def test_relax_dispersion_requires_the_ml_rung(structure):
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(BadInput):
+        structure.edit(
+            id="pd_pair",
+            ops=[{"op": "relax", "fidelity": "clean", "dispersion": True}],
         )
 
 
