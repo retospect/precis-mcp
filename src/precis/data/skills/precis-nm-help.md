@@ -1,13 +1,16 @@
 ---
 id: precis-nm-help
 title: precis — the nm kind (nanomachine block trees over atoms)
-summary: hierarchical building-block design for molecular machines — nested blocks with envelopes/poses/ports/connects/L2 threading/DOF and an L5 binding into a real structure design for the filled chemistry; typed ops via put/edit, views tree/block/ports/validate/clearance/topology; dark behind nm.enabled
+summary: hierarchical building-block design for molecular machines — nested blocks with envelopes/poses/ports/connects/L2 threading/DOF and an L5 binding into a real structure design for the filled chemistry; typed ops via put/edit, views tree/block/ports/validate/clearance/topology/mechanics/literature; dark behind nm.enabled
 answers:
   - how do I design a molecular machine as nested blocks before filling in real chemistry?
   - how do I declare a port and connect two blocks with a capability gate?
   - how do I record that a macrocycle is threaded onto an axle?
   - how do I check the envelope clearance between two blocks?
   - how do I bind a block's ports to real atoms in a structure design?
+  - how do I find literature for a block before filling it with real chemistry?
+  - how do I check whether a bound block's atoms actually fit its declared envelope?
+  - how do I tell whether a design is validate-clean because it's done, or because it's unfilled?
   - why is kind='nm' unavailable or disabled in this build?
 applies-to: get/search/put/edit/delete (kind='nm')
 status: active
@@ -160,6 +163,34 @@ false `dangling_binding`). `unbind_structure` clears a block's binding and
 every one of its ports'. Both only ever target an ordinary block — bind via
 the template for an instance.
 
+`bind_structure` also runs an `envelope_fit` **preflight**: every atom of
+the just-bound structure design is checked against the block's own declared
+envelope plus a ~1.7 Å vdW margin (the same `cad` SDF kernel `view=
+'clearance'` uses) — the L1↔L5 agreement check. This never blocks the bind
+(a hand-authored envelope is often a rough first guess); a protrusion only
+appends a `⚠ envelope_fit` line to the echo naming the worst-offending atom
+and how many Å it protrudes. The same check runs again on every later read
+as `view='validate'`'s `envelope_fit` warn-tier finding, so drift after the
+bind (a shrunk envelope, a rebind to a bulkier fragment) doesn't go unnoticed.
+
+## Find literature for a block — `view='literature'`
+
+```python
+get(kind="nm", id="rotax1", view="literature", args={"block": "hub"})  # one block
+get(kind="nm", id="rotax1", view="literature")                          # whole design
+```
+
+Deterministic (no LLM), the `structure` kind's own `view='literature'`
+precedent transferred: builds a paper-search query from the target block's
+`name`/`desc`/`use`, the design's own `description`, the objective
+vocabulary on any connect touching the block (`objectives={'role': ...}`'s
+values), and — when the block is already bound — its bound structure's
+element composition ("fair game", since proposals are per-block and an
+unbound sibling's chemistry never leaks in). Runs the query in-process
+against the paper corpus and returns both the generated query (so it can be
+seen/refined) and the ranked hits. Naming no `block=` queries the whole
+design instead — every block's material folds in.
+
 ## Generate — parametric block factories (deterministic fill)
 
 ```python
@@ -213,6 +244,8 @@ get(kind="nm", id="rotax1", view="ports")                          # every block
 get(kind="nm", id="rotax1", view="topology")                        # every threading pair + declared dof
 get(kind="nm", id="rotax1", view="validate")                         # feasibility findings, two tiers
 get(kind="nm", id="rotax1", view="clearance", args={"a": "axle", "b": "hub"})  # signed envelope gap
+get(kind="nm", id="rotax1", view="mechanics")                        # advisory L4 ceilings, never a gate
+get(kind="nm", id="rotax1", view="literature", args={"block": "hub"})  # lit-search query for one block
 ```
 
 The tree view marks each line with an inherited-envelope note (`(from
@@ -245,9 +278,18 @@ that themselves declare an envelope (a later increment, not modeled today).
 | `blocks_without_envelope` | warn | a block with ports but no envelope — geometry needed before L1 |
 | `threaded_without_envelope` | warn | a threading pair where either side has no envelope — the interlock can't be verified geometrically yet |
 | `binding_element_mismatch` | warn | a bound atom's element doesn't match the port's `expected_element` |
+| `envelope_fit` | warn | a bound block's realized atoms protrude beyond its declared envelope + vdW margin — the L1↔L5 agreement has drifted |
 
 Zero findings is trivially achievable by declaring nothing — `validate`
-checks what you *did* declare, not completeness.
+checks what you *did* declare, not completeness. That's exactly why the
+response header always leads with a **filled-fraction line**
+(`"N/M block(s) filled (bound to real chemistry)"`, counting ordinary
+blocks only — an instance is filled exactly when its template is): a
+brand-new, entirely-unbound design has zero findings *and* zero blocks
+filled, and the header says so explicitly (`"UNFILLED scaffold: zero
+findings below means nothing is wrong YET, not that this design is done"`)
+rather than reading as `"✓ no validator findings"` alone, which would
+misdescribe an unfilled scaffold as finished.
 
 ## Find a design — `search`
 
@@ -277,9 +319,14 @@ register at all. A call against it before the operator turns it on raises
 
 - A block's clearance envelope is its own config only — no subtree union
   across children (see `view='clearance'` above).
-- **No fill loop.** Going from a declared port to a real chemical fragment
-  is manual: mint or find a `structure` design yourself, then
-  `bind_structure` it in. There is no lit-search-and-attach automation yet.
+- **Propose exists; apply does not.** The `nm_propose` job proposes a
+  fragment for ONE block and dry-runs it — it reads the block's envelope,
+  ports, objectives and validate state, then returns a candidate fragment
+  (SMILES or an existing `structure` slug), a `structure` op script
+  realizing it, and a port→atom map, having first applied those ops to a
+  scratch scene and run the DRC. It never writes anything. Turning an
+  accepted proposal into a real design is still manual: run the ops to mint
+  the `structure` yourself, then `bind_structure` it in.
 - **No charge, optical, or simulation views.** No mechanism/dynamics
   analysis, no torsion scan, no rotational-barrier estimate —
   `declare_dof` records intent only.

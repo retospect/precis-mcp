@@ -19,12 +19,41 @@ store-free (module docstring above), so the handler hydrates that once (a
 ``None`` for a slug that no longer resolves) and passes it into
 :func:`validate`, the same "assemble in the view path, keep the checker
 pure" split ``_render_validate`` already uses for tree data.
+
+**Slice 4b** adds :func:`envelope_fit` — the L1↔L5 agreement check
+(docs/backlog/nm-kind.md "4b — LLM fill loop"): a block declares an
+envelope (the ``cad`` mini-DSL, Å) at L1; once bound, it holds real atoms
+at L5. ``envelope_fit`` models the *agreement* between the two (the
+pcb-component-model precedent transferred verbatim: "model the agreement,
+not the two sides"), not either side alone — it reports the single
+worst-offending atom and by how many Å it protrudes past the declared
+envelope plus a vdW margin, via the ``cad`` kernel's exact-sign
+:func:`~precis.cad.relate.component_sdf` (the same kernel ``view=
+'clearance'`` already uses). Wired in two places (both call this one
+function, never re-derived): a **bind preflight**
+(:meth:`precis_nm.handler.NmHandler._bind_structure`, an advisory note on
+the echo — a hand-authored envelope is often a rough first guess, so this
+never blocks the bind) and a **warn-tier finding** here, in
+:func:`validate` (rule ``envelope_fit``, checked every time the design is
+read — catches drift after a bind, e.g. an envelope shrunk by a later
+``add_block`` re-declaration, or a rebind to a differently-shaped
+fragment). This module still needs no store: the handler hydrates the
+bound *scenes themselves* (not just their atom/element map — envelope_fit
+needs real Cartesian positions) into ``bound_full_scenes`` and passes them
+in, the same "assemble in the view path, keep the checker pure" split.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from precis.cad import dsl as cad_dsl
+from precis.cad.graph import Design as CadDesign
+from precis.cad.relate import component_sdf
+from precis.cad.vec import as_vec3 as cad_as_vec3
+from precis.cad.vec import pose as cad_pose
+from precis.structure import Scene as StructScene
+from precis_nm.generators.sp2 import VDW_MARGIN_A
 from precis_nm.ops import BlockTree, connect_role, effective_envelope, effective_ports
 
 
@@ -43,16 +72,66 @@ class ValidationIssue:
     severity: str = "error"
 
 
+def envelope_fit(
+    envelope: str, scene: StructScene, *, margin_A: float = VDW_MARGIN_A
+) -> tuple[str, float] | None:
+    """The L1↔L5 agreement check itself (module docstring): does every atom
+    of ``scene`` sit inside ``envelope`` (a ``cad`` mini-DSL config string,
+    Å) plus ``margin_A`` of headroom? Returns ``(worst atom label,
+    protrusion_A)`` for the single worst-offending atom — the largest
+    signed distance beyond the margin (``component_sdf`` is negative
+    inside, so ``sdf - margin_A > 0`` is a genuine protrusion) — or
+    ``None`` when every atom sits inside the margin, or when ``envelope``
+    fails to parse (a malformed envelope is a different finding —
+    ``ops.py``'s ``_validate_envelope`` gate, or a stored-but-now-invalid
+    envelope the way ``_render_clearance`` re-checks; not this function's
+    job to raise on it).
+
+    **Posed at identity, not the block's world pose/rot.** A block's
+    envelope is declared in the block's own *local* frame — the same local
+    frame every :mod:`precis_nm.generators` builder emits atoms into (a
+    ``cyl:r<>h<>`` envelope's ``z=0..h``, radially centered on the axis,
+    matches a generated tube's own atom coordinates exactly, unshifted).
+    ``node.pose``/``node.rot`` only place the block *within* the larger
+    design (the same frame :func:`precis_nm.handler._render_clearance`
+    poses envelopes into to check block-vs-block clearance) — applying
+    them here would compare the bound scene's own local-frame atoms
+    against an envelope translated/rotated into a different frame
+    entirely, comparing two things that were never meant to line up."""
+    try:
+        prim = cad_dsl.build_config(envelope)
+    except cad_dsl.DslError:
+        return None
+    design = CadDesign()
+    identity = cad_pose(cad_as_vec3([0.0, 0.0, 0.0]), cad_as_vec3([0.0, 0.0, 0.0]))
+    design.add_component("_envelope_fit", design.prim("_envelope_fit", prim, identity))
+    expr = design.components["_envelope_fit"]
+    worst_label: str | None = None
+    worst_protrusion = 0.0
+    for label, atom in scene.atoms.items():
+        cart = scene.cell.frac_to_cart(atom.frac)
+        sdf = component_sdf(design, expr, cad_as_vec3(cart))
+        protrusion = sdf - margin_A
+        if protrusion > worst_protrusion:
+            worst_protrusion = protrusion
+            worst_label = label
+    if worst_label is None:
+        return None
+    return worst_label, worst_protrusion
+
+
 def validate(
     tree: BlockTree,
     *,
     bound_scenes: dict[str, dict[str, str] | None] | None = None,
+    bound_full_scenes: dict[str, StructScene] | None = None,
 ) -> list[ValidationIssue]:
     """Return all L0(-ish; threading/binding are L2/L5) findings (empty =
     clean). Pure read over ``tree`` plus the optional pre-hydrated
-    ``bound_scenes`` (module docstring) — omitted or missing a slug simply
-    skips the checks that need it, rather than raising, so a caller that
-    hasn't wired binding validation yet still gets every other finding."""
+    ``bound_scenes``/``bound_full_scenes`` (module docstring) — omitted or
+    missing a slug simply skips the checks that need it, rather than
+    raising, so a caller that hasn't wired binding/envelope-fit validation
+    yet still gets every other finding."""
     findings: list[ValidationIssue] = []
     bound_scenes = bound_scenes or {}
 
@@ -276,5 +355,44 @@ def validate(
                         severity="warn",
                     )
                 )
+
+    # 9. envelope_fit (warn) — the L1↔L5 agreement check (module docstring,
+    # slice 4b): a bound block's realized atoms should sit inside its
+    # declared envelope plus a vdW margin. Only an ordinary, bound block
+    # with a resolvable effective envelope is ever the subject — a block
+    # with no envelope has nothing to check against (``blocks_without_
+    # envelope`` already covers that gap for ported blocks), and a slug the
+    # caller didn't hydrate into ``bound_full_scenes`` is skipped rather
+    # than guessed at (the same "caller didn't hydrate — skip" discipline
+    # rule 7/8 uses for ``bound_scenes``; a dangling/unresolvable design is
+    # already reported once, by ``dangling_binding`` above).
+    bound_full_scenes = bound_full_scenes or {}
+    for node in tree.blocks.values():
+        if node.template is not None or node.bound_design is None:
+            continue
+        env = effective_envelope(tree, node)
+        if not env:
+            continue
+        scene = bound_full_scenes.get(node.bound_design)
+        if scene is None:
+            continue
+        worst = envelope_fit(env, scene)
+        if worst is not None:
+            atom_label, protrusion = worst
+            findings.append(
+                ValidationIssue(
+                    rule="envelope_fit",
+                    subject=node.name,
+                    detail=(
+                        f"atom {atom_label!r} (in bound structure "
+                        f"{node.bound_design!r}) protrudes {protrusion:.3g} Å "
+                        f"beyond block {node.name!r}'s declared envelope "
+                        f"{env!r} (+{VDW_MARGIN_A:g} Å vdW margin) — the L1 "
+                        "envelope and the L5 realized atoms have drifted "
+                        "apart; widen the envelope or rebind"
+                    ),
+                    severity="warn",
+                )
+            )
 
     return findings

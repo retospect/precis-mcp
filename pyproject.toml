@@ -457,6 +457,7 @@ fold = "precis_bio.jobs:FOLD_SPEC"
 autocatpath_explore = "precis_pathway.job:SPEC"
 autocatpath_seed = "precis_pathway.seed_job:SPEC"
 autocatpath_aggregate = "precis_pathway.aggregate_job:SPEC"
+nm_propose = "precis_nm.job:SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"

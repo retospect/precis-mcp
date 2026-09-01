@@ -135,9 +135,11 @@ class NmHandler(Handler):
             "connect/disconnect/declare_dof/clear_dof/declare_threading/"
             "remove_threading/bind_structure/unbind_structure/generate); "
             "get lists designs or renders one (view='tree'|'block'|'ports'|"
-            "'validate'|'clearance'|'topology'|'mechanics'; block/ports "
-            "take args={'name':...}, clearance takes "
-            "args={'a':...,'b':...}); delete soft-retires; search finds by "
+            "'validate'|'clearance'|'topology'|'mechanics'|'literature'; "
+            "block/ports take args={'name':...}, clearance takes "
+            "args={'a':...,'b':...}, literature takes optional "
+            "args={'block':...} (whole-design query if omitted); delete "
+            "soft-retires; search finds by "
             "intent. Envelopes reuse the cad mini-DSL (e.g. 'cyl:r5h2') at "
             "Angstrom scale — view='clearance' runs the cad kernel's "
             "signed-distance gap between two blocks' envelopes. A bond "
@@ -152,7 +154,11 @@ class NmHandler(Handler):
             "min-cut tensile between bond-connected blocks, Euler buckling "
             "for tube-shaped generated blocks, harmonic strain energy vs "
             "VSEPR ideal angles — all defect-free continuum estimates, "
-            "never validate findings. The LLM traverses a block tree, "
+            "never validate findings. view='literature' builds a "
+            "deterministic (no-LLM) paper-search query from a target "
+            "block's desc/use/name + connect objective vocabulary (or the "
+            "whole design's, with no block named) and runs it against the "
+            "paper corpus. The LLM traverses a block tree, "
             "never atoms directly."
         ),
         supports_get=True,
@@ -174,6 +180,7 @@ class NmHandler(Handler):
             "clearance",
             "topology",
             "mechanics",
+            "literature",
         ),
         # Dark-ship: hidden until the `nm.enabled` setting resolves.
         requires_setting=("nm.enabled",),
@@ -182,6 +189,7 @@ class NmHandler(Handler):
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError("nm: store required")
+        self.hub = hub
         self.store = hub.store
         self.embedder = hub.embedder
 
@@ -276,7 +284,17 @@ class NmHandler(Handler):
         collide). Binding again to the *same* design is incremental — an
         earlier call's port map survives a later call that only maps
         additional (or different) ports, so a design can be filled in
-        across several ``bind_structure`` calls."""
+        across several ``bind_structure`` calls.
+
+        **``envelope_fit`` preflight** (docs/backlog/nm-kind.md "4b" —
+        :func:`precis_nm.validate.envelope_fit`, the L1↔L5 agreement
+        check): once the binding above succeeds, every atom in the
+        just-bound ``scene`` is checked against the block's own declared
+        envelope plus a vdW margin. This never blocks the bind (a
+        hand-authored envelope is often a rough first guess) — a
+        protrusion only appends a warning line to the returned echo, and
+        the same check runs again, every future read, as
+        ``view='validate'``'s ``envelope_fit`` warn-tier finding."""
         block = op.get("block")
         if not block or not str(block).strip():
             raise BadInput("bind_structure needs 'block'")
@@ -361,9 +379,29 @@ class NmHandler(Handler):
             p.bound_design = design_slug
             p.bound_atom = atom_label
         mapped = ", ".join(f"{p}→{a}" for p, a in resolved.items())
-        return f"bound block {block_name!r} to structure {design_slug!r}" + (
+        msg = f"bound block {block_name!r} to structure {design_slug!r}" + (
             f" (ports: {mapped})" if mapped else ""
         )
+        # envelope_fit bind preflight (docs/backlog/nm-kind.md "4b" — the
+        # L1↔L5 agreement check, nm_validate.envelope_fit's docstring):
+        # advisory, never blocks the bind — a hand-authored envelope is
+        # often a rough first guess, and view='validate' re-checks this
+        # every time the design is read afterward anyway (the same
+        # "preflight note now, standing warn-tier finding forever after"
+        # split ``ops.py``'s op-time gate and this module's read-time
+        # re-check already use for everything else).
+        env = effective_envelope(tree, node)
+        if env:
+            worst = nm_validate.envelope_fit(env, scene)
+            if worst is not None:
+                atom_label, protrusion = worst
+                msg += (
+                    f"\n⚠ envelope_fit: atom {atom_label!r} protrudes "
+                    f"{protrusion:.3g} Å beyond block {block_name!r}'s "
+                    f"declared envelope {env!r} — widen the envelope, or "
+                    "this will keep surfacing as a validate finding"
+                )
+        return msg
 
     def _unbind_structure(self, tree: BlockTree, op: dict[str, Any]) -> str:
         """``{"op": "unbind_structure", "block": <name>}`` — clears the
@@ -594,7 +632,22 @@ class NmHandler(Handler):
         once, up front, into the ``bound_scenes`` mapping the pure
         validator needs for ``dangling_binding``/``binding_element_mismatch``
         (validate.py stays store-free — this is the "assemble in the view
-        path" half of that split)."""
+        path" half of that split) — and, since slice 4b, ``bound_full_scenes``
+        (the whole :class:`~precis.structure.Scene`, not just its
+        label→element map) for ``envelope_fit``, which needs real Cartesian
+        atom positions.
+
+        **Filled-fraction honesty** (docs/backlog/nm-kind.md "4b" — the
+        maze.py lesson restated: "zero findings on an empty design must
+        read as unfilled, not done"): the header always leads with
+        :func:`_fill_fraction_line`'s bound/unbound block count, on BOTH
+        the clean and the findings branch — a fresh, entirely unfilled
+        scaffold has no blocks bound yet, so it trivially has no
+        ``dangling_binding``/``envelope_fit``/... findings either, and
+        ``"✓ no validator findings"`` alone would misread as "this design
+        is done" rather than "this design has not started" (exactly the
+        ``mechanics.py`` per-block ``unfilled`` marker's honesty rule,
+        applied at the header's scale instead of a single cell's)."""
         slugs = {n.bound_design for n in tree.blocks.values() if n.bound_design}
         slugs |= {
             p.bound_design
@@ -603,6 +656,7 @@ class NmHandler(Handler):
             if p.bound_design
         }
         bound_scenes: dict[str, dict[str, str] | None] = {}
+        bound_full_scenes: dict[str, StructScene] = {}
         for slug in slugs:
             ref = self.store.get_ref(kind="structure", id=slug)
             if ref is None:
@@ -612,9 +666,13 @@ class NmHandler(Handler):
             bound_scenes[slug] = {
                 label: atom.element for label, atom in scene.atoms.items()
             }
-        findings = nm_validate.validate(tree, bound_scenes=bound_scenes)
+            bound_full_scenes[slug] = scene
+        findings = nm_validate.validate(
+            tree, bound_scenes=bound_scenes, bound_full_scenes=bound_full_scenes
+        )
+        fill_line = _fill_fraction_line(tree)
         if not findings:
-            return "✓ no validator findings"
+            return f"✓ no validator findings\n{fill_line}"
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
         rows = [
@@ -626,8 +684,9 @@ class NmHandler(Handler):
             }
             for f in findings
         ]
-        return f"# {n_error} error(s), {n_warn} warning(s)\n" + render_agent_table(
-            rows, schema=["severity", "rule", "subject", "detail"]
+        return (
+            f"# {n_error} error(s), {n_warn} warning(s)\n{fill_line}\n\n"
+            + render_agent_table(rows, schema=["severity", "rule", "subject", "detail"])
         )
 
     def _render_mechanics(self, tree: BlockTree) -> str:
@@ -783,6 +842,131 @@ class NmHandler(Handler):
             lines.append("(no bond connects declared)")
         return "\n".join(lines)
 
+    # ── literature (docs/backlog/nm-kind.md "4b" — the structure
+    # precedent, ``handlers/structure.py::_literature_query``/
+    # ``_render_literature``, transferred verbatim) ─────────────────────
+
+    def _literature_query(
+        self, tree: BlockTree, ref: Any, *, block_name: str | None = None
+    ) -> str:
+        """Deterministic paper-search query built from the nm design's own
+        material — **no LLM step**, the ``structure`` precedent's own
+        opening line restated for the block/port/connect domain. Assembled,
+        in order:
+
+        1. the design's own ``description`` (``ref.meta``), when set;
+        2. the target block's ``name`` + ``desc``/``use`` text — every
+           block's, with no ``block_name`` (the whole-design query, since
+           proposals are per-block but a caller may still want the whole
+           design's literature);
+        3. the objective vocabulary on every connect touching a target
+           block (``ConnectSpec.objectives``'s values — e.g.
+           ``{'role': 'pi_stack'}`` today; docs/backlog/nm-kind.md's
+           "Objective vectors" section names richer free-text intent like
+           'photoswitchable'/'low rotational barrier' for later rounds —
+           this walks whatever is actually stored, string values verbatim,
+           any other value's *key* as a fallback token);
+        4. when a target block is already bound to a ``structure`` design,
+           that design's element composition (task spec: "fair game") —
+           an UNBOUND sibling block's chemistry never leaks in, since
+           proposals target one block's own gap, not the whole assembly's.
+
+        Falls back to the bare target block name(s) when 1-4 together
+        produce nothing (never an empty query, the ``structure`` precedent's
+        own last-resort rule). Same tree + ref meta + bound compositions ⇒
+        same string (blocks/connects/objectives/composition all walked in a
+        fixed sort order)."""
+        targets = [block_name] if block_name is not None else sorted(tree.blocks)
+
+        parts: list[str] = []
+        desc = str((ref.meta or {}).get("description") or "").strip()
+        if desc:
+            parts.append(desc)
+
+        block_bits: list[str] = []
+        for name in targets:
+            node = tree.blocks.get(name)
+            if node is None:
+                continue
+            block_bits.append(name)
+            if node.descr:
+                block_bits.append(node.descr)
+            if node.use:
+                block_bits.append(node.use)
+        if block_bits:
+            parts.append(" ".join(block_bits))
+
+        target_set = set(targets)
+        obj_words: set[str] = set()
+        for c in sorted(
+            tree.connects, key=lambda c: (c.a_block, c.a_port, c.b_block, c.b_port)
+        ):
+            if c.a_block not in target_set and c.b_block not in target_set:
+                continue
+            for key, value in sorted((c.objectives or {}).items()):
+                obj_words.add(str(value) if isinstance(value, str) else str(key))
+        if obj_words:
+            parts.append(" ".join(sorted(obj_words)))
+
+        comp_bits: list[str] = []
+        for name in targets:
+            node = tree.blocks.get(name)
+            if node is None or not node.bound_design:
+                continue
+            struct_ref = self.store.get_ref(kind="structure", id=node.bound_design)
+            if struct_ref is None:
+                continue
+            scene, _handles = self.store.structure_load(struct_ref.id)
+            comp = scene.composition()
+            if comp and " ".join(sorted(comp)) not in comp_bits:
+                comp_bits.append(" ".join(sorted(comp)))
+        if comp_bits:
+            parts.append(" ".join(comp_bits))
+
+        if not parts:
+            parts.append(" ".join(targets) or "nanomachine block")
+        return " — ".join(p for p in parts if p)
+
+    def _render_literature(
+        self, tree: BlockTree, ref: Any, *, block_name: str | None
+    ) -> Response:
+        """``view='literature'`` (docs/backlog/nm-kind.md "4b"): run the
+        deterministic query above against the paper corpus via
+        ``PaperHandler.search_hits`` — the same fused block-search engine
+        ``kind='paper'`` search uses, called in-process (the ``structure``
+        precedent, ``handlers/structure.py::_render_literature``, verbatim).
+        Returns both the generated query (so the caller can see/refine it —
+        proposals are per-block, small blast radius, so seeing exactly what
+        ran matters more here than on a single-scene ``structure`` design)
+        and the ranked hits. Pure read: no writes, no LLM, no network
+        beyond the existing paper-search path."""
+        from precis.handlers.paper import PaperHandler
+
+        query = self._literature_query(tree, ref, block_name=block_name)
+        subject = f"block {block_name!r} of design" if block_name else "design"
+        hits = PaperHandler(hub=self.hub).search_hits(q=query, page_size=10)
+        head = f"# literature query for {subject} {ref.slug}:\n> {query}"
+        if not hits:
+            return Response(
+                body=f"{head}\n\nno matching papers\n\n"
+                "Next: enrich the block's desc=/use= (or the design's "
+                "description=) for a sharper query, or "
+                f"search(kind='paper', q={query!r}) by hand for a wider net."
+            )
+        rows = [
+            {
+                "handle": hit.uhandle
+                or (f"paper:{hit.slug}" if hit.slug else str(hit.ref_id)),
+                "title": hit.title,
+                "score": f"{hit.score:.3f}",
+            }
+            for hit in hits
+        ]
+        return Response(
+            body=f"{head}\n\n"
+            + render_agent_table(rows, schema=["handle", "title", "score"])
+        )
+
     # ── put ──────────────────────────────────────────────────────────
     def put(
         self,
@@ -922,12 +1106,19 @@ class NmHandler(Handler):
             return Response(body=_render_topology(tree))
         if v == "mechanics":
             return Response(body=self._render_mechanics(tree))
+        if v == "literature":
+            block_arg = (args or {}).get("block")
+            lit_block: str | None = str(block_arg).strip() if block_arg else None
+            if lit_block and lit_block not in tree.blocks:
+                raise NotFound(_block_not_found(tree, lit_block))
+            return self._render_literature(tree, ref, block_name=lit_block)
         raise BadInput(
             f"unknown nm view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='ports' | view='validate' | "
             "view='clearance' (args={'a':...,'b':...}) | view='topology' | "
-            "view='mechanics'",
+            "view='mechanics' | view='literature' (optional "
+            "args={'block':...})",
         )
 
     # ── delete ───────────────────────────────────────────────────────
@@ -1039,6 +1230,30 @@ class NmHandler(Handler):
 
 
 # ── payload / rendering (module-level, no store access) ────────────────
+
+
+def _fill_fraction_line(tree: BlockTree) -> str:
+    """``view='validate'``'s filled-fraction honesty header
+    (:meth:`NmHandler._render_validate`'s docstring, docs/backlog/
+    nm-kind.md "4b" — the maze.py lesson). Counts **ordinary** blocks only
+    (``node.template is None``) — an instance never owns a binding of its
+    own, it is filled exactly when its template is (``bind_structure``
+    rejects binding an instance directly, the same rule
+    ``mechanics.py``'s ``bd = node.bound_design  # instances are never
+    independently bound`` comment already states), so counting instances
+    too would double-count (or under-count, for an unbound template with
+    several instances) the same underlying fill state."""
+    ordinary = [n for n in tree.blocks.values() if n.template is None]
+    if not ordinary:
+        return "0/0 block(s) filled — no blocks declared yet (unfilled)"
+    bound = [n for n in ordinary if n.bound_design]
+    line = f"{len(bound)}/{len(ordinary)} block(s) filled (bound to real chemistry)"
+    if not bound:
+        line += (
+            " — UNFILLED scaffold: zero findings below means nothing is "
+            "wrong YET, not that this design is done"
+        )
+    return line
 
 
 def _generated_cell(coords: np.ndarray) -> StructCell:
