@@ -273,7 +273,7 @@ reality.
    `precis_nm/generators/sp2.py::build_cone`; the isometric-unroll
    chord-vs-strain distortion near the apex is truncated away past a
    derived `ρ_min` floor, honestly documented in the module docstring) —
-   **+ cyclodextrin — SHIPPED round 3** (two-path generator,
+   **+ cyclodextrin — SHIPPED round 3, afee32a3** (two-path generator,
    `precis_nm/generators/sugars.py::build_cyclodextrin`: seeded-rdkit
    ETKDGv3+MMFF conformer with a loud, re-derived-from-coordinates check,
    falling back to a Cn-symmetric idealized-glucopyranose template —
