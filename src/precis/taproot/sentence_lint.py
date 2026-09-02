@@ -117,7 +117,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-__all__ = ["EPISTEMIC_MODE_TOKENS", "SCOPE_KEYS", "lint_claim_sentence", "lint_scope"]
+__all__ = [
+    "EPISTEMIC_MODE_TOKENS",
+    "GENERIC_EPISTEMIC_HEADS",
+    "SCOPE_KEYS",
+    "find_epistemic_modes",
+    "lint_claim_sentence",
+    "lint_scope",
+]
 
 #: Method/instrument/technique tokens that count as an epistemic mode.
 #: Seeded from the remediation doc's Phase 1 list -- deliberately a plain
@@ -227,6 +234,56 @@ _EPISTEMIC_MODE_RE = re.compile(
     + r")\b",
     re.IGNORECASE,
 )
+
+
+#: The generic way-of-knowing head nouns above, as their own set. They
+#: are *superordinate*: "SCC-DFTB" is a calculation, "TEM" is microscopy.
+#: Grounding (:mod:`~precis.taproot.reword`) uses that direction -- a
+#: passage naming a specific technique grounds a claim's generic head,
+#: but never the reverse, and no specific token grounds another. Without
+#: it a claim reading "calculations find ..." warns against a passage that
+#: says "we use the SCC-DFTB algorithm", which is not a real gap.
+GENERIC_EPISTEMIC_HEADS: frozenset[str] = frozenset(
+    {
+        "measurement",
+        "measurements",
+        "simulation",
+        "simulations",
+        "calculation",
+        "calculations",
+        "spectroscopy",
+        "microscopy",
+        "experiments",
+        "analysis",
+        "theory",
+        "trial",
+        "trials",
+        "imaging",
+        "assay",
+        "assays",
+        "modelling",
+        "modeling",
+    }
+)
+
+assert GENERIC_EPISTEMIC_HEADS <= EPISTEMIC_MODE_TOKENS
+
+
+def find_epistemic_modes(text: str) -> list[str]:
+    """Every epistemic-mode token in ``text``, as written, first-occurrence
+    order (case-insensitive dedup).
+
+    The public read of the same regex ``no-epistemic-mode`` applies, so a
+    caller that has to ask *which* mode a sentence names -- mode grounding
+    in :mod:`~precis.taproot.reword` -- shares this list rather than
+    re-deriving it and drifting from the lint.
+    """
+    seen: dict[str, str] = {}
+    for match in _EPISTEMIC_MODE_RE.finditer(text or ""):
+        token = match.group(0)
+        seen.setdefault(token.lower(), token)
+    return list(seen.values())
+
 
 #: Controlled evidence verbs (canon: "claim admissibility", test
 #: `no-evidence-verb`) -- inflections included, matched case-insensitively.

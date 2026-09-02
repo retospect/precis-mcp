@@ -521,6 +521,45 @@ mining-engineering DOI, and carries two different `pdf_sha256` values.
 fi269509 is lint-clean and verified `yes`, but publishing it would emit
 a false citation. Spec: `docs/backlog/ref-2615-is-a-mis-bound-record.md`.
 
+## Grounding checks shipped 2026-09-01 (`taproot/reword.py`)
+
+The reword path validated the proposal against the *previous sentence*
+only (`_post_validate(old, new)`) — self-consistency, never grounding.
+Two checks now read the hub's own pinned passages:
+
+* **numeric grounding**, blocking — a quantity-shaped digit run absent
+  from every pinned passage rejects the reword.
+* **mode grounding**, advisory (`HubReword.warnings`, `warned=` in the
+  CLI line) — an epistemic-mode token the passages never name.
+
+Measured on this cohort before shipping. Numeric grounding fires on
+exactly one of the seven reworded hubs — **fi189543's `19`**, the number
+carried over from fi189542's paper — and on none of the other six.
+
+Mode grounding warns on four, and every warning is the same real gap:
+**the pinned passage does not carry the method the sentence names.**
+
+| hub | claims | its pinned passage |
+|---|---|---|
+| fi190987 | molecular dynamics simulations | a figure caption; names only ion-beam *imaging* as content |
+| fi191318 | density functional theory calculations | binding-energy trend prose, no method |
+| fi192836 | measurements | the paper's "Impact" section, no method |
+| fi269509 | transmission electron microscopy | reactor-temperature prose, no method |
+
+**These four are mint jobs, not text jobs:** attach the paper's methods
+passage as a second evidence edge. Both `refine_claim_sentence` and the
+sweep leave `links` untouched, so nothing here has degraded — the
+warning names work that was always owed.
+
+Corpus dry run over all 1,230 live strict claim hubs with a pinned
+passage: numeric grounding would block **10.8%**. Eight of those were
+eyeballed; six were true (the number is genuinely not in the passage)
+and the two false ones drove canon fixes now in the code — scientific
+notation (`10¹¹` vs a passage's `100,000,000,000`) and decimal precision
+(`0.7` vs `0.70`, `1.3` vs `1.33`). Mode grounding would warn on 45%,
+which is why it is advisory: promote it only after someone measures
+whether that rate is real debt or noise.
+
 ### Also open
 - Phase 5 (adversarial pass for uncited assertions) never started.
 - `docs/backlog/pdf-extraction-drops-micro-sign-in-units.md` and

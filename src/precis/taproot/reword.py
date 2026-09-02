@@ -49,6 +49,47 @@ counted and reported with the named checks. NO-REWORD is an expected
 verdict, not a failure: a definition or a "study happened" report is
 not a claim, and rewording it into one would invent a finding.
 
+Those four checks all compare the proposal to the *previous sentence* —
+self-consistency, never grounding. Two more (2026-09-01) compare it to
+the hub's own pinned evidence passages, which the cohort query now
+carries:
+
+* **numeric grounding** (blocking, :data:`_CHECK_GROUNDING`) — every
+  quantity-shaped digit run in the proposal must appear somewhere in a
+  pinned passage. Motivating defect: a nanobud hub whose sentence said
+  "an opening angle of approximately 19°" while its own paper says
+  ≈20° — the 19° was carried over from a *different* paper's hub, and
+  the old→new preservation check dutifully protected it. Quantity shape
+  (:data:`_QUANTITY_RE`) is deliberately narrower than the preservation
+  check's digit run: a run touching a word character or a hyphen is
+  nomenclature (``6-311G``, ``C60``, ``sp2``, ``B3LYP``), not a
+  measurement, and grounding it against prose would re-run the
+  ``hyphen-numeric-range`` false-positive treadmill.
+* **mode grounding** (advisory, :attr:`HubReword.warnings`) — every
+  specific epistemic-mode token the proposal names
+  (:func:`~precis.taproot.sentence_lint.find_epistemic_modes`) should
+  appear in a pinned passage. This guards the failure the lint itself
+  *incentivises*: ``no-epistemic-mode`` demands a method, so the model
+  is under pressure to supply one it cannot see. Advisory on purpose —
+  the passage-side match is a word-prefix stem (so the passage's "cone
+  wall model" grounds the claim's "modelling"), which is loose in both
+  directions and has had no corpus dry run; promote it to blocking only
+  once one has measured its false-positive rate, the discipline
+  :data:`~precis.taproot.sentence_lint.EPISTEMIC_MODE_TOKENS` itself
+  was grown under.
+
+A hub with no live pinned passage at all is not silently exempt: both
+checks no-op and the row carries a ``no pinned evidence`` warning, so
+the report never reads as "grounded" when nothing was checked.
+
+"Grounding" here is claim-against-its-passages, a different axis from
+:mod:`precis.taproot.grounding`, which asks whether a *chunk* is body
+prose at all. Neither subsumes the other, and neither is a substitute
+for :mod:`~precis.taproot.verify_edges`: whether a passage actually
+*supports* a claim is a semantic judgment no regex reaches. These two
+catch the mechanical half — a number or a method the passage does not
+contain — which is precisely the half an LLM proposal fabricates.
+
 Apply (``apply=True``; dry-run is the default and writes nothing) goes
 through :func:`precis.taproot.hub.refine_claim_sentence` — the single
 retitle door, so ``refs.title``, the ``finding_body`` chunk, and the
@@ -63,7 +104,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
 
@@ -74,7 +115,11 @@ from precis.taproot.canon import (
     not_hypothesis_predicate_sql,
 )
 from precis.taproot.hub import refine_claim_sentence
-from precis.taproot.sentence_lint import _OVER_LONG_CHARS
+from precis.taproot.sentence_lint import (
+    _OVER_LONG_CHARS,
+    GENERIC_EPISTEMIC_HEADS,
+    find_epistemic_modes,
+)
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.numerics import extract_numerics
 
@@ -113,17 +158,21 @@ _CHECK_LINT = "lint"
 _CHECK_NUMERIC = "numeric"
 _CHECK_CITATION = "citation"
 _CHECK_OVER_LONG = "over-long"
+_CHECK_GROUNDING = "numeric-grounding"
 
 
 @dataclass(frozen=True)
 class RewordCandidate:
     """One cohort member: the hub, its failing sentence (``refs.title``),
-    its ``meta.scope``, and the blocking lint codes that admitted it."""
+    its ``meta.scope``, the blocking lint codes that admitted it, and the
+    text of its live pinned evidence passages (``evidence``, empty when
+    the hub has none — see :func:`_grounding_warnings`)."""
 
     hub_ref_id: int
     sentence: str
     scope: dict[str, Any]
     lint_codes: tuple[str, ...]
+    evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -137,6 +186,7 @@ class HubReword:
     new_sentence: str | None = None
     lint_codes: tuple[str, ...] = ()
     checks_failed: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
     reason: str | None = None
     applied: bool = False
 
@@ -149,6 +199,7 @@ class HubReword:
             "status": self.status,
             "lint_codes": list(self.lint_codes),
             "checks_failed": list(self.checks_failed),
+            "warnings": list(self.warnings),
             "reason": self.reason,
             "applied": self.applied,
         }
@@ -198,6 +249,42 @@ _COHORT_SQL = f"""
        {{hub_clause}}
      ORDER BY r.ref_id
 """
+
+
+#: Every cohort hub's live pinned evidence passages, one row per edge.
+#: Same relations and pin requirement as ``verify_edges._COHORT_SQL`` --
+#: ``contradicts`` is excluded there because a sweep must not certify a
+#: dispute, and here because a contradicting passage is the *last* text a
+#: claim should be allowed to source its numbers from. Support status is
+#: deliberately NOT filtered: grounding asks "does the paper say this
+#: number", which a stripped or never-verified edge answers just as well.
+_EVIDENCE_SQL = """
+    SELECT l.dst_ref_id, c.text
+      FROM links l
+      JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
+      JOIN chunks c ON c.chunk_id = l.src_chunk_id AND c.retired_at IS NULL
+     WHERE l.relation IN ('establishes', 'corroborates')
+       AND l.src_chunk_id IS NOT NULL
+       AND l.dst_ref_id = ANY(%(hubs)s)
+     ORDER BY l.dst_ref_id, l.link_id
+"""
+
+
+def _evidence_by_hub(
+    store: Store, hub_ref_ids: Sequence[int]
+) -> dict[int, tuple[str, ...]]:
+    """``{hub_ref_id: (passage_text, ...)}`` for the given hubs. Hubs with
+    no live pinned passage are absent, not empty -- the caller distinguishes
+    "checked and grounded" from "nothing to check against"."""
+    if not hub_ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(_EVIDENCE_SQL, {"hubs": list(hub_ref_ids)}).fetchall()
+    out: dict[int, list[str]] = {}
+    for hub_ref_id, text in rows:
+        if text:
+            out.setdefault(int(hub_ref_id), []).append(str(text))
+    return {k: tuple(v) for k, v in out.items()}
 
 
 def _blocking_codes(sentence: str) -> tuple[str, ...]:
@@ -254,7 +341,8 @@ def select_reword_cohort(
         )
         if limit is not None and len(out) >= limit:
             break
-    return out
+    evidence = _evidence_by_hub(store, [c.hub_ref_id for c in out])
+    return [replace(cand, evidence=evidence.get(cand.hub_ref_id, ())) for cand in out]
 
 
 # ── the LLM call ────────────────────────────────────────────────────────
@@ -379,13 +467,170 @@ def _new_citation_markers(old: str, new: str) -> list[str]:
     return [m for m in dict.fromkeys(markers) if m not in old]
 
 
-def _post_validate(old: str, new: str) -> tuple[list[str], list[str]]:
-    """All four in-code checks over a proposed reword — returns
+#: A digit run that reads as a *quantity*: bounded on both sides by
+#: something that is neither a word character, a hyphen, nor a decimal
+#: point. Deliberately narrower than :data:`_DIGIT_RUN_RE` (which the
+#: old-to-new preservation check uses, and which must stay greedy):
+#:
+#: * a run touching a letter or a hyphen is nomenclature -- ``6-311G``,
+#:   ``C60``, ``sp2``, ``B3LYP``, ``Fe-ZSM-5`` -- and demanding a passage
+#:   restate it is the ``hyphen-numeric-range`` treadmill in a new place;
+#: * the ``.`` in both guards stops the optional fraction backtracking
+#:   into a bogus run: without it ``0.7-1.3`` yields ``"0"`` (greedy
+#:   ``0.7`` fails the hyphen guard, then ``0`` passes it) and ``"3"``,
+#:   neither of which any passage would contain. 2026-09-01 corpus dry
+#:   run: this pair was ~a third of the blocking hits.
+_QUANTITY_RE = re.compile(r"(?<![\w.-])\d+(?:\.\d+)?(?![\w.-])")
+
+#: Superscript/subscript digits are DROPPED, not folded to ASCII, before
+#: grounding. :func:`_canon_numbers` folds them (right for old-vs-new,
+#: where both sides fold identically and cancel), but here the fold is
+#: asymmetric and invents tokens: ``~100x (10^2)`` became ``"102"`` and
+#: ``3 x 10^4`` became ``"104"``, matched nothing, and blocked the hub.
+#: Dropping instead leaves ``10``, which the passage's mantissa grounds --
+#: exponent surface forms (``10^-6``, ``1e-6``, ``x 10 -6``) vary too
+#: widely between claim and passage to compare at all.
+_SUPERSCRIPT_DIGITS = str.maketrans("", "", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻₀₁₂₃₄₅₆₇₈₉")
+
+#: The mantissa ``10`` of scientific notation goes with its exponent. A
+#: claim's ``10¹¹ bits/cm²`` left a bare ``10`` that its own passage --
+#: which writes the value out as ``100,000,000,000`` -- does not contain.
+#: Nothing is grounded by the literal ten in ``10^n``, so drop it.
+_SCI_TEN_RE = re.compile(r"10(?=[⁰¹²³⁴⁵⁶⁷⁸⁹⁻])")
+
+#: Trailing fractional zeros carry no information and papers are not
+#: consistent about them: a claim's ``0.7`` must ground on a passage's
+#: ``0.70``, and ``4.0`` on ``4``. Applied after separators are stripped,
+#: so ``0.700`` -> ``0.7`` and ``4.0`` -> ``4``.
+_TRAILING_FRAC_ZERO_RE = re.compile(r"(?<=\d)(\.\d*?)0+\b")
+_BARE_POINT_RE = re.compile(r"(?<=\d)\.(?!\d)")
+
+
+def _canon_grounding(text: str) -> str:
+    """Grounding-side number canon: grouping separators stripped (so a
+    passage's ``10,000`` grounds a claim's ``10 000``), scientific-notation
+    mantissas and super/subscripts dropped, trailing fractional zeros
+    normalized away. Both sides go through it, so it only ever makes two
+    spellings of the same value compare equal."""
+    out = _GROUP_SEP_RE.sub("", text)
+    out = _SCI_TEN_RE.sub("", out).translate(_SUPERSCRIPT_DIGITS)
+    return _BARE_POINT_RE.sub("", _TRAILING_FRAC_ZERO_RE.sub(r"\1", out))
+
+
+#: Word-prefix length a mode token is stemmed to before the passage is
+#: searched, so an inflection gap is not a miss ("modelling" grounds on
+#: "cone wall model", "measurements" on "measured"). Short tokens (the
+#: acronyms) are searched whole.
+_MODE_STEM_CHARS = 5
+
+#: The advisory-warning texts, so the caller can match on a stable prefix.
+_WARN_NO_EVIDENCE = "no pinned evidence: grounding unchecked"
+_WARN_UNGROUNDED_MODE = "epistemic mode absent from every pinned passage"
+
+
+def _ungrounded_quantities(new: str, evidence: Sequence[str]) -> list[str]:
+    """Quantity-shaped digit runs of ``new`` that no pinned passage
+    contains. Empty ``evidence`` returns ``[]`` -- nothing to check
+    against is reported as a warning, never as a failure.
+
+    The passage side matches on ANY digit run, not just quantity-shaped
+    ones, so a claim's ``150`` grounds on a passage's ``150 Ohm/sq`` and
+    on its ``Fig. 150`` alike. That asymmetry is on purpose: this check
+    blocks a write, so it errs toward passing."""
+    if not evidence:
+        return []
+    seen: set[str] = set()
+    for text in evidence:
+        seen.update(_DIGIT_RUN_RE.findall(_canon_grounding(text)))
+    return [
+        run
+        for run in dict.fromkeys(_QUANTITY_RE.findall(_canon_grounding(new)))
+        if not _is_grounded(run, seen)
+    ]
+
+
+def _is_grounded(run: str, passage_runs: set[str]) -> bool:
+    """Whether one claim-side digit run is present in the passages.
+
+    Exact, except that a **decimal** run also grounds on a longer run it
+    prefixes: a claim's ``1.3`` is a rounded reading of a passage's
+    ``1.33``, and blocking on that is the pedantry that gets a check
+    disbelieved. Integers get no such tolerance -- ``19`` must not ground
+    on ``1900``, and the motivating defect (a claim saying 19° whose paper
+    says 20°) is exactly an integer."""
+    if run in passage_runs:
+        return True
+    if "." not in run:
+        return False
+    return any(other.startswith(run) for other in passage_runs)
+
+
+def _mode_probes(token: str) -> tuple[str, ...]:
+    """What counts as a passage naming this mode: the token as written,
+    plus a word-prefix stem of its last word when that word is long
+    enough to stem safely."""
+    lowered = token.lower()
+    probes = {lowered}
+    last = lowered.rsplit(" ", 1)[-1].strip("-")
+    if len(last) > _MODE_STEM_CHARS:
+        probes.add(last[:_MODE_STEM_CHARS])
+    return tuple(sorted(probes))
+
+
+def _ungrounded_modes(new: str, evidence: Sequence[str]) -> list[str]:
+    """Epistemic-mode tokens ``new`` names that no pinned passage does.
+    Advisory: see the module docstring on why this is not blocking.
+
+    A generic head (:data:`~precis.taproot.sentence_lint.
+    GENERIC_EPISTEMIC_HEADS`) is grounded by ANY specific technique in
+    the passage — "calculations" against "the SCC-DFTB algorithm" is not
+    a gap. Not the reverse: a claim naming molecular dynamics still warns
+    against a passage that only says "simulations", because *which*
+    method is the part a reader is being asked to trust."""
+    if not evidence:
+        return []
+    haystack = " \n".join(evidence).lower()
+    passage_has_specific = any(
+        token.lower() not in GENERIC_EPISTEMIC_HEADS
+        for token in find_epistemic_modes(haystack)
+    )
+    out: list[str] = []
+    for token in find_epistemic_modes(new):
+        if passage_has_specific and token.lower() in GENERIC_EPISTEMIC_HEADS:
+            continue
+        if not any(
+            re.search(r"\b" + re.escape(probe), haystack)
+            for probe in _mode_probes(token)
+        ):
+            out.append(token)
+    return out
+
+
+def _grounding_warnings(new: str, evidence: Sequence[str]) -> list[str]:
+    """The advisory half of grounding -- never blocks a write, always
+    lands in the JSONL row so a sweep is reviewable."""
+    if not evidence:
+        return [_WARN_NO_EVIDENCE]
+    modes = _ungrounded_modes(new, evidence)
+    if modes:
+        return [f"{_WARN_UNGROUNDED_MODE}: {', '.join(modes)}"]
+    return []
+
+
+def _post_validate(
+    old: str, new: str, *, evidence: Sequence[str] = ()
+) -> tuple[list[str], list[str]]:
+    """All five blocking in-code checks over a proposed reword — returns
     ``(checks_failed, human_details)``, both empty when the proposal is
     writable. Every check runs (a proposal can fail several); the
     explicit length check duplicates the ``over-long`` lint code on
     purpose, as the belt that survives any future re-scoping of
-    ``_BLOCKING_LINT_CODES``."""
+    ``_BLOCKING_LINT_CODES``.
+
+    The first four read ``old`` — self-consistency. ``evidence`` (the
+    hub's pinned passage texts) adds the fifth, numeric grounding, which
+    reads the *sources* instead; it no-ops when the sequence is empty, so
+    a caller with no passages to hand gets the historical behaviour."""
     checks: list[str] = []
     details: list[str] = []
     still_failing = _blocking_codes(new)
@@ -403,6 +648,12 @@ def _post_validate(old: str, new: str) -> tuple[list[str], list[str]]:
     if len(new) > _OVER_LONG_CHARS:
         checks.append(_CHECK_OVER_LONG)
         details.append(f"{len(new)} chars exceeds the {_OVER_LONG_CHARS}-char budget")
+    ungrounded = _ungrounded_quantities(new, evidence)
+    if ungrounded:
+        checks.append(_CHECK_GROUNDING)
+        details.append(
+            "quantit(y/ies) absent from every pinned passage: " + ", ".join(ungrounded)
+        )
     return checks, details
 
 
@@ -444,7 +695,10 @@ def _reword_one(
             lint_codes=cand.lint_codes,
             reason=f"malformed response (verdict={verdict!r})",
         )
-    checks, details = _post_validate(cand.sentence, new_sentence)
+    checks, details = _post_validate(
+        cand.sentence, new_sentence, evidence=cand.evidence
+    )
+    warnings = tuple(_grounding_warnings(new_sentence, cand.evidence))
     if checks:
         return HubReword(
             hub_ref_id=cand.hub_ref_id,
@@ -453,6 +707,7 @@ def _reword_one(
             new_sentence=new_sentence,
             lint_codes=cand.lint_codes,
             checks_failed=tuple(checks),
+            warnings=warnings,
             reason="; ".join(details),
         )
     if not apply:
@@ -462,6 +717,7 @@ def _reword_one(
             status="reworded",
             new_sentence=new_sentence,
             lint_codes=cand.lint_codes,
+            warnings=warnings,
             reason=reason,
         )
     try:
@@ -475,6 +731,7 @@ def _reword_one(
             status="apply-failed",
             new_sentence=new_sentence,
             lint_codes=cand.lint_codes,
+            warnings=warnings,
             reason=str(exc),
         )
     return HubReword(
@@ -483,6 +740,7 @@ def _reword_one(
         status="reworded",
         new_sentence=new_sentence,
         lint_codes=cand.lint_codes,
+        warnings=warnings,
         reason=reason,
         applied=True,
     )
@@ -528,7 +786,12 @@ def run_reword_sweep(
     Returns the summary the CLI prints::
 
         {"cohort": int, "processed": int, "applied": int,
-         "counts": {status: int, ...}, "apply": bool, "out": str|None}
+         "warned": int, "counts": {status: int, ...}, "apply": bool,
+         "out": str|None}
+
+    ``warned`` counts hubs carrying an advisory grounding warning (an
+    unseen epistemic mode, or no pinned passage to check against). It is
+    a review pointer into the JSONL, never a gate.
     """
     candidates = select_reword_cohort(store, hub=hub, limit=limit)
     fn = propose_fn or propose_reword
@@ -539,6 +802,7 @@ def run_reword_sweep(
         "cohort": len(candidates),
         "processed": len(results),
         "applied": sum(1 for r in results if r.applied),
+        "warned": sum(1 for r in results if r.warnings),
         "counts": dict(sorted(counts.items())),
         "apply": apply,
         "out": out_path,

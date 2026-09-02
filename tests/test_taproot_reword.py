@@ -18,11 +18,13 @@ from typing import Any
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.taproot.reword import (
+    _ungrounded_modes,
+    _ungrounded_quantities,
     propose_reword,
     run_reword_sweep,
     select_reword_cohort,
 )
-from tests.workers._helpers import seed_ref
+from tests.workers._helpers import seed_chunk, seed_ref
 
 #: Fails exactly the two dominant blocking codes (no-evidence-verb +
 #: no-epistemic-mode) and nothing else — the audit's modal cohort member.
@@ -270,6 +272,207 @@ def test_over_long_reword_is_rejected(store: Any, tmp_path: Any) -> None:
     # the belt survives a future re-scoping of the blocking set.
     assert "over-long" in row["checks_failed"]
     assert "lint" in row["checks_failed"]
+
+
+# ── grounding (proposal vs the hub's own pinned passages) ───────────
+
+
+def _with_passage(store: Any, sentence: str, passage: str) -> int:
+    """A cohort hub carrying ONE live pinned evidence passage."""
+    hub = _mint(store, sentence)
+    paper = seed_ref(store, title="source", kind="paper")
+    seed_chunk(store, ref_id=paper, text=passage, ord=0)
+    store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=hub,
+        relation="corroborates",
+        src_pos=0,
+        meta={},
+    )
+    return hub
+
+
+def test_quantity_absent_from_the_passage_is_rejected(
+    store: Any, tmp_path: Any
+) -> None:
+    """The motivating defect: the sentence carries a number its own paper
+    never states, and the old-to-new preservation check protects it."""
+    hub = _with_passage(
+        store, _FAILING, "We measured a tensile strength of 120 GPa for graphene."
+    )
+    before = _hub_state(store, hub)
+    out = tmp_path / "r.jsonl"
+
+    summary = run_reword_sweep(
+        store, apply=True, out=out, propose_fn=_stub(_ADMISSIBLE)
+    )
+
+    assert summary["counts"] == {"rejected": 1}
+    assert summary["applied"] == 0
+    (row,) = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert row["checks_failed"] == ["numeric-grounding"]
+    assert "130" in row["reason"]
+    assert _hub_state(store, hub) == before
+
+
+def test_grounded_reword_applies(store: Any) -> None:
+    hub = _with_passage(
+        store, _FAILING, "We measured a tensile strength of 130 GPa for graphene."
+    )
+
+    summary = run_reword_sweep(store, apply=True, propose_fn=_stub(_ADMISSIBLE))
+
+    assert summary["counts"] == {"reworded": 1}
+    assert summary["applied"] == 1
+    assert _hub_state(store, hub)[0] == _ADMISSIBLE
+
+
+def test_hub_with_no_pinned_passage_warns_but_never_blocks(
+    store: Any, tmp_path: Any
+) -> None:
+    """Nothing to check against is reported, not silently called grounded."""
+    _mint(store, _FAILING)
+    out = tmp_path / "r.jsonl"
+
+    summary = run_reword_sweep(
+        store, apply=True, out=out, propose_fn=_stub(_ADMISSIBLE)
+    )
+
+    assert summary["counts"] == {"reworded": 1}
+    assert summary["warned"] == 1
+    (row,) = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert row["checks_failed"] == []
+    assert row["warnings"] == ["no pinned evidence: grounding unchecked"]
+
+
+def test_nomenclature_digits_are_not_quantities(store: Any) -> None:
+    """``6-311G``/``C60`` are names, not measurements -- demanding the
+    passage restate them would re-run the hyphen-numeric-range treadmill."""
+    hub = _with_passage(
+        store,
+        "The 6-311G basis set describes C60 adsorption on graphene.",
+        "Density functional theory calculations model fullerene binding"
+        " on graphene with a Pople basis set.",
+    )
+    grounded = (
+        "Density functional theory calculations with the 6-311G basis set"
+        " show C60 binds to graphene."
+    )
+
+    summary = run_reword_sweep(store, apply=True, propose_fn=_stub(grounded))
+
+    assert summary["counts"] == {"reworded": 1}
+    assert summary["warned"] == 0
+    assert _hub_state(store, hub)[0] == grounded
+
+
+def test_unseen_epistemic_mode_warns_but_still_applies(
+    store: Any, tmp_path: Any
+) -> None:
+    """Mode grounding is advisory: the lint DEMANDS a method, so a model
+    that supplies one the passage never names is reported, not blocked."""
+    hub = _with_passage(
+        store, _FAILING, "We measured a tensile strength of 130 GPa for graphene."
+    )
+    out = tmp_path / "r.jsonl"
+
+    summary = run_reword_sweep(
+        store, apply=True, out=out, propose_fn=_stub(_ADMISSIBLE)
+    )
+
+    assert summary["counts"] == {"reworded": 1}
+    assert summary["warned"] == 1
+    (row,) = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert row["checks_failed"] == []
+    (warning,) = row["warnings"]
+    # "measurements" stems onto the passage's "measured"; "Nanoindentation"
+    # appears nowhere -- only the latter is reported.
+    assert warning.startswith("epistemic mode absent from every pinned passage")
+    assert "Nanoindentation" in warning
+    assert "measurements" not in warning
+    assert _hub_state(store, hub)[0] == _ADMISSIBLE
+
+
+def test_the_motivating_defect_a_number_from_another_paper() -> None:
+    """fi189543: the sentence said 19 degrees; its own paper says 20."""
+    assert _ungrounded_quantities(
+        "Euler's-rule analysis identifies an opening angle of approximately 19°.",
+        ["The cone with five pentagons has an opening angle of about 20°."],
+    ) == ["19"]
+
+
+def test_scientific_notation_mantissa_is_not_a_quantity() -> None:
+    """``10¹¹`` grounds on a passage that writes the value out -- the bare
+    ten is notation, not a measurement."""
+    assert (
+        _ungrounded_quantities(
+            "Crossbar measurements show a density of 10¹¹ bits/cm².",
+            ["The circuit reaches 100,000,000,000 bits per square centimetre."],
+        )
+        == []
+    )
+
+
+def test_trailing_fractional_zeros_ground_each_other() -> None:
+    assert (
+        _ungrounded_quantities(
+            "Nanoindentation measurements show a Zener ratio of 0.7.",
+            ["The measured Zener ratio is 0.70 for this framework."],
+        )
+        == []
+    )
+
+
+def test_a_decimal_grounds_on_a_longer_reading() -> None:
+    """Rounding a reported value is not a fabricated number."""
+    assert (
+        _ungrounded_quantities(
+            "Measurements show a Zener ratio reaching 1.3 in rigid MOFs.",
+            ["We obtain 1.33 for this framework."],
+        )
+        == []
+    )
+
+
+def test_an_integer_never_grounds_on_a_longer_run() -> None:
+    """No prefix tolerance for integers -- 19 is not evidence of 1900, and
+    the motivating defect is an integer."""
+    assert _ungrounded_quantities(
+        "Measurements show a cone opening angle of 19°.",
+        ["The cone opening angle is 1900 mrad."],
+    ) == ["19"]
+
+
+def test_mode_stem_grounds_an_inflection() -> None:
+    passage = "A cone wall model reproduces the observed opening angles."
+    assert _ungrounded_modes("Cone-wall modelling shows the angles.", [passage]) == []
+
+
+def test_a_specific_technique_grounds_a_generic_head() -> None:
+    """ "calculations" against a passage saying "the SCC-DFTB algorithm" is
+    not a gap -- the head noun is superordinate to the technique."""
+    assert (
+        _ungrounded_modes(
+            "Calculations show the binding is weak.",
+            ["In the present work we use the SCC-DFTB algorithm."],
+        )
+        == []
+    )
+
+
+def test_a_generic_head_never_grounds_a_specific_technique() -> None:
+    """Not the reverse: *which* method is the part a reader must trust."""
+    assert _ungrounded_modes(
+        "Molecular dynamics simulations show six configurations.",
+        ["Our simulations show six configurations."],
+    ) == ["Molecular dynamics"]
+
+
+def test_mode_grounding_matches_a_short_acronym_whole() -> None:
+    assert _ungrounded_modes("DFT predicts the gap.", ["DFT gives 1.2 eV."]) == []
+    assert _ungrounded_modes("DFT predicts the gap.", ["We measured the gap."]) == [
+        "DFT"
+    ]
 
 
 # ── model verdicts ───────────────────────────────────────────────────────
