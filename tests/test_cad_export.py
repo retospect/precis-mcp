@@ -264,6 +264,25 @@ def test_to_openscad_chamfer_emits_transformed_cube_under_difference() -> None:
     assert "chamfer" not in scad  # substituted away — OpenSCAD has no such primitive
 
 
+def test_to_openscad_cube_base_centred_in_xy() -> None:
+    # exact coordinates: cube centred in x/y, base at z=0.
+    scad = to_openscad(parse_source("component p\nbody add box:w40d20h10\n"))
+    assert "translate([-20,-10,0]) cube([40,20,10]);" in scad
+
+
+def test_halfspace_clamp_flat_top_chamfer_is_finite() -> None:
+    # chamfer:2x0 — the cutting-plane normal is exactly +z, so the clamp
+    # basis builder must not pick a parallel reference axis (NaN cross).
+    spec = parse_source(
+        "component part\nbody add box:w40d20h10\ntrim cut chamfer:2x0 @0,0,10\n"
+    )
+    node = next(n for n in spec.nodes if n.name == "trim")
+    boxes = halfspace_clamp_params(node, design_aabb(spec))
+    w, d, h, xf = boxes[0]
+    assert np.isfinite([w, d, h]).all() and min(w, d, h) > 0
+    assert np.isfinite(xf.R).all() and np.isfinite(xf.t).all()
+
+
 def test_to_openscad_patterned_chamfer_unions_clamp_boxes() -> None:
     # a patterned chamfer substitutes one clamp box per instance, folded
     # into a single union() so the difference() still sees one child.

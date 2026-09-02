@@ -82,14 +82,14 @@ def test_features_glb_skips_node_that_fails_to_tessellate(monkeypatch) -> None:
     from precis.cad.tessellate import TessellationError, node_meshes
 
     def _flaky(node, aabb=None):
-        if node.name == "bore":
+        if node.name == "plate":  # a MIDDLE node — later nodes must survive
             raise TessellationError("no mesh for you")
         return node_meshes(node, aabb)
 
     monkeypatch.setattr(gltf_mod, "node_meshes", _flaky)
     gltf = _parse_glb(to_glb(parse_source(_ASM), mode="features"))
     names = [n["name"] for n in gltf["nodes"]]
-    assert "bore" not in names and "rod" in names and "plate" in names
+    assert "plate" not in names and "rod" in names and "bore" in names
 
 
 def test_solid_mode_needs_extra() -> None:

@@ -361,6 +361,8 @@ def test_transform_dataclass_immutable() -> None:
         (0.0, 90.0, 0.0),  # gimbal lock (ry = +90°)
         (0.0, -90.0, 0.0),  # gimbal lock (ry = -90°)
         (25.0, 90.0, -40.0),  # gimbal lock with nonzero rx/rz
+        (90.0, 0.0, 0.0),  # R[2,2] = 0 with R[2,1] ≠ 0 — not gimbal
+        (90.0, 30.0, 10.0),  # same, with all three angles live
     ],
 )
 def test_euler_deg_from_matrix_round_trips(rx: float, ry: float, rz: float) -> None:

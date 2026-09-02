@@ -155,8 +155,9 @@ def test_dry_run_lone_floater_reads_as_does_not_touch():
     )
     err, _warnings = cp.dry_run(source)
     assert err is not None
-    assert "does not touch" in err
-    assert "floater" in err and "base" in err and "post" in err
+    # orientation matters: the LONE part leads, the connected rest follows.
+    assert err.startswith("disconnected: {floater} does not touch")
+    assert "base" in err and "post" in err
 
 
 def test_dry_run_skips_component_whose_volume_cannot_be_computed(monkeypatch):
