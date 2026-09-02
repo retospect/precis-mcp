@@ -29,13 +29,21 @@ the odd one out.
 
 ## In scope
 
-- Give `EmbedHandler` an explicit fresh-claim tier ordering modelled on
-  `_FRESH_TIERS` (draft/conv ahead of the rest).
-- The small tail of genuinely-inline write-path embeds:
+- ~~Give `EmbedHandler` an explicit fresh-claim tier ordering modelled on
+  `_FRESH_TIERS` (draft/conv ahead of the rest).~~ **SHIPPED** (gr262963
+  fix): `EmbedHandler._claim_fresh` override with draft > conv > rest
+  tiers, per-tier claim statements so an empty priority tier is an index
+  probe; `RakeLemmaHandler` keeps the inherited flat order deliberately.
+  Claim-order test seeds both populations. `_substitute` already reports
+  the fan-out ("N replacement(s) across M chunk(s)" + async re-embed
+  note), so that acceptance criterion is met too.
+- REMAINING — the small tail of genuinely-inline write-path embeds:
   `handlers/_cache_base.py`'s block insert (already catches
   `EmbedderUnavailable` and stores `embedding=None`, so this is mostly
   making the fast path match the fallback) and `handlers/orcid.py`'s
-  `embed_one(card)`.
+  `embed_one(card)`. Needs a product call first: inline embedding is what
+  makes a just-fetched cache ref immediately semantically searchable —
+  moving it to the worker trades that freshness for write-path latency.
 
 ## Explicitly NOT in scope
 
@@ -66,7 +74,9 @@ post-deploy.
 
 ## Open questions / decisions log
 
-- Does the shared worker base already expose a tier hook `llm_summarize`
-  uses, or does `llm_summarize` implement `_FRESH_CLAIM_SQL` privately? If
-  the latter, decide whether to lift the tier machinery into the base or
-  copy it. Read `workers/llm_summarize.py` around `_FRESH_TIERS` first.
+- RESOLVED: `llm_summarize` implements `_FRESH_CLAIM_SQL` privately; the
+  tier machinery was copied onto `EmbedHandler` (not lifted into the
+  base) so `RakeLemmaHandler`'s claim order stays untouched.
+- OPEN (for the remaining tail): is trading cache kinds' immediate
+  semantic searchability for write-path latency acceptable? Ask before
+  implementing.

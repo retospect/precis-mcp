@@ -12,7 +12,7 @@ import pytest
 from precis.embedder import MockEmbedder
 from precis.workers.base import ClaimedChunk
 from precis.workers.embed import EmbedHandler
-from tests.workers._helpers import make_mock_bge_m3, seed_chunks
+from tests.workers._helpers import make_mock_bge_m3, seed_chunk, seed_chunks, seed_ref
 
 
 class _DownEmbedder(MockEmbedder):
@@ -329,3 +329,73 @@ class TestEmbedHandlerReferencesSkip:
                 (chunk_id,),
             ).fetchone()
         assert row == (0,), "the late write must not recreate the deleted embedding"
+
+
+class TestEmbedHandlerPriorityTiers:
+    """gr262963 / embed-priority-lane-for-interactive-writes: a draft chunk
+    edited (content_sha bumped, stale relative to its old embedding) must be
+    claimed ahead of an older, never-embedded paper backlog — not buried
+    behind it in flat ``chunk_id`` FIFO order."""
+
+    def test_stale_draft_chunk_claimed_before_older_paper_backlog(self, store):
+        h = EmbedHandler(make_mock_bge_m3())
+
+        # Paper backlog: seeded first, so lower chunk_ids, never embedded —
+        # this is what a flat ORDER BY c.chunk_id would claim first.
+        _paper_ref, paper_ids = seed_chunks(store, ["paper one", "paper two"])
+
+        # Draft chunk: seeded after (higher chunk_id), already embedded once
+        # (content_sha='sha-old'), then edited — content_sha bumped to
+        # 'sha-new' while the chunk_embeddings row still carries 'sha-old',
+        # exactly like DraftOps.edit_text's citation-backfill re-derive.
+        draft_ref = seed_ref(store, kind="draft")
+        draft_id = seed_chunk(store, ref_id=draft_ref, text="draft text", ord=0)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET content_sha = 'sha-old' WHERE chunk_id = %s",
+                (draft_id,),
+            )
+            conn.commit()
+            vec = h.process(ClaimedChunk(chunk_id=draft_id, text="draft text"))
+            h.write_ok(conn, draft_id, vec)
+            conn.execute(
+                "UPDATE chunks SET content_sha = 'sha-new' WHERE chunk_id = %s",
+                (draft_id,),
+            )
+            conn.commit()
+
+            # A batch that can only hold one chunk.
+            claimed = h.claim_batch(conn, limit=1)
+            conn.commit()
+
+        assert [row.chunk_id for row in claimed] == [draft_id]
+        assert not (set(paper_ids) & {row.chunk_id for row in claimed})
+
+    def test_priority_tier_orders_before_rest_but_keeps_both(self, store):
+        # With room for everything, the paper backlog still gets claimed —
+        # the tiering reorders, it doesn't drop.
+        h = EmbedHandler(make_mock_bge_m3())
+        _paper_ref, paper_ids = seed_chunks(store, ["paper one", "paper two"])
+        draft_ref = seed_ref(store, kind="draft")
+        draft_id = seed_chunk(store, ref_id=draft_ref, text="draft text", ord=0)
+
+        with store.pool.connection() as conn:
+            claimed = h.claim_batch(conn, limit=10)
+            conn.commit()
+
+        ids = [row.chunk_id for row in claimed]
+        assert set(ids) == {draft_id, *paper_ids}  # nothing dropped
+        assert ids[0] == draft_id  # draft claimed first
+
+    def test_no_priority_chunks_pending_leaves_flat_order_unchanged(self, store):
+        # Acceptance criterion: with no draft/conv chunk pending, the rest
+        # tier's flat chunk_id order (and thus corpus-wide throughput) is
+        # unchanged from the base class's plain FIFO.
+        h = EmbedHandler(make_mock_bge_m3())
+        _ref, chunk_ids = seed_chunks(store, ["one", "two", "three"])
+
+        with store.pool.connection() as conn:
+            claimed = h.claim_batch(conn, limit=10)
+            conn.commit()
+
+        assert [row.chunk_id for row in claimed] == chunk_ids

@@ -522,8 +522,14 @@ for attempt in 1 2 3; do
             # drift, schema design) assert over filesystem globs / the
             # migrated schema, so testmon has no code-dependency edge to
             # select them on a new migration — run them unconditionally
-            # alongside the impacted set (they're fast).
-            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py tests/test_schema_design.py'
+            # alongside the impacted set (they're fast). Same treatment for
+            # the cross-cutting wire-shape guards (token budget, MCP verb
+            # kwarg parity, vocab lint): they assert over the WHOLE tool
+            # surface, and a testmon map built mid-red-gate can drop their
+            # dependency edge — gr277298 shipped a token-budget overage
+            # green because --impacted deselected the budget test right
+            # after the fix cycle that changed the wire shape.
+            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py tests/test_schema_design.py tests/test_token_budget.py tests/test_mcp_verb_kwarg_parity.py tests/test_vocab_lint.py'
             say "integration gate (ruff autofix · mypy · import contracts · pytest --impacted + repo invariants) — ${GATE_MODE} gate"
         else
             # Full authoritative path measures coverage too: pytest-cov writes

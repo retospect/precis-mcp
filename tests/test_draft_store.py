@@ -65,6 +65,33 @@ def test_universal_chunk_resolves_any_chunk_by_handle(store: Store) -> None:
     assert store.drafts.universal_chunk("dc999999999") is None
 
 
+def test_universal_chunk_derives_kind_from_owning_ref_not_handle_prefix(
+    store: Store,
+) -> None:
+    """gr264585: a handle whose 2-char code disagrees with the chunk's
+    actual owning ref must not fabricate that code's kind — ``kind`` is
+    always derived from the join to ``refs``."""
+    from precis.utils import handle_registry
+
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(
+        name="uc-mismatch", title="Mismatch Title", project_ref_id=proj
+    )
+    # the chunk really belongs to a "draft" ref, but build a handle using
+    # the "paper" chunk-code prefix ("pc") against the same chunk_id.
+    bogus_handle = handle_registry.format_handle("paper", title.chunk_id, chunk=True)
+    assert bogus_handle.startswith("pc")
+
+    uc = store.drafts.universal_chunk(bogus_handle)
+    assert uc is not None
+    assert uc["kind"] == "draft"  # true owning-ref kind, not "paper"
+    assert uc["ref_id"] == ref.id
+
+    bulk = store.drafts.universal_chunks([bogus_handle])
+    assert bulk[bogus_handle]["kind"] == "draft"
+    assert bulk[bogus_handle]["ref_id"] == ref.id
+
+
 def test_soft_delete_draft_is_atomic_and_recoverable(store: Store) -> None:
     proj = _project(store)
     ref, _title = store.drafts.create_draft(

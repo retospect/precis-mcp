@@ -293,6 +293,18 @@ class DraftFakeStore(FakeStore):
                 "chunk_kind": "paragraph",
                 "text": "A cited passage about nanoscale transport.",
             }
+        # pk77 mirrors gr264585: a handle whose code prefix decodes to
+        # "patent" but whose numeric id really belongs to the same paper
+        # chunk 77 (ref 10) — the store derives kind from the owning ref,
+        # not the prefix, so this still resolves as "paper".
+        if handle == "pk77":
+            return {
+                "kind": "paper",
+                "ref_id": 10,
+                "ord": 3,
+                "chunk_kind": "paragraph",
+                "text": "A cited passage about nanoscale transport.",
+            }
         return None
 
     def get_chunk_blob(self, handle):
@@ -854,6 +866,19 @@ def test_paper_chunk_handle_redirects_through_resolver(
     # /c/<pc-handle> resolves a PAPER chunk (not a draft chunk) → the /r
     # resolver at that chunk (paper → its PDF page via ?chunk=ord).
     r = draft_client.get("/c/pc77", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/r/paper/10?chunk=3"
+
+
+def test_goto_chunk_redirect_uses_owning_ref_kind_not_handle_prefix(
+    draft_client: TestClient,
+) -> None:
+    # gr264585: goto_chunk must build the /r/<kind>/<id> redirect from the
+    # store's resolved (true owning-ref) kind, never re-derive it from the
+    # handle's 2-char code prefix — a "pk" (patent) prefix whose chunk_id
+    # really belongs to a paper must still land on /r/paper/..., not a dead
+    # /r/patent/... redirect.
+    r = draft_client.get("/c/pk77", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/r/paper/10?chunk=3"
 

@@ -19,6 +19,76 @@ from psycopg import Connection
 from precis.embedder import Embedder, EmbedderUnavailable, make_embedder
 from precis.workers.base import ClaimedChunk, WorkerHandler
 
+# ---------------------------------------------------------------------------
+# Fresh-claim priority tiers — draft/conv jump the ~1M-chunk paper backlog
+# ---------------------------------------------------------------------------
+#
+# See docs/backlog/embed-priority-lane-for-interactive-writes.md (gr262963):
+# ``WorkerHandler._claim_fresh``'s flat ``ORDER BY c.chunk_id`` FIFO buries a
+# chunk a human just edited (draft citation backfill, a live conv turn)
+# behind the entire corpus backlog — its re-derived embedding becomes
+# effectively unreachable. Mirrors the precedent already shipped twice:
+# ``chunk_keywords.claim_chunks_needing_keywords`` (a single ``ORDER BY
+# CASE``) and ``llm_summarize._FRESH_TIERS`` (separate per-tier queries, so
+# an empty priority tier costs an index probe on ``refs_kind_idx``, not a
+# sort over the whole candidate set — the shape reused here). Only
+# ``EmbedHandler`` overrides ``_claim_fresh``; ``RakeLemmaHandler`` (the base
+# class's other subclass) keeps the inherited flat order — lifting tiering
+# into the shared base would change its claim order too, out of scope here.
+
+#: Ref kinds whose chunks jump the embed queue.
+_PRIORITY_KINDS = ("draft", "conv")
+
+#: Fresh-claim tiers, in queue order: draft > conv > rest. Each is
+#: ``(kind_pred, order_by)`` spliced into ``_TIERED_FRESH_CLAIM_SQL``. The
+#: priority tiers keep ``c.ref_id, c.ord`` contiguity (small populations);
+#: ``rest`` keeps the base class's flat ``c.chunk_id`` FIFO so corpus-wide
+#: embed throughput is unchanged when no priority chunk is pending.
+_FRESH_TIERS: dict[str, tuple[str, str]] = {
+    "draft": ("r.kind = 'draft'", "c.ref_id, c.ord"),
+    "conv": ("r.kind = 'conv'", "c.ref_id, c.ord"),
+    "rest": ("(r.kind <> ALL(ARRAY['conv', 'draft']))", "c.chunk_id"),
+}
+
+#: Same predicate as ``WorkerHandler._claim_fresh`` (no current, non-failed
+#: artifact row for this model; a stale ``content_sha`` re-derives an edited
+#: draft chunk) plus a ``r.kind`` tier filter — JOINed against ``refs`` so
+#: the planner can walk ``refs_kind_idx`` for the (tiny) priority tiers
+#: instead of scanning ``chunks`` in ``chunk_id`` order. ``{output_table}`` /
+#: ``{model_column}`` are ``EmbedHandler`` ClassVars, not caller input.
+_TIERED_FRESH_CLAIM_SQL = """
+    WITH cand AS (
+        SELECT c.chunk_id, c.text
+          FROM chunks c
+          JOIN refs r ON r.ref_id = c.ref_id
+         WHERE NOT EXISTS (
+                   SELECT 1 FROM {output_table} o
+                    WHERE o.chunk_id = c.chunk_id
+                      AND o.{model_column} = %(artifact)s
+                      AND (o.status = 'failed'
+                           OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
+               )
+           AND NOT EXISTS (
+                   SELECT 1 FROM chunk_claims cl
+                    WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(artifact)s
+               )
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           AND {kind_pred}
+           {skip_clause}
+         ORDER BY {order_by}
+         LIMIT %(limit)s
+           FOR UPDATE OF c SKIP LOCKED
+    ),
+    claimed AS (
+        INSERT INTO chunk_claims (chunk_id, artifact)
+        SELECT chunk_id, %(artifact)s FROM cand
+        ON CONFLICT (chunk_id, artifact) DO NOTHING
+        RETURNING chunk_id
+    )
+    SELECT cand.chunk_id, cand.text
+      FROM cand JOIN claimed USING (chunk_id)
+"""
+
 
 class EmbedHandler(WorkerHandler):
     """Compute and persist a dense vector for each chunk.
@@ -212,6 +282,50 @@ class EmbedHandler(WorkerHandler):
                 "skip_kinds": list(self.skip_chunk_kinds),
             },
         )
+
+    # ------------------------------------------------------------------
+    # _claim_fresh — priority-tiered override of the base class query
+    # ------------------------------------------------------------------
+
+    def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
+        """Claim fresh (never-embedded or stale-``content_sha``) chunks in
+        queue-priority order: draft > conv > rest (see :data:`_FRESH_TIERS`).
+
+        Overrides :meth:`WorkerHandler._claim_fresh` — everything else
+        (:meth:`WorkerHandler.claim_batch`'s reclaim top-up, ``release_claims``,
+        ``status``) is inherited unchanged; only the fresh-claim ordering
+        differs from the base class's flat ``ORDER BY c.chunk_id``. Each tier
+        runs its own claim statement (rather than one query with an ``ORDER
+        BY CASE``) so an empty priority tier costs a cheap indexed probe, not
+        a sort over the whole candidate set — the tiers partition, so
+        corpus-wide throughput is unchanged when no draft/conv chunk is
+        pending. A chunk claimed by an earlier tier is excluded from a later
+        one by the fresh ``NOT EXISTS chunk_claims`` (its claim row is
+        written in the same statement).
+        """
+        skip_clause, skip_kinds = self._skip_clause("c")
+        claimed: list[ClaimedChunk] = []
+        for tier in ("draft", "conv", "rest"):
+            remaining = limit - len(claimed)
+            if remaining <= 0:
+                break
+            kind_pred, order_by = _FRESH_TIERS[tier]
+            sql = _TIERED_FRESH_CLAIM_SQL.format(
+                output_table=self.output_table,
+                model_column=self.model_column,
+                kind_pred=kind_pred,
+                order_by=order_by,
+                skip_clause=skip_clause,
+            )
+            params: dict[str, object] = {
+                "artifact": self.model_name,
+                "limit": remaining,
+            }
+            if skip_kinds:
+                params["skip_kinds"] = skip_kinds
+            rows = conn.execute(sql, params).fetchall()
+            claimed += [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
+        return claimed
 
 
 def resolve_embedder(

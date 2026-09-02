@@ -718,7 +718,10 @@ class DraftStore(_AbbrevMixin):
         text — cross-kind generalisation of ``get_draft_chunk`` for the
         reader's hover-preview/click-through. ``{kind, ref_id, ord,
         chunk_kind, text}`` or ``None`` (not a chunk handle, or gone — a
-        dangling ``pc999`` degrades to a 'missing' popover)."""
+        dangling ``pc999`` degrades to a 'missing' popover). ``kind`` is the
+        owning ref's true kind (joined via ``ref_id``), not the handle's
+        2-char code prefix — a prefix that disagrees with where the chunk
+        actually lives must not fabricate a kind."""
         parsed = handle_registry.parse(handle.strip())
         if parsed is None or not parsed[1]:  # not a chunk handle
             return None
@@ -729,13 +732,15 @@ class DraftStore(_AbbrevMixin):
             return None
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT ref_id, ord, chunk_kind, text FROM chunks WHERE chunk_id = %s",
+                "SELECT c.ref_id, c.ord, c.chunk_kind, c.text, r.kind "
+                "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE c.chunk_id = %s AND r.retired_at IS NULL",
                 (chunk_id,),
             ).fetchone()
         if row is None:
             return None
         return {
-            "kind": kind,
+            "kind": row[4],
             "ref_id": int(row[0]),
             "ord": row[1],
             "chunk_kind": row[2],
@@ -749,7 +754,9 @@ class DraftStore(_AbbrevMixin):
         every hub). The numeric id a handle decodes to IS the ``chunk_id``
         regardless of kind code, so one ``ANY(%s)`` query resolves them
         all; a malformed handle or ``cad`` (outside ``chunks`` — see
-        :meth:`universal_chunk`) is simply absent from the result."""
+        :meth:`universal_chunk`) is simply absent from the result. Each
+        result's ``kind`` is the owning ref's true kind (joined via
+        ``ref_id``), not the handle's 2-char code prefix."""
         by_chunk_id: dict[int, list[str]] = {}
         for h in handles:
             parsed = handle_registry.parse(h.strip())
@@ -760,17 +767,16 @@ class DraftStore(_AbbrevMixin):
             return {}
         with self.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT chunk_id, ref_id, ord, chunk_kind, text FROM chunks "
-                "WHERE chunk_id = ANY(%s)",
+                "SELECT c.chunk_id, c.ref_id, c.ord, c.chunk_kind, c.text, r.kind "
+                "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE c.chunk_id = ANY(%s) AND r.retired_at IS NULL",
                 (list(by_chunk_id),),
             ).fetchall()
         out: dict[str, dict[str, Any]] = {}
-        for chunk_id, ref_id, ord_, chunk_kind, text in rows:
+        for chunk_id, ref_id, ord_, chunk_kind, text, ref_kind in rows:
             for h in by_chunk_id.get(int(chunk_id), []):
-                parsed = handle_registry.parse(h.strip())
-                assert parsed is not None  # filtered above
                 out[h] = {
-                    "kind": parsed[0],
+                    "kind": ref_kind,
                     "ref_id": int(ref_id),
                     "ord": ord_,
                     "chunk_kind": chunk_kind,
