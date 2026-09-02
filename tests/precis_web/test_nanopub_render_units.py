@@ -2,14 +2,24 @@
 (``precis_web.nanopub_render._ladder`` / ``_gate_report``) and the ask-box
 model label — written to kill the 2026-08-27 mutation survivors: the
 route-level tests render the HTML but never asserted which rung is
-current/done, which group a status came from, or the label fallback."""
+current/done, which group a status came from, or the label fallback.
+
+The trailing ``_dispute_panel``/``_contradicted_panel`` section is
+DB-backed (D1, docs/backlog/disputes-edge-nonblocking-disagreement.md) —
+those two read live ``links`` rows, so a fake row can't stand in."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
-from precis_web.nanopub_render import _gate_report, _ladder
+from precis_web.nanopub_render import (
+    _contradicted_panel,
+    _dispute_panel,
+    _gate_report,
+    _ladder,
+)
 
 
 @dataclass
@@ -145,6 +155,114 @@ def test_gate_report_minted_ignores_dryrun_and_unparseable_prefill_degrades() ->
     degraded = _gate_report("candidate", [], dryrun=None)
     assert degraded["dryrun"] is False
     assert all(g["status"] == "pending" for g in degraded["mint"])
+
+
+# ── ``_dispute_panel`` / ``_contradicted_panel`` (D1) ───────────────────
+
+
+def test_dispute_panel_returns_disputes_edge_entries_with_counterpart_info(
+    store: Any,
+) -> None:
+    """The non-blocking open-questions panel: one entry per live
+    `disputes` edge, either direction, naming the counterpart — and
+    resolving the disputing passage's text when the edge names a
+    chunk."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+    from tests.workers._helpers import seed_ref
+
+    hub = mint_hub(store, CanonicalClaim(sentence="a panel-tested claim", scope={}))
+    disputer = seed_ref(store, title="a disputing finding", kind="finding")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+            "VALUES (%s, 'system', 0, 'finding_body', %s) RETURNING chunk_id",
+            (disputer, "This claim looks wrong because of X."),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+        conn.commit()
+    store.add_link(
+        src_ref_id=disputer,
+        dst_ref_id=hub,
+        src_pos=0,
+        relation="disputes",
+    )
+
+    entries = _dispute_panel(store, hub)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["ref_id"] == disputer
+    assert entry["kind"] == "finding"
+    assert entry["direction"] == "in"
+    assert entry["passage"] == "This claim looks wrong because of X."
+    assert chunk_id  # sanity: the pinned chunk really was resolved
+
+
+def test_dispute_panel_resolves_passage_from_meta_source_handle(store: Any) -> None:
+    """The production writers (``workers/hub_refine.py``) set NO chunk
+    column on the edge — their pointer is ``links.meta['source_handle']``
+    (``pc<id>``), same as evidence edges. The panel must resolve the
+    passage from that fallback, or every automatically-filed dispute
+    renders with an empty passage (pre-ship review finding #2)."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+    from tests.workers._helpers import seed_ref
+
+    hub = mint_hub(store, CanonicalClaim(sentence="a handle-pinned claim", scope={}))
+    paper = seed_ref(store, title="a disputing paper", kind="paper")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+            "VALUES (%s, 'system', 0, 'paragraph', %s) RETURNING chunk_id",
+            (paper, "The measured modulus runs counter to the claim."),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+        conn.commit()
+    store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=hub,
+        relation="disputes",
+        meta={"source_handle": f"pc{chunk_id}", "dialectic": None},
+    )
+
+    entries = _dispute_panel(store, hub)
+
+    assert len(entries) == 1
+    assert entries[0]["ref_id"] == paper
+    assert entries[0]["direction"] == "in"
+    assert entries[0]["passage"] == "The measured modulus runs counter to the claim."
+
+
+def test_dispute_panel_empty_when_no_live_disputes_edge(store: Any) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    hub = mint_hub(store, CanonicalClaim(sentence="an undisputed claim", scope={}))
+
+    assert _dispute_panel(store, hub) == []
+
+
+def test_contradicted_panel_names_the_counterpart() -> None:
+    """Just enough to name it (kind, ref_id, title, direction) — the
+    blocking banner exists to say "adjudicate this," not to relitigate."""
+    from precis.nanopub.evidence import ContradictsEdge
+
+    edges = [
+        ContradictsEdge(
+            ref_id=42, kind="finding", title="a review critique", direction="in"
+        )
+    ]
+    assert _contradicted_panel(edges) == [
+        {
+            "ref_id": 42,
+            "kind": "finding",
+            "title": "a review critique",
+            "direction": "in",
+        }
+    ]
 
 
 def test_answer_model_label_env_chain(monkeypatch) -> None:

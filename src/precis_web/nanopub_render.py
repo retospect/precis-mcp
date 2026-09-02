@@ -1,6 +1,12 @@
 """The review-and-sign context for one claim hub — state header + frozen
-ladder, dispute panel, publish-row panel, one action per state, withheld
-evidence + sign-off doors, the approve-form prefill, and the DAG.
+ladder, contradicted/open-questions panels, publish-row panel, one action
+per state, withheld evidence + sign-off doors, the approve-form prefill,
+and the DAG. D1 (docs/backlog/disputes-edge-nonblocking-disagreement.md):
+"blocked" and "contradicted" key on a live ``contradicts`` edge (either
+direction, any counterpart kind — :func:`~precis.nanopub.evidence.
+live_contradicts`); "open questions" is the non-blocking ``disputes``
+complement (:func:`~precis.nanopub.evidence.open_disputes`) — never the
+red banner, never a demerit.
 
 Moved out of ``routes/nanopub.py`` in the nanopub-light-up UX
 consolidation: the reader evidence page (``/claim/fi<id>``,
@@ -83,7 +89,14 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         if row and row.batch_id is not None
         else None
     )
-    disputed = bool(bundle.contradicts)
+    # Gate parity (D1, docs/backlog/disputes-edge-nonblocking-
+    # disagreement.md): the same definition `check_contradicts` blocks
+    # mint on — a live `contradicts` edge touching the hub, either
+    # direction, any counterpart kind — not `bundle.contradicts` (the
+    # narrower inbound-paper-evidence-only shape the graph render below
+    # still uses).
+    contradicted = evidence.live_contradicts(store, hub_id)
+    disputed = bool(contradicted)
     action, action_label = _STATE_ACTION.get(state, (None, ""))
     if disputed and action is not None:
         # No forward transition is offered while the edge stands — spec
@@ -94,6 +107,7 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
     withheld = withheld_edges(store, hub_id)
     preflight = publish_preflight(store, hub_id, row=row) if state is not None else []
     suggested_payload = _suggested_payload(store, row, bundle, hub_meta)
+    open_disputes = _dispute_panel(store, hub_id)
     # Pre-approve (unminted/candidate): the mint gates haven't run for
     # real yet, but they are pure reads — dry-run them against the live
     # sentence + the prefilled grounding so the gates panel shows how the
@@ -112,13 +126,21 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         "artifact": artifact,
         "proof_state": proof[0] if proof else None,
         "disputed": disputed,
-        "disputes": _dispute_panel(store, bundle),
+        "contradicted": _contradicted_panel(contradicted),
+        "disputes": open_disputes,
         "withheld": withheld,
         "preflight": preflight,
         "action": action,
         "action_label": action_label,
         "suggested_payload": suggested_payload,
-        "graph": _graph(store, bundle, row, display_artifact_type),
+        "graph": _graph(
+            store,
+            bundle,
+            row,
+            display_artifact_type,
+            blocked=disputed,
+            open_disputes_count=len(open_disputes),
+        ),
         "ladder": _ladder(state, row, disputed=disputed),
         "gates": _gate_report(state, preflight, dryrun=dryrun),
     }
@@ -270,7 +292,7 @@ _MINT_GATES: list[tuple[str, str]] = [
 _PREFLIGHT_CHECKS: list[tuple[str, str]] = [
     ("state", "the state machine reached the publish door (anchored)"),
     ("hanging", "not a hanging claim — a grounded passage exists"),
-    ("contradicts", "still no unresolved dispute at publish time"),
+    ("contradicts", "still no live contradicts edge at publish time"),
     ("drift", "the live hub sentence still hashes to the frozen sha"),
     ("withheld-edge", "every evidence edge is refine-verified or human-signed-off"),
     ("dependency-drift", "dependency artifacts are unchanged since this one signed"),
@@ -474,44 +496,80 @@ def _suggested_payload(
     return json.dumps({"passages": passages, "fields": {}}, indent=2)
 
 
-def _dispute_panel(store: Any, bundle: Any) -> list[dict[str, Any]]:
-    """Symmetric dispute rendering: the hub's claim beside each
-    contradicting passage's text, so the reviewer sees the actual
-    conflict without hunting (fi189542 precedent)."""
-    if not bundle.contradicts:
-        return []
+def _dispute_panel(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
+    """The NON-blocking "open questions" surface (D1, docs/backlog/
+    disputes-edge-nonblocking-disagreement.md): one entry per live
+    `disputes` edge touching this hub, either direction — counterpart
+    ref/kind/title, direction, and (when the edge names one) the
+    disputing passage's text, resolved via ``ev.fetch_chunks`` so the
+    reviewer sees the actual conflict without hunting (fi189542
+    precedent, now generalized past the paper-only shape). Never the
+    blocking banner's data — see :func:`_contradicted_panel` for that."""
     from precis.nanopub import evidence as ev
-    from precis.taproot import seniority
 
-    hub_evidence = seniority.derive_evidence(store, bundle.hub_ref_id)
-    chunks_by_paper: dict[int, str] = {}
-    contradict_refs = [g for g in hub_evidence.grounding if g.relation == "contradicts"]
-    chunk_ids = []
-    for g in contradict_refs:
-        handle = g.source_handle or ""
+    edges = ev.open_disputes(store, hub_ref_id)
+    if not edges:
+        return []
+
+    # A ``disputes`` edge is directed (filer's subject → the thing it
+    # questions) and carries no inverse slug: the disputing passage sits
+    # on whichever side names it — the filer's own pin (``src_chunk_id``)
+    # when the edge points AT this hub (``direction == 'in'``), or the
+    # target's pin (``dst_chunk_id``) when this hub is the one filing the
+    # question (``direction == 'out'``). The automated writers
+    # (``workers/hub_refine.py``) don't set the chunk columns at all —
+    # their pointer is ``links.meta['source_handle']`` (``pc<id>``), same
+    # as evidence edges — so that is the fallback pin.
+    def _pin(e: Any) -> int | None:
+        col = e.src_chunk_id if e.direction == "in" else e.dst_chunk_id
+        if col is not None:
+            return col
+        handle = str((e.meta or {}).get("source_handle") or "")
         if handle.startswith("pc") and handle[2:].isdigit():
-            chunk_ids.append((g.paper_ref_id, int(handle[2:])))
-    if chunk_ids:
-        infos = {
-            c.chunk_id: c for c in ev.fetch_chunks(store, [cid for _, cid in chunk_ids])
-        }
-        for paper_id, cid in chunk_ids:
-            if cid in infos and paper_id not in chunks_by_paper:
-                chunks_by_paper[paper_id] = infos[cid].text
+            return int(handle[2:])
+        return None
+
+    pins = {(e.ref_id, e.direction): _pin(e) for e in edges}
+    chunk_ids = [cid for cid in pins.values() if cid is not None]
+    chunks = (
+        {c.chunk_id: c for c in ev.fetch_chunks(store, chunk_ids)} if chunk_ids else {}
+    )
+    out = []
+    for e in edges:
+        pin = pins[(e.ref_id, e.direction)]
+        chunk = chunks.get(pin) if pin is not None else None
+        out.append(
+            {
+                "ref_id": e.ref_id,
+                "kind": e.kind,
+                "title": e.title,
+                "direction": e.direction,
+                "passage": chunk.text if chunk is not None else "",
+            }
+        )
+    return out
+
+
+def _contradicted_panel(contradicted: list[Any]) -> list[dict[str, Any]]:
+    """The BLOCKING banner's data: one entry per live ``contradicts``
+    edge from :func:`~precis.nanopub.evidence.live_contradicts` — just
+    enough to name the counterpart (kind, ref_id, direction); the panel
+    exists to say "adjudicate this," not to relitigate the conflict, so
+    it carries no passage."""
     return [
-        {
-            "paper_ref_id": s.ref_id,
-            "paper_title": s.title,
-            "doi": s.doi,
-            "has_pdf": bool(s.pdf_sha256),
-            "passage": chunks_by_paper.get(s.ref_id, ""),
-        }
-        for s in bundle.contradicts
+        {"ref_id": e.ref_id, "kind": e.kind, "title": e.title, "direction": e.direction}
+        for e in contradicted
     ]
 
 
 def _graph(
-    store: Any, bundle: Any, row: Any, display_artifact_type: str
+    store: Any,
+    bundle: Any,
+    row: Any,
+    display_artifact_type: str,
+    *,
+    blocked: bool,
+    open_disputes_count: int = 0,
 ) -> dict[str, Any]:
     """The per-hub neighborhood as positioned SVG nodes + edges (layered:
     papers → atoms → hub → anchor), with a detail dict per node for the
@@ -520,7 +578,14 @@ def _graph(
     ``display_artifact_type`` labels the hub node instead of
     ``bundle.artifact_type``: :func:`~precis.nanopub.evidence.load_bundle`
     can only ever set the bundle's own field to ``claim``/``compound``, so
-    it alone can never say ``hypothesis`` — see :func:`hub_context`."""
+    it alone can never say ``hypothesis`` — see :func:`hub_context`.
+
+    ``blocked`` is the D1 gate-parity flag (live
+    :func:`~precis.nanopub.evidence.live_contradicts`, either direction —
+    see :func:`hub_context`'s ``disputed``), NOT ``bundle.contradicts``:
+    the hub node's red outline and "⚠ CONTRADICTED" label key on it.
+    ``open_disputes_count`` rides along as a non-red annotation only —
+    open questions never touch the node's color."""
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     width = 940
@@ -615,12 +680,17 @@ def _graph(
     nodes.append(
         {
             "id": "hub",
-            "cls": "hub" + (" disputed" if bundle.contradicts else ""),
+            "cls": "hub" + (" disputed" if blocked else ""),
             "x": width // 2,
             "y": hub_y,
             "label": bundle.sentence[:44],
             "sub": f"{display_artifact_type} · {state}"
-            + (" · ⚠ DISPUTED" if bundle.contradicts else ""),
+            + (" · ⚠ CONTRADICTED" if blocked else "")
+            + (
+                f" · open questions: {open_disputes_count}"
+                if open_disputes_count
+                else ""
+            ),
             "detail": {
                 "kind": f"{display_artifact_type} hub",
                 "title": bundle.sentence,

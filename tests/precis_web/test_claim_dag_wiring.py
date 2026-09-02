@@ -62,7 +62,7 @@ class TestCompoundPapersRow:
         )
         bundle = _bundle(conjunct_atoms=[(1, "atom one"), (2, "atom two")])
 
-        g = nanopub_render._graph(_Store(), bundle, None, "compound")
+        g = nanopub_render._graph(_Store(), bundle, None, "compound", blocked=False)
 
         paper_nodes = [n for n in g["nodes"] if n["id"] == "pc563"]
         assert len(paper_nodes) == 1
@@ -81,7 +81,7 @@ class TestCompoundPapersRow:
         # atom aggregation (both edges when the same paper grounds both).
         bundle = _bundle(sources=[_src(563)], conjunct_atoms=[(1, "atom one")])
 
-        g = nanopub_render._graph(_Store(), bundle, None, "compound")
+        g = nanopub_render._graph(_Store(), bundle, None, "compound", blocked=False)
 
         assert len([n for n in g["nodes"] if n["id"] == "pc563"]) == 1
         assert {e["dst"] for e in g["edges"] if e["src"] == "pc563"} == {
@@ -92,6 +92,6 @@ class TestCompoundPapersRow:
     def test_atomic_claim_unchanged(self) -> None:
         # No atoms: the papers row is the hub's own evidence, edges to hub.
         bundle = _bundle(sources=[_src(7, role="establishes")])
-        g = nanopub_render._graph(_Store(), bundle, None, "claim")
+        g = nanopub_render._graph(_Store(), bundle, None, "claim", blocked=False)
         assert [n["id"] for n in g["nodes"] if n["cls"].startswith("paper")] == ["pc7"]
         assert {e["dst"] for e in g["edges"] if e["src"] == "pc7"} == {"hub"}

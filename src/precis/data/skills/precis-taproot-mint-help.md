@@ -244,17 +244,23 @@ Then judge each near hit:
   existing hub lacks** → mint, then `link(rel='refines')` to the
   coarser one.
 - **Your source disagrees with the existing hub's number** → mint, and
-  `link(rel='contradicts')`. Never silently restate someone else's
+  `link(rel='disputes')`. Never silently restate someone else's
   quantity.
 - **Two existing hubs are near-duplicates of each other** → merge rather
   than adding a third.
 
-**`contradicts` is a heavy edge — a live one makes the other hub
-unpublishable.** Fire it only for a genuine disagreement about the same
-system under the same conditions. A different functional, cell size,
-fullerene size, or measurement regime is a **scope mismatch, not a
-contradiction**: mint independently and flag the tension for a human,
-rather than marking sound work disputed.
+**File `disputes`, not `contradicts`.** `contradicts` is
+adjudication-derived (claim-graph disagreement, Part 2 of
+`docs/backlog/disputes-edge-nonblocking-disagreement.md`, not built) —
+a live one blocks the hub's nanopub mint, and you don't have the
+warrant to file it by hand. `disputes` is the free, always-safe move:
+"these two claims appear to conflict; someone should look" — it never
+blocks either hub, so fire it for any genuine disagreement about the
+same system under the same conditions. A different functional, cell
+size, fullerene size, or measurement regime is a **scope mismatch, not
+a disagreement**: mint independently and flag the tension for a
+human, rather than filing `disputes` on sound work that's simply
+describing something else.
 
 ## Notation canon
 
@@ -370,7 +376,11 @@ link(kind="finding", id="fi42", rel="corroborates", target="pc293")
 
 `rel` ∈ `establishes` / `corroborates` / `contradicts`; `target` is the
 supporting paper/chunk handle — `pc<id>` grounds the edge at that
-passage, `pa<id>` lands it ref-level. `rel` is a conservative write-time
+passage, `pa<id>` lands it ref-level. Don't hand-file `rel='contradicts'`
+here — it's adjudication-derived (Part 2, not built) and a live one
+blocks the hub's nanopub mint; a source that disagrees with the claim
+is a `link(rel='disputes')` between the two claim hubs (above), not an
+evidence-role attach on this one. `rel` is a conservative write-time
 label only — the originator/corroborator split is **derived** at read
 time (`get(id='fi42', view='evidence')`), same as every other door here.
 `id` must resolve to a live `TAPROOT:claim` hub (`fi<id>`, a pub_id, or a

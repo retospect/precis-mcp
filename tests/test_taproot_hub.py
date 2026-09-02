@@ -742,6 +742,9 @@ def test_apply_placement_new_mints_and_attaches(store: Any) -> None:
 
 
 def test_apply_placement_new_contradicts_links_the_hubs(store: Any) -> None:
+    """The judge's verdict files a non-blocking ``disputes`` open question,
+    never the adjudication-only ``contradicts``
+    (docs/backlog/disputes-edge-nonblocking-disagreement.md D3)."""
     existing = mint_hub(
         store,
         CanonicalClaim(
@@ -760,7 +763,7 @@ def test_apply_placement_new_contradicts_links_the_hubs(store: Any) -> None:
     assert hub is not None
     assert hub != existing
     assert _edge(store, paper, hub) == "corroborates"  # paper supports the new claim
-    assert _edge(store, hub, existing) == "contradicts"  # hub <-> hub opposition
+    assert _edge(store, hub, existing) == "disputes"  # hub <-> hub open question
 
 
 # ── link_claims — the claim→claim advisory write door (migration 0100) ──
@@ -799,6 +802,20 @@ def test_link_claims_rejects_self_link(store: Any) -> None:
     hub = mint_hub(store, _CLAIM)
     with pytest.raises(BadInput):
         link_claims(store, from_hub_ref_id=hub, to_hub_ref_id=hub)
+
+
+def test_link_claims_writes_a_disputes_edge(store: Any) -> None:
+    """``disputes`` (docs/backlog/disputes-edge-nonblocking-disagreement.md
+    D3/D4) is a non-blocking open question between two claim hubs, filed
+    through the same door as ``refines``/``conjunct-of``."""
+    a = mint_hub(store, _CLAIM)
+    b = mint_hub(store, _SHARPER_CLAIM)
+
+    wrote = link_claims(store, from_hub_ref_id=a, to_hub_ref_id=b, relation="disputes")
+
+    assert wrote is True
+    assert _edge(store, a, b) == "disputes"
+    assert _edge(store, b, a) is None  # directed, no auto-mirror
 
 
 def test_link_claims_rejects_unknown_relation(store: Any) -> None:

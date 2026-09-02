@@ -299,7 +299,9 @@ class Placement:
     """The deterministic outcome of :func:`place`.
 
     * ``"attach"`` — merge into ``hub_ref_id`` (a confirmed ``same``).
-    * ``"new_contradicts"`` — mint a new hub, linked ``contradicts`` to
+    * ``"new_contradicts"`` — mint a new hub, linked ``disputes`` (a
+      non-blocking open question, not the adjudication-only ``contradicts``
+      — docs/backlog/disputes-edge-nonblocking-disagreement.md D3) to
       ``contradicts_hub_ref_id``.
     * ``"new"`` — mint a new hub (no matching/contradicting candidate).
     * ``"needs_review"`` — a risky (low-confidence, unconfirmed) merge.
@@ -1078,10 +1080,13 @@ def place(
        #16: a risky merge is never auto-applied — the caller should file a
        ``kind='todo'``, not attach or silently drop it).
     3. Else any ``"contradicts"`` **at/above ``confidence_threshold``** ->
-       **new_contradicts**, linked to the first such candidate. Below
-       threshold -> **new**, unlinked, with the suspicion recorded in
-       ``reason`` only: the edge blocks publication at the nanopub mint
-       gates, so it is never written on an unconfirmed verdict.
+       **new_contradicts**, linked to the first such candidate — files a
+       non-blocking ``disputes`` open question, never the adjudication-only
+       ``contradicts`` (docs/backlog/disputes-edge-nonblocking-
+       disagreement.md D3). Below threshold -> **new**, unlinked, with the
+       suspicion recorded in ``reason`` only — see the block comment below
+       for why the threshold still gates the write even though the edge no
+       longer blocks anything.
     4. Else -> **new**.
 
     ``judged`` may be empty (``block`` found no candidates) -> **new**.
@@ -1136,21 +1141,29 @@ def place(
             reason=v["rationale"],
         )
 
-    # A sub-threshold ``"contradicts"`` mints the hub *unlinked*. The edge is
-    # not advisory: ``contradicts`` blocks publication at the nanopub mint
-    # gates, so a false positive suppresses a **stranger's** claim on one
-    # unreviewed MEDIUM-tier verdict. The sibling ``same`` branch already
-    # spends a second BIG call before acting on low confidence; this branch
-    # took ``judged[0]`` at *any* confidence and never confirmed.
+    # A sub-threshold ``"contradicts"`` mints the hub *unlinked*, even
+    # though the edge ``new_contradicts`` would file is now the free,
+    # non-blocking ``disputes`` — never ``contradicts``, which is
+    # adjudication-only (Part 2) and unfileable here
+    # (docs/backlog/disputes-edge-nonblocking-disagreement.md D1-D4). The
+    # asymmetry this comment used to describe as a publication-blocking
+    # risk stops mattering at the gate under that split; the threshold
+    # still gates the *write* for a narrower reason — an unconfirmed single
+    # MEDIUM-tier verdict is exactly the kind of noise the systematic
+    # filer (``claim-conflict-search``) is supposed to surface
+    # deliberately, at scale, not this ingest-time side door on any
+    # confidence at all. The sibling ``same`` branch already spends a
+    # second BIG call before acting on low confidence; this branch took
+    # ``judged[0]`` at *any* confidence and never confirmed.
     #
     # Nothing surfaced the asymmetry because the edge had never once been
     # written — :func:`block` retrieved over ``card_combined``, which covered
     # 187 of 1,524 live hubs (2026-08-20 prod count), so ``place`` almost
-    # never saw a candidate to judge and prod holds zero machine-written
-    # hub<->hub ``contradicts`` rows. Repointing that index at
+    # never saw a candidate to judge and prod held zero machine-written
+    # hub<->hub disputes/contradicts rows. Repointing that index at
     # ``finding_body`` takes coverage to 100% and makes this branch reachable
     # for the first time; the threshold is what keeps that repair from
-    # turning into a corpus-wide wave of unreviewed publication blocks.
+    # turning into a corpus-wide wave of unreviewed disputes noise.
     unconfirmed = [(cand, v) for cand, v in judged if v["verdict"] == "contradicts"]
     if unconfirmed:
         _, v = unconfirmed[0]

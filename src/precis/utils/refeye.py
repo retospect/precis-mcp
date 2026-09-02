@@ -102,6 +102,10 @@ CLAIM_RELATIONS: frozenset[str] = frozenset(
         "contradicts",
         "refines",
         "conjunct-of",
+        # non-blocking open-question hub<->hub link (migration 0151,
+        # docs/backlog/disputes-edge-nonblocking-disagreement.md D3/D4) —
+        # joined CLAIM_LINK_RELATIONS, so it must join this pinned union too.
+        "disputes",
         "motivated-by",
     }
 )

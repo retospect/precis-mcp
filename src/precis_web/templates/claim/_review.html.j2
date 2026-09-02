@@ -14,7 +14,7 @@
         {% if np.disputed %}bg-rose-100 text-rose-700
         {% elif np.state == 'published' %}bg-emerald-100 text-emerald-700
         {% else %}bg-slate-200 text-slate-700{% endif %}">
-        {% if np.disputed %}◆ blocked (disputed){% else %}{{ np.state }}{% endif %}
+        {% if np.disputed %}◆ blocked (contradicted){% else %}{{ np.state }}{% endif %}
       </span>
       {% if np.frozen %}
       <div class="text-[11px] text-slate-500 mt-1" title="frozen-ness ladder: reviewed freezes the string; signed/anchored freeze the artifact bytes (append-only, DB-trigger enforced); published is public forever">
@@ -24,9 +24,40 @@
     </div>
   </div>
 
+  {# The counterpart of a `contradicts`/`disputes` edge is any live ref
+     kind (D1) — same kind→URL convention as the /nanopub tree's evidence
+     leaves (nanopub/index.html.j2): finding → the claim reader, paper →
+     the paper reader, anything else → the kinded /refs/<kind>/<id>
+     fallback (the KINDLESS /refs/<id> shape 400s). #}
+  {% macro ref_link(kind, ref_id, title) -%}
+    {%- if kind == 'finding' -%}
+    <a class="text-emerald-700 hover:underline" href="/claim/fi{{ ref_id }}">{{ title or ('fi' ~ ref_id) }}</a>
+    {%- elif kind == 'paper' -%}
+    <a class="text-emerald-700 hover:underline" href="/papers/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
+    {%- else -%}
+    <a class="text-emerald-700 hover:underline" href="/refs/{{ kind }}/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
+    {%- endif -%}
+  {%- endmacro %}
+
   {% if np.disputed %}
   <div class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 space-y-3">
-    <h3 class="text-sm font-semibold text-rose-700">◆ Dispute — the actual conflict, side by side</h3>
+    <h3 class="text-sm font-semibold text-rose-700">◆ Contradicted — adjudication established a conflict</h3>
+    <ul class="text-sm space-y-1">
+      {% for c in np.contradicted %}
+      <li>
+        <span class="font-mono text-rose-600">{{ c.direction }}</span>
+        {{ c.kind }} {{ ref_link(c.kind, c.ref_id, c.title) }}
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="text-xs text-rose-700/80">No forward transition while the edge stands —
+      visible internally, unpublishable externally; resolved only through adjudication.</p>
+  </div>
+  {% endif %}
+
+  {% if np.disputes %}
+  <div class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 space-y-3">
+    <h3 class="text-sm font-semibold text-sky-700">Open question{{ 's' if np.disputes|length != 1 }} — free to file, never blocking</h3>
     {% for d in np.disputes %}
     <div class="grid md:grid-cols-2 gap-3 text-sm">
       <div class="rounded-lg border border-slate-200 bg-white p-3">
@@ -34,27 +65,19 @@
         <p>{{ (np.row.approved_title if np.row and np.row.approved_title else np.bundle.sentence) }}</p>
       </div>
       <div class="rounded-lg border border-slate-200 bg-white p-3">
-        <div class="text-[11px] uppercase tracking-wide text-rose-600 mb-1">
-          contradicting passage — {{ d.paper_title }} (pc{{ d.paper_ref_id }})
+        <div class="text-[11px] uppercase tracking-wide text-sky-600 mb-1">
+          disputing passage ({{ d.direction }}) — {{ d.kind }} {{ ref_link(d.kind, d.ref_id, d.title) }}
         </div>
         {% if d.passage %}
         <blockquote class="italic text-slate-600">“{{ d.passage[:600] }}{% if d.passage|length > 600 %}…{% endif %}”</blockquote>
         {% else %}
-        <p class="text-slate-500">No grounding passage pinned on the contradicts edge.</p>
+        <p class="text-slate-500">No passage pinned on the disputes edge.</p>
         {% endif %}
-        <div class="mt-2 flex gap-2 text-xs">
-          {% if d.doi %}<a class="text-emerald-700 hover:underline" href="https://doi.org/{{ d.doi }}">DOI</a>{% endif %}
-          <a class="text-emerald-700 hover:underline" href="/papers/{{ d.paper_ref_id }}">paper page</a>
-          {% if not d.has_pdf %}
-          <a class="text-amber-700 hover:underline" href="/papers-needed"
-             title="the blocker is a missing primary — queue it for hand download">queue primary for acquisition</a>
-          {% endif %}
-        </div>
       </div>
     </div>
     {% endfor %}
-    <p class="text-xs text-rose-700/80">No forward transition while the edge stands —
-      visible internally, unpublishable externally.</p>
+    <p class="text-xs text-sky-700/80">A question someone should look into — never a demerit
+      against either claim, and never blocks publication.</p>
   </div>
   {% endif %}
 

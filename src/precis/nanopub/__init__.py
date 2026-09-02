@@ -25,7 +25,12 @@ Slices 1-3 — local, reversible:
   flip is ``store.nanopub_transition``.
 - :mod:`.evidence` — resolves one hub into a ``HubBundle`` (bimodal
   evidence edges, conjunct atoms, live-``contradicts``, grounding) for
-  the assembler and gates.
+  the assembler and gates. ``live_contradicts``/``open_disputes`` (0151,
+  ``docs/backlog/disputes-edge-nonblocking-disagreement.md``) are the
+  direct-SQL read helpers behind the mint gate and the render: any live
+  ``contradicts`` edge blocks (adjudication-derived only, Part 2 not
+  built), any live ``disputes`` edge is a non-blocking open question,
+  both regardless of counterpart ref kind or direction.
 - :mod:`.assemble` — the four named graphs (head/assertion/provenance/
   pubinfo) as an rdflib Dataset; universal anchors only (DOI, sha,
   quote, snip) — internal ids never leave the publish row.
@@ -50,7 +55,8 @@ Slices 4-5 — publish path (POST gated, nothing published yet):
   full breakdown.
 - :mod:`.overview` — every claim hub by publish state in one query +
   the frozen-ness ladder (``state.frozen_rung``), shared with
-  ``demote``.
+  ``demote``; rows carry ``open_disputes_count`` (live ``disputes``
+  edges, non-blocking) alongside the blocking ``contradicts`` state.
 - :mod:`.demote` — the ladder walked downward: a new ``contradicts``
   edge reopens a pre-anchor hub to ``candidate``; past the anchor it
   raises for a human supersede/retract instead.

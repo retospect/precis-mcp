@@ -199,6 +199,11 @@ unminted hub is one nobody has pushed through the publication pipeline —
 | `'disputed'` | it holds a live `contradicts` edge — the inspection cohort |
 | `'any'` / omitted | no filter |
 
+`trust='disputed'` reads the **adjudicated, blocking** `contradicts`
+edge only — a live `disputes` edge (non-blocking open question, free
+to file) doesn't move a hub off `'verified'` or into this tier; it
+surfaces instead as the `open-questions:<n>` flag below.
+
 ```python
 search(kind="finding", q="amine CO2 capacity", trust="verified")  # lean-on-able
 search(kind="finding", q="amine CO2 capacity", trust="disputed")  # what's opposed?
@@ -221,11 +226,14 @@ primary`:
   one carries a **negative** one (an edge can be verified and refuting —
   `support: "no"` on a `corroborates` edge is a real shape), one is
   **withheld** (the publish preflight will refuse it).
-- `flags` — `disputed` (a live `contradicts` edge), `drifted` (the
-  claim was reworded out from under its frozen string), and `refuted`
-  (every judged edge came back negative — nothing verified affirms the
-  claim; a hub with only *unjudged* evidence is unverified, not refuted,
-  and does not get this flag).
+- `flags` — `disputed` (a live, **adjudicated** `contradicts` edge —
+  blocking), `drifted` (the claim was reworded out from under its
+  frozen string), `refuted` (every judged edge came back negative —
+  nothing verified affirms the claim; a hub with only *unjudged*
+  evidence is unverified, not refuted, and does not get this flag), and
+  `open-questions:<n>` (`n` live `disputes` edges — never blocking, a
+  question for a human, not a demerit; distinct from `disputed`, which
+  is the adjudicated, blocking shape).
 
 The negatives ride in the same row as the hit deliberately. A claim
 layer that showed only its promotions is how a contradicted claim gets

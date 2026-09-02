@@ -283,6 +283,152 @@ class TestPerplexityLinkTagOps:
             research.put(id="q", text="body", mode="append")
 
 
+# ── apply_link_ops — disputes/contradicts routing (D1-D4) ──────────
+#
+# docs/backlog/disputes-edge-nonblocking-disagreement.md: `contradicts` is
+# adjudication-derived only (Part 2) and unfileable through the generic
+# write door, except the pre-existing memory<->memory subsystem (D2);
+# `disputes` between two live claim hubs delegates to
+# `taproot.hub.link_claims` (D4). Exercised directly against
+# `apply_link_ops` — the two production callers that route through it
+# (``PaperHandler``/the Perplexity caches above) never have a claim-hub
+# source, so the claim-hub-pair delegation can only be pinned at the
+# function level here.
+
+
+class TestApplyLinkOpsDisputesContradicts:
+    def test_contradicts_rejected_between_two_findings(self, store: Store) -> None:
+        from precis.handlers._link_tag_ops import apply_link_ops
+
+        a = store.insert_ref(kind="finding", slug=None, title="a plain finding").id
+        b = store.insert_ref(kind="finding", slug=None, title="another finding").id
+        with pytest.raises(BadInput, match="adjudication-derived"):
+            apply_link_ops(
+                store, a, link=f"finding:{b}", unlink=None, rel="contradicts"
+            )
+        assert store.links_for(a, direction="out") == []
+
+    def test_contradicts_still_allowed_between_two_memories(self, store: Store) -> None:
+        from precis.handlers._link_tag_ops import apply_link_ops
+
+        a = store.insert_ref(kind="memory", slug=None, title="memory a").id
+        b = store.insert_ref(kind="memory", slug=None, title="memory b").id
+        n_added, _ = apply_link_ops(
+            store, a, link=f"memory:{b}", unlink=None, rel="contradicts"
+        )
+        assert n_added == 1
+        out = store.links_for(a, direction="out")
+        assert len(out) == 1 and out[0].relation == "contradicts"
+
+    def test_disputes_between_two_claim_hubs_delegates_to_link_claims(
+        self, store: Store
+    ) -> None:
+        from precis.handlers._link_tag_ops import apply_link_ops
+        from precis.taproot.canon import CanonicalClaim
+        from precis.taproot.hub import mint_hub
+
+        a = mint_hub(
+            store, CanonicalClaim(sentence="Claim A holds under condition X.", scope={})
+        )
+        b = mint_hub(
+            store, CanonicalClaim(sentence="Claim B holds under condition Y.", scope={})
+        )
+
+        n_added, _ = apply_link_ops(
+            store, a, link=f"finding:{b}", unlink=None, rel="disputes"
+        )
+        assert n_added == 1
+        out = store.links_for(a, direction="out")
+        assert (
+            len(out) == 1 and out[0].relation == "disputes" and out[0].dst_ref_id == b
+        )
+
+        # Idempotent — link_claims' own no-op-on-existing, surfaced honestly
+        # as n_added=0 rather than a second row.
+        n_added_again, _ = apply_link_ops(
+            store, a, link=f"finding:{b}", unlink=None, rel="disputes"
+        )
+        assert n_added_again == 0
+        assert len(store.links_for(a, direction="out")) == 1
+
+    def test_disputes_paper_to_finding_uses_plain_add_link(self, store: Store) -> None:
+        """A non-claim-hub endpoint (e.g. paper->hub, the shape
+        ``reattach_as_disputes`` also writes) falls through to the plain
+        write — claim-hub delegation is only for a claim-hub pair."""
+        from precis.handlers._link_tag_ops import apply_link_ops
+        from precis.taproot.canon import CanonicalClaim
+        from precis.taproot.hub import mint_hub
+
+        paper_id = _seed_paper(store, "review2026")
+        hub_id = mint_hub(
+            store, CanonicalClaim(sentence="A claim a review note disputes.", scope={})
+        )
+
+        n_added, _ = apply_link_ops(
+            store, paper_id, link=f"finding:{hub_id}", unlink=None, rel="disputes"
+        )
+        assert n_added == 1
+        out = store.links_for(paper_id, direction="out")
+        assert (
+            len(out) == 1
+            and out[0].relation == "disputes"
+            and out[0].dst_ref_id == hub_id
+        )
+
+
+# ── NumericRefHandler.link — the same guard, a different door ──────
+#
+# `apply_link_ops` above pins the policy at the function level;
+# `NumericRefHandler.link` (memory/todo/gripe/anki/conv, and a plain
+# non-hub `finding` that falls through `FindingHandler.link`) is a SEPARATE
+# add-mode write path that used to bypass the guard entirely (the gap
+# `guard_and_route_contradicts_disputes` closes by being shared code, not a
+# second copy of the policy).
+
+
+class TestNumericRefHandlerLinkDisputesContradicts:
+    def test_contradicts_rejected_finding_to_paper(self, store: Store) -> None:
+        """A plain (non-hub) finding falls through ``FindingHandler.link``
+        to the generic ``NumericRefHandler.link`` door — same guard as
+        ``apply_link_ops``."""
+        from precis.handlers.finding import FindingHandler
+
+        a_id = store.insert_ref(kind="finding", slug=None, title="a plain finding").id
+        _seed_paper(store, "contra-numeric-ref")
+        h = FindingHandler(hub=Hub(store=store))
+        with pytest.raises(BadInput, match="adjudication-derived"):
+            h.link(id=a_id, target="paper:contra-numeric-ref", rel="contradicts")
+        assert store.links_for(a_id, direction="out") == []
+
+    def test_disputes_accepted_finding_to_paper(self, store: Store) -> None:
+        """The same non-hub-finding->paper pair accepts ``disputes`` —
+        neither endpoint is a live claim hub, so it falls through to the
+        plain write (the claim-pair delegation only fires hub<->hub)."""
+        from precis.handlers.finding import FindingHandler
+
+        a_id = store.insert_ref(kind="finding", slug=None, title="a plain finding").id
+        _seed_paper(store, "disp-numeric-ref")
+        h = FindingHandler(hub=Hub(store=store))
+        out = h.link(id=a_id, target="paper:disp-numeric-ref", rel="disputes")
+        assert "linked" in out.body
+        links = store.links_for(a_id, direction="out")
+        assert len(links) == 1 and links[0].relation == "disputes"
+
+    def test_contradicts_still_allowed_memory_to_memory(self, store: Store) -> None:
+        """Memory<->memory is a different subsystem (D2) and keeps working
+        through its own handler, not just through ``apply_link_ops``
+        directly."""
+        from precis.handlers.memory import MemoryHandler
+
+        a_id = store.insert_ref(kind="memory", slug=None, title="memory a").id
+        b_id = store.insert_ref(kind="memory", slug=None, title="memory b").id
+        h = MemoryHandler(hub=Hub(store=store))
+        out = h.link(id=a_id, target=f"memory:{b_id}", rel="contradicts")
+        assert "linked" in out.body
+        links = store.links_for(a_id, direction="out")
+        assert len(links) == 1 and links[0].relation == "contradicts"
+
+
 # ── helpers ────────────────────────────────────────────────────────
 
 

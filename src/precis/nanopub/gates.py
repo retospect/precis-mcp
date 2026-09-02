@@ -18,9 +18,14 @@ worker jobs, and stacking more LLM review inside the mint path was
 explicitly rejected.
 
 Ordering matters only for #1: the ``contradicts`` gate
-(:func:`check_contradicts`) is SQL-cheap and runs first — a disputed hub is
-visible internally, unpublishable externally, and spending anything further
-on it would be waste.
+(:func:`check_contradicts`) is SQL-cheap and runs first — a hub carrying a
+live adjudicated ``contradicts`` edge (D1,
+docs/backlog/disputes-edge-nonblocking-disagreement.md: any live
+``contradicts`` edge touching the hub, either direction, any counterpart
+kind) is visible internally, unpublishable externally, and spending
+anything further on it would be waste. A ``disputes`` edge is the
+non-blocking open-question complement (:func:`precis.nanopub.evidence.
+open_disputes`) and never reaches this gate at all.
 """
 
 from __future__ import annotations
@@ -617,31 +622,42 @@ def advisory_lint(sentence: str, *, artifact_type: str = "claim") -> list[str]:
 
 
 def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]:
-    """Gate #1: a hub carrying a live unresolved ``contradicts`` edge is
+    """Gate #1: a hub touched by a live adjudicated ``contradicts`` edge is
     unmintable until adjudicated (source retracted, or a primary acquired
-    and the claim corrected). Worst-of: one disputed member atom blocks a
-    compound (fi189542 is the precedent case)."""
+    and the claim corrected). D1 (docs/backlog/
+    disputes-edge-nonblocking-disagreement.md): blocking is ANY live
+    ``contradicts`` edge touching the hub, either direction and any
+    counterpart kind — Part 2's adjudication blocks the pair, so a
+    hub→other edge blocks exactly like an other→hub one; the former
+    ``EVIDENCE_SRC_KINDS`` filter is not a blocking-policy knob
+    post-split. Reads :func:`~precis.nanopub.evidence.live_contradicts`
+    directly (SQL-cheap), never ``bundle.contradicts`` (the narrower,
+    inbound-paper-evidence-only shape :class:`~precis.nanopub.evidence.
+    HubBundle` still carries for the graph render). A ``disputes`` edge
+    never reaches this gate — it is a non-blocking open question by
+    construction, so it produces zero violations here regardless of who
+    filed it or which claim it touches. Worst-of: one contradicted member
+    atom blocks a compound (fi189542 is the precedent case)."""
     out: list[GateViolation] = []
-    for src in bundle.contradicts:
+    for edge in ev.live_contradicts(store, bundle.hub_ref_id):
         out.append(
             GateViolation(
                 "contradicts",
-                f"live contradicts edge from {src.kind} {src.ref_id} "
-                f"({src.title[:60]}…) — disputed claims are visible "
-                "internally, unpublishable externally; adjudicate by "
-                "artifacts (retract the source, or acquire the primary and "
-                "re-mint), never by edit",
+                f"live contradicts edge {edge.direction} {edge.kind} "
+                f"{edge.ref_id} ({edge.title[:60]}…) stands — an adjudicated "
+                "contradiction is visible internally, unpublishable "
+                "externally; resolved only through adjudication (Part 2), "
+                "never by edit",
             )
         )
     for atom_id, _sentence in bundle.conjunct_atoms:
-        atom_bundle = ev.load_bundle(store, atom_id)
-        for src in atom_bundle.contradicts:
+        for edge in ev.live_contradicts(store, atom_id):
             out.append(
                 GateViolation(
                     "contradicts",
                     f"conjunct atom fi{atom_id} carries a live contradicts "
-                    f"edge from {src.kind} {src.ref_id} — worst-of blocks "
-                    "the compound",
+                    f"edge {edge.direction} {edge.kind} {edge.ref_id} — "
+                    "worst-of blocks the compound",
                 )
             )
     return out

@@ -362,7 +362,7 @@ per hop.)
 ```python
 get(kind="skill", id="precis-overview")  # verbs and kinds
 get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-relations")  # related-to, contradicts between papers
+get(kind="skill", id="precis-relations")  # related-to, disputes between papers
 get(kind="skill", id="precis-tags")  # axis vocabulary
 get(kind="skill", id="precis-paper-tag-axes")  # paper-specific axes
 get(kind="skill", id="precis-finding-help")  # chasing un-ingested DOIs

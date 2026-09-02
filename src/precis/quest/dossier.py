@@ -1495,8 +1495,8 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
 # `meta.role=support|counter|experiment`). The model maintains blocks only
 # through `dialectic_ops` (:func:`apply_dialectic_op`) — it never rewrites
 # them, so the structure cannot flatten the way tick-4's ###-skeleton did.
-# `support`/`counter` entries mint real evidence edges (`supports` /
-# `contradicts` → the hypothesis finding) from their inline handles at apply
+# `support`/`counter` entries mint real graph edges (`supports` /
+# `disputes` → the hypothesis finding) from their inline handles at apply
 # time, so the dialectic is a queryable graph, not a document shaped like one.
 
 _DIALECTIC_PINNED = "dialectic"
@@ -1511,7 +1511,13 @@ _DIALECTIC_ROLES: tuple[str, ...] = ("support", "counter", "experiment")
 #: measurement actually runs the pre-registration.
 _DIALECTIC_EDGE_RELATION: dict[str, str] = {
     "support": "supports",
-    "counter": "contradicts",
+    # `counter` files `disputes`, not `contradicts` (migration 0151 split):
+    # a dialectic counter is an LLM-drafted question about the hypothesis,
+    # not an adjudicated conflict — `contradicts` is adjudication-derived
+    # only, and would hard-block the hypothesis's own mint at
+    # `nanopub/gates.py::check_contradicts`. The `meta={"dialectic":
+    # "counter"}` stamp keeps the role queryable regardless of slug.
+    "counter": "disputes",
 }
 _DIALECTIC_SEED = ""
 #: An inline evidence handle in an entry's text, e.g. ``[fi263615]``,
@@ -1729,7 +1735,7 @@ def _chunk_owner_ref_id(store: Store, chunk_id: int) -> int | None:
 
 
 def _mint_evidence_edges(store: Store, hypothesis_id: int, role: str, text: str) -> int:
-    """Mint one ``supports``/``contradicts`` link per resolvable inline
+    """Mint one ``supports``/``disputes`` link per resolvable inline
     handle in ``text`` → the hypothesis finding. Idempotent (``add_link``'s
     unique-tuple no-op); a handle that doesn't resolve, points at the
     hypothesis itself, or FK-fails is skipped, never a raise. Returns the

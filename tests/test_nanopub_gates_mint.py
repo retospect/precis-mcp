@@ -713,6 +713,68 @@ def test_contradicts_edge_blocks_mint_first(store: Any) -> None:
     assert "contradicts" in _gate_slugs(store, hub, _payload(chunk))
 
 
+# ── D1 (docs/backlog/disputes-edge-nonblocking-disagreement.md):
+# blocking = any live `contradicts` edge touching the hub, any direction,
+# any counterpart kind; `disputes` never blocks, from any source. ───────
+
+
+def test_contradicts_blocks_from_finding_kind_source(store: Any) -> None:
+    """Pre-D1, ``check_contradicts`` read ``bundle.contradicts``, which
+    ``EVIDENCE_SRC_KINDS``-filtered to paper/patent — a finding-kind
+    contradictor (the review-critique shape,
+    e.g. fi255164→fi191315) was invisible to this gate. Post-split it
+    is adjudication-derived, so the source-kind filter is not a
+    blocking-policy knob at all: ANY live counterpart blocks."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "Contact angle is 85 degrees.", paper, chunk)
+    critique = seed_ref(store, title="a review critique", kind="finding")
+    store.add_link(src_ref_id=critique, dst_ref_id=hub, relation="contradicts")
+    assert "contradicts" in _gate_slugs(store, hub, _payload(chunk))
+
+
+def test_contradicts_blocks_on_outbound_edge(store: Any) -> None:
+    """D1: Part 2's adjudication blocks the PAIR, not one side of it — a
+    hub→other `contradicts` edge blocks exactly like an other→hub one."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "Contact angle is 85 degrees.", paper, chunk)
+    target = seed_ref(store, title="the other claim in the pair", kind="finding")
+    store.add_link(src_ref_id=hub, dst_ref_id=target, relation="contradicts")
+    assert "contradicts" in _gate_slugs(store, hub, _payload(chunk))
+
+
+def test_contradicts_ignores_disputes_edges_entirely(store: Any) -> None:
+    """A `disputes` edge is a non-blocking open question by construction
+    (D1) — a hub touched by one, either direction, must pass every gate,
+    not just avoid the `contradicts` slug specifically."""
+    # The clean-payload sentence (matches test_clean_payload_passes_all_gates)
+    # so the assertion below can require a fully empty gate set — proof the
+    # `disputes` edges contribute zero violations of ANY kind, not just that
+    # they miss the `contradicts` slug specifically.
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    other = seed_ref(store, title="a disputing note", kind="finding")
+    store.add_link(src_ref_id=other, dst_ref_id=hub, relation="disputes")
+    store.add_link(src_ref_id=hub, dst_ref_id=other, relation="disputes")
+    assert _gate_slugs(store, hub, _payload(chunk)) == set()
+
+
+def test_contradicts_ignores_edge_to_retired_counterpart(store: Any) -> None:
+    """A live counterpart is required — a `contradicts` edge whose other
+    end was since soft-deleted must not phantom-block a hub forever."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "Contact angle is 85 degrees.", paper, chunk)
+    retracted = seed_ref(store, title="a retracted counterpart", kind="finding")
+    store.add_link(src_ref_id=retracted, dst_ref_id=hub, relation="contradicts")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (retracted,)
+        )
+        conn.commit()
+    assert "contradicts" not in _gate_slugs(store, hub, _payload(chunk))
+
+
 # ── bimodal evidence read ───────────────────────────────────────────────
 
 

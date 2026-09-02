@@ -18,13 +18,24 @@ of the graph):
 Grounding resolution stays **internal-coordinate** here (chunk ids,
 ords): the publish boundary strips them — only DOI + ``pdf_sha256`` +
 quote + snip enter a published graph (universal anchors rule).
+
+:func:`live_contradicts` / :func:`open_disputes` are a separate pair of
+read helpers, deliberately outside :class:`HubBundle` — the
+``contradicts``/``disputes`` split
+(docs/backlog/disputes-edge-nonblocking-disagreement.md, D1): blocking is
+any live ``contradicts`` edge touching the hub in EITHER direction and
+of ANY counterpart kind (the pair is blocked, not one side of it); a
+``disputes`` edge is the non-blocking open-question complement and never
+blocks. Both read direct src/dst SQL rather than ``store.links_for`` —
+see their docstrings for the inverse-rewrite trap that makes the direct
+query mandatory.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.taproot import seniority
 
@@ -232,6 +243,117 @@ class EvidenceSource:
     role: str
     #: 'inbound' (paper→hub taproot edge) | 'outbound' (hub→paper lineage)
     via: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContradictsEdge:
+    """One live ``contradicts`` edge touching a hub, either direction —
+    D1 (docs/backlog/disputes-edge-nonblocking-disagreement.md): blocking
+    is "any live ``contradicts`` edge touching the hub, regardless of
+    source kind and direction," because Part 2's adjudication blocks the
+    *pair*, not one side of it."""
+
+    #: The OTHER end of the edge — not necessarily a paper/patent: the
+    #: relation is now adjudication-derived only, so its counterpart may
+    #: be any live ref kind.
+    ref_id: int
+    kind: str
+    title: str
+    #: 'in' when the hub is ``dst_ref_id`` (something contradicts the
+    #: hub), 'out' when the hub is ``src_ref_id`` (the hub contradicts
+    #: something) — both block under D1.
+    direction: str
+
+
+@dataclass(frozen=True, slots=True)
+class DisputeEdge:
+    """One live ``disputes`` edge touching a hub — a non-blocking open
+    question (migration 0151). Same shape as :class:`ContradictsEdge`
+    plus the raw chunk pins and ``links.meta`` a render needs to show the
+    disputing passage when the edge names one."""
+
+    ref_id: int
+    kind: str
+    title: str
+    #: 'in' when the hub is ``dst_ref_id``, 'out' when the hub is
+    #: ``src_ref_id`` — a ``disputes`` edge is directed (filer's subject
+    #: → the thing it questions) and carries no inverse slug.
+    direction: str
+    src_chunk_id: int | None
+    dst_chunk_id: int | None
+    meta: dict[str, Any]
+
+
+def live_contradicts(store: Store, hub_ref_id: int) -> list[ContradictsEdge]:
+    """Every live ``contradicts`` edge touching ``hub_ref_id``, either
+    direction, counterpart of ANY live ref kind (D1 — the
+    ``EVIDENCE_SRC_KINDS`` filter is not a blocking-policy knob
+    post-split). Direct src/dst SQL, deliberately NOT
+    ``store.links_for``: ``contradicts`` carries a registered inverse
+    ``contradicted-by`` (migration 0001), so ``links_for``'s
+    inverse-rewrite would ALSO match ``(src=hub, relation=
+    'contradicted-by')`` rows and double-count — the exact trap
+    documented on ``taproot/seniority.py::_fetch_evidence_rows``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.kind, r.title,
+                   CASE WHEN l.dst_ref_id = %(hub)s THEN 'in' ELSE 'out' END
+              FROM links l
+              JOIN refs r
+                ON r.ref_id = CASE WHEN l.dst_ref_id = %(hub)s
+                                    THEN l.src_ref_id ELSE l.dst_ref_id END
+               AND r.retired_at IS NULL
+             WHERE l.relation = 'contradicts'
+               AND (l.src_ref_id = %(hub)s OR l.dst_ref_id = %(hub)s)
+             ORDER BY r.ref_id
+            """,
+            {"hub": hub_ref_id},
+        ).fetchall()
+    return [
+        ContradictsEdge(
+            ref_id=int(r[0]), kind=str(r[1]), title=str(r[2] or ""), direction=str(r[3])
+        )
+        for r in rows
+    ]
+
+
+def open_disputes(store: Store, hub_ref_id: int) -> list[DisputeEdge]:
+    """Every live ``disputes`` edge touching ``hub_ref_id``, either
+    direction, counterpart of ANY live ref kind — the non-blocking open
+    question set (D1). Same direct-SQL shape and rationale as
+    :func:`live_contradicts`; ``disputes`` carries no inverse slug at all
+    (migration 0151), so the trap doesn't apply here, but one query keeps
+    the two functions symmetric and equally auditable."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.kind, r.title,
+                   CASE WHEN l.dst_ref_id = %(hub)s THEN 'in' ELSE 'out' END,
+                   l.src_chunk_id, l.dst_chunk_id, l.meta
+              FROM links l
+              JOIN refs r
+                ON r.ref_id = CASE WHEN l.dst_ref_id = %(hub)s
+                                    THEN l.src_ref_id ELSE l.dst_ref_id END
+               AND r.retired_at IS NULL
+             WHERE l.relation = 'disputes'
+               AND (l.src_ref_id = %(hub)s OR l.dst_ref_id = %(hub)s)
+             ORDER BY r.ref_id
+            """,
+            {"hub": hub_ref_id},
+        ).fetchall()
+    return [
+        DisputeEdge(
+            ref_id=int(r[0]),
+            kind=str(r[1]),
+            title=str(r[2] or ""),
+            direction=str(r[3]),
+            src_chunk_id=int(r[4]) if r[4] is not None else None,
+            dst_chunk_id=int(r[5]) if r[5] is not None else None,
+            meta=dict(r[6] or {}),
+        )
+        for r in rows
+    ]
 
 
 @dataclass(frozen=True, slots=True)

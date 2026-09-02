@@ -1516,6 +1516,31 @@ class TestLinkTaprootRouting:
         with pytest.raises(BadInput):
             h.link(id=f"fi{hub_id}", target="pc999999999", rel="establishes")
 
+    def test_contradicts_on_hub_evidence_target_is_refused(self, store) -> None:
+        """The ``HUB_ROLES`` branch refuses ``rel='contradicts'`` even
+        though it's still a valid role in ``HUB_ROLES``/``attach_evidence``
+        (Part 2's future programmatic use) — this agent-facing door can't
+        file it manually (docs/backlog/disputes-edge-nonblocking-
+        disagreement.md D1-D4). ``establishes``/``corroborates`` keep
+        working, exercised by the sibling tests above."""
+        hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
+        paper = _seed_paper(store, cite_key="contrarefused")
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()[0]
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="adjudication-derived"):
+            h.link(id=f"fi{hub_id}", target=f"pc{chunk_id}", rel="contradicts")
+        # Nothing written either direction.
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is None
+
     def test_refines_routes_to_link_claims(self, store) -> None:
         original = self._mint_hub(store, sentence="Original claim.")
         sharper = self._mint_hub(store, sentence="Sharper, reworded claim.")
@@ -1638,13 +1663,21 @@ class TestLinkTaprootRouting:
         """A plain (non-hub) finding's ``contradicts`` removal is NOT a
         HUB_ROLES interception target (the source never resolves to a claim
         hub) — falls through to the generic door, removing the ordinary
-        finding->target edge."""
+        finding->target edge. Seeded directly (``store.add_link``), not via
+        ``h.link(rel='contradicts')``: the ADD path itself now refuses a
+        manual ``contradicts`` link outside memory<->memory
+        (docs/backlog/disputes-edge-nonblocking-disagreement.md D1-D4) —
+        this test is about REMOVE routing, not the add-side guard (see
+        ``test_contradicts_on_non_hub_finding_falls_through_to_generic_link``
+        below for that)."""
         _seed_paper(store, cite_key="source2")
         target_paper = _seed_paper(store, cite_key="rival2")
         h = _make_handler(store)
         resp = h.put(title="t", body="b", cited_in="source2")
         finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
-        h.link(id=finding_id, target=f"pa{target_paper}", rel="contradicts")
+        store.add_link(
+            src_ref_id=finding_id, dst_ref_id=target_paper, relation="contradicts"
+        )
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
@@ -1666,15 +1699,29 @@ class TestLinkTaprootRouting:
         self, store
     ) -> None:
         """A plain chase finding (not a claim hub) using rel='contradicts'
-        must NOT try attach_evidence — it goes through the ordinary
-        NumericRefHandler.link door, an edge FROM the finding itself."""
+        must NOT try attach_evidence — it falls through to the ordinary
+        ``NumericRefHandler.link`` door, which now refuses to file a
+        manual ``contradicts`` edge outside memory<->memory
+        (docs/backlog/disputes-edge-nonblocking-disagreement.md D1-D4) —
+        the same guard ``apply_link_ops`` enforces, shared via
+        ``guard_and_route_contradicts_disputes``. ``disputes`` is the free,
+        non-blocking door for the same shape."""
         _seed_paper(store, cite_key="source")
         target_paper = _seed_paper(store, cite_key="rival")
         h = _make_handler(store)
         resp = h.put(title="t", body="b", cited_in="source")
         finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
-        out = h.link(id=finding_id, target=f"pa{target_paper}", rel="contradicts")
+        with pytest.raises(BadInput, match="adjudication-derived"):
+            h.link(id=finding_id, target=f"pa{target_paper}", rel="contradicts")
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (finding_id, target_paper),
+            ).fetchone()
+        assert row is None
+
+        out = h.link(id=finding_id, target=f"pa{target_paper}", rel="disputes")
         assert "linked finding" in out.body
 
         # Generic add_link shape: src=finding, dst=target (the REVERSE of
@@ -1684,7 +1731,7 @@ class TestLinkTaprootRouting:
                 "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
                 (finding_id, target_paper),
             ).fetchone()
-        assert row is not None and row[0] == "contradicts"
+        assert row is not None and row[0] == "disputes"
 
 
 # ── edit(pick_candidate=...) — multi-candidate disambiguation ───────

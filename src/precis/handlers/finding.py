@@ -677,6 +677,24 @@ class FindingHandler(NumericRefHandler):
                     )
                 tgt = str(target).strip()
                 if rel in hub.HUB_ROLES:
+                    if rel == "contradicts":
+                        # Same door policy as the generic link()s
+                        # (docs/backlog/disputes-edge-nonblocking-
+                        # disagreement.md D1-D4): claim-graph
+                        # 'contradicts' is adjudication-derived only —
+                        # this agent-facing door can't file it, even
+                        # though 'contradicts' stays in HUB_ROLES and
+                        # attach_evidence for Part 2's programmatic use.
+                        # A paper-passage-vs-claim conflict is filed as
+                        # a 'disputes' link instead.
+                        raise BadInput(
+                            "claim-graph 'contradicts' is adjudication-derived "
+                            "and cannot be filed manually",
+                            next=(
+                                "file rel='disputes' instead — free to file, "
+                                "non-blocking"
+                            ),
+                        )
                     resolved = self.store.resolve_handle(tgt)
                     if resolved is None:
                         raise BadInput(
@@ -1688,6 +1706,12 @@ def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
         )
         if on
     ]
+    # Non-blocking open-question count (D1, migration 0151) — a distinct
+    # marker from ``disputed`` above (which is the adjudicated, blocking
+    # `contradicts` shape): a live `disputes` edge is never a demerit, so
+    # it must never read as the same flag.
+    if row.open_disputes_count:
+        flags.append(f"open-questions:{row.open_disputes_count}")
     return {
         "state": row.state or "unminted",
         "support": support,

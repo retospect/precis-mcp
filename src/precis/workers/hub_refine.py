@@ -55,9 +55,11 @@ Claimed off a **due-set**, never a blind periodic rescan
    support (``contradicts=false``) → ``attach_evidence`` (role
    ``corroborates``, meta carries ``support``/``caveats``/``source_handle``).
    ``no``, or a ``contradicts``-flagged ``partial`` → append to the
-   rejection memo. A ``contradicts`` verdict **also writes the edge**
-   (:func:`_attach_contradicts`, same call ADR 0073 makes on the reground
-   path) and queues the hub's **demotion** (:mod:`precis.nanopub.demote`,
+   rejection memo. A ``contradicts`` verdict **also files a non-blocking
+   ``disputes`` link** (:func:`_attach_disputes`, same call ADR 0073 makes
+   on the reground path; docs/backlog/disputes-edge-nonblocking-
+   disagreement.md D3) and queues the hub's **demotion**
+   (:mod:`precis.nanopub.demote`,
    drained post-commit): a ``reviewed``/``signed`` hub reopens to
    ``candidate``; ``anchored``/``published`` raises for a human. Demotion
    is the only two-directional move here — everything else promotes.
@@ -133,7 +135,8 @@ claim→discover→verify→write→stamp path:
   transaction. Prunes are planned (:class:`RegroundPlan`) and applied by
   :func:`apply_reground_plan` only after adds commit and are read back
   from ``links`` (paired-add requirement, strand guard, partial-failure
-  counts). A contradictor is re-attached as ``contradicts``, never
+  counts). A contradictor is re-attached as a non-blocking ``disputes``
+  edge (docs/backlog/disputes-edge-nonblocking-disagreement.md D3), never
   plain-dropped.
 * **External last resort + retire flagging** (stages 5-6) — each behind
   its own gate; retire additionally needs a per-hub opt-in tag, and its
@@ -175,6 +178,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
+from precis.handlers._link_tag_ops import validate_relation
 from precis.nanopub.demote import DemotionRequest, run_demotions
 from precis.store.types import Tag
 from precis.taproot.canon import (
@@ -192,7 +196,7 @@ from precis.taproot.hub import (
     append_reground_log,
     attach_evidence,
     live_evidence_handles,
-    reattach_as_contradicts,
+    reattach_as_disputes,
     reground_log_entry,
     remove_evidence,
     run_retraction_checks,
@@ -263,7 +267,7 @@ def _verified_stamp(sha: str) -> dict[str, Any]:
     }
 
 
-def _attach_contradicts(
+def _attach_disputes(
     store: Store,
     conn: Connection,
     *,
@@ -274,29 +278,37 @@ def _attach_contradicts(
     caveats: list[str],
     sha: str,
     via: str,
-    pending_checks: list[int] | None,
     pending_demotions: list[DemotionRequest] | None,
 ) -> None:
-    """Write one ``contradicts`` edge from the enrichment arm, and queue
-    the hub's demotion.
+    """File one plain source ``--disputes-->`` hub open-question link from
+    the enrichment arm, and queue the hub's demotion.
 
-    Meta keeps the *plain* contradicts shape the re-attach path writes
-    (``support: "no"``, no verification stamp): a ``contradicts`` edge is
-    outside the publish preflight's withheld cohort — it blocks via the
-    contradicts gate outright — so a ``verified_*`` stamp on it would say
-    nothing the gate reads. ``widen`` is the provenance marker, mirroring
-    the reground path's ``meta.reground``, so every edge this arm writes
-    stays queryable as a set.
+    Renamed from ``_attach_contradicts`` (docs/backlog/disputes-edge-
+    nonblocking-disagreement.md D3): a contradicting judge verdict on a
+    source never previously attached to this hub is no longer written as
+    an adjudicated ``contradicts`` evidence edge — it's the free,
+    non-blocking ``disputes`` open question, the same ``store.add_link`` +
+    ``validate_relation('disputes')`` shape
+    :func:`~precis.taproot.hub.reattach_as_disputes` uses for its own add
+    half (idempotent on the DB's endpoint+relation unique index). ``widen``
+    is the provenance marker, mirroring the reground path's
+    ``meta.reground``, so every edge this arm writes stays queryable as a
+    set. The LLM verdict vocabulary (``"CONTRADICTS"`` in ``meta.widen``)
+    is unchanged — only the stored *link relation* moved.
 
     The demotion is *queued*, never applied here: this runs inside the
     caller's open transaction and ``nanopub_reopen`` opens its own pool
-    connection (see :mod:`precis.nanopub.demote`).
+    connection (see :mod:`precis.nanopub.demote`). Demotion still fires on
+    a disputes filing — the same precedent :func:`apply_reground_plan` set
+    for its own contradicts->disputes conversion: a hub's publish posture
+    no longer reflects its evidence the moment a primary-against passage
+    surfaces, independent of whether the new edge itself blocks.
     """
-    attach_evidence(
-        store,
-        hub_ref_id=hub_ref_id,
-        paper_ref_id=source_ref_id,
-        role="contradicts",
+    validated_relation = validate_relation("disputes", store=store)
+    store.add_link(
+        src_ref_id=source_ref_id,
+        dst_ref_id=hub_ref_id,
+        relation=validated_relation,
         meta={
             "support": "no",
             "support_reason": reason,
@@ -306,14 +318,13 @@ def _attach_contradicts(
         },
         set_by="system",
         conn=conn,
-        pending_checks=pending_checks,
     )
     if pending_demotions is not None:
         pending_demotions.append(
             DemotionRequest(
                 hub_ref_id=hub_ref_id,
                 reason=(
-                    f"widening pass attached a contradicts edge from source "
+                    f"widening pass attached a disputes edge from source "
                     f"#{source_ref_id}"
                 ),
             )
@@ -1332,7 +1343,9 @@ class RegroundPrune:
 @dataclass(frozen=True)
 class RegroundContradict:
     """One edge whose passage carries primary content *against* the claim
-    — converted to ``contradicts`` (ADR 0073), never plain-dropped."""
+    — converted to a non-blocking ``disputes`` edge (ADR 0073, repointed by
+    docs/backlog/disputes-edge-nonblocking-disagreement.md D3), never
+    plain-dropped."""
 
     src_ref_id: int
     src_chunk_id: int | None
@@ -1389,16 +1402,17 @@ class RegroundPlan:
         side of the intent-vs-committed diff. Rebuilt, never stored as a
         sort order or any other new state: current live edges, minus the
         planned prunes, minus the corroborates edges being converted, plus
-        this plan's adds and the resulting ``contradicts`` edges."""
+        this plan's adds. A ``disputes`` conversion (:attr:`contradicts`)
+        only discards the old edge — the replacement is a plain
+        ``disputes`` link (docs/backlog/disputes-edge-nonblocking-
+        disagreement.md D3), not a :data:`HUB_ROLES` evidence edge, so it
+        never appears in :func:`~precis.taproot.hub.live_evidence_handles`
+        and has nothing to add here."""
         end = set(self.live_before)
         for p in self.prunes:
             end.discard(EvidenceHandle(p.src_ref_id, p.src_chunk_id, p.relation))
         for c in self.contradicts:
             end.discard(EvidenceHandle(c.src_ref_id, c.src_chunk_id, c.relation))
-            # The re-attach carries the SAME grounding handle
-            # (``meta.source_handle``), so the replacement edge is
-            # chunk-grained at the same passage — not a ref-level edge.
-            end.add(EvidenceHandle(c.src_ref_id, c.src_chunk_id, "contradicts"))
         for a in self.adds:
             end.add(EvidenceHandle(a.src_ref_id, a.src_chunk_id, _ROLE))
         return end
@@ -1989,10 +2003,13 @@ def apply_reground_plan(
        the job glue puts them in the summary.
 
     Each prune runs in its own transaction so one bad handle degrades one
-    edge, not the hub's whole plan. Contradicts conversions run first
-    (add-first *within* one transaction,
-    ``taproot.hub.reattach_as_contradicts``) — a converted edge is still
-    live and changes the strand arithmetic below.
+    edge, not the hub's whole plan. Disputes conversions run first
+    (add-first *within* one transaction, ``taproot.hub.reattach_as_disputes``
+    — writes a non-blocking ``disputes`` edge, not ``contradicts``, per
+    docs/backlog/disputes-edge-nonblocking-disagreement.md D3) — the old
+    edge's removal still changes the strand arithmetic below, even though
+    the replacement no longer counts as a live :data:`HUB_ROLES` edge
+    itself.
     """
     flags = list(plan.flags)
     log_entries = list(plan.log)
@@ -2001,7 +2018,7 @@ def apply_reground_plan(
 
     for c in plan.contradicts:
         try:
-            ok = reattach_as_contradicts(
+            ok = reattach_as_disputes(
                 store,
                 hub_ref_id=plan.hub_ref_id,
                 src_ref_id=c.src_ref_id,
@@ -2015,7 +2032,7 @@ def apply_reground_plan(
             )
         except Exception:
             log.warning(
-                "hub_refine: contradicts re-attach failed for hub #%d src #%d",
+                "hub_refine: disputes re-attach failed for hub #%d src #%d",
                 plan.hub_ref_id,
                 c.src_ref_id,
                 exc_info=True,
@@ -2025,7 +2042,7 @@ def apply_reground_plan(
             reattached += 1
         else:
             withheld += 1
-            flags.append(f"contradicts-reattach-failed:{c.src_ref_id}")
+            flags.append(f"disputes-reattach-failed:{c.src_ref_id}")
 
     demoted = 0
     if reattached:
@@ -2042,7 +2059,7 @@ def apply_reground_plan(
                         hub_ref_id=plan.hub_ref_id,
                         reason=(
                             f"reground converted {reattached} evidence edge(s) to "
-                            f"contradicts"
+                            f"disputes"
                         ),
                     )
                 ],
@@ -2394,8 +2411,13 @@ def _reground_verify_candidate(
       Recorded in
       ``plan.adds`` so the applier can read it back and release the paired
       prune.
-    * ``CONTRADICTS`` → attach a ``contradicts`` edge (ADR 0073). A
-      primary-against passage is information, not noise.
+    * ``CONTRADICTS`` → files a plain, non-blocking ``disputes`` link
+      (never a ``contradicts`` evidence edge — ADR 0073, repointed by
+      docs/backlog/disputes-edge-nonblocking-disagreement.md D3; this
+      candidate was never previously attached, so there is no prior
+      evidence edge to convert, unlike :func:`apply_reground_plan`'s own
+      contradicts->disputes conversion of an *already-attached*
+      supporter). A primary-against passage is information, not noise.
     * ``PRUNE`` → memo. For a source we do NOT already hold an edge on,
       that memo is the ordinary ``taproot_rejected`` entry (which also
       excludes it from future discovery slots). For a source we DO hold an
@@ -2472,7 +2494,7 @@ def _reground_verify_candidate(
                 )
             )
             return
-    role = _ROLE if verdict.verdict == "KEEP" else "contradicts"
+    is_keep = verdict.verdict == "KEEP"
     edge_meta: dict[str, Any] = {
         "source_handle": handle,
         # Reversible as a set, the way the semantic backfill's
@@ -2485,7 +2507,7 @@ def _reground_verify_candidate(
             "via": cand.via,
         },
     }
-    if role == _ROLE:
+    if is_keep:
         # A KEEP is a fresh strict-judge verification of this exact passage
         # — the edge is born verified (reason + fingerprint, never a bare
         # support stamp).
@@ -2497,36 +2519,52 @@ def _reground_verify_candidate(
                 **_verified_stamp(plan.claim_sha),
             }
         )
+        attach_evidence(
+            store,
+            hub_ref_id=hub_ref_id,
+            paper_ref_id=source_ref_id,
+            role=_ROLE,
+            meta=edge_meta,
+            set_by="system",
+            conn=conn,
+            pending_checks=pending_checks,
+        )
     else:
-        # A contradicts edge is outside the publish preflight's withheld
-        # cohort (it blocks via the contradicts gate outright), so it keeps
-        # the plain shape the contradicts re-attach path writes.
+        # CONTRADICTS on a candidate never previously attached — file the
+        # free, non-blocking ``disputes`` link, not an adjudicated
+        # ``contradicts`` evidence edge (docs/backlog/disputes-edge-
+        # nonblocking-disagreement.md D3). Same ``store.add_link`` +
+        # ``validate_relation('disputes')`` shape
+        # :func:`~precis.taproot.hub.reattach_as_disputes` uses for its own
+        # add half; idempotent on the DB's endpoint+relation unique index.
         edge_meta.update({"support": "no", "caveats": []})
-    attach_evidence(
-        store,
-        hub_ref_id=hub_ref_id,
-        paper_ref_id=source_ref_id,
-        role=role,
-        meta=edge_meta,
-        set_by="system",
-        conn=conn,
-        pending_checks=pending_checks,
-    )
+        validated_relation = validate_relation("disputes", store=store)
+        store.add_link(
+            src_ref_id=source_ref_id,
+            dst_ref_id=hub_ref_id,
+            relation=validated_relation,
+            meta=edge_meta,
+            set_by="system",
+            conn=conn,
+        )
     attached_this_pass.add(source_ref_id)
-    if role == "contradicts" and pending_demotions is not None:
-        # Same consequence as the enrichment arm's contradicts edge: the
-        # hub's publish posture no longer reflects its evidence. Queued,
-        # not applied — this runs inside the caller's transaction.
+    if not is_keep and pending_demotions is not None:
+        # Same consequence as apply_reground_plan's own contradicts-
+        # >disputes conversion (and the enrichment arm's
+        # ``_attach_disputes``): the hub's publish posture no longer
+        # reflects its evidence the moment a primary-against passage
+        # surfaces. Queued, not applied — this runs inside the caller's
+        # transaction.
         pending_demotions.append(
             DemotionRequest(
                 hub_ref_id=hub_ref_id,
                 reason=(
-                    f"reground judge attached a contradicts edge from source "
+                    f"reground judge attached a disputes edge from source "
                     f"#{source_ref_id}"
                 ),
             )
         )
-    if role == _ROLE:
+    if is_keep:
         plan.adds.append(
             RegroundAdd(
                 src_ref_id=source_ref_id,
@@ -2539,7 +2577,7 @@ def _reground_verify_candidate(
         reground_log_entry(
             src_ref_id=source_ref_id,
             src_chunk_id=chunk_id,
-            relation=role,
+            relation=_ROLE if is_keep else "disputes",
             verdict=verdict.verdict,
             reason=verdict.reason,
             action="added",
@@ -3035,7 +3073,7 @@ def _refine_one_hub(
                     # contradicting source must never re-enter discovery and
                     # re-spend the verifier) — the edge is additional, not a
                     # replacement.
-                    _attach_contradicts(
+                    _attach_disputes(
                         store,
                         conn,
                         hub_ref_id=hub_ref_id,
@@ -3047,7 +3085,6 @@ def _refine_one_hub(
                         caveats=list(verification.get("caveats") or []),
                         sha=new_sha,
                         via=cand.via,
-                        pending_checks=pending_checks,
                         pending_demotions=pending_demotions,
                     )
                     # No ``attached_this_pass`` bookkeeping here: this arm

@@ -234,13 +234,15 @@ def test_partial_support_carries_caveats_onto_the_edge(store: Any) -> None:
     assert meta["caveats"] == ["only tested at room temperature"]
 
 
-def test_contradicting_partial_is_memoed_and_attached_as_contradicts(
+def test_contradicting_partial_is_memoed_and_filed_as_disputes(
     store: Any,
 ) -> None:
     """A ``partial`` flagged ``contradicts`` (on-topic but runs counter to /
     does not substantiate the claim) is NOT attached as corroboration -- but
-    it IS written as a ``contradicts`` edge (ADR 0073), and still memoed so
-    it is judged exactly once.
+    it IS filed as a non-blocking ``disputes`` link (ADR 0073, repointed by
+    docs/backlog/disputes-edge-nonblocking-disagreement.md D3 -- never an
+    adjudicated ``contradicts`` evidence edge), and still memoed so it is
+    judged exactly once.
 
     The memo alone was the old behaviour: the verdict stayed a private note
     to the pass and the graph never learned that a source ran counter to the
@@ -257,11 +259,13 @@ def test_contradicting_partial_is_memoed_and_attached_as_contradicts(
     edges = _edges_from(store, paper)
     assert len(edges) == 1
     dst, relation, meta = edges[0]
-    assert (dst, relation) == (hub, "contradicts")
-    # Plain contradicts shape: no verification stamp (the gate blocks on the
-    # edge outright, so a verified_* stamp would say nothing it reads).
+    assert (dst, relation) == (hub, "disputes")
+    # Plain disputes shape: no verification stamp (a disputes edge never
+    # blocks, so a verified_* stamp would say nothing any gate reads).
     assert meta["support"] == "no"
     assert "verified_by" not in meta
+    # The LLM verdict vocabulary is unchanged -- only the stored link
+    # relation moved from `contradicts` to `disputes`.
     assert meta["widen"]["verdict"] == "CONTRADICTS"
 
     rejected = _hub_meta(store, hub).get("taproot_rejected") or {}
@@ -283,7 +287,7 @@ def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
     with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mv.call_count == 1
-    assert [rel for _dst, rel, _m in _edges_from(store, paper)] == ["contradicts"]
+    assert [rel for _dst, rel, _m in _edges_from(store, paper)] == ["disputes"]
 
     # Re-trigger via a fresh DUE tag; the memoed paper must not re-verify.
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
@@ -291,7 +295,7 @@ def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert mv2.call_count == 0  # precheck-skipped via the memo
-    assert [rel for _dst, rel, _m in _edges_from(store, paper)] == ["contradicts"]
+    assert [rel for _dst, rel, _m in _edges_from(store, paper)] == ["disputes"]
 
 
 def test_empty_pass_still_stamps_last_refined_at(store: Any) -> None:
@@ -997,8 +1001,9 @@ def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
     miss than a plain ``no``) is not corroboration and DOES land in
     ``meta.citation_misses`` — the deliberate inclusion beyond the AC's
     literal ``supports=no`` (a cited source that contradicts the claim is a
-    red flag too). The edge it writes is ``contradicts``, never
-    ``corroborates``."""
+    red flag too). The edge it writes is the non-blocking ``disputes`` link
+    (docs/backlog/disputes-edge-nonblocking-disagreement.md D3), never
+    ``corroborates`` and never the adjudication-only ``contradicts``."""
     embedder = make_mock_bge_m3()
     hub, _citing, citing_chunk, cited, _cited_chunk = _seed_citation_scenario(
         store, embedder, claim="A claim its cited source contradicts.", tag="ac3contra"
@@ -1007,9 +1012,9 @@ def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
     with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
-    # Contradicting partial → never corroboration; a contradicts edge instead.
+    # Contradicting partial → never corroboration; a disputes link instead.
     assert [rel for dst, rel, _m in _edges_from(store, cited) if dst == hub] == [
-        "contradicts"
+        "disputes"
     ]
 
     meta = _hub_meta(store, hub)

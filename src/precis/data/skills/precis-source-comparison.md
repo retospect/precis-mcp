@@ -1,14 +1,14 @@
 ---
 id: precis-source-comparison
 title: precis — compare corpus sources into an agreement matrix
-summary: source-comparison runbook — cross-kind gather, agreement/disagreement/confidence matrix, contradicts links, one draft
+summary: source-comparison runbook — cross-kind gather, agreement/disagreement/confidence matrix, disputes links, one draft
 answers:
   - how do I compare what several sources say about the same question?
   - how do I record a disagreement between sources on the link graph, not just in prose?
   - when does a source-comparison deserve a diagram?
 flavor: runbook
 status: active
-applies-to: search (cross-kind); put (kind='draft'); link (rel='contradicts')
+applies-to: search (cross-kind); put (kind='draft'); link (rel='disputes')
 ---
 
 # precis-source-comparison — compare multiple sources on a topic
@@ -49,11 +49,14 @@ put(
 ## Record disagreements on the graph, not just in prose
 
 ```python
-link(kind="paper", id="<slug-a>", target="pa<id-b>", rel="contradicts")
+link(kind="paper", id="<slug-a>", target="pa<id-b>", rel="disputes")
 ```
 
 Two sources disagreeing is itself worth carrying past this document —
-the link survives independent of the matrix.
+the link survives independent of the matrix. Use `disputes`, not
+`contradicts` — the latter is adjudication-derived (claim-graph
+disagreement, unbuilt) and rejected between two papers; `disputes`
+is free to file and never blocks either source.
 
 ## Diagram only when the structure earns it
 
@@ -71,7 +74,7 @@ agreement/disagreement comparisons on its own.
 get(kind="skill", id="precis-search-help")  # cross-kind fan-out mechanics
 get(
     kind="skill", id="precis-relations"
-)  # rel='contradicts' and the rest of the vocabulary
+)  # rel='disputes' and the rest of the vocabulary
 get(kind="skill", id="precis-draft-help")  # the document kind for the matrix
 get(kind="skill", id="precis-mermaid-help")  # when a diagram is warranted
 get(kind="skill", id="precis-paper-code-audit")  # claim-vs-code, a narrower comparison

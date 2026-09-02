@@ -28,7 +28,7 @@ from precis.taproot.hub import (
     attach_evidence,
     live_evidence_handles,
     mint_hub,
-    reattach_as_contradicts,
+    reattach_as_disputes,
     remove_evidence,
 )
 from precis.workers.hub_refine import (
@@ -114,6 +114,16 @@ def _attach(store: Any, *, hub: int, paper: int, chunk_id: int, role: str) -> No
 def _handles(store: Any, hub: int) -> set[EvidenceHandle]:
     with store.pool.connection() as conn:
         return live_evidence_handles(conn, hub)
+
+
+def _link_exists(store: Any, *, src: int, dst: int, relation: str) -> bool:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = %s",
+            (src, dst, relation),
+        ).fetchone()
+    return row is not None
 
 
 def _hub_meta(store: Any, hub: int) -> dict[str, Any]:
@@ -375,15 +385,18 @@ def test_remove_evidence_guards(store: Any) -> None:
 
 
 def test_contradictor_is_reattached_never_dropped(store: Any) -> None:
-    """A true contradictor becomes a ``contradicts`` edge (ADR 0073) —
-    even when it is the hub's ONLY edge, which is exactly when a plain
-    drop would strand the hub."""
+    """A true contradictor becomes a non-blocking ``disputes`` edge
+    (docs/backlog/disputes-edge-nonblocking-disagreement.md D3), never a
+    plain drop — even when it is the hub's ONLY edge. Since ``disputes``
+    carries no evidence flow, the hub correctly ends up at ZERO live
+    :data:`HUB_ROLES` edges (it looks unsupported, honestly — the only
+    thing backing it turned out to argue against it)."""
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="The formula predicts an 85 degree angle.")
     p1, c1 = _seed_paper(store, embedder, cite_key="against", texts=["predicts 83.6"])
     _attach(store, hub=hub, paper=p1, chunk_id=c1[0], role="corroborates")
 
-    ok = reattach_as_contradicts(
+    ok = reattach_as_disputes(
         store,
         hub_ref_id=hub,
         src_ref_id=p1,
@@ -393,11 +406,13 @@ def test_contradictor_is_reattached_never_dropped(store: Any) -> None:
         handle=f"pc{c1[0]}",
     )
     assert ok is True
-    handles = _handles(store, hub)
-    assert {h.relation for h in handles} == {"contradicts"}
+    # No live HUB_ROLES edges left — `disputes` isn't one, and the old
+    # `corroborates` edge was removed.
+    assert _handles(store, hub) == set()
+    assert _link_exists(store, src=p1, dst=hub, relation="disputes")
     entries = _hub_meta(store, hub)[META_REGROUND_LOG]
     assert entries[-1]["verdict"] == "CONTRADICTS"
-    assert entries[-1]["action"].startswith("reattached-contradicts")
+    assert entries[-1]["action"].startswith("reattached-disputes")
 
 
 # ══ the applier: add-first, in code ═════════════════════════════════
@@ -782,12 +797,60 @@ def test_contradicting_edge_is_converted_not_deleted_end_to_end(store: Any) -> N
     assert res.contradicts_reattached == 1
     handles = _handles(store, hub)
     relations = {(h.src_ref_id, h.relation) for h in handles}
-    assert (paper, "contradicts") in relations
+    # `disputes` is not a HUB_ROLES relation, so the converted edge never
+    # shows up among live evidence handles — only the surviving neutral
+    # paper's `corroborates` edge does.
+    assert (paper, "contradicts") not in relations
     assert (paper, "corroborates") not in relations
-    # The converted edge keeps its grounding passage, so the stored
-    # intent matches what actually committed (no phantom drift).
-    assert EvidenceHandle(paper, chunks[0], "contradicts") in handles
+    assert (other, "corroborates") in relations
+    assert _link_exists(store, src=paper, dst=hub, relation="disputes")
+    # The old edge is gone from both the intent and the live set, so the
+    # stored intent matches what actually committed (no phantom drift).
     assert verify_hub_intent(store, hub).clean is True
+
+
+def test_new_discovery_candidate_contradicts_verdict_files_disputes(store: Any) -> None:
+    """A genuinely new candidate (never previously attached to this hub)
+    that the strict judge flags CONTRADICTS is filed as a non-blocking
+    ``disputes`` link, never an adjudicated ``contradicts`` evidence edge
+    (docs/backlog/disputes-edge-nonblocking-disagreement.md D3). Distinct
+    from ``test_contradicting_edge_is_converted_not_deleted_end_to_end``,
+    which covers an ALREADY-attached supporter re-verified as contradicting
+    (``reattach_as_disputes``); this exercises the discovery loop's own
+    write (``_reground_verify_candidate``) — same-paper deeper-passage
+    discovery, mirroring ``test_same_paper_depth_correction_is_the_primary_
+    move`` but with the deeper passage judged CONTRADICTS instead of KEEP."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(
+        store, sentence="Extension p-doping raises CNT FET drain current to 13.95 uA."
+    )
+    paper, chunks = _seed_paper(
+        store,
+        embedder,
+        cite_key="pa-newcontra",
+        texts=[
+            "PROXY: carbon nanomaterials can be adjusted by doping [5-24].",
+            "AGAINST: drain current actually falls under extension doping.",
+        ],
+    )
+    _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
+
+    judge = _ScriptedJudge([("PROXY", "KEEP"), ("AGAINST", "CONTRADICTS")])
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+
+    reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    # The never-before-attached deeper passage is filed as `disputes`, not
+    # the adjudication-only `contradicts`.
+    assert _link_exists(store, src=paper, dst=hub, relation="disputes")
+    assert not _link_exists(store, src=paper, dst=hub, relation="contradicts")
+    # `disputes` carries no evidence flow, so it never joins live HUB_ROLES
+    # handles -- only the still-KEEP proxy edge does.
+    assert _handles(store, hub) == {EvidenceHandle(paper, chunks[0], "corroborates")}
+
+    log_entries = _hub_meta(store, hub)[META_REGROUND_LOG]
+    disputes_entries = [e for e in log_entries if e.get("relation") == "disputes"]
+    assert disputes_entries and disputes_entries[-1]["verdict"] == "CONTRADICTS"
 
 
 def test_zero_supporters_needs_no_schema_change(store: Any) -> None:

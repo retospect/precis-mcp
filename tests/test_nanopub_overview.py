@@ -62,3 +62,39 @@ def test_hub_rows_carries_tagline_from_meta(store: Any) -> None:
 
     row = next(r for r in rows if r.ref_id == hub)
     assert row.tagline == "Pd/C is Suzuki catalyst"
+
+
+# ── ``open_disputes_count`` (D1, docs/backlog/
+# disputes-edge-nonblocking-disagreement.md) — the non-blocking
+# `disputes` complement to `disputed`/`disputed_since` above. ──────────
+
+
+def test_hub_rows_open_disputes_count_counts_both_directions(store: Any) -> None:
+    hub = mint_hub(store, CanonicalClaim(sentence="a disputed-open claim", scope={}))
+    inbound = seed_ref(store, title="questions this claim", kind="finding")
+    outbound = seed_ref(store, title="this claim questions that one", kind="finding")
+    store.add_link(src_ref_id=inbound, dst_ref_id=hub, relation="disputes")
+    store.add_link(src_ref_id=hub, dst_ref_id=outbound, relation="disputes")
+
+    rows = hub_rows(store)
+
+    row = next(r for r in rows if r.ref_id == hub)
+    assert row.open_disputes_count == 2
+
+
+def test_hub_rows_open_disputes_never_sets_disputed(store: Any) -> None:
+    """`disputes` is the non-blocking open question — a hub touched only
+    by a live `disputes` edge must NOT read `disputed`/`disputed_since`,
+    which key on the adjudicated, blocking `contradicts` shape alone."""
+    hub = mint_hub(
+        store, CanonicalClaim(sentence="another open-question claim", scope={})
+    )
+    other = seed_ref(store, title="an open question", kind="finding")
+    store.add_link(src_ref_id=other, dst_ref_id=hub, relation="disputes")
+
+    rows = hub_rows(store)
+
+    row = next(r for r in rows if r.ref_id == hub)
+    assert row.open_disputes_count == 1
+    assert row.disputed is False
+    assert row.disputed_since is None

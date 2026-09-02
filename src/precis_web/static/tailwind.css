@@ -2627,6 +2627,10 @@ video {
   color: rgb(3 105 161 / var(--tw-text-opacity, 1));
 }
 
+.text-sky-700\/80 {
+  color: rgb(3 105 161 / 0.8);
+}
+
 .text-sky-800 {
   --tw-text-opacity: 1;
   color: rgb(7 89 133 / var(--tw-text-opacity, 1));

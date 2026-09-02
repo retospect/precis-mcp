@@ -1,10 +1,10 @@
 ---
 id: precis-relations
 title: precis — relation vocabulary for link(rel=)
-summary: closed relation vocabulary — cites, supports, contradicts, derived-from, blocks, retracts, corrects
+summary: closed relation vocabulary — cites, supports, disputes, contradicts, derived-from, blocks, retracts, corrects
 answers:
   - which relation do I use to link two refs — cites, supports, or something else?
-  - how do I record that a memory agrees with or contradicts a paper?
+  - how do I record that a memory agrees with or disagrees with a paper?
   - how do I mark one ref as derived from another?
   - how do I block one todo on another?
   - how do I record a retraction or correction relation?
@@ -28,7 +28,8 @@ options list. Link verb mechanics and target grammar live in
 | `related-to` (default) | self | Symmetric "see also"; no stronger claim fits. |
 | `cites` | `cited-by` | A references B (paper → paper, memory → paper, etc.). |
 | `supports` | `supported-by` | B is evidence for A. |
-| `contradicts` | `contradicted-by` | A disagrees with B. |
+| `disputes` | (none) | A appears to conflict with B — free to file, never blocks. The open-question edge for claim-graph disagreement (memory-vs-memory too). |
+| `contradicts` | `contradicted-by` | Claim-graph disagreement, **adjudication-derived only** — file `disputes`, not this. Still valid, unaffected vocabulary for `memory`↔`memory` (a different subsystem, memory reconsolidation). |
 | `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
 | `refines` | (none) | A is a higher-fidelity treatment of the same object as B — no inverse (advisory only). Two independent uses: a sharper/reworded taproot claim hub → the coarser claim hub it refines; a verify-tier (coadsorbed) reaction `pathway` → its neb-tier (parked) sibling on the same catalyst candidate. |
 | `conjunct-of` | (none) | Taproot only: A (an atomic claim hub) is one conjunct of B (the compound hub bundling it) — no inverse, advisory-only, written by `taproot.hub.apply_extraction`'s decomposition, not hand-authored. |
@@ -80,12 +81,17 @@ one paragraph. Lead targets with the ref/chunk **handle** (`pa<id>`,
 ```python
 link(kind="memory", id=89, target="pa5", rel="supports")
 
-link(kind="memory", id=89, target="pa6", rel="contradicts")
+link(kind="memory", id=89, target="pa6", rel="disputes")
 ```
 
-`supports` / `contradicts` carry an evidential claim — stronger than
-`cites`. Use when the source ref takes a position on the target's
-findings. Both work between any two ref kinds.
+`supports` / `disputes` carry an evidential claim — stronger than
+`cites`. Use `disputes`, never `contradicts`, when the source ref
+takes a position *against* the target's findings: `contradicts` is
+adjudication-derived (claim-graph disagreement, unbuilt Part 2) and
+not fileable this way — `disputes` is the free, non-blocking
+equivalent and works between any two ref kinds. (Exception:
+`memory`↔`memory` `contradicts` is a separate, unaffected subsystem —
+`precis-memory-help`.)
 
 ## Record provenance (A came from B)
 ## How do I link a summary to its source?

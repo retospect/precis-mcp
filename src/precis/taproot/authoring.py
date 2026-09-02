@@ -341,7 +341,9 @@ def seed_claim_hub(
     Raises:
         BadInput: a supporter's ``paper`` doesn't resolve (or resolves to a
             non-paper/patent ref), or its ``role`` isn't in
-            :data:`~precis.taproot.hub.HUB_ROLES`.
+            :data:`~precis.taproot.hub.HUB_ROLES`, or it names
+            ``contradicts`` (adjudication-derived only, migration 0151 —
+            file a ``disputes`` link instead).
     """
     claim = CanonicalClaim(sentence=sentence, scope=dict(scope or {}))
     hub_ref_id = mint_hub(store, claim, set_by=set_by)
@@ -367,8 +369,24 @@ def seed_claim_hub(
             if role not in HUB_ROLES:
                 raise BadInput(
                     f"invalid evidence role: {role!r}",
-                    options=sorted(HUB_ROLES),
-                    next=f"role must be one of {sorted(HUB_ROLES)}",
+                    options=sorted(HUB_ROLES - {"contradicts"}),
+                    next=f"role must be one of {sorted(HUB_ROLES - {'contradicts'})}",
+                )
+            if role == "contradicts":
+                # Migration 0150 split (D4): `contradicts` is
+                # adjudication-derived only — the role stays in HUB_ROLES
+                # for Part 2's programmatic use, but no agent-facing door
+                # accepts it. A passage running counter to the claim is a
+                # question, not a verdict: file a `disputes` link instead.
+                raise BadInput(
+                    "role 'contradicts' is adjudication-derived and cannot "
+                    "be filed at mint time",
+                    options=sorted(HUB_ROLES - {"contradicts"}),
+                    next=(
+                        "mint with establishes/corroborates supporters, then "
+                        "file the conflict as a non-blocking `disputes` link "
+                        "(link(rel='disputes'))"
+                    ),
                 )
             paper_ref_id = resolve_paper_ref_id(store, paper)
             src_ord = _grounding_chunk_ord(

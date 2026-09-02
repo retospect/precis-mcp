@@ -1423,3 +1423,40 @@ def test_split_edge_review_message_distinguishes_withheld_from_unverified(
         "on the original hub"
         for c in todo.calls
     )
+
+
+# ── _place_atom's new_contradicts repoint (D3 writer sweep) ────────────
+
+
+def test_place_atom_new_contradicts_files_disputes_not_contradicts(
+    store: Any,
+) -> None:
+    """``_place_atom``'s ``new_contradicts`` action must repoint to the
+    same non-blocking ``disputes`` link ``hub._mint_for_placement`` uses on
+    the live placement path (docs/backlog/disputes-edge-nonblocking-
+    disagreement.md D3) — this parallel, migration-only write door had
+    drifted and still wrote the adjudication-only ``contradicts`` edge
+    directly (gripe 293866's writer sweep)."""
+    from precis.taproot.apply_migrate import _place_atom
+    from precis.taproot.canon import Placement
+
+    opposite = mint_hub(store, _claim("The opposite claim."))
+    placement = Placement(
+        action="new_contradicts", contradicts_hub_ref_id=opposite, reason="test"
+    )
+    with store.tx() as conn:
+        atom_id = _place_atom(
+            store,
+            _claim("An atom that contradicts the opposite claim."),
+            placement,
+            set_by="system",
+            file_review=lambda _msg: None,
+            conn=conn,
+        )
+    assert atom_id is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (atom_id, opposite),
+        ).fetchone()
+    assert row is not None and row[0] == "disputes"

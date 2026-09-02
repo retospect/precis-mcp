@@ -7,7 +7,7 @@ answers:
   - how do I file a finding for a claims-vs-code mismatch?
 flavor: runbook
 status: active
-applies-to: search/get (kind='paper','web'); put (kind='finding','draft'); link (rel='contradicts')
+applies-to: search/get (kind='paper','web'); put (kind='finding','draft'); link (rel='disputes')
 ---
 
 # precis-paper-code-audit — compare a paper's claims against its codebase
@@ -49,11 +49,13 @@ put(
     body="paper states <X>; repo default is <Y>",
     cited_in="pc<id>",
 )
-link(kind="finding", id=<finding-id>, target="pa<id>", rel="contradicts")
+link(kind="finding", id=<finding-id>, target="pa<id>", rel="disputes")
 ```
 
 Every finding needs a real source chunk (`cited_in=`) — the paper
-passage the claim came from.
+passage the claim came from. Use `disputes`, not `contradicts` — the
+latter is adjudication-derived (claim-graph disagreement, unbuilt
+Part 2); `disputes` is free to file and never blocks the paper.
 
 ## Write one consolidated audit
 
@@ -70,7 +72,7 @@ grouped mismatches / omissions / ambiguous.
 get(kind="skill", id="precis-finding-help")  # register a mismatch
 get(
     kind="skill", id="precis-relations"
-)  # rel='contradicts' and the rest of the vocabulary
+)  # rel='disputes' and the rest of the vocabulary
 get(
     kind="skill", id="precis-replication"
 )  # check whether a result reproduces, not just matches code

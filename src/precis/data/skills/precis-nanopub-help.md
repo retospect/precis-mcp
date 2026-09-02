@@ -354,26 +354,37 @@ link framing it):
 
 Every gate above (mint and publish) checks *form* — well-formed,
 sourced, traceable. Whether anything else in the corpus actually
-**disagrees** with the claim is a different question, and today the
-only edge that carries that signal is `contradicts`, so filing one is
-expensive and rare.
+**disagrees** with the claim is a different question, and two relations
+carry that signal, split along who has decided
+(`docs/backlog/disputes-edge-nonblocking-disagreement.md`):
 
-**Know what it actually blocks.** Only a **paper- or patent-sourced**
-`contradicts` edge blocks the mint mechanically. `check_contradicts` reads
-`bundle.contradicts`, and that bundle is filtered twice: once to
-`EVIDENCE_SRC_KINDS` in `taproot/seniority.py::_fetch_evidence_rows`, then
-again to `("paper", "patent")` by `nanopub/evidence.py::load_bundle`'s
-`_source`. So a **hub- or finding-sourced** dispute never fires the gate —
-deliberately, so the opposing hub isn't rendered as a "contradictor" in the
-evidence table — and an `edgar`- or `datasheet`-sourced one doesn't either,
-which is *not* deliberate (`attach_evidence` accepts those kinds). Both
-surface in the overview's `disputed` bucket and hold at human review instead.
-Treat any non-paper/patent dispute as needing a person, not as blocked.
+- **`disputes`** — free to file (agent, human, or an LLM judge), **never
+  blocks**, from any source kind or direction. "These two claims appear
+  to conflict; someone should look." File one whenever you spot a
+  possible conflict — a duplicate, a scope mismatch, a unit error, a
+  genuine contradiction — via `link(rel='disputes', ...)` between the
+  two claim-hub findings. It renders as a visible, non-red "open
+  question" on the claim page and in the overview's
+  `open_disputes_count` — a question, not a demerit against either hub.
+- **`contradicts`** — adjudication-only (Part 2 of that item; not yet
+  built). **Blocks the mint mechanically**, and does so unconditionally:
+  `check_contradicts` reads `evidence.live_contradicts`, which counts
+  ANY live `contradicts` edge touching the hub, either direction, any
+  counterpart ref kind — the source-kind/direction filtering an earlier
+  revision of this doc described is gone; adjudication is the warrant
+  now, so there is no narrower reading of "blocks." No code path mints
+  a `contradicts` edge today — the only route to one is Part 2's
+  (unbuilt) adjudication workflow, so a live claim-graph `contradicts`
+  row should be rare and always traceable to an adjudication decision.
 
-A suspected conflict that isn't a clean same-system, same-conditions
-disagreement — a possible duplicate, a scope mismatch, a unit error —
-has no free non-blocking way to be filed today. Raise it to a human
-rather than either staying silent or firing `contradicts` on a hunch.
+**When in doubt, file `disputes`.** It is the free, always-available,
+never-wrong move for "I think these disagree" — it can never mis-block
+a claim, and a suspected conflict you can't confidently classify (is
+this the same system? same conditions? a real contradiction or a units
+slip?) is exactly what it exists for. Never file `contradicts` by
+hand — it only ever derives from adjudication (Part 2); filing one
+yourself is against the contract regardless of what any one write door
+happens to check.
 
 ## Triage a gate refusal (small-model-safe: classify and file, never fix)
 

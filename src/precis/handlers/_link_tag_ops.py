@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast, get_args
 
 from precis.errors import BadInput
-from precis.handlers._link_target import parse_link_target
+from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.store import Store, Tag
 from precis.store.types import Relation
 
@@ -127,6 +127,100 @@ def validate_link_mode(mode: str) -> str:
     return mode
 
 
+def _endpoint_kinds(store: Store, a_ref_id: int, b_ref_id: int) -> dict[int, str]:
+    """``refs.kind`` for two ref ids, in one round trip."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, kind FROM refs WHERE ref_id = ANY(%s)",
+            ([a_ref_id, b_ref_id],),
+        ).fetchall()
+    return {int(r[0]): str(r[1]) for r in rows}
+
+
+def _both_live_claim_hubs(store: Store, a_ref_id: int, b_ref_id: int) -> bool:
+    """True iff both refs are live ``TAPROOT:claim`` findings.
+
+    Local import: :mod:`precis.taproot.hub` imports
+    :func:`validate_relation` from this module at module scope, so a
+    top-level import here would be circular.
+    """
+    from precis.taproot.hub import _is_claim_hub
+
+    with store.pool.connection() as conn:
+        return _is_claim_hub(a_ref_id, conn=conn) and _is_claim_hub(b_ref_id, conn=conn)
+
+
+def guard_and_route_contradicts_disputes(
+    store: Store,
+    src_ref_id: int,
+    target: LinkTarget,
+    relation: Relation,
+) -> int | None:
+    """Enforce the ``contradicts``/``disputes`` write-door policy for an
+    add-mode link, and delegate a live claim-pair ``disputes`` to
+    :func:`precis.taproot.hub.link_claims`.
+
+    Shared by every add-mode link door — the generic ``link()`` handlers
+    (:func:`apply_link_ops`, ``NumericRefHandler.link``) and any future
+    one — so the policy lives in exactly one place
+    (docs/backlog/disputes-edge-nonblocking-disagreement.md D1-D4; a
+    second copy of this guard is exactly how the gap this function
+    closes was introduced).
+
+    Returns ``None`` when the caller should proceed with its own plain
+    ``store.add_link`` write. Returns the number of links added (0 or 1)
+    when this helper already performed the write — the claim-pair
+    ``disputes`` delegation.
+
+    Two relations get extra routing on the add path:
+
+    * ``contradicts`` — claim-graph ``contradicts`` is adjudication-derived
+      only (Part 2); no agent-facing door can file it manually. The one
+      exception is ``memory``<->``memory`` (a different subsystem, D2),
+      which keeps working via the caller's plain write (this function
+      returns ``None`` for that pair). Any other endpoint pair raises
+      ``BadInput`` pointing at ``disputes``.
+    * ``disputes`` — between two live ``TAPROOT:claim`` findings at
+      ref-level, this delegates to :func:`precis.taproot.hub.link_claims`
+      (the claim-pair door, D4) instead of a plain ``add_link``: it's
+      idempotent and enforces both endpoints are live claim hubs. Any
+      other endpoint shape (paper->hub, a chunk-position target, etc.)
+      returns ``None`` so the caller falls through to its plain write —
+      claim-hub links are ref-level only, and a non-claim-hub ``disputes``
+      edge (e.g. a review note on a finding) is exactly what
+      :func:`precis.taproot.hub.reattach_as_disputes` also writes plainly.
+    """
+    if relation == "contradicts":
+        kinds = _endpoint_kinds(store, src_ref_id, target.ref_id)
+        if kinds.get(src_ref_id) != "memory" or kinds.get(target.ref_id) != "memory":
+            raise BadInput(
+                "claim-graph 'contradicts' is adjudication-derived and "
+                "cannot be filed manually",
+                next=(
+                    "file rel='disputes' instead — free to file, "
+                    "non-blocking (memory<->memory contradicts is "
+                    "unaffected)"
+                ),
+            )
+        return None
+    if (
+        relation == "disputes"
+        and target.pos is None
+        and _both_live_claim_hubs(store, src_ref_id, target.ref_id)
+    ):
+        from precis.taproot.hub import link_claims
+
+        added = link_claims(
+            store,
+            from_hub_ref_id=src_ref_id,
+            to_hub_ref_id=target.ref_id,
+            relation="disputes",
+            set_by="agent",
+        )
+        return 1 if added else 0
+    return None
+
+
 def apply_link_ops(
     store: Store,
     src_ref_id: int,
@@ -152,6 +246,11 @@ def apply_link_ops(
     ``links.meta['note']``, ``merge_meta=True`` so re-linking updates
     it). ``merge_meta`` defaults to ``False`` — every other caller of
     this function keeps today's no-op-on-conflict behaviour untouched.
+
+    The ``contradicts``/``disputes`` add-path guard and claim-pair
+    delegation (docs/backlog/disputes-edge-nonblocking-disagreement.md
+    D1-D4) live in :func:`guard_and_route_contradicts_disputes`, shared
+    with every other add-mode link door.
     """
     relation = validate_relation(rel, store=store)
 
@@ -160,15 +259,21 @@ def apply_link_ops(
 
     if link is not None:
         target = parse_link_target(link, store=store)
-        store.add_link(
-            src_ref_id=src_ref_id,
-            dst_ref_id=target.ref_id,
-            dst_pos=target.pos,
-            relation=relation,
-            meta=meta,
-            merge_meta=merge_meta,
+        routed = guard_and_route_contradicts_disputes(
+            store, src_ref_id, target, relation
         )
-        n_added = 1
+        if routed is not None:
+            n_added = routed
+        else:
+            store.add_link(
+                src_ref_id=src_ref_id,
+                dst_ref_id=target.ref_id,
+                dst_pos=target.pos,
+                relation=relation,
+                meta=meta,
+                merge_meta=merge_meta,
+            )
+            n_added = 1
 
     if unlink is not None:
         target = parse_link_target(unlink, store=store)
@@ -327,6 +432,7 @@ __all__ = [
     "apply_link_ops",
     "apply_tag_ops",
     "format_link_tag_ack",
+    "guard_and_route_contradicts_disputes",
     "require_link_target",
     "require_tag_ops",
     "validate_link_mode",

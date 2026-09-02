@@ -76,12 +76,22 @@ def render_nanopub_view(store: Store, ref: Ref) -> Response:
                 "mint will require a re-grounded verbatim quote + unique "
                 "snip per passage (no source, no atom)"
             )
-    if bundle.contradicts:
-        ids = ", ".join(str(s.ref_id) for s in bundle.contradicts)
+    # D1 gate parity (disputes-edge split, migration 0151): blocking =
+    # any live `contradicts` edge touching the hub (adjudication-derived,
+    # any counterpart kind, either direction — same read as
+    # gates.check_contradicts); a `disputes` edge is a non-blocking open
+    # question and must never render as a block.
+    contradicted = evidence.live_contradicts(store, ref.id)
+    if contradicted:
+        ids = ", ".join(f"{e.kind} {e.ref_id} ({e.direction})" for e in contradicted)
         notes.append(
-            f"UNMINTABLE while disputed: live contradicts edge(s) from "
-            f"ref(s) {ids} — adjudicate by artifacts, never by edit"
+            f"UNMINTABLE while contradicted: live contradicts edge(s) "
+            f"touching {ids} — resolved only through adjudication"
         )
+    disputes = evidence.open_disputes(store, ref.id)
+    if disputes:
+        ids = ", ".join(f"{e.kind} {e.ref_id}" for e in disputes)
+        notes.append(f"open question(s), non-blocking: disputes edge(s) with {ids}")
 
     body = assemble.draft_trig(inp)
     note_block = "".join(f"# {line}\n" for line in notes)

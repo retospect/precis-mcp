@@ -463,6 +463,30 @@ def test_seed_claim_hub_rejects_non_paper_supporter(store: Any) -> None:
         )
 
 
+def test_seed_claim_hub_rejects_contradicts_supporter_role(store: Any) -> None:
+    # Migration 0150 split (D4): `contradicts` is adjudication-derived —
+    # the mint-time supporters= door must refuse it like every other
+    # agent-facing door, and must not mint a half-attached hub first.
+    paper = seed_ref(store, title="a contrary paper", kind="paper")
+
+    with pytest.raises(BadInput, match="adjudication-derived"):
+        seed_claim_hub(
+            store,
+            sentence="A claim whose supporter tries to pre-contradict it.",
+            scope={},
+            supporters=[
+                {"paper": paper, "role": "contradicts", "source_handle": "pc9"}
+            ],
+        )
+    # No contradicts edge landed from the refused supporter.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND relation = 'contradicts'",
+            (paper,),
+        ).fetchall()
+    assert rows == []
+
+
 def test_seed_claim_hub_accepts_patent_supporter(store: Any) -> None:
     patent = seed_ref(store, title="A patent", kind="patent")
 

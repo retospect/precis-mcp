@@ -36,6 +36,7 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._link_tag_ops import (
+    guard_and_route_contradicts_disputes,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
@@ -1202,12 +1203,21 @@ class NumericRefHandler(Handler):
         # mypy: link_target and relation are guaranteed non-None below.
         assert link_target is not None and relation is not None
         if mode == "add":
-            self.store.add_link(
-                src_ref_id=ref_id,
-                dst_ref_id=link_target.ref_id,
-                dst_pos=link_target.pos,
-                relation=relation,
+            # ``contradicts``/``disputes`` write-door policy (D1-D4) —
+            # shared with ``apply_link_ops`` so the two generic-link doors
+            # never drift (docs/backlog/disputes-edge-nonblocking-
+            # disagreement.md). ``routed`` is non-None only for the
+            # claim-pair ``disputes`` delegation, which already wrote.
+            routed = guard_and_route_contradicts_disputes(
+                self.store, ref_id, link_target, relation
             )
+            if routed is None:
+                self.store.add_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=link_target.ref_id,
+                    dst_pos=link_target.pos,
+                    relation=relation,
+                )
             return Response(body=f"linked {self._sense()} id={ref_id} → {target}")
         # mode == "remove"
         n_removed = self.store.remove_link(

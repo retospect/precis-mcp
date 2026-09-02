@@ -622,8 +622,12 @@ def _place_atom(
       holders without first being one of its ``conjunct-of`` atoms.
     * ``"new"``/``"new_contradicts"`` mints via
       :func:`~precis.taproot.hub.mint_hub` (no ``paper_ref_id``);
-      ``new_contradicts`` also links the fresh hub ``contradicts`` its
-      opposite-claim candidate.
+      ``new_contradicts`` also links the fresh hub ``disputes`` its
+      opposite-claim candidate — same repoint
+      :func:`~precis.taproot.hub._mint_for_placement` applies for the live
+      placement path (docs/backlog/disputes-edge-nonblocking-disagreement.md
+      D3): an unreviewed MEDIUM-tier LLM verdict is never itself the
+      warrant for the adjudication-only ``contradicts`` edge.
     * ``"needs_review"`` files the review and mints nothing.
 
     Returns the atom's hub ref_id, or ``None`` on any needs_review path.
@@ -649,10 +653,17 @@ def _place_atom(
                 raise BadInput(
                     "new_contradicts placement has no contradicts_hub_ref_id"
                 )
+            # Hub <-> hub: the judge's verdict files a non-blocking
+            # `disputes` open question, never the adjudication-only
+            # `contradicts` (docs/backlog/disputes-edge-nonblocking-
+            # disagreement.md D3) — same repoint
+            # `hub._mint_for_placement` applies on the live placement path;
+            # an unreviewed MEDIUM-tier LLM call is never itself the
+            # warrant for blocking publication.
             store.add_link(
                 src_ref_id=hub_id,
                 dst_ref_id=placement.contradicts_hub_ref_id,
-                relation=validate_relation("contradicts", store=store),
+                relation=validate_relation("disputes", store=store),
                 set_by=set_by,
                 conn=conn,
             )

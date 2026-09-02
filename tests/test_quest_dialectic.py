@@ -254,7 +254,10 @@ class TestEvidenceEdges:
         rows = _links(store, fid, "supports")
         assert (paper_id, fid) in rows
 
-    def test_counter_citing_a_handle_mints_a_contradicts_link(self, store: Any) -> None:
+    def test_counter_citing_a_handle_mints_a_disputes_link(self, store: Any) -> None:
+        # `disputes`, not `contradicts` (migration 0151): a dialectic
+        # counter is a question, not an adjudicated conflict — it must
+        # never hard-block the hypothesis's own nanopub mint.
         qid = _mk_quest(store, "A striving")
         fid = _mk_finding(store)
         paper_id = seed_ref(store, title="a contrary paper", kind="paper")
@@ -267,8 +270,9 @@ class TestEvidenceEdges:
                 "text": f"[pa{paper_id}] found the opposite",
             },
         )
-        rows = _links(store, fid, "contradicts")
+        rows = _links(store, fid, "disputes")
         assert (paper_id, fid) in rows
+        assert (paper_id, fid) not in _links(store, fid, "contradicts")
 
     def test_reapplying_a_cited_op_is_idempotent(self, store: Any) -> None:
         # a distinct second op (different text) still cites the SAME paper —

@@ -260,6 +260,19 @@ Relation = Literal[
     # `links_for(direction='both')`. Keep in sync with the `relations`
     # seed in 0115_patent_family_relation.sql.
     "same-family-as",
+    # Non-blocking disagreement — migration 0151 (Part 1 of the
+    # `disputes`/`contradicts` split). `disputes` (source artifact →
+    # the artifact it appears to conflict with): a free-to-file open
+    # question — never blocks publication, resolved only by adjudication
+    # (Part 2), which alone may derive a blocking `contradicts`.
+    # Claim-hub↔claim-hub pairs write through `taproot.hub.link_claims`;
+    # other shapes (e.g. a paper passage vs a hub, filed by regrounding)
+    # use the generic door. Asymmetric, NO inverse (the `refines`
+    # convention): read both directions with direct src/dst SQL. After
+    # 0150, `contradicts` is adjudication-derived only in the claim
+    # graph (memory↔memory keeps its own use); write doors reject it.
+    # Keep in sync with the `relations` seed in 0151_disputes_relation.sql.
+    "disputes",
     # Quest dialectic measurement ruling — migration 0142. `tests`
     # (measurement pathway → hypothesis finding): the source computed
     # pathway executed the target hypothesis's pre-registered

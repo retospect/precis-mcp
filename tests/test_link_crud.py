@@ -573,7 +573,10 @@ class TestMemoryHandlerLink:
         _seed_paper(store)
         m = memory_handler.put(text="m", link="paper:wang2020state", rel="cites")
         new_id = id_of(m.body)
-        memory_handler.link(id=new_id, target="paper:wang2020state", rel="contradicts")
+        # memory→paper is claim-graph, so `contradicts` is refused at the
+        # door since migration 0151 (only memory↔memory keeps it) —
+        # `disputes` is the fileable disagreement edge here.
+        memory_handler.link(id=new_id, target="paper:wang2020state", rel="disputes")
         assert len(store.links_for(new_id, direction="out")) == 2
 
         memory_handler.link(
@@ -581,7 +584,7 @@ class TestMemoryHandlerLink:
         )
         remaining = store.links_for(new_id, direction="out")
         assert len(remaining) == 1
-        assert remaining[0].relation == "contradicts"
+        assert remaining[0].relation == "disputes"
 
     def test_unlink_without_rel_removes_all(
         self, memory_handler: MemoryHandler, store: Store
@@ -589,7 +592,7 @@ class TestMemoryHandlerLink:
         _seed_paper(store)
         m = memory_handler.put(text="m", link="paper:wang2020state", rel="cites")
         new_id = id_of(m.body)
-        memory_handler.link(id=new_id, target="paper:wang2020state", rel="contradicts")
+        memory_handler.link(id=new_id, target="paper:wang2020state", rel="disputes")
 
         memory_handler.link(id=new_id, target="paper:wang2020state", mode="remove")
         assert store.links_for(new_id, direction="out") == []

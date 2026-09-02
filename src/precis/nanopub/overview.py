@@ -44,10 +44,16 @@ class HubOverviewRow:
     trusty_uri: str | None
     batch_id: int | None
     updated_at: datetime | None
-    #: Live inbound `contradicts` edge exists → blocked, own bucket.
+    #: A live adjudicated `contradicts` edge touches this hub, either
+    #: direction (D1, docs/backlog/disputes-edge-nonblocking-
+    #: disagreement.md) → blocked, own bucket. Despite the name, this is
+    #: NOT the non-blocking open-question count below — that's
+    #: `open_disputes_count`. Kept as `disputed` (not renamed) because a
+    #: positional constructor elsewhere in the tree depends on field
+    #: order; see that constructor's own note.
     disputed: bool
-    #: Oldest live contradicts edge (bucket sort key — disputes must
-    #: not rot invisibly).
+    #: Oldest live `contradicts` edge touching this hub, either direction
+    #: (bucket sort key — a blocking edge must not rot invisibly).
     disputed_since: datetime | None
     #: Inbound evidence edges neither verified nor signed off.
     withheld_count: int
@@ -75,6 +81,12 @@ class HubOverviewRow:
     #: Appended last (rather than kept alongside `title`) so a positional
     #: constructor elsewhere in the tree keeps working unmodified.
     tagline: str | None = None
+    #: Live `disputes` edges touching this hub, either direction — the
+    #: non-blocking open-question count (D1, migration 0151). Never a
+    #: demerit, never a block; distinct from `disputed`/`disputed_since`
+    #: above, which count the adjudicated, blocking `contradicts` shape.
+    #: Appended last for the same reason as `tagline` — see its note.
+    open_disputes_count: int = 0
 
     @property
     def drifted(self) -> bool:
@@ -150,16 +162,22 @@ def hub_tree(store: Store) -> list[HubTreeNode]:
         # ``contradicts`` edge may come from another claim hub — the same
         # shape the ``disputed`` flag counts — so finding-kind sources are
         # kept for that relation only (the "◆ blocked" badge must never
-        # appear with its cause invisible).
+        # appear with its cause invisible). ``disputes`` gets the same
+        # exemption: a `disputes` edge is at least as likely to come from
+        # another claim hub (D1's open-question set) and must show up as
+        # an evidence leaf too, so the reviewer sees WHAT it's disputed by,
+        # not just that it is.
         inbound = conn.execute(
             """
             SELECT l.dst_ref_id, l.src_ref_id, l.relation, p.title, p.kind
               FROM links l
               JOIN refs p ON p.ref_id = l.src_ref_id
                          AND p.retired_at IS NULL
-                         AND (p.kind != 'finding' OR l.relation = 'contradicts')
+                         AND (p.kind != 'finding'
+                              OR l.relation IN ('contradicts', 'disputes'))
              WHERE l.dst_ref_id = ANY(%(ids)s)
-               AND l.relation IN ('establishes', 'corroborates', 'contradicts')
+               AND l.relation IN ('establishes', 'corroborates', 'contradicts',
+                                   'disputes')
             """,
             {"ids": ids},
         ).fetchall()
@@ -312,19 +330,38 @@ def hub_rows(
                    COALESCE(w.n, 0) AS withheld_count,
                    COALESCE(w.v, 0) AS verified_count,
                    COALESCE(w.s, 0) AS supported_count,
-                   r.meta->>'tagline' AS tagline
+                   r.meta->>'tagline' AS tagline,
+                   COALESCE(od.n, 0) AS open_disputes_count
               FROM refs r
               LEFT JOIN nanopub_publish p
                      ON p.claim_ref_id = r.ref_id AND p.state != ALL(%(terminal)s)
+              -- Live `contradicts` edges touching this hub, either
+              -- direction (D1: the adjudicated pair blocks regardless of
+              -- which side is src/dst) — the counterpart ref must be live
+              -- of ANY kind, not filtered to `pr.kind` at all.
               LEFT JOIN LATERAL (
                     SELECT MIN(l.created_at) AS since
                       FROM links l
-                      JOIN refs pr ON pr.ref_id = l.src_ref_id
-                                  AND pr.retired_at IS NULL
-                     WHERE l.dst_ref_id = r.ref_id
+                      JOIN refs pr
+                        ON pr.ref_id = CASE WHEN l.dst_ref_id = r.ref_id
+                                             THEN l.src_ref_id ELSE l.dst_ref_id END
+                       AND pr.retired_at IS NULL
+                     WHERE (l.dst_ref_id = r.ref_id OR l.src_ref_id = r.ref_id)
                        AND l.relation = 'contradicts'
                     HAVING COUNT(*) > 0
               ) d ON TRUE
+              -- Live `disputes` edges touching this hub, either direction
+              -- — the non-blocking open-question count (migration 0151).
+              LEFT JOIN LATERAL (
+                    SELECT COUNT(*) AS n
+                      FROM links l
+                      JOIN refs pr
+                        ON pr.ref_id = CASE WHEN l.dst_ref_id = r.ref_id
+                                             THEN l.src_ref_id ELSE l.dst_ref_id END
+                       AND pr.retired_at IS NULL
+                     WHERE (l.dst_ref_id = r.ref_id OR l.src_ref_id = r.ref_id)
+                       AND l.relation = 'disputes'
+              ) od ON TRUE
               LEFT JOIN LATERAL (
                     SELECT COUNT(*) FILTER (
                              WHERE l.meta->>'support' IS NULL
@@ -373,6 +410,7 @@ def hub_rows(
             verified_count=int(r[11]),
             supported_count=int(r[12]),
             tagline=r[13],
+            open_disputes_count=int(r[14]),
         )
         for r in rows
     ]

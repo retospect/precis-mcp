@@ -8,8 +8,13 @@ overlay on ``finding``/``ref_tags``/``links`` — own schema is
 (0094, no inverse — hubs read evidence via ``links_for(direction='in')``),
 ``refines`` (0100), ``conjunct-of`` (0126, atom -> compound, asymmetric, no
 inverse), ``motivated-by`` (0135, hypothesis -> the provoking artifact, same
-no-evidence-flow contract); ``corroborates``/``contradicts`` reuse existing
-slugs, endpoint kinds disambiguate. A hub is **atomic** (evidence-bearing),
+no-evidence-flow contract), ``disputes`` (0151, hub<->hub or paper->hub —
+"appears to conflict", free to file, never blocks, no evidence flow;
+``docs/backlog/disputes-edge-nonblocking-disagreement.md``);
+``corroborates``/``contradicts`` reuse existing slugs, endpoint kinds
+disambiguate — ``contradicts`` is adjudication-derived only (Part 2 of
+that same item, not built) and not itself fileable through
+:func:`.hub.link_claims`. A hub is **atomic** (evidence-bearing),
 **compound** (an un-decomposable bundling sentence, no direct evidence —
 :mod:`.hub`), or **hypothesis** (evidence-free by type — carries motivation +
 a discriminating experiment instead, ``refs.meta.artifact_type``, minted via
@@ -35,14 +40,16 @@ weigh -> oppose -> adjudicate -> gate -> publish:
 | 4 | Ground — which passage supports it | live, per-passage | |
 | 5 | Widen — who else in the corpus speaks to this? | built, dark | ``workers/hub_refine.py`` |
 | 6 | Weigh — how much independent support? | display-only, gates nothing | ``handlers/_finding_evidence.py`` union-find count |
-| 7 | Oppose — what conflicts? | live on both judge paths: writes a ``contradicts`` edge rather than dropping the old one | ``workers/_chase_llm.py::_verify_support_with_caveats`` -> ``hub_refine._attach_contradicts`` |
+| 7 | Oppose — what conflicts? | live on both judge paths: files a non-blocking ``disputes`` link rather than dropping the old edge (docs/backlog/disputes-edge-nonblocking-disagreement.md D3) | ``workers/_chase_llm.py::_verify_support_with_caveats`` -> ``hub_refine._attach_disputes`` |
 | 8 | Adjudicate — is the conflict real, who wins? | **absent** | |
 | 9 | Gate — publishable? | live, admissibility only | |
 | 10 | Publish | :mod:`precis.nanopub`'s layer entirely | |
 
 Two structural cautions. **The ratchet**: every stage promotes; nothing
-demoted until a new ``contradicts`` edge triggers :mod:`precis.nanopub.demote`
-(state rules owned there) or ``chase_trigger``'s ``TAPROOT_DUE`` re-open
+demoted until a new ``disputes`` filing (Part 1) or an adjudicated
+``contradicts`` edge (Part 2, not built) triggers
+:mod:`precis.nanopub.demote` (state rules owned there) or
+``chase_trigger``'s ``TAPROOT_DUE`` re-open
 marking (dark) — both re-open, neither adjudicates (stage 8 is still
 absent, so a re-opened claim stays unblessed). **Scale changes the risk of
 a wrong judge**: at ~1.5k hubs a
@@ -135,7 +142,8 @@ them into ``service prio``. Enable a service producer on **one host** —
 Authoring doors (all through :mod:`.hub`): ``put(kind='finding',
 supporters=[…])`` / ``precis taproot mint`` (:mod:`.authoring`);
 ``link(kind='finding', id='fi<hub>', rel=…)`` onto an existing hub;
-``rel='refines'`` mints claim->claim links (advisory, no evidence flow);
+``rel='refines'``/``rel='disputes'`` mint claim->claim links (advisory,
+no evidence flow — ``disputes`` never blocks, free to file by anyone);
 ``precis taproot backfill`` / the ``taproot_backfill`` job (:mod:`.backfill`,
 runs on the cluster worker, never in the MCP handler).
 

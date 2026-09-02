@@ -47,12 +47,15 @@ alongside `established` chase findings.
 
 Papers attach to a hub as one of three typed edges (ADR 0073):
 `establishes` (originator), `corroborates`, `contradicts`. A live
-`contradicts` edge from a **paper or patent** blocks the hub's nanopub mint
-until adjudicated (a hub-, finding-, edgar- or datasheet-sourced dispute
-does not fire the gate — it holds at human review instead;
-[[precis-nanopub-help]] has the scope) —
-attach deliberately, never as a softer
-"partially disagrees". The originator (★) is **derived at read time**,
+`contradicts` edge touching the hub blocks its nanopub mint, from ANY
+counterpart ref kind and either direction — post-split (`docs/backlog/
+disputes-edge-nonblocking-disagreement.md`), source-kind no longer
+filters the gate, since `contradicts` is now adjudication-derived only
+(Part 2, not built) and is itself the warrant for blocking. A milder,
+non-blocking disagreement — an unadjudicated hunch, a review critique, a
+possible scope mismatch — files `disputes` instead, which never fires
+the gate regardless of source kind ([[precis-nanopub-help]] has the
+scope). The originator (★) is **derived at read time**,
 not stored — whichever supporter(s) the *other* supporters' citations
 converge on (`src/precis/taproot/seniority.py::derive_evidence`, over
 the held `cites` graph). No intra-supporter citation edge held → every

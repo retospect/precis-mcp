@@ -688,10 +688,13 @@ def test_place_new_contradicts_on_confident_contradiction() -> None:
 def test_place_low_confidence_contradiction_mints_unlinked() -> None:
     """A sub-threshold ``contradicts`` must NOT write the edge.
 
-    ``contradicts`` blocks publication at the nanopub mint gates, so acting
-    on an unconfirmed verdict suppresses another author's claim. The hub is
-    still minted — the claim is not lost — but it lands unlinked, with the
-    suspicion carried in ``reason`` for a human to pick up.
+    The edge ``new_contradicts`` would file is a non-blocking ``disputes``
+    open question, not the adjudication-only ``contradicts``
+    (docs/backlog/disputes-edge-nonblocking-disagreement.md D3) — but an
+    unconfirmed single MEDIUM-tier verdict is still not the warrant for
+    even a free write. The hub is still minted — the claim is not lost —
+    but it lands unlinked, with the suspicion carried in ``reason`` for a
+    human (or the systematic filer) to pick up.
     """
     judged = [(_CAND, _verdict("contradicts", 0.84, "maybe opposite"))]
     result = place(_CLAIM, judged)

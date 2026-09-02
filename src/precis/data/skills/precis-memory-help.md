@@ -133,12 +133,16 @@ After the fact, use `link()`:
 link(kind="memory", id=73, target="pa<id>", rel="related-to")  # ref handle
 
 link(
-    kind="memory", id=73, target="pa<id>", rel="contradicts"
-)  # the chen2021critique handle
+    kind="memory", id=73, target="pa<id>", rel="disputes"
+)  # the chen2021critique handle — disputes, not contradicts: the
+   # latter is adjudication-derived claim-graph disagreement (unbuilt
+   # Part 2); memory-vs-paper disagreement files disputes, free and
+   # non-blocking. (memory<->memory contradicts stays valid — a
+   # separate, unaffected subsystem, memory reconsolidation.)
 ```
 
 Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`).
-Relation vocabulary (`cites`, `contradicts`, `supports`,
+Relation vocabulary (`cites`, `disputes`, `contradicts`, `supports`,
 `derived-from`, …) lives in `precis-relations`.
 
 ## Name another ref in the text — it auto-links

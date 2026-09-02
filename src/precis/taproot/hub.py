@@ -12,7 +12,7 @@ elsewhere bypasses the ``TAPROOT:claim`` guards and is a defect.
 Six write functions, each documented on its own: :func:`mint_hub`,
 :func:`attach_evidence`, :func:`apply_placement`, :func:`link_claims`,
 :func:`apply_extraction`, :func:`merge_hubs`. Plus the reground-era removal
-door — :func:`remove_evidence` / :func:`reattach_as_contradicts`, logged via
+door — :func:`remove_evidence` / :func:`reattach_as_disputes`, logged via
 :func:`append_reground_log` and guarded by :class:`WouldStrandHub`.
 
 Callers: ``workers/chase.py::_taproot_bridge`` (forward bridge),
@@ -61,13 +61,18 @@ HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradic
 
 #: Claim→claim advisory link relations a hub may carry to ANOTHER hub
 #: (migration 0100, taproot evidence relations amendment; migration 0126,
-#: taproot-atomic-claims). ``refines`` = "source hub is a sharper/reworded
-#: version of the target hub"; ``conjunct-of`` = "source hub is one atomic
-#: conjunct of the target compound hub" (docs/backlog/taproot-atomic-claims.md)
-#: — both link-don't-merge, NO evidence flow (each hub keeps its own
-#: paper→hub edges). Written through :func:`link_claims` (the single write
-#: door), distinct from the paper→hub evidence edges of :data:`HUB_ROLES`.
-CLAIM_LINK_RELATIONS: frozenset[str] = frozenset({"refines", "conjunct-of"})
+#: taproot-atomic-claims; migration 0151, disputes/contradicts split).
+#: ``refines`` = "source hub is a sharper/reworded version of the target
+#: hub"; ``conjunct-of`` = "source hub is one atomic conjunct of the target
+#: compound hub" (docs/backlog/taproot-atomic-claims.md); ``disputes`` =
+#: "source hub appears to conflict with the target hub — non-blocking open
+#: question, free to file" (docs/backlog/disputes-edge-nonblocking-disagreement.md
+#: D3/D4); ``contradicts`` is adjudication-derived (Part 2) and NOT fileable
+#: through this door. All link-don't-merge, NO evidence flow (each hub keeps
+#: its own paper→hub edges). Written through :func:`link_claims` (the single
+#: write door), distinct from the paper→hub evidence edges of
+#: :data:`HUB_ROLES`.
+CLAIM_LINK_RELATIONS: frozenset[str] = frozenset({"refines", "conjunct-of", "disputes"})
 
 #: The default role :func:`apply_placement` attaches with. ``corroborates`` is
 #: the *safe* assumption — never falsely claim a paper is the originator.
@@ -770,7 +775,7 @@ def attach_evidence(
 
 #: ``finding.meta`` key carrying a claim hub's reground audit trail
 #: (docs/backlog/taproot-reground.md stage 2): an append-only list of
-#: :func:`reground_log_entry` records — one per removal, contradicts
+#: :func:`reground_log_entry` records — one per removal, disputes
 #: re-attach, or deliberately *withheld* action. Read by the claim page /
 #: any human asking "why is this edge gone?".
 META_REGROUND_LOG = "reground_log"
@@ -850,7 +855,7 @@ def reground_log_entry(
     / ``sha``; the structured ``src_ref_id``/``src_chunk_id``/``relation``
     triple rides along so the log is queryable without re-parsing
     ``edge``, and ``action`` distinguishes what actually happened
-    (``removed`` / ``reattached-contradicts`` / ``added`` / ``withheld``)
+    (``removed`` / ``reattached-disputes`` / ``added`` / ``withheld``)
     from what was judged.
     """
     edge = handle or (
@@ -972,7 +977,7 @@ def remove_evidence(
     ``log=True`` (default) appends a :func:`reground_log_entry` to
     :data:`META_REGROUND_LOG` — a hard delete that records nothing is
     exactly the un-auditable removal this door exists to prevent; only a
-    caller writing its own richer entry (the contradicts re-attach below)
+    caller writing its own richer entry (the disputes re-attach below)
     passes ``log=False``.
     """
     if role not in HUB_ROLES:
@@ -1041,7 +1046,7 @@ def remove_evidence(
         return _do(c)
 
 
-def reattach_as_contradicts(
+def reattach_as_disputes(
     store: Store,
     *,
     hub_ref_id: int,
@@ -1055,44 +1060,57 @@ def reattach_as_contradicts(
     set_by: str = "system",
     conn: Any = None,
 ) -> bool:
-    """Convert one evidence edge from ``from_role`` to ``contradicts``.
-    Returns ``True`` when the ``contradicts`` edge is committed.
+    """Convert one evidence edge from ``from_role`` to a non-blocking
+    ``disputes`` open question. Returns ``True`` when the ``disputes`` edge
+    is committed.
 
-    The contradictor path (taproot evidence relations, ADR 0073): a passage
+    The contradictor path (taproot evidence relations, ADR 0073; repointed
+    by docs/backlog/disputes-edge-nonblocking-disagreement.md D3): a passage
     with primary content running counter to the claim is the most
     informative edge a hub can hold — it must never be plain-dropped by the
-    prune stage. This door **adds first**: the ``contradicts`` edge goes in
-    through :func:`attach_evidence` and is read back from ``links`` (never
-    trusting the write's return); only a confirmed re-attach releases the
-    old edge's removal. A missed read-back leaves the old edge and returns
-    ``False``.
+    prune stage. But an LLM judge's verdict is not an adjudication
+    (``contradicts`` is Part 2 only, adjudication-derived), so this door no
+    longer writes a :data:`HUB_ROLES` evidence edge at all: it writes a
+    **plain** ``source --disputes--> hub`` link (:func:`store.add_link`,
+    not :func:`attach_evidence`) — the same non-blocking-question shape a
+    claim-pair ``disputes`` edge carries, just paper→hub instead of
+    hub→hub. This door **adds first**: the ``disputes`` edge goes in and is
+    read back from ``links`` directly (never trusting the write's return,
+    and never via :func:`live_evidence_handles` — ``disputes`` is not a
+    :data:`HUB_ROLES` relation, so that reader can't see it); only a
+    confirmed re-attach releases the old edge's removal. A missed read-back
+    leaves the old edge and returns ``False``.
 
     Both halves run in ONE transaction — unlike the applier's
     cross-transaction add->prune pairing, these two writes are two faces of
     one decision: rolling them back together can never strand the hub,
     whereas committing the removal without the re-attach can.
-    ``allow_last=True`` on the removal is therefore safe and necessary: the
-    replacement is already in the same transaction.
+    ``allow_last=True`` on the removal is therefore safe and necessary
+    *and* semantically correct here: the ``disputes`` edge carries no
+    evidence flow, so a hub whose only support was judged contradicting
+    SHOULD end up at zero live :data:`HUB_ROLES` edges and look
+    unsupported — that's the honest read of "the only thing backing this
+    claim turned out to argue against it," not a bug to route around.
     """
 
     def _do(c: Any) -> bool:
-        attach_evidence(
-            store,
-            hub_ref_id=hub_ref_id,
-            paper_ref_id=src_ref_id,
-            role="contradicts",
+        validated = validate_relation("disputes", store=store)
+        store.add_link(
+            src_ref_id=src_ref_id,
+            dst_ref_id=hub_ref_id,
+            relation=validated,
             meta=meta,
             set_by=set_by,
             conn=c,
-            check_retraction=False,
         )
-        committed = live_evidence_handles(c, hub_ref_id)
-        if not any(
-            h.src_ref_id == src_ref_id and h.relation == "contradicts"
-            for h in committed
-        ):
+        committed = c.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = %s",
+            (src_ref_id, hub_ref_id, validated),
+        ).fetchone()
+        if committed is None:
             log.warning(
-                "taproot: contradicts re-attach for hub %s src %s did not read "
+                "taproot: disputes re-attach for hub %s src %s did not read "
                 "back — leaving the %s edge in place",
                 hub_ref_id,
                 src_ref_id,
@@ -1124,9 +1142,9 @@ def reattach_as_contradicts(
                     verdict="CONTRADICTS",
                     reason=reason,
                     action=(
-                        "reattached-contradicts"
+                        "reattached-disputes"
                         if removed
-                        else "reattached-contradicts (no prior edge)"
+                        else "reattached-disputes (no prior edge)"
                     ),
                     sha=claim_sha,
                     handle=handle,
@@ -1155,7 +1173,8 @@ def link_claims(
     ``True`` if a new edge was written, ``False`` if it already existed.
 
     ``relation`` must be one of :data:`CLAIM_LINK_RELATIONS` (``refines``,
-    ``conjunct-of``) and a registered relation (:func:`validate_relation`).
+    ``conjunct-of``, ``disputes``) and a registered relation
+    (:func:`validate_relation`).
     **Both** endpoints must be live ``TAPROOT:claim`` findings, and differ
     (a hub can't link to itself).
 
@@ -1735,8 +1754,8 @@ def _mint_for_placement(
     :func:`apply_placement` (atoms, ``attach_paper=True``) and
     :func:`apply_extraction`'s compound handling (``attach_paper=False`` —
     a compound never gets a direct evidence edge, step 3). One mint-logic
-    path rather than a fork: :func:`mint_hub` (+ the hub<->hub
-    ``contradicts`` link for ``new_contradicts``), optionally followed by
+    path rather than a fork: :func:`mint_hub` (+ the hub<->hub ``disputes``
+    link for ``new_contradicts``), optionally followed by
     :func:`attach_evidence`.
 
     ``extra_meta`` passes through to :func:`mint_hub` — the not-a-claim
@@ -1765,12 +1784,15 @@ def _mint_for_placement(
                 raise BadInput(
                     "new_contradicts placement has no contradicts_hub_ref_id"
                 )
-            # Hub <-> hub: opposite *claims* (distinct from a paper->hub
-            # `contradicts` evidence edge; same slug, different endpoints).
+            # Hub <-> hub: the judge's verdict files a non-blocking
+            # `disputes` open question, never the adjudication-only
+            # `contradicts` (docs/backlog/disputes-edge-nonblocking-
+            # disagreement.md D3) — an unreviewed MEDIUM-tier LLM call is
+            # never itself the warrant for blocking publication.
             store.add_link(
                 src_ref_id=claim_hub,
                 dst_ref_id=placement.contradicts_hub_ref_id,
-                relation=validate_relation("contradicts", store=store),
+                relation=validate_relation("disputes", store=store),
                 set_by=set_by,
                 conn=c,
             )
@@ -1806,7 +1828,8 @@ def apply_placement(
     * ``attach`` — attach this paper as evidence on the matched hub.
     * ``new`` — mint a hub, attach the paper.
     * ``new_contradicts`` — mint a hub, attach the paper, and link the new hub
-      ``contradicts`` the existing (opposite-*claim*) hub.
+      ``disputes`` the existing (opposite-*claim*) hub — a non-blocking open
+      question, not an adjudicated verdict (``contradicts`` is Part 2 only).
     * ``needs_review`` — file a ``kind='todo'`` via ``todo_fn`` and attach
       **nothing** (open #16: a risky merge is never auto-applied).
 
@@ -1826,7 +1849,7 @@ def apply_placement(
     (chase's per-finding ``conn``) fold the mint + attach into it. ``None``
     (default): ``attach`` writes standalone via :func:`attach_evidence`'s
     own ``store.tx()``; ``new``/``new_contradicts`` open one shared
-    ``store.tx()`` for the mint + attach (+ contradicts link). Exception:
+    ``store.tx()`` for the mint + attach (+ disputes link). Exception:
     ``needs_review`` never passes ``conn`` to ``todo_fn`` — filing the
     review todo is an intentionally separate, self-committing side-effect.
     """
@@ -2105,7 +2128,7 @@ __all__ = [
     "live_evidence_handles",
     "merge_hubs",
     "mint_hub",
-    "reattach_as_contradicts",
+    "reattach_as_disputes",
     "refine_claim_sentence",
     "reground_log_entry",
     "remove_evidence",
