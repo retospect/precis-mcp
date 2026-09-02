@@ -1190,12 +1190,9 @@ def edit(
     default | `first` | `all` | `nth`) / `nth=`. `dry_run=True`
     previews without writing.
 
-    The four-mode vocabulary above is the **file-kind** shape
-    (markdown/plaintext/tex/python). Other editable kinds vary:
-    `todo`/`memory`/`quest` accept only `mode='replace'` (pass it
-    explicitly — the default `'find-replace'` is rejected there); most
-    other kinds ignore `mode=` or don't support `edit` at all. A wrong
-    mode raises `BadInput` naming that kind's actual accepted set.
+    That vocabulary is the file-kind shape; kinds vary (`todo`/
+    `memory`/`quest`: `mode='replace'` only — see the `mode=` param
+    help). A wrong mode raises `BadInput` naming the accepted set.
 
     Full reference: get(kind='skill', id='precis-edit-help'), or
     search(kind='skill', q='changing existing content') for a topical

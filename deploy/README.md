@@ -12,6 +12,25 @@ from this tree by default, and it is the authoritative deploy path. The only
 per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
 `deploy/.vault-pass`).
 
+## Fresh cluster from zero
+
+1. Copy `deploy/inventory.example/` → your private overlay per
+   ["Setting up the overlay"](#setting-up-the-overlay-operator) below; fill
+   in hosts + `all.vars` + the `precis_capabilities` map
+   (`topology.example.yml`); encrypt `vault.yml` with `ansible-vault`
+   (key list: `inventory.example/group_vars/all/vault.yml.example`).
+2. `ansible-playbook bootstrap-macos.yml` — once per fresh macOS node, over
+   LAN.
+3. `ansible-playbook bootstrap-tailscale.yml --ask-vault-pass` — once; after
+   this, everything runs over Tailscale.
+4. `ansible-playbook site.yml` — full converge; imports the numbered
+   playbooks in order.
+5. Ongoing code pushes: `scripts/deploy [ref]` (wraps `redeploy-precis.yml`;
+   ping-gate + report — see ["Canary-staged deploys"](#canary-staged-deploys-opt-in)).
+6. App secrets: once the web role is up, load API keys via the `/secrets`
+   page or `precis secret set` — **not** the ansible vault (scope boundary:
+   `inventory.example/group_vars/all/vault.yml.example`).
+
 ## The three layers (by rate-of-change)
 
 | Layer | Lives in | Changes | Public? |

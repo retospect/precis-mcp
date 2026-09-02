@@ -124,18 +124,23 @@ off the tool surface with a WARNING, the server stays up.
 
 ### Database
 
-`precis-mcp` requires PostgreSQL with the `pgvector` extension. The
-CLI `precis migrate` applies the forward-only numbered SQL migrations
-in `src/precis/migrations/`. See `0001_initial.sql` for the schema.
+`precis-mcp` requires PostgreSQL with the `pgvector` extension (SQL
+extension name: `vector`). The CLI `precis migrate` applies the
+forward-only numbered SQL migrations in `src/precis/migrations/`. See
+`0001_initial.sql` for the schema.
 
 ```bash
 createdb precis
-psql precis -c 'CREATE EXTENSION pgvector;'
+psql precis -c 'CREATE EXTENSION vector;'
 
 export PRECIS_DATABASE_URL=postgresql://localhost/precis
 export PRECIS_EMBEDDER=bge-m3   # or "mock" for tests
 precis migrate
 ```
+
+Step-by-step single-machine runbook (worker, web UI, secrets):
+[`docs/setup-single-machine.md`](docs/setup-single-machine.md). Cluster
+(multi-host, ansible): [`deploy/README.md`](deploy/README.md).
 
 ## Run
 

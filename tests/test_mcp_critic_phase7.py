@@ -418,12 +418,12 @@ class TestDegenerateRangeTrailer:
     def test_single_block_next_is_single_step(self, store: Store) -> None:
         h = PaperHandler(hub=Hub(store=store))
         _seed_paper(store, n_blocks=4)
-        # reading ~0..2 leaves a single next block → the forward
-        # hint is a relative single step ``pc<id>+1``, not a degenerate
-        # ``+1..1`` range (the old footgun was ``~3..3`` over ``~3``).
+        # reading ~0..2 leaves a single next block → the forward hint is
+        # an absolute single-chunk selector ``pa<id>~3`` (cf. the paper
+        # hint contract in test_paper.py), never a degenerate ``~3..3``.
         resp = h.get(id="wang2020state~0..2")
-        assert "+1..1" not in resp.body
-        assert "+1" in resp.body
+        assert "~3..3" not in resp.body
+        assert "~3')" in resp.body
 
 
 # ── runtime fixture ─────────────────────────────────────────────

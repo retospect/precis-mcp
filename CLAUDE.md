@@ -38,6 +38,8 @@ Merged+clean+sessionless worktrees auto-reap.
 `docs/backlog/` (open items only, delete-on-ship). Dated history: `git log`
 (no CHANGELOG). Schema: `docs/reference/schema.md` (generated). Mission:
 `docs/mission.md`. Replicate this setup: `docs/how-to-setup-like-this.md`.
+Install/run the product: `docs/setup-single-machine.md` · cluster:
+`deploy/README.md`.
 Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
 `src/precis_web/`, Discord bridge `src/asa_bot/`, SSRF guard
 `src/precis/utils/safe_fetch.py`.

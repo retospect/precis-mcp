@@ -12,7 +12,8 @@ glossary terms, and prefer deleting to archiving — git is the history,
 |---|---|
 | Orientation + package map | `docs/codebase.md` (map is generated — see below) |
 | Subsystem architecture + why | the owning package's `__init__.py` **module docstring** |
-| Cluster topology / what runs where | `deploy/README.md` |
+| Single-machine install/run | `docs/setup-single-machine.md` |
+| Cluster topology / what runs where / cluster setup | `deploy/README.md` |
 | Cross-cutting invariants | `docs/conventions/` |
 | Controlled vocabulary | `docs/glossary.md` (hand-written) |
 | Work items (idea → ready) | `docs/backlog/` — one file per item |
