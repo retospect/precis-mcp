@@ -6,9 +6,10 @@ prio: high
 
 # `contradicts` conflates "evidence opposes this claim" with "the draft misused this claim"
 
-> **Re-scoped 2026-09-02.** Part 1 of
-> `docs/backlog/disputes-edge-nonblocking-disagreement.md` (now `ready`)
-> cures the *blocking* defect here: its migration repoints all
+> **Re-scoped 2026-09-02, blocking defect cured by 426518bb.** Part 1 of
+> `docs/backlog/disputes-edge-nonblocking-disagreement.md` (shipped,
+> migration 0151) cures the *blocking* defect here: its migration repoints
+> all
 > claim-graph `contradicts` rows (including the 3 review-critique rows
 > below) to non-blocking `disputes`, and repoints the review-lens writer
 > so new critiques file `disputes` too — the wrongly-blocked hubs become
