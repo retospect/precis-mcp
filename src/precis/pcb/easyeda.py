@@ -11,14 +11,21 @@ format to maintain.
 ``easyeda2kicad`` is the reference implementation this was cribbed from —
 **not a dependency**. We need only the pad subset of its primitive decoder.
 
-Format facts below are spike-verified (2026-08-27, C42163081) against a
-real component. Do not "fix" them without re-spiking:
+Format facts below are spike-verified (2026-08-27, C42163081; re-spiked
+2026-09-02, C2765186) against real components. Do not "fix" them without
+re-spiking:
 
 * The footprint lives at ``result.packageDetail.dataStr.shape``
   (``docType: 4``). Plain ``result.dataStr`` is the *schematic symbol*
   (``docType: 2``) — a different primitive alphabet. This is the single
   most costly mix-up here; :func:`parse_component` asserts on docType and
   names the trap in the error.
+* ``docType`` itself moved between the two spikes: C42163081 (2026-08-27)
+  carried it as a top-level int on ``dataStr``; C2765186 (2026-09-02,
+  editorVersion 6.5.57) carries no top-level ``docType`` at all — it's
+  nested as the STRING ``"4"`` at ``dataStr.head.docType`` instead.
+  :func:`parse_component` checks both locations and coerces a numeric
+  string before comparing.
 * Primitives are flat, ``~``-delimited strings: ``PAD~RECT~x~y~w~h~
   layer~net~number~...``, ``TRACK~width~layer~net~points~...``. Unknown
   primitive types are skipped, not fatal — EasyEDA's alphabet is larger
@@ -112,10 +119,13 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
     centroid, source, raw}``. Returns None when the doc has no footprint
     (a symbol-only part, or an unrecognized shape).
 
-    Raises ``ValueError`` if ``result.packageDetail.dataStr`` is not
-    ``docType: 4`` — that means the caller handed in the *schematic*
-    document (``result.dataStr``, ``docType: 2``) by mistake; see the
-    module docstring for why that mix-up is easy and costly.
+    Raises ``ValueError`` if ``result.packageDetail.dataStr`` does not
+    resolve to ``docType: 4`` — either because it resolves to something
+    else (usually the caller handed in the *schematic* document,
+    ``result.dataStr``, ``docType: 2``, by mistake) or because no
+    ``docType`` can be found at all (checked at both the old top-level
+    location and the current ``head.docType`` one — see the module
+    docstring). The two cases get distinct, honest error text.
     """
     result = doc.get("result")
     if not isinstance(result, dict):
@@ -127,7 +137,15 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
 
-    doc_type = data.get("docType")
+    doc_type_present, doc_type = _resolve_doc_type(data)
+    if not doc_type_present:
+        raise ValueError(
+            "parse_component found no docType on packageDetail.dataStr — "
+            "checked the top level (old API shape) and head.docType "
+            "(current API shape, see precis.pcb.easyeda's module "
+            "docstring). Cannot tell whether this is the FOOTPRINT "
+            "document."
+        )
     if doc_type != 4:
         raise ValueError(
             f"parse_component expected packageDetail.dataStr docType=4 "
@@ -181,6 +199,29 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
         "source": source,
         "raw": doc,
     }
+
+
+def _resolve_doc_type(data: dict[str, Any]) -> tuple[bool, Any]:
+    """Find ``docType`` on a ``packageDetail.dataStr`` doc, old-shape or
+    new-shape, and report whether it was found at all.
+
+    C42163081 (spike-verified 2026-08-27) carried a top-level int
+    ``docType``. C2765186 (spike-verified 2026-09-02, editorVersion
+    6.5.57) carries none — it's nested as the STRING ``"4"`` under
+    ``head.docType`` instead. Check both; coerce a numeric string so the
+    caller's ``!= 4`` comparison doesn't silently fail on the new shape.
+    Returns ``(False, None)`` only when neither location has anything.
+    """
+    if "docType" in data:
+        raw: Any = data["docType"]
+    else:
+        head = data.get("head")
+        raw = head.get("docType") if isinstance(head, dict) else None
+        if raw is None:
+            return False, None
+    if isinstance(raw, str) and raw.strip().lstrip("-").isdigit():
+        return True, int(raw)
+    return True, raw
 
 
 def _parse_pad(

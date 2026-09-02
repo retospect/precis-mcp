@@ -1,0 +1,27 @@
+{
+  "code": 200,
+  "success": true,
+  "result": {
+    "uuid": "schematic-uuid-c2765186",
+    "dataStr": {
+      "head": {"x": 0, "y": 0, "docType": "2", "editorVersion": "6.5.57"},
+      "shape": [
+        "P~show~0~gge0~100 90 0~0~1~gge0~0",
+        "PIN~show~1~pin1~pin1"
+      ]
+    },
+    "packageDetail": {
+      "uuid": "pkg-uuid-c2765186",
+      "dataStr": {
+        "head": {"x": 100, "y": 100, "docType": "4", "editorVersion": "6.5.57"},
+        "shape": [
+          "PAD~ELLIPSE~100~90~6~6~1~GND~1~1.5~~0~gge1~0~Y~0",
+          "PAD~RECT~110~90~6~6~1~~2~0~~0~gge2~0~Y~0",
+          "PAD~RECT~100~100~6~6~2~~3~0~~0~gge3~0~Y~0",
+          "PAD~RECT~110~100~6~6~1~~4~0~~0~gge4~0~Y~0",
+          "TRACK~1~3~~95 85 115 115~trackid1~0"
+        ]
+      }
+    }
+  }
+}

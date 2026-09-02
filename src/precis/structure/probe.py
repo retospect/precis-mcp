@@ -128,7 +128,7 @@ def find(
         if element is not None and atom.element != element:
             continue
         if undercoordinated:
-            mv = elements.max_valence(atom.element)
+            mv, _known = elements.effective_valence(atom.element, atom.charge)
             if mv is None or coordination(scene, label, tolerance) >= mv:
                 continue
         out.append(label)

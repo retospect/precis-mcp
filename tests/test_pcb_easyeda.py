@@ -11,10 +11,23 @@ import pytest
 from precis.pcb import easyeda
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "easyeda_c42163081_trimmed.json"
+# Current API shape (spike-verified 2026-09-02, C2765186, editorVersion
+# 6.5.57): no top-level dataStr.docType at all — it's the STRING "4"
+# nested at dataStr.head.docType instead. Hand-constructed (no live
+# fetch); SOLIDREGION/HOLE/ARC and dataStr.layers are left out since their
+# current-format schema wasn't spiked (SOLIDREGION/HOLE/ARC parsing is out
+# of scope regardless — gripe gr293451).
+NEW_FORMAT_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "pcb" / "easyeda_c2765186_trimmed.json"
+)
 
 
 def _doc() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def _new_format_doc() -> dict:
+    return json.loads(NEW_FORMAT_FIXTURE.read_text(encoding="utf-8"))
 
 
 # ── _to_mm / unit arithmetic ─────────────────────────────────────────────
@@ -184,6 +197,64 @@ def test_parse_component_rejects_schematic_doctype():
     bad_doc = {"result": {"packageDetail": {"dataStr": schematic}}}
     with pytest.raises(ValueError, match="docType"):
         easyeda.parse_component(bad_doc)
+
+
+def test_parse_component_rejects_present_docType_2_new_format():
+    # present-and-wrong (docType="2", head-nested string) must still get
+    # the schematic/footprint mix-up wording, not the "absent" one.
+    doc = _new_format_doc()
+    doc["result"]["packageDetail"]["dataStr"]["head"]["docType"] = "2"
+    with pytest.raises(ValueError, match="expected packageDetail.dataStr docType=4"):
+        easyeda.parse_component(doc)
+
+
+def test_parse_component_docType_absent_everywhere_raises_honest_error():
+    doc = _new_format_doc()
+    del doc["result"]["packageDetail"]["dataStr"]["head"]["docType"]
+    with pytest.raises(ValueError, match="found no docType") as exc_info:
+        easyeda.parse_component(doc)
+    # must NOT claim to have "got docType=None" — nothing was actually found
+    assert "got docType" not in str(exc_info.value)
+
+
+# ── new API format: head-nested string docType (gr293451) ───────────────
+def test_parse_component_new_format_head_nested_string_docType_parses():
+    footprint = easyeda.parse_component(_new_format_doc())
+    assert footprint is not None
+    pads = footprint["pads"]
+    assert len(pads) == 4
+    assert set(p["number"] for p in pads) == {"1", "2", "3", "4"}
+    assert footprint["source"] == "easyeda:packageDetail:pkg-uuid-c2765186"
+
+
+def test_resolve_doc_type_old_format_top_level_int():
+    present, doc_type = easyeda._resolve_doc_type({"docType": 4, "head": {}})
+    assert present is True
+    assert doc_type == 4
+
+
+def test_resolve_doc_type_new_format_head_nested_numeric_string_coerces():
+    present, doc_type = easyeda._resolve_doc_type({"head": {"docType": "4"}})
+    assert present is True
+    assert doc_type == 4  # coerced from the string "4", not left as "4"
+
+
+def test_resolve_doc_type_absent_everywhere():
+    present, doc_type = easyeda._resolve_doc_type({"head": {}})
+    assert present is False
+    assert doc_type is None
+
+    present, doc_type = easyeda._resolve_doc_type({})
+    assert present is False
+
+
+def test_resolve_doc_type_top_level_wins_over_head():
+    # top-level takes priority when (implausibly) both are present.
+    present, doc_type = easyeda._resolve_doc_type(
+        {"docType": 4, "head": {"docType": "2"}}
+    )
+    assert present is True
+    assert doc_type == 4
 
 
 # ── fetch_component: no network, injected safe_get ───────────────────────

@@ -120,6 +120,7 @@ def _tag_response_body(
     added: list[Tag],
     removed_ok: list[Tag],
     removed_noop: list[Tag],
+    removed_subsumed: list[Tag] | None = None,
 ) -> str:
     """Compose the ``tag()`` success message (gr192827 item 10b/10c).
 
@@ -128,18 +129,36 @@ def _tag_response_body(
     (wrong tag form) still reported blanket success. This names the verb
     that actually happened (``tagged`` / ``untagged`` / both) and calls
     out any ``remove=`` entry that was a no-op (the tag wasn't present).
+
+    ``removed_subsumed`` (gr293293): a ``remove=`` tag on a closed axis
+    that an ``add=`` tag on the *same* call already cleared. ``add_tag``
+    on a closed-prefix tag deletes every existing tag in that namespace
+    first (``replace_prefix`` — a ref carries at most one ``STATUS:``
+    value), so by the time the matching ``remove=`` runs the row is
+    already gone and ``remove_tag`` reports a false no-op. These tags
+    *were* removed — just as a side effect of the add rather than the
+    remove — so they count toward the ``untagged`` verb like any other
+    successful removal, and get their own clause naming what actually
+    happened instead of being lumped in with a tag that was never
+    present at all (which would wrongly read "no such tag, unchanged"
+    on a call that did apply the requested change).
     """
-    if added and removed_ok:
+    removed_subsumed = removed_subsumed or []
+    all_removed = removed_ok + removed_subsumed
+    if added and all_removed:
         verb = "tagged/untagged"
     elif added:
         verb = "tagged"
-    elif removed_ok:
+    elif all_removed:
         verb = "untagged"
     else:
         verb = None
     body = (
         f"{verb} {sense} id={ref_id}" if verb else f"no change to {sense} id={ref_id}"
     )
+    if removed_subsumed:
+        subsumed_list = ", ".join(str(t) for t in removed_subsumed)
+        body += f" (already cleared by the add=: {subsumed_list})"
     if removed_noop:
         noop_list = ", ".join(str(t) for t in removed_noop)
         body += f" (no such tag, unchanged: {noop_list})"
@@ -1070,6 +1089,15 @@ class NumericRefHandler(Handler):
         )
         removed_ok: list[Tag] = []
         removed_noop: list[Tag] = []
+        removed_subsumed: list[Tag] = []
+        # Snapshot the pre-mutation tag set (gr293293) *before* any add=
+        # runs, so a remove_tag() false-negative can be told apart from a
+        # genuine no-op. A closed-axis add= (replace_prefix=True) deletes
+        # every existing tag in that namespace first — if the matching
+        # remove= tag was present here but remove_tag() still reports no
+        # row deleted, the add= already cleared it, and the response must
+        # say so truthfully rather than "no such tag, unchanged".
+        pre_tags = set(self.store.tags_for(ref_id)) if parsed_remove else set()
         with self.store.tx() as conn:
             for t in parsed_add:
                 self.store.add_tag(
@@ -1082,6 +1110,8 @@ class NumericRefHandler(Handler):
             for t in parsed_remove:
                 if self.store.remove_tag(ref_id, t, conn=conn):
                     removed_ok.append(t)
+                elif t in pre_tags:
+                    removed_subsumed.append(t)
                 else:
                     removed_noop.append(t)
             self._after_tag_mutation(ref_id, parsed_add, parsed_remove, conn=conn)
@@ -1092,6 +1122,7 @@ class NumericRefHandler(Handler):
                 added=parsed_add,
                 removed_ok=removed_ok,
                 removed_noop=removed_noop,
+                removed_subsumed=removed_subsumed,
             )
         )
 

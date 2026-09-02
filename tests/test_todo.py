@@ -174,6 +174,39 @@ def test_tag_remove_noop_reports_no_such_tag(handler: TodoHandler) -> None:
     assert "no change" in resp.body
 
 
+def test_tag_status_flip_reports_truthfully(handler: TodoHandler) -> None:
+    """gr293293: add=['STATUS:done'], remove=['STATUS:open'] both apply
+    (the add's replace_prefix clears STATUS:open before the remove= loop
+    runs), but the old response read "tagged todo id=N (no such tag,
+    unchanged: STATUS:open)" — actively lying about the remove= half of a
+    call that fully succeeded. Pins the honest wording."""
+    r = handler.put(text="task")  # default_tags_on_create seeds STATUS:open
+    todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
+    resp = handler.tag(id=todo_id, add=["STATUS:done"], remove=["STATUS:open"])
+    assert resp.body == (
+        f"tagged/untagged todo id={todo_id} (already cleared by the add=: STATUS:open)"
+    )
+    assert "no such tag" not in resp.body
+    tags = {str(t) for t in handler.store.tags_for(todo_id)}
+    assert "STATUS:done" in tags
+    assert "STATUS:open" not in tags
+
+
+def test_tag_status_flip_genuine_noop_still_reports_no_such_tag(
+    handler: TodoHandler,
+) -> None:
+    """Same add=/remove= shape, but the remove= tag was never present
+    (typo'd STATUS value the ref never carried) — must still read as a
+    genuine no-op, not get swept into the subsumed bucket."""
+    r = handler.put(text="task")  # seeds STATUS:open, not STATUS:blocked
+    todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
+    resp = handler.tag(id=todo_id, add=["STATUS:done"], remove=["STATUS:blocked"])
+    assert resp.body == (
+        f"tagged todo id={todo_id} (no such tag, unchanged: STATUS:blocked)"
+    )
+    assert "already cleared" not in resp.body
+
+
 # ── get: single + list views ─────────────────────────────────────────
 
 

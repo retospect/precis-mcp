@@ -41,13 +41,13 @@ Two view modes: **full document** (📄, the default) renders a window
 around your focus and loads the rest as you scroll; **fisheye**
 collapses the quiet stretches so a long document fits on one screen.
 
-The steering affordances live in the gutter:
-
-- **✏️ pen** — "change this paragraph."
-- **👁 eye** — "and read this while you do."
-- The **request box** files the whole marked set as one change request,
-  so the next writer pass edits your pens *grounded in* your eyes. This
-  is the main way to get work done: mark, describe, send.
+The steering affordance is the gutter's **📌 pin** (key `p`): it marks a
+paragraph as context for the writer's next pass. Pinning also sets the edit
+target — a change request anchors on the first paragraph you've pinned,
+falling back to your current focus when nothing is pinned. The **ask box**
+at the bottom of the right pane sends a free-text request grounded in
+everything pinned; "unpin all" clears the set. This is the main way to get
+work done: pin, describe, send.
 
 You can also edit directly — text, tables, splitting a block, merging
 it into the previous one, deleting it — when it's faster to just fix

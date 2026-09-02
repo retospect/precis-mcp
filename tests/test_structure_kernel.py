@@ -374,6 +374,34 @@ def test_find_and_toc() -> None:
     assert t["formula"] == "Cu1Pd1"
 
 
+def test_find_undercoordinated_is_charge_aware() -> None:
+    # gr293205: probe.find(undercoordinated=True) used to compare against
+    # neutral max_valence, so a correctly-declared O- carboxylate (1 bond,
+    # effective budget 1) false-flagged. Mirrors validate.py's
+    # effective_valence lookup (gr285775).
+    def _one_bonded_oxygen(charge: int) -> Scene:
+        scene = Scene(cell=_cubic())
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom",
+                    "element": "O",
+                    "frac": [0.5, 0.5, 0.5],
+                    "charge": charge,
+                },
+                {"op": "add_atom", "element": "C", "frac": [0.512, 0.5, 0.5]},
+            ],
+        )
+        return scene
+
+    neutral = _one_bonded_oxygen(0)
+    assert "aO1" in probe.find(neutral, undercoordinated=True)  # 1 < neutral O's 2
+
+    charged = _one_bonded_oxygen(-1)
+    assert "aO1" not in probe.find(charged, undercoordinated=True)  # O-'s budget is 1
+
+
 # -- validator gate ----------------------------------------------------------
 
 
