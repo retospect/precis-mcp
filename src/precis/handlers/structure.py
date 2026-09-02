@@ -87,7 +87,12 @@ if TYPE_CHECKING:
 # NB: ``precis.structure`` re-exports the ``relax`` *function* under that
 # name (see ``run_relax`` above), shadowing the submodule — reach
 # ``EMT_ELEMENTS`` via the submodule path directly.
-from precis.structure.relax import EMT_ELEMENTS, RelaxResult, estimate_forces_emt
+from precis.structure.relax import (
+    EMT_ELEMENTS,
+    RelaxResult,
+    estimate_forces_emt,
+    route_ml_model,
+)
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
@@ -197,7 +202,28 @@ def _format_preflight_rejection(reasons: list[PreflightReason]) -> str:
     return "\n".join(lines)
 
 
-def _run_preflight_gate(scene: Scene) -> None:
+def _format_preflight_caveats(caveats: list[str]) -> str | None:
+    """Echo block for the never-gating domain caveats (gripe 285774) — a
+    metal-organic straddle or a declared net charge — so a passing edit
+    still says "chemistry may be off-distribution" instead of a bare
+    "converged". ``None`` when there's nothing to say (the common case)."""
+    if not caveats:
+        return None
+    lines = ["structure preflight caveat(s) — advisory only, not blocking:"]
+    lines += caveats
+    return "\n".join(lines)
+
+
+def _combine_echo(*parts: str | None) -> str | None:
+    """Join whichever of ``parts`` are non-empty with a blank line, matching
+    :meth:`StructureHandler._with_echo`'s own separator — the shared
+    append-to-body mechanism for the import-fragment echo and the preflight
+    caveat block, which a single response may carry both of."""
+    joined = [p for p in parts if p]
+    return "\n\n".join(joined) if joined else None
+
+
+def _run_preflight_gate(scene: Scene) -> list[str]:
     """Tier-0 MLIP preflight — hard reject an edit whose *resulting* scene
     fails (element out of the MLIP's coverage, a clash, a floating
     adsorbate, no vacuum headroom, a porous slab). Only runs when
@@ -209,20 +235,26 @@ def _run_preflight_gate(scene: Scene) -> None:
     Fail-**open** on infra (ASE/[dft] missing, or any other unexpected
     preflight-internal error): a preflight that can't run must not block an
     edit. Fail-**closed** only on a real ``not ok`` verdict, which raises
-    :class:`BadInput` — the caller does not catch this."""
+    :class:`BadInput` — the caller does not catch this.
+
+    Returns the passing verdict's never-gating **caveat** messages (gripe
+    285774: a metal-organic straddle, a declared net charge) — empty when
+    preflight is off, degraded, or found nothing to flag. The caller
+    surfaces these as an echo rather than dropping them silently."""
     if not _mlip_preflight_enabled():
-        return
+        return []
     try:
         verdict = _mlip_preflight(scene)
     except Exception as exc:  # ImportError (no ASE/[dft]) or any other infra hiccup
         log.debug("structure preflight degraded (fail-open): %s", exc)
-        return
+        return []
     if not verdict.ok:
         raise BadInput(
             _format_preflight_rejection(verdict.reasons),
             next="fix the flagged atom(s) (swap element / reposition / "
             "pack the slab) and re-apply the edit",
         )
+    return [c.message for c in verdict.caveats]
 
 
 def _relax_cache_address(
@@ -731,7 +763,9 @@ class StructureHandler(Handler):
         ttl = (title or slug).strip() or slug
         # Tier-0 preflight (gated, default off): reject before anything
         # persists — the prior version (none yet, for a fresh put) stands.
-        _run_preflight_gate(scene)
+        # A passing verdict may still carry never-gating domain caveats
+        # (gripe 285774) — echoed below, never dropped silently.
+        preflight_caveats = _format_preflight_caveats(_run_preflight_gate(scene))
         ref, created = self.store.structure_save(
             slug=slug,
             title=ttl,
@@ -744,7 +778,8 @@ class StructureHandler(Handler):
         self._record_run(ref.id, relax_result, version)
         if dispatch is not None:
             return self._with_echo(
-                self._dispatch_relax(ref, version, dispatch), import_echo
+                self._dispatch_relax(ref, version, dispatch),
+                _combine_echo(import_echo, preflight_caveats),
             )
         _scene, handles = self.store.structure_load(ref.id)
         verb = "created" if created else "updated"
@@ -752,7 +787,7 @@ class StructureHandler(Handler):
             self._toc_response(
                 _scene, ref, handles, head_verb=verb, relax_summary=relax_summary
             ),
-            import_echo,
+            _combine_echo(import_echo, preflight_caveats),
         )
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -812,7 +847,9 @@ class StructureHandler(Handler):
         ttl = ref.title or str(ref.slug)
         # Tier-0 preflight (gated, default off): reject before this new
         # version commits — the prior version stands (transactional undo).
-        _run_preflight_gate(scene)
+        # A passing verdict may still carry never-gating domain caveats
+        # (gripe 285774) — echoed below, never dropped silently.
+        preflight_caveats = _format_preflight_caveats(_run_preflight_gate(scene))
         self.store.structure_save(
             slug=str(ref.slug),
             title=ttl,
@@ -825,14 +862,15 @@ class StructureHandler(Handler):
         self._record_run(ref.id, relax_result, version)
         if dispatch is not None:
             return self._with_echo(
-                self._dispatch_relax(ref, version, dispatch), import_echo
+                self._dispatch_relax(ref, version, dispatch),
+                _combine_echo(import_echo, preflight_caveats),
             )
         _scene, handles = self.store.structure_load(ref.id)
         return self._with_echo(
             self._toc_response(
                 _scene, ref, handles, head_verb="edited", relax_summary=relax_summary
             ),
-            import_echo,
+            _combine_echo(import_echo, preflight_caveats),
         )
 
     # ── derive ───────────────────────────────────────────────────────
@@ -1571,7 +1609,19 @@ class StructureHandler(Handler):
         ro = relax_ops[-1]
         fidelity = str(ro.get("fidelity", "clean"))
         steps = int(ro.get("steps", 200))
-        model = str(ro.get("model", "mace_mp"))
+        # No explicit model=: route by composition on the 'ml' rung (gripe
+        # 285774) — an all-organic, non-periodic, neutral scene defaults to
+        # the organic MLIP (mace_off) rather than the materials one
+        # (mace_mp), which is off-distribution for exactly that chemistry.
+        # Every other rung keeps the historical literal default — model
+        # isn't functional there yet, so there's nothing to route.
+        explicit_model = ro.get("model")
+        if explicit_model is not None:
+            model = str(explicit_model)
+        elif fidelity == "ml":
+            model = route_ml_model(scene)
+        else:
+            model = "mace_mp"
         # Optional variable-cell relax: 'inplane' (slab box, vacuum pinned) or
         # 'full' (bulk). Validated up front so a bad mode is a retryable BadInput
         # rather than being swallowed into the dispatch/Unsupported path below.

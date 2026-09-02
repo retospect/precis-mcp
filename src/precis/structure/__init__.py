@@ -16,7 +16,10 @@ Compute-adjacent seams, each with its own module docstring:
   higher rungs extras-gated, GPU-dispatched via the compute job lane).
   ``dispersion=True`` adds DFT-D3 on the ``ml`` rung — off by default, but
   load-bearing for van-der-Waals-bound designs, and local-only (the GPU
-  container contract has no dispersion flag).
+  container contract has no dispersion flag). With no explicit ``model=``,
+  the ``ml`` rung routes by composition (``relax.route_ml_model``): an
+  all-organic-element, non-periodic, formally-neutral scene defaults to
+  ``mace_off`` (MACE-OFF23); anything else keeps ``mace_mp``.
 - `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
   spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
   faults, never physical verdicts.

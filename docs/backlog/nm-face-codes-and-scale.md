@@ -135,6 +135,13 @@ The **DRC and MLIP gaps** this slice depends on are filed as gripes
 *binding energies* are meaningless until at least the dispersion gap is
 closed, so do not compute motif tables before then.
 
+**gr285775: CLOSED 2026-09-02** (fd2d63cb). Atoms carry a declared formal
+charge end-to-end (SMILES import → `struct_atoms.charge` → relax-cache key);
+DRC valence rules consult `effective_valence(element, charge)`, and a
+warn-tier metal coordination advisory covers Zr/Zn/Cu/Fe (slab metals
+deliberately excluded). Residual: `probe.find(undercoordinated=True)` is
+still neutral-valence-only — gr293205.
+
 **Dispersion half of gr285774: CLOSED 2026-09-01.** `relax(…,
 dispersion=True)` on the `ml` rung now adds DFT-D3 (`torch-dftd`, in the
 `dft-ml` extra), folds into the run-cube cache key so a corrected run can

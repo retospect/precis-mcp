@@ -28,6 +28,22 @@ _PD = json.dumps(
     }
 )
 
+# gripe 285774: an all-organic, non-periodic, formally-neutral molecule —
+# the case ``route_ml_model`` should default toward the organic MLIP.
+# Realistic bond lengths (C-H ~1.09 Å, C-O ~1.43 Å as fractional offsets in
+# this 20 Å cell) so the pre-dispatch validator's overlap/valence gate
+# doesn't trip before the routing choice is ever reached.
+_ORGANIC_MOLECULE = json.dumps(
+    {
+        "cell": {"a": 20.0, "b": 20.0, "c": 20.0, "pbc": [False, False, False]},
+        "ops": [
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "H", "frac": [0.5545, 0.5, 0.5]},
+            {"op": "add_atom", "element": "O", "frac": [0.5, 0.5715, 0.5]},
+        ],
+    }
+)
+
 
 @pytest.fixture
 def structure(store):
@@ -925,6 +941,45 @@ def test_relax_dispersion_requires_the_ml_rung(structure):
             id="pd_pair",
             ops=[{"op": "relax", "fidelity": "clean", "dispersion": True}],
         )
+
+
+def test_relax_routes_organic_molecule_to_mace_off_by_default(
+    structure, store, no_local_mlip
+):
+    """gripe 285774: no explicit model= on an all-organic, non-periodic,
+    neutral scene routes the 'ml' rung to the organic MLIP rather than the
+    materials default — visible in the dispatched job's params (and, on a
+    host with a local backend, in the run's calc: identity via res.model)."""
+    structure.put(id="organic_mol", text=_ORGANIC_MOLECULE)
+    ref = structure.store.get_ref(kind="structure", id="organic_mol")
+    structure.edit(id="organic_mol", ops=[{"op": "relax", "fidelity": "ml"}])
+    params = _child_jobs(store, ref.id)[0]["params"]
+    assert params["model"] == "mace_off"
+
+
+def test_relax_routes_periodic_metal_to_mace_mp_by_default(
+    structure, store, no_local_mlip
+):
+    """The historical materials default is unchanged for a periodic/metallic
+    design — routing only redirects the organic, non-periodic, neutral case."""
+    structure.put(id="pd_pair_route", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_route")
+    structure.edit(id="pd_pair_route", ops=[{"op": "relax", "fidelity": "ml"}])
+    params = _child_jobs(store, ref.id)[0]["params"]
+    assert params["model"] == "mace_mp"
+
+
+def test_relax_explicit_model_wins_over_routing(structure, store, no_local_mlip):
+    """An explicit model= is never overridden by the composition heuristic —
+    even for a scene that would otherwise route to the organic default."""
+    structure.put(id="organic_mol_explicit", text=_ORGANIC_MOLECULE)
+    ref = structure.store.get_ref(kind="structure", id="organic_mol_explicit")
+    structure.edit(
+        id="organic_mol_explicit",
+        ops=[{"op": "relax", "fidelity": "ml", "model": "mace_mp"}],
+    )
+    params = _child_jobs(store, ref.id)[0]["params"]
+    assert params["model"] == "mace_mp"
 
 
 def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_mlip):

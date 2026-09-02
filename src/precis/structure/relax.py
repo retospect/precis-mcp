@@ -38,6 +38,16 @@ _RENTED_RUNGS = {"ff", "xtb", "ml", "dft-fast", "dft-tight"}
 #: outside it (a lanthanide, a bcc metal, …) needs the ``ml`` rung instead.
 EMT_ELEMENTS = frozenset({"Al", "Ni", "Cu", "Pd", "Ag", "Pt", "Au", "H", "C", "N", "O"})
 
+#: MACE-OFF23's element coverage — small-molecule organic chemistry (Kovács
+#: et al. 2023, arXiv:2312.15211: H, C, N, O, F, P, S, Cl, Br, I), not the
+#: Z1-89 materials palette MACE-MP-0 covers
+#: (:data:`preflight.MACE_MP_ELEMENTS`). Used both to register the
+#: ``mace_off`` calculator's coverage and to route a relax with no explicit
+#: ``model=`` toward it (:func:`route_ml_model`).
+ORGANIC_ELEMENTS: frozenset[str] = frozenset(
+    {"H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"}
+)
+
 #: Variable-cell relax modes for an energy rung. ``None`` / ``"fixed"`` relaxes
 #: atoms only (the historical default). ``"inplane"`` frees the in-plane lattice
 #: (the a/b vectors + the γ shear) while pinning the c-axis, so a slab's vacuum
@@ -343,6 +353,56 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     )
 
 
+def route_ml_model(scene: Scene) -> str:
+    """Composition-based default for the ``ml`` rung's calculator when the
+    caller passes no explicit ``model=`` (gripe 285774).
+
+    MACE-MP-0 is a *materials* potential (periodic solids, Materials Project
+    relaxation trajectories); MACE-OFF23 is trained on small organic
+    molecules and captures the noncovalent contacts (H-bonds, pi-stacking)
+    a materials MLIP sits off-distribution for. Routes to ``'mace_off'``
+    only when the scene is all-organic-element (:data:`ORGANIC_ELEMENTS`),
+    non-periodic (no cell axis carries ``pbc``), and formally neutral (the
+    declared per-atom ``oxidation`` states sum to zero) — every other case,
+    including the ambiguous/mixed one, keeps the historical ``'mace_mp'``
+    default rather than silently guessing toward the less-battle-tested
+    organic model. This is only the *default*: an explicit ``model=`` always
+    wins over this routing (see ``relax()``/the handler)."""
+    elements_present = {a.element for a in scene.atoms.values()}
+    if not elements_present or elements_present - ORGANIC_ELEMENTS:
+        return "mace_mp"
+    if any(scene.cell.pbc):
+        return "mace_mp"
+    if sum(a.oxidation or 0 for a in scene.atoms.values()) != 0:
+        return "mace_mp"
+    return "mace_off"
+
+
+def _dftd3_wrap(calc, *, device: str = "cpu", dtype: str = "float64"):
+    """Layer a DFT-D3(BJ) correction onto ``calc`` via ``torch_dftd`` (an ASE
+    ``SumCalculator``) — the manual equivalent of what
+    ``mace_mp(dispersion=True)`` does internally. Needed for ``mace_off``,
+    which (unlike ``mace_mp``) takes no ``dispersion`` kwarg of its own.
+    Mirrors mace_mp's own D3 defaults (BJ damping, PBE functional, 40 Bohr
+    cutoff) so a dispersion-corrected relax means the same physics
+    regardless of which MLIP it rides on. The caller has already confirmed
+    ``torch_dftd`` imports before calling this."""
+    import torch
+    from ase import units
+    from ase.calculators.mixing import SumCalculator
+    from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+
+    torch_dtype = torch.float64 if dtype == "float64" else torch.float32
+    d3 = TorchDFTD3Calculator(
+        device=device,
+        damping="bj",
+        dtype=torch_dtype,
+        xc="pbe",
+        cutoff=40.0 * units.Bohr,
+    )
+    return SumCalculator([calc, d3])
+
+
 def _ml_calculator(model: str, *, dispersion: bool = False):
     """Instantiate an ASE calculator for an MLIP, or raise RelaxUnsupported.
 
@@ -367,13 +427,31 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
             ) from exc
         if dispersion:
             try:
-                import torch_dftd  # noqa: F401
+                import torch_dftd
             except ImportError as exc:
                 raise RelaxUnsupported(
                     "dispersion=True (DFT-D3 on top of MACE) needs torch-dftd — "
                     "pip install 'precis-mcp[dft-ml]'"
                 ) from exc
         return mace_mp(default_dtype="float64", dispersion=dispersion)
+    if name in ("mace_off", "mace_off23"):
+        try:
+            from mace.calculators import mace_off
+        except ImportError as exc:
+            raise RelaxUnsupported(
+                "relax rung 'ml' (MACE-OFF) needs the [dft-ml] extra — "
+                "pip install 'precis-mcp[dft-ml]'"
+            ) from exc
+        if dispersion:
+            try:
+                import torch_dftd  # noqa: F401
+            except ImportError as exc:
+                raise RelaxUnsupported(
+                    "dispersion=True (DFT-D3 on top of MACE-OFF) needs "
+                    "torch-dftd — pip install 'precis-mcp[dft-ml]'"
+                ) from exc
+        calc = mace_off(default_dtype="float64")
+        return _dftd3_wrap(calc) if dispersion else calc
     if name == "chgnet":
         if dispersion:
             raise RelaxUnsupported(
@@ -388,7 +466,9 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
                 "pip install 'precis-mcp[dft-ml]'"
             ) from exc
         return CHGNetCalculator()
-    raise RelaxUnsupported(f"unknown MLIP model {model!r} (try 'mace_mp' or 'chgnet')")
+    raise RelaxUnsupported(
+        f"unknown MLIP model {model!r} (try 'mace_mp', 'mace_off', or 'chgnet')"
+    )
 
 
 def _cell_filter(atoms, cell: str):

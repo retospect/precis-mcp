@@ -78,6 +78,33 @@ class TestEditPreflightGate:
         resp = structure.edit(id="pd_slab", ops=[_CLEAN_OP])
         assert "edited" in resp.body
 
+    def test_flag_on_surfaces_a_domain_caveat_without_blocking(
+        self, structure, monkeypatch
+    ) -> None:
+        """gripe 285774: a passing verdict can still carry an advisory
+        domain caveat (a metal-organic straddle) — surfaced in the response
+        body as an echo, never turned into a rejection."""
+        import numpy as np
+
+        monkeypatch.setenv(_ENV, "1")
+        structure.put(id="pd_slab_caveat", text=_PD_SLAB)
+        ref = structure.store.get_ref(kind="structure", id="pd_slab_caveat")
+        scene, _ = structure.store.structure_load(ref.id)
+        cart = np.array([scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()])
+        top_z = float(cart[:, 2].max())
+        center_xy = cart[:, :2].mean(axis=0)
+        placement = np.array([center_xy[0], center_xy[1], top_z + 2.0])
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(placement)).tolist()
+
+        resp = structure.edit(
+            id="pd_slab_caveat",
+            ops=[{"op": "add_atom", "element": "C", "frac": frac}],
+        )
+        assert "edited" in resp.body  # advisory only — the edit still lands
+        assert "preflight caveat" in resp.body
+        assert "domain_straddle" not in resp.body  # message text, not the code
+        assert "metal-organic" in resp.body or "off-distribution" in resp.body
+
     def test_fail_open_on_preflight_infra_error(self, structure, monkeypatch) -> None:
         """A preflight-internal error (e.g. ASE/[dft] missing) must not block
         the edit — fail open, only a real ``not ok`` verdict fails closed."""

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import elements, export
+from .relax import ORGANIC_ELEMENTS
 from .scene import FIX_ALL, Scene
 
 try:  # pragma: no cover - exercised via the [dft] extra in the test env
@@ -215,10 +216,18 @@ class PreflightReason:
 
 @dataclass
 class PreflightVerdict:
-    """The gate's verdict — ``ok`` iff no reasons were collected."""
+    """The gate's verdict — ``ok`` iff no ``reasons`` were collected.
+
+    ``caveats`` is a second, **never-gating** list (gripe 285774): domain
+    signals under which either registered MLIP is likely off-distribution
+    for the chemistry (a metal-organic straddle, a declared net charge).
+    They ride alongside a passing verdict — an ``ok=True`` structure can
+    still carry caveats — so a straddling design gets an explicit caveat in
+    the output instead of a silent, unqualified "converged"."""
 
     ok: bool
     reasons: list[PreflightReason] = field(default_factory=list)
+    caveats: list[PreflightReason] = field(default_factory=list)
 
 
 #: Ship-safe dark switch for both preflight seams (structure handler
@@ -249,22 +258,26 @@ def preflight(
     the deployed backend's coverage differs. If the scene has no atoms, or
     can't be converted/settled (missing ASE, a conversion error), the geometry
     checks are skipped — "nothing to judge" rather than a crash — but any
-    element-coverage reason already collected still stands.
+    element-coverage reason (and any domain caveat) already collected still
+    stands.
     """
     box = backend_elements if backend_elements is not None else MACE_MP_ELEMENTS
     reasons: list[PreflightReason] = list(_check_elements(scene, box))
+    # Advisory-only (never folds into ``ok`` / ``reasons``) — cheap element +
+    # oxidation-state signals, no settle needed, so this runs unconditionally.
+    caveats: list[PreflightReason] = list(_domain_checks(scene))
 
     if not scene.atoms:
-        return PreflightVerdict(ok=not reasons, reasons=reasons)
+        return PreflightVerdict(ok=not reasons, reasons=reasons, caveats=caveats)
 
     try:
         atoms, labels = _scene_to_ase(scene)
         _settle(atoms)
     except Exception:  # any ASE/conversion/settle failure ⇒ nothing to judge
-        return PreflightVerdict(ok=not reasons, reasons=reasons)
+        return PreflightVerdict(ok=not reasons, reasons=reasons, caveats=caveats)
 
     reasons.extend(_geometry_checks(scene, atoms, labels))
-    return PreflightVerdict(ok=not reasons, reasons=reasons)
+    return PreflightVerdict(ok=not reasons, reasons=reasons, caveats=caveats)
 
 
 # ── check 1: element-in-box (no relax) ──────────────────────────────────────
@@ -289,6 +302,70 @@ def _check_elements(
                     ),
                 )
             )
+    return reasons
+
+
+# ── advisory: chemistry-domain caveats (gripe 285774) ───────────────────────
+#
+# Check 1 above gates on *elements* — "has the MLIP ever seen this atomic
+# number" — which a straddling or charged design passes trivially (C/H/N/O
+# are obviously in either model's palette). These checks catch what element
+# coverage can't: a design whose *combination* of elements, or whose formal
+# charge, puts it off-distribution even though every individual element is
+# covered. Never gating — collected into ``PreflightVerdict.caveats``, not
+# ``reasons``, so a straddling design still gets a verdict, just with an
+# explicit "chemistry may be off-distribution" note instead of a silent,
+# unqualified "converged".
+
+
+def _domain_checks(scene: Scene) -> list[PreflightReason]:
+    """Two cheap, ASE-free composition/charge signals (no settle needed):
+
+    * a metal-organic straddle — the scene mixes :data:`relax.ORGANIC_ELEMENTS`
+      with anything outside that set (a MOF cage, a catalyst-bound organic
+      cassette) — neither registered MLIP's training distribution (mace_mp
+      is materials, mace_off is small organic molecules) covers that
+      combination.
+    * a nonzero declared net charge — the sum of every atom's ``oxidation``
+      (``None`` treated as 0, i.e. "no charge declared") — MLIPs of this
+      class assume neutral systems; their short receptive field can't see
+      the long-range electrostatics a charged species carries.
+    """
+    reasons: list[PreflightReason] = []
+    if not scene.atoms:
+        return reasons
+
+    elements_present = {a.element for a in scene.atoms.values()}
+    non_organic = elements_present - ORGANIC_ELEMENTS
+    if elements_present & ORGANIC_ELEMENTS and non_organic:
+        reasons.append(
+            PreflightReason(
+                code="domain_straddle",
+                message=(
+                    "structure mixes organic elements with "
+                    f"{sorted(non_organic)} — neither the materials MLIP "
+                    "(mace_mp) nor the organic one (mace_off) was trained on "
+                    "this combination; a metal-organic cage/cassette is "
+                    "off-distribution for both. Advisory only, not blocking "
+                    "— treat any relax energy here as qualitative."
+                ),
+            )
+        )
+
+    net_charge = sum(a.oxidation or 0 for a in scene.atoms.values())
+    if net_charge != 0:
+        reasons.append(
+            PreflightReason(
+                code="domain_charged",
+                message=(
+                    "structure carries a declared net oxidation state of "
+                    f"{net_charge:+d} — MLIPs of this class assume neutral "
+                    "systems (their receptive field can't see long-range "
+                    "electrostatics); energetics between charge states here "
+                    "are not trustworthy. Advisory only, not blocking."
+                ),
+            )
+        )
     return reasons
 
 

@@ -155,3 +155,73 @@ class TestElementAgnostic:
         assert isinstance(verdict, pf.PreflightVerdict)
         assert isinstance(verdict.ok, bool)
         assert all(isinstance(r, pf.PreflightReason) for r in verdict.reasons)
+
+
+class TestDomainCaveats:
+    """gripe 285774: advisory-only chemistry-domain signals a plain element
+    check can't catch — a metal-organic straddle, a declared net charge.
+
+    The pure unit-level checks go straight at ``_domain_checks`` (no ASE/
+    settle involved — it's a composition/oxidation scan) so they're immune
+    to the unrelated vacuum/density thresholds the geometry checks apply
+    (:class:`TestPorous` shows a sparse arrangement alone can flag
+    'porous' — irrelevant noise for a caveat-only unit test). One
+    full-pipeline test below proves the caveat also surfaces through
+    :func:`pf.preflight` without turning a clean geometry's ``ok`` False."""
+
+    def _molecule(self, atoms: list[tuple[str, int | None]]) -> Scene:
+        """A small non-periodic molecule scene: ``[(element, oxidation), ...]``."""
+        scene = Scene(cell=Cell.from_lengths_angles(20.0, 20.0, 20.0, pbc=(False,) * 3))
+        for i, (element, oxidation) in enumerate(atoms):
+            label = f"a{element}{i + 1}"
+            scene.atoms[label] = Atom(
+                label=label,
+                element=element,
+                frac=np.array([0.1 * i, 0.5, 0.5]),
+                oxidation=oxidation,
+            )
+        return scene
+
+    def test_all_organic_neutral_scene_has_no_domain_caveat(self) -> None:
+        scene = self._molecule([("C", None), ("H", None), ("O", None)])
+        assert pf._domain_checks(scene) == []
+
+    def test_metal_organic_straddle_is_an_advisory_caveat(self) -> None:
+        """A Pd-organic mix — element-in-box passes (Pd and C/H are both in
+        MACE-MP's palette), but the combination straddles both MLIPs'
+        training domains; that must show up as a caveat, never a rejection."""
+        scene = self._molecule([("Pd", None), ("C", None), ("H", None)])
+        straddle = [c for c in pf._domain_checks(scene) if c.code == "domain_straddle"]
+        assert straddle and "Pd" in straddle[0].message
+
+    def test_net_charge_is_an_advisory_caveat(self) -> None:
+        scene = self._molecule([("N", 1), ("H", None), ("H", None)])
+        charged = [c for c in pf._domain_checks(scene) if c.code == "domain_charged"]
+        assert charged and "+1" in charged[0].message
+
+    def test_balanced_net_charge_is_not_flagged(self) -> None:
+        """Individually charged sites that sum to a formally neutral
+        molecule (a zwitterion, e.g.) shouldn't trip the net-charge caveat."""
+        scene = self._molecule([("N", 1), ("O", -1)])
+        assert not any(c.code == "domain_charged" for c in pf._domain_checks(scene))
+
+    def test_straddle_caveat_surfaces_through_the_full_pipeline_without_gating(
+        self,
+    ) -> None:
+        """A tethered (not detached) organic adsorbate on the Pd slab: the
+        geometry checks all pass (:class:`TestCleanSlab`'s baseline), but the
+        Pd/C mix still earns a ``domain_straddle`` caveat — proving caveats
+        ride alongside a passing verdict rather than needing a failure to
+        show up."""
+        scene = _pd_slab()
+        cart = np.array([scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()])
+        top_z = float(cart[:, 2].max())
+        center_xy = cart[:, :2].mean(axis=0)
+        placement = np.array([center_xy[0], center_xy[1], top_z + 2.0])
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(placement))
+        label = scene.next_label("C")
+        scene.atoms[label] = Atom(label=label, element="C", frac=frac)
+
+        verdict = pf.preflight(scene)
+        assert any(c.code == "domain_straddle" for c in verdict.caveats)
+        assert verdict.ok is True  # advisory caveat never blocks a clean geometry

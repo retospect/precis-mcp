@@ -19,6 +19,7 @@ from precis.structure import (
     validate,
 )
 from precis.structure.cell import Cell
+from precis.structure.relax import route_ml_model
 
 
 def _cubic(a: float = 10.0, pbc: tuple[bool, bool, bool] = (True, True, True)) -> Cell:
@@ -1111,6 +1112,102 @@ def test_ml_calculator_chgnet_rejects_dispersion() -> None:
     relax_mod = importlib.import_module("precis.structure.relax")
     with pytest.raises(RelaxUnsupported, match="no dispersion"):
         relax_mod._ml_calculator("chgnet", dispersion=True)
+
+
+# -- gripe 285774: organic-domain model + composition routing ---------------
+
+
+def test_ml_calculator_mace_off_needs_the_dft_ml_extra(monkeypatch) -> None:
+    """Same clean-``RelaxUnsupported`` contract as mace_mp/chgnet when the
+    backend package isn't installed — never a stray ImportError."""
+    import builtins
+    import importlib
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+    real_import = builtins.__import__
+
+    def _no_mace(name, *args, **kwargs):
+        if name == "mace" or name.startswith("mace."):
+            raise ImportError("no mace (test)")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_mace)
+    with pytest.raises(RelaxUnsupported, match=r"\[dft-ml\]"):
+        relax_mod._ml_calculator("mace_off", dispersion=False)
+
+
+def test_ml_calculator_mace_off_dispersion_needs_torch_dftd(monkeypatch) -> None:
+    """mace_off has no built-in ``dispersion`` kwarg (unlike mace_mp) — the
+    D3 backend is still probed up front, same clean-failure contract."""
+    import builtins
+    import importlib
+
+    pytest.importorskip("mace")
+    relax_mod = importlib.import_module("precis.structure.relax")
+    real_import = builtins.__import__
+
+    def _no_dftd(name, *args, **kwargs):
+        if name == "torch_dftd":
+            raise ImportError("no torch_dftd (test)")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_dftd)
+    with pytest.raises(RelaxUnsupported, match="torch-dftd"):
+        relax_mod._ml_calculator("mace_off", dispersion=True)
+
+
+def test_route_ml_model_organic_neutral_nonperiodic_picks_mace_off() -> None:
+    scene = Scene(cell=_cubic(20.0, pbc=(False, False, False)))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "H", "frac": [0.52, 0.5, 0.5]},
+            {"op": "add_atom", "element": "O", "frac": [0.48, 0.5, 0.5]},
+        ],
+    )
+    assert route_ml_model(scene) == "mace_off"
+
+
+def test_route_ml_model_periodic_metal_keeps_mace_mp() -> None:
+    """A periodic structure keeps the materials default even when every
+    element is technically organic-coverage (e.g. a lone carbon lattice)."""
+    scene = Scene(cell=_cubic(10.0, pbc=(True, True, True)))
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    assert route_ml_model(scene) == "mace_mp"
+
+    periodic_organic = Scene(cell=_cubic(10.0, pbc=(True, True, False)))
+    apply_ops(periodic_organic, [{"op": "add_atom", "element": "C", "frac": [0, 0, 0]}])
+    assert route_ml_model(periodic_organic) == "mace_mp"
+
+
+def test_route_ml_model_charged_species_keeps_mace_mp() -> None:
+    """A declared net charge falls back to the materials default — neither
+    registered model was trained with charge states in mind, and 'mace_mp'
+    is the conservative, historical choice."""
+    scene = Scene(cell=_cubic(20.0, pbc=(False, False, False)))
+    apply_ops(scene, [{"op": "add_atom", "element": "N", "frac": [0.5, 0.5, 0.5]}])
+    scene.atoms["aN1"].oxidation = 1
+    assert route_ml_model(scene) == "mace_mp"
+
+
+def test_route_ml_model_mixed_elements_keeps_mace_mp() -> None:
+    """A metal-organic straddle (element set outside :data:`ORGANIC_ELEMENTS`)
+    keeps the materials default — never a silent guess toward the organic
+    model for chemistry it wasn't trained on."""
+    scene = Scene(cell=_cubic(20.0, pbc=(False, False, False)))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.52, 0.5, 0.5]},
+        ],
+    )
+    assert route_ml_model(scene) == "mace_mp"
+
+
+def test_route_ml_model_empty_scene_keeps_mace_mp() -> None:
+    assert route_ml_model(Scene(cell=_cubic(10.0))) == "mace_mp"
 
 
 # -- nav probes: spatial (line / plane / sphere, §6.2) -----------------------
