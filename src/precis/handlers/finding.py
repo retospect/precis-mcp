@@ -314,7 +314,7 @@ class FindingHandler(NumericRefHandler):
                     "for a chase finding, or wants=[{'doi':'10.1/x'}], "
                     "provenance='pc42' for acquisition mode",
                 )
-            sentence = (body_text or title or "").strip()
+            sentence = (title or body_text or "").strip()
             if not sentence:
                 raise BadInput(
                     "a claim hub needs its canonical claim sentence — pass "

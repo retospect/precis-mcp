@@ -1276,6 +1276,34 @@ class TestPutSupportersHubMint:
         hub_id = int(m.group(1))
         assert is_claim_hub(store, hub_id)
 
+    def test_supporters_prefers_title_over_body_for_sentence(self, store) -> None:
+        """When both ``title=`` and ``body=`` are given, the claim sentence
+        comes from ``title=`` -- mirroring the retitle path (gr263195): a
+        long ``body=`` (e.g. a full paragraph) must never become the claim
+        sentence and later fail over-long lint at approve."""
+        from precis.taproot.seniority import is_claim_hub
+
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        title = "Amine loading raises CO2 capacity."
+        resp = h.put(
+            title=title,
+            body="A much longer body paragraph describing the same finding "
+            "in far more detail than the short title above.",
+            supporters=[{"paper": "miller23a"}],
+        )
+        assert f"claim: {title}" in resp.body
+
+        m = _search(r"claim hub fi(\d+)", resp.body)
+        hub_id = int(m.group(1))
+        assert is_claim_hub(store, hub_id)
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT title FROM refs WHERE ref_id = %s", (hub_id,)
+            ).fetchone()
+        assert row is not None
+        assert row[0] == title
+
     def test_supporters_no_lint_block_when_clean(self, store) -> None:
         """A clean scope/sentence -- no ``notation``/``scope_lint``
         warnings -- omits the lint block entirely."""

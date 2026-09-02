@@ -487,6 +487,84 @@ def test_seed_claim_hub_rejects_contradicts_supporter_role(store: Any) -> None:
     assert rows == []
 
 
+# ── gr263195: validate-first + atomicity ─────────────────────────────
+
+
+def test_seed_claim_hub_invalid_supporter_writes_nothing(store: Any) -> None:
+    """A batch with one valid and one invalid (wrong-kind) supporter fails
+    closed -- no hub ref, no chunks, no tags, no evidence edge for EITHER
+    supporter. Before the fix, ``mint_hub`` committed before the
+    supporter loop ever resolved kinds, so an invalid supporter left a
+    durable zero-evidence orphan hub behind (observed: fi263178)."""
+    good_paper = seed_ref(store, title="A good paper", kind="paper")
+    bad_ref = seed_ref(store, title="Not evidence-sourced", kind="memory")
+
+    with store.pool.connection() as conn:
+        before = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'finding'"
+        ).fetchone()[0]
+
+    with pytest.raises(BadInput):
+        seed_claim_hub(
+            store,
+            sentence="A claim with one bad supporter among the good.",
+            scope={},
+            supporters=[
+                {"paper": good_paper, "role": "corroborates"},
+                {"paper": bad_ref, "role": "corroborates"},
+            ],
+        )
+
+    with store.pool.connection() as conn:
+        after = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'finding'"
+        ).fetchone()[0]
+        chunk_count = conn.execute(
+            "SELECT count(*) FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+            "WHERE r.kind = 'finding'"
+        ).fetchone()[0]
+        tag_count = conn.execute(
+            "SELECT count(*) FROM ref_tags rt JOIN refs r ON r.ref_id = rt.ref_id "
+            "WHERE r.kind = 'finding'"
+        ).fetchone()[0]
+        edge_count = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id IN (%s, %s)",
+            (good_paper, bad_ref),
+        ).fetchone()[0]
+
+    # No orphan hub -- the finding count is unchanged, and neither
+    # supporter's paper got an evidence edge.
+    assert after == before
+    assert chunk_count == 0
+    assert tag_count == 0
+    assert edge_count == 0
+
+
+def test_seed_claim_hub_all_valid_supporters_still_mints_with_edges(
+    store: Any,
+) -> None:
+    """The validate-first pass doesn't change the happy path: an all-valid
+    multi-supporter batch still mints the hub and attaches every edge."""
+    paper_a = seed_ref(store, title="Supporter A", kind="paper")
+    paper_b = seed_ref(store, title="Supporter B", kind="paper")
+
+    out = seed_claim_hub(
+        store,
+        sentence="Every supporter here resolves cleanly.",
+        scope={},
+        supporters=[
+            {"paper": paper_a, "role": "corroborates"},
+            {"paper": paper_b, "role": "establishes"},
+        ],
+    )
+
+    assert out["attached"] == 2
+    assert out["already"] == 0
+    assert _ref_tag(store, out["hub_ref_id"], "TAPROOT") == "claim"
+    assert _edges(store, src=paper_a, dst=out["hub_ref_id"])
+    assert _edges(store, src=paper_b, dst=out["hub_ref_id"])
+
+
 def test_seed_claim_hub_accepts_patent_supporter(store: Any) -> None:
     patent = seed_ref(store, title="A patent", kind="patent")
 

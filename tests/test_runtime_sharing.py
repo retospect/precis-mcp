@@ -13,6 +13,7 @@ runtime with the tool path via ``core.set_runtime``.
 
 from __future__ import annotations
 
+import types
 from typing import cast
 
 import precis.tools.core as core
@@ -36,7 +37,9 @@ def test_init_runtime_wires_the_tool_path(monkeypatch):
     """server._init_runtime shares its built runtime with tools.core."""
     import precis.server as server
 
-    built = object()
+    # SimpleNamespace, not object(): _init_runtime stamps
+    # ``long_lived = True`` on the built runtime (gr267466).
+    built = types.SimpleNamespace()
     monkeypatch.setattr(server, "_runtime", None)
     monkeypatch.setattr(core, "_runtime", None)
     # server.py binds build_runtime at import time, so patch it there.

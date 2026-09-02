@@ -32,6 +32,7 @@ from precis.taproot.hub import (
     _grounding_chunk_ord,
     attach_evidence,
     mint_hub,
+    run_retraction_checks,
 )
 from precis.taproot.notation import lint_notation
 from precis.taproot.sentence_lint import lint_scope
@@ -338,31 +339,38 @@ def seed_claim_hub(
     detector, which is why it is wired into the mint response and not just
     the retrospective ``precis taproot lint`` pass.
 
+    Validates **every** supporter (missing/unresolvable ``paper``, an
+    invalid ``role``, or ``contradicts``) before writing anything — a bad
+    supporter anywhere in ``supporters`` must never leave a durable
+    zero-evidence orphan hub behind (gr263195: ``mint_hub`` used to run
+    first, uncommitted-until-BadInput). The mint + every evidence-edge
+    attach then land in one transaction, so an exception mid-attach (a
+    race, a store-layer bug) rolls the mint back too, not just a partial
+    attach set.
+
     Raises:
-        BadInput: a supporter's ``paper`` doesn't resolve (or resolves to a
-            non-paper/patent ref), or its ``role`` isn't in
-            :data:`~precis.taproot.hub.HUB_ROLES`, or it names
-            ``contradicts`` (adjudication-derived only, migration 0151 —
-            file a ``disputes`` link instead).
+        BadInput: one or more supporters' ``paper`` doesn't resolve (or
+            resolves to a non-paper/patent ref), or a ``role`` isn't in
+            :data:`~precis.taproot.hub.HUB_ROLES`, or names ``contradicts``
+            (adjudication-derived only, migration 0151 — file a
+            ``disputes`` link instead). Every failing supporter is
+            reported in the one raised error, not just the first.
     """
     claim = CanonicalClaim(sentence=sentence, scope=dict(scope or {}))
-    hub_ref_id = mint_hub(store, claim, set_by=set_by)
     pub_id = make_pub_id(make_taproot_hub_paper_id(claim.sentence, claim.scope))
 
-    attached = 0
-    already = 0
-    ungrounded = 0
-    collapsed: list[dict[str, Any]] = []
-    # Dedup key is (paper, role, grounding-chunk): two passages of the same
-    # paper are distinct edges now that grounding lands on src_chunk_id, so
-    # only a supporter naming the *same* passage collapses.
-    seen_edges: set[tuple[int, str, int | None]] = set()
-    # One connection reused across every supporter's `_evidence_edge_exists`
-    # check (below) rather than opening N throwaway pool connections for an
-    # N-supporter mint.
-    with store.pool.connection() as conn:
-        for supporter in supporters:
-            paper = supporter.get("paper")
+    # ── validate-first (gr263195): resolve every supporter's kind + role
+    # up front, read-only, before mint_hub ever runs. Mirrors the
+    # hypothesis door's own validate-before-write discipline (and the CLI's
+    # pre-existing `_preflight_resolve_supporters`, which this now
+    # subsumes for every caller, not just the CLI batch path) — a typo'd
+    # handle or a wrong role must fail closed with nothing written, not
+    # after a hub is already durable.
+    resolved: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for idx, supporter in enumerate(supporters):
+        paper = supporter.get("paper")
+        try:
             if paper is None:
                 raise BadInput("supporter missing required 'paper' field")
             role = supporter.get("role") or _DEFAULT_ROLE
@@ -389,6 +397,44 @@ def seed_claim_hub(
                     ),
                 )
             paper_ref_id = resolve_paper_ref_id(store, paper)
+        except BadInput as exc:
+            errors.append(f"supporter[{idx}] paper={paper!r}: {exc.cause}")
+            continue
+        resolved.append({**supporter, "role": role, "paper_ref_id": paper_ref_id})
+
+    if errors:
+        raise BadInput(
+            f"{len(errors)} of {len(supporters)} supporter(s) failed "
+            "validation — nothing minted or attached:\n" + "\n".join(errors),
+            next="fix every listed supporter and retry",
+        )
+
+    attached = 0
+    already = 0
+    ungrounded = 0
+    collapsed: list[dict[str, Any]] = []
+    # Dedup key is (paper, role, grounding-chunk): two passages of the same
+    # paper are distinct edges now that grounding lands on src_chunk_id, so
+    # only a supporter naming the *same* passage collapses.
+    seen_edges: set[tuple[int, str, int | None]] = set()
+    # Retraction checks (trigger 1) are network calls -- attach_evidence
+    # must never run them inside the open transaction below (pool-exhaustion
+    # deadlock risk under a held pgbouncer transaction). Collect the paper
+    # ref ids here, drain them via run_retraction_checks once this
+    # transaction has committed.
+    owned_checks: list[int] = []
+
+    # One transaction for the mint AND every evidence-edge attach: an
+    # exception partway through the attach loop rolls the mint back too
+    # (gr263195's atomicity backstop), rather than leaving a hub with only
+    # some of its supporters attached.
+    with store.tx() as conn:
+        hub_ref_id = mint_hub(store, claim, set_by=set_by, conn=conn)
+
+        for supporter in resolved:
+            paper = supporter["paper"]
+            role = supporter["role"]
+            paper_ref_id = supporter["paper_ref_id"]
             src_ord = _grounding_chunk_ord(
                 store,
                 paper_ref_id=paper_ref_id,
@@ -446,11 +492,16 @@ def seed_claim_hub(
                 role=role,
                 meta=meta,
                 set_by=set_by,
+                conn=conn,
+                pending_checks=owned_checks,
             )
             attached += 1
             if src_ord is None:
                 ungrounded += 1
             seen_edges.add(edge_key)
+
+    # Transaction committed -- now safe to reach the network (trigger 1).
+    run_retraction_checks(store, owned_checks, hub_ref_id=hub_ref_id)
 
     return {
         "pub_id": pub_id,

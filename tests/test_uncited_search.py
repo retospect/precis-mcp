@@ -510,6 +510,9 @@ def test_uncited_note_visible_on_first_page_when_result_paginates(
     )
     draft_ref_id = _draft_ref_id(store, "uc-paginate")
 
+    # Cursor pagination only engages on long-lived runtimes (gr267466);
+    # this test is about which page the note lands on, so opt in.
+    rt.long_lived = True
     monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "500")
     body, is_error = _search(rt, uncited=f"dr{draft_ref_id}", page_size=150)
     assert not is_error
