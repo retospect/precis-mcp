@@ -91,7 +91,7 @@ put(
 |----|------|--------|
 | `set_cell` | `lattice` or `a,b,c,…` + `pbc` | redefine the cell |
 | `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell + `pbc (true,true,true)` (ASE-exact atom order, so autocatpath can inject it). Omit the top-level `cell`. `size` is `nx×ny` in-plane repeats × `nz` layers — the cell tiles, so one substitution = 1/(nx·ny) ML coverage. `fix_layers` is an **integer count** of *bottom* layers to freeze (`2` = bottom two layers), **not** a list of layer indices. |
-| `add_atom` | `element`, `frac:[fa,fb,fc]` | place an atom at a raw fractional coordinate (wraps into the cell) — an escape hatch; for an adsorbate on an existing site, use `add_atom_site` instead |
+| `add_atom` | `element`, `frac:[fa,fb,fc]`, `charge?` | place an atom at a raw fractional coordinate (wraps into the cell) — an escape hatch; for an adsorbate on an existing site, use `add_atom_site` instead. `charge` is the declared formal/net charge (integer, default 0 — e.g. a quaternary N `+1`, a carboxylate O `-1`); it feeds the validator's charge-aware valence budget |
 | `add_atom_site` | `element`, `site:{type:"top"\|"bridge"\|"hollow", anchors:[atom labels]}`, `height?` | place an atom by **naming** a site (1/2/3 anchors) instead of guessing coordinates — `xy` = the anchors' centroid, `z` = the anchors' top + `height` (Å; default the covalent-radius sum of anchor + placed element) |
 | `set_element` | `atom`, `element` | transmute — **keeps the atom's label & position** (see caution below) |
 | `vacancy` | `atom` | remove an atom (label not recycled) |
@@ -106,7 +106,7 @@ put(
 | `ring` | `element`, `n:3-12`, `aromatic?`, `center?:[x,y,z]`, `normal?:[nx,ny,nz]`, `bond_length?` | mint a regular n-gon ring (Cartesian plane through `center` ⟂ `normal`); `aromatic:true` → order-1.5 aromatic bonds + `hybridization:sp2` on each atom, else order-1 pairwise bonds |
 | `attach` | `from`, `to`, `order?`, `distance?`, `direction?:[x,y,z]`, `from_direction?:[x,y,z]` | rigidly move the whole fragment containing `from` so it bonds to `to` (aligned to `to`'s open coordination direction); `from`/`to` already in the same fragment is rejected — use `add_bond` for a ring closure |
 | `import_fragment` | `design`, `offset?:[x,y,z]` | copy another design's atoms + declared bonds in as a positioned fragment (handler-level; response echoes the old→new label mapping so a follow-up `attach` can reference the new labels) |
-| `from_smiles` | `smiles`, `offset?:[x,y,z]`, `seed?` | mint a whole organic fragment from a SMILES string via rdkit's ETKDG 3D embedder (needs `precis-mcp[chem]`); deterministic per `(smiles, seed)`; aromatic atoms get `hybridization:sp2` and order-1.5 `aromatic` bonds, others order 1/2/3 `pairwise`; a best-effort MMFF cleanup runs but never fails the op; v1 carries geometry only — no formal charges/stereo beyond what ETKDG encodes |
+| `from_smiles` | `smiles`, `offset?:[x,y,z]`, `seed?` | mint a whole organic fragment from a SMILES string via rdkit's ETKDG 3D embedder (needs `precis-mcp[chem]`); deterministic per `(smiles, seed)`; aromatic atoms get `hybridization:sp2` and order-1.5 `aromatic` bonds, others order 1/2/3 `pairwise`; each atom's declared formal charge carries in from rdkit (`[N+](C)(C)(C)C` mints a `charge:+1` N); a best-effort MMFF cleanup runs but never fails the op; v1 carries geometry + formal charge only — no stereo beyond what ETKDG encodes |
 | `relax` | `fidelity?`, `steps?`, `model?`, `dispersion?` | terminal op — see the ladder below |
 
 **Bonds are intent, not a DFT input.** Declare the bonds you mean; the
@@ -186,8 +186,11 @@ get(
 get(
     ..., view="validate"
 )  # DRC, two tiers: errors (overlaps/valence/bond length — these gate a
-#    cloud relax) + advisory warnings (VSEPR angle strain, twisted π bond,
-#    3-/4-ring, hybridization conflict — never block anything)
+#    cloud relax; the valence budget is charge-aware, so a declared N+/O-/etc.
+#    is judged against ITS state, not luck) + advisory warnings (VSEPR angle
+#    strain, twisted π bond, 3-/4-ring, hybridization conflict, an
+#    out-of-typical-range metal coordination number, an unmodeled charge
+#    state — never block anything)
 ```
 
 ### Spatial — the CAD ray / plane, retargeted to atoms

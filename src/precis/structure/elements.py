@@ -71,6 +71,48 @@ def max_valence(element: str) -> int | None:
     return _MAX_VALENCE.get(element)
 
 
+#: Effective valence budget for common charged main-group states (gr285775).
+#: Deliberately NOT ``max_valence(element) + charge`` — that naive arithmetic
+#: coincidentally matches a couple of these (O- = 2 - 1 = 1) but is wrong in
+#: general (N+'s real budget is 4, not ``max_valence('N') + 1 == 5``): a
+#: formal charge changes an atom's accessible orbitals/lone pairs, not a
+#: fixed +/-1 slot on its neutral bond count. Keyed by ``(element, charge)``;
+#: small and obviously extendable — add an entry rather than guessing.
+_CHARGED_VALENCE: dict[tuple[str, int], int] = {
+    ("N", 1): 4,  # ammonium / quaternary ammonium N+ (e.g. CBPQT(4+))
+    ("O", -1): 1,  # alkoxide / carboxylate O-
+    ("O", 1): 3,  # oxocarbenium-adjacent / protonated-ether O+
+    ("C", -1): 3,  # carbanion
+    ("C", 1): 3,  # carbocation
+    ("S", 1): 3,  # sulfonium S+
+    ("P", 1): 4,  # phosphonium P+
+    ("F", -1): 0,  # halide anions: a bare anion carries no covalent bond
+    ("Cl", -1): 0,
+    ("Br", -1): 0,
+    ("I", -1): 0,
+}
+
+
+def effective_valence(element: str, charge: int) -> tuple[int | None, bool]:
+    """The valence budget rules 2/5 (``validate.py``) should use for an atom
+    declaring ``charge`` — ``(budget, known)``.
+
+    ``charge == 0`` always returns :func:`max_valence` (unchanged neutral
+    behaviour), ``known=True``. A nonzero charge looks up
+    :data:`_CHARGED_VALENCE`; a ``(element, charge)`` state with no entry
+    falls back to the neutral :func:`max_valence` with ``known=False`` — the
+    caller gets a usable number (never a hard failure) but should surface an
+    advisory note (:mod:`vsepr`'s ``unmodeled_charge_state``) rather than
+    silently trusting a guess at exotic charge-state chemistry.
+    """
+    if charge == 0:
+        return max_valence(element), True
+    entry = _CHARGED_VALENCE.get((element, charge))
+    if entry is not None:
+        return entry, True
+    return max_valence(element), False
+
+
 def is_known(element: str) -> bool:
     """True if the element is in the curated radius table."""
     return element in _COVALENT_RADIUS

@@ -140,12 +140,20 @@ def _op_add_atom(scene: Scene, op: dict[str, Any]) -> None:
     label = op.get("label") or scene.next_label(element)
     if label in scene.atoms:
         raise OpError(f"duplicate atom label: {label!r}")
+    charge_raw = op.get("charge", 0)
+    try:
+        charge = int(charge_raw) if charge_raw is not None else 0
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"add_atom 'charge' must be an integer, got {charge_raw!r}"
+        ) from exc
     scene.atoms[label] = Atom(
         label=label,
         element=element,
         frac=frac,
         magmom=op.get("magmom"),
         oxidation=op.get("oxidation"),
+        charge=charge,
         hybridization=op.get("hybridization"),
     )
 
@@ -829,16 +837,19 @@ def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
     its own.
 
     One scene atom per rdkit atom (element = ``GetSymbol()``, position = the
-    embedded conformer + ``offset``); an aromatic atom gets
-    ``hybridization="sp2"``. One declared bond per rdkit bond: an
-    ``AROMATIC`` rdkit bond → order 1.5, kind ``aromatic``; anything else →
-    order = ``GetBondTypeAsDouble()`` (1/2/3), kind ``pairwise``. Each bond's
-    periodic image is set via ``scene.cell.mic`` (the ``ring``/``attach``
-    discipline — ``wrap()`` may split the fragment across a cell wall).
+    embedded conformer + ``offset``, ``charge`` = ``GetFormalCharge()`` —
+    gr285775, so a quaternary-ammonium/carboxylate SMILES round-trips its
+    declared charge into the validator's charge-aware valence budget); an
+    aromatic atom gets ``hybridization="sp2"``. One declared bond per rdkit
+    bond: an ``AROMATIC`` rdkit bond → order 1.5, kind ``aromatic``; anything
+    else → order = ``GetBondTypeAsDouble()`` (1/2/3), kind ``pairwise``. Each
+    bond's periodic image is set via ``scene.cell.mic`` (the ``ring``/
+    ``attach`` discipline — ``wrap()`` may split the fragment across a cell
+    wall).
 
-    v1 scope: geometry only. Formal charges, stereochemistry, and anything
-    else beyond what ETKDG's distance-geometry embedding encodes are not
-    carried into the scene.
+    v1 scope: geometry + formal charge. Stereochemistry and anything else
+    beyond what ETKDG's distance-geometry embedding encodes is not carried
+    into the scene.
     """
     smiles = op.get("smiles")
     if not smiles:
@@ -903,6 +914,7 @@ def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
             label=label,
             element=element,
             frac=frac,
+            charge=int(atom.GetFormalCharge()),
             hybridization="sp2" if atom.GetIsAromatic() else None,
         )
         labels[idx] = label

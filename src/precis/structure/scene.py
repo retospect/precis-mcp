@@ -6,9 +6,12 @@ system-of-record, never the per-probe compute path. The Scene is the
 ``(ref, version)`` working object; the store layer (increment 2) loads/saves it
 from the ``struct_*`` tables.
 
-Atoms carry *intent + current position* (the declared layer); per-atom derived
-values (force/charge) are run-scoped and live elsewhere (§12). Bonds are the
-editable graph (order + provenance + periodic image), not a DFT input (§8.1).
+Atoms carry *intent + current position* (the declared layer), including a
+declared formal/net ``charge`` (gr285775 — quaternary N+, a carboxylate O-);
+per-atom DERIVED values (force/partial charge from a compute run) are
+run-scoped and live elsewhere (§12) — a different thing from the declared
+``Atom.charge`` here. Bonds are the editable graph (order + provenance +
+periodic image), not a DFT input (§8.1).
 """
 
 from __future__ import annotations
@@ -37,6 +40,11 @@ class Atom:
     fixed: int = 0  # bitmask: FIX_X|FIX_Y|FIX_Z
     magmom: float | None = None
     oxidation: int | None = None
+    #: Declared formal/net charge (intent, gr285775) — e.g. a quaternary
+    #: ammonium N+ (charge=1) or a carboxylate O- (charge=-1). Feeds
+    #: validate.py's charge-aware valence budget. Distinct from a run-scoped
+    #: DERIVED partial charge (a DFT/ML output, not stored on the Scene).
+    charge: int = 0
     hybridization: str | None = None  # declared intent only
 
 

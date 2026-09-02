@@ -653,6 +653,116 @@ def test_validate_valence_budget_ignores_inferred_bonds() -> None:
 # -- export (pure formats) ---------------------------------------------------
 
 
+def test_validate_charged_quaternary_ammonium_passes_via_declared_charge() -> None:
+    # gr285775: a quaternary N+ (4 single bonds) must pass because it
+    # DECLARES charge=+1, not because neutral N's table entry happens to be
+    # 4 too. CBPQT(4+)'s N+ centres are the motivating case.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom",
+                "element": "N",
+                "frac": [0.5, 0.5, 0.5],
+                "charge": 1,
+            },
+            {"op": "add_atom", "element": "C", "frac": [0.62, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.38, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.62, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.38, 0.5]},
+            {"op": "add_bond", "i": "aN1", "j": "aC1", "order": 1},
+            {"op": "add_bond", "i": "aN1", "j": "aC2", "order": 1},
+            {"op": "add_bond", "i": "aN1", "j": "aC3", "order": 1},
+            {"op": "add_bond", "i": "aN1", "j": "aC4", "order": 1},
+        ],
+    )
+    assert scene.atoms["aN1"].charge == 1
+    findings = validate(scene)
+    assert not any(f.atoms == ["aN1"] for f in findings)
+
+
+def test_validate_charged_n_plus_still_flags_a_fifth_bond() -> None:
+    # Proves the explicit charged-valence table is used, not naive
+    # `max_valence('N') + charge` arithmetic (4 + 1 = 5 would wrongly permit
+    # a 5th bond) — N+'s real effective budget is 4, so a 5th single bond
+    # must still trip the budget rule.
+    scene = Scene(cell=_cubic())
+    ops: list[dict[str, object]] = [
+        {"op": "add_atom", "element": "N", "frac": [0.5, 0.5, 0.5], "charge": 1}
+    ]
+    for i, (dx, dy, dz) in enumerate(
+        [(0.12, 0, 0), (-0.12, 0, 0), (0, 0.12, 0), (0, -0.12, 0), (0, 0, 0.12)]
+    ):
+        ops.append(
+            {"op": "add_atom", "element": "C", "frac": [0.5 + dx, 0.5 + dy, 0.5 + dz]}
+        )
+        ops.append({"op": "add_bond", "i": "aN1", "j": f"aC{i + 1}", "order": 1})
+    apply_ops(scene, ops)
+    findings = [f for f in validate(scene) if f.atoms == ["aN1"]]
+    assert findings and findings[0].rule in (
+        "over_valence",
+        "valence_budget_exceeded",
+    )
+    assert findings[0].expected == 4
+
+
+def test_validate_carboxylate_o_minus_single_bond_is_clean() -> None:
+    # gr285775: an O- (charge=-1) with exactly one declared bond — a
+    # carboxylate/alkoxide oxygen — must validate clean; nothing in the
+    # error-tier gate polices under-valence at all, so this is really a
+    # regression guard against ever adding one without charge-awareness.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.5], "charge": -1},
+            {"op": "add_atom", "element": "C", "frac": [0.6, 0.5, 0.5]},
+            {"op": "add_bond", "i": "aO1", "j": "aC1", "order": 1},
+        ],
+    )
+    findings = validate(scene)
+    assert not any(f.atoms == ["aO1"] for f in findings)
+
+
+def test_validate_o_plus_three_bonds_only_passes_when_charged() -> None:
+    # Demonstrates the charge-aware budget actually changes the outcome
+    # (unlike the N+ case, where neutral N's table entry already matches):
+    # neutral O's max valence is 2, so 3 single bonds fails; declaring O+
+    # (effective budget 3) makes the identical bond graph pass.
+    def _three_bonded_oxygen(charge: int) -> Scene:
+        scene = Scene(cell=_cubic())
+        ops: list[dict[str, object]] = [
+            {
+                "op": "add_atom",
+                "element": "O",
+                "frac": [0.5, 0.5, 0.5],
+                "charge": charge,
+            }
+        ]
+        for i, (dx, dy, dz) in enumerate([(0.12, 0, 0), (-0.12, 0, 0), (0, 0.12, 0)]):
+            ops.append(
+                {
+                    "op": "add_atom",
+                    "element": "C",
+                    "frac": [0.5 + dx, 0.5 + dy, 0.5 + dz],
+                }
+            )
+            ops.append({"op": "add_bond", "i": "aO1", "j": f"aC{i + 1}", "order": 1})
+        apply_ops(scene, ops)
+        return scene
+
+    neutral_findings = [
+        f for f in validate(_three_bonded_oxygen(0)) if f.atoms == ["aO1"]
+    ]
+    assert neutral_findings  # 3 > neutral O's max valence 2
+
+    charged_findings = [
+        f for f in validate(_three_bonded_oxygen(1)) if f.atoms == ["aO1"]
+    ]
+    assert not charged_findings  # O+'s effective budget is 3
+
+
 def test_poscar_export_groups_and_selective_dynamics() -> None:
     scene = Scene(cell=_cubic(3.0))
     apply_ops(

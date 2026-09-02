@@ -441,6 +441,51 @@ def test_migration_0087_columns_exist(structure):
     assert row is None  # no rows yet — the point is the query didn't error
 
 
+def test_declared_atom_charge_round_trips_through_the_store(structure):
+    """gr285775: ``add_atom``'s ``charge`` persists on ``struct_atoms`` and
+    survives a ``structure_load`` — the declared-formal-charge intent, not a
+    run-derived partial charge."""
+    payload = json.dumps(
+        {
+            "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+            "ops": [
+                {
+                    "op": "add_atom",
+                    "element": "N",
+                    "frac": [0.5, 0.5, 0.5],
+                    "charge": 1,
+                },
+                {"op": "add_atom", "element": "O", "frac": [0.6, 0.5, 0.5]},
+            ],
+        }
+    )
+    structure.put(id="charged_n", text=payload)
+    ref = structure.store.get_ref(kind="structure", id="charged_n")
+    scene, _ = structure.store.structure_load(ref.id)
+    assert scene.atoms["aN1"].charge == 1
+    assert scene.atoms["aO1"].charge == 0  # undeclared -> neutral default
+    atom_view = structure.get(id="charged_n", view="atom", args={"atom": "aN1"})
+    assert "charge=+1" in atom_view.body
+
+
+def test_struct_atoms_row_without_an_explicit_charge_loads_as_zero(structure):
+    """gr285775: a pre-migration row (inserted before ``charge`` existed as a
+    concept the app writes) relies on the column's ``NOT NULL DEFAULT 0``
+    backfill — simulate that by inserting directly via SQL, omitting
+    ``charge``, and confirming ``structure_load`` reads it back as neutral."""
+    structure.put(id="legacy_row", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="legacy_row")
+    with structure.store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO struct_atoms "
+            "(ref_id, label, element, fa, fb, fc, added_version) "
+            "VALUES (%s, 'aPd99', 'Pd', 0.9, 0.9, 0.9, 1)",
+            (ref.id,),
+        )
+    scene, _ = structure.store.structure_load(ref.id)
+    assert scene.atoms["aPd99"].charge == 0
+
+
 def test_emt_relax_records_per_atom_forces_shown_in_atom_view(structure):
     """A real 'emt' relax (ASE-EMT, no MACE needed) records a per-atom force
     array of the right length; view='atom' surfaces |F| for one atom, tagged

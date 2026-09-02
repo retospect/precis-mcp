@@ -31,6 +31,25 @@ SMALL_RING_MAX = 4
 #: their coordination geometry is a different (crystal-field) story.
 _HYBRID_ELEMENTS = {"B", "C", "N", "O", "Si", "P", "S"}
 
+#: Known-reasonable coordination-number ranges for a metal acting as a
+#: cluster/complex centre (gr285775) — small, commented, obviously
+#: extendable. Sourced from common inorganic-cluster/MOF-node chemistry:
+#: Zr6O4(OH)4 (the UiO-66 SBU) nodes run CN 6-8; Zn/Cu paddle-wheel and
+#: tetrahedral MOF nodes commonly run 4-6; octahedral/tetrahedral Fe
+#: complexes commonly run 4-6. Deliberately does NOT include the slab
+#: metals this codebase also carries (Ni/Pd/Pt/Au, ``elements._MAX_VALENCE``)
+#: — their correct bulk/surface coordination runs much higher (~9-12), which
+#: would false-flag on every legitimate slab; :func:`_metal_coordination`
+#: additionally only counts LIGAND (non-metal) declared bonds, so a bare
+#: slab atom with zero declared bonds is skipped outright rather than
+#: misread as CN=0.
+_METAL_CN_RANGE: dict[str, tuple[int, int]] = {
+    "Zr": (6, 8),
+    "Zn": (4, 6),
+    "Cu": (4, 6),
+    "Fe": (4, 6),
+}
+
 #: sp3 ideal angle is lone-pair-adjusted per central atom (Bent's rule, cheap
 #: nominal values) rather than the flat tetrahedral 109.47° — a bare-lone-pair
 #: N/O/S/P compresses its bond angle below the no-lone-pair value.
@@ -300,6 +319,94 @@ def _hybridization_conflict(scene: Scene) -> list[ValidationIssue]:
     return findings
 
 
+def _metal_coordination(scene: Scene) -> list[ValidationIssue]:
+    """Advisory metal coordination-number check (gr285775): metals carry no
+    valence bound (``validate.py`` rule 2 explicitly skips them — see
+    :data:`elements._MAX_VALENCE`), so a wildly over-coordinated metal (a Zr
+    bonded to 20 oxygens) passes the hard-reject gate silently. Never
+    gating — real coordination chemistry varies plenty even within
+    :data:`_METAL_CN_RANGE`'s table.
+
+    Counts DECLARED bonds only (this module's usual discipline), and only to
+    LIGAND (non-metal) neighbours — a metal-metal lattice bond, or a bare
+    metal atom with no declared bonds at all (every ``slab``-built design),
+    isn't "coordination chemistry" in the cluster/complex sense this table
+    models, so it's excluded from the count rather than misread as CN=0 and
+    warned on every ordinary slab.
+    """
+    findings: list[ValidationIssue] = []
+    for label, atom in scene.atoms.items():
+        cn_range = _METAL_CN_RANGE.get(atom.element)
+        if cn_range is None:
+            continue
+        ligand_bonds = [
+            b
+            for b in scene.bonds_of(label)
+            if b.provenance == "declared"
+            and (other := scene.atoms.get(b.j if b.i == label else b.i)) is not None
+            and elements.max_valence(other.element) is not None
+        ]
+        if not ligand_bonds:
+            continue  # not acting as a coordination centre at all — skip
+        cn = len(ligand_bonds)
+        lo, hi = cn_range
+        if lo <= cn <= hi:
+            continue
+        findings.append(
+            ValidationIssue(
+                rule="metal_coordination",
+                atoms=[label],
+                measured=float(cn),
+                expected=float(hi if cn > hi else lo),
+                suggested_fix=(
+                    f"{label} ({atom.element}) has {cn} declared ligand bonds — "
+                    f"outside the {lo}-{hi} coordination range typical for "
+                    f"{atom.element} clusters/complexes (advisory only: unusual "
+                    "coordination is possible, but double-check the bonds)."
+                ),
+                severity="warn",
+            )
+        )
+    findings.sort(key=lambda f: sorted(f.atoms))
+    return findings
+
+
+def _unmodeled_charge_state(scene: Scene) -> list[ValidationIssue]:
+    """Advisory note (gr285775): a declared charge whose effective valence
+    budget (``validate.py`` rules 2/5, :func:`elements.effective_valence`)
+    has no explicit :data:`elements._CHARGED_VALENCE` entry, so the budget
+    check silently fell back to the neutral :func:`elements.max_valence` —
+    flag it rather than trusting a guess at exotic charge-state chemistry.
+    Metals are excluded: their coordination isn't valence-bounded at all
+    (rules 2/5 skip them outright), so this note doesn't apply to them.
+    """
+    findings: list[ValidationIssue] = []
+    for label, atom in scene.atoms.items():
+        if atom.charge == 0 or elements.max_valence(atom.element) is None:
+            continue
+        _, known = elements.effective_valence(atom.element, atom.charge)
+        if known:
+            continue
+        findings.append(
+            ValidationIssue(
+                rule="unmodeled_charge_state",
+                atoms=[label],
+                measured=float(atom.charge),
+                expected=0.0,
+                suggested_fix=(
+                    f"{label} ({atom.element}) declares charge {atom.charge:+d}, "
+                    "which has no entry in the charged-valence table "
+                    f"(elements._CHARGED_VALENCE) — the valence budget check "
+                    f"fell back to neutral {atom.element}'s max valence; "
+                    "double-check this charge state by hand."
+                ),
+                severity="warn",
+            )
+        )
+    findings.sort(key=lambda f: sorted(f.atoms))
+    return findings
+
+
 def advisories(scene: Scene) -> list[ValidationIssue]:
     """All warn-tier geometry findings (empty = clean). Pure read over the
     Scene — never call this from a hard-reject gate; see the module
@@ -316,4 +423,6 @@ def advisories(scene: Scene) -> list[ValidationIssue]:
     findings += _pi_twist(scene, adj)
     findings += _small_ring(scene, small_rings)
     findings += _hybridization_conflict(scene)
+    findings += _metal_coordination(scene)
+    findings += _unmodeled_charge_state(scene)
     return findings

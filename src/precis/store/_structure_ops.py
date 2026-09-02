@@ -198,8 +198,8 @@ class StructureMixin:
                 row = conn.execute(
                     "INSERT INTO struct_atoms "
                     "(ref_id, label, element, fa, fb, fc, fixed, magmom, "
-                    " oxidation, hybridization, added_version) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    " oxidation, charge, hybridization, added_version) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (
                         ref.id,
                         atom.label,
@@ -210,6 +210,7 @@ class StructureMixin:
                         atom.fixed,
                         atom.magmom,
                         atom.oxidation,
+                        atom.charge,
                         atom.hybridization,
                         version,
                     ),
@@ -420,7 +421,7 @@ class StructureMixin:
         with self.pool.connection() as conn:
             arows = conn.execute(
                 "SELECT id, label, element, fa, fb, fc, fixed, magmom, oxidation, "
-                "hybridization FROM struct_atoms "
+                "charge, hybridization FROM struct_atoms "
                 "WHERE ref_id = %s AND retired_version IS NULL ORDER BY id ASC",
                 (ref_id,),
             ).fetchall()
@@ -437,7 +438,7 @@ class StructureMixin:
             ).fetchall()
         handles: dict[str, int] = {}
         id_to_label: dict[int, str] = {}
-        for aid, label, element, fa, fb, fc, fixed, magmom, oxi, hyb in arows:
+        for aid, label, element, fa, fb, fc, fixed, magmom, oxi, charge, hyb in arows:
             scene.atoms[str(label)] = Atom(
                 label=str(label),
                 element=str(element),
@@ -445,6 +446,10 @@ class StructureMixin:
                 fixed=int(fixed),
                 magmom=magmom,
                 oxidation=oxi,
+                # NOT NULL DEFAULT 0 (0150) backfilled every pre-existing row,
+                # but coalesce defensively so an old in-memory row shape can
+                # never surface as a phantom None charge.
+                charge=int(charge) if charge is not None else 0,
                 hybridization=hyb,
             )
             handles[str(label)] = int(aid)

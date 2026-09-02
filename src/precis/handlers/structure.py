@@ -1452,7 +1452,7 @@ class StructureHandler(Handler):
         Loads the source design via the same load path this handler uses
         for the target, mints one fresh atom per source atom (element,
         cart = source cart + offset, carrying hybridization/magmom/
-        oxidation) with freshly minted TARGET-scene labels, then one bond
+        oxidation/charge) with freshly minted TARGET-scene labels, then one bond
         per source DECLARED bond (mapped labels, order/kind carried,
         periodic images dropped — the import is geometric only). Measures
         do not import. Importing a design into itself is fine (duplicates
@@ -1496,6 +1496,7 @@ class StructureHandler(Handler):
                 frac=frac,
                 magmom=atom.magmom,
                 oxidation=atom.oxidation,
+                charge=atom.charge,
                 hybridization=atom.hybridization,
             )
             label_map[label] = new_label
@@ -2199,10 +2200,11 @@ class StructureHandler(Handler):
                 raise NotFound(f"no atom {label!r} in this structure")
             atom = scene.atoms[label]
             nbrs = probe.neighborhood(scene, label, radius=3.5)
+            charge_note = "" if atom.charge == 0 else f" · charge={atom.charge:+d}"
             head = (
                 f"# {label} — {atom.element} frac({','.join(f'{x:.3f}' for x in atom.frac)}) "
                 f"· coord {probe.coordination(scene, label)} · "
-                f"fixed={'yes' if atom.fixed else 'no'}"
+                f"fixed={'yes' if atom.fixed else 'no'}{charge_note}"
             )
             # gripe 161576 remainder: a "calc: …" line naming what produced
             # this design's numbers — the same struct_runs row selection as

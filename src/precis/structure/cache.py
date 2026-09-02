@@ -12,7 +12,9 @@ addressing promise, scoped to the cache and needing no CoW-snapshot table).
 Why this is correct to cache:
 
 - The key is over the **input** geometry — cell + per-atom element / fractional
-  position / fixed-axis mask / magmom / oxidation — *not* labels (naming is
+  position / fixed-axis mask / magmom / oxidation / declared charge (gr285775 —
+  a neutral N and a quaternary N+ atom are chemically different relax inputs
+  and must never collide in the cube) — *not* labels (naming is
   design-scoped, geometry is not) and *not* bonds (a bond is graph intent, never
   a DFT input, §8.1; two designs with identical atoms relax identically whatever
   their bond annotations).
@@ -60,6 +62,7 @@ def _atom_signature(atom: Any) -> list[Any]:
         int(atom.fixed),
         None if atom.magmom is None else _round(atom.magmom),
         atom.oxidation,
+        int(atom.charge),
     ]
 
 

@@ -378,6 +378,111 @@ def test_hybridization_conflict_declared_sp3_with_double_bond_warns() -> None:
     assert findings[0].measured == pytest.approx(120.0)  # bonds imply sp2
 
 
+# -- metal_coordination (gr285775) ------------------------------------------------
+
+
+def _zr_with_n_oxygens(n: int) -> Scene:
+    """One Zr atom declared-bonded to ``n`` O atoms, spread out enough to
+    dodge the unrelated atom_overlap/bond_too_long error-tier rules — the
+    point here is exercising the metal-coordination COUNT, not geometry."""
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "add_atom", "element": "Zr", "cart": [0.0, 0.0, 0.0]}])
+    ops: list[dict[str, object]] = []
+    for k in range(n):
+        # points on a sphere (golden-angle spiral) so no two O atoms collide
+        phi = np.arccos(1 - 2 * (k + 0.5) / n)
+        theta = np.pi * (1 + 5**0.5) * k
+        d = (
+            np.array(
+                [
+                    np.sin(phi) * np.cos(theta),
+                    np.sin(phi) * np.sin(theta),
+                    np.cos(phi),
+                ]
+            )
+            * 2.2
+        )  # ~Zr-O bond length
+        ops.append({"op": "add_atom", "element": "O", "cart": d.tolist()})
+        ops.append({"op": "add_bond", "i": "aZr1", "j": f"aO{k + 1}", "order": 1})
+    apply_ops(scene, ops)
+    return scene
+
+
+def test_metal_coordination_normal_sbu_zr_is_clean() -> None:
+    # Zr6O4(OH)4 (UiO-66 SBU)-style: 7 oxygens on one Zr, within the 6-8
+    # advisory range.
+    scene = _zr_with_n_oxygens(7)
+    assert not any(f.rule == "metal_coordination" for f in vsepr.advisories(scene))
+
+
+def test_metal_coordination_overcoordinated_zr_warns() -> None:
+    scene = _zr_with_n_oxygens(20)
+    findings = [f for f in vsepr.advisories(scene) if f.rule == "metal_coordination"]
+    assert len(findings) == 1
+    assert findings[0].atoms == ["aZr1"]
+    assert findings[0].measured == 20.0
+    assert findings[0].severity == "warn"
+
+
+def test_metal_coordination_never_gates() -> None:
+    scene = _zr_with_n_oxygens(20)
+    assert validate(scene) == []  # advisory only — the hard-reject gate is silent
+
+
+def test_metal_coordination_ignores_a_bare_slab_atom_with_no_declared_bonds() -> None:
+    # A `slab`-built (or otherwise undecorated) metal atom declares zero
+    # bonds at all — not "coordination chemistry" in this rule's sense, so
+    # it must be skipped rather than misread as CN=0-out-of-range.
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "add_atom", "element": "Zn", "cart": [0.0, 0.0, 0.0]}])
+    assert not any(f.rule == "metal_coordination" for f in vsepr.advisories(scene))
+
+
+def test_metal_coordination_unmodeled_metal_is_silently_skipped() -> None:
+    # Pd/Ni/Pt/Au are deliberately absent from the small table (they're this
+    # codebase's slab metals; their correct bulk CN would false-flag) — no
+    # finding, not a guessed range.
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "cart": [0.0, 0.0, 0.0]}])
+    apply_ops(scene, [{"op": "add_atom", "element": "O", "cart": [2.0, 0.0, 0.0]}])
+    apply_ops(scene, [{"op": "add_bond", "i": "aPd1", "j": "aO1", "order": 1}])
+    assert not any(f.rule == "metal_coordination" for f in vsepr.advisories(scene))
+
+
+# -- unmodeled_charge_state (gr285775) ----------------------------------------------
+
+
+def test_unmodeled_charge_state_warns_for_an_untabulated_state() -> None:
+    # N carrying charge +2 has no elements._CHARGED_VALENCE entry.
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(
+        scene,
+        [{"op": "add_atom", "element": "N", "cart": [0.0, 0.0, 0.0], "charge": 2}],
+    )
+    findings = [
+        f for f in vsepr.advisories(scene) if f.rule == "unmodeled_charge_state"
+    ]
+    assert len(findings) == 1
+    assert findings[0].atoms == ["aN1"]
+    assert findings[0].severity == "warn"
+
+
+def test_unmodeled_charge_state_silent_for_a_tabulated_state() -> None:
+    # N+ (charge=+1) IS in the table — no advisory note.
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(
+        scene,
+        [{"op": "add_atom", "element": "N", "cart": [0.0, 0.0, 0.0], "charge": 1}],
+    )
+    assert not any(f.rule == "unmodeled_charge_state" for f in vsepr.advisories(scene))
+
+
+def test_unmodeled_charge_state_silent_for_neutral_atoms() -> None:
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "add_atom", "element": "N", "cart": [0.0, 0.0, 0.0]}])
+    assert not any(f.rule == "unmodeled_charge_state" for f in vsepr.advisories(scene))
+
+
 # -- gate isolation ---------------------------------------------------------------
 
 

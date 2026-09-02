@@ -97,13 +97,16 @@ def validate(scene: Scene) -> list[ValidationIssue]:
     # neighbour doesn't consume covalent valence, so an adsorbate sitting in
     # a hollow/bridge site — within bond cutoff of 3-4 slab metal atoms, the
     # chemically preferred geometry — must not trip this. The rule still
-    # fires on genuine over-valence between covalent elements.
+    # fires on genuine over-valence between covalent elements. The budget is
+    # charge-aware (gr285775): a declared N+ gets N+'s own budget (4), not
+    # neutral N's — no more "passes only by numeric coincidence".
     for label, atom in scene.atoms.items():
-        mv = elements.max_valence(atom.element)
+        mv, _known = elements.effective_valence(atom.element, atom.charge)
         if mv is None:
             continue  # metals are not valence-bounded
         cn = probe.covalent_coordination(scene, label)
         if cn > mv:
+            charge_note = "" if atom.charge == 0 else f", charge {atom.charge:+d}"
             findings.append(
                 ValidationIssue(
                     rule="over_valence",
@@ -111,8 +114,8 @@ def validate(scene: Scene) -> list[ValidationIssue]:
                     measured=cn,
                     expected=mv,
                     suggested_fix=(
-                        f"{label} ({atom.element}) has {cn} neighbours but "
-                        f"max valence is {mv} — remove a bond or a neighbour."
+                        f"{label} ({atom.element}{charge_note}) has {cn} neighbours "
+                        f"but max valence is {mv} — remove a bond or a neighbour."
                     ),
                 )
             )
@@ -191,7 +194,9 @@ def validate(scene: Scene) -> list[ValidationIssue]:
             if label in scene.atoms:
                 budgets[label] = budgets.get(label, 0.0) + bond.order
     for label, total in budgets.items():
-        mv = elements.max_valence(scene.atoms[label].element)
+        atom = scene.atoms[label]
+        # charge-aware (gr285775) — same effective_valence lookup as rule 2.
+        mv, _known = elements.effective_valence(atom.element, atom.charge)
         if mv is None or total <= mv + VALENCE_BUDGET_EPSILON:
             continue
         incident = [
@@ -202,6 +207,7 @@ def validate(scene: Scene) -> list[ValidationIssue]:
         partners = ", ".join(
             f"{b.j if b.i == label else b.i}({b.order:g})" for b in incident
         )
+        charge_note = "" if atom.charge == 0 else f", charge {atom.charge:+d}"
         findings.append(
             ValidationIssue(
                 rule="valence_budget_exceeded",
@@ -209,7 +215,7 @@ def validate(scene: Scene) -> list[ValidationIssue]:
                 measured=total,
                 expected=mv,
                 suggested_fix=(
-                    f"{label} ({scene.atoms[label].element}) carries declared "
+                    f"{label} ({atom.element}{charge_note}) carries declared "
                     f"bonds totalling order {total:g} [{partners}], but max "
                     f"valence is {mv} — lower an order or remove a bond."
                 ),

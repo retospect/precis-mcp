@@ -27,7 +27,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers.structure import StructureHandler
-from precis.structure import OpError, Scene, apply_ops, probe, vsepr
+from precis.structure import OpError, Scene, apply_ops, probe, validate, vsepr
 from precis.structure.cell import Cell
 from precis.structure.elements import covalent_radius
 
@@ -408,6 +408,22 @@ def test_from_smiles_composes_with_attach() -> None:
     apply_ops(scene, [{"op": "attach", "from": ch3_c, "to": c_label}])
 
     assert any({b.i, b.j} == {ch3_c, c_label} for b in scene.bonds)
+
+
+def test_from_smiles_carries_declared_formal_charge() -> None:
+    """gr285775: a charged SMILES (tetramethylammonium, a quaternary N+)
+    carries rdkit's ``GetFormalCharge()`` into ``Atom.charge`` — and that
+    declared charge is what makes the validator's charge-aware valence
+    budget pass the N+ centre on its own terms, not by coincidence."""
+    pytest.importorskip("rdkit")
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(scene, [{"op": "from_smiles", "smiles": "C[N+](C)(C)C"}])
+
+    n_label = next(lb for lb, a in scene.atoms.items() if a.element == "N")
+    assert scene.atoms[n_label].charge == 1
+    # every carbon in this SMILES is neutral
+    assert all(a.charge == 0 for a in scene.atoms.values() if a.element == "C")
+    assert not any(f.atoms == [n_label] for f in validate(scene))
 
 
 # -- import_fragment (handler-level; needs the store) ------------------
