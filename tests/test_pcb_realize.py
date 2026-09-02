@@ -1947,6 +1947,47 @@ def test_collapse_straight_falls_back_to_the_mirror_elbow_when_blocked():
         assert pcb_realize._is_octilinear(a, b)
 
 
+def test_collapse_straight_tight_corridor_retries_elbow_at_bare_radius():
+    """The tight-corridor fallback (found live 2026-09-01 as the nano
+    board's single `octilinear` DRC finding): a DRAWN segment a hair
+    off-axis sits in a corridor tighter than the full query radius's
+    discretisation slack, so BOTH elbow variants test blocked at the
+    drawn radius — yet the elbow deviates from the proven segment by no
+    more than the nub, so the re-ask at bare copper radius must succeed
+    and the off-angle copper must still get its elbow, not survive the
+    collapse."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+
+    # Same fixture geometry as the siblings above: pitch 0.05mm.
+    spec = pcb_maze.grid_for(
+        [(0.0, 0.0), (10.0, 3.0)], n_layers=1, bounds=(-5.0, -5.0, 20.0, 20.0)
+    )
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
+    step = spec.pitch / 2.0  # 0.025
+
+    # A two-point drawn segment 0.04mm off-axis: nub = 0.04 <= 2*step.
+    # Two points, so the span-splice loop never runs and only the
+    # off-angle SEGMENT repair path can fire.
+    pts = [(0.0, 0.0, 0), (5.0, 0.04, 0)]
+    assert not pcb_realize._is_octilinear(pts[0], pts[1])
+
+    # A foreign-net wall one cell row above the corridor (y=0.10): every
+    # elbow-path sample at y<=0.04 sits 0.06-0.10mm from it — inside the
+    # full 0.1mm query radius (blocked), outside the tight
+    # max(0.1 - 2*step, step) = 0.05mm one (free).
+    for k in range(121):
+        grid.stamp_disk((0,), -0.5 + 0.05 * k, 0.10, 0.02, net_id=999)
+    assert pcb_realize._octilinear_connect(grid, pts[0], pts[1], 0, 0.1, step) is None
+
+    out = pcb_realize._collapse_straight(pts, grid, net_id=0, radius=0.1, step=step)
+    assert out == [(0.0, 0.0, 0), (0.04, 0.04, 0), (5.0, 0.04, 0)]
+    tight = max(0.1 - 2.0 * step, step)
+    for a, b in itertools.pairwise(out):
+        assert pcb_realize._is_octilinear(a, b)
+        assert pcb_realize._chord_is_free(grid, a, b, 0, tight, step)
+
+
 def test_collapse_straight_never_lengthens_a_path():
     """Every collapse drops a vertex only when its surrounding chord tests
     free — by the triangle inequality that can only shorten or preserve
