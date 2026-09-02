@@ -35,14 +35,34 @@ RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 #: Statuses that must *never* be retried, however tempting.
 FATAL_STATUSES = frozenset({401, 403})
 
+#: How much of a failing response body to keep for diagnosis. Bounded so a
+#: chatty error page can't bloat the exception; never the headers — those
+#: can carry auth material (session cookies, signed tokens).
+_BODY_PREFIX_LIMIT = 500
+
 
 class VendorError(Exception):
     """A third-party call failed in a way we will not retry."""
 
-    def __init__(self, service: str, detail: str, *, status: int | None = None):
+    def __init__(
+        self,
+        service: str,
+        detail: str,
+        *,
+        status: int | None = None,
+        body: str | None = None,
+        url: str | None = None,
+    ):
         self.service = service
         self.status = status
-        super().__init__(f"{service}: {detail}")
+        self.body = body
+        self.url = url
+        message = f"{service}: {detail}"
+        if url:
+            message += f" [{url}]"
+        if body:
+            message += f" body={body!r}"
+        super().__init__(message)
 
 
 class VendorUnavailable(VendorError):
@@ -96,6 +116,26 @@ def _delay(attempt: int, policy: Policy, rng: random.Random) -> float:
     decorrelating them matters more than a tight lower bound."""
     ceiling = min(policy.cap, policy.base * (2**attempt))
     return rng.uniform(0.0, ceiling)
+
+
+def _body_prefix(resp: httpx.Response) -> str | None:
+    """Bounded prefix of a failing response body — the shape of the
+    complaint (validation error, HTML error page, ...) without the
+    unbounded blob. Never headers: those are where auth material lives."""
+    try:
+        text = resp.text
+    except Exception:
+        return None
+    return text[:_BODY_PREFIX_LIMIT] if text else None
+
+
+def _url_of(resp: httpx.Response) -> str | None:
+    """The request URL a failing response belongs to, if one was attached
+    (a bare test-double :class:`httpx.Response` may not have one)."""
+    try:
+        return str(resp.request.url)
+    except RuntimeError:
+        return None
 
 
 def _retry_after(resp: httpx.Response) -> float | None:
@@ -154,13 +194,23 @@ def with_backoff(
 
     last_detail = "no attempts made"
     last_status: int | None = None
+    last_body: str | None = None
+    last_url: str | None = None
+    #: The transport exception behind the current failure, if any — kept
+    #: outside the ``except`` block (which Python unbinds ``exc`` from on
+    #: exit) so the eventual raise can chain ``from`` it.
+    last_exc: BaseException | None = None
     for attempt in range(policy.attempts):
         try:
             resp = send()
         except httpx.HTTPError as exc:
             last_detail = f"transport error: {exc}"
             last_status = None
+            last_body = None
+            last_url = None
+            last_exc = exc
         else:
+            last_exc = None
             circuit.last_call_at = now()
             if resp.status_code in FATAL_STATUSES:
                 _trip(circuit, policy, now)
@@ -174,6 +224,8 @@ def with_backoff(
                 return resp
             last_detail = f"HTTP {resp.status_code}"
             last_status = resp.status_code
+            last_body = _body_prefix(resp)
+            last_url = _url_of(resp)
             hinted = _retry_after(resp)
             if hinted is not None and attempt < policy.attempts - 1:
                 _trip(circuit, policy, now)
@@ -183,8 +235,12 @@ def with_backoff(
         _trip(circuit, policy, now)
         if circuit.opened_at is not None:
             raise VendorUnavailable(
-                service, f"circuit opened after {last_detail}", status=last_status
-            )
+                service,
+                f"circuit opened after {last_detail}",
+                status=last_status,
+                body=last_body,
+                url=last_url,
+            ) from last_exc
         if attempt < policy.attempts - 1:
             sleep(_delay(attempt, policy, rng))
 
@@ -192,7 +248,9 @@ def with_backoff(
         service,
         f"{policy.attempts} attempts exhausted; last: {last_detail}",
         status=last_status,
-    )
+        body=last_body,
+        url=last_url,
+    ) from last_exc
 
 
 def _trip(circuit: _Circuit, policy: Policy, now: Callable[[], float]) -> None:

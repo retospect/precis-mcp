@@ -52,8 +52,15 @@ def _fixed_rng() -> random.Random:
     return random.Random(0)
 
 
-def _resp(status: int, headers: dict[str, str] | None = None) -> httpx.Response:
-    return httpx.Response(status, headers=headers or {})
+def _resp(
+    status: int,
+    headers: dict[str, str] | None = None,
+    *,
+    text: str | None = None,
+    url: str | None = None,
+) -> httpx.Response:
+    request = httpx.Request("GET", url) if url is not None else None
+    return httpx.Response(status, headers=headers or {}, text=text, request=request)
 
 
 # ── fatal statuses: never retried ────────────────────────────────────────
@@ -437,3 +444,160 @@ def test_reset_circuit_clears_open_breaker():
             rng=_fixed_rng(),
         )
     assert len(calls) == 2
+
+
+# ── failure diagnosis: body prefix, URL, __cause__ (gr267454) ────────────
+
+
+def test_exhausted_retries_carry_body_prefix_and_url():
+    clock = FakeClock()
+    policy = Policy(attempts=2, base=0.0, cap=0.0, breaker_threshold=100)
+
+    def send():
+        return _resp(
+            500,
+            text='{"error": "invalid signature"}',
+            url="https://jlcpcb.example/openapi/parts",
+        )
+
+    with pytest.raises(VendorUnavailable) as excinfo:
+        with_backoff(
+            send,
+            service="jlcpcb",
+            policy=policy,
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    err = excinfo.value
+    assert err.body is not None
+    assert "invalid signature" in err.body
+    assert err.url == "https://jlcpcb.example/openapi/parts"
+    # Rendered in the message too, so callers see it without field access.
+    message = str(err)
+    assert "invalid signature" in message
+    assert "https://jlcpcb.example/openapi/parts" in message
+
+
+def test_body_prefix_is_truncated_at_bound():
+    clock = FakeClock()
+    policy = Policy(attempts=1, base=0.0, cap=0.0, breaker_threshold=100)
+    huge = "x" * 5000
+
+    def send():
+        return _resp(500, text=huge, url="https://jlcpcb.example/openapi/parts")
+
+    with pytest.raises(VendorUnavailable) as excinfo:
+        with_backoff(
+            send,
+            service="jlcpcb-truncate",
+            policy=policy,
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    assert excinfo.value.body is not None
+    assert len(excinfo.value.body) == 500
+    assert len(excinfo.value.body) < len(huge)
+
+
+def test_circuit_opened_raise_carries_body_and_url():
+    clock = FakeClock()
+    policy = Policy(
+        attempts=1, base=0.0, cap=0.0, breaker_threshold=1, breaker_cooldown=300.0
+    )
+
+    def send():
+        return _resp(
+            503, text="service unavailable", url="https://jlcpcb.example/openapi/foo"
+        )
+
+    with pytest.raises(VendorUnavailable) as excinfo:
+        with_backoff(
+            send,
+            service="jlcpcb-circuit",
+            policy=policy,
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    assert "circuit opened" in str(excinfo.value)
+    assert excinfo.value.body is not None
+    assert "service unavailable" in excinfo.value.body
+    assert excinfo.value.url == "https://jlcpcb.example/openapi/foo"
+
+
+def test_transport_error_chains_cause():
+    clock = FakeClock()
+    policy = Policy(attempts=1, base=0.0, cap=0.0, breaker_threshold=100)
+    boom = httpx.ConnectError("connection refused")
+
+    def send():
+        raise boom
+
+    with pytest.raises(VendorUnavailable) as excinfo:
+        with_backoff(
+            send,
+            service="jlcpcb-transport",
+            policy=policy,
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    assert excinfo.value.__cause__ is boom
+    # No response was ever received — nothing to attribute a body/url to.
+    assert excinfo.value.body is None
+    assert excinfo.value.url is None
+
+
+def test_status_only_failure_does_not_chain_a_stale_exception():
+    """A transport error on an earlier attempt must not leak its __cause__
+    onto a later, unrelated status-code failure."""
+    clock = FakeClock()
+    calls = []
+    policy = Policy(attempts=3, base=0.0, cap=0.0, breaker_threshold=100)
+
+    def send():
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ConnectError("connection refused")
+        return _resp(500, text="server error", url="https://jlcpcb.example/x")
+
+    with pytest.raises(VendorUnavailable) as excinfo:
+        with_backoff(
+            send,
+            service="jlcpcb-mixed",
+            policy=policy,
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.body is not None
+
+
+def test_message_never_includes_response_headers():
+    """Headers can carry auth material (session cookies, signed tokens) —
+    they must never end up in the exception, even indirectly."""
+    clock = FakeClock()
+    policy = Policy(attempts=1, base=0.0, cap=0.0, breaker_threshold=100)
+
+    def send():
+        return _resp(
+            500,
+            headers={"Set-Cookie": "secret-session=abc123"},
+            text="plain error body",
+            url="https://jlcpcb.example/x",
+        )
+
+    with pytest.raises(VendorUnavailable) as excinfo:
+        with_backoff(
+            send,
+            service="jlcpcb-headers",
+            policy=policy,
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    assert "secret-session" not in str(excinfo.value)
+    assert "abc123" not in str(excinfo.value)

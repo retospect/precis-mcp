@@ -109,6 +109,21 @@ class PrecisRuntime(DispatchMixin, SearchMixin, AngleMixin, HintsMixin, ErrorMix
     #: tool calls within the worker's lifetime.
     pagination: PaginationCache = field(default_factory=lambda: _new_pagination_cache())
 
+    #: Whether this runtime's process is expected to still be around
+    #: when the agent tries to redeem a pagination cursor. ``False``
+    #: (the default) is the safe assumption for a one-shot invocation
+    #: like `precis eval` — the process, and with it ``pagination``
+    #: above, is gone the moment the call returns, so a
+    #: ``more(cursor=...)`` footer would promise a capability that
+    #: doesn't exist (gr267466). Set ``True`` by the two entry points
+    #: that actually stick around long enough for a retry to land: the
+    #: MCP `precis serve` boot path (`precis.server._init_runtime`) and
+    #: `precis repl` (`precis.cli.repl.run`) — both build one runtime
+    #: and keep dispatching through it for the life of the process.
+    #: Read by :meth:`~precis.runtime.dispatch.DispatchMixin.dispatch_with_status`
+    #: to pick which pagination footer to render.
+    long_lived: bool = False
+
     #: In-tree migration head as of runtime construction (≈ process
     #: boot). The schema-drift probe compares this against the live
     #: ``_migrations`` ledger when a verb dies on

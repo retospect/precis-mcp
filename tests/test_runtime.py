@@ -530,3 +530,51 @@ def test_dispatch_chunk_code_rejected_as_kind(runtime: PrecisRuntime) -> None:
     """``kind='dc'`` is not a put/get kind — it stays unresolved and errors."""
     out = runtime.dispatch("get", {"kind": "dc"})
     assert "[error:NotFound]" in out
+
+
+# ── pagination footer is lifetime-aware (gr267466) ────────────────────
+#
+# A ``PrecisRuntime.pagination`` cursor lives only as long as the
+# process that minted it. The default ``long_lived=False`` (the
+# one-shot `precis eval` assumption) must render a footer that never
+# promises a ``more(cursor=...)`` retry it can't satisfy; the two
+# entry points that build a runtime meant to stick around (`precis
+# serve` boot, `precis repl`) flip ``long_lived=True`` and keep the
+# original cursor footer.
+
+
+def test_short_lived_runtime_footer_has_no_cursor_instruction(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    assert runtime.long_lived is False  # the documented default
+    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
+    assert is_error is False
+    assert "more(cursor=" not in out
+    assert "PRECIS_MAX_BODY_BYTES" in out
+    assert "NOT the complete result" in out
+
+
+def test_long_lived_runtime_footer_keeps_cursor_instruction(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    runtime.long_lived = True
+    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
+    assert is_error is False
+    assert "more(cursor='" in out
+
+
+def test_fetch_more_miss_error_never_says_expired(runtime: PrecisRuntime) -> None:
+    """A cursor absent from this process's cache can't be told apart
+    from a genuinely-TTL-expired one (the cache prunes expired entries
+    before ``pop`` sees them) — the miss error must lead with the
+    honest, always-true process-lifetime explanation and never claim
+    "expired", which misdirects a `precis eval` caller toward a timing
+    fix for what's actually a process-lifetime limit."""
+    body, is_error = runtime.fetch_more("definitely-not-a-real-cursor")
+    assert is_error is True
+    assert "expired" not in body.lower()
+    assert "no such cursor in this process" in body

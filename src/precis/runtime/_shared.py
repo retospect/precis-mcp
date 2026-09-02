@@ -78,6 +78,7 @@ class RuntimeShape:
     pagination: PaginationCache
     default_tags_resolved: tuple[str, ...]
     boot_migration_head: str | None
+    long_lived: bool
 
     # ``store`` / ``hints`` are read-only properties on ``PrecisRuntime``
     # (delegating to ``self.hub``), not plain settable fields — declared

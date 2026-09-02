@@ -13,6 +13,17 @@ head plus a cursor. The tail lives in this cache, keyed by cursor,
 TTL-pruned. The agent retrieves the rest via the ``more`` MCP tool
 which calls back into ``PaginationCache.pop``.
 
+The cache is per-process, so a minted cursor is only ever
+retrievable from *this same process* — fine for a long-lived server
+(MCP `precis serve`, `precis repl`), fatal for a one-shot `precis
+eval` invocation, which exits the moment it prints the head and
+takes the cache with it. ``PaginationCache.split``'s
+``cursor_capable=`` flag (wired from ``PrecisRuntime.long_lived``)
+tells it which situation this call is in: when the caller can't
+possibly come back for the cursor, ``split`` skips minting one
+altogether and renders a different footer that says so instead of
+handing out an instruction that can never be satisfied.
+
 Splitting is textual, not structural — the renderer already emits
 GitHub-flavoured Markdown, so we split on ``\\n## `` (H2 section)
 boundaries. Sections fit inside a single chunk; only the boundary
@@ -74,6 +85,27 @@ _FOOTER_TEMPLATE = (
     "content until you have drained every page.\n"
 )
 
+#: Footer for a cursor-incapable (short-lived) caller — a one-shot
+#: process (``precis eval``) whose :class:`PaginationCache` dies with
+#: it before any ``more(cursor=...)`` retry could ever reach it. Points
+#: at ``PRECIS_MAX_BODY_BYTES`` (the one lever that actually helps in
+#: that situation) and a long-lived session instead of an instruction
+#: that would just fail with "unknown cursor". Kept as its own
+#: template (not a branch inside :data:`_FOOTER_TEMPLATE`) so neither
+#: wording can drift onto the other's call site by accident.
+_SHORT_LIVED_FOOTER_TEMPLATE = (
+    "\n\n---\n"
+    "⚠️ **Truncated — this is NOT the complete result.** It was cut to fit "
+    "the response frame; about {remaining} more was cut and there is no way "
+    "to retrieve it from here — this call is running in a one-shot process "
+    "(e.g. `precis eval`) with no long-lived pagination cache, so a page-"
+    "continuation cursor would die with the process before it could ever be "
+    "redeemed; none is offered. To see more in one page, re-run with a "
+    "higher `PRECIS_MAX_BODY_BYTES` (default "
+    f"{DEFAULT_MAX_BODY_BYTES}) or a narrower query; for full pagination use "
+    "a long-lived session (the MCP server, or `precis repl`).\n"
+)
+
 #: Optional trailing sentence appended after :data:`_FOOTER_TEMPLATE` when a
 #: caller supplies ``alt_hint`` to :meth:`PaginationCache.split`. Some kinds
 #: (e.g. ``skill``) support targeted section access that makes draining
@@ -118,6 +150,15 @@ def _clamp_alt_hint(alt_hint: str | None) -> str | None:
 def _build_footer(*, cursor: str, remaining: str, alt_hint: str | None) -> str:
     """Render the full pagination footer, with the optional hint sentence."""
     footer = _FOOTER_TEMPLATE.format(cursor=cursor, remaining=remaining)
+    if alt_hint:
+        footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
+    return footer
+
+
+def _build_short_lived_footer(*, remaining: str, alt_hint: str | None) -> str:
+    """Render the truncation footer for a cursor-incapable (short-lived)
+    caller — see :data:`_SHORT_LIVED_FOOTER_TEMPLATE`."""
+    footer = _SHORT_LIVED_FOOTER_TEMPLATE.format(remaining=remaining)
     if alt_hint:
         footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
     return footer
@@ -241,7 +282,11 @@ class PaginationCache:
         )
 
     def split(
-        self, body: str, *, alt_hint: str | None = None
+        self,
+        body: str,
+        *,
+        alt_hint: str | None = None,
+        cursor_capable: bool = True,
     ) -> tuple[str, str | None]:
         """Split ``body`` into a head + cached tail if oversized.
 
@@ -263,20 +308,38 @@ class PaginationCache:
         it (the default) leaves the footer byte-identical to before
         this parameter existed — see :func:`_clamp_alt_hint` for how
         it's bounded so it can't blow the footer reserve.
+
+        ``cursor_capable=False`` (wired from ``PrecisRuntime.long_lived``
+        being ``False``) is for a caller whose process exits before a
+        ``more(cursor=...)`` retry could ever reach this cache — a
+        one-shot ``precis eval`` invocation. In that mode the overflow
+        is still computed and truncated, but the tail is discarded
+        rather than cached, no cursor is minted (the return is always
+        ``(head, None)``), and the footer points at
+        ``PRECIS_MAX_BODY_BYTES`` / a long-lived session instead of an
+        unsatisfiable cursor instruction — see
+        :data:`_SHORT_LIVED_FOOTER_TEMPLATE`.
         """
         alt_hint = _clamp_alt_hint(alt_hint)
         cap = _max_body_bytes()
         if len(body.encode("utf-8")) <= cap:
             return body, None
 
-        head, tail = _greedy_split(body, cap, alt_hint=alt_hint)
+        head, tail = _greedy_split(
+            body, cap, alt_hint=alt_hint, cursor_capable=cursor_capable
+        )
         if not tail:
             # Body fits after all (multi-byte UTF-8 made the
             # initial check pessimistic). No cursor needed.
             return body, None
 
-        cursor = uuid.uuid4().hex
         remaining = _human_bytes(len(tail.encode("utf-8")))
+
+        if not cursor_capable:
+            footer = _build_short_lived_footer(remaining=remaining, alt_hint=alt_hint)
+            return head + footer, None
+
+        cursor = uuid.uuid4().hex
         footer = _build_footer(cursor=cursor, remaining=remaining, alt_hint=alt_hint)
         head_with_footer = head + footer
 
@@ -351,9 +414,20 @@ _ALT_HINT_RESERVE_BYTES = len(
     )
 )
 
+#: Reserve for :data:`_SHORT_LIVED_FOOTER_TEMPLATE`, the cursor-incapable
+#: sibling of :data:`_FOOTER_RESERVE_BYTES` — no cursor placeholder needed
+#: (the footer never mints one), just a bounded-width ``remaining`` readout.
+_SHORT_LIVED_FOOTER_RESERVE_BYTES = len(
+    _SHORT_LIVED_FOOTER_TEMPLATE.format(remaining="8888.8 MB").encode("utf-8")
+)
+
 
 def _greedy_split(
-    body: str, cap_bytes: int, *, alt_hint: str | None = None
+    body: str,
+    cap_bytes: int,
+    *,
+    alt_hint: str | None = None,
+    cursor_capable: bool = True,
 ) -> tuple[str, str]:
     """Return ``(head, tail)`` such that head fits inside ``cap_bytes``.
 
@@ -364,12 +438,16 @@ def _greedy_split(
        section alone exceeds the cap.
     3. Last resort: hard-cut on a UTF-8 char boundary.
     """
-    # Reserve some bytes for the ``more(cursor='...')`` footer (plus
-    # the optional alt_hint sentence, if one was passed); the rest is
-    # available to the head. For very small caps the reserve can
+    # Reserve some bytes for the footer (plus the optional alt_hint
+    # sentence, if one was passed); the rest is available to the head.
+    # ``cursor_capable`` picks which footer template's reserve applies —
+    # the short-lived footer has no cursor placeholder so it reserves a
+    # different (fixed) width. For very small caps the reserve can
     # dominate — clamp to a minimum of 1 byte for the head budget so
     # the chunker still makes forward progress.
-    reserve = _FOOTER_RESERVE_BYTES
+    reserve = (
+        _FOOTER_RESERVE_BYTES if cursor_capable else _SHORT_LIVED_FOOTER_RESERVE_BYTES
+    )
     if alt_hint:
         reserve += _ALT_HINT_RESERVE_BYTES
     budget = max(cap_bytes - reserve, 1)

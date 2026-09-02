@@ -143,14 +143,22 @@ class DispatchMixin(RuntimeShape):
                     )
                 response = self._dispatch_inner(verb, dict(args))
                 # Chunk over-large bodies so they don't blow the
-                # MCP stdio frame. The pagination cache stashes
+                # MCP stdio frame. On a long-lived runtime (MCP
+                # server / `precis repl`) the pagination cache stashes
                 # the tail under a cursor; the agent calls
-                # ``more(cursor=...)`` to retrieve it. A handler may
-                # set ``response.pagination_alt_hint`` to point at a
+                # ``more(cursor=...)`` to retrieve it. A short-lived
+                # runtime (e.g. `precis eval`, the default) has no
+                # process around to redeem a cursor with, so
+                # ``cursor_capable=False`` skips minting one and the
+                # footer points at PRECIS_MAX_BODY_BYTES / a long-lived
+                # session instead (gr267466). A handler may set
+                # ``response.pagination_alt_hint`` to point at a
                 # cheaper alternative to draining every page (e.g.
                 # the skill handler's targeted-section access).
                 body, _cursor = self.pagination.split(
-                    self._render(response), alt_hint=response.pagination_alt_hint
+                    self._render(response),
+                    alt_hint=response.pagination_alt_hint,
+                    cursor_capable=self.long_lived,
                 )
                 self._record_tool_call(verb, args, body, False, started)
                 return body, False
@@ -328,8 +336,9 @@ class DispatchMixin(RuntimeShape):
         Mirrors :meth:`dispatch_with_status`'s ``(body, is_error)``
         return shape so the ``more`` MCP tool's wrapper code is
         identical to the seven-verb wrappers. Returns
-        ``(error_body, True)`` when the cursor is unknown or
-        expired so the protocol-level ``isError`` flag flips.
+        ``(error_body, True)`` when ``cursor`` isn't in this
+        process's :class:`~precis._pagination.PaginationCache` so the
+        protocol-level ``isError`` flag flips.
 
         Recursive cursors: if the popped tail is itself oversized,
         :class:`PaginationCache` re-splits and embeds the new
@@ -337,12 +346,32 @@ class DispatchMixin(RuntimeShape):
         """
         tail = self.pagination.pop(cursor)
         if tail is None:
+            # gr267466: ``PaginationCache._prune_expired`` drops an
+            # actually-TTL-expired entry *before* ``pop`` can tell "it
+            # expired" apart from "it never existed in this process" —
+            # both land here as a plain miss. Rather than guess, lead
+            # with the true, always-applicable explanation (process
+            # lifetime) and fold the TTL/single-use case in as a
+            # secondary possibility — never claim "expired", which
+            # would misdirect a `precis eval` caller toward a timing
+            # fix when the real problem is that the cursor's cache
+            # died with the process that minted it.
             err = BadInput(
-                f"unknown or expired pagination cursor {cursor!r}",
+                f"no such cursor in this process: {cursor!r}",
                 next=(
-                    "Cursors are single-use and expire after a few "
-                    "minutes. Re-issue the original call to get a "
-                    "fresh page."
+                    "pagination cursors live only in the process that "
+                    "minted them — a `precis eval` invocation exits (and "
+                    "takes its cursor cache with it) the moment it prints "
+                    "its result, so a cursor from a prior `precis eval` "
+                    "call can never be found here even though it was "
+                    "genuinely valid a moment ago. Set PRECIS_MAX_BODY_BYTES "
+                    "higher to avoid the truncation in the first place, or "
+                    "use a long-lived session (the MCP server, or `precis "
+                    "repl`) where cursors are retrievable for a few "
+                    "minutes. If you're already in a long-lived session and "
+                    "still see this, the cursor was single-use and already "
+                    "consumed, or its few-minute window passed — re-issue "
+                    "the original call to get a fresh page."
                 ),
             )
             return self.render_error(err), True

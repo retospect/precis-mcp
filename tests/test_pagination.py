@@ -16,6 +16,7 @@ import pytest
 from precis._pagination import (
     _ALT_HINT_RESERVE_BYTES,
     _FOOTER_RESERVE_BYTES,
+    _SHORT_LIVED_FOOTER_RESERVE_BYTES,
     DEFAULT_MAX_BODY_BYTES,
     PaginationCache,
 )
@@ -30,6 +31,12 @@ from precis._pagination import (
 #: than it to split at a boundary rather than a hard byte cut.)
 _ONE_SECTION_CAP = str(_FOOTER_RESERVE_BYTES + 340)
 _WIDE_SECTION_CAP = str(_FOOTER_RESERVE_BYTES + 410)
+
+#: Same idea, sized off the cursor-incapable (short-lived) footer's own
+#: reserve — it's a different template/width than the cursor-bearing one,
+#: so a cap derived from ``_FOOTER_RESERVE_BYTES`` wouldn't reliably
+#: leave room for one full section under ``cursor_capable=False``.
+_SHORT_LIVED_ONE_SECTION_CAP = str(_SHORT_LIVED_FOOTER_RESERVE_BYTES + 340)
 
 #: Same idea as above, but the reserve also has to cover the
 #: alt_hint sentence — used by ``TestAltHint`` below.
@@ -151,6 +158,98 @@ class TestFooter:
         assert f"more(cursor='{cursor}')" in head
         # head + footer stays under the frame cap.
         assert len(head.encode("utf-8")) <= int(_ONE_SECTION_CAP)
+
+
+# ── cursor_capable=False: short-lived caller (gr267466) ──────────────
+
+
+class TestCursorIncapable:
+    """A one-shot process (``precis eval``) has no long-lived
+    ``PaginationCache`` — a ``more(cursor=...)`` footer would promise a
+    capability that dies with the process before it could ever be used.
+    ``cursor_capable=False`` truncates the same way but never mints or
+    caches a cursor, and points the agent at ``PRECIS_MAX_BODY_BYTES`` /
+    a long-lived session instead."""
+
+    def test_short_body_passes_through_unchanged(self) -> None:
+        cache = PaginationCache()
+        body = "## hello\n\nfits.\n"
+        out, cursor = cache.split(body, cursor_capable=False)
+        assert out == body
+        assert cursor is None
+
+    def test_no_cursor_minted_or_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _SHORT_LIVED_ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+            "## section four\n" + ("d" * 260) + "\n"
+        )
+        head, cursor = cache.split(body, cursor_capable=False)
+        assert cursor is None
+        # The truncated tail is discarded, not stashed — nothing to
+        # ``more()`` into later even within the same process.
+        assert len(cache) == 0
+
+    def test_footer_has_no_cursor_instruction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _SHORT_LIVED_ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+            "## section four\n" + ("d" * 260) + "\n"
+        )
+        head, cursor = cache.split(body, cursor_capable=False)
+        assert cursor is None
+        assert "more(cursor=" not in head
+        # Still loudly states incompleteness — a short-lived caller
+        # must not mistake the truncated head for the full result.
+        assert "NOT the complete result" in head
+        assert any(unit in head for unit in (" B", " KB", " MB"))
+
+    def test_footer_carries_max_body_bytes_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _SHORT_LIVED_ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+            "## section four\n" + ("d" * 260) + "\n"
+        )
+        head, cursor = cache.split(body, cursor_capable=False)
+        assert cursor is None
+        assert "PRECIS_MAX_BODY_BYTES" in head
+        # Names the long-lived alternative too, not just the env knob.
+        assert "long-lived" in head
+
+    def test_still_truncates_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The short-lived path is honest about incompleteness but
+        still enforces the frame cap — it doesn't silently return the
+        full oversized body just because it can't paginate it."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _SHORT_LIVED_ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+            "## section four\n" + ("d" * 260) + "\n"
+        )
+        head, cursor = cache.split(body, cursor_capable=False)
+        assert cursor is None
+        assert "section one" in head
+        assert ("c" * 50) not in head
+        assert len(head.encode("utf-8")) <= int(_SHORT_LIVED_ONE_SECTION_CAP)
 
 
 # ── Optional alt_hint sentence ──────────────────────────────────────

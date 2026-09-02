@@ -129,6 +129,12 @@ def run(args: argparse.Namespace) -> None:
         from precis.tools.core import _get_runtime
 
         runtime = _get_runtime()
+        # The repl loops on stdin for the life of the process, so a
+        # pagination cursor minted mid-session is still retrievable by
+        # a later `more cursor=...` line — unlike the default one-shot
+        # `precis eval` assumption `_get_runtime()` builds under
+        # (gr267466).
+        runtime.long_lived = True
         embedder = getattr(runtime, "embedder", None)
         ensure = getattr(embedder, "_ensure_loaded", None) if embedder else None
         if ensure is not None:
