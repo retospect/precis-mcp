@@ -1521,9 +1521,7 @@ def test_sn_patch_relocates_off_a_via_passed_as_an_avoid_obstacle():
         "y": (by0 + by1) / 2.0,
         "dia_mm": 0.6,
     }
-    moved = build_sn_patch(
-        _BOARD_OUTLINE, pads=[], avoid=via_obstacles([centre_via])
-    )
+    moved = build_sn_patch(_BOARD_OUTLINE, pads=[], avoid=via_obstacles([centre_via]))
     if moved.bbox is None:
         assert moved.dropped  # honest drop beats a via under the patch
         return
@@ -1531,9 +1529,9 @@ def test_sn_patch_relocates_off_a_via_passed_as_an_avoid_obstacle():
     x1 = max(p[0] for p in moved.bbox)
     y0 = min(p[1] for p in moved.bbox)
     y1 = max(p[1] for p in moved.bbox)
-    assert not (
-        x0 <= centre_via["x"] <= x1 and y0 <= centre_via["y"] <= y1
-    ), "patch still covers the via it was told to avoid"
+    assert not (x0 <= centre_via["x"] <= x1 and y0 <= centre_via["y"] <= y1), (
+        "patch still covers the via it was told to avoid"
+    )
 
 
 def test_sn_patch_round_trips_through_gerber_as_a_real_cutout():

@@ -778,20 +778,12 @@ def test_rounded_polygon_rounds_a_rectangles_four_corners():
 
     # Bottom edge's straight middle: (0,0)'s tangent setback lands at
     # (3, 0), (62,0)'s at (59, 0) -- both tan(45deg)=1, so setback == r.
-    assert any(
-        abs(x - 3.0) < 1e-9 and abs(y - 0.0) < 1e-9 for x, y in out
-    ), out
-    assert any(
-        abs(x - 59.0) < 1e-9 and abs(y - 0.0) < 1e-9 for x, y in out
-    ), out
+    assert any(abs(x - 3.0) < 1e-9 and abs(y - 0.0) < 1e-9 for x, y in out), out
+    assert any(abs(x - 59.0) < 1e-9 and abs(y - 0.0) < 1e-9 for x, y in out), out
     # Left edge's straight middle, same setback: (0,0) -> (0,3),
     # (0,46) -> (0,43).
-    assert any(
-        abs(x - 0.0) < 1e-9 and abs(y - 3.0) < 1e-9 for x, y in out
-    ), out
-    assert any(
-        abs(x - 0.0) < 1e-9 and abs(y - 43.0) < 1e-9 for x, y in out
-    ), out
+    assert any(abs(x - 0.0) < 1e-9 and abs(y - 3.0) < 1e-9 for x, y in out), out
+    assert any(abs(x - 0.0) < 1e-9 and abs(y - 43.0) < 1e-9 for x, y in out), out
 
 
 def test_rounded_polygon_gives_every_corner_at_least_six_facets():

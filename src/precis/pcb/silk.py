@@ -1366,9 +1366,7 @@ def fiducial_candidate_sites(
             cand = _corner_point(sx, sy, x0, y0, x1, y1, m)
             if not _circle_inside_polygon(cand, radius, poly):
                 continue
-            if any(
-                _polygon_overlaps_circle(ring, cand, standoff) for ring in rings
-            ):
+            if any(_polygon_overlaps_circle(ring, cand, standoff) for ring in rings):
                 continue
             sites.append((idx, cand))
     return sites

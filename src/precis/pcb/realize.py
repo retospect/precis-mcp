@@ -3188,9 +3188,7 @@ def _stitch_one_net(
         if overlap.is_empty or overlap.area <= 0.0:
             continue
         lo, hi = (li, lj) if li < lj else (lj, li)
-        parts = [
-            g for g in getattr(overlap, "geoms", [overlap]) if g.area > 0.0
-        ]
+        parts = [g for g in getattr(overlap, "geoms", [overlap]) if g.area > 0.0]
         # Smallest part first: an island's single guaranteed slot must
         # not depend on how much budget the big field consumed.
         parts.sort(key=lambda g: g.area)
@@ -3742,9 +3740,10 @@ def _taut_pass(
             if mids is not None:
                 replaced = pts[i : j + 1]
                 candidate = [pts[i], *mids, pts[j]]
-                if len(candidate) < len(replaced) or _polyline_len(
-                    candidate
-                ) < _polyline_len(replaced) - 1e-9:
+                if (
+                    len(candidate) < len(replaced)
+                    or _polyline_len(candidate) < _polyline_len(replaced) - 1e-9
+                ):
                     best_j, best_mids = j, mids
             j += 1
         if best_j >= 0:
@@ -3776,9 +3775,7 @@ def _taut_pass(
                 nub = min(min(adx, ady), abs(adx - ady))
                 if nub <= 2.0 * step:
                     tight = max(radius - 2.0 * step, step)
-                    mids = _octilinear_connect(
-                        grid, pts[i], nxt, net_id, tight, step
-                    )
+                    mids = _octilinear_connect(grid, pts[i], nxt, net_id, tight, step)
             if mids:
                 out.extend(mids)
                 changed = True
@@ -4128,8 +4125,10 @@ def _snap_to_pads(
     # indices, the reverse order cannot.
     if dist((points[-1][0], points[-1][1]), end) <= limit:
         points[-1] = (end[0], end[1], points[-1][2])
-        if len(points) >= 2 and points[-2][2] == points[-1][2] and (
-            not _is_octilinear(points[-2], points[-1])
+        if (
+            len(points) >= 2
+            and points[-2][2] == points[-1][2]
+            and (not _is_octilinear(points[-2], points[-1]))
         ):
             # A pad centre is continuous, a grid vertex is not, so the
             # snapped final segment is generically a hair off-angle. Fix
@@ -4149,8 +4148,10 @@ def _snap_to_pads(
             points.insert(len(points) - 1, (mx, my, points[-1][2]))
     if not path.attached and dist((points[0][0], points[0][1]), start) <= limit:
         points[0] = (start[0], start[1], points[0][2])
-        if len(points) >= 2 and points[1][2] == points[0][2] and (
-            not _is_octilinear(points[0], points[1])
+        if (
+            len(points) >= 2
+            and points[1][2] == points[0][2]
+            and (not _is_octilinear(points[0], points[1]))
         ):
             # Same construction as the far end above.
             mx, my = _octilinear_corners(points[0], points[1])[0]

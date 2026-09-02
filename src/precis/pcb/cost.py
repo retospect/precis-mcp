@@ -1145,9 +1145,7 @@ def _world_courtyard_polygon(
         fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
     )
     rot = float(ir.inst_rot[inst])
-    return place_points(
-        local, cx=x, cy=y, rot_deg=0.0 if math.isnan(rot) else rot
-    )
+    return place_points(local, cx=x, cy=y, rot_deg=0.0 if math.isnan(rot) else rot)
 
 
 def _courtyard_overlap(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
@@ -1425,13 +1423,23 @@ def alignment_pair_term(
     region = f"{refdes_a}~{refdes_b}"
     if level < Level.L3:
         return TermValue(
-            "alignment", Family.MONEY, region, 0.0, _ALIGNMENT_JUSTIFICATION, is_bound=True
+            "alignment",
+            Family.MONEY,
+            region,
+            0.0,
+            _ALIGNMENT_JUSTIFICATION,
+            is_bound=True,
         )
     xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
     xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
     if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
         return TermValue(
-            "alignment", Family.MONEY, region, 0.0, _ALIGNMENT_JUSTIFICATION, is_bound=True
+            "alignment",
+            Family.MONEY,
+            region,
+            0.0,
+            _ALIGNMENT_JUSTIFICATION,
+            is_bound=True,
         )
     nearby_mm = (
         _alignment_neighbourhood_mm(ir, config)
@@ -1441,7 +1449,9 @@ def alignment_pair_term(
     dx = abs(xa - xb)
     dy = abs(ya - yb)
     if math.hypot(dx, dy) > nearby_mm:
-        return TermValue("alignment", Family.MONEY, region, 0.0, _ALIGNMENT_JUSTIFICATION)
+        return TermValue(
+            "alignment", Family.MONEY, region, 0.0, _ALIGNMENT_JUSTIFICATION
+        )
     tol_mm = 2.0 * config.default_pitch_mm
     m = min(dx, dy)
     fraction = min(m, tol_mm) / tol_mm if tol_mm > 0.0 else 0.0

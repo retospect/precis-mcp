@@ -45,12 +45,11 @@ other, and `block()` retrieved over `card_combined` — a chunk kind only
 never asked a question it could answer. (Fixed separately — this file's
 numbers below post-date the fix.)
 
-**Schema note, relevant to any automated pass.** `links` has no unique
-constraint on `(src_ref_id, dst_ref_id, relation)` — only a `link_id`
-primary key. Harmless at 6 hand-written rows; a live hazard for any pass
-writing edges at corpus scale, which must supply its own idempotency or
-double every edge on a re-run. Filed separately:
-`docs/backlog/links-no-unique-edge-constraint.md`.
+**Schema note — RESOLVED.** `links` now carries a unique index on
+`(src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation)`
+(`links_endpoints_relation_idx`, NULLS NOT DISTINCT; shipped 278624b6).
+Automated passes still need to upsert/skip on conflict rather than error,
+but the double-every-edge hazard is closed.
 
 **Near-neighbour measurement, post-fix (prod, 2026-08-20).** Cosine over
 `finding_body`, pairs already joined by any link excluded: 9 pairs under
