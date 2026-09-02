@@ -28,6 +28,22 @@ reconciler owns quest-coordinator orphans (reacts in ~15 min, one pass); the
 sweeper is the general backstop for every other coordinator/`claude_inproc`
 orphan (and for a quest loop if the reconciler is disabled).
 
+**Dead-node-pin self-heal (gr292747).** A distinct wedge from the reboot
+orphan above: a loop minted *pinned* (``meta.params.target_node`` set — see
+:func:`_loop_params`) whose target node dies before the loop is ever
+claimed has `meta.lease_until IS NULL`, so it matches neither this
+reconciler's own reboot-orphan reap (requires a non-null expired lease) nor
+the sweeper's ``_enumerate_dead_node_orphans`` (requires
+``executor='ssh_node'`` + ``STATUS:running``; this loop is
+`executor='coordinator'`, still `queued`) — nothing ever cancelled it, and
+its `idem_key` blocked re-minting indefinitely. This is exactly how spark's
+decommission (while still the hardcoded default pin) wedged the whole quest
+pipeline for four days. :func:`_reap_dead_node_pinned_loop` closes that gap:
+provably-dead-node predicate mirrored from the sweeper, grace margin against
+a reboot-window race, cancel + re-mint in the same pass as its sibling.
+Default pin is now unset (see :data:`_DEFAULT_NODE_ENV`), so this arm is a
+backstop for the opt-in per-quest/env pin, not the common path.
+
 **Grace margin, not the bare ssh_node predicate.** A *coordinator* lease is
 5 min (:mod:`precis.workers.executors.coordinator`'s ``_LEASE_MINUTES``,
 short vs. an ssh_node lease's ~1h), so a live but slow slice (`big`-tier
@@ -110,6 +126,7 @@ from precis.quest.compute import (
 )
 from precis.quest.tick import quest_loop_enabled
 from precis.utils.env import env_int
+from precis.workers.nursery import DEAD_WORKER_SILENCE_MIN, WORKER_CONTINUOUS_PROCESSES
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -120,8 +137,19 @@ log = logging.getLogger(__name__)
 #: Phase C retired the location-coupled ``local-big`` tier — a served OSS
 #: model still backs ``big`` when the backend/chain routes there.
 _DEFAULT_TIER = "big"
-#: Default node the coordinator claim pins to (env-overridable per-deploy;
-#: a quest's own ``meta.loop.target_node`` wins over both).
+#: Node to pin the coordinator claim to — unset by default (gr292747): a
+#: loop with no ``target_node`` in its params is claimable by any ``system``
+#: worker (``workers/executors/coordinator.py::_claim_jobs``'s node-pin
+#: semantics — absent means unrestricted). The pin exists only for a
+#: coordinator that genuinely needs a node-local resource (e.g. a box-local
+#: OSS model); the earlier hardcoded ``"spark"`` default assumed that box was
+#: permanent infrastructure, and it wasn't — spark's decommission left every
+#: freshly-minted loop pinned to a node that no longer existed, and nothing
+#: reaped a never-claimed (``lease_until IS NULL``) pinned loop, wedging the
+#: quest pipeline for four days (gr292747; see
+#: :func:`_reap_dead_node_pinned_loop` for the fix). Env-overridable per-deploy
+#: (empty string reads as unset, same as absent); a quest's own
+#: ``meta.loop.target_node`` wins over both when truthy.
 _DEFAULT_NODE_ENV = "PRECIS_QUEST_LOOP_NODE"
 
 #: A non-terminal coordinator loop is reaped only once its lease has been
@@ -415,11 +443,18 @@ def _dry_rest_escalation_active(
         return False
 
 
-def _loop_params(store: Store, quest_id: int) -> tuple[str, str]:
+def _loop_params(store: Store, quest_id: int) -> tuple[str, str | None]:
     """Resolve ``(tier, target_node)`` — quest ``meta.loop`` override, else
-    the module/env defaults."""
+    the module/env defaults.
+
+    ``target_node`` is unset (``None``) by default (gr292747) — an empty or
+    absent :data:`_DEFAULT_NODE_ENV` is not a pin. A quest's own
+    ``meta.loop.target_node``, when truthy, wins over the env default; a
+    falsy override (``""``/``None``/missing key) leaves the env value in
+    place rather than clobbering it with a bogus unset.
+    """
     tier = _DEFAULT_TIER
-    target_node = os.environ.get(_DEFAULT_NODE_ENV, "spark")
+    target_node: str | None = os.environ.get(_DEFAULT_NODE_ENV) or None
     try:
         ref = store.get_ref(kind="quest", id=quest_id)
     except Exception:
@@ -427,7 +462,9 @@ def _loop_params(store: Store, quest_id: int) -> tuple[str, str]:
     loop_meta = (getattr(ref, "meta", None) or {}).get("loop") if ref else None
     if isinstance(loop_meta, dict):
         tier = str(loop_meta.get("tier") or tier)
-        target_node = str(loop_meta.get("target_node") or target_node)
+        override_node = loop_meta.get("target_node")
+        if override_node:
+            target_node = str(override_node)
     return tier, target_node
 
 
@@ -443,6 +480,11 @@ def ensure_quest_loop(
     row; ``False`` when an existing live loop was found instead. Never
     raises — this runs inside a worker pass and a single quest's mint
     failure must not crash the reconcile cycle.
+
+    ``target_node`` is OMITTED from ``params`` (not set to ``null``) when
+    :func:`_loop_params` resolves it unset — absence, not a null-ish key, is
+    the shape ``workers/executors/coordinator.py::_claim_jobs`` reads as
+    "claimable by any system worker" (gr292747; see the module docstring).
     """
     try:
         from precis.dispatch import Hub
@@ -451,12 +493,15 @@ def ensure_quest_loop(
         tier, target_node = _loop_params(store, quest_id)
         jobs = JobHandler(hub=hub or Hub(store=store))
         idem = f"quest_tick:{quest_id}"
+        params: dict[str, Any] = {"quest_id": quest_id, "tier": tier}
+        if target_node:
+            params["target_node"] = target_node
         resp = jobs.put(
             job_type="quest_tick",
             executor="coordinator",
             parent_id=quest_id,
             idem_key=idem,
-            params={"quest_id": quest_id, "tier": tier, "target_node": target_node},
+            params=params,
         )
         body = resp.body or ""
         created = body.startswith("created job")
@@ -591,6 +636,152 @@ def _reap_orphaned_loop(store: Store, quest_id: int, *, grace_s: int) -> int | N
         return job_id
     except Exception:
         log.exception("_reap_orphaned_loop: failed to reap quest %s", quest_id)
+        return None
+
+
+def _reap_dead_node_pinned_loop(
+    store: Store, quest_id: int, *, grace_s: int
+) -> int | None:
+    """Cancel ``quest_id``'s coordinator loop iff it is pinned to a dead node
+    and was never claimed (gr292747).
+
+    **Division of labor with** :func:`_reap_orphaned_loop`: that reaper
+    handles a loop that WAS claimed and then died mid-run
+    (``meta.lease_until`` non-null, expired) — a coordinator's own lease. This
+    reaper handles the other half: a loop that was minted pinned to a
+    ``target_node`` (``meta.params.target_node`` — see :func:`_loop_params`)
+    and never claimed at all (``lease_until IS NULL``, so no coordinator ever
+    took the lease). A never-claimed pinned loop is invisible to every other
+    self-heal path: ``_reap_orphaned_loop`` requires a non-null expired lease
+    and skips it; :mod:`workers.sweeper`'s ``_enumerate_dead_node_orphans``
+    only matches ``executor='ssh_node'`` + ``STATUS:running`` and skips it
+    too (this loop is ``executor='coordinator'``, still ``queued``) — so
+    nothing ever cancelled it, and its ``idem_key=quest_tick:<id>`` blocked
+    ``ensure_quest_loop`` from re-minting forever. This is exactly what
+    happened prod-wide when spark was decommissioned while still the
+    hardcoded default pin: every loop minted against it wedged for four days
+    until this reaper shipped.
+
+    A candidate must satisfy ALL of:
+
+    1. still non-terminal (the idem-blocking condition — same
+       ``NOT EXISTS`` STATUS check as :func:`_reap_orphaned_loop`);
+    2. ``meta.lease_until IS NULL`` — never claimed; a claimed loop is the
+       other reaper's business, not this one's;
+    3. ``meta.params.target_node`` is set — an unpinned loop is claimable by
+       any ``system`` worker and can never wedge this way;
+    4. that target node is *provably dead* — mirrors
+       :mod:`workers.sweeper`'s ``_enumerate_dead_node_orphans`` predicate
+       exactly: no ``worker_logs`` row for either continuous daemon
+       (:data:`~precis.workers.nursery.WORKER_CONTINUOUS_PROCESSES`) within
+       :data:`~precis.workers.nursery.DEAD_WORKER_SILENCE_MIN`, AND no fresh
+       (< 3 min) ``host_heartbeat`` row — the host itself looks down, not
+       just one wedged process;
+    5. ``r.created_at`` older than ``grace_s`` — a freshly-minted pinned loop
+       during a node reboot window is left alone rather than raced.
+
+    Terminalizes to ``STATUS:cancelled`` (never claimed, so never actually
+    ran — not a real failure) tagged ``reaped:dead-node-pin``, deliberately
+    distinct from ``reaped:reboot-orphan`` (this module's other arm),
+    ``reaped:dead-node-orphan`` (the sweeper's ``ssh_node`` arm) and
+    ``swept:claim-orphaned`` (the sweeper's generic stuck-job backstop) so
+    the recovery paths stay legible in the tag history. Re-checked ``FOR
+    UPDATE`` inside the write tx, so a claim or a re-mint racing this can
+    never be reaped out from under itself. Returns the cancelled job id, or
+    ``None`` when there is nothing to reap. Never raises — a single quest's
+    reap failure must not crash the reconcile cycle.
+    """
+    try:
+        from precis.store.types import Tag
+
+        idem = f"quest_tick:{quest_id}"
+        grace_interval = f"{grace_s} seconds"
+        with store.tx() as conn:
+            row = conn.execute(
+                """
+                SELECT r.ref_id, r.meta->'params'->>'target_node' AS target_node
+                  FROM refs r
+                 WHERE r.kind = 'job'
+                   AND r.retired_at IS NULL
+                   AND r.meta->>'idem_key' = %(idem)s
+                   AND r.meta->>'executor' = 'coordinator'
+                   AND (r.meta->>'lease_until') IS NULL
+                   AND (r.meta->'params'->>'target_node') IS NOT NULL
+                   AND r.created_at < now() - %(grace)s::interval
+                   AND NOT EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = r.ref_id
+                            AND t.namespace = 'STATUS'
+                            AND t.value = ANY(%(terminal)s)
+                       )
+                   AND NOT EXISTS (
+                         SELECT 1 FROM worker_logs wl
+                          WHERE wl.host = r.meta->'params'->>'target_node'
+                            AND wl.process = ANY(%(procs)s)
+                            AND wl.ts > now() - %(silence)s::interval
+                       )
+                   AND NOT EXISTS (
+                         SELECT 1 FROM host_heartbeat hh
+                          WHERE hh.host = r.meta->'params'->>'target_node'
+                            AND hh.ts > now() - interval '3 minutes'
+                       )
+                 ORDER BY r.ref_id DESC
+                 LIMIT 1
+                   FOR UPDATE OF r SKIP LOCKED
+                """,
+                {
+                    "idem": idem,
+                    "grace": grace_interval,
+                    "terminal": list(_TERMINAL_STATUSES),
+                    "procs": list(WORKER_CONTINUOUS_PROCESSES),
+                    "silence": f"{DEAD_WORKER_SILENCE_MIN} minutes",
+                },
+            ).fetchone()
+            if row is None:
+                return None
+            job_id = int(row[0])
+            target_node = row[1]
+            reap_note = (
+                f"reaped: pinned to dead node {target_node!r}, never claimed "
+                f"(lease_until null), minted more than {grace_s}s ago"
+            )
+            # Same replace_prefix + searchable open-tag shape as
+            # _reap_orphaned_loop, distinct tag value.
+            store.add_tag(
+                job_id,
+                Tag.closed("STATUS", "cancelled"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            store.add_tag(
+                job_id,
+                Tag.open("reaped:dead-node-pin"),
+                set_by="system",
+                conn=conn,
+            )
+            store.update_ref(job_id, meta_patch={"reap_note": reap_note}, conn=conn)
+            store.append_event(
+                job_id,
+                source="quest-loop-reconcile",
+                event="loop-reaped",
+                payload={
+                    "quest_id": quest_id,
+                    "cause": "dead-node-pin",
+                    "target_node": target_node,
+                },
+                conn=conn,
+            )
+        log.info(
+            "reconcile_quest_loops: reaped dead-node-pinned loop %d for quest %s "
+            "(target_node=%s never claimed, host provably dead)",
+            job_id,
+            quest_id,
+            target_node,
+        )
+        return job_id
+    except Exception:
+        log.exception("_reap_dead_node_pinned_loop: failed to reap quest %s", quest_id)
         return None
 
 
@@ -914,9 +1105,12 @@ def reconcile_quest_loops(
     an alert is already open on it — but this is not permanent: once the
     cooldown elapses re-minting resumes at that long cadence, giving the quest
     a tick that can observe recovery and reset the counter. Otherwise a *reap* step runs
-    before the ensure: a reboot-orphaned loop (non-terminal, lease provably
-    expired) is cancelled so its idem no longer blocks the re-mint below, and
-    the quest self-heals in this pass. A quest whose most-recent loop rested
+    before the ensure, trying both arms: a reboot-orphaned loop (non-terminal,
+    lease provably expired — :func:`_reap_orphaned_loop`) is cancelled first;
+    if that finds nothing, a never-claimed loop pinned to a provably dead
+    node (:func:`_reap_dead_node_pinned_loop`, gr292747) is tried next — either
+    way its idem no longer blocks the re-mint below, and the quest self-heals
+    in this pass. A quest whose most-recent loop rested
     ``failed`` (RC1) or rested ``succeeded`` with ``rest_reason: "dry"``
     (gr170252's cooldown symmetry) is instead held out of the re-mint for an
     escalating cooldown (:func:`_failed_rest_cooldown_active` /
@@ -924,7 +1118,7 @@ def reconcile_quest_loops(
     (quests cooled to dormant), ``escalated`` (active quests skipped this
     pass because they're past the dry-rest-stuck threshold and still inside
     the escalated cooldown), ``reaped``
-    (orphaned loops cancelled this pass), ``backoff`` (active quests whose
+    (orphaned loops cancelled this pass, either arm), ``backoff`` (active quests whose
     re-mint was skipped this pass because a failed or dry rest is still
     cooling down), ``ensured`` (active quests confirmed to have a live loop,
     minted or pre-existing), ``minted`` (of those, how many were freshly
@@ -981,9 +1175,16 @@ def reconcile_quest_loops(
             continue
         # A reboot-orphan reap terminalizes to ``cancelled`` and re-mints in this
         # same pass — it is never a failed/dry rest, so neither cooldown applies.
-        # A loop that rested ``failed`` or dry (and wasn't reaped) waits out its
-        # escalating cooldown before the re-mint below.
-        if _reap_orphaned_loop(store, qid, grace_s=grace_s) is not None:
+        # The dead-node-pin arm (gr292747) only runs when the reboot-orphan arm
+        # found nothing — the two predicates are mutually exclusive (lease_until
+        # non-null vs. null) but checking both cheaply covers whichever wedge this
+        # loop actually hit. A loop that rested ``failed`` or dry (and wasn't
+        # reaped by either arm) waits out its escalating cooldown before the
+        # re-mint below.
+        reaped_job = _reap_orphaned_loop(store, qid, grace_s=grace_s)
+        if reaped_job is None:
+            reaped_job = _reap_dead_node_pinned_loop(store, qid, grace_s=grace_s)
+        if reaped_job is not None:
             reaped += 1
         elif _failed_rest_cooldown_active(
             store, qid, base_s=base_s, max_s=max_s

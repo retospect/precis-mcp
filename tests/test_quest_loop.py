@@ -151,6 +151,43 @@ def _insert_chunk(store: Store, job_id: int, *, age_sql: str) -> None:
         conn.commit()
 
 
+def _backdate_created_at(store: Store, job_id: int, age_sql: str) -> None:
+    """Backdate ``refs.created_at`` server-side (e.g. ``'20 minutes'``) — the
+    dead-node-pin reap's grace-margin predicate."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - (%s)::interval WHERE ref_id = %s",
+            (age_sql, job_id),
+        )
+        conn.commit()
+
+
+def _pin_target_node(store: Store, job_id: int, target_node: str) -> None:
+    """Stamp ``meta.params.target_node`` on an already-minted loop — mirrors
+    a legacy/env/per-quest pin without going through ``ensure_quest_loop``
+    (which no longer sets it by default, gr292747)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, '{params,target_node}', "
+            "to_jsonb(%s::text)) WHERE ref_id = %s",
+            (target_node, job_id),
+        )
+        conn.commit()
+
+
+def _upsert_host_heartbeat(store: Store, host: str, *, age_minutes: float) -> None:
+    """Seed/refresh a ``host_heartbeat`` row (PK on ``host``, so upsert) —
+    mirrors ``test_sweeper.py``'s own helper for the identical predicate."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval) "
+            "ON CONFLICT (host) DO UPDATE SET ts = excluded.ts",
+            (host, age_minutes),
+        )
+        conn.commit()
+
+
 def _last_reap_event_payload(store: Store, job_id: int) -> dict[str, Any]:
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -163,6 +200,43 @@ def _last_reap_event_payload(store: Store, job_id: int) -> dict[str, Any]:
         ).fetchone()
     assert row is not None, f"no loop-reaped event for job {job_id}"
     return dict(row[0] or {})
+
+
+class TestLoopParams:
+    """gr292747: :func:`loop_mod._loop_params`'s ``target_node`` resolution —
+    unset by default, env-overridable, quest-override wins over env."""
+
+    def test_default_target_node_is_none(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        tier, target_node = loop_mod._loop_params(store, q)
+        assert tier == "big"
+        assert target_node is None
+
+    def test_env_sets_target_node(self, store: Store, monkeypatch: Any) -> None:
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "melchior")
+        q = _mk_quest(store, "A striving")
+        _tier, target_node = loop_mod._loop_params(store, q)
+        assert target_node == "melchior"
+
+    def test_empty_env_reads_as_unset(self, store: Store, monkeypatch: Any) -> None:
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "")
+        q = _mk_quest(store, "A striving")
+        _tier, target_node = loop_mod._loop_params(store, q)
+        assert target_node is None
+
+    def test_quest_meta_override_wins_over_env(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "melchior")
+        q = _mk_quest(store, "A striving")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (Jsonb({"loop": {"target_node": "caspar"}}), q),
+            )
+            conn.commit()
+        _tier, target_node = loop_mod._loop_params(store, q)
+        assert target_node == "caspar"
 
 
 class TestEnsureQuestLoop:
@@ -180,7 +254,10 @@ class TestEnsureQuestLoop:
         assert meta["idem_key"] == f"quest_tick:{q}"
         assert meta["params"]["quest_id"] == q
         assert meta["params"]["tier"] == "big"
-        assert meta["params"]["target_node"] == "spark"
+        # gr292747: unpinned by default — the key is OMITTED, not null, so
+        # coordinator._claim_jobs's "no target_node → claimable by any
+        # system worker" shape applies.
+        assert "target_node" not in meta["params"]
 
     def test_second_call_while_non_terminal_does_not_mint_again(
         self, store: Store
@@ -467,6 +544,123 @@ class TestReapOrphanedLoop:
         payload = _last_reap_event_payload(store, orphan_id)
         assert payload["last_chunk_at"] is None
         assert payload["lease_until"] is not None
+
+
+class TestReapDeadNodePinnedLoop:
+    """gr292747: a never-claimed loop pinned to a provably dead node is
+    reaped and re-minted in the same pass — division of labor with
+    :class:`TestReapOrphanedLoop`'s claimed/lease-expired arm."""
+
+    def _make_active_quest(self, store: Store) -> int:
+        q = _mk_quest(store, "A striving")
+        _set_status(store, q, "active")
+        return q
+
+    def _arm_pinned_orphan(
+        self,
+        store: Store,
+        quest_id: int,
+        *,
+        target_node: str,
+        age_sql: str = "20 minutes",
+    ) -> int:
+        """Mint a loop (unpinned, per gr292747's default), then pin it to a
+        dead node and backdate it past the grace margin — mirrors a
+        legacy/env/per-quest pin that never got claimed before its node
+        died."""
+        job_id, _ = loop_mod.ensure_quest_loop(store, quest_id)
+        assert job_id is not None
+        _pin_target_node(store, job_id, target_node)
+        _backdate_created_at(store, job_id, age_sql)
+        return job_id
+
+    def test_dead_node_pinned_loop_is_reaped_and_re_minted(self, store: Store) -> None:
+        from uuid import uuid4
+
+        node = f"dead-{uuid4().hex[:8]}"
+        q = self._make_active_quest(store)
+        orphan_id = self._arm_pinned_orphan(store, q, target_node=node)
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["reaped"] == 1
+        assert out["minted"] == 1
+        assert _current_status(store, orphan_id) == "cancelled"
+        tags = {str(t) for t in store.tags_for(orphan_id)}
+        assert "reaped:dead-node-pin" in tags
+        meta = _job_meta(store, orphan_id)
+        assert meta.get("reap_note")
+        # A fresh, unpinned loop re-minted in the same pass.
+        live = _non_terminal_loop_ids(store, q)
+        assert len(live) == 1
+        assert live[0] != orphan_id
+        assert "target_node" not in _job_meta(store, live[0])["params"]
+
+        payload = _last_reap_event_payload(store, orphan_id)
+        assert payload["cause"] == "dead-node-pin"
+        assert payload["target_node"] == node
+
+    def test_fresh_host_heartbeat_is_not_reaped(self, store: Store) -> None:
+        from uuid import uuid4
+
+        node = f"hb-{uuid4().hex[:8]}"
+        q = self._make_active_quest(store)
+        _upsert_host_heartbeat(store, node, age_minutes=0.5)
+        live_id = self._arm_pinned_orphan(store, q, target_node=node)
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["reaped"] == 0
+        assert out["minted"] == 0
+        assert _current_status(store, live_id) == "queued"
+        assert _non_terminal_loop_ids(store, q) == [live_id]
+
+    def test_claimed_lease_is_not_this_arms_business(self, store: Store) -> None:
+        """A ``lease_until``-non-null loop is a claimed loop, dead or not —
+        :func:`loop_mod._reap_orphaned_loop`'s job, never this arm's."""
+        from uuid import uuid4
+
+        node = f"leased-{uuid4().hex[:8]}"
+        q = self._make_active_quest(store)
+        job_id, _ = loop_mod.ensure_quest_loop(store, q)
+        assert job_id is not None
+        _pin_target_node(store, job_id, node)
+        _backdate_created_at(store, job_id, "20 minutes")
+        # Claimed and still non-terminal — its (already-expired) lease means
+        # the OTHER arm may reap it, but never this one directly: force the
+        # other arm's chunk-evidence guard so only the dead-node-pin
+        # predicate's ``lease_until IS NULL`` exclusion is under test.
+        _set_status(store, job_id, "running")
+        _set_lease(store, job_id, "now() - interval '1 hour'")
+
+        assert loop_mod._reap_dead_node_pinned_loop(store, q, grace_s=600) is None
+
+    def test_job_younger_than_grace_is_not_reaped(self, store: Store) -> None:
+        from uuid import uuid4
+
+        node = f"young-{uuid4().hex[:8]}"
+        q = self._make_active_quest(store)
+        live_id = self._arm_pinned_orphan(
+            store, q, target_node=node, age_sql="1 minute"
+        )
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["reaped"] == 0
+        assert out["minted"] == 0
+        assert _non_terminal_loop_ids(store, q) == [live_id]
+
+    def test_unpinned_job_is_not_reaped(self, store: Store) -> None:
+        q = self._make_active_quest(store)
+        job_id, _ = loop_mod.ensure_quest_loop(store, q)
+        assert job_id is not None
+        _backdate_created_at(store, job_id, "20 minutes")
+
+        assert loop_mod._reap_dead_node_pinned_loop(store, q, grace_s=600) is None
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+        assert out["reaped"] == 0
+        assert out["minted"] == 0
+        assert _non_terminal_loop_ids(store, q) == [job_id]
 
 
 class TestFailedRestBackoff:
