@@ -457,6 +457,13 @@ def run_import(
                     meta_out["table"] = child.meta["table"]
                 if child.meta.get("caption") is not None:
                     meta_out["caption"] = child.meta["caption"]
+                # A heading's own `\label` — title-embedded or immediately
+                # following the heading command — is captured by
+                # `walk_document` into `child.meta['label']` (gripe 271293).
+                # Persist it so `\ref{sec:x}` resolves durably instead of
+                # only through the transient `labels` map below.
+                if child.meta.get("label"):
+                    meta_out["label"] = child.meta["label"]
                 meta = meta_out or None
                 # `equation` is an internal plan marker only — math is stored as
                 # a `$$…$$` paragraph (normalised above). Every other kind is
@@ -472,6 +479,8 @@ def run_import(
                 counts[child.kind] += 1
                 handle = made[0].handle if made else parent_handle
                 dc = made[0].dc if made else parent_dc
+                if child.meta.get("label"):
+                    labels[child.meta["label"]] = dc
                 for lab in labels_in(raw):
                     labels[lab] = dc
                 if note_ids:

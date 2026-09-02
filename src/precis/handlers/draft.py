@@ -2131,7 +2131,15 @@ class DraftHandler(Handler):
         ``needs-table-review`` — is recovered from its own raw text via
         :func:`table_payload`, the same function the read path uses, and the
         stale flag is cleared once a grid is persisted (gripe 263197). Only a
-        chunk that recovery genuinely cannot parse still refuses.
+        chunk that recovery genuinely cannot parse still refuses. A
+        ``\\label{...}`` recovered along with the grid is persisted into
+        ``meta.label`` on every write that touches this chunk (both the
+        raw-LaTeX in-place patch below and this markdown re-derivation), so
+        the cross-reference anchor survives even once the source stops
+        being raw LaTeX (gripe 271129); a residual parse-miss corner (a
+        label the raw text visibly has but couldn't be confidently
+        extracted) surfaces as a warning hint on the response instead of
+        silently vanishing.
 
         ``dry_mode`` (``'diff'``/``'full'``, from ``normalize_dry_run`` —
         None means "apply for real") renders the same preview as the plain
@@ -2187,6 +2195,11 @@ class DraftHandler(Handler):
         # 251 flagged chunks (97%). The other 7 still hit `no_data_err`, so
         # the honest refusal survives where recovery genuinely fails.
         recovered_caption: str | None = None
+        # The chunk's `\label{...}` (gripe 271129), recovered
+        # alongside the grid so a persisted write can carry it forward in
+        # `meta.label` instead of dropping it — see the two `patch["label"]`
+        # / `meta_patch` sites below.
+        recovered_label: str | None = None
         # True iff `cur_table` above was recovered from raw LaTeX (not from
         # canonical `meta.table`, nor from the derived-markdown fallback) —
         # the source :func:`table_payload` reaches only via
@@ -2205,9 +2218,28 @@ class DraftHandler(Handler):
                         }
                     )
                     recovered_caption = recovered.get("caption") or None
+                    recovered_label = recovered.get("label") or None
                     is_latex_source = parse_markdown_table(chunk.text or "") is None
                 except Exception:
                     cur_table = None  # ragged parse — fall through to refusal
+        # Guard (gripe 271129 item 3): a raw LaTeX source that visibly has a
+        # `\label{...}` but that :func:`parse_latex_table` couldn't
+        # confidently extract (malformed braces, e.g.) would otherwise lose
+        # it in total silence — surface a warning hint instead. Once
+        # `recovered_label` IS captured, both persist paths below carry it
+        # into `meta.label`, so this only fires on the residual parse-miss
+        # corner.
+        label_loss_hint = ""
+        if (
+            is_latex_source
+            and not recovered_label
+            and re.search(r"\\label\s*\{", chunk.text or "")
+        ):
+            label_loss_hint = (
+                " (warning: this chunk's raw text has a \\label{…} that "
+                "could not be confidently parsed — check it manually before "
+                "trusting any \\ref pointing here)"
+            )
         no_data_err = BadInput(
             "this table chunk has no stored data — pass table={header, rows}",
             next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
@@ -2237,6 +2269,8 @@ class DraftHandler(Handler):
                 regen=regen,
                 base_sha=base_sha,
                 dry_mode=dry_mode,
+                recovered_label=recovered_label,
+                label_loss_hint=label_loss_hint,
             )
         replace_count: int | None = None
         if table is not None:
@@ -2309,6 +2343,12 @@ class DraftHandler(Handler):
             cap = cur.get("caption") or recovered_caption or None
         md = table_to_markdown(norm, caption=cap)
         patch: dict[str, Any] = {"table": norm}
+        # Carry a recovered `\label{...}` into `meta.label` (gripe 271129):
+        # once this write lands, `chunk.text` is markdown — the anchor no
+        # longer sits in raw LaTeX to re-parse, so this is now its only
+        # durable home.
+        if recovered_label:
+            patch["label"] = recovered_label
         # The review flag only ever meant "no canonical data was recoverable at
         # import". Once we persist a grid the flag is false, and leaving it set
         # would keep the chunk in every "table-blocked" census forever — the
@@ -2349,7 +2389,7 @@ class DraftHandler(Handler):
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
             body=f"edited table {(c or chunk).dc} ({rows}×{cols}){extra}; "
-            "markdown re-derived"
+            f"markdown re-derived{label_loss_hint}"
         )
 
     def _edit_latex_table_in_place(
@@ -2366,6 +2406,8 @@ class DraftHandler(Handler):
         regen: dict[str, Any] | None,
         base_sha: str | None,
         dry_mode: str | None = None,
+        recovered_label: str | None = None,
+        label_loss_hint: str = "",
     ) -> Response:
         """``cell=``/``find=``/``sub=`` on a LaTeX-sourced table chunk
         (gripe 271129) — patch the raw LaTeX `chunk.text` in place via
@@ -2380,6 +2422,16 @@ class DraftHandler(Handler):
         thereafter-authoritative data. The ``needs-table-review`` flag is
         left exactly as-is for the same reason: no canonical grid was
         actually persisted.
+
+        ``recovered_label`` (from :func:`~precis.utils.table_data.parse_latex_table`,
+        threaded through by the caller) IS persisted, into ``meta.label`` —
+        the raw ``\\label{}`` command survives this patch untouched either
+        way (only the row/cell area is ever rewritten), but a durable
+        ``meta.label`` gives the anchor a queryable home that doesn't
+        depend on re-parsing raw text every read (gripe 271129).
+        ``label_loss_hint`` rides along on the response body when the
+        caller couldn't confidently recover a label that the raw text
+        visibly has.
 
         ``caption=``/``regen=`` don't apply here — see the refusal below —
         since patching `meta` alone wouldn't be read back (the fallback
@@ -2486,14 +2538,18 @@ class DraftHandler(Handler):
                 )
         if dry_mode is not None:
             return self._render_draft_dry_run(chunk.dc, raw, new_raw, mode=dry_mode)
-        c = self.store.drafts.edit_text(handle, new_raw, base_sha=base_sha)
+        meta_patch = {"label": recovered_label} if recovered_label else None
+        c = self.store.drafts.edit_text(
+            handle, new_raw, base_sha=base_sha, meta_patch=meta_patch
+        )
         if c is not None:
             self._attribute_touch([c.chunk_id])
             self.sync_draft_links(c.ref_id)
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
             body=f"edited table {(c or chunk).dc}{extra}; patched the raw "
-            "LaTeX in place — label/rules/multicolumn spans/spacing untouched"
+            "LaTeX in place — label/rules/multicolumn spans/spacing "
+            f"untouched{label_loss_hint}"
         )
 
     def _resolve_project(self, project: str | int) -> int:

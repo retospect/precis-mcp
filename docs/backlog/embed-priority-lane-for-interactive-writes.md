@@ -74,9 +74,9 @@ post-deploy.
 
 ## Open questions / decisions log
 
-- RESOLVED: `llm_summarize` implements `_FRESH_CLAIM_SQL` privately; the
-  tier machinery was copied onto `EmbedHandler` (not lifted into the
-  base) so `RakeLemmaHandler`'s claim order stays untouched.
+- Decided (base-vs-copy): `llm_summarize` implements `_FRESH_CLAIM_SQL`
+  privately; the tier machinery was copied onto `EmbedHandler` (not lifted
+  into the base) so `RakeLemmaHandler`'s claim order stays untouched.
 - OPEN (for the remaining tail): is trading cache kinds' immediate
   semantic searchability for write-path latency acceptable? Ask before
   implementing.

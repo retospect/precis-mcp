@@ -412,17 +412,19 @@ def _extract_caption(text: str) -> tuple[str | None, str]:
     return inner, text[: m.start()] + text[end:]
 
 
-def _strip_one_arg_command(text: str, name: str) -> str:
-    """Remove every ``\\name{...}`` (balanced braces), name and all."""
-    pat = re.compile(r"\\" + name + r"\s*\{")
-    while True:
-        m = pat.search(text)
-        if not m:
-            return text
-        end = _find_balanced(text, m.end() - 1)
-        if end is None:
-            return text
-        text = text[: m.start()] + text[end:]
+def _extract_label(text: str) -> tuple[str | None, str]:
+    """Pull the first ``\\label{...}`` (balanced braces) out of ``text``,
+    returning ``(inner, text-with-label-removed)`` — mirrors
+    :func:`_extract_caption` (gripe 271129: the anchor used to be silently
+    discarded (stripped, not captured) instead)."""
+    m = re.search(r"\\label\s*\{", text)
+    if not m:
+        return None, text
+    end = _find_balanced(text, m.end() - 1)
+    if end is None:
+        return None, text
+    inner = text[m.end() : end - 1]
+    return inner, text[: m.start()] + text[end:]
 
 
 def _strip_resizebox(text: str) -> str:
@@ -648,12 +650,19 @@ def _clean_latex_cell(raw: str) -> str:
 
 
 def parse_latex_table(text: str) -> dict[str, Any] | None:
-    """Recover ``{header, rows, caption}`` from raw LaTeX ``tabular``-family
-    text — the fallback for a LaTeX-imported ``chunk_kind='table'`` chunk
-    that has no canonical ``meta.table`` (gr51405 + gr52564). Accepts a
-    bare tabular body (importer's captured ``\\begin{tabular}`` inner,
-    starting with the ``{colspec}``) or a full float wrapper (``table``/
-    ``longtable`` with a ``\\caption{}`` and a nested ``tabular``).
+    """Recover ``{header, rows, caption, label}`` from raw LaTeX
+    ``tabular``-family text — the fallback for a LaTeX-imported
+    ``chunk_kind='table'`` chunk that has no canonical ``meta.table``
+    (gr51405 + gr52564). Accepts a bare tabular body (importer's captured
+    ``\\begin{tabular}`` inner, starting with the ``{colspec}``) or a full
+    float wrapper (``table``/``longtable`` with a ``\\caption{}`` and a
+    nested ``tabular``).
+
+    ``label`` is the ``\\label{...}`` argument (``None`` when absent) —
+    captured, not discarded, so a caller that persists the recovered grid
+    has somewhere to carry the cross-reference anchor forward (gripe
+    271129: it used to be stripped with no trace, silently orphaning any
+    ``\\ref`` elsewhere).
 
     Structureless input (prose, an empty string, a GFM table chunk the
     markdown parser already handled) returns ``None`` — this runs on
@@ -663,7 +672,7 @@ def parse_latex_table(text: str) -> dict[str, Any] | None:
             return None
         body = _strip_latex_comments(text)
         caption, body = _extract_caption(body)
-        body = _strip_one_arg_command(body, "label")
+        label, body = _extract_label(body)
         body = re.sub(r"\\centering\b|\\small\b|\\footnotesize\b", "", body)
         body = _strip_resizebox(body)
         body = re.sub(r"\\begin\{center\}|\\end\{center\}", "", body)
@@ -691,7 +700,12 @@ def parse_latex_table(text: str) -> dict[str, Any] | None:
                 row = row + [""] * (width - len(row))
             rows.append(row)
         cap_clean = _clean_latex_cell(caption) if caption else None
-        return {"header": header, "rows": rows, "caption": cap_clean or None}
+        return {
+            "header": header,
+            "rows": rows,
+            "caption": cap_clean or None,
+            "label": label.strip() if label else None,
+        }
     except Exception:
         return None
 
@@ -719,8 +733,8 @@ _LABEL_CMD_RE = re.compile(r"\\label\s*\{")
 
 
 def _blank_balanced_command(text: str, pattern: re.Pattern[str]) -> str:
-    """Same-length sibling of :func:`_strip_one_arg_command`/
-    :func:`_extract_caption`: every match of ``pattern`` (expected to end in
+    """Same-length sibling of :func:`_extract_caption`/:func:`_extract_label`:
+    every match of ``pattern`` (expected to end in
     an opening ``{``) through its balanced closing ``}`` is overwritten with
     spaces, so `text`'s length — and every other character's absolute
     position — is unchanged. Used only to keep the row/cell-boundary finder

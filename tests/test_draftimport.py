@@ -49,6 +49,52 @@ First para.
     assert [c.kind for c in ulist.children] == ["item", "item"]
 
 
+def test_heading_label_glued_captured_in_meta() -> None:
+    """``\\label{...}`` immediately after a heading command — no blank
+    line, still on the same "line" of content — is that heading's own
+    label, not whatever chunk the remaining body happens to emit first
+    (gripe 271293)."""
+    body = r"""
+\section{Foo}\label{sec:foo}
+Some prose right after, no blank line before it.
+"""
+    tree = walk_document(body)
+    heading = tree.children[0]
+    assert heading.kind == "heading" and heading.text == "Foo"
+    assert heading.meta.get("label") == "sec:foo"
+    # and the label doesn't leak into the following paragraph's text
+    para = heading.children[0]
+    assert "label" not in (para.text or "")
+
+
+def test_heading_label_standalone_paragraph_variant_captured_in_meta() -> None:
+    """The same anchor, but as its own paragraph (blank line on both
+    sides) before any other section content — also the heading's own
+    label (gripe 271293)."""
+    body = r"""
+\section{Foo}
+
+\label{sec:foo}
+
+Some prose describing the section.
+"""
+    tree = walk_document(body)
+    heading = tree.children[0]
+    assert heading.kind == "heading" and heading.text == "Foo"
+    assert heading.meta.get("label") == "sec:foo"
+
+
+def test_heading_label_embedded_in_title_captured_in_meta() -> None:
+    """``\\label{...}`` embedded directly inside the heading command's own
+    argument (``\\section{Foo\\label{sec:foo}}``) is also captured, and
+    stripped out of the rendered title text (gripe 271293)."""
+    body = r"\section{Foo\label{sec:foo}}" + "\nSome prose.\n"
+    tree = walk_document(body)
+    heading = tree.children[0]
+    assert heading.text == "Foo"
+    assert heading.meta.get("label") == "sec:foo"
+
+
 def test_bare_tabular_becomes_table_not_paragraph() -> None:
     body = r"\section{S}\begin{tabular}{ll}a & b\\\end{tabular}"
     kinds = _kinds(walk_document(body))

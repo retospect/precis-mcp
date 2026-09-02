@@ -663,6 +663,55 @@ def render_plan(chunks: list[Chunk], lines: list[str], indent: int = 0) -> None:
             render_plan(c.children, lines, indent + 1)
 
 
+_LABEL_CMD_RE = re.compile(r"\\label\s*\{")
+_LEADING_LABEL_RE = re.compile(r"\A\s*\\label\s*\{")
+
+
+def _pull_labels(s: str) -> tuple[str, list[str]]:
+    """Remove every ``\\label{...}`` (balanced braces) from `s`, returning
+    the cleaned string and the extracted label keys in order — the
+    title-embedded idiom, ``\\section{Foo\\label{sec:foo}}`` (gripe 271293).
+    An unbalanced/malformed trailing ``\\label{`` is left verbatim rather
+    than guessed at."""
+    labels: list[str] = []
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _LABEL_CMD_RE.search(s, i)
+        if not m:
+            out.append(s[i:])
+            break
+        out.append(s[i : m.start()])
+        groups, end = _balanced_groups(s, m.end() - 1, 1)
+        if not groups:
+            out.append(s[m.start() :])
+            break
+        labels.append(groups[0].strip())
+        i = end
+    return "".join(out), labels
+
+
+def _extract_leading_label(seg: str) -> tuple[str | None, str]:
+    """A ``\\label{...}`` that is the very first thing in a heading's body
+    — whether glued onto the same line (``\\section{Foo}\\label{sec:foo}``)
+    or its own standalone paragraph before any other content — is that
+    heading's own label, not whatever chunk happens to be emitted first
+    from the remaining body (gripe 271293). Peel it off here so it neither
+    merges into a following paragraph with no blank line to protect it
+    (silently dropped by ``demacro``'s 1-arg-command cleanup) nor gets
+    anchored, via the standalone-empty-paragraph fallback, to a
+    coincidental chunk instead of the heading. Returns ``(label_or_None,
+    seg_with_the_label_removed)`` — `seg` unchanged when no leading label
+    is found."""
+    m = _LEADING_LABEL_RE.match(seg)
+    if not m:
+        return None, seg
+    groups, end = _balanced_groups(seg, m.end() - 1, 1)
+    if not groups:
+        return None, seg
+    return groups[0].strip(), seg[end:]
+
+
 def walk_document(body: str) -> Chunk:
     """Integrate headings (``build_tree``'s level stack) with bodies
     (``plan_blocks``) into one ordered chunk tree, ready for the writer.
@@ -671,7 +720,15 @@ def walk_document(body: str) -> Chunk:
     LaTeX in ``.text`` (the writer cleans it with the cite keymap and
     extracts ``\\label``s before creating the chunk). Headings nest by the
     explicit-depth stack; the body between two headings attaches under the
-    current heading (sub-headings handled by the stack)."""
+    current heading (sub-headings handled by the stack).
+
+    A heading's own ``\\label`` — title-embedded (:func:`_pull_labels`) or
+    immediately following the heading command (:func:`_extract_leading_label`)
+    — is captured into ``node.meta['label']`` rather than left to the
+    writer's per-chunk ``\\label`` scan, which had no durable home for a
+    label attached to a *heading* (gripe 271293: 41 dangling ``\\ref``s on
+    one draft, all section-level). The title-embedded form wins when both
+    are present."""
     root = Chunk("root")
     heads = list(_HEAD_RE.finditer(body))
     stack: list[tuple[int, Chunk]] = [(0, root)]
@@ -684,14 +741,21 @@ def walk_document(body: str) -> Chunk:
     for idx, m in enumerate(heads):
         cmd = m.group(1)
         titles, after = _balanced_groups(body, m.end() - 1, 1)
-        title = re.sub(r"\s+", " ", titles[0]).strip() if titles else ""
+        title_raw, title_labels = _pull_labels(titles[0]) if titles else ("", [])
+        title = re.sub(r"\s+", " ", title_raw).strip()
         depth = _DEPTH[cmd]
-        node = Chunk("heading", text=title, meta={"cmd": cmd, "depth": depth})
         seg_end = heads[idx + 1].start() if idx + 1 < len(heads) else len(body)
+        seg = body[after:seg_end]
+        leading_label, seg = _extract_leading_label(seg)
+        label = title_labels[0] if title_labels else leading_label
+        meta: dict[str, object] = {"cmd": cmd, "depth": depth}
+        if label:
+            meta["label"] = label
+        node = Chunk("heading", text=title, meta=meta)
         while len(stack) > 1 and stack[-1][0] >= depth:
             stack.pop()
         stack[-1][1].children.append(node)
-        _attach_body(body[after:seg_end], node)
+        _attach_body(seg, node)
         stack.append((depth, node))
     return root
 

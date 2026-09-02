@@ -3,8 +3,9 @@ and its wiring as `table_payload`'s third fallback (gr51405 + gr52564).
 
 Mirrors the style of ``parse_markdown_table`` coverage in
 ``tests/test_draft_table.py`` — pure functions, no DB, exact expected
-``{header, rows, caption}`` per case (see the frozen contract's test
-matrix)."""
+``{header, rows, caption, label}`` per case (see the frozen contract's test
+matrix; ``label`` was added for gripe 271129 — the ``\\label{...}``
+argument, captured rather than discarded)."""
 
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ Ge & 0.67 & diamond \\
             ["Ge", "0.67", "diamond"],
         ],
         "caption": None,
+        "label": None,
     }
 
 
@@ -52,6 +54,7 @@ B & 2 \\
             ["B", "2"],
         ],
         "caption": None,
+        "label": None,
     }
 
 
@@ -74,6 +77,7 @@ X & Y & Z \\
         "header": ["X", "Y", "Z"],
         "rows": [["1", "2", "3"]],
         "caption": "Cap",
+        "label": "tab:my-table",
     }
 
 
@@ -91,6 +95,7 @@ foo & 1 & 2 \\
         "header": ["Name", "A", "B"],
         "rows": [["foo", "1", "2"]],
         "caption": None,
+        "label": None,
     }
 
 
@@ -108,6 +113,7 @@ a & b & c \\
         "header": ["Col1", "Col2", "Col3"],
         "rows": [["a", "b", "c"]],
         "caption": None,
+        "label": None,
     }
 
 
@@ -125,6 +131,7 @@ X & A \& B \\
         "header": ["Term", "Meaning"],
         "rows": [["X", "A & B"]],
         "caption": None,
+        "label": None,
     }
 
 
@@ -142,6 +149,7 @@ A & B & C \\
         "header": ["A", "B", "C"],
         "rows": [["Spanning", "tail", ""]],
         "caption": None,
+        "label": None,
     }
 
 
@@ -160,6 +168,7 @@ Si & 1.523 \\
         "header": ["Element", "Gap"],
         "rows": [["Si", "1.523"]],
         "caption": None,
+        "label": None,
     }
     assert isinstance(result["rows"][0][1], str)
 
@@ -179,7 +188,47 @@ A & B \\
         "header": ["A", "B"],
         "rows": [["1", "2"]],
         "caption": None,
+        "label": None,
     }
+
+
+# ── parse_latex_table — label capture (gripe 271129) ────────────────────
+
+
+def test_label_glued_immediately_after_caption() -> None:
+    tex = r"""
+\begin{table}
+\caption{Gap table}\label{tab:glued}
+\begin{tabular}{ll}
+\hline
+A & B \\
+\hline
+1 & 2 \\
+\hline
+\end{tabular}
+\end{table}
+"""
+    result = parse_latex_table(tex)
+    assert result is not None
+    assert result["label"] == "tab:glued"
+    assert result["caption"] == "Gap table"
+
+
+def test_label_removed_from_body_does_not_leak_into_a_cell() -> None:
+    tex = r"""
+\begin{tabular}{ll}
+\label{tab:no-caption}
+\hline
+A & B \\
+\hline
+1 & 2 \\
+\hline
+\end{tabular}
+"""
+    result = parse_latex_table(tex)
+    assert result is not None
+    assert result["label"] == "tab:no-caption"
+    assert result["rows"] == [["1", "2"]]
 
 
 # ── parse_latex_table — failure cases (return None) ────────────────────
@@ -237,6 +286,7 @@ Si & 1.12 & diamond \\
         "header": ["Element", "Gap", "Structure"],
         "rows": [["Si", "1.12", "diamond"]],
         "caption": None,
+        "label": None,
     }
 
 
@@ -254,6 +304,9 @@ zz & yy \\
         {"table": {"header": ["el", "gap"], "rows": [["Si", 1.12]]}},
         tex,
     )
+    # The canonical `meta.table` branch never scans raw text for a label
+    # (there's no raw LaTeX left to scan once a chunk is canonical) — its
+    # contract stays `{header, rows, caption}`, no `label` key.
     assert payload == {
         "header": ["el", "gap"],
         "rows": [["Si", "1.12"]],

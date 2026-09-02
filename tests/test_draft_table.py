@@ -621,6 +621,45 @@ def test_edit_table_recovers_caption_from_raw_latex(
     assert "alpha & b" in chunk.text
 
 
+def test_edit_table_cell_edit_persists_label_via_in_place_patch(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ``\\label{...}`` recovered alongside the grid lands in
+    ``meta.label`` even on the raw-LaTeX in-place patch path (gripe
+    271129) — the raw ``\\label{}`` command itself is untouched (only the
+    row/cell area is ever rewritten), but ``meta.label`` gives the anchor
+    a durable, queryable home instead of relying solely on re-parsing raw
+    text on every read."""
+    raw = "{cc}\n\\label{tab:x}\n\\toprule\na & b \\\\\n1 & 2 \\\\\n"
+    tc = _flagged_latex_chunk(draft, hub, raw)
+    draft.edit(id=tc.dc, cell="A1", text="alpha")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "\\label{tab:x}" in chunk.text  # raw label untouched
+    assert "alpha & b" in chunk.text
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta.get("label") == "tab:x"
+
+
+def test_edit_table_caption_only_edit_on_latex_source_persists_label(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``caption=``/``regen=`` alone (no cell=/find=/sub=) on a LaTeX-sourced
+    chunk falls through to the markdown-re-derivation path, not the
+    in-place patcher — the exact write that used to drop ``\\label``
+    silently (gripe 271129). ``meta.label`` now survives even though the
+    raw LaTeX text itself is replaced by derived markdown."""
+    raw = (
+        "{cc}\n\\caption{Yield thresholds}\n\\label{tab:yield}\n"
+        "\\toprule\na & b \\\\\n1 & 2 \\\\\n"
+    )
+    tc = _flagged_latex_chunk(draft, hub, raw)
+    draft.edit(id=tc.dc, caption="New legend")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta.get("label") == "tab:yield"
+    assert meta.get("caption") == "New legend"
+
+
 def test_edit_table_markdown_fallback_recovery_promotes_to_canonical(
     draft: DraftHandler, hub: Hub
 ) -> None:
