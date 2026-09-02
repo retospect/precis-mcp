@@ -1,6 +1,7 @@
 ---
 status: draft
 title: claim conflict search — every claim hunts its own opposition, at mint and retroactively, with coverage tracked
+model: opus
 blocked-by: disputes-edge-nonblocking-disagreement
 ---
 
@@ -11,8 +12,9 @@ conflicting info and either incorporate in nanopub or also write that down
 as nanopub and link it."* Extended same day: run it **when we make a
 claim** (not only at nanopub approve), run it **retroactively on existing
 claims and keep track that we did**, and rank candidate papers by
-trustworthiness **without rejecting hidden small voices entirely** (that
-last piece: `docs/backlog/source-trust-prior.md`).
+trustworthiness without rejecting hidden small voices — using the
+**existing** `paper_rank` score (`workers/paper_rank.py`,
+`refs.meta.paper_rank.read_first`), not a new one.
 
 ## Motivation / why
 
@@ -27,34 +29,49 @@ after mint, the existing corpus is backfilled by the same pass, and the
 nanopub approve step surfaces the results while the claim wording can
 still absorb a caveat.
 
+**Blocked-by scope note:** only the edge-filing half (item 5, and item 4's
+"linkable dispute" rendering) needs Part 1's `disputes` relation. Items
+1–3 (search, budgeted verify, coverage ledger) are independently buildable
+and can start accumulating `meta.conflict_search` coverage before Part 1
+lands; verdicts wait in the ledger until there's an edge to file.
+
 ## In scope
 
-**One mechanism, two populations.** A standing ref-pass worker (a
-`hub_refine` sibling in `src/precis/workers/`, registered in
-`workers/registry.py`) sweeps every claim hub whose
-`meta.conflict_search.version` is missing or older than the current
-search version. That single watermark rule makes "new claim gets swept
-promptly after mint" and "retro backfill of the existing corpus" the same
-code path — no separate backfill tool, and bumping the version re-sweeps
-everyone after a method change.
+**One mechanism, two populations.** A standing ref-pass worker (a new
+worker in `src/precis/workers/`, registered in `workers/registry.py`)
+sweeps every claim hub whose `meta.conflict_search.version` is missing or
+older than the current search version. That single watermark rule makes
+"new claim gets swept promptly after mint" and "retro backfill of the
+existing corpus" the same code path — no separate backfill tool, and
+bumping the version re-sweeps everyone after a method change.
 
-1. **Search.** Reuse `hub_refine`'s machinery: ANN over paper/patent body
-   chunks + claim-hub embeddings for the claim sentence, then a BIG-tier
-   LLM verify per candidate with the existing
-   `yes/partial/no/contradicts` verdict shape. Add one retrieval trick
-   the disputes spec's floor-caveat motivates: also embed 1–3
-   LLM-generated *negated/opposing paraphrases* of the claim and search
-   those — "X has no effect on Y" sits far from "X enhances Y" in
-   embedding space, so searching only the claim's own phrasing is
-   structurally blind to the disagreements most worth finding.
-2. **Budgeted verify, trust-ordered, with a small-voice floor.** LLM
+1. **Search.** ANN over paper/patent body chunks + claim-hub embeddings
+   for the claim sentence, **plus** 1–3 LLM-generated *negated/opposing
+   paraphrases* of the claim embedded and searched the same way — "X has
+   no effect on Y" sits far from "X enhances Y" in embedding space, so
+   searching only the claim's own phrasing is structurally blind to the
+   disagreements most worth finding. Slice 1, decided (see log).
+   **Boundary with `hub_refine`:** re-derive the discovery wiring in the
+   new pass per the codebase's cross-task-seam precedent — do NOT import
+   `hub_refine`'s underscore-private helpers (`_citation_candidates`,
+   `_Candidate`, …; they're excluded from its `__all__` deliberately).
+   The sanctioned shared seam is `workers/_chase_llm.py`: the LLM verify
+   (yes/partial/no/contradicts verdict shape) is imported from there,
+   extended if needed there, never forked.
+2. **Budgeted verify, paper_rank-ordered, with a small-voice floor.** LLM
    verification is the expensive step, so candidates are ranked before
-   spending: once `source-trust-prior` lands, order by trust — but
-   reserve a fixed fraction of every hub's verify budget for
-   below-median-trust candidates, and never drop a candidate on trust
-   alone. Dissent disproportionately lives in low-prestige venues;
-   a pure trust ordering would re-flatten exactly what this pass exists
-   to find. Until the prior lands, order by cosine distance.
+   spending, by the existing `meta.paper_rank.read_first` (five-signal
+   deterministic score: fwci, corpus citation-graph PageRank, citation
+   velocity, methodology + reproducibility markers; retracted capped at
+   20 but never excluded — the score already ranks-without-rejecting by
+   design). It's documented as reading-priority, not claim-quality —
+   which is exactly the right shape for "whose conflict deserves verify
+   spend first." The floor rule lives here: reserve a fixed fraction of
+   every hub's verify budget for below-median-`read_first` candidates,
+   and never drop a candidate on rank alone — dissent disproportionately
+   lives in low-prestige venues, and a pure rank ordering would
+   re-flatten exactly what this pass exists to find. Candidates whose
+   paper lacks `paper_rank` order by cosine distance within their band.
 3. **Coverage ledger.** Each swept hub records
    `meta.conflict_search = {version, at, candidates_checked,
    disputes_filed}`. This is the "keep track that we did it": "no known
@@ -72,9 +89,16 @@ everyone after a method change.
 5. **Counter-claim + link.** If the conflicting info is a genuine
    opposing claim with its own grounding in a held source, mint it as its
    own hub through the normal directed-mint path (own sentence, own
-   grounding passage) and file a `disputes` edge between the two. Both
-   remain mintable — `disputes` is non-blocking by design; adjudication
-   comes later via the disputes spec's Part 2.
+   grounding passage) and file a `disputes` edge between the two. This
+   explicit edge-file is a **deliberate backstop**, not redundancy: once
+   Part 1 repoints `place()`, directed-mint's own `block()` →
+   `dedup_judge()` → `place()` cascade may file the edge automatically —
+   but this pass's negated-paraphrase candidate is often one `block()`'s
+   narrower same-phrasing search would never surface, so the cascade
+   cannot be relied on. The acceptance test asserts the edge *exists*
+   after the sitting, whichever path wrote it. Both hubs remain mintable
+   — `disputes` is non-blocking by design; adjudication comes later via
+   the disputes spec's Part 2.
 
 Edge writes must tolerate re-runs: the DB enforces uniqueness
 (`links_endpoints_relation_idx`), so a re-sweep must upsert/skip cleanly
@@ -90,9 +114,9 @@ conflicts hide where coverage is thickest.
   unreviewed LLM suspicion raises a question (`disputes`), it does not
   veto (`contradicts` stays adjudication-derived).
 - **Adjudication** — Part 2 of the disputes spec, untouched here.
-- **Trust scoring itself** — signals, score shape, storage are
-  `docs/backlog/source-trust-prior.md`; this item only consumes the
-  ordering and owns the floor rule.
+- **Changing `paper_rank`** — this item consumes
+  `meta.paper_rank.read_first` as-is; new signals or reweighting belong
+  to that worker's own follow-ons.
 - **External search** (semanticscholar / websearch / perplexity). A
   counter-hub must ground in a held passage; an external hit routes
   through paper acquisition first, and a stub is not citable. Corpus-only
@@ -108,21 +132,23 @@ conflicts hide where coverage is thickest.
 - Approving a candidate whose corpus contains a planted opposing claim
   shows that claim to the reviewer before the string freezes, with the
   passage and verdict; approve is never mechanically blocked.
-- A confirmed opposing claim can be minted as its own hub and linked with
-  `disputes` in the same review sitting; re-sweeping does not duplicate
-  the edge.
+- After a review sitting that confirms a genuine opposing claim, the
+  counter-hub exists and a `disputes` edge joins the pair (written by
+  this pass or by the `place()` cascade — the test asserts existence,
+  not authorship); re-sweeping does not duplicate it.
 - Negated-paraphrase retrieval demonstrably retrieves at least one
   opposition pair that same-phrasing ANN misses (seed pair fi191120 vs
   fi218681, or a synthetic fixture).
-- With a trust prior present, a below-median-trust candidate still
-  receives verify spend on a hub whose high-trust candidates would
-  exhaust the budget (floor rule test, fixture-based).
+- A below-median-`paper_rank` candidate still receives verify spend on a
+  hub whose high-rank candidates would exhaust the budget (floor rule
+  test, fixture-based).
 
 ## Target + blast radius
 
 - New ref-pass worker in `src/precis/workers/`, registered in
-  `workers/registry.py`, LLM via the router seam; hub
-  `meta.conflict_search` writes.
+  `workers/registry.py`; LLM verify via `workers/_chase_llm.py` + the
+  router seam; hub `meta.conflict_search` writes;
+  `meta.paper_rank.read_first` reads.
 - `nanopub/mint.py::approve` — advisory surface + freshness check.
 - `links` write door for `disputes` — whichever door the disputes spec's
   Part 1 item 3 picks; this item consumes it, doesn't build it.
@@ -136,12 +162,20 @@ conflicts hide where coverage is thickest.
 - **Decided (2026-09-02, Reto):** trigger is claim-mint + retro backfill
   via one watermarked worker pass, not approve-only; coverage must be
   tracked; trust ranks but never rejects.
+- **Decided (2026-09-02, Reto):** trust ordering uses the existing
+  `paper_rank` score — no new trust/goodness score (a drafted
+  `source-trust-prior` item was deleted same day as duplicate).
+- **Decided (2026-09-02, post ready-review):** negated-paraphrase
+  retrieval is slice 1 — it is the part that beats the retrieval floor;
+  without it the pass mostly re-finds paraphrase neighbours, which is
+  dedup's job, not this pass's. Cost bounded by k≤3 paraphrases.
+- **Decided (2026-09-02, post ready-review):** no imports of
+  `hub_refine` privates; re-derive discovery, share only via
+  `workers/_chase_llm.py` (see In-scope item 1).
 - Does the searched-at negative statement ride into the *published*
   provenance graph, or stay a local honesty record? (Close to the
   negative-results pathway in `claim-publication-nanopub-ots.md` —
   possibly the same artifact shape.)
-- Is negated-paraphrase retrieval slice 1 or a fast-follow? It's the part
-  that beats the retrieval floor, but it multiplies search cost ×(1+k).
 - Verify-budget size per hub, and the floor fraction (starting point:
-  ~20% of spend reserved for below-median trust) — tune on the backfill's
+  ~20% of spend reserved for below-median rank) — tune on the backfill's
   first dense neighbourhood.
