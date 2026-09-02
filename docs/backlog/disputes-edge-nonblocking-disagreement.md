@@ -1,15 +1,23 @@
 ---
-status: draft
+status: ready
 title: "split `contradicts` into non-blocking `disputes` + adjudicated `contradicts` — make disagreement free to file"
+prio: high
 model: opus
 ---
 
-# The corpus cannot disagree with itself
+# The corpus cannot disagree with itself — Part 1: vocabulary + write path
 
-**Lead with dedup, demote the disputes edge to a follow-on.** Part 1
-(vocabulary + write path) ships alone; Part 2 (review workflow) is
-`blocked-by` it. Keep the vocabulary split regardless of volume: one slug
-(`contradicts`) currently means at least four unrelated relationships —
+This file is Part 1 only (ship alone). Part 2 (adjudication workflow —
+the claim-about-two-claims tier, verdicts, reviewer persona) moved to
+`docs/backlog/disputes-adjudication-workflow.md`, blocked by this.
+Downstream consumer: `docs/backlog/claim-conflict-search.md` (blocked by
+this file; its worker files the edges this vocabulary creates). Sibling:
+`docs/backlog/contradicts-conflates-evidence-and-prose-misuse.md` — its
+blocking defect is cured by this item (decisions D2/D3 below); its
+residual scope stays open there.
+
+Keep the vocabulary split regardless of volume: one slug (`contradicts`)
+currently means at least four unrelated relationships —
 evidence-contradicts-claim, claim-contradicts-paper,
 critique-contradicts-claim, memory-contradicts-memory — and the case for
 separating them rests on that naming collision, not on row count. It holds
@@ -26,12 +34,13 @@ reciprocal or self-loop rows):**
 | `memory` → `memory` | 2 | unrelated subsystem |
 | hub ↔ hub | **0** | *what the relation was designed for* |
 
-The `finding`→`finding` row isn't a hub↔hub disagreement either:
-`fi192706` → `fi191316`, the claim-adversary persona's critique
-(`TAPROOT:review`-tagged, not `TAPROOT:claim`) — a fifth relationship on
-the same slug, not the fourth. (One count in this heading was wrong twice
-before this census — verify against a fresh read-only query, not a
-remembered number, before citing it again.)
+**Stale — re-measure at build (work item 0).** The sibling
+`contradicts-conflates` audit (2026-08-29) implies at least 3
+`finding`→`finding` review-critique rows (fi255164→fi191315,
+fi192706→fi191316, fi255165→fi191329), not 1 — the drift is visible, not
+hypothetical. (One count in this heading was wrong twice before the
+census — verify against a fresh read-only query, never a remembered
+number.)
 
 The zero is not 1,524 acts of self-censorship — no agent chooses to file a
 hub↔hub `contradicts`; it is written automatically by
@@ -43,7 +52,7 @@ other, and `block()` retrieved over `card_combined` — a chunk kind only
 187/1,524 hubs (12.3%) carried an embedding for, against 1,524/1,524 for
 `finding_body`. The judge was blind to 88% of the corpus and was almost
 never asked a question it could answer. (Fixed separately — this file's
-numbers below post-date the fix.)
+numbers post-date the fix.)
 
 **Schema note — RESOLVED.** `links` now carries a unique index on
 `(src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation)`
@@ -51,62 +60,27 @@ numbers below post-date the fix.)
 Automated passes still need to upsert/skip on conflict rather than error,
 but the double-every-edge hazard is closed.
 
-**Near-neighbour measurement, post-fix (prod, 2026-08-20).** Cosine over
-`finding_body`, pairs already joined by any link excluded: 9 pairs under
-0.05, 23 under 0.10, 76 under 0.15, 205 under 0.20, 1,204 under 0.30. A
-15-pair sample from the <0.15 band held **one** genuine disagreement
-(`fi218623` ↔ `fi218626`, lateral vs vertical heterostructure FETs
-outperforming vs falling orders of magnitude short); the rest were
-restatements, paraphrases, and scope variants.
+**Confirmation asymmetry — partially fixed 2026-08-20.** `place()` now
+filters `"contradicts"` on `confidence >= confidence_threshold`; a
+sub-threshold verdict mints the hub **unlinked** (reason on
+`Placement.reason` only). **Not fixed:** no `merge-confirm`-equivalent
+second call exists for a high-confidence contradiction — the threshold
+filters, it doesn't confirm. Under this spec that asymmetry stops
+mattering at the gate (the verdict files a non-blocking `disputes`), and a
+`contradiction_confirm` BIG-tier call becomes Part 2's adjudication
+concern, not a write-path patch.
 
-**Retrieval-shaped epistemics.** Both this near-neighbour pass and any
-future opposition finder built on it are ANN-retrieval-first. That
-structurally favours claims phrased like their neighbours and misses both
-independent confirmation and genuine contradiction expressed in different
-vocabulary — embedding proximity measures *topical* similarity, not
-propositional opposition. "X enhances Y" and "X has no significant effect
-on Y" can sit far apart in embedding space while two paraphrases sit at
-0.03 cosine. So any retrieval-based opposition finder is structurally
-biased against exactly the disagreements most worth finding: its recall is
-a **floor**, never an estimate, and no coverage number it produces may be
-reported as one. The 76-under-0.15 figure above is such a floor; the
-1-in-15 hit rate is one positive in a plausible 1–20 range, wide enough
-that it cannot alone decide build-vs-manual for a dedicated finder.
-
-**What the near-neighbour band is actually good for.** It is dominated by
-duplicates, not disputes — 23 pairs under 0.10 look like hubs that should
-have converged and didn't, including two byte-identical sentences forked
-on `scope` (`fi191179`/`fi191260`, `fi191192`/`fi191262`). That repair is
-measurable, mechanical, and needs no new vocabulary — hence lead with
-dedup.
-
-**Confirmation asymmetry — fixed 2026-08-20.** `place()` used to
-double-check a `"same"` verdict at low confidence with a second
-`merge-confirm` LLM call, but acted on `"contradicts"` first-hit at any
-confidence — reversible low-harm decision double-checked, irreversible
-high-harm one single-shot. This became urgent once the `block()` retrieval
-fix above was ready: shipping it would have switched on an unconfirmed
-publication-blocking write path across all 1,524 hubs at once. `place()`
-now filters `"contradicts"` on `confidence >= confidence_threshold`; a
-sub-threshold verdict mints the hub **unlinked**, reason recorded on
-`Placement.reason` only, and every existing consumer already groups `new`
-with `new_contradicts` (`taproot/hub.py::apply_placement`,
-`cli/taproot.py`'s result printer). **Not fixed:** there is still no
-`merge-confirm`-equivalent second call for a high-confidence contradiction
-— the threshold filters, it doesn't confirm. A `contradiction_confirm` at
-BIG tier would make the two branches symmetric.
-
-Every gate here is an admissibility gate — well-formed, sourced,
+Every gate today is an admissibility gate — well-formed, sourced,
 traceable. Admissible is not true. Claim-versus-claim disagreement is the
 only truth-bearing mechanism in the system, and it has never actually run.
-Independently reached by an external review
-(`get(kind='perplexity-research', id='critique-the-design-of-a-scientific-claim-publication-pipeli')`):
-the corpus is *"impeccably traced but epistemically flat."* Re-confirmed by
-the 2026-08-27 staged-queue review: finding-level critiques (fi191315's)
-must surface as a nonblocking review/dispute state — visible in the
-evidence view, not silently absent, not a hard gate — which is exactly
-Part 1's `disputes` rendering. Third independent derivation; Part 1's
-priority rises accordingly.
+An external review (`get(kind='perplexity-research',
+id='critique-the-design-of-a-scientific-claim-publication-pipeli')`)
+points the same direction — the corpus is impeccably traced but
+epistemically flat (paraphrase of its themes, not a verbatim quote).
+Re-confirmed by the 2026-08-27 staged-queue review: finding-level
+critiques must surface as a nonblocking review/dispute state — visible in
+the evidence view, not silently absent, not a hard gate — which is exactly
+the `disputes` rendering below.
 
 ## The change
 
@@ -114,169 +88,117 @@ Split one relation into two, along who has decided:
 
 | relation | who files it | blocks publication? | means |
 |---|---|---|---|
-| `disputes` | anyone, freely — agent, human, or the ingest LLM judge | **no** | "these two claims appear to conflict; someone should look" |
-| `contradicts` | adjudication only | **yes** | "these do conflict, and it has been established" |
+| `disputes` | anyone, freely — agent, human, or an LLM judge | **no** | "these two claims appear to conflict; someone should look" |
+| `contradicts` | adjudication only (Part 2) | **yes** | "these do conflict, and it has been established" |
 
-**Both columns describe the target, not today.** Today `contradicts` is
-written by the ingest judge with no adjudication anywhere; `disputes`
-doesn't exist. The single highest-value line of this change is therefore
-**repointing `canon.place()`'s `"contradicts"` verdict at `disputes`** — an
-unreviewed LLM call raises a question instead of silently blocking a
-stranger's publication. That one repoint fixes the confirmation asymmetry
-above without any of the adjudication machinery below. Filing becomes
-free; only *resolution* is expensive. A `disputes` edge is a **question**,
-not a verdict, and must render as one everywhere it appears — no demerit
-against either hub.
+A `disputes` edge is a **question**, not a verdict, and must render as one
+everywhere it appears — no demerit against either hub. Filing is free;
+only *resolution* is expensive. `contradicts` becomes derived, not
+authored: post-migration, a live claim-graph `contradicts` edge can only
+come from a Part 2 adjudication, which is a far better warrant for
+refusing publication than an anonymous unreviewed LLM row.
 
-## What carries the disagreement: an edge, or a claim about two claims?
+## Decisions (2026-09-02 — the former open questions, resolved)
 
-Reto, 2026-08-20: *"we have one paper, a nanopub with one claim, and
-another nanopub with an opposing claim, and a … nanopub that says A and B
-are opposing?"* — yes, and that's the better structure. A `links` row
-(`set_by` + a `meta` blob) has no sentence, evidence, author, signature, or
-identity: it's a database fact about two rows, not a scientific statement.
-**A statement about two claims is itself a claim** — standard
-nanopublication practice (assertions whose subject is another
-nanopublication, own trusty URI/provenance/signature); the micropublication
-model's `supports`/`challenges` and CiTO's `cito:disagreesWith` are this
-shape. Making the adjudication a first-class hub buys, for free, everything
-hub machinery already does — authored sentence, `pub_id`, grounding,
-review, minting, signing, anchoring — and one more property: **a dispute
-can itself be disputed.** "A and B conflict" is falsifiable and often
-wrong (`scope-mismatch` is the expected majority verdict); an edge can't
-record that it was overturned, a claim can.
+- **D1 — gate reads `contradicts` only, unfiltered by source kind.**
+  Post-split, adjudication is the warrant, so `check_contradicts` blocks
+  on any live claim-graph `contradicts` edge regardless of `src` kind —
+  the `EVIDENCE_SRC_KINDS` filter stops being a blocking-policy knob.
+  `disputes` never blocks, from any source. The three read surfaces
+  reconcile to two definitions used consistently: **blocking** = live
+  `contradicts`; **open question** = live `disputes` (rendered by the
+  claim page, `view='nanopub'`, and the overview's bucket — never the red
+  UNMINTABLE banner).
+- **D2 — the migration repoints existing claim-graph `contradicts` rows
+  to `disputes`.** None was ever adjudicated (no adjudication mechanism
+  has existed), so none carries the warrant the new semantics assign to
+  the slug. `memory`↔`memory` rows are left untouched (different
+  subsystem; never read by these surfaces). Claim-graph `contradicts`
+  therefore starts at zero — correct, not a regression — and the three
+  review-critique blocks (fi191315/fi191316/fi191329) become visible
+  open questions, curing the sibling item's live defect.
+- **D3 — repoint every writer, not just `place()`.** Item 1a covers the
+  ingest dedup judge; the review-lens writer that produced the 3 live
+  problem rows (likely `quest/review_fanout.py` — "find the writer first"
+  per the sibling item; confirm at build) must also emit `disputes`: a
+  review critique is a question about a claim, not adjudicated evidence
+  conflict. After Part 1, **no code path writes `contradicts`.**
+- **D4 — `link_claims` is the door.** Add `disputes` to
+  `taproot/hub.py::link_claims`'s `CLAIM_LINK_RELATIONS`; the generic MCP
+  `link()` door delegates a `disputes` op between two claim-hub findings
+  to it. The genuinely missing guard at the generic door is only the
+  live-claim-hub-kind check — `store/_links_ops.py::add_link` already
+  rejects self-loops and is idempotent, and `parse_link_target` already
+  requires a live ref — so this is a small delegation, not a guard
+  rebuild. Manual `contradicts` stays unfileable through every door.
+- **D5 — boundary with `contradicts-conflates-evidence-and-prose-misuse`.**
+  Its gate-level question and this file's are one decision, made here
+  (D1/D2). Its deeper ask — a dedicated cite-misuse relation scoped to
+  the (draft-chunk, hub) pair, fixing the scope inversion — stays open in
+  that item and is *not* foreclosed: a review-sourced `disputes` edge is
+  an interim superset that a later `misused-by` relation can re-target.
 
-### The two tiers
+## Scope of work (Part 1 — ship this alone)
 
-Not competitors — two ends of one lifecycle:
-
-| tier | carrier | who | cost | means |
-|---|---|---|---|---|
-| **flag** | `disputes` link | anyone, freely | ~zero | "these look like they conflict; someone should look" |
-| **adjudication** | a **claim hub** whose sentence is about two hubs | a reviewer, with reasoning | full mint path | "these do/don't conflict, and here is why" |
-
-Filing stays free because the flag is free; the nanopub appears only at
-resolution. **`contradicts` becomes derived, not authored** — a live edge
-exists because a signed adjudication hub with verdict `genuine-conflict`
-says so, a far better warrant for refusing publication than an anonymous
-row.
-
-### The gate that has to change first
-
-Every claim hub today grounds in a primary-source passage. An adjudication
-hub grounds in *two other claims* plus, usually, a third source —
-`nanopub/gates.py` has no notion of this second grounding mode; as-is, an
-adjudication hub is rejected as unsourced. Resolve before building: either
-admit `grounding.mode='claims'` explicitly, or the adjudication tier is
-unmintable.
-
-**Open question, deliberately unresolved:** should the adjudication hub's
-`pub_id` hash the two claim ids alongside the sentence? Probably yes —
-otherwise two adjudications of *different* pairs sharing a sentence
-("These claims differ in measurement regime.") collide into one.
-
-## Why this is safe to make free
-
-`contradicts` blocking is sound reasoning applied to the wrong scope: we
-must not publish a claim known to be *contested*. That reasoning covers
-adjudicated conflict and nothing else — an unreviewed suspicion was never
-grounds to block, and treating it as such produced the silence measured
-above. Publication safety is fully preserved by the `contradicts` half.
-
-## Adjudication verdicts
-
-A `disputes` edge resolves into exactly one of five outcomes. Only the
-last blocks:
-
-- `same-claim` → attach evidence to the survivor, retire the duplicate
-- `refines` → typed `refines` edge, `disputes` retired
-- `scope-mismatch` → different functional / cell size / measurement
-  regime; annotate scope on both, no edge. **Expected majority.**
-- `unit-error` → one side is arithmetically wrong; retract it
-- `genuine-conflict` → `contradicts`, plus a hunt for a third adjudicating
-  source
-
-## Scope of work
-
-**Two shippable specs.** Part 2 is `blocked-by` part 1; don't start it
-first.
-
-### Part 1 — write path + vocabulary (ship this alone)
-
-0. **Measure first.** Re-run placement over the corpus with the `block()`
-   fix in, and count `contradicts`. Read-only; if the count moves sharply,
-   revise this spec before building.
-1. **Relation vocabulary** — add `disputes`. The relation set is a DB
-   table (`relations`, PK'd on `slug`, FK'd from `links.relation` via
-   `links_relation_fkey`) plus a hand-maintained `Literal` at
-   `src/precis/store/types.py::Relation` — both need a migration and both
-   need updating in lockstep (pattern: `migrations/0100_taproot_refines_relation.sql`).
+0. **Measure first.** Fresh read-only census of `contradicts` rows (count,
+   directions, writers). If sharply different from the table above, revise
+   before building.
+1. **Relation vocabulary** — add `disputes`: `relations` table row +
+   `links_relation_fkey` + the `Relation` Literal in
+   `src/precis/store/types.py`, in lockstep, one migration (pattern:
+   `migrations/0100_taproot_refines_relation.sql`; check current max
+   number first). The same migration performs D2's repoint of existing
+   claim-graph `contradicts` rows.
 1a. **Repoint the ingest judge** — `taproot/canon.py::place()`'s
    `"contradicts"` branch and `taproot/hub.py`'s `new_contradicts`
-   placement action must emit `disputes`, not `contradicts`. Highest
-   value-to-risk item in this document; untouched by the original draft.
-2. **Publish gates — three call sites, confirmed, not one.**
-   `nanopub/gates.py::check_contradicts` and
-   `precis_web/nanopub_render.py` both read `HubBundle.contradicts`, built
-   by `taproot/seniority.py::_fetch_evidence_rows` filtered to
-   `EVIDENCE_SRC_KINDS = {paper, patent, edgar, datasheet}`
-   (`taproot/hub.py`) — hub- and finding-sourced disputes are invisible to
-   both. `nanopub/overview.py`'s `disputed` bucket/`hub_rows` query reads
-   `l.relation = 'contradicts'` **unfiltered** and is the only one of the
-   three that sees `fi192706 → fi191316`. So today: the mechanical gate
-   blocks paper/patent-sourced disputes only; a finding-sourced one
-   surfaces in the overview and holds at human review, not at the gate —
-   `fi191316`'s hold (`docs/backlog/nanobud-nanopub-batch3.md`) was Reto's
-   call via the overview page, not `check_contradicts` firing. Reconcile
-   the three queries when building; decide whether the gate *should* see
-   hub/finding sources here — that's this item's actual open question now.
-3. **A write door with invariants.** `taproot/hub.py::link_claims`'s
-   `CLAIM_LINK_RELATIONS = {"refines", "conjunct-of"}` excludes both
-   `disputes` and manual `contradicts`; the generic MCP `link()` door
-   (`handlers/_link_tag_ops.py::apply_link_ops`) has none of
-   `link_claims`'s guards (live endpoint check, no self-link, idempotent).
-   Decide which door files a `disputes` edge and give it the guards — open.
-4. **Render** — the claim page and `view='nanopub'` currently show an
-   UNMINTABLE warning for a contradicts edge. `disputes` gets its own
-   visibly non-blocking treatment ("open question", counterpart hub
-   linked), never the red banner.
-
-### Part 2 — review workflow (blocked by part 1)
-
-5. **Second grounding mode** — `grounding.mode='claims'` so an adjudication
-   hub, whose subject is two other hubs, can pass admissibility. Without
-   it the adjudication tier is unmintable.
-6. **Skills** — `precis-taproot-help` and `precis-nanopub-help` must
-   actively *invite* `disputes`: filing one is free, expected, harms
-   neither claim. Add the five adjudication verdicts. No queue/dashboard
-   for browsing newly-filed `disputes` edges is scoped yet —
-   `nanopub/overview.py` has a `withheld_count` queue for evidence edges;
-   nothing analogous exists for `disputes`.
-7. **Reviewer persona** — `precis-adversarial-reviewer` cannot simply be
-   adapted: `scripts/review-paper/run.sh` runs it against a single `paper:`
-   handle, and `precis-common-reviewer.md` makes it explicitly read-only.
-   Hub review needs pairwise comparison and a write capability, neither of
-   which it has. Of its 7 categories only `unsupported-claim` and
-   `overgeneralisation` plausibly transfer to a claim-hub sentence. Budget
-   for a new persona or a real extension, not a rename.
+   placement action emit `disputes`.
+1b. **Repoint the review-lens writer** (D3) — find it (start at
+   `quest/review_fanout.py`), make it emit `disputes`.
+2. **Reconcile the three read surfaces to D1** —
+   `nanopub/gates.py::check_contradicts` (blocks on live `contradicts`,
+   any source kind), `precis_web/nanopub_render.py` and
+   `nanopub/overview.py` (both show `disputes` as a non-blocking open
+   question, any source kind, counterpart linked).
+3. **The write door** (D4) — `link_claims` gains `disputes`; generic
+   `link()` delegates claim-pair `disputes` there; add the claim-hub-kind
+   check.
+4. **Render** — `disputes` gets its own visibly non-blocking treatment
+   ("open question", counterpart hub linked), never the red banner.
 
 ## First run
 
-Run over the dense topic neighbourhoods first — conflicts hide where
-coverage is thickest: MOF conduction, DNA bricks, molecular switches.
-
-Two seed cases already in hand that no automated gate caught:
+Success looks like the `disputes` count growing into the hundreds — a
+large `disputes` graph is the deliverable, not a regression: it's the map
+of where inquiry should go. Systematic filing at scale is
+`claim-conflict-search`'s worker (dense neighbourhoods first; its specced
+retrieval is ANN-based and its recall is a floor, never an estimate — see
+that file). Two seed cases already in hand that no automated gate caught:
 
 - fi191120 vs fi218681 — possible genuine contradiction
 - pa1992 — GPa/TPa unit error, off by ~10³
 
-Success looks like the `disputes` count growing into the hundreds. **A
-large `disputes` graph is the deliverable, not a regression** — it's the
-map of where inquiry should go, subject to the retrieval-floor caveat
-above.
-
 ## Related
 
+- `docs/backlog/disputes-adjudication-workflow.md` — Part 2, blocked by
+  this
+- `docs/backlog/claim-conflict-search.md` — the systematic filer, blocked
+  by this
+- `docs/backlog/contradicts-conflates-evidence-and-prose-misuse.md` —
+  residual cite-misuse scope (D5)
 - `docs/backlog/claim-review-mechanism.md` — the procedure this plugs into
 - `docs/backlog/nanopub-corpus-remediation.md` Phase 4 — the original
-  observation and the verdict list
+  observation
+
+## Open questions / decisions log
+
+- 2026-09-02: ready-gate drift check re-verified every Part-1 code
+  citation against the current tree (all held; only the `links`
+  uniqueness note had rotted, fixed). Its three blockers — gate
+  visibility, write door, sibling-item reconciliation — resolved as
+  D1–D5 above; its advisories (guard-gap overstatement, quote-as-
+  paraphrase, stale census) folded into the text. Flipped to `ready`.
+- Near-neighbour dedup lead (the 2026-08-20 measurement: ≤0.10-cosine
+  band dominated by unconverged duplicates, e.g. `fi191179`/`fi191260`,
+  `fi191192`/`fi191262`) is real but is **not** Part 1 work — it needs no
+  new vocabulary; it belongs to the dedup/merge-door thread
+  (`docs/backlog/claim-hub-dedup-sweep.md`).

@@ -6,6 +6,19 @@ prio: high
 
 # `contradicts` conflates "evidence opposes this claim" with "the draft misused this claim"
 
+> **Re-scoped 2026-09-02.** Part 1 of
+> `docs/backlog/disputes-edge-nonblocking-disagreement.md` (now `ready`)
+> cures the *blocking* defect here: its migration repoints all
+> claim-graph `contradicts` rows (including the 3 review-critique rows
+> below) to non-blocking `disputes`, and repoints the review-lens writer
+> so new critiques file `disputes` too — the wrongly-blocked hubs become
+> visible open questions instead (its decisions D2/D3/D5). What remains
+> *this* item's scope: the inversion — cite-misuse belongs to the
+> (draft-chunk, hub) pair, not the hub — and whether a dedicated
+> relation (option 1, `misused-by` hub→draft-chunk) should re-target
+> those rows so a prose complaint stops even *disputing* the science.
+> Options 2/3 below are superseded by Part 1's D1/D2.
+
 Found 2026-08-29 while auditing the 4 disputed hubs behind the nanobud
 draft (`docs/backlog/nanobud-claim-remediation.md`). Three of the four
 turned out to be contradicted not by opposing evidence but by **review
