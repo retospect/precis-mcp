@@ -53,6 +53,26 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-09-02** — sampled 6 largest sessions since 08-23 (4.1-73 MB; top one
+  4x the next-largest — a 5-day, 25023-line PCB place+route marathon,
+  `8b8de41e`/humble-honking-plum). All findings folded into
+  `token-review-hook-gaps` (still the live tracker, not re-duplicated here):
+  Rule D's "echo fixed" 08-23 read was premature — it was prose-only, never
+  hook-coded, and has regressed to 184/2028 (9%) and 58/742 (8%) Bash calls
+  in the two worst sessions; `sed -n` is worse than ever (303/2028=15%,
+  172/742=23%). Rule E (tail-poll vs `Monitor`) trending better (ratio down
+  from ~12:1 to 1.75-3:1 in 3 of 6 sessions) but uneven (19:1 in one). Rule F
+  (fully un-delegated feature build) **recurred** — second session
+  (`378acf66`, nanopub web-routes/templates, 179 Edit/32 Write across 20+
+  files, 0 `coder` dispatches, 892 opus-tier turns) confirms the pattern;
+  backlog item now recommends building the Edit/Write delegation nudge
+  rather than continuing to watch. New, separate finding: PCB visual-
+  iteration reads 31 full-res board-render images (11.9MB, 76% of that
+  session's tool_result bytes) — plausibly inherent to the design loop, not
+  a bug; filed as gr292748 (area:token-waste) for the pcb-render owner to
+  judge whether a cheaper in-loop preview is feasible. Delegation health
+  otherwise fine (4/6 sessions healthy bash:agent ratios and subagent-type
+  spread).
 - **2026-08-23** — sampled 6 largest 08-15–08-23 sessions (5.3–19.5 MB, all
   in the primary checkout). Rule D's `echo "==="` half is fixed (0/6 files,
   vs. 73% of one session's Bash calls pre-fix); `sed -n` half is not (2–76
