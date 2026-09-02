@@ -21,14 +21,19 @@ import numpy as np
 import pytest
 
 import precis_nm
+import precis_nm.validate as nm_validate
 from precis.cad import dsl as cad_dsl
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
+from precis.structure.scene import Atom as StructAtom
+from precis.structure.scene import Bond as StructBond
+from precis.structure.scene import Scene as StructScene
 from precis_nm.generators import GENERATORS, GeneratedBlock, GeneratorError
 from precis_nm.generators.sp2 import build_cnt, build_cone, build_fullerene
-from precis_nm.handler import NmHandler
+from precis_nm.generators.sugars import build_cyclodextrin
+from precis_nm.handler import NmHandler, _generated_cell
 
 _MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
 
@@ -428,15 +433,68 @@ def test_cone_topology_facts() -> None:
     assert abs(block.topology["cone_half_angle_deg"] - 30.0) < 1e-6
 
 
-def test_cone_envelope_is_a_cone_primitive_containing_the_atoms() -> None:
+def test_cone_envelope_is_a_tcone_primitive_containing_the_atoms() -> None:
+    """gripe 286160: the envelope must be a ``tcone`` (apex at z=0, base at
+    z=h — matching the atoms' own small-end-first z ordering), not the
+    ``cone`` alias (whose apex sits at z=h, the *opposite* orientation —
+    the original bug: a declared solid with its large end at z=0 tapering
+    to a point at z=h, while the atoms run small-end-first)."""
     block = build_cone({"pentagons": 2, "length_A": 15.0})
     spec = cad_dsl.parse(block.envelope)
-    assert spec.alias == "cone"
-    r, h = spec.params["r"], spec.params["h"]
+    assert spec.alias == "tcone"
+    rb, rt, h = spec.params["rb"], spec.params["rt"], spec.params["h"]
+    assert rb < rt  # small end (apex-ward, low z) narrower than the large end
     radial = np.linalg.norm(block.coords[:, :2], axis=1)
-    assert np.all(radial <= r + 1e-6)
-    assert np.all(block.coords[:, 2] >= -1e-6)
-    assert np.all(block.coords[:, 2] <= h + 1e-6)
+    z = block.coords[:, 2]
+    assert np.all(z >= -1e-6)
+    assert np.all(z <= h + 1e-6)
+    # radius must bracket the atoms at their OWN height, not just overall —
+    # this is what the original bug (declared apex at the wrong end) fails.
+    envelope_radius_at_z = rb + (rt - rb) * z / h
+    assert np.all(radial <= envelope_radius_at_z + 1e-6)
+
+
+def _scene_from_block(block: GeneratedBlock) -> StructScene:
+    """The same GeneratedBlock->Scene conversion
+    :meth:`precis_nm.handler.NmHandler._prepare_generate` uses (module
+    docstring's "generator geometry, exactly as realized" standard) — atoms
+    unshifted into the block's own local frame, the exact frame
+    ``envelope_fit`` compares the declared envelope against."""
+    scene = StructScene(cell=_generated_cell(block.coords))
+    labels: list[str] = []
+    for element, cart in zip(block.elements, block.coords, strict=True):
+        label = scene.next_label(element)
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(np.asarray(cart, dtype=float)))
+        scene.atoms[label] = StructAtom(
+            label=label, element=element, frac=frac, hybridization=block.hybridization
+        )
+        labels.append(label)
+    for i, j, order, kind in block.bonds:
+        scene.bonds.append(StructBond(i=labels[i], j=labels[j], order=order, kind=kind))
+    return scene
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        build_cnt({"n": 6, "m": 0, "length_A": 15.0}),
+        build_fullerene({"atoms": 60}),
+        build_cone({"pentagons": 2, "length_A": 15.0}),
+        build_cyclodextrin({"variant": "beta"}),
+    ],
+    ids=["cnt", "fullerene", "cone", "cyclodextrin"],
+)
+def test_generator_envelope_fit_reports_nothing(block: GeneratedBlock) -> None:
+    """gripe 286160 regression: every generator's declared envelope must
+    actually contain its own realized atoms (the L1<->L5 agreement
+    ``envelope_fit`` checks) — ``build_cone`` shipped a ``cone:`` envelope
+    with its apex/base swapped relative to where the atoms actually sit,
+    a ~7.6 A worst-atom protrusion that this test would have caught
+    immediately. Run over every closed-form generator so the next one to
+    get this wrong is caught here too, not by a live design's
+    ``view='validate'`` warn-tier finding."""
+    scene = _scene_from_block(block)
+    assert nm_validate.envelope_fit(block.envelope, scene) is None
 
 
 # ── cone param rejection ─────────────────────────────────────────────────

@@ -766,9 +766,34 @@ def build_cone(raw: dict[str, Any]) -> GeneratedBlock:
             )
         )
 
+    # Envelope (gripe 286160 fix): the DSL has no per-block translation, so
+    # a declared envelope always spans z=0..h in the SAME local frame the
+    # atoms themselves are emitted into (validate.py's envelope_fit docstring
+    # — "unshifted"), and every atom here already sits at
+    # z = rho*cos(half_angle), r_cyl = rho*sin(half_angle) for its own
+    # (untruncated) rho — i.e. r_cyl(z) = z*tan(half_angle) EXACTLY, the
+    # equation of a true cone whose apex is the disclination point itself
+    # (unrealized, at z=0, rho=0) — not an artifact of the near-apex
+    # rho_min truncation. So the tight-fitting envelope for these atoms,
+    # unshifted, IS that true cone extended down to z=0: a ``tcone`` with
+    # rb=0 (apex) at z=0 and rt=cone_radius at z=h=cone_height (the ``cone``
+    # alias has its apex at z=h, the opposite orientation — using it here
+    # is exactly gripe 286160's bug: declared apex/base swapped, so the
+    # solid's large end sat where the atoms' small end is). The truncated
+    # region z < z_min has no atoms in it, so leaving it inside the
+    # envelope (rather than translating atoms to start the block frame at
+    # z_min) costs nothing and matches every other sp² generator's
+    # convention of emitting atoms unshifted into their own local frame.
+    # Margin is added to rb and rt uniformly (matching cyl/sphere's single-r
+    # margin), which is equivalent to margin added to r(z) at every height,
+    # since linear interpolation distributes over addition.
     cone_height = rho_max * math.cos(half_angle)
     cone_radius = rho_max * math.sin(half_angle)
-    envelope = f"cone:r{_fmt_len(cone_radius + VDW_MARGIN_A)}h{_fmt_len(cone_height)}"
+    envelope = (
+        f"tcone:rb{_fmt_len(VDW_MARGIN_A)}"
+        f"rt{_fmt_len(cone_radius + VDW_MARGIN_A)}"
+        f"h{_fmt_len(cone_height)}"
+    )
     half_angle_deg = math.degrees(half_angle)
     provenance = (
         f"Carbon nanocone (P={p} apex pentagons) — wrapped-graphene-sheet "

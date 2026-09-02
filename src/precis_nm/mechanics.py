@@ -47,12 +47,12 @@ section:
    table has no slot for a scalar-valued invariant yet) — so this module
    re-derives ``(radius, length)`` from the block's stored **envelope**
    instead (:func:`tube_geometry_from_envelope`): a ``cyl:r<>h<>``
-   envelope (what every sp² tube/cone-family generator emits) is treated
+   envelope (what the CNT/fullerene-family generators emit) is treated
    as a tube candidate, radius corrected by subtracting the generators'
    own :data:`~precis_nm.generators.sp2.VDW_MARGIN_A` (the margin every
    sp² generator's envelope already adds around the realized shell) to
-   recover the physical shell radius. A cone's ``cone:r<>h<>`` envelope
-   is NOT treated as a tube (a cone's wall isn't a constant-radius
+   recover the physical shell radius. A cone's ``tcone:rb<>rt<>h<>``
+   envelope is NOT treated as a tube (a cone's wall isn't a constant-radius
    cylinder — buckling of a tapered shell is a different, harder formula,
    out of scope this round).
 3. **Harmonic strain energy** (:func:`harmonic_strain_energy_eV`) — a
