@@ -1,14 +1,18 @@
 """The draft reader's hand-driven working set (Level-2 by hand).
 
-The planner and dreams place **eyes** automatically; here the *author* does it in
-the reader. Two markers per paragraph:
-
-- **🖊 pen** (big) — "edit here": the chunk goes on the edit job's
-  *edit-these-at-a-minimum* hint list, and (auto) gets an eye so you always see
-  what you're changing.
-- **👁 eye** (small) — "see here": the chunk (and, via *around here*, its whole
-  fisheye — reading-order neighbourhood **+ the ring targets promoted to real
-  eyes**: cited papers, linked notes) becomes read-only grounding.
+The planner and dreams place **eyes** automatically; here the *author* does it
+in the reader. Smartdraft (the sole live draft reader, see the
+``precis_web`` package docstring) exposes exactly one gutter/keyboard
+affordance for this — **📌 pin** (shortcut ``p``) — which always POSTs
+``op='eye'`` to ``routes/drafts.py::edit_marks``. A pin is a dual-purpose eye:
+it's persistent read-only grounding (*see here*) **and**, via
+``request_change_ws``'s anchor selection (first pinned draft-chunk eye, else
+the caller's current focus), the implicit edit anchor for the next change
+request — there's no separate "edit here" gesture in this UI. ``edit_marks``
+still accepts ``op='pen'`` as a distinct marker (auto-opens an eye, feeds the
+edit job's *edit-these-at-a-minimum* hint list via ``toggle_pen``) — that's a
+legacy shape from the retired classic ``/drafts`` reader; nothing in
+smartdraft calls it, so ``marks["pens"]`` is always empty in practice.
 
 The set is **sticky with a TTL** — persisted on the draft ref's ``meta`` so it
 survives reload and builds across a session, but expiring after

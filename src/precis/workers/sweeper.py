@@ -65,7 +65,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from precis.alerts import raise_alert
+from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.handlers._job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.store import Store
 from precis.store.types import Tag
@@ -527,6 +527,10 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     by ref) so the gap is visible instead of a silent park. Pinned jobs are
     skipped: self-gating declines to reserve but the node gate still runs
     them, so they aren't stuck. Returns the alert count.
+
+    Also resolves any open ``scheduler`` alert whose fingerprint isn't in
+    this pass's live set — the job left ``STATUS:queued`` or the capability
+    got advertised — so alerts don't accumulate forever (gr254322).
     """
     with store.pool.connection() as conn:
         advertised = {
@@ -551,6 +555,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
             (_UNSCHEDULABLE_SCAN_CAP,),
         ).fetchall()
     n = 0
+    live: set[str] = set()
     for raw_id, raw_meta in rows:
         ref_id = int(raw_id)
         meta = dict(raw_meta or {})
@@ -563,10 +568,11 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         unmet = sorted(res for res in requires if res not in advertised)
         if not unmet:
             continue
+        fingerprint = f"unschedulable:{ref_id}"
         raise_alert(
             store,
             source="scheduler",
-            fingerprint=f"unschedulable:{ref_id}",
+            fingerprint=fingerprint,
             title=f"Job #{ref_id} needs {', '.join(unmet)} — no host advertises it",
             detail=(
                 f"requires={requires}; unmet={unmet}; no target_node pin. "
@@ -576,7 +582,9 @@ def _alert_unschedulable_jobs(store: Store) -> int:
             severity="warn",
             subject_ref_id=ref_id,
         )
+        live.add(fingerprint)
         n += 1
+    resolve_stale_alerts(store, source="scheduler", live_fingerprints=live)
     return n
 
 
