@@ -145,6 +145,35 @@ def pose(location: Vec3, rot_deg: Vec3) -> Transform:
     return Transform(R=rot.R, t=loc)
 
 
+def euler_deg_from_matrix(R: NDArray[np.float64]) -> tuple[float, float, float]:
+    """Inverse of :func:`rotation`: recover ``(rx, ry, rz)`` degrees from a
+    proper rotation matrix (``R = Rz @ Ry @ Rx``).
+
+    Needed wherever a rigid orientation is *built* directly from a
+    world-space basis (e.g. a CAD export substitution constructed from an
+    arbitrary plane normal) and must be handed back through the DSL's
+    ``rot:rx,ry,rz`` pose fields rather than a raw matrix. Degenerate at
+    ``|R[2,0]| ≈ 1`` (gimbal lock, ``ry = ±90°``, where ``rx``/``rz`` are
+    not independently observable) — that branch fixes ``rz = 0`` and folds
+    the coupling into ``rx``, which still reproduces ``R`` exactly, just
+    not uniquely.
+    """
+    r20 = float(np.clip(R[2, 0], -1.0, 1.0))
+    cp = float(np.hypot(float(R[2, 1]), float(R[2, 2])))
+    if cp > 1e-9:
+        rx = float(np.arctan2(R[2, 1], R[2, 2]))
+        rz = float(np.arctan2(R[1, 0], R[0, 0]))
+    else:
+        rz = 0.0
+        rx = float(np.arctan2(-R[1, 2], R[1, 1]))
+    ry = float(np.arcsin(-r20))
+    return (
+        float(np.degrees(rx)),
+        float(np.degrees(ry)),
+        float(np.degrees(rz)),
+    )
+
+
 def normalize(v: Vec3) -> Vec3:
     """Unit vector; raises on a zero-length input."""
     arr = as_vec3(v)

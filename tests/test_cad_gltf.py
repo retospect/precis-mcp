@@ -60,6 +60,38 @@ def test_cut_features_are_translucent() -> None:
     assert any(a < 1.0 for a in alphas)
 
 
+def test_features_glb_draws_chamfer_as_clamped_box() -> None:
+    # A chamfer node is an unbounded half-space with no mesh of its own;
+    # `_features_glb` used to skip it silently. It must now render as the
+    # box the export/mesh backends substitute (see tessellate.node_meshes).
+    spec = parse_source(
+        "component part\nbody  add box:w40d20h10\nbevel cut chamfer:2x45 @20,0,10\n"
+    )
+    gltf = _parse_glb(to_glb(spec, mode="features"))
+    names = [n["name"] for n in gltf["nodes"]]
+    assert names == ["body", "bevel"]
+    bevel_mesh = gltf["meshes"][names.index("bevel")]
+    idx = bevel_mesh["primitives"][0]["indices"]
+    assert gltf["accessors"][idx]["count"] > 0  # a real, non-empty mesh
+
+
+def test_features_glb_skips_node_that_fails_to_tessellate(monkeypatch) -> None:
+    # defensive: a node whose mesh generation raises is dropped from the
+    # glb rather than aborting the whole export.
+    import precis.cad.gltf as gltf_mod
+    from precis.cad.tessellate import TessellationError, node_meshes
+
+    def _flaky(node, aabb=None):
+        if node.name == "bore":
+            raise TessellationError("no mesh for you")
+        return node_meshes(node, aabb)
+
+    monkeypatch.setattr(gltf_mod, "node_meshes", _flaky)
+    gltf = _parse_glb(to_glb(parse_source(_ASM), mode="features"))
+    names = [n["name"] for n in gltf["nodes"]]
+    assert "bore" not in names and "rod" in names and "plate" in names
+
+
 def test_solid_mode_needs_extra() -> None:
     spec = parse_source(_ASM)
     if solid_available():

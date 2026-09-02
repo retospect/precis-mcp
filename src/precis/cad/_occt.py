@@ -20,8 +20,8 @@ from typing import Any
 
 from precis.cad.dsl import parse
 from precis.cad.scene import NodeSpec, SceneSpec, _node_xform, _pattern_transforms
-from precis.cad.tessellate import _ngon_xy
-from precis.cad.vec import Transform
+from precis.cad.tessellate import _ngon_xy, design_aabb, halfspace_clamp_params
+from precis.cad.vec import Transform, Vec3
 
 
 class StepExportError(RuntimeError):
@@ -127,14 +127,17 @@ def _loft(o: Any, bottom: list[tuple[float, float]], top: Any, h: float) -> Any:
     return gen.Shape()
 
 
+def _box_shape(o: Any, w: float, d: float, h: float) -> Any:
+    """A box ``w × d × h``, centred in x/y, base at local ``z=0`` — matches
+    :func:`precis.cad.tessellate._box_mesh`'s convention."""
+    return o["BRepPrimAPI_MakeBox"](o["gp_Pnt"](-w / 2, -d / 2, 0.0), w, d, h).Shape()
+
+
 def _primitive_shape(o: Any, config: str) -> Any:
     spec = parse(config)
     a, p = spec.alias, spec.params
     if a == "box":
-        w, d, h = p["w"], p["d"], p["h"]
-        return o["BRepPrimAPI_MakeBox"](
-            o["gp_Pnt"](-w / 2, -d / 2, 0.0), w, d, h
-        ).Shape()
+        return _box_shape(o, p["w"], p["d"], p["h"])
     if a == "cyl":
         return o["BRepPrimAPI_MakeCylinder"](p["r"], p["h"]).Shape()
     if a == "cone":
@@ -177,7 +180,21 @@ def _placed(o: Any, shape: Any, xf: Transform) -> Any:
     return o["BRepBuilderAPI_Transform"](shape, trsf, True).Shape()
 
 
-def _node_shape(o: Any, node: NodeSpec) -> Any:
+def _node_shape(o: Any, node: NodeSpec, aabb: tuple[Vec3, Vec3] | None) -> Any:
+    if parse(node.config).alias == "chamfer":
+        # unbounded half-space — clamp to a box covering the design (see
+        # tessellate.halfspace_clamp_params); `aabb` is always present here
+        # because `_component_shapes` only computes it when the design has
+        # a chamfer node in the first place.
+        assert aabb is not None
+        boxes = halfspace_clamp_params(node, aabb)
+        w, d, h, xf = boxes[0]
+        cur = _placed(o, _box_shape(o, w, d, h), xf)
+        for w, d, h, xf in boxes[1:]:
+            cur = o["BRepAlgoAPI_Fuse"](
+                cur, _placed(o, _box_shape(o, w, d, h), xf)
+            ).Shape()
+        return cur
     base = _primitive_shape(o, node.config)
     if node.pattern is not None:
         xfs = _pattern_transforms(node)
@@ -192,6 +209,8 @@ def _component_shapes(o: Any, spec: SceneSpec) -> list[tuple[str, Any]]:
     """Fold each component into its own OCCT solid, **without** fusing
     across components. STEP carries multiple solids natively, so an
     assembly travels as separate named bodies in the one file — exactly what a downstream CAD tool wants."""
+    has_chamfer = any(parse(n.config).alias == "chamfer" for n in spec.nodes)
+    aabb = design_aabb(spec) if has_chamfer else None
     by_comp: dict[str, list[NodeSpec]] = {}
     for node in spec.nodes:
         by_comp.setdefault(node.component, []).append(node)
@@ -199,7 +218,7 @@ def _component_shapes(o: Any, spec: SceneSpec) -> list[tuple[str, Any]]:
     for comp in spec.components:
         cur: Any = None
         for node in by_comp.get(comp, []):
-            shape = _node_shape(o, node)
+            shape = _node_shape(o, node, aabb)
             if cur is None:
                 cur = shape
             elif node.op == "add":

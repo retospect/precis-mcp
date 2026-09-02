@@ -103,9 +103,16 @@ immediately, and the result echoes the node tree plus any
 | pyramid | `pyramid:n<N>r<R>h<H>` | `pyramid:n4r5h8` |
 | sphere | `sphere:r<R>` | `sphere:r6` |
 | torus | `torus:R<major>r<minor>` | `torus:R10r2` |
+| chamfer bevel tool | `chamfer:<size>x<angle°>` | `chamfer:1x45` |
 
 All are placed base-at-`z=0`, centred on the local axis; `@x,y,z` and
 `rot:` set the world pose.
+
+`chamfer` is an unbounded half-space *tool*, not a solid: `cut` /
+`intersect` only, never a component's first node. Its cutting plane sits
+`size` along −normal from the node origin, tilted `angle`° from local
++z — pose it with `@`/`rot:` onto the edge to bevel (patterns apply).
+Exports and the viewer substitute a finite clamped box automatically.
 
 ## Read the design — `get`
 
@@ -303,9 +310,9 @@ delete(kind="cad", id="flange")  # soft-retire the whole design (recoverable)
 ## Scope (v1)
 
 Primitives: frustum family (box / cyl / cone / tcone / n-gon prism /
-pyramid), sphere, torus. Ops: merge / subtract / intersect, place,
-polar / linear pattern. Probes: point / ray / arc / section(z). Relations:
-clearance / interference / translational DOF. Bulk: geometric volume
-(sampled). **Deferred to phase 2**: threads / gears, rotational DOF,
-fillets / rounds, STEP/OCCT export, chamfer-as-half-space cuts, datums,
+pyramid), sphere, torus, chamfer half-space bevel tool. Ops: merge /
+subtract / intersect, place, polar / linear pattern. Probes: point /
+ray / arc / section(z). Relations: clearance / interference /
+translational DOF. Bulk: geometric volume (sampled). **Deferred to
+phase 2**: threads / gears, rotational DOF, fillets / rounds, datums,
 persisted observers, mass/density.

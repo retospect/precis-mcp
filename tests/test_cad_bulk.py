@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import math
 
-from precis.cad.bulk import volume
+import numpy as np
+
+from precis.cad.bulk import expr_aabb, volume
 from precis.cad.dsl import build_config
 from precis.cad.graph import Design
+from precis.cad.scene import build_design, parse_source
 from precis.cad.vec import translation, vec3
 
 
@@ -65,3 +68,40 @@ def test_rel_err_reported() -> None:
     res = volume(d, samples=100_000)
     assert 0 < res.rel_err < 0.05
     _ = vec3  # keep import used
+
+
+# ---------------------------------------------------------------------------
+# chamfer — AABB-through-transform regression + volume behaviour
+# ---------------------------------------------------------------------------
+
+_UNCHAMFERED_BOX = "component part\nbody add box:w40d20h10\n"
+_CHAMFERED_BOX = (
+    "component part\nbody  add box:w40d20h10\nbevel cut chamfer:2x45 @20,0,10\n"
+)
+
+
+def test_chamfered_box_component_aabb_is_finite() -> None:
+    # The chamfer half-space leaf is unbounded (±inf local AABB); a naive
+    # 8-corner rotate of that box would produce inf*0 = NaN. expr_aabb only
+    # unions *finite* leaf AABBs, so a cut/intersect-guarded chamfer (never
+    # the base) leaves the component's AABB finite and equal to the
+    # unchamfered box's (the bevel only removes material, never grows the
+    # bound).
+    design = build_design(parse_source(_CHAMFERED_BOX))
+    lo, hi = expr_aabb(design, design.components["part"])
+    assert math.isfinite(float(lo[0])) and math.isfinite(float(hi[0]))
+    assert math.isfinite(float(lo[1])) and math.isfinite(float(hi[1]))
+    assert math.isfinite(float(lo[2])) and math.isfinite(float(hi[2]))
+    assert not any(math.isnan(x) for x in (*lo, *hi))
+    base_design = build_design(parse_source(_UNCHAMFERED_BOX))
+    blo, bhi = expr_aabb(base_design, base_design.components["part"])
+    assert np.allclose(lo, blo) and np.allclose(hi, bhi)
+
+
+def test_chamfered_box_volume_is_finite_and_smaller() -> None:
+    design = build_design(parse_source(_CHAMFERED_BOX))
+    res = volume(design, component="part")
+    assert math.isfinite(res.volume)
+    base_design = build_design(parse_source(_UNCHAMFERED_BOX))
+    base_res = volume(base_design, component="part")
+    assert 0 < res.volume < base_res.volume

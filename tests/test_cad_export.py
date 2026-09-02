@@ -20,7 +20,16 @@ from precis.cad.export import (
     to_openscad,
 )
 from precis.cad.scene import parse_source
-from precis.cad.tessellate import _signed_volume, mesh_config
+from precis.cad.tessellate import (
+    TessellationError,
+    _signed_volume,
+    clamped_halfspace_mesh,
+    design_aabb,
+    halfspace_clamp_params,
+    mesh_config,
+    node_meshes,
+)
+from precis.cad.vec import vec3
 
 _FLANGE = """
 component flange
@@ -223,3 +232,124 @@ def test_step_assembly_named_solids(tmp_path) -> None:
     data = out.read_text(errors="replace", encoding="utf-8")
     assert data.count("MANIFOLD_SOLID_BREP") == 2  # two distinct bodies
     assert "'alpha'" in data and "'beta'" in data  # carried as named solids
+
+
+# ── chamfer: the unbounded half-space clamped to a finite box at every
+#    export boundary — the chamfer half-space has no finite mesh of its
+#    own, so every backend substitutes a box covering the design's AABB,
+#    one face exactly on the cutting plane ────────────────────────────────
+
+_CHAMFERED_BOX = (
+    "component part\nbody  add box:w40d20h10\nbevel cut chamfer:2x45 @20,0,10\n"
+)
+# bevel cut chamfer:2x45 @20,0,10 on box:w40d20h10 removes an exact 45°
+# wedge of the +x/+z top edge: legs 2·size·cos45° = 2·sqrt(2) mm along both
+# x and z, extruded the full 20 mm depth (see tests/test_cad_bulk.py's
+# analytic derivation for the AABB/volume checks on the same design) —
+# wedge volume = 0.5·(2√2)²·20 = 80 mm³.
+_CHAMFERED_BOX_VOLUME = 40 * 20 * 10 - 80.0
+
+_PATTERNED_CHAMFER = (
+    "component part\n"
+    "body  add box:w60d60h10\n"
+    "bevel cut chamfer:3x45 @0,0,10 polar:n4r0\n"
+)
+
+
+def test_to_openscad_chamfer_emits_transformed_cube_under_difference() -> None:
+    scad = to_openscad(parse_source(_CHAMFERED_BOX))
+    assert "difference()" in scad  # the chamfer is a `cut`
+    assert scad.count("cube(") >= 2  # the body box + the clamped chamfer box
+    assert "multmatrix(" in scad
+    assert "chamfer" not in scad  # substituted away — OpenSCAD has no such primitive
+
+
+def test_to_openscad_patterned_chamfer_unions_clamp_boxes() -> None:
+    # a patterned chamfer substitutes one clamp box per instance, folded
+    # into a single union() so the difference() still sees one child.
+    scad = to_openscad(parse_source(_PATTERNED_CHAMFER))
+    assert "union() {" in scad
+    assert scad.count("multmatrix(") >= 4  # polar:n4r0 — one per instance
+
+
+def test_node_meshes_chamfer_without_aabb_raises() -> None:
+    # no design context → nothing to clamp against; must refuse, not NaN.
+    spec = parse_source(_CHAMFERED_BOX)
+    node = next(n for n in spec.nodes if n.name == "bevel")
+    with pytest.raises(TessellationError):
+        node_meshes(node, aabb=None)
+
+
+def test_halfspace_clamp_params_one_box_per_pattern_instance() -> None:
+    spec = parse_source(_PATTERNED_CHAMFER)
+    node = next(n for n in spec.nodes if n.name == "bevel")
+    aabb = design_aabb(spec)
+    boxes = halfspace_clamp_params(node, aabb)
+    assert len(boxes) == 4  # polar:n4r0
+    # each instance is rotated 90° further about z — four distinct planes.
+    rotations = {tuple(np.round(xf.R.flatten(), 6)) for _, _, _, xf in boxes}
+    assert len(rotations) == 4
+    meshes = clamped_halfspace_mesh(node, aabb)
+    assert len(meshes) == 4
+    for verts, tris in meshes:
+        assert verts.shape == (8, 3) and tris.shape == (12, 3)
+
+
+def test_halfspace_clamp_box_does_not_reach_geometry_the_plane_never_touches() -> None:
+    # Margin regression: the far corner of the box — real geometry the
+    # bevel never removes — must land outside the substituted clamp box
+    # (else the AABB-padding maths would let the cutter gouge material the
+    # true unbounded half-space never touched), while a point right at the
+    # cut is inside it (the box isn't undersized either).
+    spec = parse_source(_CHAMFERED_BOX)
+    node = next(n for n in spec.nodes if n.name == "bevel")
+    aabb = design_aabb(spec)
+    w, d, h, xf = halfspace_clamp_params(node, aabb)[0]
+
+    def in_box(p: tuple[float, float, float]) -> bool:
+        lx, ly, lz = xf.to_local_point(vec3(*p))
+        eps = 1e-6
+        return (
+            -w / 2 - eps <= lx <= w / 2 + eps
+            and -d / 2 - eps <= ly <= d / 2 + eps
+            and -eps <= lz <= h + eps
+        )
+
+    assert not in_box((-20.0, -10.0, 0.0))  # opposite corner — untouched
+    assert not in_box((-20.0, 10.0, 10.0))  # untouched top edge, far side
+    assert in_box((19.9, 0.0, 9.9))  # just inside the actual bevel
+
+
+@pytest.mark.skipif(not _HAS_MANIFOLD, reason="manifold3d not installed")
+def test_export_mesh_chamfer_volume_matches_analytic_wedge() -> None:
+    import manifold3d as m3d
+
+    from precis.cad.export import _solid_mesh
+
+    v, t = _solid_mesh(parse_source(_CHAMFERED_BOX))
+    man = m3d.Manifold(
+        m3d.Mesh(vert_properties=v.astype("float32"), tri_verts=t.astype("uint32"))
+    )
+    assert str(man.status()) == "Error.NoError"
+    # planar cut on a planar box — tessellation is exact, so this is tight.
+    assert man.volume() == pytest.approx(_CHAMFERED_BOX_VOLUME, abs=0.1)
+
+
+@pytest.mark.skipif(not _HAS_MANIFOLD, reason="manifold3d not installed")
+def test_export_stl_chamfer_preserves_far_corner(tmp_path) -> None:
+    # Margin regression at the mesh-export boundary: the box's untouched
+    # far corner must still be in the exported STL's bounding box.
+    out = export_mesh(parse_source(_CHAMFERED_BOX), tmp_path / "bevel.stl")
+    ntri, lo, hi = _read_binary_stl_bbox(out.read_bytes())
+    assert ntri > 0
+    assert lo[0] == pytest.approx(-20, abs=0.01)
+    assert lo[1] == pytest.approx(-10, abs=0.01)
+    assert lo[2] == pytest.approx(0, abs=0.01)
+
+
+@pytest.mark.skipif(not _HAS_STEP, reason="OpenCASCADE (cad-step) not installed")
+def test_export_step_chamfer_real(tmp_path) -> None:
+    out = export_step(parse_source(_CHAMFERED_BOX), tmp_path / "bevel.step")
+    assert out.exists() and out.stat().st_size > 0
+    head = out.read_text(errors="replace", encoding="utf-8")[:200]
+    assert "ISO-10303" in head

@@ -117,3 +117,56 @@ def test_spec_to_source_carries_meta_and_components() -> None:
     assert "@0,0,-20" in out
     assert "linear:n3dx5" in out
     assert "rot:0,0,45" in out
+
+
+# ---------------------------------------------------------------------------
+# chamfer
+# ---------------------------------------------------------------------------
+
+_BEVEL_BOX = """
+component part
+body  add cyl:r25h8
+bevel cut chamfer:2x45 @20,0,10
+"""
+
+
+def test_chamfer_cut_source_round_trips() -> None:
+    spec = parse_source(_BEVEL_BOX)
+    assert spec.nodes[1].config == "chamfer:2x45"
+    assert parse_source(spec_to_source(spec)) == spec
+
+
+def test_chamfer_as_first_node_rejected() -> None:
+    with pytest.raises(SceneError, match="first"):
+        parse_source("bevel cut chamfer:2x45 @0,0,0")
+
+
+def test_chamfer_with_add_rejected() -> None:
+    with pytest.raises(SceneError, match="add"):
+        parse_source("body add cyl:r25h8\nbevel add chamfer:2x45 @0,0,0")
+
+
+def test_chamfer_bevels_box_corner_keeps_deep_body() -> None:
+    # bevel cut chamfer:2x45 @20,0,10 on box:w40d20h10 shaves the +x top edge.
+    design = build_design(
+        parse_source(
+            "component part\nbody  add box:w40d20h10\nbevel cut chamfer:2x45 @20,0,10\n"
+        )
+    )
+    # corner-region points beyond the bevel plane are removed
+    assert not design.classify_point(vec3(19.9, 0, 9.9), component="part").inside
+    # deep-body points are retained (including one right at the notional
+    # bevel boundary distance)
+    assert design.classify_point(vec3(0, 0, 5), component="part").inside
+    assert design.classify_point(vec3(19, 0, 8), component="part").inside
+
+
+def test_chamfer_truncates_cylinder_top() -> None:
+    # chamfer:0x0 @0,0,5 cut on cyl:r5h10 is a flat cut: nothing above z=5.
+    design = build_design(
+        parse_source(
+            "component part\nbody add cyl:r5h10\ncap  cut chamfer:0x0 @0,0,5\n"
+        )
+    )
+    assert design.classify_point(vec3(0, 0, 4.9), component="part").inside
+    assert not design.classify_point(vec3(0, 0, 5.1), component="part").inside

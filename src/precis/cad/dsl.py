@@ -12,8 +12,9 @@ A single string names a primitive and its dimensions in millimetres, e.g.
 * ``ngon:n6r5h10``       — regular n-gon prism
 * ``frustum:n6rb4rt2h5`` — regular n-gon frustum
 * ``pyramid:n4r5h8``     — regular n-gon pyramid
-* ``chamfer:1x45``       — planar bevel: size × angle° (resolved against an
-                           anchor face at node-build time, not here)
+* ``chamfer:1x45``       — planar bevel half-space tool: size × angle°.
+                           Built entirely in the node's own local frame
+                           (no anchor face) — see :func:`build`.
 
 Grammar: ``<alias>:<tokens>`` where each token is a ``<key><number>``
 pair. Keys are matched longest-first so ``rb`` / ``rt`` win over ``r``;
@@ -26,11 +27,13 @@ This module stays kernel-pure (no precis imports). It raises
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
 from precis.cad.primitives import (
     CircularFrustum,
+    HalfSpace,
     Primitive,
     Sphere,
     Torus,
@@ -39,6 +42,7 @@ from precis.cad.primitives import (
     regular_frustum,
     regular_prism,
 )
+from precis.cad.vec import vec3
 
 
 class DslError(ValueError):
@@ -128,8 +132,16 @@ def parse(config: str) -> ShapeSpec:
 def build(spec: ShapeSpec) -> Primitive:
     """Build a kernel :class:`Primitive` from a :class:`ShapeSpec`.
 
-    ``chamfer`` is *not* buildable here — a half-space needs an anchor
-    face (resolved at node-build time), so this raises for it.
+    ``chamfer:SxA`` builds a :class:`~precis.cad.primitives.HalfSpace`
+    cutting tool entirely in the node's own local frame — there is no
+    anchor face; the node's usual ``@x,y,z``/``rot:`` transform places it in
+    the world exactly like any other node. In the local frame the cutting
+    plane's normal is ``n̂ = (sin A°, 0, cos A°)`` (tilted ``A`` degrees off
+    local ``+z`` toward local ``+x``, i.e. rotated about local ``y``); the
+    plane passes through ``-size · n̂`` (``size`` mm in from the local
+    origin along ``-n̂``). The tool's material is the ``+n̂`` side, so a
+    ``cut`` shaves off everything beyond the plane and an ``intersect``
+    keeps only the near side.
     """
     p = spec.params
     a = spec.alias
@@ -153,7 +165,16 @@ def build(spec: ShapeSpec) -> Primitive:
         return regular_frustum(int(p["n"]), p["rb"], p["rt"], p["h"])
     if a == "pyramid":
         return pyramid(int(p["n"]), p["r"], p["h"])
-    raise DslError(f"{a} cannot be built standalone (chamfer needs an anchor face)")
+    if a == "chamfer":
+        angle = math.radians(p["angle"])
+        size = p["size"]
+        sa, ca = math.sin(angle), math.cos(angle)
+        return HalfSpace(
+            point=vec3(-size * sa, 0.0, -size * ca), normal=vec3(-sa, 0.0, -ca)
+        )
+    raise DslError(
+        f"{a!r} is not a buildable shape"
+    )  # pragma: no cover - parse guards alias
 
 
 def build_config(config: str) -> Primitive:

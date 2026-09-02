@@ -3,16 +3,21 @@
 
 The web "Further instructions" box mints one of these under a todo. It runs on
 the agent-profile worker (which has ``claude`` auth) and its whole deliverable is
-a *proposal*: a ``job_result`` chunk holding ``{source, rationale, valid}``. The
-human reviews it in the viewer and clicks Apply — a separate step
-(:meth:`CadHandler.derive`) that branches a new design.
+a *proposal*: a ``job_result`` chunk holding
+``{source, rationale, valid, warnings, error?}``. The human reviews it in the
+viewer and clicks Apply — a separate step (:meth:`CadHandler.derive`) that
+branches a new design.
 
 Unlike ``structure_propose`` (which returns incremental *ops*), a CAD design is
 authored as **whole text** (:mod:`precis.cad.scene`), so the model returns a
 complete rewritten source. We inline the current design as its
 :func:`precis.cad.scene.spec_to_source` text, parse the reply back out, then
-*dry-run* it (``parse_source`` + ``build_design``) so the proposal is marked
-valid / invalid before a human ever sees it.
+*dry-run* it: ``parse_source`` + ``build_design``, plus a geometry lint
+(:func:`precis.cad.relate.connectivity` for a disconnected assembly, a
+per-component :func:`precis.cad.bulk.volume` for an emptied/degenerate part)
+so the proposal is marked valid / invalid — with non-fatal findings such as
+intentional interference surfaced as ``warnings`` — before a human ever sees
+it.
 
 **Propose-only by construction.** The ``claude -p`` call is given **no MCP tools**
 (``mcp_config=None``), so the agent physically cannot mutate anything — it can
@@ -27,6 +32,9 @@ import logging
 import os
 from typing import Any
 
+from precis.cad.bulk import volume as cad_volume
+from precis.cad.graph import Design
+from precis.cad.relate import ConnectivityResult, connectivity
 from precis.cad.scene import SceneError, build_design, parse_source, spec_to_source
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.workers.job_types import JobTypeSpec
@@ -59,10 +67,17 @@ _DSL_CRIB = (
     "[polar:nNrR | linear:nNdx..dy..dz..]'. op ∈ add|cut|intersect. "
     "'component <name>' opens a part. 'desc:'/'use:' lines record intent. "
     "config shapes: box:wWdDhH, cyl:rRhH, cone:rRhH, tcone:rBrThH, sphere:rR, "
-    "torus:RRrr, hex:rRhH, ngon:nNrRhH, frustum:nNrBrThH, pyramid:nNrRhH. "
+    "torus:RRrr, hex:rRhH, ngon:nNrRhH, frustum:nNrBrThH, pyramid:nNrRhH, "
+    "chamfer:SxA. "
     "Units mm; +Z up; box centred in x/y with base at z=0; cyl/cone axis +z, "
     "base at z=0. First node in a part is its base; later add merges, cut "
-    "subtracts, intersect intersects."
+    "subtracts, intersect intersects. "
+    "chamfer:SxA is an unbounded half-space bevel tool placed by the node's "
+    "own @x,y,z/rot: like any other node (no anchor face); in its local "
+    "frame the cutting plane is tilted A degrees off +z toward +x and set "
+    "back S mm, with material on the +normal side — so it must be 'cut' or "
+    "'intersect' (never 'add', which would be an infinite solid) and can "
+    "never be a component's first (base) node."
 )
 
 
@@ -106,20 +121,95 @@ def parse_proposal(text: str) -> dict[str, Any]:
     return {"source": source, "rationale": str(obj.get("rationale") or "").strip()}
 
 
-def dry_run(source: str) -> str | None:
-    """Parse + build the proposed source to catch errors before a human sees it.
-    Returns an error string, or ``None`` when it is a valid buildable design."""
+#: Grid side for the lint's per-component volume check — a coarse/cheap
+#: quadrature (this runs inline in a dry-run, not a background job), fine
+#: enough to tell "consumed to nothing" from "a real solid".
+_LINT_VOLUME_GRID = 24
+#: Below this, a component's quadrature volume reads as empty. The ray-grid
+#: quadrature (:mod:`precis.cad.bulk`) is exact-per-ray, so a fully consumed
+#: component integrates to exactly 0.0 — this just leaves headroom for a
+#: sliver that's real but degenerate.
+_EMPTY_VOLUME_MM3 = 1e-6
+
+
+def _describe_disconnection(result: ConnectivityResult) -> str:
+    """Name the split for a disconnected assembly's ``ConnectivityResult``."""
+    groups = [", ".join(sorted(g)) for g in result.groups]
+    # The common shape: one lone part floating free of an otherwise-connected
+    # rest — read naturally as "X does not touch {the rest}".
+    singletons = [i for i, g in enumerate(result.groups) if len(g) == 1]
+    if len(groups) == 2 and singletons:
+        i = singletons[0]
+        lone, rest = groups[i], groups[1 - i]
+        return f"disconnected: {{{lone}}} does not touch {{{rest}}}"
+    bodies = " | ".join(f"{{{g}}}" for g in groups)
+    return f"disconnected: assembly splits into {len(groups)} separate bodies: {bodies}"
+
+
+def _empty_component_findings(design: Design) -> list[str]:
+    """Per-component (near-)zero-volume check — a cut that consumed a whole
+    component, or a degenerate shape. Components whose expression can't be
+    bounded (e.g. an unresolved ``chamfer:`` half-space) are skipped, not
+    flagged — we can't safely assume every primitive has a finite AABB."""
+    findings: list[str] = []
+    for name in design.components:
+        try:
+            vol = cad_volume(design, component=name, grid=_LINT_VOLUME_GRID)
+        except Exception:  # unbounded / degenerate expr — not this check's job
+            continue
+        if vol.volume <= _EMPTY_VOLUME_MM3:
+            findings.append(
+                f"component {name!r} has (near-)zero volume — cuts consumed "
+                "it or shapes are degenerate"
+            )
+    return findings
+
+
+def _interference_warnings(result: ConnectivityResult) -> list[str]:
+    """Overlapping-contact findings — not fatal (e.g. an intentional press
+    fit), so they're surfaced as warnings rather than invalidating the design."""
+    return [
+        f"components {c.a!r} and {c.b!r} interpenetrate ({-c.gap:g} mm)"
+        for c in result.contacts
+        if c.interfering
+    ]
+
+
+def dry_run(source: str) -> tuple[str | None, list[str]]:
+    """Parse + build the proposed source, then run cheap geometry lint on it,
+    to catch errors before a human sees it.
+
+    Returns ``(error, warnings)``. ``error`` is ``None`` iff the design
+    parses, builds, has no empty/degenerate component, and — when it has ≥2
+    parts — reads as one connected solid (:func:`precis.cad.relate.
+    connectivity`); otherwise it names what's wrong. ``warnings`` carries
+    non-fatal findings (currently: inter-part interference, which can be
+    intentional — a press fit) that don't flip ``error``.
+    """
     try:
         spec = parse_source(source)
     except SceneError as exc:
-        return f"source error: {exc}"
+        return f"source error: {exc}", []
     if not spec.nodes:
-        return "design has no nodes"
+        return "design has no nodes", []
     try:
-        build_design(spec)
+        design = build_design(spec)
     except Exception as exc:  # kernel build error
-        return f"build error: {exc}"
-    return None
+        return f"build error: {exc}", []
+
+    findings = _empty_component_findings(design)
+    warnings: list[str] = []
+    if len(design.components) >= 2:
+        try:
+            result = connectivity(design)
+        except Exception:  # pragma: no cover - defensive
+            log.debug("cad_propose lint: connectivity check failed", exc_info=True)
+        else:
+            if not result.connected:
+                findings.append(_describe_disconnection(result))
+            warnings.extend(_interference_warnings(result))
+
+    return ("; ".join(findings) if findings else None), warnings
 
 
 def _dispatch(ctx: Any, spec: Any) -> None:
@@ -185,18 +275,21 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"cad_propose: {exc}")
         return
 
-    err = dry_run(proposal["source"])
+    err, warnings = dry_run(proposal["source"])
     proposal["valid"] = err is None
     if err is not None:
         proposal["error"] = err
+    proposal["warnings"] = warnings
     proposal["instruction"] = instruction
     proposal["cad_ref_id"] = cad_ref_id
 
     ctx.append_chunk("job_result", json.dumps(proposal))
     verdict = "valid" if proposal["valid"] else f"INVALID ({err})"
+    warn_note = f" [{len(warnings)} warning(s)]" if warnings else ""
     ctx.append_chunk(
         "job_summary",
-        f"Proposed a rewrite [{verdict}] for {slug}: {proposal['rationale'][:300]}",
+        f"Proposed a rewrite [{verdict}]{warn_note} for {slug}: "
+        f"{proposal['rationale'][:300]}",
     )
     ctx.set_meta(proposal_valid=proposal["valid"])
     ctx.set_status("succeeded")

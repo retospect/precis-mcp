@@ -339,6 +339,12 @@ def _envelope_fit_warnings(
         # crash a proposal over a problem that belongs to a different check.
         return None
     lo, hi = prim.aabb_local()
+    if not (np.all(np.isfinite(lo)) and np.all(np.isfinite(hi))):
+        # An unbounded primitive (chamfer half-space) has no centroid to
+        # align to; it is not a usable standalone envelope — skip, same
+        # posture as the bad-config branch above. (Before chamfer became
+        # buildable this case arrived as a DslError; now it builds.)
+        return None
     env_center = (np.asarray(lo, dtype=float) + np.asarray(hi, dtype=float)) / 2.0
     carts = [scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()]
     centroid = np.mean(np.asarray(carts), axis=0)

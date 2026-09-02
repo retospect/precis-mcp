@@ -56,6 +56,8 @@ from precis.cad.export import (
 from precis.cad.gltf import component_colors, solid_available, to_glb
 from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.scene import build_design
+from precis.cad.tessellate import design_aabb, halfspace_clamp_params
+from precis.cad.vec import Vec3, euler_deg_from_matrix
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
@@ -461,7 +463,16 @@ async def cad_scene(request: Request, slug: str) -> JSONResponse:
     """The design's *recipe* — parsed primitives + poses + colours — so the
     browser tessellates client-side (the ~1 KB "3D-SVG" payload) instead of
     downloading a baked mesh. Each node carries its parsed ``shape`` (alias +
-    numeric params); ``None`` for the unbounded chamfer half-space (no mesh)."""
+    numeric params); ``None`` for a config the client tessellator can't parse.
+
+    A ``chamfer`` node is an unbounded half-space with no client-tessellable
+    shape of its own — the browser's tessellator (``cad-tessellate.js``)
+    never learns the ``'chamfer'`` alias. Instead this route substitutes,
+    per pattern instance, a ``box`` shape + pose clamped to the whole
+    design's AABB (:func:`~precis.cad.tessellate.halfspace_clamp_params`) —
+    the client draws the resolved cut/intersect tool exactly like any other
+    node, byte-for-byte the same box the server-side glTF/mesh/STEP
+    exporters substitute."""
     store = get_store(request)
     try:
         ref = _require_ref(store, slug)
@@ -469,13 +480,44 @@ async def cad_scene(request: Request, slug: str) -> JSONResponse:
         return JSONResponse({"error": "not found"}, status_code=404)
     spec, _handles = store.cad_load(ref.id)
     colors = component_colors(spec.components)
+    aabb: tuple[Vec3, Vec3] | None = None
     nodes: list[dict[str, Any]] = []
     for n in spec.nodes:
+        color = colors.get(n.component, "#8a9bb0")
         try:
             sh = parse_shape(n.config)
-            shape: dict[str, Any] | None = {"alias": sh.alias, "params": sh.params}
         except DslError:
-            shape = None  # e.g. chamfer — unbounded, drawn as a resolved cut only
+            nodes.append(
+                {
+                    "name": n.name,
+                    "component": n.component,
+                    "op": n.op,
+                    "loc": list(n.loc),
+                    "rot": list(n.rot),
+                    "pattern": n.pattern,
+                    "shape": None,
+                    "color": color,
+                }
+            )
+            continue
+        if sh.alias == "chamfer":
+            if aabb is None:
+                aabb = design_aabb(spec)
+            for w, d, h, xf in halfspace_clamp_params(n, aabb):
+                rx, ry, rz = euler_deg_from_matrix(xf.R)
+                nodes.append(
+                    {
+                        "name": n.name,
+                        "component": n.component,
+                        "op": n.op,
+                        "loc": [float(x) for x in xf.t],
+                        "rot": [rx, ry, rz],
+                        "pattern": None,
+                        "shape": {"alias": "box", "params": {"w": w, "d": d, "h": h}},
+                        "color": color,
+                    }
+                )
+            continue
         nodes.append(
             {
                 "name": n.name,
@@ -484,8 +526,8 @@ async def cad_scene(request: Request, slug: str) -> JSONResponse:
                 "loc": list(n.loc),
                 "rot": list(n.rot),
                 "pattern": n.pattern,
-                "shape": shape,
-                "color": colors.get(n.component, "#8a9bb0"),
+                "shape": {"alias": sh.alias, "params": sh.params},
+                "color": color,
             }
         )
     return JSONResponse(

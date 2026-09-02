@@ -9,13 +9,13 @@ import pytest
 from precis.cad.dsl import (
     DslError,
     ShapeSpec,
-    build,
     build_config,
     format_spec,
     parse,
 )
 from precis.cad.primitives import (
     CircularFrustum,
+    HalfSpace,
     PolyFrustum,
     Sphere,
     Torus,
@@ -127,9 +127,25 @@ def test_build_pyramid_narrows() -> None:
     assert not p.contains_local(vec3(4, 4, 7.9))
 
 
-def test_build_chamfer_needs_anchor() -> None:
-    with pytest.raises(DslError, match="anchor"):
-        build(parse("chamfer:1x45"))
+def test_build_chamfer_is_local_frame_halfspace() -> None:
+    # size=2, angle=45: n̂ = (sin45, 0, cos45); point = -size·n̂;
+    # constructed HalfSpace negates the normal (material on the +n̂ side).
+    c = build_config("chamfer:2x45")
+    assert isinstance(c, HalfSpace)
+    s2 = math.sqrt(2.0) / 2.0
+    assert c.point == pytest.approx(vec3(-2 * s2, 0.0, -2 * s2))
+    assert c.normal == pytest.approx(vec3(-s2, 0.0, -s2))
+
+
+def test_build_chamfer_zero_angle_is_horizontal_plane_at_minus_size() -> None:
+    # A=0 → n̂ = +z, plane at local z = -size, material at z >= -size.
+    c = build_config("chamfer:3x0")
+    assert isinstance(c, HalfSpace)
+    assert c.point == pytest.approx(vec3(0.0, 0.0, -3.0))
+    assert c.normal == pytest.approx(vec3(0.0, 0.0, -1.0))
+    # material is the +n̂ side: local z >= -size
+    assert c.contains_local(vec3(0, 0, -2.9))  # above the plane: material
+    assert not c.contains_local(vec3(0, 0, -3.1))  # below the plane: air
 
 
 # ---------------------------------------------------------------------------

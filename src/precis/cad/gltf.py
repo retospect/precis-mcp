@@ -33,8 +33,10 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from precis.cad.dsl import parse
 from precis.cad.scene import SceneSpec
-from precis.cad.tessellate import Mesh, TessellationError, node_meshes
+from precis.cad.tessellate import Mesh, TessellationError, design_aabb, node_meshes
+from precis.cad.vec import Vec3
 
 #: Dihedral angle (degrees) below which an edge is smooth-shaded. 64-facet
 #: barrels vary ~5.6° edge-to-edge (smoothed); cap/box edges are 90° (kept sharp).
@@ -248,13 +250,22 @@ class _GlbBuilder:
 
 def _features_glb(spec: SceneSpec, colors: dict[str, str]) -> bytes:
     """Per-feature meshes: one clickable glTF node per design node, coloured by
-    component; ``cut``/``intersect`` nodes translucent so removals read as ghosts."""
+    component; ``cut``/``intersect`` nodes translucent so removals read as ghosts.
+
+    A ``chamfer`` node is an unbounded half-space with no mesh of its own —
+    :func:`~precis.cad.tessellate.node_meshes` substitutes a box clamped to
+    the whole design's AABB (:func:`~precis.cad.tessellate.design_aabb`) so
+    it still draws as the (finite) tool it resolves to, instead of being
+    silently dropped."""
+    aabb: tuple[Vec3, Vec3] | None = None
+    if any(parse(node.config).alias == "chamfer" for node in spec.nodes):
+        aabb = design_aabb(spec)
     b = _GlbBuilder()
     for node in spec.nodes:
         try:
-            instances = node_meshes(node)
+            instances = node_meshes(node, aabb)
         except TessellationError:
-            continue  # unbounded half-space (chamfer) — nothing to draw
+            continue  # defensive — scene.py guards mean this shouldn't happen
         # merge a pattern's instances into one clickable object
         merged = _merge(instances)
         if merged is None:

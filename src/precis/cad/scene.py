@@ -24,6 +24,9 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   — ``op`` ∈ {``add``, ``cut``, ``intersect``}; ``config`` is the §11
   mini-DSL (:mod:`precis.cad.dsl`). The first node in a part is its base;
   later ``add`` merges, ``cut`` subtracts, ``intersect`` intersects.
+  ``chamfer:`` nodes are unbounded half-space tools, so they may only be
+  ``cut``/``intersect`` (never ``add``, which would leave the component an
+  infinite solid) and may never be a component's first (base) node.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
-from precis.cad.dsl import build_config
+from precis.cad.dsl import build, build_config, parse
 from precis.cad.fold import Expr
 from precis.cad.graph import Design
 from precis.cad.vec import Transform, identity, rotation, translation
@@ -188,6 +191,7 @@ def parse_source(text: str) -> SceneSpec:
     current = "part"
     seen_components: list[str] = []
     seen_names: set[str] = set()
+    components_with_nodes: set[str] = set()
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
@@ -223,7 +227,21 @@ def parse_source(text: str) -> SceneSpec:
             raise SceneError(f"line {lineno}: duplicate node name {name!r}")
         seen_names.add(name)
         # validate the shape config eagerly (raises on bad DSL)
-        build_config(config)
+        node_spec = parse(config)
+        build(node_spec)
+        if node_spec.alias == "chamfer":
+            if op == "add":
+                raise SceneError(
+                    f"line {lineno}: chamfer node {name!r} cannot use op 'add' "
+                    "— an added half-space is an unbounded infinite solid; "
+                    "use 'cut' or 'intersect'"
+                )
+            if current not in components_with_nodes:
+                raise SceneError(
+                    f"line {lineno}: chamfer node {name!r} cannot be the first "
+                    f"node of component {current!r} — the base must be a "
+                    "finite solid; add a bounded base node before chamfering it"
+                )
 
         loc = (0.0, 0.0, 0.0)
         rot = (0.0, 0.0, 0.0)
@@ -248,6 +266,7 @@ def parse_source(text: str) -> SceneSpec:
 
         if current not in seen_components:
             seen_components.append(current)
+        components_with_nodes.add(current)
         spec.nodes.append(
             NodeSpec(
                 name=name,

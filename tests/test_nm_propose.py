@@ -332,6 +332,19 @@ def test_dry_run_envelope_fit_warning_does_not_fail(nm_handler: NmHandler) -> No
     assert any("envelope_fit" in w for w in warnings)
 
 
+def test_dry_run_unbounded_envelope_skips_fit_check(nm_handler: NmHandler) -> None:
+    # A chamfer half-space builds fine as a cad primitive (since the chamfer
+    # authoring slice) but is unbounded — it has no centroid to align the
+    # fragment to, so the fit check must skip it gracefully (same posture as
+    # a bad config), never emit a NaN-derived warning or crash.
+    tree = _seeded_tree(nm_handler)
+    tree.blocks["hub"].envelope = "chamfer:1x45"
+    ops = [{"op": "ring", "element": "C", "n": 6, "aromatic": True}]
+    err, warnings = nmj.dry_run(tree, "hub", ops, {"cap": "aC1"})
+    assert err is None
+    assert not any("envelope_fit" in w for w in warnings)
+
+
 # ── dispatch (stubbed agent) ─────────────────────────────────────────────
 
 

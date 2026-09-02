@@ -534,8 +534,9 @@ setMode('features');
     }
     const p = d.proposal;
     if (!p) {
+      const jobLink = '<a href="/r/job/' + esc(d.job_id) + '" class="underline hover:text-red-800">see the job log</a>';
       return '<div class="rounded-lg border border-red-200 bg-red-50 p-3">'
-        + '<div class="flex items-center gap-2 mb-1"><span class="text-xs text-red-600">proposal ' + esc(d.status) + ' — see the job log</span>' + meta + '</div>'
+        + '<div class="flex items-center gap-2 mb-1"><span class="text-xs text-red-600">proposal ' + esc(d.status) + ' — ' + jobLink + '</span>' + meta + '</div>'
         + instr + '</div>';
     }
     const badge = p.valid
@@ -616,7 +617,8 @@ setMode('features');
     } else if (t.answer) {
       a = '<div class="text-[11px] text-slate-700 whitespace-pre-wrap"><span class="font-semibold text-indigo-700">CAD:</span> ' + esc(t.answer) + '</div>';
     } else {
-      a = '<div class="text-[11px] text-red-600">answer ' + esc(t.status) + ' — see the job log</div>';
+      const jobLink = '<a href="/r/job/' + esc(t.job_id) + '" class="underline hover:text-red-800">see the job log</a>';
+      a = '<div class="text-[11px] text-red-600">answer ' + esc(t.status) + ' — ' + jobLink + '</div>';
     }
     return '<div class="rounded-lg border border-slate-200 bg-white p-2 space-y-1">' + q + a
       + '<div class="text-[10px] text-slate-400">job r' + esc(t.job_id) + ' · ' + esc(t.created) + '</div></div>';

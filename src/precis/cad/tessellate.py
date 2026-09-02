@@ -37,9 +37,17 @@ import math
 import numpy as np
 from numpy.typing import NDArray
 
-from precis.cad.dsl import ShapeSpec, parse
-from precis.cad.scene import NodeSpec, _node_xform, _pattern_transforms
-from precis.cad.vec import Transform
+from precis.cad.bulk import expr_aabb
+from precis.cad.dsl import ShapeSpec, build, parse
+from precis.cad.primitives import HalfSpace
+from precis.cad.scene import (
+    NodeSpec,
+    SceneSpec,
+    _node_xform,
+    _pattern_transforms,
+    build_design,
+)
+from precis.cad.vec import Transform, Vec3, as_vec3, vec3
 
 #: Segment count for curved primitives (cyl/cone/sphere/torus). Matches the
 #: OpenSCAD ``$fn`` used by the text export so the two routes agree.
@@ -204,13 +212,18 @@ def _torus(R: float, r: float) -> Mesh:
 # ---------------------------------------------------------------------------
 
 
+def _box_mesh(w: float, d: float, h: float) -> Mesh:
+    """A box ``w × d × h``, centred in x/y, base at local ``z=0``."""
+    hw, hd = w / 2.0, d / 2.0
+    ring = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd)]
+    return _extrude(ring, list(ring), h)
+
+
 def mesh_shape(spec: ShapeSpec) -> Mesh:
     """Tessellate a parsed :class:`ShapeSpec` in its local frame."""
     a, p = spec.alias, spec.params
     if a == "box":
-        hw, hd = p["w"] / 2.0, p["d"] / 2.0
-        ring = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd)]
-        return _extrude(ring, list(ring), p["h"])
+        return _box_mesh(p["w"], p["d"], p["h"])
     if a == "cyl":
         return _circular(p["r"], p["r"], p["h"])
     if a == "cone":
@@ -248,10 +261,139 @@ def _apply(xf: Transform, verts: NDArray[np.float64]) -> NDArray[np.float64]:
     return (xf.R @ verts.T).T + xf.t
 
 
-def node_meshes(node: NodeSpec) -> list[Mesh]:
-    """World-space meshes for a node — one per pattern instance (or one)."""
-    base = mesh_shape(parse(node.config))
-    v, t = base
+# ---------------------------------------------------------------------------
+# chamfer export/view boundary: clamp the unbounded half-space to a box
+# ---------------------------------------------------------------------------
+#
+# ``chamfer:`` builds a :class:`~precis.cad.primitives.HalfSpace` — exact
+# and correct for the analytic probe/relate/bulk layers, which never mesh,
+# but *unbounded*, so it has no finite triangle mesh of its own. Every
+# export/view backend needs one, so at that boundary (and only there) we
+# substitute a finite oriented box: one face exactly on the cutting plane,
+# extending on the tool's material side far enough to cover the whole
+# design (:func:`design_aabb`, padded) in every direction. Intersected with
+# the design's real geometry, that box and the true half-space agree
+# everywhere the design actually has material, so the CSG result is
+# identical — only the maths needed to *build* the tool differs.
+
+
+def design_aabb(spec: SceneSpec) -> tuple[Vec3, Vec3]:
+    """World-space AABB of every non-chamfer node in ``spec`` (union).
+
+    Reuses the kernel :class:`~precis.cad.graph.Design` +
+    :func:`~precis.cad.bulk.expr_aabb` the analytic bulk-volume probe
+    already relies on — :func:`expr_aabb` walks every leaf but only unions
+    the *finite* ones, so a chamfer's ``±inf`` half-space instance drops
+    out on its own; no separate chamfer-skipping logic needed here.
+    """
+    design = build_design(spec)
+    return expr_aabb(design, design.whole())
+
+
+def _tangent_basis(
+    w: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Unit ``(u, v)`` such that ``(u, v, w)`` is right-handed orthonormal
+    (``u × v == w``), for an arbitrary unit ``w``."""
+    ref = vec3(0.0, 0.0, 1.0) if abs(float(w[2])) < 0.9 else vec3(1.0, 0.0, 0.0)
+    u = np.cross(ref, w)
+    u = u / np.linalg.norm(u)
+    v = np.cross(w, u)
+    return u, v
+
+
+def halfspace_clamp_params(
+    node: NodeSpec, aabb: tuple[Vec3, Vec3]
+) -> list[tuple[float, float, float, Transform]]:
+    """``(w, d, h, xf)`` per pattern instance for a ``chamfer`` node clamped
+    to ``aabb`` — one entry (unpatterned) or one per ``polar:``/``linear:``
+    instance.
+
+    ``xf`` rigidly places a canonical box (:func:`_box_mesh` /
+    ``box(w, d, h)`` — centred in x/y, base at local ``z=0``) so that base
+    face lies exactly on the chamfer's world-space cutting plane and the
+    box extends ``h`` further along the tool's material normal, wide/deep
+    enough (``w``/``d``) to cover ``aabb`` — padded by 10% of its diagonal
+    plus 1 mm, so a corner of real geometry sitting right at the AABB
+    boundary is never clipped by plane/box coincidence — in every
+    direction. Any export/view backend that can place a rigid box under a
+    :class:`Transform` (mesh, OpenSCAD ``multmatrix``, OCCT ``gp_Trsf``, or
+    an Euler-decomposed ``loc``/``rot`` pose) gets an exact substitute for
+    the unbounded half-space.
+    """
+    spec = parse(node.config)
+    prim = build(spec)
+    assert isinstance(prim, HalfSpace)  # the only unbounded shape (scene.py guards)
+    point_local = as_vec3(prim.point)
+    normal_local = as_vec3(prim.normal)
+    normal_local = normal_local / np.linalg.norm(normal_local)
+
+    lo, hi = as_vec3(aabb[0]), as_vec3(aabb[1])
+    margin = 0.1 * float(np.linalg.norm(hi - lo)) + 1.0
+    lo, hi = lo - margin, hi + margin
+    corners = np.array(
+        [
+            [x, y, z]
+            for x in (lo[0], hi[0])
+            for y in (lo[1], hi[1])
+            for z in (lo[2], hi[2])
+        ]
+    )
+
+    xforms = (
+        _pattern_transforms(node)
+        if node.pattern is not None
+        else [_node_xform(node.loc, node.rot)]
+    )
+    out: list[tuple[float, float, float, Transform]] = []
+    for xf in xforms:
+        p0 = xf.apply(point_local)
+        n = xf.apply_dir(normal_local)
+        n = n / np.linalg.norm(n)
+        material_dir = -n  # the side `contains_local` accepts
+        u, v = _tangent_basis(material_dir)
+        rel = corners - p0
+        depths = rel @ material_dir
+        us = rel @ u
+        vs = rel @ v
+        h = max(float(depths.max()), margin)
+        u_lo, u_hi = float(us.min()), float(us.max())
+        v_lo, v_hi = float(vs.min()), float(vs.max())
+        w_dim, d_dim = u_hi - u_lo, v_hi - v_lo
+        origin = p0 + 0.5 * (u_lo + u_hi) * u + 0.5 * (v_lo + v_hi) * v
+        R = np.stack([u, v, material_dir], axis=1)
+        out.append((w_dim, d_dim, h, Transform(R=R, t=origin)))
+    return out
+
+
+def clamped_halfspace_mesh(node: NodeSpec, aabb: tuple[Vec3, Vec3]) -> list[Mesh]:
+    """World-space clamped-box mesh(es) for a ``chamfer`` node — one per
+    pattern instance. See :func:`halfspace_clamp_params`."""
+    out: list[Mesh] = []
+    for w, d, h, xf in halfspace_clamp_params(node, aabb):
+        verts, tris = _box_mesh(w, d, h)
+        out.append((_apply(xf, verts), tris))
+    return out
+
+
+def node_meshes(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None = None) -> list[Mesh]:
+    """World-space meshes for a node — one per pattern instance (or one).
+
+    A ``chamfer`` node has no finite mesh of its own; passing the design's
+    ``aabb`` (:func:`design_aabb`) substitutes a clamped box
+    (:func:`clamped_halfspace_mesh`) so export/view backends can still
+    tessellate it. Without ``aabb`` it raises :class:`TessellationError`
+    (unchanged) — there is no design context here to clamp against.
+    """
+    spec = parse(node.config)
+    if spec.alias == "chamfer":
+        if aabb is None:
+            raise TessellationError(
+                "chamfer node has no finite mesh without a design aabb to "
+                "clamp against — pass design_aabb(spec)"
+            )
+        return clamped_halfspace_mesh(node, aabb)
+    v, t = mesh_shape(spec)
     if node.pattern is not None:
         return [(_apply(xf, v), t) for xf in _pattern_transforms(node)]
     return [(_apply(_node_xform(node.loc, node.rot), v), t)]

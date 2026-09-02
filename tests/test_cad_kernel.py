@@ -25,6 +25,7 @@ from precis.cad.primitives import (
     regular_prism,
 )
 from precis.cad.vec import (
+    euler_deg_from_matrix,
     identity,
     pose,
     rotation,
@@ -349,3 +350,24 @@ def test_transform_dataclass_immutable() -> None:
     t = identity()
     with pytest.raises(dataclasses.FrozenInstanceError):
         t.t = vec3(1, 1, 1)  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "rx,ry,rz",
+    [
+        (0.0, 0.0, 0.0),
+        (15.0, 40.0, -75.0),
+        (-30.0, 10.0, 200.0),
+        (0.0, 90.0, 0.0),  # gimbal lock (ry = +90°)
+        (0.0, -90.0, 0.0),  # gimbal lock (ry = -90°)
+        (25.0, 90.0, -40.0),  # gimbal lock with nonzero rx/rz
+    ],
+)
+def test_euler_deg_from_matrix_round_trips(rx: float, ry: float, rz: float) -> None:
+    # euler_deg_from_matrix need not recover the *same* angles at a gimbal
+    # lock (rx/rz aren't independently observable there) — it must recover
+    # the *same rotation matrix*, always.
+    R = rotation(rx, ry, rz).R
+    got = euler_deg_from_matrix(R)
+    R2 = rotation(*got).R
+    assert np.allclose(R, R2, atol=1e-9)

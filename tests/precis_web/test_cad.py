@@ -98,6 +98,21 @@ def test_cad_detail_renders_drag_affordances(cad_client, runtime_with_store) -> 
     assert 'input[name="instruction"]' in r.text
 
 
+def test_cad_detail_failure_cards_link_to_the_job_log(
+    cad_client, runtime_with_store
+) -> None:
+    """A propose/discuss job that failed (no result) must render a link to its
+    owning job, not just a bare 'see the job log' string — the reader needs
+    somewhere to click to find out *why* (docs/backlog/cad-connectivity-lint.md)."""
+    _seed(runtime_with_store, slug="web_joblink")
+    r = cad_client.get("/cad/web_joblink")
+    assert r.status_code == 200
+    # the proposal + discuss failure cards both build a click-through to the
+    # generic ``/r/{kind}/{id}`` resolver, keyed on the job's ref id.
+    assert "/r/job/" in r.text
+    assert r.text.count("/r/job/") >= 2  # one in each failure-card builder
+
+
 def test_cad_model_gltf_returns_glb(cad_client, runtime_with_store) -> None:
     _seed(runtime_with_store, slug="web_glb")
     r = cad_client.get("/cad/web_glb/model.gltf")
@@ -118,6 +133,32 @@ def test_cad_scene_json_serves_recipe(cad_client, runtime_with_store) -> None:
     assert names["hub_bore"]["op"] == "cut"
     # every node carries a colour + pose so the browser can build + place it
     assert all("color" in n and "loc" in n and "rot" in n for n in body["nodes"])
+
+
+def test_cad_scene_json_substitutes_chamfer_with_clamped_box(
+    cad_client, runtime_with_store
+) -> None:
+    # A chamfer node is an unbounded half-space — the browser tessellator
+    # (cad-tessellate.js) never learns the 'chamfer' alias, so this route
+    # must substitute an equivalent finite box + pose instead of shipping
+    # the raw alias (which the client would silently draw as nothing).
+    CadHandler(hub=runtime_with_store.hub).put(
+        id="web_chamfer",
+        text=(
+            "component part\n"
+            "body   add box:w40d20h10\n"
+            "bevel  cut chamfer:2x45 @20,0,10\n"
+        ),
+    )
+    r = cad_client.get("/cad/web_chamfer/scene.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert "chamfer" not in json.dumps(body)  # substituted away entirely
+    bevel_nodes = [n for n in body["nodes"] if n["name"] == "bevel"]
+    assert len(bevel_nodes) == 1  # unpatterned chamfer — one substituted box
+    assert bevel_nodes[0]["shape"]["alias"] == "box"
+    assert bevel_nodes[0]["op"] == "cut"
+    assert set(bevel_nodes[0]["shape"]["params"]) == {"w", "d", "h"}
 
 
 def test_cad_detail_viewer_uses_scene_json(cad_client, runtime_with_store) -> None:

@@ -28,8 +28,8 @@ import numpy as np
 
 from precis.cad.dsl import parse
 from precis.cad.scene import NodeSpec, SceneSpec, _node_xform, _pattern_transforms
-from precis.cad.tessellate import node_meshes
-from precis.cad.vec import Transform
+from precis.cad.tessellate import design_aabb, halfspace_clamp_params, node_meshes
+from precis.cad.vec import Transform, Vec3
 
 #: Facet resolution for curved primitives in the exported mesh.
 _FN = 64
@@ -48,15 +48,18 @@ def _g(x: float) -> str:
     return f"{x:.6g}"
 
 
+def _cube_scad(w: float, d: float, h: float) -> str:
+    """OpenSCAD ``cube`` centred in x/y, base at local ``z=0`` — matches
+    :func:`precis.cad.tessellate._box_mesh`'s convention."""
+    return f"translate([{_g(-w / 2)},{_g(-d / 2)},0]) cube([{_g(w)},{_g(d)},{_g(h)}]);"
+
+
 def _scad_primitive(config: str) -> str:
     """OpenSCAD primitive for a ``config`` string, in its local frame."""
     spec = parse(config)
     a, p = spec.alias, spec.params
     if a == "box":
-        w, d, h = p["w"], p["d"], p["h"]
-        return (
-            f"translate([{_g(-w / 2)},{_g(-d / 2)},0]) cube([{_g(w)},{_g(d)},{_g(h)}]);"
-        )
+        return _cube_scad(p["w"], p["d"], p["h"])
     if a == "cyl":
         return f"cylinder(h={_g(p['h'])}, r={_g(p['r'])}, $fn={_FN});"
     if a == "cone":
@@ -97,7 +100,20 @@ def _multmatrix(xf: Transform) -> str:
     return "multmatrix([" + ",".join(rows) + "])"
 
 
-def _node_scad(node: NodeSpec) -> str:
+def _node_scad(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None) -> str:
+    if parse(node.config).alias == "chamfer":
+        # unbounded half-space — clamp to a box covering the design (see
+        # tessellate.halfspace_clamp_params); `aabb` is always present here
+        # because `to_openscad` only computes it when the design has a
+        # chamfer node in the first place.
+        assert aabb is not None
+        placements = [
+            f"{_multmatrix(xf)} {_cube_scad(w, d, h)}"
+            for w, d, h, xf in halfspace_clamp_params(node, aabb)
+        ]
+        if len(placements) == 1:
+            return placements[0]
+        return "union() {\n  " + "\n  ".join(placements) + "\n}"
     prim = _scad_primitive(node.config)
     if node.pattern is not None:
         placements = [f"{_multmatrix(xf)} {prim}" for xf in _pattern_transforms(node)]
@@ -110,10 +126,10 @@ def _indent(text: str, n: int = 2) -> str:
     return "\n".join(pad + line for line in text.splitlines())
 
 
-def _component_scad(nodes: list[NodeSpec]) -> str:
+def _component_scad(nodes: list[NodeSpec], aabb: tuple[Vec3, Vec3] | None) -> str:
     cur: str | None = None
     for node in nodes:
-        snippet = _node_scad(node)
+        snippet = _node_scad(node, aabb)
         if cur is None:
             cur = snippet
         elif node.op == "add":
@@ -135,12 +151,17 @@ def _by_component(spec: SceneSpec) -> dict[str, list[NodeSpec]]:
 def to_openscad(spec: SceneSpec, *, name: str = "design") -> str:
     """Render a :class:`SceneSpec` to OpenSCAD source (assembly = union of
     each component's folded solid)."""
+    # A chamfer node needs the design's AABB to clamp its unbounded
+    # half-space to a finite cube (see tessellate.halfspace_clamp_params);
+    # only pay for building the kernel Design when one is actually present.
+    has_chamfer = any(parse(n.config).alias == "chamfer" for n in spec.nodes)
+    aabb = design_aabb(spec) if has_chamfer else None
     by_comp = _by_component(spec)
     blocks = []
     for comp in spec.components:
         if comp not in by_comp:
             continue
-        body = _component_scad(by_comp[comp])
+        body = _component_scad(by_comp[comp], aabb)
         if body:
             blocks.append(f"// component {comp}\n{body}")
 
@@ -177,9 +198,9 @@ def _to_manifold(verts: np.ndarray, tris: np.ndarray) -> Any:
     return m3d.Manifold(mesh)
 
 
-def _node_solid(node: NodeSpec) -> Any:
+def _node_solid(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None) -> Any:
     """A node's solid — the union of its pattern instances (or the one)."""
-    parts = [_to_manifold(v, t) for v, t in node_meshes(node)]
+    parts = [_to_manifold(v, t) for v, t in node_meshes(node, aabb)]
     cur = parts[0]
     for p in parts[1:]:
         cur = cur + p  # manifold3d: + is union
@@ -195,12 +216,14 @@ def _component_solids(spec: SceneSpec) -> list[tuple[str, Any]]:
             "manifold3d not installed — mesh export needs it (core dep; "
             "broken venv?):  pip install --force-reinstall 'precis-mcp'"
         )
+    has_chamfer = any(parse(n.config).alias == "chamfer" for n in spec.nodes)
+    aabb = design_aabb(spec) if has_chamfer else None
     by_comp = _by_component(spec)
     out: list[tuple[str, Any]] = []
     for comp in spec.components:
         cur: Any | None = None
         for node in by_comp.get(comp, []):
-            man = _node_solid(node)
+            man = _node_solid(node, aabb)
             if cur is None:
                 cur = man
             elif node.op == "add":
