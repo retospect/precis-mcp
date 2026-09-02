@@ -1897,20 +1897,20 @@ class PaperHandler(Handler):
         if hi + 1 < total:
             span = 5 if single_block else (hi - lo + 1)
             n_next = min(span, total - 1 - hi)
-            # forward read via relative navigation off the last
-            # chunk's handle (``pc<id>+1..N``) — self-identifying, no kind=.
-            last = blocks[-1]
-            last_h = handle_registry.try_format(ref.kind, last.id, chunk=True)
-            if last_h is not None:
-                rel = f"+1..{n_next}" if n_next > 1 else "+1"
-                hint_id = f"{last_h}{rel}"
-            else:
-                nxt_lo, nxt_hi = hi + 1, hi + n_next
-                hint_id = (
-                    f"{ref.slug}~{nxt_lo}..{nxt_hi}"
-                    if nxt_hi > nxt_lo
-                    else f"{ref.slug}~{nxt_lo}"
-                )
+            # Absolute range off the same record handle as the trailer's
+            # other hints (``pa<id>~26..28``) — a reader who just fetched
+            # ``~23..25`` can verify it at a glance. The relative form this
+            # replaces (``pc<id>+1..3``) was arithmetically equivalent but
+            # anchored on an opaque chunk id, and read as off-by-something
+            # even to a careful human; a hint must be checkable from the
+            # response it rides on. ``resolve_relative`` still accepts the
+            # relative shape as input — it's just no longer advertised.
+            nxt_lo, nxt_hi = hi + 1, hi + n_next
+            hint_id = (
+                f"{_pa(ref)}~{nxt_lo}..{nxt_hi}"
+                if nxt_hi > nxt_lo
+                else f"{_pa(ref)}~{nxt_lo}"
+            )
             nav.append(
                 (
                     f"get(id='{hint_id}')",

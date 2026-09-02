@@ -19,6 +19,16 @@ the agent's intent ("if you want to ..."), column 2 is the literal
 call to execute. Pairs with the active-voice wording rules in the
 storage-v2 design discussion.
 
+Hint legibility invariant: a hint must be verifiable from the response
+it rides on — anchor it on ids the caller just used or can see on the
+page, and prefer absolute selectors (``pa<id>~26..28``) over relative
+arithmetic on an opaque id (``pc<id>+1..3``). A correct-but-opaque hint
+reads as wrong (2026-09-02 gripe: the paper chunk trailer's relative
+form), erodes trust in every hint, and shows up as retry loops in agent
+transcripts. Round-trip guard for the paper path:
+``test_chunk_trailer_hints_round_trip``; generalization tracked in
+``docs/backlog/hint-round-trip-harness.md``.
+
 Backwards compat: callsites pass the same ``[(call, description)]``
 list they always did; the renderer transposes (description first,
 call second) so the audit at callsites only changes the *strings*,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
 from precis.store.types import Tag
+from precis.tools.command_parser import parse_command
 from precis.utils import handle_registry
 from tests.conftest import chunk_handle, record_handle
 
@@ -507,11 +509,40 @@ class TestChunks:
         assert f"search(kind='paper', q='your query', scope='{_pa}')" in resp.body
         # Promoted: TOC.
         assert "view='toc'" in resp.body
-        # Forward read is a 5-block span via relative nav, not a
-        # bare next-block: ``pc<id>+1..5`` (5 chunks after the one just read).
-        assert "+1..5" in resp.body
+        # Forward read is a 5-block absolute range anchored on the same
+        # record handle as the other trailer hints — verifiable at a
+        # glance from the response itself (read ~3 → next is ~4..8) —
+        # not the opaque relative form ``pc<id>+1..5``.
+        assert f"get(id='{_pa}~4..8')" in resp.body
+        assert "+1.." not in resp.body
         # And the bare-block legacy hint is NOT the primary follow-up.
         assert "next chunk: get(kind='paper', id='wang2020state~4')" not in resp.body
+
+    def test_chunk_trailer_hints_round_trip(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Every ``get(...)`` the chunk-read trailer advertises must
+        execute, and the forward hint must land on exactly the chunks
+        after the range just read. A trailer hint that errors — or
+        silently fetches the wrong span — trains callers into retry
+        loops, and nothing else checks the advertised call actually
+        works (prior assertions were substring-presence only)."""
+        _seed_paper(store, blocks=[f"para {i}" for i in range(10)])
+        resp = handler.get(id="wang2020state~2..4")
+        hints = re.findall(r"get\([^)]*\)", resp.body.split("Next:")[-1])
+        assert hints, "trailer advertised no get() hints"
+        for hint in hints:
+            verb, kwargs = parse_command(hint)
+            assert verb == "get"
+            kwargs.pop("kind", None)
+            assert handler.get(**kwargs).body
+        # The forward hint specifically: read ~2..4 → next 3 are 5..7.
+        forward = next(h for h in hints if ".." in h)
+        _, kwargs = parse_command(forward)
+        body = handler.get(id=kwargs["id"]).body
+        for o in (5, 6, 7):
+            assert f"# {chunk_handle(store, 'wang2020state', ord=o)}" in body
+        assert f"# {chunk_handle(store, 'wang2020state', ord=8)}" not in body
 
     def test_chunk_out_of_range_404s(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["a"])
