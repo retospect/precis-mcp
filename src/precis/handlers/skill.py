@@ -1448,6 +1448,41 @@ class SkillHandler(Handler):
                     schema=["field", "value"],
                 )
             )
+        lines.extend(["", "**Embedder**", ""])
+        embedder = getattr(self.hub, "embedder", None) if self.hub is not None else None
+        if embedder is None:
+            lines.append(
+                "_no embedder wired — semantic search is unavailable "
+                "(every search runs lexical-only)_"
+            )
+        else:
+            embedder_rows = _collect_embedder_info(embedder)
+            lines.append(
+                render_agent_table(
+                    [{"field": f, "value": v} for f, v in embedder_rows],
+                    schema=["field", "value"],
+                )
+            )
+            # gr249198: the "mock" backend never raises, so a session
+            # that boots with it produces zero semantic hits on every
+            # real corpus, silently and forever — the existing
+            # degrade-to-lexical paths (which key off a caught
+            # ``Upstream``) never fire because mock never raises.
+            # Reading the LIVE embedder object (not env) here is the
+            # point: env can look correct while the wired backend
+            # isn't.
+            if not getattr(embedder, "is_production", True):
+                lines.append("")
+                lines.append(
+                    "**⚠ semantic search is non-functional.** The active "
+                    "embedder is `mock` (deterministic hash vectors, not a "
+                    "trained model) — every semantic/hybrid search will "
+                    "silently return zero real matches. Do not read that "
+                    "as 'nothing in the corpus'. Fix by wiring a real "
+                    "backend (`PRECIS_EMBEDDER=bge-m3` or `remote`) and "
+                    "restarting."
+                )
+
         lines.extend(
             [
                 "",
@@ -1798,6 +1833,43 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
     rows.append(("server_version", str(server_version).split(",", 1)[0]))
     rows.append(("migration", str(migration) if migration is not None else "(none)"))
     rows.append(("migration_count", str(mig_count)))
+    return rows
+
+
+def _collect_embedder_info(embedder: Any) -> list[tuple[str, str]]:
+    """Return ``(field, value)`` rows for the **Embedder** section.
+
+    Reads the LIVE embedder object bound to the hub — not
+    ``PrecisConfig`` / env — so a session that booted with a wrong or
+    stale wiring is caught even when the env looks correct (gr249198:
+    a session once ran with the default ``embedder="mock"`` and every
+    semantic search silently returned zero, forever, because
+    ``MockEmbedder`` never raises the ``Upstream`` the degrade-to-
+    lexical paths key off).
+
+    Unwraps :class:`~precis.embedder.BoundedConcurrencyEmbedder` via
+    ``.inner`` — the documented convention
+    (``runtime/factory.py::build_runtime``) for introspecting the
+    concrete backend under the request-path concurrency wrapper.
+
+    ``model`` costs a network round-trip for a cold ``RemoteEmbedder``
+    (fetches ``/model``); guarded so an unreachable remote reports
+    inline rather than crashing the whole status probe.
+    """
+    inner = getattr(embedder, "inner", embedder)
+    backend = getattr(inner, "backend", type(inner).__name__)
+    try:
+        model = str(inner.model)
+    except Exception as exc:  # pragma: no cover — defensive, mirrors DB probe
+        model = f"(unreachable: {type(exc).__name__}: {exc})"
+    rows: list[tuple[str, str]] = [
+        ("backend", str(backend)),
+        ("model", model),
+        ("production", "yes" if getattr(inner, "is_production", True) else "no"),
+    ]
+    url = getattr(inner, "url", None)
+    if url:
+        rows.append(("url", str(url)))
     return rows
 
 

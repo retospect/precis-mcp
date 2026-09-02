@@ -9,8 +9,11 @@ the kind set, and renders. End to end through ``runtime.dispatch``.
 
 from __future__ import annotations
 
+from precis.config import PrecisConfig
+from precis.dispatch import boot
+from precis.embedder import MockEmbedder
 from precis.runtime import PrecisRuntime
-from precis.store import ChunkInsert
+from precis.store import ChunkInsert, Store
 
 
 def _seed(rt: PrecisRuntime, kind: str, slug: str, title: str, text: str) -> int:
@@ -60,3 +63,53 @@ def test_bad_since_surfaces_error(runtime_with_store: PrecisRuntime) -> None:
     )
     assert is_error
     assert "since=" in body
+
+
+def test_source_search_marks_non_production_embedder(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr249198: the sort=/since=/until= source-search primitive runs
+    the semantic leg against the fixture's ``MockEmbedder`` — which
+    never raises, so the existing degrade-to-lexical path never fires
+    even though the vector is deterministic noise. The envelope must
+    say so.
+    """
+    rt = runtime_with_store
+    _seed(rt, "paper", "src-d", "Delta study", "quantum spin liquid frustration")
+    out = rt.dispatch(
+        "search",
+        {"kind": "paper", "q": "quantum spin liquid", "sort": "recency"},
+    )
+    assert "non-production" in out
+    assert "mock" in out
+
+
+def test_source_search_no_marker_for_production_embedder(store: Store) -> None:
+    """The converse: a backend that reports itself production must not
+    carry the warning."""
+
+    class _ProductionStubEmbedder(MockEmbedder):
+        """Deterministic vectors (store-dim compatible) but flagged as
+        a production backend — stands in for a real remote/bge-m3
+        embedder without the network/torch dependency."""
+
+        @property
+        def backend(self) -> str:
+            return "remote"
+
+        @property
+        def is_production(self) -> bool:
+            return True
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(),
+        hub=boot(
+            store=store, embedder=_ProductionStubEmbedder(dim=store.embedding_dim())
+        ),
+    )
+    _seed(rt, "paper", "src-e", "Epsilon study", "quantum spin liquid frustration")
+    out = rt.dispatch(
+        "search",
+        {"kind": "paper", "q": "quantum spin liquid", "sort": "recency"},
+    )
+    assert "non-production" not in out

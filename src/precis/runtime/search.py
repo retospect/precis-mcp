@@ -36,6 +36,47 @@ from precis.utils.search_merge import (
 
 log = logging.getLogger(__name__)
 
+#: gr249198: ``MockEmbedder`` never raises, so the existing
+#: ``semantic_degraded`` paths below — which key off catching
+#: ``Upstream`` from a failing embed — never fire when the wired
+#: backend is the "mock" default. A search that ran the semantic leg
+#: against mock still gets a vector back and still executes the store
+#: query; it just compares against deterministic hash noise, so a
+#: real "no matches" is indistinguishable from "the semantic leg was
+#: meaningless". This marker fires independent of embed success/
+#: failure — a mock embed usually SUCCEEDS — whenever the wired
+#: embedder is non-production, so the ambiguity above is never silent.
+_NON_PRODUCTION_EMBEDDER_MARKER = (
+    "_(⚠ embedder={backend!r} is non-production — the semantic leg ran "
+    "against a deterministic mock vector, not a trained model; treat any "
+    "apparent absence here as unproven, not confirmed. See "
+    "get(kind='skill', id='precis-status') for the active backend.)_"
+)
+
+
+def _stamp_non_production_embedder(
+    response: Response, embedder: Any | None
+) -> Response:
+    """Insert the non-production-embedder marker into ``response.body``.
+
+    A no-op when ``embedder`` is ``None`` (mode='lexical' skipped the
+    semantic leg entirely — nothing to warn about) or when the
+    embedder doesn't carry ``is_production`` (an ad-hoc test double;
+    default True keeps this silent rather than guessing). Matches the
+    existing "insert a bracketed one-liner after the headline" visual
+    convention used for the errored/omitted-kinds trailers in
+    :meth:`SearchMixin._dispatch_cross_kind`.
+    """
+    if embedder is None or getattr(embedder, "is_production", True):
+        return response
+    backend = getattr(embedder, "backend", type(embedder).__name__)
+    marker = _NON_PRODUCTION_EMBEDDER_MARKER.format(backend=backend)
+    lines = response.body.splitlines()
+    if lines:
+        lines.insert(1, marker)
+        return Response(body="\n".join(lines), cost=response.cost)
+    return Response(body=marker, cost=response.cost)
+
 
 def _stub_state_line(row: dict[str, Any]) -> str:
     """The per-stub state line, with ``prio N`` and (when the ``stub_rank``
@@ -415,7 +456,7 @@ class SearchMixin(RuntimeShape):
             )
         else:
             empty_body = f"no matches across {', '.join(kinds)} for {q!r}{date_suffix}"
-        return merge_and_render(
+        response = merge_and_render(
             [hits],
             page_size=top_k,
             query=q,
@@ -423,6 +464,7 @@ class SearchMixin(RuntimeShape):
             mode="rrf",
             empty_body=empty_body,
         )
+        return _stamp_non_production_embedder(response, embedder)
 
     def _dispatch_cross_kind(self, kind: str, args: dict[str, Any]) -> Response:
         """Fan out a search across multiple kinds and RRF-fuse the streams.
@@ -781,7 +823,7 @@ class SearchMixin(RuntimeShape):
                 lines.append(tip)
             response = Response(body="\n".join(lines), cost=response.cost)
 
-        return response
+        return _stamp_non_production_embedder(response, embedder)
 
     def _dispatch_cross_kind_tags_only(
         self, kind: Any, args: dict[str, Any]

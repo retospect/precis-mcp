@@ -13,7 +13,9 @@ from typing import Any, cast
 
 import pytest
 
+from precis.config import PrecisConfig
 from precis.dispatch import Hub, boot
+from precis.embedder import MockEmbedder
 from precis.errors import BadInput, Gone, NotFound
 from precis.handlers._paper_format import _strip_jats
 from precis.handlers.paper import _normalise_view
@@ -223,6 +225,49 @@ def test_wildcard_kind_dispatches_cross_kind_merge(
     """``kind='*'`` is the canonical "search every kind" form."""
     out = runtime_with_store.dispatch("search", {"kind": "*", "q": "qabsentword"})
     assert "[error:BadInput]" not in out
+
+
+def test_cross_kind_search_marks_non_production_embedder(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr249198: cross-kind ``search()`` runs against the fixture's
+    ``MockEmbedder`` — a non-production backend that never raises, so
+    the existing ``semantic_degraded``/``Upstream`` paths stay silent.
+    The response must still say so, distinguishing "the semantic leg
+    ran against deterministic noise" from a genuine "no matches".
+    """
+    out = runtime_with_store.dispatch("search", {"q": "qabsentword"})
+    assert "non-production" in out
+    assert "mock" in out
+
+
+def test_cross_kind_search_no_marker_for_production_embedder(store: Store) -> None:
+    """The converse of the above: a backend that reports itself
+    production (real remote/bge-m3) must NOT carry the warning — it
+    would be noise on every normal search.
+    """
+
+    class _ProductionStubEmbedder(MockEmbedder):
+        """Deterministic vectors (store-dim compatible) but flagged as
+        a production backend — stands in for a real remote/bge-m3
+        embedder without the network/torch dependency."""
+
+        @property
+        def backend(self) -> str:
+            return "remote"
+
+        @property
+        def is_production(self) -> bool:
+            return True
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(),
+        hub=boot(
+            store=store, embedder=_ProductionStubEmbedder(dim=store.embedding_dim())
+        ),
+    )
+    out = rt.dispatch("search", {"q": "qabsentword"})
+    assert "non-production" not in out
 
 
 @pytest.mark.parametrize("alias", ["all", "All", "ALL", "any", "*", "", "  all  "])

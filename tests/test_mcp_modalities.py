@@ -305,6 +305,21 @@ def test_precis_status_renders_optional_dep_table(
     assert "Overall: OK" in body, f"precis-status reports a degraded venv:\n{body}"
 
 
+def test_precis_status_reports_active_embedder_and_warns_on_mock(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr249198: the status probe must report the LIVE embedder object's
+    backend — not re-derive it from env/config — and must call out
+    plainly when that backend is ``mock`` (semantic search is
+    non-functional). The shared test fixtures wire ``MockEmbedder``,
+    so this exercises the warning branch directly.
+    """
+    body = runtime_with_store.dispatch("get", {"kind": "skill", "id": "precis-status"})
+    assert "**Embedder**" in body
+    assert "mock" in body
+    assert "non-functional" in body
+
+
 def test_precis_status_marks_missing_optional_dep(monkeypatch) -> None:
     """When an optional dep is missing, the probe row tags it
     MISSING and surfaces the install hint.  Simulated by

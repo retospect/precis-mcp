@@ -94,6 +94,19 @@ class Embedder(Protocol):
     # server-side) return immediately.
     def unload(self) -> None: ...
 
+    # ``backend`` / ``is_production`` are DELIBERATELY not part of this
+    # Protocol, even though every real backend below carries them.
+    # ``skill_index/index.py::FileCorpusIndex.is_available()`` (and a
+    # handful of test doubles across the suite that hand-roll a
+    # minimal embedder for one scenario) gate on structural
+    # ``isinstance(e, Embedder)`` — adding required members here would
+    # silently flip those fakes to "not an Embedder" and mask their
+    # test's own semantic search path. Read via
+    # ``getattr(embedder, "is_production", True)`` (default **True** —
+    # an unrecognised/duck-typed embedder is assumed production-grade
+    # so this doesn't manufacture false warnings for every ad-hoc test
+    # double) rather than an isinstance/type check, per gripe gr249198.
+
 
 # ---------------------------------------------------------------------------
 # Mock — deterministic, no external deps. Used in all unit tests.
@@ -124,6 +137,14 @@ class MockEmbedder:
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def backend(self) -> str:
+        return "mock"
+
+    @property
+    def is_production(self) -> bool:
+        return False
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [self.embed_one(t) for t in texts]
@@ -330,6 +351,14 @@ class BgeM3Embedder:
     @property
     def model(self) -> str:
         return self._model_name
+
+    @property
+    def backend(self) -> str:
+        return "bge-m3"
+
+    @property
+    def is_production(self) -> bool:
+        return True
 
     def _ensure_loaded(self) -> object:
         """Load the model on first use; cached thereafter.
@@ -590,6 +619,23 @@ class RemoteEmbedder:
     def model(self) -> str:
         return self._model_info().model
 
+    @property
+    def backend(self) -> str:
+        return "remote"
+
+    @property
+    def is_production(self) -> bool:
+        return True
+
+    @property
+    def url(self) -> str:
+        """Comma-joined endpoint list — for status/observability display.
+
+        Not part of the ``Embedder`` Protocol (only the remote backend
+        has a URL); read via ``getattr(embedder, "url", None)``.
+        """
+        return ", ".join(self._endpoints)
+
     def is_ready(self) -> bool:
         # Remote backend has no local warmup phase. The first call
         # pays a small ``/model`` round-trip; subsequent calls don't.
@@ -751,6 +797,20 @@ class BoundedConcurrencyEmbedder:
     @property
     def model(self) -> str:
         return self._inner.model
+
+    @property
+    def backend(self) -> str:
+        # ``backend``/``is_production`` are duck-typed extras, not part
+        # of the ``Embedder`` Protocol (see the note above the
+        # Protocol class) — every real backend carries them, but an
+        # ``Embedder``-typed ``self._inner`` doesn't statically
+        # guarantee it, hence ``getattr`` with a safe default here
+        # instead of a direct attribute access.
+        return getattr(self._inner, "backend", type(self._inner).__name__)
+
+    @property
+    def is_production(self) -> bool:
+        return getattr(self._inner, "is_production", True)
 
     def is_ready(self) -> bool:
         return self._inner.is_ready()
