@@ -275,7 +275,12 @@ def run(
     """
     from precis.workers.planner_prompt import build_planner_prompts
 
-    model = params["model"]
+    model = params.get("model")
+    if model is None:
+        raise KeyError(
+            "plan_tick job minted without params['model'] — set meta.llm_tier "
+            "or params.model on the todo"
+        )
     sel = params.get("select")
     if not isinstance(sel, dict):
         sel = {}

@@ -764,6 +764,27 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                 f"{sorted(missing_caps)}",
             )
 
+        # A todo can set ``meta.executor``/``meta.job_type='plan_tick'``
+        # explicitly without a resolvable ``meta.llm_tier`` (nothing for the
+        # synthesis block above to key off), and without ``params.model``
+        # either — the mint would otherwise proceed with a modelless
+        # ``params={}`` and the child job crashes instantly on
+        # ``params["model"]`` (plan_tick.run). Reuse the same
+        # ``validate_submit`` the direct put-job path already runs
+        # (``handlers/job.py``) so this stays a single source of truth for
+        # "what's a valid plan_tick params dict", including the
+        # ``PLANNER_MODEL_ALIASES`` check — rather than a second bespoke
+        # model-presence check here.
+        if job_type == "plan_tick" and spec.validate_submit is not None:
+            err = spec.validate_submit(store, gripe_id=None, params=params)
+            if err is not None:
+                return _halt_bad_dispatch(
+                    store,
+                    conn,
+                    ref_id,
+                    f"{err} (set meta.llm_tier or params.model on the todo)",
+                )
+
         # Auto-inject ``auto_check`` if the writer didn't set one, so a
         # deterministic job's parent resolves on the child's success.
         # Skip it for self-resolving job types (the ``plan_tick``

@@ -261,6 +261,33 @@ def test_plan_tick_synthesizes_model_with_explicit_executor(
     assert children[0]["meta"]["params"]["model"] == "sonnet"
 
 
+def test_plan_tick_explicit_executor_no_llm_tier_self_halts(
+    handler: TodoHandler, store: Store
+) -> None:
+    """meta.executor='plan_tick' set explicitly with no llm_tier and no
+    params.model must NOT mint a doomed ``params={}`` child job.
+
+    Regression (prod td259614): the model-synthesis branch only fires
+    when ``meta.llm_tier`` is set, so this combo used to mint a live
+    ``plan_tick`` job that instantly KeyError'd on ``params['model']``
+    and crash-looped under the sweeper. It must self-halt instead, same
+    as the other unknown-executor/job_type/incompatible-combo guards.
+    """
+    r = handler.put(
+        text="planner brief, no model anywhere",
+        meta={"executor": "claude_inproc", "job_type": "plan_tick"},
+    )
+    rid = id_of(r.body)
+    result = run_dispatch_pass(store)
+    assert result.claimed == 1
+    assert result.ok == 0
+    assert result.failed == 1
+    assert "halt:bad-dispatch" in _open_tag_values(store, rid)
+    # No live child job left behind — in particular, none with an empty
+    # params dict that would KeyError on `params["model"]` if claimed.
+    assert _child_jobs_under(store, rid) == []
+
+
 def test_plan_tick_threads_llm_select_into_job_params(
     handler: TodoHandler, store: Store
 ) -> None:
