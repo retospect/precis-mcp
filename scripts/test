@@ -138,10 +138,19 @@ done
 # -p no:warnings drops the warnings summary (noise while iterating); --tb=short
 # keeps tracebacks compact; -q drops per-test verbosity. Pass pytest args as
 # inner positional params ("$@") so no cross-shell re-quoting is needed.
+#
+# Preflight (gr286507): a stale baked venv (new core dep promoted, image not
+# yet rebuilt) otherwise surfaces as ModuleNotFoundError red tests in whatever
+# file pytest collects first — unrelated to the change under test, and
+# expensive to root-cause from cold. check-core-deps.py imports every
+# `[project] dependencies` entry under the SAME `uv run --no-sync ${UV_WITH}`
+# prefix as pytest (so a UV_WITH bridge is honoured here too) and fails loud,
+# before pytest starts, naming the missing module(s) and the fix. One extra
+# `uv run` in the same container — no second container spin-up.
 compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
     "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
     "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
     -v "${WORKTREE}":/app precis-dev \
-    bash -lc 'uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
+    bash -lc 'uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py && uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
     _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
     "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "$@"
