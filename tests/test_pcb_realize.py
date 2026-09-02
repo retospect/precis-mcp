@@ -437,8 +437,14 @@ def test_plane_pour_merges_same_net_copper_and_antipads_foreign_net():
     ]
     sig_tracks = [t for t in result.tracks if t.net_id == 1]
     assert sig_tracks, "SIG must have routed on a layer the pour also covers"
+    # GND pours ON the pad layer itself and the pour floods over both GND
+    # pads, so `_prune_redundant_drop_vias` (2026-09-01) removes every
+    # dog-bone stub+via as redundant — the pour IS the connection. Zero
+    # GND vias is the correct outcome here, not a missing fanout.
     gnd_vias = [v for v in result.vias if v.net_id == 0]
-    assert gnd_vias, "GND's dog-bone fanout must have dropped a via into the plane"
+    assert gnd_vias == [], (
+        "a pad covered by its own net's same-layer pour needs no drop via"
+    )
 
     model = to_gerber_model(
         result,
@@ -447,20 +453,22 @@ def test_plane_pour_merges_same_net_copper_and_antipads_foreign_net():
         outline=outline,
     )
 
-    # merge: GND's own stub+via must be ONE connected island with its
-    # pour -- net_islands only reports a net split across >1 fragment, so
-    # GND's absence here IS the merge assertion.
+    # merge: GND's pads must be ONE connected island with the pour (that
+    # is what justified pruning the vias) -- net_islands only reports a
+    # net split across >1 fragment, so GND's absence here IS the merge
+    # assertion.
     islands = {i.net for i in net_islands(model)}
     assert "GND" not in islands, net_islands(model)
 
-    # antipad: GND's own via (the connection) must sit INSIDE the pour;
+    # antipad: GND's own pad (the connection) must sit INSIDE the pour;
     # SIG's foreign-net trace must sit OUTSIDE it (in the hole cut around
     # it) -- both read straight off the pour geometry plane_pours itself
     # produced, the same predicate net_islands uses for pour membership.
     pour = result.pours[0]
     assert pour["net"] == "GND" and pour["layer"] == "F.Cu"
-    gv = gnd_vias[0]
-    assert point_in_pour(pour, gv.x, gv.y), "GND's own via must merge into its pour"
+    assert point_in_pour(pour, 5.0, 15.0), (
+        "GND's own pad must merge into its pour (G1's centre)"
+    )
     sx, sy = sig_tracks[0].segments[0]["start"]
     assert not point_in_pour(pour, sx, sy), (
         "SIG's foreign-net trace must be antipadded out of the GND pour"
@@ -1877,13 +1885,14 @@ def _octile_staircase(
     return pts
 
 
-def test_collapse_straight_reduces_an_octile_staircase_to_the_true_diagonal():
+def test_collapse_straight_reduces_an_octile_staircase_to_the_taut_dogleg():
     """An 11-vertex octile staircase from (0,0) to (10,3) approximates a
-    16.7-degree line — an angle no single A* step on this grid can draw.
-    In free space the taut-string answer is the two endpoints and nothing
-    else, so :func:`_collapse_straight` must find exactly that rather than
-    a 45-degree-limited partial collapse — this is the empirical proof
-    behind :func:`_collapse_straight`'s own docstring claim."""
+    16.7-degree line — an angle no single A* step on this grid can draw,
+    and since 2026-08-31 an angle the collapse itself must not draw
+    either (every wire fully 90/45). The taut OCTILINEAR answer is one
+    45-degree run plus one axis run: endpoints plus the diagonal-first
+    elbow at (3,3) — never the direct arbitrary-angle chord the old pass
+    emitted, and never a partial staircase."""
     from precis.pcb import maze as pcb_maze
     from precis.pcb import realize as pcb_realize
 
@@ -1896,29 +1905,46 @@ def test_collapse_straight_reduces_an_octile_staircase_to_the_true_diagonal():
     grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
     step = spec.pitch / 2.0
     out = pcb_realize._collapse_straight(pts, grid, net_id=0, radius=0.1, step=step)
-    assert out == [(0.0, 0.0, 0), (10.0, 3.0, 0)]
+    assert out == [(0.0, 0.0, 0), (3.0, 3.0, 0), (10.0, 3.0, 0)]
+    for a, b in itertools.pairwise(out):
+        assert pcb_realize._is_octilinear(a, b)
 
 
-def test_collapse_straight_stops_exactly_at_a_real_blocking_obstacle():
+def test_collapse_straight_falls_back_to_the_mirror_elbow_when_blocked():
     """The same staircase, with one foreign-net obstacle sitting on the
-    direct chord: the collapse must still find the longest legal skip on
-    each side of the obstacle, not fall back to every original vertex."""
+    PREFERRED (diagonal-first) elbow path: the collapse must take the
+    mirror (axis-first) elbow rather than fall back to the staircase —
+    and every chord it emits must itself test free, the guarantee this
+    pass exists to preserve."""
     from precis.pcb import maze as pcb_maze
     from precis.pcb import realize as pcb_realize
 
-    pts = _octile_staircase((0.0, 0.0), (10.0, 3.0))
+    # An axis-first octile path (0,0)..(7,0) then (8,1),(9,2),(10,3) —
+    # hand-built rather than `_octile_staircase`, whose diagonal-first
+    # greedy shape COINCIDES with the preferred elbow path and so could
+    # never have the preferred elbow blocked without blocking itself.
+    pts = [(float(x), 0.0, 0) for x in range(8)] + [
+        (8.0, 1.0, 0),
+        (9.0, 2.0, 0),
+        (10.0, 3.0, 0),
+    ]
+    assert len(pts) == 11
     spec = pcb_maze.grid_for(
         [(0.0, 0.0), (10.0, 3.0)], n_layers=1, bounds=(-5.0, -5.0, 20.0, 20.0)
     )
     grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-    grid.stamp_disk((0,), 5.0, 1.5, 0.6, net_id=999)  # foreign copper on the chord
+    # Foreign copper ON the preferred diagonal-first leg (0,0)->(3,3),
+    # clear of both the original path along y=0 and the axis-first
+    # (mirror) elbow path (0,0)->(7,0)->(10,3).
+    grid.stamp_disk((0,), 2.0, 2.0, 0.6, net_id=999)
     step = spec.pitch / 2.0
     out = pcb_realize._collapse_straight(pts, grid, net_id=0, radius=0.1, step=step)
-    assert out == [(0.0, 0.0, 0), (6.0, 3.0, 0), (10.0, 3.0, 0)]
+    assert out == [(0.0, 0.0, 0), (7.0, 0.0, 0), (10.0, 3.0, 0)]
     # every emitted chord must itself test free -- the guarantee this pass
     # exists to preserve, not merely assumed of its own output.
     for a, b in itertools.pairwise(out):
         assert pcb_realize._chord_is_free(grid, a, b, 0, 0.1, step)
+        assert pcb_realize._is_octilinear(a, b)
 
 
 def test_collapse_straight_never_lengthens_a_path():
@@ -2215,3 +2241,427 @@ def test_track_from_run_still_fillets_when_the_budget_is_not_binding():
     assert radius == pytest.approx(1.5 * width, rel=1e-9), (
         "an unconstrained corner must keep the full requested radius"
     )
+
+
+def test_prune_redundant_drop_vias_removes_only_pour_covered_pins():
+    """A dogbone whose pad the top pour covers loses BOTH its stub and
+    its via (the pour is the connection); one whose pad sits outside the
+    pour keeps both. User review 2026-09-01: 'R2 has two superfluous
+    vias' — every top-poured net's pin was getting a drop via the pour
+    made redundant."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    import numpy as np
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.ir import PcbIR
+
+    ir = cast(
+        "PcbIR",
+        SimpleNamespace(
+            stackup=[{"name": "F.Cu"}, {"name": "B.Cu"}],
+            net_name=np.array(["GND"], dtype=object),
+        ),
+    )
+    pours = [
+        {
+            "layer": "F.Cu",
+            "net": "GND",
+            "polygon": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            "holes": [],
+        }
+    ]
+
+    def dogbone(pad, end):
+        return pcb_realize.RealizedTrack(
+            0,
+            0,
+            0,
+            ({"shape": "line", "start": list(pad), "end": list(end)},),
+            1.0,
+            None,
+            0.2,
+            is_dogbone=True,
+        )
+
+    covered = dogbone((5.0, 5.0), (6.0, 5.0))
+    outside = dogbone((20.0, 5.0), (21.0, 5.0))
+    vias = [
+        pcb_realize.RealizedVia(
+            seg_id=0,
+            net_id=0,
+            x=6.0,
+            y=5.0,
+            dia_mm=0.6,
+            drill_mm=0.3,
+            layer_lo=0,
+            layer_hi=1,
+            endpoint="a",
+        ),
+        pcb_realize.RealizedVia(
+            seg_id=0,
+            net_id=0,
+            x=21.0,
+            y=5.0,
+            dia_mm=0.6,
+            drill_mm=0.3,
+            layer_lo=0,
+            layer_hi=1,
+            endpoint="a",
+        ),
+    ]
+    kept_tracks, kept_vias = pcb_realize._prune_redundant_drop_vias(
+        ir, [covered, outside], vias, pours
+    )
+    assert kept_tracks == [outside]
+    assert [(v.x, v.y) for v in kept_vias] == [(21.0, 5.0)]
+
+
+# ── mounting-hole claims + sprinkle spread (round-3 review items 1/4) ────
+
+
+def test_spread_order_first_pass_samples_the_whole_list():
+    from precis.pcb import realize as pcb_realize
+
+    cands = [(float(i), 0.0) for i in range(100)]
+    got = list(pcb_realize._spread_order(cands, 10))
+    # every candidate is still visited exactly once …
+    assert sorted(got) == cands
+    # … and the first cap-sized slice strides the WHOLE list rather than
+    # clustering at the head (the measured bottom-rows defect).
+    first = [int(x) for x, _ in got[:10]]
+    assert first == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
+
+
+def test_spread_order_passthrough_when_under_cap():
+    from precis.pcb import realize as pcb_realize
+
+    cands = [(1.0, 1.0), (2.0, 2.0)]
+    assert list(pcb_realize._spread_order(cands, 10)) == cands
+
+
+def test_claim_mounting_holes_blocks_every_layer_and_the_via_keepout():
+    from types import SimpleNamespace
+    from typing import cast
+
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.ir import MountingHole, PcbIR
+
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=100, ny=100, n_layers=4)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+    ir = cast(
+        "PcbIR",
+        SimpleNamespace(
+            mounting_holes=(
+                MountingHole(x=5.0, y=5.0, drill_mm=2.0, ring_dia_mm=3.0, plated=True),
+            ),
+            n_nets=3,
+            n_pins=7,
+        ),
+    )
+    pcb_realize._claim_mounting_holes(grid, ir)
+    ix, iy = spec.to_cell(5.0, 5.0)
+    sentinel = 3 + 7 + pcb_realize._MOUNTING_HOLE_NET_OFFSET
+    # a drilled hole exists on EVERY layer, not just the pad layer
+    for layer in range(4):
+        assert grid.owner[layer, iy, ix] == sentinel
+    # and the ring is a pad-class keep-out: a via may not land inside it
+    assert not grid.via_clears_pads(5.0, 5.0, 0.3)
+    assert grid.via_clears_pads(5.0 + 3.0, 5.0 + 3.0, 0.3)
+
+
+def test_claim_fiducial_keepouts_owns_cells_on_every_layer():
+    """A render-time fiducial is now a whole-stack copper feature
+    (:func:`precis.pcb.silk.build_fiducials`), so the router's pre-claim
+    of its candidate sites must reserve every layer too -- same
+    discipline, and the same `_claim_mounting_holes` precedent right
+    above, as this function's own docstring now says. Without this, a
+    track legally routed on an inner layer or B.Cu could still cross a
+    corner the mint later flashes copper onto there."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb import silk as pcb_silk
+    from precis.pcb.ir import from_graph
+
+    outline = [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]]
+    ir = from_graph(
+        {"instances": [], "nets": []}, stackup=DEFAULT_STACKUP, outline=outline
+    )
+
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.5, nx=140, ny=100, n_layers=4)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+    pcb_realize._claim_fiducial_keepouts(grid, ir)
+
+    sites = pcb_silk.fiducial_candidate_sites(outline, ir=ir)
+    assert sites  # the candidate superset is never empty on a real board
+    fx, fy = sites[0][1]
+    ix, iy = spec.to_cell(fx, fy)
+    # every layer the grid carries owns this cell -- not just PAD_LAYER.
+    for layer in range(spec.n_layers):
+        assert grid.owner[layer, iy, ix] != pcb_maze.FREE
+    # and it is a pad-class keep-out on every layer: a via may not land
+    # inside a fiducial's mask opening.
+    assert not grid.via_clears_pads(fx, fy, 0.05)
+
+
+def test_mounting_hole_blockers_are_every_layer_foreign_net_fakes():
+    from types import SimpleNamespace
+    from typing import cast
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.ir import MountingHole, PcbIR
+
+    ir = cast(
+        "PcbIR",
+        SimpleNamespace(
+            mounting_holes=(
+                MountingHole(x=4.0, y=4.0, drill_mm=4.3),
+                MountingHole(x=6.0, y=6.0, drill_mm=5.6, ring_dia_mm=8.0, plated=True),
+                MountingHole(x=0.0, y=0.0, drill_mm=0.0),  # degenerate: skipped
+            )
+        ),
+    )
+    layers = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+    blockers = pcb_realize._mounting_hole_blockers(ir, layers)
+    assert [(b["x"], b["y"], b["dia_mm"]) for b in blockers] == [
+        (4.0, 4.0, 4.3),
+        (6.0, 6.0, 8.0),  # the RING is the copper other nets owe clearance to
+    ]
+    for b in blockers:
+        assert b["ctype"] == "via"
+        assert b["net"] == ""  # never equals a pour's net -> always antipadded
+        assert b["layers"] == layers
+
+
+# ── courtyard ink avoidance (round-4 silk review, item 8 residue) ────────
+
+
+def _tiny_square_ring(
+    cx: float, cy: float, half: float = 0.05
+) -> list[tuple[float, float]]:
+    """A small, closed square ring centred on ``(cx, cy)`` — just big
+    enough that :meth:`~precis.pcb.realize._InkField.clips` fires for a
+    via centred exactly there, small enough that it does not reach a
+    neighbouring candidate site in these fixtures."""
+    return [
+        (cx - half, cy - half),
+        (cx + half, cy - half),
+        (cx + half, cy + half),
+        (cx - half, cy + half),
+        (cx - half, cy - half),
+    ]
+
+
+def test_courtyard_ink_field_builds_rings_for_placed_instances_and_empty_for_none():
+    """gr — round-4 review residue: vias still clipped courtyard silk near
+    U1/C5 (motor board) and D4 (nano board) after round-3's furniture-only
+    avoidance. :func:`~precis.pcb.realize._courtyard_ink_field` is the
+    route-independent ink field the via-placement sites below now defer
+    to. A pinless (no net membership) or unplaced instance contributes no
+    ink -- there is no land pattern, and an IR with no instances at all
+    contributes none either."""
+    from precis.pcb import realize as pcb_realize
+
+    graph = {
+        "instances": [{"refdes": "U1", "x": 5.0, "y": 5.0}],
+        "nets": [
+            {
+                "name": "N1",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    cap = capability_for("4layer")
+    field = pcb_realize._courtyard_ink_field(ir, cap)
+    assert field.segments, "a placed, pinned instance must contribute ink segments"
+    # A coarse sanity bound on where the ring sits, not an exact-shape
+    # assertion -- the courtyard polygon's own shape is
+    # `instance_courtyard_polygon`'s contract, pinned elsewhere.
+    for ax, ay, bx, by, *_bbox in field.segments:
+        assert math.hypot(ax - 5.0, ay - 5.0) < 5.0
+        assert math.hypot(bx - 5.0, by - 5.0) < 5.0
+
+    empty_ir = from_graph({"instances": [], "nets": []}, stackup=DEFAULT_STACKUP)
+    assert pcb_realize._courtyard_ink_field(empty_ir, cap).segments == ()
+
+
+def test_drop_via_site_prefers_ink_free_and_falls_back_to_inked_when_none_exists():
+    """gr — the plane drop via is the round-4 review's primary offender
+    (THT/plane-heavy U1/C5/D4): among every legal candidate
+    :func:`~precis.pcb.realize._drop_via_site` tries, in its existing
+    near-to-far sweep order, it must prefer one whose annulus does not
+    touch courtyard ink -- but a via that must sit under ink still beats
+    an unrouted net, so with every candidate inked it returns the same
+    site the un-aware search would have (never ``None``)."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.rules import NetRules
+
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=400, ny=400, n_layers=2)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+    rules = NetRules(
+        track_width_mm=0.2, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
+    )
+    config = RealizeConfig()
+    pad = (20.0, 20.0)
+    direction = (1.0, 0.0)
+    pad_radius_mm = 0.3
+    assert rules.via_dia_mm is not None
+    via_radius_mm = rules.via_dia_mm / 2.0
+
+    baseline = pcb_realize._drop_via_site(
+        grid, pad, direction, 0, rules, config, range(0, 1), pad_radius_mm, []
+    )
+    assert baseline is not None
+
+    spot_field = pcb_realize._ink_field_from_rings([_tiny_square_ring(*baseline)])
+    # Sanity: the baseline site really does sit under this ink.
+    assert spot_field.clips(baseline[0], baseline[1], via_radius_mm)
+
+    diverted = pcb_realize._drop_via_site(
+        grid,
+        pad,
+        direction,
+        0,
+        rules,
+        config,
+        range(0, 1),
+        pad_radius_mm,
+        [],
+        ink_field=spot_field,
+    )
+    assert diverted is not None
+    assert diverted != baseline, "an ink-free candidate exists and must be preferred"
+    assert not spot_field.clips(diverted[0], diverted[1], via_radius_mm)
+
+    # Blanket EVERY candidate the sweep could ever try -- no legal site is
+    # ink-free anywhere in the whole search.
+    ux, uy = direction
+    base = round(math.atan2(uy, ux) / (math.pi / 4.0)) % 8
+    base_reach = max(
+        config.dogbone_stub_mm, pad_radius_mm + via_radius_mm + grid.clearance_mm
+    )
+    blanket_rings = []
+    for search_step in range(1, pcb_realize._DROP_SEARCH_STEPS + 1):
+        reach = base_reach * search_step
+        for offset in pcb_realize._DROP_SEARCH_OFFSETS:
+            vx, vy = pcb_realize._OCTO_DIRS[(base + offset) % 8]
+            blanket_rings.append(
+                _tiny_square_ring(pad[0] + vx * reach, pad[1] + vy * reach)
+            )
+    blanket_field = pcb_realize._ink_field_from_rings(blanket_rings)
+    fallback = pcb_realize._drop_via_site(
+        grid,
+        pad,
+        direction,
+        0,
+        rules,
+        config,
+        range(0, 1),
+        pad_radius_mm,
+        [],
+        ink_field=blanket_field,
+    )
+    assert fallback == baseline, (
+        "with every candidate inked, the search must still return the "
+        "first legal one rather than failing the net",
+        fallback,
+        baseline,
+    )
+
+
+def test_shove_vias_moves_a_via_out_from_under_ink_when_a_free_candidate_exists():
+    """gr — round-4 review: a via transition sitting under courtyard ink
+    must become a shove candidate even though the path either side of it
+    is already perfectly straight (so :func:`_octilinear_shove_target`'s
+    strictly-shortening search alone would never touch it, module note
+    ahead of :func:`~precis.pcb.realize._courtyard_ink_field`)."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+
+    # A SHORT span, deliberately: the nearest off-axis octilinear ray
+    # intersection between two fixed endpoints L apart sits at height
+    # L/2 above their midpoint, so it only falls inside `shove_radius_mm`
+    # when L is small relative to it -- a wide span (e.g. 10mm at a 1mm
+    # radius) offers this pass NO candidate at all to move to, ink or not.
+    pts = [(0.0, 0.0, 0), (1.0, 0.0, 0), (1.0, 0.0, 1), (2.0, 0.0, 1)]
+    spec = pcb_maze.GridSpec(x0=-5.0, y0=-5.0, pitch=0.05, nx=400, ny=400, n_layers=2)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
+    via_group_extent_mm = 0.3
+    shove_radius_mm = 2.0
+    chord_radius_mm = 0.1
+    step = spec.pitch / 2.0
+    via_r = via_group_extent_mm / 2.0
+
+    # Baseline: no ink, path already taut on both flanks -> no move helps.
+    _out, moved = pcb_realize._shove_vias(
+        pts, grid, 0, via_group_extent_mm, shove_radius_mm, chord_radius_mm, step
+    )
+    assert not moved, "an already-taut via with no ink must not move"
+
+    spot_field = pcb_realize._ink_field_from_rings([_tiny_square_ring(1.0, 0.0)])
+    assert spot_field.clips(1.0, 0.0, via_r)
+
+    out, moved = pcb_realize._shove_vias(
+        pts,
+        grid,
+        0,
+        via_group_extent_mm,
+        shove_radius_mm,
+        chord_radius_mm,
+        step,
+        ink_field=spot_field,
+    )
+    assert moved, "an ink-free candidate exists and the via must move to it"
+    new_x, new_y, _lo = out[1]
+    _nx2, _ny2, _hi = out[2]
+    assert (new_x, new_y) == (_nx2, _ny2), "both layer anchors move together"
+    assert (new_x, new_y) != (1.0, 0.0)
+    assert not spot_field.clips(new_x, new_y, via_r)
+    # untouched otherwise: the outer, non-via points are exactly as given.
+    assert out[0] == pts[0] and out[3] == pts[3]
+
+
+def test_shove_vias_leaves_an_inked_via_alone_when_no_free_candidate_exists():
+    """The same fixture as the test above, but every candidate the shove
+    could ever move to is ALSO under ink -- moving there would not fix
+    anything and is not itself a shortening move, so the via must be left
+    exactly where the search put it, not relocated to another inked
+    spot."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+
+    pts = [(0.0, 0.0, 0), (1.0, 0.0, 0), (1.0, 0.0, 1), (2.0, 0.0, 1)]
+    spec = pcb_maze.GridSpec(x0=-5.0, y0=-5.0, pitch=0.05, nx=400, ny=400, n_layers=2)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
+    via_group_extent_mm = 0.3
+    shove_radius_mm = 2.0
+    chord_radius_mm = 0.1
+    step = spec.pitch / 2.0
+
+    candidates = pcb_realize._octilinear_shove_candidates(
+        (0.0, 0.0), (2.0, 0.0), (1.0, 0.0), shove_radius_mm, allow_no_gain=True
+    )
+    assert candidates, "fixture must actually offer shove candidates"
+    blanket_rings = [_tiny_square_ring(1.0, 0.0)] + [
+        _tiny_square_ring(cx, cy) for cx, cy in candidates
+    ]
+    blanket_field = pcb_realize._ink_field_from_rings(blanket_rings)
+
+    out, moved = pcb_realize._shove_vias(
+        pts,
+        grid,
+        0,
+        via_group_extent_mm,
+        shove_radius_mm,
+        chord_radius_mm,
+        step,
+        ink_field=blanket_field,
+    )
+    assert not moved
+    assert out == pts

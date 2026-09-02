@@ -54,7 +54,19 @@ FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "esp32c3_reference.json"
 #: the picture SHOWS without changing what it PROVES.
 _BOARD_MM = 40.0
 
-_SEED = 1
+#: Asserted over EVERY seed (worst-case), one parametrized test each —
+#: same rationale as ``tests/test_pcb_reference_end_to_end.py``'s
+#: ``SEEDS``: a single pinned seed measures one lottery draw of the
+#: anneal, and on THIS deliberately over-packed board the draw-to-draw
+#: variance is highest, which is exactly where a single-seed waiver
+#: invites constant-nudging.
+SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5)
+
+#: ``PRECIS_PCB_RENDER_OUT`` writes one board, not five — by default the
+#: first seed's, so the kept artifact stays comparable run to run;
+#: ``PRECIS_PCB_RENDER_SEED`` overrides which draw gets written (e.g. seed
+#: 2, the ledger's clean draw, for a best-case picture).
+_RENDER_SEED = int(os.environ.get("PRECIS_PCB_RENDER_SEED", str(SEEDS[0])))
 
 #: **57 errors down to 2, over 2026-08-30.** This board is deliberately
 #: too small for its own parts — ~44mm of parts on a 40mm outline — so it
@@ -172,8 +184,69 @@ _SEED = 1
 #:
 #: A new rule, or more of an existing one, still fails — a rule absent
 #: from this mapping is allowed zero.
-KNOWN_OPEN_DRC_ERRORS: dict[str, int] = {
-    "silk_missing": 1,
+#: 8. **2026-08-31 — the waiver became a PER-SEED ledger** when this test
+#:    started asserting over ``SEEDS`` instead of one pinned draw. The
+#:    scalar form's history above still governs: every count may only go
+#:    DOWN, a rule absent from a seed's entry is allowed ZERO, and no
+#:    entry may be raised (or added) to green a red run without a
+#:    written-out reason of the rotation-gate standard. The entries below
+#:    are not regressions — they are the first honest measurement of
+#:    draw-to-draw variance on a board that is deliberately too small
+#:    (~44mm of parts on 40mm), taken the day multi-seed assertion
+#:    landed:
+#:
+#:    - **Seed 2 was CLEAN — every rule zero** — proving the engine can
+#:      fully resolve even this over-packed board on some draws; a clean
+#:      seed's empty entry is the standard the others are measured
+#:      against (seeds 4 and 5 hold it in the current ledger).
+#:    - Seed 3's ``clearance`` (at 0.000mm) + ``via_pad_keepout`` were
+#:      the one entry class that is a GUARANTEE HOLE, not capacity:
+#:      copper reached the board without claiming its corridor.
+#:    - ``unrouted``/``connectivity`` entries are the plane stitcher and
+#:      router honestly reporting what they provably cannot close on
+#:      that draw (no spare layer, no pour-free corridor); the
+#:      capacity-limit answer on a stress board.
+#:    - ``silk_missing`` counts ride the same congestion, and every
+#:      nonzero seed includes the known dot-suppression coupling — each
+#:      dropped courtyard also silences its pin-1 dot
+#:      (``docs/backlog/pcb-courtyard-polygon.md``'s open pin-1 item).
+#:
+#: 9. **2026-08-31 (later) — the guarantee hole is CLOSED and the ledger
+#:    re-pinned under the octilinear engine.** Root cause of item 8's
+#:    clearance/via_pad_keepout family: render-time FIDUCIALS were never
+#:    claimed on the routing grid (they are minted by the handler AFTER
+#:    routing), so a legal route could cross the corner the mint later
+#:    landed on. ``realize._claim_fiducial_keepouts`` now pre-claims the
+#:    obstacle-independent candidate superset
+#:    (``silk.fiducial_candidate_sites``) before any pad/track claim —
+#:    ``clearance`` and ``via_pad_keepout`` are ZERO on every seed and
+#:    may never be waived again. The same session made routing fully
+#:    octilinear (every emitter 90/45 + the ``octilinear`` DRC rule) and
+#:    re-drew every seed, so the capacity entries re-rolled: seeds 4/5
+#:    came back fully clean, seed 1 keeps one dropped silk, seed 3 two,
+#:    and seed 2's draw now leaves BOOT and SDA unrouted — the honest
+#:    re-measurement, entered the day the engine changed, not a
+#:    quiet raise.
+#:
+#: 10. **2026-09-01 — re-measured again** after the alignment cost term
+#:    (``cost.CostConfig.alignment_usd_per_pair``, tuned DOWN from 0.01
+#:    to 0.002 the same day when the stronger value steered a reference
+#:    seed unroutable), the per-courtyard fiducial candidate filter, the
+#:    pour-rim edge inset fix, and the redundant-drop-via prune. Item
+#:    9's entries all RESOLVED — seeds 1-4 are fully clean — and seed
+#:    5's new draw leaves EN congested (1 connectivity + 1 unrouted),
+#:    the lone capacity entry on a board that is deliberately too small.
+#:
+#:    The natural-size acceptance fixture
+#:    (``tests/test_pcb_reference_end_to_end.py``) holds hard ZEROS on
+#:    all five seeds — that is where the engine's quality claim lives;
+#:    this ledger is where its variance is recorded.
+KNOWN_OPEN_DRC_ERRORS: dict[int, dict[str, int]] = {
+    1: {},
+    2: {},
+    3: {},
+    4: {},
+    5: {"connectivity": 1, "unrouted": 1},
 }
 
 #: The films this board must produce with geometry on them. Listed
@@ -181,10 +254,14 @@ KNOWN_OPEN_DRC_ERRORS: dict[str, int] = {
 #: asks the exporter what it exports cannot notice the exporter forgetting
 #: something.
 #:
-#: ``B_Mask``/``B_Paste``/``B_Silkscreen`` are deliberately absent: every
-#: part on this fixture is top-side, so those films are legitimately empty
-#: and requiring geometry on them would assert a fiction. That they are
-#: *written at all* is covered by ``tests/test_pcb_fab_export.py``.
+#: ``B_Paste``/``B_Silkscreen`` are deliberately absent: every part on
+#: this fixture is top-side, so those films are legitimately empty and
+#: requiring geometry on them would assert a fiction. ``B_Mask`` is NOT
+#: in that set — board fiducials span the whole stack (round 4), so the
+#: bottom mask legitimately opens at each fiducial even on an all-top
+#: board — but this tuple only lists layers asserted non-empty, so it
+#: stays unlisted here. That every film is *written at all* is covered
+#: by ``tests/test_pcb_fab_export.py``.
 _EXPECTED_LAYERS = (
     "F_Cu",
     "In1_Cu",
@@ -208,8 +285,9 @@ def _drain_one_job(store: Store) -> None:
     assert result["failed"] == 0, f"job failed to drain cleanly: {result}"
 
 
+@pytest.mark.parametrize("seed", SEEDS)
 def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
-    store: Store,
+    store: Store, seed: int
 ) -> None:
     with FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = copy.deepcopy(json.load(fh))
@@ -286,18 +364,18 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     pcb.put(id="fabrender", args={"op": "plane_net", "layer": "B.Cu", "net": "VCC3V3"})
 
     assert (
-        "enqueued" in pcb.put(id="fabrender", args={"op": "place", "seed": _SEED}).body
+        "enqueued" in pcb.put(id="fabrender", args={"op": "place", "seed": seed}).body
     )
     _drain_one_job(store)
     assert (
-        "enqueued" in pcb.put(id="fabrender", args={"op": "route", "seed": _SEED}).body
+        "enqueued" in pcb.put(id="fabrender", args={"op": "route", "seed": seed}).body
     )
     _drain_one_job(store)
 
     svg = pcb.get(id="fabrender", view="svg", args={"level": "fab"}).body
 
     out = os.environ.get("PRECIS_PCB_RENDER_OUT")
-    if out:
+    if out and seed == _RENDER_SEED:
         Path(out).write_text(svg, encoding="utf-8")
 
     # **The board this renders must be a board, not just a picture.**
@@ -307,10 +385,11 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     # to a human as a deliverable implies the board behind it is sound, so
     # assert that here rather than letting the picture speak for it.
     #
-    # As of 2026-08-30 the claim is UNWAIVED: `KNOWN_OPEN_DRC_ERRORS` is
-    # empty, so any error of any rule fails here. See that mapping's own
-    # docstring for the ledger of what each retired entry was and how it
-    # was closed — an empty waiver cannot explain itself.
+    # Waived per SEED since 2026-08-31: `KNOWN_OPEN_DRC_ERRORS[seed]` is
+    # this draw's known-open ledger entry (seed 2's is empty — fully
+    # clean), and a rule absent from it is allowed zero. See that
+    # mapping's own docstring for the full retired-and-open ledger — a
+    # waiver cannot explain itself.
     #
     # Declaring a plane is what exercises the pour path, and it is also
     # what exposes the fan-out defects, so this assertion belongs on
@@ -337,10 +416,11 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     by_rule = collections.Counter(str(f["rule"]) for f in errors)
     # Compare per RULE against the waiver, never a total: a summed budget
     # lets a fixed defect pay for a new one silently.
+    waiver = KNOWN_OPEN_DRC_ERRORS.get(seed, {})
     over_budget = {
-        rule: (n, KNOWN_OPEN_DRC_ERRORS.get(rule, 0))
+        rule: (n, waiver.get(rule, 0))
         for rule, n in by_rule.items()
-        if n > KNOWN_OPEN_DRC_ERRORS.get(rule, 0)
+        if n > waiver.get(rule, 0)
     }
     # Report the OFFENDING findings with their objects, not the first six of
     # whatever the board produced. A message that names a rule and a count
@@ -356,8 +436,8 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     assert not over_budget, (
         f"DRC error(s) beyond the known-open waiver: "
         f"{ {r: f'{got} > {allowed}' for r, (got, allowed) in over_budget.items()} }"
-        f"\nfull tally: {dict(by_rule)}\nsee KNOWN_OPEN_DRC_ERRORS -- a rule "
-        f"absent from it is allowed ZERO\n{detail}"
+        f"\nfull tally: {dict(by_rule)}\nsee KNOWN_OPEN_DRC_ERRORS[{seed}] -- a "
+        f"rule absent from this seed's entry is allowed ZERO\n{detail}"
     )
 
     groups = {name: body for name, body in _GROUP_RE.findall(svg)}

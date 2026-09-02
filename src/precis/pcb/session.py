@@ -34,6 +34,7 @@ import hashlib
 import json
 from typing import Any
 
+from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 
 
@@ -64,28 +65,95 @@ def outline_from_features(features: list[dict[str, Any]]) -> list[list[float]] |
     imports optimize/cost/drc" boundary, which extends to not importing
     the handler layer either). ``build_ir``'s own caller is responsible
     for fetching ``features`` (this module has no store handle of its
-    own, by design)."""
+    own, by design).
+
+    ``geom.corner_radius_mm`` is honoured here exactly as the handler
+    mirror honours it (fillet + polygonize via :func:`precis.pcb.geom.
+    rounded_polygon`) — the two extractions drifting on the radius would
+    hand the router a SHARP outline for a board every render draws
+    rounded, i.e. copper poured into corners the fab mills away."""
     for f in features:
         geom = f.get("geom") or {}
         if str(f.get("ftype") or "") == "outline" and isinstance(
             geom.get("path"), list
         ):
-            return [[float(p[0]), float(p[1])] for p in geom["path"]]
+            path = [[float(p[0]), float(p[1])] for p in geom["path"]]
+            radius = geom.get("corner_radius_mm")
+            if radius is not None and float(radius) > 0:
+                ring: list[pcb_geom.Point] = [(p[0], p[1]) for p in path]
+                return [
+                    [p[0], p[1]] for p in pcb_geom.rounded_polygon(ring, float(radius))
+                ]
+            return path
     return None
 
 
+def mounting_holes_from_features(
+    features: list[dict[str, Any]],
+) -> tuple[pcb_ir.MountingHole, ...]:
+    """Every ``ftype='mounting_hole'`` feature as a
+    :class:`~precis.pcb.ir.MountingHole` — the board-config companion to
+    :func:`outline_from_features`, and carried onto the IR for the same
+    reason the outline is: a hole only the handler's feature list knows
+    about is one the router draws copper through (round-3 review item 4,
+    the ``npth_clearance`` family). ``geom.diameter`` is the drill;
+    optional ``geom.ring_dia_mm`` (+ ``geom.plated``) describe a
+    solder-nut's copper annulus."""
+    out: list[pcb_ir.MountingHole] = []
+    for f in features:
+        if str(f.get("ftype") or "") != "mounting_hole":
+            continue
+        geom = f.get("geom") or {}
+        try:
+            x, y = float(f.get("x", 0.0)), float(f.get("y", 0.0))
+            drill = float(geom.get("diameter") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if drill <= 0.0:
+            continue
+        out.append(
+            pcb_ir.MountingHole(
+                x=x,
+                y=y,
+                drill_mm=drill,
+                ring_dia_mm=float(geom.get("ring_dia_mm") or 0.0),
+                plated=bool(geom.get("plated")),
+            )
+        )
+    return tuple(out)
+
+
 def build_ir(
-    graph: dict[str, Any], *, outline: list[list[float]] | None = None
+    graph: dict[str, Any],
+    *,
+    outline: list[list[float]] | None = None,
+    mounting_holes: tuple[pcb_ir.MountingHole, ...] = (),
 ) -> pcb_ir.PcbIR:
     """Build a fresh L0(+L3) IR from a :meth:`Store.pcb_graph` payload.
     ``outline`` (see :func:`outline_from_features`) is optional — a caller
     with no board-outline feature yet (or one that hasn't been updated to
     fetch it) simply gets an IR whose ``outline`` is ``None``, same as
     today; ``cost.py``'s ``board_edge_clearance`` term and ``optimize.
-    py``'s TRANSLATE clamp both already degrade cleanly for that case."""
+    py``'s TRANSLATE clamp both already degrade cleanly for that case.
+    ``mounting_holes`` (see :func:`mounting_holes_from_features`) rides
+    the same pattern — ``()`` degrades to today's router-blind behavior.
+
+    An instance row in ``graph["instances"]`` may also carry ``"group"``/
+    ``"group_offset"`` (an authored rigid "super footprint") or
+    ``"pattern"``/``"pattern_instance"`` (an auto-derived rigid tile) —
+    parsed straight through by :func:`~precis.pcb.ir.from_graph` (see
+    :func:`precis.pcb.ir._parse_instance_groups`) into
+    :attr:`~precis.pcb.ir.PcbIR.inst_group` and friends; this function has
+    no group-specific logic of its own, it just forwards whatever the
+    graph rows already carry, same as every other per-instance field."""
     board = graph.get("board") or {}
     stackup = board.get("stackup")
-    return pcb_ir.from_graph(sorted_graph(graph), stackup=stackup, outline=outline)
+    return pcb_ir.from_graph(
+        sorted_graph(graph),
+        stackup=stackup,
+        outline=outline,
+        mounting_holes=mounting_holes,
+    )
 
 
 def footprints_by_refdes(
@@ -340,6 +408,7 @@ __all__ = [
     "content_hash",
     "extract_sketch",
     "footprints_by_refdes",
+    "mounting_holes_from_features",
     "outline_from_features",
     "pin_swap_diff",
     "positions",

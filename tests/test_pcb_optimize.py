@@ -11,34 +11,55 @@ contribute cost), SA improving on the constructive seed, the digest's
 per-term/per-region breakdown, and (slice 7) layer assignment, side flip,
 plane promote/demote, and pin swap — including pin swap's admissible-set/
 exclusion contract and its measured crossing reduction.
+
+Also covers rigid groups/patterns end to end against the REAL
+``nano_oc_switch.json`` fixture, built the same way ``pcb_place.py``'s
+job does (:func:`precis.pcb.session.build_ir` + its real outline/holes) —
+see :func:`test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_
+congruent`'s own docstring for the round-3-review defect this exists to
+pin down (four real bugs a synthetic-graph unit test could not see).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
+import math
 import random
+from pathlib import Path
 
 import pytest
 
 from precis.pcb import DEFAULT_STACKUP
-from precis.pcb.cost import CostConfig, evaluate_cost
+from precis.pcb import session as pcb_session
+from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM, CostConfig, evaluate_cost
+from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
 from precis.pcb.ir import (
+    COURTYARD_CLEARANCE_MM,
     Level,
+    MountingHole,
     courtyard_bound_radius_mm,
     from_graph,
+    instance_courtyard_polygons,
     plane_layers_of,
 )
+from precis.pcb.landpattern import place_points, rotate_offset
 from precis.pcb.optimize import (
     MOVE_GENERATORS,
     Move,
     MoveKind,
     OptimizeConfig,
     OptimizeEngine,
+    _hole_keepout_radius_mm,
+    _hole_polygon,
     digest_toon,
     optimize,
+    recentre_in_outline,
     seed_placement,
 )
 from precis.pcb.pinswap import PinSwapGroup, propose_reassignment, total_group_crossings
+
+_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pcb"
 
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
 
@@ -731,6 +752,129 @@ def test_translate_move_falls_back_to_synthetic_square_without_an_outline():
     assert engine._placement_bounds == (0.0, 0.0, engine.board_side, engine.board_side)
 
 
+def test_recentre_in_outline_centers_the_finished_pack():
+    """Regression for the visual-review finding: a board authored
+    somewhat larger than the parts' own footprint must not deliver the
+    pack hugging the outline's min corner. The centring is a POST-anneal
+    rigid translation (:func:`recentre_in_outline`) — the seed itself
+    stays deliberately corner-anchored (see its docstring: a centred seed
+    flipped two reference-fixture seeds to ``no_path``)."""
+    from precis.pcb.ir import (
+        COURTYARD_CLEARANCE_MM,
+        courtyard_bound_radius_mm,
+        instance_courtyard_polygons,
+    )
+    from precis.pcb.optimize import COURTYARD_MIN_SEPARATION_MM
+
+    graph = _board(10, seed=50)
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    seed_placement(ir, random.Random(51))  # no outline: origin-anchored
+    # The SAME part-edge pack bbox recentre_in_outline itself measures.
+    radii = courtyard_bound_radius_mm(
+        instance_courtyard_polygons(
+            ir,
+            clearance_mm=COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+        )
+    )
+    n = ir.n_instances
+    pack_x0 = min(float(ir.inst_x[i]) - float(radii[i]) for i in range(n))
+    pack_x1 = max(float(ir.inst_x[i]) + float(radii[i]) for i in range(n))
+    pack_y0 = min(float(ir.inst_y[i]) - float(radii[i]) for i in range(n))
+    pack_y1 = max(float(ir.inst_y[i]) + float(radii[i]) for i in range(n))
+    w, h = pack_x1 - pack_x0, pack_y1 - pack_y0
+    # A COMMENSURATE outline: 1.4x the pack per axis (area ratio 1.96,
+    # under _RECENTRE_MAX_AREA_RATIO), deliberately offset so centring
+    # must move the pack; the offset stays inside the slack so the clamp
+    # cannot zero the shift.
+    slack_x, slack_y = 0.2 * w, 0.2 * h
+    off_x, off_y = slack_x * 0.5, -slack_y * 0.5
+    ir.outline = [
+        (pack_x0 - slack_x + off_x, pack_y0 - slack_y + off_y),
+        (pack_x1 + slack_x + off_x, pack_y0 - slack_y + off_y),
+        (pack_x1 + slack_x + off_x, pack_y1 + slack_y + off_y),
+        (pack_x0 - slack_x + off_x, pack_y1 + slack_y + off_y),
+    ]
+    dx, dy = recentre_in_outline(ir)
+    assert (dx, dy) != (0.0, 0.0)
+    # The applied shift is exactly the offset (clamp inactive by
+    # construction), so the pack's edge-extent centre now coincides with
+    # the outline centre.
+    assert dx == pytest.approx(off_x, abs=1e-6)
+    assert dy == pytest.approx(off_y, abs=1e-6)
+
+
+def test_recentre_in_outline_skips_a_placeholder_canvas():
+    """An outline an order of magnitude larger than the design (the
+    esp32c3 fixture ships a 300x300 canvas for a ~35mm pack) is not a
+    centring target: the shift would be large enough to perturb routing
+    through the absolute-coordinate board-edge interactions, for zero
+    layout meaning. The area-ratio gate refuses it."""
+    graph = _board(10, seed=50)
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    seed_placement(ir, random.Random(51))
+    ir.outline = [
+        (-500.0, -500.0),
+        (500.0, -500.0),
+        (500.0, 500.0),
+        (-500.0, 500.0),
+    ]
+    before = [(float(x), float(y)) for x, y in zip(ir.inst_x, ir.inst_y, strict=True)]
+    assert recentre_in_outline(ir) == (0.0, 0.0)
+    after = [(float(x), float(y)) for x, y in zip(ir.inst_x, ir.inst_y, strict=True)]
+    assert before == after
+
+
+def test_recentre_in_outline_refuses_when_any_instance_is_locked():
+    """A rigid translation that moved a ``fixed_xy`` part would violate
+    the lock, and translating everyone else would tear the placement --
+    any lock means no shift at all."""
+    graph = _board(6, seed=54, fixed={0: "xy"})
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.outline = [
+        (-500.0, -500.0),
+        (500.0, -500.0),
+        (500.0, 500.0),
+        (-500.0, 500.0),
+    ]
+    seed_placement(ir, random.Random(55))
+    before = [(float(x), float(y)) for x, y in zip(ir.inst_x, ir.inst_y, strict=True)]
+    assert recentre_in_outline(ir) == (0.0, 0.0)
+    after = [(float(x), float(y)) for x, y in zip(ir.inst_x, ir.inst_y, strict=True)]
+    assert before == after
+
+
+def test_derive_placement_bounds_stays_seed_capped_inside_a_huge_outline():
+    """The domain is the seed extent padded by ``board_side`` even when a
+    much larger outline exists — deliberately NOT the full outline bbox.
+    Measured 2026-08-31 (esp32c3 reference, 300x300 placeholder canvas):
+    a full-outline domain let two seeds sprawl parts until a net came
+    back ``no_path``. The outline caps the domain; the seed's own
+    centred, padded extent is what keeps the working area compact and
+    routable (see :meth:`OptimizeEngine._derive_placement_bounds`)."""
+    ir = _seeded_ir(6, graph_seed=52, seed_rng_seed=53)  # tiny blob, no outline yet
+    ir.outline = [
+        (-300.0, -300.0),
+        (300.0, -300.0),
+        (300.0, 300.0),
+        (-300.0, 300.0),
+    ]
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=53))
+    bx0, by0, bx1, by1 = engine._placement_bounds
+    # Strictly inside the inset outline on every side (the cap, not the
+    # canvas)...
+    assert bx0 > -299.5 and by0 > -299.5 and bx1 < 299.5 and by1 < 299.5
+    # ...and exactly the placed extent padded by board_side.
+    import numpy as np
+
+    placed = np.isfinite(ir.inst_x) & np.isfinite(ir.inst_y)
+    pad = engine.board_side
+    assert bx0 == pytest.approx(float(ir.inst_x[placed].min()) - pad)
+    assert by0 == pytest.approx(float(ir.inst_y[placed].min()) - pad)
+    assert bx1 == pytest.approx(float(ir.inst_x[placed].max()) + pad)
+    assert by1 == pytest.approx(float(ir.inst_y[placed].max()) + pad)
+
+
 # ── slice 7: pin swap ─────────────────────────────────────────────────
 def _pin_swap_ir_and_group():
     """Two nets whose airwires obviously cross under the CURRENT pin
@@ -1092,3 +1236,511 @@ def test_plane_promotion_is_not_offered_on_a_board_with_no_outline():
             MOVE_GENERATORS[MoveKind.PLANE_PROMOTE](engine, random.Random(attempt), 5.0)
             is None
         )
+
+
+# ── rigid groups + mounting-hole keepouts (round-3 review item 4 /
+# nano_oc_switch's daughterboard + 4-channel board) ──────────────────────
+
+
+def _group_graph():
+    """A 6-instance chain (``_board``) with the first two turned into an
+    AUTHORED rigid group at the nano fixture's own header pitch (0.6",
+    15.24mm) — J1's offset is the group's own anchor (0, 0), J2 sits
+    15.24mm to its right, mirroring ``tests/fixtures/pcb/
+    nano_oc_switch.json``'s J1/J2. J1 is also rotation-locked, so the pair
+    can TRANSLATE together but never ROTATE — the one thing that would
+    make "the relative offset is unchanged forever" a statistical claim
+    rather than a structural one."""
+    graph = _board(6, seed=50)
+    graph["instances"][0] = {
+        **graph["instances"][0],
+        "group": "nano_hdr",
+        "group_offset": {"x": 0.0, "y": 0.0, "rot": 0.0},
+        "fixed": "rot",
+    }
+    graph["instances"][1] = {
+        **graph["instances"][1],
+        "group": "nano_hdr",
+        "group_offset": {"x": 15.24, "y": 0.0, "rot": 0.0},
+    }
+    return graph
+
+
+def _channel_pattern_graph():
+    """Four congruent 2-instance "channel" tiles (a connector-like part +
+    a passive, netted together so TRANSLATE/ROTATE/SWAP all have a real
+    reason to move them) plus one ungrouped instance — the pattern half
+    of the nano fixture's four identical driver channels, at unit-test
+    scale."""
+    instances = []
+    nets = []
+    for k in range(4):
+        instances.append(
+            {"refdes": f"J{k}", "pattern": "channel", "pattern_instance": k}
+        )
+        instances.append(
+            {"refdes": f"R{k}", "pattern": "channel", "pattern_instance": k}
+        )
+        nets.append(
+            {
+                "name": f"OUT{k}",
+                "members": [
+                    {"refdes": f"J{k}", "pin": "1"},
+                    {"refdes": f"R{k}", "pin": "1"},
+                ],
+            }
+        )
+    instances.append({"refdes": "U0"})
+    return {"instances": instances, "nets": nets}
+
+
+#: Same generous board profile ``_seeded_ir(..., outline=True)`` already
+#: authors for its own PLANE_PROMOTE tests, reused here for a different
+#: reason: without an outline, ``OptimizeEngine``'s no-outline placement
+#: domain is capped at ``board_side`` on every axis regardless of where
+#: the seed actually landed (``_derive_placement_bounds``'s ``ox1 =
+#: self.board_side`` default) — fine for the small, tightly-packed boards
+#: every OTHER fixture in this file seeds, but a rigid group/pattern's
+#: bigger combined footprint can legitimately spread the pack past that
+#: cap, which would then make every TRANSLATE/SWAP candidate illegal by
+#: construction (nowhere legal to land) rather than exercising the
+#: group-aware code this suite is actually testing.
+_WIDE_OUTLINE = [(-200.0, -200.0), (200.0, -200.0), (200.0, 200.0), (-200.0, 200.0)]
+
+
+def _group_ir(seed_rng_seed: int):
+    ir = from_graph(_group_graph(), stackup=DEFAULT_STACKUP)
+    ir.outline = _WIDE_OUTLINE
+    seed_placement(ir, random.Random(seed_rng_seed))
+    return ir
+
+
+def _pattern_ir(seed_rng_seed: int):
+    ir = from_graph(_channel_pattern_graph(), stackup=DEFAULT_STACKUP)
+    ir.outline = _WIDE_OUTLINE
+    seed_placement(ir, random.Random(seed_rng_seed))
+    return ir
+
+
+def test_seed_honors_authored_group_offset_exactly():
+    ir = _group_ir(1)
+    gid = int(ir.inst_group[0])
+    assert gid >= 0 and gid == int(ir.inst_group[1])
+    dx = float(ir.inst_x[1]) - float(ir.inst_x[0])
+    dy = float(ir.inst_y[1]) - float(ir.inst_y[0])
+    assert math.isclose(dx, 15.24, abs_tol=1e-9)
+    assert math.isclose(dy, 0.0, abs_tol=1e-9)
+
+
+def test_short_anneal_preserves_authored_group_offset():
+    """J1/J2's 15.24mm relative offset must survive every ACCEPTED move
+    the anneal makes -- a TRANSLATE moves the whole rigid pair by one
+    shared delta (offset untouched by construction), and ROTATE never
+    reaches this group at all (J1 is rotation-locked, see
+    :func:`_group_graph`), so the relative offset is not merely
+    approximately preserved on average, it is unchanged after every
+    single accepted move."""
+    ir = _group_ir(1)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1, iters=400))
+    engine.anneal(random.Random(2))
+    dx = float(ir.inst_x[1]) - float(ir.inst_x[0])
+    dy = float(ir.inst_y[1]) - float(ir.inst_y[0])
+    assert math.isclose(dx, 15.24, abs_tol=1e-6)
+    assert math.isclose(dy, 0.0, abs_tol=1e-6)
+
+
+def test_swap_never_touches_an_authored_group_with_no_pattern():
+    """A plain authored group (no ``"pattern"``) may never trade anchors
+    with anything -- not another ungrouped instance, not itself, nothing
+    -- since it names no congruent counterpart to trade with (the SWAP
+    docstring note on :class:`~precis.pcb.optimize.Move`)."""
+    ir = _group_ir(3)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    rng = random.Random(4)
+    saw_any_swap = False
+    for _ in range(300):
+        move = MOVE_GENERATORS[MoveKind.SWAP](engine, rng, 5.0)
+        if move is None:
+            continue
+        saw_any_swap = True
+        assert 0 not in move.instances and 1 not in move.instances
+    assert saw_any_swap  # the other 4 ungrouped instances swap freely
+
+
+def _isolated_group_graph():
+    """A single 2-member AUTHORED group with nothing else on the board —
+    isolates TRANSLATE/ROTATE's rigid-body MECHANICS (the thing this test
+    checks) from :meth:`OptimizeEngine._placement_is_legal`'s crowding
+    behaviour, which is a separate, already-covered question (a fresh
+    shelf pack has every tile touching its neighbours at exactly their
+    combined keep-out — see :func:`seed_placement`'s own "legal by
+    construction" docstring — so a busier board makes a group's own
+    legal-proposal odds a matter of local room, not of whether the rigid-
+    body math itself is right)."""
+    return {
+        "instances": [
+            {
+                "refdes": "A",
+                "group": "g",
+                "group_offset": {"x": 0.0, "y": 0.0, "rot": 0.0},
+            },
+            {
+                "refdes": "B",
+                "group": "g",
+                "group_offset": {"x": 5.0, "y": 0.0, "rot": 0.0},
+            },
+        ],
+        "nets": [],
+    }
+
+
+def test_translate_and_rotate_move_a_pattern_tile_as_one_rigid_body():
+    ir = from_graph(_isolated_group_graph(), stackup=DEFAULT_STACKUP)
+    seed_placement(ir, random.Random(5))
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=5))
+    gid = int(ir.inst_group[0])
+    members = engine._group_members[gid]
+    assert members == (0, 1)
+
+    rng = random.Random(6)
+    move = None
+    for _ in range(50):
+        candidate = MOVE_GENERATORS[MoveKind.TRANSLATE](engine, rng, 5.0)
+        if candidate is not None:
+            move = candidate
+            break
+    assert move is not None
+    assert move.instances == members
+    dxs = {round(n[0] - o[0], 9) for o, n in zip(move.old, move.new)}
+    dys = {round(n[1] - o[1], 9) for o, n in zip(move.old, move.new)}
+    assert len(dxs) == 1 and len(dys) == 1  # every member shares ONE delta
+
+    rng = random.Random(7)
+    rmove = None
+    for _ in range(50):
+        candidate = MOVE_GENERATORS[MoveKind.ROTATE](engine, rng, 5.0)
+        if candidate is not None:
+            rmove = candidate
+            break
+    assert rmove is not None
+    assert rmove.instances == members
+    for (ox, oy, orot), (nx, ny, nrot) in zip(rmove.old, rmove.new):
+        assert (nrot - orot) % 360.0 in (90.0, 270.0)
+    # B's offset from A must still be 5mm, just rotated by the SAME step
+    # every member's own rotation advanced by -- the point of a rigid
+    # body: its own internal geometry never changes shape, only pose.
+    (ax, ay, _arot), (bx, by, _brot) = rmove.new
+    assert math.isclose(math.hypot(bx - ax, by - ay), 5.0, abs_tol=1e-9)
+
+
+def test_pattern_tiles_share_internal_layout_after_a_short_anneal():
+    """Every "channel" tile's members must sit at IDENTICAL offsets from
+    their own tile centroid, up to whatever rigid rotation that tile has
+    individually accumulated -- feature 3's whole point ("identical tiles
+    by construction"). Checked twice: right after seeding (pins the
+    tiling STAMP itself down) and again after a short anneal (pins that
+    TRANSLATE/ROTATE/SWAP keep it true, not just the initial stamp)."""
+    ir = _pattern_ir(7)
+
+    tiles_by_idx: dict[int, list[int]] = {}
+    for i in range(ir.n_instances):
+        gid = int(ir.inst_group[i])
+        if gid < 0:
+            continue
+        idx = int(ir.group_pattern_index[gid])
+        tiles_by_idx.setdefault(idx, []).append(i)
+    tiles = [sorted(tiles_by_idx[k]) for k in sorted(tiles_by_idx)]
+    assert len(tiles) == 4
+
+    def _offsets(members: list[int]) -> list[tuple[float, float]]:
+        cx = sum(float(ir.inst_x[m]) for m in members) / len(members)
+        cy = sum(float(ir.inst_y[m]) for m in members) / len(members)
+        return [(float(ir.inst_x[m]) - cx, float(ir.inst_y[m]) - cy) for m in members]
+
+    stamped_offsets = [_offsets(t) for t in tiles]
+    stamped_rot0 = [float(ir.inst_rot[t[0]]) for t in tiles]
+    # Every tile's members already match the leader's layout, right after
+    # the stamp -- and every tile was stamped with the SAME absolute
+    # rotation the leader had (never merely the same RELATIVE one), which
+    # is what makes `stamped_rot0` a shared baseline below.
+    for offs in stamped_offsets[1:]:
+        for (ox, oy), (lx, ly) in zip(offs, stamped_offsets[0]):
+            assert math.isclose(ox, lx, abs_tol=1e-6)
+            assert math.isclose(oy, ly, abs_tol=1e-6)
+    assert len(set(stamped_rot0)) == 1
+
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=7, iters=400))
+    engine.anneal(random.Random(8))
+
+    for k, members in enumerate(tiles):
+        current = _offsets(members)
+        # This tile's own accumulated rotation since the stamp -- every
+        # member of ONE group always advances by the SAME delta in one
+        # move (rigid-body ROTATE), so any member's own rotation drift
+        # names the whole tile's.
+        delta = (float(ir.inst_rot[members[0]]) - stamped_rot0[k]) % 360.0
+        for (cx_, cy_), (sx, sy) in zip(current, stamped_offsets[k]):
+            ux, uy = rotate_offset(cx_, cy_, -delta)
+            assert math.isclose(ux, sx, abs_tol=1e-6)
+            assert math.isclose(uy, sy, abs_tol=1e-6)
+
+
+def test_swap_between_congruent_pattern_tiles_trades_anchors():
+    """A freshly-shelf-packed board has every tile touching its neighbours
+    at exactly their combined keep-out (:func:`seed_placement`'s "legal
+    by construction... adjacent centres are exactly r_i + r_j apart"), so
+    trading two tiles' anchors outright almost always collides with a
+    THIRD, untouched tile still sitting where the pack put it — not a
+    group-swap defect, the identical reason a fresh seed rarely offers a
+    legal plain SWAP either. A short anneal first (which already touches
+    this graph's groups via TRANSLATE/ROTATE, per the OTHER tests in this
+    module) gives the board the same real breathing room a longer run
+    would, then a cross-tile SWAP is easy to find."""
+    ir = _pattern_ir(9)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=9, iters=300))
+    engine.anneal(random.Random(10))
+
+    rng = random.Random(12)
+    found: Move | None = None
+    for _ in range(300):
+        move = MOVE_GENERATORS[MoveKind.SWAP](engine, rng, 5.0)
+        if move is not None and len(move.instances) == 4:
+            found = move
+            break
+    assert found is not None, "expected a cross-tile pattern swap within 300 draws"
+    half = len(found.instances) // 2
+    # Each member's NEW pose is exactly its swap partner's OLD pose --
+    # a straight positional exchange, index-aligned by the same sorted-
+    # instance-id correspondence the tiling stamp established.
+    assert found.new[:half] == found.old[half:]
+    assert found.new[half:] == found.old[:half]
+
+
+# ── mounting-hole keepouts ────────────────────────────────────────────────
+
+
+def test_courtyard_overlapping_a_mounting_hole_is_illegal():
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}], "nets": []},
+        stackup=DEFAULT_STACKUP,
+        mounting_holes=(
+            MountingHole(x=10.0, y=10.0, drill_mm=5.6, ring_dia_mm=8.0, plated=True),
+        ),
+    )
+    # A modest initial pose (NOT the eventual test point) -- this is what
+    # `OptimizeEngine.__init__` derives its no-outline placement domain
+    # from (`_derive_placement_bounds`'s seed-extent-plus-``board_side``
+    # rule), so it has to be somewhere the domain can actually contain
+    # both the on-hole and the far-away point checked below.
+    ir.inst_x[0] = 5.0
+    ir.inst_y[0] = 5.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    assert not engine._placement_is_legal(((0, 10.0, 10.0),))  # dead centre of the hole
+    assert engine._placement_is_legal(((0, 18.0, 18.0),))  # well clear of it
+
+
+def test_short_anneal_on_nano_like_fixture_clears_mounting_hole_overlap():
+    """The user-observed defect: Q3 landing on the top-left M4 solder-nut
+    hole, R1 almost fully under it, C1 clipping it. A seeded part is
+    forced onto a hole (``seed_placement`` doesn't itself avoid holes --
+    see that function's own docstring for why: legality + this graded
+    pressure are the backstop, not the seed), then a short anneal must
+    leave the WHOLE board -- every instance, against every neighbour AND
+    every hole -- legal."""
+    graph = _board(10, seed=60)
+    holes = (
+        MountingHole(x=6.0, y=6.0, drill_mm=5.6, ring_dia_mm=8.0, plated=True),
+        MountingHole(x=56.0, y=6.0, drill_mm=5.6, ring_dia_mm=8.0, plated=True),
+    )
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, mounting_holes=holes)
+    ir.outline = _WIDE_OUTLINE
+    seed_placement(ir, random.Random(61))
+    ir.inst_x[0] = holes[0].x
+    ir.inst_y[0] = holes[0].y
+
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=61, iters=1500))
+    engine.anneal(random.Random(62))
+
+    proposals = [
+        (i, float(ir.inst_x[i]), float(ir.inst_y[i])) for i in range(ir.n_instances)
+    ]
+    assert engine._placement_is_legal(proposals)
+
+
+# ── real-pipeline regression: the nano fixture's group/pattern machinery,
+# through the SAME session.build_ir() entry pcb_place.py's job uses ──────
+
+
+def _nano_fixture_graph() -> tuple[
+    dict, list[list[float]] | None, tuple[MountingHole, ...]
+]:
+    """The nano fixture's ``components``/``nets``/``connections``/
+    ``features`` create-op shape (as authored — see ``tests/fixtures/pcb/
+    nano_oc_switch.json``), converted into the ``{"instances": [...],
+    "nets": [...]}`` graph shape :func:`~precis.pcb.session.build_ir`
+    consumes -- the SAME shape :meth:`~precis.store.Store.pcb_graph`
+    hoists group/pattern fields onto (pinned by ``tests/test_pcb_handler.
+    py::test_pcb_graph_round_trips_group_and_pattern_fields``), built
+    here without a DB so this stays a fast, no-DB unit test. Every
+    instance-level key ``from_graph`` reads (``label``, ``group``,
+    ``group_offset``, ``pattern``, ``pattern_instance``) is carried
+    through verbatim; ``x``/``y``/``rot``/``fixed``/``part_lcsc`` are
+    simply absent (matching an unplaced design), and nets are rebuilt
+    from ``connections`` grouped by net name."""
+    path = _FIXTURE_DIR / "nano_oc_switch.json"
+    with path.open(encoding="utf-8") as fh:
+        design = json.load(fh)
+
+    instances = []
+    for c in design["components"]:
+        inst: dict = {"refdes": c["refdes"], "label": c.get("label")}
+        for key in ("group", "group_offset", "pattern", "pattern_instance"):
+            if key in c:
+                inst[key] = c[key]
+        instances.append(inst)
+
+    members_by_net: dict[str, list[dict[str, str]]] = {}
+    for conn in design["connections"]:
+        members_by_net.setdefault(conn["net"], []).append(
+            {"refdes": conn["refdes"], "pin": conn["pin"]}
+        )
+    nets = [
+        {"name": name, "members": members} for name, members in members_by_net.items()
+    ]
+    graph = {"instances": instances, "nets": nets}
+
+    features = design.get("features") or []
+    outline = pcb_session.outline_from_features(features)
+    holes = pcb_session.mounting_holes_from_features(features)
+    return graph, outline, holes
+
+
+def test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_congruent():
+    """Regression test for a real, round-3-review defect (2026-09):
+    wiring the create->graph DB path to persist+hoist ``group``/
+    ``group_offset``/``pattern``/``pattern_instance`` (``tests/
+    test_pcb_handler.py::test_pcb_graph_round_trips_group_and_pattern_
+    fields``) activated this module's group/pattern parsing against a
+    REAL design for the first time, and the real ``nano_oc_switch.json``
+    render (4 identical "channel" pattern tiles + one authored 2-header
+    "super footprint", a real 62x46mm rounded-corner outline, 4 real
+    mounting holes) came back with FOUR real bugs none of the earlier,
+    synthetic-graph tests in this module could see:
+
+    1. Several pattern tiles seeded (and stayed FROZEN through the whole
+       anneal) tens of millimetres off-board — root cause:
+       ``_cluster_instances`` has no notion of "pattern" membership, so a
+       tile's own netlist-connected members landed in unrelated
+       clusters; :func:`~precis.pcb.optimize._merge_pattern_clusters` +
+       :func:`~precis.pcb.optimize._compact_pattern_leaders` close it.
+    2. J1/J2 rendered end-to-end (one long column) instead of two
+       parallel rows — the FIXTURE authored the group_offset along the
+       header's own pin-row axis instead of perpendicular to it (fixed
+       in the fixture itself, not the engine).
+    3. Parts still sitting ON a mounting hole — a downstream symptom of
+       (1): a frozen tile can never respond to the graded hole-clearance
+       pressure either.
+    4. A rigid group whose members have DIFFERENT keep-out radii could
+       find literally ZERO legal TRANSLATE/ROTATE proposals forever: the
+       shared delta was clamped against only the PICKED member's own
+       ``bounds_for``, which could still walk a BIGGER group-mate out of
+       ITS OWN (tighter) domain --
+       :func:`~precis.pcb.optimize._gen_translate` now clamps to the
+       INTERSECTION of every member's domain, sampling UNIFORMLY across
+       a corridor too wide for a normal step to explore
+       (:func:`~precis.pcb.optimize._sample_delta_1d`) so a single
+       reachable-but-blocked corner cannot freeze a tile forever.
+
+    Built the SAME way ``pcb_place.py``'s own job builds it
+    (:func:`~precis.pcb.session.build_ir` with the fixture's real
+    outline/mounting holes, see :func:`_nano_fixture_graph`), then a
+    REAL seed + anneal (not a hand-picked move sequence) — so any of
+    the four defects above reappearing fails this test directly.
+    """
+    graph, outline, holes = _nano_fixture_graph()
+    ir = pcb_session.build_ir(graph, outline=outline, mounting_holes=holes)
+    assert ir.outline is not None and len(ir.outline) >= 3
+    assert len(ir.mounting_holes) == 4
+    assert ir.n_groups == 5  # 4 "channel" pattern tiles + 1 authored "nano_hdr" group
+
+    optimize(ir, OptimizeConfig(iters=2000, seed=1))
+
+    # (a) every instance's courtyard sits FULLY inside the true outline
+    # polygon (not just its bounding box -- a rounded-corner outline has
+    # slivers a bbox check would miss).
+    local_polys = instance_courtyard_polygons(
+        ir,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )
+    world_polys = [
+        place_points(
+            local_polys[i],
+            cx=float(ir.inst_x[i]),
+            cy=float(ir.inst_y[i]),
+            rot_deg=float(ir.inst_rot[i]),
+        )
+        for i in range(ir.n_instances)
+    ]
+    for i, poly in enumerate(world_polys):
+        for pt in poly:
+            assert point_in_polygon(pt, ir.outline), (
+                f"{ir.instance_refdes[i]}'s courtyard reaches {pt}, "
+                "outside the board outline"
+            )
+
+    # (b) no courtyard overlaps a mounting hole
+    for i, poly in enumerate(world_polys):
+        for hole in ir.mounting_holes:
+            hole_poly = _hole_polygon(hole.x, hole.y, _hole_keepout_radius_mm(hole))
+            assert not convex_polygons_overlap(poly, hole_poly), (
+                f"{ir.instance_refdes[i]}'s courtyard overlaps the mounting "
+                f"hole at ({hole.x}, {hole.y})"
+            )
+
+    # (c) J1/J2: still EXACTLY the fixture's own authored group_offset
+    # (0, 15.24) once the world-space delta is rotated back by J1's own
+    # rotation into J1's frame -- not merely "15.24mm apart at SOME
+    # angle" -- and PARALLEL (same rotation), never end-to-end. The
+    # offset is deliberately PERPENDICULAR to a 1x15 header's own pin
+    # row (which runs along local X, `landpattern._single_row`) so two
+    # rows land side by side rather than nose-to-tail — see the fixture's
+    # own ``group_offset`` and this test's module docstring, defect 2.
+    j1 = next(i for i in range(ir.n_instances) if str(ir.instance_refdes[i]) == "J1")
+    j2 = next(i for i in range(ir.n_instances) if str(ir.instance_refdes[i]) == "J2")
+    assert math.isclose(float(ir.inst_rot[j1]), float(ir.inst_rot[j2]), abs_tol=1e-6)
+    world_dx = float(ir.inst_x[j2]) - float(ir.inst_x[j1])
+    world_dy = float(ir.inst_y[j2]) - float(ir.inst_y[j1])
+    local_dx, local_dy = rotate_offset(world_dx, world_dy, -float(ir.inst_rot[j1]))
+    assert math.isclose(local_dx, 0.0, abs_tol=1e-6)
+    assert math.isclose(local_dy, 15.24, abs_tol=1e-6)
+
+    # (d) every "channel" pattern tile has an IDENTICAL internal layout
+    # (member offsets from its own centroid, up to the tile's own
+    # rotation) -- the same congruence check
+    # `test_pattern_tiles_share_internal_layout_after_a_short_anneal`
+    # pins on a synthetic graph, repeated here against the real fixture.
+    tiles_by_idx: dict[int, list[int]] = {}
+    for i in range(ir.n_instances):
+        gid = int(ir.inst_group[i])
+        if gid >= 0 and ir.group_pattern[gid] == "channel":
+            idx = int(ir.group_pattern_index[gid])
+            tiles_by_idx.setdefault(idx, []).append(i)
+    tiles = [sorted(tiles_by_idx[k]) for k in sorted(tiles_by_idx)]
+    assert len(tiles) == 4
+    assert all(len(t) == 4 for t in tiles)
+
+    def _offsets(members: list[int]) -> list[tuple[float, float]]:
+        cx = sum(float(ir.inst_x[m]) for m in members) / len(members)
+        cy = sum(float(ir.inst_y[m]) for m in members) / len(members)
+        return [(float(ir.inst_x[m]) - cx, float(ir.inst_y[m]) - cy) for m in members]
+
+    leader_offsets = _offsets(tiles[0])
+    leader_rot0 = float(ir.inst_rot[tiles[0][0]])
+    for tile in tiles[1:]:
+        offs = _offsets(tile)
+        delta = (float(ir.inst_rot[tile[0]]) - leader_rot0) % 360.0
+        for (tx, ty), (lx, ly) in zip(offs, leader_offsets):
+            ux, uy = rotate_offset(tx, ty, -delta)
+            assert math.isclose(ux, lx, abs_tol=1e-6)
+            assert math.isclose(uy, ly, abs_tol=1e-6)

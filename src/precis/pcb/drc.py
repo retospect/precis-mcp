@@ -1449,6 +1449,28 @@ def check_outline_containment(
             continue  # a pinless part the caller gave no fallback shape
         outside(Polygon(poly), f"part {refdes}", {"refdes": refdes})
 
+    # Silkscreen ink is imaged too — a refdes label or a courtyard drawn
+    # past the outline is exactly as absent from the delivered board as
+    # copper would be, and until this loop existed `view='drc'` never saw
+    # it: `precis.pcb.silk.build_silk` checked a candidate against pads/
+    # vias/committed silk but never against the board itself (silk.py's
+    # own module docstring). `_silk_item_polygon` reads the SAME
+    # ``model["silkscreen"]`` shape :func:`check_silk_missing` already
+    # consumes, so a caller building one model gets both checks over it
+    # for free.
+    for side, draws in (model.get("silkscreen") or {}).items():
+        for draw in draws:
+            geom = _silk_item_polygon(draw)
+            if geom is None or geom.is_empty:
+                continue
+            role = str(draw.get("role") or "")
+            refdes = str(draw.get("refdes") or "")
+            outside(
+                geom,
+                f"silk {role}[{refdes}] on {side}",
+                {"role": role, "refdes": refdes, "side": side},
+            )
+
     return findings
 
 
@@ -1461,6 +1483,20 @@ def check_outline_containment(
 # -- so a board could ship with unlabelled parts and read as DRC-clean.
 # `SilkPlacement` (silk.py) is the structured census this reads instead of
 # re-parsing that prose.
+
+
+def _silk_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
+    """One ``model["silkscreen"]`` draw's physical ink footprint.
+
+    ``precis.pcb.silk._draw`` emits ``segments``/``width_mm`` in exactly
+    the shape :func:`_copper_item_polygon`'s ``ctype == "track"`` branch
+    already reads (a polyline buffered by its half-width, round caps) —
+    so this is that branch, not a second implementation of "what shape is
+    a stroke": a silk draw carries no ``ctype`` of its own, and adding one
+    just to dispatch through the same function beats writing the buffer
+    arithmetic twice."""
+    return _copper_item_polygon({**item, "ctype": "track"})
+
 
 #: A LEGIBILITY judgement, not a fab spec: below this cap height a human
 #: reading an assembled board's silkscreen struggles to make a refdes out
@@ -1631,6 +1667,129 @@ def check_silk_printability(
     return findings
 
 
+#: Float-noise tolerance for the 45-degree direction test — the DRC-side
+#: twin of :data:`precis.pcb.realize._OCTILINEAR_EPS_MM` (kept as a local
+#: constant: this module deliberately imports no realizer). A genuinely
+#: octilinear segment misses by rounding only (~1e-14 at board scale);
+#: an off-angle emitter misses by whole hundredths of a millimetre.
+_OCTILINEAR_EPS_MM = 1e-6
+
+
+def check_octilinear(model: dict[str, Any]) -> list[DrcFinding]:
+    """Every drawn copper LINE segment must run at a multiple of 45
+    degrees — axis-aligned or a true diagonal (|dx| == |dy|) — the
+    octilinear discipline every emitter on the maze-router path in
+    :mod:`precis.pcb.realize` guarantees since 2026-08-31 (user
+    requirement: every wire on every layer fully 90/45).
+
+    Scope: ``segments`` entries with ``shape == "line"`` on
+    ``model["copper"]`` — the drawn wires, dogbone stubs included. Arcs
+    are exempt (a corner fillet between two octilinear runs is still an
+    octilinear layout, and an arc has no single direction to grade);
+    pour rims are exempt (a pour follows its blockers, it is not a
+    wire); silkscreen is ink, not copper. No capability field and no
+    two-tier margin — a fab can image any angle, so this is a HOUSE
+    style rule; severity is ``error`` so the acceptance fixtures'
+    copper-class hard zero holds it board-wide."""
+    findings: list[DrcFinding] = []
+    for item in model.get("copper") or []:
+        for seg in item.get("segments") or []:
+            if seg.get("shape") != "line":
+                continue
+            x1, y1 = (float(v) for v in seg["start"])
+            x2, y2 = (float(v) for v in seg["end"])
+            dx, dy = abs(x2 - x1), abs(y2 - y1)
+            if (
+                dx <= _OCTILINEAR_EPS_MM
+                or dy <= _OCTILINEAR_EPS_MM
+                or abs(dx - dy) <= _OCTILINEAR_EPS_MM
+            ):
+                continue
+            angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+            net, layer = item.get("net"), item.get("layer")
+            findings.append(
+                DrcFinding(
+                    rule="octilinear",
+                    severity="error",
+                    where=f"track[{net}] on {layer}",
+                    detail=(
+                        f"segment ({x1:.3f},{y1:.3f})->({x2:.3f},{y2:.3f}) "
+                        f"on {layer} runs at {angle:.1f}deg; every drawn "
+                        f"wire must be a multiple of 45deg"
+                    ),
+                    objects=({"net": net, "layer": layer, "x": x1, "y": y1},),
+                )
+            )
+    return findings
+
+
+def check_silk_edge_clearance(
+    model: dict[str, Any],
+    capability: CapabilityRow,
+    *,
+    outline: list[list[float]] | None,
+) -> list[DrcFinding]:
+    """Silk-to-board-edge clearance — the same two-tier bar
+    :func:`check_board_edge_clearance` applies to copper, applied here to
+    silkscreen ink, off the same ``board_edge_clearance_vcut_mm`` field
+    and the same :func:`_two_tier`/:func:`_margin_detail` machinery.
+
+    ``precis.pcb.silk.build_silk`` already keeps a caller-supplied
+    ``outline`` clear of this margin at CANDIDATE time
+    (``silk._silk_edge_margin_mm``) for the refdes label and the pin-1
+    dot — but only for those two, and only when it was given an outline
+    at all. This rule is the independent DRC-time check of the same fact,
+    over EVERY item in ``model["silkscreen"]``: the courtyard ring and the
+    corner tick, which the generator deliberately never relocates (silk.py's
+    own module docstring — their footprint is the part's own, not a
+    candidate choice), a render built with no ``outline`` passed to
+    :func:`~precis.pcb.silk.build_silk` at all, and a genuine regression in
+    the generator itself. A candidate that this module's own generation
+    side already rejected should never fire this rule; one that does is
+    the two disagreeing about the one board-edge number the module
+    docstring's edge-margin note says they must not."""
+    field = "board_edge_clearance_vcut_mm"
+    jlc_min = capability.jlc_min[field]
+    house = capability.house_default.get(field)
+    if jlc_min is None or not outline or len(outline) < 3:
+        return []
+    ring_pts = [(float(p[0]), float(p[1])) for p in outline]
+    if ring_pts[0] != ring_pts[-1]:
+        ring_pts.append(ring_pts[0])
+    boundary = LineString(ring_pts)
+    findings: list[DrcFinding] = []
+    for side, draws in (model.get("silkscreen") or {}).items():
+        for draw in draws:
+            geom = _silk_item_polygon(draw)
+            if geom is None or geom.is_empty:
+                continue
+            gap = boundary.distance(geom)
+            result = _two_tier(gap, jlc_min, house)
+            if result is None:
+                continue
+            severity, margin = result
+            role = str(draw.get("role") or "")
+            refdes = str(draw.get("refdes") or "")
+            findings.append(
+                DrcFinding(
+                    rule="silk_edge_clearance",
+                    severity=severity,
+                    where=f"silk {role}[{refdes}] on {side}",
+                    detail=_margin_detail(
+                        "silk-to-board-edge clearance",
+                        gap,
+                        capability,
+                        field,
+                        severity,
+                        margin,
+                    ),
+                    objects=({"role": role, "refdes": refdes, "side": side},),
+                    margin_mm=margin,
+                )
+            )
+    return findings
+
+
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
@@ -1755,6 +1914,8 @@ def run_geometric_drc(
     findings += check_board_edge_clearance(
         model, capability, outline=outline, panel_type=panel_type
     )
+    findings += check_silk_edge_clearance(model, capability, outline=outline)
+    findings += check_octilinear(model)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_connectivity(model)
     findings += check_unrouted(unrouted)
@@ -1775,7 +1936,9 @@ __all__ = [
     "check_connectivity",
     "check_courtyard_overlap",
     "check_npth_clearance",
+    "check_octilinear",
     "check_outline_containment",
+    "check_silk_edge_clearance",
     "check_silk_missing",
     "check_silk_printability",
     "check_trace_width",

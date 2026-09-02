@@ -48,8 +48,12 @@ This reader tracks that same attribute state and stamps it onto the
 :class:`Flash`/:class:`Stroke`/:class:`Region` it produces, and
 :func:`render_fab_svg` turns it into an SVG ``<title>`` — the browser's own
 native tooltip, so it works with no script and survives the file being
-opened straight off disk. An object with no ``%TO...*%`` gets no identity
-in its title, only layer/type/coordinates: this reader never fills that gap
+opened straight off disk. Every title reads as a HIERARCHY, outermost
+first: layer, then where on the board, then what the shape physically is,
+then (last, because it is the one piece of it optional per-object) what
+it belongs to on the schematic — e.g. ``F_Cu · (12.3000, 4.5000) mm · pad
+1 of Q4 · net OUT4``. An object with no ``%TO...*%`` gets no identity
+clause, only layer/coordinates/kind: this reader never fills that gap
 by cross-referencing anything outside the gerber/Excellon text, because
 doing so is exactly the divergence-from-the-artefact this module exists to
 eliminate. A recognised ``%TO.N``/``%TO.P`` that fails to parse raises
@@ -58,6 +62,23 @@ same discipline as ``%AM``/``%SR`` above; any *other* ``%TO...`` (component-
 level attributes such as ``%TO.C``, which this writer does not emit) falls
 through the same harmless catch-all as an unrecognised ``%TF...`` file
 attribute always has.
+
+**A soldermask layer is rendered as what it physically is: a film with
+holes**, not as the holes themselves. ``F_Mask``/``B_Mask`` gerbers carry
+only the OPENINGS (see :func:`precis.pcb.gerber.soldermask_gerber`) — the
+mask material itself is everywhere else on the board, implicit, the same
+way the copper a track is stroked on is implicit in a copper gerber.
+Rendering just the opening flashes (the earlier approach) paints only a
+handful of small shapes sitting exactly on top of the pads they open,
+which is nearly indistinguishable from the copper beneath it — toggling
+the layer on reads as toggling nothing. :func:`render_fab_svg` instead
+draws a translucent film across the whole board (the parsed Edge_Cuts
+outline when available, else the viewBox rect) and cuts the openings out
+of it with an SVG ``<mask>`` — the same paint-semantics trick
+:func:`_region_els` already uses for antipads/knockouts, so overlapping
+openings all stay open. The openings still carry their titles: each one
+also gets an all-but-invisible hit target on top of the film, in the same
+shape, so hovering a pad's mask opening still tells you which pad it is.
 """
 
 from __future__ import annotations
@@ -539,51 +560,45 @@ def _pt(x: float, y: float) -> str:
     return f"({x:.4f}, {y:.4f}) mm"
 
 
-def _identity_clause(net: str | None, refdes: str | None, pin: str | None) -> str:
-    """The identity part of a tooltip — empty when the gerber carried no
-    ``%TO...*%`` for this object. Built ONLY from what :func:`parse_gerber`
-    read off the file; there is no fallback that looks anywhere else."""
-    parts = []
-    if refdes and pin:
-        parts.append(f"pin {refdes}.{pin}")
-    if net:
-        parts.append(f"net {net}")
-    return " · ".join(parts)
+def _net_clause(net: str | None) -> str:
+    """The trailing "belongs to" clause every title ends with when the
+    gerber carried a ``%TO.N``/net — empty (and so dropped, see
+    :func:`_title`) when it didn't. Built ONLY from what
+    :func:`parse_gerber` read off the file; there is no fallback that
+    looks anywhere else."""
+    return f"net {net}" if net else ""
 
 
-def _title(layer: str, kind: str, coords: str, identity: str) -> str:
-    parts = [layer, kind, *([identity] if identity else []), coords]
+def _title(layer: str, coords: str, kind: str, belongs_to: str = "") -> str:
+    """Every hover title reads as one hierarchy, outermost first: which
+    LAYER, then WHERE on the board, then WHAT the shape physically is,
+    then (last, and only when the gerber said so) what it BELONGS TO on
+    the schematic — see the module docstring's own example."""
+    parts = [layer, coords, kind, *([belongs_to] if belongs_to else [])]
     return _esc(" · ".join(parts))
 
 
 def _flash_title(layer: str, flash: Flash) -> str:
-    # "pad" only when the gerber itself said so via %TO.P — a round flash
-    # with just a net (a via barrel, or a pad the model never gave a pin)
-    # is called a "flash", not guessed to be one or the other.
-    kind = "pad" if (flash.refdes and flash.pin) else "flash"
-    return _title(
-        layer,
-        kind,
-        _pt(flash.x, flash.y),
-        _identity_clause(flash.net, flash.refdes, flash.pin),
-    )
+    # "pad N of REFDES" only when the gerber itself said so via %TO.P — a
+    # round flash with just a net (a via barrel, or a pad the model never
+    # gave a pin) is called a "flash", not guessed to be one or the other.
+    if flash.refdes and flash.pin:
+        kind = f"pad {flash.pin} of {flash.refdes}"
+    else:
+        kind = "flash"
+    return _title(layer, _pt(flash.x, flash.y), kind, _net_clause(flash.net))
 
 
 def _stroke_title(layer: str, stroke: Stroke) -> str:
     p0, p1 = stroke.points[0], stroke.points[-1]
     coords = f"{_pt(*p0)} → {_pt(*p1)}"
-    return _title(
-        layer,
-        f"track {stroke.width:.4f}mm",
-        coords,
-        _identity_clause(stroke.net, stroke.refdes, stroke.pin),
-    )
+    return _title(layer, coords, f"track {stroke.width:.4f}mm", _net_clause(stroke.net))
 
 
 def _region_title(layer: str, region: Region) -> str:
     xs = [p[0] for p in region.ring]
     ys = [p[1] for p in region.ring]
-    coords = f"{_pt(min(xs), min(ys))} – {_pt(max(xs), max(ys))}"
+    coords = _pt((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
     # A clear-polarity region is an antipad/knockout, not copper/ink — it
     # never carries a net (see the Region.net docstring), so this branch
     # is never a missed identity, it is the correct absence of one.
@@ -596,32 +611,111 @@ def _region_title(layer: str, region: Region) -> str:
         kind = "silk fill" if is_silk else "pour"
     else:
         kind = "silk knockout" if is_silk else "antipad"
-    return _title(layer, kind, coords, _identity_clause(region.net, None, None))
+    return _title(layer, coords, kind, _net_clause(region.net))
 
 
 def _drill_title(layer: str, x: float, y: float, dia: float) -> str:
     # Drills come from Excellon, which this project's writer never gives an
     # X2 attribute — there is no identity to show, by construction, not by
     # omission.
-    return _title(layer, f"drill Ø{dia:.4f}mm", _pt(x, y), "")
+    return _title(layer, _pt(x, y), f"drill Ø{dia:.4f}mm")
 
 
-def _flash_svg(flash: Flash, colour: str, title: str) -> str:
+def _flash_geometry(flash: Flash) -> tuple[str, str]:
+    """``(tag, shape-attrs)`` for one flash's aperture — the ONE place that
+    turns a :class:`Flash` into an SVG shape, shared by the normal
+    coloured render (:func:`_flash_svg`), the mask-film cutout shape
+    (:func:`_flash_mask_shape`) and the mask-film hit target
+    (:func:`_flash_hit_target`) — three different fills of the exact same
+    outline must never risk drifting into three different outlines."""
     ap = flash.aperture
     if ap.shape == "C":
-        return (
-            f'<circle cx="{flash.x:.4f}" cy="{flash.y:.4f}" '
-            f'r="{ap.sizes[0] / 2:.4f}" fill="{colour}">'
-            f"<title>{title}</title></circle>"
+        return "circle", (
+            f'cx="{flash.x:.4f}" cy="{flash.y:.4f}" r="{ap.sizes[0] / 2:.4f}"'
         )
     w = ap.sizes[0]
     h = ap.sizes[1] if len(ap.sizes) > 1 else w
     rx = f' rx="{min(w, h) / 2:.4f}"' if ap.shape == "O" else ""
-    return (
-        f'<rect x="{flash.x - w / 2:.4f}" y="{flash.y - h / 2:.4f}" '
-        f'width="{w:.4f}" height="{h:.4f}"{rx} fill="{colour}">'
-        f"<title>{title}</title></rect>"
+    return "rect", (
+        f'x="{flash.x - w / 2:.4f}" y="{flash.y - h / 2:.4f}" '
+        f'width="{w:.4f}" height="{h:.4f}"{rx}'
     )
+
+
+def _flash_svg(flash: Flash, colour: str, title: str) -> str:
+    tag, attrs = _flash_geometry(flash)
+    return f'<{tag} {attrs} fill="{colour}"><title>{title}</title></{tag}>'
+
+
+def _flash_mask_shape(flash: Flash) -> str:
+    """One soldermask opening, painted BLACK into a mask film's ``<mask>``
+    — see :func:`_mask_film_els`. Each opening is its own shape (never
+    unioned into one compound path), so two overlapping openings both stay
+    cut out, the same paint-semantics reasoning :func:`_region_els`'s own
+    docstring lays out for antipads/knockouts."""
+    tag, attrs = _flash_geometry(flash)
+    return f'<{tag} {attrs} fill="#000"/>'
+
+
+def _flash_hit_target(flash: Flash, title: str) -> str:
+    """An almost-invisible copy of one soldermask opening, painted ON TOP
+    of the film (not cut into it) purely so the opening stays hoverable —
+    the film itself has no per-opening ``<title>`` (it is one compound
+    ``<path>``), and this is cheaper than reshaping the film into N
+    separate paths just to hang a tooltip off each one."""
+    tag, attrs = _flash_geometry(flash)
+    return (
+        f'<{tag} {attrs} fill="#fff" fill-opacity="0.01"><title>{title}</title></{tag}>'
+    )
+
+
+def _rect_ring(bounds: tuple[float, float, float, float]) -> list[tuple[float, float]]:
+    x0, y0, x1, y1 = bounds
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def _edge_cuts_outline(art: LayerArt | None) -> list[tuple[float, float]] | None:
+    """The board outline as THIS reader saw it drawn — Edge_Cuts' own
+    stroke polyline(s), concatenated in file order — used as a mask
+    film's own shape (see :func:`_mask_film_els`) so a non-rectangular
+    board doesn't get a rectangular film spilling past its own edge.
+    ``None`` when Edge_Cuts didn't parse or drew nothing, in which case the
+    caller falls back to the viewBox rect."""
+    if art is None or not art.strokes:
+        return None
+    ring: list[tuple[float, float]] = []
+    for s in art.strokes:
+        ring.extend(s.points)
+    return ring if len(ring) >= 3 else None
+
+
+def _mask_film_els(
+    art: LayerArt | None, layer: str, colour: str, film_ring: list[tuple[float, float]]
+) -> list[str]:
+    """A soldermask layer rendered as what it physically is — see the
+    module docstring's "a film with holes" note. ``art.flashes`` are the
+    openings (this project's own writer, :func:`precis.pcb.gerber
+    .soldermask_gerber`, never emits anything else on a mask layer — see
+    that function's own docstring); everything else about this render is
+    the paint-semantics mask trick :func:`_region_els` already uses."""
+    openings = art.flashes if art is not None else []
+    if not openings:
+        return [
+            f'<path d="{_path_d(film_ring, close=True)}" '
+            f'fill="{colour}" fill-opacity="0.55"/>'
+        ]
+    mask_id = f"masklayer-mask-{layer}"
+    mask_shapes = "".join(_flash_mask_shape(f) for f in openings)
+    out = [
+        f'<mask id="{mask_id}" maskUnits="userSpaceOnUse" '
+        f'x="-1e6" y="-1e6" width="2e6" height="2e6">'
+        f'<path d="{_path_d(film_ring, close=True)}" fill="#fff"/>'
+        f"{mask_shapes}</mask>",
+        f'<path d="{_path_d(film_ring, close=True)}" fill="{colour}" '
+        f'fill-opacity="0.55" mask="url(#{mask_id})"/>',
+    ]
+    out.extend(_flash_hit_target(f, _flash_title(layer, f)) for f in openings)
+    return out
 
 
 def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
@@ -636,15 +730,32 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
     indistinguishable to this function, which is the point: one cutout
     renderer, not a copper one and a silk-specific second one.
 
-    Each pair becomes ONE compound path with ``fill-rule="evenodd"`` — a
-    real geometric cutout, the same technique :func:`precis.pcb.svg
-    ._pour_el` uses. This has to be a real cutout rather than the previous
-    "paint the hole in the board background colour" trick: with the layer
-    group now translucent (:data:`_COPPER_LAYER_OPACITY`), an opaque
-    background-coloured patch would itself become a translucent grey smear
-    over whatever is underneath instead of a transparent hole letting it
-    show through — a plane rendered without a REAL hole is still, visually,
-    indistinguishable from a short.
+    Each pair becomes a solid ring paired with an SVG ``<mask>`` cut from
+    the clear rings, NOT a single compound path with ``fill-rule="evenodd"``
+    (the earlier technique, and still what :func:`precis.pcb.svg._pour_el`
+    uses for a plain pour with a single, non-overlapping antipad set). A
+    silk knockout letter's clear rings come from :func:`_stroke_ring` one
+    PER STROKE, and two strokes of the same glyph legitimately overlap —
+    e.g. an "N"'s diagonal meeting its vertical at the corner joint. Real
+    gerber clear polarity is idempotent (erasing an already-erased area is
+    still erased); ``evenodd`` parity is not — a second overlapping clear
+    ring flips the overlap's winding count back to even, i.e. back to
+    FILLED, which is exactly the white wedge this function exists to stop
+    rendering. A mask does not have this failure mode: each clear ring is
+    painted BLACK into the mask, and overlapping black paint is still
+    black, so any area covered by one or more clear rings stays cut out
+    regardless of how many of them cover it. The solid ring is painted
+    WHITE into the same mask (visible), then the mask is applied to the
+    visible path via ``mask="url(#...)"``. A mask is also why this still
+    works now that the layer group is translucent
+    (:data:`_COPPER_LAYER_OPACITY`): unlike the older "paint the hole in
+    the board background colour" trick, where an opaque background-
+    coloured patch would itself become a translucent grey smear over
+    whatever is underneath, a masked-out area is genuinely transparent —
+    real absence of paint, not paint the same colour as the paper.
+    A solid ring with no following clear rings is left as a plain
+    ``<path>`` with no mask at all — the common case (a pour or silk fill
+    with no antipad/knockout) shouldn't pay for machinery it doesn't need.
     """
     out: list[str] = []
     i = 0
@@ -656,11 +767,36 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
             while j < len(regions) and not regions[j].solid:
                 rings.append(regions[j].ring)
                 j += 1
-            d = " ".join(_path_d(r, close=True) for r in rings)
-            out.append(
-                f'<path d="{d}" fill="{colour}" fill-rule="evenodd">'
-                f"<title>{_region_title(layer, region)}</title></path>"
-            )
+            title = f"<title>{_region_title(layer, region)}</title>"
+            if len(rings) == 1:
+                out.append(
+                    f'<path d="{_path_d(region.ring, close=True)}" '
+                    f'fill="{colour}">{title}</path>'
+                )
+            else:
+                # Unique across the whole document: this function runs once
+                # per LAYER (see render_fab_svg), and `i` is this pair's
+                # position within that layer's own region list.
+                mask_id = f"region-mask-{layer}-{i}"
+                mask_paths = "".join(
+                    f'<path d="{_path_d(r, close=True)}" '
+                    f'fill="{"#fff" if k == 0 else "#000"}"/>'
+                    for k, r in enumerate(rings)
+                )
+                # userSpaceOnUse + an oversized fixed box, rather than the
+                # default objectBoundingBox: a clear ring is expected to sit
+                # inside the solid ring's bounds, but the default's -10%/
+                # +120% padding is a bounding-box guess this function has no
+                # reason to depend on being enough.
+                out.append(
+                    f'<mask id="{mask_id}" maskUnits="userSpaceOnUse" '
+                    f'x="-1e6" y="-1e6" width="2e6" height="2e6">'
+                    f"{mask_paths}</mask>"
+                )
+                out.append(
+                    f'<path d="{_path_d(region.ring, close=True)}" '
+                    f'fill="{colour}" mask="url(#{mask_id})">{title}</path>'
+                )
             i = j
         else:
             # A clear-polarity region with no preceding solid ring to cut a
@@ -742,6 +878,14 @@ def render_fab_svg(
     keys = [k for k in _STACK_ORDER if k in arts or k in drills]
     keys += sorted(k for k in {*arts, *drills} if k not in _STACK_ORDER)
 
+    # The mask FILM's own shape — the real Edge_Cuts outline when this file
+    # set parsed one, else the same rect the viewBox itself is built from.
+    # Computed once, outside the per-layer loop: F_Mask and B_Mask are the
+    # same physical board, so they share one film shape.
+    film_ring = _edge_cuts_outline(arts.get("Edge_Cuts")) or _rect_ring(
+        (x0, y0, x1, y1)
+    )
+
     body: list[str] = []
     for key in keys:
         colour, visible = _LAYER_STYLE.get(key, _DEFAULT_STYLE)
@@ -754,7 +898,11 @@ def render_fab_svg(
         op_attr = f' opacity="{_COPPER_LAYER_OPACITY}"' if key.endswith("_Cu") else ""
         body.append(f'<g id="layer-{key}" class="{cls}" fill="{colour}"{op_attr}>')
         art = arts.get(key)
-        if art is not None:
+        if key.endswith("_Mask"):
+            # A film with holes, not the holes themselves — see the module
+            # docstring's "rendered as what it physically is" note.
+            body.extend(_mask_film_els(art, key, colour, film_ring))
+        elif art is not None:
             body.extend(_region_els(art.regions, key, colour))
             for s in art.strokes:
                 body.append(

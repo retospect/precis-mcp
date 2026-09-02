@@ -26,11 +26,14 @@ from precis.pcb.geom import (
     Point,
     _corner_fillet,
     convex_polygons_overlap,
+    convex_polygons_signed_separation,
     dist,
     fillet_polyline,
     max_inward_deviation,
     max_radius_for_deviation,
     quantize,
+    rounded_polygon,
+    segments_cross,
 )
 from precis.pcb.gerber import _u
 
@@ -653,3 +656,187 @@ def test_convex_polygons_overlap_accepts_a_closed_ring():
     assert convex_polygons_overlap(closed, open_ring)
     assert not convex_polygons_overlap(closed, far)
     assert not convex_polygons_overlap(far, closed)
+
+
+# ── convex_polygons_signed_separation: the graded companion ─────────────
+
+
+def test_signed_separation_sign_always_agrees_with_the_boolean():
+    """The graded number and the boolean answer the same question about
+    the same axes, so their verdicts may never split: separation > 0 iff
+    the boolean says disjoint. Randomized over the same fixture generator
+    the boolean's own oracle test uses."""
+    for seed in range(40):
+        rng = random.Random(seed)
+        a = _random_convex(rng, 0.0, 0.0)
+        b = _random_convex(rng, rng.uniform(-6.0, 6.0), rng.uniform(-6.0, 6.0))
+        sep = convex_polygons_signed_separation(a, b)
+        assert (sep > 0.0) == (not convex_polygons_overlap(a, b)), (a, b, sep)
+
+
+def test_signed_separation_negative_branch_is_the_exact_mtv_depth():
+    """When the polygons overlap, ``-separation`` claims to be the exact
+    minimum-translation depth — pinned on constructed axis-aligned cases
+    where the MTV is knowable by hand (including containment, where a
+    naive 'overlap extent' reading would wrongly cap at a width)."""
+    unit = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
+    shifted = [(1.5, 0.0), (3.5, 0.0), (3.5, 2.0), (1.5, 2.0)]  # 0.5 deep in x
+    assert convex_polygons_signed_separation(unit, shifted) == pytest.approx(-0.5)
+    # Containment: a small square centred in a big one must push out by
+    # centre-to-edge distance plus its own half-width, not be capped by
+    # either width.
+    big = [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)]
+    small = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+    assert convex_polygons_signed_separation(big, small) == pytest.approx(-6.0)
+
+
+def test_signed_separation_zero_at_an_exact_touch():
+    """The zero crossing must sit exactly where the boolean's strict
+    ``<`` puts the legality/DRC boundary — a shared edge or vertex."""
+    unit = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    shared_edge = [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)]
+    assert convex_polygons_signed_separation(unit, shared_edge) == pytest.approx(0.0)
+
+
+def test_signed_separation_positive_branch_is_a_lower_bound_on_distance():
+    """Documented caveat, pinned: for disjoint polygons the SAT axis gap
+    UNDERSTATES the true Euclidean clearance when the closest approach is
+    vertex-to-vertex (two unit squares offset corner-to-corner report the
+    axis gap 1.0, not the diagonal sqrt(2)). Conservative for a spreading
+    pressure — parts read as closer, never farther — and the aligned case
+    is exact."""
+    unit = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    aligned = [(1.75, 0.0), (2.75, 0.0), (2.75, 1.0), (1.75, 1.0)]
+    assert convex_polygons_signed_separation(unit, aligned) == pytest.approx(0.75)
+    diagonal = [(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0)]
+    sep = convex_polygons_signed_separation(unit, diagonal)
+    true_gap = math.hypot(1.0, 1.0)
+    assert sep == pytest.approx(1.0)
+    assert sep < true_gap
+
+
+def test_signed_separation_accepts_a_closed_ring():
+    """Same contract as the boolean: the closed ring's zero-length edge
+    contributes no axis and changes no answer."""
+    open_ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    closed = [*open_ring, (0.0, 0.0)]
+    far = [(3.0, 0.0), (4.0, 0.0), (4.0, 1.0), (3.0, 1.0)]
+    assert convex_polygons_signed_separation(
+        closed, far
+    ) == convex_polygons_signed_separation(open_ring, far)
+
+
+# ── rounded_polygon: board-outline corner rounding ─────────────────────────
+#
+# Board-outline consumers (pours, DRC edge clearance, fiducials, silk,
+# gerber/SVG render) all read the outline as a plain point polygon, never
+# fillet_polyline's line/arc segment chain — so rounding a corner here means
+# polygonizing the arc into straight facets, not emitting an arc segment.
+# These tests pin that shape directly (a shoelace-area budget, not the
+# implementation's own math restated) and the two failure directions that
+# matter: an outline whose corners fillet cleanly, and one whose short edge
+# forces a clamp.
+
+
+def _shoelace_area(poly: list[Point]) -> float:
+    ring = poly if poly[0] == poly[-1] else [*poly, poly[0]]
+    total = 0.0
+    for (x0, y0), (x1, y1) in itertools.pairwise(ring):
+        total += x0 * y1 - x1 * y0
+    return abs(total) / 2.0
+
+
+def test_rounded_polygon_zero_radius_is_the_identity():
+    rect = [(0.0, 0.0), (62.0, 0.0), (62.0, 46.0), (0.0, 46.0), (0.0, 0.0)]
+    assert rounded_polygon(rect, 0.0) == rect
+    assert rounded_polygon(rect, -1.0) == rect
+
+
+def test_rounded_polygon_rounds_a_rectangles_four_corners():
+    """A 62x46 board outline (the nano_oc_switch fixture's own dimensions)
+    at r=3mm: every new facet point stays inside the original rectangle,
+    the removed area matches the closed-form ``4 * (r^2 - pi*r^2/4)``
+    corner-cut budget within 2%, and the tangent points bounding each
+    edge's untouched straight middle land exactly where the r/tan(45deg)
+    setback puts them -- the mid-edge is a sub-segment of the original
+    edge, not a new curve."""
+    rect = [(0.0, 0.0), (62.0, 0.0), (62.0, 46.0), (0.0, 46.0), (0.0, 0.0)]
+    r = 3.0
+    out = rounded_polygon(rect, r)
+
+    assert len(out) > len(rect)  # vertex count grows
+
+    for x, y in out:
+        assert -1e-9 <= x <= 62.0 + 1e-9
+        assert -1e-9 <= y <= 46.0 + 1e-9
+
+    area = _shoelace_area(out)
+    corner_cut = r * r - math.pi * r * r / 4.0
+    expected = 62.0 * 46.0 - 4.0 * corner_cut
+    assert area == pytest.approx(expected, rel=0.02)
+    assert area < 62.0 * 46.0
+
+    # Bottom edge's straight middle: (0,0)'s tangent setback lands at
+    # (3, 0), (62,0)'s at (59, 0) -- both tan(45deg)=1, so setback == r.
+    assert any(
+        abs(x - 3.0) < 1e-9 and abs(y - 0.0) < 1e-9 for x, y in out
+    ), out
+    assert any(
+        abs(x - 59.0) < 1e-9 and abs(y - 0.0) < 1e-9 for x, y in out
+    ), out
+    # Left edge's straight middle, same setback: (0,0) -> (0,3),
+    # (0,46) -> (0,43).
+    assert any(
+        abs(x - 0.0) < 1e-9 and abs(y - 3.0) < 1e-9 for x, y in out
+    ), out
+    assert any(
+        abs(x - 0.0) < 1e-9 and abs(y - 43.0) < 1e-9 for x, y in out
+    ), out
+
+
+def test_rounded_polygon_gives_every_corner_at_least_six_facets():
+    """4 right-angle (90deg) corners, each a quarter-circle arc: at
+    ``max_chord_mm=0.05`` (the default) a 3mm-radius quarter circle needs
+    only ~5 facets to hold that tolerance, so this pins the ``min_facets``
+    floor (6) actually firing -- 4 corners * (6 facets + 1 shared endpoint)
+    + the closing repeat of the first point."""
+    rect = [(0.0, 0.0), (62.0, 0.0), (62.0, 46.0), (0.0, 46.0), (0.0, 0.0)]
+    out = rounded_polygon(rect, 3.0)
+    assert len(out) == 4 * 7 + 1
+
+
+def test_rounded_polygon_clamps_instead_of_self_intersecting():
+    """A radius bigger than half the shortest edge must clamp per corner
+    (:func:`_corner_fillet`'s own contract) rather than push a tangent
+    point past the far end of a short leg and fold the outline over
+    itself. A 10x4mm rectangle with r=3 (half the 4mm edge is 2) forces
+    exactly that clamp on every corner -- and, on a rectangle, the two
+    corners sharing that 4mm edge clamp to the SAME half (2mm) each,
+    which legitimately makes their tangent points MEET exactly at the
+    edge's midpoint (a touch, not a self-intersection) -- so 'simple' is
+    checked with :func:`segments_cross` (properly-crossing, touch-
+    excluded -- the same predicate the ratsnest crossing metric uses),
+    not a blanket 'no duplicate point' rule that would misfire on this
+    legitimate coincidence."""
+    rect = [(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (0.0, 4.0), (0.0, 0.0)]
+    out = rounded_polygon(rect, 3.0)
+
+    for x, y in out:
+        assert math.isfinite(x) and math.isfinite(y)
+
+    edges = list(itertools.pairwise(out))
+    for i, (a1, a2) in enumerate(edges):
+        for j, (b1, b2) in enumerate(edges):
+            if j <= i:
+                continue
+            assert not segments_cross(a1, a2, b1, b2), (i, j, a1, a2, b1, b2)
+
+    area = _shoelace_area(out)
+    assert 0.0 < area < 10.0 * 4.0
+
+    # No point escapes the original rectangle -- the clamp keeps every
+    # tangent point within the shorter adjoining leg's own half.
+    assert min(x for x, _ in out) >= -1e-9
+    assert max(x for x, _ in out) <= 10.0 + 1e-9
+    assert min(y for _, y in out) >= -1e-9
+    assert max(y for _, y in out) <= 4.0 + 1e-9

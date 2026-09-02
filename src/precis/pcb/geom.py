@@ -142,6 +142,53 @@ def convex_polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
     return True
 
 
+def convex_polygons_signed_separation(
+    poly_a: list[Point], poly_b: list[Point]
+) -> float:
+    """Signed separation between two CONVEX polygons, in the polygons' own
+    units — the GRADED companion to :func:`convex_polygons_overlap`'s
+    boolean, sweeping the same SAT axes (edge normals of both polygons,
+    normalized here so projections are metric).
+
+    - **Negative when they overlap**: exactly minus the minimum-translation
+      depth — the smallest distance either polygon must move along some
+      edge normal to separate them. Exact for convex shapes.
+    - **Zero when they touch** (shared edge or vertex), the same boundary
+      :func:`convex_polygons_overlap`'s strict ``<`` puts on the
+      overlapping side.
+    - **Positive when disjoint**: the largest projection gap over the SAT
+      axes, which is a LOWER bound on the true Euclidean clearance (two
+      unit squares offset corner-to-corner report their axis gap, not the
+      longer diagonal distance). A steering term built on this can only
+      treat parts as CLOSER than they are, never farther — the
+      conservative direction for a spreading pressure — and the sign, the
+      zero crossing, and the negative branch are all exact.
+
+    One continuous number across the boundary is the point: a cost term
+    reading this gets a slope on both sides of legality instead of a
+    plateau that jumps at contact. Zero-length edges (closed rings repeat
+    their first vertex) contribute no axis, matching the boolean's
+    treatment. Two degenerate (single-point) inputs yield no axis at all
+    and report 0.0 — coincident points touch."""
+    best = -math.inf
+    for poly in (poly_a, poly_b):
+        n = len(poly)
+        for i in range(n):
+            x1, y1 = poly[i]
+            x2, y2 = poly[(i + 1) % n]
+            nx, ny = -(y2 - y1), (x2 - x1)
+            norm = math.hypot(nx, ny)
+            if norm <= 0.0:
+                continue
+            nx, ny = nx / norm, ny / norm
+            a_vals = [nx * px + ny * py for px, py in poly_a]
+            b_vals = [nx * px + ny * py for px, py in poly_b]
+            gap = max(min(b_vals) - max(a_vals), min(a_vals) - max(b_vals))
+            if gap > best:
+                best = gap
+    return 0.0 if best == -math.inf else best
+
+
 def bbox(p1: Point, p2: Point) -> tuple[float, float, float, float]:
     """Axis-aligned bounding box (minx, miny, maxx, maxy) of a segment."""
     return (
@@ -635,3 +682,144 @@ def max_radius_for_deviation(
             continue
         cap = min(cap, budget_mm / shrink)
     return cap
+
+
+# ── closed-polygon corner rounding (board outlines) ────────────────────────
+
+#: Default chord tolerance for :func:`rounded_polygon`'s facet count — the
+#: largest a facet's straight chord is allowed to deviate from the true arc
+#: it stands in for.
+DEFAULT_ROUNDED_POLYGON_CHORD_MM = 0.05
+
+#: Default minimum facet count PER CORNER, regardless of what the chord
+#: tolerance alone would ask for — so a small radius still reads as a
+#: visibly rounded corner rather than one or two segments that look almost
+#: sharp.
+DEFAULT_ROUNDED_POLYGON_MIN_FACETS = 6
+
+
+def _polygonize_arc(
+    center: Point,
+    start: Point,
+    end: Point,
+    cw: bool,
+    radius_mm: float,
+    *,
+    max_chord_mm: float,
+    min_facets: int,
+) -> list[Point]:
+    """A fillet arc — centre/start/end/sweep-direction exactly as
+    :func:`_corner_fillet` returns them — flattened into a polyline (start
+    and end inclusive) fine enough that no facet's straight chord deviates
+    from the true arc by more than ``max_chord_mm``, with at least
+    ``min_facets`` segments regardless.
+
+    Same signed-sweep recovery as :func:`precis.pcb.drc._arc_points` (not
+    imported from there — a two-line trig recompute here is cheaper than a
+    cross-module dependency for a helper this small; both start from the
+    same ``(a2 - a1) % 2pi``, then flip via ``cw`` the same way, so they
+    agree on every input by construction, not by convention alone).
+
+    **Facet count.** A chord subtending angle ``d`` off a circle of radius
+    ``r`` has sagitta ``r * (1 - cos(d/2))``; solving
+    ``r * (1 - cos(d/2)) == max_chord_mm`` for the largest ``d`` under the
+    tolerance gives ``d_max = 2 * acos(1 - max_chord_mm / r)``. The corner's
+    own sweep divided by ``d_max``, rounded up, is the facet count the
+    tolerance alone would need; ``min_facets`` then floors it.
+    """
+    cx, cy = center
+    a1 = math.atan2(start[1] - cy, start[0] - cx)
+    a2 = math.atan2(end[1] - cy, end[0] - cx)
+    diff = (a2 - a1) % (2 * math.pi)
+    sweep = diff if not cw else diff - 2 * math.pi
+    total = abs(sweep)
+    if radius_mm <= 1e-12 or total <= 1e-12:
+        return [start, end]
+    ratio = max(-1.0, min(1.0, 1.0 - max_chord_mm / radius_mm))
+    max_dtheta = 2.0 * math.acos(ratio)
+    n = (
+        min_facets
+        if max_dtheta <= 1e-12
+        else max(min_facets, math.ceil(total / max_dtheta))
+    )
+    return [
+        (
+            cx + radius_mm * math.cos(a1 + sweep * k / n),
+            cy + radius_mm * math.sin(a1 + sweep * k / n),
+        )
+        for k in range(n + 1)
+    ]
+
+
+def rounded_polygon(
+    path: list[Point],
+    radius_mm: float,
+    *,
+    max_chord_mm: float = DEFAULT_ROUNDED_POLYGON_CHORD_MM,
+    min_facets: int = DEFAULT_ROUNDED_POLYGON_MIN_FACETS,
+    reversal_eps_rad: float = DEFAULT_REVERSAL_EPS_RAD,
+    collinear_eps_rad: float = DEFAULT_COLLINEAR_EPS_RAD,
+) -> list[Point]:
+    """Round every corner of a CLOSED polygon (a board outline's
+    ``geom.path`` — first point == last, as every ``outline`` feature
+    carries it) with a tangent-arc fillet of radius ``radius_mm``,
+    polygonized into straight facets (see :func:`_polygonize_arc`) — the
+    only shape an outline's downstream consumers (plane pours, DRC edge
+    clearance, fiducial/gerber/silk render) understand, since every one of
+    them consumes the outline as a plain point polygon, never a
+    line/arc segment chain like :func:`fillet_polyline`'s routing corners
+    do. Rounding the outline HERE, once, at parse, is what lets all of
+    those consumers inherit rounded corners for free.
+
+    Reuses :func:`_corner_fillet` for the actual fillet geometry (tangent
+    points, centre, sweep direction, per-corner setback clamp) so the
+    rounding math has exactly ONE implementation whether it ends up as an
+    arc segment (a routed track) or facetted points (an outline) — only
+    the OUTPUT shape differs.
+
+    ``radius_mm <= 0`` (including the absent-``corner_radius_mm`` default)
+    returns ``path`` unchanged, point for point — a board with no
+    ``corner_radius_mm`` in its outline feature must build byte-identical
+    to before this function existed. A corner whose adjoining legs are too
+    short to support the requested radius is clamped down for THAT corner
+    alone (never crashes, never self-intersects — see
+    :func:`_corner_fillet`); a near-collinear or near-reversal corner is
+    left sharp, same skip rules as :func:`fillet_polyline`.
+    """
+    if radius_mm <= 0 or len(path) < 4:
+        return [(float(p[0]), float(p[1])) for p in path]
+    closed = dist(path[0], path[-1]) < 1e-9
+    ring = [(float(p[0]), float(p[1])) for p in (path[:-1] if closed else path)]
+    n = len(ring)
+    if n < 3:
+        return [(float(p[0]), float(p[1])) for p in path]
+    out: list[Point] = []
+    for i in range(n):
+        prev = ring[i - 1]
+        cur = ring[i]
+        nxt = ring[(i + 1) % n]
+        corner = _corner_fillet(
+            prev,
+            cur,
+            nxt,
+            radius_mm,
+            reversal_eps_rad=reversal_eps_rad,
+            collinear_eps_rad=collinear_eps_rad,
+        )
+        if corner is None:
+            out.append(cur)
+            continue
+        out.extend(
+            _polygonize_arc(
+                corner.center,
+                corner.t1,
+                corner.t2,
+                corner.cw,
+                corner.radius_mm,
+                max_chord_mm=max_chord_mm,
+                min_facets=min_facets,
+            )
+        )
+    if closed:
+        out.append(out[0])
+    return out

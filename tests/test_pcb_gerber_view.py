@@ -385,8 +385,20 @@ def test_every_board_element_has_a_title_with_coordinates() -> None:
     start = svg.index('<g transform="translate')
     end = svg.index('<g class="legend">')
     board_svg = svg[start:end]
-    elements = re.findall(r"<(?:circle|rect|path)\b", board_svg)
-    titles = re.findall(r"<title>([^<]*)</title>", board_svg)
+    # A <mask>'s own white/black paths are cutout machinery, not hoverable
+    # board objects -- they carry no title by design (the title lives on
+    # the visible path that references the mask). A mask FILM's own visible
+    # path is the one exception to "the visible masked path carries the
+    # title": it stays a bare self-closing <path .../> with no title of its
+    # own (the per-opening hover identity lives on the almost-invisible hit
+    # targets laid over it instead, see _mask_film_els) -- self-closing
+    # paths are excluded here the same way <mask> internals are.
+    board_svg_no_masks = re.sub(
+        r"<mask\b[^>]*>.*?</mask>", "", board_svg, flags=re.DOTALL
+    )
+    board_svg_no_masks = re.sub(r"<path\b[^>]*/>", "", board_svg_no_masks)
+    elements = re.findall(r"<(?:circle|rect|path)\b", board_svg_no_masks)
+    titles = re.findall(r"<title>([^<]*)</title>", board_svg_no_masks)
     assert elements, "fixture must actually render something"
     assert len(titles) == len(elements)
     for t in titles:
@@ -405,8 +417,25 @@ def test_flash_title_names_a_pad_only_when_the_gerber_said_so() -> None:
     model["pads"][0]["pin"] = "3"
     files2 = gerber.export_fab(model, name="t", allow_synthesized=True)
     svg2 = gerber_view.render_fab_svg(files2, title="t")
-    assert "· pad ·" in svg2
-    assert "pin U1.3" in svg2
+    assert "pad 3 of U1" in svg2
+    assert "· pad " not in svg  # only present once the gerber says "pad"
+
+
+def test_flash_title_reads_layer_then_coords_then_ownership_then_net() -> None:
+    """The hierarchy the user asked for: layer, coordinates, what the shape
+    IS/belongs to, net -- in that order, not the old layer/kind/identity/
+    coords ordering."""
+    model = _model()
+    model["pads"][0]["refdes"] = "Q4"
+    model["pads"][0]["pin"] = "1"
+    model["pads"][0]["net"] = "OUT4"
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    pad = [f for f in gerber_view.parse_gerber(files["t-F_Cu.gbr"]).flashes if f.pin]
+    assert len(pad) == 1
+    title = gerber_view._flash_title("F_Cu", pad[0])
+    assert title == "F_Cu · (2.0000, 2.0000) mm · pad 1 of Q4 · net OUT4"
+    assert title in svg
 
 
 def test_drill_title_has_no_identity_only_layer_diameter_and_coords() -> None:
@@ -443,7 +472,7 @@ def test_copper_layer_groups_get_opacity_other_layers_stay_opaque() -> None:
         assert "opacity=" not in m.group(0)
 
 
-def test_pour_and_its_hole_render_as_one_evenodd_cutout() -> None:
+def test_pour_and_its_hole_render_as_a_masked_cutout() -> None:
     """A real geometric cutout, not the old "paint the hole in the board
     background colour" trick -- with the layer now translucent, an opaque
     background-coloured patch would itself read as a smear over whatever
@@ -462,19 +491,144 @@ def test_pour_and_its_hole_render_as_one_evenodd_cutout() -> None:
     layer_m = re.search(r'<g id="layer-In1_Cu"[^>]*>(.*?)</g>', svg, re.DOTALL)
     assert layer_m is not None, svg[:400]
     layer_body = layer_m.group(1)
+    masks = re.findall(r"<mask\b[^>]*>.*?</mask>", layer_body, re.DOTALL)
+    body_no_masks = re.sub(r"<mask\b[^>]*>.*?</mask>", "", layer_body, flags=re.DOTALL)
 
-    paths = re.findall(r"<path\b[^>]*>", layer_body)
-    assert len(paths) == 1, "pour + its hole must be ONE compound path"
-    assert 'fill-rule="evenodd"' in paths[0]
-    d_m = re.search(r'd="([^"]*)"', paths[0])
-    assert d_m is not None
-    assert d_m.group(1).count("M ") == 2  # outer ring + the one hole ring
+    paths = re.findall(r"<path\b[^>]*>", body_no_masks)
+    assert len(paths) == 1, "pour's own path -- the hole lives in a <mask>, not here"
+    assert "mask=" in paths[0]
+    assert "fill-rule" not in paths[0]
+
+    assert len(masks) == 1
+    assert masks[0].count("<path") == 2  # solid ring (white) + the one hole (black)
+    assert 'fill="#fff"' in masks[0]
+    assert 'fill="#000"' in masks[0]
 
     # translucent via the GROUP, not the path itself painting the board
     # background over the hole
     group_m = re.search(r'<g id="layer-In1_Cu"[^>]*>', svg)
     assert group_m is not None
     assert f'opacity="{gerber_view._COPPER_LAYER_OPACITY}"' in group_m.group(0)
+
+
+def test_overlapping_clear_rings_both_stay_in_the_mask() -> None:
+    """The bug this rewrite fixes: two knockout strokes whose rings overlap
+    (e.g. an "N"'s diagonal meeting its vertical at the corner joint) must
+    both stay cut out. The old ``fill-rule="evenodd"`` compound path
+    double-counted the overlap's winding parity and painted it back in --
+    a white wedge inside the letter. A mask paints each clear ring BLACK;
+    overlapping black paint is still black, so this must not reproduce
+    that flip regardless of how the two rings overlap."""
+    solid = gerber_view.Region([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])
+    clear_a = gerber_view.Region(
+        [(1.0, 1.0), (5.0, 1.0), (5.0, 5.0), (1.0, 5.0)], solid=False
+    )
+    clear_b = gerber_view.Region(
+        [(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)], solid=False
+    )  # overlaps clear_a's [3,5]x[3,5] corner
+    els = gerber_view._region_els([solid, clear_a, clear_b], "F_Silkscreen", "#fff")
+
+    assert len(els) == 2  # one <mask>, one visible <path>
+    mask_el, path_el = els
+    assert mask_el.startswith("<mask")
+    assert mask_el.count("<path") == 3  # solid ring + BOTH clear rings, unreduced
+    assert mask_el.count('fill="#000"') == 2  # both clear rings, still separately black
+    assert path_el.startswith("<path")
+    mask_id_m = re.search(r'<mask id="([^"]+)"', mask_el)
+    assert mask_id_m is not None
+    assert f'mask="url(#{mask_id_m.group(1)})"' in path_el
+    assert "fill-rule" not in path_el
+
+
+def test_a_solid_region_with_no_holes_renders_without_mask_overhead() -> None:
+    """The common case -- a pour or silk fill with no antipad/knockout --
+    should stay a plain path; masking machinery is for when there is
+    something to cut out."""
+    solid = gerber_view.Region([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])
+    els = gerber_view._region_els([solid], "F_Cu", "#c8781e")
+
+    assert len(els) == 1
+    assert els[0].startswith("<path")
+    assert "mask=" not in els[0]
+    assert "<mask" not in els[0]
+
+
+# ── soldermask layers render as a FILM with holes, not the holes ─────
+def test_mask_layer_renders_a_film_with_one_black_shape_per_opening() -> None:
+    """The user-visible fix: a mask layer must render as a translucent
+    FILM covering the board with the openings cut out, not as the opening
+    shapes themselves sitting invisibly on top of the pads. Overlapping
+    openings must both stay open -- same paint-semantics mask trick
+    :func:`gerber_view._region_els` already uses for antipads."""
+    ap = gerber_view.Aperture("C", (1.0,))
+    art = gerber_view.LayerArt(
+        flashes=[
+            gerber_view.Flash(ap, 5.0, 5.0, refdes="U1", pin="1"),
+            gerber_view.Flash(ap, 5.4, 5.4, refdes="U1", pin="2"),  # overlaps
+        ]
+    )
+    film_ring = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+    els = gerber_view._mask_film_els(art, "F_Mask", "#7a2d8f", film_ring)
+
+    mask_el = next(e for e in els if e.startswith("<mask"))
+    film_path = next(e for e in els if e.startswith("<path") and "mask=" in e)
+    # one <path> (the film itself, white) + one <circle> per opening
+    # (round apertures render as circles, not paths -- see _flash_geometry)
+    assert mask_el.count("<path") == 1
+    assert mask_el.count("<circle") == 2  # the two openings, unreduced
+    assert mask_el.count('fill="#000"') == 2  # both openings, still separately black
+    assert 'fill="#fff"' in mask_el  # the film itself, visible in the mask
+    assert 'fill-opacity="0.55"' in film_path
+    mask_id_m = re.search(r'<mask id="([^"]+)"', mask_el)
+    assert mask_id_m is not None
+    assert f'mask="url(#{mask_id_m.group(1)})"' in film_path
+
+
+def test_mask_opening_hit_targets_still_carry_titles() -> None:
+    """The film itself is one compound path with no per-opening title --
+    hovering a pad's mask opening must still name the pad, via an
+    almost-invisible hit target laid over the film."""
+    ap = gerber_view.Aperture("C", (1.0,))
+    art = gerber_view.LayerArt(
+        flashes=[gerber_view.Flash(ap, 2.0, 2.0, refdes="U1", pin="1", net="OUT")]
+    )
+    film_ring = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    els = gerber_view._mask_film_els(art, "F_Mask", "#7a2d8f", film_ring)
+    hit_targets = [e for e in els if 'fill-opacity="0.01"' in e]
+    assert len(hit_targets) == 1
+    assert "<title>" in hit_targets[0]
+    assert "pad 1 of U1" in hit_targets[0]
+
+
+def test_mask_layer_renders_as_a_film_end_to_end() -> None:
+    """A real board's F_Mask group must contain a translucent film path +
+    a mask, not just the bare opening flashes it used to render as."""
+    files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    layer_m = re.search(r'<g id="layer-F_Mask"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert layer_m is not None, svg[:400]
+    layer_body = layer_m.group(1)
+    assert "<mask" in layer_body
+    assert 'fill-opacity="0.55"' in layer_body
+    # the opening itself is still hoverable, just as an almost-invisible
+    # hit target rather than a solid patch in the layer colour
+    assert 'fill-opacity="0.01"' in layer_body
+    # layer toggling still targets the one <g id="layer-F_Mask"> group
+    assert 'data-layer="F_Mask"' in svg
+
+
+def test_non_mask_layers_keep_their_old_flash_structure() -> None:
+    """The mask film change must not touch how copper/silk/paste layers
+    render -- direct flash shapes in the layer's own colour, no film, no
+    mask, no near-invisible hit targets."""
+    files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    layer_m = re.search(r'<g id="layer-F_Cu"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert layer_m is not None, svg[:400]
+    layer_body = layer_m.group(1)
+    assert "<mask" not in layer_body
+    assert "fill-opacity=" not in layer_body
+    assert re.search(r'<circle[^>]*fill="#c8781e"', layer_body)
 
 
 # ── silk knockout (S/N patch): a clear-polarity STROKE, not a region,
@@ -526,13 +680,15 @@ def test_the_svg_renders_the_sn_box_and_its_knockout_as_one_cutout() -> None:
     layer_m = re.search(r'<g id="layer-F_Silkscreen"[^>]*>(.*?)</g>', svg, re.DOTALL)
     assert layer_m is not None, svg[:400]
     layer_body = layer_m.group(1)
+    masks = re.findall(r"<mask\b[^>]*>.*?</mask>", layer_body, re.DOTALL)
+    body_no_masks = re.sub(r"<mask\b[^>]*>.*?</mask>", "", layer_body, flags=re.DOTALL)
 
-    paths = re.findall(r"<path\b[^>]*>", layer_body)
-    assert len(paths) == 1, "the box + its knockout must be ONE compound path"
-    assert 'fill-rule="evenodd"' in paths[0]
-    d_m = re.search(r'd="([^"]*)"', paths[0])
-    assert d_m is not None
-    assert d_m.group(1).count("M ") == 2  # the box ring + the one knockout ring
+    paths = re.findall(r"<path\b[^>]*>", body_no_masks)
+    assert len(paths) == 1, "the box's own path -- the knockout lives in a <mask>"
+    assert "mask=" in paths[0]
+
+    assert len(masks) == 1
+    assert masks[0].count("<path") == 2  # the box ring + the one knockout ring
 
     # silk gets silk-appropriate hover vocabulary, not copper's
     # "pour"/"antipad" (the compound path's title reflects the SOLID

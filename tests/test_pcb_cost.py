@@ -29,6 +29,7 @@ from precis.pcb.cost import (
     _thermal_rise,
     _via_count,
     aggregate_margin,
+    alignment_pair_term,
     crossings_term_for_layer,
     evaluate_cost,
     hardened_penalty,
@@ -239,7 +240,10 @@ def test_courtyard_overlap_scores_worse_when_instances_coincide():
     assert coincident.risk > separated.risk
 
     (t,) = [t for t in coincident.terms if t.name == "courtyard_overlap"]
-    assert t.raw == pytest.approx(1.0)  # perfect coincidence: fully at budget
+    # Coincident polygons are OVER budget (the budget — fraction 1.0 — is
+    # contact, the legality/DRC boundary; penetration depth carries it
+    # past 1.0), not merely at it as the old flat-circle term reported.
+    assert t.raw > 1.0
     (t,) = [t for t in separated.terms if t.name == "courtyard_overlap"]
     assert t.raw == pytest.approx(0.0)
 
@@ -293,6 +297,86 @@ def test_board_edge_clearance_absent_without_an_outline():
 
 def test_board_edge_clearance_registered_term_direction_is_lower():
     spec = _BY_NAME["board_edge_clearance"]
+    assert spec.direction is BoundDirection.LOWER
+
+
+# ── alignment (2026-09-01) ───────────────────────────────────────────────
+def _row_graph(xs: list[float], ys: list[float]) -> dict:
+    return {
+        "instances": [
+            {"refdes": f"U{i}", "x": xs[i], "y": ys[i]} for i in range(len(xs))
+        ],
+        "nets": [],
+    }
+
+
+def test_alignment_scores_better_for_an_exact_row_than_a_jittered_one():
+    """Three parts on an exact row (same y, spaced 2mm apart -- well
+    inside the default nearby gate) cost LESS in the ``alignment`` term
+    than the same parts jittered a few tenths of a mm off that row -- the
+    direct hand-built pin to the user request ("a bonus for parts that
+    are nicely aligned")."""
+    config = CostConfig()
+    row = evaluate_cost(
+        from_graph(_row_graph([0.0, 2.0, 4.0], [0.0, 0.0, 0.0])), Level.L4, config
+    )
+    jittered = evaluate_cost(
+        from_graph(_row_graph([0.0, 2.0, 4.0], [0.0, 0.3, -0.3])), Level.L4, config
+    )
+    row_alignment = sum(t.raw for t in row.terms if t.name == "alignment")
+    jittered_alignment = sum(t.raw for t in jittered.terms if t.name == "alignment")
+    assert row_alignment == pytest.approx(0.0)
+    assert jittered_alignment > row_alignment
+    assert row.total < jittered.total
+
+
+def test_alignment_pair_term_zero_at_exact_alignment_monotone_then_flat():
+    """The per-pair value: 0 at exact alignment, monotone in the
+    misalignment ``m``, and FLAT once ``m`` reaches ``tol`` -- no further
+    penalty (and no reward) past that point, the "no long-range pull"
+    shape the module docstring's alignment section documents."""
+    config = CostConfig()
+    dx = 1.5  # fixed, inside the default nearby gate; kept LARGER than
+    # every dy swept below so `m = min(dx, dy) == dy` throughout.
+
+    def raw_at(dy: float) -> float:
+        ir = from_graph(_row_graph([0.0, dx], [0.0, dy]))
+        return alignment_pair_term(ir, 0, 1, Level.L4, config).raw
+
+    tol = 2.0 * config.default_pitch_mm
+    exact = raw_at(0.0)
+    half = raw_at(tol / 2.0)
+    at_tol = raw_at(tol)
+    beyond = raw_at(tol * 2.0)
+
+    assert exact == pytest.approx(0.0)
+    assert 0.0 < half < at_tol
+    assert at_tol == pytest.approx(config.alignment_usd_per_pair)
+    assert beyond == pytest.approx(at_tol)  # flat past tol -- no long-range pull
+
+
+def test_alignment_pair_term_zero_beyond_the_nearby_gate():
+    """Two instances sharing a y coordinate exactly (``m == 0``) but far
+    apart in x score ZERO, not the max fraction — the distance gate
+    (:func:`~precis.pcb.cost._alignment_neighbourhood_mm`) exists
+    precisely to stop an unbounded-distance "share a coordinate" reward,
+    the long-range pull the module docstring's "no wirelength term"
+    caution bans."""
+    config = CostConfig()
+    ir = from_graph(_row_graph([0.0, 500.0], [0.0, 0.0]))
+    t = alignment_pair_term(ir, 0, 1, Level.L4, config)
+    assert t.raw == 0.0
+
+
+def test_alignment_pair_term_admissible_before_l3():
+    ir = from_graph(_row_graph([0.0, 0.0], [0.0, 0.0]))
+    t = alignment_pair_term(ir, 0, 1, Level.L1, CostConfig())
+    assert t.is_bound
+    assert t.raw == 0.0
+
+
+def test_alignment_registered_term_direction_is_lower():
+    spec = _BY_NAME["alignment"]
     assert spec.direction is BoundDirection.LOWER
 
 
@@ -434,19 +518,12 @@ def test_admissibility_direction_holds_across_a_hardened_schedule_too():
 #: If a future term turns out to need an exception, name it here with its
 #: own reason; never widen this to a blanket skip.
 _NOT_MOVE_REACHABLE: dict[str, str] = {
-    "courtyard_overlap": (
-        "Unreachable BY A GENERATED MOVE since 2026-08-28, deliberately: "
-        "OptimizeEngine._placement_is_legal now rejects any TRANSLATE/SWAP "
-        "proposal that overlaps two parts' keep-outs, so no move this test "
-        "can generate produces a nonzero value. The term is NOT dead — it "
-        "still scores states this engine did not author (a human-placed or "
-        "locked pose loaded from the store, a design hydrated with "
-        "overlapping instances), which is precisely the case where a "
-        "report matters and no move-time filter can help. What changed is "
-        "that the engine can no longer PURCHASE an overlap: a measured run "
-        "with this term active and no hard constraint settled with 10 "
-        "overlapping pairs, because a penalty is a price."
-    ),
+    # ``courtyard_overlap`` left this mapping on 2026-08-31: while it
+    # graded a flat 2.0mm centre-distance circle it was unreachable by a
+    # generated move (legality's own circle floor coincided with it), but
+    # as a separation-shortfall relaxation it is live on LEGAL states —
+    # two parts closer than a routing corridor score nonzero without
+    # overlapping — so the reachability property below now covers it.
     "board_edge_clearance": (
         "Same reason as courtyard_overlap: OptimizeEngine.bounds_for now "
         "shrinks each instance's legal centre range by its OWN keep-out "

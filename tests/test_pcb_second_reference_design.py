@@ -91,9 +91,17 @@ def test_power_nets_carry_current_annotations(design: dict[str, Any]) -> None:
         assert rail in annotated, f"{rail} carries no current= annotation"
 
 
-def test_has_through_hole_and_bottom_side_parts(design: dict[str, Any]) -> None:
-    """The axis board one never exercises at all: THT labels and one
-    authored bottom-side instance."""
+def test_has_through_hole_parts_and_no_half_supported_bottom_parts(
+    design: dict[str, Any],
+) -> None:
+    """The axis board one never exercises at all: THT labels. This board
+    deliberately carries NO bottom-side instance: ``"layer": "bottom"``
+    is today only half-honoured (silk mirrors to the bottom film while
+    pads/mask/paste/routing all still emit top-side), so an authored
+    bottom part is a silk-only lie in the gerbers. C3 was flipped back
+    to top in review round 4; full bottom-side support is
+    docs/backlog/pcb-review-round4-0901.md item 10, and this assertion
+    flips back with it."""
     labels = {c["refdes"]: c["label"] for c in design["components"]}
     tht_refdes = {
         r
@@ -103,8 +111,7 @@ def test_has_through_hole_and_bottom_side_parts(design: dict[str, Any]) -> None:
     assert len(tht_refdes) >= 5, f"expected >=5 THT parts, got {tht_refdes}"
 
     bottom = [c for c in design["components"] if c.get("layer") == "bottom"]
-    assert len(bottom) == 1
-    assert bottom[0]["refdes"] == "C3"
+    assert bottom == []
 
 
 def test_has_a_current_annotation_large_enough_to_force_a_multi_via_group(

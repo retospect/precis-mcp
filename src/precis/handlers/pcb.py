@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import tempfile
 import uuid
 from collections.abc import Callable
@@ -60,6 +61,7 @@ from precis.pcb import cost as pcb_cost
 from precis.pcb import drc as pcb_drc
 from precis.pcb import export as pcb_export
 from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
+from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import ir as pcb_ir
 from precis.pcb import planes as pcb_planes
@@ -142,6 +144,13 @@ _VIEWS = (
 _JOB_OPS = ("place", "route")
 _INLINE_EDIT_OPS = ("move", "rip", "pin_side", "plane_net", "class_rules")
 _OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS)
+
+#: :meth:`PcbHandler._polarized_refdes`'s label-inference half — an
+#: instance whose ``label`` matches this (case-insensitively) is treated
+#: as polarized even with no explicit ``"polarized": true`` flag. Matches
+#: the abbreviations a real BOM label uses: "ELEC" (electrolytic), "TANT"
+#: (tantalum), "POL" (generic "polarized").
+_POLARIZED_LABEL_RE = re.compile(r"ELEC|TANT|POL", re.IGNORECASE)
 
 
 class PcbHandler(Handler):
@@ -723,13 +732,45 @@ class PcbHandler(Handler):
         return out
 
     def _outline_from_features(self, ref_id: int) -> list[list[float]] | None:
+        """The board outline, as a plain point polygon — the single
+        parse point every view/export reads (gerber, board/fab SVG, DRC,
+        silk/fiducial furniture) so an ``outline`` feature's optional
+        ``corner_radius_mm`` (fillet + polygonize, see
+        :func:`precis.pcb.geom.rounded_polygon`) applies exactly once and
+        every downstream consumer inherits the rounded corners for free —
+        none of them special-case a radius, they just get more points.
+        ``corner_radius_mm`` absent or ``<= 0`` returns the sharp-corner
+        path unchanged, byte for byte."""
         for f in self.store.pcb_features_list(ref_id):
             geom = f.get("geom") or {}
             if str(f.get("ftype") or "") == "outline" and isinstance(
                 geom.get("path"), list
             ):
-                return [[float(p[0]), float(p[1])] for p in geom["path"]]
+                path = [[float(p[0]), float(p[1])] for p in geom["path"]]
+                radius = geom.get("corner_radius_mm")
+                if radius is not None and float(radius) > 0:
+                    ring: list[pcb_geom.Point] = [(p[0], p[1]) for p in path]
+                    return [
+                        [p[0], p[1]]
+                        for p in pcb_geom.rounded_polygon(ring, float(radius))
+                    ]
+                return path
         return None
+
+    def _build_ir(self, ref_id: int, graph: dict[str, Any]) -> pcb_ir.PcbIR:
+        """:func:`precis.pcb.session.build_ir` with the board-config
+        features the store knows attached — one wrapper so no view can
+        build an IR that forgot the mounting holes. A hole missing from
+        the IR is invisible to the router's occupancy grid
+        (:func:`precis.pcb.realize._claim_mounting_holes`), which is the
+        ``npth_clearance`` finding family: measured 2026-09-01 as all
+        four nano-fixture corner holes violated, every seed."""
+        return pcb_session.build_ir(
+            graph,
+            mounting_holes=pcb_session.mounting_holes_from_features(
+                self.store.pcb_features_list(ref_id)
+            ),
+        )
 
     def _furniture_clearance_mm(self, stackup: list[dict[str, Any]]) -> float | None:
         """The clearance :meth:`_board_furniture` hands to
@@ -785,6 +826,39 @@ class PcbHandler(Handler):
         except ValueError:
             return None
 
+    def _polarized_refdes(self, design: dict[str, Any]) -> frozenset[str]:
+        """The refdes of every instance that carries REAL polarity — the
+        ``polarized`` set :func:`~precis.pcb.silk.build_silk` (via
+        :meth:`_board_furniture`) uses to decide which R/C/L/FB parts
+        still get a pin-1 mark (that module's own docstring, "Not every
+        part needs one"). The IR silk.py builds from has refdes but no
+        labels, so this determination has to happen here, off the raw
+        design's ``instances`` list — the same list :meth:`_board_furniture`
+        callers already read for ``instance_sides``.
+
+        An instance is polarized when it declares ``"polarized": true``
+        outright, OR its ``label`` matches (case-insensitively) one of
+        ELEC/TANT/POL — the abbreviations a real part label uses for
+        "electrolytic"/"tantalum"/generic "polarized" (e.g. this module's
+        own nano fixture's C1, labelled ``"CAP-ELEC-16V-100uF-THT"``).
+        Neither test is authoritative on its own: a label is free text a
+        BOM author may not have written consistently, and a design with no
+        ``polarized`` flag at all (the common case today) must still infer
+        polarity from whatever label it has, rather than mark every R/C
+        pin-1-less by default regardless of what the part actually is."""
+        out: set[str] = set()
+        for i in design.get("instances") or []:
+            refdes = str(i.get("refdes") or "")
+            if not refdes:
+                continue
+            if i.get("polarized"):
+                out.add(refdes)
+                continue
+            label = str(i.get("label") or "")
+            if _POLARIZED_LABEL_RE.search(label):
+                out.add(refdes)
+        return frozenset(out)
+
     def _board_furniture(
         self,
         ir: pcb_ir.PcbIR,
@@ -799,6 +873,7 @@ class PcbHandler(Handler):
         clearance_mm: float | None,
         capability: CapabilityRow | None = None,
         date: str | None = None,
+        polarized: frozenset[str] = frozenset(),
     ) -> tuple[
         list[dict[str, Any]],
         dict[str, list[dict[str, Any]]],
@@ -818,11 +893,11 @@ class PcbHandler(Handler):
         structured record :func:`precis.pcb.drc.check_silk_missing`/
         :func:`~precis.pcb.drc.check_silk_printability` read, rather than
         this function's own ``warnings`` prose — and ``copper``, which is
-        the ``copper`` PARAMETER given back with any plane pour on the
-        fiducials' layer antipadded around the fiducial discs just placed
-        (:func:`precis.pcb.planes.cut_antipads`, called below once
-        :func:`~precis.pcb.silk.build_fiducials` has run). A caller MUST
-        use this returned ``copper``, not the one it passed in, for
+        the ``copper`` PARAMETER given back with any plane pour, ON EVERY
+        LAYER a fiducial occupies, antipadded around the fiducial discs
+        just placed (:func:`precis.pcb.planes.cut_antipads`, called below
+        once :func:`~precis.pcb.silk.build_fiducials` has run). A caller
+        MUST use this returned ``copper``, not the one it passed in, for
         everything downstream (the gerber/DRC/fab-SVG model's
         ``"copper"`` key) — this function does not mutate the input list
         in place, so keeping the old reference silently un-does the cut
@@ -830,9 +905,19 @@ class PcbHandler(Handler):
         resolved figure (:meth:`_furniture_clearance_mm`) for that same
         cut — ``None`` only when the board's stackup has no capability
         row at all (an unsupported layer count), which reports as a
-        warning and leaves any pour on the fiducials' layer un-cut rather
-        than raising, since a board in that state carries no pour to cut
-        in the first place (that same docstring's own reasoning).
+        warning and leaves any pour on any layer a fiducial occupies
+        un-cut rather than raising, since a board in that state carries no
+        pour to cut in the first place (that same docstring's own
+        reasoning).
+
+        ``polarized`` is passed straight through to
+        :func:`~precis.pcb.silk.build_silk` — the refdes of every instance
+        that carries REAL polarity (an electrolytic/tantalum cap, a
+        polarized inductor), determined by the caller from the design's
+        component flags/labels (this function only sees ``ir``/``pads``,
+        never a label). Defaults to empty, same "every pre-2026-09-01
+        caller's behaviour is unchanged" contract ``build_silk`` itself
+        documents.
 
         **This exists because there are two render sites** —
         :meth:`_render_gerber` (the fab set a human orders from) and the
@@ -882,6 +967,7 @@ class PcbHandler(Handler):
                 vias=vias,
                 instance_sides=instance_sides,
                 capability=capability,
+                polarized=polarized,
             )
             warnings.extend(f"silk: {m}" for m in silk_only.dropped)
             warnings.extend(f"silk: {m}" for m in silk_only.relocated)
@@ -898,8 +984,62 @@ class PcbHandler(Handler):
         # and silently dropped the block from the rendered board — found by
         # rendering and looking, not by any test. `build_title_block`'s own
         # docstring says to place it first; this is that instruction.
+        # Routed vias are obstacles for BOTH furniture pieces (silk
+        # dodges copper, the module's normal direction): neither builder
+        # used to see them, and the S/N patch — the one silk feature
+        # that exists to be WRITTEN on — ended up with stitch-via bumps
+        # under the Sharpie area (round-3 review item 2).
+        via_avoid = pcb_silk.via_obstacles(vias)
+        # Part COURTYARDS too (as bbox obstacles): the furniture ladders
+        # gained inward rungs (edge-slide, edge-centre — to escape corner
+        # mounting hardware), which can now propose spots inside the
+        # parts field. The builders only check pads, so a slid title
+        # block landed beside C14 on the 40mm stress fixture and cost
+        # that part its courtyard silk (clipped below legibility) — the
+        # furniture must yield to per-part silk it cannot see.
+        # Inflated past the bare courtyard hull (`world_courtyard_rings`
+        # is clearance-0): the DRAWN courtyard outline sits a silk
+        # clearance further out, and a furniture box that clears the hull
+        # but not the stroke still clips that stroke below legibility —
+        # exactly the C14 drop above, reproduced at hull-only inflation.
+        court_margin = (
+            pcb_silk.silk_clearance_mm(
+                capability, stroke_width_mm=pcb_silk.DEFAULT_SILK_WIDTH_MM
+            )
+            + 1.0
+        )
+        courtyard_avoid = [
+            pcb_silk.obstacle_from_bbox(
+                [
+                    (
+                        min(p[0] for p in ring) - court_margin,
+                        min(p[1] for p in ring) - court_margin,
+                    ),
+                    (
+                        max(p[0] for p in ring) + court_margin,
+                        min(p[1] for p in ring) - court_margin,
+                    ),
+                    (
+                        max(p[0] for p in ring) + court_margin,
+                        max(p[1] for p in ring) + court_margin,
+                    ),
+                    (
+                        min(p[0] for p in ring) - court_margin,
+                        max(p[1] for p in ring) + court_margin,
+                    ),
+                ]
+            )
+            for ring in pcb_silk.world_courtyard_rings(ir)
+            if ring
+        ]
+        furniture_avoid = courtyard_avoid + via_avoid
         title = pcb_silk.build_title_block(
-            outline, pads, name=slug, date=date, capability=capability
+            outline,
+            pads,
+            name=slug,
+            date=date,
+            avoid=furniture_avoid,
+            capability=capability,
         )
         warnings.extend(f"title block: {m}" for m in title.dropped)
 
@@ -918,13 +1058,20 @@ class PcbHandler(Handler):
             avoid=(
                 [pcb_silk.obstacle_from_bbox(title.bbox)]
                 if title.bbox is not None
-                else None
-            ),
+                else []
+            )
+            + furniture_avoid,
             capability=capability,
         )
         warnings.extend(f"S/N patch: {m}" for m in sn.dropped)
 
-        fid_layer = layer_names[0] if layer_names else "F.Cu"
+        # Every copper layer, not just the top one: a fiducial is a
+        # whole-stack registration mark — inner layers and the bottom film
+        # need the same optical target the top one gets, or a fab has
+        # nothing to align them against (this is that fix). Falls back to
+        # a single synthetic "F.Cu" only for the no-stackup-known case
+        # `build_fiducials` already tolerated before this change.
+        fid_layers = list(layer_names) if layer_names else ["F.Cu"]
         # `obstacle_from_bbox` returns a pad-shaped dict, which is exactly
         # what `build_fiducials` checks its candidate corners against — so
         # the block becomes an ordinary obstacle rather than a special case.
@@ -932,7 +1079,11 @@ class PcbHandler(Handler):
         for placed_bbox in (title.bbox, sn.bbox):
             if placed_bbox is not None:
                 fid_obstacles.append(pcb_silk.obstacle_from_bbox(placed_bbox))
-        fid = pcb_silk.build_fiducials(outline, fid_obstacles, layer=fid_layer)
+        # `ir=` feeds the parts-thicket exclusion — the SAME filter the
+        # router's pre-claim (`realize._claim_fiducial_keepouts`) applies,
+        # off the same IR, so the mint can only ever choose a site the
+        # router already reserved copper-free.
+        fid = pcb_silk.build_fiducials(outline, fid_obstacles, layers=fid_layers, ir=ir)
         warnings.extend(f"fiducial: {m}" for m in fid.dropped)
 
         # `FiducialResult.plane_blockers` cut in HERE, at render time, off
@@ -943,8 +1094,13 @@ class PcbHandler(Handler):
         # `plane_pours` would have, sized off the SAME `clearance_mm` this
         # handler resolves from `capabilities.py` (the caller's own
         # docstring), around each fiducial's MASK opening (the blocker
-        # discs are already sized to `mask_dia_mm`, not the bare copper).
-        # Non-pour copper (tracks/vias/pads) passes through untouched.
+        # discs are already sized to `mask_dia_mm`, not the bare copper) —
+        # ON EVERY LAYER a blocker names (`fid.plane_blockers` now carries
+        # all of `fid_layers`, so this one call already cuts a pour on an
+        # inner layer or B.Cu exactly as it always cut one on F.Cu; no
+        # per-layer loop needed, `cut_antipads` matches a blocker's
+        # `layers` list against each pour's own layer internally). Non-pour
+        # copper (tracks/vias/pads) passes through untouched.
         pour_items = [c for c in copper if c.get("ctype") == "pour"]
         if fid.plane_blockers and pour_items and clearance_mm is None:
             # No capability row for this stackup (see
@@ -954,8 +1110,8 @@ class PcbHandler(Handler):
             # realize time) is reported here rather than crashing a
             # render that otherwise has nothing to do with this cut.
             warnings.append(
-                f"fiducial: no fab capability row for this stackup — "
-                f"pour(s) on {fid_layer} left uncut around the fiducials"
+                "fiducial: no fab capability row for this stackup — "
+                "pour(s) left uncut around the fiducials on every layer"
             )
         elif fid.plane_blockers and pour_items:
             assert clearance_mm is not None  # narrowed by the branch above
@@ -964,26 +1120,30 @@ class PcbHandler(Handler):
             )
             copper = [c for c in copper if c.get("ctype") != "pour"] + cut_pours
             # The cut is geometry, not a promise — verify the invariant it
-            # exists for (a fiducial's mask opening is clear of copper)
-            # rather than trusting it silently. The one way this can
-            # legitimately still fail: the antipad ring's own area falls
-            # under `MIN_FRAGMENT_MM2` (`cut_antipads` reuses the SAME
-            # noise floor `plane_pours` uses for a sliver fragment, shared
-            # via `_pour_item`), so the hole is filtered out as buffering
-            # noise and the pour re-solidifies over the fiducial — a real
-            # fiducial-mask-opening-vs-fab-noise-floor collision, not a
-            # timing gap this function can no longer close.
+            # exists for (a fiducial's mask opening is clear of copper on
+            # EVERY layer it occupies, not just one) rather than trusting
+            # it silently. The one way this can legitimately still fail:
+            # the antipad ring's own area falls under `MIN_FRAGMENT_MM2`
+            # (`cut_antipads` reuses the SAME noise floor `plane_pours`
+            # uses for a sliver fragment, shared via `_pour_item`), so the
+            # hole is filtered out as buffering noise and the pour
+            # re-solidifies over the fiducial — a real fiducial-mask-
+            # opening-vs-fab-noise-floor collision, not a timing gap this
+            # function can no longer close.
             for fx, fy in fid.fiducials:
-                if any(
-                    str(p.get("layer") or "") == fid_layer
-                    and pcb_planes.point_in_pour(p, fx, fy)
-                    for p in cut_pours
-                ):
+                still_covered = sorted(
+                    {
+                        str(p.get("layer") or "")
+                        for p in cut_pours
+                        if pcb_planes.point_in_pour(p, fx, fy)
+                    }
+                )
+                if still_covered:
                     warnings.append(
                         f"fiducial: antipad ring at ({fx:.2f}, {fy:.2f}) on "
-                        f"{fid_layer} was too small to survive as a real hole "
-                        f"(< {pcb_planes.MIN_FRAGMENT_MM2}mm^2) — the pour "
-                        "still covers this fiducial"
+                        f"{', '.join(still_covered)} was too small to survive "
+                        f"as a real hole (< {pcb_planes.MIN_FRAGMENT_MM2}mm^2) "
+                        "— the pour still covers this fiducial there"
                     )
 
         pads = pads + fid.pads
@@ -1004,6 +1164,8 @@ class PcbHandler(Handler):
             instance_sides=instance_sides,
             reserved=reserved,
             capability=capability,
+            outline=[(float(p[0]), float(p[1])) for p in outline],
+            polarized=polarized,
         )
         warnings.extend(f"silk: {m}" for m in silk_result.dropped)
         warnings.extend(f"silk: {m}" for m in silk_result.relocated)
@@ -1031,7 +1193,7 @@ class PcbHandler(Handler):
         graph = self.store.pcb_graph(ref_id)
         if not graph.get("nets"):
             return []
-        ir = pcb_session.build_ir(graph)
+        ir = self._build_ir(ref_id, graph)
         footprints = pcb_session.footprints_by_refdes(
             ir, self.store.pcb_footprints_for(ref_id)
         )
@@ -1072,7 +1234,7 @@ class PcbHandler(Handler):
         than the check would ever flag — a TO-220's several-millimetre
         courtyard checked against nothing."""
         graph = self.store.pcb_graph(ref_id)
-        ir = pcb_session.build_ir(graph)
+        ir = self._build_ir(ref_id, graph)
         footprints = pcb_session.footprints_by_refdes(
             ir, self.store.pcb_footprints_for(ref_id)
         )
@@ -1125,8 +1287,19 @@ class PcbHandler(Handler):
             x, y = f.get("x"), f.get("y")
             if dia is None or x is None or y is None:
                 continue
+            # ``plated`` now comes from the feature: a solder-on nut's
+            # hole is plated (its ring is pad copper — emitted by
+            # ``pads_for_ir`` off ``ir.mounting_holes`` — so clearance
+            # rules cover it), and ``check_npth_clearance`` correctly
+            # skips it; a bare screw hole stays the unplated default
+            # that check exists to protect.
             out.append(
-                {"x": float(x), "y": float(y), "dia_mm": float(dia), "plated": False}
+                {
+                    "x": float(x),
+                    "y": float(y),
+                    "dia_mm": float(dia),
+                    "plated": bool(geom.get("plated")),
+                }
             )
         return out
 
@@ -1246,7 +1419,7 @@ class PcbHandler(Handler):
 
         footprints = self.store.pcb_footprints_for(ref_id)
         graph = self.store.pcb_graph(ref_id)
-        ir = pcb_session.build_ir(graph)
+        ir = self._build_ir(ref_id, graph)
         pin_to_net = {
             (m["refdes"], m["pin"]): net["name"]
             for net in graph["nets"]
@@ -1255,6 +1428,15 @@ class PcbHandler(Handler):
         pads, drills = padplace.board_pads(
             design["instances"], footprints, layers=layer_names, pin_to_net=pin_to_net
         )
+        # Mounting-hole drills belong in the SAME Excellon set as the
+        # component drills — without these the fab bundle carried a
+        # solder-nut's copper ring with NO hole through it (measured on
+        # the round-3 nano render: 43 via drills, zero mounting drills).
+        # Same {"x","y","dia_mm","plated"} shape as `_drc_drills`.
+        drills = drills + [
+            {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
+            for h in ir.mounting_holes
+        ]
         placed = [
             i
             for i in design["instances"]
@@ -1321,6 +1503,7 @@ class PcbHandler(Handler):
                 pads,
                 vias=vias,
                 instance_sides=instance_sides,
+                polarized=self._polarized_refdes(design),
                 copper=copper,
                 outline=outline,
                 layer_names=layer_names,
@@ -1583,7 +1766,7 @@ class PcbHandler(Handler):
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         graph = self.store.pcb_graph(ref_id)
-        ir = pcb_session.build_ir(graph)
+        ir = self._build_ir(ref_id, graph)
         instance_sides = {
             str(i.get("refdes")): str(i.get("layer") or "top")
             for i in design["instances"]
@@ -1615,6 +1798,7 @@ class PcbHandler(Handler):
                 pads,
                 vias=vias,
                 instance_sides=instance_sides,
+                polarized=self._polarized_refdes(design),
                 copper=copper,
                 outline=outline,
                 layer_names=layer_names,
@@ -1744,7 +1928,7 @@ class PcbHandler(Handler):
                     body="no parts on this design yet — nothing to sketch\n\n"
                     "Next: put(kind='pcb', id='slug', args={'components':[...]})"
                 )
-            ir = pcb_session.build_ir(graph)
+            ir = self._build_ir(ref_id, graph)
             pcb_session.apply_route_overrides(ir, self.store.pcb_routes_get(ref_id))
             return Response(
                 body=pcb_svg.render_sketch(ir, title=f"{slug} — sketch (L3)")
@@ -1813,7 +1997,7 @@ class PcbHandler(Handler):
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
         pads = self._drc_pads(ref_id, layer_names)
         graph = self.store.pcb_graph(ref_id)
-        ir = pcb_session.build_ir(graph)
+        ir = self._build_ir(ref_id, graph)
         instance_sides = {
             str(i.get("refdes")): str(i.get("layer") or "top")
             for i in design["instances"]
@@ -1828,6 +2012,7 @@ class PcbHandler(Handler):
                 pads,
                 vias=vias,
                 instance_sides=instance_sides,
+                polarized=self._polarized_refdes(design),
                 copper=copper,
                 outline=outline,
                 layer_names=layer_names,
@@ -1842,6 +2027,17 @@ class PcbHandler(Handler):
             "outline": outline,
             "copper": copper,
             "pads": pads,
+            # Mounting-hole drills — without them this preview showed a
+            # solder-nut ring with no hole through it while the real
+            # bundle (`_render_gerber`, same IR source) drills one; the
+            # two views disagreeing about the artefact is exactly what
+            # this level='fab' view exists to prevent. Via drills ride in
+            # from `copper` (excellon_files' own via pass), so this key
+            # carries only the board-config holes.
+            "drills": [
+                {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
+                for h in ir.mounting_holes
+            ],
             "silkscreen": silk_draws,
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
         }

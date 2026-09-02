@@ -88,6 +88,27 @@ def _obj_array(values: list[Any]) -> np.ndarray:
     return arr
 
 
+@dataclass(frozen=True, slots=True)
+class MountingHole:
+    """One board-config mounting hole (``ftype='mounting_hole'`` feature),
+    carried on :attr:`PcbIR.mounting_holes` so the ROUTER can claim it —
+    a hole the router cannot see is exactly the fiducial copper-claim
+    leak family again (tracks/vias legally drawn through a spot the
+    handler drills afterward; ``npth_clearance`` findings, round-3
+    review item 4)."""
+
+    x: float
+    y: float
+    #: Finished hole size, mm (an M4 clearance hole is 4.3; an M4
+    #: solder-nut hole is the nut's own drill, e.g. 5.6).
+    drill_mm: float
+    #: Copper annulus (outer) diameter, mm — 0.0 for a bare NPTH hole; a
+    #: positive value means a plated ring on every copper layer (a
+    #: solder-on nut's land), which the router must clear like a pad.
+    ring_dia_mm: float = 0.0
+    plated: bool = False
+
+
 @dataclass(slots=True)
 class PcbIR:
     """The progressively-enriched IR. Construct via :func:`from_graph`
@@ -235,6 +256,53 @@ class PcbIR:
     inst_fixed_xy: np.ndarray  # bool[n_inst] -- 'xy' or 'both'
     inst_fixed_rot: np.ndarray  # bool[n_inst] -- 'rot' or 'both'
 
+    # ---- placement structure: rigid "super footprint" groups -------------
+    # A user may declare two independent, both optional mechanisms that make
+    # several instances move as ONE rigid body under `optimize.py`'s
+    # TRANSLATE/ROTATE/SWAP: an authored ``"group"``/``"group_offset"`` (two
+    # named parts that are physically one assembly, e.g. a daughterboard's
+    # two header rows that must land 0.6" apart forever) and an
+    # auto-derived ``"pattern"``/``"pattern_instance"`` (N structurally
+    # identical repeats of one sub-circuit, e.g. four driver channels, that
+    # must end up with IDENTICAL internal layout without a human authoring
+    # N copies of the same offsets by hand). Both resolve to the SAME
+    # per-instance ``inst_group`` id below -- the optimizer's move
+    # generators don't need to know which mechanism produced a group, only
+    # that it exists -- but only an AUTHORED group ever carries a non-NaN
+    # ``inst_group_offset_*`` (:func:`from_graph`'s own docstring on
+    # ``_parse_instance_groups`` has the full split); a PATTERN group's
+    # congruent internal layout is a POST-SEED result
+    # (:func:`precis.pcb.optimize.seed_placement`'s tiling stamp), never
+    # authored data, so those three arrays stay NaN for a pattern member.
+    #
+    # int32[n_inst], the group id an instance belongs to, or -1 (the
+    # overwhelming common case: no group at all).
+    inst_group: np.ndarray
+    #: float64[n_inst], the AUTHORED offset (mm, footprint-local to the
+    #: group's own synthetic anchor pose, same clockwise-from-north
+    #: convention as ``pin_dx``/``pin_dy``) this member sits at relative to
+    #: its group's anchor -- NaN unless this instance is a member of an
+    #: authored (non-pattern) group with a ``"group_offset"`` given.
+    inst_group_offset_dx: np.ndarray
+    inst_group_offset_dy: np.ndarray
+    #: degrees, added to the group anchor's own rotation to get this
+    #: member's own ``inst_rot`` at seed time -- same NaN discipline as the
+    #: two fields above.
+    inst_group_offset_rot: np.ndarray
+    #: object[n_groups] -> str | None, the PATTERN family name a
+    #: pattern-derived group belongs to, ``None`` for a plain authored
+    #: group. Two DIFFERENT groups sharing the same non-``None`` value
+    #: here are congruent tiles of the same pattern -- the one thing
+    #: `optimize.py`'s SWAP generator checks before letting two groups
+    #: trade anchors (:data:`MoveKind.SWAP`'s own docstring note).
+    group_pattern: np.ndarray
+    #: int32[n_groups], the authored ``"pattern_instance"`` number for a
+    #: pattern-derived group, -1 for a plain authored group. Pattern
+    #: instance 0 is the LEADER whose internal layout every other instance
+    #: of that pattern gets stamped onto (see the tiling-stamp docstring in
+    #: :mod:`precis.pcb.optimize`).
+    group_pattern_index: np.ndarray
+
     # ---- L4: metric annotations -----------------------------------------
     seg_gap_capacity: (
         np.ndarray
@@ -268,6 +336,15 @@ class PcbIR:
     #: closing, not repeating).
     outline: list[tuple[float, float]] | None = None
 
+    #: The board's mounting holes (:class:`MountingHole`) — board-config
+    #: data with the same status as ``outline`` above: populated once at
+    #: hydration from ``ftype='mounting_hole'`` features, never mutated
+    #: by a move. Carried on the IR so :mod:`precis.pcb.realize` can
+    #: claim each hole (drill + annulus) on the occupancy grid BEFORE
+    #: routing — the handler-only feature list left the router blind to
+    #: them (``npth_clearance`` findings, round-3 review item 4).
+    mounting_holes: tuple[MountingHole, ...] = ()
+
     # -- sizes --------------------------------------------------------
     @property
     def n_instances(self) -> int:
@@ -292,6 +369,10 @@ class PcbIR:
     @property
     def n_layers(self) -> int:
         return len(self.stackup)
+
+    @property
+    def n_groups(self) -> int:
+        return len(self.group_pattern)
 
     # -- mutators: each owns exactly which levels it dirties -----------
     def move_instance(
@@ -517,11 +598,109 @@ def _build_segments_index(
     return idx
 
 
+def _safe_float(value: Any, default: float) -> float:
+    """``float(value)``, degrading to ``default`` for anything that isn't
+    one — the same "malformed input never crashes IR construction" rule
+    :func:`mounting_holes_from_features`-style parsers already follow
+    elsewhere in this package."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_instance_groups(
+    instances: list[dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Parse each instance dict's optional ``"group"``/``"group_offset"``
+    (an AUTHORED rigid "super footprint" — see :attr:`PcbIR.inst_group`'s
+    own docstring) and ``"pattern"``/``"pattern_instance"`` (an
+    AUTO-DERIVED rigid group — N congruent tiles of one sub-circuit) into
+    the six parallel arrays :func:`from_graph` needs:
+    ``(inst_group, inst_group_offset_dx, inst_group_offset_dy,
+    inst_group_offset_rot, group_pattern, group_pattern_index)``.
+
+    **A component names at most one of the two.** If a graph author (or a
+    bad merge) supplies both ``"pattern"`` and ``"group"`` on one
+    instance, ``"pattern"`` wins and ``"group"`` is silently ignored for
+    THAT instance — arbitrary but deterministic, never a crash: the two
+    mechanisms build a congruent rigid body via very different paths
+    (:func:`precis.pcb.optimize.seed_placement`'s anchor+offset seed for
+    an authored group vs. its own post-seed "stamp the leader tile's
+    layout onto every follower" pass for a pattern), so one component
+    cannot coherently ask for both at once.
+
+    Malformed input degrades gracefully, never raises: a non-string/empty
+    ``"group"``/``"pattern"`` name leaves the instance ungrouped; an
+    unparseable ``"pattern_instance"`` leaves a ``"pattern"``-naming
+    instance out of any pattern (there is no slot number to put it in);
+    a ``"group_offset"`` that is missing, not a dict, or has a
+    non-numeric ``x``/``y``/``rot`` defaults THAT axis to ``0.0`` (co-
+    locate with the anchor) rather than leaving a poisoning NaN in the
+    rigid-placement math a good sibling member's offset depends on.
+    """
+    n = len(instances)
+    inst_group = np.full(n, -1, dtype=np.int32)
+    offset_dx = np.full(n, math.nan, dtype=np.float64)
+    offset_dy = np.full(n, math.nan, dtype=np.float64)
+    offset_rot = np.full(n, math.nan, dtype=np.float64)
+
+    group_pattern: list[str | None] = []
+    group_pattern_index: list[int] = []
+    group_id_by_key: dict[tuple[Any, ...], int] = {}
+
+    def _group_id(
+        key: tuple[Any, ...], *, pattern: str | None, pattern_idx: int
+    ) -> int:
+        gid = group_id_by_key.get(key)
+        if gid is not None:
+            return gid
+        gid = len(group_pattern)
+        group_id_by_key[key] = gid
+        group_pattern.append(pattern)
+        group_pattern_index.append(pattern_idx)
+        return gid
+
+    for i, inst in enumerate(instances):
+        pattern = inst.get("pattern")
+        if isinstance(pattern, str) and pattern:
+            try:
+                idx_int = int(inst.get("pattern_instance"))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue  # no slot number -- can't place it in a pattern
+            gid = _group_id(
+                ("pattern", pattern, idx_int), pattern=pattern, pattern_idx=idx_int
+            )
+            inst_group[i] = gid
+            continue  # "pattern" wins over "group" when both are present
+
+        group = inst.get("group")
+        if not (isinstance(group, str) and group):
+            continue
+        gid = _group_id(("group", group), pattern=None, pattern_idx=-1)
+        inst_group[i] = gid
+        raw_offset = inst.get("group_offset")
+        offset = raw_offset if isinstance(raw_offset, dict) else {}
+        offset_dx[i] = _safe_float(offset.get("x"), 0.0)
+        offset_dy[i] = _safe_float(offset.get("y"), 0.0)
+        offset_rot[i] = _safe_float(offset.get("rot"), 0.0)
+
+    return (
+        inst_group,
+        offset_dx,
+        offset_dy,
+        offset_rot,
+        _obj_array(group_pattern),
+        np.array(group_pattern_index, dtype=np.int32),
+    )
+
+
 def from_graph(
     graph: dict[str, Any],
     *,
     stackup: list[dict[str, Any]] | None = None,
     outline: list[tuple[float, float]] | list[list[float]] | None = None,
+    mounting_holes: tuple[MountingHole, ...] = (),
 ) -> PcbIR:
     """Build an L0 :class:`PcbIR` from the plain-dict graph shape shared
     with :mod:`precis.pcb.eyes` (``{"instances":[...], "nets":[...],
@@ -672,6 +851,15 @@ def from_graph(
         if inst.get("y") is not None:
             inst_y[i] = float(inst["y"])
 
+    (
+        inst_group,
+        inst_group_offset_dx,
+        inst_group_offset_dy,
+        inst_group_offset_rot,
+        group_pattern,
+        group_pattern_index,
+    ) = _parse_instance_groups(instances)
+
     ir = PcbIR(
         stackup=stackup,
         outline=(
@@ -679,6 +867,7 @@ def from_graph(
             if outline is not None
             else None
         ),
+        mounting_holes=tuple(mounting_holes),
         instance_refdes=_obj_array([inst["refdes"] for inst in instances]),
         inst_extended_part=np.array(
             [bool(inst.get("extended_part")) for inst in instances], dtype=bool
@@ -726,6 +915,12 @@ def from_graph(
             [(inst.get("fixed") or "") in ("rot", "both") for inst in instances],
             dtype=bool,
         ),
+        inst_group=inst_group,
+        inst_group_offset_dx=inst_group_offset_dx,
+        inst_group_offset_dy=inst_group_offset_dy,
+        inst_group_offset_rot=inst_group_offset_rot,
+        group_pattern=group_pattern,
+        group_pattern_index=group_pattern_index,
         seg_gap_capacity=np.full(n_seg, np.nan),
         seg_region_density=np.full(n_seg, np.nan),
         seg_copper_length_mm=np.full(n_seg, np.nan),

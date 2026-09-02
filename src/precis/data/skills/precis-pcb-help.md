@@ -102,7 +102,22 @@ Field notes:
   description?, note?}`), placement `x`/`y`/`rot`/`layer` (`top`/`bottom`),
   `fixed` (`'xy'` or `'both'` — pins it against autoplace, for connectors /
   mounting / status LEDs), `roles` (free tags like `sensitive`/`noisy` that
-  drive class-based measures), `note`.
+  drive class-based measures), `note`. **Silk pin-1 marks**: a resistor,
+  capacitor, inductor, or ferrite bead (refdes family R/C/L/FB) has no
+  inherent polarity and gets no pin-1 indicator by default — set
+  `polarized: true` for one that actually is (electrolytic/tantalum cap,
+  polarized inductor) to keep the mark; a `label` containing ELEC/TANT/POL
+  (case-insensitive) infers it too, so a well-named part needs no explicit
+  flag. Every other family (D/Q/U/J/LED/…) is unaffected and always keeps
+  its mark. **Placement constraints**: `group: "<name>"` +
+  `group_offset: {x, y, rot}` lock components into one rigid body the
+  autoplacer moves as a unit — the offsets are authored geometry (e.g. the
+  two header rows of a daughterboard at their real row pitch); a `fixed`
+  member pins the whole group. `pattern: "<name>"` + `pattern_instance: <n>`
+  mark repeated subcircuits (channel 0..k of identical driver stages): every
+  instance is laid out **identically** (instance 0's internal layout is
+  stamped onto the rest and each tile then moves rigidly), so repeats read
+  as clean tiles instead of four ad-hoc arrangements.
 - **net**: `name` is **required and meaningful** — the name *is* the intent
   (`I2C_SCL`, not `N$7`). `class` drives width / plane / measure defaults
   ([[precis-net-class-help]]); `current` (amps) sizes the trace; `width` (mm)
@@ -239,9 +254,19 @@ put(
         "features": [
             {
                 "ftype": "outline",
-                "geom": {"path": [[0, 0], [30, 0], [30, 20], [0, 20]]},
+                # corner_radius_mm (optional) rounds every outline corner
+                # (fillet, polygonized); pours/DRC/silk all inherit it.
+                "geom": {"path": [[0, 0], [30, 0], [30, 20], [0, 20]],
+                         "corner_radius_mm": 2.0},
             },
+            # bare screw hole (unplated; copper must clear it — DRC npth rule)
             {"ftype": "mounting_hole", "x": 2, "y": 2, "geom": {"diameter": 3.2}},
+            # solder-on nut: plated hole + copper ring on every layer
+            # (rendered, gerber'd, and cleared like a pad; router+pours
+            # avoid both kinds automatically)
+            {"ftype": "mounting_hole", "x": 28, "y": 18,
+             "geom": {"diameter": 5.6, "ring_dia_mm": 8.0, "plated": True,
+                      "style": "solder_nut_m4"}},
         ]
     },
 )

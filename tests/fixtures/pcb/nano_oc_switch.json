@@ -1,0 +1,822 @@
+{
+ "components": [
+  {
+   "refdes": "J1",
+   "label": "HDR-2.54-1x15",
+   "group": "nano_hdr",
+   "group_offset": { "x": 0, "y": 0, "rot": 0 },
+   "pins": [
+    {
+     "name": "D13"
+    },
+    {
+     "name": "3V3"
+    },
+    {
+     "name": "AREF"
+    },
+    {
+     "name": "A0"
+    },
+    {
+     "name": "A1"
+    },
+    {
+     "name": "A2"
+    },
+    {
+     "name": "A3"
+    },
+    {
+     "name": "A4"
+    },
+    {
+     "name": "A5"
+    },
+    {
+     "name": "A6"
+    },
+    {
+     "name": "A7"
+    },
+    {
+     "name": "5V"
+    },
+    {
+     "name": "RST"
+    },
+    {
+     "name": "GND"
+    },
+    {
+     "name": "VIN"
+    }
+   ]
+  },
+  {
+   "refdes": "J2",
+   "label": "HDR-2.54-1x15",
+   "group": "nano_hdr",
+   "group_offset": { "x": 0, "y": 15.24, "rot": 0 },
+   "pins": [
+    {
+     "name": "D12"
+    },
+    {
+     "name": "D11"
+    },
+    {
+     "name": "D10"
+    },
+    {
+     "name": "D9"
+    },
+    {
+     "name": "D8"
+    },
+    {
+     "name": "D7"
+    },
+    {
+     "name": "D6"
+    },
+    {
+     "name": "D5"
+    },
+    {
+     "name": "D4"
+    },
+    {
+     "name": "D3"
+    },
+    {
+     "name": "D2"
+    },
+    {
+     "name": "GND"
+    },
+    {
+     "name": "RST2"
+    },
+    {
+     "name": "RX0"
+    },
+    {
+     "name": "TX1"
+    }
+   ]
+  },
+  {
+   "refdes": "J3",
+   "label": "SCREW-TERM-2.54-2P",
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "J4",
+   "label": "SCREW-TERM-2.54-2P",
+   "pattern": "channel",
+   "pattern_instance": 0,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "Q1",
+   "label": "TO-220-NPN",
+   "pattern": "channel",
+   "pattern_instance": 0,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    },
+    {
+     "name": "3"
+    }
+   ]
+  },
+  {
+   "refdes": "R1",
+   "label": "RES-0402",
+   "pattern": "channel",
+   "pattern_instance": 0,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "D1",
+   "label": "DIODE-AXIAL-THT-FLYBACK",
+   "pattern": "channel",
+   "pattern_instance": 0,
+   "pins": [
+    {
+     "name": "A"
+    },
+    {
+     "name": "K"
+    }
+   ]
+  },
+  {
+   "refdes": "J5",
+   "label": "SCREW-TERM-2.54-2P",
+   "pattern": "channel",
+   "pattern_instance": 1,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "Q2",
+   "label": "TO-220-NPN",
+   "pattern": "channel",
+   "pattern_instance": 1,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    },
+    {
+     "name": "3"
+    }
+   ]
+  },
+  {
+   "refdes": "R2",
+   "label": "RES-0402",
+   "pattern": "channel",
+   "pattern_instance": 1,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "D2",
+   "label": "DIODE-AXIAL-THT-FLYBACK",
+   "pattern": "channel",
+   "pattern_instance": 1,
+   "pins": [
+    {
+     "name": "A"
+    },
+    {
+     "name": "K"
+    }
+   ]
+  },
+  {
+   "refdes": "J6",
+   "label": "SCREW-TERM-2.54-2P",
+   "pattern": "channel",
+   "pattern_instance": 2,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "Q3",
+   "label": "TO-220-NPN",
+   "pattern": "channel",
+   "pattern_instance": 2,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    },
+    {
+     "name": "3"
+    }
+   ]
+  },
+  {
+   "refdes": "R3",
+   "label": "RES-0402",
+   "pattern": "channel",
+   "pattern_instance": 2,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "D3",
+   "label": "DIODE-AXIAL-THT-FLYBACK",
+   "pattern": "channel",
+   "pattern_instance": 2,
+   "pins": [
+    {
+     "name": "A"
+    },
+    {
+     "name": "K"
+    }
+   ]
+  },
+  {
+   "refdes": "J7",
+   "label": "SCREW-TERM-2.54-2P",
+   "pattern": "channel",
+   "pattern_instance": 3,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "Q4",
+   "label": "TO-220-NPN",
+   "pattern": "channel",
+   "pattern_instance": 3,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    },
+    {
+     "name": "3"
+    }
+   ]
+  },
+  {
+   "refdes": "R4",
+   "label": "RES-0402",
+   "pattern": "channel",
+   "pattern_instance": 3,
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "D4",
+   "label": "DIODE-AXIAL-THT-FLYBACK",
+   "pattern": "channel",
+   "pattern_instance": 3,
+   "pins": [
+    {
+     "name": "A"
+    },
+    {
+     "name": "K"
+    }
+   ]
+  },
+  {
+   "refdes": "R5",
+   "label": "RES-0402",
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "LED1",
+   "label": "LED-0603-PWR",
+   "pins": [
+    {
+     "name": "A"
+    },
+    {
+     "name": "K"
+    }
+   ]
+  },
+  {
+   "refdes": "C1",
+   "label": "CAP-ELEC-16V-100uF-THT",
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  },
+  {
+   "refdes": "C2",
+   "label": "CAP-0603-100nF",
+   "pins": [
+    {
+     "name": "1"
+    },
+    {
+     "name": "2"
+    }
+   ]
+  }
+ ],
+ "nets": [
+  {
+   "name": "VBAT",
+   "class": "power",
+   "current": 8.0
+  },
+  {
+   "name": "GND",
+   "class": "ground",
+   "current": 8.0
+  },
+  {
+   "name": "5V",
+   "class": "power",
+   "current": 0.3
+  },
+  {
+   "name": "LED_A"
+  },
+  {
+   "name": "OUT1",
+   "class": "power",
+   "current": 2.0
+  },
+  {
+   "name": "BASE1"
+  },
+  {
+   "name": "GPIO2"
+  },
+  {
+   "name": "OUT2",
+   "class": "power",
+   "current": 2.0
+  },
+  {
+   "name": "BASE2"
+  },
+  {
+   "name": "GPIO3"
+  },
+  {
+   "name": "OUT3",
+   "class": "power",
+   "current": 2.0
+  },
+  {
+   "name": "BASE3"
+  },
+  {
+   "name": "GPIO4"
+  },
+  {
+   "name": "OUT4",
+   "class": "power",
+   "current": 2.0
+  },
+  {
+   "name": "BASE4"
+  },
+  {
+   "name": "GPIO5"
+  }
+ ],
+ "connections": [
+  {
+   "net": "VBAT",
+   "refdes": "J3",
+   "pin": "1"
+  },
+  {
+   "net": "GND",
+   "refdes": "J3",
+   "pin": "2"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "J1",
+   "pin": "VIN"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "C1",
+   "pin": "1"
+  },
+  {
+   "net": "GND",
+   "refdes": "C1",
+   "pin": "2"
+  },
+  {
+   "net": "GND",
+   "refdes": "J1",
+   "pin": "GND"
+  },
+  {
+   "net": "GND",
+   "refdes": "J2",
+   "pin": "GND"
+  },
+  {
+   "net": "5V",
+   "refdes": "J1",
+   "pin": "5V"
+  },
+  {
+   "net": "5V",
+   "refdes": "C2",
+   "pin": "1"
+  },
+  {
+   "net": "GND",
+   "refdes": "C2",
+   "pin": "2"
+  },
+  {
+   "net": "5V",
+   "refdes": "R5",
+   "pin": "1"
+  },
+  {
+   "net": "LED_A",
+   "refdes": "R5",
+   "pin": "2"
+  },
+  {
+   "net": "LED_A",
+   "refdes": "LED1",
+   "pin": "A"
+  },
+  {
+   "net": "GND",
+   "refdes": "LED1",
+   "pin": "K"
+  },
+  {
+   "net": "GPIO2",
+   "refdes": "J2",
+   "pin": "D2"
+  },
+  {
+   "net": "GPIO2",
+   "refdes": "R1",
+   "pin": "1"
+  },
+  {
+   "net": "BASE1",
+   "refdes": "R1",
+   "pin": "2"
+  },
+  {
+   "net": "BASE1",
+   "refdes": "Q1",
+   "pin": "1"
+  },
+  {
+   "net": "OUT1",
+   "refdes": "Q1",
+   "pin": "2"
+  },
+  {
+   "net": "GND",
+   "refdes": "Q1",
+   "pin": "3"
+  },
+  {
+   "net": "OUT1",
+   "refdes": "J4",
+   "pin": "2"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "J4",
+   "pin": "1"
+  },
+  {
+   "net": "OUT1",
+   "refdes": "D1",
+   "pin": "A"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "D1",
+   "pin": "K"
+  },
+  {
+   "net": "GPIO3",
+   "refdes": "J2",
+   "pin": "D3"
+  },
+  {
+   "net": "GPIO3",
+   "refdes": "R2",
+   "pin": "1"
+  },
+  {
+   "net": "BASE2",
+   "refdes": "R2",
+   "pin": "2"
+  },
+  {
+   "net": "BASE2",
+   "refdes": "Q2",
+   "pin": "1"
+  },
+  {
+   "net": "OUT2",
+   "refdes": "Q2",
+   "pin": "2"
+  },
+  {
+   "net": "GND",
+   "refdes": "Q2",
+   "pin": "3"
+  },
+  {
+   "net": "OUT2",
+   "refdes": "J5",
+   "pin": "2"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "J5",
+   "pin": "1"
+  },
+  {
+   "net": "OUT2",
+   "refdes": "D2",
+   "pin": "A"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "D2",
+   "pin": "K"
+  },
+  {
+   "net": "GPIO4",
+   "refdes": "J2",
+   "pin": "D4"
+  },
+  {
+   "net": "GPIO4",
+   "refdes": "R3",
+   "pin": "1"
+  },
+  {
+   "net": "BASE3",
+   "refdes": "R3",
+   "pin": "2"
+  },
+  {
+   "net": "BASE3",
+   "refdes": "Q3",
+   "pin": "1"
+  },
+  {
+   "net": "OUT3",
+   "refdes": "Q3",
+   "pin": "2"
+  },
+  {
+   "net": "GND",
+   "refdes": "Q3",
+   "pin": "3"
+  },
+  {
+   "net": "OUT3",
+   "refdes": "J6",
+   "pin": "2"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "J6",
+   "pin": "1"
+  },
+  {
+   "net": "OUT3",
+   "refdes": "D3",
+   "pin": "A"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "D3",
+   "pin": "K"
+  },
+  {
+   "net": "GPIO5",
+   "refdes": "J2",
+   "pin": "D5"
+  },
+  {
+   "net": "GPIO5",
+   "refdes": "R4",
+   "pin": "1"
+  },
+  {
+   "net": "BASE4",
+   "refdes": "R4",
+   "pin": "2"
+  },
+  {
+   "net": "BASE4",
+   "refdes": "Q4",
+   "pin": "1"
+  },
+  {
+   "net": "OUT4",
+   "refdes": "Q4",
+   "pin": "2"
+  },
+  {
+   "net": "GND",
+   "refdes": "Q4",
+   "pin": "3"
+  },
+  {
+   "net": "OUT4",
+   "refdes": "J7",
+   "pin": "2"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "J7",
+   "pin": "1"
+  },
+  {
+   "net": "OUT4",
+   "refdes": "D4",
+   "pin": "A"
+  },
+  {
+   "net": "VBAT",
+   "refdes": "D4",
+   "pin": "K"
+  }
+ ],
+ "features": [
+  {
+   "ftype": "outline",
+   "geom": {
+    "path": [
+     [
+      0,
+      0
+     ],
+     [
+      62,
+      0
+     ],
+     [
+      62,
+      46
+     ],
+     [
+      0,
+      46
+     ],
+     [
+      0,
+      0
+     ]
+    ],
+    "corner_radius_mm": 3.0
+   }
+  },
+  {
+   "ftype": "mounting_hole",
+   "x": 6.0,
+   "y": 6.0,
+   "geom": {
+    "diameter": 5.6,
+    "ring_dia_mm": 8.0,
+    "plated": true,
+    "style": "solder_nut_m4"
+   }
+  },
+  {
+   "ftype": "mounting_hole",
+   "x": 56.0,
+   "y": 6.0,
+   "geom": {
+    "diameter": 5.6,
+    "ring_dia_mm": 8.0,
+    "plated": true,
+    "style": "solder_nut_m4"
+   }
+  },
+  {
+   "ftype": "mounting_hole",
+   "x": 6.0,
+   "y": 40.0,
+   "geom": {
+    "diameter": 5.6,
+    "ring_dia_mm": 8.0,
+    "plated": true,
+    "style": "solder_nut_m4"
+   }
+  },
+  {
+   "ftype": "mounting_hole",
+   "x": 56.0,
+   "y": 40.0,
+   "geom": {
+    "diameter": 5.6,
+    "ring_dia_mm": 8.0,
+    "plated": true,
+    "style": "solder_nut_m4"
+   }
+  }
+ ],
+ "planes": [
+  { "layer": "F.Cu", "net": "GND" },
+  { "layer": "In1.Cu", "net": "GND" },
+  { "layer": "In2.Cu", "net": "VBAT" },
+  { "layer": "B.Cu", "net": "GND" }
+ ]
+}

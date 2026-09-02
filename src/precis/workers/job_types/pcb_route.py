@@ -150,8 +150,17 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # and the place job's outline-aware placement quietly re-annealed away
     # here. One rule, two call sites, drifted: the same shape as every
     # other defect this build has produced.
-    outline = pcb_session.outline_from_features(ctx.store.pcb_features_list(pcb_ref_id))
-    ir = pcb_session.build_ir(graph, outline=outline)
+    features = ctx.store.pcb_features_list(pcb_ref_id)
+    ir = pcb_session.build_ir(
+        graph,
+        outline=pcb_session.outline_from_features(features),
+        # Mounting holes ride the same hydration for the same reason as
+        # the outline note above: a hole this IR doesn't carry is one the
+        # realizer's occupancy grid never claims, and _render_drc then
+        # checks the routed copper against holes the router couldn't see
+        # (the npth_clearance family, round-3 review item 4).
+        mounting_holes=pcb_session.mounting_holes_from_features(features),
+    )
     routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
     pcb_session.apply_route_overrides(ir, routes_by_net)
 

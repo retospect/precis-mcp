@@ -80,8 +80,7 @@
       "pins": [
         { "name": "1" },
         { "name": "2" }
-      ],
-      "layer": "bottom"
+      ]
     },
     {
       "refdes": "C4",
@@ -274,20 +273,37 @@
           [70, 50],
           [0, 50],
           [0, 0]
-        ]
+        ],
+        "corner_radius_mm": 3.0
       }
     },
     {
       "ftype": "mounting_hole",
-      "x": 3.0,
-      "y": 3.0,
-      "geom": { "diameter": 3.2 }
+      "x": 6.0,
+      "y": 6.0,
+      "geom": { "diameter": 5.6, "ring_dia_mm": 8.0, "plated": true, "style": "solder_nut_m4" }
     },
     {
       "ftype": "mounting_hole",
-      "x": 67.0,
-      "y": 47.0,
-      "geom": { "diameter": 3.2 }
+      "x": 64.0,
+      "y": 6.0,
+      "geom": { "diameter": 5.6, "ring_dia_mm": 8.0, "plated": true, "style": "solder_nut_m4" }
+    },
+    {
+      "ftype": "mounting_hole",
+      "x": 6.0,
+      "y": 44.0,
+      "geom": { "diameter": 5.6, "ring_dia_mm": 8.0, "plated": true, "style": "solder_nut_m4" }
+    },
+    {
+      "ftype": "mounting_hole",
+      "x": 64.0,
+      "y": 44.0,
+      "geom": { "diameter": 5.6, "ring_dia_mm": 8.0, "plated": true, "style": "solder_nut_m4" }
     }
+  ],
+  "planes": [
+    { "layer": "F.Cu", "net": "GND" },
+    { "layer": "B.Cu", "net": "GND" }
   ]
 }

@@ -126,9 +126,11 @@ gate_slot_acquire
 # container, where this worktree is mounted at /app, so a repo-relative path
 # lands on the host.
 ARTIFACT_ENV=()
-if [[ -n "${PRECIS_PCB_RENDER_OUT:-}" ]]; then
-    ARTIFACT_ENV=(-e "PRECIS_PCB_RENDER_OUT=${PRECIS_PCB_RENDER_OUT}")
-fi
+for _render_var in PRECIS_PCB_RENDER_OUT PRECIS_PCB_RENDER_SEED PRECIS_PCB_RENDER_FIXTURE; do
+    if [[ -n "${!_render_var:-}" ]]; then
+        ARTIFACT_ENV+=(-e "${_render_var}=${!_render_var}")
+    fi
+done
 
 # --no-sync: the image already bakes the venv and installs /app editable, so
 # the bind-mounted source is live without a per-run reinstall (that reinstall

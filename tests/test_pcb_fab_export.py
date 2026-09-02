@@ -231,10 +231,11 @@ def test_gerber_view_writes_a_zip_and_reports_counts(pcb, tmp_path):
     assert "exported fabtest → GERBER" in resp.body
     # 3 QFN SMD pads + 2 cap SMD pads + 1 THT pad flashed on all 4 stackup
     # layers (annular ring) = 3 + 2 + 4 = 9, PLUS the 3 board fiducials,
-    # which are ordinary `model["pads"]` entries so that their copper and
-    # their swelled mask opening come out of the existing pad pipeline
-    # rather than a second one.
-    assert "pads: 12" in resp.body
+    # which are ordinary `model["pads"]` entries — one per fiducial per
+    # stackup layer since fiducials span the whole stack (round 4), so
+    # their copper and their swelled mask opening (both films) come out
+    # of the existing pad pipeline rather than a second one: 9 + 3*4 = 21.
+    assert "pads: 21" in resp.body
     # the THT pad's own drill -- the via's drill is a separate copper item,
     # not part of model["drills"] (precis.pcb.gerber.excellon_files reads
     # vias straight off model["copper"], see its own docstring).

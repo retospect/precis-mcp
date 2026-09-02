@@ -7,6 +7,7 @@ members), re-runnability, and soft-delete. Uses the shared ``store`` fixture.
 
 from __future__ import annotations
 
+import zipfile
 from typing import Any
 
 import pytest
@@ -144,6 +145,63 @@ def test_pcb_graph_carries_extended_part_per_instance(pcb, store):
     graph = store.pcb_graph(ref.id)
     by_refdes = {i["refdes"]: i["extended_part"] for i in graph["instances"]}
     assert by_refdes == {"U1": True, "C1": False, "R1": False}
+
+
+def test_pcb_graph_round_trips_group_and_pattern_fields(pcb, store):
+    """The placement-constraint fields (rigid super-footprint ``group`` +
+    ``group_offset``, repeated-tile ``pattern`` + ``pattern_instance``)
+    ride ``pcb_instances.meta`` through create and come back HOISTED onto
+    the instance dict — the exact top-level shape
+    ``precis.pcb.ir.from_graph`` parses. A component without them must
+    come back without the keys at all (no ``None`` placeholders), so a
+    group-less design's graph is unchanged."""
+    design = {
+        "components": [
+            {
+                "refdes": "J1",
+                "label": "HDR-1x2",
+                "pins": [{"name": "1"}, {"name": "2"}],
+                "group": "hdr_pair",
+                "group_offset": {"x": 0.0, "y": 0.0, "rot": 0.0},
+            },
+            {
+                "refdes": "J2",
+                "label": "HDR-1x2",
+                "pins": [{"name": "1"}, {"name": "2"}],
+                "group": "hdr_pair",
+                "group_offset": {"x": 15.24, "y": 0.0, "rot": 0.0},
+            },
+            {
+                "refdes": "Q1",
+                "label": "TO-220",
+                "pins": [{"name": "1"}, {"name": "2"}, {"name": "3"}],
+                "pattern": "channel",
+                "pattern_instance": 0,
+            },
+            {
+                "refdes": "R1",
+                "label": "RES-0402",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },
+        ],
+        "nets": [{"name": "GND"}],
+        "connections": [
+            {"net": "GND", "refdes": "Q1", "pin": "3"},
+            {"net": "GND", "refdes": "R1", "pin": "2"},
+        ],
+    }
+    pcb.put(id="grouped-node", args=design)
+    ref = store.get_ref(kind="pcb", id="grouped-node")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    by_refdes = {i["refdes"]: i for i in graph["instances"]}
+    assert by_refdes["J1"]["group"] == "hdr_pair"
+    assert by_refdes["J1"]["group_offset"] == {"x": 0.0, "y": 0.0, "rot": 0.0}
+    assert by_refdes["J2"]["group_offset"] == {"x": 15.24, "y": 0.0, "rot": 0.0}
+    assert by_refdes["Q1"]["pattern"] == "channel"
+    assert by_refdes["Q1"]["pattern_instance"] == 0
+    for key in ("group", "group_offset", "pattern", "pattern_instance"):
+        assert key not in by_refdes["R1"]
 
 
 def test_toc_shows_placement_and_fanout(pcb):
@@ -528,6 +586,51 @@ def test_drc_view_reports_npth_clearance_near_a_mounting_hole(pcb):
     pcb.store.pcb_routes_write(ref.id, board_id, {"GND": {"status": "realized"}})
     drc = pcb.get(id="npth-board", view="drc")
     assert "npth_clearance" in drc.body, drc.body
+
+
+def test_outline_corner_radius_mm_rounds_the_parsed_outline(pcb):
+    """``_outline_from_features`` is the single authoritative outline
+    parse point every view/export reads -- a ``corner_radius_mm`` on the
+    outline feature's ``geom`` must round every corner there, once, so
+    every consumer (pours, DRC, silk, gerber/SVG render) inherits it for
+    free without any of them special-casing a radius."""
+    design: dict[str, Any] = {
+        "components": [],
+        "nets": [],
+        "connections": [],
+        "features": [
+            {
+                "ftype": "outline",
+                "geom": {
+                    "path": [[0, 0], [62, 0], [62, 46], [0, 46], [0, 0]],
+                    "corner_radius_mm": 3.0,
+                },
+            },
+        ],
+    }
+    pcb.put(id="rounded-board", args=design)
+    ref = pcb.store.get_ref(kind="pcb", id="rounded-board")
+    outline = pcb._outline_from_features(ref.id)
+    assert outline is not None
+    assert len(outline) > 5
+    for x, y in outline:
+        assert -1e-9 <= x <= 62.0 + 1e-9
+        assert -1e-9 <= y <= 46.0 + 1e-9
+
+
+def test_outline_without_corner_radius_mm_is_unchanged(pcb):
+    """Absent ``corner_radius_mm`` -- today's behaviour, byte for byte."""
+    path = [[0, 0], [62, 0], [62, 46], [0, 46], [0, 0]]
+    design: dict[str, Any] = {
+        "components": [],
+        "nets": [],
+        "connections": [],
+        "features": [{"ftype": "outline", "geom": {"path": path}}],
+    }
+    pcb.put(id="sharp-board", args=design)
+    ref = pcb.store.get_ref(kind="pcb", id="sharp-board")
+    outline = pcb._outline_from_features(ref.id)
+    assert outline == [[float(x), float(y)] for x, y in path]
 
 
 def _many_pins(n: int) -> list[dict[str, Any]]:
@@ -1283,3 +1386,101 @@ def test_svg_view_bad_level_is_bad_input(pcb):
     pcb.put(id="x4", args=_CROSSED)
     with pytest.raises(BadInput):
         pcb.get(id="x4", view="svg", args={"level": "nonsense"})
+
+
+# ── fiducials span the whole stack (all copper layers + both mask films) ──
+
+
+def test_gerber_bundle_fiducial_flashes_span_inner_and_bottom_copper(pcb, tmp_path):
+    """A fiducial is a fab-wide registration mark: on the DEFAULT_STACKUP
+    4-layer board (F.Cu/In1.Cu/In2.Cu/B.Cu) the gerber bundle must carry a
+    copper flash for it on EVERY layer, not just F.Cu -- an inner layer
+    (In1.Cu) and B.Cu each get a ``D03`` flash the same way F.Cu always
+    did, or a fab has nothing to register those films against."""
+    design: dict[str, Any] = {
+        "components": [],
+        "nets": [],
+        "connections": [],
+        "features": [
+            {
+                "ftype": "outline",
+                "geom": {"path": [[0, 0], [60, 0], [60, 40], [0, 40]]},
+            },
+        ],
+    }
+    pcb.put(id="fidspan", args=design)
+    resp = pcb.get(id="fidspan", view="gerber", args={"dir": str(tmp_path)})
+    assert "exported fidspan" in resp.body
+    with zipfile.ZipFile(tmp_path / "fidspan-fab.zip") as zf:
+        in1_cu = zf.read("fidspan-In1_Cu.gbr").decode("utf-8")
+        b_cu = zf.read("fidspan-B_Cu.gbr").decode("utf-8")
+    assert "D03*" in in1_cu  # a fiducial flash on an INNER copper layer
+    assert "D03*" in b_cu  # ... and on the bottom copper layer
+
+
+def test_gerber_bundle_b_mask_gains_the_fiducial_opening(pcb, tmp_path):
+    """The bottom soldermask film must open over each fiducial too --
+    ``soldermask_gerber`` derives a film's openings from ``model["pads"]``
+    entries on that side's OUTER copper layer, so a B.Cu fiducial pad
+    (the test above) is what makes this true, the same existing mechanism
+    the top film has always used, never a second one invented for the
+    bottom side."""
+    design: dict[str, Any] = {
+        "components": [],
+        "nets": [],
+        "connections": [],
+        "features": [
+            {
+                "ftype": "outline",
+                "geom": {"path": [[0, 0], [60, 0], [60, 40], [0, 40]]},
+            },
+        ],
+    }
+    pcb.put(id="fidmask", args=design)
+    pcb.get(id="fidmask", view="gerber", args={"dir": str(tmp_path)})
+    with zipfile.ZipFile(tmp_path / "fidmask-fab.zip") as zf:
+        f_mask = zf.read("fidmask-F_Mask.gbr").decode("utf-8")
+        b_mask = zf.read("fidmask-B_Mask.gbr").decode("utf-8")
+    assert "D03*" in f_mask  # unchanged: the top opening always existed
+    assert "D03*" in b_mask  # new: the bottom opening this task adds
+
+
+# ── `_polarized_refdes` -- the polarity determination behind the R/C/L/FB
+# pin-1 policy (precis.pcb.silk's own "Not every part needs one"). The IR
+# `build_silk` works from has refdes but no labels, so this has to happen
+# here, off the raw design's `instances` list.
+def test_polarized_refdes_infers_from_an_electrolytic_label(pcb):
+    """The live case: a label carrying "ELEC" (the nano fixture's C1,
+    ``"CAP-ELEC-16V-100uF-THT"``) is inferred polarized with no explicit
+    flag at all."""
+    design = {"instances": [{"refdes": "C1", "label": "CAP-ELEC-16V-100uF-THT"}]}
+    assert pcb._polarized_refdes(design) == frozenset({"C1"})
+
+
+def test_polarized_refdes_a_generic_passive_label_is_not_polarized(pcb):
+    """A plain 0603 cap label carries no ELEC/TANT/POL abbreviation --
+    not polarized, so its pin-1 mark is subject to the R/C/L/FB policy."""
+    design = {"instances": [{"refdes": "C2", "label": "CAP-0603-100nF"}]}
+    assert pcb._polarized_refdes(design) == frozenset()
+
+
+def test_polarized_refdes_honors_an_explicit_flag_even_with_no_matching_label(pcb):
+    """``"polarized": true`` on the instance is authoritative on its own,
+    independent of what the label says."""
+    design = {
+        "instances": [
+            {"refdes": "L3", "label": "INDUCTOR-SHIELDED-4.7uH", "polarized": True}
+        ]
+    }
+    assert pcb._polarized_refdes(design) == frozenset({"L3"})
+
+
+def test_polarized_refdes_matches_tant_and_pol_case_insensitively(pcb):
+    design = {
+        "instances": [
+            {"refdes": "C9", "label": "cap-tant-10v-22uf"},
+            {"refdes": "C10", "label": "CAP-POL-radial"},
+            {"refdes": "R7", "label": "RES-0402"},
+        ]
+    }
+    assert pcb._polarized_refdes(design) == frozenset({"C9", "C10"})

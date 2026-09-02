@@ -119,6 +119,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -132,12 +133,14 @@ from shapely.geometry import (  # type: ignore[import-untyped]
 from shapely.geometry import Point as _ShapelyPoint
 from shapely.geometry import Polygon as _ShapelyPolygon
 
-from precis.pcb import geom, maze, padplace
+from precis.pcb import geom, landpattern, maze, padplace
+from precis.pcb import silk as pcb_silk
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist, dist_point_to_segment
 from precis.pcb.ir import (
     NO_NET,
     PcbIR,
+    instance_courtyard_polygon,
     nearest_other_instance,
     pin_point,
     plane_layers_of,
@@ -261,9 +264,11 @@ class RealizeConfig:
     #: this.
     preferred_directions: bool = True
     #: Pull each routed path taut against the occupancy grid before
-    #: claiming it (:func:`_straighten`), removing the 45-degree staircases
-    #: an octile search necessarily produces. Can only remove copper, never
-    #: add or move it into someone else's corridor.
+    #: claiming it (:func:`_straighten`), collapsing the 45-degree
+    #: staircases an octile search necessarily produces into straight
+    #: runs plus taut 45/90 elbows. Octilinear-preserving: the pull never
+    #: emits a direction that is not a multiple of 45 degrees, and can
+    #: only remove copper, never move it into someone else's corridor.
     straighten: bool = True
     #: Let :func:`_straighten` nudge a via's (x, y) — never its layer SPAN —
     #: within :attr:`via_shove_radius_mm` when doing so lets a wire go
@@ -1152,6 +1157,11 @@ def _realize_maze(
     # first strands it; a heuristic, not a guarantee, and the guarantee
     # (no overlapping copper) does not depend on it.
     order = sorted(route_ids, key=lambda s: _seg_span_mm(ir, s))
+    # Built ONCE, outside the retry loop below: courtyard ink is
+    # placement-derived (this section's module note), identical on every
+    # rip-up-and-retry attempt, so recomputing it per attempt would just
+    # be the same answer paid for again.
+    ink_field = _courtyard_ink_field(ir, config.fab_caps)
     best: tuple[list[RealizedTrack], list[RealizedVia], list[int]] | None = None
     for _attempt in range(max(1, config.route_passes)):
         outcome = _route_pass(
@@ -1166,6 +1176,7 @@ def _realize_maze(
             signal_layers,
             spec,
             pad_geoms,
+            ink_field=ink_field,
         )
         if best is None or len(outcome[2]) < len(best[2]):
             best = outcome
@@ -1178,29 +1189,75 @@ def _realize_maze(
         order = failed + [s for s in order if s not in set(failed)]
     assert best is not None  # the loop runs at least once
     tracks, vias, unrouted = best
+    # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
+    # which is a TRACK-CENTERLINE figure (edge rule + half the widest
+    # track) that over-insets a polygon rim by `widest/2` and left parts
+    # near the edge visibly outside the fill (user review 2026-09-01:
+    # "extend fill pattern to the edge as far as design rules allow").
+    # The +0.01 cushion keeps float noise on a mitred rim from grazing
+    # the two-tier warn threshold at exactly the house figure.
     pours, extra_unrouted = _pour_planes(
-        ir, tracks, vias, unrouted, plane_ids, clearance, edge_inset, footprints
-    )
-    # Deliberate stitching vias, AFTER pouring -- this pass needs the
-    # finished pour polygons to know what it is joining (module docstring's
-    # "Plane fragment stitching" note, gripe 270637).
-    stitch_vias, stitch_tracks, unstitched = _stitch_plane_fragments(
         ir,
         tracks,
         vias,
-        pours,
-        spec=spec,
-        clearance=clearance,
-        pads=pads,
-        rules_by_net=rules_by_net,
-        config=config,
+        unrouted,
+        plane_ids,
+        clearance,
+        max(clearance, edge_min) + 0.01,
+        footprints,
     )
-    vias = vias + stitch_vias
-    # Jumper traces join the board AFTER pouring, deliberately: they are
-    # this net's own copper on a spare layer and are cleared against every
-    # foreign pour geometrically (`_clears_foreign_pours`), so they need no
-    # antipad cut and must not re-trigger one.
-    tracks = tracks + stitch_tracks
+    tracks, vias = _prune_redundant_drop_vias(ir, tracks, vias, pours)
+    # Deliberate stitching vias, AFTER pouring -- this pass needs the
+    # finished pour polygons to know what it is joining (module docstring's
+    # "Plane fragment stitching" note, gripe 270637).
+    #
+    # POUR AGAIN after any round that added copper. A stitch via is placed
+    # after the pours were carved, so a FOREIGN layer its barrel merely
+    # passes through still shows solid copper where the barrel is — the
+    # exact "third net's finished pour" limitation `_stitch_plane_
+    # fragments`'s docstring stated and deferred. It stopped being
+    # theoretical the day a board poured GND on F/In1/B and VBAT on In2
+    # (nano fixture, 2026-09-01: 24 clearance errors, every one a GND
+    # stitch barrel inside the VBAT plane). Re-pouring with the stitch
+    # vias in the copper list cuts the missing antipads — planes yield to
+    # vias, as fabricated boards actually do — and the loop runs the
+    # stitcher once more against the re-carved pours in case an antipad
+    # split something (a fresh fragment gets its join; a quiet round ends
+    # the loop). Two rounds bound it: each antipad is a via-sized bite,
+    # so a second round's additions are few and a third round's would be
+    # none in any board seen; a residual split is reported honestly by
+    # `unstitched`/connectivity rather than looped on forever.
+    unstitched: list[UnstitchedNet] = []
+    for _stitch_round in range(2):
+        stitch_vias, stitch_tracks, unstitched = _stitch_plane_fragments(
+            ir,
+            tracks,
+            vias,
+            pours,
+            spec=spec,
+            clearance=clearance,
+            pads=pads,
+            rules_by_net=rules_by_net,
+            config=config,
+        )
+        vias = vias + stitch_vias
+        # Jumper traces are this net's own copper on a spare layer and are
+        # cleared against every foreign pour geometrically
+        # (`_clears_foreign_pours`), so they need no antipad; the re-pour
+        # below still folds them in as ordinary blockers for OTHER nets.
+        tracks = tracks + stitch_tracks
+        if not stitch_vias and not stitch_tracks:
+            break
+        pours, _ = _pour_planes(
+            ir,
+            tracks,
+            vias,
+            unrouted,
+            plane_ids,
+            clearance,
+            max(clearance, edge_min) + 0.01,
+            footprints,
+        )
     reasons = _diagnose_all(
         ir,
         unrouted,
@@ -1283,6 +1340,84 @@ def _diagnose_all(
             )
         )
     return reasons
+
+
+def _claim_fiducial_keepouts(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
+    """Claim every corner site a render-time fiducial may occupy — BEFORE
+    :func:`_stamp_pads`, so the pad pass's own re-assert wins any overlap
+    back for a real pad (a candidate that crowds a pad is one
+    :func:`precis.pcb.silk.build_fiducials` will reject anyway, so losing
+    its cells to the pad costs nothing).
+
+    Fiducials are minted by the handler at render/DRC time, after routing
+    (:func:`precis.pcb.silk.fiducial_candidate_sites`'s docstring tells
+    the whole story); without this claim the router draws tracks, and
+    lands vias, straight through the spot the mint later picks — the
+    0.000mm-clearance / ``via_pad_keepout`` family
+    (``docs/backlog/pcb-plane-via-copper-claim-leak.md``), reproduced
+    live on esp32c3 seed 3 as a VCC3V3 track through the (6, 6) fiducial.
+    Claiming the obstacle-independent candidate SUPERSET rather than
+    predicting the mint's exact choices is what makes this robust: the
+    mint's pad/title-block/spacing checks only ever reject candidates,
+    so its output is always inside what was claimed here, at the cost of
+    a few never-used corner keep-outs.
+
+    **Every layer, not just ``PAD_LAYER``** — same discipline as
+    :func:`_claim_mounting_holes` right below, and for the identical
+    reason: :func:`precis.pcb.silk.build_fiducials` now mints a copper
+    flash on EVERY stackup layer (a fiducial is a whole-stack
+    registration mark, not a top-side-only one), so a router that only
+    claimed the pad layer would leave inner-layer/B.Cu copper free to
+    route straight through a fiducial the mint later lands there — the
+    same 0.000mm short this function exists to prevent, just one layer
+    down. :meth:`~precis.pcb.maze.OccupancyGrid.stamp_pad` (not bare
+    ``stamp_disk``) so the via keep-out mask sees the mask opening too —
+    a via drilled through a fiducial's window is as fab-fatal as a track
+    through it. Sentinel nets sit above the NC-pad band
+    (``n_nets + n_pins + k``): foreign to every real net, distinct per
+    site."""
+    if not ir.outline or len(ir.outline) < 3:
+        return
+    layers = range(0, grid.spec.n_layers)
+    for k, (_corner, (fx, fy)) in enumerate(
+        pcb_silk.fiducial_candidate_sites(ir.outline, ir=ir)
+    ):
+        radius = pcb_silk.FIDUCIAL_MASK_DIA_MM / 2.0
+        net = int(ir.n_nets) + int(ir.n_pins) + k
+        grid.stamp_disk(layers, fx, fy, grid.core_radius_mm(2.0 * radius), net)
+        grid.stamp_pad(layers, fx, fy, radius, net)
+
+
+#: Sentinel-net offset for mounting-hole claims — far above any fiducial
+#: candidate count (those sentinels are ``n_nets + n_pins + k`` for a
+#: handful of corner sites), so the two claim families can never collide.
+_MOUNTING_HOLE_NET_OFFSET = 4096
+
+
+def _claim_mounting_holes(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
+    """Claim every :attr:`~precis.pcb.ir.PcbIR.mounting_holes` entry on
+    the grid — BEFORE :func:`_stamp_pads`, same discipline (and same
+    reason) as :func:`_claim_fiducial_keepouts` above: a hole only the
+    handler knows about is one the router draws copper through, which is
+    the ``npth_clearance`` finding family (round-3 review item 4 —
+    measured as 4/4 corner holes violated on the nano fixture).
+
+    A drilled hole exists on EVERY layer, so unlike the SMD-assumption
+    pad claims this stamps ``range(0, n_layers)`` — a track dodging the
+    hole on F.Cu but crossing it on In1.Cu is still a track through a
+    drill. The claim radius is the larger of the drill and the copper
+    annulus (a solder-nut's ring is copper other nets owe clearance to,
+    exactly like a pad). :meth:`~precis.pcb.maze.OccupancyGrid.stamp_pad`
+    for the core so the via keep-out mask sees it too — a via inside a
+    mounting hole's ring is fab-fatal the same way one inside a pad is."""
+    for k, hole in enumerate(ir.mounting_holes):
+        r = max(float(hole.drill_mm), float(hole.ring_dia_mm)) / 2.0
+        if r <= 0.0:
+            continue
+        net = int(ir.n_nets) + int(ir.n_pins) + _MOUNTING_HOLE_NET_OFFSET + k
+        layers = range(0, grid.spec.n_layers)
+        grid.stamp_disk(layers, hole.x, hole.y, grid.core_radius_mm(2.0 * r), net)
+        grid.stamp_pad(layers, hole.x, hole.y, r, net)
 
 
 def _stamp_pads(grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float]]) -> None:
@@ -1416,6 +1551,8 @@ def _diagnose_unrouted(
             "this connection's endpoint has no placed (x, y) yet — nothing to route",
         )
     probe = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    _claim_fiducial_keepouts(probe, ir)
+    _claim_mounting_holes(probe, ir)
     _stamp_pads(probe, pads)
     clear_path = probe.route(
         net_id,
@@ -1489,8 +1626,17 @@ def _route_pass(
     signal_layers: list[int],
     spec: maze.GridSpec,
     pad_geoms: list[PadGeom],
+    ink_field: _InkField | None = None,
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
-    """One complete routing attempt onto a fresh ``grid``, in ``order``."""
+    """One complete routing attempt onto a fresh ``grid``, in ``order``.
+
+    ``ink_field`` (:func:`_courtyard_ink_field`, built ONCE in
+    :func:`_realize_maze` — placement-derived, so it is identical on every
+    attempt) is forwarded to the plane fan-out's drop-via search and to
+    the straighten pass's via shove, the two via-placement sites that
+    defer to courtyard silk (this section's module note)."""
+    _claim_fiducial_keepouts(grid, ir)
+    _claim_mounting_holes(grid, ir)
     _stamp_pads(grid, pads)
 
     tracks: list[RealizedTrack] = []
@@ -1501,7 +1647,7 @@ def _route_pass(
     # they ARE copper, so they get realized (and claimed) first, before
     # any route can be planned through where they sit.
     plane_tracks, plane_vias, plane_failed = _plane_fanout(
-        ir, plane_ids, grid, config, rules_by_net, pad_geoms
+        ir, plane_ids, grid, config, rules_by_net, pad_geoms, ink_field=ink_field
     )
     tracks += plane_tracks
     vias += plane_vias
@@ -1555,6 +1701,7 @@ def _route_pass(
                 shove_vias=config.shove_vias,
                 via_group_extent_mm=group_extent,
                 via_shove_radius_mm=config.via_shove_radius_mm,
+                ink_field=ink_field,
             )
         grid.stamp_path(path, rules.track_width_mm)
         via_r = (
@@ -1693,6 +1840,97 @@ def _pad_blockers(
     return out
 
 
+def _mounting_hole_blockers(ir: PcbIR, layers: list[str]) -> list[dict[str, Any]]:
+    """Every :attr:`~precis.pcb.ir.PcbIR.mounting_holes` entry as a fake
+    every-layer ``via`` blocker for :func:`~precis.pcb.planes.plane_pours`
+    — same reshaping trick (and same reason) as :func:`_pad_blockers`
+    above: the pour must antipad around a drill and its solder-nut ring,
+    or a filled layer renders solid copper through a hole the fab will
+    cut (and a floating nut ring merged into a plane is a picture of a
+    short). ``net=""`` never equals a pour's net, so every plane yields
+    an antipad; the diameter is the larger of drill and ring, unbuffered
+    (``plane_pours`` applies its own uniform ``clearance_mm``)."""
+    out: list[dict[str, Any]] = []
+    for hole in ir.mounting_holes:
+        dia = max(float(hole.drill_mm), float(hole.ring_dia_mm))
+        if dia <= 0.0:
+            continue
+        out.append(
+            {
+                "ctype": "via",
+                "net": "",
+                "x": float(hole.x),
+                "y": float(hole.y),
+                "dia_mm": dia,
+                "layers": list(layers),
+            }
+        )
+    return out
+
+
+def _prune_redundant_drop_vias(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    pours: list[dict[str, Any]],
+) -> tuple[list[RealizedTrack], list[RealizedVia]]:
+    """Drop a plane fan-out's stub+via when its own pad already sits IN
+    its net's pour on the pad layer — the pour IS the connection there
+    (:func:`precis.pcb.planes.plane_pours` deliberately does not carve
+    around own-net copper), so the dogbone adds a drilled hole and a
+    stub for nothing. User review 2026-09-01: "R2 has two superfluous
+    vias" on the motor board — every top-poured net's SMD pin was
+    getting a drop via it didn't need, because :func:`_plane_fanout`
+    runs BEFORE pouring and cannot know the pour will reach the pad.
+
+    Runs after :func:`_pour_planes` and before
+    :func:`_stitch_plane_fragments`, which rebuilds its grid and its
+    node set from the PRUNED lists — so if a removed via happened to be
+    the only bridge between this net's pours on two layers, the stitcher
+    sees the disconnection and places a via where the join actually
+    needs one, instead of at whichever pin the fan-out reached first.
+    Containment is asked of the pad CENTRE against the pour polygon,
+    holes included: the pour floods over own-net pads, so a covered
+    pad's centre is interior, while a pad the pour only grazes keeps its
+    dogbone (removal must never turn "connected by construction" into
+    "connected if the DRC's tangency test agrees")."""
+    layer_names = [str(layer.get("name")) for layer in ir.stackup]
+    pad_layer_name = layer_names[PAD_LAYER] if layer_names else None
+    pour_by_net: dict[str, Any] = {}
+    for pour in pours:
+        if str(pour.get("layer")) != pad_layer_name:
+            continue
+        poly = _pour_polygon(pour)
+        if not poly.is_empty:
+            net = str(pour.get("net", ""))
+            prev = pour_by_net.get(net)
+            pour_by_net[net] = poly if prev is None else prev.union(poly)
+    if not pour_by_net:
+        return tracks, vias
+    dead_tracks: set[int] = set()
+    dead_vias: set[tuple[float, float, int]] = set()
+    for t_idx, track in enumerate(tracks):
+        if not track.is_dogbone or not track.segments:
+            continue
+        seg = track.segments[0]
+        if seg.get("shape") != "line":
+            continue
+        poly = pour_by_net.get(str(ir.net_name[track.net_id]))
+        if poly is None:
+            continue
+        pad_pt = seg["start"]
+        if not poly.contains(_ShapelyPoint(float(pad_pt[0]), float(pad_pt[1]))):
+            continue
+        end = seg["end"]
+        dead_tracks.add(t_idx)
+        dead_vias.add((float(end[0]), float(end[1]), track.net_id))
+    if not dead_tracks:
+        return tracks, vias
+    kept_tracks = [t for i, t in enumerate(tracks) if i not in dead_tracks]
+    kept_vias = [v for v in vias if (v.x, v.y, v.net_id) not in dead_vias]
+    return kept_tracks, kept_vias
+
+
 def _pour_planes(
     ir: PcbIR,
     tracks: list[RealizedTrack],
@@ -1732,9 +1970,11 @@ def _pour_planes(
     pours: list[dict[str, Any]] = []
     if plane_nets and ir.outline:
         interim = RealizeResult(tuple(tracks), tuple(vias), ())
-        copper = to_gerber_model(interim, ir, layers=layer_names, outline=[])[
-            "copper"
-        ] + _pad_blockers(ir, layer_names, footprints)
+        copper = (
+            to_gerber_model(interim, ir, layers=layer_names, outline=[])["copper"]
+            + _pad_blockers(ir, layer_names, footprints)
+            + _mounting_hole_blockers(ir, layer_names)
+        )
         pours = plane_pours(
             outline=[[float(p[0]), float(p[1])] for p in ir.outline],
             layers=layer_names,
@@ -1766,6 +2006,131 @@ def _pour_planes(
     return pours, extra
 
 
+# ── courtyard ink avoidance (round-4 silk review, item 8 residue) ─────────
+#
+# A part's courtyard OUTLINE is placement-derived and known in full before
+# a single track is planned: nothing about where it is drawn depends on
+# which corridor a router later picks (contrast a track/pad, which is
+# copper the router itself decides). So a via that lands under it is not
+# an unavoidable collision the way two nets contesting the same corridor
+# is -- it is this pass never having asked a question whose answer was
+# available for free. The two via-placement sites below (a plane drop via,
+# :func:`_drop_via_site`; a straightened via transition, :func:`_shove_vias`)
+# each defer to courtyard ink SOFTLY: prefer an ink-free legal site, but
+# place the via under ink rather than fail the net outright -- a routed
+# connection beats an unrouted one every time, silk legibility is a review
+# concern, not a DRC one. The maze search's own in-grid via mask/cost is
+# deliberately untouched (out of scope): these two sites are where the
+# round-4 review's remaining clips (U1/C5 motor board, D4 nano board) were
+# traced to -- THT/plane-heavy spots, i.e. plane drop vias, with a route
+# layer-change via as the secondary case.
+
+
+#: Half the drawn courtyard stroke's own width. `instance_courtyard_polygon`
+#: called at `clearance_mm=`:func:`~precis.pcb.silk.silk_clearance_mm`'s
+#: result (as :func:`_courtyard_ink_field` below does, the same ring
+#: :func:`precis.pcb.silk.build_silk` actually strokes) already returns the
+#: silk CENTRELINE -- that function's own docstring's chain ends "+ drawn
+#: stroke width / 2 -> silk CENTRELINE". So the ring polyline is not the ink
+#: itself, it is the line a `stroke_width_mm`-wide pen travels along; a via
+#: clips real ink once it comes within this half-width of that centreline,
+#: not only when it crosses the mathematical polyline.
+_INK_HALF_STROKE_MM = pcb_silk.DEFAULT_SILK_WIDTH_MM / 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class _InkField:
+    """Every drawn-courtyard-ring edge on the board, in world coordinates,
+    each carrying its own precomputed bbox -- built ONCE per
+    :func:`_realize_maze` call (route-independent, module note above) and
+    threaded read-only through every route attempt and via-placement site
+    that wants to avoid it. :meth:`clips` rejects a candidate with four
+    float compares before it ever runs the real point-to-segment distance,
+    so a per-via-candidate query costs O(nearby segments), not O(every
+    part on the board) -- consulted, per the module note above, once for
+    EVERY candidate site a via search tries, not once per via placed.
+    """
+
+    segments: tuple[tuple[float, float, float, float, float, float, float, float], ...]
+
+    def clips(self, x: float, y: float, radius_mm: float) -> bool:
+        """Does a disk of copper radius ``radius_mm`` centred at
+        ``(x, y)`` touch drawn courtyard ink -- the via's own copper plus
+        the ink's half-stroke width (:data:`_INK_HALF_STROKE_MM`), never
+        the bare polyline distance alone."""
+        test = radius_mm + _INK_HALF_STROKE_MM
+        for ax, ay, bx, by, minx, miny, maxx, maxy in self.segments:
+            if x < minx - test or x > maxx + test or y < miny - test or y > maxy + test:
+                continue
+            if dist_point_to_segment((x, y), (ax, ay), (bx, by)) <= test:
+                return True
+        return False
+
+
+def _ink_field_from_rings(rings: list[list[Point]]) -> _InkField:
+    """Every ring's edges, bbox-precomputed, flattened into one
+    :class:`_InkField` -- the shared segment-building step
+    :func:`_courtyard_ink_field` uses for a real board and a test uses to
+    build a small, controlled one."""
+    segments: list[tuple[float, float, float, float, float, float, float, float]] = []
+    for ring in rings:
+        for a, b in itertools.pairwise(ring):
+            minx, maxx = (a[0], b[0]) if a[0] <= b[0] else (b[0], a[0])
+            miny, maxy = (a[1], b[1]) if a[1] <= b[1] else (b[1], a[1])
+            segments.append((a[0], a[1], b[0], b[1], minx, miny, maxx, maxy))
+    return _InkField(tuple(segments))
+
+
+def _courtyard_ink_field(ir: PcbIR, capability: CapabilityRow) -> _InkField:
+    """Every PLACED instance's DRAWN courtyard ring (the silk CENTRELINE
+    :func:`precis.pcb.silk.build_silk` actually strokes, not the bare
+    clearance-0 hull :func:`precis.pcb.silk.world_courtyard_rings` returns
+    for furniture avoidance -- see this section's module note above for
+    why the offset matters here), in world coordinates.
+
+    ``capability`` is ``config.fab_caps`` (:class:`RealizeConfig`'s own
+    field, never ``None`` -- it defaults to a real capability row), the
+    SAME row :func:`_board_edge_min_mm`/:func:`_outline_clip` already read,
+    so this reuses the board's actual published silk-to-mask figures
+    rather than guessing a fallback the way a module with no capability
+    visibility at all would have to.
+
+    A pinless placed instance (mounting hole, fiducial) contributes
+    nothing -- no land pattern, no courtyard to protect. Bottom-side
+    mirroring is ignored on purpose, the same call
+    :func:`~precis.pcb.silk.world_courtyard_rings` makes and for the same
+    reason (that function's own docstring): a mirror flips a ring about
+    its own centre, and this is a SOFT via-placement preference with
+    millimetres of its own slack, not a clearance guarantee."""
+    margin_mm = pcb_silk.silk_clearance_mm(
+        capability, stroke_width_mm=pcb_silk.DEFAULT_SILK_WIDTH_MM
+    )
+    pins_of_inst: dict[int, list[int]] = {}
+    for pid in range(ir.n_pins):
+        pins_of_inst.setdefault(int(ir.pin_instance[pid]), []).append(pid)
+    rings: list[list[Point]] = []
+    for inst in range(ir.n_instances):
+        cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+        if math.isnan(cx) or math.isnan(cy):
+            continue
+        ring_local = instance_courtyard_polygon(
+            ir, inst, clearance_mm=margin_mm, pins=pins_of_inst.get(inst, [])
+        )
+        if not ring_local:
+            continue
+        rot = float(ir.inst_rot[inst])
+        rings.append(
+            landpattern.place_points(
+                ring_local,
+                cx=cx,
+                cy=cy,
+                rot_deg=0.0 if math.isnan(rot) else rot,
+                mirrored=False,
+            )
+        )
+    return _ink_field_from_rings(rings)
+
+
 def _plane_fanout(
     ir: PcbIR,
     plane_ids: list[int],
@@ -1773,8 +2138,13 @@ def _plane_fanout(
     config: RealizeConfig,
     rules_by_net: dict[int, NetRules],
     pad_geoms: list[PadGeom],
+    ink_field: _InkField | None = None,
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Connect every pin of a plane-promoted net DOWN to its plane.
+
+    ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
+    :func:`_drop_via_site` unchanged, is the plane drop via's own defer-
+    to-silk-softly preference -- see this section's module note.
 
     One stub plus one drop via per PIN, not per segment. A net's segments
     are a star from ``member_pins[0]`` (``ir.from_graph``), so per-segment
@@ -1864,6 +2234,7 @@ def _plane_fanout(
                     ir,
                     _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
                 ),
+                ink_field=ink_field,
             )
             if stub_end is None:
                 failed.append(pid)
@@ -1929,10 +2300,32 @@ def _plane_fanout(
 #: genuinely blocked and saying so beats drawing a longer and longer stub
 #: through a congested fanout.
 _DROP_SEARCH_STEPS = 6
-#: Angles (radians) tried at each distance, in order. Straight out along
-#: the pin's own offset first — that is the direction the land pattern
-#: already says is outward — then progressively off-axis.
-_DROP_SEARCH_ANGLES = (0.0, 0.4, -0.4, 0.9, -0.9, 1.6, -1.6)
+#: The eight octilinear unit directions, counter-clockwise from +x. The
+#: diagonal component is one shared ``sqrt(0.5)`` float so a diagonal
+#: stub's |dx| equals |dy| EXACTLY, which is what keeps the emitted
+#: segment recognisably 45-degree under :func:`_is_octilinear`'s epsilon
+#: — ``cos(pi/4)`` and ``sin(pi/4)`` can differ in the last ulp and
+#: would not.
+_OCTO = math.sqrt(0.5)
+_OCTO_DIRS: tuple[tuple[float, float], ...] = (
+    (1.0, 0.0),
+    (_OCTO, _OCTO),
+    (0.0, 1.0),
+    (-_OCTO, _OCTO),
+    (-1.0, 0.0),
+    (-_OCTO, -_OCTO),
+    (0.0, -1.0),
+    (_OCTO, -_OCTO),
+)
+#: Direction-table offsets (multiples of 45 degrees) tried at each reach,
+#: in order: straight out along the pin's own offset — quantised to the
+#: nearest octilinear direction, because the stub it aims is DRAWN copper
+#: and every drawn segment must be a multiple of 45 degrees — then
+#: progressively off-axis, ending with the full reversal. This replaces
+#: the old free-radian sweep ``(0.0, 0.4, -0.4, 0.9, -0.9, 1.6, -1.6)``,
+#: whose stubs were the largest single source of arbitrary-angle copper
+#: on a rendered board.
+_DROP_SEARCH_OFFSETS = (0, 1, -1, 2, -2, 3, -3, 4)
 
 
 def _via_clears_vias(
@@ -1979,8 +2372,19 @@ def _drop_via_site(
     pad_radius_mm: float,
     placed_via_sites: list[tuple[float, float, float]],
     edge_clip: tuple[float, float, float, float] | None = None,
+    ink_field: _InkField | None = None,
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
+
+    **Defers to courtyard ink, softly.** ``ink_field``
+    (:func:`_courtyard_ink_field`) is placement-derived and known before
+    this search ever runs (this section's module note) — among every
+    LEGAL candidate this sweep tries, in its existing near-to-far,
+    axis-then-off-axis order, the first one whose via annulus (plus a
+    half-stroke margin, :class:`_InkField`'s own docstring) does not touch
+    drawn courtyard ink is returned; if none is ink-free, the first legal
+    candidate found (ink or no) is returned instead of failing the net —
+    a via that must sit under ink beats a net that cannot fan out at all.
 
     Asks the occupancy grid before claiming, for both the via annulus and
     the stub that feeds it — the same claim-then-draw discipline every
@@ -2045,11 +2449,22 @@ def _drop_via_site(
         config.dogbone_stub_mm, pad_radius_mm + via_radius_mm + grid.clearance_mm
     )
     ux, uy = direction
+    # Quantise the pin's outward direction to the nearest octilinear table
+    # entry: the stub this search aims is drawn copper, and every drawn
+    # segment is required to be a multiple of 45 degrees (see
+    # `_DROP_SEARCH_OFFSETS`). The sweep then rotates by whole table
+    # steps, never free radians.
+    base = round(math.atan2(uy, ux) / (math.pi / 4.0)) % 8
+    # The first LEGAL site found, remembered as the fallback the ink
+    # preference below yields to when no legal candidate is ink-free —
+    # see this function's own docstring. Without this fallback the search
+    # would have to be run twice (once for real, once to recover the
+    # pre-ink-aware answer) whenever ink rules out every candidate.
+    fallback_site: Point | None = None
     for step in range(1, _DROP_SEARCH_STEPS + 1):
         reach = base_reach * step
-        for angle in _DROP_SEARCH_ANGLES:
-            cos_a, sin_a = math.cos(angle), math.sin(angle)
-            vx, vy = ux * cos_a - uy * sin_a, ux * sin_a + uy * cos_a
+        for offset in _DROP_SEARCH_OFFSETS:
+            vx, vy = _OCTO_DIRS[(base + offset) % 8]
             site = (pad[0] + vx * reach, pad[1] + vy * reach)
             if edge_clip is not None and not (
                 edge_clip[0] <= site[0] <= edge_clip[2]
@@ -2068,7 +2483,7 @@ def _drop_via_site(
             # free space fed by a trace through someone else's copper is
             # still a short.
             n = max(1, int(reach / (grid.spec.pitch / 2.0)))
-            if all(
+            if not all(
                 grid.disk_is_free(
                     (PAD_LAYER,),
                     pad[0] + vx * reach * k / n,
@@ -2078,8 +2493,14 @@ def _drop_via_site(
                 )
                 for k in range(n + 1)
             ):
+                continue
+            if fallback_site is None:
+                fallback_site = site
+            if ink_field is None or not ink_field.clips(
+                site[0], site[1], via_radius_mm
+            ):
                 return site
-    return None
+    return fallback_site
 
 
 # ── plane fragment stitching (gripe 270637) ───────────────────────────────
@@ -2176,6 +2597,28 @@ def _grid_candidates(poly: Any, pitch: float) -> list[tuple[float, float]]:
             x += pitch
         y += pitch
     return out
+
+
+def _spread_order(
+    cands: list[tuple[float, float]], cap: int
+) -> Iterator[tuple[float, float]]:
+    """Iterate ``cands`` so the first ``cap`` accepted sites SPREAD across
+    the whole list instead of clustering at its head. `_grid_candidates`
+    enumerates its grid bottom-row-first; consuming that order directly
+    under a per-overlap cap put every accepted sprinkle via into the
+    lowest rows of a large overlap — measured on the nano fixture as two
+    ~20-via rows marching along the board's bottom edge (round-3 review
+    item 1). A strided interleave (every k-th candidate first, then the
+    off-by-one pass, …) makes the first full pass an even sample of the
+    region, while still eventually visiting every candidate so a blocked
+    site falls through to its neighbours."""
+    n = len(cands)
+    if n <= cap or cap <= 0:
+        yield from cands
+        return
+    k = math.ceil(n / cap)
+    for off in range(k):
+        yield from (cands[idx] for idx in range(off, n, k))
 
 
 def _candidate_points_in(region: Any, via_r: float) -> list[tuple[float, float]]:
@@ -2728,6 +3171,14 @@ def _stitch_one_net(
     # a real feature (thermal/EMI margin) but not this pass's job.
     # Same-layer pairs are left to stage 2 (they never spatially overlap
     # by definition — see stage 2's own note).
+    #
+    # The via BUDGET is allocated per disjoint PART of the overlap (min 1
+    # each) and each part's share is consumed in `_spread_order` — two
+    # deliberate distribution choices from the round-3 review: a small
+    # island must always get its stitch (user 2026-09-01: the ideal spots
+    # are "smallish islands" and thin necks), and a large field's share
+    # must sample the whole region instead of piling into the grid's
+    # first rows (the measured two-rows-along-the-board-bottom defect).
     for i, j in itertools.combinations(range(n_frags), 2):
         li, poly_i = frags[i]
         lj, poly_j = frags[j]
@@ -2737,13 +3188,21 @@ def _stitch_one_net(
         if overlap.is_empty or overlap.area <= 0.0:
             continue
         lo, hi = (li, lj) if li < lj else (lj, li)
-        placed = 0
-        for x, y in _grid_candidates(overlap, pitch):
-            if placed >= config.max_sprinkle_vias_per_overlap:
-                break
-            if try_via(x, y, lo, hi):
-                dsu.union(i, j)
-                placed += 1
+        parts = [
+            g for g in getattr(overlap, "geoms", [overlap]) if g.area > 0.0
+        ]
+        # Smallest part first: an island's single guaranteed slot must
+        # not depend on how much budget the big field consumed.
+        parts.sort(key=lambda g: g.area)
+        share = max(1, config.max_sprinkle_vias_per_overlap // max(1, len(parts)))
+        for part in parts:
+            placed = 0
+            for x, y in _spread_order(_grid_candidates(part, pitch), share):
+                if placed >= share:
+                    break
+                if try_via(x, y, lo, hi):
+                    dsu.union(i, j)
+                    placed += 1
 
     # Stage 2 -- targeted residue over FRAGMENT PAIRS ONLY (class
     # docstring's proof: a via node can never be a legal bridging target).
@@ -2999,6 +3458,8 @@ def _stitch_plane_fragments(
             pour_polys.append((str(pour.get("net", "")), idx, poly))
 
     grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    _claim_fiducial_keepouts(grid, ir)
+    _claim_mounting_holes(grid, ir)
     _stamp_pads(grid, pads)
     for t in tracks:
         _stamp_realized_track(grid, t)
@@ -3074,15 +3535,23 @@ def _straighten(
     shove_vias: bool = False,
     via_group_extent_mm: float | None = None,
     via_shove_radius_mm: float = 0.5,
+    ink_field: _InkField | None = None,
 ) -> maze.RoutePath:
-    """Pull a routed path taut: drop any interior vertex whose two
-    neighbours can see each other through free copper.
+    """Pull a routed path taut — WITHIN the octilinear direction set.
 
     An octile grid search cannot produce a line that is not a multiple of
     45 degrees, so a run to a pad that sits at some other angle comes out
     as a staircase — measured on the reference board, 431 segments over 78
     tracks with a 0.41mm median segment. Every one of those corners is real
-    copper with a real bend in it.
+    copper with a real bend in it. The original cure replaced a staircase
+    with the direct chord at whatever angle joined its ends — which traded
+    the staircase for arbitrary-angle copper, the very thing a fabbed
+    board should not carry (user review 2026-08-31: every wire on every
+    layer fully 90/45). Since then the pull is octilinear-preserving: a
+    staircase collapses to at most one straight run plus one taut 45/90
+    elbow (:func:`_octilinear_connect`), and the off-angle end segments
+    :func:`_snap_to_pads` necessarily creates (pad centres are continuous,
+    grid vertices are not) get an elbow inserted the same way.
 
     The chord is tested against the SAME occupancy grid that proved the
     original path clear, at the same radius the search itself queries with
@@ -3096,21 +3565,34 @@ def _straighten(
     **Vias are fixed points by default** — a vertex where the layer changes
     is never dropped, because moving it would move a hole. With
     ``shove_vias=True`` (:attr:`RealizeConfig.shove_vias`) a via MAY move,
-    within ``via_shove_radius_mm``, toward the straight line between its
+    within ``via_shove_radius_mm``, onto an octilinear-taut point
+    (:func:`_octilinear_shove_target`) between its
     two outer (non-via) neighbours — see :func:`_shove_vias` for the
     validation a candidate move must pass before it is accepted. A second
     collapse pass runs afterward so any run that only became collinear
     because of the shove gets the same treatment as everything else.
+
+    ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
+    :func:`_shove_vias` unchanged, lets a via transition sitting under
+    courtyard ink move even when it is not otherwise a shove candidate —
+    see that function's own docstring.
     """
     pts = list(path.points)
-    if len(pts) < 3:
+    if len(pts) < 2:
         return path
     radius = width_mm / 2.0 + grid.spec.pitch
     step = grid.spec.pitch / 2.0
     pts = _collapse_straight(pts, grid, net_id, radius, step)
     if shove_vias and via_group_extent_mm is not None and len(pts) >= 4:
         pts, moved = _shove_vias(
-            pts, grid, net_id, via_group_extent_mm, via_shove_radius_mm, radius, step
+            pts,
+            grid,
+            net_id,
+            via_group_extent_mm,
+            via_shove_radius_mm,
+            radius,
+            step,
+            ink_field=ink_field,
         )
         if moved:
             pts = _collapse_straight(pts, grid, net_id, radius, step)
@@ -3122,6 +3604,87 @@ def _straighten(
     return maze.RoutePath(path.net_id, tuple(pts), length, path.attached)
 
 
+#: Float-noise tolerance for the 45-degree direction test. Grid vertices
+#: are exact pitch multiples and the elbow construction in
+#: :func:`_octilinear_corners` reuses one shared min() for both diagonal
+#: components, so a genuinely octilinear segment misses by rounding only
+#: (~1e-14 at board scale); anything a snapped pad centre or shoved via
+#: bends off-axis misses by whole hundredths of a millimetre.
+_OCTILINEAR_EPS_MM = 1e-6
+
+
+def _is_octilinear(
+    a: tuple[float, float, int] | tuple[float, float],
+    c: tuple[float, float, int] | tuple[float, float],
+) -> bool:
+    """Is the straight segment ``a``→``c`` a multiple of 45 degrees —
+    axis-aligned or a true diagonal (|dx| == |dy|) — within float noise?
+    These are the only directions drawn copper is allowed to take (user
+    requirement 2026-08-31: every wire on every layer fully 90/45)."""
+    dx, dy = abs(c[0] - a[0]), abs(c[1] - a[1])
+    return (
+        dx <= _OCTILINEAR_EPS_MM
+        or dy <= _OCTILINEAR_EPS_MM
+        or abs(dx - dy) <= _OCTILINEAR_EPS_MM
+    )
+
+
+def _octilinear_corners(
+    a: tuple[float, float, int], c: tuple[float, float, int]
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """The two taut octilinear elbow points between ``a`` and ``c``:
+    diagonal-first, then axis-first. Either elbow yields the SHORTEST
+    45/90 path between the endpoints (one diagonal of the smaller extent
+    plus one axis run of the difference) — they differ only in which leg
+    comes first, i.e. which side of the straight chord the copper bulges
+    toward, which is exactly the degree of freedom that lets a blocked
+    elbow try the mirror."""
+    dx, dy = c[0] - a[0], c[1] - a[1]
+    d = min(abs(dx), abs(dy))
+    sx = 1.0 if dx >= 0 else -1.0
+    sy = 1.0 if dy >= 0 else -1.0
+    return (
+        (a[0] + sx * d, a[1] + sy * d),
+        (c[0] - sx * d, c[1] - sy * d),
+    )
+
+
+def _octilinear_connect(
+    grid: maze.OccupancyGrid,
+    a: tuple[float, float, int],
+    c: tuple[float, float, int],
+    net_id: int,
+    radius: float,
+    step: float,
+) -> list[tuple[float, float, int]] | None:
+    """The interior vertices of a FREE octilinear connection ``a``→``c``
+    (same layer): ``[]`` when the straight chord is itself octilinear and
+    clear, ``[elbow]`` for a taut two-segment dogleg (diagonal-first
+    preferred, mirror as fallback), ``None`` when nothing octilinear
+    clears. The one shared answer to "may copper run between these two
+    points, and along what path?" — used by the taut pull, by the via
+    shove's feasibility test, and (transitively) for the off-angle end
+    segments :func:`_snap_to_pads` creates, so every accepted connection
+    is provably re-derivable by the next pass over the same grid."""
+    if _is_octilinear(a, c):
+        return [] if _chord_is_free(grid, a, c, net_id, radius, step) else None
+    for mx, my in _octilinear_corners(a, c):
+        m = (mx, my, a[2])
+        if _chord_is_free(grid, a, m, net_id, radius, step) and _chord_is_free(
+            grid, m, c, net_id, radius, step
+        ):
+            return [m]
+    return None
+
+
+def _polyline_len(pts: list[tuple[float, float, int]]) -> float:
+    return sum(
+        dist((a[0], a[1]), (b[0], b[1]))
+        for a, b in itertools.pairwise(pts)
+        if a[2] == b[2]
+    )
+
+
 def _collapse_straight(
     pts: list[tuple[float, float, int]],
     grid: maze.OccupancyGrid,
@@ -3129,26 +3692,99 @@ def _collapse_straight(
     radius: float,
     step: float,
 ) -> list[tuple[float, float, int]]:
-    """One taut-pull pass: drop any interior, same-layer-neighboured vertex
-    whose surrounding chord tests clear. The vertex-collapse half of
+    """Taut-pull passes until fixpoint — OCTILINEAR-preserving since
+    2026-08-31. The old pass replaced a staircase with the direct chord at
+    whatever angle connected its ends; those chords were the largest
+    source of arbitrary-angle copper on a rendered board. Now a span is
+    only ever replaced by :func:`_octilinear_connect`'s straight-or-elbow
+    result, so pulling taut can never mint a direction the grid search
+    itself could not have drawn. The vertex-collapse half of
     :func:`_straighten`, factored out so a via shove (which can create NEW
-    collinear runs on either side of the moved via) gets a second pass
-    through the exact same logic rather than a hand-rolled local cleanup."""
-    pts = list(pts)
+    collapsible runs on either side of the moved via) gets a second pass
+    through the exact same logic.
+
+    Termination: a span replacement is accepted only when it strictly
+    reduces the vertex count or strictly shortens the copper, and an
+    elbow insertion (fixing an off-angle segment a snap or shove left
+    behind) is idempotent — so every pass monotonically decreases
+    (vertices, length) and the fixpoint loop is finite."""
     changed = True
-    while changed and len(pts) > 2:
-        changed = False
-        i = 1
-        while i < len(pts) - 1:
-            a, b, c = pts[i - 1], pts[i], pts[i + 1]
-            if a[2] == b[2] == c[2] and _chord_is_free(
-                grid, a, c, net_id, radius, step
-            ):
-                del pts[i]
-                changed = True
-            else:
-                i += 1
+    while changed:
+        pts, changed = _taut_pass(pts, grid, net_id, radius, step)
     return pts
+
+
+def _taut_pass(
+    pts: list[tuple[float, float, int]],
+    grid: maze.OccupancyGrid,
+    net_id: int,
+    radius: float,
+    step: float,
+) -> tuple[list[tuple[float, float, int]], bool]:
+    """One forward greedy pass of the octilinear taut pull: from each kept
+    vertex, splice in the farthest same-layer span that
+    :func:`_octilinear_connect` can replace with fewer/shorter copper;
+    where no span improves, still repair an off-angle SEGMENT (snapped pad
+    end, shoved via flank) by inserting its free elbow. Layer-change
+    vertices (vias) are span boundaries and never move."""
+    if len(pts) < 2:
+        return pts, False
+    out: list[tuple[float, float, int]] = [pts[0]]
+    changed = False
+    i = 0
+    while i < len(pts) - 1:
+        layer = pts[i][2]
+        best_j = -1
+        best_mids: list[tuple[float, float, int]] = []
+        j = i + 2
+        while j < len(pts) and pts[j - 1][2] == layer and pts[j][2] == layer:
+            mids = _octilinear_connect(grid, pts[i], pts[j], net_id, radius, step)
+            if mids is not None:
+                replaced = pts[i : j + 1]
+                candidate = [pts[i], *mids, pts[j]]
+                if len(candidate) < len(replaced) or _polyline_len(
+                    candidate
+                ) < _polyline_len(replaced) - 1e-9:
+                    best_j, best_mids = j, mids
+            j += 1
+        if best_j >= 0:
+            out.extend(best_mids)
+            out.append(pts[best_j])
+            i = best_j
+            changed = True
+            continue
+        nxt = pts[i + 1]
+        if nxt[2] == layer and not _is_octilinear(pts[i], nxt):
+            mids = _octilinear_connect(grid, pts[i], nxt, net_id, radius, step)
+            if mids is None:
+                # Tight-corridor fallback. The off-angle segment being
+                # repaired was DRAWN — its corridor exists — but `radius`
+                # carries a full cell of discretisation slack, so in a
+                # corridor tighter than that slack both elbow variants can
+                # test blocked even though they deviate from the proven
+                # segment by no more than the nub (min-axis extent). When
+                # that nub is within the one-cell dilation the route
+                # search itself already granted, re-ask at bare copper
+                # radius: the elbow then stays inside the cleared
+                # corridor by construction. Found live 2026-09-01 as the
+                # nano board's single `octilinear` DRC finding — a snapped
+                # pad end 0.023mm off-diagonal whose elbow was refused.
+                adx, ady = abs(nxt[0] - pts[i][0]), abs(nxt[1] - pts[i][1])
+                # The elbow's SHORT leg bounds its deviation from the
+                # proven chord: the axis remainder for a near-diagonal
+                # segment, the diagonal bite for a near-axis one.
+                nub = min(min(adx, ady), abs(adx - ady))
+                if nub <= 2.0 * step:
+                    tight = max(radius - 2.0 * step, step)
+                    mids = _octilinear_connect(
+                        grid, pts[i], nxt, net_id, tight, step
+                    )
+            if mids:
+                out.extend(mids)
+                changed = True
+        out.append(nxt)
+        i += 1
+    return out, changed
 
 
 def _project_onto_segment(p: Point, a: Point, b: Point) -> Point:
@@ -3166,17 +3802,143 @@ def _project_onto_segment(p: Point, a: Point, b: Point) -> Point:
     return (ax + t * dx, ay + t * dy)
 
 
-def _clamp_to_radius(candidate: Point, origin: Point, radius_mm: float) -> Point:
-    """``candidate``, pulled back toward ``origin`` if it is further than
-    ``radius_mm`` away — the "slightly" in "vias allowed to move
-    slightly" (backlog, verbatim)."""
-    d = dist(candidate, origin)
-    if d <= radius_mm or d < 1e-12:
-        return candidate
-    t = radius_mm / d
+def _octilinear_shove_candidates(
+    prev_pt: Point,
+    next_pt: Point,
+    origin: Point,
+    radius_mm: float,
+    *,
+    allow_no_gain: bool,
+) -> list[Point]:
+    """Every geometric via-shove target within ``radius_mm`` of ``origin``
+    that keeps BOTH flanks single straight octilinear segments, shortest
+    total flank length first — the full ranked list, where
+    :func:`_octilinear_shove_target` (below, now a thin wrapper) only ever
+    exposed the winner. A second caller, the courtyard-ink escape in
+    :func:`_shove_vias`, needs to walk past an ink-free candidate that
+    turns out illegal to the next-best ink-free one, which needs the
+    whole ranking, not just the best entry.
+
+    The candidates that genuinely straighten are the intersection points
+    of the eight octilinear rays out of each fixed neighbour (at most one
+    per direction pair), plus — when the neighbours' own chord is itself
+    octilinear — the origin's projection onto that chord (the via sliding
+    INTO the straight run, the ideal outcome).
+
+    ``allow_no_gain=False`` (the ONLY behaviour before this function
+    existed) keeps a candidate only when it STRICTLY shortens the two
+    flanks — the shove's "only ever removes copper" invariant under the
+    octilinear metric. ``allow_no_gain=True`` — used only when ``origin``
+    itself sits under courtyard ink (:func:`_shove_vias`) — additionally
+    keeps equal-or-longer candidates: escaping ink is worth some flank
+    length a pure taut-pull would never spend. Geometry only — the caller
+    still owns every occupancy/pad/via check."""
+    current = dist(prev_pt, origin) + dist(origin, next_pt)
+    out: list[tuple[float, Point]] = []
+
+    def consider(x: float, y: float) -> None:
+        cand = (x, y)
+        offset = dist(cand, origin)
+        if offset > radius_mm or offset < 1e-9:
+            return
+        total = dist(prev_pt, cand) + dist(cand, next_pt)
+        if not allow_no_gain and total >= current - 1e-9:
+            return
+        out.append((total, cand))
+
+    if _is_octilinear(prev_pt, next_pt):
+        px, py = _project_onto_segment(origin, prev_pt, next_pt)
+        consider(px, py)
+    wx, wy = next_pt[0] - prev_pt[0], next_pt[1] - prev_pt[1]
+    for ux, uy in _OCTO_DIRS:
+        for vx, vy in _OCTO_DIRS:
+            # Solve prev + s*u == next + t*v for s, t >= 0 (Cramer); a
+            # near-zero determinant is a parallel pair with no single
+            # intersection, and t < 0 is the same point some other pair
+            # reaches with the reversed direction — both skipped.
+            det = vx * uy - ux * vy
+            if abs(det) < 1e-9:
+                continue
+            s = (vx * wy - vy * wx) / det
+            t = (ux * wy - uy * wx) / det
+            if s < 1e-9 or t < 1e-9:
+                continue
+            consider(prev_pt[0] + s * ux, prev_pt[1] + s * uy)
+    out.sort(key=lambda entry: entry[0])
+    return [cand for _, cand in out]
+
+
+def _octilinear_shove_target(
+    prev_pt: Point, next_pt: Point, origin: Point, radius_mm: float
+) -> Point | None:
+    """The single best geometric target for a via shove, or ``None`` when
+    no move helps — the strictly-shortening winner of
+    :func:`_octilinear_shove_candidates`, kept as its own name because it
+    is still the right call for a shortening-only search (this function's
+    prior full docstring, on the candidate GEOMETRY, now lives there)."""
+    candidates = _octilinear_shove_candidates(
+        prev_pt, next_pt, origin, radius_mm, allow_no_gain=False
+    )
+    return candidates[0] if candidates else None
+
+
+def _shove_candidate_legal(
+    grid: maze.OccupancyGrid,
+    prev_pt: tuple[float, float, int],
+    next_pt: tuple[float, float, int],
+    v_pre_layer: int,
+    v_post_layer: int,
+    candidate: Point,
+    net_id: int,
+    via_group_extent_mm: float,
+    chord_radius_mm: float,
+    step: float,
+) -> bool:
+    """May the via transition move to ``candidate`` — both flanks clear
+    (plain chord test: both are single straight octilinear segments by
+    construction, :func:`_octilinear_shove_candidates`, so no elbow case
+    to consider) AND the via's own annulus clears, at
+    ``via_group_extent_mm`` collapsed across every layer, same as
+    :func:`_shove_vias`'s own docstring on why. Split out of that
+    function's loop body so the courtyard-ink fallback below can test
+    several ranked candidates without duplicating this logic."""
+    near_ok = _chord_is_free(
+        grid,
+        (prev_pt[0], prev_pt[1], v_pre_layer),
+        (candidate[0], candidate[1], v_pre_layer),
+        net_id,
+        chord_radius_mm,
+        step,
+    )
+    far_ok = near_ok and _chord_is_free(
+        grid,
+        (candidate[0], candidate[1], v_post_layer),
+        (next_pt[0], next_pt[1], v_post_layer),
+        net_id,
+        chord_radius_mm,
+        step,
+    )
     return (
-        origin[0] + (candidate[0] - origin[0]) * t,
-        origin[1] + (candidate[1] - origin[1]) * t,
+        far_ok
+        and grid.disk_is_free(
+            range(0, grid.spec.n_layers),
+            candidate[0],
+            candidate[1],
+            grid.core_radius_mm(via_group_extent_mm),
+            net_id,
+        )
+        # `disk_is_free` is deliberately SAME-NET-blind (right for a
+        # trace legally ending on its own pad, `_shove_vias`'s own
+        # docstring) — a shoved via is not a trace, so it must also clear
+        # `via_clears_pads` (net-blind, checks a pad's own net too) or a
+        # shove can walk a via straight onto its own pad. Found
+        # 2026-08-29 (gripe 269811): this loop moved a via by testing
+        # only `disk_is_free`, so a candidate site that was merely "not
+        # foreign copper" was accepted even when it sat on the via's own
+        # net's pad, at the SAME group-extent radius the occupancy check
+        # above already uses (the conservative stitched-group footprint,
+        # never the single via's own smaller diameter).
+        and grid.via_clears_pads(candidate[0], candidate[1], via_group_extent_mm / 2.0)
     )
 
 
@@ -3188,6 +3950,7 @@ def _shove_vias(
     shove_radius_mm: float,
     chord_radius_mm: float,
     step: float,
+    ink_field: _InkField | None = None,
 ) -> tuple[list[tuple[float, float, int]], bool]:
     """One pass over every via TRANSITION in ``pts`` — a same-coordinate,
     different-layer consecutive pair with a fixed neighbour on each side
@@ -3223,6 +3986,24 @@ def _shove_vias(
     this can only change WHERE a via sits, never how many exist or what it
     connects, so it cannot sever a net the way a naive "just move it"
     edit could.
+
+    **Courtyard ink is a second, SOFT reason to move a via — see the
+    module note ahead of :func:`_courtyard_ink_field`.** When ``ink_field``
+    is given and the via transition's OWN disk (at
+    ``via_group_extent_mm / 2.0``, the same radius the legality check
+    above already uses) touches drawn courtyard ink, this transition
+    becomes a shove candidate even when it is already octilinear-taut —
+    :func:`_octilinear_shove_candidates` is asked with
+    ``allow_no_gain=True`` and the pool is narrowed to INK-FREE candidates
+    only (moving to a different inked spot fixes nothing and is not a
+    shortening move either, so it would spend flank length for zero
+    benefit); the first of those that also passes every existing legality
+    check is taken, and no ink-free legal candidate in range leaves the
+    via exactly where it is, same as "no move helps" always has. A
+    transition that is NOT under ink is untouched by any of this — it
+    still only ever moves to strictly shorten, exactly as before
+    ``ink_field`` existed, so the "only ever removes copper" invariant is
+    unweakened for the common case.
     """
     pts = list(pts)
     moved = False
@@ -3234,57 +4015,54 @@ def _shove_vias(
             continue
         prev_pt, next_pt = pts[i - 1], pts[i + 2]
         origin = (v_pre[0], v_pre[1])
-        target = _project_onto_segment(
-            origin, (prev_pt[0], prev_pt[1]), (next_pt[0], next_pt[1])
+        via_r = via_group_extent_mm / 2.0
+        origin_inked = ink_field is not None and ink_field.clips(
+            origin[0], origin[1], via_r
         )
-        candidate = _clamp_to_radius(target, origin, shove_radius_mm)
-        if dist(candidate, origin) < 1e-9:
-            i += 1
-            continue
-        near_ok = _chord_is_free(
-            grid,
-            (prev_pt[0], prev_pt[1], v_pre[2]),
-            (candidate[0], candidate[1], v_pre[2]),
-            net_id,
-            chord_radius_mm,
-            step,
-        )
-        far_ok = near_ok and _chord_is_free(
-            grid,
-            (candidate[0], candidate[1], v_post[2]),
-            (next_pt[0], next_pt[1], v_post[2]),
-            net_id,
-            chord_radius_mm,
-            step,
-        )
-        via_ok = (
-            far_ok
-            and grid.disk_is_free(
-                range(0, grid.spec.n_layers),
-                candidate[0],
-                candidate[1],
-                grid.core_radius_mm(via_group_extent_mm),
+        if origin_inked:
+            assert ink_field is not None  # narrows for mypy; origin_inked implies this
+            # Only INK-FREE candidates are considered here — moving to
+            # another inked spot fixes nothing and is not itself a
+            # shortening move, so it would spend real flank length for
+            # zero benefit. No ink-free candidate in range means this
+            # via is left exactly where it is, same as today's "no move
+            # helps" outcome.
+            pool = _octilinear_shove_candidates(
+                (prev_pt[0], prev_pt[1]),
+                (next_pt[0], next_pt[1]),
+                origin,
+                shove_radius_mm,
+                allow_no_gain=True,
+            )
+            ordered = [c for c in pool if not ink_field.clips(c[0], c[1], via_r)]
+        else:
+            candidate = _octilinear_shove_target(
+                (prev_pt[0], prev_pt[1]),
+                (next_pt[0], next_pt[1]),
+                origin,
+                shove_radius_mm,
+            )
+            ordered = [candidate] if candidate is not None else []
+
+        accepted: Point | None = None
+        for candidate in ordered:
+            if _shove_candidate_legal(
+                grid,
+                prev_pt,
+                next_pt,
+                v_pre[2],
+                v_post[2],
+                candidate,
                 net_id,
-            )
-            # `disk_is_free` is deliberately SAME-NET-blind (right for a
-            # trace legally ending on its own pad, module docstring above)
-            # — a shoved via is not a trace, so it must also clear
-            # `via_clears_pads` (net-blind, checks a pad's own net too)
-            # or a shove can walk a via straight onto its own pad. Found
-            # 2026-08-29 (gripe 269811): this loop moved a via by testing
-            # only `disk_is_free`, so a candidate site that was merely
-            # "not foreign copper" was accepted even when it sat on the
-            # via's own net's pad, at the SAME group-extent radius the
-            # occupancy check above already uses (the conservative
-            # stitched-group footprint, never the single via's own
-            # smaller diameter).
-            and grid.via_clears_pads(
-                candidate[0], candidate[1], via_group_extent_mm / 2.0
-            )
-        )
-        if via_ok:
-            pts[i] = (candidate[0], candidate[1], v_pre[2])
-            pts[i + 1] = (candidate[0], candidate[1], v_post[2])
+                via_group_extent_mm,
+                chord_radius_mm,
+                step,
+            ):
+                accepted = candidate
+                break
+        if accepted is not None:
+            pts[i] = (accepted[0], accepted[1], v_pre[2])
+            pts[i + 1] = (accepted[0], accepted[1], v_post[2])
             moved = True
         i += 1
     return pts, moved
@@ -3346,10 +4124,37 @@ def _snap_to_pads(
     """
     points = list(path.points)
     limit = pitch * math.sqrt(2.0) / 2.0 + 1e-9
-    if not path.attached and dist((points[0][0], points[0][1]), start) <= limit:
-        points[0] = (start[0], start[1], points[0][2])
+    # Far end first, then near end: a head insertion would shift tail
+    # indices, the reverse order cannot.
     if dist((points[-1][0], points[-1][1]), end) <= limit:
         points[-1] = (end[0], end[1], points[-1][2])
+        if len(points) >= 2 and points[-2][2] == points[-1][2] and (
+            not _is_octilinear(points[-2], points[-1])
+        ):
+            # A pad centre is continuous, a grid vertex is not, so the
+            # snapped final segment is generically a hair off-angle. Fix
+            # it HERE with the taut elbow, UNCHECKED against the grid on
+            # purpose: the elbow deviates from the pre-snap (octilinear,
+            # grid-cleared) segment by no more than the snap distance —
+            # the same half-cell bound, inside the same one-cell dilation
+            # slack, that justifies the snap itself — and it terminates
+            # inside the pad's own claimed core, which no foreign copper
+            # may legally approach. A grid re-check at corridor radius
+            # was tried first and false-refuses in any minimum-clearance
+            # parallel corridor (nano board 2026-09-01: one 134.8-degree
+            # segment surviving as the board's only `octilinear` DRC
+            # finding), because the check radius carries discretisation
+            # slack the corridor genuinely does not have.
+            mx, my = _octilinear_corners(points[-2], points[-1])[0]
+            points.insert(len(points) - 1, (mx, my, points[-1][2]))
+    if not path.attached and dist((points[0][0], points[0][1]), start) <= limit:
+        points[0] = (start[0], start[1], points[0][2])
+        if len(points) >= 2 and points[1][2] == points[0][2] and (
+            not _is_octilinear(points[0], points[1])
+        ):
+            # Same construction as the far end above.
+            mx, my = _octilinear_corners(points[0], points[1])[0]
+            points.insert(1, (mx, my, points[0][2]))
     length = sum(
         dist((a[0], a[1]), (b[0], b[1]))
         for a, b in itertools.pairwise(points)
@@ -3881,6 +4686,33 @@ def pads_for_ir(
         if geom.shape != "circle":
             pad["h"] = geom.h_mm
         out.append(pad)
+    # A PLATED mounting hole's copper annulus (a solder-on nut's land) is
+    # real pad copper on EVERY copper layer — emitted here because this
+    # function is "the single answer to where are the pads" (docstring
+    # above): render, gerber, clearance DRC and the via-pad keep-out all
+    # inherit the ring from this one loop. ``net=""`` follows the NC-pad
+    # convention (checkable for clearance, attributed to no net); the
+    # synthesized flag is False — the ring is authored dimension, not a
+    # landpattern bound, so fab export must not refuse it. A bare NPTH
+    # hole adds nothing here: no copper, and ``check_npth_clearance``
+    # owns its rule via ``model['drills']``.
+    for k, hole in enumerate(ir.mounting_holes):
+        if not hole.plated or float(hole.ring_dia_mm) <= 0.0:
+            continue
+        for layer_name in layers:
+            out.append(
+                {
+                    "layer": layer_name,
+                    "net": "",
+                    "shape": "circle",
+                    "x": float(hole.x),
+                    "y": float(hole.y),
+                    "w": float(hole.ring_dia_mm),
+                    "synthesized": False,
+                    "refdes": f"MH{k + 1}",
+                    "pin": "1",
+                }
+            )
     return out
 
 

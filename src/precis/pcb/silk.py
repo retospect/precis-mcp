@@ -56,6 +56,18 @@ already applies to copper.
    throughout, because it proves a draw EXISTS and cannot see that it is
    invisible.
 
+   **Not every part needs one.** A pin-1 mark exists to disambiguate an
+   orientation the assembler could otherwise get backwards — meaningless
+   for a part with no polarity at all. A passive whose refdes FAMILY
+   (leading letters before the first digit, uppercased —
+   :func:`_refdes_family`) is R/C/L/FB gets no attempt UNLESS the caller's
+   ``polarized`` set names it (an electrolytic/tantalum cap, a polarized
+   inductor): see :func:`build_silk`'s own ``polarized`` parameter. The
+   skip still gets a census row (``outcome="not_applicable"``), never a
+   silent absence, so :func:`precis.pcb.drc.check_silk_missing` and a
+   human reading the report both see a deliberate policy, not a dropped
+   mark.
+
 **Suppression, not silent loss.** Every drawn stroke — text, outline,
 tick alike — is checked against the passed-in ``pads`` (real flashed pad
 geometry, e.g. :func:`precis.pcb.padplace.board_pads`'s output, or the
@@ -70,6 +82,22 @@ test in this module one expansion optimistic. A via has no opening (they
 are tented) so its bare annulus is the obstacle. An overlapping outline/tick
 segment is dropped outright (there is no sensible "relocate a courtyard
 box"); an overlapping refdes tries the candidate list first.
+
+**The board's own cut edge was a separate, unchecked question until
+2026-08-31.** ``pads``/``vias``/``reserved`` are OBSTACLES; none of them is
+the board itself, so a build with no outline gap between a part and the
+board edge used to print silk past it with no margin at all. An optional
+``outline`` argument (:func:`build_silk`) closes this for the two
+primitives with somewhere else to go: a refdes candidate and a pin-1 dot
+candidate are now also rejected when they would land outside ``outline``
+or inside its silk-to-edge margin (:func:`_silk_edge_margin_mm`, the same
+``board_edge_clearance_vcut_mm`` figure :func:`precis.pcb.drc.
+check_board_edge_clearance` grades copper against). The courtyard ring and
+the corner tick are deliberately NOT rejected by it — their footprint is
+the part's own, not a choice among candidates, so there is nothing to
+relocate; :func:`precis.pcb.drc.check_outline_containment` and
+:func:`~precis.pcb.drc.check_silk_edge_clearance` still catch those at
+DRC time.
 :class:`SilkResult` carries a structured ``census`` (one
 :class:`SilkPlacement` per courtyard/pin-1/refdes item considered) plus
 ``dropped``/``relocated`` human-readable messages DERIVED from it — never
@@ -258,6 +286,15 @@ _REFDES_DIRECTIONS = 12
 _REFDES_ALIGN_DEADBAND = 0.25
 
 
+def _angular_dist(a: float, target: float) -> float:
+    """Circular distance between two angles (radians), independent of
+    which side of the 0/2*pi wrap either one falls on — a plain ``abs(a -
+    target)`` is wrong for a target near either end of the ``[0, 2*pi)``
+    range :func:`_refdes_candidates` sweeps its angles over."""
+    d = abs(a - target) % (2.0 * math.pi)
+    return min(d, 2.0 * math.pi - d)
+
+
 def _refdes_candidates(
     n_rings: int, per_ring: int
 ) -> tuple[tuple[float, float, str, str, str], ...]:
@@ -272,11 +309,15 @@ def _refdes_candidates(
     1 — the same meaning the old hand-written ``(0, -2)`` fallback had.
 
     Order is: centred first (the common case), then each ring outward,
-    and within a ring the directions nearest STRAIGHT UP first. Up is
-    where a reader expects a refdes, so a label only ends up somewhere
-    unusual when everything more conventional was taken. Ties (a
-    direction's mirror image about the vertical) break toward the smaller
-    angle, so the sweep is deterministic rather than dict-ordered.
+    and within a ring the directions nearest RIGHT (+x, angle 0) first,
+    then nearest BELOW (-y, angle -pi/2), then everything else. A single
+    "up is where a reader expects a refdes" preference is superseded by
+    this side-consistency rule: a repeated part in an array relocates its
+    label to the SAME relative spot every time, which is what actually
+    reads as tidy across a populated board (task brief, verbatim,
+    2026-09-01). Ties (a direction equidistant from both preferred sides)
+    break toward the smaller angle, so the sweep is deterministic rather
+    than dict-ordered.
 
     The ladder always walks past candidate 0 for a small part — an 0402's
     courtyard is smaller than any legible label at a normal ``height_mm``,
@@ -293,9 +334,16 @@ def _refdes_candidates(
     ]
     for ring in range(1, n_rings + 1):
         angles = [2.0 * math.pi * k / per_ring for k in range(per_ring)]
-        # Nearest straight up (pi/2) first; the mirror pair breaks toward
-        # the smaller angle so the order never depends on float ties.
-        angles.sort(key=lambda a: (round(abs(a - math.pi / 2.0), 9), a))
+        # Nearest RIGHT (angle 0) first, then nearest BELOW (angle
+        # -pi/2); the remaining tie breaks toward the smaller angle so
+        # the order never depends on float ties.
+        angles.sort(
+            key=lambda a: (
+                round(_angular_dist(a, 0.0), 9),
+                round(_angular_dist(a, -math.pi / 2.0), 9),
+                a,
+            )
+        )
         for theta in angles:
             du, dv = math.cos(theta) * ring, math.sin(theta) * ring
             h = (
@@ -345,9 +393,13 @@ class SilkPlacement:
     ``"relocated"`` below is reserved for the refdes label's own
     multi-candidate ladder; a courtyard/pin-1 tick has no such ladder, only
     placed-or-dropped), ``"relocated"`` (a refdes label landed on a
-    candidate other than the default centered one), or ``"dropped"``
+    candidate other than the default centered one), ``"dropped"``
     (never drawn at all — the fact :func:`precis.pcb.drc.
-    check_silk_missing` turns into a DRC error).
+    check_silk_missing` turns into a DRC error), or, ``kind="pin1"`` only,
+    ``"not_applicable"`` (never ATTEMPTED — an unpolarized R/C/L/FB, see
+    the module docstring's "Not every part needs one" — deliberately NOT
+    ``"dropped"``, so :func:`~precis.pcb.drc.check_silk_missing` never
+    turns a policy decision into a DRC error).
 
     ``reason`` is populated whenever ``outcome`` is not ``"placed"`` — the
     SAME text a human-readable ``dropped``/``relocated`` message carries,
@@ -367,7 +419,7 @@ class SilkPlacement:
     refdes: str
     kind: str  # "refdes" | "courtyard" | "pin1"
     side: str  # "top" | "bottom"
-    outcome: str  # "placed" | "relocated" | "dropped"
+    outcome: str  # "placed" | "relocated" | "dropped" | "not_applicable" (pin1 only)
     reason: str | None = None
     stroke_width_mm: float = 0.0
     height_mm: float | None = None
@@ -771,6 +823,20 @@ def _via_pad(via: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def via_obstacles(vias: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Vias reshaped into the circle-pad obstacle dicts every clearance
+    check in this module reads (:func:`_via_pad`) — public so the handler
+    can fold the routed board's vias into :func:`build_title_block` /
+    :func:`build_sn_patch` ``avoid`` lists. Both are placed at render
+    time, AFTER routing, and neither used to see vias at all — measured
+    on the nano fixture as two rows of GND stitch vias marching straight
+    through the S/N patch, the one silk feature that exists to be
+    WRITTEN on (a tented via is a bump under the Sharpie; round-3 review
+    item 2). Silk dodging copper is this module's normal direction —
+    the refdes ladder already avoids vias the same way."""
+    return [_via_pad(v) for v in vias]
+
+
 def _via_reaches_side(span: Any, layer_names: list[str]) -> tuple[bool, bool]:
     """``(reaches_top, reaches_bottom)`` for a via's plating barrel, off
     its ``span`` layer-NAME pair (:func:`precis.pcb.realize.to_gerber_model`'s
@@ -1023,6 +1089,29 @@ def _side_for(inst_sides: dict[str, str], refdes: str) -> str:
     return "bottom" if raw in ("bottom", "bot", "b") else "top"
 
 
+#: Refdes families with no INHERENT polarity — a resistor, capacitor,
+#: inductor, or ferrite bead can be assembled either way around, so a
+#: pin-1 mark on one asserts an orientation that does not exist. The
+#: caller's ``polarized`` set (:func:`build_silk`) is the escape hatch for
+#: the members of these families that DO carry real polarity (an
+#: electrolytic/tantalum cap, a polarized inductor) — see
+#: :mod:`precis.handlers.pcb`'s ``polarized`` build (``"polarized": true``
+#: or a label matching ``ELEC|TANT|POL``).
+_PIN1_EXEMPT_FAMILIES = frozenset({"R", "C", "L", "FB"})
+
+
+def _refdes_family(refdes: str) -> str:
+    """A refdes's FAMILY — its leading letters, before the first digit,
+    uppercased (``"R12"`` -> ``"R"``, ``"LED3"`` -> ``"LED"``,
+    ``"C1"`` -> ``"C"``). :data:`_PIN1_EXEMPT_FAMILIES` keys off this, not
+    the raw refdes, so ``"R1"`` and ``"R100"`` are the same policy
+    decision. A refdes with no leading letters at all (malformed input)
+    falls back to its own uppercased self, which will simply never match
+    any known family."""
+    m = re.match(r"[A-Za-z]+", refdes)
+    return m.group(0).upper() if m else refdes.upper()
+
+
 # ─────────────────────────────────────────────────────────────────────
 # board-level fiducials — optical alignment targets, NOT a per-instance
 # concern (everything above this line is per-placed-part). See the
@@ -1122,14 +1211,26 @@ class FiducialResult:
     out of the EXISTING pad pipeline for free (``copper_gerber``/
     ``soldermask_gerber`` read every ``model["pads"]`` entry identically
     regardless of what put it there — nothing here duplicates that).
+    **One entry per fiducial PER LAYER in ``layers``**, all sized
+    ``copper_dia_mm`` — a fiducial is a fab-wide registration mark, not a
+    top-side-only one: the fab needs a flash on every copper layer to
+    align inner layers to the outer films, and (since ``soldermask_gerber``
+    reads pads on ``layers[0]``/``layers[-1]`` only) a bottom mask opening
+    falls out of this same list automatically, for free, exactly the way
+    the top one always has — no second, mask-specific entry shape.
 
     ``plane_blockers`` is a SEPARATE list, in the same "pad reshaped as a
-    single-layer fake via" ``ctype='via'`` shape
+    multi-layer fake via" ``ctype='via'`` shape
     :func:`precis.pcb.realize._pad_blockers` already uses to feed a real
     component pad into :func:`precis.pcb.planes.plane_pours` as an
     antipad obstacle (see that function's own docstring for why a pad
     has to be a blocker at all — an unlisted pad gets flooded straight
-    over). Sized to ``mask_dia_mm``, not the bare copper disc, so the
+    over). ``layers`` names EVERY layer in ``layers`` (the module's own
+    ``layers`` argument, not a single one) so :func:`precis.pcb.planes.
+    cut_antipads` (which already reads a blocker's full ``layers`` list,
+    see :func:`~precis.pcb.planes._blocker_layers`) cuts the ring into a
+    pour on ANY of them, not just the one the copper flash used to sit
+    on. Sized to ``mask_dia_mm``, not the bare copper disc, so the
     antipad clears the whole mask opening, not just the copper underneath
     it. **This module cannot fold it into ``plane_pours`` itself**:
     ``plane_pours`` runs at REALIZE time (:func:`precis.pcb.realize.
@@ -1159,22 +1260,154 @@ class FiducialResult:
     dropped: tuple[str, ...] = ()
 
 
+def world_courtyard_rings(ir: PcbIR) -> list[list[Point]]:
+    """Every PLACED instance's courtyard polygon in board coordinates —
+    the per-part "thicket" pieces a fiducial must stay out of. A pinless
+    placed instance (mounting hole) contributes nothing: it has no land
+    pattern and a fiducial beside a mounting hole is fine. Bottom-side
+    mirroring is ignored on purpose: a mirror flips a ring about its own
+    centre, and the fiducial standoff test that consumes these rings
+    carries millimetres of its own slack."""
+    pins_of_inst: dict[int, list[int]] = {}
+    for pid in range(ir.n_pins):
+        pins_of_inst.setdefault(int(ir.pin_instance[pid]), []).append(pid)
+    rings: list[list[Point]] = []
+    for inst in range(ir.n_instances):
+        cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+        if math.isnan(cx) or math.isnan(cy):
+            continue
+        ring_local = instance_courtyard_polygon(
+            ir, inst, clearance_mm=0.0, pins=pins_of_inst.get(inst, [])
+        )
+        if not ring_local:
+            continue
+        rot = float(ir.inst_rot[inst])
+        rings.append(
+            _place(
+                ring_local,
+                cx=cx,
+                cy=cy,
+                rot=0.0 if math.isnan(rot) else rot,
+                mirror=False,
+            )
+        )
+    return rings
+
+
+def fiducial_candidate_sites(
+    outline: list[tuple[float, float]] | list[list[float]],
+    *,
+    ir: PcbIR | None = None,
+    margin_mm: float = FIDUCIAL_MARGIN_MM,
+    mask_dia_mm: float = FIDUCIAL_MASK_DIA_MM,
+) -> list[tuple[int, Point]]:
+    """Every ``(corner_index, point)`` candidate :func:`build_fiducials`
+    may ever choose, in its exact trial order, filtered only by outline
+    containment — the obstacle-INDEPENDENT superset.
+
+    This is the shared definition between the render-time mint
+    (:func:`build_fiducials` consumes this list and applies its pad-
+    overlap/spacing/count checks on top — every one of which only ever
+    REJECTS candidates, so the chosen fiducials are always a subset) and
+    the ROUTER's pre-claim (``precis.pcb.realize._claim_fiducial_
+    keepouts``). Fiducials are minted at render/DRC time, AFTER routing;
+    without a route-time claim of these sites, a legally-routed track or
+    via could cross the corner the mint later lands on — found live
+    2026-08-31 as a 0.000mm VCC3V3-track-to-fiducial short on the
+    esp32c3 reference fixture, seed 3 (the root cause behind
+    ``docs/backlog/pcb-plane-via-copper-claim-leak.md``'s "copper reaches
+    the board without claiming its corridor" family)."""
+    sites: list[tuple[int, Point]] = []
+    if len(outline) < 3:
+        return sites
+    poly = [(float(p[0]), float(p[1])) for p in outline]
+    x0, y0, x1, y1 = _bbox(poly)
+    radius = mask_dia_mm / 2.0
+    # A fiducial buried in the parts thicket is useless to the fab (an
+    # optical target needs clear surroundings) AND, because it is minted
+    # after routing, it lands on whatever copper routed through that spot
+    # first — so the thicket is excluded from candidacy for the mint and
+    # the router's pre-claim alike, off the same ``ir``. PER-COURTYARD
+    # polygons, not a global parts bbox: a bbox over a placement that
+    # (correctly, post-recentre) spreads across its board covers every
+    # corner and yields the zero-fiducial board the 2026-09-01 review
+    # caught on the nano fixture — the thicket is the parts, not their
+    # hull. The standoff is one mask radius folded into the test circle:
+    # a clear ring the size of the window itself between any courtyard
+    # edge and the mask opening.
+    rings = world_courtyard_rings(ir) if ir is not None else []
+    # A full mask DIAMETER of standoff beyond the fiducial's own radius,
+    # not the original half: the deeper rungs (below) walk candidates in
+    # toward the parts, and at half-diameter a rung-5/6 fiducial could sit
+    # close enough to a courtyard for its silk keep-out to clip the
+    # courtyard OUTLINE below legibility — measured on the 40mm stress
+    # fixture seed 2 as C14's courtyard (and with it the pin-1 tick)
+    # dropped entirely. An optical target needs clear surroundings; a
+    # spot that costs another feature its silk is not clear.
+    standoff = radius + mask_dia_mm
+    # Six rungs, not the original two: corner MOUNTING HARDWARE (an M4
+    # solder nut claims ~10mm of every corner, fixtures since 2026-09-01)
+    # sits exactly where the first rungs land, and a ladder that gives up
+    # at 2x margin yields the zero-fiducial board the round-3 session
+    # measured (and 2/3 at 4x — a part near a corner eats the freed rung).
+    # The deeper rungs stay a bounded, obstacle-independent superset —
+    # the router's pre-claim grows by a few never-used corner discs,
+    # which is the documented cost of the superset trick (docstring
+    # above).
+    for idx, (sx, sy) in enumerate(_FIDUCIAL_CORNER_SIGNS):
+        for m in (
+            margin_mm,
+            margin_mm * 2.0,
+            margin_mm * 3.0,
+            margin_mm * 4.0,
+            margin_mm * 5.0,
+            margin_mm * 6.0,
+        ):
+            cand = _corner_point(sx, sy, x0, y0, x1, y1, m)
+            if not _circle_inside_polygon(cand, radius, poly):
+                continue
+            if any(
+                _polygon_overlaps_circle(ring, cand, standoff) for ring in rings
+            ):
+                continue
+            sites.append((idx, cand))
+    return sites
+
+
 def build_fiducials(
     outline: list[tuple[float, float]] | list[list[float]],
     pads: list[dict[str, Any]],
     *,
-    layer: str,
+    layers: list[str],
+    ir: PcbIR | None = None,
     count: int = FIDUCIAL_COUNT,
     margin_mm: float = FIDUCIAL_MARGIN_MM,
     copper_dia_mm: float = FIDUCIAL_COPPER_DIA_MM,
     mask_dia_mm: float = FIDUCIAL_MASK_DIA_MM,
 ) -> FiducialResult:
     """``count`` (default 3) optical targets near non-collinear corners of
-    ``outline``'s bounding box, on ``layer`` — inset by ``margin_mm``,
-    each checked clear of every REAL pad in ``pads`` (a component pad
-    flooding a fiducial's mask opening is exactly as fab-fatal as a
-    refdes label doing it — see this module's docstring) and fully
-    inside ``outline`` (never straddling the board edge).
+    ``outline``'s bounding box, spanning EVERY layer in ``layers`` —
+    inset by ``margin_mm``, each checked clear of every REAL pad in
+    ``pads`` (a component pad flooding a fiducial's mask opening is
+    exactly as fab-fatal as a refdes label doing it — see this module's
+    docstring) and fully inside ``outline`` (never straddling the board
+    edge).
+
+    A fiducial is a whole-stack registration feature, not a single-layer
+    one: a fab aligns inner-layer films and BOTH soldermask films to the
+    same optical target, so the geometry this mints carries a copper disc
+    on every entry of ``layers`` (see ``FiducialResult.pads``'s own
+    docstring for how the outer two of those double as the top/bottom
+    mask openings) and one router keep-out — sized once, off ``layers``
+    as a whole, in ``plane_blockers`` — that :func:`precis.pcb.planes.
+    cut_antipads` applies per-layer against whatever pour actually exists
+    there.
+
+    The corner PICK itself is layer-independent (candidacy only ever
+    checks the outline, the parts thicket and real pads, never which
+    copper layer a fiducial will occupy), so ``layers`` affects only how
+    many pad/blocker entries a chosen fiducial mints, never where the
+    three land.
 
     Corners are tried in a fixed order (:data:`_FIDUCIAL_CORNER_SIGNS`)
     chosen so the first ``count`` that SUCCEED are never collinear — a
@@ -1191,15 +1424,16 @@ def build_fiducials(
     fids: list[Point] = []
     dropped: list[str] = []
     if len(outline) >= 3:
-        poly = [(float(p[0]), float(p[1])) for p in outline]
-        x0, y0, x1, y1 = _bbox(poly)
         radius = mask_dia_mm / 2.0
-        for idx, (sx, sy) in enumerate(_FIDUCIAL_CORNER_SIGNS):
+        candidates = fiducial_candidate_sites(
+            outline, ir=ir, margin_mm=margin_mm, mask_dia_mm=mask_dia_mm
+        )
+        for idx in range(len(_FIDUCIAL_CORNER_SIGNS)):
             if len(fids) >= count:
                 break
-            for m in (margin_mm, margin_mm * 2.0):
-                cand = _corner_point(sx, sy, x0, y0, x1, y1, m)
-                if not _circle_inside_polygon(cand, radius, poly):
+            placed_this_corner = False
+            for cand_idx, cand in candidates:
+                if cand_idx != idx:
                     continue
                 if any(_circle_overlaps_pad(cand, radius, pad) for pad in pads):
                     continue
@@ -1209,11 +1443,12 @@ def build_fiducials(
                 ):
                     continue
                 fids.append(cand)
+                placed_this_corner = True
                 break
-            else:
+            if not placed_this_corner:
                 dropped.append(
-                    f"fiducial corner {idx}: no spot clear of the outline edge "
-                    "or a pad within 2x margin -- skipped"
+                    f"fiducial corner {idx}: no candidate rung clear of the "
+                    "outline edge, the parts thicket, or a pad -- skipped"
                 )
     if len(fids) < count:
         dropped.append(
@@ -1222,7 +1457,7 @@ def build_fiducials(
         )
     fid_pads = [
         {
-            "layer": layer,
+            "layer": layer_name,
             "net": "",
             "shape": "circle",
             "x": fx,
@@ -1231,6 +1466,7 @@ def build_fiducials(
             "role": "fiducial",
         }
         for fx, fy in fids
+        for layer_name in layers
     ]
     plane_blockers = [
         {
@@ -1239,7 +1475,7 @@ def build_fiducials(
             "x": fx,
             "y": fy,
             "dia_mm": mask_dia_mm,
-            "layers": [layer],
+            "layers": list(layers),
             "role": "fiducial",
         }
         for fx, fy in fids
@@ -1429,9 +1665,40 @@ def build_title_block(
     poly = [(float(p[0]), float(p[1])) for p in outline]
     x0, y0, x1, y1 = _bbox(poly)
     mirror = side == "bottom"
-    obstacles = _mask_openings(pads, capability) + list(avoid or ())
+    # Vias in ``avoid`` (tagged by :func:`_via_pad`) are SOFT obstacles:
+    # the first pass treats them as hard, but if no corner clears them
+    # the same ladder reruns via-blind — title text over a tented via is
+    # a cosmetic compromise, a silently DROPPED title block is a missing
+    # feature (measured 2026-09-01: spreading the stitch sprinkle left
+    # ~1 via in every corner candidate rect, so an all-hard check
+    # dropped the furniture from the whole board).
+    hard = _mask_openings(pads, capability) + [
+        a for a in (avoid or ()) if a.get("obstacle") != "via"
+    ]
+    via_soft = [a for a in (avoid or ()) if a.get("obstacle") == "via"]
+    passes: list[list[dict[str, Any]]] = [hard + via_soft]
+    if via_soft:
+        passes.append(hard)
     gap = height_mm + TITLE_LINE_GAP_MM
-    for corner_name, x_at_max, y_at_max, h_align, v_align, stack_sign in _TITLE_CORNERS:
+    # The slide rung: corner mounting hardware (M4 solder nuts, fixtures
+    # since 2026-09-01) reaches ~10mm into every corner, and a purely
+    # diagonal margin ladder (2/3/4mm) can never escape it. Sliding is
+    # OUTERMOST (after the obstacle pass) so every plain corner is tried
+    # before any slid position — a free corner still beats "same corner,
+    # slid inward", preserving the original corner-preference order.
+    for obstacles, slide, (
+        corner_name,
+        x_at_max,
+        y_at_max,
+        h_align,
+        v_align,
+        stack_sign,
+    ) in (
+        (obs, s, corner)
+        for obs in passes
+        for s in (0.0, 8.0, 14.0)
+        for corner in _TITLE_CORNERS
+    ):
         # `stroke_font`'s mirror negates the LOCAL x coordinate about the
         # anchor (mirror applied before rotate, same order `landpattern.
         # rotate_offset` pins everywhere else) -- so an unmirrored
@@ -1448,7 +1715,10 @@ def build_title_block(
         if mirror:
             draw_h_align = "left" if h_align == "right" else "right"
         for m in (margin_mm, margin_mm * 1.5, margin_mm * 2.0):
-            anchor_x = x1 - m if x_at_max else x0 + m
+            # `slide` (outer rung, see the comment above the loop) moves
+            # the anchor inward along the horizontal edge, past corner
+            # hardware the diagonal margin can never clear.
+            anchor_x = x1 - m - slide if x_at_max else x0 + m + slide
             anchor_y = y1 - m if y_at_max else y0 + m
             boxes: list[list[Point]] = []
             strokes_all: list[list[Point]] = []
@@ -1650,6 +1920,17 @@ def _candidate_rects(
         (x1 - gap - w, y0 + gap),  # outline bottom-right
         (x0 + gap, y0 + gap),  # outline bottom-left
     ]
+    # Edge-CENTRE fallbacks, after the corners: corner mounting hardware
+    # (M4 solder nuts, fixtures since 2026-09-01) occupies every corner
+    # of a board that authors it, and a ladder with only corner rungs
+    # then drops the patch entirely. The middle of the bottom/top edge is
+    # clear of the nuts by construction and still a conventional spot for
+    # a serial-number field.
+    cx = (x0 + x1 - w) / 2.0
+    out += [
+        (cx, y0 + gap),  # bottom edge, centred
+        (cx, y1 - gap - h),  # top edge, centred
+    ]
     return out
 
 
@@ -1706,7 +1987,17 @@ def build_sn_patch(
     poly = [(float(p[0]), float(p[1])) for p in outline]
     outline_bbox = _bbox(poly)
     mirror = side == "bottom"
-    obstacles = _mask_openings(pads, capability) + list(avoid or ())
+    # Same soft-via discipline as :func:`build_title_block`: vias (tagged
+    # by :func:`_via_pad`) never HARD-reject a candidate — a board whose
+    # stitch vias sprinkle everywhere would otherwise drop the patch
+    # entirely. Here the compromise is REAL (a via bump under the writing
+    # surface degrades it), so the ladder is SCORED: first via-free
+    # candidate wins outright, otherwise the fewest-vias candidate is
+    # taken and the count reported in ``dropped`` (the warnings channel).
+    hard = _mask_openings(pads, capability) + [
+        a for a in (avoid or ()) if a.get("obstacle") != "via"
+    ]
+    via_soft = [a for a in (avoid or ()) if a.get("obstacle") == "via"]
 
     pad_mm = max(label_height_mm * SN_BOX_PADDING_MM_FACTOR, SN_BOX_PADDING_MIN_MM)
     label_w = stroke_font.text_width_mm(SN_LABEL, label_height_mm)
@@ -1728,7 +2019,14 @@ def build_sn_patch(
     # the box's left edge and grows into the box regardless of side.
     label_h_align = "right" if mirror else "left"
 
-    for x0, y0 in _candidate_rects(outline_bbox, title_bbox, box_w, box_h, pad_mm):
+    candidates = list(_candidate_rects(outline_bbox, title_bbox, box_w, box_h, pad_mm))
+    # Pass 1 walks the ladder with vias hard (first via-free spot wins).
+    # Pass 2 re-walks it via-blind — but scored: of every candidate that
+    # clears the HARD obstacles, take the one covering the FEWEST vias
+    # (ladder order breaks ties), not the first. Ladder-order acceptance
+    # here put the patch over 4 stitch vias when a later candidate had 1.
+    best: tuple[int, int, float, float] | None = None  # (vias, order, x0, y0)
+    for rank, (x0, y0) in enumerate(candidates):
         corners = [
             (x0, y0),
             (x0 + box_w, y0),
@@ -1737,8 +2035,22 @@ def build_sn_patch(
         ]
         if not all(point_in_polygon(c, poly) for c in corners):
             continue
-        if any(_box_overlaps_pad(corners, pad) for pad in obstacles):
+        if any(_box_overlaps_pad(corners, pad) for pad in hard):
             continue
+        vias_here = sum(1 for v in via_soft if _box_overlaps_pad(corners, v))
+        if vias_here == 0:
+            best = (0, rank, x0, y0)
+            break
+        if best is None or vias_here < best[0]:
+            best = (vias_here, rank, x0, y0)
+    if best is not None:
+        vias_under, _rank, x0, y0 = best
+        corners = [
+            (x0, y0),
+            (x0 + box_w, y0),
+            (x0 + box_w, y0 + box_h),
+            (x0, y0 + box_h),
+        ]
         label_anchor = (x0 + pad_mm, y0 + pad_mm)
         text_strokes = stroke_font.layout_text(
             SN_LABEL,
@@ -1753,7 +2065,19 @@ def build_sn_patch(
             _region_draw(corners),
             *[_clear_draw(pts, knockout_w) for pts in text_strokes],
         ]
-        return SnPatchResult(draws=draws, bbox=corners, dropped=())
+        return SnPatchResult(
+            draws=draws,
+            bbox=corners,
+            dropped=(
+                (
+                    f"S/N patch: no via-free spot -- placed over "
+                    f"{vias_under} via(s) (the fewest of any candidate); "
+                    "the writing surface will have bumps",
+                )
+                if vias_under
+                else ()
+            ),
+        )
 
     return SnPatchResult(
         draws=[],
@@ -1781,6 +2105,72 @@ def _refdes_sort_key(refdes: str) -> tuple[str, int, str]:
     return (prefix, int(digits) if digits else -1, rest)
 
 
+#: Fallback silk-to-board-edge margin, mm — used only when a board's
+#: capability row carries no ``board_edge_clearance_vcut_mm`` figure (a
+#: process JLC publishes none for) or there is no row at all, the same
+#: "``None`` falls back to a documented constant" contract every other
+#: capability-derived figure in this module already follows
+#: (:func:`silk_clearance_mm`, :func:`soldermask_expansion_mm`). JLC's
+#: 4-layer house-default V-cut figure — the same number
+#: :func:`precis.pcb.realize._board_edge_min_mm` sizes the routing grid's
+#: own inset with.
+DEFAULT_BOARD_EDGE_CLEARANCE_MM = 0.6
+
+
+def _silk_edge_margin_mm(capability: CapabilityRow | None) -> float:
+    """How far silk must sit from the board's own cut edge, mm.
+
+    Reads this board's ``board_edge_clearance_vcut_mm`` at
+    :func:`~precis.pcb.capabilities.design_value`'s usual tier (house
+    default, then JLC's published minimum, then
+    :data:`DEFAULT_BOARD_EDGE_CLEARANCE_MM`) — the SAME field
+    :func:`precis.pcb.realize._board_edge_min_mm` reads to inset the
+    routing grid and :func:`precis.pcb.drc.check_board_edge_clearance`
+    reads to grade copper, so a candidate this module accepts and the
+    checker that grades the finished board never disagree about what
+    "too close to the edge" means.
+
+    **Re-derived here, not imported.** :mod:`precis.pcb.realize` does not
+    import this module today, but :mod:`precis.handlers.pcb` calls both,
+    and title-block/fiducial placement already lives here — a future
+    ``realize -> silk`` import would turn a ``silk -> realize`` import
+    back into a real cycle. A second small reader of the same capability
+    field costs far less than that.
+    """
+    return design_value(
+        capability,
+        "board_edge_clearance_vcut_mm",
+        fallback=DEFAULT_BOARD_EDGE_CLEARANCE_MM,
+    )
+
+
+def _box_inside_outline(
+    corners: list[Point], outline: list[Point], margin_mm: float
+) -> bool:
+    """True iff every one of ``corners`` sits inside ``outline`` AND at
+    least ``margin_mm`` clear of every one of its edges.
+
+    The containment-plus-clearance test a generation-side candidate uses
+    so silk never lands outside the board or hugs its cut edge.
+    Corner-only, not the full stroke: ``corners`` is
+    :func:`~precis.pcb.stroke_font.text_bbox_corners`'s bounding box (or
+    an equivalent axis box a caller already built), which bounds every
+    stroke a label draws — the same "check the box, not each glyph"
+    shortcut :func:`_box_overlaps_pad` already takes at the very same call
+    site. ``outline`` may be open or closed (repeating its first point at
+    the end is not required)."""
+    ring = outline if outline[0] == outline[-1] else [*outline, outline[0]]
+    for c in corners:
+        if not point_in_polygon(c, outline):
+            return False
+        if any(
+            dist_point_to_segment(c, a, b) < margin_mm
+            for a, b in itertools.pairwise(ring)
+        ):
+            return False
+    return True
+
+
 def build_silk(
     ir: PcbIR,
     pads: list[dict[str, Any]],
@@ -1791,11 +2181,26 @@ def build_silk(
     height_mm: float = DEFAULT_REFDES_HEIGHT_MM,
     stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM,
     capability: CapabilityRow | None = None,
+    outline: list[tuple[float, float]] | None = None,
+    polarized: frozenset[str] | None = None,
 ) -> SilkResult:
     """Build ``{"top": [...], "bottom": [...]}`` silk draws for every
     PLACED instance in ``ir`` — the one builder :mod:`precis.handlers.pcb`
     calls for every gerber/svg-fab site that needs silk (module
     docstring's "one silk builder, never duplicated" discipline).
+
+    ``polarized`` names the refdes of every instance that carries REAL
+    polarity — the escape hatch from the module docstring's "Not every
+    part needs one" pin-1 policy: an R/C/L/FB refdes (by FAMILY,
+    :func:`_refdes_family`) gets no pin-1 attempt unless it appears here.
+    Every other family is unaffected regardless of this set's contents.
+    ``None`` (default) is the empty set — every pre-2026-09-01 caller's
+    behaviour is unchanged for non-R/C/L/FB parts, and an R/C/L/FB part
+    now gets ``outcome="not_applicable"`` instead of a pin-1 attempt.
+    Determining WHICH refdes are polarized is the caller's job
+    (:mod:`precis.handlers.pcb` reads it off a ``"polarized": true``
+    component flag or a label match) — this module only knows refdes and
+    geometry, never labels.
 
     ``pads`` is the board's real flashed pad geometry, in
     :mod:`precis.pcb.gerber`'s ``model["pads"]`` shape — used ONLY to
@@ -1838,8 +2243,20 @@ def build_silk(
     this module's own documented constants, so a caller that has no row
     (a stackup with no published process) still gets a board rather than
     a crash — see :func:`~precis.pcb.capabilities.design_value`.
+
+    ``outline`` is this board's cut-edge polygon, world coordinates, the
+    same shape :func:`build_title_block`/:func:`build_fiducials` already
+    take — optional (``None`` keeps every pre-2026-08-31 caller's
+    behaviour: no board edge to check, exactly as before). When given, a
+    refdes candidate and a pin-1 dot candidate that would land outside
+    ``outline`` or inside its silk-to-edge margin
+    (:func:`_silk_edge_margin_mm`) are rejected, same as landing on a pad
+    or on committed silk (module docstring's edge-margin note). The
+    courtyard ring and the corner tick are NOT filtered by this — see
+    that same note for why.
     """
     sides = instance_sides or {}
+    polarized_set = polarized or frozenset()
     top: list[dict[str, Any]] = []
     bottom: list[dict[str, Any]] = []
     census: list[SilkPlacement] = []
@@ -1850,6 +2267,14 @@ def build_silk(
     # OPENING every clearance test below actually runs against.
     clearance_mm = silk_clearance_mm(capability, stroke_width_mm=stroke_width_mm)
     pads = _mask_openings(pads, capability)
+
+    # Resolved ONCE, same as `clearance_mm` above: `None` when the caller
+    # gave no outline at all, so every check below is a no-op and every
+    # pre-2026-08-31 caller keeps its exact prior behaviour.
+    outline_ring: list[Point] | None = (
+        [(float(p[0]), float(p[1])) for p in outline] if outline else None
+    )
+    edge_margin_mm = _silk_edge_margin_mm(capability) if outline_ring else 0.0
 
     layer_names = [str(layer.get("name") or i) for i, layer in enumerate(ir.stackup)]
     top_via_pads: list[dict[str, Any]] = []
@@ -2026,7 +2451,31 @@ def build_silk(
         # touching its own courtyard's corner is the intended shape, not a
         # collision.
         tick_obstacle: dict[str, Any] | None = None
-        if pins and box_local and not courtyard_kept:
+        # Policy check FIRST, ahead of the courtyard-dropped fallback below:
+        # an unpolarized R/C/L/FB gets no pin-1 attempt regardless of
+        # whether its courtyard survived -- there is no mark to have lost,
+        # so "the courtyard was dropped" would be the wrong reason to give.
+        family = _refdes_family(refdes)
+        no_pin1_by_policy = (
+            bool(pins)
+            and family in _PIN1_EXEMPT_FAMILIES
+            and refdes not in polarized_set
+        )
+        if no_pin1_by_policy:
+            census.append(
+                SilkPlacement(
+                    refdes=refdes,
+                    kind="pin1",
+                    side=side_name,
+                    outcome="not_applicable",
+                    reason=(
+                        f"no polarity -- pin-1 mark not applicable ({family} "
+                        "parts are unpolarized unless declared polarized)"
+                    ),
+                    stroke_width_mm=stroke_width_mm,
+                )
+            )
+        elif pins and box_local and not courtyard_kept:
             census.append(
                 SilkPlacement(
                     refdes=refdes,
@@ -2071,6 +2520,10 @@ def build_silk(
                 # circle, so it needs no new primitive.
                 candidate = [(dcx, dcy), (dcx, dcy)]
                 if _stroke_overlaps_any_pad(candidate, side_obstacles, dia):
+                    continue
+                if outline_ring is not None and not _circle_inside_polygon(
+                    (dcx, dcy), dia / 2.0 + edge_margin_mm, outline_ring
+                ):
                     continue
                 if courtyard_kept and _stroke_crosses_stroke(candidate, box_pts, dia):
                     continue
@@ -2242,6 +2695,10 @@ def build_silk(
             )
             if any(_box_overlaps_pad(corners, pad) for pad in side_obstacles):
                 continue
+            if outline_ring is not None and not _box_inside_outline(
+                corners, outline_ring, edge_margin_mm
+            ):
+                continue
             strokes = stroke_font.layout_text(
                 refdes,
                 anchor=(ax, ay),
@@ -2366,7 +2823,10 @@ __all__ = [
     "build_silk",
     "build_sn_patch",
     "build_title_block",
+    "fiducial_candidate_sites",
     "obstacle_from_bbox",
     "silk_clearance_mm",
     "soldermask_expansion_mm",
+    "via_obstacles",
+    "world_courtyard_rings",
 ]

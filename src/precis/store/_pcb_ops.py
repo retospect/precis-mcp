@@ -353,12 +353,22 @@ class PcbMixin:
         refdes: str,
         c: dict[str, Any],
     ) -> int:
+        # Placement-constraint fields ride `meta` (jsonb) rather than
+        # columns: `group`/`group_offset` (rigid super-footprint) and
+        # `pattern`/`pattern_instance` (repeated-tile identity) are read
+        # back verbatim by `pcb_graph`, which hoists them onto the
+        # instance dict for `precis.pcb.ir.from_graph` to parse.
+        meta = {
+            k: c[k]
+            for k in ("group", "group_offset", "pattern", "pattern_instance")
+            if c.get(k) is not None
+        }
         row = conn.execute(
             """
             INSERT INTO pcb_instances
                 (ref_id, board_id, component_id, refdes, x, y, rot, layer,
-                 fixed, roles, note)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 fixed, roles, note, meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING instance_id
             """,
             (
@@ -373,6 +383,7 @@ class PcbMixin:
                 c.get("fixed"),
                 list(c.get("roles") or []),
                 c.get("note"),
+                Jsonb(meta),
             ),
         ).fetchone()
         assert row is not None
@@ -792,6 +803,22 @@ class PcbMixin:
                     # as `coupling_bound_k`'s own note — rather than
                     # guessing either way for a part not in the catalog.
                     "extended_part": r[11],
+                    # Placement-constraint keys hoisted from `i.meta` onto
+                    # the instance dict itself — exactly the top-level
+                    # shape `precis.pcb.ir.from_graph`'s
+                    # `_parse_instance_groups` reads. Absent keys stay
+                    # absent (no `None` placeholders) so a group-less
+                    # design's graph is byte-identical to before.
+                    **{
+                        k: (r[12] or {})[k]
+                        for k in (
+                            "group",
+                            "group_offset",
+                            "pattern",
+                            "pattern_instance",
+                        )
+                        if k in (r[12] or {})
+                    },
                 }
                 for r in conn.execute(
                     "SELECT i.refdes, i.x, i.y, i.layer, i.roles, c.label, "
@@ -810,7 +837,7 @@ class PcbMixin:
                     # multiply instance rows; a non-catalog part yields NULL
                     # -> false, matching `extended_part`'s documented
                     # "unknown is never silently promoted to a fee".
-                    "       COALESCE(NOT pt.basic, false) "
+                    "       COALESCE(NOT pt.basic, false), i.meta "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "  LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "

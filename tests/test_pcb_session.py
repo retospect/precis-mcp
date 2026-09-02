@@ -9,11 +9,12 @@ thing on the IR side that knows an instance's C-number).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.ir import from_graph
-from precis.pcb.session import footprints_by_refdes, pin_swap_diff
+from precis.pcb.session import build_ir, footprints_by_refdes, pin_swap_diff
 
 _FP = {"pads": [{"number": "1", "x": 0.0, "y": 0.0, "w": 1.0, "shape": "RECT"}]}
 
@@ -108,3 +109,144 @@ def test_pin_swap_diff_reports_empty_net_not_a_wrapped_last_net_name():
         "net, never a real (wrong) net name"
     )
     assert by_pin["B"]["net"] == "NET_A"
+
+
+# ── mounting-hole hydration (round-3 review item 4) ──────────────────────
+
+
+def test_mounting_holes_from_features_parses_drill_ring_and_plating():
+    from precis.pcb.session import mounting_holes_from_features
+
+    holes = mounting_holes_from_features(
+        [
+            {"ftype": "outline", "geom": {"path": [[0, 0], [10, 0], [10, 10]]}},
+            {"ftype": "mounting_hole", "x": 4.0, "y": 4.0, "geom": {"diameter": 4.3}},
+            {
+                "ftype": "mounting_hole",
+                "x": 6.0,
+                "y": 6.0,
+                "geom": {"diameter": 5.6, "ring_dia_mm": 8.0, "plated": True},
+            },
+            # malformed / degenerate rows must be skipped, never crash
+            {"ftype": "mounting_hole", "x": 1.0, "y": 1.0, "geom": {}},
+            {"ftype": "mounting_hole", "x": "oops", "y": 1.0, "geom": {"diameter": 3}},
+        ]
+    )
+    assert [(h.x, h.y, h.drill_mm, h.ring_dia_mm, h.plated) for h in holes] == [
+        (4.0, 4.0, 4.3, 0.0, False),
+        (6.0, 6.0, 5.6, 8.0, True),
+    ]
+
+
+def test_build_ir_carries_mounting_holes_onto_the_ir():
+    from precis.pcb.session import build_ir, mounting_holes_from_features
+
+    holes = mounting_holes_from_features(
+        [{"ftype": "mounting_hole", "x": 2.0, "y": 3.0, "geom": {"diameter": 3.2}}]
+    )
+    ir = build_ir(_graph(), mounting_holes=holes)
+    assert len(ir.mounting_holes) == 1
+    assert ir.mounting_holes[0].drill_mm == 3.2
+    # the default stays the degrade-cleanly empty tuple, mirroring outline
+    assert build_ir(_graph()).mounting_holes == ()
+
+
+# ── rigid "super footprint" groups / patterns (build_ir's own pass-through
+# of PcbIR.inst_group and friends, see precis.pcb.ir._parse_instance_groups)
+
+
+def test_build_ir_parses_an_authored_group_and_its_offset():
+    graph = {
+        "instances": [
+            {
+                "refdes": "J1",
+                "group": "nano_hdr",
+                "group_offset": {"x": 0.0, "y": 0.0, "rot": 0.0},
+            },
+            {
+                "refdes": "J2",
+                "group": "nano_hdr",
+                "group_offset": {"x": 15.24, "y": 0.0, "rot": 0.0},
+            },
+            {"refdes": "U1"},  # ungrouped
+        ],
+        "nets": [],
+    }
+    ir = build_ir(graph)
+    assert ir.n_groups == 1
+    gid = int(ir.inst_group[0])
+    assert gid >= 0
+    assert int(ir.inst_group[1]) == gid
+    assert int(ir.inst_group[2]) == -1  # U1 names no group at all
+    assert ir.group_pattern[gid] is None  # an authored group, not a pattern
+    assert int(ir.group_pattern_index[gid]) == -1
+    assert float(ir.inst_group_offset_dx[0]) == 0.0
+    assert float(ir.inst_group_offset_dx[1]) == 15.24
+    assert float(ir.inst_group_offset_dy[1]) == 0.0
+
+
+def test_build_ir_parses_pattern_instances_into_one_group_each():
+    graph = {
+        "instances": [
+            {"refdes": "A0", "pattern": "channel", "pattern_instance": 0},
+            {"refdes": "B0", "pattern": "channel", "pattern_instance": 0},
+            {"refdes": "A1", "pattern": "channel", "pattern_instance": 1},
+            {"refdes": "B1", "pattern": "channel", "pattern_instance": 1},
+        ],
+        "nets": [],
+    }
+    ir = build_ir(graph)
+    assert ir.n_groups == 2
+    g0, g0b = int(ir.inst_group[0]), int(ir.inst_group[1])
+    g1, g1b = int(ir.inst_group[2]), int(ir.inst_group[3])
+    assert g0 == g0b and g1 == g1b and g0 != g1
+    assert ir.group_pattern[g0] == "channel"
+    assert ir.group_pattern[g1] == "channel"
+    assert int(ir.group_pattern_index[g0]) == 0
+    assert int(ir.group_pattern_index[g1]) == 1
+    # a pattern member carries NO authored offset -- that's a post-seed
+    # tiling-stamp result (precis.pcb.optimize.seed_placement), never
+    # authored data.
+    assert math.isnan(float(ir.inst_group_offset_dx[0]))
+    assert math.isnan(float(ir.inst_group_offset_dy[0]))
+    assert math.isnan(float(ir.inst_group_offset_rot[0]))
+
+
+def test_build_ir_ignores_malformed_group_and_pattern_entries():
+    graph = {
+        "instances": [
+            {"refdes": "A", "group": ""},  # empty name -- ungrouped
+            {"refdes": "B", "group": 123},  # wrong type -- ungrouped
+            # a named group with a garbage group_offset -- degrades to
+            # (0, 0, 0) rather than poisoning the group with NaN
+            {"refdes": "C", "group": "g1", "group_offset": "not-a-dict"},
+            {"refdes": "D", "pattern": "p", "pattern_instance": "oops"},  # no slot
+            {"refdes": "E", "pattern": "", "pattern_instance": 0},  # empty name
+            # both keys on one instance -- "pattern" wins, "group" ignored
+            {
+                "refdes": "F",
+                "pattern": "p2",
+                "pattern_instance": 0,
+                "group": "g2",
+                "group_offset": {"x": 1.0, "y": 2.0, "rot": 3.0},
+            },
+        ],
+        "nets": [],
+    }
+    ir = build_ir(graph)  # must not raise on any of the above
+    assert int(ir.inst_group[0]) == -1
+    assert int(ir.inst_group[1]) == -1
+    gid_c = int(ir.inst_group[2])
+    assert gid_c >= 0
+    assert ir.group_pattern[gid_c] is None
+    assert float(ir.inst_group_offset_dx[2]) == 0.0
+    assert float(ir.inst_group_offset_dy[2]) == 0.0
+    assert float(ir.inst_group_offset_rot[2]) == 0.0
+    assert int(ir.inst_group[3]) == -1
+    assert int(ir.inst_group[4]) == -1
+    gid_f = int(ir.inst_group[5])
+    assert gid_f >= 0
+    assert ir.group_pattern[gid_f] == "p2"
+    # "group"/"group_offset" were ignored for F -- a pattern member's
+    # offset arrays stay NaN, never F's authored (1, 2, 3).
+    assert math.isnan(float(ir.inst_group_offset_dx[5]))

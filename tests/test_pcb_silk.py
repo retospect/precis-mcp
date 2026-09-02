@@ -492,7 +492,12 @@ def test_processing_order_is_natural_refdes_order_not_array_order():
     it. The ordering claim -- the thing this test is named for -- is
     untouched by that, and asserting it directly means a future change to
     label candidates cannot make this test fail for a reason it never
-    cared about."""
+    cared about.
+
+    ``polarized`` names both refdes: this test is about PROCESSING ORDER,
+    not the R/C/L/FB pin-1 policy (``test_no_pin1_attempt_for_an_unpolarized_passive``
+    covers that), so it opts both parts into a real pin-1 attempt exactly
+    as every part got before that policy existed."""
     ir = from_graph(
         _multi(
             _graph("C14", 8, x=0.7, y=0.0),  # listed FIRST in the array
@@ -500,7 +505,7 @@ def test_processing_order_is_natural_refdes_order_not_array_order():
         ),
         stackup=DEFAULT_STACKUP,
     )
-    result = build_silk(ir, pads=[])
+    result = build_silk(ir, pads=[], polarized=frozenset({"C1", "C14"}))
     outcome = {(row.refdes, row.kind): row.outcome for row in result.census}
     # C1 sorts first, so it keeps both marks...
     assert outcome[("C1", "courtyard")] == "placed"
@@ -511,6 +516,69 @@ def test_processing_order_is_natural_refdes_order_not_array_order():
     # Both labels still print somewhere -- neither part goes unlabelled.
     assert outcome[("C1", "refdes")] in ("placed", "relocated")
     assert outcome[("C14", "refdes")] in ("placed", "relocated")
+
+
+# ── pin-1 policy: R/C/L/FB carry no INHERENT polarity ─────────────────────
+@pytest.mark.parametrize("refdes", ["R1", "C1", "L1", "FB1"])
+def test_no_pin1_attempt_for_an_unpolarized_passive(refdes):
+    """A resistor, capacitor, inductor or ferrite bead can be assembled
+    either way around -- a pin-1 mark on one asserts an orientation that
+    does not exist (module docstring's "Not every part needs one"). With
+    no ``polarized`` set at all (the default), every one of these FAMILIES
+    gets no pin-1 draw, and the census explains why rather than reading
+    like a dropped mark."""
+    ir = from_graph(_graph(refdes, 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    result = build_silk(ir, pads=[])
+    roles = {d["role"] for d in result.draws["top"] if d["refdes"] == refdes}
+    assert "pin1" not in roles
+    row = next(c for c in result.census if c.refdes == refdes and c.kind == "pin1")
+    assert row.outcome == "not_applicable"
+    assert row.reason is not None
+    assert "polarity" in row.reason
+    # The courtyard/refdes marks are UNAFFECTED by the policy -- only pin1.
+    assert "outline" in roles
+    # Never reported as dropped -- a deliberate policy is not a defect.
+    assert not any(refdes in msg for msg in result.dropped)
+
+
+def test_polarized_passive_still_gets_a_pin1_mark():
+    """The escape hatch: an R/C/L/FB refdes named in ``polarized`` (a real
+    electrolytic/tantalum cap, e.g.) gets the ordinary pin-1 attempt, same
+    as any non-exempt family."""
+    ir = from_graph(_graph("C1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    result = build_silk(ir, pads=[], polarized=frozenset({"C1"}))
+    roles = {d["role"] for d in result.draws["top"] if d["refdes"] == "C1"}
+    assert "pin1" in roles
+    row = next(c for c in result.census if c.refdes == "C1" and c.kind == "pin1")
+    assert row.outcome == "placed"
+
+
+def test_pin1_policy_does_not_affect_other_families():
+    """A refdes family outside R/C/L/FB (a diode, transistor, IC, LED, ...)
+    keeps its ordinary pin-1 mark whether or not it appears in
+    ``polarized`` -- the policy is scoped to the four exempt families
+    only."""
+    ir = from_graph(_graph("D1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    result = build_silk(ir, pads=[])
+    roles = {d["role"] for d in result.draws["top"] if d["refdes"] == "D1"}
+    assert "pin1" in roles
+    row = next(c for c in result.census if c.refdes == "D1" and c.kind == "pin1")
+    assert row.outcome == "placed"
+
+
+def test_check_silk_missing_does_not_flag_a_deliberately_unmarked_passive():
+    """The downstream DRC completeness rule must not turn a policy
+    decision into a false ``silk_missing`` error: a census row with
+    ``outcome="not_applicable"`` is neither a ``"dropped"`` item (the
+    first pass) nor a claimed ``"placed"``/``"relocated"`` item with no
+    matching draw (the cross-check pass)."""
+    from precis.pcb.drc import check_silk_missing
+
+    ir = from_graph(_graph("C1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    result = build_silk(ir, pads=[])
+    model = {"silkscreen": result.draws}
+    findings = check_silk_missing(result.census, model)
+    assert not any(f.where.startswith("C1 (pin1") for f in findings)
 
 
 # ── pin-1 tick never survives its own courtyard being dropped ────────────
@@ -1049,7 +1117,7 @@ def _point_in_poly_independent(p, poly) -> bool:
 
 
 def test_build_fiducials_places_three_inside_the_outline():
-    result = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
+    result = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
     assert not result.dropped
     assert len(result.fiducials) == 3
     for p in result.fiducials:
@@ -1060,13 +1128,13 @@ def test_build_fiducials_are_non_collinear():
     """Three collinear fiducials cannot resolve rotation -- assert the
     real geometric property (nonzero triangle area) rather than trusting
     the corner-based placement code to have gotten it right."""
-    result = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
+    result = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
     a, b, c = result.fiducials
     assert _triangle_area2(a, b, c) > 1.0  # comfortably nonzero, not just != 0.0
 
 
 def test_build_fiducials_copper_and_mask_diameters_are_the_named_constants():
-    result = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
+    result = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
     assert len(result.pads) == 3
     for pad in result.pads:
         assert pad["shape"] == "circle"
@@ -1082,6 +1150,43 @@ def test_build_fiducials_copper_and_mask_diameters_are_the_named_constants():
         assert blocker["layers"] == ["F.Cu"]
 
 
+def test_build_fiducials_spans_every_copper_layer():
+    """A fiducial is a whole-stack registration mark, not a top-side-only
+    one: given a 4-layer ``layers`` list, EVERY fiducial mints a copper
+    pad on EVERY one of those layers (so a fab can align inner layers and
+    both soldermask films to the same target), while the geometric PICK
+    itself (which 3 corners) does not change with layer count -- same
+    ``fiducials`` positions as the single-layer case, just more pads per
+    position -- and the single ``plane_blockers`` entry per fiducial names
+    every layer at once (the antipad cut, not the copper flash, is what
+    stays one-per-fiducial)."""
+    stack = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+    one_layer = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
+    result = build_fiducials(_BOARD_OUTLINE, pads=[], layers=stack)
+    assert result.fiducials == one_layer.fiducials
+    assert len(result.pads) == 3 * len(stack)
+    for fx, fy in result.fiducials:
+        layers_here = sorted(
+            p["layer"] for p in result.pads if p["x"] == fx and p["y"] == fy
+        )
+        assert layers_here == sorted(stack)
+    for pad in result.pads:
+        assert pad["w"] == FIDUCIAL_COPPER_DIA_MM
+    # The mask opening for BOTH outer films rides the SAME pad pipeline
+    # (`soldermask_gerber` reads pads on `layers[0]`/`layers[-1]`) -- an
+    # F.Cu AND a B.Cu pad at every fiducial site is what makes that true,
+    # never a separate "mask entry".
+    for outer in ("F.Cu", "B.Cu"):
+        outer_pads = [p for p in result.pads if p["layer"] == outer]
+        assert len(outer_pads) == 3
+    # One antipad blocker per fiducial (not per layer), each naming every
+    # layer in `stack` -- `cut_antipads` fans that single blocker out to
+    # whichever layer a given pour actually lives on.
+    assert len(result.plane_blockers) == 3
+    for blocker in result.plane_blockers:
+        assert blocker["layers"] == stack
+
+
 def test_build_fiducials_never_overlaps_a_real_pad():
     """A pad sitting exactly where the tight-margin corner candidate
     would land forces that fiducial to either escalate its margin or be
@@ -1094,7 +1199,7 @@ def test_build_fiducials_never_overlaps_a_real_pad():
         "w": FIDUCIAL_MASK_DIA_MM * 3,  # big enough to also block the 2x-margin rung
         "net": "GND",
     }
-    result = build_fiducials(_BOARD_OUTLINE, pads=[blocking_pad], layer="F.Cu")
+    result = build_fiducials(_BOARD_OUTLINE, pads=[blocking_pad], layers=["F.Cu"])
     r = FIDUCIAL_MASK_DIA_MM / 2.0
     for fx, fy in result.fiducials:
         dist = math.hypot(fx - blocking_pad["x"], fy - blocking_pad["y"])
@@ -1108,14 +1213,18 @@ def test_build_fiducials_reports_a_corner_it_could_not_clear():
     """When even the escalated-margin rung is still blocked, that corner
     is reported in ``dropped`` -- never silently absorbed into a smaller
     result the caller has no way to notice."""
-    covers_both_rungs = {
+    # w=46 (radius 23) covers all SIX rungs (3..18mm diagonal — the
+    # ladder deepened 2026-09-01 to escape corner mounting hardware, so
+    # the blockade must too: the 6th rung sits 18*sqrt(2)=25.5mm out
+    # diagonally, i.e. 21.2mm from this circle's centre at rung 1).
+    covers_every_rung = {
         "shape": "circle",
         "x": FIDUCIAL_MARGIN_MM,
         "y": FIDUCIAL_MARGIN_MM,
-        "w": 20.0,
+        "w": 46.0,
         "net": "GND",
     }
-    result = build_fiducials(_BOARD_OUTLINE, pads=[covers_both_rungs], layer="F.Cu")
+    result = build_fiducials(_BOARD_OUTLINE, pads=[covers_every_rung], layers=["F.Cu"])
     assert result.dropped
     assert any("corner 0" in msg for msg in result.dropped)
     # the 4th corner (not tried by default, since count=3 already
@@ -1126,8 +1235,8 @@ def test_build_fiducials_reports_a_corner_it_could_not_clear():
 
 
 def test_build_fiducials_is_a_pure_function_of_its_inputs():
-    a = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
-    b = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
+    a = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
+    b = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
     assert a == b
 
 
@@ -1140,7 +1249,7 @@ def test_fiducial_plane_blockers_cut_a_hole_in_a_pour():
     fiducial geometry this module produces is wired correctly for the
     caller's realize-time integration (see FiducialResult's own
     docstring for why this module cannot fold it in itself)."""
-    result = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
+    result = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
     pours = plane_pours(
         outline=_BOARD_OUTLINE,
         layers=["F.Cu"],
@@ -1151,6 +1260,32 @@ def test_fiducial_plane_blockers_cut_a_hole_in_a_pour():
     )
     assert len(pours) == 1
     pour = pours[0]
+    assert pour.get("holes")
+    for fx, fy in result.fiducials:
+        assert point_in_pour(pour, fx, fy) is False
+    # the board centre, nowhere near a fiducial, is still poured copper.
+    assert point_in_pour(pour, 30.0, 20.0) is True
+
+
+def test_fiducial_plane_blockers_cut_a_hole_in_an_inner_layer_pour():
+    """A whole-stack fiducial's single ``plane_blockers`` entry names
+    EVERY layer it occupies, so a pour on an INNER layer (not just F.Cu,
+    the only layer this used to touch) gets the same antipad ring cut
+    into it -- the fab-wide registration mark this task exists to make
+    real."""
+    stack = ["F.Cu", "In1.Cu", "B.Cu"]
+    result = build_fiducials(_BOARD_OUTLINE, pads=[], layers=stack)
+    pours = plane_pours(
+        outline=_BOARD_OUTLINE,
+        layers=stack,
+        plane_nets={1: "GND"},  # GND poured on In1.Cu only
+        copper=result.plane_blockers,
+        clearance_mm=0.2,
+        edge_clearance_mm=0.5,
+    )
+    assert len(pours) == 1
+    pour = pours[0]
+    assert pour["layer"] == "In1.Cu"
     assert pour.get("holes")
     for fx, fy in result.fiducials:
         assert point_in_pour(pour, fx, fy) is False
@@ -1187,7 +1322,7 @@ def test_title_block_omits_a_date_and_revision_it_was_never_given():
 
 
 def test_title_block_relocates_away_from_a_fiducial_at_its_default_corner():
-    fids = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
+    fids = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
     unblocked = build_title_block(_BOARD_OUTLINE, pads=[], name="WIDGET")
     assert unblocked.bbox is not None
     blocking = {
@@ -1297,15 +1432,17 @@ def test_title_block_reports_every_corner_tried_when_all_are_blocked():
     """Every corner occupied still says so -- the drop path must remain
     reachable, and the message must name the corners the ladder actually
     walked, not just repeat the old single-corner wording."""
+    # Full-width bands along both horizontal edges, not four corner
+    # squares: the ladder gained an edge-SLIDE rung (2026-09-01, to
+    # escape corner mounting hardware), so a blockade that leaves a gap
+    # between corner blockers no longer proves the drop path.
     result = build_title_block(
         _BOARD_OUTLINE,
         pads=[],
         name="WIDGET",
         avoid=[
-            _corner_blocker(0.0, 0.0),
-            _corner_blocker(60.0, 0.0),
-            _corner_blocker(0.0, 40.0),
-            _corner_blocker(60.0, 40.0),
+            {"shape": "rect", "x": 30.0, "y": 5.0, "w": 70.0, "h": 16.0},
+            {"shape": "rect", "x": 30.0, "y": 35.0, "w": 70.0, "h": 16.0},
         ],
     )
     assert result.draws == []
@@ -1361,6 +1498,42 @@ def test_sn_patch_box_leaves_real_writing_room_beyond_the_label():
     box_w = result.bbox[1][0] - result.bbox[0][0]
     label_w = stroke_font.text_width_mm(SN_LABEL, SN_LABEL_HEIGHT_MM)
     assert box_w > label_w * 2.0
+
+
+def test_sn_patch_relocates_off_a_via_passed_as_an_avoid_obstacle():
+    """A via under the S/N patch is a bump under the one silk feature
+    that exists to be WRITTEN on (round-3 review: two rows of stitch
+    vias marched through it). The handler folds routed vias into
+    ``avoid`` via :func:`via_obstacles`; a via parked in the patch's
+    first-choice spot must relocate the patch, never sit under it."""
+    from precis.pcb.silk import via_obstacles
+
+    baseline = build_sn_patch(_BOARD_OUTLINE, pads=[])
+    assert baseline.bbox is not None
+    (bx0, by0), _, (bx1, by1), _ = (
+        baseline.bbox[0],
+        baseline.bbox[1],
+        baseline.bbox[2],
+        baseline.bbox[3],
+    )
+    centre_via = {
+        "x": (bx0 + bx1) / 2.0,
+        "y": (by0 + by1) / 2.0,
+        "dia_mm": 0.6,
+    }
+    moved = build_sn_patch(
+        _BOARD_OUTLINE, pads=[], avoid=via_obstacles([centre_via])
+    )
+    if moved.bbox is None:
+        assert moved.dropped  # honest drop beats a via under the patch
+        return
+    x0 = min(p[0] for p in moved.bbox)
+    x1 = max(p[0] for p in moved.bbox)
+    y0 = min(p[1] for p in moved.bbox)
+    y1 = max(p[1] for p in moved.bbox)
+    assert not (
+        x0 <= centre_via["x"] <= x1 and y0 <= centre_via["y"] <= y1
+    ), "patch still covers the via it was told to avoid"
 
 
 def test_sn_patch_round_trips_through_gerber_as_a_real_cutout():
@@ -1517,7 +1690,7 @@ def test_export_fab_with_fiducials_and_title_block_is_byte_identical_twice():
     module invents nothing time-based (no ``datetime.now()``), so this
     must hold as long as the caller doesn't feed it anything that isn't."""
     ir = from_graph(_graph("U1", 4, x=30.0, y=20.0), stackup=DEFAULT_STACKUP)
-    fids = build_fiducials(_BOARD_OUTLINE, pads=[], layer="F.Cu")
+    fids = build_fiducials(_BOARD_OUTLINE, pads=[], layers=["F.Cu"])
     tb = build_title_block(
         _BOARD_OUTLINE,
         pads=[],
@@ -1766,19 +1939,21 @@ def test_the_corner_tick_is_the_last_resort_when_no_dot_fits():
     assert mark["width_mm"] == pytest.approx(0.15)
 
 
-def test_the_refdes_ladder_starts_centred_and_walks_outward_upward_first():
+def test_the_refdes_ladder_starts_centred_and_walks_outward_right_first():
     """Order is the whole contract of the ladder: centred is the common
-    case, and after that a reader expects a refdes ABOVE its part. Only
-    when everything conventional is taken should a label end up somewhere
-    odd. Pinned because the sweep is generated -- a sort-key change could
-    silently start every board's labels at the bottom-left."""
+    case, and after that every relocated label prefers the SAME side
+    (right, then bottom) so repeated parts in an array land their labels
+    in the same relative spot -- side consistency reads as tidy across a
+    populated board (task brief 2026-09-01). Pinned because the sweep is
+    generated -- a sort-key change could silently start every board's
+    labels somewhere else."""
     cands = silk._refdes_candidates(3, 12)
     assert len(cands) == 1 + 3 * 12
     assert cands[0][:2] == (0.0, 0.0)
-    # First spot off centre: straight up, one ring out.
+    # First spot off centre: straight right, one ring out.
     du, dv, h_align, v_align, spot = cands[1]
-    assert (round(du, 6), round(dv, 6)) == (0.0, 1.0)
-    assert (h_align, v_align) == ("center", "baseline")
+    assert (round(du, 6), round(dv, 6)) == (1.0, 0.0)
+    assert (h_align, v_align) == ("left", "middle")
     assert "ring 1" in spot
     # Rings are walked in order, and magnitude IS the ring number, so
     # ring 2 sits twice as far out as ring 1 (the old hand-written
@@ -1827,3 +2002,99 @@ def test_dropped_and_relocated_are_exactly_derived_from_the_census():
     )
     assert result.dropped == expected_dropped
     assert result.relocated == expected_relocated
+
+
+# ── outline: silk must not print past the board's own cut edge ──────────
+
+
+def _point_in_polygon_independent(p, poly) -> bool:
+    """Ray-cast point-in-polygon, retyped independently of
+    ``precis.pcb.geom.point_in_polygon`` -- same "don't verify the
+    builder's own primitive with itself" discipline as this file's other
+    independent checkers above."""
+    x, y = p
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            x_at_y = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x < x_at_y:
+                inside = not inside
+    return inside
+
+
+def test_box_inside_outline_rejects_outside_and_within_margin():
+    outline = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    inside = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]
+    assert silk._box_inside_outline(inside, outline, margin_mm=1.0)
+    outside = [(4.0, 4.0), (11.0, 4.0), (11.0, 6.0), (4.0, 6.0)]
+    assert not silk._box_inside_outline(outside, outline, margin_mm=1.0)
+    hugging_edge = [(0.2, 4.0), (2.0, 4.0), (2.0, 6.0), (0.2, 6.0)]
+    assert not silk._box_inside_outline(hugging_edge, outline, margin_mm=1.0)
+    assert silk._box_inside_outline(hugging_edge, outline, margin_mm=0.1)
+
+
+def test_silk_edge_margin_mm_falls_back_when_capability_is_none():
+    assert silk._silk_edge_margin_mm(None) == silk.DEFAULT_BOARD_EDGE_CLEARANCE_MM
+
+
+def test_silk_edge_margin_mm_reads_house_default_from_a_real_capability_row():
+    cap = capability_for("4layer")
+    expected = cap.house_default["board_edge_clearance_vcut_mm"]
+    assert expected is not None
+    assert silk._silk_edge_margin_mm(cap) == expected
+
+
+def test_refdes_candidate_rejected_outside_the_outline_relocates_to_one_inside():
+    """The default (centred) refdes spot prints past the board's own cut
+    edge here -- without ``outline`` the builder happily draws it there;
+    with ``outline`` that candidate must be rejected and the label either
+    relocates to a candidate that is fully inside the board with the
+    silk-to-edge margin, or is dropped -- never printed off-board."""
+    # Placed near the RIGHT edge, not the left -- the ladder now prefers a
+    # candidate to the right of the part first (side-consistency reorder,
+    # 2026-09-01), so that is the direction that has to leak off-board for
+    # the sanity check below to mean anything.
+    ir = from_graph(_graph("U1", 8, x=19.7, y=5.0), stackup=DEFAULT_STACKUP)
+    outline = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+
+    unbounded = build_silk(ir, pads=[])
+    unbounded_refdes = [
+        d
+        for d in unbounded.draws["top"]
+        if d["role"] == "refdes" and d["refdes"] == "U1"
+    ]
+    assert unbounded_refdes  # sanity: it draws, centred, with no outline given
+    # ... and it really does print past x=20 -- otherwise the outline below
+    # would prove nothing (the centred candidate has to actually be the one
+    # this test means to reject).
+    assert any(
+        pt[0] > 20.0
+        for d in unbounded_refdes
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    )
+
+    bounded = build_silk(ir, pads=[], outline=outline)
+    refdes_row = next(
+        c for c in bounded.census if c.refdes == "U1" and c.kind == "refdes"
+    )
+    assert refdes_row.outcome in ("relocated", "dropped")
+
+    margin = silk.DEFAULT_BOARD_EDGE_CLEARANCE_MM
+    ring = [*outline, outline[0]]
+    bounded_refdes = [
+        d for d in bounded.draws["top"] if d["role"] == "refdes" and d["refdes"] == "U1"
+    ]
+    if refdes_row.outcome == "relocated":
+        assert bounded_refdes  # a relocated label must still have drawn
+    for d in bounded_refdes:
+        for seg in d["segments"]:
+            for pt in (seg["start"], seg["end"]):
+                assert _point_in_polygon_independent(pt, outline)
+                assert all(
+                    _point_to_segment_dist(pt, a, b) >= margin - 1e-6
+                    for a, b in itertools.pairwise(ring)
+                )

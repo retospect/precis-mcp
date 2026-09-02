@@ -19,58 +19,46 @@ sweep), `geom.convex_polygons_overlap` (the one SAT primitive),
 `landpattern.place_points` (the one affine path),
 `handlers/pcb.py::_drc_geometry` (why three clearances, one shape).
 
-What is left is one real disagreement and two smaller notes.
+The graded-term disagreement and the single-seed fixtures closed
+2026-08-31 (ledger below). What is left: the two filed-not-fixed notes,
+the pin-1-dot suppression decision, and whatever residuals the first
+honest multi-seed measurement surfaced (tracked in their own items).
 
-## The disagreement
+## CLOSED (2026-08-31) — the disagreement
 
-`cost.courtyard_overlap_pair_term` grades placements by a flat
-`COURTYARD_MIN_SEPARATION_MM` (2.0mm) **centre-distance** between two
-circles — `drc.DEFAULT_COURTYARD_RADIUS_MM * 2`, a constant that predates
-every real courtyard in this subsystem. Legality is now polygon overlap.
-So the annealer descends a slope defined by one courtyard while
-`_placement_is_legal` enforces a different one.
+`cost.courtyard_overlap_pair_term` no longer grades a flat 2.0mm
+centre-distance circle: it reads the SAME courtyard polygons legality and
+DRC test, via `geom.convex_polygons_signed_separation` (the graded
+companion of the boolean SAT — exact MTV depth when overlapping, exact
+zero at contact, an axis-gap lower bound on clearance when disjoint).
 
-This is not currently producing wrong boards: the graded term steers away
-from tight packing generally, and legality catches the categorical
-violation it cannot price. But the two answer the same question with
-different geometry, which is the exact shape of defect the courtyard work
-just spent two ships removing everywhere else.
+**Not overlap DEPTH, deliberately** (the open decision's first option, as
+literally written, was a trap): legality already forbids polygon overlap
+for every generated move, so a depth-only term would be identically zero
+on every reachable state — dead code, cost.py's own move-reachability
+ban. The live quantity on legal states is the CLEARANCE between the
+polygons, so the term grades the shortfall of signed separation below one
+routing corridor (`config.default_pitch_mm`): 0.0 at a full corridor,
+1.0 (at budget) exactly at contact — the legality/DRC line — and
+`1 + depth/corridor` past it (seed/fixed poses only). The predicted grid
+coupling was real and handled: `_courtyard_cell_mm` is now derived from
+`2*max(courtyard_bound_radius_mm) + corridor`, floored at the old
+constant. Bonus: the term left `_NOT_MOVE_REACHABLE` — the old circle
+term was itself already dead on engine-generated states (legality's old
+circle floor coincided with it), the relaxation is not.
 
-**Open decision:** move the graded term to polygon overlap DEPTH (the
-`drc._overlap_depth_mm` reading, already written and tested), or keep the
-circle term and state in `cost.py` that it is a deliberately coarse
-STEERING heuristic that legality overrides. Either is defensible; leaving
-it undocumented is not.
+## CLOSED (2026-08-31) — the fixtures pin one lottery draw
 
-Note the coupling if the term moves: `optimize._courtyard_cell` buckets
-instances on a uniform grid whose cell size EQUALS
-`COURTYARD_MIN_SEPARATION_MM`, and `_courtyard_candidates_near`'s claim to
-be exact rather than approximate rests on that equality. A polygon-depth
-term has no single interaction radius, so the grid would need its cell
-size derived from `courtyard_bound_radius_mm`'s maximum instead.
-
-## The fixtures pin one lottery draw
-
-Both acceptance fixtures assert exact DRC counts at ONE placement seed
-over a simulated anneal. That is why a correctness fix can read as a
-regression, and it is the root cause of the two contradictory clearance
-sweeps recorded in `ir.COURTYARD_CLEARANCE_MM`: the same four values
-ranked differently before and after `_gen_rotate` gained a legality gate,
-because the search itself changed.
-
-The consequence is concrete. `COURTYARD_CLEARANCE_MM` is a point inside a
-working range (~0.25-0.40) chosen because it leaves both fixtures at their
-recorded baselines — a pin, not an optimum — and nothing stops the next
-engine change from moving the fixtures again and inviting another round of
-constant-nudging.
-
-**The fix is to make the fixtures assert over N seeds** (median, or
-worst-case, or "no seed exceeds K"), so a baseline measures the engine
-rather than one draw. The sweep harness for this is trivial — monkeypatch
-`_SEED` and the ratchets, loop — and both sweeps in this item's history
-were produced that way. Until then, treat a single-seed fixture
-regression as a prompt to measure across seeds, never as a prompt to
-adjust a constant.
+Both acceptance fixtures now parametrize over seeds 1-5 and hold every
+baseline on EVERY seed (worst-case-over-seeds). The first multi-seed run
+on the pre-change engine proved the point better than the argument did:
+seed 3 of the natural-size reference board carried **1 copper clearance
+error at 0.000mm plus a via_pad_keepout error** — a real hole in the
+occupancy-grid guarantee that seed-1 pinning had been hiding — and seeds
+3/4 of the 40mm stress board carried unstitched-plane connectivity
+splits. Single-seed baselines were not conservative, they were blind.
+Residuals from the multi-seed measurement are tracked below /
+in their own items, not by raising baselines.
 
 ## Filed, not fixed: the silk obstacle list has no broad phase
 
@@ -112,7 +100,9 @@ every courtyard on every board, so they deserve the same standard.
   `silk.py` and `drc.py` matters more than batching, and after the broad
   phase there are only a handful of pairs left to test. Revisit only if
   profiling asks.
-- **OPEN — the graded cost term** (above).
+- **CLOSED (2026-08-31) — the graded cost term** (above: a separation-
+  shortfall relaxation over the shared polygons, not a depth term, which
+  would have been dead code).
 - **OPEN (2026-08-30) — a dropped courtyard still suppresses the pin-1
   DOT.** `silk.build_silk`'s "a pin-1 tick never survives alone" guard was
   written when the marker was a corner TICK, which is a cut of the

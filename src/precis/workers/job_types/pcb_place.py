@@ -85,8 +85,15 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         return
 
-    outline = pcb_session.outline_from_features(ctx.store.pcb_features_list(pcb_ref_id))
-    ir = pcb_session.build_ir(graph, outline=outline)
+    features = ctx.store.pcb_features_list(pcb_ref_id)
+    ir = pcb_session.build_ir(
+        graph,
+        outline=pcb_session.outline_from_features(features),
+        # Same hydration as pcb_route: the placer doesn't claim holes
+        # itself, but the realize probe this job's auto-checks run does,
+        # and an IR without them under-reports congestion near a corner.
+        mounting_holes=pcb_session.mounting_holes_from_features(features),
+    )
 
     # Re-apply persisted plane assignments (authored `op='plane_net'` AND a
     # prior pcb_route run's derived write-back) onto the fresh IR BEFORE

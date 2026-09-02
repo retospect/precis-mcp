@@ -69,14 +69,29 @@ constant here is order-of-magnitude, not fit to real fab/bench data. The
 ranking harness (reference vs. perturbed-negative designs) catches gross
 errors only, not near-optimal tuning.
 
-**``courtyard_overlap``/``board_edge_clearance`` (gr267456)** report a
-graded fraction of the SAME physical threshold ``drc.py`` checks
-categorically, imported rather than re-declared:
-:data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` and
+**``courtyard_overlap``/``board_edge_clearance`` (gr267456)** grade the
+SAME boundary the hard checks enforce, never a re-declared one.
+``courtyard_overlap`` (since 2026-08-31) reads the real courtyard
+POLYGONS through the one shared SAT primitive family
+(:func:`precis.pcb.geom.convex_polygons_signed_separation`, the graded
+companion of the boolean legality/DRC use) — a relaxation that hits "at
+budget" exactly at contact, the legality/DRC line — with
+:data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` surviving only as the
+pinless-part fallback scale. ``board_edge_clearance`` reads
 :class:`precis.pcb.capabilities.CapabilityRow`'s
 ``board_edge_clearance_vcut_mm`` (via :data:`CostConfig.fab_caps`). The
-``cost.py -> drc.py`` import is one-directional and constant-only (no
-cycle, no shapely/STRtree machinery crosses).
+``cost.py -> drc.py`` import stays one-directional and constant-only (no
+cycle, no shapely/STRtree machinery crosses; ``geom`` is pure math).
+
+**``alignment`` (2026-09-01) is the first "preference field"**
+(``docs/backlog/pcb-global-codesign-north-star.md``'s invariant 3): a
+weak, numerous, purely aesthetic pressure with no hard-rule counterpart
+to relax, which is exactly why it rides :class:`Family.MONEY` (summed)
+rather than :class:`Family.MARGIN` (max) — a max aggregate only ever
+feels the single worst pressure board-wide, so a cosmetic term registered
+there would either vanish under a real risk or, worse, occasionally BE
+the worst term and distort the max. Every later aesthetic pressure this
+board optimizer grows belongs in the same SUMMED family, never MARGIN.
 """
 
 from __future__ import annotations
@@ -90,14 +105,20 @@ from typing import Any
 from precis.pcb import objectives as obj
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.drc import DEFAULT_COURTYARD_RADIUS_MM
+from precis.pcb.geom import convex_polygons_signed_separation
 from precis.pcb.ir import (
+    COURTYARD_CLEARANCE_MM,
     UNSET_LAYER,
     Level,
     PcbIR,
+    courtyard_bound_radius_mm,
+    instance_courtyard_polygon,
+    instance_courtyard_polygons,
     pin_point,
     plane_layers_of,
     same_layer_crossing_count,
 )
+from precis.pcb.landpattern import place_points
 from precis.pcb.rules import (
     implied_via_count,
     ipc2221_capacity_a,
@@ -183,6 +204,22 @@ class CostConfig:
     default_instance_area_mm2: float = (
         2.0  # coarse per-instance area assumption before L3 positions exist
     )
+    #: USD a single PAIR of nearby instances costs at full misalignment
+    #: (``alignment_pair_term``'s ``fraction == 1``), 0 at exact
+    #: alignment. A TENTH of ``via_usd`` (0.02) -- the cheapest other
+    #: money granule on the board -- and far below
+    #: ``extended_part_fee_usd`` (3.0) or ``layer_usd`` (5.0), so summing
+    #: this over every nearby pair on a whole board can never outweigh a
+    #: single avoided via, let alone a layer or a part fee: a COSMETIC
+    #: tie-breaker between placements already equal on every real cost
+    #: axis, never a pressure that trades away real fab cost for tidier
+    #: rows. First shipped at 0.01 (half a via) and measured the same day
+    #: to be strong enough to steer the esp32c3 reference fixture's seed-1
+    #: anneal into a placement two nets could not route out of -- an
+    #: aesthetic term that costs routability has left tie-breaker
+    #: territory, so it came down until every reference seed routed
+    #: 11/11 again.
+    alignment_usd_per_pair: float = 0.002
 
     # -- margin budgets ---------------------------------------------------
     default_pitch_mm: float = 0.3  # trace width + clearance, generic class fallback
@@ -976,36 +1013,72 @@ def _crossings(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     ]
 
 
-# ── courtyard overlap (gr267456) ─────────────────────────────────────────
+# ── courtyard overlap (gr267456; polygon-relaxation form 2026-08-31) ─────
 
-#: Two instances' courtyard circles first touch when their centre-to-
-#: centre distance drops to this — the SAME threshold ``drc.
-#: check_courtyard_overlap`` uses for its own two circles (each of radius
-#: :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM`), imported rather
-#: than re-declared (module docstring).
+#: The nominal courtyard DIAMETER — ``drc.DEFAULT_COURTYARD_RADIUS_MM * 2``,
+#: imported rather than re-declared. Since 2026-08-31 this is no longer the
+#: graded term's threshold (the term reads real courtyard POLYGONS below);
+#: it survives as the nominal fallback scale a PINLESS part's courtyard
+#: square is floored to (``ir.instance_courtyard_polygon``'s
+#: ``fallback_half_extent_mm`` — both here and in
+#: :mod:`precis.pcb.optimize`'s keep-outs, one figure, two consumers).
 COURTYARD_MIN_SEPARATION_MM = 2.0 * DEFAULT_COURTYARD_RADIUS_MM
 
 _COURTYARD_JUSTIFICATION = (
-    "two components' courtyards cannot physically overlap on a manufactured board -- "
-    "the same rule drc.check_courtyard_overlap enforces as a hard error, graded here "
-    "as overlap depth (fraction of the shared minimum separation) so the optimizer "
-    "has a slope to descend rather than a plateau"
+    "the router needs at least one routing corridor (track width + clearance, "
+    "config.default_pitch_mm) between any two parts' courtyards to escape between "
+    "them -- graded as the shortfall of the true polygon-to-polygon separation below "
+    "that corridor, reaching 'at budget' (1.0) exactly where drc.check_courtyard_"
+    "overlap and OptimizeEngine._placement_is_legal draw the hard line (contact), "
+    "and growing past 1.0 with penetration depth beyond it"
 )
 
 
 def courtyard_overlap_pair_term(
-    ir: PcbIR, ia: int, ib: int, level: Level, config: CostConfig
+    ir: PcbIR,
+    ia: int,
+    ib: int,
+    level: Level,
+    config: CostConfig,
+    *,
+    poly_a: list[tuple[float, float]] | None = None,
+    poly_b: list[tuple[float, float]] | None = None,
 ) -> TermValue:
     """One instance PAIR's ``courtyard_overlap`` :class:`TermValue` — the
-    optimizer-visible, GRADED counterpart to ``drc.check_courtyard_
-    overlap``'s hard, binary "error". DRC treats any overlap as
-    categorical, but an optimizer needs a slope to descend, not a
-    plateau, so this reports how DEEPLY the two courtyards overlap, as a
-    fraction of :data:`COURTYARD_MIN_SEPARATION_MM` (the same threshold
-    DRC's two circles collide at) — 0.0 the instant the circles stop
-    touching, 1.0 at perfect coincidence, and (like every other fraction
-    in this module) unbounded above 1.0 has no meaning here since a
-    centre-to-centre distance can't go negative.
+    optimizer-visible, GRADED counterpart to the hard overlap rule, and
+    since 2026-08-31 a true RELAXATION of it: the same courtyard POLYGONS
+    legality tests (``OptimizeEngine._placement_is_legal``) and DRC checks
+    (``drc.check_courtyard_overlap``), measured by
+    :func:`precis.pcb.geom.convex_polygons_signed_separation` instead of a
+    boolean. A flat 2.0mm centre-distance circle stood here until then —
+    a constant predating every real courtyard in this subsystem, so the
+    annealer descended a slope defined by one geometry while legality
+    enforced another (``docs/backlog/pcb-courtyard-polygon.md``'s "the
+    disagreement").
+
+    **Why separation shortfall and not overlap depth.** Legality already
+    FORBIDS polygon overlap for every generated move, so a term graded on
+    overlap depth alone would be identically zero on every reachable
+    state — dead code, the exact move-reachability trap the module
+    docstring bans. The live quantity on legal states is the CLEARANCE
+    between the two polygons: the router needs at least one routing
+    corridor (``config.default_pitch_mm``, the same track-width+clearance
+    figure ``gap_capacity`` prices) between two courtyards to escape
+    between them. So the fraction is the shortfall of the signed
+    separation below that corridor: 0.0 at a full corridor or more, 1.0
+    (at budget) exactly at contact — the legality/DRC boundary — and
+    ``1 + depth/corridor`` beyond it (only reachable through a seed or
+    fixed placement, since moves cannot create overlap), which
+    :func:`hardened_penalty`'s overage branch punishes with the schedule.
+    One continuous slope through the boundary, zero disagreement with the
+    hard rule about where the boundary IS.
+
+    ``poly_a``/``poly_b`` accept the caller's already-resolved WORLD-frame
+    courtyard polygons (:meth:`OptimizeEngine._world_courtyard`'s
+    pose-keyed cache) so the per-move path never recomputes a hull; left
+    ``None``, this derives them from the IR via the same
+    ``ir.instance_courtyard_polygon`` + ``landpattern.place_points`` path
+    with the same constants, so the two callers cannot diverge.
 
     Before L3 (no committed position for either instance), two SPECIFIC
     instances' eventual placement is exactly as unconstrained as
@@ -1027,10 +1100,6 @@ def courtyard_overlap_pair_term(
             _COURTYARD_JUSTIFICATION,
             is_bound=True,
         )
-    # INSTANCE centroids, deliberately — a courtyard is the part's BODY,
-    # not its pads. This is the one geometric term that must NOT move to
-    # pin_point: pads sit inside the courtyard, so measuring body overlap
-    # from pad positions would understate it.
     xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
     xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
     if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
@@ -1042,9 +1111,13 @@ def courtyard_overlap_pair_term(
             _COURTYARD_JUSTIFICATION,
             is_bound=True,
         )
-    dist_mm = math.hypot(xa - xb, ya - yb)
-    overlap_mm = max(0.0, COURTYARD_MIN_SEPARATION_MM - dist_mm)
-    fraction = overlap_mm / COURTYARD_MIN_SEPARATION_MM
+    if poly_a is None:
+        poly_a = _world_courtyard_polygon(ir, ia, xa, ya)
+    if poly_b is None:
+        poly_b = _world_courtyard_polygon(ir, ib, xb, yb)
+    corridor_mm = config.default_pitch_mm
+    separation_mm = convex_polygons_signed_separation(poly_a, poly_b)
+    fraction = max(0.0, (corridor_mm - separation_mm) / corridor_mm)
     return TermValue(
         "courtyard_overlap",
         Family.MARGIN,
@@ -1055,16 +1128,48 @@ def courtyard_overlap_pair_term(
     )
 
 
+def _world_courtyard_polygon(
+    ir: PcbIR, inst: int, x: float, y: float
+) -> list[tuple[float, float]]:
+    """``inst``'s courtyard polygon in BOARD coordinates — the SLOW,
+    IR-derived fallback behind :func:`courtyard_overlap_pair_term`'s
+    ``poly_a``/``poly_b`` parameters, built from the same helpers with the
+    same constants :mod:`precis.pcb.optimize` uses for its cached
+    keep-outs (``COURTYARD_CLEARANCE_MM`` clearance, the nominal
+    half-courtyard floor for a pinless part, ``place_points`` for the
+    affine) so the cached and derived answers are the same shape."""
+    local = instance_courtyard_polygon(
+        ir,
+        inst,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )
+    rot = float(ir.inst_rot[inst])
+    return place_points(
+        local, cx=x, cy=y, rot_deg=0.0 if math.isnan(rot) else rot
+    )
+
+
 def _courtyard_overlap(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     """Every instance PAIR's ``courtyard_overlap`` value — genuinely
     O(n_instances^2), same carve-out as ``coupling``'s own full double
     loop (module docstring's "what is NOT claimed local" section):
     :mod:`precis.pcb.optimize` never calls this full-board version per
     move, it maintains its own grid-bucketed incremental cache instead
-    (see that module's docstring)."""
+    (see that module's docstring). Each placed instance's world polygon is
+    resolved ONCE here, not once per pair — the hull derivation is the
+    expensive half."""
     n = ir.n_instances
+    polys: dict[int, list[tuple[float, float]]] = {}
+    if level >= Level.L3:
+        for i in range(n):
+            x, y = float(ir.inst_x[i]), float(ir.inst_y[i])
+            if not (math.isnan(x) or math.isnan(y)):
+                polys[i] = _world_courtyard_polygon(ir, i, x, y)
     return [
-        courtyard_overlap_pair_term(ir, ia, ib, level, config)
+        courtyard_overlap_pair_term(
+            ir, ia, ib, level, config, poly_a=polys.get(ia), poly_b=polys.get(ib)
+        )
         for ia in range(n)
         for ib in range(ia + 1, n)
     ]
@@ -1207,6 +1312,161 @@ def _board_edge_clearance(
     return out
 
 
+# ── alignment bonus (2026-09-01, first SUMMED "preference field") ───────
+_ALIGNMENT_JUSTIFICATION = (
+    "ragged placement assembles/inspects worse -- pick-and-place programming and "
+    "AOI/visual inspection both read faster off a row or column of parts whose "
+    "centres line up than off the same parts scattered by a fraction of a "
+    "millimetre; the first COSMETIC pressure riding the SUMMED MONEY family "
+    "rather than the MAX-aggregated MARGIN one (docs/backlog/pcb-global-codesign-"
+    "north-star.md invariant 3: many weak aesthetic pressures must never contend "
+    "with a real manufacturing risk for the margin max, or a single loud cosmetic "
+    "term could mask a catastrophic one -- see this module's own docstring)"
+)
+
+
+def _alignment_neighbourhood_mm(ir: PcbIR, config: CostConfig) -> float:
+    """The maximum instance-centre distance ``alignment_pair_term`` will
+    ever score nonzero for -- computed by the EXACT SAME formula
+    :meth:`precis.pcb.optimize.OptimizeEngine.__init__` uses for its own
+    ``_courtyard_cell_mm`` (same courtyard polygons, same clearance and
+    pinless-fallback constants, same ``default_pitch_mm``), duplicated
+    here rather than imported because ``cost.py -> optimize.py`` would be
+    a cycle (``optimize.py`` already imports plenty from ``cost.py``).
+    Identical inputs make this an EXACT match, not merely a contained
+    bound: any pair this function's caller can score nonzero is exactly
+    the set :meth:`~precis.pcb.optimize.OptimizeEngine.
+    _courtyard_candidates_near` already finds for ``courtyard_overlap``,
+    never fewer (a silently-dead pair) or more (an engine/full-board
+    mismatch the delta-correctness tests would catch).
+
+    Without SOME distance cap, ``alignment_pair_term``'s
+    ``m = min(|dx|, |dy|)`` would reward two instances sharing an x or y
+    coordinate however far apart along the OTHER axis -- unbounded
+    action at a distance, exactly the long-range pull the module
+    docstring's "no wirelength term" caution bans. Reusing courtyard's
+    own already-justified interaction radius, rather than inventing a
+    second one, is what keeps this genuinely local ("a NEARBY part", per
+    the request that added this term) and keeps the incremental engine's
+    candidate search (which already computes this radius once, as
+    ``_courtyard_cell_mm``) exactly sufficient for this term too."""
+    polys = instance_courtyard_polygons(
+        ir,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )
+    r_max = float(courtyard_bound_radius_mm(polys).max()) if ir.n_instances else 0.0
+    return max(COURTYARD_MIN_SEPARATION_MM, 2.0 * r_max + config.default_pitch_mm)
+
+
+def alignment_pair_term(
+    ir: PcbIR,
+    ia: int,
+    ib: int,
+    level: Level,
+    config: CostConfig,
+    *,
+    neighbourhood_mm: float | None = None,
+) -> TermValue:
+    """One instance PAIR's ``alignment`` :class:`TermValue` -- a small,
+    SUMMED (:class:`Family.MONEY`) bonus for two NEARBY instances whose
+    centres nearly share an x or y coordinate, so the anneal gently snaps
+    rows/columns without fighting real cost (this is a COSMETIC
+    tie-breaker, not a structural pressure -- see :data:`CostConfig.
+    alignment_usd_per_pair`).
+
+    ``m = min(|dx|, |dy|)`` is the misalignment along whichever axis is
+    closer to shared -- 0 exactly when the two centres line up on a row
+    or column, growing as either axis drifts. The per-pair dollar cost is
+    ``min(m, tol) / tol * config.alignment_usd_per_pair``: 0 at exact
+    alignment, linear up to ``tol``, and FLAT beyond it -- clamped, not
+    left to keep growing, so an already-badly-misaligned pair exerts no
+    further gradient once past ``tol`` (no incentive fighting placement
+    for its own sake once "aligned or not" has been decided).
+
+    ``tol = 2 * config.default_pitch_mm`` -- two routing-corridor widths,
+    the SAME track-width+clearance figure ``courtyard_overlap`` already
+    prices its escape corridor against (see
+    :data:`_COURTYARD_JUSTIFICATION`), reused rather than inventing a new
+    physical constant: within about two pitches a part reads as "trying
+    to be aligned" (float jitter/rounding from a prior move); beyond that
+    it is a placement CHOICE, not misalignment, and earns no further
+    bonus either way.
+
+    ``neighbourhood_mm`` gates ``m`` itself, not just an optimization:
+    beyond it the pair scores a flat 0.0 regardless of how small ``m``
+    is, because a pair sharing a coordinate on opposite sides of the
+    board is a coincidence, not "nicely aligned" -- see
+    :func:`_alignment_neighbourhood_mm`'s docstring for why this is
+    necessary at all (unbounded action-at-a-distance) and why reusing
+    courtyard_overlap's own radius, rather than a smaller invented one,
+    keeps this term's incremental engine wiring exact. Left ``None``,
+    this derives it via that (whole-board, O(n)) function -- correct but
+    SLOW if called once per pair; every registered caller below and the
+    engine's own per-move refresh pass a pre-resolved value instead, the
+    same ``poly_a``/``poly_b`` convention :func:`courtyard_overlap_pair_
+    term` already established.
+
+    Same pre-L3/NaN-position gating as :func:`courtyard_overlap_pair_
+    term` (that function's own docstring's argument applies unchanged):
+    two instances' RELATIVE alignment is exactly as undetermined before
+    either has a committed position as their courtyard separation is, so
+    0.0 is the tightest LOWER-admissible bound, ``is_bound=True`` there —
+    same as :func:`board_area_term`/:func:`layer_count_term`'s own coarse
+    branches, this money term also has a genuine coarse/fine split. Once
+    a position exists, a nonzero-vs-zero result is a real MEASUREMENT
+    (``is_bound=False``) whether or not the pair clears the
+    ``neighbourhood_mm`` gate — "too far apart to call aligned" is a
+    real answer, the same "genuine measured near-zero" category
+    :func:`gap_capacity_term`'s plane-promoted-net branch documents, not
+    a hidden risk."""
+    refdes_a = str(ir.instance_refdes[ia])
+    refdes_b = str(ir.instance_refdes[ib])
+    region = f"{refdes_a}~{refdes_b}"
+    if level < Level.L3:
+        return TermValue(
+            "alignment", Family.MONEY, region, 0.0, _ALIGNMENT_JUSTIFICATION, is_bound=True
+        )
+    xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
+    xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
+    if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
+        return TermValue(
+            "alignment", Family.MONEY, region, 0.0, _ALIGNMENT_JUSTIFICATION, is_bound=True
+        )
+    nearby_mm = (
+        _alignment_neighbourhood_mm(ir, config)
+        if neighbourhood_mm is None
+        else neighbourhood_mm
+    )
+    dx = abs(xa - xb)
+    dy = abs(ya - yb)
+    if math.hypot(dx, dy) > nearby_mm:
+        return TermValue("alignment", Family.MONEY, region, 0.0, _ALIGNMENT_JUSTIFICATION)
+    tol_mm = 2.0 * config.default_pitch_mm
+    m = min(dx, dy)
+    fraction = min(m, tol_mm) / tol_mm if tol_mm > 0.0 else 0.0
+    raw = fraction * config.alignment_usd_per_pair
+    return TermValue("alignment", Family.MONEY, region, raw, _ALIGNMENT_JUSTIFICATION)
+
+
+def _alignment(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    """Every instance PAIR's ``alignment`` value -- the same O(n_instances
+    ^2) whole-board carve-out :func:`_courtyard_overlap` documents (that
+    function's own docstring): :mod:`precis.pcb.optimize` never calls
+    this per move, it maintains its own grid-bucketed incremental running
+    total instead (see that module's docstring). ``_alignment_
+    neighbourhood_mm`` is resolved ONCE here, not once per pair -- the
+    same one-resolve-per-call shape ``_courtyard_overlap`` uses for its
+    own per-instance world polygons."""
+    n = ir.n_instances
+    nearby_mm = _alignment_neighbourhood_mm(ir, config) if level >= Level.L3 else 0.0
+    return [
+        alignment_pair_term(ir, ia, ib, level, config, neighbourhood_mm=nearby_mm)
+        for ia in range(n)
+        for ib in range(ia + 1, n)
+    ]
+
+
 TERMS: list[TermSpec] = [
     TermSpec(
         "board_area",
@@ -1238,6 +1498,14 @@ TERMS: list[TermSpec] = [
         Criticality.COSMETIC,
         "JLC's flat per-line surcharge for Extended-library parts",
         _extended_part_fees,
+        direction=BoundDirection.LOWER,
+    ),
+    TermSpec(
+        "alignment",
+        Family.MONEY,
+        Criticality.COSMETIC,
+        _ALIGNMENT_JUSTIFICATION,
+        _alignment,
         direction=BoundDirection.LOWER,
     ),
     TermSpec(

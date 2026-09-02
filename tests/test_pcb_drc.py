@@ -955,6 +955,110 @@ def test_check_board_edge_clearance_does_not_double_report_a_single_pad_as_two_f
     assert len(drc.check_board_edge_clearance(model, _CAP4, outline=_EDGE_OUTLINE)) == 1
 
 
+# ── silkscreen vs the board's own outline: containment + edge clearance ──
+
+
+def _silk_draw(
+    role: str, refdes: str, start, end, *, width_mm: float = 0.2
+) -> dict[str, Any]:
+    return {
+        "width_mm": width_mm,
+        "segments": [{"shape": "line", "start": list(start), "end": list(end)}],
+        "source": "synthesized",
+        "role": role,
+        "refdes": refdes,
+    }
+
+
+def test_check_outline_containment_flags_silk_drawn_outside_the_board():
+    """A refdes label whose ink lands past the outline is as absent from
+    the delivered board as copper outside it would be -- the same
+    "a fab images only what is inside the profile" rule
+    ``check_outline_containment`` already applies to copper/pads/parts,
+    extended here to ``model["silkscreen"]``."""
+    model = {
+        "silkscreen": {
+            "top": [_silk_draw("refdes", "U1", (-2.0, 5.0), (-1.0, 5.0))],
+            "bottom": [],
+        }
+    }
+    findings = drc.check_outline_containment(model, outline=_EDGE_OUTLINE)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "outline_containment" and f.severity == "error"
+    assert f.objects[0]["refdes"] == "U1"
+
+
+def test_check_outline_containment_quiet_for_silk_well_inside_the_board():
+    model = {
+        "silkscreen": {
+            "top": [_silk_draw("refdes", "U1", (9.0, 10.0), (11.0, 10.0))],
+            "bottom": [],
+        }
+    }
+    assert drc.check_outline_containment(model, outline=_EDGE_OUTLINE) == []
+
+
+def test_check_silk_edge_clearance_fires_for_silk_near_the_edge():
+    """Silk sitting inside the board but closer to the cut edge than the
+    fab's V-cut minimum -- the same two-tier bar
+    ``check_board_edge_clearance`` applies to copper, now applied to ink."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    gap = jlc_min / 2.0  # inside jlc_min -> error tier
+    model = {
+        "silkscreen": {
+            "top": [_silk_draw("refdes", "U1", (gap, 5.0), (gap, 15.0), width_mm=0.0)],
+            "bottom": [],
+        }
+    }
+    findings = drc.check_silk_edge_clearance(model, _CAP4, outline=_EDGE_OUTLINE)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "silk_edge_clearance" and f.severity == "error"
+    assert f.margin_mm is not None and f.margin_mm < 0
+    assert f.margin_mm == pytest.approx(gap - jlc_min, abs=1e-4)
+
+
+def test_check_silk_edge_clearance_quiet_for_silk_comfortably_inside():
+    house = _CAP4.house_default["board_edge_clearance_vcut_mm"]
+    assert house is not None
+    gap = house + 0.5  # comfortably clear of every edge
+    model = {
+        "silkscreen": {
+            "top": [_silk_draw("refdes", "U1", (gap, 5.0), (gap, 15.0), width_mm=0.0)],
+            "bottom": [],
+        }
+    }
+    assert drc.check_silk_edge_clearance(model, _CAP4, outline=_EDGE_OUTLINE) == []
+
+
+def test_check_silk_edge_clearance_no_outline_is_a_noop():
+    model = {
+        "silkscreen": {
+            "top": [_silk_draw("refdes", "U1", (0.0, 5.0), (0.0, 15.0), width_mm=0.0)],
+            "bottom": [],
+        }
+    }
+    assert drc.check_silk_edge_clearance(model, _CAP4, outline=None) == []
+
+
+def test_check_silk_edge_clearance_wired_into_run_geometric_drc():
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    gap = jlc_min / 2.0
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [],
+        "silkscreen": {
+            "top": [_silk_draw("refdes", "U1", (gap, 5.0), (gap, 15.0), width_mm=0.0)],
+            "bottom": [],
+        },
+    }
+    findings = drc.run_geometric_drc(model, capability=_CAP4, outline=_EDGE_OUTLINE)
+    assert any(f.rule == "silk_edge_clearance" for f in findings)
+
+
 # ── process_for_stackup ───────────────────────────────────────────────
 
 
@@ -1445,3 +1549,51 @@ def test_clearance_oracle_matches_on_dense_close_layout():
             for i, j, _ in drc.clearance_pairs_indexed(model, required_mm=required_mm)
         )
         assert naive == indexed, (trial, model, naive ^ indexed)
+
+
+# ── octilinear (every drawn wire a multiple of 45 degrees) ────────────
+
+
+def test_check_octilinear_fires_on_an_off_angle_segment():
+    """A 55-degree run is exactly the defect the 2026-08-31 user review
+    reported ("R2->R1 at ~55deg") -- one error per offending segment,
+    naming the angle so the fix starts from the finding."""
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [_track("A", "F.Cu", (0.0, 0.0), (7.0, 10.0))],
+    }
+    findings = drc.check_octilinear(model)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "octilinear" and f.severity == "error"
+    assert "55.0deg" in f.detail
+
+
+def test_check_octilinear_quiet_on_axis_diagonal_and_arcs():
+    """Axis runs, true diagonals (|dx| == |dy|) and fillet arcs are all
+    legal -- the rule grades LINE direction only."""
+    arc_track = {
+        "ctype": "track",
+        "layer": "F.Cu",
+        "net": "C",
+        "width_mm": 0.2,
+        "segments": [
+            {
+                "shape": "arc",
+                "start": [0.0, 0.0],
+                "end": [1.0, 1.0],
+                "center": [1.0, 0.0],
+                "cw": False,
+            }
+        ],
+    }
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [
+            _track("A", "F.Cu", (0.0, 0.0), (5.0, 0.0)),
+            _track("A", "F.Cu", (5.0, 0.0), (8.0, 3.0)),
+            _track("B", "F.Cu", (0.0, 1.0), (0.0, 6.0)),
+            arc_track,
+        ],
+    }
+    assert drc.check_octilinear(model) == []
