@@ -66,6 +66,8 @@ class MarkdownHandler(PlaintextHandler):
         note_like=True,
         views=("toc", "raw"),
         modes=("create",),
+        # edit() is inherited unmodified from PlaintextHandler.
+        edit_modes=("find-replace", "append", "insert", "replace"),
     )
 
     _KIND: ClassVar[str] = "markdown"

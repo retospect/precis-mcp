@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from precis.errors import BadInput, Unsupported
 from precis.handlers import _todo_guards as guards
 from precis.handlers import _todo_views as views
+from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
@@ -232,6 +233,12 @@ class TodoHandler(NumericRefHandler):
         id_required=False,
         note_like=True,
         placement="artifact",
+        # edit()'s only accepted mode — the top-level tools/core.py::edit
+        # signature defaults mode= to 'find-replace' (the file-kind
+        # default), so a caller that omits mode= on a todo edit still
+        # arrives here with a non-'replace' value; require_mode()
+        # reads this declaration to say so precisely (gr292913).
+        edit_modes=("replace",),
     )
 
     kind: ClassVar[str] = "todo"
@@ -723,11 +730,7 @@ class TodoHandler(NumericRefHandler):
                 "edit(kind='todo') requires id=",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
-        if mode != "replace":
-            raise BadInput(
-                f"edit(kind='todo') only supports mode='replace', got {mode!r}",
-                next="edit(kind='todo', id=N, mode='replace', text='new text')",
-            )
+        require_mode(spec=self.spec, verb="edit", mode=mode)
         has_text = text is not None and text.strip()
         has_body = body is not None and body.strip()
         if not has_text and not has_body:

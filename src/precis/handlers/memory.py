@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
 from precis.handlers._argument_view import render_argument_view
+from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
@@ -78,6 +79,10 @@ class MemoryHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
+        # edit()'s only accepted mode — see todo.py's identical
+        # annotation (gr292913) for why an omitted mode= still needs
+        # this declaration.
+        edit_modes=("replace",),
     )
 
     kind: ClassVar[str] = "memory"
@@ -395,11 +400,7 @@ class MemoryHandler(NumericRefHandler):
                 "edit(kind='memory') requires id=",
                 next="edit(kind='memory', id=N, mode='replace', text='new body')",
             )
-        if mode != "replace":
-            raise BadInput(
-                f"edit(kind='memory') only supports mode='replace', got {mode!r}",
-                next=("edit(kind='memory', id=N, mode='replace', text='new body')"),
-            )
+        require_mode(spec=self.spec, verb="edit", mode=mode)
         has_text = text is not None and text.strip()
         rule_clean = rule.strip() if isinstance(rule, str) and rule.strip() else None
         warrant_clean = (

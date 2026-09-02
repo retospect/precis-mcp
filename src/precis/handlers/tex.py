@@ -74,6 +74,8 @@ class TexHandler(PlaintextHandler):
         note_like=True,
         views=("raw", "toc"),
         modes=("create",),
+        # edit() is inherited unmodified from PlaintextHandler.
+        edit_modes=("find-replace", "append", "insert", "replace"),
     )
 
     _KIND: ClassVar[str] = "tex"

@@ -34,6 +34,7 @@ from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_render as render
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
+from precis.handlers._mode_help import require_mode
 from precis.handlers._roots import parse_alias_roots
 from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import Handler, KindSpec
@@ -62,6 +63,10 @@ _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
 # 'replace'); selector-deletes live on ``delete``. The three gates
 # (parse / qualname-drop / ruff) ride on whichever verb is invoked.
 _SUPPORTED_PUT_MODES = ("create",)
+# ``edit``'s accepted modes — region-modifying ops only. Python supports
+# the same set as markdown/plaintext minus ``create`` (lives on ``put``)
+# and ``delete`` (its own verb).
+_SUPPORTED_EDIT_MODES = ("find-replace", "append", "insert", "replace")
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +224,7 @@ class PythonHandler(Handler):
         id_required=False,
         views=_SUPPORTED_VIEWS,
         modes=_SUPPORTED_PUT_MODES,
+        edit_modes=_SUPPORTED_EDIT_MODES,
     )
 
     def __init__(
@@ -532,16 +538,6 @@ class PythonHandler(Handler):
 
     # ── seven-verb surface ─────────────────────────────────────────
 
-    #: Modes accepted by :meth:`edit` — region-modifying ops only.
-    #: Python supports the same set as markdown/plaintext minus
-    #: ``create`` (lives on ``put``) and ``delete`` (its own verb).
-    _EDIT_MODES: ClassVar[tuple[str, ...]] = (
-        "find-replace",
-        "append",
-        "insert",
-        "replace",
-    )
-
     def edit(  # type: ignore[override]
         self,
         *,
@@ -564,15 +560,7 @@ class PythonHandler(Handler):
         ruff) as the legacy ``put(mode=...)`` path. ``mode='find-
         replace'`` is the new default for the legacy ``put(mode='edit')``.
         """
-        if mode not in self._EDIT_MODES:
-            raise BadInput(
-                f"unknown edit mode {mode!r}",
-                options=list(self._EDIT_MODES),
-                next=(
-                    "edit(kind='python', id='r/file.py', mode='find-replace', "
-                    "find='old', text='new')"
-                ),
-            )
+        require_mode(spec=self.spec, verb="edit", mode=mode)
         parsed = _parse_id(str(id))
         root = self._resolve_alias(parsed.alias)
         if mode == "append":

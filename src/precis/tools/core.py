@@ -1190,6 +1190,13 @@ def edit(
     default | `first` | `all` | `nth`) / `nth=`. `dry_run=True`
     previews without writing.
 
+    The four-mode vocabulary above is the **file-kind** shape
+    (markdown/plaintext/tex/python). Other editable kinds vary:
+    `todo`/`memory`/`quest` accept only `mode='replace'` (pass it
+    explicitly — the default `'find-replace'` is rejected there); most
+    other kinds ignore `mode=` or don't support `edit` at all. A wrong
+    mode raises `BadInput` naming that kind's actual accepted set.
+
     Full reference: get(kind='skill', id='precis-edit-help'), or
     search(kind='skill', q='changing existing content') for a topical
     lookup.
@@ -1424,8 +1431,10 @@ _SEARCH_HELP: dict[str, str] = {
 
 _PUT_HELP: dict[str, str] = {
     "kind": "Which kind to write to.",
-    "mode": "Operation hint. File kinds: 'create' (only). "
-    "Numeric-ref kinds: omit to create.",
+    "mode": "File kinds (markdown/plaintext/tex/python): 'create' (only). "
+    "Paid-cache kinds (websearch/perplexity-reasoning/perplexity-research): "
+    "'import' registers a free web-UI answer. Numeric-ref kinds "
+    "(memory/todo/gripe/...): omit — an explicit mode= is rejected.",
     "id": "Target ref. Omit to create on numeric-ref kinds.",
     "text": "Content for create.",
     "tags": "Tags to add.",
@@ -1438,7 +1447,11 @@ _PUT_HELP: dict[str, str] = {
 _EDIT_HELP: dict[str, str] = {
     "kind": "Which kind to edit.",
     "id": "Existing ref id, optionally with selector for region edits.",
-    "mode": "'find-replace' (default) | 'append' | 'insert' | 'replace'.",
+    "mode": "File kinds (markdown/plaintext/tex/python): 'find-replace' "
+    "(default) | 'append' | 'insert' | 'replace'. todo/memory/quest: "
+    "'replace' only — the default 'find-replace' is rejected there. "
+    "Most other kinds don't branch on mode= (silently ignored) or don't "
+    "support edit at all.",
     "text": "Replacement / inserted content. Required for every mode "
     "except 'reorder'. Pass text='' on find-replace to delete "
     "the matched span.",

@@ -32,6 +32,7 @@ from typing import Any, ClassVar
 from psycopg.errors import ForeignKeyViolation
 
 from precis.errors import BadInput, Upstream
+from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio
 from precis.protocol import KindSpec
@@ -64,6 +65,11 @@ class GripeHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
+        # put() rejects any explicit mode= outright — id-presence alone
+        # dispatches create-vs-comment. Declared explicitly (rather than
+        # left at the `()` default) so it reads as a deliberate "none
+        # accepted" rather than "not applicable" (gr292913).
+        modes=(),
     )
 
     kind: ClassVar[str] = "gripe"
@@ -147,10 +153,7 @@ class GripeHandler(NumericRefHandler):
                     ),
                 )
             if mode is not None:
-                raise BadInput(
-                    f"mode= is not accepted on {self._sense()} put",
-                    next=f"delete(kind={self.kind!r}, id={id})",
-                )
+                require_mode(spec=self.spec, verb="put", mode=mode)
             return self._append_comment(id=id, text=text)
         return super().put(
             id=id,

@@ -113,7 +113,29 @@ class KindSpec:
     can_own_jobs: bool = False
 
     views: tuple[str, ...] = ()  # supported view= values
-    modes: tuple[str, ...] = ()  # supported mode= values for put
+    #: Supported ``mode=`` values for ``put``. Populate only for a kind
+    #: whose ``put`` *branches on* ``mode`` (dispatches differently per
+    #: value, or explicitly rejects any value) — leave the default `()`
+    #: for a kind whose ``put`` doesn't take a ``mode`` parameter at all,
+    #: or silently ignores an unrecognised one via ``**_kw``. An empty
+    #: tuple is therefore ambiguous between "no mode= concept applies"
+    #: and "every mode= is rejected" (gripe's put is the latter) — both
+    #: read the same to a caller: omit ``mode=``. See ``edit_modes``
+    #: for the parallel declaration on ``edit``, and
+    #: ``precis.handlers._mode_help.require_mode`` for the shared
+    #: enforcement helper that reads this field (gr292913).
+    modes: tuple[str, ...] = ()
+    #: Supported ``mode=`` values for ``edit``. Same non-empty-only-if-
+    #: branching convention as ``modes`` above, but for the ``edit``
+    #: verb's ``mode=`` — a *distinct* vocabulary (region-rewrite ops
+    #: like ``'find-replace'``/``'append'``/``'insert'``/``'replace'``,
+    #: or a single-mode kind like ``todo``/``memory`` that only accepts
+    #: ``'replace'``). Kept separate from ``modes`` rather than folded
+    #: into one field because ``put`` and ``edit`` modes never overlap
+    #: in practice (create/import vs. region-rewrite) and conflating
+    #: them would make a kind that supports both verbs report the union
+    #: as if either verb accepted every value in it.
+    edit_modes: tuple[str, ...] = ()
 
     requires_env: tuple[str, ...] = ()  # all must be set or kind is hidden
     #: Secrets that must resolve (env → DB vault → file) or the kind

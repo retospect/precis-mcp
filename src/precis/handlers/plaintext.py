@@ -43,6 +43,7 @@ from precis.handlers._link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.handlers._mode_help import require_mode
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -87,6 +88,10 @@ log = logging.getLogger(__name__)
 # Region edits move to the ``edit`` verb (mode='find-replace'|'append'|
 # 'insert'|'replace') and selector-deletes move to ``delete``.
 _SUPPORTED_PUT_MODES = ("create",)
+# ``edit``'s accepted modes — region-modifying ops only ('create' lives
+# on ``put``, selector-deletes on ``delete``). Shared by markdown/tex
+# (subclasses that inherit ``edit`` unmodified) via their own ``spec``.
+_SUPPORTED_EDIT_MODES = ("find-replace", "append", "insert", "replace")
 
 
 def _recipe(
@@ -245,6 +250,7 @@ class PlaintextHandler(Handler):
         note_like=True,
         views=("raw",),
         modes=_SUPPORTED_PUT_MODES,
+        edit_modes=_SUPPORTED_EDIT_MODES,
     )
 
     # ── subclass-extensible knobs ───────────────────────────────────
@@ -1162,14 +1168,6 @@ class PlaintextHandler(Handler):
 
     # ── seven-verb surface ─────────────────────────────────────────
 
-    #: Modes accepted by :meth:`edit` — region-modifying ops only.
-    _EDIT_MODES: ClassVar[tuple[str, ...]] = (
-        "find-replace",
-        "append",
-        "insert",
-        "replace",
-    )
-
     def edit(  # type: ignore[override]
         self,
         *,
@@ -1191,15 +1189,7 @@ class PlaintextHandler(Handler):
         existing private helpers; ``mode='find-replace'`` is the new
         default name for the legacy ``put(mode='edit')`` path.
         """
-        if mode not in self._EDIT_MODES:
-            raise BadInput(
-                f"unknown edit mode {mode!r}",
-                options=list(self._EDIT_MODES),
-                next=(
-                    f"edit(kind='{self._KIND}', id='slug', mode='find-replace', "
-                    "find='old', text='new')"
-                ),
-            )
+        require_mode(spec=self.spec, verb="edit", mode=mode)
         slug, sel, _path_view = _parse_file_id(
             str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
         )

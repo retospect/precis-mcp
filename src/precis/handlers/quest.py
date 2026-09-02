@@ -40,6 +40,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
+from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio
 from precis.protocol import KindSpec
@@ -144,6 +145,10 @@ class QuestHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
+        # edit()'s only accepted mode — see todo.py's identical
+        # annotation (gr292913) for why an omitted mode= still needs
+        # this declaration.
+        edit_modes=("replace",),
     )
 
     kind: ClassVar[str] = "quest"
@@ -379,14 +384,7 @@ class QuestHandler(NumericRefHandler):
                 "edit(kind='quest') requires id=",
                 next="edit(kind='quest', id=N, mode='replace', text='new striving statement')",
             )
-        if mode != "replace":
-            raise BadInput(
-                f"edit(kind='quest') only supports mode='replace', got {mode!r}",
-                next=(
-                    "edit(kind='quest', id=N, mode='replace', "
-                    "text='new striving statement')"
-                ),
-            )
+        require_mode(spec=self.spec, verb="edit", mode=mode)
         if text is None or not text.strip():
             raise BadInput(
                 "edit(kind='quest', mode='replace') requires text=",
