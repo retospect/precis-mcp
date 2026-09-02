@@ -588,6 +588,9 @@ class TestReapDeadNodePinnedLoop:
         assert _current_status(store, orphan_id) == "cancelled"
         tags = {str(t) for t in store.tags_for(orphan_id)}
         assert "reaped:dead-node-pin" in tags
+        # replace_prefix must swap the queued STATUS out, not stack a second
+        # one next to it — a cancelled+queued job would still look claimable.
+        assert sum(t.startswith("STATUS:") for t in tags) == 1
         meta = _job_meta(store, orphan_id)
         assert meta.get("reap_note")
         # A fresh, unpinned loop re-minted in the same pass.
