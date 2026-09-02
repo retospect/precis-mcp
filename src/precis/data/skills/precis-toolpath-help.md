@@ -150,7 +150,7 @@ what you read. Plugin kinds (`route`/`protein`), on where the tool-pack is enabl
 
 | Goal | Toolpath | Depth |
 |---|---|---|
-| Plan a synthesis to a target | `put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth')` → `get(kind='route', id='<slug>')` / `view='metrics'` | `precis-route-help` |
+| Plan a synthesis to a target | `put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth')` → `get(kind='route', id='<slug>')` / `view='metrics'` | `precis-lab-help` |
 | Fold a protein from its sequence | `put(kind='protein', id='<slug>', sequence='<AA>', engine='alphafold3')` → `get(kind='protein', id='<slug>')` | `precis-protein-help` |
 | See a fold in 3D | `get(kind='protein', id='<slug>', view='structure')` → `get(kind='structure', id='<slug>-fold')` | `precis-structure-help` |
 | Compose them toward a research goal | search prior art → mint route/fold → read metrics/pLDDT → iterate | `precis-lab-help` |

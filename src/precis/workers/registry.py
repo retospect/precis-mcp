@@ -752,7 +752,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.JOB,
         one_line="Placement-only anneal over a pcb design's graph — "
         "minted by put(kind='pcb', args={'op':'place'}).",
-        doc_skill="precis-route-help",
+        doc_skill="precis-pcb-route-help",
     ),
     ServiceSpec(
         # Same tool-surface slice; the joint place+sketch anneal +
@@ -763,7 +763,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.JOB,
         one_line="Joint place+sketch anneal + realize checkpoint over a "
         "pcb design's graph — minted by put(kind='pcb', args={'op':'route'}).",
-        doc_skill="precis-route-help",
+        doc_skill="precis-pcb-route-help",
     ),
     ServiceSpec(
         name="llm_summarize",

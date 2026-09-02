@@ -1117,3 +1117,123 @@ def test_edit_table_latex_sub_no_match_refuses(draft: DraftHandler, hub: Hub) ->
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert after is not None
     assert after.text == before.text
+
+
+# ── dry_run on table chunks (gr273955 residual) ────────────────────────
+# A table chunk used to blanket-reject dry_run for EVERY op, so a table
+# edit could never be previewed at all — and the rejection's own next=
+# hint recommended the exact call (text=, dry_run=True) that had just
+# failed on this chunk kind. Every path that computes a would-be new
+# chunk text now renders the same diff/full preview as the plain
+# text-mutation paths and writes NOTHING.
+
+
+def test_edit_table_latex_find_replace_dry_run_diff_leaves_chunk_untouched(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``find=``+``text=`` with a backslash-carrying replacement, previewed
+    on a LaTeX-in-place table chunk: the diff shows the replacement
+    (backslashes un-doubled back to literal, per the find= escaping rule)
+    and nothing is written."""
+    tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+
+    r = draft.edit(
+        id=tc.dc,
+        find="Combinatorial",
+        text="Combinatorial \\cite{fi99}",
+        dry_run=True,
+    )
+    assert "[dry-run]" in r.body
+    assert "Combinatorial \\cite{fi99}" in r.body
+
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+    assert "\\cite{fi99}" not in after.text
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert not meta.get("table")  # still never promoted to canonical
+
+
+def test_edit_table_latex_find_replace_dry_run_full_leaves_chunk_untouched(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``dry_run='full'`` on the same LaTeX-in-place path shows the whole
+    post-edit body instead of a diff — still writes nothing."""
+    tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+
+    r = draft.edit(
+        id=tc.dc,
+        find="Combinatorial",
+        text="Combinatorial \\cite{fi99}",
+        dry_run="full",
+    )
+    assert "[dry-run]" in r.body
+    assert "\\textbf{Combinatorial \\cite{fi99}}" in r.body
+    assert "\\toprule" in r.body and "\\bottomrule" in r.body
+
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``cell=`` dry_run on an ordinary (markdown-canonical, not
+    LaTeX-recovered) table chunk previews the re-derived markdown and
+    writes neither the text nor ``meta.table``."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["element", "gap_eV"], "rows": [["Si", 1.12]]},
+        caption="Band gaps",
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+
+    r = draft.edit(id=tc.dc, cell="A2", text="Ge", dry_run=True)
+    assert "[dry-run]" in r.body
+    assert "Ge" in r.body
+
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"] == [["Si", 1.12]]  # unchanged
+
+
+def test_edit_table_structural_op_dry_run_still_rejects_with_table_aware_hint(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A genuinely non-previewable op (``move=``) on a table chunk still
+    rejects dry_run — but the ``next=`` hint must name a call that
+    actually works for THIS chunk (a find=/text= preview), not the
+    generic text= rewrite claim that used to be a self-recommending dead
+    end on a table chunk (gr273955 residual)."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["x"], "rows": [[1]]},
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    order = hub.live_store.drafts.reading_order(
+        hub.live_store.get_ref(kind="draft", id="d").id  # type: ignore[union-attr]
+    )
+    title_h = order[0].handle
+
+    with pytest.raises(BadInput, match="dry_run has no preview") as exc:
+        draft.edit(id=tc.dc, move={"before": "¶" + title_h}, dry_run=True)
+    assert exc.value.next is not None
+    assert "find=" in exc.value.next and "text=" in exc.value.next
+    assert tc.dc in exc.value.next

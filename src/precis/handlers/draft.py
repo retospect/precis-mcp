@@ -1412,23 +1412,35 @@ class DraftHandler(Handler):
         # ``dry_run`` is advertised on the shared edit surface as "preview
         # without writing". It used to be swallowed in ``**_kw`` and the edit
         # *applied anyway* — a data-loss footgun (gr48518). It is now honored
-        # for the text-mutation paths (whole-chunk rewrite + find-replace):
-        # ``dry_run=True`` renders a unified diff and writes nothing, so a
-        # scary "massive rewrite" can be eyeballed first; ``dry_run='full'``
-        # shows the whole post-edit chunk. The structural / metadata ops
-        # (move, style, table, authors, …) have no diff semantics and reject
-        # the flag rather than silently writing; the regex ``sub`` op has its
-        # own apply=-gated preview.
+        # for the text-mutation paths (whole-chunk rewrite + find-replace),
+        # AND for every table= / cell= / find= / sub= / caption= / regen=
+        # path that re-derives a table chunk's text (``_edit_table`` /
+        # ``_edit_latex_table_in_place``) — a table chunk used to be blanket-
+        # rejected for dry_run regardless of op, which meant a table preview
+        # could never be rendered at all (gr273955 residual). The remaining
+        # structural / metadata ops (move, style, permission, voice/lang,
+        # review, …) still have no diff semantics and reject the flag rather
+        # than silently writing; the regex ``sub`` op addressed at a
+        # non-table scope has its own apply=-gated preview.
         dry_mode = normalize_dry_run(dry_run)
 
-        def _reject_dry_run(op: str) -> None:
+        def _reject_dry_run(op: str, chunk: Any = None) -> None:
             if dry_mode is not None:
+                if chunk is not None and chunk.chunk_kind == "table":
+                    hint = (
+                        f"for a table preview: edit(kind='draft', id={chunk.dc!r}, "
+                        "find='…', text='…', dry_run=True)"
+                    )
+                else:
+                    hint = (
+                        "for a text preview: edit(kind='draft', id='dc<id>', "
+                        "text='…', dry_run=True)"
+                    )
                 raise BadInput(
                     f"dry_run has no preview for the '{op}' draft op — only "
                     "text edits (whole-chunk rewrite + find-replace) render a "
                     "diff. This op writes directly; omit dry_run to apply it.",
-                    next="for a text preview: edit(kind='draft', id='dc<id>', "
-                    "text='…', dry_run=True)",
+                    next=hint,
                 )
 
         # ``title`` is a draft-level op (rename the document) — id is the slug
@@ -1547,9 +1559,11 @@ class DraftHandler(Handler):
             raise NotFound(f"draft chunk {handle!r} not found")
         self._refuse_if_machine_owned(int(_base.ref_id))
         handle = _base.handle
-        # dry_run previews only the text-mutation paths (find-replace / rewrite,
-        # handled below). The structural / metadata ops write in place and have
-        # no diff semantics — reject rather than silently write (gr48518).
+        # dry_run previews the text-mutation paths (find-replace / rewrite,
+        # handled below) AND the table-chunk data paths (handed to
+        # ``_edit_table`` just below, which renders its own diff/full
+        # preview). These ops write in place and have no diff semantics at
+        # all — reject rather than silently write (gr48518).
         if dry_mode is not None and (
             permission is not None
             or origin is not None
@@ -1557,14 +1571,11 @@ class DraftHandler(Handler):
             or list_kind is not None
             or word_target is not None
             or move is not None
-            or table is not None
-            or regen is not None
             or voice is not None
             or lang is not None
             or review is not None
-            or _base.chunk_kind == "table"
         ):
-            _reject_dry_run("structural")
+            _reject_dry_run("structural", _base)
         if review is not None:
             # Review ledger (rung 3, docs/backlog/paper-writing-pipeline.md
             # §"Review — the memoized approval
@@ -1635,7 +1646,7 @@ class DraftHandler(Handler):
             # Patch a registry ``term`` leaf's attribute bag / hover surfaces
             # in place: manufacturer / mpn / url / ordering, and the
             # short / surface_forms surfaces. Metadata-only — no re-embed.
-            _reject_dry_run("meta")
+            _reject_dry_run("meta", _base)
             c = self.store.drafts.set_term_attrs(handle, meta)
             return Response(body=f"updated term attributes {c.dc}" if c else "updated")
         if word_target is not None:
@@ -1671,6 +1682,7 @@ class DraftHandler(Handler):
                 text=text,
                 sub=sub,
                 base_sha=base_sha,
+                dry_mode=dry_mode,
             )
         # ``find=`` substitutes *within* the chunk — never a wholesale
         # overwrite. Presence of ``find`` is the sole signal: the wire
@@ -2101,6 +2113,7 @@ class DraftHandler(Handler):
         text: str | None = None,
         sub: dict[str, Any] | str | None = None,
         base_sha: str | None,
+        dry_mode: str | None = None,
     ) -> Response:
         """Edit a chunk_kind='table' chunk — precedence (the shipped draft-table-editing proposal item 1, git history): (1) ``table=`` replaces the whole
         canonical structure; (2) ``cell=`` (A1 string or ``{row,col}``, 1-based,
@@ -2118,7 +2131,14 @@ class DraftHandler(Handler):
         ``needs-table-review`` — is recovered from its own raw text via
         :func:`table_payload`, the same function the read path uses, and the
         stale flag is cleared once a grid is persisted (gripe 263197). Only a
-        chunk that recovery genuinely cannot parse still refuses."""
+        chunk that recovery genuinely cannot parse still refuses.
+
+        ``dry_mode`` (``'diff'``/``'full'``, from ``normalize_dry_run`` —
+        None means "apply for real") renders the same preview as the plain
+        text-edit paths and writes nothing: no ``edit_text``, no
+        ``meta.table``/caption/flag patch, no ``chunk_events`` row
+        (gr273955 residual — a table chunk used to reject dry_run
+        unconditionally)."""
         if chunk is None or chunk.chunk_kind != "table":
             raise BadInput(
                 "table=/cell=/find=/sub=/caption=/regen= apply only to a "
@@ -2216,6 +2236,7 @@ class DraftHandler(Handler):
                 caption=caption,
                 regen=regen,
                 base_sha=base_sha,
+                dry_mode=dry_mode,
             )
         replace_count: int | None = None
         if table is not None:
@@ -2301,6 +2322,25 @@ class DraftHandler(Handler):
             patch["caption"] = cap or ""
         if regen is not None:
             patch["regen"] = regen
+        if dry_mode is not None:
+            # Same diff/full rendering as the plain text-edit paths — write
+            # NOTHING (no edit_text, no meta patch). The metadata side
+            # effects folded into ``patch`` above ride silently on a real
+            # edit_text call; surface them as a one-line note here instead
+            # of refusing the whole preview.
+            meta_notes = []
+            if "flag" in patch:
+                meta_notes.append("clears the needs-table-review flag")
+            if caption is not None:
+                meta_notes.append(
+                    f"sets caption to {cap!r}" if cap else "clears the caption"
+                )
+            if regen is not None:
+                meta_notes.append("updates regen metadata")
+            note = f" (also would: {'; '.join(meta_notes)})" if meta_notes else ""
+            return self._render_draft_dry_run(
+                chunk.dc, chunk.text or "", md, mode=dry_mode, note=note
+            )
         c = self.store.drafts.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)
         if c is not None:
             self._attribute_touch([c.chunk_id])
@@ -2325,6 +2365,7 @@ class DraftHandler(Handler):
         caption: str | None,
         regen: dict[str, Any] | None,
         base_sha: str | None,
+        dry_mode: str | None = None,
     ) -> Response:
         """``cell=``/``find=``/``sub=`` on a LaTeX-sourced table chunk
         (gripe 271129) — patch the raw LaTeX `chunk.text` in place via
@@ -2343,7 +2384,11 @@ class DraftHandler(Handler):
         ``caption=``/``regen=`` don't apply here — see the refusal below —
         since patching `meta` alone wouldn't be read back (the fallback
         recovery path re-derives caption from `\\caption{}` in the text
-        itself, not from `meta.caption`)."""
+        itself, not from `meta.caption`).
+
+        ``dry_mode`` renders the diff/full preview of ``new_raw`` and
+        writes nothing — no metadata is ever touched on this path anyway,
+        so no extra note is needed (gr273955 residual)."""
         if caption is not None or regen is not None:
             selector = (
                 "cell" if cell is not None else "find" if find is not None else "sub"
@@ -2439,6 +2484,8 @@ class DraftHandler(Handler):
                     "replaced, the table was left unchanged.",
                     next=f"get(kind='draft', id={chunk.dc!r})",
                 )
+        if dry_mode is not None:
+            return self._render_draft_dry_run(chunk.dc, raw, new_raw, mode=dry_mode)
         c = self.store.drafts.edit_text(handle, new_raw, base_sha=base_sha)
         if c is not None:
             self._attribute_touch([c.chunk_id])

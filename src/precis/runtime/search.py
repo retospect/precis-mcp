@@ -16,7 +16,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from precis.errors import BadInput, NotFound, Unsupported, Upstream
+from precis.errors import BadInput, Internal, NotFound, Unsupported, Upstream
 from precis.protocol import Handler
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_ALIASES as _CROSS_KIND_ALIASES
@@ -617,15 +617,18 @@ class SearchMixin(RuntimeShape):
 
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
+        errored: dict[str, Exception] = {}
         for k in kinds:
             handler = self.hub.handler_for(k)
             if handler is None:
                 per_kind_counts.append((k, 0))
                 continue
-            hits = self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
-            if hits is None:
+            hits_or_exc = self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
+            if isinstance(hits_or_exc, Exception):
+                errored[k] = hits_or_exc
                 per_kind_counts.append((k, 0))
                 continue
+            hits = hits_or_exc
             # Defensive post-filter: handler search_hits
             # implementations have inconsistent ``tags=`` support
             # (numeric-ref kinds honour the filter via
@@ -646,6 +649,22 @@ class SearchMixin(RuntimeShape):
             hits_list = list(hits)
             per_kind_counts.append((k, len(hits_list)))
             streams.append(hits_list)
+
+        # Total failure must be loud: when every handler-bearing kind
+        # errored, "0 matches" is a false negative — during the
+        # gr281493 schema-drift outage the fan-out attested quiet while
+        # every single-kind call raised, misleading anyone using it as
+        # a health check. (``streams`` gets an entry for every kind
+        # that *ran*, even with zero hits, so empty ``streams`` +
+        # non-empty ``errored`` ⇒ nothing ran successfully.)
+        if errored and not streams:
+            names = ", ".join(
+                f"{k} ({type(e).__name__})" for k, e in sorted(errored.items())
+            )
+            raise Internal(
+                f"cross-kind search failed in every kind tried — {names} "
+                "(see server log)"
+            ) from next(iter(errored.values()))
 
         # When the embedder was unavailable for this turn, change the
         # empty-result wording from "no matches" to a partial-result
@@ -702,6 +721,25 @@ class SearchMixin(RuntimeShape):
             if lines:
                 lines.insert(1, f"_(per kind: {breakdown})_")
                 response = Response(body="\n".join(lines), cost=response.cost)
+
+        # Partial failure is not silence either: a kind that errored is
+        # indistinguishable from a kind with zero matches in the per-kind
+        # counts, so name it — the caller may be missing exactly the hits
+        # they wanted. (Total failure raised above.)
+        if errored:
+            tip = (
+                "_(⚠ errored, omitted from this merge: "
+                + ", ".join(
+                    f"{k} ({type(e).__name__})" for k, e in sorted(errored.items())
+                )
+                + " — results may be incomplete; see server log)_"
+            )
+            lines = response.body.splitlines()
+            if lines:
+                lines.insert(1, tip)
+            else:
+                lines.append(tip)
+            response = Response(body="\n".join(lines), cost=response.cost)
 
         # Broad-pass finding #7: when cross-kind ran with the wildcard
         # (kind=None or kind='*'), surface the kinds that have search
@@ -868,15 +906,17 @@ class SearchMixin(RuntimeShape):
         handler: Handler,
         kind: str,
         base_kwargs: dict[str, Any],
-    ) -> list[SearchHit] | None:
+    ) -> list[SearchHit] | Exception:
         """Call ``handler.search_hits`` with progressive-degradation
         retries. Handlers' ``search_hits`` signatures vary in which
         optional kwargs they accept (``tags=``, ``exclude=``, …); rather
         than introspect ahead of time, try the full kwargs set first and
         drop unknown kwargs on ``TypeError``, most-recent-addition first
         (``exclude``, then ``tags``). Any non-TypeError exception is
-        logged and degraded to ``None`` so one broken kind doesn't crash
-        the whole query.
+        logged and returned as a value — the caller drops the kind from
+        the merge but records *that it errored*, so one broken kind
+        neither crashes the whole query nor hides inside a "0 matches"
+        count (the gr281493 false-quiet).
 
         ``exclude_ref_ids=`` is deliberately NOT in the drop list: every
         handler's ``search_hits`` today declares ``**_kw`` (silently
@@ -888,17 +928,17 @@ class SearchMixin(RuntimeShape):
         every remaining kind, ignoring the kwarg is provably harmless
         (globally-unique ref_ids) or actually honoured. If a future
         handler ever *does* raise ``TypeError`` on it, the final fallback
-        returns ``None`` — no hits from that kind — rather than
-        proceeding without the filter.
+        returns that ``TypeError`` — no hits from that kind — rather
+        than proceeding without the filter.
         """
         # Try the full set first.
         try:
             return list(handler.search_hits(**base_kwargs))
-        except TypeError:
-            pass
-        except Exception:
+        except TypeError as exc:
+            first_type_error: Exception = exc
+        except Exception as exc:
             log.exception("cross-kind search_hits failed for %s", kind)
-            return None
+            return exc
 
         # Drop ``exclude=`` (most recent kwarg addition) and retry.
         if "exclude" in base_kwargs:
@@ -907,9 +947,9 @@ class SearchMixin(RuntimeShape):
                 return list(handler.search_hits(**without_exclude))
             except TypeError:
                 pass
-            except Exception:
+            except Exception as exc:
                 log.exception("cross-kind search_hits failed for %s", kind)
-                return None
+                return exc
         else:
             without_exclude = base_kwargs
 
@@ -918,13 +958,14 @@ class SearchMixin(RuntimeShape):
             minimal = {k: v for k, v in without_exclude.items() if k != "tags"}
             try:
                 return list(handler.search_hits(**minimal))
-            except Exception:
+            except Exception as exc:
                 log.exception("cross-kind search_hits failed for %s", kind)
-                return None
+                return exc
 
-        # Already minimal (q + top_k only) and still failing.
-        log.exception("cross-kind search_hits failed for %s", kind)
-        return None
+        # Already minimal (q + top_k only) and still failing on the
+        # signature itself.
+        log.error("cross-kind search_hits failed for %s: %s", kind, first_type_error)
+        return first_type_error
 
     def _filter_hits_by_tags(
         self,

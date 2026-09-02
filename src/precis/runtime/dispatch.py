@@ -156,6 +156,7 @@ class DispatchMixin(RuntimeShape):
                 return body, False
             except PrecisError as e:
                 self._maybe_add_skill_hint(e, verb, args)
+                self._maybe_add_schema_drift_hint(e)
                 body = self.render_error(e)
                 self._record_tool_call(verb, args, body, True, started)
                 return body, True
@@ -172,7 +173,9 @@ class DispatchMixin(RuntimeShape):
                 log.exception("internal error in %s", verb)
                 body = self.render_error(
                     Internal(
-                        f"internal error in {verb}: {type(e).__name__} (see server log)"
+                        f"internal error in {verb}: {type(e).__name__} "
+                        "(see server log)",
+                        next=self._schema_drift_note(e),
                     )
                 )
                 self._record_tool_call(verb, args, body, True, started)
@@ -236,6 +239,88 @@ class DispatchMixin(RuntimeShape):
             )
         except Exception:
             log.debug("tool_ledger: _record_tool_call failed", exc_info=True)
+
+    def _maybe_add_schema_drift_hint(self, err: PrecisError) -> None:
+        """Append the schema-drift recovery hint to an already-typed error.
+
+        Handlers (and :meth:`_invoke_handler`'s defaulted-kind wrap)
+        sometimes re-raise a psycopg schema error inside a
+        ``PrecisError`` — the drift note must ride on that envelope
+        too, not only on the raw-exception fallback path.
+        """
+        note = self._schema_drift_note(err)
+        if note is None:
+            return
+        if err.next is None:
+            err.next = note
+        elif isinstance(err.next, str):
+            err.next = [err.next, note]
+        else:
+            err.next.append(note)
+
+    def _schema_drift_note(self, exc: BaseException) -> str | None:
+        """Actionable recovery hint when ``exc`` chains to a
+        schema-shape DB error, else ``None``.
+
+        The gr281493 outage family (dozens of duplicate gripes filed
+        blind): a long-lived server keeps serving after a deploy
+        migrates the DB under it, and every ref-backed verb then dies
+        with an opaque ``[error:Internal] … UndefinedColumn (see server
+        log)`` — agents can't tell a code bug from "the process is
+        stale, restart it". When the exception chain carries
+        ``psycopg.errors.UndefinedColumn``/``UndefinedTable``, compare
+        the migration head captured at runtime construction
+        (:data:`~precis.runtime.core.PrecisRuntime.boot_migration_head`)
+        against the live ``_migrations`` ledger and name the real
+        recovery. Best-effort: any probe failure (no store, ledger
+        query fails, no boot head) returns ``None`` and the generic
+        envelope stands.
+        """
+        try:
+            from psycopg.errors import UndefinedColumn, UndefinedTable
+        except Exception:  # pragma: no cover — psycopg always present
+            return None
+        seen: set[int] = set()
+        cur: BaseException | None = exc
+        found = False
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            if isinstance(cur, (UndefinedColumn, UndefinedTable)):
+                found = True
+                break
+            cur = cur.__cause__ or cur.__context__
+        if not found:
+            return None
+
+        boot = getattr(self, "boot_migration_head", None)
+        store = self.store
+        if boot is None or store is None:
+            return None
+        try:
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT max(version) FROM public._migrations "
+                    "WHERE plugin = 'precis'"
+                ).fetchone()
+            db_head = row[0] if row else None
+        except Exception:
+            log.debug("schema-drift probe failed", exc_info=True)
+            return None
+        if db_head is None or db_head == boot:
+            return None
+        if db_head > boot:
+            return (
+                f"the database is at migration {db_head} but this server "
+                f"process booted with migrations up to {boot} — the process "
+                "predates a migration and is serving stale code. Restart "
+                "the precis MCP server / worker; no retry will succeed "
+                "until then."
+            )
+        return (
+            f"this build ships migration {boot} but the database head is "
+            f"{db_head} — the database is behind the code. Run `precis "
+            "migrate` (scripts/deploy does this), then retry."
+        )
 
     def fetch_more(self, cursor: str) -> tuple[str, bool]:
         """Return the next page for a pagination cursor.

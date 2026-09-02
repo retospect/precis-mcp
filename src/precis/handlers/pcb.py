@@ -15,7 +15,7 @@ pixels. The verbs map onto the seven-verb surface:
   worker job (never compute inline — the optimizer measures ~880 moves/s,
   minutes per board) idempotent per (design, op, content-hash); ``op='move'``/
   ``'rip'``/``'pin_side'``/``'plane_net'``/``'class_rules'`` are cheap inline
-  edits. See ``precis-route-help``.
+  edits. See ``precis-pcb-route-help``.
 - ``get``    — list designs (no id); a design's netlist TOC (``id=slug``,
   now with the board/stackup + net_classes + route-status summary); one
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
@@ -37,7 +37,7 @@ The in-house topological place+route engine (:mod:`precis.pcb.optimize` /
 :mod:`precis.pcb.realize`, run via the ``pcb_place``/``pcb_route`` jobs) is
 the primary path; Freerouting/gerbers-via-DSN is the rented, demoted escape
 hatch. Export is the one place the design leaves the relational graph.
-See ``precis-pcb-help`` and ``precis-route-help``.
+See ``precis-pcb-help`` and ``precis-pcb-route-help``.
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ class PcbHandler(Handler):
             "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'}) "
             "are cheap inline edits; search over names; delete soft-retires. "
             "Postgres-canonical; routing/gerbers are downstream export. "
-            "See precis-pcb-help and precis-route-help."
+            "See precis-pcb-help and precis-pcb-route-help."
         ),
         supports_get=True,
         supports_put=True,
@@ -277,7 +277,7 @@ class PcbHandler(Handler):
             # Slice 10) — enqueues the SAME `pcb_place` job `op='place'`
             # does; kept as a one-release alias so an existing caller's
             # `args={'autoplace':{...}}` still works, just asynchronously
-            # now. See precis-route-help for the replacement.
+            # now. See precis-pcb-route-help for the replacement.
             opts = autoplace if isinstance(autoplace, dict) else {}
             body = self._enqueue_op(ref, "place", opts)
             return Response(
@@ -285,7 +285,7 @@ class PcbHandler(Handler):
                     "⚠️  DEPRECATED: args={'autoplace':...} now ENQUEUES a "
                     "worker job instead of computing inline — use "
                     "args={'op':'place', ...} directly (same params, same "
-                    "job); this alias will be removed. See precis-route-help.\n\n"
+                    "job); this alias will be removed. See precis-pcb-route-help.\n\n"
                     + body
                 )
             )
@@ -389,7 +389,7 @@ class PcbHandler(Handler):
     def _dispatch_op(self, ref: Any, op: str, args: dict[str, Any]) -> Response:
         """``put(args={'op': ..., ...})`` — the enqueued heavy ops
         (``place``/``route``, never computed inline) and the cheap inline
-        edits. See precis-route-help for the full surface."""
+        edits. See precis-pcb-route-help for the full surface."""
         if op in _JOB_OPS:
             return Response(body=self._enqueue_op(ref, op, args))
         if op == "move":
@@ -408,7 +408,7 @@ class PcbHandler(Handler):
             next=(
                 "put(kind='pcb', id='slug', args={'op':'place'}) or "
                 "args={'op':'route'} (enqueued jobs); or one of "
-                f"{_INLINE_EDIT_OPS} for an inline edit — see precis-route-help"
+                f"{_INLINE_EDIT_OPS} for an inline edit — see precis-pcb-route-help"
             ),
         )
 

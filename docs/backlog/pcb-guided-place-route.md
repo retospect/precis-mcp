@@ -1232,7 +1232,7 @@ recorded-fixture pattern (one live smoke gated on creds).
 - Worker: new job types on the existing substrate
   (`src/precis/workers/`), route/place lanes.
 - Skills: `precis-pcb-help` (+ net-class/measures cross-refs) get the
-  new ops; a new `precis-route-help` runtime skill.
+  new ops; a new `precis-pcb-route-help` runtime skill.
 - Secrets vault rows (`JLCPCB_*`, set via `/secrets`) — no deploy-
   template env change needed. **No kicad-cli image dependency** (the
   KiCad-DRC oracle is dropped); Freerouting role demoted in docs.

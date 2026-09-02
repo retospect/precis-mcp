@@ -41,7 +41,8 @@ Read the prior art *before* proposing a route so you can favour a known
 disconnection. Swap `engine='askcos'` for a second opinion — the IR is identical,
 so `get` renders the same graph. A route is **solved** when every branch reaches
 buyable leaves; an unsolved one is a hypothesis to refine (deeper `max_steps`, a
-different engine). Depth: `precis-route-help`, `precis-search-help`.
+different engine). Depth: `precis-search-help` (no retrosynthesis depth
+skill yet — this recipe is the depth for `route`).
 
 ## Recipe: fold + inspect a protein target
 

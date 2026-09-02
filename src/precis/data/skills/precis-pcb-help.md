@@ -30,7 +30,7 @@ Four verbs, no new ones: `put` (create/extend), `get` (list / netlist TOC /
 one instance / one net / an analysis / an export), `search` (by intent),
 `delete` (soft-retire).
 
-Related skills: [[precis-route-help]] (place/route as enqueued jobs — the
+Related skills: [[precis-pcb-route-help]] (place/route as enqueued jobs — the
 `op=` surface, once the netlist exists), [[precis-part-select-help]] (pick
 real parts), [[precis-net-class-help]] (name + classify nets),
 [[precis-measures-help]] (the "measuring tapes"), and the pattern playbooks
@@ -177,7 +177,7 @@ get(
 )  # per-net route status: unrouted|sketched|realized|failed
 get(
     kind="pcb", id="s", view="congestion"
-)  # the last op='route' run's over-capacity-gap warnings (see precis-route-help)
+)  # the last op='route' run's over-capacity-gap warnings (see precis-pcb-route-help)
 get(
     kind="pcb", id="s", view="planes"
 )  # authored plane assignments (op='plane_net') — which nets are plane-served
@@ -202,7 +202,7 @@ get(kind="pcb", id="s", view="measures")  # evaluate the design's measuring tape
 
 Placement and routing run as **enqueued worker jobs** — never inline in this
 call (a real board is minutes of compute, not milliseconds). `put` returns a
-job id immediately; see **[[precis-route-help]]** for the full `op=` surface
+job id immediately; see **[[precis-pcb-route-help]]** for the full `op=` surface
 (`place`/`route`, plus the inline edits `move`/`rip`/`pin_side`/`plane_net`/
 `class_rules`), the congestion/planes read views, and what's still inert
 (including its inert move classes `SIDE_FLIP`/`PIN_SWAP`).
@@ -301,10 +301,10 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
    bypass cap *at* the pin) ([[precis-measures-help]]).
 4. **Check connectivity** — `get(id=slug)`, `#REFDES` hops, `view='drc'`.
 5. **Place** — `op='place'` (enqueued), then `view='crossings'`; pin fixed
-   parts; repeat. See [[precis-route-help]].
+   parts; repeat. See [[precis-pcb-route-help]].
 6. **Route** — `op='route'` (enqueued); check `view='route-status'` and
    `view='congestion'`; rip + re-pin + re-route on a failure
-   ([[precis-route-help]]'s rip-up loop).
+   ([[precis-pcb-route-help]]'s rip-up loop).
 7. **Export & order** — `view='bom'` + `view='cpl'` to order at JLCPCB;
    `view='mechanical'` for the enclosure; `view='route'` (Freerouting) stays
    available as a demoted escape hatch.

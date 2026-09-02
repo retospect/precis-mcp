@@ -58,6 +58,28 @@ def _new_pagination_cache() -> PaginationCache:
     return PaginationCache()
 
 
+def _shipped_migration_head() -> str | None:
+    """Highest in-tree precis migration version on disk right now.
+
+    Captured once per runtime construction (process boot for the MCP
+    server / worker) so :meth:`DispatchMixin._schema_drift_note` can
+    later tell "the DB migrated under this long-lived process" apart
+    from a genuine schema bug — re-globbing at error time would read
+    the *new* files a vcs-install deploy just dropped and mask exactly
+    the stale-process case the probe exists for. ``None`` when the
+    directory can't be read (frozen installs, tests without the tree).
+    """
+    try:
+        from precis.store.schema_dump import builtin_migrations_dir
+
+        return max(
+            (p.stem for p in builtin_migrations_dir().glob("*.sql")),
+            default=None,
+        )
+    except Exception:
+        return None
+
+
 @dataclass
 class PrecisRuntime(DispatchMixin, SearchMixin, AngleMixin, HintsMixin, ErrorMixin):
     """Server-wide singleton: config + hub + dispatch logic.
@@ -86,6 +108,14 @@ class PrecisRuntime(DispatchMixin, SearchMixin, AngleMixin, HintsMixin, ErrorMix
     #: exactly one runtime per worker so cursors survive across
     #: tool calls within the worker's lifetime.
     pagination: PaginationCache = field(default_factory=lambda: _new_pagination_cache())
+
+    #: In-tree migration head as of runtime construction (≈ process
+    #: boot). The schema-drift probe compares this against the live
+    #: ``_migrations`` ledger when a verb dies on
+    #: UndefinedColumn/UndefinedTable, turning the opaque
+    #: "[error:Internal] … UndefinedColumn" outage (gr281493 family)
+    #: into "the DB migrated under this process — restart the server".
+    boot_migration_head: str | None = field(default_factory=_shipped_migration_head)
 
     # ----- delegating properties ---------------------------------------
 
