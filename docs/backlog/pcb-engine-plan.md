@@ -512,8 +512,8 @@ net owning a through via could start a later connection *inside the
 barrel* on an inner layer and run a trace along it. It shorts to the plane
 the moment one is poured. Every existing test asked whether copper
 overlapped, was reachable, or was connected; **none asked which layer it
-was on**. Now `tests/test_pcb_maze.py::test_routed_copper_only_ever_lands_
-on_a_signal_layer`.
+was on**. Now
+`tests/test_pcb_maze.py::test_routed_copper_only_ever_lands_on_a_signal_layer`.
 
 Note the pattern across all three: the viewer found the last one in
 minutes, and it is the one no existing check could have found, because

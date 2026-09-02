@@ -10,7 +10,7 @@ Neither line is hub-tagline code; both belong to sibling ships that day
   `tests/test_cast_job_types.py::test_specs_registered_on_claude_inproc`.
 - `SURVIVED src/precis_web/routes/drafts.py:1683` — `unary: remove not`
   survived all four covering delete-draft tests
-  (`tests/precis_web/test_drafts.py::test_delete_draft_*`).
+  (the four `tests/precis_web/test_drafts.py::test_delete_draft_wrong_name_does_nothing`-family tests).
 
 `mutation-summary: total=2 run=2 killed=0 survived=2`.
 
