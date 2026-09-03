@@ -1247,6 +1247,36 @@ def test_dead_node_queued_transition_lost_race_returns_false(
     assert "reaped:dead-node-queued" not in job_tags
 
 
+def test_dead_node_queued_reap_returns_count_and_meta(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The arm reports exactly how many it reaped, and enumerate carries the
+    job's meta through (mutation survivors: the transition's success ``True``,
+    both counter increments, and the ``meta or {}`` fallback were previously
+    unasserted). The candidate set is pinned via monkeypatch so sibling test
+    runs on the shared DB can't skew the count."""
+    from uuid import uuid4
+
+    from precis.workers import sweeper
+    from precis.workers.sweeper import _enumerate_dead_node_queued
+
+    node = f"dead-{uuid4().hex[:8]}"
+    rid = _id_of(handler.put(text="parent").body)
+    j1 = _mint_queued_job(store, rid, age_seconds=1200, params={"target_node": node})
+    j2 = _mint_queued_job(store, rid, age_seconds=1200, params={"target_node": node})
+
+    ours = [
+        c
+        for c in _enumerate_dead_node_queued(store, 600, limit=200)
+        if c.target_node == node
+    ]
+    assert {c.ref_id for c in ours} == {j1, j2}
+    assert ours[0].meta["params"]["target_node"] == node
+
+    monkeypatch.setattr(sweeper, "_enumerate_dead_node_queued", lambda *a, **k: ours)
+    assert sweeper._reap_dead_node_queued(store, limit=200) == 2
+
+
 def test_dead_node_queued_quest_tick_left_to_loop_arm(
     handler: TodoHandler, store: Store
 ) -> None:

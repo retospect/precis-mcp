@@ -255,6 +255,13 @@ chunk's cell), `sub=` (regex substitute, dry-run by default), `review=`
 `style=` (a heading's section style), `not_abbrev=` (silence an
 abbreviation hint) — all documented in `precis-draft-help`, not here.
 
+`meta=` (pres/draft only) merges keys into the ref's meta dict — pres's
+BibTeX attribution fields (venue/date/authors/…, see `precis-pres-help`)
+and a draft registry `term` leaf's attribute bag (see `precis-draft-help`).
+A kind whose edit handler doesn't declare it raises `BadInput` naming
+`meta` instead of silently swallowing the kwarg; `todo` meta is set via
+`tag(meta=…)`'s allowlisted promotion instead.
+
 `review='human'` (+ optional `verdict=`, default `'approved'`) records that
 you — the human — signed off on a chunk at its *current* text, e.g.
 `edit(kind='draft', id='dc12', review='human')`. `authoring='on'|'off'`
