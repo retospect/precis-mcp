@@ -1210,9 +1210,9 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
         assert loop_mod._pathway_job_tree_state(store, pw) == ("wrongful_kill", None)
 
     def test_dead_node_reaped_failed_is_wrongful_kill(self, store: Store) -> None:
-        """``reaped:dead-node-orphan`` isn't in ``_job_bubble.
-        INFRA_FAILURE_TAGS`` (a separate gap — see the gripe filed on it),
-        but this sweep's own wrongful-kill set includes it: an
+        """``reaped:dead-node-orphan`` is infra-class in ``_job_bubble.
+        INFRA_FAILURE_TAGS`` (gr210536 — it used to be a local widening
+        here), so this sweep's wrongful-kill set carries it: an
         ``ssh_node``-executor autocatpath seed job dying with its GPU node
         is exactly as wrongful as a swept claim-orphan."""
         q = _mk_quest(store, "A striving")

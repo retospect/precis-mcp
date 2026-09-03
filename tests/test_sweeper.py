@@ -910,6 +910,10 @@ def test_dead_node_orphan_is_reaped_when_target_node_is_dead(
     assert row[0] == "infra"
     events = store.events_for(job_id)
     assert any(e.event == "compute-reaped" for e in events)
+    # gr210536: reaped:dead-node-orphan is infra-class in INFRA_FAILURE_TAGS,
+    # so the bubble gives the parent the bounded retry — no immediate latch.
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" not in parent_tags
 
     # The generic sweep still ran and caught the unrelated job.
     other_tags = {str(t) for t in store.tags_for(other_job_id)}
@@ -1028,6 +1032,246 @@ def test_dead_node_orphan_not_reaped_when_host_heartbeat_fresh(
     job_tags = {str(t) for t in store.tags_for(job_id)}
     assert "STATUS:running" in job_tags
     assert "STATUS:failed" not in job_tags
+
+
+# ── dead-node QUEUED reap (executor-agnostic, gr292747 follow-through) ──
+#
+# The queued-side complement: a job pinned to a node that died before any
+# claim has ``lease_until IS NULL`` and stays ``STATUS:queued``, so it
+# matches neither the generic timeout sweep nor the running-side dead-node
+# reap above — and its idem_key blocks re-mints forever. Same uuid-tagged
+# host convention as above against shared-DB liveness noise.
+
+
+def _mint_queued_job(
+    store: Store,
+    parent_id: int | None,
+    *,
+    age_seconds: float,
+    executor: str = "ssh_node",
+    job_type: str = "struct_relax",
+    params: dict | None = None,
+    idem_key: str | None = None,
+) -> int:
+    """Insert a ``kind='job'`` ref, tag STATUS:queued, backdate the ref.
+
+    Unlike :func:`_mint_running_job` the age lives on ``refs.created_at``
+    (the queued reap's grace anchor — there is no lease to anchor on), and
+    ``meta.lease_until`` is deliberately absent: never claimed.
+    """
+    meta: dict = {"job_type": job_type, "executor": executor}
+    if params is not None:
+        meta["params"] = params
+    if idem_key is not None:
+        meta["idem_key"] = idem_key
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title=f"{job_type} test job",
+        meta=meta,
+        parent_id=parent_id,
+    )
+    store.add_tag(
+        job.id,
+        Tag.closed("STATUS", "queued"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - %s::interval WHERE ref_id = %s",
+            (f"{age_seconds} seconds", job.id),
+        )
+        conn.commit()
+    return int(job.id)
+
+
+def test_dead_node_queued_pinned_job_is_reaped(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Queued past grace, never claimed, pinned to a provably-dead node →
+    reaped as an infra death (failed, failure_class=infra, tagged
+    reaped:dead-node-queued, bubble fires). And because that tag is in
+    INFRA_FAILURE_TAGS (gr210536), the parent gets the bounded infra retry —
+    NOT an immediate ``child-failed:`` latch."""
+    from uuid import uuid4
+
+    node = f"dead-{uuid4().hex[:8]}"
+    r = handler.put(
+        text="parent",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    rid = _id_of(r.body)
+    job_id = _mint_queued_job(
+        store,
+        rid,
+        age_seconds=1200,  # well past the 600s default grace
+        params={"target_node": node},
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+    assert "STATUS:queued" not in job_tags
+    assert "reaped:dead-node-queued" in job_tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'failure_class' FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "infra"
+    events = store.events_for(job_id)
+    assert any(e.event == "job-reaped" for e in events)
+    # Infra-class bubble under the retry cap: parent stays unlatched.
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" not in parent_tags
+
+
+def test_dead_node_queued_not_reaped_within_grace(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A freshly-minted pinned job — even against a currently-quiet node —
+    is left alone: the grace absorbs a mint that races a node reboot."""
+    from uuid import uuid4
+
+    node = f"fresh-{uuid4().hex[:8]}"
+    rid = _id_of(handler.put(text="parent").body)
+    job_id = _mint_queued_job(store, rid, age_seconds=60, params={"target_node": node})
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:queued" in job_tags
+    assert "reaped:dead-node-queued" not in job_tags
+
+
+def test_dead_node_queued_not_reaped_when_node_alive(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The target node's worker logged recently — it will claim the job
+    itself; the reap must abstain."""
+    from uuid import uuid4
+
+    node = f"alive-{uuid4().hex[:8]}"
+    _insert_worker_process_log(store, node, "precis-worker", age_minutes=1.0)
+    rid = _id_of(handler.put(text="parent").body)
+    job_id = _mint_queued_job(
+        store, rid, age_seconds=1200, params={"target_node": node}
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:queued" in job_tags
+    assert "reaped:dead-node-queued" not in job_tags
+
+
+def test_dead_node_queued_not_reaped_when_heartbeat_fresh(
+    handler: TodoHandler, store: Store
+) -> None:
+    """No worker_logs evidence but the host itself heartbeats — a wedged
+    daemon is not a dead node; abstain."""
+    from uuid import uuid4
+
+    node = f"hb-{uuid4().hex[:8]}"
+    _upsert_host_heartbeat(store, node, age_minutes=0.5)
+    rid = _id_of(handler.put(text="parent").body)
+    job_id = _mint_queued_job(
+        store, rid, age_seconds=1200, params={"target_node": node}
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:queued" in job_tags
+
+
+def test_dead_node_queued_unpinned_job_left_alone(
+    handler: TodoHandler, store: Store
+) -> None:
+    """No ``target_node`` pin means any live worker can claim it — queued is
+    its normal state, not a wedge; the reap (and the generic sweep, which is
+    running-only) must both leave it."""
+    rid = _id_of(handler.put(text="parent").body)
+    job_id = _mint_queued_job(store, rid, age_seconds=7200, params={})
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:queued" in job_tags
+    assert "STATUS:failed" not in job_tags
+
+
+def test_dead_node_queued_grace_env_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env override parses, clamps negatives to 0, and garbage falls back to
+    the 600s default."""
+    from precis.workers.sweeper import _dead_node_queued_grace_s
+
+    monkeypatch.delenv("PRECIS_DEAD_NODE_QUEUED_GRACE_S", raising=False)
+    assert _dead_node_queued_grace_s() == 600
+    monkeypatch.setenv("PRECIS_DEAD_NODE_QUEUED_GRACE_S", "120")
+    assert _dead_node_queued_grace_s() == 120
+    monkeypatch.setenv("PRECIS_DEAD_NODE_QUEUED_GRACE_S", "-5")
+    assert _dead_node_queued_grace_s() == 0
+    monkeypatch.setenv("PRECIS_DEAD_NODE_QUEUED_GRACE_S", "bogus")
+    assert _dead_node_queued_grace_s() == 600
+
+
+def test_dead_node_queued_transition_lost_race_returns_false(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The locked re-check inside the transition re-verifies the whole
+    predicate: if the node came back (fresh heartbeat) between enumerate and
+    lock, the transition declines — returns False, job untouched."""
+    from uuid import uuid4
+
+    from precis.workers.sweeper import (
+        _DeadNodeOrphan,
+        _transition_dead_node_queued_to_failed,
+    )
+
+    node = f"back-{uuid4().hex[:8]}"
+    rid = _id_of(handler.put(text="parent").body)
+    job_id = _mint_queued_job(
+        store, rid, age_seconds=1200, params={"target_node": node}
+    )
+    orphan = _DeadNodeOrphan(ref_id=job_id, target_node=node, meta={})
+    # Node comes back between enumerate and the locked re-check.
+    _upsert_host_heartbeat(store, node, age_minutes=0.5)
+
+    assert _transition_dead_node_queued_to_failed(store, orphan, 600) is False
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:queued" in job_tags
+    assert "reaped:dead-node-queued" not in job_tags
+
+
+def test_dead_node_queued_quest_tick_left_to_loop_arm(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A pinned, never-claimed quest loop matches every other predicate but
+    belongs to quest/loop.py's ``_reap_dead_node_pinned_loop`` (cancel +
+    re-mint, not failed + bubble) — the idem_key prefix excludes it here."""
+    from uuid import uuid4
+
+    node = f"dead-{uuid4().hex[:8]}"
+    rid = _id_of(handler.put(text="quest parent").body)
+    job_id = _mint_queued_job(
+        store,
+        rid,
+        age_seconds=1200,
+        executor="coordinator",
+        job_type="quest_tick",
+        params={"target_node": node},
+        idem_key="quest_tick:424242",
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:queued" in job_tags
+    assert "reaped:dead-node-queued" not in job_tags
 
 
 # ── unpark phase (parked-leaf-recovery, docs/backlog/

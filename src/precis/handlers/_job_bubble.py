@@ -71,7 +71,23 @@ log = logging.getLogger(__name__)
 #: ``open_tag=``) — synchronously, by the worker that owned the job,
 #: before it marks the job failed — so the same "no live worker can
 #: still be running it" safety argument applies.
-INFRA_FAILURE_TAGS = frozenset({"swept:claim-orphaned", "infra:child-killed"})
+#: The two ``reaped:dead-node-*`` tags (gr210536) are the sweeper's
+#: dead-node reaps — running-side (expired lease, target node provably
+#: dead: no live executor left to race) and queued-side (never claimed,
+#: pinned to a provably-dead node: no claim ever happened) — both an even
+#: stronger form of the same argument, and both stamped
+#: ``meta.failure_class='infra'`` at the source. The bounded retry's
+#: re-mint re-derives ``target_node`` from env/topology at mint time, so
+#: a retry after a node re-homing lands on the live node instead of the
+#: dead pin.
+INFRA_FAILURE_TAGS = frozenset(
+    {
+        "swept:claim-orphaned",
+        "infra:child-killed",
+        "reaped:dead-node-orphan",
+        "reaped:dead-node-queued",
+    }
+)
 
 #: Bounded-retry knobs for the infra-class path. A parent may re-arm this
 #: many infra failures inside the trailing window before the bubble gives

@@ -203,14 +203,10 @@ _ID_IN_ACK = re.compile(r"\bid=(\d+)\b")
 #: compute never really ran, so the failure says nothing about the material —
 #: rather than a genuine content-class result. :data:`INFRA_FAILURE_TAGS`
 #: (``precis.handlers._job_bubble``) is the bounded-retry classification the
-#: rest of the codebase already uses; ``reaped:dead-node-orphan``
-#: (``workers.sweeper``'s ``ssh_node``-specific dead-node reap — exactly the
-#: executor `autocatpath_seed`/`autocatpath_aggregate` run under) is an
-#: equally wrongful-kill signal that constant doesn't (yet) carry — filed as
-#: a gripe rather than widened at the source from here.
-_PATHWAY_WRONGFUL_KILL_TAGS = INFRA_FAILURE_TAGS | frozenset(
-    {"reaped:dead-node-orphan"}
-)
+#: rest of the codebase uses; since gr210536 it carries the sweeper's
+#: ``reaped:dead-node-*`` tags too, so the local widening this alias used to
+#: do is gone — the alias stays for the name's local legibility.
+_PATHWAY_WRONGFUL_KILL_TAGS = INFRA_FAILURE_TAGS
 
 #: Bounded per-quest-per-pass re-dispatch budget for
 #: :func:`_reconcile_orphaned_pathways` — a systemic outage (a GPU node down
@@ -655,9 +651,12 @@ def _reap_dead_node_pinned_loop(
     self-heal path: ``_reap_orphaned_loop`` requires a non-null expired lease
     and skips it; :mod:`workers.sweeper`'s ``_enumerate_dead_node_orphans``
     only matches ``executor='ssh_node'`` + ``STATUS:running`` and skips it
-    too (this loop is ``executor='coordinator'``, still ``queued``) — so
-    nothing ever cancelled it, and its ``idem_key=quest_tick:<id>`` blocked
-    ``ensure_quest_loop`` from re-minting forever. This is exactly what
+    too (this loop is ``executor='coordinator'``, still ``queued``), and the
+    sweeper's queued-side arm (``_enumerate_dead_node_queued``) deliberately
+    excludes ``quest_tick:*`` idem keys in favor of this reaper's
+    cancel-plus-re-mint — so without this arm nothing ever cancelled it, and
+    its ``idem_key=quest_tick:<id>`` blocked ``ensure_quest_loop`` from
+    re-minting forever. This is exactly what
     happened prod-wide when spark was decommissioned while still the
     hardcoded default pin: every loop minted against it wedged for four days
     until this reaper shipped.

@@ -20,7 +20,14 @@ race), terminalizing like the executor's own poison-guard
 (``STATUS:failed`` + ``meta.failure_class='infra'`` +
 ``bubble_job_failure``), tagged ``reaped:dead-node-orphan`` — distinct
 from ``swept:claim-orphaned`` (below) and ``reaped:reboot-orphan``
-(``quest/loop.py``).
+(``quest/loop.py``). ``_reap_dead_node_queued`` is its queued-side,
+executor-agnostic complement: a job pinned to a dead node *before any
+claim* (``lease_until IS NULL``, still ``STATUS:queued``) is unclaimable
+by every live worker (the claim path node-gates on
+``meta.params.target_node``) yet matches neither sweep above — it
+terminalizes the same way, tagged ``reaped:dead-node-queued``, leaving
+quest loops (``idem_key`` ``quest_tick:*``) to ``quest/loop.py``'s own
+cancel-plus-re-mint arm.
 
 **Transition.** Per orphan: replace ``STATUS:running`` with
 ``STATUS:failed`` (``STATUS:cancelled`` for
@@ -688,6 +695,11 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     # ``_enumerate_orphans``). Runs every pass, fleet-wide, not gated behind
     # any dark-launch flag.
     _reap_dead_node_orphans(store, limit=limit)
+    # Its queued-side, executor-agnostic complement (gr292747 follow-through):
+    # a never-claimed job pinned to a dead node matches no other recovery
+    # path (no lease to expire, not STATUS:running) and its idem_key blocks
+    # re-mints forever. Same deadness predicate, same terminal shape.
+    _reap_dead_node_queued(store, limit=limit)
     # ``unpark`` phase (parked-leaf-recovery) — a DISTINCT pass over
     # ``child-failed:*``-latched todos, unconditional and fleet-wide like
     # the dead-node reap above; called before the generic orphan sweep's
@@ -997,6 +1009,216 @@ def _reap_dead_node_orphans(store: Store, *, limit: int) -> int:
         except Exception:  # pragma: no cover - defensive
             log.warning(
                 "sweeper: dead-node reap for job #%d raised",
+                orphan.ref_id,
+                exc_info=True,
+            )
+    return n
+
+
+#: Minimum age of a queued pinned job before the dead-node queued reap will
+#: touch it (seconds). Larger than :func:`_dead_node_reap_grace_s`'s
+#: post-lease margin because there is no lease here to anchor on — only
+#: ``refs.created_at`` — and a job minted moments before a node reboot must
+#: not be raced (mirrors ``quest/loop.py``'s
+#: ``PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`` choice for the same predicate).
+#: ``PRECIS_DEAD_NODE_QUEUED_GRACE_S``, default 600 (10 min).
+def _dead_node_queued_grace_s() -> int:
+    raw = os.environ.get("PRECIS_DEAD_NODE_QUEUED_GRACE_S")
+    if raw is None:
+        return 600
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 600
+
+
+def _enumerate_dead_node_queued(
+    store: Store, grace_s: int, *, limit: int
+) -> list[_DeadNodeOrphan]:
+    """Find ``STATUS:queued``, never-claimed jobs pinned to a dead node.
+
+    The executor-agnostic complement to :func:`_enumerate_dead_node_orphans`
+    (gr292747 follow-through): every executor's claim path node-gates on
+    ``meta.params.target_node`` (``executors/_common.py``'s
+    ``claim_executor_jobs``, ``ssh_node.py`` / ``claude_docker.py``'s own
+    claim SQL, the coordinator's pin check), so a queued job pinned to a
+    node that died before any claim is unclaimable by every live worker —
+    and, with ``lease_until IS NULL``, invisible to both the generic
+    timeout sweep (``STATUS:running`` only) and the running-side dead-node
+    reap (non-null expired lease required). Its ``idem_key`` then blocks any
+    re-mint forever. That executor doesn't matter here is also what makes
+    the reap safe: no claim ever happened, so there is no executor-owned
+    recovery to race.
+
+    A candidate must satisfy ALL of:
+
+    1. currently ``STATUS:queued`` (any executor);
+    2. ``meta.lease_until IS NULL`` — never claimed; a claimed-then-died
+       job belongs to the running-side arms;
+    3. ``meta.params.target_node`` is set — an unpinned job is claimable
+       by any live worker and can never wedge this way;
+    4. NOT a quest loop (``idem_key`` prefix ``quest_tick:``) —
+       ``quest/loop.py``'s ``_reap_dead_node_pinned_loop`` owns those with
+       cancel-plus-re-mint semantics this pass can't replicate;
+    5. ``refs.created_at`` older than ``grace_s`` — a pinned job minted
+       during a reboot window is left alone rather than raced;
+    6. the target node is *provably dead* — the same worker_logs-silence +
+       no-fresh-``host_heartbeat`` predicate as
+       :func:`_enumerate_dead_node_orphans`.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.meta->'params'->>'target_node' AS target_node, r.meta
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'queued'
+               AND (r.meta->>'lease_until') IS NULL
+               AND (r.meta->'params'->>'target_node') IS NOT NULL
+               AND COALESCE(r.meta->>'idem_key', '') NOT LIKE 'quest_tick:%%'
+               AND r.created_at < now() - %(grace)s::interval
+               AND NOT EXISTS (
+                     SELECT 1 FROM worker_logs wl
+                      WHERE wl.host = r.meta->'params'->>'target_node'
+                        AND wl.process = ANY(%(procs)s)
+                        AND wl.ts > now() - %(silence)s::interval
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM host_heartbeat hh
+                      WHERE hh.host = r.meta->'params'->>'target_node'
+                        AND hh.ts > now() - interval '3 minutes'
+                   )
+             ORDER BY r.ref_id
+             LIMIT %(limit)s
+            """,
+            {
+                "grace": f"{grace_s} seconds",
+                "procs": list(WORKER_CONTINUOUS_PROCESSES),
+                "silence": f"{DEAD_WORKER_SILENCE_MIN} minutes",
+                "limit": limit,
+            },
+        ).fetchall()
+    return [
+        _DeadNodeOrphan(ref_id=int(r[0]), target_node=str(r[1]), meta=dict(r[2] or {}))
+        for r in rows
+    ]
+
+
+def _transition_dead_node_queued_to_failed(
+    store: Store, orphan: _DeadNodeOrphan, grace_s: int
+) -> bool:
+    """Lock the queued job, re-verify the predicate, terminalize to failed.
+
+    Same terminal shape as :func:`_transition_dead_node_orphan_to_failed`
+    (``STATUS:failed`` + ``meta.failure_class='infra'`` +
+    :func:`bubble_job_failure`) so downstream consumers — the bubble's
+    bounded infra retry, the quest harvest's retry-vs-rule-out branch —
+    read it as an infra death, never a physical verdict. Tagged
+    ``reaped:dead-node-queued``, distinct from the running-side
+    ``reaped:dead-node-orphan`` and the loop arm's ``reaped:dead-node-pin``
+    so the recovery paths stay legible. A bounded re-mint from the bubble
+    re-derives ``target_node`` at mint time (env/topology), so retries are
+    not doomed to the same dead pin.
+
+    No reservation refund and no container kill: the job was never claimed,
+    so nothing was ever reserved or started.
+
+    Returns ``True`` on successful transition, ``False`` on a lost race
+    (claimed, transitioned, or the node came back by the time this locks).
+    """
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.ref_id = %(ref_id)s
+               AND r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'queued'
+               AND (r.meta->>'lease_until') IS NULL
+               AND (r.meta->'params'->>'target_node') = %(node)s
+               AND r.created_at < now() - %(grace)s::interval
+               AND NOT EXISTS (
+                     SELECT 1 FROM worker_logs wl
+                      WHERE wl.host = %(node)s
+                        AND wl.process = ANY(%(procs)s)
+                        AND wl.ts > now() - %(silence)s::interval
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM host_heartbeat hh
+                      WHERE hh.host = %(node)s
+                        AND hh.ts > now() - interval '3 minutes'
+                   )
+             FOR UPDATE OF r SKIP LOCKED
+            """,
+            {
+                "ref_id": orphan.ref_id,
+                "grace": f"{grace_s} seconds",
+                "node": orphan.target_node,
+                "procs": list(WORKER_CONTINUOUS_PROCESSES),
+                "silence": f"{DEAD_WORKER_SILENCE_MIN} minutes",
+            },
+        ).fetchone()
+        if row is None:
+            return False
+        store.add_tag(
+            orphan.ref_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        # INFRA — the pinned-to node died before any claim; the compute
+        # never ran at all, so this says nothing about the content.
+        set_meta(conn, orphan.ref_id, failure_class="infra")
+        store.add_tag(
+            orphan.ref_id,
+            Tag.open("reaped:dead-node-queued"),
+            set_by="system",
+            conn=conn,
+        )
+        store.append_event(
+            orphan.ref_id,
+            source="sweeper",
+            event="job-reaped",
+            payload={"target_node": orphan.target_node, "cause": "dead-node-queued"},
+            conn=conn,
+        )
+    # Bubble outside the tx, same as _transition_dead_node_orphan_to_failed.
+    bubble_job_failure(store, orphan.ref_id)
+    return True
+
+
+def _reap_dead_node_queued(store: Store, *, limit: int) -> int:
+    """Run the queued-pinned-to-dead-node reap pass (gr292747 follow-through).
+
+    Per-candidate wrapped like :func:`_reap_dead_node_orphans` so one job's
+    failure can never abort the rest of the sweep. Returns the count reaped.
+    """
+    grace_s = _dead_node_queued_grace_s()
+    candidates = _enumerate_dead_node_queued(store, grace_s, limit=limit)
+    n = 0
+    for orphan in candidates:
+        try:
+            if _transition_dead_node_queued_to_failed(store, orphan, grace_s):
+                n += 1
+                log.warning(
+                    "sweeper: job #%d reaped (queued, never claimed, pinned to "
+                    "provably-dead target_node=%s — unclaimable by any live "
+                    "worker)",
+                    orphan.ref_id,
+                    orphan.target_node,
+                )
+        except Exception:  # pragma: no cover - defensive
+            log.warning(
+                "sweeper: dead-node queued reap for job #%d raised",
                 orphan.ref_id,
                 exc_info=True,
             )
