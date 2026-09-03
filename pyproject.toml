@@ -440,12 +440,18 @@ asa-slack = "asa_slack.__main__:main"
 # `nm` (nanomachine) kind — hierarchical building blocks with spatial
 # envelopes, dark behind PRECIS_NM_ENABLED. Slice 3 round 1 ships the
 # plugin skeleton + block tree only; no job_type yet.
+# `precis_se` is nm's scale-agnostic sibling (docs/backlog/se-kind.md,
+# se : cad :: nm : structure): the `se` (structural envelope) kind —
+# metre-scale block trees with cad-DSL envelopes and first-class arrays,
+# dark behind PRECIS_SE_ENABLED. Slices 1-2 ship the scaffold + L0/L1
+# block-tree core; no job_type yet.
 [project.entry-points."precis.handlers"]
 route = "precis_chem.route:RouteHandler"
 protein = "precis_bio.protein:ProteinHandler"
 pathway = "precis_pathway.handler:PathwayHandler"
 estimate = "precis_estimate.handler:EstimateHandler"
 nm = "precis_nm.handler:NmHandler"
+se = "precis_se.handler:SeHandler"
 
 [project.entry-points."precis.job_types"]
 retrosynth = "precis_chem.jobs:RETROSYNTH_SPEC"
@@ -465,11 +471,13 @@ precis_bio = "precis_bio.migrations"
 autocatpath = "precis_pathway.migrations"
 precis_estimate = "precis_estimate.migrations"
 precis_nm = "precis_nm.migrations"
+precis_se = "precis_se.migrations"
 
 [project.entry-points."precis.handle_codes"]
 pathway = "precis_pathway.handles"
 estimate = "precis_estimate.handles"
 nm = "precis_nm.handles"
+se = "precis_se.handles"
 
 [dependency-groups]
 dev = [
@@ -527,7 +535,7 @@ dev = [
 autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_nm"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_nm", "src/precis_se"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under

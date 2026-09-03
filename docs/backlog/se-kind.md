@@ -459,12 +459,16 @@ live in the tables, never chunks (nm/ADR-0041 storage rule).
 
 1. **Scaffold** — plugin skeleton, migration 0001, dark flag, `se`
    handle code, empty handler registering. (nm build order step 1.)
+   SHIPPED 2026-09-03 together with slice 2's block-tree half:
+   blocks/instancing/**arrays** + tree/block views + set_envelope
+   (`src/precis_se/`).
 2. **L0/L1 core** — blocks/ports/connects ops + tree view, incl.
    template instancing + array nodes; envelope via the cad DSL;
    clearance/fit views renting `component_sdf`. Validate with
    filled-fraction honesty from day one, plus the geometry-tier
    solidity checks (volume/connectivity/net-empty) — they need nothing
-   but envelopes.
+   but envelopes. REMAINING: ports/connects ops, clearance/fit views,
+   validate (blocks/arrays shipped with slice 1).
 3. **L2 invariants + graph DRC** — joints as kinematic class +
    mechanism registry (incl. mechanism-implied demands); measures +
    tolerance relations; loads as objective vectors. Tolerance stack-up
