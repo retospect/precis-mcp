@@ -10,13 +10,12 @@ gives language-model agents a small, uniform API for reading, writing,
 and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`, with a web
-interface ([see how it works](https://retospect.github.io/precis-mcp/)).
+interface ([see how it works](guide/README.md)).
 
 ## See it
 
-A two-minute narrated tour of the web interface, section by section:
-**[retospect.github.io/precis-mcp](https://retospect.github.io/precis-mcp/)**.
-Video: coming.
+A narrated tour of the web interface, section by section, right in
+this repo: **[guide/README.md](guide/README.md)**. Video: coming.
 
 **Set it up:** single machine —
 [`docs/setup-single-machine.md`](docs/setup-single-machine.md) ·
