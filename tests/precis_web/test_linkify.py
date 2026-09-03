@@ -1326,3 +1326,24 @@ def test_base_template_release_compares_by_popid_not_raw_element() -> None:
     assert "popIdOf(openEl) === popIdOf(el)" in release_body
     # The old (buggy) raw-identity comparison must be gone from this method.
     assert "openEl === el" not in release_body
+
+
+# ---- gr298015: htmx/Alpine vendored, no unpkg CDN fetch ---------------
+#
+# base.html.j2 loads on EVERY page, so a runtime fetch of its core JS
+# (htmx, Alpine) from unpkg would silently break every htmx swap and all
+# ``x-data``/``x-show`` interactivity cluster-wide on the tailnet-only
+# deployment (no guaranteed internet egress). katex/pdf.js are already
+# vendored under static/ for the same reason (see the comments above them
+# in the template) — this pins htmx/Alpine to the same pattern. Scoped to
+# base.html.j2 specifically, not every template: a handful of kind-detail
+# pages (cad/detail, refs/pathway_detail, structure/detail, smartdraft/view,
+# todo/dashboard) still pull heavier third-party libs (three.js, 3Dmol,
+# a second katex copy, mermaid) from a CDN — a separate, larger migration
+# outside this gripe's scope.
+def test_base_template_vendors_htmx_and_alpine_no_unpkg_cdn() -> None:
+    html = _base_template_script()
+    assert "unpkg.com" not in html
+    assert "cdn.jsdelivr.net" not in html
+    assert '<script src="/static/htmx.min.js" defer></script>' in html
+    assert '<script src="/static/alpine.min.js" defer></script>' in html

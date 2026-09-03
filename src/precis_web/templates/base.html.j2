@@ -18,8 +18,13 @@
   <link rel="stylesheet" href="/static/katex/katex.min.css" />
   <script src="/static/katex/katex.min.js" defer></script>
   <script src="/static/katex/contrib/auto-render.min.js" defer></script>
-  <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
-  <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  {# Vendored htmx 2.0.3 / Alpine.js 3.14.3 — self-hosted like katex/pdf.js
+     above, no runtime CDN fetch (tailnet-only deployment; a bare unpkg
+     <script> silently no-ops with no internet egress, killing every htmx
+     swap and all x-data interactivity). Re-pin both files under
+     static/ when bumping either version. #}
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/alpine.min.js" defer></script>
   <style>[x-cloak] { display: none !important; }</style>
   {# Abbreviation recall (linkify._highlight_abbrevs — draft reader +
      claim-page quote blocks): an INSTANT custom tooltip, no native <abbr

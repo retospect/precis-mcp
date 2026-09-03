@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points as _entry_points
@@ -399,6 +400,60 @@ class Hub:
 # ---------------------------------------------------------------------------
 
 
+def _read_only_env_override() -> bool:
+    """True when ``PRECIS_MCP_READ_ONLY`` is set to an on-ish value.
+
+    Explicit escape hatch for the DSN-probe below: an operator who
+    already knows the process is pointed at a read replica can skip
+    the probe round-trip entirely. Off by default — mirrors the
+    on/off vocabulary of ``PRECIS_ORACLE_AUTO_REINGEST``
+    (``jobs/oracle_sync.is_disabled_by_env``).
+    """
+    return os.environ.get("PRECIS_MCP_READ_ONLY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _probe_read_only(store: Store) -> bool:
+    """One-shot ``SHOW transaction_read_only`` check against the pool.
+
+    Used at boot to decide whether the non-idempotent kinds-upsert /
+    oracle_sync writes are safe to attempt. A probe that itself fails
+    (network hiccup, unexpected server response, …) must not become a
+    new boot failure mode — fall back to ``False`` (assume writable,
+    today's behaviour) and let the write attempt below surface its own
+    error if the DSN really is read-only.
+    """
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute("SHOW transaction_read_only").fetchone()
+        if row is None:
+            return False
+        return str(row[0]).strip().lower() == "on"
+    except Exception:
+        log.debug(
+            "precis dispatch boot: read-only probe failed; assuming writable",
+            exc_info=True,
+        )
+        return False
+
+
+def _boot_is_read_only(store: Store) -> bool:
+    """Whether boot's non-idempotent writes (kinds upsert, oracle_sync)
+    should be skipped for this process.
+
+    Checks the explicit env override first (cheap, no I/O), then falls
+    back to the DSN probe. See :func:`_read_only_env_override` and
+    :func:`_probe_read_only`.
+    """
+    if _read_only_env_override():
+        return True
+    return _probe_read_only(store)
+
+
 def _try(
     cls: Callable[..., Any],
     *,
@@ -629,6 +684,19 @@ def boot(
 
     hub = Hub(store=store, embedder=embedder)
 
+    # Boot performs a handful of non-idempotent writes below (the
+    # kinds-table upsert, the oracle_sync reconcile thread) that exist
+    # to keep code-driven state in sync with the DB. Against a
+    # read-only DSN (a replica, or a deliberately locked-down role)
+    # those writes just fail on every process start — logged as
+    # exceptions while the process otherwise serves fine. Detect once,
+    # up front, and skip both write sites; see ``_boot_is_read_only``.
+    mcp_read_only = False
+    if store is not None:
+        mcp_read_only = _boot_is_read_only(store)
+        if mcp_read_only:
+            log.info("precis dispatch boot: read-only DSN — skipping boot writes")
+
     def _gated(cls: Callable[..., Any], **kw: Any) -> Any | None:
         """Local _try alias capturing ``hub`` + the parsed prohibition
         set. Each call site keeps only its handler-specific kwargs."""
@@ -802,7 +870,7 @@ def boot(
         if "oracle" in hub.kinds:
             from precis.jobs.oracle_sync import is_disabled_by_env, maybe_reingest
 
-            if not is_disabled_by_env():
+            if not is_disabled_by_env() and not mcp_read_only:
                 # F11: run oracle_sync on a daemon thread rather than
                 # inline. Synchronous reconcile blocked every CLI
                 # invocation behind the bge-m3 cold-start whenever the
@@ -994,8 +1062,9 @@ def boot(
     # ``kinds`` table so the FK target stays in sync with the code
     # registry without a hand-maintained migration. See
     # ``store/_kinds_ops.py`` for the design note. Skipped on stateless
-    # boots (no store): nothing to upsert against.
-    if store is not None:
+    # boots (no store: nothing to upsert against) and on a read-only
+    # DSN (``mcp_read_only``, computed above — already logged once).
+    if store is not None and not mcp_read_only:
         try:
             from precis.store._kinds_ops import boot_process_identity
 

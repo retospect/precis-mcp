@@ -8,6 +8,7 @@ being ported yet.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 
@@ -337,6 +338,182 @@ def test_boot_survives_missing_sympy(monkeypatch: pytest.MonkeyPatch) -> None:
 
     r = boot(store=None)
     assert "calc" not in r.kinds
+
+
+# ---------------------------------------------------------------------------
+# Read-only DSN detection — skip boot's non-idempotent writes (gr298050)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["1", "true", "True", "yes", "on"])
+def test_read_only_env_override_truthy_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from precis.dispatch import _read_only_env_override
+
+    monkeypatch.setenv("PRECIS_MCP_READ_ONLY", value)
+    assert _read_only_env_override() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+def test_read_only_env_override_falsy_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from precis.dispatch import _read_only_env_override
+
+    monkeypatch.setenv("PRECIS_MCP_READ_ONLY", value)
+    assert _read_only_env_override() is False
+
+
+def test_read_only_env_override_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.dispatch import _read_only_env_override
+
+    monkeypatch.delenv("PRECIS_MCP_READ_ONLY", raising=False)
+    assert _read_only_env_override() is False
+
+
+def test_probe_read_only_reads_show_transaction_read_only(store: Store) -> None:
+    """Sanity check against the real test DB: a normal (writable)
+    connection reports ``off``."""
+    from precis.dispatch import _probe_read_only
+
+    assert _probe_read_only(store) is False
+
+
+def test_probe_read_only_false_on_probe_failure() -> None:
+    """A probe that itself blows up must not become a new boot failure
+    mode — fall back to "assume writable" (today's behaviour).
+
+    Uses a bare stand-in rather than the ``store`` fixture: swapping
+    out the real ``store.pool`` would also have to survive the
+    fixture's own teardown (``pool.close()``), which is an unrelated
+    concern this unit test shouldn't have to manage.
+    """
+    from precis.dispatch import _probe_read_only
+
+    class _BoomPool:
+        def connection(self):  # pragma: no cover - never entered
+            raise RuntimeError("simulated pool failure")
+
+    class _FakeStore:
+        pool = _BoomPool()
+
+    assert _probe_read_only(_FakeStore()) is False  # type: ignore[arg-type]
+
+
+def test_boot_skips_kinds_upsert_when_probe_reports_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    store: Store,
+) -> None:
+    """Mock the probe to report a read-only DSN: boot must skip the
+    kinds/kind_provider upserts and log once at INFO, not exception
+    level."""
+    from precis import dispatch as _d
+
+    monkeypatch.setattr(_d, "_probe_read_only", lambda _store: True)
+
+    def _boom(*a: object, **kw: object) -> None:
+        raise AssertionError("upsert_kinds must not be called on a read-only DSN")
+
+    monkeypatch.setattr(store, "upsert_kinds", _boom)
+    monkeypatch.setattr(store, "upsert_kind_providers", _boom)
+
+    with caplog.at_level(logging.INFO, logger="precis.dispatch"):
+        hub = _d.boot(store=store)
+
+    assert isinstance(hub, Hub)
+    assert any(
+        rec.levelno == logging.INFO
+        and "read-only DSN" in rec.message
+        and "skipping boot writes" in rec.message
+        for rec in caplog.records
+    )
+    assert not any(rec.levelno >= logging.ERROR for rec in caplog.records)
+
+
+def test_boot_skips_oracle_sync_thread_when_read_only(
+    monkeypatch: pytest.MonkeyPatch, store: Store
+) -> None:
+    """The oracle_sync background thread must not even spawn on a
+    read-only DSN — it holds an advisory lock and calls INSERT/UPDATE
+    on every re-ingest."""
+    from precis import dispatch as _d
+
+    monkeypatch.setattr(_d, "_probe_read_only", lambda _store: True)
+    monkeypatch.setenv("PRECIS_ORACLE_AUTO_REINGEST", "1")
+
+    started: list[str] = []
+    real_thread_start = __import__("threading").Thread.start
+
+    def _spy_start(self: Any, *a: object, **kw: object) -> None:
+        if self.name == "precis-oracle-sync":
+            started.append(self.name)
+        real_thread_start(self, *a, **kw)
+
+    monkeypatch.setattr("threading.Thread.start", _spy_start)
+
+    _d.boot(store=store)
+
+    assert started == []
+
+
+def test_boot_env_override_skips_writes_without_probing(
+    monkeypatch: pytest.MonkeyPatch, store: Store
+) -> None:
+    """``PRECIS_MCP_READ_ONLY=1`` skips the probe entirely — boot must
+    not even attempt the ``SHOW transaction_read_only`` round-trip."""
+    from precis import dispatch as _d
+
+    monkeypatch.setenv("PRECIS_MCP_READ_ONLY", "1")
+
+    def _boom_probe(_store: Store) -> bool:
+        raise AssertionError("probe must not run when the env override is set")
+
+    monkeypatch.setattr(_d, "_probe_read_only", _boom_probe)
+
+    def _boom_write(*a: object, **kw: object) -> None:
+        raise AssertionError("writes must not run when the env override is set")
+
+    monkeypatch.setattr(store, "upsert_kinds", _boom_write)
+    monkeypatch.setattr(store, "upsert_kind_providers", _boom_write)
+
+    hub = _d.boot(store=store)
+    assert isinstance(hub, Hub)
+
+
+def test_boot_falls_back_to_writes_when_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    store: Store,
+) -> None:
+    """Probe failure (not read-only detection, the probe *erroring*)
+    must fall back to the pre-fix behaviour — attempt the writes."""
+    from precis import dispatch as _d
+
+    def _boom_probe(_store: Store) -> bool:
+        return False  # what _probe_read_only itself returns on failure
+
+    monkeypatch.setattr(_d, "_probe_read_only", _boom_probe)
+    monkeypatch.delenv("PRECIS_MCP_READ_ONLY", raising=False)
+
+    called: list[str] = []
+    real_upsert_kinds = store.upsert_kinds
+
+    def _spy_upsert_kinds(specs: list[Any], *, conn: Any = None) -> int:
+        called.append("upsert_kinds")
+        return real_upsert_kinds(specs, conn=conn)
+
+    monkeypatch.setattr(store, "upsert_kinds", _spy_upsert_kinds)
+
+    with caplog.at_level(logging.INFO, logger="precis.dispatch"):
+        _d.boot(store=store)
+
+    assert called == ["upsert_kinds"]
+    assert not any(
+        "read-only DSN — skipping boot writes" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_duplicate_handler_registration_raises() -> None:
