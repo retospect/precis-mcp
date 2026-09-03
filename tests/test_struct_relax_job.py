@@ -295,6 +295,44 @@ def test_reset_gpu_local_vs_remote(monkeypatch: pytest.MonkeyPatch) -> None:
     assert struct_relax.reset_gpu(node="spark") is False
 
 
+def test_no_dft_node_helpers_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No node arg + PRECIS_DFT_NODE unset (``_NODE is None``): the container
+    helpers no-op instead of ssh-ing a node literal that no longer exists —
+    no subprocess is ever spawned."""
+    monkeypatch.setattr(struct_relax, "_NODE", None)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+    assert struct_relax.kill_container(123) is False
+    assert struct_relax.reset_gpu() is False
+    assert struct_relax.reap_stale_containers() == 0
+    assert calls == []
+
+
+def test_dispatch_without_any_target_node_fails_infra(
+    structure, tmp_path, monkeypatch
+) -> None:
+    """Params without ``target_node`` and no PRECIS_DFT_NODE fallback: the
+    dispatch records a self-describing infra failure instead of staging a
+    relax with nowhere to run."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    assert "target_node" not in params
+
+    monkeypatch.setattr(struct_relax, "_NODE", None)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    fails = [e for e in events if e[0] == "fail"]
+    assert len(fails) == 1
+    assert fails[0][1]["failure_class"] == "infra"
+    assert "PRECIS_DFT_NODE" in fails[0][1]["reason"]
+
+
 def test_dispatch_infra_failure_is_classed_infra(structure, tmp_path, monkeypatch):
     """The real bug this pins: a runner that dies (container/docker/executor
     failure — no ``result.json`` at all) must be classed ``"infra"``, NOT

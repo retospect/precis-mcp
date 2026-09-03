@@ -511,8 +511,7 @@ def test_boot_falls_back_to_writes_when_probe_fails(
 
     assert called == ["upsert_kinds"]
     assert not any(
-        "read-only DSN — skipping boot writes" in rec.message
-        for rec in caplog.records
+        "read-only DSN — skipping boot writes" in rec.message for rec in caplog.records
     )
 
 

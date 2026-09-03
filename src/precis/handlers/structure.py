@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import numpy as np
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, Internal, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
@@ -1954,6 +1954,19 @@ class StructureHandler(Handler):
         if nd.requester_id is not None:
             todo_guards.check_parent_exists(self.store, nd.requester_id)
 
+        # Resolve the DFT node before minting: deploy renders PRECIS_DFT_NODE
+        # from topology (precis_capabilities.dft) into every minting daemon's
+        # env. Deliberately no node-literal fallback — a hardcoded default
+        # outlives the node it names (the 2026-08-29 spark retirement left
+        # jobs minting against a ghost for days), so unset refuses loudly.
+        dft_node = os.environ.get("PRECIS_DFT_NODE")
+        if not dft_node:
+            raise Internal(
+                "no DFT node configured: PRECIS_DFT_NODE is unset on this "
+                "host, so a struct_relax job would have nowhere to run — "
+                "deploy renders it from topology (precis_capabilities.dft)"
+            )
+
         # self.hub is set at registration; a hand-constructed handler (tests)
         # leaves it None, so fall back to a minimal hub over the same store —
         # JobHandler only needs hub.store.
@@ -1972,9 +1985,9 @@ class StructureHandler(Handler):
             "order": nd.order,
             "poscar_labels": nd.poscar_labels,
             "poscar": nd.poscar,
-            # Pin to the GPU node so its worker claims the job (§23 #3) — the
+            # Pin to the DFT node so its worker claims the job (§23 #3) — the
             # stager + container then share one host's NFS view.
-            "target_node": os.environ.get("PRECIS_DFT_NODE", "spark"),
+            "target_node": dft_node,
         }
         job_resp = hub.sibling("job").put(
             job_type="struct_relax",

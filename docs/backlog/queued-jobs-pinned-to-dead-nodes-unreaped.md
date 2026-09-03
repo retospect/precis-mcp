@@ -33,10 +33,9 @@ or fold); ssh_node compute jobs probably want `failed` +
 retry-vs-rule-out branch reads it as an infra death (mirror
 `_transition_dead_node_orphan_to_failed`).
 
-Mint-side hardening belongs here too: `PRECIS_DFT_NODE` default should not
-be a node literal that can silently outlive the node ("spark" today) —
-prefer unset-means-refuse-to-mint-with-a-loud-error, or resolve from
-topology. Ops prerequisite either way: confirm the melchior worker plist
-exports `PRECIS_DFT_NODE` pointing at the post-08-29 DFT twin
-(`deploy/playbooks/42-dft.yml` moved serving to a compute-group node; the
-minting hosts' env must agree).
+Mint-side hardening SHIPPED (2026-09-03): the `"spark"` literals are gone —
+`handlers/structure.py` refuses the mint loudly when `PRECIS_DFT_NODE` is
+unset, `struct_relax.py`'s helpers no-op / record an infra failure, and
+deploy renders `PRECIS_DFT_NODE` from `precis_capabilities.dft` into the
+web plist, worker templates, and 20b's collapsed-worker env union. What
+remains here is only the executor-agnostic sweeper arm above.

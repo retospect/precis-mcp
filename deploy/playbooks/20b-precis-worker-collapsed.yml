@@ -216,6 +216,10 @@
            )
          | combine({'PRECIS_MIRROR_ENABLED': '1'} if (precis_worker_nanopub_mirror | default(true)) else {})
          | combine({'PRECIS_OTS_ENABLED': '1'} if (precis_worker_nanopub_ots | default(true)) else {})
+         | combine(
+             {'PRECIS_DFT_NODE': (precis_capabilities.dft | first)}
+             if ((precis_capabilities.dft | default([])) | length > 0) else {}
+           )
          | combine({
              'VLLM_GPU_MEMORY_UTILIZATION': surya_vllm_gpu_mem_util | default('0.25'),
              'SURYA_INFERENCE_PORT': surya_inference_port | default('8912'),

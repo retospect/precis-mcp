@@ -106,10 +106,16 @@ DESCRIPTION = (
 )
 
 # ── container contract (mirrors precis-dft.jobs.gpaw_relax) ──────────────
-_NODE = os.environ.get("PRECIS_DFT_NODE", "spark")
+#: Deploy renders PRECIS_DFT_NODE from topology (precis_capabilities.dft);
+#: deliberately no node-literal default — a hardcoded node outlives the node
+#: it names (2026-08-29 spark retirement). ``None`` ⇒ this host can't resolve
+#: a DFT target: the container helpers no-op, dispatch records an infra
+#: failure.
+_NODE = os.environ.get("PRECIS_DFT_NODE") or None
 _IMAGE = os.environ.get("PRECIS_DFT_IMAGE", "precis-dft:cpu")
-#: Spark mounts caspar's export at /shared (macOS nodes use /opt/shared); the
-#: container runs on the node, so the bind paths must be valid there.
+#: The Linux DFT node mounts caspar's export at /shared (macOS nodes use
+#: /opt/shared); the container runs on the node, so the bind paths must be
+#: valid there.
 _NFS_ROOT = os.environ.get("PRECIS_DFT_NFS_ROOT", "/shared")
 _CONTAINER_CMD = os.environ.get("PRECIS_DFT_CONTAINER_CMD", "docker")
 _CONTAINER_IN = "/work/in"
@@ -240,6 +246,13 @@ def kill_container(
     ``rm -f`` on a missing name is a harmless no-op)."""
     name = f"{_CONTAINER_PREFIX}{ref_id}"
     target = node or _NODE
+    if target is None:
+        log.warning(
+            "struct_relax: kill_container %s skipped — no node given and "
+            "PRECIS_DFT_NODE unset",
+            name,
+        )
+        return False
     local = target == os.environ.get("PRECIS_NODE")
     argv = [container_cmd, "rm", "-f", name]
     cmd = argv if local else _remote_argv(target, argv)
@@ -268,6 +281,11 @@ def reset_gpu(*, node: str | None = None, container_cmd: str = _CONTAINER_CMD) -
     needs the nightly reboot. Returns ``True`` iff the reset was issued and
     reported success."""
     target = node or _NODE
+    if target is None:
+        log.warning(
+            "struct_relax: reset_gpu skipped — no node given and PRECIS_DFT_NODE unset"
+        )
+        return False
     local = target == os.environ.get("PRECIS_NODE")
     argv = ["nvidia-smi", "--gpu-reset"]
     cmd = argv if local else _remote_argv(target, argv)
@@ -321,6 +339,12 @@ def reap_stale_containers(
     the count force-removed."""
     threshold = max_age_hours if max_age_hours is not None else _stale_container_hours()
     target = node or _NODE
+    if target is None:
+        # The sweeper calls this bare on every host each pass; a host without
+        # a rendered PRECIS_DFT_NODE has no DFT containers to reap — quiet
+        # no-op, not a warning per sweep.
+        log.debug("struct_relax: reap_stale_containers skipped — no DFT node")
+        return 0
     local = target == os.environ.get("PRECIS_NODE")
     list_argv = [
         container_cmd,
@@ -479,6 +503,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     steps = int(params.get("steps", 200))
     cell = params.get("cell") or None
     node = params.get("target_node") or _NODE
+    if node is None:
+        ctx.record_failure(
+            "struct_relax: no target node — params carry no target_node and "
+            "PRECIS_DFT_NODE is unset on this host (deploy renders it from "
+            "topology precis_capabilities.dft)",
+            failure_class="infra",
+        )
+        return
 
     in_dir, out_dir = STAGER(structure_ref_id)
     Path(in_dir, "POSCAR").write_text(poscar, encoding="utf-8")

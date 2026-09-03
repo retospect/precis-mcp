@@ -54,6 +54,14 @@
        cluster-wide 2026-08-07 after landing dark. #}
     <key>PRECIS_STRUCTURE_PREFLIGHT</key>
     <string>1</string>
+    {# struct_relax mint target — workers mint relax jobs too (quest ticks
+       dispatch structure builds through the handlers). Topology-derived so a
+       node retirement can't leave a stale literal (2026-08-29 GPU-node
+       retirement). Unset ⇒ the handler refuses to mint, loudly. #}
+    {% if (precis_capabilities.dft | default([])) | length > 0 %}
+    <key>PRECIS_DFT_NODE</key>
+    <string>{{ precis_capabilities.dft | first }}</string>
+    {% endif %}
     {# PRECIS_PROCESS tags every row written to worker_logs so
        `precis logs --process precis-worker` filters cleanly across
        the cluster. PRECIS_SOURCE serves the existing audit role

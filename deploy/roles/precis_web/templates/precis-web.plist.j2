@@ -98,6 +98,14 @@
     <string>{{ precis_capabilities.bio_fold | first }}</string>
     {% endif %}
     {% endif %}
+    {% if (precis_capabilities.dft | default([])) | length > 0 %}
+    {# struct_relax mint target (handlers/structure.py): topology-derived so a
+       node retirement can't leave a stale literal (the 2026-08-29 GPU-node
+       retirement wedged relax mints for days). Unset ⇒ the handler refuses
+       to mint, loudly. Topology: dft. #}
+    <key>PRECIS_DFT_NODE</key>
+    <string>{{ precis_capabilities.dft | first }}</string>
+    {% endif %}
     {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
        See inventory/group_vars/all/precis_env.yml for the canonical
        list. Every precis-* daemon includes the same block so capability

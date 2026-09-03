@@ -28,6 +28,15 @@ Environment=HF_HOME={{ precis_worker_hf_home }}
 Environment=PRECIS_PROCESS=precis-worker
 Environment=PRECIS_SOURCE=precis-worker
 Environment=PRECIS_STRUCTURE_PREFLIGHT=1
+# struct_relax mint target — workers mint relax jobs too (quest ticks
+# dispatch structure builds through the handlers). Topology-derived so a
+# node retirement can't leave a stale literal (2026-08-29 GPU-node retirement).
+# Unset ⇒ the handler refuses to mint, loudly. On the DFT node itself the
+# dft role's EnvironmentFile drop-in sets the same value (drop-ins win),
+# so the two always agree.
+{% if (precis_capabilities.dft | default([])) | length > 0 %}
+Environment=PRECIS_DFT_NODE={{ precis_capabilities.dft | first }}
+{% endif %}
 # §F cycle b: the ExecStart --embedder/--embedder-url flags below only
 # reach cli/worker.py's OWN embedder resolution (the standing `embed`
 # pass, now manual-only). capability_probe._probe_embedder and
