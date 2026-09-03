@@ -943,6 +943,19 @@
 - name: "Refresh asa bridges (code + daemon bounce)"
   ansible.builtin.import_playbook: playbooks/32-asa-code-refresh.yml
 
+# ── 2c. Rebuild the precis-agent container image (sha-pinned; layer-cached) ──
+# The §13 container executor (dream/doctor ticks, plan_tick fix lane) runs
+# each `claude -p` in a resident `precis-agent` image — which, unlike the
+# three venvs above, was NEVER rebuilt by a deploy (gr210220): it sat baked
+# at whatever sha it was last built by hand while the venvs (and the DB
+# schema) moved on, so every containerized DB-backed verb died with
+# UndefinedColumn against a schema the stale wheel didn't recognize
+# (gr281493, the ~70-duplicate outage family). Pinned + staleness-gated the
+# same way 45-tts.yml's render image is — see the playbook header for the
+# OCI-label probe and the gateway/inference host-scope rationale.
+- name: "Rebuild the precis-agent container image (sha-pinned; layer-cached)"
+  ansible.builtin.import_playbook: playbooks/33-precis-agent-image.yml
+
 # ── 3. Remove the vestigial /opt/mcps/venv relic off hosts that never run it ──
 # `precis_web` — the only role that installs the gateway's /opt/mcps/venv —
 # targets the `gateway` group (the gateway) ONLY. `data`/`inference` hosts may

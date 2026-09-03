@@ -280,7 +280,7 @@ from the `com.precis.web` plist (mode 600). **Sync the worktree first**:
 a stale tree predating `c6c386a3` queries `refs.deleted_at`, which prod
 no longer has.
 
-## Phase 2 DONE for the two reworded hubs (2026-08-30)
+## Phase 2 complete for the two reworded hubs (2026-08-30)
 
 `verify-edges --apply` re-stamped both after the reword invalidated their
 `verified_claim_sha`. Both `supports: yes`, `contradicts: false`,

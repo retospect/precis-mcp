@@ -1,0 +1,189 @@
+---
+# 33-precis-agent-image.yml — (Re)build the `precis-agent` container image
+# (docker/Dockerfile `agent` target) whenever its baked precis-mcp code has
+# drifted from the deploy's pinned sha (gr210220).
+#
+# ROOT CAUSE: the image was ONLY EVER built by hand (`docker build --target
+# agent -t precis-agent:latest -f docker/Dockerfile .` — see the comment
+# above the `agent` stage in docker/Dockerfile). No task in
+# redeploy-precis.yml or any role built/pulled it; every deploy reinstalls
+# the three venvs from the pinned sha, but the image sat baked at
+# 2026-07-18 — pre-migration-0149 code — while the DB moved on. Every
+# containerized dream/doctor tick and the plan_tick fix lane
+# (workers/executors/agent_container.py) ran that stale wheel against a
+# schema it didn't recognize and died with UndefinedColumn on every
+# DB-backed verb — the root of the ~70-duplicate outage-gripe family
+# (gr281493 canonical). This play closes that gap the same way
+# 45-tts.yml (image-baked render engine) and 32-asa-code-refresh.yml
+# (sha-pinned code refresh) already close it for their own artifacts.
+#
+# HOST SCOPE: the §13 container executor runs wherever PRECIS_AGENT_CONTAINER
+# is set — today that's the `inference` group unconditionally
+# (precis-worker-agent.service.j2's containerized structural/deep_review/
+# diagram passes) and the `gateway` group behind `precis_agent_container_enabled`
+# (20b-precis-worker-collapsed.yml; currently false pending the dream_agent
+# containerization call — see 20b's header §L-b step 3). That's exactly
+# `groups['gateway'] + groups['inference']`, the SAME union 20b itself gates
+# the container env on — targeting it here too keeps the gateway's image
+# warm for whenever that flag flips, at no cost while it's off (this play's
+# own docker/colima probe below no-ops cleanly on any OTHER host, so listing
+# just these two is a scope choice, not a correctness requirement).
+#
+# STALENESS PROBE (mirrors 32-asa-code-refresh.yml's sha preflight): the
+# Dockerfile itself is untouched — `docker build --label
+# org.precis.sha=<sha>` stamps the built commit as an OCI label at build
+# time, read back next run via `docker image inspect -f
+# '{{index .Config.Labels "org.precis.sha"}}'`. A missing label (every image
+# built before this playbook existed, including the stale 2026-07-18 one, or
+# no image at all) reads as stale → one guaranteed rebuild on first rollout,
+# then converged like every other managed artifact. SAME → skipped;
+# `-e precis_force_agent_image_build=true` overrides.
+#
+# BUILD SOURCE: the repo tree is COPYed to the build host from THIS
+# controller checkout — mirrors roles/tts's `tts_src_dir` copy technique
+# (`copy`, not `synchronize`: the controller's ssh-agent is flaky and
+# synchronize spawns a fresh rsync ssh that fails agent auth — same
+# reasoning as roles/tts/tasks/main.yml). docker/Dockerfile's `agent` target
+# (via `serve` → `builder-lite`) does `COPY . /build/precis-mcp/` then a
+# LOCAL path `uv pip install` — unlike precis-tts's git+https
+# `--build-arg` install, a git clone-by-sha on the build host would be
+# redundant work the controller's already-synced checkout does for free:
+# scripts/deploy's freshness guard ("local tree does not contain
+# origin/${REF}") already asserts this checkout matches the deploy ref
+# before ansible ever runs. Standalone runs (no `precis_target_sha` pinned)
+# fall back to `main` — the label still gates re-runs, it just compares
+# against the literal string `main` instead of a frozen sha.
+#
+# NO-OP GUARD: every task below is gated on a `docker/colima version` probe
+# — a host with neither (no container executor lane wired up) is a clean
+# no-op, same shape as 32's `/opt/asa/venv` stat guard. A real build failure
+# still reddens the deploy (`failed_when` honest on the build task itself).
+#
+# Standalone runs:
+#   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_target_sha=<sha>
+#   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_force_agent_image_build=true
+
+- name: "(Re)build the precis-agent image where the container executor lane runs"
+  hosts: gateway:inference
+  vars:
+    _agent_image: "{{ precis_agent_image | default('precis-agent:latest') }}"
+    _agent_image_ref: "{{ precis_target_sha | default('main') }}"
+    # Same docker CLI the container executor itself dials — colima's docker
+    # on the macOS gateway (precis_worker_agent_container_bin), system
+    # docker on the Linux inference node (precis-worker-agent.service.j2).
+    _agent_container_bin: >-
+      {{ 'docker' if os_family == 'linux'
+         else (precis_worker_agent_container_bin | default('/opt/homebrew/bin/docker')) }}
+    # deploy owns both the colima VM/socket (gateway) and /usr/bin/docker
+    # (inference — precis-worker-agent.service.j2's "no socket fight" note);
+    # building as any other user would hit a permission-denied docker socket.
+    _agent_build_user: deploy
+    _agent_build_dir: >-
+      {{ '/tmp/precis-agent-build' if os_family == 'linux'
+         else '/Users/deploy/.cache/precis-agent-build' }}
+  tasks:
+    - name: Probe the container runtime (docker/colima) — absence is a clean no-op
+      ansible.builtin.command: "{{ _agent_container_bin }} version --format '{{ '{{' }}.Server.Version{{ '}}' }}'"
+      register: agent_runtime
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Report skip when no container runtime is present
+      when: agent_runtime.rc != 0
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: no docker/colima runtime reachable at
+          {{ _agent_container_bin }} (rc={{ agent_runtime.rc }}) — skipping
+          the precis-agent image build (no container executor lane on this host).
+
+    - name: Read the resident precis-agent image's baked sha (OCI label)
+      when: agent_runtime.rc == 0
+      ansible.builtin.shell: |
+        set -uo pipefail
+        {{ _agent_container_bin }} image inspect {{ _agent_image }} \
+          -f '{{ "{{" }}index .Config.Labels "org.precis.sha"{{ "}}" }}' 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      register: agent_label_probe
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      changed_when: false
+
+    - name: Decide whether the precis-agent image is stale (gate the rebuild)
+      when: agent_runtime.rc == 0
+      ansible.builtin.set_fact:
+        agent_image_stale: >-
+          {{ (agent_label_probe.stdout | default('') | trim)
+             not in [_agent_image_ref] }}
+
+    - name: "(Re)build the precis-agent image on the pinned sha"
+      when:
+        - agent_runtime.rc == 0
+        - (agent_image_stale | default(true) | bool) or (precis_force_agent_image_build | default(false) | bool)
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      block:
+        - name: Ensure the build context dir on the host
+          ansible.builtin.file:
+            path: "{{ _agent_build_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: Copy the precis-mcp repo tree (build context) to the host
+          # copy (not synchronize) rides ansible's own ssh — mirrors
+          # roles/tts's tts_src_dir copy (the controller's ssh-agent is
+          # flaky and synchronize spawns a fresh rsync ssh that fails agent
+          # auth). Whole-repo (~55 MB) rather than tts's two files because
+          # the `agent` target's builder-lite stage needs `COPY . /build/
+          # precis-mcp/` for its local-path `uv pip install`; a stray
+          # .venv/.mypy_cache in a non-synced checkout just costs disk, not
+          # correctness — the copied .dockerignore still keeps the actual
+          # `docker build` context lean.
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../"
+            dest: "{{ _agent_build_dir }}/"
+            mode: preserve
+
+        - name: docker build --target agent (BuildKit; label stamps the built sha)
+          ansible.builtin.command:
+            cmd: >-
+              {{ _agent_container_bin }} build
+              --target agent
+              -t {{ _agent_image }}
+              --label org.precis.sha={{ _agent_image_ref }}
+              -f docker/Dockerfile
+              .
+            chdir: "{{ _agent_build_dir }}"
+          environment:
+            DOCKER_BUILDKIT: "1"
+          register: agent_build
+          retries: 2
+          delay: 10
+          until: agent_build.rc == 0
+          changed_when: >-
+            'Successfully' in (agent_build.stdout + agent_build.stderr)
+            or 'naming to' in (agent_build.stdout + agent_build.stderr)
+          failed_when: agent_build.rc != 0
+
+    - name: Assert the precis-agent image is present
+      when: agent_runtime.rc == 0
+      ansible.builtin.command: "{{ _agent_container_bin }} image inspect {{ _agent_image }}"
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      register: agent_img
+      changed_when: false
+      failed_when: agent_img.rc != 0
+      # Fails when the image is absent: (re)build with
+      # -e precis_force_agent_image_build=true, or by hand per the `agent`
+      # stage's comment in docker/Dockerfile.
+
+    - name: Report precis-agent image outcome
+      when: agent_runtime.rc == 0
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: precis-agent image
+          {{ 'rebuilt' if ((agent_image_stale | default(true) | bool)
+                           or (precis_force_agent_image_build | default(false) | bool))
+             else 'unchanged (already pinned to ' ~ _agent_image_ref ~ ')' }}
