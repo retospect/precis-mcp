@@ -88,7 +88,7 @@ precis secret set NAME --prompt
 ```
 
 or the web `/secrets` page, which shows a red/amber/green status dot per
-known key plus a how-to-get-one link. Full env-var catalog (deploy-time and
+known key, a free/paid cost badge, and a how-to-get-one link. Full env-var catalog (deploy-time and
 feature-toggle vars, not app secrets):
 [`docs/reference/config-variables.md`](reference/config-variables.md).
 

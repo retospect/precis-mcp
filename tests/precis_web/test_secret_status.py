@@ -44,6 +44,12 @@ def test_every_spec_has_purpose_and_blurb() -> None:
         assert spec.get_blurb.strip()
 
 
+def test_every_spec_has_cost_note() -> None:
+    # The template colors the badge by prefix: "free…" green, else amber.
+    for spec in secret_status.KNOWN_SECRETS:
+        assert spec.cost.strip()
+
+
 def test_every_probe_group_has_a_registered_probe() -> None:
     groups = {s.probe_group for s in secret_status.KNOWN_SECRETS if s.probe_group}
     assert groups  # sanity: the registry does define probed secrets
@@ -207,6 +213,10 @@ def test_index_renders_missing_and_verified_dots(
     assert "bg-rose-500" in r.text
     assert "missing" in r.text
     assert "verified" in r.text
+    # Cost badges render for known rows — Anthropic's is paid, S2's free.
+    assert "paid — usage-billed" in r.text
+    assert "bg-amber-50" in r.text
+    assert "bg-emerald-50" in r.text
 
 
 def test_index_renders_amber_for_bad_probe(

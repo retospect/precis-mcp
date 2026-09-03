@@ -47,6 +47,9 @@ class SecretSpec:
     purpose: str
     get_url: str | None
     get_blurb: str
+    #: Short cost note rendered as a badge — labels starting with "free"
+    #: render green, everything else amber (money involved somewhere).
+    cost: str = "free"
     #: Key into :data:`_PROBES`, or ``None`` for a presence-only secret (no
     #: cheap auth-only endpoint, or a probe would cost money/side effects).
     probe_group: str | None = None
@@ -58,6 +61,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         purpose="Anthropic API key for the cloud rungs of the LLM ladder.",
         get_url="https://console.anthropic.com/settings/keys",
         get_blurb="Create a key in the Anthropic console and paste it here.",
+        cost="paid — usage-billed",
         probe_group="anthropic",
     ),
     SecretSpec(
@@ -66,6 +70,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_url=None,
         get_blurb="Run `claude setup-token` on any machine you're already "
         "logged into, and paste the token it prints here.",
+        cost="included with a Claude subscription",
         probe_group=None,
     ),
     SecretSpec(
@@ -73,6 +78,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         purpose="Backs the perplexity-research / perplexity-reasoning kinds.",
         get_url="https://www.perplexity.ai/settings/api",
         get_blurb="Generate an API key in Perplexity's settings and paste it here.",
+        cost="paid — usage-billed",
         probe_group="perplexity",
     ),
     SecretSpec(
@@ -88,6 +94,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_url="https://developers.epo.org",
         get_blurb="Register an app at the EPO developer portal; it hands you a "
         "client key and secret pair — set both here.",
+        cost="free tier",
         probe_group="epo",
     ),
     SecretSpec(
@@ -96,6 +103,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_url="https://developers.epo.org",
         get_blurb="Register an app at the EPO developer portal; it hands you a "
         "client key and secret pair — set both here.",
+        cost="free tier",
         probe_group="epo",
     ),
     SecretSpec(
@@ -120,6 +128,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_url="https://developer.wolframalpha.com",
         get_blurb="Create an AppID in the Wolfram|Alpha developer portal and "
         "paste it here.",
+        cost="free tier (non-commercial)",
         probe_group="wolfram",
     ),
     SecretSpec(
@@ -127,6 +136,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         purpose="CORE open-access fulltext fetch.",
         get_url="https://core.ac.uk/services/api",
         get_blurb="Register for CORE's free-tier API and paste the key here.",
+        cost="free tier",
         probe_group="core",
     ),
     SecretSpec(
@@ -135,6 +145,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_url="https://dev.elsevier.com",
         get_blurb="Register at the Elsevier Developer Portal — fulltext "
         "access needs an institutional TDM entitlement behind the key.",
+        cost="free key — needs a paid institutional subscription",
         probe_group="elsevier",
     ),
     SecretSpec(
@@ -143,6 +154,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_url=None,
         get_blurb="Email support@openalex.org for a premium key — the free "
         "OpenAlex API needs no key at all.",
+        cost="paid — premium subscription",
         probe_group="openalex",
     ),
     SecretSpec(
@@ -152,6 +164,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_blurb="Request a Wiley TDM client token — verifying it would "
         "mean actually downloading an article, so this entry is "
         "presence-only.",
+        cost="free token — needs an institutional subscription",
         probe_group=None,
     ),
     SecretSpec(
@@ -161,6 +174,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_blurb="If using OpenRouter as the OSS backend, generate a key "
         "there and paste it here (see docs/reference/config-variables.md "
         "for the full recipe).",
+        cost="paid — usage-billed",
         probe_group="oss_llm",
     ),
     SecretSpec(
@@ -169,6 +183,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_url=None,
         get_blurb="Only needed when the summarize lane points at a "
         "different endpoint/key than the main LLM ladder.",
+        cost="depends on the endpoint",
         probe_group=None,
     ),
     SecretSpec(
