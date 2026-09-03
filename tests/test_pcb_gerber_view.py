@@ -450,6 +450,67 @@ def test_drill_title_has_no_identity_only_layer_diameter_and_coords() -> None:
     assert "net" not in title_m.group(1)
 
 
+# ── document geometry: legend gutter + short-board legend coverage ────
+def test_document_reserves_the_legend_gutter_and_covers_a_short_boards_legend() -> None:
+    """``doc_w``/``doc_h`` each add two quantities (the legend gutter/height
+    ON TOP of the scaled board); a `+` -> `-` mutant on either shrinks the
+    document instead of widening it, or on a short board can go negative
+    without a single existing test noticing (a tall board's own vh already
+    dominates ``max(vh, legend_h + 8.0)``, so the board here is made
+    deliberately SHORT to force the legend branch to actually run)."""
+    model = _model(
+        outline=[[0, 0], [30, 0], [30, 1], [0, 1]],
+        copper=[],
+        pads=[
+            {
+                "layer": "F.Cu",
+                "net": "N",
+                "shape": "circle",
+                "x": 2.0,
+                "y": 0.5,
+                "w": 0.3,
+                "h": 0.3,
+            }
+        ],
+    )
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+
+    vb_m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
+    assert vb_m is not None, svg[:400]
+    doc_w, doc_h = float(vb_m.group(1)), float(vb_m.group(2))
+    wh_m = re.search(r'\swidth="(\d+)" height="(\d+)"', svg)
+    assert wh_m is not None, svg[:400]
+    assert (float(wh_m.group(1)), float(wh_m.group(2))) == pytest.approx(
+        (doc_w, doc_h), abs=1.0
+    )
+
+    # Replicate render_fab_svg's own bounds/scale computation (whitebox,
+    # same private helpers other tests in this file already reach into) to
+    # get the scaled board size the doc geometry is supposed to build on.
+    arts: dict[str, gerber_view.LayerArt] = {}
+    drills: dict[str, list[tuple[float, float, float]]] = {}
+    for name, text in sorted(files.items()):
+        key = gerber_view._layer_key(name)
+        if name.endswith(".drl"):
+            drills[key] = gerber_view.parse_excellon(text)
+        else:
+            arts[key] = gerber_view.parse_gerber(text)
+    x0, y0, x1, y1 = gerber_view._bounds(arts, drills)
+    margin = 2.0  # render_fab_svg's own default
+    w = max(1e-6, (x1 + margin) - (x0 - margin))
+    h = max(1e-6, (y1 + margin) - (y0 - margin))
+    px = gerber_view._view_scale(w, h)
+    vw, vh = w * px, h * px
+
+    n_rows = len(re.findall(r'<g class="legend-row', svg))
+    legend_h = 20 * n_rows + 12
+    assert vh < legend_h + 8.0, "fixture must be short enough to exercise the legend branch"
+
+    assert doc_w == pytest.approx(gerber_view._LEGEND_GUTTER_PX + vw, abs=0.6)
+    assert doc_h == pytest.approx(legend_h + 8.0, abs=0.6)
+
+
 # ── deterministic across calls ────────────────────────────────────────
 def test_render_fab_svg_is_byte_identical_across_calls() -> None:
     files = gerber.export_fab(_model(), name="t", allow_synthesized=True)

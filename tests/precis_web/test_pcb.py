@@ -87,6 +87,31 @@ def test_list_shows_seeded_design(pcb_client, runtime_with_store) -> None:
     assert "web_listed_pcb" in r.text
 
 
+def test_detail_drc_tally_counts_only_error_severity_not_warn(
+    pcb_client, runtime_with_store
+) -> None:
+    """The vitals' DRC tally is meant to surface fab-blocking problems, not
+    every finding on the board — a warn-severity finding must never inflate
+    the count (a `==` -> `!=` flip on the severity filter would count the
+    warning and, on this fixture, also drop the real error)."""
+    store = runtime_with_store.hub.store
+    _seed(runtime_with_store, slug="web_mixed_severity")
+    ref = store.get_ref(kind="pcb", id="web_mixed_severity")
+    board_id = store.pcb_ensure_board(ref.id)
+    store.pcb_write_drc_findings(
+        board_id,
+        "run1",
+        [
+            {"rule": "clearance", "severity": "error", "objects": [], "detail": "…"},
+            {"rule": "trace_width", "severity": "warn", "objects": [], "detail": "…"},
+        ],
+    )
+    r = pcb_client.get("/pcb/web_mixed_severity")
+    assert r.status_code == 200
+    assert "clearance" in r.text
+    assert "trace_width" not in r.text
+
+
 def test_detail_shows_vitals_and_both_panes(pcb_client, runtime_with_store) -> None:
     _seed(runtime_with_store)
     r = pcb_client.get("/pcb/web_pcb")

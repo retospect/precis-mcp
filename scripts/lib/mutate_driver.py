@@ -140,6 +140,23 @@ def covering_tests_for_file(
     return result
 
 
+def select_covering_tests(
+    tests: list[str], rel_path: str, max_tests: int
+) -> list[str]:
+    """Order-preserving covering-test selection capped at ``max_tests``,
+    preferring tests whose OWN file names the mutated module (``stem`` in
+    ``test_<stem>.py`` or a path containing the stem) — a plain ``[:
+    max_tests]`` slice can fill the cap with unrelated tests and drop the
+    one test file that says the module's name and kills the mutant
+    (gr302974)."""
+    if len(tests) <= max_tests:
+        return tests
+    stem = Path(rel_path).stem
+    matched = [t for t in tests if stem in t.split("::", 1)[0]]
+    rest = [t for t in tests if t not in matched]
+    return (matched + rest)[:max_tests]
+
+
 # ── mutant model ────────────────────────────────────────────────────────────
 
 
@@ -538,7 +555,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         for m in selected:
-            tests = line_tests.get((m.path, m.lineno), [])[: args.max_tests]
+            tests = select_covering_tests(
+                line_tests.get((m.path, m.lineno), []), m.path, args.max_tests
+            )
             print(f"PLANNED {m.path}:{m.lineno}  {m.description}  tests={tests}")
         print(
             f"mutation-summary: total={total_generated} run=0 killed=0 survived=0 skipped=0 elapsed=0s"
@@ -555,7 +574,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"SKIPPED  budget exhausted — {remaining} mutant(s) not run")
             break
 
-        tests = line_tests.get((m.path, m.lineno), [])[: args.max_tests]
+        tests = select_covering_tests(
+            line_tests.get((m.path, m.lineno), []), m.path, args.max_tests
+        )
         if not tests:
             skipped += 1
             print(f"SKIPPED  {m.path}:{m.lineno}  {m.description}  (no covering tests)")

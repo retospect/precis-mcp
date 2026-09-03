@@ -215,6 +215,34 @@ def test_covering_tests_for_file() -> None:
     assert result == {1: ["tests/test_x.py::test_a"]}
 
 
+def test_select_covering_tests_name_matched_test_beats_the_cap() -> None:
+    """A test whose OWN file names the mutated module has to survive the
+    cap even when it sorts after enough unrelated tests to fill it — the
+    exact gr302974 miss: 5 other tests filled ``--max-tests`` and the
+    name-matched killer never ran."""
+    tests = [
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+        "tests/test_c.py::test_c",
+        "tests/test_d.py::test_d",
+        "tests/test_e.py::test_e",
+        "tests/workers/test_pcb_route.py::test_routed_net_is_never_failed",
+    ]
+    selected = md.select_covering_tests(tests, "src/precis/pcb/pcb_route.py", 5)
+    assert "tests/workers/test_pcb_route.py::test_routed_net_is_never_failed" in selected
+    assert len(selected) == 5
+
+
+def test_select_covering_tests_no_match_keeps_original_order() -> None:
+    tests = ["tests/test_a.py::test_a", "tests/test_b.py::test_b"]
+    assert md.select_covering_tests(tests, "src/precis/pcb/pcb_route.py", 5) == tests
+
+
+def test_select_covering_tests_under_cap_is_unchanged() -> None:
+    tests = ["tests/workers/test_pcb_route.py::test_x", "tests/test_a.py::test_a"]
+    assert md.select_covering_tests(tests, "src/precis/pcb/pcb_route.py", 5) == tests
+
+
 def test_has_any_test_context_true_when_a_real_context_exists() -> None:
     data = _FakeCoverageData({"src/precis/x.py": {1: ["tests/test_x.py::test_a|run"]}})
     assert md.has_any_test_context(data) is True
