@@ -35,6 +35,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.store import Store
+from precis.workers.executors._common import TERMINAL, current_status
 from precis.workers.executors.job_inproc import run_job_inproc_pass
 
 pytestmark = pytest.mark.slow
@@ -53,10 +54,37 @@ def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _drain_one_job(store: Store) -> None:
-    result = run_job_inproc_pass(store, limit=1)
-    assert result["claimed"] == 1, f"expected exactly one queued job, got {result}"
-    assert result["failed"] == 0, f"job failed to drain cleanly: {result}"
+def _drain_one_job(store: Store, parent_id: int) -> None:
+    """Drain the queued job most recently enqueued under ``parent_id``.
+
+    Not just "whatever's next in the queue" (gr295496): the shared
+    per-worker test DB can carry an orphaned job left behind by an
+    unrelated test file, and ``run_job_inproc_pass(limit=1)`` claims
+    strict priority/age order, so a stray row — not this design's own
+    job — gets claimed first and its failure misreads as OUR drain
+    failing. Loop passes, tolerating whatever unrelated row lands along
+    the way, until THIS design's own job reaches a terminal status.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (parent_id,),
+        ).fetchone()
+    assert row is not None, f"no job was ever queued for parent_id={parent_id}"
+    job_ref_id = row[0]
+
+    for _ in range(25):
+        with store.pool.connection() as conn:
+            status = current_status(conn, job_ref_id)
+        if status in TERMINAL:
+            assert status == "succeeded", (
+                f"job {job_ref_id} failed to drain cleanly: status={status!r}"
+            )
+            return
+        result = run_job_inproc_pass(store, limit=1)
+        assert result["claimed"] == 1, f"expected a queued job, got {result}"
+    raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
 def test_motor_power_board_place_and_route_seeds_1_through_5(store: Store) -> None:
@@ -73,19 +101,18 @@ def test_motor_power_board_place_and_route_seeds_1_through_5(store: Store) -> No
         slug = f"motor-power-ref-s{seed}"
         created = pcb.put(id=slug, args=design)
         assert "created" in created.body
+        ref = store.get_ref(kind="pcb", id=slug)
+        assert ref is not None
 
         t0 = time.perf_counter()
         place_resp = pcb.put(id=slug, args={"op": "place", "seed": seed})
         assert "enqueued" in place_resp.body
-        _drain_one_job(store)
+        _drain_one_job(store, ref.id)
 
         route_resp = pcb.put(id=slug, args={"op": "route", "seed": seed})
         assert "enqueued" in route_resp.body
-        _drain_one_job(store)
+        _drain_one_job(store, ref.id)
         runtime_s = time.perf_counter() - t0
-
-        ref = store.get_ref(kind="pcb", id=slug)
-        assert ref is not None
 
         status_rows = store.pcb_route_status(ref.id)
         routed_count = sum(

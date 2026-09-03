@@ -945,7 +945,7 @@ def test_op_place_enqueues_and_is_idempotent_per_content_hash(pcb, store):
     assert n == 1
 
 
-def test_op_place_never_computes_inline(pcb, monkeypatch):
+def test_op_place_never_computes_inline(pcb, store, monkeypatch):
     """The serve thread-pool starvation lesson (backlog, verbatim): heavy
     compute must never run in the MCP request path. Patches the optimizer
     entry point to explode if called — ``op='place'`` must still succeed by
@@ -959,6 +959,20 @@ def test_op_place_never_computes_inline(pcb, monkeypatch):
     pcb.put(id="op-place-noinline", args=_CROSSED)
     resp = pcb.put(id="op-place-noinline", args={"op": "place"})
     assert "enqueued" in resp.body
+
+    # This test only asserts optimize() never runs inline — the enqueued
+    # job itself is doomed (the patched optimize() explodes the moment
+    # anything actually drains it) and this test never drains it. Left
+    # queued, it strands in the shared per-worker test DB for the next
+    # test file's drain helper to claim and misread as ITS OWN failure
+    # (gr295496) — delete it rather than leave an orphan behind.
+    ref = store.get_ref(kind="pcb", id="op-place-noinline")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM refs WHERE kind = 'job' AND parent_id = %s", (ref.id,)
+        )
+        conn.commit()
 
 
 def test_op_route_enqueues_a_pcb_route_job(pcb, store):

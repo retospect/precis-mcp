@@ -64,6 +64,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.store import Store
+from precis.workers.executors._common import TERMINAL, current_status
 from precis.workers.executors.job_inproc import run_job_inproc_pass
 
 # Heavy compute (a full simulated-annealing place + route pass over a
@@ -146,10 +147,37 @@ def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _drain_one_job(store: Store) -> None:
-    result = run_job_inproc_pass(store, limit=1)
-    assert result["claimed"] == 1, f"expected exactly one queued job, got {result}"
-    assert result["failed"] == 0, f"job failed to drain cleanly: {result}"
+def _drain_one_job(store: Store, parent_id: int) -> None:
+    """Drain the queued job most recently enqueued under ``parent_id``.
+
+    Not just "whatever's next in the queue" (gr295496): the shared
+    per-worker test DB can carry an orphaned job left behind by an
+    unrelated test file, and ``run_job_inproc_pass(limit=1)`` claims
+    strict priority/age order, so a stray row — not this design's own
+    job — gets claimed first and its failure misreads as OUR drain
+    failing. Loop passes, tolerating whatever unrelated row lands along
+    the way, until THIS design's own job reaches a terminal status.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (parent_id,),
+        ).fetchone()
+    assert row is not None, f"no job was ever queued for parent_id={parent_id}"
+    job_ref_id = row[0]
+
+    for _ in range(25):
+        with store.pool.connection() as conn:
+            status = current_status(conn, job_ref_id)
+        if status in TERMINAL:
+            assert status == "succeeded", (
+                f"job {job_ref_id} failed to drain cleanly: status={status!r}"
+            )
+            return
+        result = run_job_inproc_pass(store, limit=1)
+        assert result["claimed"] == 1, f"expected a queued job, got {result}"
+    raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -162,6 +190,8 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     pcb = PcbHandler(hub=Hub(store=store))
     created = pcb.put(id="esp32c3-ref", args=design)
     assert "created" in created.body
+    ref = store.get_ref(kind="pcb", id="esp32c3-ref")
+    assert ref is not None
 
     # --- place ------------------------------------------------------
     # No `iters=` override: the default schedule (2000 place / 3000 route
@@ -174,12 +204,12 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     # win worth taking.
     place_resp = pcb.put(id="esp32c3-ref", args={"op": "place", "seed": seed})
     assert "enqueued" in place_resp.body
-    _drain_one_job(store)
+    _drain_one_job(store, ref.id)
 
     # --- route ------------------------------------------------------
     route_resp = pcb.put(id="esp32c3-ref", args={"op": "route", "seed": seed})
     assert "enqueued" in route_resp.body
-    _drain_one_job(store)
+    _drain_one_job(store, ref.id)
 
     # --- read back: routed count, honestly denominated ---------------
     # view='route-status' / store.pcb_route_status report per-net status
@@ -191,8 +221,6 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     # with fanout >= 2 (11 of the 20, per this fixture) — computed here
     # from the fixture's own connections so a future edit to the fixture
     # can't silently drift the two out of sync.
-    ref = store.get_ref(kind="pcb", id="esp32c3-ref")
-    assert ref is not None
     fanout = _fanout(design["connections"])
     fanout2_nets = {name for name, n in fanout.items() if n >= 2}
     assert len(fanout2_nets) == 11
