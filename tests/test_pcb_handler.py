@@ -147,6 +147,35 @@ def test_pcb_graph_carries_extended_part_per_instance(pcb, store):
     assert by_refdes == {"U1": True, "C1": False, "R1": False}
 
 
+def test_pcb_graph_netconns_members_are_sorted(pcb, store):
+    """gr296327: ``Store.pcb_graph``'s netconns SELECT (src/precis/store/
+    _pcb_ops.py) had no ``ORDER BY``, so a net's ``members`` list order
+    tracked Postgres scan order — not insertion order — a trap for any
+    consumer reading ``graph["nets"]`` directly instead of through
+    ``pcb_session.sorted_graph``. Insert one net's connections in shuffled
+    (non-alphabetical) refdes order and confirm ``pcb_graph`` hands back
+    members sorted by ``(refdes, pin)`` straight off the SELECT."""
+    design = {
+        "components": [
+            {"refdes": "Z1", "label": "r", "pins": [{"name": "1"}]},
+            {"refdes": "A1", "label": "r", "pins": [{"name": "1"}]},
+            {"refdes": "M1", "label": "r", "pins": [{"name": "1"}]},
+        ],
+        "nets": [{"name": "BUS"}],
+        "connections": [
+            {"net": "BUS", "refdes": "Z1", "pin": "1"},
+            {"net": "BUS", "refdes": "A1", "pin": "1"},
+            {"net": "BUS", "refdes": "M1", "pin": "1"},
+        ],
+    }
+    pcb.put(id="shuffled-net", args=design)
+    ref = store.get_ref(kind="pcb", id="shuffled-net")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    (bus,) = [n for n in graph["nets"] if n["name"] == "BUS"]
+    assert [m["refdes"] for m in bus["members"]] == ["A1", "M1", "Z1"]
+
+
 def test_pcb_graph_round_trips_group_and_pattern_fields(pcb, store):
     """The placement-constraint fields (rigid super-footprint ``group`` +
     ``group_offset``, repeated-tile ``pattern`` + ``pattern_instance``)
@@ -316,6 +345,60 @@ def test_ratsnest_view_excludes_plane_nets(pcb):
     # I2C_SCL is a signal net → an airwire; GND/VCC3V3 are plane → excluded
     assert "I2C_SCL" in rn.body
     assert "GND" not in rn.body and "VCC3V3" not in rn.body
+
+
+# A 3-member signal net on a line, member order chosen so Prim's MST
+# (precis.pcb.ratsnest._mst_edges, rooted at members[0]) picks a different
+# root — and thus different from/to edge directions — depending on which
+# end of the (refdes, pin)-sorted member list the store happens to hand
+# back first.
+_MST_LINE = {
+    "components": [
+        {"refdes": "A1", "label": "r", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
+        {"refdes": "B1", "label": "r", "x": 5.0, "y": 0.0, "pins": [{"name": "1"}]},
+        {"refdes": "C1", "label": "r", "x": 12.0, "y": 0.0, "pins": [{"name": "1"}]},
+    ],
+    "nets": [{"name": "BUS", "class": "signal"}],
+    "connections": [
+        {"net": "BUS", "refdes": "A1", "pin": "1"},
+        {"net": "BUS", "refdes": "B1", "pin": "1"},
+        {"net": "BUS", "refdes": "C1", "pin": "1"},
+    ],
+}
+
+
+def test_ratsnest_view_stable_despite_unsorted_store_member_order(
+    pcb, store, monkeypatch
+):
+    """gr296327: ``PcbHandler.get(view='ratsnest'/'crossings'/'feasibility')``
+    (handlers/pcb.py ``_render_view``) reads ``graph["nets"]`` straight off
+    ``Store.pcb_graph`` — before the fix this bypassed the ``(refdes, pin)``
+    normalization ``pcb_session.sorted_graph``/``build_ir`` applies, so a
+    differently-ordered store read (Postgres scan-order nondeterminism)
+    could flip which airwire direction the ratsnest MST reports. Simulate
+    an out-of-order store read by monkeypatching ``pcb_graph`` to reverse
+    every net's members, and confirm the rendered view is byte-identical
+    to the natural-order call — i.e. the handler is normalizing via
+    ``sorted_graph`` regardless of what the store hands back."""
+    pcb.put(id="mst-line", args=_MST_LINE)
+    forward = pcb.get(id="mst-line", view="ratsnest").body
+    real_pcb_graph = store.pcb_graph
+
+    def reversed_pcb_graph(ref_id: int) -> dict:
+        graph = real_pcb_graph(ref_id)
+        graph["nets"] = [
+            {**n, "members": list(reversed(n["members"]))} for n in graph["nets"]
+        ]
+        return graph
+
+    monkeypatch.setattr(store, "pcb_graph", reversed_pcb_graph)
+    reversed_body = pcb.get(id="mst-line", view="ratsnest").body
+    assert reversed_body == forward
+
+    # Twice in a row through the (now-monkeypatched) unsorted store must
+    # also agree with itself — the view is stable across calls, not just
+    # against the natural-order baseline.
+    assert pcb.get(id="mst-line", view="ratsnest").body == reversed_body
 
 
 def test_drc_view_before_any_route_run(pcb):

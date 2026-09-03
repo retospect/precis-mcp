@@ -363,7 +363,7 @@ class PcbHandler(Handler):
         """Anneal over the current graph and persist the placement + the
         ``last_place`` meta stamp. Shared by the put-time autoplace and the
         route round-trip's per-pass re-place (one copy of the store logic)."""
-        graph = self.store.pcb_graph(ref_id)
+        graph = pcb_session.sorted_graph(self.store.pcb_graph(ref_id))
         res = place.autoplace(
             graph["instances"],
             graph["nets"],
@@ -598,7 +598,7 @@ class PcbHandler(Handler):
             if ref is None:
                 raise NotFound(f"pcb id={ref_id} not found")
             return render_links_view(self.store, ref, sense="pcb")
-        graph = self.store.pcb_graph(ref_id)
+        graph = pcb_session.sorted_graph(self.store.pcb_graph(ref_id))
         if view in ("crossings", "ratsnest", "feasibility"):
             placed = {
                 i["refdes"]: (float(i["x"]), float(i["y"]))

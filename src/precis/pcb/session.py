@@ -21,11 +21,11 @@ in ``pcb_routes`` and still land on the SAME segment next time.
 
 **Hub selection must be deterministic, which the raw graph isn't.**
 :func:`~precis.pcb.ir.from_graph` stars each net off its first
-``members`` entry (the "hub"); :meth:`Store.pcb_graph`'s SQL carries no
-``ORDER BY`` on net membership, so which pin comes first is whatever join
-order Postgres happens to pick that call — silently reshuffling every
-segment's identity run to run. :func:`sorted_graph` fixes this once, at
-the IR-build boundary, by sorting each net's members by ``(refdes, pin)``.
+``members`` entry (the "hub"); :meth:`Store.pcb_graph`'s netconns SELECT
+now carries an ``ORDER BY``, but :func:`sorted_graph` still sorts each
+net's members by ``(refdes, pin)`` at the IR-build boundary as
+defense-in-depth — a caller shouldn't have to trust the store's SQL to
+keep hub selection deterministic.
 """
 
 from __future__ import annotations
@@ -45,7 +45,9 @@ def _pin_key(refdes: str, pin: str) -> str:
 def sorted_graph(graph: dict[str, Any]) -> dict[str, Any]:
     """A shallow copy of ``graph`` with every net's ``members`` sorted by
     ``(refdes, pin)`` — see the module docstring for why this must run
-    before :func:`build_ir` calls :func:`~precis.pcb.ir.from_graph`."""
+    before :func:`build_ir` calls :func:`~precis.pcb.ir.from_graph`.
+    Defense-in-depth over :meth:`Store.pcb_graph`'s now-ordered netconns
+    SELECT, not the sole mitigation."""
     nets = []
     for net in graph.get("nets") or []:
         members = sorted(

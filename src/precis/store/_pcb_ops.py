@@ -867,7 +867,8 @@ class PcbMixin:
                 "JOIN pcb_nets n ON n.net_id = k.net_id "
                 "JOIN pcb_instances i ON i.instance_id = k.instance_id "
                 "JOIN pcb_pins p ON p.pin_id = k.pin_id "
-                "WHERE n.ref_id = %s AND n.retired_at IS NULL",
+                "WHERE n.ref_id = %s AND n.retired_at IS NULL "
+                "ORDER BY n.name, i.refdes, p.name",
                 (ref_id,),
             ).fetchall():
                 nid = int(r[0])
