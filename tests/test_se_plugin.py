@@ -1,4 +1,5 @@
-"""precis_se `se` kind — slices 1-2 (plugin scaffold + L0/L1 block tree,
+"""precis_se `se` kind — slices 1-3 (plugin scaffold + L0/L1 block tree +
+the L2 invariant tier: joints/measures/loads/stack-up/DRC,
 docs/backlog/se-kind.md "Ship order").
 
 The shared test DB template carries only core migrations, so this module
@@ -17,9 +18,11 @@ import precis_se
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.store import Store
+from precis_se import drc as se_drc
 from precis_se import persist
 from precis_se.handler import SeHandler, _render_tree
-from precis_se.ops import SeTree, apply_ops, effective_envelope
+from precis_se.measures import MeasureSpec, stackup
+from precis_se.ops import OpError, SeTree, apply_ops, effective_envelope
 
 _MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
@@ -636,8 +639,10 @@ def test_connect_wires_ports_and_roundtrips(handler: SeHandler, store: Store) ->
                 "op": "connect",
                 "a": "wheel.bore",
                 "b": "hub.shaft",
-                "joint": {"kind": "revolute"},
-                "objectives": {"radial_load_N": 40},
+                # slice 3: joint/objectives go through the real schemas —
+                # the slice-2 free-form dicts would now reject.
+                "joint": {"class": "revolute", "axis": [0, 0, 2]},
+                "objectives": {"force": [0, 0, -40]},
             }
         ],
     )
@@ -646,8 +651,9 @@ def test_connect_wires_ports_and_roundtrips(handler: SeHandler, store: Store) ->
     tree = persist.load_tree(store, ref.id)
     assert len(tree.connects) == 1
     c = tree.connects[0]
-    assert c.joint == {"kind": "revolute"}
-    assert c.objectives == {"radial_load_N": 40}
+    # axis unit-normalized at write time
+    assert c.joint == {"class": "revolute", "axis": [0.0, 0.0, 1.0]}
+    assert c.objectives == {"force": [0.0, 0.0, -40.0]}
     block = handler.get(id="cart1", view="block", args={"name": "hub"})
     assert "revolute" in block.body
 
@@ -953,3 +959,904 @@ def test_effective_envelope_tolerates_dangling_template() -> None:
     node = tree.blocks["solo"]
     node.template = "vanished"  # hand-corrupted
     assert effective_envelope(tree, node) is None
+
+
+# ── slice 3: joints (kinematic class × mechanism) ────────────────────────
+
+
+def _l2_tree() -> SeTree:
+    """hub + wheel (apart in x), one port each, one connect — the pure-ops
+    seed for the L2 tests."""
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "hub", "envelope": "cyl:r0.008h0.03"},
+            {
+                "op": "add_block",
+                "name": "wheel",
+                "envelope": "cyl:r0.04h0.02",
+                "pose": [0.2, 0, 0],
+            },
+            {"op": "add_port", "block": "hub", "name": "shaft"},
+            {"op": "add_port", "block": "wheel", "name": "bore"},
+            {"op": "connect", "a": "wheel.bore", "b": "hub.shaft"},
+        ],
+    )
+    return tree
+
+
+def test_joint_unknown_class_rejected() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="must be one of.*revolute"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "joint": {"class": "spinny"},
+                }
+            ],
+        )
+
+
+def test_joint_unknown_key_rejected_loudly() -> None:
+    # the swallowed-facet lesson: a stray key must reject, never be
+    # silently dropped (mechanism-specific numbers belong under params).
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="unknown joint key.*preload"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "joint": {"class": "revolute", "preload": 3},
+                }
+            ],
+        )
+
+
+def test_joint_axis_on_axisless_class_rejected() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="takes no 'axis'"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "joint": {"class": "rigid", "axis": [0, 0, 1]},
+                }
+            ],
+        )
+
+
+def test_joint_zero_axis_rejected() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="nonzero"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "joint": {"class": "revolute", "axis": [0, 0, 0]},
+                }
+            ],
+        )
+
+
+def test_joint_unknown_mechanism_rejected() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="mechanism.*must be one of.*press"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "joint": {"class": "revolute", "mechanism": "glue"},
+                }
+            ],
+        )
+
+
+def test_set_joint_replaces_and_clears() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {
+                    "class": "revolute",
+                    "axis": [0, 0, 2],
+                    "mechanism": "bearing",
+                },
+            }
+        ],
+    )
+    c = tree.connects[0]
+    assert c.joint == {
+        "class": "revolute",
+        "axis": [0.0, 0.0, 1.0],  # unit-normalized
+        "mechanism": "bearing",
+    }
+    apply_ops(
+        tree,
+        [{"op": "set_joint", "a": "wheel.bore", "b": "hub.shaft", "joint": None}],
+    )
+    assert tree.connects[0].joint is None
+
+
+def test_set_joint_missing_connect_lists_live() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="Live connects: .*wheel.bore"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.rim",
+                    "b": "hub.shaft",
+                    "joint": {"class": "rigid"},
+                }
+            ],
+        )
+
+
+# ── slice 3: loads (objective vectors) ───────────────────────────────────
+
+
+def test_set_load_on_block_vets_and_stores() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_load",
+                "block": "wheel",
+                "force": [0, 0, -200],
+                "duty": "pushed around a workshop daily",
+                "cycles": 1e6,
+            }
+        ],
+    )
+    assert tree.blocks["wheel"].objectives == {
+        "force": [0.0, 0.0, -200.0],
+        "duty": "pushed around a workshop daily",
+        "cycles": 1e6,
+    }
+
+
+def test_set_load_on_connect_and_clear() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_load",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "torque": [0, 0, 1.5],
+            }
+        ],
+    )
+    assert tree.connects[0].objectives == {"torque": [0.0, 0.0, 1.5]}
+    apply_ops(
+        tree,
+        [{"op": "set_load", "a": "wheel.bore", "b": "hub.shaft", "clear": True}],
+    )
+    assert tree.connects[0].objectives == {}
+
+
+def test_set_load_stray_key_rejected_never_swallowed() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="unknown key.*radial_N"):
+        apply_ops(tree, [{"op": "set_load", "block": "wheel", "radial_N": 40}])
+    with pytest.raises(OpError, match="unknown key.*radial_N"):
+        # even next to a valid key — never silently dropped
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_load",
+                    "block": "wheel",
+                    "force": [0, 0, -1],
+                    "radial_N": 40,
+                }
+            ],
+        )
+    with pytest.raises(OpError, match="needs at least one of"):
+        apply_ops(tree, [{"op": "set_load", "block": "wheel"}])
+
+
+def test_connect_objectives_vetted_through_registry() -> None:
+    tree = _l2_tree()
+    apply_ops(tree, [{"op": "add_port", "block": "hub", "name": "base"}])
+    with pytest.raises(OpError, match="unknown objective key.*radial_N"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "connect",
+                    "a": "wheel.bore",
+                    "b": "hub.base",
+                    "objectives": {"radial_N": 40},
+                }
+            ],
+        )
+
+
+def test_set_load_needs_exactly_one_target() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="exactly one of"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_load",
+                    "block": "wheel",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "force": [0, 0, -1],
+                }
+            ],
+        )
+    with pytest.raises(OpError, match="mutually exclusive"):
+        apply_ops(
+            tree,
+            [{"op": "set_load", "block": "wheel", "clear": True, "cycles": 5}],
+        )
+
+
+# ── slice 3: measures + tolerance relations ─────────────────────────────
+
+
+def test_add_measure_with_relation_and_duplicate() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_measure", "block": "hub", "name": "od_d", "value": 0.016},
+            {
+                "op": "add_measure",
+                "block": "wheel",
+                "name": "bore_d",
+                "relation": {"source": "hub.od_d", "offset": 2e-4, "tol": 5e-5},
+                "strength": "hard",
+                "reason": "running clearance for the axle seat",
+            },
+        ],
+    )
+    assert len(tree.measures) == 2
+    m = tree.measures[1]
+    assert m.relation == {"source": "hub.od_d", "offset": 2e-4, "tol": 5e-5}
+    assert m.strength == "hard"
+    with pytest.raises(OpError, match="duplicate measure"):
+        apply_ops(tree, [{"op": "add_measure", "block": "hub", "name": "od_d"}])
+
+
+def test_add_measure_guards() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="must not contain '.'"):
+        apply_ops(tree, [{"op": "add_measure", "block": "hub", "name": "od.d"}])
+    with pytest.raises(OpError, match="no such block"):
+        apply_ops(tree, [{"op": "add_measure", "block": "ghost", "name": "od_d"}])
+    apply_ops(tree, [{"op": "instance_block", "name": "hub2", "template": "hub"}])
+    with pytest.raises(OpError, match="measures live on the template"):
+        apply_ops(tree, [{"op": "add_measure", "block": "hub2", "name": "od_d"}])
+    with pytest.raises(OpError, match="unknown relation key"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "add_measure",
+                    "block": "hub",
+                    "name": "od_d",
+                    "relation": {"source": "hub.x", "slack": 1},
+                }
+            ],
+        )
+    with pytest.raises(OpError, match="'tol' must be ≥ 0"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "add_measure",
+                    "block": "hub",
+                    "name": "od_d",
+                    "relation": {"source": "hub.x", "tol": -1e-5},
+                }
+            ],
+        )
+    with pytest.raises(OpError, match="'strength' must be one of"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "add_measure",
+                    "block": "hub",
+                    "name": "od_d",
+                    "strength": "firm",
+                }
+            ],
+        )
+
+
+def test_add_measure_forward_reference_accepted() -> None:
+    # a relation source that doesn't exist YET is legal at write time
+    # (spec: "unresolvable relations" is graph-DRC's read-time finding).
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "add_measure",
+                "block": "wheel",
+                "name": "bore_d",
+                "relation": {"source": "hub.od_d", "offset": 2e-4, "tol": 5e-5},
+            }
+        ],
+    )
+    assert tree.measures[0].relation is not None
+
+
+def test_set_and_remove_measure() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [{"op": "add_measure", "block": "hub", "name": "od_d", "value": 0.016}],
+    )
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_measure",
+                "block": "hub",
+                "name": "od_d",
+                "value": 0.017,
+                "strength": "soft",
+            }
+        ],
+    )
+    m = tree.measures[0]
+    assert m.value == 0.017
+    assert m.strength == "soft"
+    with pytest.raises(OpError, match="at least one of"):
+        apply_ops(tree, [{"op": "set_measure", "block": "hub", "name": "od_d"}])
+    with pytest.raises(OpError, match="Measures on 'hub': od_d"):
+        apply_ops(tree, [{"op": "set_measure", "block": "hub", "name": "id_d"}])
+    apply_ops(tree, [{"op": "remove_measure", "block": "hub", "name": "od_d"}])
+    assert tree.measures == []
+    with pytest.raises(OpError, match="no such measure"):
+        apply_ops(tree, [{"op": "remove_measure", "block": "hub", "name": "od_d"}])
+
+
+def test_remove_block_drops_owned_measures_keeps_danglers() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_measure", "block": "hub", "name": "od_d", "value": 0.016},
+            {
+                "op": "add_measure",
+                "block": "wheel",
+                "name": "bore_d",
+                "relation": {"source": "hub.od_d", "offset": 2e-4, "tol": 5e-5},
+            },
+            {"op": "disconnect", "a": "wheel.bore", "b": "hub.shaft"},
+            {"op": "remove_block", "block": "hub"},
+        ],
+    )
+    # hub's measure went with the block; wheel's survives with a dangling
+    # relation — DRC's unresolvable_relation reports it.
+    assert [f"{m.block}.{m.name}" for m in tree.measures] == ["wheel.bore_d"]
+    report = se_drc.drc(tree)
+    assert any(f.rule == "unresolvable_relation" for f in report.findings)
+
+
+# ── slice 3: stack-up evaluation ─────────────────────────────────────────
+
+
+def test_stackup_chain_sums_offsets_and_tols() -> None:
+    ms = [
+        MeasureSpec(block="hub", name="od", value=0.016),
+        MeasureSpec(
+            block="wheel",
+            name="bore",
+            relation={"source": "hub.od", "offset": 2e-4, "tol": 5e-5},
+        ),
+        MeasureSpec(
+            block="cap",
+            name="fit",
+            relation={"source": "wheel.bore", "offset": 1e-4, "tol": 5e-5},
+        ),
+    ]
+    results = {r.measure: r for r in stackup(ms)}
+    assert results["wheel.bore"].derived == pytest.approx(0.0162)
+    assert results["wheel.bore"].tol_accum == pytest.approx(5e-5)
+    assert results["cap.fit"].derived == pytest.approx(0.0163)
+    assert results["cap.fit"].tol_accum == pytest.approx(1e-4)
+    assert results["cap.fit"].problem is None
+
+
+def test_stackup_detects_cycle_and_dangling() -> None:
+    ms = [
+        MeasureSpec(
+            block="a", name="x", relation={"source": "b.y", "offset": 0, "tol": 0}
+        ),
+        MeasureSpec(
+            block="b", name="y", relation={"source": "a.x", "offset": 0, "tol": 0}
+        ),
+        MeasureSpec(
+            block="c",
+            name="z",
+            relation={"source": "ghost.w", "offset": 0, "tol": 0},
+        ),
+    ]
+    results = {r.measure: r for r in stackup(ms)}
+    assert results["a.x"].problem_kind == "cycle"
+    assert results["c.z"].problem_kind == "dangling"
+
+
+def test_stackup_declared_vs_derived_mismatch() -> None:
+    ms = [
+        MeasureSpec(block="hub", name="od", value=0.016),
+        MeasureSpec(
+            block="wheel",
+            name="bore",
+            value=0.020,  # disagrees with 0.0162 beyond ±5e-5
+            relation={"source": "hub.od", "offset": 2e-4, "tol": 5e-5},
+        ),
+    ]
+    (res,) = stackup(ms)
+    assert res.problem_kind == "mismatch"
+    ms[1].value = 0.01623  # within ±5e-5 of 0.0162 — agreement
+    (res,) = stackup(ms)
+    assert res.problem is None
+
+
+def test_stackup_valued_midchain_anchors_nearest() -> None:
+    ms = [
+        MeasureSpec(block="a", name="x", value=1.0),
+        MeasureSpec(
+            block="b",
+            name="y",
+            value=2.0,  # declared AND related — nearest anchor for c.z
+            relation={"source": "a.x", "offset": 0.5, "tol": 0.1},
+        ),
+        MeasureSpec(
+            block="c", name="z", relation={"source": "b.y", "offset": 0.1, "tol": 0.01}
+        ),
+    ]
+    results = {r.measure: r for r in stackup(ms)}
+    assert results["c.z"].derived == pytest.approx(2.1)  # from b.y=2.0, not a.x
+    assert results["c.z"].tol_accum == pytest.approx(0.01)
+
+
+# ── slice 3: graph-tier DRC ──────────────────────────────────────────────
+
+
+def test_drc_flags_malformed_stored_joint() -> None:
+    # a pre-slice-3 free-form joint (or hand-corrupted row) must surface
+    # as a finding, never a crash.
+    tree = _l2_tree()
+    tree.connects[0].joint = {"kind": "revolute"}
+    report = se_drc.drc(tree)
+    assert any(
+        f.rule == "malformed_joint" and f.severity == "error" for f in report.findings
+    )
+
+
+def test_drc_flags_rigid_vs_moving_contradiction() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_port", "block": "hub", "name": "flange"},
+            {"op": "add_port", "block": "wheel", "name": "face"},
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "revolute"},
+            },
+            {
+                "op": "connect",
+                "a": "wheel.face",
+                "b": "hub.flange",
+                "joint": {"class": "rigid"},
+            },
+        ],
+    )
+    report = se_drc.drc(tree)
+    contra = [f for f in report.findings if f.rule == "joint_contradiction"]
+    assert len(contra) == 1
+    assert contra[0].severity == "error"
+    assert "revolute" in contra[0].detail
+
+
+def test_drc_mechanism_demand_unmet_then_met() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "rigid", "mechanism": "press"},
+            }
+        ],
+    )
+    report = se_drc.drc(tree)
+    demand = [f for f in report.findings if f.rule == "mechanism_demand"]
+    assert len(demand) == 1
+    assert "interference tolerance relation" in demand[0].detail
+    # declaring the relation between the two blocks' measures satisfies it
+    apply_ops(
+        tree,
+        [
+            {"op": "add_measure", "block": "hub", "name": "od_d", "value": 0.016},
+            {
+                "op": "add_measure",
+                "block": "wheel",
+                "name": "bore_d",
+                "relation": {"source": "hub.od_d", "offset": -2e-5, "tol": 1e-5},
+                "strength": "hard",
+            },
+        ],
+    )
+    report = se_drc.drc(tree)
+    assert not [f for f in report.findings if f.rule == "mechanism_demand"]
+
+
+def test_drc_flags_stray_stored_objective_key() -> None:
+    tree = _l2_tree()
+    tree.blocks["wheel"].objectives = {"radial_N": 40}  # pre-schema stray
+    report = se_drc.drc(tree)
+    assert any(f.rule == "unchecked_objective" for f in report.findings)
+
+
+def test_drc_flags_measure_on_missing_block() -> None:
+    tree = _l2_tree()
+    tree.measures.append(MeasureSpec(block="ghost", name="w", value=1.0))
+    report = se_drc.drc(tree)
+    assert any(
+        f.rule == "measure_on_missing_block" and f.severity == "error"
+        for f in report.findings
+    )
+
+
+def test_drc_stackup_mismatch_is_warn_dangling_is_error() -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_measure", "block": "hub", "name": "od", "value": 0.016},
+            {
+                "op": "add_measure",
+                "block": "wheel",
+                "name": "bore",
+                "value": 0.02,
+                "relation": {"source": "hub.od", "offset": 2e-4, "tol": 5e-5},
+            },
+            {
+                "op": "add_measure",
+                "block": "wheel",
+                "name": "rim",
+                "relation": {"source": "fender.gap", "offset": 0, "tol": 0},
+            },
+        ],
+    )
+    report = se_drc.drc(tree)
+    by_rule = {f.rule: f for f in report.findings}
+    assert by_rule["tolerance_mismatch"].severity == "warn"
+    assert by_rule["unresolvable_relation"].severity == "error"
+
+
+# ── slice 3: declared-vs-derived DOF probe ───────────────────────────────
+
+
+def test_dof_probe_revolute_unbounded_axis_travel_warns() -> None:
+    # hub and wheel are 0.2 m apart in x — nothing bounds axial (z)
+    # travel, so a declared revolute is geometrically unconstrained.
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "revolute", "axis": [0, 0, 1]},
+            }
+        ],
+    )
+    report = se_drc.drc(tree)
+    assert any(f.rule == "dof_disagreement" for f in report.findings)
+    assert any("FINDING" in p.outcome for p in report.dof_probes)
+
+
+def test_dof_probe_revolute_bounded_is_ok_prismatic_blocked_warns() -> None:
+    # co-located (interpenetrating) envelopes: zero axis travel — bounded,
+    # fine for revolute; a blocked slide for prismatic.
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "hub", "envelope": "cyl:r0.008h0.03"},
+            {"op": "add_block", "name": "wheel", "envelope": "cyl:r0.04h0.02"},
+            {"op": "add_port", "block": "hub", "name": "shaft"},
+            {"op": "add_port", "block": "wheel", "name": "bore"},
+            {
+                "op": "connect",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "revolute", "axis": [0, 0, 1]},
+            },
+        ],
+    )
+    report = se_drc.drc(tree)
+    assert not [f for f in report.findings if f.rule == "dof_disagreement"]
+    assert any(p.outcome.startswith("ok") for p in report.dof_probes)
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "prismatic", "axis": [0, 0, 1]},
+            }
+        ],
+    )
+    report = se_drc.drc(tree)
+    assert any(f.rule == "dof_disagreement" for f in report.findings)
+    assert "cannot move" in next(
+        f.detail for f in report.findings if f.rule == "dof_disagreement"
+    )
+
+
+def test_dof_probe_honest_skips() -> None:
+    tree = _l2_tree()
+    # no axis declared
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "prismatic"},
+            }
+        ],
+    )
+    report = se_drc.drc(tree)
+    assert any("no axis declared" in p.outcome for p in report.dof_probes)
+    # off-principal axis
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "prismatic", "axis": [1, 1, 0]},
+            }
+        ],
+    )
+    report = se_drc.drc(tree)
+    assert any("not principal-aligned" in p.outcome for p in report.dof_probes)
+    assert not [f for f in report.findings if f.rule == "dof_disagreement"]
+
+
+# ── slice 3: persistence + views over the L2 tier ────────────────────────
+
+
+def _l2_design(handler: SeHandler) -> None:
+    _wheel_on_hub(handler)
+    handler.edit(
+        id="cart1",
+        ops=[
+            {
+                "op": "connect",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {
+                    "class": "revolute",
+                    "axis": [0, 0, 1],
+                    "mechanism": "bearing",
+                },
+            },
+            {"op": "set_load", "block": "wheel", "force": [0, 0, -200]},
+            {"op": "add_measure", "block": "hub", "name": "od_d", "value": 0.016},
+            {
+                "op": "add_measure",
+                "block": "wheel",
+                "name": "bore_d",
+                "relation": {"source": "hub.od_d", "offset": 2e-4, "tol": 5e-5},
+                "strength": "hard",
+                "reason": "bearing seat clearance",
+            },
+        ],
+    )
+
+
+def test_l2_tier_roundtrips_through_store(handler: SeHandler, store: Store) -> None:
+    _l2_design(handler)
+    ref = store.get_ref(kind="se", id="cart1")
+    assert ref is not None
+    tree = persist.load_tree(store, ref.id)
+    assert tree.connects[0].joint == {
+        "class": "revolute",
+        "axis": [0.0, 0.0, 1.0],
+        "mechanism": "bearing",
+    }
+    assert tree.blocks["wheel"].objectives == {"force": [0.0, 0.0, -200.0]}
+    assert len(tree.measures) == 2
+    hard = next(m for m in tree.measures if m.name == "bore_d")
+    assert hard.strength == "hard"
+    assert hard.relation == {"source": "hub.od_d", "offset": 2e-4, "tol": 5e-5}
+    assert hard.reason == "bearing seat clearance"
+
+
+def test_measures_view_renders_table_and_stackup(handler: SeHandler) -> None:
+    _l2_design(handler)
+    resp = handler.get(id="cart1", view="measures")
+    assert "hub.od_d" in resp.body
+    assert "= hub.od_d + 0.0002 ± 5e-05" in resp.body
+    assert "stack-up" in resp.body
+    assert "0.0162" in resp.body  # derived value
+    assert "hard" in resp.body
+
+
+def test_measures_view_empty_is_honest(handler: SeHandler) -> None:
+    _wheel_on_hub(handler)
+    resp = handler.get(id="cart1", view="measures")
+    assert "no measures declared yet" in resp.body
+
+
+def test_drc_view_renders_probes_and_findings(handler: SeHandler) -> None:
+    _l2_design(handler)
+    resp = handler.get(id="cart1", view="drc")
+    # bearing's demand is met (the bore_d relation), so no mechanism
+    # finding; the far-apart revolute IS a dof finding + probe row.
+    assert "mechanism_demand" not in resp.body
+    assert "dof_disagreement" in resp.body
+    assert "declared-vs-derived DOF" in resp.body
+    assert "block(s) have envelopes" in resp.body  # honesty header
+
+
+def test_drc_view_clean_design_reads_unfilled_not_done(handler: SeHandler) -> None:
+    handler.put(id="bare1", text=json.dumps({"ops": []}))
+    resp = handler.get(id="bare1", view="drc")
+    assert "✓ no DRC findings" in resp.body
+    assert "no blocks declared yet (unfilled)" in resp.body
+
+
+def test_block_view_shows_loads_and_measures(handler: SeHandler) -> None:
+    _l2_design(handler)
+    resp = handler.get(id="cart1", view="block", args={"name": "wheel"})
+    assert '"force"' in resp.body
+    assert "wheel.bore_d" in resp.body
+    assert "bearing seat clearance" in resp.body
+
+
+# ── reviewer findings: corrupt stored data + contradiction coverage ──────
+
+
+def test_malformed_stored_relation_is_a_finding_never_a_crash() -> None:
+    # a hand-corrected jsonb row (offset: null) must surface as a problem/
+    # finding on every read path — the malformed_joint posture for
+    # measures (reviewer finding 1).
+    tree = _l2_tree()
+    tree.measures.append(
+        MeasureSpec(
+            block="wheel",
+            name="bore_d",
+            value=0.016,
+            relation={"source": "hub.od_d", "offset": None, "tol": 5e-5},
+        )
+    )
+    tree.measures.append(MeasureSpec(block="hub", name="od_d", value=0.016))
+    (res,) = stackup(tree.measures)
+    assert res.problem_kind == "malformed"
+    report = se_drc.drc(tree)
+    assert any(
+        f.rule == "malformed_relation" and f.severity == "error"
+        for f in report.findings
+    )
+
+
+def test_malformed_relation_midchain_acts_as_anchor() -> None:
+    # the broken measure's brokenness is ITS finding; a dependent chain
+    # stops there (using its declared value) rather than crashing.
+    ms = [
+        MeasureSpec(
+            block="a",
+            name="x",
+            value=1.0,
+            relation={"source": "z.q", "offset": "bogus", "tol": 0},
+        ),
+        MeasureSpec(
+            block="b", name="y", relation={"source": "a.x", "offset": 0.5, "tol": 0.1}
+        ),
+    ]
+    results = {r.measure: r for r in stackup(ms)}
+    assert results["a.x"].problem_kind == "malformed"
+    assert results["b.y"].problem is None
+    assert results["b.y"].derived == pytest.approx(1.5)
+
+
+def test_measure_views_render_corrupt_relation_legibly(
+    handler: SeHandler, store: Store
+) -> None:
+    _l2_design(handler)
+    ref = store.get_ref(kind="se", id="cart1")
+    assert ref is not None
+    with store.pool.connection() as c:
+        c.execute(
+            "UPDATE se_measures SET relation = %s "
+            "WHERE ref_id = %s AND name = 'bore_d' AND retired_at IS NULL",
+            ('{"source": "hub.od_d", "offset": null, "tol": 5e-5}', ref.id),
+        )
+    # neither view crashes; drc names the malformed relation
+    body = handler.get(id="cart1", view="measures").body
+    assert "hub.od_d" in body
+    drc_body = handler.get(id="cart1", view="drc").body
+    assert "malformed_relation" in drc_body
+    block_body = handler.get(id="cart1", view="block", args={"name": "wheel"}).body
+    assert "wheel.bore_d" in block_body
+
+
+def test_drc_flags_rigid_vs_compliant_contradiction() -> None:
+    # compliant permits motion (with stiffness) — rigid+compliant between
+    # the same pair contradicts (reviewer finding 2).
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_port", "block": "hub", "name": "flange"},
+            {"op": "add_port", "block": "wheel", "name": "face"},
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "compliant"},
+            },
+            {
+                "op": "connect",
+                "a": "wheel.face",
+                "b": "hub.flange",
+                "joint": {"class": "rigid"},
+            },
+        ],
+    )
+    report = se_drc.drc(tree)
+    assert any(f.rule == "joint_contradiction" for f in report.findings)
+
+
+def test_set_measure_explicit_null_pushes_back() -> None:
+    # value=null must error, never silently no-op (reviewer finding 3).
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [{"op": "add_measure", "block": "hub", "name": "od_d", "value": 0.016}],
+    )
+    with pytest.raises(OpError, match="cannot clear value"):
+        apply_ops(
+            tree,
+            [{"op": "set_measure", "block": "hub", "name": "od_d", "value": None}],
+        )
+    assert tree.measures[0].value == 0.016  # untouched

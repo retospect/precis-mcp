@@ -3,9 +3,11 @@
 An ``se`` design is a slug-addressed ref whose content is a **block tree**
 (:mod:`precis_se.ops`/:mod:`precis_se.persist`) — nested building blocks
 with cad-DSL spatial envelopes in **metres**, rough poses, read-time
-template instancing, and first-class linear/polar **arrays**. Maps onto
-the verbs as of this round (se slice 1/2, docs/backlog/se-kind.md "Ship
-order"):
+template instancing, first-class linear/polar **arrays**, and the L2
+invariant tier: joints (kinematic class × mechanism —
+:mod:`precis_se.joints`), named measures with tolerance relations
+(:mod:`precis_se.measures`), and loads. Maps onto the verbs as of this
+round (se slices 1-3, docs/backlog/se-kind.md "Ship order"):
 
 - ``put``    — create/replace a design from a JSON payload
   ``{description?, ops: [...]}`` (``id=`` the design slug). A re-put
@@ -16,11 +18,15 @@ order"):
 - ``get``    — list designs (no ``id``), a design's nested tree TOC
   (``id=slug``, the default view), one block's full record
   (``view='block'``, ``args={'name': ...}``), every block's ports
-  (``view='ports'``), feasibility findings with the filled-fraction
-  honesty header (``view='validate'`` — :mod:`precis_se.validate`), or
-  the signed envelope gap between two blocks (``view='clearance'``,
-  ``args={'a': ..., 'b': ...}``, the cad kernel at metres — the nm
-  clearance view's design, transferred).
+  (``view='ports'``), measures + stack-up (``view='measures'`` —
+  :mod:`precis_se.measures`), feasibility findings with the
+  filled-fraction honesty header (``view='validate'`` —
+  :mod:`precis_se.validate`), the signed envelope gap between two blocks
+  (``view='clearance'``, ``args={'a': ..., 'b': ...}``, the cad kernel
+  at metres — the nm clearance view's design, transferred), or the
+  graph-tier DRC report (``view='drc'`` — :mod:`precis_se.drc`: joint
+  contradictions, mechanism-implied demands, unresolvable relations,
+  the declared-vs-derived axis-travel probe).
 - ``delete`` — soft-retire a whole design.
 - ``search`` — find designs by intent over each design's one
   ``card_combined`` chunk; ``search_hits`` opts into the cross-kind
@@ -58,8 +64,10 @@ from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis_se import drc as se_drc
 from precis_se import persist
 from precis_se import validate as se_validate
+from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
     OpError,
     SeBlock,
@@ -93,28 +101,36 @@ class SeHandler(Handler):
             "cad-DSL envelopes in METRES, poses, read-time template "
             "instancing, and first-class arrays. put/edit take typed ops "
             "(add_block/instance_block/array_block/set_pose/set_envelope/"
-            "remove_block/add_port/remove_port/connect/disconnect); get "
-            "lists designs or renders one "
-            "(view='tree'|'block'|'ports'|'validate'|'clearance'; block "
-            "takes args={'name':...}, clearance takes "
-            "args={'a':...,'b':...} and runs the cad kernel's "
-            "signed-distance gap between two blocks' posed envelopes); "
-            "delete soft-retires; search finds by intent. connect wires "
-            "two 'block.port' endpoints; its joint= dict is free-form "
-            "until the kinematic-class schema lands. view='validate' "
-            "leads with filled-fraction honesty (N/M blocks have "
-            "envelopes) and warns on undeclared envelope "
-            "interpenetration. Envelopes reuse the cad "
-            "mini-DSL (e.g. 'cyl:r0.02h0.01' = a 2 cm-radius disc) — every "
-            "field beyond a block's name is optional (suggestive by "
-            "contract; an empty design reads as unfilled, not done). "
+            "remove_block/add_port/remove_port/connect/disconnect/"
+            "set_joint/set_load/add_measure/set_measure/remove_measure); "
+            "get lists designs or renders one (view='tree'|'block'|"
+            "'ports'|'measures'|'validate'|'clearance'|'drc'; block takes "
+            "args={'name':...}, clearance takes args={'a':...,'b':...} "
+            "and runs the cad kernel's signed-distance gap between two "
+            "blocks' posed envelopes); delete soft-retires; search finds "
+            "by intent. connect wires two 'block.port' endpoints; a "
+            "joint= is {'class': rigid|revolute|prismatic|cylindrical|"
+            "planar|ball|compliant|captive, 'axis'?, 'mechanism'?: snap|"
+            "screw|press|key|magnet|bearing|bond|integral, 'params'?}. "
+            "Loads (set_load): force/torque 3-vectors (N, N·m), duty, "
+            "cycles, on blocks or connects. Measures (add_measure, "
+            "metres) carry tolerance RELATIONS between named measures "
+            "({'source':'block.measure','offset','tol'} + hard/soft/"
+            "gauge); view='measures' shows the stack-up evaluation. "
+            "view='validate' leads with filled-fraction honesty and "
+            "warns on undeclared envelope interpenetration; view='drc' "
+            "runs the graph tier (joint contradictions, "
+            "mechanism-implied demands, unresolvable relations, "
+            "declared-vs-derived axis-travel probe). Envelopes reuse the "
+            "cad mini-DSL (e.g. 'cyl:r0.02h0.01' = a 2 cm-radius disc) — "
+            "every field beyond a block's name is optional (suggestive "
+            "by contract; an empty design reads as unfilled, not done). "
             "array_block patterns a template block N times "
             "(linear={'count','pitch','axis'} in metres, or "
             "polar={'count','radius','axis'}, axis default +z) — the "
-            "block tree stays canonical, members are derived. Ports, "
-            "joints, tolerances, loads and manufacturing modes land in "
-            "later slices. The LLM traverses a block tree, never raw "
-            "geometry."
+            "block tree stays canonical, members are derived. Notes/"
+            "propose, realization and manufacturing modes land in later "
+            "slices. The LLM traverses a block tree, never raw geometry."
         ),
         supports_get=True,
         supports_put=True,
@@ -127,7 +143,7 @@ class SeHandler(Handler):
         placement="artifact",
         corpus_role="none",
         can_own_jobs=False,
-        views=("tree", "block", "ports", "validate", "clearance"),
+        views=("tree", "block", "ports", "measures", "validate", "clearance", "drc"),
         # Dark-ship: hidden until the `se.enabled` setting resolves.
         requires_setting=("se.enabled",),
     )
@@ -272,15 +288,21 @@ class SeHandler(Handler):
             return Response(body=_render_block(tree, node))
         if v == "ports":
             return Response(body=_render_ports(tree))
+        if v == "measures":
+            return Response(body=_render_measures(tree))
         if v == "validate":
             return Response(body=_render_validate(tree))
         if v == "clearance":
             return Response(body=_render_clearance(tree, args))
+        if v == "drc":
+            return Response(body=_render_drc(tree))
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
-            "(args={'name':...}) | view='ports' | view='validate' | "
-            "view='clearance' (args={'a':...,'b':...})",
+            "(args={'name':...}) | view='ports' | view='measures' "
+            "(+ stack-up) | view='validate' | view='clearance' "
+            "(args={'a':...,'b':...}) | view='drc' (graph tier + DOF "
+            "probe)",
         )
 
     # ── delete ───────────────────────────────────────────────────────
@@ -524,6 +546,21 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
         lines.append(f"envelope: {node.envelope or '— (unfilled)'}")
     lines.append(f"desc: {node.descr or '—'}")
     lines.append(f"use: {node.use or '—'}")
+    if node.objectives:
+        lines.append(f"loads: {json.dumps(node.objectives)}")
+
+    measures_owner = node.template or node.name
+    own_measures = [m for m in tree.measures if m.block == measures_owner]
+    if own_measures:
+        via = f" (via template {node.template!r})" if node.template else ""
+        lines.append("")
+        lines.append(f"## measures{via}")
+        lines.append(
+            render_agent_table(
+                [_measure_row(m) for m in own_measures],
+                schema=["measure", "value", "relation", "strength", "reason"],
+            )
+        )
 
     ports = effective_ports(tree, node)
     lines.append("")
@@ -589,6 +626,136 @@ def _render_ports(tree: SeTree) -> str:
     return f"# {len(rows)} port(s)\n" + render_agent_table(
         rows, schema=["block", "port", "roles", "direction", "annotations"]
     )
+
+
+def _fmt_num(v: Any) -> str:
+    """``:g`` when the value is a number; ``repr`` otherwise — a
+    hand-corrupted stored relation must render legibly (and be flagged by
+    DRC), never crash the read path."""
+    try:
+        return f"{float(v):g}"
+    except (TypeError, ValueError):
+        return repr(v)
+
+
+def _measure_row(m: Any) -> dict[str, str]:
+    rel = "—"
+    if m.relation is not None:
+        rel = (
+            f"= {m.relation.get('source')} + {_fmt_num(m.relation.get('offset', 0))} "
+            f"± {_fmt_num(m.relation.get('tol', 0))}"
+        )
+    return {
+        "measure": f"{m.block}.{m.name}",
+        "value": f"{m.value:g}" if m.value is not None else "—",
+        "relation": rel,
+        "strength": m.strength,
+        "reason": m.reason or "—",
+    }
+
+
+def _stackup_rows(results: list[Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "measure": r.measure,
+            "declared": f"{r.declared:g}" if r.declared is not None else "—",
+            "derived": (
+                f"{r.derived:g} ± {r.tol_accum:g}" if r.derived is not None else "—"
+            ),
+            "chain": " → ".join(r.chain),
+            "status": r.problem or "ok",
+        }
+        for r in results
+    ]
+
+
+def _render_measures(tree: SeTree) -> str:
+    """``view='measures'`` — every measure (metres) with its tolerance
+    relation, then the stack-up evaluation (:func:`precis_se.measures.
+    stackup`): each related measure's derived value ± accumulated
+    worst-case tolerance, with unresolved/cyclic/mismatching chains named
+    in the status column (DRC turns those into findings)."""
+    if not tree.measures:
+        return (
+            "# se measures  (units: metres)\n\n(no measures declared yet)\n\n"
+            "Next: edit(kind='se', id=..., ops=[{'op':'add_measure',"
+            "'block':'wheel','name':'bore_d','relation':{'source':"
+            "'hub.od_d','offset':2e-4,'tol':5e-5},'strength':'hard'}])"
+        )
+    lines = [f"# {len(tree.measures)} measure(s)  (units: metres)"]
+    lines.append(
+        render_agent_table(
+            [_measure_row(m) for m in tree.measures],
+            schema=["measure", "value", "relation", "strength", "reason"],
+        )
+    )
+    results = se_stackup(tree.measures)
+    lines.append("")
+    if results:
+        lines.append("## stack-up (worst-case linear: Σ|tol| along the chain)")
+        lines.append(
+            render_agent_table(
+                _stackup_rows(results),
+                schema=["measure", "declared", "derived", "chain", "status"],
+            )
+        )
+    else:
+        lines.append("## stack-up\n(no relations declared — nothing to evaluate)")
+    return "\n".join(lines)
+
+
+def _render_drc(tree: SeTree) -> str:
+    """``view='drc'`` — the graph-tier report (:mod:`precis_se.drc`):
+    findings under the filled-fraction header (same honesty rule as
+    validate — a clean empty design is unfilled, not done), then the DOF
+    probe outcomes (including honest skips) and any stack-up problems'
+    full rows."""
+    report = se_drc.drc(tree)
+    fill_line = _fill_fraction_line(tree)
+    lines: list[str] = []
+    if not report.findings:
+        lines.append(f"✓ no DRC findings\n{fill_line}")
+    else:
+        n_error = sum(1 for f in report.findings if f.severity == "error")
+        n_warn = sum(1 for f in report.findings if f.severity == "warn")
+        lines.append(f"# {n_error} error(s), {n_warn} warning(s)\n{fill_line}\n")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "severity": f.severity,
+                        "rule": f.rule,
+                        "subject": f.subject,
+                        "detail": f.detail,
+                    }
+                    for f in report.findings
+                ],
+                schema=["severity", "rule", "subject", "detail"],
+            )
+        )
+    if report.dof_probes:
+        lines.append("")
+        lines.append("## declared-vs-derived DOF (axis-travel probe, advisory)")
+        lines.append(
+            render_agent_table(
+                [
+                    {"connect": p.subject, "class": p.klass, "outcome": p.outcome}
+                    for p in report.dof_probes
+                ],
+                schema=["connect", "class", "outcome"],
+            )
+        )
+    problems = [r for r in report.stackup if r.problem is not None]
+    if problems:
+        lines.append("")
+        lines.append("## stack-up problems (full rows in view='measures')")
+        lines.append(
+            render_agent_table(
+                _stackup_rows(problems),
+                schema=["measure", "declared", "derived", "chain", "status"],
+            )
+        )
+    return "\n".join(lines)
 
 
 def _fill_fraction_line(tree: SeTree) -> str:

@@ -12,8 +12,9 @@ reached over the store's public connection surface (``store.tx()`` /
 :class:`~precis_se.ops.SeTree` keyed by name; :func:`save_tree` retires
 every live row for the ref and reinserts the whole tree afresh in
 parent/template-respecting order. Row ids are rebuilt on every save, which
-is exactly why everything cross-referencing (connect endpoints, later
-measures/notes) is **name-keyed text, never an FK to a block row id** —
+is exactly why everything cross-referencing (connect endpoints, measure
+blocks + relation sources, later notes) is **name-keyed text, never an FK
+to a block row id** —
 the one exception is ``se_ports.block_id``, written **in lockstep** with
 the freshly minted block ids, inside the same transaction (nm's port
 pattern — a port row is always written against the block id that save
@@ -28,14 +29,16 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from precis_se.measures import MeasureSpec
 from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree
 
 _BLOCK_COLS = (
     "id, parent_block_id, template_block_id, name, pose_xyz, pose_rot, "
-    "envelope, array_spec, descr, use_"
+    "envelope, array_spec, descr, use_, objectives"
 )
 _PORT_COLS = "block_id, name, roles, direction, annotations"
 _CONNECT_COLS = "a_block, a_port, b_block, b_port, joint, objectives"
+_MEASURE_COLS = "block, name, value, relation, strength, reason"
 
 
 def load_tree(store: Any, ref_id: int) -> SeTree:
@@ -67,6 +70,13 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 (ref_id,),
             )
             connect_rows = cur.fetchall()
+            cur.execute(
+                f"SELECT {_MEASURE_COLS} FROM se_measures "
+                "WHERE ref_id = %s AND retired_at IS NULL "
+                "ORDER BY id ASC",
+                (ref_id,),
+            )
+            measure_rows = cur.fetchall()
     by_id = {r["id"]: r for r in rows}
     tree = SeTree()
     for r in rows:
@@ -82,6 +92,7 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             descr=r["descr"],
             use=r["use_"],
             array=dict(r["array_spec"]) if r["array_spec"] is not None else None,
+            objectives=dict(r["objectives"] or {}),
         )
     for p in port_rows:
         block_row = by_id.get(p["block_id"])
@@ -103,6 +114,17 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 b_port=c["b_port"],
                 joint=dict(c["joint"]) if c["joint"] is not None else None,
                 objectives=dict(c["objectives"] or {}),
+            )
+        )
+    for m in measure_rows:
+        tree.measures.append(
+            MeasureSpec(
+                block=m["block"],
+                name=m["name"],
+                value=m["value"],
+                relation=dict(m["relation"]) if m["relation"] is not None else None,
+                strength=m["strength"],
+                reason=m["reason"],
             )
         )
     return tree
@@ -162,6 +184,11 @@ def save_tree(
             (ref_id,),
         )
         c.execute(
+            "UPDATE se_measures SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        c.execute(
             "UPDATE se_blocks SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
@@ -174,8 +201,9 @@ def save_tree(
             row = c.execute(
                 "INSERT INTO se_blocks "
                 "(ref_id, parent_block_id, template_block_id, name, "
-                " pose_xyz, pose_rot, envelope, array_spec, descr, use_) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                " pose_xyz, pose_rot, envelope, array_spec, descr, use_, "
+                " objectives) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     ref_id,
                     parent_id,
@@ -187,6 +215,7 @@ def save_tree(
                     Jsonb(node.array) if node.array is not None else None,
                     node.descr,
                     node.use,
+                    Jsonb(node.objectives) if node.objectives else None,
                 ),
             ).fetchone()
             assert row is not None
@@ -231,6 +260,21 @@ def save_tree(
                     Jsonb(conn_spec.objectives) if conn_spec.objectives else None,
                 ),
             )
+        for m in tree.measures:
+            c.execute(
+                "INSERT INTO se_measures "
+                "(ref_id, block, name, value, relation, strength, reason) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    ref_id,
+                    m.block,
+                    m.name,
+                    m.value,
+                    Jsonb(m.relation) if m.relation is not None else None,
+                    m.strength,
+                    m.reason,
+                ),
+            )
         store.chunks.upsert_card_combined(ref_id, card_text, conn=c)
 
     if conn is not None:
@@ -253,6 +297,11 @@ def retire_design(store: Any, ref_id: int) -> int:
         )
         conn.execute(
             "UPDATE se_connects SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE se_measures SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         )

@@ -13,8 +13,8 @@ loads a design's live rows into a fresh :class:`SeTree` keyed by name and
 reinserts the whole tree on every save (row ids are rebuilt; names carry
 across), so a block is only ever looked up by name here.
 
-Op catalog (slices 1-2 — blocks/instancing/arrays + ports/connects;
-joints/measures/loads schema lands slice 3):
+Op catalog (slices 1-3 — blocks/instancing/arrays + ports/connects +
+joints/measures/loads):
 
 - ``add_block``      — mint a new block, optionally nested under an
   existing ``parent``, with an optional envelope (validated through the
@@ -74,12 +74,28 @@ joints/measures/loads schema lands slice 3):
   ``'block.port'``, split on the *last* dot). Each endpoint resolves on
   the block itself or — for an instance/array — its template. Self- and
   duplicate connects (same unordered endpoint pair) are rejected.
-  ``joint`` is a free passthrough dict this round (the kinematic-class ×
-  mechanism schema is slice 3 — no shape enforced yet, like nm 0001's
-  ``dof``); ``objectives`` likewise (loads land slice 3).
+  ``joint``/``objectives`` go through the slice-3 schemas
+  (:mod:`precis_se.joints` — kinematic class × mechanism, registered
+  load keys), same as ``set_joint``/``set_load`` below.
 - ``disconnect``      — remove a live connect by its unordered endpoint
   pair; a missing pair is a retryable :class:`OpError` listing what *is*
   live.
+- ``set_joint``       — set/replace/clear an existing connect's joint
+  (``a``/``b`` endpoints + ``joint`` object or ``null``) — the L2 shape:
+  kinematic ``class`` (+ ``axis`` where the class has one, unit-
+  normalized), optional ``mechanism`` from the registry, ``params`` for
+  mechanism-specific numbers. Unknown keys/classes rejected loudly.
+- ``set_load``        — set/replace the loads on a block (``block=``) or
+  a connect (``a=``/``b=``): ``force``/``torque`` 3-vectors (N / N·m),
+  ``duty`` prose, ``cycles`` ≥ 0 — replace semantics; ``clear=true``
+  removes. The kind-neutral loads vocabulary (se-kind.md "Relation to
+  nm").
+- ``add_measure`` / ``set_measure`` / ``remove_measure`` — named measures
+  on ordinary blocks (metres), optionally carrying a **tolerance
+  relation** ``{'source': 'block.measure', 'offset', 'tol'}`` +
+  hard/soft/gauge strength (:mod:`precis_se.measures`; stack-up +
+  unresolvable-relation findings are :mod:`precis_se.drc`'s read-time
+  job — a forward-referenced relation source is legal at write time).
 """
 
 from __future__ import annotations
@@ -89,6 +105,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.cad import dsl as cad_dsl
+from precis_se import joints as se_joints
+from precis_se.measures import MeasureError, MeasureSpec, validate_relation
 
 
 class OpError(ValueError):
@@ -114,10 +132,11 @@ class PortSpec:
 @dataclass
 class ConnectSpec:
     """A port↔port intent edge between two ``'block.port'`` endpoints,
-    name-keyed like everything else in this module. ``joint`` is the free
-    joint slot (kinematic class × mechanism — schema enforced from slice 3
-    on; free passthrough today, the nm-0001-``dof`` precedent);
-    ``objectives`` the free objective-vector slot (loads, real units)."""
+    name-keyed like everything else in this module. ``joint`` holds the
+    slice-3 schema shape (:func:`precis_se.joints.validate_joint` —
+    kinematic class × mechanism); ``objectives`` the registered loads
+    vocabulary (:func:`precis_se.joints.validate_objectives`, real units).
+    Both are vetted at write time; stored strays are DRC findings."""
 
     a_block: str
     a_port: str
@@ -149,6 +168,9 @@ class SeBlock:
     use: str | None = None
     array: dict[str, Any] | None = None
     ports: dict[str, PortSpec] = field(default_factory=dict)
+    #: loads on the block — the registered objectives vocabulary
+    #: (:func:`precis_se.joints.validate_objectives`), real units.
+    objectives: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -160,6 +182,9 @@ class SeTree:
 
     blocks: dict[str, SeBlock] = field(default_factory=dict)
     connects: list[ConnectSpec] = field(default_factory=list)
+    #: named measures + tolerance relations (:mod:`precis_se.measures`),
+    #: unordered — identity is ``(block, name)``.
+    measures: list[MeasureSpec] = field(default_factory=list)
 
 
 def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
@@ -600,6 +625,11 @@ def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
         for c in tree.connects
         if c.a_block not in subtree and c.b_block not in subtree
     ]
+    # Measures owned by a removed block go with it (same vacancy rule). A
+    # surviving measure whose *relation source* lived in the subtree is
+    # deliberately kept — it dangles, and DRC's unresolvable_relation
+    # finding reports it, read-time honesty over silent cleanup.
+    tree.measures = [m for m in tree.measures if m.block not in subtree]
     for n in subtree:
         del tree.blocks[n]
 
@@ -698,14 +728,8 @@ def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
     b_block, b_port = _split_endpoint(b_raw, "connect 'b'")
     if (a_block, a_port) == (b_block, b_port):
         raise OpError(f"connect: cannot connect {a_raw!r} to itself")
-    joint_raw = op.get("joint")
-    if joint_raw is not None and not isinstance(joint_raw, dict):
-        raise OpError(f"connect 'joint' must be a JSON object, got {joint_raw!r}")
-    objectives_raw = op.get("objectives")
-    if objectives_raw is not None and not isinstance(objectives_raw, dict):
-        raise OpError(
-            f"connect 'objectives' must be a JSON object, got {objectives_raw!r}"
-        )
+    joint = _vet_joint(op.get("joint"), opname="connect")
+    objectives = _vet_objectives(op.get("objectives"), opname="connect")
     _resolve_connect_port(tree, a_block, a_port, what="connect")
     _resolve_connect_port(tree, b_block, b_port, what="connect")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
@@ -720,8 +744,8 @@ def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
             a_port=a_port,
             b_block=b_block,
             b_port=b_port,
-            joint=dict(joint_raw) if joint_raw else None,
-            objectives=dict(objectives_raw) if objectives_raw else {},
+            joint=joint,
+            objectives=objectives or {},
         )
     )
 
@@ -748,6 +772,271 @@ def _op_disconnect(tree: SeTree, op: dict[str, Any]) -> None:
     )
 
 
+def _vet_joint(raw: Any, *, opname: str) -> dict[str, Any] | None:
+    """``joint=`` through the one schema (:mod:`precis_se.joints`) — write
+    time is where a malformed joint gets rejected; DRC only *reports* what
+    slipped past into storage."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise OpError(f"{opname} 'joint' must be a JSON object, got {raw!r}")
+    try:
+        return se_joints.validate_joint(raw)
+    except se_joints.JointError as exc:
+        raise OpError(f"{opname}: {exc}") from exc
+
+
+def _vet_objectives(raw: Any, *, opname: str) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise OpError(f"{opname} 'objectives' must be a JSON object, got {raw!r}")
+    try:
+        return se_joints.validate_objectives(raw)
+    except se_joints.JointError as exc:
+        raise OpError(f"{opname}: {exc}") from exc
+
+
+def _find_connect(tree: SeTree, op: dict[str, Any], *, opname: str) -> ConnectSpec:
+    """Resolve ``a=``/``b=`` to the live connect with that unordered
+    endpoint pair — the ``disconnect`` lookup, shared by the joint/load
+    ops that address an existing edge."""
+    a_raw, b_raw = op.get("a"), op.get("b")
+    if not a_raw or not b_raw:
+        raise OpError(f"{opname} needs 'a' and 'b' (each 'block.port')")
+    a_block, a_port = _split_endpoint(a_raw, f"{opname} 'a'")
+    b_block, b_port = _split_endpoint(b_raw, f"{opname} 'b'")
+    pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
+    for c in tree.connects:
+        if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:
+            return c
+    live = (
+        ", ".join(
+            f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}" for c in tree.connects
+        )
+        or "(none)"
+    )
+    raise OpError(
+        f"{opname}: no such connect between {a_raw!r} and {b_raw!r}. "
+        f"Live connects: {live}"
+    )
+
+
+def _op_set_joint(tree: SeTree, op: dict[str, Any]) -> None:
+    """Set/replace (or clear, with ``joint=null``) an existing connect's
+    joint — the slice-3 schema: ``{'class': rigid|revolute|prismatic|
+    cylindrical|planar|ball|compliant|captive, 'axis'?: [x,y,z],
+    'mechanism'?: snap|screw|press|key|magnet|bearing|bond|integral,
+    'params'?: {...}}``."""
+    c = _find_connect(tree, op, opname="set_joint")
+    if "joint" not in op:
+        raise OpError("set_joint needs 'joint' (the joint object, or null to clear)")
+    c.joint = _vet_joint(op.get("joint"), opname="set_joint")
+
+
+def _op_set_load(tree: SeTree, op: dict[str, Any]) -> None:
+    """Set/replace the loads (objective vectors, real units) on a block
+    (``block=``) or an existing connect (``a=``/``b=``). Replace
+    semantics — the op states the whole load picture for its target;
+    ``clear=true`` removes it."""
+    has_block = op.get("block") is not None
+    has_edge = op.get("a") is not None or op.get("b") is not None
+    if has_block == has_edge:
+        raise OpError(
+            "set_load targets exactly one of a block (block=) or a "
+            "connect (a= and b=, each 'block.port')"
+        )
+    allowed = {"op", "block", "a", "b", "clear"} | set(se_joints.OBJECTIVE_KEYS)
+    strays = sorted(set(op) - allowed)
+    if strays:
+        # a typo'd load key next to a valid one must reject, never be
+        # silently dropped (the swallowed-facet lesson).
+        known = ", ".join(sorted(se_joints.OBJECTIVE_KEYS))
+        raise OpError(
+            f"set_load: unknown key(s) {', '.join(strays)} — registered "
+            f"load keys: {known}"
+        )
+    given = {k: op[k] for k in se_joints.OBJECTIVE_KEYS if op.get(k) is not None}
+    if op.get("clear"):
+        if given:
+            raise OpError("set_load: 'clear' and load keys are mutually exclusive")
+        objectives: dict[str, Any] = {}
+    else:
+        if not given:
+            known = ", ".join(sorted(se_joints.OBJECTIVE_KEYS))
+            raise OpError(
+                f"set_load needs at least one of {known} (or clear=true "
+                "to remove loads)"
+            )
+        vetted = _vet_objectives(given, opname="set_load")
+        objectives = vetted or {}
+    if has_block:
+        name = _require_name(op, "block", "set_load")
+        node = tree.blocks.get(name)
+        if node is None:
+            raise OpError(_no_block_msg(tree, name, what="block"))
+        node.objectives = objectives
+    else:
+        c = _find_connect(tree, op, opname="set_load")
+        c.objectives = objectives
+
+
+_STRENGTHS = ("hard", "soft", "gauge")
+
+
+def _measure_shared(
+    tree: SeTree, op: dict[str, Any], *, opname: str
+) -> tuple[str, str]:
+    """Resolve + vet the ``block``/``name`` pair every measure op takes:
+    the block must exist and be ordinary (a measure, like a port, lives on
+    the template — an instance's measures resolve through it); the measure
+    name may not contain ``'.'`` (the ``'block.measure'`` relation-source
+    syntax reserves it)."""
+    block = _require_name(op, "block", opname)
+    node = tree.blocks.get(block)
+    if node is None:
+        raise OpError(_no_block_msg(tree, block, what="block"))
+    if node.template is not None:
+        raise OpError(
+            f"block {block!r} is an instance (of {node.template!r}) — "
+            "measures live on the template (same rule as envelope/ports); "
+            f"{opname} on {node.template!r} instead"
+        )
+    name = _require_name(op, "name", opname)
+    if "." in name:
+        raise OpError(
+            f"{opname} 'name' must not contain '.': {name!r} — the "
+            "relation-source syntax ('block.measure', split on the last "
+            "dot) reserves it"
+        )
+    return block, name
+
+
+def _vet_measure_fields(
+    op: dict[str, Any], *, opname: str
+) -> tuple[float | None, dict[str, Any] | None, str | None, str | None]:
+    """The optional measure fields, vetted: ``(value, relation, strength,
+    reason)`` — each ``None`` when absent from the op."""
+    value: float | None = None
+    if op.get("value") is not None:
+        try:
+            value = float(op["value"])
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"{opname} 'value' must be a number (m), got {op['value']!r}"
+            ) from exc
+    relation: dict[str, Any] | None = None
+    if op.get("relation") is not None:
+        if not isinstance(op["relation"], dict):
+            raise OpError(
+                f"{opname} 'relation' must be a JSON object, got {op['relation']!r}"
+            )
+        try:
+            relation = validate_relation(op["relation"])
+        except MeasureError as exc:
+            raise OpError(f"{opname}: {exc}") from exc
+    strength: str | None = None
+    if op.get("strength") is not None:
+        strength = str(op["strength"]).strip().lower()
+        if strength not in _STRENGTHS:
+            raise OpError(
+                f"{opname} 'strength' must be one of {' | '.join(_STRENGTHS)}, "
+                f"got {op['strength']!r}"
+            )
+    return value, relation, strength, _opt_str(op.get("reason"))
+
+
+def _find_measure(tree: SeTree, block: str, name: str) -> MeasureSpec | None:
+    for m in tree.measures:
+        if m.block == block and m.name == name:
+            return m
+    return None
+
+
+def _op_add_measure(tree: SeTree, op: dict[str, Any]) -> None:
+    """Mint a named measure on a block — ``value`` (m) and/or ``relation``
+    (``{'source': 'block.measure', 'offset': <m>, 'tol': <m>}``), both
+    optional (a measure may exist as a named handle first — suggestive by
+    contract). A relation source that doesn't exist YET is accepted (a
+    forward reference inside one ops batch is normal); an unresolvable
+    relation is DRC's read-time finding."""
+    block, name = _measure_shared(tree, op, opname="add_measure")
+    if _find_measure(tree, block, name) is not None:
+        raise OpError(
+            f"duplicate measure on block {block!r}: {name!r} (measure "
+            "names are unique per block; set_measure to change it)"
+        )
+    value, relation, strength, reason = _vet_measure_fields(op, opname="add_measure")
+    tree.measures.append(
+        MeasureSpec(
+            block=block,
+            name=name,
+            value=value,
+            relation=relation,
+            strength=strength or "gauge",
+            reason=reason,
+        )
+    )
+
+
+def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
+    """Update an existing measure, presence-based: only the keys the op
+    carries change. An explicit ``value=null``/``relation=null`` is
+    rejected (a presence-based update can't clear a field, and silent
+    inaction would misread as "cleared") — remove + re-add instead."""
+    block, name = _measure_shared(tree, op, opname="set_measure")
+    m = _find_measure(tree, block, name)
+    if m is None:
+        roster = (
+            ", ".join(sorted(x.name for x in tree.measures if x.block == block))
+            or "(none)"
+        )
+        raise OpError(
+            f"no such measure on block {block!r}: {name!r}. "
+            f"Measures on {block!r}: {roster}"
+        )
+    field_keys = ("value", "relation", "strength", "reason")
+    if not any(k in op for k in field_keys):
+        raise OpError(
+            "set_measure needs at least one of value/relation/strength/reason"
+        )
+    # An explicit null must push back, not silently no-op (reviewer
+    # finding): presence-based updates can't express "clear this field".
+    nulled = [k for k in field_keys if k in op and op[k] is None]
+    if nulled:
+        raise OpError(
+            f"set_measure cannot clear {', '.join(nulled)} with null — "
+            "remove_measure + add_measure to drop a field"
+        )
+    value, relation, strength, reason = _vet_measure_fields(op, opname="set_measure")
+    if value is not None:
+        m.value = value
+    if relation is not None:
+        m.relation = relation
+    if strength is not None:
+        m.strength = strength
+    if reason is not None:
+        m.reason = reason
+
+
+def _op_remove_measure(tree: SeTree, op: dict[str, Any]) -> None:
+    """Drop a measure. A surviving relation that pointed at it now
+    dangles — DRC's unresolvable_relation reports it (read-time honesty,
+    same posture as remove_block's measure note)."""
+    block, name = _measure_shared(tree, op, opname="remove_measure")
+    m = _find_measure(tree, block, name)
+    if m is None:
+        roster = (
+            ", ".join(sorted(x.name for x in tree.measures if x.block == block))
+            or "(none)"
+        )
+        raise OpError(
+            f"no such measure on block {block!r}: {name!r}. "
+            f"Measures on {block!r}: {roster}"
+        )
+    tree.measures.remove(m)
+
+
 _OPS = {
     "add_block": _op_add_block,
     "instance_block": _op_instance_block,
@@ -759,4 +1048,9 @@ _OPS = {
     "remove_port": _op_remove_port,
     "connect": _op_connect,
     "disconnect": _op_disconnect,
+    "set_joint": _op_set_joint,
+    "set_load": _op_set_load,
+    "add_measure": _op_add_measure,
+    "set_measure": _op_set_measure,
+    "remove_measure": _op_remove_measure,
 }

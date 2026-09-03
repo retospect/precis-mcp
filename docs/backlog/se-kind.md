@@ -476,6 +476,12 @@ live in the tables, never chunks (nm/ADR-0041 storage rule).
    `relate.py::translational_dof` (the rotational probe twin is new
    kernel work, may slip a slice). Graph-tier DRC (dangling ports, DOF
    contradictions, unresolvable relations) backing `view='drc'`.
+   SHIPPED 2026-09-03 (`precis_se/joints.py`/`measures.py`/`drc.py`,
+   migration 0002): joint schema enforced at write + DRC re-check;
+   press/bearing/snap demand a tolerance relation (bearing's BOM demand
+   deferred to se_bom); worst-case-linear stack-up (RSS later);
+   translational probe only, principal-axis-aligned joints only (the
+   rotational twin slipped, as anticipated).
 4. **Propose/interrogate** — `se_notes` ledger + `view='interview'`
    first (it's pure store work and useful for hand design alone), then
    the `se_propose` job + dry-run gate wired to read/answer notes.
