@@ -39,20 +39,48 @@
 # then converged like every other managed artifact. SAME → skipped;
 # `-e precis_force_agent_image_build=true` overrides.
 #
-# BUILD SOURCE: the repo tree is COPYed to the build host from THIS
-# controller checkout — mirrors roles/tts's `tts_src_dir` copy technique
+# BUILDX PREFLIGHT (gr303169, 2026-09-03 first real run): the Dockerfile
+# requires BuildKit (`# syntax=docker/dockerfile:1.7`, `RUN --mount` in 6+
+# places) — `DOCKER_BUILDKIT=0` is not an option. Homebrew's `docker` formula
+# ships the CLI only; buildx is the separate `docker-buildx` formula (Docker
+# Desktop bundles it, which is how the original 2026-07-18 image was built —
+# this cluster runs the homebrew CLI, not Desktop). A host that passes the
+# docker/colima probe but lacks buildx used to discover that only AFTER the
+# multi-hour build-context transfer below, so the probe right after the
+# runtime check fails the host immediately, before any transfer. macOS/
+# homebrew hosts also get a self-heal install (brew install docker-buildx +
+# symlink into ~/.docker/cli-plugins/) so the play converges on its own
+# rather than needing a human to run the fix by hand; Linux hosts (docker-ce)
+# typically bundle buildx already, so no install task runs there — the
+# preflight still guards them in case that ever isn't true.
+#
+# BUILD SOURCE (gr302869, same first run): the build context is a
+# `git archive` of the pinned sha, cut on THIS controller checkout and
+# shipped as ONE tarball — mirrors roles/tts's `tts_src_dir` copy technique
 # (`copy`, not `synchronize`: the controller's ssh-agent is flaky and
 # synchronize spawns a fresh rsync ssh that fails agent auth — same
-# reasoning as roles/tts/tasks/main.yml). docker/Dockerfile's `agent` target
-# (via `serve` → `builder-lite`) does `COPY . /build/precis-mcp/` then a
-# LOCAL path `uv pip install` — unlike precis-tts's git+https
-# `--build-arg` install, a git clone-by-sha on the build host would be
-# redundant work the controller's already-synced checkout does for free:
-# scripts/deploy's freshness guard ("local tree does not contain
-# origin/${REF}") already asserts this checkout matches the deploy ref
-# before ansible ever runs. Standalone runs (no `precis_target_sha` pinned)
-# fall back to `main` — the label still gates re-runs, it just compares
-# against the literal string `main` instead of a frozen sha.
+# reasoning as roles/tts/tasks/main.yml) for the transfer mechanism, but NOT
+# for the payload: the original whole-tree `ansible.builtin.copy` (no
+# excludes) file-by-file copied the ENTIRE controller checkout — `.git` plus
+# every worktree under `.claude/worktrees/` — over ansible ssh, which took
+# 2h11m on the first real run. `git archive <ref>` emits tracked files only
+# (respects `.gitattributes` export-ignore, never touches `.git`/worktrees/
+# caches) as one tar, so the transfer is back to the ~55 MB the old task
+# comment already claimed. docker/Dockerfile's `agent` target (via `serve` →
+# `builder-lite`) does `COPY . /build/precis-mcp/` then a LOCAL path
+# `uv pip install` against the untarred context — unlike precis-tts's
+# git+https `--build-arg` install, a git clone-by-sha on the build host would
+# be redundant work the archive already does for free. Standalone runs (no
+# `precis_target_sha` pinned) archive `main`.
+#
+# BUILD DIR (gr302869 pt.2 — concurrent-deploy race): the remote build dir is
+# now SHA-named (`<base>/<sha>/`, `<base>/main/` standalone) instead of one
+# shared path — two concurrent deploys writing the same `_agent_build_dir`
+# used to race their (interleaving) copies. A sha-scoped dir isolates
+# concurrent deploys of DIFFERENT shas and makes a re-run of the SAME sha
+# resume/overwrite cleanly. Old sha dirs are swept after a successful build
+# (keep-latest only) so the build host doesn't accumulate one dir per deploy
+# forever.
 #
 # NO-OP GUARD: every task below is gated on a `docker/colima version` probe
 # — a host with neither (no container executor lane wired up) is a clean
@@ -78,9 +106,16 @@
     # (inference — precis-worker-agent.service.j2's "no socket fight" note);
     # building as any other user would hit a permission-denied docker socket.
     _agent_build_user: deploy
-    _agent_build_dir: >-
+    # SHA-scoped (gr302869 pt.2) — see the BUILD DIR header note above.
+    _agent_build_base_dir: >-
       {{ '/tmp/precis-agent-build' if os_family == 'linux'
          else '/Users/deploy/.cache/precis-agent-build' }}
+    _agent_build_dir: "{{ _agent_build_base_dir }}/{{ _agent_image_ref }}"
+    # Apple Silicon layout — same assumption the docker default above makes.
+    _agent_homebrew_prefix: /opt/homebrew
+    _agent_homebrew_bin: "{{ _agent_homebrew_prefix }}/bin/brew"
+    # ONE tarball, cut on the controller — see BUILD SOURCE above.
+    _agent_archive_tar: "/tmp/precis-agent-build-context-{{ _agent_image_ref }}.tar"
   tasks:
     - name: Probe the container runtime (docker/colima) — absence is a clean no-op
       ansible.builtin.command: "{{ _agent_container_bin }} version --format '{{ '{{' }}.Server.Version{{ '}}' }}'"
@@ -97,6 +132,71 @@
           {{ inventory_hostname }}: no docker/colima runtime reachable at
           {{ _agent_container_bin }} (rc={{ agent_runtime.rc }}) — skipping
           the precis-agent image build (no container executor lane on this host).
+
+    # ── buildx (gr303169) — fail fast, BEFORE any build-context transfer ──
+    - name: "Ensure docker-buildx is installed + linked as a CLI plugin (macOS/homebrew self-heal)"
+      when:
+        - agent_runtime.rc == 0
+        - os_family == "darwin"
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      environment:
+        HOME: "/Users/{{ _agent_build_user }}"
+      block:
+        - name: Check whether the docker-buildx formula is already installed
+          ansible.builtin.stat:
+            path: "{{ _agent_homebrew_prefix }}/opt/docker-buildx"
+          register: agent_buildx_formula
+
+        - name: brew install docker-buildx (only when the formula is missing)
+          when: not (agent_buildx_formula.stat.exists | default(false))
+          ansible.builtin.command: "{{ _agent_homebrew_bin }} install docker-buildx"
+          changed_when: true
+
+        - name: Resolve the docker-buildx homebrew prefix
+          ansible.builtin.command: "{{ _agent_homebrew_bin }} --prefix docker-buildx"
+          register: agent_buildx_prefix
+          changed_when: false
+
+        - name: Ensure ~/.docker/cli-plugins exists
+          ansible.builtin.file:
+            path: "/Users/{{ _agent_build_user }}/.docker/cli-plugins"
+            state: directory
+            mode: "0755"
+
+        - name: Symlink docker-buildx into the docker CLI plugins dir (idempotent — no churn on re-run)
+          ansible.builtin.file:
+            src: "{{ agent_buildx_prefix.stdout | trim }}/bin/docker-buildx"
+            dest: "/Users/{{ _agent_build_user }}/.docker/cli-plugins/docker-buildx"
+            state: link
+            force: true
+
+    - name: "Preflight: docker buildx must be reachable (gr303169 — fail fast, before the context transfer)"
+      when: agent_runtime.rc == 0
+      ansible.builtin.command: "{{ _agent_container_bin }} buildx version"
+      environment:
+        DOCKER_BUILDKIT: "1"
+      register: agent_buildx_probe
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      changed_when: false
+      failed_when: false
+
+    - name: "Fail this host if buildx is still unreachable (self-heal above should have fixed macOS)"
+      when: agent_runtime.rc == 0
+      ansible.builtin.assert:
+        that: agent_buildx_probe.rc == 0
+        quiet: true
+        fail_msg: >-
+          {{ inventory_hostname }}: `{{ _agent_container_bin }} buildx version` failed
+          (rc={{ agent_buildx_probe.rc }}) — the precis-agent image's Dockerfile requires
+          BuildKit (`# syntax=docker/dockerfile:1.7`, `RUN --mount`), so
+          DOCKER_BUILDKIT=0 is not an option. Fix: `brew install docker-buildx` then
+          `ln -sfn "$(brew --prefix docker-buildx)/bin/docker-buildx"
+          ~/.docker/cli-plugins/docker-buildx` (Docker Desktop bundles buildx already;
+          a homebrew-CLI-only docker install does not). On macOS this play's own
+          self-heal task should have done this automatically — a red here means that
+          install itself failed (check its output above).
 
     - name: Read the resident precis-agent image's baked sha (OCI label)
       when: agent_runtime.rc == 0
@@ -125,26 +225,55 @@
       become: true
       become_user: "{{ _agent_build_user }}"
       block:
-        - name: Ensure the build context dir on the host
+        - name: Ensure the (sha-scoped) build context dir on the host
           ansible.builtin.file:
             path: "{{ _agent_build_dir }}"
             state: directory
             mode: "0755"
 
-        - name: Copy the precis-mcp repo tree (build context) to the host
+        - name: "Build the git-archive build-context tarball (controller; tracked files only, gr302869)"
+          # git archive — NOT the old whole-tree `copy` — so `.git` and every
+          # worktree under `.claude/worktrees/` never leave the controller.
+          # Cut from the pinned sha (or `main` on a standalone run), matching
+          # `_agent_image_ref`/the OCI label exactly.
+          delegate_to: localhost
+          become: false
+          vars:
+            # ansible.cfg's remote_tmp is a CLUSTER path owned by the remote
+            # user — on the controller it can be owned by a different local
+            # user, which makes a localhost-delegated task UNREACHABLE at
+            # tmpdir creation. Same override redeploy-precis.yml's 0b2 uses.
+            ansible_remote_tmp: "~/.ansible/tmp"
+          ansible.builtin.command:
+            cmd: "git archive --format=tar -o {{ _agent_archive_tar }} {{ _agent_image_ref }}"
+            chdir: "{{ playbook_dir }}/../.."
+          register: agent_archive_build
+          changed_when: true
+
+        - name: Copy the build-context tarball to the host (ONE file — ansible's own ssh, not synchronize)
           # copy (not synchronize) rides ansible's own ssh — mirrors
           # roles/tts's tts_src_dir copy (the controller's ssh-agent is
           # flaky and synchronize spawns a fresh rsync ssh that fails agent
-          # auth). Whole-repo (~55 MB) rather than tts's two files because
-          # the `agent` target's builder-lite stage needs `COPY . /build/
-          # precis-mcp/` for its local-path `uv pip install`; a stray
-          # .venv/.mypy_cache in a non-synced checkout just costs disk, not
-          # correctness — the copied .dockerignore still keeps the actual
-          # `docker build` context lean.
+          # auth). Now a single git-archive tarball instead of the whole
+          # checkout (gr302869): the old whole-repo `copy` had no excludes
+          # and recursively file-by-file copied the ENTIRE controller
+          # checkout — .git plus ~28 worktrees under .claude/worktrees/ —
+          # gigabytes over ansible ssh, 2h11m on the first real run.
           ansible.builtin.copy:
-            src: "{{ playbook_dir }}/../../"
-            dest: "{{ _agent_build_dir }}/"
+            src: "{{ _agent_archive_tar }}"
+            dest: "{{ _agent_build_dir }}/build-context.tar"
             mode: preserve
+
+        - name: Untar the build context on the host
+          ansible.builtin.unarchive:
+            src: "{{ _agent_build_dir }}/build-context.tar"
+            dest: "{{ _agent_build_dir }}"
+            remote_src: true
+
+        - name: Remove the tarball on the host (keep the build dir lean)
+          ansible.builtin.file:
+            path: "{{ _agent_build_dir }}/build-context.tar"
+            state: absent
 
         - name: docker build --target agent (BuildKit; label stamps the built sha)
           ansible.builtin.command:
@@ -166,6 +295,25 @@
             'Successfully' in (agent_build.stdout + agent_build.stderr)
             or 'naming to' in (agent_build.stdout + agent_build.stderr)
           failed_when: agent_build.rc != 0
+
+        - name: Clean up old precis-agent build dirs (gr302869 pt.2 — keep only the current sha)
+          ansible.builtin.shell: |
+            set -uo pipefail
+            find "{{ _agent_build_base_dir }}" -mindepth 1 -maxdepth 1 -type d \
+              ! -name "{{ _agent_image_ref }}" -exec rm -rf {} +
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        - name: Remove the controller-side tarball
+          delegate_to: localhost
+          become: false
+          vars:
+            ansible_remote_tmp: "~/.ansible/tmp"
+          ansible.builtin.file:
+            path: "{{ _agent_archive_tar }}"
+            state: absent
 
     - name: Assert the precis-agent image is present
       when: agent_runtime.rc == 0
