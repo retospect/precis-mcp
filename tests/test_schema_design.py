@@ -117,12 +117,6 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "nanopub_mirror.dois",
         "nanopub_publish.dependency_codes",
         "nanopub_publish.grounding",
-        # nm plugin (precis_nm 0001/0002): genuinely open-ended design
-        # payloads — per-block DOF spec, connect objectives, free-form meta.
-        "nm_blocks.dof",
-        "nm_connects.meta",
-        "nm_connects.objectives",
-        "nm_topology.meta",
         "part_footprints.centroid",
         "part_footprints.courtyard",
         # 0140: precomputed footprint escape graph (shells/gaps/

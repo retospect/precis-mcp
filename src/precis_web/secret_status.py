@@ -67,7 +67,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     SecretSpec(
         name="CLAUDE_CODE_OAUTH_TOKEN",
         purpose="Auth for daemon-spawned `claude -p` agent runs.",
-        get_url=None,
+        get_url="https://code.claude.com/docs/en/cli-reference",
         get_blurb="Run `claude setup-token` on any machine you're already "
         "logged into, and paste the token it prints here.",
         cost="included with a Claude subscription",
@@ -151,7 +151,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     SecretSpec(
         name="PRECIS_OPENALEX_CONTENT_KEY",
         purpose="OpenAlex premium/content key.",
-        get_url=None,
+        get_url="mailto:support@openalex.org",
         get_blurb="Email support@openalex.org for a premium key — the free "
         "OpenAlex API needs no key at all.",
         cost="paid — premium subscription",
@@ -205,7 +205,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     SecretSpec(
         name="REMARKABLE_RMAPI_CONFIG",
         purpose="Deployment-wide shared reMarkable fallback (full rmapi config body).",
-        get_url=None,
+        get_url="/account",
         get_blurb="Prefer per-user pairing on the /account page — this "
         "vault entry is only the shared-device fallback for sends before "
         "a user has paired their own tablet.",
