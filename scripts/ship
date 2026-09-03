@@ -295,6 +295,10 @@ sync_from_container() {
 # mode the map lives on the mounted worktree already, so neither is needed.
 testmon_into_container() {
     ls "${WORKTREE}"/.testmondata* >/dev/null 2>&1 || return 0
+    # Purge any stale container-side sidecars first — a leftover -wal/-shm
+    # from a *previous* container map must never mix with the host file we're
+    # about to extract (mismatched sidecars = "malformed" on the next open).
+    compose exec -T precis-gate sh -c 'rm -f /app/.testmondata*'
     tar -C "$WORKTREE" -cf - .testmondata* \
         | compose exec -T precis-gate tar -C /app --no-same-owner -xf - || true
 }
@@ -303,6 +307,32 @@ testmon_from_container() {
     # host worktree has no map yet, so a local `.testmondata*` would stay
     # literal and tar would miss the file testmon just built in /app.
     compose exec -T precis-gate sh -c 'ls /app/.testmondata* >/dev/null 2>&1' || return 0
+    # A red/killed gate (OOM-137, mid-run kill) can leave the sqlite db
+    # torn mid-transaction with un-checkpointed -wal/-shm sidecars. Exporting
+    # that as-is corrupts the host map ("database disk image is malformed"),
+    # poisoning every later --impacted run until a human `rm`s the three
+    # files and eats a full-length rerun. Checkpoint (folds -wal into the
+    # main file, leaving one clean file) and integrity-check *inside the
+    # container* first; a red rc here means the map is unsalvageable, so
+    # skip the export and keep the host's last-good map instead. This check
+    # runs regardless of the gate's own rc — a red gate's map is still valid
+    # once it passes checkpoint+integrity, and rc==0 doesn't guarantee the
+    # map wasn't torn by some other interruption either.
+    if ! compose exec -T precis-gate uv run python -c '
+import sqlite3
+c = sqlite3.connect("/app/.testmondata")
+c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+ok = c.execute("PRAGMA integrity_check").fetchone()[0]
+c.close()
+raise SystemExit(0 if ok == "ok" else 1)
+'; then
+        echo "testmon map failed integrity check in container — keeping host map"
+        return 0
+    fi
+    # Purge stale host-side sidecars before extracting: after a TRUNCATE
+    # checkpoint the export is a single clean file, so a leftover host
+    # -wal/-shm from a prior run must not survive to shadow it.
+    rm -f "${WORKTREE}"/.testmondata*
     compose exec -T precis-gate sh -c 'cd /app && tar -cf - .testmondata*' \
         | tar -C "$WORKTREE" --no-same-owner -xf - || true
 }
