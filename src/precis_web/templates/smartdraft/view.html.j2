@@ -239,10 +239,10 @@
    used (since retired), so smartdraft renders LaTeX ($sp^3$, reactions) too.
    mhchem registers \ce{}/\pu{}; auto-render's onload fires the initial pass
    over #sd-content, and afterSwap() re-runs it after every no-reload nav. #}
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/mhchem.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+<link rel="stylesheet" href="/static/katex/katex.min.css" />
+<script defer src="/static/katex/katex.min.js"></script>
+<script defer src="/static/katex/contrib/mhchem.min.js"></script>
+<script defer src="/static/katex/contrib/auto-render.min.js"
   onload="window.__sdRenderMath && window.__sdRenderMath()"></script>
 
 {# ProseMirror mount (window.__mountDraftPM) + the global draftEdit/

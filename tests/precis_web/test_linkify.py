@@ -1347,3 +1347,42 @@ def test_base_template_vendors_htmx_and_alpine_no_unpkg_cdn() -> None:
     assert "cdn.jsdelivr.net" not in html
     assert '<script src="/static/htmx.min.js" defer></script>' in html
     assert '<script src="/static/alpine.min.js" defer></script>' in html
+
+
+# ---- gr298594: repo-wide no-CDN guard ---------------------------------
+#
+# gr298015 (above) only pinned base.html.j2 (htmx/alpine). gr298594 found
+# a second wave of runtime CDN fetches scattered across other templates
+# (katex/mhchem dup in smartdraft, 3Dmol, mermaid ESM, three.js importmap)
+# that silently break on the tailnet-only deployment (no internet egress).
+# All of those are now vendored under precis_web/static/ — this walks
+# EVERY template and fails the day a new CDN <script>/<link>/importmap
+# entry sneaks back in, instead of relying on someone remembering to
+# extend a single-file test.
+_CDN_HOSTS = (
+    "unpkg.com",
+    "cdn.jsdelivr.net",
+    "cdnjs.cloudflare.com",
+    "cdn.tailwindcss.com",
+    "esm.sh",
+    "skypack.dev",
+    "jspm.dev",
+)
+
+
+def test_no_template_loads_assets_from_a_runtime_cdn() -> None:
+    from pathlib import Path
+
+    import precis_web
+
+    templates_dir = Path(precis_web.__file__).parent / "templates"
+    offenders = []
+    for path in sorted(templates_dir.rglob("*.j2")):
+        text = path.read_text(encoding="utf-8")
+        for host in _CDN_HOSTS:
+            if host in text:
+                offenders.append(f"{path.relative_to(templates_dir)}: {host}")
+    assert not offenders, (
+        "template(s) load assets from a live CDN, which silently no-ops on "
+        f"the tailnet-only (no internet egress) deployment: {offenders}"
+    )

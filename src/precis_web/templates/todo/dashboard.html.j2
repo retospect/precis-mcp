@@ -173,8 +173,8 @@
     <section class="mb-4 rounded-lg border border-slate-200 bg-white p-3 overflow-x-auto">
       <pre class="mermaid">{{ tree_diagram }}</pre>
     </section>
-    <script type="module">
-      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    <script src="/static/mermaid/mermaid.min.js"></script>
+    <script>
       mermaid.initialize({ startOnLoad: true, securityLevel: "strict", theme: "default" });
     </script>
     {% endif %}
