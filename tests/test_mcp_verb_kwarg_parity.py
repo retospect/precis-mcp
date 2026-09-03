@@ -164,13 +164,14 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         ("paper", "edit", "year"),
         ("pres", "edit", "bibtex_type"),
         ("pres", "edit", "date"),
-        ("pres", "edit", "meta"),
         ("pres", "edit", "note"),
         ("pres", "edit", "url"),
         ("pres", "edit", "venue"),
         # -- edit: draft metadata repair -----------------------------------
+        # ("draft","edit","meta") / ("pres","edit","meta") fixed gr301897:
+        # tools/core.py::edit now declares meta= and routes it through the
+        # __extras__ accepted-kwargs gate.
         ("draft", "edit", "list_kind"),
-        ("draft", "edit", "meta"),
         ("draft", "edit", "source"),
         ("draft", "edit", "style"),
         # -- edit: finding acquisition-mode's dead-end flip side ----------

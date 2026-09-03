@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
+from mcp.types import CallToolResult
 
 from precis.runtime import PrecisRuntime
 from precis.store import Store
@@ -41,6 +43,17 @@ def mounted_runtime(runtime_with_store: PrecisRuntime) -> Iterator[PrecisRuntime
         yield runtime_with_store
     finally:
         tools_core._runtime = None
+
+
+def _body(out: Any) -> str:
+    """Pull the text body out of a tool result (mirrors test_mcp_args_kwarg.py)."""
+    if isinstance(out, CallToolResult):
+        return out.content[0].text  # type: ignore[union-attr]
+    return out
+
+
+def _is_error(out: Any) -> bool:
+    return isinstance(out, CallToolResult) and bool(out.isError)
 
 
 def _mint_provenance_handle(store: Store) -> str:
@@ -153,3 +166,76 @@ def test_edit_structure_ops_reach_the_handler_over_the_mcp_door(
     # The edited TOC reflects the op having been applied: two atoms, the O
     # among them — a dropped ops= would leave the design at one C atom.
     assert "aO1" in out, out
+
+
+# ---------------------------------------------------------------------------
+# gr301897: tag()'s missing meta= and edit()'s silently-swallowed meta=
+# ---------------------------------------------------------------------------
+
+
+def test_tag_todo_meta_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``tag(kind='todo', id=…, meta={…})`` through the real MCP callable
+    promotes an allowlisted key (``llm_tier``) — not the raw ``tag() got an
+    unexpected keyword argument 'meta'`` TypeError a missing tool-layer
+    meta= produced before the fix. ``TodoHandler.tag`` already implemented
+    the allowlisted promotion (``guards.check_meta_keys_promotable`` +
+    ``check_llm_tier_meta``); only this door was missing."""
+    tools_core.put(kind="todo", text="unblock the plan_tick crash loop")
+    ref = store.list_refs(kind="todo", limit=1)[0]
+
+    out = tools_core.tag(kind="todo", id=ref.id, meta={"llm_tier": "opus"})
+
+    assert not _is_error(out), _body(out)
+    assert f"id={ref.id}" in _body(out)
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.meta.get("llm_tier") == "opus"
+
+
+def test_edit_pres_meta_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``edit(kind='pres', id=…, meta={…})`` through the real MCP callable
+    lands the metadata patch — ``PresentationHandler.edit`` has always
+    accepted ``meta=`` (BibTeX attribution fields), but the tool-layer
+    ``edit()`` never declared or forwarded it (a pre-existing
+    ``("pres","edit","meta")`` gap in the kwarg-parity ratchet, closed
+    alongside gr301897)."""
+    tools_core.put(kind="pres", id="deck-meta-door-test", text="Title slide")
+
+    out = tools_core.edit(
+        kind="pres", id="deck-meta-door-test", meta={"venue": "demo day"}
+    )
+
+    assert not _is_error(out), _body(out)
+    ref = store.get_ref(kind="pres", id="deck-meta-door-test")
+    assert ref is not None
+    assert ref.meta.get("venue") == "demo day"
+
+
+def test_edit_todo_meta_rejected_loudly_not_swallowed(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``edit(kind='todo', id=…, meta={…})`` must fail loudly — ``TodoHandler
+    .edit`` doesn't accept ``meta=`` at all (its meta is set via ``tag()``'s
+    allowlisted promotion instead), so before the fix this reached the
+    handler's ``**_kw`` catch-all and vanished with a bare "success" body
+    and no meta write (gr301897, symptom 2 — worse than the tag() TypeError
+    because nothing signalled the drop)."""
+    tools_core.put(kind="todo", text="unblock the plan_tick crash loop")
+    ref = store.list_refs(kind="todo", limit=1)[0]
+
+    out = tools_core.edit(kind="todo", id=ref.id, meta={"llm_tier": "opus"})
+
+    assert _is_error(out), _body(out)
+    body = _body(out)
+    assert "[error:BadInput]" in body
+    assert "meta" in body
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.meta.get("llm_tier") != "opus"

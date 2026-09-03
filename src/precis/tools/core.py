@@ -1174,6 +1174,17 @@ def edit(
     ops: list[dict[str, Any]] | None = None,
     # Mirrors ``put``'s ``args=`` — kind-specific op payloads on edit.
     args: dict[str, Any] | None = None,
+    # metadata patch (see precis-pres-help / precis-draft-help): meta=
+    # merges keys into the ref's meta dict, on the kinds whose edit()
+    # handler declares it — today pres (BibTeX attribution: venue/date/
+    # authors/...) and draft (a registry ``term`` leaf's attribute bag).
+    # Routed through the same args=-validation gate ``_invoke_handler``
+    # already uses for put()/get()'s args= (not the ``args=`` param
+    # above, which is edit's own separate op-payload tunnel) — a kind
+    # whose handler doesn't declare meta= (e.g. todo, whose meta is set
+    # via tag()'s allowlisted promotion instead) gets a loud BadInput
+    # naming 'meta' rather than a silent **_kw swallow (gr301897).
+    meta: dict[str, Any] | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -1193,6 +1204,10 @@ def edit(
     That vocabulary is the file-kind shape; kinds vary (`todo`/
     `memory`/`quest`: `mode='replace'` only — see the `mode=` param
     help). A wrong mode raises `BadInput` naming the accepted set.
+
+    `meta=` (pres/draft only — metadata-patch kinds) merges keys into
+    the ref's meta; a kind whose handler doesn't accept it raises
+    `BadInput` naming `meta` rather than silently dropping it.
 
     Full reference: get(kind='skill', id='precis-edit-help'), or
     search(kind='skill', q='changing existing content') for a topical
@@ -1244,6 +1259,14 @@ def edit(
         "ops": ops,
         "args": args,
     }
+    if meta is not None:
+        # Ride the ``__extras__`` channel (the same accepted-kwargs gate
+        # ``_invoke_handler`` already runs for get()/put()'s args=) rather
+        # than a flat payload key — a flat key would just vanish into a
+        # non-accepting handler's ``**_kw`` catch-all, the exact silent
+        # swallow this fix closes (gr301897). ``args=`` above is edit's
+        # own separate op-payload tunnel and is left untouched.
+        payload["__extras__"] = {"meta": meta}
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)
 
@@ -1282,6 +1305,15 @@ def tag(
     id: str | int | None = None,
     add: list[str] | None = None,
     remove: list[str] | None = None,
+    # todo (see precis-todo-tree-help): meta= merges keys into the todo's
+    # ``refs.meta`` — a closed, handler-enforced allowlist
+    # (``rotation_root``/``worker_mintable``/``schedule``/``llm_tier``;
+    # ``guards.check_meta_keys_promotable``), not a general meta bag.
+    # Declared at the verb level (the gr262482 pattern) so strict-schema MCP
+    # clients don't strip it — TodoHandler.tag already implements the
+    # promotion; only this door was missing (gr301897). Other kinds' tag()
+    # don't declare meta and swallow it via **_kw (a no-op, not an error).
+    meta: dict[str, Any] | None = None,
 ) -> str:
     """Add and/or remove tags on an existing ref (atomic).
 
@@ -1298,11 +1330,16 @@ def tag(
     web/perplexity-research/perplexity-reasoning/websearch/youtube:
     CACHE+WATCH. oracle/skill: none. python/calc/math: tag unsupported.
 
+    `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
+    onto the ref's meta dict — see precis-todo-tree-help.
+
     Full reference: get(kind='skill', id='precis-tag-help'), or
     search(kind='skill', q='classifying refs') for a topical lookup.
     `precis-tags` is the authoritative axis matrix.
     """
-    return _dispatch("tag", {"kind": kind, "id": id, "add": add, "remove": remove})
+    return _dispatch(
+        "tag", {"kind": kind, "id": id, "add": add, "remove": remove, "meta": meta}
+    )
 
 
 def link(
@@ -1460,6 +1497,7 @@ _EDIT_HELP: dict[str, str] = {
     "nth": "1-based index when match='nth'.",
     "allow_rename": "Opt in to qualname-drop gate override (Python).",
     "dry_run": "Preview without writing (True | 'diff' | 'full').",
+    "meta": "Metadata patch (pres/draft only); other kinds reject it loudly.",
 }
 
 _DELETE_HELP: dict[str, str] = {
@@ -1472,6 +1510,7 @@ _TAG_HELP: dict[str, str] = {
     "id": "Ref id.",
     "add": "Tags to add.",
     "remove": "Tags to remove.",
+    "meta": "todo only: allowlisted meta keys to promote (e.g. llm_tier).",
 }
 
 _LINK_HELP: dict[str, str] = {

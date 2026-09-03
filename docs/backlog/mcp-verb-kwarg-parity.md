@@ -102,9 +102,12 @@ Lower-urgency / administrative:
   (narration routing / figure provenance) but not on `put()` — so setting
   them at *creation* time is broken while editing an existing chunk to add
   them works. Narrower gap than it looks.
-- `draft.edit(list_kind=/meta=/source=/style=)`, `pres.edit(bibtex_type=/
-  date=/meta=/note=/url=/venue=)` — more metadata-repair fields, same
-  shape as the paper/cfp/datasheet bucket above but lower-traffic kinds.
+- `draft.edit(list_kind=/source=/style=)`, `pres.edit(bibtex_type=/date=/
+  note=/url=/venue=)` — more metadata-repair fields, same shape as the
+  paper/cfp/datasheet bucket above but lower-traffic kinds. (`meta=` on
+  both was fixed by gr301897 — routed through the `__extras__`
+  accepted-kwargs gate, with a loud `BadInput` on kinds that don't
+  declare it, e.g. `todo`.)
 - `job.put(requires=/select=)` — job submission gating; unclear how often
   an agent (vs. only internal callers) needs to set these directly.
 - `message.put(attachments=)` — conversation/thread attachments.
