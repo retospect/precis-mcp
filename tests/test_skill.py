@@ -145,6 +145,22 @@ def test_search_finds_term(skill: SkillHandler) -> None:
     assert "precis-" in out.body
 
 
+def test_search_trailer_interpolates_top_hit_slug(skill: SkillHandler) -> None:
+    """hint-audit item 5: the search drill-down hint used to say
+    ``id='<slug-from-above>'`` — mirrors the ``tag.py``
+    ``_render_search_body`` pattern (interpolate the real top hit's
+    slug) instead of a template the reader has to fill in by hand."""
+    import re
+
+    out = skill.search(q="kind")
+    assert "id='<slug-from-above>'" not in out.body
+    m = re.search(r"get\(kind='skill', id='([^']+)'\)", out.body)
+    assert m is not None
+    top_slug = m.group(1)
+    before_next = out.body.split("Next:")[0]
+    assert top_slug in before_next, "hint slug must be a row shown above it"
+
+
 def test_search_no_match(skill: SkillHandler) -> None:
     # Nonsense tokens only — common English words ("such", "no") would
     # word-match whatever skill happens to use them in prose.
@@ -461,6 +477,39 @@ def test_toc_lists_every_skill_with_synopsis(skill: SkillHandler) -> None:
     # one search recipe inside it.
     assert "Suggested starting commands" in body
     assert "search(kind='skill'" in body
+
+
+def test_toc_suggested_commands_paste_verbatim(skill: SkillHandler) -> None:
+    """hint-audit item 5: the TOC's "Suggested starting commands" table
+    promises "paste verbatim to land somewhere useful", but included
+    ``get(kind='skill', id='<slug>')`` — rejected by ``_SKILL_ID_RE``
+    (``<``/``>`` aren't valid slug chars). Replaced with a real,
+    always-valid slug (``toc``) that actually dispatches."""
+    out = skill.get(id="toc")
+    assert "id='<slug>'" not in out.body
+    assert "get(kind='skill', id='toc')" in out.body
+    # And it genuinely dispatches (the "paste verbatim" promise held).
+    assert skill.get(id="toc").body
+
+
+def test_scoped_toc_hint_uses_scope_lower_bound_not_hardcoded_zero(
+    skill: SkillHandler,
+) -> None:
+    """hint-audit item 5: the scoped-TOC chunk hint hardcoded ``~0``
+    claiming it was "from above" even when the scoped listing doesn't
+    start at 0. Discover a real non-zero position from the unscoped
+    TOC, scope to it, and confirm the hint anchors on THAT position."""
+    unscoped = skill.get(id="precis-overview/toc").body
+    import re
+
+    positions = sorted({int(m) for m in re.findall(r"precis-overview~(\d+)", unscoped)})
+    nonzero = [p for p in positions if p > 0]
+    assert nonzero, "fixture skill needs a chunk position > 0 for this test"
+    lo = nonzero[0]
+
+    scoped = skill.get(id=f"precis-overview~{lo}..{lo}/toc").body
+    assert f"id='precis-overview~{lo}')" in scoped
+    assert "id='precis-overview~0')" not in scoped
 
 
 def test_toc_listed_in_bare_index_hint(skill: SkillHandler) -> None:

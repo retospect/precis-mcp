@@ -443,20 +443,20 @@ class PythonHandler(Handler):
                     "list files in this repo",
                 )
             )
-            # Fully-qualified symbol shape (`::` separator or dotted
-            # path) that missed → the relevant repo may not be in
-            # PRECIS_PYTHON_ROOTS. Surface that as a hint so the LLM
-            # can ask the user, rather than re-trying narrower variants.
-            if "::" in q or ("." in q and "/" not in q):
-                hints.append(
-                    (
-                        "# check PRECIS_PYTHON_ROOTS",
-                        "the repo for this symbol may not be configured "
-                        "— ask the user to add an alias=path entry",
-                    )
-                )
             body = f"no python symbols match {q!r}\n\n"
             body += render_next_section(hints)
+            # Fully-qualified symbol shape (`::` separator or dotted
+            # path) that missed → the relevant repo may not be in
+            # PRECIS_PYTHON_ROOTS. Surface that as prose, not a nav
+            # tuple — ``# check PRECIS_PYTHON_ROOTS`` is a shell
+            # comment, not a callable verb, and the Next: table's
+            # "execute this call" column only ever holds real calls.
+            if "::" in q or ("." in q and "/" not in q):
+                body += (
+                    "\n\nNote: the repo for this symbol may not be "
+                    "configured in PRECIS_PYTHON_ROOTS — ask the user to "
+                    "add an alias=path entry."
+                )
             return Response(body=body)
 
         hits.sort(key=lambda h: -h[0])
@@ -1645,11 +1645,22 @@ def _render_put_response(
     lines.append("")
     lines.append(change_summary)
 
-    lines.append("")
-    lines.append("Next:")
+    nav: list[tuple[str, str]] = []
     if parsed.qualname is not None:
-        lines.append(f"  get(kind='python', id='{parsed.alias}::{parsed.qualname}')")
+        nav.append(
+            (
+                f"get(kind='python', id='{parsed.alias}::{parsed.qualname}')",
+                "re-fetch the edited symbol",
+            )
+        )
     elif parsed.file is not None:
-        lines.append(f"  get(kind='python', id='{parsed.alias}/{parsed.file}')")
+        nav.append(
+            (
+                f"get(kind='python', id='{parsed.alias}/{parsed.file}')",
+                "re-fetch the edited file",
+            )
+        )
 
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    body += render_next_section(nav)
+    return body

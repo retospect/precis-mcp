@@ -822,18 +822,25 @@ class SkillHandler(Handler):
                 "context, not to invoke recipes."
             )
 
-        body += render_next_section(
-            [
+        # Drill-down: interpolate the top hit's real slug (mirrors
+        # tag.py's ``_render_search_body`` pattern) rather than a
+        # ``<slug-from-above>`` placeholder — nothing on an empty
+        # results page to substitute it with anyway.
+        nav: list[tuple[str, str]] = []
+        if visible:
+            nav.append(
                 (
-                    "get(kind='skill', id='<slug-from-above>')",
-                    "read the full skill (paste any slug from the table)",
-                ),
-                (
-                    f"search(kind='skill', q={q!r}, page_size=25)",
-                    "widen to more hits",
-                ),
-            ]
+                    f"get(kind='skill', id={visible[0].slug!r})",
+                    "read the full skill (top hit above)",
+                )
+            )
+        nav.append(
+            (
+                f"search(kind='skill', q={q!r}, page_size=25)",
+                "widen to more hits",
+            )
         )
+        body += render_next_section(nav)
         return Response(body=body)
 
     # ── search helpers ─────────────────────────────────────────────
@@ -979,6 +986,11 @@ class SkillHandler(Handler):
             adapter=adapter,
             scope=scope,
         )
+        # ``~0`` was hardcoded and claimed "from above" even when the
+        # scoped listing doesn't include chunk 0 — anchor on the
+        # scope's own lower bound when one was given, since that's
+        # the first position the rendered listing actually shows.
+        first_pos = scope[0] if scope is not None else 0
         body += render_next_section(
             [
                 (
@@ -986,7 +998,7 @@ class SkillHandler(Handler):
                     "read the skill's card + chunk overview",
                 ),
                 (
-                    f"get(kind='skill', id='{slug}~0')",
+                    f"get(kind='skill', id='{slug}~{first_pos}')",
                     "read a specific chunk (use any handle from above)",
                 ),
             ]
@@ -1319,8 +1331,13 @@ class SkillHandler(Handler):
                         "purpose": "fuzzy lookup by topic",
                     },
                     {
-                        "command": "get(kind='skill', id='<slug>')",
-                        "purpose": "fetch any skill from the table above",
+                        # "paste verbatim" is promised above — a
+                        # ``<slug>`` template contradicts that (it 400s
+                        # unless substituted; ``_SKILL_ID_RE`` rejects
+                        # ``<``/``>``). Use a real, always-valid slug
+                        # instead, same as the index's suggestion table.
+                        "command": "get(kind='skill', id='toc')",
+                        "purpose": "fetch a skill by slug (any row above works too)",
                     },
                 ],
                 schema=["command", "purpose"],

@@ -17,6 +17,13 @@ from __future__ import annotations
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.store.types import Tag
+from precis.utils import handle_registry
+from tests.hintcheck import assert_hints_round_trip
+
+
+def _pa(ref_id: int) -> str:
+    """The universal paper record handle for ``ref_id`` (e.g. ``pa5``)."""
+    return handle_registry.format_handle("paper", ref_id)
 
 
 def _stub(
@@ -393,9 +400,19 @@ def test_view_stubs_lists_backlog(runtime_with_store: PrecisRuntime) -> None:
 
     out = runtime_with_store.dispatch("search", {"view": "stubs"})
     assert "papers we still need to get" in out
-    assert f"ref {rid}" in out
+    # Rows print the universal ``pa<id>`` handle, not a bare
+    # ``ref {id}`` (which only resolves via the fallback that fires
+    # the bare_numeric_hint WARNING).
+    assert _pa(rid) in out
     assert "10.1/needit" in out
     assert "DREAM:acquire" in out  # the Next: block points at the tag view
+    # The stub-mint hint uses the same handle, quoted as a get() id=.
+    assert f"get(kind='paper', id='{_pa(rid)}')" in out
+    # And the tag-sweep hint uses the working cross-kind form (item 4):
+    # a single-kind ``search(kind='paper', tags=[...])`` has no q= and
+    # paper's search() requires one — the tags-only sweep only exists
+    # on the cross-kind branch.
+    assert "search(kind='*', tags=['DREAM:acquire'])" in out
 
 
 def test_view_stubs_shows_prio_when_ranked(runtime_with_store: PrecisRuntime) -> None:
@@ -454,7 +471,7 @@ def test_view_stubs_ignores_q(runtime_with_store: PrecisRuntime) -> None:
     out = runtime_with_store.dispatch(
         "search", {"view": "stubs", "q": "totally unrelated query"}
     )
-    assert f"ref {rid}" in out
+    assert _pa(rid) in out
 
 
 # ── dispatch: search(view='chase-queue') ─────────────────────────────
@@ -473,8 +490,8 @@ def test_view_chase_queue_is_doi_only(runtime_with_store: PrecisRuntime) -> None
 
     out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
     assert "chase queue" in out
-    assert f"ref {doi_rid}" in out
-    assert f"ref {arxiv_rid}" not in out
+    assert _pa(doi_rid) in out
+    assert _pa(arxiv_rid) not in out
 
 
 def test_view_chase_queue_never_tried_first(runtime_with_store: PrecisRuntime) -> None:
@@ -485,7 +502,7 @@ def test_view_chase_queue_never_tried_first(runtime_with_store: PrecisRuntime) -
     never = _stub(store, cite_key="cq_never2024", doi="10.1/cqnever")
 
     out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
-    assert out.index(f"ref {never}") < out.index(f"ref {tried}")
+    assert out.index(_pa(never)) < out.index(_pa(tried))
 
 
 def test_view_chase_queue_ignores_q(runtime_with_store: PrecisRuntime) -> None:
@@ -496,7 +513,7 @@ def test_view_chase_queue_ignores_q(runtime_with_store: PrecisRuntime) -> None:
     out = runtime_with_store.dispatch(
         "search", {"view": "chase-queue", "q": "totally unrelated query"}
     )
-    assert f"ref {rid}" in out
+    assert _pa(rid) in out
 
 
 def test_view_chase_queue_shows_prio_when_ranked(
@@ -509,6 +526,29 @@ def test_view_chase_queue_shows_prio_when_ranked(
 
     out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
     assert "prio 7" in out
+
+
+def test_view_stubs_trailer_hints_round_trip(runtime_with_store: PrecisRuntime) -> None:
+    """Every ``get``/``search`` the ``view='stubs'`` trailer advertises
+    must parse and execute. Covers the tags-only sweep needing the
+    cross-kind branch, and the bare-numeric ``id=`` row/hint replaced
+    with the ``pa<id>`` handle."""
+    store = runtime_with_store.hub.store
+    assert store is not None
+    _stub(store, cite_key="rt2024", doi="10.1/rt")
+    out = runtime_with_store.dispatch("search", {"view": "stubs"})
+    assert_hints_round_trip(out, runtime_with_store.dispatch)
+
+
+def test_view_chase_queue_trailer_hints_round_trip(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Same round-trip guard for ``view='chase-queue'``."""
+    store = runtime_with_store.hub.store
+    assert store is not None
+    _stub(store, cite_key="cqrt2024", doi="10.1/cqrt")
+    out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
+    assert_hints_round_trip(out, runtime_with_store.dispatch)
 
 
 # ── store engine: requeue_stubs_for_fetch (Part 3) ───────────────────

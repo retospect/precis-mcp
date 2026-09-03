@@ -139,8 +139,11 @@ class TexHandler(PlaintextHandler):
             [
                 (f"get(kind='{self._KIND}', id='{ref.slug}/raw')", "full source"),
                 (f"get(id='{handle}')", "overview"),
+                # ``scope=`` is a FILE SLUG, not a handle — tex resolves
+                # search scope via ``ensure_ingested`` (path + cite_key
+                # lookup), so the ``tx42`` handle form raises NotFound.
                 (
-                    f"search(kind='{self._KIND}', q='...', scope='{handle}')",
+                    f"search(kind='{self._KIND}', q='...', scope='{ref.slug}')",
                     "search inside this file",
                 ),
             ]

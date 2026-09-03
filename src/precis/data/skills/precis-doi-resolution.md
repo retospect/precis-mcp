@@ -80,22 +80,17 @@ get(kind="paper", id="10.1038/nature10352", view="endnote")
 ## Recover when a DOI lookup misses
 ## What if get(kind='paper', id='<DOI>') raises NotFound?
 
-The DOI isn't ingested. Register a finding so the worker chases it:
+The DOI isn't ingested. Stub it so the fetch worker chases a copy:
 
 ```python
-put(
-    kind="finding",
-    title="<one-line claim from the citing context>",
-    body="<the surrounding sentence(s)>",
-    cited_in="doi:10.1038/nature10352",
-)
-# → created finding id=N
+put(kind="paper", doi="10.1038/nature10352")
 ```
 
-The chase fetches via Unpaywall / arXiv / S2 and walks back toward
-the primary source. Drop `[N]` in your draft; `precis resolve`
-substitutes the established `cite_key` at finalisation. Full chase
-mechanics in `precis-finding-help`.
+`cited_in=` on a `finding` only resolves corpus handles — a bare
+`'doi:…'` is rejected. To register a claim that auto-grounds once the
+paper lands, mint the finding in **acquisition mode** instead
+(`wants=[{'doi': '10.1038/nature10352'}]` + `provenance=<citing
+chunk>` in place of `cited_in=`) — see `precis-finding-help`.
 
 ## Find which ingested papers cite a given DOI
 ## Search the corpus for body-text mentions of a DOI

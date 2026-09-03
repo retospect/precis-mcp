@@ -289,18 +289,24 @@ def _list_languages(video_id: str) -> Response:
     """
     yt = require_optional("youtube_transcript_api")
     try:
-        transcript_list = yt.YouTubeTranscriptApi().list(video_id)
+        transcripts = list(yt.YouTubeTranscriptApi().list(video_id))
     except Exception as exc:
         raise Upstream(f"YouTube API error: {exc}") from exc
 
     lines = [f"Available transcripts for {video_id}:"]
-    for t in transcript_list:
+    for t in transcripts:
         mark = "auto" if t.is_generated else "human"
         lines.append(f"  {t.language_code:<6} {t.language:<30} [{mark}]")
     lines.append("")
     lines.append(f"- {_YT_BASE_ATTRIBUTION}")
     lines.append(f"  Watch: https://www.youtube.com/watch?v={video_id}")
     body = "\n".join(lines)
+    # Interpolate the first listed track's real language code — the
+    # table just above prints real codes, so a hardcoded ``LANG_CODE``
+    # placeholder is a copy-paste trap (falls back to the placeholder
+    # only in the no-tracks edge case, where nothing real exists to
+    # substitute).
+    first_code = transcripts[0].language_code if transcripts else "LANG_CODE"
     # Canonical Next: block — c5 unified-trailer patch. Previously
     # a raw ``Next: get(...)`` f-string that skipped the column
     # alignment every other kind uses.
@@ -317,7 +323,7 @@ def _list_languages(video_id: str) -> Response:
                 # mechanism on every kind that has params beyond the
                 # five top-level kwargs.
                 f"get(kind='youtube', id='{video_id}', "
-                "args={'languages': 'LANG_CODE'})",
+                f"args={{'languages': {first_code!r}}})",
                 "fetch a specific transcript",
             ),
         ]

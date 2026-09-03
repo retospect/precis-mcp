@@ -120,15 +120,22 @@ class RandomHandler(Handler):
         block, ref = picked
 
         handle = _handle(ref, block)
-        drill = _drill_down(ref, block)
         preview = _preview(block.text)
 
         body = f"# random\n`{handle}`"
         if preview:
             body += f"\n\n{preview}"
+        # Drill-down uses the SAME handle just printed in the body (see
+        # ``_handle``) instead of separately re-deriving a
+        # ``kind='<slug>~<ord>'`` call — either self-identifies its kind
+        # at dispatch (universal 2-char-code handles via
+        # ``_maybe_infer_kind_from_handle``, or the colon form via
+        # ``_maybe_split_prefixed_id``, both in ``runtime/dispatch.py``),
+        # so nothing is lost, and the reader can now visually match the
+        # hint against what's on the page.
         body += render_next_section(
             [
-                (drill, "read this block"),
+                (f"get(id={handle!r})", "read this block"),
                 ("get(kind='random')", "another random pick"),
             ]
         )
@@ -224,34 +231,34 @@ class RandomHandler(Handler):
 
 
 def _handle(ref: Any, block: Any) -> str:
-    """Universal handle for the picked block.
+    """Universal handle for the picked block — this is ALSO what the
+    drill-down hint advertises, so the two must always agree (a reader
+    who can't visually match the body's handle against the trailer's
+    call reads a correct hint as a wrong one).
 
-    Returns the computed chunk handle (``pc<chunk_id>``) for a kind with a
-    chunk code, falling back to the legacy ``kind:identifier~pos`` for a
-    code-less kind. Either form is a valid ``link=`` / ``id=`` address.
+    Three forms, in preference order:
+
+    1. The computed chunk handle (``pc<chunk_id>``) for a kind with a
+       chunk code — self-identifying, no ``kind=`` needed on dispatch
+       (``_maybe_infer_kind_from_handle``).
+    2. For a code-less **slug** kind (e.g. ``oracle``), the colon form
+       ``kind:slug~pos`` — also self-identifying (the colon-prefix
+       grammar, ``_maybe_split_prefixed_id``) and the ``~pos`` selector
+       is real (the kind supports fetching one block by position).
+    3. For a code-less **numeric** kind (e.g. ``memory``), the colon
+       form WITHOUT a selector: ``kind:ref_id``. Numeric kinds render
+       the whole ref on ``get`` regardless of which block was picked
+       and don't parse a ``~pos`` suffix on ``id=`` — a trailing
+       ``~{block.ord}`` here would print a handle that then 400s if
+       pasted, which is worse than the mismatch this function exists
+       to fix.
     """
-    ident = ref.slug if ref.slug else str(ref.id)
-    return handle_registry.try_format(ref.kind, block.id, chunk=True) or (
-        f"{ref.kind}:{ident}~{block.ord}"
-    )
-
-
-def _drill_down(ref: Any, block: Any) -> str:
-    """Build the ``get(...)`` call that fetches the picked block.
-
-    For numeric kinds (``memory`` / ``todo`` / ``gripe`` / ``anki``)
-    the ref id alone is enough — these kinds render the whole ref
-    body on ``get`` and don't split it by block. For slug kinds
-    with multi-block content (``paper`` / ``oracle`` / ``conv``)
-    we include the ``~pos`` selector so the agent lands on the
-    exact block we picked.
-    """
+    universal = handle_registry.try_format(ref.kind, block.id, chunk=True)
+    if universal is not None:
+        return universal
     if ref.slug is None:
-        # Numeric kind — ``id=`` is an int literal, not a quoted slug.
-        return f"get(kind={ref.kind!r}, id={ref.id})"
-    # Slug kind — address the specific block via ``slug~pos``.
-    selector = f"{ref.slug}~{block.ord}"
-    return f"get(kind={ref.kind!r}, id={selector!r})"
+        return f"{ref.kind}:{ref.id}"
+    return f"{ref.kind}:{ref.slug}~{block.ord}"
 
 
 def _preview(text: str, *, max_chars: int = 160) -> str:

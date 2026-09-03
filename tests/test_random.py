@@ -152,16 +152,18 @@ def test_slug_kind_handle_and_drill_down(
     store: Store, hub: Hub, handler: RandomHandler
 ) -> None:
     """Slug-kind picks render ``kind:slug~pos`` handles and a
-    drill-down hint pointing at ``get(kind=…, id='slug~pos')``."""
+    drill-down hint that pastes the SAME handle (self-identifying via
+    the colon-prefix grammar) rather than a separately re-derived
+    ``kind='...', id='slug~pos'`` pair."""
     _seed_oracle_with_embeddings(
         store, hub, "test-trad", ["the mountain teaches stillness"]
     )
     r = handler.get()
     # Canonical handle in the body, backtick-wrapped.
     assert "`oracle:test-trad~0`" in r.body
-    # Next: trailer teaches the drill-down call.
+    # Next: trailer teaches the drill-down call — same handle as the body.
     assert "Next:" in r.body
-    assert "get(kind='oracle', id='test-trad~0')" in r.body
+    assert "get(id='oracle:test-trad~0')" in r.body
     # And the "pick again" self-reference.
     assert "get(kind='random')" in r.body
 
@@ -201,14 +203,17 @@ def test_slug_kind_long_line_truncated_in_preview(
 def test_numeric_kind_handle_is_ref_id(
     store: Store, hub: Hub, handler: RandomHandler
 ) -> None:
-    """Numeric kinds (memory / todo / …) have no slug — the
-    handle falls back to ``kind:<int>~0`` and the drill-down hint
-    uses the int id without quotes."""
+    """Numeric kinds (memory / todo / …) have no slug and no per-block
+    ``~pos`` selector on ``get`` (the whole ref renders regardless of
+    which block was picked) — the handle is bare ``kind:<int>``, and
+    the drill-down hint pastes that same handle."""
     ref_id = _seed_memory(store, hub, "remember this")
     r = handler.get()
-    assert f"`memory:{ref_id}~0`" in r.body
-    # Drill-down is ``id=<int>`` (no quotes — it's a literal int).
-    assert f"get(kind='memory', id={ref_id})" in r.body
+    assert f"`memory:{ref_id}`" in r.body
+    assert f"`memory:{ref_id}~0`" not in r.body
+    # Drill-down pastes the same handle — self-identifies via the
+    # colon-prefix grammar, no separate kind= re-derivation.
+    assert f"get(id='memory:{ref_id}')" in r.body
 
 
 # ---------------------------------------------------------------------------

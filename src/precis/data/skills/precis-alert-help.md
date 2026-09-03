@@ -65,7 +65,7 @@ fixed condition leaves the open list on the next pass.
 ```
 get(kind='alert', id='/open')          # currently-open alerts
 get(kind='alert', id='/recent')        # recent (open + resolved)
-get(kind='alert', id=N)                # one alert + tags
+get(kind='alert', id=42)               # one alert + tags
 search(kind='alert', q='spin loop')    # lexical over titles
 search(kind='alert', tags=['alert-source:nursery:spin-loop'])
 search(kind='alert', tags=['severity:critical'])
@@ -82,7 +82,7 @@ underlying fix lands), either use the **dismiss** button on the
 `/alerts` web tab or flip the tags:
 
 ```
-tag(kind='alert', id=N, add=['alert-state:resolved'],
+tag(kind='alert', id=42, add=['alert-state:resolved'],
     remove=['alert-state:open'])
 ```
 

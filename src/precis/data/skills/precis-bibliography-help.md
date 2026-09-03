@@ -52,7 +52,7 @@ cited yet — that's the normal state for a freshly-ingested paper.
 ## What each column means
 
 - `id` — `ci<N>` handle. Paste into `get(id='ci<N>')` (or
-  `get(kind='citation', id=<N>)`) for the full record (verifier caveats,
+  `get(kind='citation', id=42)`) for the full record (verifier caveats,
   verified-at timestamp).
 - `claim` — the persisted assertion, truncated to ~80 chars.
 - `source` — the chunk handle the quote came from (`pc<chunk_id>`; a range

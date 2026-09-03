@@ -209,7 +209,7 @@ job id immediately; see **[[precis-pcb-route-help]]** for the full `op=` surface
 
 ```python
 put(kind="pcb", id="s", args={"op": "place", "iters": 2000, "seed": 0})
-# ... poll get(kind='job', id=<id>) or re-check view='crossings' ...
+# ... poll get(kind='job', id='<id>') or re-check view='crossings' ...
 put(kind="pcb", id="s", args={"op": "route"})
 ```
 

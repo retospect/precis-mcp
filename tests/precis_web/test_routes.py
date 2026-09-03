@@ -5105,8 +5105,8 @@ def test_dashboard_emits_mermaid_when_tree_and_focus(client, runtime) -> None:
     # Mermaid source block present.
     assert 'class="mermaid"' in resp.text
     assert "graph TD" in resp.text
-    # CDN loader present (lazy-loaded only when the diagram is shown).
-    assert "mermaid.esm.min.mjs" in resp.text
+    # Vendored loader present (templates are CDN-free since gr298594).
+    assert "/static/mermaid/mermaid.min.js" in resp.text
     # Depth selector renders for each allowed value.
     for d in (1, 2, 3, 5, 10):
         assert f"{d} deep" in resp.text

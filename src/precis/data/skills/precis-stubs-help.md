@@ -63,11 +63,14 @@ chasing down manually.
 ## See just the papers a dream decided to chase
 
 ```python
-search(kind="paper", tags=["DREAM:acquire"])
+search(kind='*', tags=['DREAM:acquire'])
 ```
 
 `view='stubs'` is the whole backlog (chase-worker stubs included);
 the `DREAM:acquire` tag marks only the ones a dream explicitly wanted.
+A tags-only sweep needs the cross-kind branch — `search(kind='paper',
+tags=[…])` alone raises "search requires q=" since single-kind paper
+search has no tags-only path.
 
 ## Open a stub to see where it came up
 

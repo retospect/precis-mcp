@@ -22,6 +22,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers.plaintext import PlaintextHandler
 from precis.handlers.tex import TexHandler
 from precis.store import Store
+from tests.hintcheck import assert_hints_round_trip
 
 
 @pytest.fixture
@@ -319,6 +320,37 @@ def test_toc_view_renders_section_tree(handler: TexHandler, tex_root: Path) -> N
     intro_line = body[body.rfind("\n", 0, intro_idx) + 1 : intro_idx]
     materials_line = body[body.rfind("\n", 0, materials_idx) + 1 : materials_idx]
     assert len(materials_line) > len(intro_line)
+
+
+def test_toc_hints_round_trip_and_scope_is_a_slug(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """hint-audit item 2: the TOC's ``Next:`` trailer must advertise
+    ``scope='<file-slug>'`` — tex resolves search scope via
+    ``ensure_ingested`` (a path/cite_key lookup), so the ``tx42``
+    handle form 404s."""
+    _write(
+        tex_root,
+        "paper.tex",
+        r"\section{Introduction}" + "\n\n" + "Body of intro.\n",
+    )
+    out = handler.get(id="paper", view="toc")
+
+    def dispatch(verb: str, kwargs: dict) -> object:
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    # The trailer's ``get(id='<universal-handle>')`` "overview" hint
+    # self-identifies its kind only through the FULL runtime dispatch
+    # layer (``_maybe_infer_kind_from_handle`` in ``runtime/dispatch.py``)
+    # — calling the handler directly (as this test does, mirroring
+    # ``test_chunk_trailer_hints_round_trip``'s pattern) can't resolve
+    # it and isn't part of this fix anyway; restrict execution to the
+    # ``search`` hint this test is actually about, so every hint still
+    # PARSES but only the fixed one is dispatched.
+    hints = assert_hints_round_trip(out.body, dispatch, execute_verbs=("search",))
+    scope_hint = next(h for h in hints if h.startswith("search("))
+    assert "scope='paper'" in scope_hint
 
 
 def test_toc_view_path_form_works(handler: TexHandler, tex_root: Path) -> None:

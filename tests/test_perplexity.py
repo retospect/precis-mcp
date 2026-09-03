@@ -24,6 +24,7 @@ from precis.handlers.perplexity import (
     _title_for_query,
 )
 from precis.store import Store
+from tests.hintcheck import assert_hints_round_trip
 
 # ── stub httpx.Client ────────────────────────────────────────────────
 
@@ -50,6 +51,10 @@ class _StubClient:
     last_payload: dict[str, Any] | None = None
     response: _StubResp | None = None
     raise_on_post: Exception | None = None
+    #: Counts real "upstream" calls — used by the ``no_fetch=True`` /recent
+    #: trailer regression test (hint-audit item 9): dispatching the
+    #: advertised hint on a listed slug must not increment this.
+    call_count: int = 0
 
     def __init__(self, **_kw: Any) -> None:
         pass
@@ -68,6 +73,7 @@ class _StubClient:
         json: dict[str, Any] | None = None,
     ) -> _StubResp:
         type(self).last_payload = json
+        type(self).call_count += 1
         if type(self).raise_on_post is not None:
             raise type(self).raise_on_post  # type: ignore[misc]
         resp = type(self).response
@@ -102,6 +108,7 @@ def _patch_httpx_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
     _StubClient.last_payload = None
     _StubClient.response = _StubResp(json_data=_SAMPLE_RESPONSE)
     _StubClient.raise_on_post = None
+    _StubClient.call_count = 0
     monkeypatch.setattr(httpx, "Client", _StubClient)
 
 
@@ -824,6 +831,78 @@ def test_recent_rejects_unknown_slash_view(
     rather than being treated as a cache-miss query."""
     with pytest.raises(BadInput, match="unknown view"):
         research.get(id="/recnet")
+
+
+def test_recent_trailer_no_fetch_hint_never_posts(
+    websearch: WebsearchHandler,
+) -> None:
+    """hint-audit item 9 (mirrored perplexity ``_render_recent``): the
+    populated listing's ``Next:`` hint must read a listed row via
+    ``no_fetch=True`` — pasting a listed slug bare would MISS the
+    request-hash cache and fire a fresh, billable Sonar call. Dispatch
+    the advertised (and the concrete, real-slug) shape and confirm
+    neither adds an upstream POST."""
+    websearch.get(id="who is the CEO of Anthropic")
+    calls_before = _StubClient.call_count
+
+    resp = websearch.get(id="/recent")
+    assert "no_fetch=True" in resp.body
+
+    hints = assert_hints_round_trip(
+        resp.body,
+        lambda verb, kwargs: getattr(websearch, verb)(**kwargs),
+        whole_body=True,
+    )
+    assert any("no_fetch=True" in h for h in hints)
+
+    # The advertised hint is a template (``id='<slug>'``) so the helper
+    # above only parses it — dispatch the CONCRETE shape (real slug) to
+    # prove the regression that matters.
+    refs = websearch.store.list_refs(kind="websearch", limit=10)
+    real_slug = refs[0].slug
+    assert real_slug is not None
+    websearch.get(kind="websearch", id=real_slug, no_fetch=True)
+
+    assert _StubClient.call_count == calls_before
+
+
+def test_recent_empty_state_migrated_to_render_next_section(
+    research: ResearchHandler,
+) -> None:
+    """The empty-state trailer was hand-rolled prose; confirm it still
+    carries both recovery calls after migrating to
+    ``render_next_section`` (hint-audit item 9, structural note)."""
+    resp = research.get()
+    assert "Next:" in resp.body
+    hints = assert_hints_round_trip(
+        resp.body,
+        lambda verb, kwargs: getattr(research, verb)(**kwargs),
+        whole_body=True,
+        execute_verbs=(),  # both hints are templates; nothing to dispatch
+    )
+    assert any("get(kind='perplexity-research', id='<query>')" in h for h in hints)
+    assert any("mode='import'" in h for h in hints)
+
+
+def test_next_tier_hint_guards_missing_query_in_meta(
+    websearch: WebsearchHandler,
+) -> None:
+    """hint-audit item 11: an unguarded ``meta.get('query')`` renders a
+    valid-but-wrong ``id=None`` literal for a cache row written before
+    ``query`` was tracked in meta. Strip it and confirm the escalation
+    hint is dropped rather than rendering ``id=None``."""
+    websearch.get(id="who is the CEO of Anthropic")
+    refs = websearch.store.list_refs(kind="websearch", limit=1)
+    ref_id = refs[0].id
+    with websearch.store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE cache_state SET meta = meta - 'query' WHERE ref_id = %s",
+            (ref_id,),
+        )
+
+    resp = websearch.get(id="who is the CEO of Anthropic")  # cache hit, re-renders
+    assert "id=None" not in resp.body
+    assert "perplexity-reasoning" not in resp.body
 
 
 def test_recent_survives_without_api_key(

@@ -745,7 +745,8 @@ class QuestHandler(NumericRefHandler):
                     render_next_section(
                         [
                             (
-                                f"link(kind='todo', id=N, target={handle!r}, rel='serves')",
+                                "link(kind='todo', id='<todo-id>', "
+                                f"target={handle!r}, rel='serves')",
                                 "put a project/goal in this quest's service",
                             ),
                             (
@@ -861,7 +862,8 @@ class QuestHandler(NumericRefHandler):
         body += render_next_section(
             [
                 (
-                    f"link(kind='todo', id=N, target={self.kind!r}+':{ref_id}', rel='serves')",
+                    f"link(kind='todo', id='<todo-id>', target={handle!r}, "
+                    "rel='serves')",
                     "put a project/goal in its service",
                 ),
                 (

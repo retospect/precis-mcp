@@ -23,6 +23,7 @@ from precis.handlers._cache_base import (
 from precis.protocol import KindSpec
 from precis.store import Store
 from precis.store.types import ChunkInsert
+from tests.hintcheck import assert_hints_round_trip
 
 
 class _FakeCacheKind(CacheBackedHandler):
@@ -803,3 +804,72 @@ class TestNoFetchServesCache:
         # An explicit refresh must still bypass the cache and re-fetch.
         h.get(id="what-is-crispr", refresh=True)
         assert len(h.fetch_calls) == 2
+
+    def test_no_fetch_by_slug_serves_cache_default_slug_for(self, hub: Hub) -> None:
+        """Regression for the ``/recent`` trailer fix (hint-audit item 9).
+
+        Unlike ``_FakeSlugAddressedKind`` (perplexity-shaped: an
+        idempotent, unhashed ``_slug_for``), ``_FakeCacheKindAsMath``
+        uses the BASE ``_slug_for`` — a content hash suffix derived
+        from the ``_canonical_key``-transformed input. Re-deriving a
+        slug from the PASTED slug (treated as a query) produces a
+        DIFFERENT hash than the one actually stored, so before this
+        fix a listed slug pasted into ``no_fetch=True`` fell straight
+        through to the misleading "not cached yet (paid)" NotFound —
+        the exact trap the ``/recent`` trailer's advertised call must
+        not walk a caller into. The regression that matters is the
+        upstream fetch count: it must stay at 1.
+        """
+        h = _FakeCacheKindAsMath(hub=hub)
+        h.get(q="population of Ireland")
+        assert len(h.fetch_calls) == 1
+        refs = h.store.list_refs(kind="math", limit=10)
+        assert len(refs) == 1
+        slug = refs[0].slug
+        assert slug is not None
+
+        resp = h.get(id=slug, no_fetch=True)
+        assert len(h.fetch_calls) == 1, (
+            "no_fetch=True with a listed slug must NOT trigger a fresh fetch"
+        )
+        assert "the population of ireland answer" in resp.body
+        assert "cached" in (resp.cost or "")
+
+    def test_recent_trailer_advertises_no_fetch_and_round_trips(self, hub: Hub) -> None:
+        """The ``/recent`` listing's ``Next:`` hint must be the exact
+        shape that reads a listed row without spending — dispatching it
+        must not add to ``fetch_calls``."""
+        h = _FakeCacheKindAsMath(hub=hub)
+        h.get(q="speed of light")
+        assert len(h.fetch_calls) == 1
+
+        resp = h.get()  # bare get -> /recent listing
+        assert "no_fetch=True" in resp.body
+
+        hints = assert_hints_round_trip(
+            resp.body,
+            lambda verb, kwargs: getattr(h, verb)(**kwargs),
+            whole_body=True,
+        )
+        assert any("no_fetch=True" in hint for hint in hints)
+        assert len(h.fetch_calls) == 1, (
+            "dispatching the advertised /recent hint must not spend a fetch"
+        )
+
+        # The hint is a template (``id='<slug>'``), so the round-trip
+        # helper only parses it — dispatch the CONCRETE shape (real
+        # slug substituted) to prove the regression that matters:
+        # reading a listed row via this exact call shape must not fetch.
+        refs = h.store.list_refs(kind="math", limit=10)
+        real_slug = refs[0].slug
+        assert real_slug is not None
+        h.get(kind="math", id=real_slug, no_fetch=True)
+        assert len(h.fetch_calls) == 1
+
+    def test_empty_search_hint_templates_example_query(self, hub: Hub) -> None:
+        """The empty-search hint wraps ``example_query`` in angle
+        brackets — it's a real, pastable (and on paid kinds, billable)
+        query, not a placeholder name, so it must read as a template."""
+        h = _FakeCacheKindAsMath(hub=hub)
+        resp = h.search(q="no such thing matches this")
+        assert f"id='<{h.example_query}>'" in resp.body

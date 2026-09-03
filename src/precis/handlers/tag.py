@@ -213,15 +213,16 @@ class TagHandler(Handler):
                 "find tags by name or meaning",
             )
         )
-        # Pagination hint — there might be more.
+        # Pagination hint — there might be more. `get` has no top-level
+        # `page=`/`scope=` kwargs; the working channel is `args=`, which
+        # dispatch flattens onto TagHandler.get's own page=/scope= params.
         if len(rows) == page_size:
+            next_args: dict[str, Any] = {"page": page + 1}
+            if scope:
+                next_args["scope"] = scope
             nexts.append(
                 (
-                    (
-                        f"get(kind='tag', page={page + 1}"
-                        + (f", scope={scope!r}" if scope else "")
-                        + ")"
-                    ),
+                    f"get(kind='tag', args={next_args!r})",
                     f"next {page_size} tags",
                 )
             )
@@ -361,6 +362,15 @@ class TagHandler(Handler):
                 render_agent_table(sem_rows, schema=["tag", "axis", "distance"])
             )
         body = "\n".join(body_parts)
+        if self.embedder is None:
+            # Operator advice, not a callable command — keep it out of the
+            # "execute this call" column (it's a shell invocation, not a
+            # verb call the parser can round-trip).
+            body += (
+                "\n\n(semantic search is off — an operator can run "
+                "`precis worker --once` to drain the tag-embedding queue "
+                "and enable it)"
+            )
         # Drill-down: paste a top hit's slug into a metadata view.
         nexts: list[tuple[str, str]] = []
         if lex:
@@ -377,13 +387,6 @@ class TagHandler(Handler):
                 (
                     f"get(kind='tag', id={top_slug!r})",
                     "metadata for the top hit",
-                )
-            )
-        if self.embedder is None:
-            nexts.append(
-                (
-                    "precis worker --once",
-                    "drain the tag-embedding queue to enable semantic search",
                 )
             )
         body += render_next_section(nexts)

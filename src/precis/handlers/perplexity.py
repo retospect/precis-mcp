@@ -340,18 +340,23 @@ class _PerplexityBase(CacheBackedHandler):
         # formatter), but on cache hit we surface a Next: trailer that
         # points at any other tier the agent might want to escalate to.
         nav: list[tuple[str, str]] = []
-        # Suggest the next tier up, except for perplexity-research (already top tier).
-        if self.spec.kind == "websearch":
+        # Suggest the next tier up, except for perplexity-research (already
+        # top tier). Guarded like the citations hint below: an unguarded
+        # ``meta.get('query')`` renders a valid-but-wrong ``id=None`` literal
+        # for any cache row written before ``query`` was tracked in meta —
+        # it parses fine and only fails at dispatch.
+        query = meta.get("query")
+        if self.spec.kind == "websearch" and query:
             nav.append(
                 (
-                    f"get(kind='perplexity-reasoning', id={meta.get('query')!r})",
+                    f"get(kind='perplexity-reasoning', id={query!r})",
                     "deeper analytical answer (~$0.005/call)",
                 )
             )
-        elif self.spec.kind == "perplexity-reasoning":
+        elif self.spec.kind == "perplexity-reasoning" and query:
             nav.append(
                 (
-                    f"get(kind='perplexity-research', id={meta.get('query')!r})",
+                    f"get(kind='perplexity-research', id={query!r})",
                     "multi-step deep research (~$0.50/call)",
                 )
             )
@@ -383,15 +388,19 @@ class _PerplexityBase(CacheBackedHandler):
         )
         heading = f"# recent {self.spec.kind} refs"
         if not refs:
-            body = (
-                f"{heading}\n\n"
-                f"_(no {self.spec.kind} refs yet.)_\n\n"
-                f"Next:\n"
-                f"- `get(kind={self.spec.kind!r}, id='<query>')` - "
-                f"run a fresh query (paid API)\n"
-                f"- `put(kind={self.spec.kind!r}, id='<query>', "
-                f"text='<report>', mode='import')` - "
-                f"register a pre-generated answer at $0\n"
+            body = f"{heading}\n\n_(no {self.spec.kind} refs yet.)_\n"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind={self.spec.kind!r}, id='<query>')",
+                        f"run a fresh query (paid API, ~${self.TIER.cost_per_call_usd:.4f}/call)",
+                    ),
+                    (
+                        f"put(kind={self.spec.kind!r}, id='<query>', "
+                        "text='<report>', mode='import')",
+                        "register a pre-generated answer at $0",
+                    ),
+                ]
             )
             return Response(body=body)
 
@@ -412,11 +421,21 @@ class _PerplexityBase(CacheBackedHandler):
             count_phrase = f"showing {len(refs)} of at most {limit}"
         else:
             count_phrase = f"showing {len(refs)} of {len(refs)}"
-        lines.append(
-            f"_{count_phrase}. "
-            f"Next: get(kind={self.spec.kind!r}, id='<slug>') to read one._"
+        lines.append(f"_{count_phrase}._")
+        body = "\n".join(lines)
+        # ``no_fetch=True`` matters here: a listed slug pasted into a bare
+        # ``get(id=<slug>)`` MISSES the request-hash cache (the slug isn't
+        # the canonical ``<model>:<query>`` key) and falls through to a
+        # fresh, paid Sonar call — up to ~$0.50 and minutes on this tier.
+        body += render_next_section(
+            [
+                (
+                    f"get(kind={self.spec.kind!r}, id='<slug>', no_fetch=True)",
+                    "read one listed row (never triggers a fresh, billable fetch)",
+                ),
+            ]
         )
-        return Response(body="\n".join(lines))
+        return Response(body=body)
 
     # ── cost trailer: distinguish imported cache entries from fetched ─
 

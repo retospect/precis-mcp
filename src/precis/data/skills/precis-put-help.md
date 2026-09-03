@@ -39,7 +39,7 @@ put(
 
 Omit `id=` to mint a fresh numeric ref. The response returns the new
 id and its handle (`me<N>`); read back with `get(id='me<N>')` (the
-prefix infers the kind) or `get(kind='memory', id=<N>)`.
+prefix infers the kind) or `get(kind='memory', id=42)`.
 
 ## File a todo
 ## Add a task to my list
@@ -55,7 +55,7 @@ put(
 ```
 
 `STATUS:open` is the implicit default; flip with
-`tag(kind='todo', id=<N>, add=['STATUS:done'])` once the task lands.
+`tag(kind='todo', id=42, add=['STATUS:done'])` once the task lands.
 
 ## Log a gripe
 ## Capture an annoyance to fix later

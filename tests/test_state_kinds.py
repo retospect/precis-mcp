@@ -8,6 +8,8 @@ addressing, view paths.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -296,6 +298,30 @@ class TestGripe:
         assert "zephyr breeze" not in body
         assert "6 total" in body
         assert "page 4" in body
+
+    def test_create_ack_hints_round_trip(self, gripe: GripeHandler) -> None:
+        """The ack used to advertise ``link='gripe'+':N'`` — a BinOp
+        the literals-only command parser rejects. Now both the
+        ``link=`` (real id, D3 shortcut) and the
+        ``target=`` (unknowable other-gripe id) render as single string
+        literals — the latter a quoted ``<gripe-handle>`` template."""
+        from tests.hintcheck import assert_hints_round_trip
+
+        resp = gripe.put(text="hint round-trip regression fixture")
+        gid = int(gripe.store.list_refs(kind="gripe", limit=1)[0].id)
+
+        def dispatch(verb: str, kwargs: dict[str, Any]) -> object:
+            kwargs = dict(kwargs)
+            kwargs.pop("kind", None)
+            return getattr(gripe, verb)(**kwargs)
+
+        hints = assert_hints_round_trip(resp.body, dispatch, whole_body=True)
+        job_hints = [h for h in hints if h.startswith("put(kind='job'")]
+        assert job_hints, f"expected the fix_gripe hand-off hint: {hints!r}"
+        assert f"link='gripe:{gid}'" in job_hints[0]
+        link_hints = [h for h in hints if h.startswith("link(")]
+        assert link_hints, f"expected the supersedes hint: {hints!r}"
+        assert "target='<gripe-handle>'" in link_hints[0]
 
     def test_kindspec_is_first_class(self) -> None:
         """Regression guard: the v0 write-only KindSpec was inverted

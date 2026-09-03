@@ -331,7 +331,7 @@ the matching tag to disappear and re-queues the job to `STATUS:queued`
 so the next slice resumes from the checkpoint.
 
 Answer the pending question by clearing the matching tag on the job
-(`tag(kind='job', id=N, remove=['ask-user:<phase>:<slug>'])`) once
+(`tag(kind='job', id=42, remove=['ask-user:<phase>:<slug>'])`) once
 you've decided. This is the job-level sibling of the todo-level
 `ask-user`/`ask-user:<question>` open tag a dispatched agent tags on
 its own todo to yield the same way — see `precis-todo-tree-help`,

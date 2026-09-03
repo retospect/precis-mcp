@@ -11,6 +11,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.plaintext import PlaintextHandler
 from precis.store import Store
 from precis.utils.plaintext_parse import parse_plaintext
+from tests.hintcheck import assert_hints_round_trip
 
 
 @pytest.fixture
@@ -134,6 +135,36 @@ def test_overview_renders_metadata(handler: PlaintextHandler, pt_root: Path) -> 
     assert "foo" in out.body
     assert "paragraphs:  2" in out.body
     assert "path:" in out.body
+
+
+def test_overview_hints_round_trip_and_scope_is_a_slug(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """hint-audit item 2: the overview's ``Next:`` trailer must
+    advertise ``scope='<file-slug>'`` (not a handle — this kind
+    resolves search scope via ``ensure_ingested``, a path/cite_key
+    lookup that 404s on a handle) and interpolate a REAL block slug
+    for the ``~SLUG`` placeholder (the overview body just printed one)."""
+    _write(
+        pt_root,
+        "foo.txt",
+        "First paragraph line one.\nFirst paragraph line two.\n\n"
+        "Second paragraph here.\n",
+    )
+    out = handler.get(id="foo")
+    assert "~SLUG" not in out.body
+
+    def dispatch(verb: str, kwargs: dict) -> object:
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    hints = assert_hints_round_trip(out.body, dispatch)
+    scope_hint = next(h for h in hints if h.startswith("search("))
+    assert "scope='foo'" in scope_hint
+    # A handle form would 404 — prove the fixed hint form actually
+    # dispatches (the round-trip helper above already executed it,
+    # this re-asserts the specific regression it must not reintroduce).
+    handler.search(q="paragraph", scope="foo")
 
 
 def test_overview_for_missing_file_raises(handler: PlaintextHandler) -> None:

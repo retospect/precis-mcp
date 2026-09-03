@@ -547,9 +547,9 @@ class OracleHandler(Handler):
         default produced.
         """
         slug = ref.slug or "???"
-        handle = handle_registry.format_handle("oracle", ref.id)
+        ref_handle = handle_registry.format_handle("oracle", ref.id)
         lines = [
-            f"# oracle {handle}/index",
+            f"# oracle {ref_handle}/index",
             f"_{ref.title}_",
             f"\n{len(blocks)} entries:",
         ]
@@ -565,14 +565,15 @@ class OracleHandler(Handler):
             else:
                 lines.append(f"- **{block.ord}. {title}**  `{handle}`")
         body = "\n".join(lines)
+        first_ord = blocks[0].ord
         body += render_next_section(
             [
                 (
-                    f"get(id={handle!r})",
+                    f"get(id={ref_handle!r})",
                     "random entry (default)",
                 ),
                 (
-                    f"get(kind='oracle', id='{slug}~N')",
+                    f"get(kind='oracle', id='{slug}~{first_ord}')",
                     "fetch entry N (1-indexed; matches inherent numbering for I-Ching)",
                 ),
             ]

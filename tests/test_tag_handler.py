@@ -12,12 +12,15 @@ prefix / bare flag), the read-only verb shape, and pagination.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub, InitError
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.tag import TagHandler
+from precis.response import Response
 from precis.store import Store
 from precis.store.types import Tag
 
@@ -149,6 +152,49 @@ class TestGetList:
         for i in range(5):
             assert f"topic:page-{i}" in all_bodies
 
+    def test_pagination_hint_round_trips_via_args(
+        self, store: Store, handler: TagHandler
+    ) -> None:
+        """``get`` has no top-level ``page=``/``scope=`` kwargs
+        (``get(kind='tag', page=2)`` died at the verb boundary) — the
+        working channel is ``args=``, which the real
+        dispatcher flattens back onto ``TagHandler.get``'s own params.
+        The dispatch closure below mirrors that flattening."""
+        from precis.tools.command_parser import parse_command
+        from tests.hintcheck import assert_hints_round_trip
+
+        ref = _seed_paper(store, slug="paginated-hint")
+        for i in range(3):
+            store.add_tag(ref, Tag.open(f"topic:hint-page-{i}"))
+
+        resp = handler.get(page=1, page_size=2)
+
+        def dispatch(verb: str, kwargs: dict[str, Any]) -> Response:
+            kwargs = dict(kwargs)
+            kwargs.pop("kind", None)
+            extras = kwargs.pop("args", None)
+            if extras:
+                kwargs.update(extras)
+            result: Response = getattr(handler, verb)(**kwargs)
+            return result
+
+        # assert_hints_round_trip already executes every non-template
+        # get(...) hint (including this one) against ``dispatch`` above and
+        # requires a non-empty result — a bare top-level page=2 kwarg would
+        # have TypeError'd there (swallowed by **_kw, silently ignored) or
+        # (via the real dispatcher) raised BadInput at the verb boundary.
+        hints = assert_hints_round_trip(resp.body, dispatch, whole_body=True)
+        page_hints = [h for h in hints if "args=" in h]
+        assert page_hints, f"expected the args= pagination hint: {hints!r}"
+        _, kwargs = parse_command(page_hints[0])
+        assert kwargs["args"] == {"page": 2}
+        # The flattened call actually advances the page — content that
+        # wasn't visible on page 1 shows up on the hint's target page (the
+        # hint itself doesn't carry page_size= — same page_size the caller
+        # is already using, mirrored here rather than the get() default).
+        next_resp = dispatch("get", {**kwargs, "page_size": 2})
+        assert "topic:hint-page-2" in next_resp.body
+
 
 # ---------------------------------------------------------------------------
 # get(kind='tag', id=...) — metadata mode
@@ -264,6 +310,22 @@ class TestSearch:
         assert "topic:no-embedder" in resp.body
         # Hint surfaces the worker recovery path.
         assert "tag-embedding" in resp.body or "worker" in resp.body
+
+    def test_no_embedder_advice_is_prose_not_a_hint_row(
+        self, store: Store, handler_no_embedder: TagHandler
+    ) -> None:
+        """``precis worker --once`` is a shell command, not a verb
+        call — it must not ride in the "execute this call" column of
+        the Next: trailer (a caller that dispatches it
+        as a hint gets nonsense). It's still surfaced, just as prose."""
+        from tests.hintcheck import extract_hints
+
+        p1 = _seed_paper(store, slug="zz-prose")
+        store.add_tag(p1, Tag.open("topic:no-embedder-prose"))
+        resp = handler_no_embedder.search(q="no-embedder-prose")
+        assert "precis worker --once" in resp.body
+        for hint in extract_hints(resp.body):
+            assert "precis worker" not in hint
 
 
 # ---------------------------------------------------------------------------

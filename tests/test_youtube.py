@@ -164,6 +164,26 @@ def test_languages_view_lists_tracks(handler: YouTubeHandler) -> None:
     assert _StubApi.list_calls == ["dQw4w9WgXcQ"]
 
 
+def test_languages_view_hint_interpolates_first_real_code(
+    handler: YouTubeHandler,
+) -> None:
+    """hint-audit item 6: the drill-down hint hardcoded
+    ``args={'languages': 'LANG_CODE'}`` under a table of real codes —
+    a copy-paste trap. Interpolate the first listed track's real code
+    (``en``, per ``_StubApi.list``'s order) instead."""
+    resp = handler.get(id="dQw4w9WgXcQ", view="languages")
+    assert "LANG_CODE" not in resp.body
+    assert "args={'languages': 'en'}" in resp.body
+    # And the advertised call actually dispatches to that language —
+    # ``args={'languages': ...}`` is the MCP-dispatch-layer shape
+    # (unpacked to this handler's own ``languages=`` kwarg by the
+    # runtime before the handler ever sees it; calling the handler
+    # directly here exercises that same target kwarg).
+    _StubApi.fetch_calls.clear()
+    handler.get(id="dQw4w9WgXcQ", languages="en")
+    assert _StubApi.fetch_calls == [("dQw4w9WgXcQ", ["en"])]
+
+
 def test_languages_view_accepts_url(handler: YouTubeHandler) -> None:
     handler.get(id="https://youtu.be/dQw4w9WgXcQ", view="languages")
     assert _StubApi.list_calls == ["dQw4w9WgXcQ"]

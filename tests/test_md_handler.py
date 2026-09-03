@@ -211,6 +211,20 @@ def test_get_alias_overview(handler: MdHandler) -> None:
     assert "docs" in resp.body  # top-level dir
 
 
+def test_overview_hint_file_is_verifiable_on_the_page(handler: MdHandler) -> None:
+    """hint-audit item 7: the overview's drill-down hint names
+    ``idx.files[0]`` (here ``docs/guide.md``), a file the overview body
+    never otherwise listed (only top-level DIR counts) — the reader
+    couldn't verify the hint's target from what's on the page. The
+    fixed overview prints the sample filename right next to the hint."""
+    resp = handler.get(id="r")
+    assert "docs/guide.md" in resp.body
+    assert "Sample file: docs/guide.md" in resp.body
+    assert "get(kind='md', id='r/docs/guide.md')" in resp.body
+    # And it actually dispatches.
+    handler.get(id="r/docs/guide.md")
+
+
 def test_get_overview_view_source_requires_file(handler: MdHandler) -> None:
     with pytest.raises(BadInput, match="requires a file"):
         handler.get(id="r", view="source")

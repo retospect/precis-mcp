@@ -95,8 +95,8 @@ search(kind="memory", q="kwargs vs modes", tags=["confidence-strong"])
 
 ```python
 get(kind="tag")  # most-used first, paginated
-get(kind="tag", page=2)  # next page (default 50 per page)
-get(kind="tag", page_size=20)  # smaller page
+get(kind="tag", args={"page": 2})  # next page (default 50 per page)
+get(kind="tag", args={"page_size": 20})  # smaller page
 get(kind="tag", scope="paper")  # tags used on papers only
 ```
 

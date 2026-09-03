@@ -456,6 +456,21 @@ class CacheBackedHandler(Handler):
         # fetch of a different one.
         if no_fetch:
             entry = cached
+            # Try the pasted id VERBATIM as a slug first — this is the
+            # shape ``/recent`` advertises and the only one that reliably
+            # round-trips. For query-addressed kinds (perplexity,
+            # youtube) ``_canonical_key`` above happily accepts a slug as
+            # "a query" and never raises, so the BadInput-fallback slug
+            # lookup earlier in this method never fires for them; without
+            # this direct lookup a listed slug would fall through to
+            # ``_slug_for(key)`` below, which re-derives a slug from the
+            # mis-canonicalised key and (almost) never matches the
+            # original — silently landing on the misleading NotFound
+            # "fetch it (paid)" hint for a row that is, in fact, cached.
+            if entry is None and isinstance(id, str) and id.strip():
+                entry = self.store.get_cache_entry_by_slug(
+                    kind=self.spec.kind, slug=id.strip()
+                )
             if entry is None:
                 entry = self.store.get_cache_entry_by_slug(
                     kind=self.spec.kind, slug=self._slug_for(key)
@@ -876,11 +891,23 @@ class CacheBackedHandler(Handler):
             count_phrase = f"showing {len(refs)} of at most {limit}"
         else:
             count_phrase = f"showing {len(refs)} of {len(refs)}"
-        lines.append(
-            f"_{count_phrase}. "
-            f"Next: get(kind={self.spec.kind!r}, id='<slug>') to read one._"
+        lines.append(f"_{count_phrase}._")
+        body = "\n".join(lines)
+        # ``no_fetch=True`` matters here: a listed slug pasted into a bare
+        # ``get(id=<slug>)`` MISSES the request-hash cache (the slug isn't
+        # the canonical key) and falls through to a fresh upstream fetch —
+        # on the paid perplexity tiers that's a ~$0.50, minutes-long
+        # mistake that mints a junk row. The advertised call below reads
+        # the listed row without risking that.
+        body += render_next_section(
+            [
+                (
+                    f"get(kind={self.spec.kind!r}, id='<slug>', no_fetch=True)",
+                    "read one listed row (never triggers a fresh fetch)",
+                ),
+            ]
         )
-        return Response(body="\n".join(lines))
+        return Response(body=body)
 
     # ── seven-verb surface: search / tag / link ───────────────────────
     #
@@ -1036,11 +1063,19 @@ class CacheBackedHandler(Handler):
             # the empty-state envelope across cache-backed vs
             # ref-backed kinds. (c5 unified-trailer patch.)
             body = f"no {self.spec.kind} blocks match {q!r}"
+            # ``example_query`` is a real, PASTABLE (and for the priced
+            # tiers, billable) query — angle-bracket it so it reads as a
+            # template placeholder, not a literal to copy verbatim (a
+            # 7B caller pasting "your question" straight in has minted a
+            # real, costed cache row on the perplexity tiers before).
+            populate_desc = "populate the cache first"
+            if self.cost_per_call_usd:
+                populate_desc += f" (paid — ~${self.cost_per_call_usd:.4f}/call)"
             body += render_next_section(
                 [
                     (
-                        f"get(kind={self.spec.kind!r}, id={self.example_query!r})",
-                        "populate the cache first",
+                        f"get(kind={self.spec.kind!r}, id='<{self.example_query}>')",
+                        populate_desc,
                     ),
                     (
                         f"search(kind={self.spec.kind!r}, q={q!r}, page_size=50)",

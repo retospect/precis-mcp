@@ -1559,16 +1559,27 @@ class PlaintextHandler(Handler):
         return "paragraphs:"
 
     def _overview_next_hints(self, ref: Ref) -> list[tuple[str, str]]:
-        """Next: hint list for the overview response."""
-        handle = handle_registry.format_handle(self._KIND, ref.id)
+        """Next: hint list for the overview response.
+
+        ``scope=`` is a FILE SLUG here, not a handle — these kinds
+        resolve search scope via ``ensure_ingested`` (path + cite_key
+        lookup), so a handle like ``pl42`` raises NotFound. The ``~SLUG``
+        placeholder is interpolated to the first real paragraph slug the
+        overview body just printed (:meth:`_overview_body_extras`), so
+        the hint is copy-pasteable rather than a template.
+        """
+        first_block = self.store.chunks.list_chunks_for_ref(ref.id)[:1]
+        sample_selector = (
+            (first_block[0].slug or first_block[0].ord) if first_block else "SLUG"
+        )
         return [
             (f"get(kind='{self._KIND}', id='{ref.slug}/raw')", "full source"),
             (
-                f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
+                f"get(kind='{self._KIND}', id='{ref.slug}~{sample_selector}')",
                 "read one paragraph by slug",
             ),
             (
-                f"search(kind='{self._KIND}', q='...', scope='{handle}')",
+                f"search(kind='{self._KIND}', q='...', scope='{ref.slug}')",
                 "search inside this file",
             ),
         ]

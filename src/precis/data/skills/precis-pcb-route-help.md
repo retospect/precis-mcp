@@ -25,7 +25,7 @@ re-generates, the rest of the board is untouched.
 **Every heavy op is an enqueued worker job, never inline.** The optimizer
 measures ~880 moves/s on a real board — minutes, not milliseconds — so
 `put(args={'op':'place'|'route'})` always returns a **job id** immediately;
-poll `get(kind='job', id=<id>)` or just re-check the design's views a
+poll `get(kind='job', id='<id>')` or just re-check the design's views a
 little later. This is the same thread-pool-starvation lesson every other
 heavy-compute kind in this server follows (structure relax, cad discuss).
 

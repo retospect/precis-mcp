@@ -393,11 +393,14 @@ def render_toc(
     total_blocks: int,
     blocks_by_pos: dict[int, ChunkRow] | None = None,
     range_label: str | None = None,
+    kind: str = "paper",
+    address: str | None = None,
 ) -> str:
     """Render a hierarchical TOC as text.
 
     Args:
-        slug:           paper slug (for header + drill-down hint calls)
+        slug:           paper/file slug (header label; also the
+                        drill-down address when ``address`` is unset)
         toc:            output of :func:`build_toc` (optionally clipped)
         total_blocks:   block count for the *whole* paper (header line)
         blocks_by_pos:  optional ``{pos: ChunkRow}`` lookup so we can
@@ -406,6 +409,30 @@ def render_toc(
                         render with title only.
         range_label:    e.g. ``"~46..105"``; appears in the header to
                         signal a drilled-down view.
+        kind:           the caller's ``kind=`` for the drill-down
+                        trailer's ``get(...)`` calls. Defaults to
+                        ``"paper"`` (the historical/only in-tree
+                        producer of this renderer). ``paper``'s block
+                        selector supports absolute ``~N..M`` ranges
+                        combined with ``/toc`` or a bare read, plus a
+                        ``view='bibtex'`` view — none of which the
+                        file-slug kinds (``markdown``/``plaintext``/
+                        ``tex``, via :class:`PlaintextHandler`) support:
+                        their ``_parse_file_id`` rejects a selector
+                        combined with ``view=`` outright and has no
+                        ``~N..M`` range form at all (only a single int
+                        ``~N``, a slug, or a Track-A ``~L42-58`` line
+                        range), and they don't expose a ``bibtex``
+                        view. For any ``kind`` other than ``"paper"``
+                        the trailer instead advertises a single ``~N``
+                        read at the section's first block (the one
+                        selector form every kind here supports) plus a
+                        scoped-search template.
+        address:        the id to interpolate into hint calls
+                        (``pa5``, a ``md<id>`` handle, …). Defaults to
+                        ``slug`` when unset — the historical paper
+                        behaviour, where the slug itself is a valid
+                        ``get(kind='paper', id=...)`` address.
 
     Output style (matches v1 structured TOC)::
 
@@ -469,27 +496,53 @@ def render_toc(
             toc,
             key=lambda s: s.block_count,
         )
+        addr = address if address is not None else slug
         lines.append("")
-        rl_call = _format_block_range(biggest.start, biggest.end)
         lines.append("Next:")
-        lines.extend(
-            format_next_block(
-                [
-                    (
-                        f"get(kind='paper', id='{slug}{rl_call}/toc')",
-                        f"drill into {biggest.title or 'the largest section'}",
-                    ),
-                    (
-                        f"get(kind='paper', id='{slug}{rl_call}')",
-                        f"read {biggest.title or 'the largest section'}",
-                    ),
-                    (
-                        f"get(kind='paper', id='{slug}', view='bibtex')",
-                        "BibTeX citation",
-                    ),
-                ]
+        if kind == "paper":
+            rl_call = _format_block_range(biggest.start, biggest.end)
+            lines.extend(
+                format_next_block(
+                    [
+                        (
+                            f"get(kind='paper', id='{addr}{rl_call}/toc')",
+                            f"drill into {biggest.title or 'the largest section'}",
+                        ),
+                        (
+                            f"get(kind='paper', id='{addr}{rl_call}')",
+                            f"read {biggest.title or 'the largest section'}",
+                        ),
+                        (
+                            f"get(kind='paper', id='{addr}', view='bibtex')",
+                            "BibTeX citation",
+                        ),
+                    ]
+                )
             )
-        )
+        else:
+            # File-slug kinds (markdown/plaintext/tex, see the ``kind``
+            # arg docstring above) have no range selector and reject a
+            # selector combined with ``view=`` outright, so the paper
+            # trio above doesn't translate. Advertise the one selector
+            # form every such kind supports (a single ``~N`` at the
+            # section's first block) plus a scoped-search template —
+            # ``scope=`` for these kinds resolves as the file slug, not
+            # a universal handle (see :class:`PlaintextHandler.search`).
+            lines.extend(
+                format_next_block(
+                    [
+                        (
+                            f"get(kind='{kind}', id='{addr}~{biggest.start}')",
+                            f"read the start of "
+                            f"{biggest.title or 'the largest section'}",
+                        ),
+                        (
+                            f"search(kind='{kind}', q='<topic>', scope='{slug}')",
+                            "search inside this file",
+                        ),
+                    ]
+                )
+            )
 
     return "\n".join(lines)
 

@@ -711,6 +711,24 @@ class Tag:
                     "space-free tag (e.g. 'topic:co2-capture')"
                 ),
             )
+        # Unsubstituted hint placeholder guard. `Next:` trailers advertise
+        # templates like `add=['claimed-by:<self>']` for values the hint
+        # renderer can't know (the caller's own agent name) — copying one
+        # verbatim, angle brackets and all, used to pass every check above
+        # and persist as a garbage tag value (e.g. a bogus claim owner the
+        # nursery's stale-claim detector then reads). No real tag grammar
+        # in this codebase ever uses ``<``/``>`` — every occurrence in a
+        # hint or skill doc is a "replace this" template — so reject here,
+        # at the single write choke point every handler's ``tag``/``put``
+        # path funnels through (this guard never runs on a read: persisted
+        # tags come straight off the ``tags`` table, not back through
+        # ``parse_strict``).
+        if "<" in s or ">" in s:
+            raise BadInput(
+                f"tag value {s!r} looks like an unsubstituted placeholder "
+                "— replace <...> with a real value",
+                next="e.g. add=['claimed-by:your-agent-name'], not add=['claimed-by:<self>']",
+            )
 
         if ":" in s:
             prefix, _, value = s.partition(":")

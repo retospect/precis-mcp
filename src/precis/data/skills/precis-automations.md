@@ -64,7 +64,7 @@ schema change — `automation` is a normal open tag on `kind='todo'`.
 
 **Push-mode** (`meta.deliver` set): the automation's behaviour lives in the
 recurring's own text — that's the synthetic prompt fired on each tick.
-`edit(kind='todo', id=N, mode='replace', text='<revised prompt>')` changes it
+`edit(kind='todo', id=42, mode='replace', text='<revised prompt>')` changes it
 in place (todo `edit` supports rewriting the title — no delete +
 re-create dance is needed).
 

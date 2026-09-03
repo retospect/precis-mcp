@@ -511,9 +511,18 @@ def _render_overview(alias: str, idx: MdRepoIndex) -> str:
         for d, count in top_dirs.most_common():
             lines.append(f"  {d:<28} {count} file{'s' if count != 1 else ''}")
 
+    # ``sample`` below is the real file the drill-down hint names — the
+    # overview otherwise only prints top-level dir *counts*, never a
+    # filename, so without this line the hint's target is unverifiable
+    # from the page it rides on. Minimal fix: print the sample right
+    # next to it rather than re-deriving the hint from a dir listing.
+    sample = sorted(idx.files)[0] if idx.files else None
+    if sample:
+        lines.append("")
+        lines.append(f"  Sample file: {sample}")
+
     body = "\n".join(lines)
     hints: list[tuple[str, str]] = []
-    sample = sorted(idx.files)[0] if idx.files else None
     if sample:
         hints.append(
             (f"get(kind='md', id='{alias}/{sample}')", "view a file's heading outline")

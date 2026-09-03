@@ -71,7 +71,7 @@ attribution for free by opening a log and setting the env var.
 ## Reading (agent side)
 
 ```
-get(kind='agentlog', id=N)          # one run: prompt + model/source + tags
+get(kind='agentlog', id=42)         # one run: prompt + model/source + tags
 get(kind='agentlog', id='/recent')  # recent runs, newest-first
 search(kind='agentlog', q='...')    # lexical over run titles
 tag / link / delete                 # classify / relate / prune

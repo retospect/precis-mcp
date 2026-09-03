@@ -103,6 +103,12 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "nanopub_mirror.dois",
         "nanopub_publish.dependency_codes",
         "nanopub_publish.grounding",
+        # nm plugin (precis_nm 0001/0002): genuinely open-ended design
+        # payloads — per-block DOF spec, connect objectives, free-form meta.
+        "nm_blocks.dof",
+        "nm_connects.meta",
+        "nm_connects.objectives",
+        "nm_topology.meta",
         "part_footprints.centroid",
         "part_footprints.courtyard",
         # 0140: precomputed footprint escape graph (shells/gaps/
@@ -167,6 +173,19 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
 def _rows(store: Store, sql: str) -> list[tuple]:
     with store.pool.connection() as conn:
         return conn.execute(sql).fetchall()
+
+
+def _existing_tables(store: Store) -> set[str]:
+    return {
+        t
+        for (t,) in _rows(
+            store,
+            """
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            """,
+        )
+    }
 
 
 def _find_cycles(edges: set[tuple[str, str]]) -> set[frozenset[str]]:
@@ -290,7 +309,11 @@ def test_fk_columns_have_covering_index(store: Store) -> None:
         )
     }
     new = found - UNINDEXED_FKS
-    fixed = UNINDEXED_FKS - found
+    # Plugin tables (precis_nm) only exist once that plugin's migrations
+    # ran in this DB — a partial-suite run may not have them. Only call a
+    # grandfathered entry stale when its table is actually present.
+    present = _existing_tables(store)
+    fixed = {e for e in UNINDEXED_FKS - found if e.split(".", 1)[0] in present}
     assert not new, (
         "FK constraint(s) with no covering index (parent DELETE/UPDATE "
         "seq-scans the child):\n  "
@@ -320,7 +343,10 @@ def test_jsonb_columns_are_deliberate(store: Store) -> None:
         )
     }
     new = found - JSONB_COLUMNS
-    dropped = JSONB_COLUMNS - found
+    # Same plugin-table caveat as ``test_fk_columns_have_covering_index``:
+    # an allowlisted column only counts as dropped when its table exists.
+    present = _existing_tables(store)
+    dropped = {e for e in JSONB_COLUMNS - found if e.split(".", 1)[0] in present}
     assert not new, (
         "new json/jsonb column(s):\n  "
         + "\n  ".join(sorted(new))

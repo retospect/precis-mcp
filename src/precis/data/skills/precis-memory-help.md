@@ -54,7 +54,7 @@ and one is derived from the body's first line (capped at 80 chars), but an
 explicit title reads better. `tags=` and `link=` on create save a
 round-trip vs. a follow-up `tag()` / `link()`.
 
-Rewrite a memory in place with `edit(kind='memory', id=N, mode='replace',
+Rewrite a memory in place with `edit(kind='memory', id=42, mode='replace',
 text='new body'[, title='new header'])` — same id, links stay attached,
 old body kept in `view='log'`.
 

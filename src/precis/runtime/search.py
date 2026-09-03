@@ -137,8 +137,13 @@ class SearchMixin(RuntimeShape):
         lines = [f"papers we still need to get ({len(rows)} shown):", ""]
         for r in rows:
             ident = r["identifier"] or "(no external id)"
-            cite = r["cite_key"] or f"ref {r['ref_id']}"
-            lines.append(f"  ref {r['ref_id']}  {ident}  [{cite}]")
+            # Universal handle, not the bare ref_id: a bare number in
+            # ``get(id=...)`` only resolves via the fallback that fires
+            # the ``bare_numeric_hint`` WARNING — printing it here taught
+            # the exact habit the system warns against one turn later.
+            handle = handle_registry.format_handle("paper", r["ref_id"])
+            cite = r["cite_key"] or handle
+            lines.append(f"  {handle}  {ident}  [{cite}]")
             lines.append(f"      {_stub_state_line(r)}")
             reason = (r.get("llm_reason") or "").strip()
             if reason:
@@ -146,14 +151,22 @@ class SearchMixin(RuntimeShape):
                     reason = reason[:79].rstrip() + "…"
                 lines.append(f"      {reason}")
         body = "\n".join(lines)
+        top_handle = handle_registry.format_handle("paper", rows[0]["ref_id"])
         body += render_next_section(
             [
                 (
-                    f"get(kind='paper', id={rows[0]['ref_id']})",
+                    f"get(kind='paper', id='{top_handle}')",
                     "open a stub to see what links to it",
                 ),
                 (
-                    "search(kind='paper', tags=['DREAM:acquire'])",
+                    # A single-kind ``search(kind='paper', tags=[...])``
+                    # has no q= and paper's own search() requires one —
+                    # the tags-only sweep only exists on the cross-kind
+                    # branch (``kind='*'``/comma-list). ``DREAM:acquire``
+                    # is only ever set on paper stubs (PaperHandler.acquire),
+                    # so the wildcard fan-out still answers "just the
+                    # papers a dream wanted" correctly.
+                    "search(kind='*', tags=['DREAM:acquire'])",
                     "just the papers a dream wanted",
                 ),
                 (
@@ -200,14 +213,18 @@ class SearchMixin(RuntimeShape):
         lines = [f"chase queue — DOI-only, never-tried first ({len(rows)} shown):", ""]
         for r in rows:
             ident = r["identifier"] or "(no external id)"
-            cite = r["cite_key"] or f"ref {r['ref_id']}"
-            lines.append(f"  ref {r['ref_id']}  {ident}  [{cite}]")
+            # See ``_dispatch_stubs`` above — universal handle, not the
+            # bare ref_id.
+            handle = handle_registry.format_handle("paper", r["ref_id"])
+            cite = r["cite_key"] or handle
+            lines.append(f"  {handle}  {ident}  [{cite}]")
             lines.append(f"      {_stub_state_line(r)}")
         body = "\n".join(lines)
+        top_handle = handle_registry.format_handle("paper", rows[0]["ref_id"])
         body += render_next_section(
             [
                 (
-                    f"get(kind='paper', id={rows[0]['ref_id']})",
+                    f"get(kind='paper', id='{top_handle}')",
                     "open a stub to see what links to it",
                 ),
                 (

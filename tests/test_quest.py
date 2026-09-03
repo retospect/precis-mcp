@@ -236,6 +236,31 @@ class TestServesAndTree:
         assert "quest (1) serving" not in tree
 
 
+class TestCreateAckHintsRoundTrip:
+    def test_create_ack_hints_parse_and_get_hint_executes(self, store: Any) -> None:
+        """The ``link(...)`` hint used to be ``target='quest'+':123'``
+        — a BinOp the literals-only command parser rejects. It's now
+        the universal handle form (like
+        ``_render_tree`` already used), and the unknowable todo id is a
+        quoted ``<todo-id>`` template rather than a bareword ``id=N``."""
+        from tests.hintcheck import assert_hints_round_trip
+
+        h = _handler(store)
+        resp = h.put(text="A hint round-trip striving")
+        qid = _created_id(resp)
+
+        def dispatch(verb: str, kwargs: dict[str, Any]) -> Any:
+            kwargs = dict(kwargs)
+            kwargs.pop("kind", None)
+            return getattr(h, verb)(**kwargs)
+
+        hints = assert_hints_round_trip(resp.body, dispatch, whole_body=True)
+        link_hints = [hh for hh in hints if hh.startswith("link(")]
+        assert link_hints, f"expected a link(...) hint in the create ack: {hints!r}"
+        assert f"target='qu{qid}'" in link_hints[0]
+        assert "<todo-id>" in link_hints[0]
+
+
 class TestTreeNextBlock:
     def test_no_servers_renders_intact_next_block(self, store: Any) -> None:
         """Regression: ``lines += render_next_section(...)`` iterated the
@@ -259,6 +284,27 @@ class TestTreeNextBlock:
         # No line should be a single stray character (the char-by-char
         # failure mode), aside from legitimate short glyphs.
         assert not any(len(ln) == 1 and ln not in ("", "…") for ln in lines)
+
+    def test_no_servers_link_hint_is_a_quoted_template(self, store: Any) -> None:
+        """No todo exists yet at this call site, so the id genuinely
+        can't be interpolated — it must still be a quoted, parseable
+        placeholder (``id='<todo-id>'``), not the bareword
+        ``id=N`` that used to raise ``CommandParseError`` on copy-paste."""
+        from tests.hintcheck import assert_hints_round_trip
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Another lone striving"))
+        tree = h.get(id=qid, view="tree").body
+
+        def dispatch(verb: str, kwargs: dict[str, Any]) -> Any:
+            kwargs = dict(kwargs)
+            kwargs.pop("kind", None)
+            return getattr(h, verb)(**kwargs)
+
+        hints = assert_hints_round_trip(tree, dispatch)
+        link_hints = [hh for hh in hints if hh.startswith("link(")]
+        assert link_hints, f"expected a link(...) hint: {hints!r}"
+        assert "id='<todo-id>'" in link_hints[0]
 
 
 class TestListViews:

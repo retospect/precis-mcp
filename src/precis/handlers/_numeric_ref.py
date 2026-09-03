@@ -1799,7 +1799,7 @@ class NumericRefHandler(Handler):
             body += render_next_section(
                 [
                     (
-                        f"get(kind={self.kind!r}, id=N)",
+                        f"get(kind={self.kind!r}, id={refs[0].id})",
                         f"read full {self._sense()} text + tags",
                     ),
                     (

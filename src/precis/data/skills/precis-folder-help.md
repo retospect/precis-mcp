@@ -52,7 +52,7 @@ folder**.
 link(kind='draft',     id='<slug>', target='folder:12', rel='parent')
 link(kind='structure', id='<slug>', target='folder:12', rel='parent')
 link(kind='cad',       id='<slug>', target='folder:12', rel='parent')
-link(kind='todo',      id=N,        target='folder:12', rel='parent')  # strategic roots only
+link(kind='todo',      id=42,       target='folder:12', rel='parent')  # strategic roots only
 link(kind='folder',    id=13,       target='folder:12', rel='parent')  # nest
 link(kind='<any>',     id=...,      rel='parent', mode='remove')       # unfile
 ```

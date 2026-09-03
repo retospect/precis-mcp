@@ -923,27 +923,39 @@ class PaperSearchResultRenderer:
                 doi = doi_match.group(1)
                 body += "\n\nThis DOI is not in the local corpus. "
                 body += (
-                    "Pull it into the corpus via the finding-chase + "
+                    "Pull it into the corpus via the paper-stub + "
                     "Unpaywall/arXiv/S2 fetcher pipeline:"
                 )
+                # The old headline recovery here was
+                # ``put(kind='finding', cited_in='doi:{doi}', ...)`` —
+                # ``FindingHandler._resolve_cited_in`` explicitly rejects a
+                # bare ``doi:`` (only corpus handles resolve), so it failed
+                # 100% of the time. The DOI has to become a real paper stub
+                # — and get fetched/ingested — before any chunk exists for
+                # ``cited_in`` to point at; step 2 stays a template (no
+                # slug exists yet to interpolate). Also dropped the
+                # ``scope={'...': '...'}`` ellipsis dict the old template
+                # carried — scope is optional on ``put(kind='finding')``
+                # and an unfilled ellipsis literal silently writes garbage
+                # into the dedup/filter field if pasted verbatim.
                 body += render_next_section(
                     [
                         (
+                            f"put(kind='paper', doi='{doi}')",
+                            "mint a stub for this DOI — the fetcher "
+                            "(Unpaywall/arXiv/S2) tries an OA pull next pass",
+                        ),
+                        (
                             "put(kind='finding', title='<short claim>', "
-                            f"body='<claim + setup>', cited_in='doi:{doi}', "
-                            "scope={'...': '...'})",
-                            "register the DOI as a chase target; the "
-                            "fetcher will try Unpaywall/arXiv/S2 next pass",
+                            "body='<claim + setup>', "
+                            "cited_in='<slug-once-fetched>~0')",
+                            "once the stub is ingested, register the claim "
+                            "against its first chunk — cited_in wants a "
+                            "corpus chunk handle, not a bare 'doi:'",
                         ),
                         (
-                            "precis stubs --awaiting",
+                            "search(view='stubs')",
                             "list stub backlog the fetcher will work on",
-                        ),
-                        (
-                            "edit(kind='plaintext', id='./request_doi.md', "
-                            f"mode='append', text='{doi} - <one-line reason>\\n')",
-                            "(legacy) append to the plaintext queue — "
-                            "deprecated; use put(kind='finding') above",
                         ),
                     ]
                 )
@@ -1153,10 +1165,25 @@ class PaperSearchResultRenderer:
                     )
 
                 if result.scope is None and top_handle is not None:
+                    # ``top_handle`` (pa<id>) is a real, resolvable
+                    # handle — but the results table above only ever
+                    # prints chunk handles (``pc<id>``); nothing on the
+                    # page lets the reader confirm what paper it names
+                    # (same defect class as the fixed pc<id>+1..3 gripe
+                    # — a correct-but-unverifiable hint). Name the paper
+                    # by title in the description column so the hint is
+                    # checkable at a glance without a follow-up call.
+                    top_title = (
+                        _clean_inline_text(hits[0][1].title)
+                        if hits[0][1].title
+                        else "(untitled)"
+                    )
+                    if len(top_title) > 60:
+                        top_title = top_title[:57] + "..."
                     nav.append(
                         (
                             f"search(kind='{kind}', q={q!r}, scope='{top_handle}')",
-                            f"narrow to blocks inside {top_handle}",
+                            f"narrow to blocks inside {top_handle} ({top_title})",
                         )
                     )
                 # Round-2 picky F-9, 2026-05-30: previous wording was

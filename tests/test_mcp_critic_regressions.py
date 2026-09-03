@@ -609,6 +609,25 @@ def test_tag_strict_still_accepts_space_free_tags() -> None:
     Tag.parse_strict("halt:missing-credentials")
 
 
+# ── unsubstituted <placeholder> tag values ──
+
+
+def test_tag_strict_rejects_angle_bracket_placeholder() -> None:
+    """A ``Next:`` trailer template like ``claimed-by:<self>`` used to pass
+    every guard and persist verbatim as a garbage claim owner (the
+    nursery's stale-claim detector then reads it). ``parse_strict`` is the
+    single write chokepoint every handler's ``tag``/``put`` path funnels
+    through, so the guard lives here."""
+    with pytest.raises(BadInput, match="placeholder"):
+        Tag.parse_strict("claimed-by:<self>")
+    with pytest.raises(BadInput, match="placeholder"):
+        Tag.parse_strict("child-failed:<job_id>")
+    # A bare '<' or '>' anywhere in the value is enough, not just a
+    # matched pair — a truncated/mangled substitution shouldn't sneak by.
+    with pytest.raises(BadInput, match="placeholder"):
+        Tag.parse_strict("waiting-for:<owner")
+
+
 # ── MAJOR: the documented STATUS values match the runtime ───────────
 
 

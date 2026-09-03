@@ -10,7 +10,9 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.markdown import MarkdownHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store
+from tests.hintcheck import assert_hints_round_trip
 
 
 @pytest.fixture
@@ -22,6 +24,28 @@ def md_root(tmp_path: Path) -> Path:
 @pytest.fixture
 def handler(hub: Hub, md_root: Path) -> MarkdownHandler:
     return MarkdownHandler(hub=hub, root=md_root)
+
+
+@pytest.fixture
+def runtime(store: Store, md_root: Path) -> PrecisRuntime:
+    """Full-dispatch runtime (handle inference included) pointed at
+    ``md_root`` — needed to round-trip trailer hints that advertise a
+    universal ``md<id>`` handle: :class:`MarkdownHandler` itself only
+    resolves plain file slugs (``ensure_ingested``); the handle ->
+    slug rewrite lives one layer up, in
+    ``PrecisRuntime._maybe_infer_kind_from_handle``. Calling
+    ``handler.get(id='md5~...')`` directly (bypassing dispatch, like
+    the plain ``handler`` fixture) would 404 even for a well-formed
+    hint."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+
+    embedder = MockEmbedder(dim=store.embedding_dim())
+    return PrecisRuntime(
+        config=PrecisConfig(),
+        hub=boot(store=store, embedder=embedder, precis_root=str(md_root)),
+    )
 
 
 def _write(root: Path, rel: str, content: str) -> Path:
@@ -145,6 +169,62 @@ def test_toc_view(handler: MarkdownHandler, md_root: Path) -> None:
     out = handler.get(id="doc/toc")
     assert "Top" in out.body
     assert "A" in out.body and "B" in out.body
+
+
+def test_toc_drill_down_hints_use_markdown_kind_and_round_trip(
+    runtime: PrecisRuntime, md_root: Path
+) -> None:
+    """The shared ``_paper_toc.render_toc`` used to hardcode
+    ``kind='paper'`` in its drill-down trailer, so a markdown file's
+    ``/toc`` advertised
+    ``get(kind='paper', id='doc~3..6/toc')`` — BadInput, wrong kind AND
+    an addressing form (absolute chunk range combined with ``view=``)
+    the file kinds don't support at all. Every hint the multi-H1
+    trailer advertises must now parse *and* execute against the real
+    dispatcher (handle inference included)."""
+    _write(
+        md_root,
+        "doc.md",
+        "# Top\n\nIntro para one.\n\n"
+        "# Middle\n\nMid body one.\n\nMid body two.\n\nMid body three.\n\n"
+        "# Bottom\n\nBottom body.\n",
+    )
+    out = runtime.dispatch("get", {"kind": "markdown", "id": "doc/toc"})
+    assert "Next:" in out
+    assert "kind='paper'" not in out
+    assert "kind='markdown'" in out
+
+    def _dispatch(verb: str, kwargs: dict[str, object]) -> str:
+        return runtime.dispatch(verb, kwargs)
+
+    assert_hints_round_trip(out, _dispatch)
+
+
+def test_overview_next_hints_round_trip(runtime: PrecisRuntime, md_root: Path) -> None:
+    """The overview's ``search(..., scope=...)`` hint advertised a
+    universal handle (``scope='md42'``), but markdown's search
+    resolves ``scope=`` as
+    the file slug (``ensure_ingested``) — a handle 404s. And the "read
+    one block" hint was a bare ``~SLUG`` placeholder with no slug
+    anywhere on the page (headings render as ``~<int ord>``). Both
+    must now parse and, for the concrete ``get`` hint, execute."""
+    _write(
+        md_root,
+        "doc.md",
+        "# Title\n\nIntro paragraph.\n\n## Sub\n\nMore.\n",
+    )
+    out = runtime.dispatch("get", {"kind": "markdown", "id": "doc"})
+    assert "Next:" in out
+    assert "scope='doc'" in out
+    assert "scope='md" not in out
+
+    def _dispatch(verb: str, kwargs: dict[str, object]) -> str:
+        return runtime.dispatch(verb, kwargs)
+
+    hints = assert_hints_round_trip(out, _dispatch)
+    # The "read one block" hint anchors on the real first-heading
+    # position ("Title" is ~0) rather than an unresolvable ~SLUG.
+    assert any("id='doc~0'" in h for h in hints)
 
 
 def test_raw_view(handler: MarkdownHandler, md_root: Path) -> None:

@@ -96,9 +96,9 @@ put(
     "Stream for >10k rows. See the design note in me812.",
 )
 # rewrite it later:
-edit(kind="todo", id=N, mode="replace", body="updated acceptance criteria")
+edit(kind="todo", id=42, mode="replace", body="updated acceptance criteria")
 # or rewrite both at once:
-edit(kind="todo", id=N, mode="replace", text="new title", body="new body")
+edit(kind="todo", id=42, mode="replace", text="new title", body="new body")
 ```
 
 ## Dashboard: strategic roots and 7d accounting

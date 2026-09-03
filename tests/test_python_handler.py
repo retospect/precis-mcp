@@ -15,6 +15,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.python import PythonHandler, _is_test_path, _parse_id
+from tests.hintcheck import assert_hints_round_trip
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -436,6 +437,26 @@ def test_search_no_match_with_scope_suggests_widening(
     widen_line = next(ln for ln in out.body.splitlines() if "widen to all repos" in ln)
     _, _, call_part = widen_line.partition("\t")
     assert "scope=" not in call_part
+
+
+def test_search_no_match_qualified_symbol_roots_note_is_prose(
+    handler: PythonHandler,
+) -> None:
+    """hint-audit item 4: the PRECIS_PYTHON_ROOTS advice used to be a
+    fake call-column entry (``# check PRECIS_PYTHON_ROOTS`` — a shell
+    comment, not a verb call). It's now a prose line outside the
+    Next: table, and every real hint in the table still round-trips."""
+    out = handler.search(q="some.dotted.path.nothing")
+    assert "no python symbols match" in out.body
+    assert "PRECIS_PYTHON_ROOTS" in out.body
+    assert "# check PRECIS_PYTHON_ROOTS" not in out.body
+
+    def dispatch(verb: str, kwargs: dict) -> object:
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    hints = assert_hints_round_trip(out.body, dispatch)
+    assert all("PRECIS_PYTHON_ROOTS" not in h for h in hints)
 
 
 def test_search_requires_q(handler: PythonHandler) -> None:

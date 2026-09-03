@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -318,3 +320,53 @@ def test_search_no_match(handler: TodoHandler) -> None:
     handler.put(text="hello")
     r = handler.search(q="frobnicate")
     assert "no todo entries match" in r.body
+
+
+# ── Next: trailer hint round-trips ─────────────────────────────────────
+
+
+def test_recent_list_hint_round_trips(handler: TodoHandler) -> None:
+    """Base-class instance: the shared ``NumericRefHandler._list_view``'s
+    ``/recent`` trailer used to advertise a bareword ``id=N`` — ships
+    on EVERY numeric-ref kind's
+    ``/recent`` list. It now interpolates the first listed row's real
+    id (todo exercises the base-class fallback for 'recent')."""
+    from tests.hintcheck import assert_hints_round_trip
+
+    handler.put(text="first todo")
+    handler.put(text="second todo")
+    resp = handler.get(id="/recent")
+    # ``/recent`` is most-recent-first — the top row is whatever
+    # ``_list_view`` actually rendered, not necessarily the first put.
+    top_row_id = handler.store.list_refs(kind="todo", limit=20)[0].id
+
+    def dispatch(verb: str, kwargs: dict[str, Any]) -> object:
+        kwargs = dict(kwargs)
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    hints = assert_hints_round_trip(resp.body, dispatch, whole_body=True)
+    get_hints = [h for h in hints if h.startswith("get(")]
+    assert get_hints, f"expected a get(...) hint: {hints!r}"
+    assert f"id={top_row_id}" in get_hints[0]
+
+
+def test_status_list_hints_round_trip(handler: TodoHandler) -> None:
+    """``_render_status_list``'s two hints used to advertise a
+    bareword ``id=N`` — a ``CommandParseError`` on copy-paste. Both
+    now interpolate the first row's real id."""
+    from tests.hintcheck import assert_hints_round_trip
+
+    r = handler.put(text="an open todo")
+    rid = r.ref_id
+    resp = handler.get(id="/open")
+
+    def dispatch(verb: str, kwargs: dict[str, Any]) -> object:
+        kwargs = dict(kwargs)
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    hints = assert_hints_round_trip(resp.body, dispatch, whole_body=True)
+    assert any(f"id={rid}" in h for h in hints), hints
+    tag_hints = [h for h in hints if h.startswith("tag(")]
+    assert tag_hints and f"id={rid}" in tag_hints[0]

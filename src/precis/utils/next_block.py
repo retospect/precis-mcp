@@ -25,9 +25,10 @@ page, and prefer absolute selectors (``pa<id>~26..28``) over relative
 arithmetic on an opaque id (``pc<id>+1..3``). A correct-but-opaque hint
 reads as wrong (2026-09-02 gripe: the paper chunk trailer's relative
 form), erodes trust in every hint, and shows up as retry loops in agent
-transcripts. Round-trip guard for the paper path:
-``test_chunk_trailer_hints_round_trip``; generalization tracked in
-``docs/backlog/hint-round-trip-harness.md``.
+transcripts. Round-trip guard: ``tests/hintcheck.py`` — every view's
+trailer test extracts the advertised calls, parses them through the real
+command parser, and executes the concrete read ones. New hint emitters
+get the same treatment (angle-bracket placeholders are parse-only).
 
 Backwards compat: callsites pass the same ``[(call, description)]``
 list they always did; the renderer transposes (description first,

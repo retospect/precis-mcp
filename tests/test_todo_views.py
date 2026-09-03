@@ -8,6 +8,8 @@ handler-side dispatch wiring.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -503,3 +505,126 @@ def test_tree_view_includes_child_jobs(handler: TodoHandler) -> None:
     assert "fix_gripe attempt" in out.body
     # Gear glyph distinguishes the job row from todo rows.
     assert "⚙" in out.body
+
+
+# ── Next: trailer hint round-trips ──
+
+
+def _dispatch(handler: TodoHandler) -> Any:
+    def _call(verb: str, kwargs: dict[str, Any]) -> object:
+        kwargs = dict(kwargs)
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    return _call
+
+
+def test_projects_hint_round_trips(handler: TodoHandler) -> None:
+    """``render_projects``'s ``get(...view='tree')`` hint used to advertise
+    a bareword ``id=N``; it now interpolates the first listed project's id."""
+    from tests.hintcheck import assert_hints_round_trip
+
+    root = handler.put(
+        text="Project goal",
+        meta={
+            "rotation_root": True,
+            "workspace": {"path": "projects/hintcheck", "format": "tex"},
+        },
+    )
+    root_id = _id_of(root.body)
+    out = handler.search(view="projects")
+    hints = assert_hints_round_trip(out.body, _dispatch(handler), whole_body=True)
+    tree_hints = [h for h in hints if "view='tree'" in h]
+    assert tree_hints, f"expected a view='tree' hint: {hints!r}"
+    assert f"id={root_id}" in tree_hints[0]
+
+
+def test_strategic_hint_round_trips(handler: TodoHandler) -> None:
+    """``render_strategic``'s drill-in hint used to advertise a bareword
+    ``id=N``; it now interpolates the first strategic root's id."""
+    from tests.hintcheck import assert_hints_round_trip
+
+    root = handler.put(text="Strategic root.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    handler.put(text="A tactical child.", parent_id=root_id)
+    out = handler.search(view="strategic")
+    hints = assert_hints_round_trip(out.body, _dispatch(handler), whole_body=True)
+    tree_hints = [h for h in hints if "view='tree'" in h]
+    assert tree_hints, f"expected a view='tree' hint: {hints!r}"
+    assert f"id={root_id}" in tree_hints[0]
+
+
+def test_doable_hints_round_trip(handler: TodoHandler) -> None:
+    """``render_doable``'s three hints used to advertise a bareword
+    ``id=N``; the claim hint's ``<self>`` placeholder stays a template
+    but the description now tells the caller to substitute it, and the
+    id is a real leaf id (any id above)."""
+    from tests.hintcheck import assert_hints_round_trip
+
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    leaf = handler.put(text="A doable thing.", parent_id=root_id)
+    leaf_id = _id_of(leaf.body)
+    out = handler.search(view="doable")
+    hints = assert_hints_round_trip(out.body, _dispatch(handler), whole_body=True)
+    assert any(f"id={leaf_id}" in h for h in hints), hints
+    claim_hints = [h for h in hints if "claimed-by" in h]
+    assert claim_hints, f"expected a claimed-by hint: {hints!r}"
+    assert f"id={leaf_id}" in claim_hints[0]
+    assert "<self>" in claim_hints[0]  # still a template — see next test
+
+
+def test_doable_claim_placeholder_rejected_if_pasted_verbatim(
+    handler: TodoHandler,
+) -> None:
+    """Copying ``claimed-by:<self>`` verbatim (ignoring the hint's
+    "replace <self>" instruction) must fail loudly, not silently
+    persist a garbage claim owner the nursery's stale-claim detector
+    then reads."""
+    from precis.errors import BadInput
+
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    leaf = handler.put(text="A doable thing.", parent_id=root_id)
+    leaf_id = _id_of(leaf.body)
+    with pytest.raises(BadInput, match="placeholder"):
+        handler.tag(id=leaf_id, add=["claimed-by:<self>"])
+
+
+def test_ask_user_hints_round_trip(handler: TodoHandler) -> None:
+    """``render_ask_user``'s two hints used to advertise a bareword
+    ``id=N``; both now interpolate the first pending ask's real id."""
+    from tests.hintcheck import assert_hints_round_trip
+
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    ask = handler.put(text="Cite Tanaka or skip?", parent_id=root_id, tags=["ask-user"])
+    ask_id = _id_of(ask.body)
+    out = handler.search(view="ask-user")
+    hints = assert_hints_round_trip(out.body, _dispatch(handler), whole_body=True)
+    assert any(f"id={ask_id}" in h for h in hints), hints
+
+
+def test_attention_hints_round_trip_and_child_failed_uses_real_tag_value(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Every ``id=N`` bareword is now a real id, and the
+    ``remove=['child-failed:...']`` hint carries the actual tag
+    *value* the producer wrote (a bare job id), not the ``jb<id>``
+    handle rendered on the page — pasting the handle used to silently
+    clear nothing."""
+    from precis.store.types import Tag
+    from tests.hintcheck import assert_hints_round_trip
+
+    r = handler.put(text="Fix the rate-limit gripe")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:4711"), set_by="system")
+
+    out = handler.search(view="attention")
+    hints = assert_hints_round_trip(out.body, _dispatch(handler), whole_body=True)
+    cf_hints = [h for h in hints if "child-failed" in h]
+    assert cf_hints, f"expected a child-failed removal hint: {hints!r}"
+    assert f"id={rid}" in cf_hints[0]
+    # The bare job id (as producers write it), not the ``jb4711`` handle.
+    assert "child-failed:4711" in cf_hints[0]
+    assert "jb4711" not in cf_hints[0]

@@ -532,7 +532,7 @@ def render_projects(store: Store) -> Response:
     body += render_next_section(
         [
             (
-                "get(kind='todo', id=N, view='tree')",
+                f"get(kind='todo', id={projects[0]['id']}, view='tree')",
                 "drill into a project's todo tree",
             ),
             (
@@ -763,10 +763,11 @@ def render_strategic(store: Store) -> Response:
             f"[{int(open_count or 0)}/{int(total_count or 0)} open]"
         )
     body = "\n".join(lines)
+    first_strategic_id = int(rows[0][0])
     body += render_next_section(
         [
             (
-                "get(kind='todo', id=N, view='tree')",
+                f"get(kind='todo', id={first_strategic_id}, view='tree')",
                 "drill into a subtree",
             ),
             (
@@ -1010,16 +1011,20 @@ def render_doable(
         f"Asking: {totals['asking']} | Open: {totals['open']}"
     )
     body = "\n".join(lines)
+    first_leaf_id = leaves[0]["id"]
     body += render_next_section(
         [
-            ("get(kind='todo', id=N, view='tree')", "see the subtree above a leaf"),
             (
-                "tag(kind='todo', id=N, add=['claimed-by:<self>'])",
-                "claim a leaf",
+                f"get(kind='todo', id={first_leaf_id}, view='tree')",
+                "see the subtree above a leaf (any id above)",
             ),
             (
-                "tag(kind='todo', id=N, add=['STATUS:done'])",
-                "mark a leaf done",
+                f"tag(kind='todo', id={first_leaf_id}, add=['claimed-by:<self>'])",
+                "claim a leaf — replace <self> with your own agent name",
+            ),
+            (
+                f"tag(kind='todo', id={first_leaf_id}, add=['STATUS:done'])",
+                "mark a leaf done (any id above)",
             ),
         ]
     )
@@ -1324,12 +1329,13 @@ def render_ask_user(store: Store) -> Response:
             first_line = first_line[:70].rstrip() + "…"
         lines.append(f"{_h(ref_id):<6} {first_line}")
     body = "\n".join(lines)
+    first_ask_id = int(rows[0][0])
     body += render_next_section(
         [
-            ("get(kind='todo', id=N)", "read the ask + its ancestry"),
+            (f"get(kind='todo', id={first_ask_id})", "read the ask + its ancestry"),
             (
-                "tag(kind='todo', id=N, add=['STATUS:done'])",
-                "resolve the ask",
+                f"tag(kind='todo', id={first_ask_id}, add=['STATUS:done'])",
+                "resolve the ask (any id above)",
             ),
         ]
     )
@@ -1412,22 +1418,39 @@ def render_attention(store: Store) -> Response:
                 first = first[:76].rstrip() + "…"
             lines.append(f"{_h(h['id']):<6} {first}")
     body = "\n".join(lines)
-    body += render_next_section(
-        [
-            (
-                "get(kind='todo', id=N)",
-                "read the leaf + its ancestry chain to triage",
-            ),
-            (
-                "tag(kind='todo', id=N, remove=['child-failed:<job_id>'])",
-                "after deciding to retry: clear the bubble flag",
-            ),
-            (
-                "tag(kind='todo', id=N, remove=['halt'])",
-                "lift the halt (owner-only; resumes doable / dispatch)",
-            ),
-        ]
+    # Pick a concrete id from whichever signal actually surfaced above —
+    # ``total > 0`` guarantees at least one of the three lists is non-empty.
+    first_id = (
+        asks[0]["id"]
+        if asks
+        else (child_failed[0]["id"] if child_failed else halted[0]["id"])
     )
+    nav: list[tuple[str, str]] = [
+        (
+            f"get(kind='todo', id={first_id})",
+            "read the leaf + its ancestry chain to triage",
+        ),
+    ]
+    if child_failed:
+        # The real tag *value* — producers write the bare job id, not the
+        # ``jb<id>`` handle rendered above, so substituting the printed
+        # handle here would silently clear nothing.
+        first_cf = child_failed[0]
+        first_bubble_tag = first_cf["child_failed_tags"][0]
+        nav.append(
+            (
+                f"tag(kind='todo', id={first_cf['id']}, remove=[{first_bubble_tag!r}])",
+                "after deciding to retry: clear the bubble flag",
+            )
+        )
+    if halted:
+        nav.append(
+            (
+                f"tag(kind='todo', id={halted[0]['id']}, remove=['halt'])",
+                "lift the halt (owner-only; resumes doable / dispatch)",
+            )
+        )
+    body += render_next_section(nav)
     return Response(body=body)
 
 

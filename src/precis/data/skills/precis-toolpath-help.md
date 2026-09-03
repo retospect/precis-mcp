@@ -57,9 +57,9 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Deep async paper campaign | `search(kind='paper', q='...', good=True)` → poll the job handle | `precis-search-help` |
 | Which skill do I need? | `get(kind='skill', id='toc')` / `search(kind='skill', q='your goal')` | `precis-overview` |
 | Stumble into something new | `get(kind='random')` | `precis-random-help` |
-| Debug a ref's hidden state | `get(kind='todo', id=N, view='raw')` (dumps full `meta` JSON) | `precis-todo-help` |
-| Inspect a ref's link graph | `get(kind='todo', id=N, view='links')` | `precis-relations` |
-| Read a ref's event trail | `get(kind='todo', id=N, view='log')` | — |
+| Debug a ref's hidden state | `get(kind='todo', id=122, view='raw')` (dumps full `meta` JSON) | `precis-todo-help` |
+| Inspect a ref's link graph | `get(kind='todo', id=122, view='links')` | `precis-relations` |
+| Read a ref's event trail | `get(kind='todo', id=122, view='log')` | — |
 
 Which kinds accept `view='raw'`/`'links'`/`'log'`, and which expose
 their own view set instead, is in `precis-overview`.
@@ -107,10 +107,10 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Goal | Toolpath | Depth |
 |---|---|---|
 | See project dashboard | `search(kind='todo', view='projects')` | `precis-todo-tree-help` |
-| Drill into one project's tree | `get(kind='todo', id=N, view='tree')` | `precis-todo-tree-help` |
+| Drill into one project's tree | `get(kind='todo', id=122, view='tree')` | `precis-todo-tree-help` |
 | Doable leaves in a subtree | `search(kind='todo', view='doable', args={'under': N})` | `precis-todo-tree-help` |
 | What needs my attention | `search(kind='todo', view='attention')` | `precis-todo-tree-help` |
-| Split a task | children via `put(..., parent_id=N)` | `precis-decomposition-help` |
+| Split a task | children via `put(..., parent_id=122)` | `precis-decomposition-help` |
 | Sketch a thread's reasoning outline | `put(kind='plan', id='x-plan', title='…', project=N)`, then add `pe<id>` nodes | `precis-plan-help` |
 | Wait on a condition | leaf with `meta.auto_check` | `precis-auto-todo-help` |
 | Recurring work | `meta.schedule` set | `precis-recurring-help` |

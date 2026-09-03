@@ -19,6 +19,7 @@ from precis.store.types import Tag
 from precis.tools.command_parser import parse_command
 from precis.utils import handle_registry
 from tests.conftest import chunk_handle, record_handle
+from tests.hintcheck import assert_hints_round_trip, extract_hints
 
 # ---------------------------------------------------------------------------
 # Slug parsing — pure logic, no DB
@@ -445,6 +446,65 @@ class TestViews:
         resp = handler.get(id="wang2020state/cite/bib")
         assert "@article" in resp.body
 
+    def test_bibliography_headline_hint_interpolates_first_citation(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``get(kind='citation', id=<N>)`` was an unquoted angle
+        placeholder — a SyntaxError, not even a valid template. The
+        table above always carries a real ``citation:<id>`` value;
+        interpolate it as a literal instead."""
+        from precis.handlers.citation import CitationHandler
+
+        _seed_paper(store, slug="cited2024", title="Cited Paper")
+        cite_handler = CitationHandler(hub=Hub(store=store))
+        put_resp = cite_handler.put(
+            text="A claim from the cited paper",
+            source_handle="cited2024~0",
+            source_quote="the paper actually says this",
+            verifier_confidence=0.9,
+            # ``_render_bibliography`` walks the ``cites`` link, which
+            # only gets wired when ``link=``/``rel=`` are passed —
+            # ``source_handle=`` alone does not create it.
+            link="paper:cited2024",
+            rel="cites",
+        )
+        m = re.search(r"id=(\d+)", put_resp.body)
+        assert m is not None, put_resp.body
+        citation_id = int(m.group(1))
+
+        out = handler.get(id="cited2024", view="bibliography").body
+        assert f"citation:{citation_id}" in out
+        assert "id=<N>" not in out
+        assert f"get(kind='citation', id={citation_id})" in out
+
+        hints = extract_hints(out)
+        assert hints
+        for hint in hints:
+            verb, _kwargs = parse_command(hint)  # must not raise
+            assert verb == "get"
+
+    def test_list_view_open_hint_interpolates_first_handle(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``get(id='pa<id>')`` was an unresolvable placeholder on the
+        ``get()`` (no id=) list view;
+        interpolate the first listed ref's real handle, mirroring the
+        fix already applied to ``_paper_search.py``'s equivalent
+        affordance."""
+        _seed_paper(store, slug="listed2024", title="Listed Paper")
+        out = handler.get().body
+        top_handle = record_handle(store, "listed2024")
+        assert "id='pa<id>'" not in out
+        assert f"get(id='{top_handle}')" in out
+
+        def _dispatch(verb: str, kwargs: dict[str, Any]) -> Any:
+            kwargs.pop("kind", None)
+            return (
+                handler.search(**kwargs) if verb == "search" else handler.get(**kwargs)
+            )
+
+        assert_hints_round_trip(out, _dispatch)
+
 
 # ---------------------------------------------------------------------------
 # Chunk selectors
@@ -609,23 +669,50 @@ class TestSearch:
         resp = lex_only.search(q="zzqqxx")
         assert "no paper blocks match" in resp.body
 
-    def test_search_doi_miss_routes_to_request_doi(self, store: Store) -> None:
-        """DOI-shaped query that misses should point to request_doi.md
-        (perplexity / fetch pipeline) rather than suggest a wider
+    def test_search_doi_miss_routes_to_stub_mint(self, store: Store) -> None:
+        """DOI-shaped query that misses should point at minting a paper
+        stub (put(kind='paper', doi=...)) rather than suggest a wider
         lexical search that will also miss. Friction fix for the
         shotgun pattern where agents fire 3-5 keyword variants
         trying to find a paper that isn't in the corpus.
+
+        The old headline recovery
+        (``put(kind='finding', cited_in='doi:{doi}', ...)``) failed
+        100% of the time — ``FindingHandler._resolve_cited_in``
+        rejects a bare ``doi:`` outright — and the third row
+        (``edit(kind='plaintext', id='./request_doi.md', ...)``) was
+        self-labelled legacy and errors without ``PRECIS_ROOT``. Both
+        are gone; the headline call is the one that actually works.
         """
         lex_only = PaperHandler(hub=Hub(store=store))
         _seed_paper(store, blocks=["alpha"])
         resp = lex_only.search(q="10.1038/nature10352")
         body = resp.body
         assert "no paper blocks match" in body
-        assert "request_doi.md" in body
         assert "10.1038/nature10352" in body
         # The generic "widen the lexical net" hint should not appear
         # for DOI misses - we know widening won't help.
         assert "widen the lexical net" not in body
+        # The deleted rows are gone.
+        assert "request_doi.md" not in body
+        assert "cited_in='doi:" not in body
+        # The headline recovery mints the stub directly — the call
+        # ``paper.put(doi=...)`` actually accepts (see PaperHandler.put).
+        assert "put(kind='paper', doi='10.1038/nature10352')" in body
+        # ``scope={'...': '...'}`` (the ellipsis-dict footgun) is gone too.
+        assert "scope={'...': '...'}" not in body
+
+        # Every hint must at least parse — including the two write
+        # verbs, which hintcheck's default ``execute_verbs=("get",
+        # "search")`` never dispatches (a live ``put`` here would hit
+        # S2 for identifier verification).
+        hints = extract_hints(body)
+        assert hints, "no hints found in the DOI-miss trailer"
+        for hint in hints:
+            verb, kwargs = parse_command(hint)  # raises on non-literal args
+            assert verb in ("get", "search", "put")
+            if verb == "put" and kwargs.get("kind") == "paper":
+                assert kwargs["doi"] == "10.1038/nature10352"
 
     def test_singleton_hit_no_redundant_trailer(
         self, store: Store, handler: PaperHandler
@@ -681,6 +768,56 @@ class TestSearch:
         # Two-line nav must still be present.
         assert "narrow to blocks inside" in resp.body
         assert "tighten the query with a hit-specific token" in resp.body
+
+    def test_narrow_scope_hint_names_the_paper_it_targets(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """The narrow-scope hint's ``pa<id>`` handle is real and
+        interpolated, but the results table only
+        ever prints ``pc<chunk_id>`` chunk handles — the pa id used to
+        appear nowhere else on the page, so a reader had no way to
+        confirm what paper the hint actually scopes to (same defect
+        class as the fixed ``pc<id>+1..3`` gripe). The description
+        column now names the paper by title so the hint is verifiable
+        without a follow-up call, and the hint itself still round-trips.
+
+        Dispatches through :class:`PrecisRuntime`, not the bare
+        handler, because the results table's OTHER hint
+        (``get(id='pc<id>')``, "paste any handle above") is a *chunk*
+        handle — only full dispatch's handle-inference rewrites that
+        to the handler's native ``slug~ord`` selector; the handler's
+        own ``get()`` only resolves *record* handles (``pa<id>``)
+        inline (see :func:`resolve_live_slug_ref`).
+        """
+        for slug in ("paper-a", "paper-b", "paper-c"):
+            _seed_paper(
+                store,
+                slug=slug,
+                title=f"Distinctive Title {slug}",
+                blocks=[f"photocatalytic reduction in {slug}"],
+            )
+        # page_size=2 with 3 total hits keeps the multi-hit branch (the
+        # singleton-hit branch — page_size=1 — suppresses the narrow-scope
+        # hint entirely; see test_singleton_hit_no_redundant_trailer).
+        body = runtime_with_store.dispatch(
+            "search", {"kind": "paper", "q": "photocatalytic", "page_size": 2}
+        )
+        # The table above only prints chunk handles.
+        assert re.search(r"\bpc\d+\b", body)
+        # The description names the top hit's paper by title — pull it
+        # out and cross-check against the store rather than assume
+        # which of the three seeded papers ranked first.
+        m = re.search(r"narrow to blocks inside (pa\d+) \(([^)]*)\)", body)
+        assert m is not None, f"narrow-scope hint not found or not verifiable:\n{body}"
+        top_handle, shown_title = m.group(1), m.group(2)
+        parsed = handle_registry.parse(top_handle)
+        assert parsed is not None
+        kind, is_chunk, pk = parsed
+        ref = store.get_ref(kind=kind, id=pk)
+        assert ref is not None and not is_chunk
+        assert ref.title == shown_title
+
+        assert_hints_round_trip(body, runtime_with_store.dispatch)
 
     # ── exclude= ──────────────────────────────────────────────────
 

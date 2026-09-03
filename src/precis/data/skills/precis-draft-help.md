@@ -463,7 +463,7 @@ its own **Claims** group — see `precis-fisheye-help`). Only wired for
 The outline ends with a **`## Work in progress`** block when todos
 working on this draft are stuck or in flight (walked draft → project →
 todo subtree): `⚠ blocked` carries a `child-failed:<job>` bubble, `⚙ in
-flight` is a live/queued job. Inspect with `get(kind='todo', id=<id>)`;
+flight` is a live/queued job. Inspect with `get(kind='todo', id='<id>')`;
 unblock by retrying, splitting, or dropping (`tag` off the
 `child-failed:` bubble + `STATUS:done`) — how a failed enrichment job
 registers on the draft instead of silently stalling.

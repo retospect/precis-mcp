@@ -95,7 +95,7 @@ ref's `refreshed_at`. Use this to keep a fragment alive past its
 decay window:
 
 ```python
-tag(kind='memory', id=<N>, add=['internal-thought'])
+tag(kind='memory', id=42, add=['internal-thought'])
 ```
 
 A common pattern: when a recent-thoughts entry resonates with the
@@ -111,7 +111,7 @@ promote one — confirm the connection feels real — remove the
 namespace tag and add the non-speculative variant:
 
 ```python
-tag(kind='memory', id=<N>,
+tag(kind='memory', id=42,
     remove=['DREAM:speculative'],
     add=['internal-thought', 'user:asa'])
 ```

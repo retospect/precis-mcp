@@ -14,7 +14,9 @@ from precis.handlers.paper import PaperHandler
 from precis.store import Store
 from precis.taproot.authoring import seed_claim_hub
 from precis.taproot.hub import attach_evidence
+from precis.tools.command_parser import parse_command
 from precis.utils import handle_registry
+from tests.hintcheck import extract_hints
 from tests.workers._helpers import seed_ref
 
 
@@ -32,6 +34,20 @@ def test_claims_view_no_hubs_points_at_mint_affordance(store: Store) -> None:
     assert "no claim hubs" in out
     assert "supporters=" in out
     assert pa in out
+    # The mint-affordance's
+    # ``'source_handle': '<pc_id>'`` stays a template (this page has no
+    # pc handle to substitute — an empty-state page), but it must still
+    # PARSE as a template (angle-bracket placeholder, quoted — not a
+    # bare, unparseable ``id=<N>`` bareword), and the description now
+    # says where a real pc<id> comes from.
+    hints = extract_hints(out)
+    assert hints, "no hint found on the claims empty-state page"
+    put_hint = next(h for h in hints if h.startswith("put("))
+    verb, kwargs = parse_command(put_hint)  # must not raise
+    assert verb == "put"
+    assert kwargs["supporters"][0]["source_handle"] == "<pc_id>"
+    assert "get a pc<id> chunk handle from" in out
+    assert "view='toc'" in out  # pointer to where a pc<id> comes from
 
 
 def test_claims_view_lists_grounded_hub_with_posture(store: Store) -> None:

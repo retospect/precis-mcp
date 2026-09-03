@@ -382,13 +382,13 @@ class GripeHandler(NumericRefHandler):
                 ),
                 (
                     f"put(kind='job', job_type='fix_gripe', "
-                    f"link={self.kind!r}+':{ref_id}', rel='fixes')",
+                    f"link='{self.kind}:{ref_id}', rel='fixes')",
                     "hand off to an agent",
                 ),
                 (
                     f"link(kind={self.kind!r}, id={ref_id}, "
-                    f"target={self.kind!r}+':N', rel='supersedes')",
-                    "mark this as superseding/refining another",
+                    "target='<gripe-handle>', rel='supersedes')",
+                    "mark this as superseding/refining another (the other gripe's id)",
                 ),
                 (
                     f"get(kind={self.kind!r}, id='/recent')",

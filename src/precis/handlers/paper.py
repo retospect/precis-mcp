@@ -1569,10 +1569,13 @@ class PaperHandler(Handler):
             return Response(body=body)
 
         rows: list[dict[str, str]] = []
+        first_citation_id: int | None = None
         for link in cite_links:
             citation = self.store.get_ref(kind="citation", id=link.src_ref_id)
             if citation is None:
                 continue
+            if first_citation_id is None:
+                first_citation_id = citation.id
             meta = citation.meta or {}
             handle = meta.get("source_handle") or ""
             quote = _clean_inline_text(meta.get("source_quote") or "")
@@ -1599,18 +1602,26 @@ class PaperHandler(Handler):
                 rows, schema=["id", "claim", "source", "conf", "quote"]
             )
         )
-        body += render_next_section(
-            [
+        # ``get(kind='citation', id=<N>)`` was an unquoted angle
+        # placeholder — a SyntaxError, not even a valid template. The
+        # table above always carries a real ``citation:<id>`` value
+        # once ``rows`` is non-empty;
+        # interpolate it as a proper literal instead.
+        nav: list[tuple[str, str]] = []
+        if first_citation_id is not None:
+            nav.append(
                 (
-                    "get(kind='citation', id=<N>)",
+                    f"get(kind='citation', id={first_citation_id})",
                     "read one citation's full record (the verifier's caveats too)",
-                ),
-                (
-                    "get(kind='skill', id='precis-citation-help')",
-                    "the verifier-workflow agent surface",
-                ),
-            ]
+                )
+            )
+        nav.append(
+            (
+                "get(kind='skill', id='precis-citation-help')",
+                "the verifier-workflow agent surface",
+            )
         )
+        body += render_next_section(nav)
         return Response(body=body)
 
     def _render_claims(self, ref: Ref) -> Response:
@@ -1652,7 +1663,9 @@ class PaperHandler(Handler):
                         f"put(kind='finding', title='<claim sentence>', "
                         f"supporters=[{{'paper': '{_pa(ref)}', "
                         "'source_handle': '<pc_id>'}])",
-                        "mint a claim hub grounded in this paper",
+                        "mint a claim hub grounded in this paper — "
+                        f"get a pc<id> chunk handle from "
+                        f"get(id='{_pa(ref)}', view='toc') or any chunk read",
                     ),
                 ]
             )
@@ -2132,7 +2145,12 @@ class PaperHandler(Handler):
                     "find a specific paper by topic",
                 ),
                 (
-                    "get(id='pa<id>')",
+                    # ``'pa<id>'`` was an unresolvable placeholder — every
+                    # row above already prints a real handle; interpolate
+                    # the first one (same fix _paper_search.py's
+                    # equivalent affordance already applies) so the
+                    # advertised call actually executes.
+                    f"get(id='{_pa(refs[0])}')",
                     "open one paper from the list (paste any handle above)",
                 ),
             ]

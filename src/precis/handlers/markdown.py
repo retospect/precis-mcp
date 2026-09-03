@@ -143,6 +143,16 @@ class MarkdownHandler(PlaintextHandler):
             toc=toc,
             total_blocks=len(blocks),
             blocks_by_pos=blocks_by_pos,
+            # ``render_toc`` defaults to ``kind='paper'``-shaped
+            # drill-down hints (absolute ``~N..M`` ranges + a bibtex
+            # view) that markdown's file-slug addressing can't
+            # execute — pass our own kind + the ``md<id>`` handle
+            # already computed above so the trailer advertises calls
+            # that actually resolve (was: hardcoded ``kind='paper'``,
+            # BadInput on every copy — see the drill-down branch in
+            # ``render_toc`` for the addressing gap).
+            kind=self._KIND,
+            address=handle,
         )
         return Response(body=body)
 
@@ -185,17 +195,45 @@ class MarkdownHandler(PlaintextHandler):
         return lines
 
     def _overview_next_hints(self, ref: Ref) -> list[tuple[str, str]]:
-        """Markdown's hint set mentions ``/toc`` and ``block`` nouns."""
-        handle = handle_registry.format_handle(self._KIND, ref.id)
+        """Markdown's hint set mentions ``/toc`` and ``block`` nouns.
+
+        Two fixes from the 2026-09 hint audit:
+
+        - ``scope=`` resolves through :meth:`PlaintextHandler.search`
+          -> ``ensure_ingested``, which treats it as the *file slug*,
+          not a universal handle — the base class's
+          ``scope='{handle}'`` form 404s for every file kind. Advertise
+          the slug (same as :meth:`_render_index` already does).
+        - The "read one block" hint used to advertise a bare
+          ``~SLUG`` placeholder, but markdown's overview only ever
+          prints heading positions as ``~<int ord>`` (see
+          :meth:`_overview_body_extras`) — no slug is discoverable
+          anywhere on the page. Anchor on the first heading's real
+          position instead, so the hint is both parseable *and*
+          verifiable from the response it rides on.
+        """
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        toc = build_toc(list(blocks))
+        first = next((s for s in toc if s.title), None)
+        if first is None:
+            first = next((c for s in toc for c in s.children if c.title), None)
+        read_hint = (
+            (
+                f"get(kind='markdown', id='{ref.slug}~{first.start}')",
+                f"read the {first.title!r} block",
+            )
+            if first is not None
+            else (
+                f"get(kind='markdown', id='{ref.slug}~0')",
+                "read the first block",
+            )
+        )
         return [
             (f"get(kind='markdown', id='{ref.slug}/toc')", "full TOC"),
             (f"get(kind='markdown', id='{ref.slug}/raw')", "full source"),
+            read_hint,
             (
-                f"get(kind='markdown', id='{ref.slug}~SLUG')",
-                "read one block by slug",
-            ),
-            (
-                f"search(kind='markdown', q='...', scope='{handle}')",
+                f"search(kind='markdown', q='...', scope='{ref.slug}')",
                 "search inside this file",
             ),
         ]

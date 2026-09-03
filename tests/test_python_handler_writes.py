@@ -469,6 +469,26 @@ def test_response_includes_change_summary(handler: PythonHandler, repo: Path) ->
     assert "r::pkg.m.helper" in out.body
 
 
+def test_put_response_next_hint_round_trips(handler: PythonHandler, repo: Path) -> None:
+    """``_render_put_response``'s trailer was migrated to
+    ``render_next_section`` (hint-audit item 4, structural note) — the
+    advertised re-fetch call must still parse and dispatch."""
+    from tests.hintcheck import assert_hints_round_trip
+
+    out = handler.edit(
+        id="r::pkg.m.helper",
+        text="def helper(x: int) -> int:\n    return x + 9\n",
+        mode="replace",
+    )
+
+    def dispatch(verb: str, kwargs: dict) -> object:
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    hints = assert_hints_round_trip(out.body, dispatch)
+    assert any("r::pkg.m.helper" in h for h in hints)
+
+
 def test_kind_spec_supports_seven_verb_surface() -> None:
     """The KindSpec advertises the seven-verb shape: ``put`` is
     creation-only (``mode='create'`` only), ``edit`` and ``delete``

@@ -304,12 +304,13 @@ class TodoHandler(NumericRefHandler):
             preview = (title[:80] + "…") if len(title) > 80 else title
             lines.append(f"  {ref_id:>4}  [{status:<7}]  {preview}")
         body = "\n".join(lines)
+        first_id = kept[0][0]
         body += render_next_section(
             [
-                ("get(kind='todo', id=N)", "read full todo + tags"),
+                (f"get(kind='todo', id={first_id})", "read full todo + tags"),
                 (
-                    "tag(kind='todo', id=N, add=['STATUS:done'])",
-                    "mark a todo done",
+                    f"tag(kind='todo', id={first_id}, add=['STATUS:done'])",
+                    "mark a todo done (any id above)",
                 ),
                 ("put(kind='todo', text='new task')", "create a new todo"),
             ]

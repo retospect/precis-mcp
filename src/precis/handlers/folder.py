@@ -49,12 +49,13 @@ class FolderHandler(NumericRefHandler):
         description=(
             "Organizational container for authored artifacts "
             "(draft, structure, cad, todo roots, other folders). "
-            "put(text='<name>') creates one (nest it with link(id=N, "
-            "target='folder:M', rel='parent')); get lists the folder tree; "
-            "get(id=N) shows path + "
+            "put(text='<name>') creates one (nest it with link(id='<id>', "
+            "target='folder:<parent-id>', rel='parent')); get lists the "
+            "folder tree; get(id='<id>') shows path + "
             "contents; view='tree' renders the whole subtree. Place an "
-            "artifact with link(kind='<its kind>', id=..., target='folder:N', "
-            "rel='parent'); mode='remove' unfiles it. delete refuses while "
+            "artifact with link(kind='<its kind>', id='<child-handle>', "
+            "target='folder:<id>', rel='parent'); mode='remove' unfiles it. "
+            "delete refuses while "
             "the folder has live contents. Folders organize what you MAKE - "
             "papers, memories, and alerts stay out. Keep them shallow. "
             "See precis-folder-help."
@@ -239,15 +240,15 @@ class FolderHandler(NumericRefHandler):
             body += render_next_section(
                 [
                     (
-                        "link(kind='<its kind>', id=..., "
+                        "link(kind='<its kind>', id='<child-handle>', "
                         f"target='folder:{ref.id}', rel='parent')",
                         "place an artifact here",
                     ),
                     (
-                        "put(kind='folder', text='<name>') then "
-                        f"link(kind='folder', id=<new>, target='folder:{ref.id}', "
-                        "rel='parent')",
-                        "create a subfolder",
+                        "put(kind='folder', text='<name>')",
+                        "create a subfolder, then "
+                        f"link(kind='folder', id='<new>', target='folder:{ref.id}', "
+                        "rel='parent') to nest it",
                     ),
                 ]
             )
@@ -357,12 +358,17 @@ class FolderHandler(NumericRefHandler):
 
         emit(None, 0)
         body = "\n".join(lines)
+        first_fid = int(rows[0][0])
         body += render_next_section(
             [
-                ("get(kind='folder', id=N)", "open a folder (path + contents)"),
+                (
+                    f"get(kind='folder', id={first_fid})",
+                    "open a folder (path + contents)",
+                ),
                 ("put(kind='folder', text='<name>')", "create a folder"),
                 (
-                    "link(kind='<its kind>', id=..., target='folder:N', rel='parent')",
+                    "link(kind='<its kind>', id='<child-handle>', "
+                    f"target='folder:{first_fid}', rel='parent')",
                     "place an artifact",
                 ),
             ]

@@ -18,6 +18,7 @@ from precis.handlers.cad import CadHandler
 from precis.handlers.folder import FolderHandler
 from precis.handlers.todo import TodoHandler
 from tests.conftest import id_of
+from tests.hintcheck import assert_hints_round_trip
 
 
 @pytest.fixture
@@ -54,6 +55,60 @@ def test_get_empty_folder_renders_hints(folder: FolderHandler) -> None:
 def test_no_folders_yet_hint(folder: FolderHandler) -> None:
     resp = folder.get()
     assert "no folders yet" in resp.body
+
+
+# ── hint-audit item 3: Next: trailer legibility ──────────────────────
+
+
+def _dispatch(folder: FolderHandler):
+    def _call(verb: str, kwargs: dict) -> object:
+        kwargs.pop("kind", None)
+        return getattr(folder, verb)(**kwargs)
+
+    return _call
+
+
+def test_empty_folder_create_subfolder_hint_is_one_call(
+    folder: FolderHandler,
+) -> None:
+    """The old "put(...) then link(...)" call-column value was two
+    calls joined by prose — a SyntaxError if pasted whole. The call
+    column must now be a single valid call; the link step moves to
+    the description column."""
+    fid = _mk(folder, "Empty2")
+    resp = folder.get(id=fid)
+    assert "') then link(" not in resp.body
+    assert "put(kind='folder', text='<name>')" in resp.body
+
+
+def test_empty_folder_hints_round_trip_and_link_is_templated(
+    folder: FolderHandler,
+) -> None:
+    """Every hint on the empty-folder page must parse; the
+    place-an-artifact hint's ``id=`` was Ellipsis (parses, then dies
+    illegibly in ``_coerce_id``) — now a quoted angle-bracket template."""
+    fid = _mk(folder, "Empty3")
+    resp = folder.get(id=fid)
+    hints = assert_hints_round_trip(resp.body, _dispatch(folder))
+    place_hint = next(h for h in hints if h.startswith("link("))
+    assert "id='<child-handle>'" in place_hint
+    assert f"target='folder:{fid}'" in place_hint
+
+
+def test_folder_index_hints_round_trip_and_use_real_fid(
+    folder: FolderHandler,
+) -> None:
+    """``get(kind='folder', id=N)`` was an unquoted, unparseable
+    template; the index already prints real ``folder:{fid}`` rows —
+    interpolate one instead."""
+    fid = _mk(folder, "Root A")
+    resp = folder.get()
+    hints = assert_hints_round_trip(resp.body, _dispatch(folder))
+    get_hint = next(h for h in hints if h.startswith("get("))
+    assert get_hint == f"get(kind='folder', id={fid})"
+    link_hint = next(h for h in hints if h.startswith("link("))
+    assert "id='<child-handle>'" in link_hint
+    assert f"target='folder:{fid}'" in link_hint
 
 
 def test_edit_renames(folder: FolderHandler) -> None:
