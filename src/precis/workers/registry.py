@@ -863,6 +863,29 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-taproot-help",
     ),
     ServiceSpec(
+        # precis.workers.conflict_search (claim-conflict-search slice 1):
+        # negated-paraphrase ANN sweep hunting each claim hub's opposition
+        # in the corpus, paper_rank-budgeted verify with a small-voice
+        # floor, disputes edges filed on confirmed contradicts verdicts,
+        # coverage tracked in meta.conflict_search. Same shape as
+        # hub_refine/hub_tagline just above: dark by default (§L: `service
+        # prio` controls it, no live PRECIS_CONFLICT_SEARCH_ENABLED read).
+        name="conflict_search",
+        label="Claim conflict search",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_CONFLICT_SEARCH_ENABLED",
+        uses_model=True,
+        cost_sources=("conflict_search",),
+        one_line=(
+            "Negated-paraphrase ANN sweep — every claim hub hunts opposing "
+            "corpus passages, paper_rank-budgeted verify, disputes filed, "
+            "meta.conflict_search coverage ledger."
+        ),
+        doc_skill="precis-taproot-help",
+    ),
+    ServiceSpec(
         name="chase_trigger",
         label="Taproot chase trigger",
         category="discovery",

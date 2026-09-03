@@ -61,6 +61,19 @@ converge on (`src/precis/taproot/seniority.py::derive_evidence`, over
 the held `cites` graph). No intra-supporter citation edge held → every
 supporter stays `corroborates` (never guessed).
 
+**Every hub hunts its own opposition.** The `conflict_search` worker
+pass (dark until enabled) sweeps live claim hubs: LLM-negated
+paraphrases of the claim are ANN-searched over paper/patent/hub
+passages ("X has no effect" sits far from "X enhances" in embedding
+space), the hits are verify-budgeted by `paper_rank` with a reserved
+floor for low-prestige sources, and a confirmed opposing passage is
+filed as a `disputes` edge (`meta.via='conflict_search'`). The hub's
+`meta.conflict_search = {version, at, candidates_checked,
+disputes_filed}` is the coverage ledger — "no known conflict as of
+`at`, method `version`" is a checkable statement, not silence; a
+missing or stale-version ledger means the hub was never swept by the
+current method.
+
 **A compound hub holds no direct evidence.** When a claim decomposes into
 several atomic sub-claims, the bundling sentence gets its own hub — cite-able,
 but attach-only-through-atoms: `link(...,

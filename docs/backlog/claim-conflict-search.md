@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: claim conflict search — every claim hunts its own opposition, at mint and retroactively, with coverage tracked
 model: opus
 blocked-by: disputes-edge-nonblocking-disagreement
@@ -172,6 +172,22 @@ conflicts hide where coverage is thickest.
 - **Decided (2026-09-02, post ready-review):** no imports of
   `hub_refine` privates; re-derive discovery, share only via
   `workers/_chase_llm.py` (see In-scope item 1).
+- **Decided (2026-09-03):** Part 1 shipped AND deployed (0de3ec7c,
+  migration 0151), so the blocked-by contingency is moot — slice 1
+  (items 1–3) files `disputes` edges directly on confirmed contradicts
+  verdicts instead of parking verdicts in the ledger. Items 4–5
+  (approve advisory panel, counter-claim mint) remain follow-on slices.
+- **SHIPPED (2026-09-03): slice 1** — `workers/conflict_search.py`
+  (items 1–3 + direct `disputes` filing): watermarked claim-lease pass,
+  negated-paraphrase ANN (finding-kind candidates re-derive the
+  canonical-hub predicate — scratch chase findings never file), 20%
+  small-voice floor over `paper_rank.read_first`, shared `_chase_llm`
+  verify, `meta.conflict_search` ledger. Dark: enable via a
+  `service_config` row (`conflict_search`). REMAINING in this item:
+  item 4 (approve-time advisory panel + freshness re-sweep), item 5
+  (counter-claim mint through directed mint), backfill ordering /
+  budget tuning on the first dense neighbourhood, and the two open
+  questions below.
 - Does the searched-at negative statement ride into the *published*
   provenance graph, or stay a local honesty record? (Close to the
   negative-results pathway in `claim-publication-nanopub-ots.md` —

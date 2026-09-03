@@ -233,6 +233,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_inbound_chase_pass": PassPriority.BACKGROUND,
     "_hub_refine_pass": PassPriority.BACKGROUND,
     "_hub_tagline_pass": PassPriority.BACKGROUND,
+    "_conflict_search_pass": PassPriority.BACKGROUND,
     "_chase_trigger_pass": PassPriority.BACKGROUND,
     "_fetch_pass": PassPriority.BACKGROUND,
     "_gp_fetch_pass": PassPriority.BACKGROUND,
@@ -939,6 +940,66 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_hub_tagline_pass)
+
+        # conflict_search — negated-paraphrase ANN sweep hunting each claim
+        # hub's opposition (precis.workers.conflict_search, claim-conflict-
+        # search slice 1). Needs an embedder for discovery, same reuse-the-
+        # booted-EmbedHandler-or-construct-fresh-LAZILY degrade as
+        # hub_refine/chase_trigger above (register-all means this closure
+        # is built on every profile). Default-OFF, dark like every other
+        # taproot service / --only conflict_search.
+        if _register("conflict_search"):
+            from precis.workers.conflict_search import run_conflict_search_pass
+            from precis.workers.embed import EmbedHandler as _ConflictSearchEmbedHandler
+            from precis.workers.runner import BatchResult as _ConflictSearchBatchResult
+
+            _conflict_search_embed_handler = next(
+                (h for h in handlers if isinstance(h, _ConflictSearchEmbedHandler)),
+                None,
+            )
+            _conflict_search_embedder_cache: list[Any] = []
+
+            def _conflict_search_get_embedder() -> Any:
+                if _conflict_search_embedder_cache:
+                    return _conflict_search_embedder_cache[0]
+                if _conflict_search_embed_handler is not None:
+                    embedder = _conflict_search_embed_handler.embedder
+                else:
+                    try:
+                        embedder = _resolve_embedder(args, store)
+                    except Exception:
+                        log.warning(
+                            "conflict_search: embedder unavailable -- pass "
+                            "will degrade to no-op",
+                            exc_info=True,
+                        )
+                        embedder = None
+                _conflict_search_embedder_cache.append(embedder)
+                return embedder
+
+            def _conflict_search_pass(batch_size: int) -> _ConflictSearchBatchResult:
+                r = run_conflict_search_pass(
+                    store,
+                    embedder=_conflict_search_get_embedder(),
+                    limit=batch_size,
+                )
+                # hub_tagline's exact {claimed, ok, failed} accounting:
+                # claimed = every hub this pass's claim-and-lease picked
+                # up, ok = the ones that reached a completed sweep, failed
+                # = claimed - ok (a vanished/negate-failed hub is claimed
+                # but neither ok nor failed-elsewhere -- it folds into
+                # failed here, same as hub_tagline's own NotFound/rejected
+                # hubs do).
+                _claimed = r["hubs_claimed"]
+                _ok = r["hubs_swept"]
+                return _ConflictSearchBatchResult(
+                    handler="conflict_search",
+                    claimed=_claimed,
+                    ok=_ok,
+                    failed=_claimed - _ok,
+                )
+
+            ref_passes.append(_conflict_search_pass)
 
         # chase_trigger — incremental counterpart to hub_refine above
         # (transient-napping-parrot Phase 1): sweeps freshly-embedded

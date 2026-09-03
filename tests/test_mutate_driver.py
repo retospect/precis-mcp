@@ -229,7 +229,9 @@ def test_select_covering_tests_name_matched_test_beats_the_cap() -> None:
         "tests/workers/test_pcb_route.py::test_routed_net_is_never_failed",
     ]
     selected = md.select_covering_tests(tests, "src/precis/pcb/pcb_route.py", 5)
-    assert "tests/workers/test_pcb_route.py::test_routed_net_is_never_failed" in selected
+    assert (
+        "tests/workers/test_pcb_route.py::test_routed_net_is_never_failed" in selected
+    )
     assert len(selected) == 5
 
 

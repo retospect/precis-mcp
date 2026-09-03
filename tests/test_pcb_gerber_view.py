@@ -505,7 +505,9 @@ def test_document_reserves_the_legend_gutter_and_covers_a_short_boards_legend() 
 
     n_rows = len(re.findall(r'<g class="legend-row', svg))
     legend_h = 20 * n_rows + 12
-    assert vh < legend_h + 8.0, "fixture must be short enough to exercise the legend branch"
+    assert vh < legend_h + 8.0, (
+        "fixture must be short enough to exercise the legend branch"
+    )
 
     assert doc_w == pytest.approx(gerber_view._LEGEND_GUTTER_PX + vw, abs=0.6)
     assert doc_h == pytest.approx(legend_h + 8.0, abs=0.6)
