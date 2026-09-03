@@ -31,7 +31,13 @@ from typing import TYPE_CHECKING, Any
 
 from precis.pcb import session as pcb_session
 from precis.pcb.optimize import MoveKind as _MK
-from precis.pcb.optimize import OptimizeConfig, ScheduleStage, digest_toon, optimize
+from precis.pcb.optimize import (
+    OptimizeConfig,
+    ScheduleStage,
+    digest_toon,
+    optimize,
+    resolve_measures,
+)
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -131,7 +137,19 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     ir_pin_swaps = ctx.store.pcb_pin_swaps_list(pcb_ref_id)
     pcb_session.apply_pin_swap_overrides(ir, ir_pin_swaps)
 
-    config = OptimizeConfig(iters=iters, seed=seed, schedule=_PLACE_ONLY_SCHEDULE)
+    # Authored proximity/separation intent (put(args={'measures':[...]})),
+    # resolved to the pair-distance cost terms `optimize.py`'s anneal can
+    # actually enforce (precis-measures-help) — previously measured but
+    # never enforced by this job (only the legacy `place.autoplace` quick
+    # placer honoured them). `resolve_measures` silently drops anything
+    # this engine can't express as a two-instance distance bound (a
+    # `height`/connectivity metric, a role-based operand, a `gauge`
+    # strength) — those stay eyes.py-evaluated only, same as before.
+    measures = resolve_measures(ctx.store.pcb_measures_list(pcb_ref_id))
+
+    config = OptimizeConfig(
+        iters=iters, seed=seed, schedule=_PLACE_ONLY_SCHEDULE, measures=measures
+    )
     result = optimize(ir, config)
 
     pose = pcb_session.positions(ir)

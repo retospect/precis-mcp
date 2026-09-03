@@ -188,6 +188,9 @@ get(
     kind="pcb", id="s", view="trace", args={"net": "I2C_SCL"}
 )  # logical hop through 2-pin series R/C
 get(kind="pcb", id="s", view="measures")  # evaluate the design's measuring tapes
+get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
+# before any placement (matching labels ARE the connections; also on the
+# web PCB tab)
 ```
 
 - **crossings** is the objective the placer minimises — fewer crossed wires =

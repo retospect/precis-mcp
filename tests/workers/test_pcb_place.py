@@ -10,6 +10,7 @@ reduce crossings).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
@@ -184,6 +185,58 @@ def test_pcb_place_reapplies_persisted_plane_without_writing_back(
         "pcb_place cannot change a plane assignment (no PLANE_* move in "
         "its schedule) -- it must never write one back"
     )
+
+
+def test_pcb_place_honors_an_authored_proximity_measure(store: Store) -> None:
+    """The defect this job existed to fix: an authored `put(args={
+    'measures':[...]})` proximity/separation intent used to be MEASURED
+    (`eyes.py`, `get(view='measures')`) and honoured only by the legacy
+    `place.autoplace` quick placer — never by THIS job, the one
+    `put(args={'op':'place'})` actually enqueues (precis.pcb.optimize's
+    production anneal). Two unconnected instances (no shared net, so
+    wirelength/crossings give this job no OTHER reason to move them
+    together), seeded 30mm apart, with an authored 'soft' proximity goal
+    of 8mm — after a real dispatch through the store (put -> pcb_apply ->
+    pcb_measures_list -> resolve_measures -> optimize()) they land close
+    to that goal, not merely wherever the initial seed left them."""
+    args = {
+        "components": [
+            {
+                "refdes": "A",
+                "label": "part",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "B",
+                "label": "part",
+                "x": 30.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+        ],
+        "nets": [],
+        "connections": [],
+        "measures": [
+            {
+                "metric": "proximity",
+                "operands": [{"instance": "A"}, {"instance": "B"}],
+                "goal": 8,
+                "strength": "soft",
+                "reason": "crystal hugs the MCU",
+            }
+        ],
+    }
+    ref_id = _seed(store, "place-measure", args)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 6000, "seed": 1})
+    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+
+    assert not ctx.failures
+    graph = store.pcb_graph(ref_id)
+    placed = {i["refdes"]: (i["x"], i["y"]) for i in graph["instances"]}
+    dist = math.hypot(placed["A"][0] - placed["B"][0], placed["A"][1] - placed["B"][1])
+    assert dist <= 12.0  # a few mm of the 8mm goal -- not still ~30mm apart
 
 
 def test_pcb_place_fails_legibly_on_empty_design(store: Store) -> None:

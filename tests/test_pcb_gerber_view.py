@@ -725,3 +725,20 @@ def test_export_fab_refuses_synthesized_pads() -> None:
     with pytest.raises(gerber.SynthesizedPadError):
         gerber.export_fab(model, name="t")
     assert gerber.export_fab(model, name="t", allow_synthesized=True)
+
+
+def test_hostile_slug_cannot_break_out_of_the_document_title() -> None:
+    """The fab SVG is served to the browser as image/svg+xml and embedded
+    via <object> (scripts deliberately live, for the legend toggles) -- and
+    ``title`` is the raw agent-supplied design slug. An unescaped slug like
+    ``x</title><script>...`` would break out of the <title> text node and
+    inject a live script into whoever opens the board in the web UI."""
+    files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
+    hostile = 'x</title><script>fetch(1)</script><title y="'
+    svg = gerber_view.render_fab_svg(files, title=hostile)
+    assert "<script>" not in svg
+    assert "&lt;/title&gt;" in svg
+    # and it must still be one well-formed document
+    import xml.etree.ElementTree as ET
+
+    ET.fromstring(svg)

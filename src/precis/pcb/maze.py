@@ -85,6 +85,18 @@ CONTESTED = -2
 #: separate questions and deliberately not wired together.
 VIA_COST_MM = 3.0
 
+#: Extra cost, ON TOP OF ``VIA_COST_MM``, for a via whose transition cell
+#: falls under a placed component's own body (see
+#: :class:`OccupancyGrid`'s ``body_mask``/:meth:`OccupancyGrid.
+#: set_body_mask`, and :func:`precis.pcb.realize._courtyard_body_mask` for
+#: how that mask is built). A via there is not illegal — sometimes it is
+#: the only way through — but it is the one a rework has to desolder the
+#: part to reach, so reworkability prices it rather than vetoes it: a
+#: routing *preference*, not the ``via_count`` MONEY term in
+#: :mod:`precis.pcb.cost` (which prices vias for the placer), same
+#: framing as ``VIA_COST_MM`` above and deliberately not wired to it.
+VIA_UNDER_BODY_COST_MM = 3.0
+
 #: Cap on A* node expansions for a single segment. A blocked net should
 #: fail in milliseconds and be reported, never spin: the grid is finite so
 #: the search always terminates, but "always" can mean after every cell on
@@ -366,6 +378,12 @@ class OccupancyGrid:
         #: number in the tens to low hundreds on any board this router
         #: sees — cheap to scan exactly, no discretisation to get wrong.
         self._pads: list[tuple[float, float, float]] = []
+        #: ``(ny, nx)`` boolean, or ``None`` — cells under a placed
+        #: component's own body, set (once, optionally) via
+        #: :meth:`set_body_mask`. ``None`` is the every-caller-today
+        #: default and means the ``via_body_cost_mm`` surcharge in
+        #: :meth:`route` never fires, so an unset mask is a pure no-op.
+        self._body_mask: np.ndarray | None = None
 
     @property
     def owner(self) -> np.ndarray:
@@ -374,6 +392,23 @@ class OccupancyGrid:
     @property
     def pads(self) -> tuple[tuple[float, float, float], ...]:
         return tuple(self._pads)
+
+    def set_body_mask(self, mask: np.ndarray | None) -> None:
+        """Mark cells that lie under a placed component's own body, for
+        :meth:`route`'s ``via_body_cost_mm`` surcharge.
+
+        Optional and separate from the constructor because it is
+        placement-derived (:func:`precis.pcb.realize._courtyard_body_mask`)
+        and every caller predating this feature builds a grid with no
+        notion of component bodies at all — ``None`` (never calling this)
+        reproduces that exactly, rather than forcing every construction
+        site to thread a mask through just to pass ``None``.
+        """
+        if mask is not None and mask.shape != (self.spec.ny, self.spec.nx):
+            raise ValueError(
+                f"body_mask shape {mask.shape} != {(self.spec.ny, self.spec.nx)}"
+            )
+        self._body_mask = None if mask is None else mask.astype(bool)
 
     def core_radius_mm(self, width_mm: float) -> float:
         """The radius one piece of copper claims for itself: its own
@@ -607,6 +642,7 @@ class OccupancyGrid:
         pad_layer: int | None = None,
         attach: bool = True,
         via_cost_mm: float = VIA_COST_MM,
+        via_body_cost_mm: float = 0.0,
         max_expansions: int = MAX_EXPANSIONS,
         layer_prefs: dict[int, str] | None = None,
     ) -> RoutePath | None:
@@ -619,7 +655,16 @@ class OccupancyGrid:
         The passable set is computed once per call: every other net's
         core, dilated by this net's own half-width (plus one cell of
         discretisation slack). See :class:`OccupancyGrid` for why the
-        dilation belongs here and not in the claim."""
+        dilation belongs here and not in the claim.
+
+        ``via_body_cost_mm`` (default ``0.0``, a no-op) surcharges a layer
+        change whose transition cell falls in :meth:`set_body_mask`'s
+        mask, on top of ``via_cost_mm`` — see
+        :data:`VIA_UNDER_BODY_COST_MM`. Deliberately left OUT of
+        ``heuristic`` below: folding it in there would make the heuristic
+        overestimate a path that turns out to avoid every body cell,
+        breaking A*'s admissibility guarantee for a search that is
+        supposed to stay optimal-under-weighting, not just fast."""
         spec = self.spec
         if not layers:
             return None
@@ -769,7 +814,12 @@ class OccupancyGrid:
                 nidx = other * plane + iy * spec.nx + ix
                 if nidx in closed or not passable(nidx):
                     continue
-                tentative = base + via_cost_mm
+                under_body = self._body_mask is not None and bool(
+                    self._body_mask[iy, ix]
+                )
+                tentative = (
+                    base + via_cost_mm + (via_body_cost_mm if under_body else 0.0)
+                )
                 if tentative < g_score.get(nidx, math.inf):
                     g_score[nidx] = tentative
                     came[nidx] = cur
@@ -843,6 +893,7 @@ __all__ = [
     "FREE",
     "MAX_EXPANSIONS",
     "VIA_COST_MM",
+    "VIA_UNDER_BODY_COST_MM",
     "GridSpec",
     "OccupancyGrid",
     "RoutePath",

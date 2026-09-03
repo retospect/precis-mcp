@@ -108,6 +108,23 @@ disqualified regardless of cost. This module never calls
   rigidly translates the FINISHED placement to the outline's centre
   (routing is translation-invariant); a spread-to-FILL pressure, if ever
   wanted, belongs in the cost function, not in this domain.
+- ``measures`` (2026-09-03, author-supplied placement intent —
+  ``put(args={'measures':[...]})``, precis-measures-help): a
+  ``proximity``/``separation`` measure names exactly two instances and a
+  distance bound, so unlike ``alignment``'s spatial-grid-discovered
+  neighbours the pair is FIXED at construction (:meth:`OptimizeEngine.
+  __init__` resolves ``config.measures`` once, into
+  ``_measures_by_inst[inst]`` — the small, static list of measures naming
+  ``inst``) and needs no candidate search at all: :meth:`OptimizeEngine.
+  _refresh_measures` just recomputes those, O(measures on this instance),
+  every move. A SUMMED (``Family.MONEY``-shaped, though not a registered
+  ``cost.py`` :class:`~precis.pcb.cost.TermSpec` — see
+  :data:`_MEASURE_SOFT_USD_PER_MM`'s docstring for why) running total,
+  the same running-dollar shape ``alignment`` uses, kept in its own
+  ``_money_measures`` channel. Never a legality rejection: the penalty is
+  linear in violation distance with no ceiling, so a badly-seeded pair
+  always has a gradient walking it toward its goal, at every schedule
+  stage.
 
 **Not claimed local**: :func:`precis.pcb.cost.aggregate_margin`'s max is a
 linear scan over cached per-item penalties, O(cached entries) not
@@ -127,6 +144,7 @@ import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 import numpy as np
 
@@ -152,6 +170,7 @@ from precis.pcb.cost import (
     loop_inductance_term,
     outline_bbox,
 )
+from precis.pcb.eyes import measure_bound
 from precis.pcb.geom import (
     convex_polygons_overlap,
     convex_polygons_signed_separation,
@@ -340,6 +359,157 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
 #: pad position.
 
 
+#: Linear USD-per-mm-of-violation scale for a `soft` measure — a gradient
+#: toward the authored goal, NOT a fab-cost figure. Deliberately NOT a
+#: registered `cost.py` :class:`~precis.pcb.cost.TermSpec` (unlike
+#: `alignment`, this module's other MONEY "preference field"): an authored
+#: `pcb_measures` row is per-DESIGN intent that lives outside `PcbIR`/
+#: `CostConfig`'s board-physics catalogue entirely (it isn't even data the
+#: IR carries), so it rides its OWN small money channel here
+#: (:attr:`OptimizeEngine._money_measures`, folded into :meth:`OptimizeEngine.
+#: money` directly) rather than joining `_money_static_by_name`'s
+#: `_BY_NAME`-keyed terms — see :meth:`OptimizeEngine.digest`'s own
+#: hand-built `TermSummary` for this term for the same reason. Set an
+#: order of magnitude above `CostConfig.alignment_usd_per_pair` (0.002, the
+#: deliberately-weakest possible cosmetic tie-breaker) since an AUTHORED
+#: measure is a real stated intent, not a tie-breaker — but still well
+#: below a single via (`via_usd` 0.02) or a layer (`layer_usd` 5.0) at a
+#: typical few-mm violation, so a `soft` measure trades off against real
+#: fab cost rather than steamrolling it.
+#: Measured empirically (a two-free-instance anneal, no other cost term in
+#: play, `tests/test_pcb_optimize.py`'s own measure tests): the schedule's
+#: cooling temperature starts at `board_side / 2` (`OptimizeEngine.anneal`)
+#: and a per-pair-unit scale near `CostConfig.alignment_usd_per_pair`
+#: (0.002) left the acceptance-probability gradient too weak against that
+#: temperature to reliably close more than a few mm per run — this value
+#: reliably lands a soft-measured pair within a couple mm of `goal_mm`.
+_MEASURE_SOFT_USD_PER_MM = 1.0
+
+#: `hard` measures get a DECISIVELY larger per-mm scale than `soft` — 40x —
+#: so a hard violation dominates any real money term this engine ever
+#: prices (one mm of hard violation already outweighs eight whole extra
+#: layers), without ever being a legality REJECTION (task requirement,
+#: verbatim): the anneal always has a slope to walk a violating seed back
+#: in, it is just very rarely willing to accept a move that walks further
+#: out.
+_MEASURE_HARD_USD_PER_MM = 40.0
+
+#: :meth:`OptimizeEngine.digest`'s hand-built justification for the
+#: "measures" row — there is no `cost.py` :class:`~precis.pcb.cost.TermSpec`
+#: to read one from (:data:`_MEASURE_SOFT_USD_PER_MM`'s own docstring), so
+#: this is the one place that text lives.
+_MEASURES_JUSTIFICATION = (
+    "author-stated placement intent (put(args={'measures':[...]})) — a "
+    "proximity/separation goal between two named instances, priced as a "
+    "linear-in-violation-mm penalty so the anneal steers toward it; "
+    "'hard' measures are priced decisively above 'soft' ones, never as a "
+    "legality rejection (precis-measures-help)"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureSpec:
+    """One placement-drivable `pcb_measures` row, pre-resolved to the
+    shape this engine can enforce as a bounded pair-distance cost term —
+    NOT the raw ``{'metric', 'operands', ...}`` dict
+    ``store.pcb_measures_list`` returns (:func:`resolve_measures` converts
+    one into the other). Only `proximity`/`separation` measures over
+    exactly two ``{'instance': refdes}`` operands resolve to one of these:
+    `height` measures are `eyes.py`-evaluated only (not a pair-distance
+    bound), and role-based (``{'role': ...}``) operands can't resolve here
+    at all — bare :class:`~precis.pcb.ir.PcbIR` carries no role data (that
+    lives only on the graph dict `store.pcb_graph` hands `eyes.py`/
+    `place.py`, never on the IR this engine anneals), so a role-based
+    measure is still evaluated read-only (``get(view='measures')``) but
+    does not steer this module's placement — a documented gap, not a
+    silent one.
+
+    ``refdes_a``/``refdes_b`` are resolved to instance ids at
+    :meth:`OptimizeEngine.__init__` time (a design's refdes are stable
+    strings; instance ids are engine-internal), so this dataclass itself
+    stays engine-agnostic and easy to unit-test standalone."""
+
+    refdes_a: str
+    refdes_b: str
+    bound: str  # "lower" | "upper" | "target" — precis.pcb.eyes.measure_bound
+    goal_mm: float
+    hard: bool
+    weight: float
+
+
+def resolve_measures(measures: list[dict[str, Any]] | None) -> tuple[MeasureSpec, ...]:
+    """Raw `pcb_measures` rows (`store.pcb_measures_list`'s own shape) ->
+    the pair-distance bounds this engine can enforce. Mirrors
+    :func:`precis.pcb.place._measure_specs`'s own filtering — skip
+    `strength='gauge'` (report-only, never drives placement per
+    precis-measures-help, verbatim); skip a metric other than proximity/
+    separation; skip a missing goal — but resolves ONLY
+    ``{'instance': refdes}`` operand pairs (see :class:`MeasureSpec`'s
+    docstring for why role operands can't resolve at this layer) and keeps
+    EXACTLY two distinct refdes — a measure naming more or fewer operands
+    doesn't name a pair-distance bound this engine's move-local delta
+    machinery can express."""
+    out: list[MeasureSpec] = []
+    for m in measures or []:
+        strength = str(m.get("strength") or "gauge").strip().lower()
+        if strength == "gauge":
+            continue
+        metric = str(m.get("metric") or "").strip().lower()
+        if metric not in ("proximity", "separation"):
+            continue
+        goal = m.get("goal")
+        if goal is None:
+            continue
+        refs = [
+            str(op["instance"])
+            for op in (m.get("operands") or [])
+            if isinstance(op, dict) and "instance" in op
+        ]
+        if len(refs) != 2 or refs[0] == refs[1]:
+            continue
+        weight = 1.0 if m.get("weight") is None else float(m["weight"])
+        out.append(
+            MeasureSpec(
+                refdes_a=refs[0],
+                refdes_b=refs[1],
+                bound=measure_bound(m.get("direction"), metric),
+                goal_mm=float(goal),
+                hard=(strength == "hard"),
+                weight=weight,
+            )
+        )
+    return tuple(out)
+
+
+def _measure_pair_usd(ir: PcbIR, ia: int, ib: int, spec: MeasureSpec) -> float:
+    """One measure's current USD contribution — 0.0 when its bound is
+    satisfied, growing LINEARLY with the violation distance (the same
+    linear-in-fraction shape :func:`~precis.pcb.cost.alignment_pair_term`
+    uses for this module's other summed preference term), scaled by
+    :data:`_MEASURE_HARD_USD_PER_MM`/:data:`_MEASURE_SOFT_USD_PER_MM` and
+    the measure's own author-supplied ``weight`` (``weight: 0`` records a
+    measure without letting it steer placement, same convention
+    :func:`precis.pcb.place._measure_specs` documents). Never a legality
+    rejection — a violating pair always keeps a nonzero gradient pulling
+    it back toward ``goal_mm``, at every distance, so a badly-seeded pair
+    can always walk in."""
+    xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
+    xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
+    if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
+        return 0.0
+    dist_mm = math.hypot(xa - xb, ya - yb)
+    if spec.bound == "lower":  # separation: keep apart, penalise being too close
+        violation_mm = max(0.0, spec.goal_mm - dist_mm)
+    elif spec.bound == "upper":  # proximity: keep close, penalise being too far
+        violation_mm = max(0.0, dist_mm - spec.goal_mm)
+    else:  # target: aim at goal_mm from either side
+        violation_mm = abs(dist_mm - spec.goal_mm)
+    if violation_mm <= 0.0:
+        return 0.0
+    scale = _MEASURE_HARD_USD_PER_MM if spec.hard else _MEASURE_SOFT_USD_PER_MM
+    return spec.weight * scale * violation_mm
+
+
 @dataclass(frozen=True, slots=True)
 class OptimizeConfig:
     """Every tunable this module needs. ``cost`` is passed straight to the
@@ -390,6 +560,18 @@ class OptimizeConfig:
     #: default: an optimizer-DERIVED plane assignment stays fully
     #: explorable, only a human's stays fixed.
     locked_plane_nets: frozenset[int] = frozenset()
+    #: Author-supplied placement measures (``put(args={'measures':[...]})``,
+    #: see precis-measures-help) as pre-resolved :class:`MeasureSpec`\\ s —
+    #: :func:`resolve_measures` is the caller-side conversion from
+    #: ``store.pcb_measures_list``'s raw dicts, mirroring
+    #: :attr:`pin_swap_groups`'s own "caller resolves, engine consumes"
+    #: shape. Empty by default: with no measures, :meth:`OptimizeEngine.
+    #: __init__` resolves an empty pair list, ``_money_measures`` stays 0.0
+    #: for the WHOLE anneal, and every move/accept/reject decision is
+    #: bit-for-bit identical to a run built before this field existed — the
+    #: measure machinery adds a cost term, never a new code path an
+    #: unrelated design's anneal has to pass through.
+    measures: tuple[MeasureSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:
@@ -1232,12 +1414,16 @@ def _hole_polygon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
 
 def _hole_keepout_radius_mm(hole: MountingHole) -> float:
     """A mounting hole's placement keep-out radius: half its widest
-    feature (the plated annulus when there is one, else the bare drill)
-    PLUS the same courtyard clearance an instance's own pads get against
-    a neighbour (:data:`~precis.pcb.ir.COURTYARD_CLEARANCE_MM`) — the
-    router needs the identical breathing room around a hole's copper (or
-    bare NPTH edge) that it needs around any other pad."""
-    return max(hole.drill_mm, hole.ring_dia_mm) / 2.0 + COURTYARD_CLEARANCE_MM
+    feature — the plated annulus, the bare drill, or the authored
+    hardware envelope (:attr:`~precis.pcb.ir.MountingHole.head_dia_mm`,
+    the screw head / solder-nut flange / washer sitting above the board,
+    which can be wider than the copper) — PLUS the same courtyard
+    clearance an instance's own pads get against a neighbour
+    (:data:`~precis.pcb.ir.COURTYARD_CLEARANCE_MM`) — the router needs
+    the identical breathing room around a hole's copper (or bare NPTH
+    edge, or physical hardware) that it needs around any other pad."""
+    widest = max(hole.drill_mm, hole.ring_dia_mm, hole.head_dia_mm)
+    return widest / 2.0 + COURTYARD_CLEARANCE_MM
 
 
 #: How far inside the board outline a component's OUTERMOST PAD must sit
@@ -1483,6 +1669,40 @@ class OptimizeEngine:
         self._alignment_partners: dict[int, set[int]] = {}
         self._alignment_pair_usd: dict[tuple[int, int], float] = {}
 
+        # measures state: author-supplied proximity/separation pair bounds
+        # (`config.measures`, see :class:`MeasureSpec`), resolved to
+        # instance ids ONCE here (never re-resolved mid-anneal — the
+        # NAMED pair is fixed for the design's whole life, unlike
+        # courtyard/alignment's dynamically-discovered spatial neighbours).
+        # `_measures_by_inst[inst]` is the FIXED list of `_measure_pairs`
+        # indices naming `inst` — no discard-then-rediscover dance is
+        # needed the way courtyard/alignment's grid search requires, since
+        # membership never changes, only the two named instances' own
+        # positions do. `_measure_usd[idx]` mirrors `_alignment_pair_usd`'s
+        # own "remember the OLD value so a later refresh can subtract it"
+        # role for the SAME running-total shape, folded into
+        # `_money_measures` (not `_money_static_by_name` — see
+        # :attr:`OptimizeConfig.measures`'s and :meth:`money`'s own
+        # docstrings for why this term stays outside the `_BY_NAME`-keyed
+        # catalogue). An unresolvable measure (a refdes not on this design,
+        # or naming an instance twice) is silently dropped here, mirroring
+        # `precis.pcb.eyes._resolve`'s own leniency — a design changing
+        # underneath a stale measure should not crash placement.
+        refdes_to_inst = {str(ir.instance_refdes[i]): i for i in range(ir.n_instances)}
+        self._measure_pairs: list[tuple[int, int, MeasureSpec]] = []
+        for spec in config.measures:
+            mia = refdes_to_inst.get(spec.refdes_a)
+            mib = refdes_to_inst.get(spec.refdes_b)
+            if mia is None or mib is None or mia == mib:
+                continue
+            self._measure_pairs.append((mia, mib, spec))
+        self._measures_by_inst: dict[int, list[int]] = {}
+        for idx, (mia, mib, _spec) in enumerate(self._measure_pairs):
+            self._measures_by_inst.setdefault(mia, []).append(idx)
+            self._measures_by_inst.setdefault(mib, []).append(idx)
+        self._measure_usd: dict[int, float] = {}
+        self._money_measures: float = 0.0
+
         # margin cache: (term_name, key) -> latest TermValue. `key` is a
         # segment id for gap_capacity/loop_inductance, a sorted segment-id
         # pair for coupling, a net name for thermal_rise, a layer id for
@@ -1530,6 +1750,7 @@ class OptimizeEngine:
         self._init_crossing_state()
         self._init_courtyard_state()
         self._init_alignment_state()
+        self._init_measures_state()
         self._seed_layers()
 
     # -- one-time initialization (the only "full board" pass) ------------
@@ -1873,6 +2094,50 @@ class OptimizeEngine:
 
         self._money_static_by_name["alignment"] = total
 
+    # -- measures delta (author-supplied proximity/separation pairs) -----
+    def _init_measures_state(self) -> None:
+        """One-time full pass over every resolved :attr:`_measure_pairs`
+        entry — unlike :meth:`_init_courtyard_state`/:meth:`
+        _init_alignment_state`, this needs no per-instance ordering
+        argument: a measure's pair is FIXED (not spatial-neighbourhood
+        discovered), so visiting each measure once, in any order, already
+        computes the exact same total :meth:`_refresh_measures` maintains
+        incrementally afterward."""
+        total = 0.0
+        for idx, (mia, mib, spec) in enumerate(self._measure_pairs):
+            usd = _measure_pair_usd(self.ir, mia, mib, spec)
+            self._measure_usd[idx] = usd
+            total += usd
+        self._money_measures = total
+
+    def _refresh_measures(self, inst: int) -> None:
+        """The bounded per-move measures delta: recompute exactly the
+        measures NAMING ``inst`` (``_measures_by_inst[inst]``, a fixed
+        list built once at construction — never a spatial search) from
+        the instance's current (already-moved) position, subtracting each
+        one's OLD cached dollar value before adding the new one — the same
+        running-total shape :meth:`_refresh_alignment` uses for
+        ``_money_static_by_name["alignment"]``, here folded into the
+        SEPARATE ``_money_measures`` channel (see :attr:`OptimizeConfig.
+        measures`'s docstring for why). Recomputing a measure spanning a
+        SWAP's two instances twice (once per moved instance, the second
+        time seeing both new positions) is correct regardless of call
+        order — a fresh-from-current-position computation, not an
+        incremental diff, so the LAST call touching any given measure is
+        always the true answer, the same argument :meth:`_apply_placement`
+        already relies on for courtyard/alignment."""
+        indices = self._measures_by_inst.get(inst)
+        if not indices:
+            return
+        total = self._money_measures
+        for idx in indices:
+            mia, mib, spec = self._measure_pairs[idx]
+            total -= self._measure_usd.get(idx, 0.0)
+            usd = _measure_pair_usd(self.ir, mia, mib, spec)
+            self._measure_usd[idx] = usd
+            total += usd
+        self._money_measures = total
+
     # -- board-edge-clearance delta (O(1) per instance) -------------------
     def _refresh_board_edge(self, inst: int) -> None:
         t = board_edge_clearance_term(self.ir, inst, self.level, self.config.cost)
@@ -2205,6 +2470,7 @@ class OptimizeEngine:
         ir = self.ir
         self._refresh_courtyard(moved_inst)
         self._refresh_alignment(moved_inst)
+        self._refresh_measures(moved_inst)
         self._refresh_board_edge(moved_inst)
 
         direct = set(ir._segs_of_instance.get(moved_inst, ()))
@@ -2292,7 +2558,11 @@ class OptimizeEngine:
 
     # -- aggregate cost ----------------------------------------------------
     def money(self) -> float:
-        return sum(self._money_static_by_name.values()) + self._money_board_area
+        return (
+            sum(self._money_static_by_name.values())
+            + self._money_board_area
+            + self._money_measures
+        )
 
     def risk(self) -> float:
         if not self._margin:
@@ -2540,6 +2810,11 @@ class OptimizeEngine:
                 self._money_board_area,
                 None,
                 _BY_NAME["board_area"].justification,
+            )
+        )
+        term_summaries.append(
+            TermSummary(
+                "measures", "money", self._money_measures, None, _MEASURES_JUSTIFICATION
             )
         )
 

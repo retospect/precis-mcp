@@ -126,7 +126,10 @@ _SESSION_VIEWS = ("congestion", "planes")
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
 #: rubber-band sketch off the IR. See :meth:`PcbHandler._render_svg`.
-_RENDER_VIEWS = ("svg",)
+#: ``schematic`` is the placement-free sibling: the netlist as a
+#: net-label schematic (:mod:`precis.pcb.schematic`) — renders before the
+#: first ``op='place'`` because it reads intent, not copper.
+_RENDER_VIEWS = ("svg", "schematic")
 _OTHER_VIEWS = ("links",)
 _VIEWS = (
     *_PROBE_VIEWS,
@@ -173,6 +176,8 @@ class PcbHandler(Handler):
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
             "'congestion'|'planes'), a vector figure (view='svg', "
             "args={'level':'board'|'sketch'|'fab','layers':[...],'include':[...]}), "
+            "a net-label schematic SVG off the netlist alone "
+            "(view='schematic', works before any placement), "
             "or an export (view='bom'|'cpl'|'netlist'|"
             "'dsn'|'mechanical'|'gerber' writes a JLCPCB fab artifact -- "
             "'gerber' is the full manufacturable bundle (gerbers+Excellon, "
@@ -589,6 +594,16 @@ class PcbHandler(Handler):
             return self._render_drc(ref_id)
         if view == "svg":
             return self._render_svg(ref_id, args)
+        if view == "schematic":
+            from precis.pcb import schematic
+
+            ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
+            slug = (ref.slug if ref is not None else None) or "pcb"
+            return Response(
+                body=schematic.render_schematic_svg(
+                    self.store.pcb_graph(ref_id), title=slug
+                )
+            )
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.

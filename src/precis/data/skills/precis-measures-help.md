@@ -103,11 +103,15 @@ held.
 
 ## How measures interact with placement
 
-`autoplace` minimises `W_CROSS·crossings + length + W_MEASURE·penalty`, where
-the penalty is the violation of `soft`/`hard` separation & proximity measures.
-So measures **steer** the layout, they don't post-hoc reject it. `fixed` parts
-(connectors, mounting holes) still never move regardless. See
-[[precis-pcb-help]] for the place loop.
+The production anneal (the enqueued `op='place'` job, and `op='route'`'s
+re-place pass) prices each `soft`/`hard` proximity & separation measure as
+a cost term: zero when satisfied, growing linearly with violation-mm, with
+`hard` weighted ~40× `soft`. So measures **steer** the layout, they don't
+post-hoc reject it — a `hard` measure is a strong pull, not a legality
+wall, and on a congested board it can still lose (read `view='measures'`
+after placing to see what held). The quick `autoplace` path prices them
+too (`W_MEASURE·penalty`). `fixed` parts (connectors, mounting holes)
+still never move regardless. See [[precis-pcb-help]] for the place loop.
 
 ## Idioms
 
@@ -116,4 +120,5 @@ So measures **steer** the layout, they don't post-hoc reject it. `fixed` parts
 - **Quiet analog:** tag the preamp `sensitive`, the regulator/MCU `noisy`, one
   `separation` `soft` between the roles.
 - **Fits the box:** tag lid-side parts `under_lid`, one `height` `gauge`.
-- **Crystal hugs the MCU:** `proximity` `soft`, crystal ↔ MCU, small goal.
+- **Crystal hugs the MCU:** `proximity` `hard`, crystal ↔ MCU, small goal —
+  and the load caps get their own `proximity` `hard` onto the crystal.

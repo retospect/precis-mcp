@@ -1,0 +1,27 @@
+{% extends "base.html.j2" %}
+{% block title %}PCB{% endblock %}
+{% block content %}
+
+<div class="mb-4 flex items-center gap-3">
+  <h1 class="text-lg font-semibold">PCB designs</h1>
+  <span class="text-xs text-slate-400">boards the model places &amp; routes</span>
+</div>
+
+{% if designs %}
+<ul class="divide-y divide-slate-100 rounded border border-slate-200 bg-white">
+  {% for d in designs %}
+  <li class="flex items-center gap-3 px-3 py-2">
+    <a href="/pcb/{{ d.slug }}" class="font-medium text-slate-800 hover:text-slate-600">{{ d.title }}</a>
+    <span class="text-[11px] text-slate-400">{{ d.slug }} · {{ d.handle }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-sm text-slate-500">
+  No pcb designs yet. Create one from the MCP:
+  <code class="text-xs bg-slate-100 px-1 rounded">put(kind='pcb', id='myboard', args={'components': […], 'nets': […], 'connections': […]})</code>,
+  then open it here.
+</p>
+{% endif %}
+
+{% endblock %}

@@ -11,10 +11,22 @@ already applies to copper.
 **Per placed instance, three kinds of silk:**
 
 1. a **reference-designator label** (:mod:`precis.pcb.stroke_font`), sized
-   from ``height_mm`` and centered on the part by default, RELOCATED
-   (above/below/left/right the part) or, failing every candidate spot,
-   DROPPED when it would overlap a pad — "a fab scrapes silk off pads, so
-   text under a pad is silently lost" (task brief). Never emitted blind.
+   from ``height_mm``. Default placement (user spec, 2026-09-02 round-5
+   review): the label's rendered BOTTOM edge collinear with the courtyard's
+   own bottom edge, horizontally centred on the box — or, failing that,
+   flush with its left or right edge (:func:`_bottom_edge_candidates`,
+   ``v_align="baseline"``, an alphabet with no descenders makes "bottom of
+   text = bottom of box" literal). Failing all three — usually the part's
+   OWN bottom-row pins, since that is exactly where the courtyard's bottom
+   edge sits — the user's own chosen fallback (same day) HANGS the label
+   below the courtyard instead: same centred/left-flush/right-flush
+   horizontal spots, keyed the same literal way, just anchored outside the
+   box and growing further away from it (:func:`_below_box_candidates`,
+   ``v_align="top"``). Failing all six, RELOCATED onto :data:`_CANDIDATES`'
+   radial ladder (a ring sweep around the part, unchanged) or, failing
+   every candidate spot on that too, DROPPED when it would overlap a pad —
+   "a fab scrapes silk off pads, so text under a pad is silently lost"
+   (task brief). Never emitted blind.
    **Read from one side, at any part rotation.** Glyph orientation is
    pinned to 0 degrees regardless of the part's own rotation — a label
    never goes vertical or upside-down, so nobody ever turns the board to
@@ -367,6 +379,117 @@ def _refdes_candidates(
 _CANDIDATES: tuple[tuple[float, float, str, str, str], ...] = _refdes_candidates(
     _REFDES_RINGS, _REFDES_DIRECTIONS
 )
+
+
+#: How far the bottom-edge candidates' baseline (and the left/right-flush
+#: candidates' own vertical edge) sit INSIDE the courtyard's own border
+#: line, as a multiple of the drawn stroke width — the "stroke tolerance"
+#: a caller checking "bottom of text == courtyard min(y)" (or "left of
+#: text == courtyard min(x)") has to allow for. An anchor drawn EXACTLY ON
+#: that line is geometrically coincident with the courtyard outline's own
+#: stroke, and :func:`_stroke_crosses_stroke` (the label's own
+#: self-overlap check, applied to every candidate including these)
+#: inflates both by half their own width before testing SAT overlap — two
+#: coincident centrelines are then always within the combined half-widths
+#: of each other, so an un-inset anchor would self-reject on every part,
+#: every time, regardless of any real obstacle. 2x the combined-half-width
+#: threshold (measured: 1.5x already clears it; 2x leaves a real margin
+#: rather than riding the exact boundary) keeps "bottom/left/right of text
+#: = bottom/left/right of box" true to a fraction of a millimetre while
+#: staying a real, non-touching candidate.
+_BOTTOM_EDGE_INSET_STROKES = 2.0
+
+
+def _bottom_edge_candidates(
+    box_local: list[Point], stroke_width_mm: float
+) -> tuple[tuple[Point, str, str, str], ...]:
+    """The label CONVENTION (user spec, round-5 review), tried FIRST, before
+    :func:`_below_box_candidates` and before :data:`_CANDIDATES`' radial
+    ladder: the label's rendered bottom edge collinear with the
+    courtyard's own bottom edge, horizontally centred on the box or else
+    flush with its left or right edge. Three fixed ``(local_anchor,
+    h_align, v_align, label)`` candidates, in try order (bottom-center,
+    bottom-left-flush, bottom-right-flush) — a blocked one falls through
+    to the next, and past all three to :func:`_below_box_candidates`
+    (the user's own chosen fallback, tried before the radial ladder; see
+    the call site in :func:`build_silk`).
+
+    Keyed to the courtyard hull's LITERAL ``min(y)``/``min(x)``/``max(x)``
+    — never :func:`_courtyard_support_mm`'s directional support, which is
+    the RIGHT helper for the radial ladder's "how far out" question but
+    the WRONG one here: support diverges from the hull's true edge on an
+    asymmetric courtyard (a connector, a TO-220 tab), so a support-based
+    "bottom" would float off the actual bottom edge exactly where this
+    convention matters most.
+
+    ``v_align="baseline"`` is what makes "bottom of text = bottom of box"
+    (near-)literal: this alphabet (:mod:`precis.pcb.stroke_font`) has no
+    descenders, so a baseline anchored just inside the courtyard's own
+    bottom-edge line (:data:`_BOTTOM_EDGE_INSET_STROKES` — see that
+    constant for why it can't be exactly ON the line) puts the LOWEST ink
+    of every glyph a stroke tolerance above that line, growing upward into
+    the box — never past it, since ``height_mm`` is normally far smaller
+    than the courtyard. Local instance frame, same as :data:`_CANDIDATES`
+    — a relocated label still moves with the part's own rotation/mirror
+    through :func:`_place`, never the board's absolute axes. Empty for a
+    pinless/courtyard-less instance — nothing to key a bottom edge off."""
+    if not box_local:
+        return ()
+    xs = [p[0] for p in box_local]
+    ys = [p[1] for p in box_local]
+    inset = stroke_width_mm * _BOTTOM_EDGE_INSET_STROKES
+    x0, x1 = min(xs), max(xs)
+    y0 = min(ys) + inset
+    cx = (x0 + x1) / 2.0
+    return (
+        ((cx, y0), "center", "baseline", "bottom-center"),
+        ((x0 + inset, y0), "left", "baseline", "bottom-left-flush"),
+        ((x1 - inset, y0), "right", "baseline", "bottom-right-flush"),
+    )
+
+
+def _below_box_candidates(
+    box_local: list[Point], stroke_width_mm: float
+) -> tuple[tuple[Point, str, str, str], ...]:
+    """The user's OWN chosen fallback (round-5 review item 2, decided
+    explicitly rather than jumping straight to the radial ladder) for
+    when every :func:`_bottom_edge_candidates` spot is blocked — usually
+    by the part's OWN pads, since the over-box bottom edge sits right
+    where a bottom row of pins lives. Same three horizontal spots (centred
+    / left-flush / right-flush), same literal courtyard ``min(y)``/
+    ``min(x)``/``max(x)`` keying — but the label now HANGS below the
+    courtyard instead of sitting over it: text just under the bottom
+    edge, extending further away from the part.
+
+    ``v_align="top"`` (not ``"baseline"``) is the whole difference:
+    :func:`~precis.pcb.stroke_font._v_shift`'s ``"top"`` puts the glyph
+    CAP at the anchor and grows the box DOWNWARD from there (the same
+    primitive :func:`build_title_block` already uses to grow a top-corner
+    block away from the board's own top edge) — anchored on the
+    courtyard's bottom-edge line, offset OUTWARD by the same
+    :data:`_BOTTOM_EDGE_INSET_STROKES` gap the over-box candidates inset
+    INWARD by (so strokes never touch the courtyard's own outline
+    either), that puts the whole label below the part.
+
+    Tried after :func:`_bottom_edge_candidates`'s three and before
+    :data:`_CANDIDATES`' radial ladder (see the call site in
+    :func:`build_silk`). Local instance frame, same as both — a relocated
+    label still moves with the part's own rotation/mirror through
+    :func:`_place`. Empty for a pinless/courtyard-less instance, same as
+    :func:`_bottom_edge_candidates`."""
+    if not box_local:
+        return ()
+    xs = [p[0] for p in box_local]
+    ys = [p[1] for p in box_local]
+    gap = stroke_width_mm * _BOTTOM_EDGE_INSET_STROKES
+    x0, x1 = min(xs), max(xs)
+    y0 = min(ys) - gap
+    cx = (x0 + x1) / 2.0
+    return (
+        ((cx, y0), "center", "top", "below-center"),
+        ((x0, y0), "left", "top", "below-left-flush"),
+        ((x1, y0), "right", "top", "below-right-flush"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -978,7 +1101,11 @@ _PIN1_DOT_DISTANCES = 3
 
 
 def _pin1_dot_candidates(
-    ir: PcbIR, pin1: int, stroke_width_mm: float, clearance_mm: float
+    ir: PcbIR,
+    pin1: int,
+    stroke_width_mm: float,
+    clearance_mm: float,
+    courtyard: list[Point],
 ) -> list[tuple[Point, float]]:
     """Where a pin-1 DOT may sit, best spot first, as
     ``(centre, dot_diameter)`` pairs in the instance's local frame.
@@ -995,19 +1122,30 @@ def _pin1_dot_candidates(
     Ordered outward-from-the-part-centre first: that is where a reader
     looks, and it keeps the dot off the part's body. A pin sitting AT the
     instance origin (a single-pad part) has no outward direction, so the
-    sweep starts at +x rather than dividing by zero."""
+    sweep starts at +x rather than dividing by zero.
+
+    **Sized off the instance's own courtyard reach, not pin 1's own pad
+    half-extent.** Every ring used to floor its distance at
+    ``hypot(pad_hw, pad_hh)`` -- pin 1's own land-pattern half-size, which
+    has nothing to do with how big the PART is. On any part whose pin 1
+    pad is small relative to its own hull (measured: every multi-pin part
+    whose pin 1 isn't at a hull extremum -- connectors, regulators with a
+    tab), that floor left every ring landing inside the part's own body.
+    :func:`_courtyard_support_mm` is the same directional-reach helper the
+    refdes ladder already uses for exactly this "how far does THIS part's
+    hull actually reach" question, called here per direction the sweep
+    tries (never a single shared radius, for the same reason a courtyard
+    isn't a circle: an elongated part reaches further along its long axis
+    than across it). This still isn't a GUARANTEE the candidate clears the
+    hull on a concave courtyard -- the acceptance check in
+    :func:`build_silk` is the actual correctness gate; this only sizes the
+    search so it usually doesn't have to fall through every ring first."""
     dia = stroke_width_mm * _PIN1_DOT_STROKES
     dx, dy = float(ir.pin_dx[pin1]), float(ir.pin_dy[pin1])
-    hw, hh = float(ir.pin_w[pin1]) / 2.0, float(ir.pin_h[pin1]) / 2.0
     reach = math.hypot(dx, dy)
     base = math.atan2(dy, dx) if reach > 1e-9 else 0.0
-    # Clear of pin 1's own pad corner, plus the fab clearance and the
-    # dot's own radius — the first ring is the closest the dot may legally
-    # sit, and each further ring adds one diameter.
-    first = math.hypot(hw, hh) + clearance_mm + dia / 2.0
     out: list[tuple[Point, float]] = []
     for step in range(_PIN1_DOT_DISTANCES):
-        radius = first + step * dia
         for k in range(_PIN1_DOT_DIRECTIONS):
             # 0, -1, +1, -2, +2 ... around `base`: the outward direction
             # first, then each symmetric pair. Which member of a pair
@@ -1016,9 +1154,14 @@ def _pin1_dot_candidates(
             half = (k + 1) // 2
             sign = 1 if k % 2 == 0 else -1
             theta = base + sign * half * 2.0 * math.pi / _PIN1_DOT_DIRECTIONS
-            out.append(
-                ((dx + math.cos(theta) * radius, dy + math.sin(theta) * radius), dia)
-            )
+            ux, uy = math.cos(theta), math.sin(theta)
+            # Clear of the courtyard's own reach in THIS direction, plus
+            # the fab clearance and the dot's own radius — the first ring
+            # is the closest the dot may legally sit, and each further
+            # ring adds one diameter.
+            first = _courtyard_support_mm(courtyard, ux, uy) + clearance_mm + dia / 2.0
+            radius = first + step * dia
+            out.append(((dx + ux * radius, dy + uy * radius), dia))
     return out
 
 
@@ -2508,7 +2651,7 @@ def build_silk(
             # the board.
             dot_pts, dot_dia = None, stroke_width_mm
             for local_centre, dia in _pin1_dot_candidates(
-                ir, pin1, stroke_width_mm, clearance_mm
+                ir, pin1, stroke_width_mm, clearance_mm, box_local
             ):
                 (dcx, dcy) = _place(
                     [local_centre], cx=cx, cy=cy, rot=rot, mirror=mirror
@@ -2523,7 +2666,22 @@ def build_silk(
                     (dcx, dcy), dia / 2.0 + edge_margin_mm, outline_ring
                 ):
                     continue
-                if courtyard_kept and _stroke_crosses_stroke(candidate, box_pts, dia):
+                # Fully OUTSIDE this instance's own courtyard, not merely
+                # "doesn't cross its border line". `_stroke_crosses_stroke`
+                # (the refdes label's own self-check, a few lines down)
+                # is right for a glyph: the courtyard's hollow interior is
+                # legal ground for TEXT, since the default refdes candidate
+                # sits inside it on purpose. A pin-1 dot has no such
+                # exemption -- the module docstring's own "the dot sits
+                # outside, beside the pin it names" -- so a candidate
+                # entirely inside the polygon, which crosses no border and
+                # so never tripped a crossing test, must still be rejected.
+                # `_polygon_overlaps_circle` already covers both shapes of
+                # failure (fully inside, or merely touching the boundary)
+                # in one exact (non-sampled) test.
+                if courtyard_kept and _polygon_overlaps_circle(
+                    box_pts, (dcx, dcy), dia / 2.0
+                ):
                     continue
                 # Yield to every OTHER part's body outline on this side,
                 # whether or not that part has been processed yet (see
@@ -2663,14 +2821,37 @@ def build_silk(
         # approximation every other obstacle here uses) -- correct for a
         # FOREIGN part's courtyard (a component's whole footprint is real
         # keep-out for someone else's silk) but wrong for THIS part's own
-        # default candidate 0, which is deliberately centered INSIDE its
-        # own courtyard. Folded in right after this loop, once this
-        # instance's own label search is done, so every later instance
-        # still treats it as solid.
+        # default candidate, which is deliberately allowed to sit over its
+        # own courtyard (the bottom-edge convention's whole point -- see
+        # `_bottom_edge_candidates`). Folded in right after this loop, once
+        # this instance's own label search is done, so every later
+        # instance still treats it as solid.
         text_rot = 0.0
         gap = height_mm * 0.3
-        placed_text = False
-        for idx, (du, dv, h_align, v_align, spot) in enumerate(_CANDIDATES):
+
+        # Candidate order (user spec, round-5 review; below-box fallback
+        # order is the user's own explicit choice): the bottom-edge
+        # convention's three fixed spots first (`_bottom_edge_candidates`
+        # -- bottom-center, bottom-left-flush, bottom-right-flush), THEN
+        # the below-box fallback's three (`_below_box_candidates` --
+        # below-center, below-left-flush, below-right-flush, hanging
+        # under the courtyard instead of over it), THEN the existing
+        # radial ladder (`_CANDIDATES`) unchanged as the last resort.
+        # Every candidate is resolved to a world anchor/bbox HERE, once,
+        # rather than twice (an acceptance test and a reorder test
+        # computed from two independently-built boxes is exactly this
+        # module's own named recurring defect) -- `is_ladder` tags the
+        # radial-ladder entries, the only group the tile-bleed reorder
+        # below ever touches (both the over-box and below-box groups key
+        # off this instance's OWN hull, never a neighbour's).
+        raw_candidates: list[tuple[Point, str, str, str, bool]] = [
+            (*cand, False)
+            for cand in (
+                *_bottom_edge_candidates(box_local, stroke_width_mm),
+                *_below_box_candidates(box_local, stroke_width_mm),
+            )
+        ]
+        for du, dv, h_align, v_align, spot in _CANDIDATES:
             # Directional, not one scalar radius: an elongated part reaches
             # much further along its own long axis than across it, and the
             # square courtyard this replaced pushed every label out by the
@@ -2680,7 +2861,10 @@ def build_silk(
                 if (du, dv) != (0.0, 0.0)
                 else 0.0
             )
-            local_anchor = (du * off, dv * off)
+            raw_candidates.append(((du * off, dv * off), h_align, v_align, spot, True))
+
+        scored: list[tuple[bool, Point, list[Point], str, str, str]] = []
+        for local_anchor, h_align, v_align, spot, is_ladder in raw_candidates:
             (ax, ay) = _place([local_anchor], cx=cx, cy=cy, rot=rot, mirror=mirror)[0]
             corners = stroke_font.text_bbox_corners(
                 refdes,
@@ -2691,6 +2875,28 @@ def build_silk(
                 h_align=h_align,
                 v_align=v_align,
             )
+            # Tile-neighbour bleed (round-5 review item 3): a candidate
+            # whose bbox overlaps ANY OTHER instance's courtyard is tried
+            # LAST among the radial ladder, never hard-rejected -- a dense
+            # board still needs the label to land SOMEWHERE even when
+            # every legal spot happens to sit over a neighbour's body.
+            # Only the ladder is reordered: the bottom-edge candidates key
+            # off this instance's OWN hull, never a neighbour's, so they
+            # never need deprioritizing. Both convex (the courtyard is a
+            # hull), so `convex_polygons_overlap` is exact, not sampled.
+            bleeds = is_ladder and any(
+                other != inst
+                and other_side == side_name
+                and convex_polygons_overlap(corners, ring)
+                for other, (other_side, ring) in courtyard_ring.items()
+            )
+            scored.append((bleeds, (ax, ay), corners, h_align, v_align, spot))
+        scored.sort(key=lambda item: item[0])  # stable: non-bleeding group first
+
+        placed_text = False
+        for idx, (_bleeds, (ax, ay), corners, h_align, v_align, spot) in enumerate(
+            scored
+        ):
             if any(_box_overlaps_pad(corners, pad) for pad in side_obstacles):
                 continue
             if outline_ring is not None and not _box_inside_outline(
@@ -2714,9 +2920,10 @@ def build_silk(
             if courtyard_kept and any(
                 _stroke_crosses_stroke(pts, box_pts, stroke_width_mm) for pts in strokes
             ):
-                # the courtyard's hollow interior is legal (candidate 0 sits
-                # inside it on purpose), but a glyph still can't cross its
-                # own courtyard's border line -- see _stroke_crosses_stroke.
+                # the courtyard's hollow interior is legal (the bottom-edge
+                # default sits over it on purpose), but a glyph still can't
+                # cross its own courtyard's border line -- see
+                # _stroke_crosses_stroke.
                 continue
             # Yield to every OTHER part's body outline on this side, placed
             # or not yet (`courtyard_ring`) -- the same precedence the pin-1
@@ -2749,8 +2956,9 @@ def build_silk(
                         side=side_name,
                         outcome="relocated",
                         reason=(
-                            "refdes label moved off-center to clear a pad, a via, "
-                            f"or silk already committed (drawn at {spot})"
+                            "refdes label moved off the default bottom-edge spot "
+                            "to clear a pad, a via, or silk already committed "
+                            f"(drawn at {spot})"
                         ),
                         stroke_width_mm=stroke_width_mm,
                         height_mm=height_mm,

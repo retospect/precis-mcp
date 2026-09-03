@@ -83,10 +83,13 @@ def test_render_the_named_fixture_to_svg(store: Store) -> None:
             args={"op": "plane_net", "layer": entry["layer"], "net": entry["net"]},
         )
         assert "assigned to plane layer" in resp.body
-    assert (
-        "enqueued"
-        in pcb.put(id="renderfixture", args={"op": "place", "seed": seed}).body
-    )
+    place_args: dict[str, Any] = {"op": "place", "seed": seed}
+    # Optional anneal budget override — the job default converges the small
+    # boards but can leave a long coordinated walk (a hard proximity
+    # measure dragging a part across the board) unfinished.
+    if os.environ.get("PRECIS_PCB_RENDER_ITERS"):
+        place_args["iters"] = int(os.environ["PRECIS_PCB_RENDER_ITERS"])
+    assert "enqueued" in pcb.put(id="renderfixture", args=place_args).body
     _drain_one_job(store)
     assert (
         "enqueued"
@@ -108,3 +111,10 @@ def test_render_the_named_fixture_to_svg(store: Store) -> None:
     )
     print(f"\nrendered {path.name} seed={seed} -> {out} ({len(svg)} bytes)")
     print(f"DRC error tally (informational): {dict(tally) or 'CLEAN'}")
+    # Copper-missing findings name their net — print them so "which nets
+    # failed?" doesn't need a second probe run. (The persisted finding rows
+    # carry rule/severity/detail/objects — no `where` column; the net name
+    # lives in the detail sentence.)
+    for f in findings:
+        if f["severity"] == "error" and f["rule"] in ("unrouted", "connectivity"):
+            print(f"  {f['rule']}: {f['detail']}")

@@ -21,6 +21,7 @@ import pytest
 
 from precis.pcb import DEFAULT_STACKUP, gerber, gerber_view, realize, silk, stroke_font
 from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
 from precis.pcb.ir import from_graph, instance_courtyard_polygon
 from precis.pcb.planes import plane_pours, point_in_pour
 from precis.pcb.silk import (
@@ -71,6 +72,33 @@ def _multi(*graphs: dict) -> dict:
         instances += g["instances"]
         nets += g["nets"]
     return {"instances": instances, "nets": nets}
+
+
+def _graph_named(
+    refdes: str, labels: list[str], *, x: float = 0.0, y: float = 0.0, rot: float = 0.0
+):
+    """Like ``_graph``, but with EXPLICIT pin labels in the given
+    declaration order. ``ir.py::from_graph`` assigns land-pattern offsets
+    in net-declaration order ("pin-creation order, which is netlist
+    member order", that module's own docstring) — so this is what lets a
+    synthetic fixture put a NAMED pin (e.g. the literal ``"1"``) on a
+    land-pattern slot OTHER than the first, which every family
+    ``landpattern.offsets_for`` synthesizes puts at a hull extremum. A
+    real part with named, non-"1" pins (round-5 review's BUCK-SO8 ``U1``)
+    can order its netlist the same way -- this is that shape, built
+    directly rather than through a package label lookup."""
+    return {
+        "instances": [{"refdes": refdes, "x": x, "y": y, "rot": rot}],
+        "nets": [
+            {
+                "name": f"N{i}",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": refdes, "pin": lbl}],
+            }
+            for i, lbl in enumerate(labels)
+        ],
+    }
 
 
 # ── independent overlap checker (deliberately NOT silk.py's own helper) ──
@@ -1799,7 +1827,31 @@ def test_a_blocked_pin1_corner_still_gets_a_dot_beside_pin_1():
     # Beside pin 1, not at the corner the via took.
     (dx, dy) = dot["segments"][0]["start"]
     assert math.hypot(dx - corner[0], dy - corner[1]) > 0.3
-    assert math.hypot(dx - float(ir.pin_dx[0]), dy - float(ir.pin_dy[0])) < 2.0
+    # "Beside" is now measured against the PART's own reach (round-5
+    # review item 1a: the dot ring is sized off the courtyard's real
+    # directional reach, `_courtyard_support_mm`, not pin 1's own pad
+    # half-extent) -- on this elongated 4-pin row the courtyard alone
+    # reaches ~2.4mm from the origin, so a flat "<2.0mm from pin 1" bound
+    # (correct only under the old, too-small pad-extent sizing) would now
+    # fail even a correctly-placed dot. The self-updating bound: never
+    # farther from pin 1 than the part's own drawn outline reaches, plus
+    # a small margin -- still catches a dot that wandered off toward some
+    # other, unrelated point on the board.
+    outline_pts = [
+        p
+        for d in result.draws["top"]
+        if d["role"] == "outline"
+        for seg in d["segments"]
+        for p in (seg["start"], seg["end"])
+    ]
+    max_reach_from_pin1 = max(
+        math.hypot(x - float(ir.pin_dx[0]), y - float(ir.pin_dy[0]))
+        for x, y in outline_pts
+    )
+    assert (
+        math.hypot(dx - float(ir.pin_dx[0]), dy - float(ir.pin_dy[0]))
+        < max_reach_from_pin1 + 1.0
+    )
 
 
 def test_the_pin1_dot_survives_to_the_gerber_as_real_ink():
@@ -1967,10 +2019,14 @@ def test_census_records_relocated_outcome_with_the_spot_it_settled_on():
     used to report ("candidate 17") named nothing a reader could picture
     -- the ring and bearing do."""
     ir = from_graph(_graph("TP3", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # a pad on the part's centre forces the default (centred) spot to
-    # relocate -- same fixture shape as
-    # test_refdes_relocates_when_the_default_center_spot_overlaps_a_pad.
-    pads = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 3.0, "net": "FOREIGN"}]
+    # A tall pad covering the over-box AND below-box bands, plus the
+    # radial ladder's own dead-centre default, forces a genuine ring
+    # position -- narrower obstacles now settle on the below-box
+    # fallback instead (see test_refdes_hangs_below_the_box_...), which
+    # says WHERE it went too, just not with "ring" in the message.
+    pads = [
+        {"shape": "rect", "x": 0.0, "y": -1.75, "w": 4.0, "h": 4.6, "net": "FOREIGN"}
+    ]
     result = build_silk(ir, pads=pads)
     refdes_row = next(
         c for c in result.census if c.refdes == "TP3" and c.kind == "refdes"
@@ -2000,6 +2056,337 @@ def test_dropped_and_relocated_are_exactly_derived_from_the_census():
     )
     assert result.dropped == expected_dropped
     assert result.relocated == expected_relocated
+
+
+# ── round-5 user review (2026-09-02): pin-1 dot containment, refdes
+# bottom-edge convention, tile-neighbour label bleed ─────────────────────
+def test_pin1_dot_lands_outside_the_courtyard_when_pin_1_is_not_a_hull_extremum():
+    """Round-5 review item 1: ``_pin1_dot_candidates`` used to size its
+    ring off pin 1's own pad half-extent, and the acceptance loop used
+    ``_stroke_crosses_stroke`` (border-TOUCHING only) instead of a
+    fully-outside containment test -- together a dot could sail through
+    fully INSIDE the courtyard whenever pin 1 sits away from a hull
+    extremum and the natural escape directions are blocked (measured on
+    the real boards: motor J1/J2/J3/U1/U2, nano J4/J5/J7).
+
+    Reproduced synthetically: an 8-pin dual-row part with the literal
+    ``"1"`` label declared SECOND (not first), which lands it on a MIDDLE
+    slot of the left column rather than a hull corner (checked below,
+    against every real courtyard vertex) -- the same shape a named-pin
+    part with no literal "1" pin (the round-5 review's BUCK-SO8 ``U1``)
+    can produce. A foreign pad covers pin 1's own natural escape side, so
+    the dot search has to try a direction that does not point at pin 1's
+    own nearby edge -- against the pre-fix code this exact fixture placed
+    the dot at (-0.40, 0.63), inside the courtyard."""
+    ir = from_graph(
+        _graph_named("U1", ["2", "1", "3", "4", "5", "6", "7", "8"]),
+        stackup=DEFAULT_STACKUP,
+    )
+    pin1 = next(pid for pid in range(ir.n_pins) if str(ir.pin_label[pid]) == "1")
+    poly = instance_courtyard_polygon(
+        ir,
+        0,
+        clearance_mm=silk_clearance_mm(
+            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+        ),
+        pins=list(range(ir.n_pins)),
+    )
+    pin1_xy = (float(ir.pin_dx[pin1]), float(ir.pin_dy[pin1]))
+    # Sanity: pin 1 really is not a hull vertex (every corner differs).
+    assert all(math.hypot(pin1_xy[0] - vx, pin1_xy[1] - vy) > 0.1 for vx, vy in poly)
+
+    pads = [
+        {"shape": "rect", "x": -2.2, "y": -0.65, "w": 1.6, "h": 2.2, "net": "FOREIGN"}
+    ]
+    result = build_silk(ir, pads=pads)
+    dot = next(d for d in result.draws["top"] if d["role"] == "pin1")
+    assert len(dot["segments"]) == 1  # a dot, not the corner-tick fallback
+    (dx, dy) = dot["segments"][0]["start"]
+    assert not point_in_polygon((dx, dy), poly)
+
+
+def test_pin1_dot_still_places_correctly_for_a_two_pad_part():
+    """Coverage for the other end of the size range item 1 touches: a
+    plain 2-pad part (pin 1 already IS the hull extremum, the shape every
+    other fixture in this file uses) must still get an outside dot,
+    unobstructed -- the fix must not regress the common case."""
+    ir = from_graph(_graph("D1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    poly = instance_courtyard_polygon(
+        ir,
+        0,
+        clearance_mm=silk_clearance_mm(
+            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+        ),
+        pins=list(range(ir.n_pins)),
+    )
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.kind == "pin1")
+    assert row.outcome == "placed"
+    dot = next(d for d in result.draws["top"] if d["role"] == "pin1")
+    (dx, dy) = dot["segments"][0]["start"]
+    assert not point_in_polygon((dx, dy), poly)
+
+
+def test_refdes_bottom_edge_matches_the_courtyard_bottom_for_a_rectangular_part():
+    """Round-5 review item 2: the default refdes candidate is now
+    bottom-center, not dead-center -- the label's rendered bottom edge
+    collinear with the courtyard's own bottom edge (to a stroke
+    tolerance, ``silk._BOTTOM_EDGE_INSET_STROKES`` -- an exactly-coincident
+    baseline would self-collide with the courtyard's own outline stroke),
+    horizontally centred on a symmetric (rectangular) hull."""
+    ir = from_graph(_graph("U20", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "placed"  # the bottom-edge default, unobstructed
+    poly = instance_courtyard_polygon(
+        ir,
+        0,
+        clearance_mm=silk_clearance_mm(
+            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+        ),
+        pins=list(range(ir.n_pins)),
+    )
+    courtyard_min_y = min(p[1] for p in poly)
+    courtyard_x0, courtyard_x1 = min(p[0] for p in poly), max(p[0] for p in poly)
+
+    refdes_draws = [d for d in result.draws["top"] if d["role"] == "refdes"]
+    xs = [
+        pt[0]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    ys = [
+        pt[1]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    # Bottom of text == bottom of box, within a few stroke widths.
+    tolerance = gerber.DEFAULT_SILK_WIDTH_MM * 3.0
+    assert min(ys) == pytest.approx(courtyard_min_y, abs=tolerance)
+    # Horizontally centred on the (symmetric) hull's own centre.
+    centre = (courtyard_x0 + courtyard_x1) / 2.0
+    assert (min(xs) + max(xs)) / 2.0 == pytest.approx(centre, abs=0.5)
+
+
+def test_refdes_bottom_edge_matches_the_courtyard_bottom_for_an_asymmetric_hull():
+    """Same convention, on a hull that is NOT centred on the instance's
+    own origin (a connector/TO-220-shaped part, round-5 review's own
+    example) -- keyed to the courtyard's LITERAL ``min(x)``/``max(x)``,
+    not a support-function reach from the origin, so the horizontal
+    centre tracks the real, off-centre hull rather than assuming
+    symmetry."""
+    ir = from_graph(_graph("J1", 8, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    # Shift the whole right column further right: still a clean rectangle,
+    # but no longer centred at x=0 -- an asymmetric hull without the
+    # self-intersecting notch a single-pin shift would add.
+    for pid in (4, 5, 6, 7):
+        ir.pin_dx[pid] = float(ir.pin_dx[pid]) + 2.0
+
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "placed"
+    poly = instance_courtyard_polygon(
+        ir,
+        0,
+        clearance_mm=silk_clearance_mm(
+            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+        ),
+        pins=list(range(ir.n_pins)),
+    )
+    courtyard_min_y = min(p[1] for p in poly)
+    courtyard_x0, courtyard_x1 = min(p[0] for p in poly), max(p[0] for p in poly)
+    centre = (courtyard_x0 + courtyard_x1) / 2.0
+    assert centre != pytest.approx(0.0, abs=0.5)  # sanity: genuinely off-centre
+
+    refdes_draws = [d for d in result.draws["top"] if d["role"] == "refdes"]
+    xs = [
+        pt[0]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    ys = [
+        pt[1]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    tolerance = gerber.DEFAULT_SILK_WIDTH_MM * 3.0
+    assert min(ys) == pytest.approx(courtyard_min_y, abs=tolerance)
+    assert (min(xs) + max(xs)) / 2.0 == pytest.approx(centre, abs=0.5)
+
+
+def test_refdes_bottom_edge_falls_through_left_then_right_then_the_radial_ladder():
+    """The try order (round-5 review item 2): bottom-center, then
+    bottom-left-flush, then bottom-right-flush, then the user's own
+    below-box fallback (:func:`silk._below_box_candidates` -- see
+    ``test_refdes_hangs_below_the_box_...`` below), then
+    :data:`_CANDIDATES`' existing radial ladder unchanged as the last
+    resort."""
+    ir = from_graph(_graph("U", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+
+    # Blocks ONLY the narrow centre band -- both flush candidates clear it.
+    centre_blocked = build_silk(
+        ir,
+        pads=[{"shape": "rect", "x": 0.0, "y": -1.9, "w": 0.6, "h": 1.2, "net": "F"}],
+    )
+    row = next(c for c in centre_blocked.census if c.kind == "refdes")
+    assert row.outcome == "relocated"
+    assert row.reason is not None and "bottom-left-flush" in row.reason
+
+    # Blocks the whole bottom band (over- and under-box alike) and the
+    # radial ladder's own dead-centre default -- a genuinely crowded case
+    # that falls all the way through to a real ring position, same as
+    # before this feature.
+    crowded = build_silk(
+        ir,
+        pads=[{"shape": "rect", "x": 0.0, "y": -1.75, "w": 4.0, "h": 4.6, "net": "F"}],
+    )
+    row2 = next(c for c in crowded.census if c.kind == "refdes")
+    assert row2.outcome == "relocated"
+    assert row2.reason is not None and "ring" in row2.reason
+
+
+def test_refdes_hangs_below_the_box_when_over_box_candidates_are_blocked_by_its_own_pads():
+    """The user's OWN chosen fallback (round-5 review item 2, follow-up):
+    when a part's real pads block all three over-box candidates -- the
+    common case for a single-row (header/connector) footprint, whose
+    pads sit right along the SAME edge the over-box convention keys off
+    -- the label hangs BELOW the courtyard instead of jumping straight to
+    the radial ladder's coarser ring sweep.
+
+    ``J1`` here is a 4-pin single-row part (``landpattern._family_for``'s
+    ``_ROW`` family, n_pins<=4): its own synthesized pads
+    (:func:`precis.pcb.realize.pads_for_ir`, the SAME real-pad geometry a
+    caller with no cached footprint feeds this module) sit in a strip
+    right along the courtyard's own bottom edge -- exactly the shape that
+    blocks bottom-center/left-flush/right-flush together."""
+    ir = from_graph(_graph("J1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    result = build_silk(ir, pads=pads)
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "relocated"
+    assert row.reason is not None and "below-center" in row.reason
+
+    poly = instance_courtyard_polygon(
+        ir,
+        0,
+        clearance_mm=silk_clearance_mm(
+            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+        ),
+        pins=list(range(ir.n_pins)),
+    )
+    courtyard_min_y = min(p[1] for p in poly)
+    courtyard_x0, courtyard_x1 = min(p[0] for p in poly), max(p[0] for p in poly)
+
+    refdes_draws = [d for d in result.draws["top"] if d["role"] == "refdes"]
+    xs = [
+        pt[0]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    ys = [
+        pt[1]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    # The label's TOP edge (nearest the part) sits just under the
+    # courtyard's own bottom edge, offset by the same stroke-tolerance
+    # gap the over-box candidates inset INWARD by (`_BOTTOM_EDGE_INSET_
+    # STROKES`) -- here applied OUTWARD instead.
+    gap = gerber.DEFAULT_SILK_WIDTH_MM * silk._BOTTOM_EDGE_INSET_STROKES
+    assert max(ys) == pytest.approx(courtyard_min_y - gap, abs=1e-6)
+    assert min(ys) < max(ys)  # it hangs DOWN, away from the part
+    centre = (courtyard_x0 + courtyard_x1) / 2.0
+    assert (min(xs) + max(xs)) / 2.0 == pytest.approx(centre, abs=0.5)
+
+
+def test_refdes_below_box_falls_through_center_to_left_flush():
+    """Same try order within the below-box fallback itself: below-center
+    first, then below-left-flush -- a via blocking specifically the
+    centred spot (not the flush ones) must relocate one step further,
+    not all the way to the radial ladder."""
+    ir = from_graph(_graph("J1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    via = {
+        "x": 0.0,
+        "y": -1.4,
+        "dia_mm": 1.0,
+        "drill_mm": 0.3,
+        "span": ["F.Cu", "B.Cu"],
+    }
+    result = build_silk(ir, pads=pads, vias=[via])
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "relocated"
+    assert row.reason is not None and "below-left-flush" in row.reason
+
+
+def test_tile_neighbour_bleed_defers_to_a_non_overlapping_candidate():
+    """Round-5 review item 3 (the nano board's J4 label landing on Q1's
+    body): once the bottom-edge convention and ring 1 are both exhausted,
+    the radial ladder's own angle order does not know that a nearby ring
+    position sits inside a DIFFERENT instance's own courtyard -- the same
+    defect class item 1 closes for the pin-1 dot, here for the refdes
+    label. Two instances packed into a ~0.6mm channel: BIG1 (16 pins)
+    directly below C2 (2 pins), with C2's bottom-edge candidates, all of
+    ring 1, and ring 2's first two candidates blocked by foreign pads --
+    so the ladder's own next candidate in raw angle order (ring 2 at
+    300deg) sits INSIDE BIG1's courtyard (bbox overlap, not a border
+    cross, so the existing hard check misses it -- confirmed against this
+    exact fixture without the reorder fix). The next candidate after it in
+    that same order (ring 2 at 60deg, pointing away from BIG1) does not,
+    and soft ordering must prefer it."""
+    clearance = silk_clearance_mm(None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM)
+    gap_y = 0.6
+    big1_y = -(2.69625 + 0.5 + gap_y)
+    ir = from_graph(
+        _multi(_graph("BIG1", 16, x=0.0, y=big1_y), _graph("C2", 2, x=0.0, y=0.0)),
+        stackup=DEFAULT_STACKUP,
+    )
+    pads = [
+        # Blocks C2's own bottom-edge candidates and the whole of ring 1.
+        {"shape": "rect", "x": 0.0, "y": 0.0, "w": 3.0, "h": 3.0, "net": "F1"},
+        # Blocks ring 2's rightward candidates (0deg/300deg's near
+        # neighbours), leaving 300deg (bleeds into BIG1) as the first
+        # candidate the ladder's own angle order would reach.
+        {"shape": "rect", "x": 2.2, "y": 0.0, "w": 2.0, "h": 3.0, "net": "F2"},
+    ]
+    result = build_silk(ir, pads=pads)
+    row = next(c for c in result.census if c.refdes == "C2" and c.kind == "refdes")
+    assert row.outcome == "relocated"
+    assert row.reason is not None and "ring 2" in row.reason
+
+    refdes_draws = [
+        d for d in result.draws["top"] if d["role"] == "refdes" and d["refdes"] == "C2"
+    ]
+    assert refdes_draws
+    xs = [
+        pt[0]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    ys = [
+        pt[1]
+        for d in refdes_draws
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    label_box = [
+        (min(xs), min(ys)),
+        (max(xs), min(ys)),
+        (max(xs), max(ys)),
+        (min(xs), max(ys)),
+    ]
+    big1_poly_local = instance_courtyard_polygon(
+        ir, 0, clearance_mm=clearance, pins=list(range(16))
+    )
+    big1_poly_world = [(p[0], p[1] + big1_y) for p in big1_poly_local]
+    assert not convex_polygons_overlap(label_box, big1_poly_world)
 
 
 # ── outline: silk must not print past the board's own cut edge ──────────

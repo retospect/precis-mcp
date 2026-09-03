@@ -55,6 +55,7 @@ from precis.pcb.optimize import (
     digest_toon,
     optimize,
     recentre_in_outline,
+    resolve_measures,
     seed_placement,
 )
 from precis.pcb.pinswap import PinSwapGroup, propose_reassignment, total_group_crossings
@@ -1144,6 +1145,128 @@ def test_optimize_config_rejects_soft_p_norm():
         OptimizeConfig(cost=CostConfig(p_norm=2.0))
 
 
+# ── author-supplied placement measures drive the PRODUCTION anneal ──────
+# (previously measured read-only by eyes.py / enforced only by the legacy
+# `place.autoplace` quick placer — see this module's `MeasureSpec`/
+# `resolve_measures`/`_measure_pair_usd` docstrings for the design).
+
+
+def _isolated_pair_graph() -> dict:
+    """Two instances sharing NO net at all — proximity/separation steering
+    has to come entirely from the measure itself, never from an
+    incidental wirelength pull (cost.py's module docstring: "no
+    wirelength term") or from `alignment`/`courtyard_overlap` (both gated
+    to a small nearby-instance neighbourhood, which the seeded starting
+    gap below starts well outside of)."""
+    return {"instances": [{"refdes": "A"}, {"refdes": "B"}], "nets": []}
+
+
+def _seeded_pair(sep_mm: float):
+    ir = from_graph(_isolated_pair_graph(), stackup=DEFAULT_STACKUP)
+    ir.inst_x[0], ir.inst_y[0] = 0.0, 0.0
+    ir.inst_x[1], ir.inst_y[1] = sep_mm, 0.0
+    return ir
+
+
+def test_soft_proximity_measure_pulls_two_unconnected_instances_together():
+    """The exact "crystal hugs the MCU" idiom (precis-measures-help):
+    a `soft` `proximity` measure between A and B, seeded 30mm apart with
+    no shared net, ends the anneal within a couple mm of the authored
+    8mm goal — while the SAME seed run with no measure at all (nothing
+    else on this 2-instance, 0-net board has any positional preference)
+    ends measurably farther apart. Values/seed pinned by direct
+    measurement (see the git history for this test) — a bare 2-instance
+    SA run is inherently noisy, so this asserts a comfortable margin
+    rather than exact convergence."""
+    goal_mm = 8.0
+    measures = resolve_measures(
+        [
+            {
+                "metric": "proximity",
+                "operands": [{"instance": "A"}, {"instance": "B"}],
+                "goal": goal_mm,
+                "strength": "soft",
+                "reason": "crystal hugs the MCU",
+            }
+        ]
+    )
+
+    ir_with = _seeded_pair(30.0)
+    res_with = optimize(ir_with, OptimizeConfig(seed=1, iters=6000, measures=measures))
+    ax, ay, _ = res_with.positions["A"]
+    bx, by, _ = res_with.positions["B"]
+    dist_with = math.hypot(ax - bx, ay - by)
+
+    ir_without = _seeded_pair(30.0)
+    res_without = optimize(ir_without, OptimizeConfig(seed=1, iters=6000))
+    ax2, ay2, _ = res_without.positions["A"]
+    bx2, by2, _ = res_without.positions["B"]
+    dist_without = math.hypot(ax2 - bx2, ay2 - by2)
+
+    assert dist_with <= goal_mm + 2.0  # within ~goal of each other
+    assert dist_with < dist_without - 3.0  # measurably closer than unmeasured
+
+
+def test_hard_separation_measure_pushes_a_pair_apart_past_its_goal():
+    """A `hard` `separation` measure between two instances seeded almost
+    touching (2mm apart) reliably ends the anneal past the authored 20mm
+    goal — the mirror direction of the proximity test above, and `hard`
+    (not `soft`) so the push is decisive rather than merely a nudge."""
+    goal_mm = 20.0
+    measures = resolve_measures(
+        [
+            {
+                "metric": "separation",
+                "operands": [{"instance": "A"}, {"instance": "B"}],
+                "goal": goal_mm,
+                "strength": "hard",
+                "reason": "keep the noisy regulator off the sensitive part",
+            }
+        ]
+    )
+    ir = _seeded_pair(2.0)
+    result = optimize(ir, OptimizeConfig(seed=2, iters=8000, measures=measures))
+    ax, ay, _ = result.positions["A"]
+    bx, by, _ = result.positions["B"]
+    assert math.hypot(ax - bx, ay - by) > goal_mm
+
+
+def test_no_measures_default_path_is_bit_identical_to_before_this_feature():
+    """The measures machinery must be a pure ADDITION: with
+    ``config.measures`` at its default ``()``, `_money_measures` never
+    leaves 0.0 (the per-move `_refresh_measures` early-returns for every
+    instance — `_measures_by_inst` is empty) and `money()`/`total()`
+    collapse to EXACTLY the pre-existing formula (the same
+    `_money_static_by_name` sum + `_money_board_area`, with no extra
+    addend) — an unrelated design's anneal takes no new code path at all,
+    not merely "a code path that happens to compute zero". Also pins
+    positional determinism (same shape as `test_determinism_same_seed_
+    same_result`) so a future change to the measures machinery that
+    somehow perturbed the no-measures case would fail here, not silently
+    in production."""
+    graph = _board(10, seed=50)
+    config = OptimizeConfig(seed=51, iters=400)
+
+    ir0 = from_graph(graph, stackup=DEFAULT_STACKUP)
+    seed_placement(ir0, random.Random(config.seed))
+    engine = OptimizeEngine(ir0, config)
+    assert engine._money_measures == 0.0
+    assert engine.money() == pytest.approx(
+        sum(engine._money_static_by_name.values()) + engine._money_board_area
+    )
+    engine.anneal(random.Random(config.seed))
+    assert engine._money_measures == 0.0
+    assert engine.money() == pytest.approx(
+        sum(engine._money_static_by_name.values()) + engine._money_board_area
+    )
+
+    ir1 = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir2 = from_graph(graph, stackup=DEFAULT_STACKUP)
+    r1 = optimize(ir1, config)
+    r2 = optimize(ir2, config)
+    assert r1.positions == r2.positions
+
+
 # ── ROTATE must respect polygon legality (it could ignore a circle) ──────
 def test_rotate_is_refused_when_it_would_swing_a_part_into_its_neighbour():
     """**A rotation can make a placement illegal, and could not before
@@ -1539,6 +1662,51 @@ def test_courtyard_overlapping_a_mounting_hole_is_illegal():
     assert engine._placement_is_legal(((0, 18.0, 18.0),))  # well clear of it
 
 
+def test_hole_keepout_radius_widens_for_an_authored_hardware_head():
+    """The round-6 defect: a hole's copper annulus (Ø8mm) is not the
+    board's actual keep-out — the physical screw head / solder-nut
+    flange (``head_dia_mm``) sitting above the board can be wider, and
+    that is what a part must clear. ``head_dia_mm=0.0`` (the default,
+    absent-hardware case) must reproduce the pre-existing ring-only
+    value exactly -- no regression for holes with no authored head."""
+    ring_only = MountingHole(x=0.0, y=0.0, drill_mm=5.6, ring_dia_mm=8.0)
+    assert _hole_keepout_radius_mm(ring_only) == 8.0 / 2.0 + COURTYARD_CLEARANCE_MM
+
+    with_head = dataclasses.replace(ring_only, head_dia_mm=9.0)
+    assert _hole_keepout_radius_mm(with_head) == 9.0 / 2.0 + COURTYARD_CLEARANCE_MM
+
+
+def test_courtyard_overlapping_a_mounting_hole_head_envelope_is_illegal():
+    """Same shape as ``test_courtyard_overlapping_a_mounting_hole_is_
+    illegal`` but the illegal point sits OUTSIDE the Ø8mm copper ring's
+    keep-out and INSIDE the Ø20mm screw-head envelope's only -- proving
+    the head diameter, not just the ring, drives placement legality (the
+    round-6 defect: a part parked legally under the copper-only rule but
+    physically under the screw head)."""
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}], "nets": []},
+        stackup=DEFAULT_STACKUP,
+        mounting_holes=(
+            MountingHole(
+                x=10.0,
+                y=10.0,
+                drill_mm=5.6,
+                ring_dia_mm=8.0,
+                head_dia_mm=20.0,
+                plated=True,
+            ),
+        ),
+    )
+    ir.inst_x[0] = 5.0
+    ir.inst_y[0] = 5.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    # 8mm off-centre: clear of the ring-only keep-out (4.0 + clearance,
+    # comfortably legal there) but well inside the head keep-out
+    # (10.0 + clearance) -- illegal only because head_dia_mm now dominates.
+    assert not engine._placement_is_legal(((0, 18.0, 10.0),))
+    assert engine._placement_is_legal(((0, 18.5, 18.5),))  # well clear of it
+
+
 def test_short_anneal_on_nano_like_fixture_clears_mounting_hole_overlap():
     """The user-observed defect: Q3 landing on the top-left M4 solder-nut
     hole, R1 almost fully under it, C1 clipping it. A seeded part is
@@ -1661,9 +1829,22 @@ def test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_congruent():
     ir = pcb_session.build_ir(graph, outline=outline, mounting_holes=holes)
     assert ir.outline is not None and len(ir.outline) >= 3
     assert len(ir.mounting_holes) == 4
-    assert ir.n_groups == 5  # 4 "channel" pattern tiles + 1 authored "nano_hdr" group
+    # 4 "channel" pattern tiles + 1 authored "prog_hdr" group. (Round 7
+    # briefly authored a rigid "mcu_xtal" group too — U1 + crystal circuit
+    # as one unit — but a ~12x18mm rigid bloc strands outside the outline
+    # at every tried seed: containment pressure can't walk a group that
+    # big back in. Reverted; the crystal intent rides hard proximity
+    # measures instead, and the group-containment defect is filed in the
+    # round-7 backlog item.)
+    assert ir.n_groups == 5
 
-    optimize(ir, OptimizeConfig(iters=2000, seed=1))
+    # 6000, not the job default 2000: the round-6 redesigned fixture (nano
+    # socket replaced by an on-board TQFP-32 MCU + programming headers, 22
+    # -> 33 instances) converges slower — at THIS seed U1's large courtyard
+    # seeds onto the (6,6) mounting hole's hardware-head keep-out and needs
+    # ~5000+ iterations of graded hole pressure to walk off (measured:
+    # still parked at 4000, clear at 6000; seed 2 is clear at 2000).
+    optimize(ir, OptimizeConfig(iters=6000, seed=1))
 
     # (a) every instance's courtyard sits FULLY inside the true outline
     # polygon (not just its bounding box -- a rounded-corner outline has
@@ -1698,14 +1879,15 @@ def test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_congruent():
                 f"hole at ({hole.x}, {hole.y})"
             )
 
-    # (c) J1/J2: still EXACTLY the fixture's own authored group_offset
-    # (0, 15.24) once the world-space delta is rotated back by J1's own
-    # rotation into J1's frame -- not merely "15.24mm apart at SOME
-    # angle" -- and PARALLEL (same rotation), never end-to-end. The
-    # offset is deliberately PERPENDICULAR to a 1x15 header's own pin
-    # row (which runs along local X, `landpattern._single_row`) so two
-    # rows land side by side rather than nose-to-tail — see the fixture's
-    # own ``group_offset`` and this test's module docstring, defect 2.
+    # (c) J1/J2 (the ICSP + FTDI programming-header pair): still EXACTLY
+    # the fixture's own authored group_offset (0, 5.08) once the
+    # world-space delta is rotated back by J1's own rotation into J1's
+    # frame -- not merely "5.08mm apart at SOME angle" -- and PARALLEL
+    # (same rotation), never end-to-end. The offset is deliberately
+    # PERPENDICULAR to a header's own pin row (which runs along local X,
+    # `landpattern._single_row`) so two rows land side by side rather
+    # than nose-to-tail — see the fixture's own ``group_offset`` and
+    # this test's module docstring, defect 2.
     j1 = next(i for i in range(ir.n_instances) if str(ir.instance_refdes[i]) == "J1")
     j2 = next(i for i in range(ir.n_instances) if str(ir.instance_refdes[i]) == "J2")
     assert math.isclose(float(ir.inst_rot[j1]), float(ir.inst_rot[j2]), abs_tol=1e-6)
@@ -1713,7 +1895,7 @@ def test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_congruent():
     world_dy = float(ir.inst_y[j2]) - float(ir.inst_y[j1])
     local_dx, local_dy = rotate_offset(world_dx, world_dy, -float(ir.inst_rot[j1]))
     assert math.isclose(local_dx, 0.0, abs_tol=1e-6)
-    assert math.isclose(local_dy, 15.24, abs_tol=1e-6)
+    assert math.isclose(local_dy, 5.08, abs_tol=1e-6)
 
     # (d) every "channel" pattern tile has an IDENTICAL internal layout
     # (member offsets from its own centroid, up to the tile's own

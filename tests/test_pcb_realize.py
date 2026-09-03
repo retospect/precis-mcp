@@ -2706,3 +2706,162 @@ def test_shove_vias_leaves_an_inked_via_alone_when_no_free_candidate_exists():
     )
     assert not moved
     assert out == pts
+
+
+# ── component-body via surcharge (reworkability) ──────────────────────────
+
+
+def test_courtyard_body_mask_marks_cells_under_a_placed_instance():
+    """:func:`~precis.pcb.realize._courtyard_body_mask` must mark grid
+    cells that fall inside a placed instance's own courtyard FOOTPRINT
+    (:func:`~precis.pcb.silk.world_courtyard_rings`'s clearance-0 hull —
+    the part's real body) and mark nothing for an IR with no placed
+    instances, mirroring :func:`_courtyard_ink_field`'s own contract
+    (``test_courtyard_ink_field_builds_rings_for_placed_instances_and_
+    empty_for_none`` above) but asking about the FILLED body a via would
+    sit under, not the silk stroke drawn around it."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+
+    graph = {
+        "instances": [{"refdes": "U1", "x": 5.0, "y": 5.0}],
+        "nets": [
+            {
+                "name": "N1",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=100, ny=100, n_layers=2)
+    mask = pcb_realize._courtyard_body_mask(ir, spec)
+    assert mask.shape == (spec.ny, spec.nx)
+    ix, iy = spec.to_cell(5.0, 5.0)
+    assert mask[iy, ix], "the instance's own centre must fall inside its courtyard"
+    assert mask.any()
+
+    empty_ir = from_graph({"instances": [], "nets": []}, stackup=DEFAULT_STACKUP)
+    empty_mask = pcb_realize._courtyard_body_mask(empty_ir, spec)
+    assert not empty_mask.any(), "an IR with no placed instances marks no body cells"
+
+
+def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
+    """The wiring this task adds, exercised end to end through
+    :func:`~precis.pcb.realize._route_pass` (the function
+    :func:`~precis.pcb.realize._realize_maze` actually calls for every real
+    segment) rather than at :mod:`precis.pcb.maze` alone: with a body mask
+    set on the grid and ``RealizeConfig.via_body_cost_mm`` left at its
+    unpriced default, the cheapest crossing of a wall sealing layer 0 (the
+    same construction :mod:`tests.test_pcb_maze` uses) drops its via inside
+    the masked strip; raising ``via_body_cost_mm`` on the SAME grid must
+    move it off, proving the config knob actually reaches
+    ``grid.route``'s surcharge and not just that the maze module accepts
+    one in isolation."""
+    import math
+
+    import numpy as np
+
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.ir import pin_point
+
+    graph = {
+        "instances": [
+            {"refdes": "U1", "x": 1.0, "y": 4.0},
+            {"refdes": "U2", "x": 5.0, "y": 4.0},
+        ],
+        "nets": [
+            {
+                "name": "SIG",
+                "members": [
+                    {"refdes": "U1", "pin": "1"},
+                    {"refdes": "U2", "pin": "1"},
+                ],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    config = RealizeConfig()
+    pad_geoms = pad_geometry(ir)
+    pads = []
+    for pid in range(ir.n_pins):
+        point = pin_point(ir, pid)
+        assert point is not None  # every instance above is placed
+        geom = pad_geoms[pid]
+        radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
+        pads.append((point, int(ir.pin_net[pid]), radius))
+    rules_by_net = {
+        n: pcb_realize._resolve_track_rules(ir, n, PAD_LAYER, config)
+        for n in range(ir.n_nets)
+    }
+    clearance = max(
+        config.clearance_mm, max(r.clearance_mm for r in rules_by_net.values())
+    )
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=60, ny=60, n_layers=2)
+    signal_layers = [0, 1]
+
+    def build_grid() -> pcb_maze.OccupancyGrid:
+        grid = pcb_maze.OccupancyGrid(spec, clearance_mm=clearance)
+        # A foreign net (999 -- never resolved through `rules_by_net`, only
+        # ever queried as "not this net") sealing layer 0 the full span of
+        # y, forcing SIG's only path through a layer change -- see
+        # ``tests/test_pcb_maze.py``'s ``_walled_two_layer_grid`` for the
+        # same construction pinned at the maze-module level.
+        for k in range(80):
+            grid.stamp_disk((0,), 3.0, k * 0.1, 0.12, 999)
+        return grid
+
+    mask = np.zeros((spec.ny, spec.nx), dtype=bool)
+    cx, cy = spec.to_cell(2.5, 4.0)
+    mask[cy - 3 : cy + 4, cx - 2 : cx + 3] = True
+
+    def via_lands_in_mask(vias) -> bool:
+        return any(
+            bool(mask[spec.to_cell(v.x, v.y)[1], spec.to_cell(v.x, v.y)[0]])
+            for v in vias
+        )
+
+    cheap_grid = build_grid()
+    cheap_grid.set_body_mask(mask)
+    _tracks, cheap_vias, cheap_unrouted = pcb_realize._route_pass(
+        ir,
+        [0],
+        [],
+        cheap_grid,
+        RealizeConfig(via_body_cost_mm=0.0),
+        rules_by_net,
+        pads,
+        clearance,
+        signal_layers,
+        spec,
+        pad_geoms,
+    )
+    assert not cheap_unrouted
+    assert cheap_vias
+    assert via_lands_in_mask(cheap_vias), (
+        "the unpriced baseline must actually exercise the masked body cell"
+    )
+
+    priced_grid = build_grid()
+    priced_grid.set_body_mask(mask)
+    _tracks, priced_vias, priced_unrouted = pcb_realize._route_pass(
+        ir,
+        [0],
+        [],
+        priced_grid,
+        RealizeConfig(via_body_cost_mm=5.0),
+        rules_by_net,
+        pads,
+        clearance,
+        signal_layers,
+        spec,
+        pad_geoms,
+    )
+    assert not priced_unrouted
+    assert priced_vias
+    assert not via_lands_in_mask(priced_vias), (
+        "RealizeConfig.via_body_cost_mm must reach grid.route and move the "
+        "via off the masked body strip"
+    )

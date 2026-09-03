@@ -1202,16 +1202,11 @@ def edit(
     previews without writing.
 
     That vocabulary is the file-kind shape; kinds vary (`todo`/
-    `memory`/`quest`: `mode='replace'` only — see the `mode=` param
-    help). A wrong mode raises `BadInput` naming the accepted set.
+    `memory`/`quest`: `mode='replace'` only). A wrong mode, or `meta=`
+    on a kind whose handler lacks it (pres/draft-only meta patch),
+    raises `BadInput` naming the accepted set — never a silent drop.
 
-    `meta=` (pres/draft only — metadata-patch kinds) merges keys into
-    the ref's meta; a kind whose handler doesn't accept it raises
-    `BadInput` naming `meta` rather than silently dropping it.
-
-    Full reference: get(kind='skill', id='precis-edit-help'), or
-    search(kind='skill', q='changing existing content') for a topical
-    lookup.
+    Full reference: get(kind='skill', id='precis-edit-help').
     """
     err = _check_text_payload_size("edit", text)
     if err is not None:

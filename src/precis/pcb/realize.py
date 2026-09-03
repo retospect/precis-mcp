@@ -123,6 +123,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 # shapely ships no py.typed marker here -- same suppression drc.py/planes.py
 # carry, same reason: only the polygon booleans this module's stitching
 # pass (below) needs, never a track/via/pad's own shape (that stays this
@@ -352,6 +354,18 @@ class RealizeConfig:
     #: a 5-piece plane; past that, an honest ``UnstitchedNet`` beats
     #: silently threading a board full of detours.
     max_plane_jumpers_per_net: int = 4
+    #: Extra cost, on top of :data:`~precis.pcb.maze.VIA_COST_MM`, for a
+    #: via the maze search places under a placed component's own body
+    #: (:func:`_courtyard_body_mask`, forwarded to
+    #: :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
+    #: ``via_body_cost_mm``) — reworkability: a via there is legal (it can
+    #: be the only way through) but the part has to come off the board to
+    #: rework it, so the search should reach for a detour first and only
+    #: pay this when nothing cheaper exists. Defaults to
+    #: :data:`~precis.pcb.maze.VIA_UNDER_BODY_COST_MM`, the SAME "routing
+    #: preference, not the ``via_count`` MONEY term" figure that module
+    #: documents for :data:`~precis.pcb.maze.VIA_COST_MM` itself.
+    via_body_cost_mm: float = maze.VIA_UNDER_BODY_COST_MM
 
 
 @dataclass(frozen=True, slots=True)
@@ -1162,13 +1176,20 @@ def _realize_maze(
     # rip-up-and-retry attempt, so recomputing it per attempt would just
     # be the same answer paid for again.
     ink_field = _courtyard_ink_field(ir, config.fab_caps)
+    # Same "built ONCE, outside the retry loop" reasoning as `ink_field`
+    # right above: which grid cells sit under a placed part is
+    # placement-derived, so it does not change between rip-up-and-retry
+    # attempts.
+    body_mask = _courtyard_body_mask(ir, spec)
     best: tuple[list[RealizedTrack], list[RealizedVia], list[int]] | None = None
     for _attempt in range(max(1, config.route_passes)):
+        attempt_grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+        attempt_grid.set_body_mask(body_mask)
         outcome = _route_pass(
             ir,
             order,
             plane_ids,
-            maze.OccupancyGrid(spec, clearance_mm=clearance),
+            attempt_grid,
             config,
             rules_by_net,
             pads,
@@ -1681,6 +1702,7 @@ def _route_pass(
             width_mm=rules.track_width_mm,
             via_dia_mm=group_extent,
             pad_layer=PAD_LAYER,
+            via_body_cost_mm=config.via_body_cost_mm,
             max_expansions=config.max_expansions,
             layer_prefs=(
                 _layer_preferences(ir, signal_layers)
@@ -2129,6 +2151,50 @@ def _courtyard_ink_field(ir: PcbIR, capability: CapabilityRow) -> _InkField:
             )
         )
     return _ink_field_from_rings(rings)
+
+
+def _courtyard_body_mask(ir: PcbIR, spec: maze.GridSpec) -> np.ndarray:
+    """``(spec.ny, spec.nx)`` boolean: True where a grid cell CENTRE falls
+    inside a placed instance's own courtyard footprint —
+    :func:`~precis.pcb.silk.world_courtyard_rings`'s clearance-0 hull, the
+    part's real body, not the silk stroke :func:`_courtyard_ink_field`
+    tracks around it (a via can sit millimetres outside the courtyard and
+    still clip that ring's ink; this asks a different question — is the
+    via UNDER the part at all). Feeds :meth:`~precis.pcb.maze.
+    OccupancyGrid.set_body_mask`, which :meth:`~precis.pcb.maze.
+    OccupancyGrid.route` consults for the ``via_body_cost_mm`` surcharge
+    (:attr:`RealizeConfig.via_body_cost_mm`) — a reworkability PREFERENCE,
+    not a keep-out, so this mask only ever prices a cell, never removes it
+    from ``passable``.
+
+    Built ONCE per :func:`_realize_maze` call, like :func:`
+    _courtyard_ink_field` right above it — placement-derived, so identical
+    on every rip-up-and-retry attempt.
+
+    Per-cell ``shapely`` point-in-polygon over each ring's own bounding
+    box, not a full-grid scan: a part's courtyard is a handful of grid
+    cells even on a fine-pitch board, while the grid itself can be
+    hundreds of cells on a side.
+    """
+    mask = np.zeros((spec.ny, spec.nx), dtype=bool)
+    for ring in pcb_silk.world_courtyard_rings(ir):
+        if len(ring) < 3:
+            continue
+        poly = _ShapelyPolygon(ring)
+        if not poly.is_valid or poly.is_empty:
+            continue
+        minx, miny, maxx, maxy = poly.bounds
+        lo_x, lo_y = spec.to_cell(minx, miny)
+        hi_x, hi_y = spec.to_cell(maxx, maxy)
+        lo_x, hi_x = (lo_x, hi_x) if lo_x <= hi_x else (hi_x, lo_x)
+        lo_y, hi_y = (lo_y, hi_y) if lo_y <= hi_y else (hi_y, lo_y)
+        for iy in range(lo_y, hi_y + 1):
+            y = spec.y0 + iy * spec.pitch
+            for ix in range(lo_x, hi_x + 1):
+                x = spec.x0 + ix * spec.pitch
+                if poly.contains(_ShapelyPoint(x, y)):
+                    mask[iy, ix] = True
+    return mask
 
 
 def _plane_fanout(

@@ -954,9 +954,17 @@ def render_fab_svg(
     # scaled to fit, so a picture meant to show a board showed a caption.
     px = _view_scale(w, h)
     vw, vh = w * px, h * px
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vw:.1f} {vh:.1f}"
- width="{vw:.0f}" height="{vh:.0f}" role="img" aria-label="{title}">
-<title>{title} — rendered from gerbers</title>
+    # The legend lives in its own gutter column LEFT of the board, not
+    # overlaid on it — an overlay covers real copper in the corner it sits
+    # on (user round 7: "the svg nav block should be outside the board
+    # canvas"). The document is widened by the gutter and the board group
+    # shifted right; a short board still gets a document tall enough for
+    # the full legend.
+    doc_w = _LEGEND_GUTTER_PX + vw
+    doc_h = max(vh, legend_h + 8.0)
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {doc_w:.1f} {doc_h:.1f}"
+ width="{doc_w:.0f}" height="{doc_h:.0f}" role="img" aria-label="{_esc(title)}">
+<title>{_esc(title)} — rendered from gerbers</title>
 <style>
   .layer.off {{ display: none; }}
   .legend {{ font: 11px ui-monospace, monospace; fill: #d8d8d8; }}
@@ -964,8 +972,8 @@ def render_fab_svg(
   .legend-row.off text {{ fill: #6a6a6a; }}
   .legend-row.off .swatch {{ fill-opacity: 0.25; }}
 </style>
-<rect x="0" y="0" width="{vw:.1f}" height="{vh:.1f}" fill="{_BOARD_BG}"/>
-<g transform="translate({-x0 * px:.4f},{y1 * px:.4f}) scale({px:.6f},-{px:.6f})">
+<rect x="0" y="0" width="{doc_w:.1f}" height="{doc_h:.1f}" fill="{_BOARD_BG}"/>
+<g transform="translate({_LEGEND_GUTTER_PX + -x0 * px:.4f},{y1 * px:.4f}) scale({px:.6f},-{px:.6f})">
 {chr(10).join(body)}
 </g>
 <g class="legend">
@@ -981,6 +989,10 @@ def render_fab_svg(
 #: gives either a postage stamp or a 20-megapixel document.
 _TARGET_PX = 1600.0
 _MAX_PX_PER_MM = 20.0
+
+#: Width of the legend's own column: the 160px legend panel at x=4 plus a
+#: matching 4px of breathing room before the board starts.
+_LEGEND_GUTTER_PX = 168.0
 
 
 def _view_scale(w: float, h: float) -> float:

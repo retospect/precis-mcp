@@ -1,0 +1,48 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ title }} — PCB{% endblock %}
+{% block content %}
+
+<div class="mb-3 flex items-baseline gap-3 flex-wrap">
+  <a href="/pcb" class="text-xs text-slate-400 hover:text-slate-600">← designs</a>
+  <h1 class="text-lg font-semibold">{{ title }}</h1>
+  <span class="text-xs text-slate-400">{{ slug }}</span>
+  <span class="text-xs text-slate-500">{{ n_parts }} part(s) · {{ n_nets }} net(s)</span>
+  {% if route_status %}
+  <span class="text-xs text-slate-500">
+    routes:
+    {% for status, n in route_status.items() %}{{ status }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
+  </span>
+  {% endif %}
+  {% if drc %}
+  <span class="text-xs text-rose-600">
+    DRC:
+    {% for rule, n in drc.items() %}{{ rule }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
+  </span>
+  {% else %}
+  <span class="text-xs text-emerald-600">DRC: no recorded errors</span>
+  {% endif %}
+</div>
+
+{# object, not img: the board SVG's layer-toggle legend is scripted, and
+   scripts only run when the SVG is its own document. #}
+<div class="mb-6 rounded border border-slate-200 bg-white p-2">
+  <h2 class="mb-1 px-1 text-sm font-semibold text-slate-700">Board</h2>
+  <div class="overflow-auto">
+    <object type="image/svg+xml" data="/pcb/{{ slug }}/board.svg"
+            class="min-w-full">
+      board render unavailable
+    </object>
+  </div>
+</div>
+
+<div class="mb-6 rounded border border-slate-200 bg-white p-2">
+  <h2 class="mb-1 px-1 text-sm font-semibold text-slate-700">Schematic
+    <span class="font-normal text-xs text-slate-400">net-label style — matching labels are the connection</span>
+  </h2>
+  <div class="overflow-auto">
+    <img src="/pcb/{{ slug }}/schematic.svg" alt="schematic of {{ title }}"
+         class="min-w-full">
+  </div>
+</div>
+
+{% endblock %}

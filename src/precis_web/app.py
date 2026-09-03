@@ -137,6 +137,7 @@ def create_app(
         needs_you,
         papers,
         papers_needed,
+        pcb,
         podcast,
         pres,
         preview,
@@ -174,6 +175,7 @@ def create_app(
     app.include_router(categorizers.router)
     app.include_router(figure.router)
     app.include_router(mermaid.router)
+    app.include_router(pcb.router)
     app.include_router(nanopub.router)
     app.include_router(alerts.router)
     app.include_router(gripes.router)

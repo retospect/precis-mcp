@@ -125,16 +125,25 @@ def test_mounting_holes_from_features_parses_drill_ring_and_plating():
                 "ftype": "mounting_hole",
                 "x": 6.0,
                 "y": 6.0,
-                "geom": {"diameter": 5.6, "ring_dia_mm": 8.0, "plated": True},
+                "geom": {
+                    "diameter": 5.6,
+                    "ring_dia_mm": 8.0,
+                    "plated": True,
+                    "head_dia_mm": 9.0,
+                },
             },
             # malformed / degenerate rows must be skipped, never crash
             {"ftype": "mounting_hole", "x": 1.0, "y": 1.0, "geom": {}},
             {"ftype": "mounting_hole", "x": "oops", "y": 1.0, "geom": {"diameter": 3}},
         ]
     )
-    assert [(h.x, h.y, h.drill_mm, h.ring_dia_mm, h.plated) for h in holes] == [
-        (4.0, 4.0, 4.3, 0.0, False),
-        (6.0, 6.0, 5.6, 8.0, True),
+    assert [
+        (h.x, h.y, h.drill_mm, h.ring_dia_mm, h.head_dia_mm, h.plated) for h in holes
+    ] == [
+        (4.0, 4.0, 4.3, 0.0, 0.0, False),
+        # absent geom.head_dia_mm on the first hole defaults to 0.0; an
+        # authored value round-trips onto the second (M4 screw head, say)
+        (6.0, 6.0, 5.6, 8.0, 9.0, True),
     ]
 
 

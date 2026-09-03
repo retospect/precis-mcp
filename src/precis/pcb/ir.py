@@ -106,6 +106,13 @@ class MountingHole:
     #: positive value means a plated ring on every copper layer (a
     #: solder-on nut's land), which the router must clear like a pad.
     ring_dia_mm: float = 0.0
+    #: Physical hardware envelope diameter above the board, mm — the
+    #: screw head / solder-nut flange / washer, which can be wider than
+    #: the copper annulus (an M4 screw head or nut is ~8-10mm). AUTHORED,
+    #: optional; 0.0 = no hardware envelope beyond the copper. Mechanical
+    #: only — it must NOT feed any copper-clearance DRC (``npth_clearance``
+    #: stays keyed to drill/ring), only placement keep-out.
+    head_dia_mm: float = 0.0
     plated: bool = False
 
 

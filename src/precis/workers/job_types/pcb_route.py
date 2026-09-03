@@ -38,7 +38,12 @@ from precis.pcb.ir import (
     plane_layers_of,
     segment_points,
 )
-from precis.pcb.optimize import OptimizeConfig, digest_toon, optimize
+from precis.pcb.optimize import (
+    OptimizeConfig,
+    digest_toon,
+    optimize,
+    resolve_measures,
+)
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -111,11 +116,24 @@ def _residual_crossings(
                 (a1, a2), (b1, b2) = pts[sa], pts[sb]  # type: ignore[misc]
                 if segments_cross(a1, a2, b1, b2):
                     name_a, name_b = str(ir.net_name[na]), str(ir.net_name[nb])
+                    # `reason` too, not just `kind`: the per-net note builder
+                    # only surfaces `reason` values, so kind-only entries used
+                    # to fail a net with note=None — a failure with no WHY.
                     failing.setdefault(name_a, []).append(
-                        {"kind": "same-layer-crossing", "layer": layer, "with": name_b}
+                        {
+                            "kind": "same-layer-crossing",
+                            "reason": "same-layer-crossing",
+                            "layer": layer,
+                            "with": name_b,
+                        }
                     )
                     failing.setdefault(name_b, []).append(
-                        {"kind": "same-layer-crossing", "layer": layer, "with": name_a}
+                        {
+                            "kind": "same-layer-crossing",
+                            "reason": "same-layer-crossing",
+                            "layer": layer,
+                            "with": name_a,
+                        }
                     )
     return failing
 
@@ -224,7 +242,17 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     locked_plane_nets = frozenset(
         net_name_to_id[name] for name in authored_net_names if name in net_name_to_id
     )
-    config = OptimizeConfig(iters=iters, seed=seed, locked_plane_nets=locked_plane_nets)
+    # Same authored-measure enforcement as pcb_place's anneal — without
+    # this, the route job's re-place pass would silently undo whatever a
+    # proximity/separation measure had just pulled into shape (one rule,
+    # one call site short).
+    measures = resolve_measures(ctx.store.pcb_measures_list(pcb_ref_id))
+    config = OptimizeConfig(
+        iters=iters,
+        seed=seed,
+        locked_plane_nets=locked_plane_nets,
+        measures=measures,
+    )
     result = optimize(ir, config)
 
     # Write back the anneal's settled plane decisions (gr267526: this used
@@ -412,8 +440,20 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 }
                 n_dangling += 1
             continue
+        # The crossing sweep is PLACEMENT-time geometry (segment_points is
+        # instance-centroid chords, ir.py's own docstring) — meaningful only
+        # for a net with no realized copper. A net the maze router actually
+        # routed is crossing-free by construction (copper is claimed on a
+        # shared occupancy grid before it is drawn, maze.py's guarantee), so
+        # applying the chord check to it reported genuinely-finished nets as
+        # "unrouted" — phantom failures that moved with every placement draw
+        # (root-caused round 7; the regression test in
+        # tests/workers/test_pcb_route.py pins this).
+        chord_crossings = (
+            [] if net_id in routed_nets else crossing_fail.get(net_name, [])
+        )
         problems = (
-            crossing_fail.get(net_name, [])
+            chord_crossings
             + congestion_fail.get(net_name, [])
             + unrouted_fail.get(net_name, [])
             + unstitched_fail.get(net_name, [])

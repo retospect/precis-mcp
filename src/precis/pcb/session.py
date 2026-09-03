@@ -100,7 +100,9 @@ def mounting_holes_from_features(
     about is one the router draws copper through (round-3 review item 4,
     the ``npth_clearance`` family). ``geom.diameter`` is the drill;
     optional ``geom.ring_dia_mm`` (+ ``geom.plated``) describe a
-    solder-nut's copper annulus."""
+    solder-nut's copper annulus; optional ``geom.head_dia_mm`` describes
+    the hardware envelope above the board (screw head / nut flange /
+    washer) for placement keep-out only."""
     out: list[pcb_ir.MountingHole] = []
     for f in features:
         if str(f.get("ftype") or "") != "mounting_hole":
@@ -119,6 +121,7 @@ def mounting_holes_from_features(
                 y=y,
                 drill_mm=drill,
                 ring_dia_mm=float(geom.get("ring_dia_mm") or 0.0),
+                head_dia_mm=float(geom.get("head_dia_mm") or 0.0),
                 plated=bool(geom.get("plated")),
             )
         )

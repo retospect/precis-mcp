@@ -814,3 +814,54 @@ def test_pcb_route_never_touches_an_authored_pin_swap(store: Store) -> None:
 
     after = store.pcb_pin_swaps_list(ref_id)
     assert after == before  # untouched: still authored, still swapped
+
+
+def test_routed_net_is_never_failed_by_a_placement_chord_crossing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuinely fully-routed net must never be reported failed/unrouted
+    solely because its PLACEMENT-time centroid chord crosses another net's.
+
+    `_residual_crossings` sweeps `segment_points` — instance-centroid
+    straight chords, placement-fidelity geometry — while the maze router's
+    real copper is crossing-free by construction (claimed on a shared
+    occupancy grid before it is drawn). Before the round-7 fix, that sweep
+    flagged finished nets as "unrouted", with the phantom set reshuffling
+    on every placement draw (user-visible as pins "not connected to
+    anything" on nets whose copper was fine — root-caused 2026-09-03).
+    Forcing the sweep to report a crossing for every net makes the
+    regression deterministic instead of placement-dependent.
+    """
+
+    def _always_crossing(ir: Any, plane_net_ids: set[int]) -> dict[str, Any]:
+        return {
+            str(ir.net_name[n]): [
+                {
+                    "kind": "same-layer-crossing",
+                    "reason": "same-layer-crossing",
+                    "layer": 0,
+                    "with": "phantom",
+                }
+            ]
+            for n in range(ir.n_nets)
+        }
+
+    monkeypatch.setattr(pcb_route, "_residual_crossings", _always_crossing)
+    ref_id = _seed(store, "route-chord-phantom", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+
+    assert not ctx.failures
+    status_rows = store.pcb_route_status(ref_id)
+    assert len(status_rows) == 1
+    assert status_rows[0]["status"] == "realized"  # not "failed"
+
+
+def test_residual_crossing_entries_carry_a_reason_for_the_note() -> None:
+    """The per-net failure note only surfaces `reason` values — a
+    kind-only crossing entry used to fail a net with note=None (a failure
+    with no WHY). Pin the shape, not the sweep."""
+    import inspect
+
+    src = inspect.getsource(pcb_route._residual_crossings)
+    assert '"reason": "same-layer-crossing"' in src

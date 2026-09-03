@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 from precis.pcb import DEFAULT_STACKUP
@@ -134,6 +135,91 @@ def test_route_changes_layer_between_non_adjacent_signal_layers():
     assert path.vias, "a layer change must report its via"
     for _vx, _vy, lo, hi in path.vias:
         assert (lo, hi) == (0, 3)
+
+
+def _walled_two_layer_grid() -> tuple[OccupancyGrid, GridSpec]:
+    """A two-layer grid with net 1 sealing layer 0 across the FULL y range
+    at x=3.0 (no gap), forcing any other net's route from x=1.0 to x=5.0 to
+    dip onto layer 1 and back -- the same wall
+    :func:`test_route_changes_layer_between_non_adjacent_signal_layers`
+    uses, at two layers instead of four so the round trip is a single pair
+    of vias, both landing on the straight line through ``y=4.0`` because
+    nothing else on the board prefers any other y."""
+    spec = _spec(n_layers=2)
+    grid = OccupancyGrid(spec, clearance_mm=0.02)
+    for k in range(80):
+        grid.stamp_disk((0,), 3.0, k * 0.1, 0.12, 1)
+    return grid, spec
+
+
+def test_via_body_cost_pushes_the_via_out_of_a_masked_body_strip():
+    """With no surcharge the cheapest crossing drops its via at (2.5, 4.0)
+    -- dead on the straight line between start and goal, confirmed by
+    :func:`_walled_two_layer_grid`'s own geometry. Marking that cell (and
+    its immediate neighbourhood) as a component body and pricing a via
+    there must move the via off it: a few tenths of a millimetre of lateral
+    detour is cheaper than the surcharge, so the search should take that
+    trade rather than pay to drop the via under the part."""
+    grid, spec = _walled_two_layer_grid()
+    mask = np.zeros((spec.ny, spec.nx), dtype=bool)
+    cx, cy = spec.to_cell(2.5, 4.0)
+    mask[cy - 3 : cy + 4, cx - 2 : cx + 3] = True
+    grid.set_body_mask(mask)
+
+    def masked(path):
+        return [
+            bool(mask[spec.to_cell(vx, vy)[1], spec.to_cell(vx, vy)[0]])
+            for vx, vy, _lo, _hi in path.vias
+        ]
+
+    cheap = grid.route(
+        2, (1.0, 4.0), (5.0, 4.0), layers=[0, 1], width_mm=0.05, via_dia_mm=0.3
+    )
+    assert cheap is not None and cheap.vias
+    assert any(masked(cheap)), (
+        "the unpriced baseline must actually exercise the body cell"
+    )
+
+    priced = grid.route(
+        2,
+        (1.0, 4.0),
+        (5.0, 4.0),
+        layers=[0, 1],
+        width_mm=0.05,
+        via_dia_mm=0.3,
+        via_body_cost_mm=5.0,
+    )
+    assert priced is not None and priced.vias
+    assert not any(masked(priced)), "a priced via must not land under the body"
+
+
+def test_via_body_cost_mm_defaults_to_zero_and_unset_mask_is_a_no_op():
+    """Every caller predating this feature never calls
+    :meth:`OccupancyGrid.set_body_mask` and never passes
+    ``via_body_cost_mm`` -- both must be exact no-ops: an unset mask (or
+    one that is set but all-False) plus the ``via_body_cost_mm=0.0``
+    default must reproduce the identical route byte-for-byte."""
+    grid_unset, _spec_unset = _walled_two_layer_grid()
+    path_unset = grid_unset.route(
+        2, (1.0, 4.0), (5.0, 4.0), layers=[0, 1], width_mm=0.05, via_dia_mm=0.3
+    )
+
+    grid_masked, spec = _walled_two_layer_grid()
+    grid_masked.set_body_mask(np.zeros((spec.ny, spec.nx), dtype=bool))
+    path_masked = grid_masked.route(
+        2,
+        (1.0, 4.0),
+        (5.0, 4.0),
+        layers=[0, 1],
+        width_mm=0.05,
+        via_dia_mm=0.3,
+        via_body_cost_mm=0.0,
+    )
+
+    assert path_unset is not None and path_masked is not None
+    assert path_unset.points == path_masked.points
+    assert path_unset.vias == path_masked.vias
+    assert path_unset.length_mm == pytest.approx(path_masked.length_mm)
 
 
 def test_stamp_pad_records_pad_and_still_claims_copper_like_stamp_disk():
