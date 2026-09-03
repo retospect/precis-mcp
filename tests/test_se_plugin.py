@@ -1098,6 +1098,15 @@ def test_set_joint_replaces_and_clears() -> None:
     assert tree.connects[0].joint is None
 
 
+def test_bare_connect_normalizes_joint_and_objectives() -> None:
+    # mutation survivor (ops.py `objectives or {}`): a connect without
+    # objectives must store {}, never None — ConnectSpec's default-dict
+    # invariant that set_load/renderers rely on.
+    tree = _l2_tree()
+    assert tree.connects[0].objectives == {}
+    assert tree.connects[0].joint is None
+
+
 def test_set_joint_missing_connect_lists_live() -> None:
     tree = _l2_tree()
     with pytest.raises(OpError, match="Live connects: .*wheel.bore"):
