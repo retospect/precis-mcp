@@ -265,10 +265,14 @@
             mode: preserve
 
         - name: Untar the build context on the host
-          ansible.builtin.unarchive:
-            src: "{{ _agent_build_dir }}/build-context.tar"
-            dest: "{{ _agent_build_dir }}"
-            remote_src: true
+          # Plain `tar -xf`, not the unarchive module: unarchive requires
+          # GNU tar on the target and macOS ships only BSD tar, so it
+          # falls back to /usr/bin/unzip and dies on a .tar (seen on the
+          # first real run of this play).
+          ansible.builtin.command:
+            cmd: "tar -xf build-context.tar"
+            chdir: "{{ _agent_build_dir }}"
+          changed_when: true
 
         - name: Remove the tarball on the host (keep the build dir lean)
           ansible.builtin.file:
