@@ -58,3 +58,5 @@ into a durable doc and delete the memory).
 **2026-08-18** — ✓ clean (later sibling run, after the rewording above).
 
 **2026-08-26** — ✓ clean
+
+**2026-09-03** — ✓ clean
