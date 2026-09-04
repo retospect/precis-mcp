@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# scripts/guide-web — launch a local `precis web` for guide-capture sessions
+# (docs/backlog/user-guide-demo.md, slice 2).
+#
+# Modeled on scripts/prod-precis for DSN handling (same tunnel-DSN secret,
+# same host.docker.internal -> 127.0.0.1 rewrite for on-host use), but
+# capture is GET-only and this launcher makes that STRUCTURAL rather than a
+# promise: it forces every connection read-only for the life of the
+# process, regardless of which pages get toured.
+#
+# Read-only mechanism — the spec's open question, now decided: PGOPTIONS,
+# not a `?options=` query param spliced into the DSN. `PGOPTIONS` is a
+# standard libpq environment variable (read at connection time by every
+# libpq-linked client, including psycopg[binary]/psycopg[pool] — this
+# repo's driver) that's passed through as `-c <name>=<value>` GUC settings,
+# same as `psql -c`. It composes independently of the DSN string, so it
+# can't clobber whatever query params the stored tunnel DSN already carries.
+#
+# pgbouncer caveat (hit live 2026-09-04): pgbouncer (pool_mode=transaction)
+# REJECTS `options` startup parameters outright — "FATAL: unsupported
+# startup parameter in options: default_transaction_read_only" — and a
+# per-connection SET instead would be unsafe under transaction pooling
+# (server conns are shared across clients between transactions). So
+# PGOPTIONS applies to --db test only (direct postgres); the prod branch
+# gets read-only a stronger way: it rewrites the DSN user to `agent_ro`,
+# the grants-based read-only role (SELECT-only on all app tables, pgpass
+# already carries its password for 6432). Role grants are enforced
+# server-side per statement — pooling-mode-proof.
+#
+# Usage:
+#   scripts/guide-web --db test                    # compose test DB, :9105
+#   scripts/guide-web --db prod --port 9110         # prod tunnel, read-only
+#
+# NOTE: default port is 9105, NOT 9100 — the local Prometheus node exporter
+# owns 9100 and answers 200, which looks like a silently-wrong app.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+WORKTREE="$PWD"
+
+DB=test
+PORT=9105
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/guide-web --db prod|test [--port N]
+
+  --db prod   Prod tunnel DSN (~/.secrets/pw/PRECIS_DATABASE_URL), read-only.
+  --db test   docker-compose test DB (this worktree's own, isolated).
+  --port N    Bind port (default 9105 — NOT 9100, node-exporter owns that).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --db) DB="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "guide-web: unknown arg: $1" >&2; usage; exit 1 ;;
+    esac
+done
+
+# Structurally read-only for BOTH modes — capture never needs to write, and
+# the test DB is throwaway/shared with scripts/test, so nothing benefits
+# from letting a browsing session mutate it either. Mechanism differs per
+# mode (see header): prod = agent_ro role, test = PGOPTIONS.
+export PRECIS_WEB_AUTH=off
+
+case "$DB" in
+    prod)
+        if [[ ! -f "$HOME/.secrets/pw/PRECIS_DATABASE_URL" ]]; then
+            echo "guide-web: no ~/.secrets/pw/PRECIS_DATABASE_URL — can't reach prod" >&2
+            exit 1
+        fi
+        # The stored DSN is container-oriented (host.docker.internal = the
+        # Mac's autossh tunnel to caspar's pgbouncer); this process runs
+        # directly on the host (like scripts/prod-precis), so rewrite to
+        # 127.0.0.1. Also swap the DSN user to agent_ro — pgbouncer rejects
+        # the PGOPTIONS read-only startup param (see header); the ro role's
+        # grants enforce read-only server-side instead. pgpass supplies
+        # agent_ro's password (no inline creds in the stored DSN).
+        export PRECIS_DATABASE_URL="$(sed -e 's#@host.docker.internal:#@127.0.0.1:#' -e 's#://agent_rw@#://agent_ro@#' "$HOME/.secrets/pw/PRECIS_DATABASE_URL")"
+        unset PGOPTIONS  # would FATAL through pgbouncer
+        export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
+        echo "guide-web: prod tunnel DSN as agent_ro (grants-enforced read-only), :${PORT}" >&2
+        echo "guide-web: reachable from a docker container via host.docker.internal:${PORT}" >&2
+        exec uv run precis web --host 0.0.0.0 --port "$PORT"
+        ;;
+    test)
+        export PGOPTIONS="-c default_transaction_read_only=on"
+        source "$WORKTREE/scripts/lib/compose-project.sh"
+        PROJECT="$(compose_project_for "$WORKTREE")"
+        COMPOSE_FILE="${PRECIS_COMPOSE:-$WORKTREE/docker/dev/compose.yaml}"
+        COMPOSE=(docker compose -f "$COMPOSE_FILE" -p "$PROJECT" --profile dev)
+
+        "${COMPOSE[@]}" up -d --wait precis-test-db
+
+        NAME="${PROJECT}-guide-web"
+        docker rm -f "$NAME" >/dev/null 2>&1 || true
+
+        echo "guide-web: compose test DB (project ${PROJECT}), read-only (PGOPTIONS), :${PORT}" >&2
+        echo "guide-web: reachable from a sibling container on the '${PROJECT}_default' network as '${NAME}:${PORT}', or from the host at 127.0.0.1:${PORT}" >&2
+        exec "${COMPOSE[@]}" run --rm --no-deps --name "$NAME" \
+            --publish "${PORT}:${PORT}" \
+            -v "$WORKTREE":/app \
+            -e PRECIS_DATABASE_URL="postgresql://postgres@precis-test-db:5432/precis_test" \
+            -e PGOPTIONS \
+            -e PRECIS_WEB_AUTH \
+            precis-dev uv run precis web --host 0.0.0.0 --port "$PORT"
+        ;;
+    *)
+        echo "guide-web: --db must be 'prod' or 'test' (got '$DB')" >&2
+        usage
+        exit 1
+        ;;
+esac

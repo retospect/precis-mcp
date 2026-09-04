@@ -1,0 +1,30 @@
+{
+  "title": "Reading papers",
+  "route": "/papers/{id}",
+  "steps": [
+    {
+      "anchor": "reader-header",
+      "heading": "The two-pane reader",
+      "text": "Every paper (and slide deck) opens here: a toolbox on the left, the source document itself on the right. This is also where a citation preview links back to when you click through.",
+      "placement": "bottom"
+    },
+    {
+      "anchor": "reader-tabs",
+      "heading": "Navigate, Jump, Sources, Cited, Meta",
+      "text": "Navigate searches this document's own text and browses its table of contents. Jump goes straight to a page, a chunk, or an exact phrase. Sources and Cited are the S2 bibliography and citing-papers graphs. Meta is the bibliographic record — edit it here.",
+      "placement": "right"
+    },
+    {
+      "anchor": "reader-navigate",
+      "heading": "Search inside the document",
+      "text": "Semantic search finds passages by meaning, keyword by exact words; TOC browses the outline; Raw reads the ingested body verbatim when there's no PDF to fall back on. Click a result to jump the pane on the right to it.",
+      "placement": "right"
+    },
+    {
+      "anchor": "reader-pdf",
+      "heading": "The document itself",
+      "text": "The actual PDF, rendered in place — every jump from the sidebar scrolls it to the matching page or passage. A stub with no PDF on disk still gets Navigate and Jump over whatever chunks are ingested.",
+      "placement": "left"
+    }
+  ]
+}

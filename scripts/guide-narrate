@@ -1,0 +1,216 @@
+#!/usr/bin/env -S uv run python
+"""scripts/guide-narrate — render ``guide/narration/<nn>-<slug>.md`` to
+per-section mp3s via the existing TTS stack.
+
+For each narration file discovered by ``guide_lib.discover_guide_sections``:
+``markdown_segments()`` (``precis.draft.narrate``) turns the marketing-toned
+prose into a voice score, then ``render_episode()`` (``precis.tts.render``)
+synthesizes it to ``guide/assets/audio/<slug>.mp3`` — the same two-call spine
+``precis cast`` / ``precis.workers.cast_audio`` use, container-first.
+
+Backend selection (fails loudly — never half-renders):
+
+1. ``PRECIS_TTS_IMAGE`` set -> the ``precis-tts`` container
+   (``docker/tts/README.md``), driven via ``PRECIS_TTS_CONTAINER_CMD``
+   (default ``podman``). Needs no local TTS deps.
+2. Else the in-process Kokoro path -- needs the ``tts`` extra
+   (``uv sync --extra tts``) *and* ``PRECIS_KOKORO_MODEL`` /
+   ``PRECIS_KOKORO_VOICES`` pointing at the baked model files.
+3. Neither available -> a hard error naming exactly what's missing. This
+   script does not build the tts image or fetch model files itself.
+
+``--check`` is the backend-free smoke path: it segments every narration file
+(pure text processing, same code as a real render) and reports segment
+counts without touching a synth — this is what CI / a clean checkout can
+always run.
+
+Usage::
+
+    scripts/guide-narrate --check                 # segment counts only, no synth
+    scripts/guide-narrate                          # render all nine, bm_george
+    scripts/guide-narrate --only drive --voice af_heart
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from guide_lib import GuideError, assets_dir, discover_guide_sections, repo_root
+
+_DEFAULT_VOICE = "bm_george"
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--voice",
+        default=_DEFAULT_VOICE,
+        help=f"Kokoro voice (default {_DEFAULT_VOICE}).",
+    )
+    p.add_argument("--only", default=None, help="Narrate just this section's slug.")
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help="Segment every narration file and report counts; no synthesis.",
+    )
+    p.add_argument("--speed", type=float, default=1.0, help="Narration speed.")
+    p.add_argument("--assets-dir", type=Path, default=None)
+    p.add_argument("--narration-dir", type=Path, default=None)
+    return p.parse_args(argv)
+
+
+def _resolve_voice_lang(voice: str) -> str:
+    from precis.tts import voices
+
+    try:
+        _, lang = voices.resolve(voice, None)
+    except ValueError as exc:
+        raise GuideError(str(exc)) from exc
+    return lang
+
+
+def _resolve_backend(*, speed: float) -> tuple[str | None, Any | None, str]:
+    """Pick a TTS backend. Returns ``(image, synth, description)``. Raises
+    :class:`GuideError` with an actionable message if neither the container
+    nor the in-process path is usable — this must never half-render."""
+    image = os.environ.get("PRECIS_TTS_IMAGE")
+    if image:
+        container_cmd = os.environ.get("PRECIS_TTS_CONTAINER_CMD") or "podman"
+        if shutil.which(container_cmd) is None:
+            raise GuideError(
+                f"PRECIS_TTS_IMAGE={image!r} is set but {container_cmd!r} isn't "
+                "on PATH — install it, or set PRECIS_TTS_CONTAINER_CMD to the "
+                "container tool you have (see docker/tts/README.md)"
+            )
+        return image, None, f"container ({container_cmd} run {image})"
+
+    try:
+        import kokoro_onnx  # noqa: F401
+    except ImportError as exc:
+        raise GuideError(
+            "no TTS backend available: set PRECIS_TTS_IMAGE to the precis-tts "
+            "container image (see docker/tts/README.md) OR install the local "
+            "backend with `uv sync --extra tts` and set PRECIS_KOKORO_MODEL / "
+            "PRECIS_KOKORO_VOICES to the baked kokoro-v1.0.onnx / "
+            "voices-v1.0.bin files. `--check` works without either."
+        ) from exc
+
+    model = os.environ.get("PRECIS_KOKORO_MODEL")
+    voices_path = os.environ.get("PRECIS_KOKORO_VOICES")
+    if not model or not voices_path:
+        raise GuideError(
+            "the 'tts' extra is installed but PRECIS_KOKORO_MODEL / "
+            "PRECIS_KOKORO_VOICES aren't set — point them at kokoro-v1.0.onnx "
+            "/ voices-v1.0.bin, or set PRECIS_TTS_IMAGE instead. `--check` "
+            "works without either."
+        )
+    from precis.tts.kokoro import KokoroSynth
+
+    return None, KokoroSynth(speed=speed), f"in-process kokoro ({model})"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    root = repo_root()
+    assets = args.assets_dir or assets_dir(root)
+
+    from precis.draft.narrate import markdown_segments
+
+    try:
+        lang = _resolve_voice_lang(args.voice)
+        sections = discover_guide_sections(root)
+        if args.narration_dir is not None or args.only is not None:
+            from guide_lib import discover_narration, slug_from_narration_path
+
+            narr_dir = args.narration_dir or (root / "guide" / "narration")
+            wanted = {
+                slug_from_narration_path(p)
+                for p in discover_narration(narr_dir, only=args.only)
+            }
+            sections = [s for s in sections if s.slug in wanted]
+    except GuideError as exc:
+        print(f"guide-narrate: {exc}", file=sys.stderr)
+        return 1
+
+    if not sections:
+        print("guide-narrate: no narration files to render", file=sys.stderr)
+        return 1
+
+    scored = []
+    for section in sections:
+        text = section.narration_path.read_text(encoding="utf-8")
+        segments = markdown_segments(text, voice=args.voice, lang=lang)
+        scored.append((section, segments))
+        if not segments:
+            print(
+                f"guide-narrate: {section.slug}: WARNING nothing speakable "
+                f"in {section.narration_path.name}",
+                file=sys.stderr,
+            )
+
+    if args.check:
+        for section, segments in scored:
+            print(
+                f"guide-narrate: {section.index}-{section.slug}: {len(segments)} segment(s)"
+            )
+        print(
+            f"guide-narrate --check: {len(scored)} section(s) segmented, 0 synthesized"
+        )
+        return 0
+
+    try:
+        image, synth, backend_desc = _resolve_backend(speed=args.speed)
+    except GuideError as exc:
+        print(f"guide-narrate: {exc}", file=sys.stderr)
+        return 1
+
+    from precis.tts.render import render_episode
+
+    print(f"guide-narrate: backend = {backend_desc}")
+    audio_dir = assets / "audio"
+    container_cmd = os.environ.get("PRECIS_TTS_CONTAINER_CMD") or "podman"
+    scratch_dir = os.environ.get("PRECIS_TTS_SCRATCH")
+    for section, segments in scored:
+        if not segments:
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            out_path = Path(td) / f"{section.slug}.mp3"
+            try:
+                result = render_episode(
+                    segments,
+                    out_path,
+                    image=image,
+                    synth=synth,
+                    speed=args.speed,
+                    container_cmd=container_cmd,
+                    scratch_dir=scratch_dir,
+                )
+            except Exception as exc:  # a bad image / dead synth must fail loudly
+                print(
+                    f"guide-narrate: {section.slug}: render failed: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            final = audio_dir / f"{section.slug}.mp3"
+            shutil.copyfile(result["audio_path"], final)
+            print(
+                f"guide-narrate: {section.slug} -> {final} "
+                f"({result['segments']} seg, {result['duration_s']:.0f}s)"
+            )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

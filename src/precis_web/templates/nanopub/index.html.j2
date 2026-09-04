@@ -26,7 +26,7 @@
     {%- endif -%}
   {%- endmacro %}
 
-  <div class="flex items-baseline justify-between px-1">
+  <div class="flex items-baseline justify-between px-1" data-tour="np-ladder">
     <h1 class="text-lg font-semibold">Nanopub claims</h1>
     <p class="text-xs text-slate-500">
       {{ n_nodes }} hub{{ 's' if n_nodes != 1 }}:
@@ -176,7 +176,7 @@
   {% endmacro %}
 
   <div id="np-panes" class="flex items-stretch" style="height: calc(100vh - 9rem); min-height: 480px;">
-    <div id="pane-tree" class="overflow-y-auto min-w-0 pr-1" style="width: 34%">
+    <div id="pane-tree" class="overflow-y-auto min-w-0 pr-1" style="width: 34%" data-tour="np-tree">
       {% if roots %}
       <ul>
         {% for n in roots %}{{ node(n) }}{% endfor %}
@@ -223,7 +223,7 @@
 
     <div class="np-divider" data-pane="pane-tree"></div>
 
-    <div id="pane-review" class="min-w-0" style="width: 36%">
+    <div id="pane-review" class="min-w-0" style="width: 36%" data-tour="np-review">
       {# Panes are DIVS, not iframes. Everything the workbench needs to do to
          a pane — navigate it, read what it shows, route a click out of it —
          had to cross a frame boundary before, and every mechanism for doing
@@ -239,7 +239,7 @@
 
     <div class="np-divider" data-pane="pane-review"></div>
 
-    <div id="pane-paper" class="min-w-0 flex-1">
+    <div id="pane-paper" class="min-w-0 flex-1" data-tour="np-paper">
       <div id="np-paper" role="region" aria-label="paper reader"
            class="w-full h-full overflow-hidden rounded-lg border border-slate-200 bg-white px-4"
            data-placeholder="Click an evidence paper — its reader loads here."></div>

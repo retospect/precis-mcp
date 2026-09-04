@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from psycopg.conninfo import make_conninfo
 
 from precis.errors import BadInput, NotFound
 from precis.store import Store, Tag
@@ -265,3 +266,27 @@ def test_tx_rolls_back(store: Store) -> None:
 
     refs = store.list_refs(kind="memory")
     assert refs == []
+
+
+# ---------------------------------------------------------------------------
+# locked_ref_ids
+# ---------------------------------------------------------------------------
+
+
+def test_locked_ref_ids_degrades_to_empty_under_readonly_transaction(
+    store: Store,
+) -> None:
+    """``FOR UPDATE SKIP LOCKED`` raises ReadOnlySqlTransaction (or
+    InsufficientPrivilege under a read-only role/grant) — locked-ness is
+    a cosmetic /todo dashboard badge, so the probe must degrade to
+    "nothing locked" instead of 500ing the caller (gr regression: the
+    method used to let this propagate)."""
+    ref = store.insert_ref(kind="memory", slug=None, title="lockprobe")
+
+    assert store.dsn is not None
+    ro_dsn = make_conninfo(store.dsn, options="-c default_transaction_read_only=on")
+    ro_store = Store.connect(ro_dsn, min_size=1, max_size=1)
+    try:
+        assert ro_store.locked_ref_ids([ref.id]) == set()
+    finally:
+        ro_store.close()

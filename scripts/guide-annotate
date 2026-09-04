@@ -1,0 +1,134 @@
+#!/usr/bin/env -S uv run python
+"""scripts/guide-annotate — burn callouts onto the clean captures from
+``scripts/guide-capture``.
+
+For each ``guide/assets/<slug>/`` produced by a capture run (its
+``steps.json`` sidecar + the matching tour manifest), renders:
+
+(a) one static annotated PNG per step — ``step-<N>-annotated.png`` — the
+    clean screenshot with a highlight rectangle around the step's anchor,
+    a connector arrow, and a rounded callout box (heading + text) burned
+    in via Pillow. Used as the video/fallback frame.
+(b) one animated SVG per section — ``tour.svg`` — the step-1 PNG embedded
+    as a base64 image layer with each step's highlight/arrow/callout
+    fading in and out in sequence on a loop (SMIL ``<animate>``, no JS,
+    no external references — renders natively in a GitHub-rendered
+    README/markdown page).
+
+Needs the ``guide`` extra (Pillow) for (a); (b) is pure stdlib.
+
+Usage::
+
+    scripts/guide-capture --base-url ... [--id ...]   # first
+    scripts/guide-annotate                            # then
+    scripts/guide-annotate --only drive
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from guide_lib import (
+    GuideError,
+    annotate_png,
+    assets_dir,
+    build_tour_svg,
+    discover_manifests,
+    load_manifest,
+    merge_manifest_and_sidecar,
+    repo_root,
+    slug_from_manifest_path,
+    tour_dir,
+)
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument("--only", default=None, help="Annotate just this section's slug.")
+    p.add_argument("--assets-dir", type=Path, default=None)
+    p.add_argument("--tour-dir", type=Path, default=None)
+    return p.parse_args(argv)
+
+
+def _annotate_one(manifest_path: Path, slug_assets: Path) -> None:
+    from PIL import Image
+
+    manifest = load_manifest(manifest_path)
+    sidecar_path = slug_assets / "steps.json"
+    if not sidecar_path.is_file():
+        raise GuideError(
+            f"{slug_assets}: no steps.json — run scripts/guide-capture first"
+        )
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    merged = merge_manifest_and_sidecar(manifest, sidecar)
+
+    for step in merged:
+        png_path = slug_assets / step.png
+        if not png_path.is_file():
+            raise GuideError(f"{slug_assets}: missing {step.png} named in steps.json")
+        image = Image.open(png_path)
+        annotated = annotate_png(
+            image, step.rect, step.heading, step.text, step.placement
+        )
+        out_name = png_path.stem + "-annotated" + png_path.suffix
+        annotated.save(slug_assets / out_name)
+
+    step1_png = slug_assets / merged[0].png
+    svg = build_tour_svg(
+        slug=sidecar["slug"],
+        title=manifest["title"],
+        png_bytes=step1_png.read_bytes(),
+        viewport=sidecar["viewport"],
+        steps=merged,
+    )
+    (slug_assets / "tour.svg").write_text(svg, encoding="utf-8")
+    print(
+        f"guide-annotate: {sidecar['slug']} -> {len(merged)} annotated PNG(s) + tour.svg"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    root = repo_root()
+    assets = args.assets_dir or assets_dir(root)
+    tdir = args.tour_dir or tour_dir(root)
+
+    try:
+        manifests = discover_manifests(tdir, only=args.only)
+    except GuideError as exc:
+        print(f"guide-annotate: {exc}", file=sys.stderr)
+        return 1
+
+    if not manifests:
+        print("guide-annotate: no manifests to annotate", file=sys.stderr)
+        return 1
+
+    try:
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        print(
+            "guide-annotate: needs Pillow — install 'precis-mcp[guide]'",
+            file=sys.stderr,
+        )
+        return 1
+
+    for manifest_path in manifests:
+        slug = slug_from_manifest_path(manifest_path)
+        try:
+            _annotate_one(manifest_path, assets / slug)
+        except GuideError as exc:
+            print(f"guide-annotate: {exc}", file=sys.stderr)
+            return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,120 @@
+[
+  {
+    "audio_mp3": "assets/audio/what-is-precis.mp3",
+    "index": "00",
+    "route": null,
+    "slug": "what-is-precis",
+    "title": "What is precis",
+    "tour_svg": null,
+    "transcript": [
+      "This is precis — an untiring research collaborator, one that never sleeps and never tires of another paper. Drop a PDF, paste a DOI, or let precis pull one in on its own — close to nine thousand papers already, split into about one and a half million searchable chunks.",
+      "It's grounded: no claim stands without a citation, a specific passage in a real paper. And it's untiring: a background loop of quests and todos keeps reading, proposing, and writing between your visits.",
+      "Out of what the corpus supports, precis mints claims, signable as a small, checkable nanopublication. A draft cites that same corpus live, never text that can drift from its source. And work climbs a model ladder: cheap local models for volume, frontier Claude only when it matters.",
+      "A paper, a draft, a claim — everything here is a kind, answering to the same seven moves: get, search, put, edit, delete, tag, link. Let's take a look."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/drive.mp3",
+    "index": "01",
+    "route": "/drive",
+    "slug": "drive",
+    "title": "Drive",
+    "tour_svg": "assets/drive/tour.svg",
+    "transcript": [
+      "Drive is the front door — one search box over everything precis has read or written: papers, patents, slide decks, cached answers, your own drafts. Type a question and get the same search the model runs, with the best matching passage shown for every hit.",
+      "Plus New is where anything gets born — a CAD part, a DFT cell, a figure, a diagram, or a draft. Pick draft, and the description you write becomes the writer's starting instruction: what it reads first, and returns to on every pass after.",
+      "Folders and tags keep a growing corpus navigable, or skip them and just search — nothing here is ever more than one search away."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/writing-a-paper.mp3",
+    "index": "02",
+    "route": "/smartdraft/{id}",
+    "slug": "writing-a-paper",
+    "title": "Writing a paper",
+    "tour_svg": "assets/writing-a-paper/tour.svg",
+    "transcript": [
+      "A draft in precis isn't typed, it's steered. You describe what you want, and a writer works on it between your visits — your job is reading what comes back and pointing it onward.",
+      "Open a draft and a fisheye table of contents sits on the left: every heading, quiet stretches collapsed so a long draft fits on one screen. The middle pane holds your focus — that's what a change request acts on by default.",
+      "Pin another paragraph as context, without making it the target, then describe the change in the request box and send it. Every citation is a live object pointing at an actual passage, never text that can drift from where it came from."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/reading-papers.mp3",
+    "index": "03",
+    "route": "/papers/{id}",
+    "slug": "reading-papers",
+    "title": "Reading papers",
+    "tour_svg": "assets/reading-papers/tour.svg",
+    "transcript": [
+      "Every paper — and every slide deck — opens in the same two pane reader: a toolbox on the left, the source document on the right, rendered as it was published. A citation preview from inside a draft lands here too, so a claim's grounding is one click from the page it came from.",
+      "The toolbox does the finding. Navigate searches the document's own text, by meaning or exact keyword; Jump goes straight to a page, a chunk, or an exact phrase. Sources and Cited show its bibliography and everything that has since cited it.",
+      "It even works without a PDF: a stub still gets Navigate and Jump over whatever text is already ingested, so you're never stuck waiting on a fetch to start reading."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/claims-and-nanopubs.mp3",
+    "index": "04",
+    "route": "/nanopub",
+    "slug": "claims-and-nanopubs",
+    "title": "Claims & nanopubs",
+    "tour_svg": "assets/claims-and-nanopubs/tour.svg",
+    "transcript": [
+      "A nanopublication is about as small as a scientific claim can get and still be checkable — one sentence, its evidence, a signature, small enough that a stranger can verify it without trusting you or your server. precis mints these from the claim graph it builds out of the papers it reads; the workbench is where you review them, claim forest on the left, source paper on the right.",
+      "A claim climbs a ladder — reviewed, signed, anchored, published — each rung freezing more of it, until publication makes it public, forever.",
+      "Signing matters most. It uses a key that only loads through an explicit, interactive door — no worker, no agent, no scheduled job can reach it. It's the one place the system stops and waits for a person to look."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/figures-and-diagrams.mp3",
+    "index": "05",
+    "route": "/figure/{id}",
+    "slug": "figures-and-diagrams",
+    "title": "Figures & diagrams",
+    "tour_svg": "assets/figures-and-diagrams/tour.svg",
+    "transcript": [
+      "A figure in a draft comes from one of two places: you upload an image, or you draw one straight into the document with the model's help. Either way, it travels with the draft into every export.",
+      "Upload a third party image and precis asks the one question that matters: where did this come from. Original work and your own plotted data are clear on sight; anything borrowed needs a permission record before it saves — who granted it, on what terms. It's a ledger you keep, so months later \"who cleared this\" is one click away.",
+      "Or skip that question and draw instead — a live canvas you build turn by turn with the model. A figure drawn from your own data needs no clearance, no expiry, and usually says what you mean better than the one you'd have borrowed."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/structures-and-cad.mp3",
+    "index": "06",
+    "route": "/cad/{id}",
+    "slug": "structures-and-cad",
+    "title": "Structures & CAD",
+    "tour_svg": "assets/structures-and-cad/tour.svg",
+    "transcript": [
+      "An atomic structure or a CAD part is never a picture to the model — it's typed data, atoms and bonds, or a parametric solid, reasoned about with analytical probes instead of image recognition recovering a flattened projection. That's what lets an agent build these things, not describe one.",
+      "You still get to see it. The structures tab renders an interactive three dimensional cell — atoms colored by element, bonds as clickable cylinders — beside a run cube: every simulation pass at every fidelity, quick relaxation through full density functional theory, including a cached run that cost nothing to reuse.",
+      "CAD works the same way: rotate the solid, click a feature, tell it what to change in plain language, and a proposal comes back to review before it's applied — exported as an STL, a STEP file, or an OpenSCAD script."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/the-loop.mp3",
+    "index": "07",
+    "route": "/todo",
+    "slug": "the-loop",
+    "title": "The loop",
+    "tour_svg": "assets/the-loop/tour.svg",
+    "transcript": [
+      "Between your visits, precis doesn't wait — it works. A quest reads, proposes candidates, runs them through simulation, ranks the results, writes down what it learned, and goes around again, tick after tick.",
+      "The quest dashboard is where you watch that happen. A momentum badge shows whether it's active, warming up, or stalled — the one number worth checking first. A dossier holds the real output: a narrative that gets rewritten as understanding changes, and a ledger of everything tried, including what didn't work — often the more useful half. Candidates still awaiting simulation on the frontier plot are marked provisional, not hidden.",
+      "The todo tree is the same idea, finer grained; status rolls it into corpus and worker health, so you can tell whether the factory is running."
+    ]
+  },
+  {
+    "audio_mp3": "assets/audio/attention.mp3",
+    "index": "08",
+    "route": "/needs-you",
+    "slug": "attention",
+    "title": "Attention",
+    "tour_svg": "assets/attention/tour.svg",
+    "transcript": [
+      "Not everything precis does can finish on its own. Needs-you is where those things land: an open question, a hypothesis proposed for your sign-off, a paper whose metadata automation gave up on. Every row here is a real decision only you can make.",
+      "Alerts is the operational half of the same idea — open health conditions raised automatically, cleared the moment the underlying problem resolves, not just dismissed.",
+      "And if something in precis itself is broken, slow, or just wrong, that's what gripes is for. File it right there in the app, in your own words — it goes straight into the record the people building this actually read."
+    ]
+  }
+]

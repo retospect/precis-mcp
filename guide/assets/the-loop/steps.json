@@ -1,0 +1,45 @@
+{
+  "slug": "the-loop",
+  "title": "The loop",
+  "route": "/todo",
+  "url": "http://host.docker.internal:9105/todo",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "todo-vitals",
+      "png": "step-1.png",
+      "rect": {
+        "x": 240,
+        "y": 178,
+        "width": 738.65625,
+        "height": 26
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "todo-tree",
+      "png": "step-2.png",
+      "rect": {
+        "x": 240,
+        "y": 0,
+        "width": 738.65625,
+        "height": 260284
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "todo-doable",
+      "png": "step-3.png",
+      "rect": {
+        "x": 1002.65625,
+        "y": -198,
+        "width": 357.34375,
+        "height": 260482
+      }
+    }
+  ]
+}

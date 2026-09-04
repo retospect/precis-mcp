@@ -1,0 +1,30 @@
+{
+  "title": "Figures & diagrams",
+  "route": "/figure/{id}",
+  "steps": [
+    {
+      "anchor": "fig-canvas",
+      "heading": "The canvas",
+      "text": "An inline SVG you build with the model instead of upload — the grid overlay is the shared 10% coordinate frame you and the model both work in. The same canvas mechanism draws the diagrams at /mermaid.",
+      "placement": "right"
+    },
+    {
+      "anchor": "fig-docs",
+      "heading": "Shared vocabulary & notes",
+      "text": "Two tabs the model keeps in sync as it works: vocabulary is for you — what the drawing is — and implementation notes are the model's own record of ids, structure, and conventions.",
+      "placement": "left"
+    },
+    {
+      "anchor": "fig-chat",
+      "heading": "The conversation is the history",
+      "text": "Every request and reply lives here — there's no separate version list because the chat itself is the revision log. Scroll up to see how the drawing got to where it is.",
+      "placement": "left"
+    },
+    {
+      "anchor": "fig-prompt",
+      "heading": "Ask for a change",
+      "text": "Describe what you want in plain language — “draw a round green face with two eyes” — and send it. The canvas, the vocabulary, and any lint findings all update in place.",
+      "placement": "top"
+    }
+  ]
+}

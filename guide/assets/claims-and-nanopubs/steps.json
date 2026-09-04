@@ -1,0 +1,56 @@
+{
+  "slug": "claims-and-nanopubs",
+  "title": "Claims & nanopubs",
+  "route": "/nanopub",
+  "url": "http://host.docker.internal:9105/nanopub",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "np-ladder",
+      "png": "step-1.png",
+      "rect": {
+        "x": 12,
+        "y": 54,
+        "width": 1576,
+        "height": 28
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "np-tree",
+      "png": "step-2.png",
+      "rect": {
+        "x": 12,
+        "y": 94,
+        "width": 535.828125,
+        "height": 856
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "np-review",
+      "png": "step-3.png",
+      "rect": {
+        "x": 556.828125,
+        "y": 94,
+        "width": 567.359375,
+        "height": 856
+      }
+    },
+    {
+      "index": 4,
+      "anchor": "np-paper",
+      "png": "step-4.png",
+      "rect": {
+        "x": 1133.1875,
+        "y": 94,
+        "width": 454.8125,
+        "height": 856
+      }
+    }
+  ]
+}

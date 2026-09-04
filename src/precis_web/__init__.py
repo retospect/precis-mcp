@@ -32,8 +32,10 @@ Daily (Drive, Tags, ToDo) always visible; Browse ▾ (Quests, Schedules,
 Clusters, Structures, CAD, Figures, Mermaid); Attention (Needs you,
 Gripes, Alerts, badged); Manual (top-level, unbadged — the no-idea-where
 tab, so never in a dropdown); Ops ▾ (System, Categorizers, Agent Logs,
-Console, Env, Secrets); 🔍 loupe submits to ``/drive``; Account (far
-right, signed-in user's ``abbrev`` chip) → ``/account``.
+Console, Env, Secrets); 🔍 loupe submits to ``/drive``; "?" tour launcher
+(only on a page whose path matches a tour manifest's ``route`` —
+``routes/manual.py::tour_slug_for_path``, no extra client fetch); Account
+(far right, signed-in user's ``abbrev`` chip) → ``/account``.
 
 **Drive (`/drive`)** is the unified seek+manage surface:
 ``routes/drive.py::index`` runs cross-kind chunk search (``q=``, kind/tag

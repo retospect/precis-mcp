@@ -1,0 +1,36 @@
+{
+  "title": "Writing a paper",
+  "route": "/smartdraft/{id}",
+  "steps": [
+    {
+      "anchor": "sd-toc",
+      "heading": "Fisheye table of contents",
+      "text": "Every heading in the document, foldable — the quiet stretches collapse so a long draft fits on one screen. Click any row to jump; the search box above filters it by verbatim text, keywords, tags, or meaning.",
+      "placement": "right"
+    },
+    {
+      "anchor": "sd-view-toggle",
+      "heading": "Fisheye vs full document",
+      "text": "🔍 collapses distant text so you see the map; 📄 renders a normal scrolling window around your focus instead. Toggle any time — it's just how this pane reads, not a different draft.",
+      "placement": "bottom"
+    },
+    {
+      "anchor": "sd-focus",
+      "heading": "The focus",
+      "text": "The block you're pointed at, expanded in full with its immediate neighbours. This is what a change request from the panel on the right acts on by default — navigate to a paragraph and it becomes the thing being changed.",
+      "placement": "left"
+    },
+    {
+      "anchor": "sd-pin",
+      "heading": "Pin for context",
+      "text": "📌 pins a paragraph as reading context for the writer without making it the thing being changed — \"read this while you work.\" Pin as many as you like; unpin all clears them.",
+      "placement": "top"
+    },
+    {
+      "anchor": "sd-request-box",
+      "heading": "The request box",
+      "text": "Describe the change in your own words and send it. It works on your pinned paragraphs as context and the current focus as the target — mark, describe, send is the whole workflow.",
+      "placement": "left"
+    }
+  ]
+}

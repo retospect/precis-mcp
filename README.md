@@ -14,8 +14,14 @@ interface ([see how it works](guide/README.md)).
 
 ## See it
 
-A narrated tour of the web interface, section by section, right in
-this repo: **[guide/README.md](guide/README.md)**. Video: coming.
+<a href="guide/README.md">
+<img src="guide/assets/drive/tour.svg" alt="precis Drive — search everything you've collected, animated tour" width="720">
+</a>
+
+A two-minute tour, section by section, lives right here in the repo at
+**[guide/README.md](guide/README.md)**. A narrated version (audio) lives at
+**[retospect.github.io/precis-mcp](https://retospect.github.io/precis-mcp/)**
+once Pages is enabled. Video: coming.
 
 **Set it up:** single machine —
 [`docs/setup-single-machine.md`](docs/setup-single-machine.md) ·

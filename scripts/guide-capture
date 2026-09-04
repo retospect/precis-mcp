@@ -1,0 +1,253 @@
+#!/usr/bin/env -S uv run python
+"""scripts/guide-capture — clean-page screenshots for the user-guide tours.
+
+For each tour manifest (``src/precis_web/manual/tour/<nn>-<slug>.json``, or
+just ``--only <slug>``): resolve its route (filling any ``{id}`` from a
+required ``--id <slug>=<value>``), then drive a REAL browser to that route
+with NO tour overlay (clean page, exactly what a visitor sees) and, for
+every step's ``[data-tour=<anchor>]`` element: scroll it into view, capture
+a full-viewport PNG, and record its bounding rect. Output:
+``guide/assets/<slug>/step-<N>.png`` + a ``steps.json`` sidecar (anchor
+rects, viewport, final URL) — the input to ``scripts/guide-annotate``.
+
+A missing ``[data-tour=...]`` anchor on the live page is a HARD ERROR
+naming the anchor + route: that's the UI-drift tripwire (a manifest and the
+template it describes have drifted apart).
+
+Browser: host Playwright can't launch on this Mac (sandbox blocks the
+Chromium/WebKit helpers — see memory `local-web-demo-recipe`), so the
+capture runs INSIDE the official ``mcr.microsoft.com/playwright/python``
+container, which this script drives via ``docker`` (attached to a docker
+network when the target ``--base-url`` is only reachable there, e.g. a
+compose-network container name). The actual Playwright driving code is the
+small sibling file ``scripts/guide_capture_inner.py``, mounted in and run
+once per manifest — this script is orchestration only.
+
+You must already have a web instance running to point at — start one with
+``scripts/guide-web`` first. This script never launches or tunnels to prod
+itself.
+
+Usage::
+
+    scripts/guide-web --db test --port 9105 &          # separately
+    scripts/guide-capture --base-url http://host.docker.internal:9105 \\
+        --id writing-a-paper=dr123 --id reading-papers=pp456
+
+    scripts/guide-capture --only drive --base-url http://127.0.0.1:9105
+
+Env:
+    GUIDE_CAPTURE_IMAGE            override the Playwright image (default
+                                    below; pin the tag to whatever's cached
+                                    locally with `docker images`).
+    GUIDE_CAPTURE_PLAYWRIGHT_VER   override the pip `playwright` version
+                                    installed inside the container (default:
+                                    parsed from the image tag, e.g.
+                                    "v1.62.0-noble" -> "1.62.0").
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from guide_lib import (
+    GuideError,
+    discover_manifests,
+    load_manifest,
+    parse_id_flags,
+    repo_root,
+    resolve_route,
+    slug_from_manifest_path,
+    tour_dir,
+)
+
+DEFAULT_IMAGE = "mcr.microsoft.com/playwright/python:v1.62.0-noble"
+_IMAGE_TAG_VERSION_RE = re.compile(r":v(\d+\.\d+\.\d+)-")
+
+
+def _playwright_version_for(image: str) -> str:
+    m = _IMAGE_TAG_VERSION_RE.search(image)
+    if m is None:
+        raise GuideError(
+            f"can't parse a playwright version out of image tag {image!r}; "
+            "set GUIDE_CAPTURE_PLAYWRIGHT_VER explicitly"
+        )
+    return m.group(1)
+
+
+def _run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, text=True, encoding="utf-8", **kw)  # type: ignore[arg-type]
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument("--only", default=None, help="Capture just this section's slug.")
+    p.add_argument(
+        "--id",
+        action="append",
+        default=[],
+        metavar="SLUG=VALUE",
+        help="Fill a manifest route's {id} placeholder. Repeatable.",
+    )
+    p.add_argument(
+        "--base-url",
+        required=True,
+        help="Where the target `precis web` instance is reachable FROM "
+        "the Playwright container (e.g. http://host.docker.internal:9105 "
+        "for a host-bound scripts/guide-web, or a compose service name).",
+    )
+    p.add_argument(
+        "--network",
+        default=None,
+        help="docker network to attach the Playwright container to (only "
+        "needed when --base-url names a container, not a host port).",
+    )
+    p.add_argument("--width", type=int, default=1600)
+    p.add_argument("--height", type=int, default=1000)
+    p.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Default: <repo>/guide/assets.",
+    )
+    p.add_argument(
+        "--image",
+        default=os.environ.get("GUIDE_CAPTURE_IMAGE", DEFAULT_IMAGE),
+    )
+    p.add_argument(
+        "--playwright-version",
+        default=os.environ.get("GUIDE_CAPTURE_PLAYWRIGHT_VER"),
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    root = repo_root()
+    out_root = args.out_dir or (root / "guide" / "assets")
+
+    try:
+        manifests = discover_manifests(tour_dir(root), only=args.only)
+        ids = parse_id_flags(args.id)
+        resolved: list[tuple[Path, str, str]] = []
+        for manifest_path in manifests:
+            manifest = load_manifest(manifest_path)
+            slug = slug_from_manifest_path(manifest_path)
+            route = resolve_route(manifest["route"], slug, ids)
+            resolved.append((manifest_path, slug, route))
+    except GuideError as exc:
+        print(f"guide-capture: {exc}", file=sys.stderr)
+        return 1
+
+    if not resolved:
+        print("guide-capture: no manifests to capture", file=sys.stderr)
+        return 1
+
+    pw_version = args.playwright_version or _playwright_version_for(args.image)
+    container = f"guide-capture-{uuid.uuid4().hex[:10]}"
+
+    docker_run = [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        container,
+        "-v",
+        f"{root}:/work",
+    ]
+    if args.network:
+        docker_run += ["--network", args.network]
+    docker_run += [args.image, "sleep", "infinity"]
+
+    print(f"guide-capture: starting {container} ({args.image})", file=sys.stderr)
+    started = _run(docker_run, capture_output=True)
+    if started.returncode != 0:
+        print(f"guide-capture: docker run failed:\n{started.stderr}", file=sys.stderr)
+        return 1
+
+    try:
+        install = _run(
+            [
+                "docker",
+                "exec",
+                container,
+                "pip",
+                "install",
+                "-q",
+                f"playwright=={pw_version}",
+            ],
+            capture_output=True,
+        )
+        if install.returncode != 0:
+            # PyPI flakes under sibling gate load — one retry (see memory
+            # `gate-mypy-oom-and-pypi-flake`, same failure family).
+            time.sleep(3)
+            install = _run(
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "pip",
+                    "install",
+                    "-q",
+                    f"playwright=={pw_version}",
+                ],
+                capture_output=True,
+            )
+        if install.returncode != 0:
+            print(
+                f"guide-capture: pip install playwright failed:\n{install.stderr}",
+                file=sys.stderr,
+            )
+            return 1
+
+        for manifest_path, slug, route in resolved:
+            rel_manifest = manifest_path.relative_to(root)
+            out_dir = out_root / slug
+            out_dir.mkdir(parents=True, exist_ok=True)
+            rel_out = out_dir.relative_to(root)
+            print(f"guide-capture: {slug} @ {route}", file=sys.stderr)
+            result = _run(
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "python",
+                    "/work/scripts/guide_capture_inner.py",
+                    "--manifest",
+                    f"/work/{rel_manifest}",
+                    "--route",
+                    route,
+                    "--base-url",
+                    args.base_url,
+                    "--out",
+                    f"/work/{rel_out}",
+                    "--width",
+                    str(args.width),
+                    "--height",
+                    str(args.height),
+                ],
+            )
+            if result.returncode != 0:
+                print(f"guide-capture: FAILED capturing {slug!r}", file=sys.stderr)
+                return 1
+    finally:
+        _run(["docker", "rm", "-f", container], capture_output=True)
+
+    print(f"guide-capture: done — {len(resolved)} section(s) -> {out_root}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

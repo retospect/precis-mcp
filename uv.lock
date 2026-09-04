@@ -3490,6 +3490,9 @@ estimate = [
     { name = "pymatgen" },
     { name = "tblite", marker = "platform_machine == 'x86_64' or sys_platform == 'darwin'" },
 ]
+guide = [
+    { name = "pillow" },
+]
 paper = [
     { name = "habanero" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
@@ -3560,6 +3563,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
     { name = "opentimestamps", specifier = ">=0.4.5" },
     { name = "pgvector", specifier = ">=0.3.0" },
+    { name = "pillow", marker = "extra == 'guide'", specifier = ">=10.0" },
     { name = "pint", specifier = ">=0.23" },
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "precis-mcp", extras = ["embed", "paper", "web"], marker = "extra == 'all'" },
@@ -3595,7 +3599,7 @@ requires-dist = [
     { name = "wolframalpha", specifier = ">=5.0" },
     { name = "youtube-transcript-api", specifier = ">=1.0" },
 ]
-provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "dft-ml", "catalyst", "catalyst-gpu", "web", "cad-step", "chem", "estimate", "all"]
+provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "dft-ml", "catalyst", "catalyst-gpu", "web", "cad-step", "guide", "chem", "estimate", "all"]
 
 [package.metadata.requires-dev]
 dev = [

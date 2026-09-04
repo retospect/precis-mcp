@@ -1,0 +1,56 @@
+{
+  "slug": "structures-and-cad",
+  "title": "Structures & CAD",
+  "route": "/cad/hex-pocket-block",
+  "url": "http://host.docker.internal:9105/cad/hex-pocket-block",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "cad-viewport",
+      "png": "step-1.png",
+      "rect": {
+        "x": 240,
+        "y": 144,
+        "width": 548,
+        "height": 460
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "cad-instruct",
+      "png": "step-2.png",
+      "rect": {
+        "x": 240,
+        "y": 903.5,
+        "width": 1120,
+        "height": 30
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "cad-proposal",
+      "png": "step-3.png",
+      "rect": {
+        "x": 240,
+        "y": 945.5,
+        "width": 1120,
+        "height": 24
+      }
+    },
+    {
+      "index": 4,
+      "anchor": "cad-discuss",
+      "png": "step-4.png",
+      "rect": {
+        "x": 240,
+        "y": 909.5,
+        "width": 1120,
+        "height": 90
+      }
+    }
+  ]
+}

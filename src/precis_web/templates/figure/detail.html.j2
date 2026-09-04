@@ -16,7 +16,7 @@
   {# ── left: the canvas ── #}
   <div>
     <div class="relative rounded border border-slate-200 bg-white overflow-hidden"
-         style="aspect-ratio: {{ vb_w }} / {{ vb_h }};">
+         style="aspect-ratio: {{ vb_w }} / {{ vb_h }};" data-tour="fig-canvas">
       {# the grid overlay — the shared coordinate frame (10% ticks) #}
       <div class="pointer-events-none absolute inset-0 z-10 opacity-40"
            style="background-image:
@@ -48,7 +48,7 @@
 
   {# ── right: docs (two tabs) + chat ── #}
   <div class="flex flex-col gap-4">
-    <div>
+    <div data-tour="fig-docs">
       <div class="flex items-center gap-1 mb-1">
         <button id="fig-tab-vocab" type="button"
                 class="px-2 py-0.5 rounded text-xs font-semibold text-slate-700 bg-slate-100">Shared vocabulary</button>
@@ -62,14 +62,14 @@
 
     <div class="flex-1 min-h-0">
       <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Chat</h2>
-      <div id="fig-chat" class="space-y-2 text-xs max-h-96 overflow-y-auto pr-1">
+      <div id="fig-chat" class="space-y-2 text-xs max-h-96 overflow-y-auto pr-1" data-tour="fig-chat">
         {% for t in turns %}
         <pre class="bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap">{{ t }}</pre>
         {% endfor %}
       </div>
     </div>
 
-    <form id="fig-form" class="flex gap-2" data-slug="{{ slug }}">
+    <form id="fig-form" class="flex gap-2" data-slug="{{ slug }}" data-tour="fig-prompt">
       <input id="fig-msg" name="message" required autocomplete="off"
              placeholder="e.g. draw a round green face with two eyes…"
              class="flex-1 rounded border border-slate-300 px-3 py-1.5 text-sm">

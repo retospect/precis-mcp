@@ -1,0 +1,56 @@
+{
+  "slug": "figures-and-diagrams",
+  "title": "Figures & diagrams",
+  "route": "/figure/deck-hook-dc2105810",
+  "url": "http://host.docker.internal:9105/figure/deck-hook-dc2105810",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "fig-canvas",
+      "png": "step-1.png",
+      "rect": {
+        "x": 240,
+        "y": 138,
+        "width": 548,
+        "height": 548
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "fig-docs",
+      "png": "step-2.png",
+      "rect": {
+        "x": 812,
+        "y": 138,
+        "width": 548,
+        "height": 184
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "fig-chat",
+      "png": "step-3.png",
+      "rect": {
+        "x": 812,
+        "y": 358,
+        "width": 548,
+        "height": 364
+      }
+    },
+    {
+      "index": 4,
+      "anchor": "fig-prompt",
+      "png": "step-4.png",
+      "rect": {
+        "x": 812,
+        "y": 756,
+        "width": 548,
+        "height": 34
+      }
+    }
+  ]
+}

@@ -52,7 +52,20 @@
   <article class="min-w-0 max-w-3xl flex-1">
     <div class="mb-4">
       <a href="/manual" class="lg:hidden text-xs text-slate-400 hover:text-slate-600">← Manual</a>
-      <h1 class="text-lg font-semibold text-slate-900">{{ chapter.title }}</h1>
+      <div class="flex items-center gap-3">
+        <h1 class="text-lg font-semibold text-slate-900">{{ chapter.title }}</h1>
+        {# Only when the manifest's route is a concrete URL: a route with an
+           {id} placeholder (e.g. /smartdraft/{id}) has no real page for a
+           manual chapter — which carries no draft/paper of its own — to
+           link to, so it's left off rather than shipping a link that 404s
+           on the literal placeholder text. #}
+        {% if tour and '{id}' not in tour.route %}
+        <a href="{{ tour.route }}?tour={{ chapter.slug }}"
+           class="text-xs font-medium text-sky-600 hover:text-sky-800 hover:underline">
+          Take the tour →
+        </a>
+        {% endif %}
+      </div>
     </div>
 
     <div class="manual rounded-lg border border-slate-200 bg-white px-5 py-4">

@@ -1,0 +1,24 @@
+{
+  "title": "Attention",
+  "route": "/needs-you",
+  "steps": [
+    {
+      "anchor": "needs-you-queue",
+      "heading": "Everything waiting on you",
+      "text": "Open ask-user todos that block the planner, proposed hypotheses ready for a look, and papers flagged for triage — one queue for the things only a person can unstick.",
+      "placement": "bottom"
+    },
+    {
+      "anchor": "nav-alerts",
+      "heading": "Alerts",
+      "text": "System-level warnings, not workflow — the badge tells you something needs attention before it becomes a bigger problem.",
+      "placement": "bottom"
+    },
+    {
+      "anchor": "nav-gripes",
+      "heading": "Gripes",
+      "text": "This is where you file bugs. Anything wrong with the app, the data, or a workflow — write it down here and it becomes trackable, not lost in a chat scrollback.",
+      "placement": "bottom"
+    }
+  ]
+}

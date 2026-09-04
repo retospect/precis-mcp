@@ -1,0 +1,30 @@
+{
+  "title": "Claims & nanopubs",
+  "route": "/nanopub",
+  "steps": [
+    {
+      "anchor": "np-ladder",
+      "heading": "The publish ladder",
+      "text": "Every claim climbs candidate → reviewed → signed → anchored → published, one deliberate rung at a time. The counts here are the whole workbench at a glance — unpublished is a good terminal state, not a backlog to burn down.",
+      "placement": "bottom"
+    },
+    {
+      "anchor": "np-tree",
+      "heading": "The claim forest",
+      "text": "Compound claims nest the atoms they're built from; evidence hangs off as leaves. Click a claim to review it in the middle pane, a paper to read it on the right — the same tree /claim/<id> opens into on its own.",
+      "placement": "right"
+    },
+    {
+      "anchor": "np-review",
+      "heading": "Review, then sign",
+      "text": "A claim's state, its evidence DAG, and one action box that offers exactly what its current state allows. Approve freezes the sentence and its grounding; sign is a human-only door — no worker, no agent can reach it — that certifies a person looked.",
+      "placement": "top"
+    },
+    {
+      "anchor": "np-paper",
+      "heading": "The evidence, in place",
+      "text": "Click an evidence paper and its reader loads right here, so you can check a quote against its source without losing your place in the forest.",
+      "placement": "left"
+    }
+  ]
+}

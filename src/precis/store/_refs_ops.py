@@ -32,7 +32,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from psycopg import Connection
+from psycopg import Connection, errors
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
@@ -1108,14 +1108,24 @@ class RefsMixin:
         worker holds ``FOR UPDATE``). Implemented as a ``SELECT … FOR
         UPDATE SKIP LOCKED`` diff: locked rows are skipped, so the ids
         we fail to re-select are exactly the locked ones. Rolls back
-        immediately — a read-only probe, never a real claim."""
+        immediately — a read-only probe, never a real claim.
+
+        Postgres requires UPDATE privilege on the table for *any*
+        ``FOR …`` locking clause, so under a read-only role (grants- or
+        GUC-based) the probe raises instead of probing. Locked-ness is
+        cosmetic (a badge), so degrade to "nothing locked" rather than
+        500 the caller's page."""
         if not ref_ids:
             return set()
         with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) FOR UPDATE SKIP LOCKED",
-                (ref_ids,),
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) FOR UPDATE SKIP LOCKED",
+                    (ref_ids,),
+                ).fetchall()
+            except (errors.InsufficientPrivilege, errors.ReadOnlySqlTransaction):
+                conn.rollback()
+                return set()
             conn.rollback()
         free = {int(r[0]) for r in rows}
         return {rid for rid in ref_ids if rid not in free}

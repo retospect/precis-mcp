@@ -32,7 +32,7 @@
      class="flex flex-col" style="height: {% if doc.in_pane %}100%{% else %}calc(100vh - 4.5rem){% endif %}">
 
   {# compact header strip — title + canonical handle + sidebar toggle #}
-  <div class="flex items-center gap-3 py-2">
+  <div class="flex items-center gap-3 py-2" data-tour="reader-header">
     <a href="{{ doc.list_url }}" class="text-sm text-slate-500 hover:underline">&larr; {{ doc.list_label }}</a>
     {# tex-scope: a paper/pres title can carry $…$/$$…$$ TeX (KaTeX render,
        base.html.j2). The title="" tooltip stays plain text — attributes
@@ -52,7 +52,7 @@
       {# tab strip — Sources/Cited are paper-only (see doc.show_refs_tabs
          note at the top of this file). #}
       {% set _tabs = ['Navigate', 'Jump'] + (['Sources', 'Cited'] if doc.show_refs_tabs else []) + ['Meta'] %}
-      <div class="flex shrink-0 border-b border-slate-200 text-xs font-medium">
+      <div class="flex shrink-0 border-b border-slate-200 text-xs font-medium" data-tour="reader-tabs">
         {# single-quoted attribute — ``tojson`` escapes ``'`` but NOT ``"``,
            so a double-quoted attribute is terminated by the array's first
            quote and Alpine sees ``t in [`` (the whole tab strip dies). #}
@@ -66,7 +66,7 @@
 
       <div class="min-h-0 flex-1 overflow-y-auto p-3 text-sm">
         {# ── Navigate: semantic / keyword search + TOC ──────────── #}
-        <div x-show="tab === 'Navigate'">
+        <div x-show="tab === 'Navigate'" data-tour="reader-navigate">
           <div class="flex gap-1 text-xs">
             <template x-for="m in [['semantic','Semantic'],['keyword','Keyword'],['toc','TOC'],['raw','Raw']]" :key="m[0]">
               <button type="button" @click="setMode(m[0])"
@@ -248,7 +248,7 @@
          :class="{ 'bg-emerald-400': resizing }"></div>
 
     {# ── main: PDF.js reader ─────────────────────────────────────── #}
-    <section class="min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white">
+    <section class="min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white" data-tour="reader-pdf">
       {% if doc.pdf_on_disk %}
         <iframe id="pdf-frame" class="h-full w-full" :class="{ 'pointer-events-none': resizing }"
                 src="/static/pdfjs/web/viewer.html?file={{ doc.pdf_url | urlencode }}"></iframe>

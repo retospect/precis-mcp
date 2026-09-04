@@ -1,0 +1,30 @@
+{
+  "title": "Drive",
+  "route": "/drive",
+  "steps": [
+    {
+      "anchor": "drive-search",
+      "heading": "Search everything you've collected",
+      "text": "One box searches papers, patents, slides, cached answers — and everything you've made. It's the same query the LLM runs; each result shows the single best-matching passage from that source.",
+      "placement": "bottom"
+    },
+    {
+      "anchor": "drive-new",
+      "heading": "+ New",
+      "text": "Create a CAD part, a DFT cell, a figure, a diagram — or a draft. Pick draft and two fields matter: the description becomes the writer's initial prompt (not a summary — it's what the model reads first and returns to on every pass), and genre sets the register and section scaffold.",
+      "placement": "left"
+    },
+    {
+      "anchor": "drive-folders",
+      "heading": "Folders",
+      "text": "File anything into a folder tree, or leave it unfiled and find it by search instead. \"Anywhere\" drops the folder scope so a kind's list still matches its real total.",
+      "placement": "right"
+    },
+    {
+      "anchor": "drive-tags",
+      "heading": "Tag filter",
+      "text": "Type to autocomplete a tag, click to add it as a chip — narrows the list to items carrying every tag you've selected.",
+      "placement": "top"
+    }
+  ]
+}

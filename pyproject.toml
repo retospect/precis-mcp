@@ -368,6 +368,16 @@ web = [
 # rather than build123d's whole jupyter/ezdxf/svg tree. Heavy (~200 MB of
 # bundled libs), so kept out of ``[all]`` like the torch-gated paths.
 cad-step = ["cadquery-ocp-novtk>=7.8"]
+# guide — the annotated user-guide capture/render pipeline
+# (scripts/guide-capture, scripts/guide-annotate; docs/backlog/
+# user-guide-demo.md slice 2). Pillow burns the highlight rect + connector
+# arrow + callout box onto captured screenshots. Already present
+# transitively today (matplotlib pulls it; marker-pdf under [paper] caps it
+# <11.0.0 — see the core-deps note above), but never a *direct* dependency
+# until now — declared explicitly so guide-annotate doesn't silently rely
+# on another extra's transitive graph. No upper pin here: when installed
+# alongside [paper] the resolver naturally intersects with that cap.
+guide = ["Pillow>=10.0"]
 # NOTE: [pcb] deleted (2026-08-27) — it was only ``easyeda2kicad``, and Flow-B
 # footprint resolution no longer depends on it: ``precis.pcb.easyeda`` fetches
 # the EasyEDA component JSON and parses the pad subset itself (easyeda2kicad
@@ -703,6 +713,13 @@ python_version = "3.12"
 warn_unused_configs = true
 check_untyped_defs = true
 warn_unused_ignores = true
+# `mypy src tests` (the gate's scope) never passes `scripts/` as a target,
+# but tests/test_guide_scripts.py imports scripts/guide_lib.py at runtime
+# via a sys.path insert (scripts/*.py isn't a package under src/ — see the
+# CLAUDE.md scripts convention). mypy_path only widens import RESOLUTION
+# for files it's already checking; it doesn't add scripts/*.py to the
+# checked set, so the rest of scripts/ stays outside gate scope as before.
+mypy_path = "scripts"
 # Burn-down complete 2026-08-02: every once-disabled error code
 # (no-any-return, valid-type, dict-item, method-assign, var-annotated,
 # union-attr, type-var, assignment, operator, index) is now enforced.

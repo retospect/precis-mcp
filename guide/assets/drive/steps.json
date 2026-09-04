@@ -1,0 +1,56 @@
+{
+  "slug": "drive",
+  "title": "Drive",
+  "route": "/drive",
+  "url": "http://host.docker.internal:9105/drive",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "drive-search",
+      "png": "step-1.png",
+      "rect": {
+        "x": 240,
+        "y": 148,
+        "width": 276.5,
+        "height": 52
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "drive-new",
+      "png": "step-2.png",
+      "rect": {
+        "x": 1289.203125,
+        "y": 66,
+        "width": 70.796875,
+        "height": 33
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "drive-folders",
+      "png": "step-3.png",
+      "rect": {
+        "x": 240,
+        "y": 336,
+        "width": 240,
+        "height": 664
+      }
+    },
+    {
+      "index": 4,
+      "anchor": "drive-tags",
+      "png": "step-4.png",
+      "rect": {
+        "x": 240,
+        "y": 298,
+        "width": 1120,
+        "height": 22
+      }
+    }
+  ]
+}

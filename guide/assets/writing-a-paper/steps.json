@@ -1,0 +1,67 @@
+{
+  "slug": "writing-a-paper",
+  "title": "Writing a paper",
+  "route": "/smartdraft/173020",
+  "url": "http://host.docker.internal:9105/smartdraft/173020",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "sd-toc",
+      "png": "step-1.png",
+      "rect": {
+        "x": 240,
+        "y": 95,
+        "width": 313.59375,
+        "height": 387
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "sd-view-toggle",
+      "png": "step-2.png",
+      "rect": {
+        "x": 516.59375,
+        "y": 136.75,
+        "width": 28,
+        "height": 22.5
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "sd-focus",
+      "png": "step-3.png",
+      "rect": {
+        "x": 578.59375,
+        "y": 247,
+        "width": 466.796875,
+        "height": 505.3125
+      }
+    },
+    {
+      "index": 4,
+      "anchor": "sd-pin",
+      "png": "step-4.png",
+      "rect": {
+        "x": 971.84375,
+        "y": 256.5,
+        "width": 28.171875,
+        "height": 20
+      }
+    },
+    {
+      "index": 5,
+      "anchor": "sd-request-box",
+      "png": "step-5.png",
+      "rect": {
+        "x": 1079.390625,
+        "y": 639,
+        "width": 295.59375,
+        "height": 58
+      }
+    }
+  ]
+}

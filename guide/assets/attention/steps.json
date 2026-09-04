@@ -1,0 +1,45 @@
+{
+  "slug": "attention",
+  "title": "Attention",
+  "route": "/needs-you",
+  "url": "http://host.docker.internal:9105/needs-you",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "needs-you-queue",
+      "png": "step-1.png",
+      "rect": {
+        "x": 240,
+        "y": 66,
+        "width": 1120,
+        "height": 28
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "nav-alerts",
+      "png": "step-2.png",
+      "rect": {
+        "x": 896.375,
+        "y": 8.203125,
+        "width": 73.953125,
+        "height": 25.59375
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "nav-gripes",
+      "png": "step-3.png",
+      "rect": {
+        "x": 810.578125,
+        "y": 8.203125,
+        "width": 83.796875,
+        "height": 25.59375
+      }
+    }
+  ]
+}

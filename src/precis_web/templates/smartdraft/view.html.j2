@@ -459,7 +459,7 @@
 
   {# ── LEFT: fisheye TOC nav (sticky sidebar; the middle flows so its
        hover-preview popovers aren't clipped by an overflow container) ── #}
-  <div class="sticky top-2 self-start rounded border border-slate-200 bg-white">
+  <div class="sticky top-2 self-start rounded border border-slate-200 bg-white" data-tour="sd-toc">
     {# header: search + signal toggles + fisheye/full + results view #}
     <div class="space-y-1.5 border-b border-slate-100 p-2">
       <form method="get" action="/smartdraft/{{ ident }}">
@@ -478,7 +478,7 @@
            class="inline-flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold
                   {% if on %}border-sky-500 bg-sky-600 text-white{% else %}border-slate-200 text-slate-300 hover:text-slate-500{% endif %}">{{ s[0]|upper }}</a>
         {% endfor %}
-        <a href="{{ slink(to_rel=(not relevance)) }}" title="fisheye vs full document"
+        <a href="{{ slink(to_rel=(not relevance)) }}" title="fisheye vs full document" data-tour="sd-view-toggle"
            class="ml-auto rounded border border-slate-200 px-1.5 py-0.5 text-[11px] {% if relevance %}bg-sky-600 text-white{% else %}text-slate-500{% endif %}">{{ '🔍' if relevance else '📄' }}</a>
       </div>
       {% if q %}
@@ -560,12 +560,12 @@
            `n.editable` (there's no free-text edit path for it), but it always
            gets the structured grid. #}
         {% set _seed = n.table or {'header': ['Column 1', 'Column 2'], 'rows': [], 'caption': none} %}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2" data-tour="sd-focus">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
-              <button onclick="smartPin('{{ n.dc }}')"
+              <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
             </div>
@@ -608,12 +608,12 @@
            moves inside it (a button must sit in the Alpine scope whose
            ``startEdit()`` it calls), which also puts it next to the text it
            edits. #}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2" data-tour="sd-focus">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
-              <button onclick="smartPin('{{ n.dc }}')"
+              <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
             </div>
@@ -638,13 +638,13 @@
           </figure>
         </div>
         {% elif m.mode == 'full' %}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2" data-tour="sd-focus">
           {% call draft_editors.draft_edit(ident, n.base58, n.sha, n.editable, n.is_heading, n.text, rows=10) %}
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
-              <button onclick="smartPin('{{ n.dc }}')"
+              <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
               {% if n.editable %}
@@ -902,6 +902,7 @@
       {% endif %}
 
       <textarea x-model="text" rows="3" placeholder="Ask the LLM (works on the pinned context, or the current para if nothing is pinned)…"
+                data-tour="sd-request-box"
                 class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
       <div class="flex flex-wrap items-center gap-2">
         {{ llm_selector.llm_selector(default_tier='big') }}

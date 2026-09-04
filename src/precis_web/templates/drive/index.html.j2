@@ -30,7 +30,7 @@
   {# + New — cad/structure/figure/mermaid ride /drive/new; draft reuses
      /drafts/new so its genre picker + richer flow stay single-sourced there.
      Keeps ml-auto so it stays right-aligned when the download button is hidden. #}
-  <div class="ml-auto relative shrink-0">
+  <div class="ml-auto relative shrink-0" data-tour="drive-new">
     <button type="button" @click="open = !open"
             class="rounded bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700">
       + New <span class="text-[9px]">▾</span>
@@ -108,7 +108,7 @@
      link is the only way out). #}
   {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
   <div class="flex flex-wrap items-end gap-2">
-    <div class="flex-1 min-w-[16rem]">
+    <div class="flex-1 min-w-[16rem]" data-tour="drive-search">
       <label class="block text-xs text-slate-500 mb-0.5">Search</label>
       <input type="text" name="q" value="{{ q }}" autofocus
              placeholder="e.g. MOF CO₂ capture"
@@ -301,7 +301,7 @@
 
   {# Tag filter — type to autocomplete (substring), click to add a chip,
      ✕ to remove. Selected tags submit as repeated ?tag= params. #}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs">
+  <div class="flex flex-wrap items-center gap-1.5 text-xs" data-tour="drive-tags">
     <span class="text-slate-500 mr-1">Tags</span>
     <template x-for="(t, i) in tags" :key="t">
       <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-100 text-violet-800">
@@ -543,7 +543,7 @@
 <div class="flex gap-6 items-start">
 
   {# ── sidebar: the folder tree + create form + drop-zone info ──────── #}
-  <aside class="w-60 shrink-0">
+  <aside class="w-60 shrink-0" data-tour="drive-folders">
     <div class="rounded-md border border-slate-200 overflow-hidden">
       <div class="px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
         Folders

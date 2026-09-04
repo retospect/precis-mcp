@@ -1,0 +1,30 @@
+{
+  "title": "Structures & CAD",
+  "route": "/cad/{id}",
+  "steps": [
+    {
+      "anchor": "cad-viewport",
+      "heading": "The 3D viewport",
+      "text": "Drag to rotate, scroll to zoom, click a feature for its details. Parts are coloured; cut and intersect tool volumes render translucent so you can see what they removed.",
+      "placement": "right"
+    },
+    {
+      "anchor": "cad-instruct",
+      "heading": "Edit by prompt",
+      "text": "Describe a change in plain English and an LLM proposes a rewrite of the design recipe — not a guess at the mesh, the actual parametric feature tree.",
+      "placement": "top"
+    },
+    {
+      "anchor": "cad-proposal",
+      "heading": "Review, then commit",
+      "text": "A proposal renders here for you to read before anything happens: apply in place to edit this design with no new version, or save as a new version and keep the original untouched.",
+      "placement": "top"
+    },
+    {
+      "anchor": "cad-discuss",
+      "heading": "Ask, don't change",
+      "text": "A read-only thread for questions about the model — is the hub connected to the rim, why isn't this functional. Nothing asked here is ever applied.",
+      "placement": "top"
+    }
+  ]
+}

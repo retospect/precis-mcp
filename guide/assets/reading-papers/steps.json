@@ -1,0 +1,56 @@
+{
+  "slug": "reading-papers",
+  "title": "Reading papers",
+  "route": "/papers/207770",
+  "url": "http://host.docker.internal:9105/papers/resolving23",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "steps": [
+    {
+      "index": 1,
+      "anchor": "reader-header",
+      "png": "step-1.png",
+      "rect": {
+        "x": 16,
+        "y": 66,
+        "width": 1568,
+        "height": 42
+      }
+    },
+    {
+      "index": 2,
+      "anchor": "reader-tabs",
+      "png": "step-2.png",
+      "rect": {
+        "x": 17,
+        "y": 109,
+        "width": 350,
+        "height": 35
+      }
+    },
+    {
+      "index": 3,
+      "anchor": "reader-navigate",
+      "png": "step-3.png",
+      "rect": {
+        "x": 29,
+        "y": 144,
+        "width": 326,
+        "height": 29663
+      }
+    },
+    {
+      "index": 4,
+      "anchor": "reader-pdf",
+      "png": "step-4.png",
+      "rect": {
+        "x": 398,
+        "y": 108,
+        "width": 1186,
+        "height": 886
+      }
+    }
+  ]
+}

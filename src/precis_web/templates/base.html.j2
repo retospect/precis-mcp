@@ -58,6 +58,8 @@
              • Manual — the user-facing how-to, top-level and unbadged.
              • Ops ▾ — System + the admin/dev surfaces, right dropdown.
              • 🔍 loupe — global search, submits to Drive.
+             • "?" — tour launcher, only on a page with a matching tour
+               manifest route (nav.py::nav_badges), just left of Account.
              • Account — your own login (abbrev chip), far right. #}
         <nav class="flex flex-wrap items-center gap-0.5 py-1.5 text-xs">
           <span class="font-semibold tracking-tight text-emerald-400 mr-2">precis</span>
@@ -120,14 +122,14 @@
               <span class="ml-1 inline-flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
               {% endif %}
             </a>
-            <a href="/gripes"
+            <a href="/gripes" data-tour="nav-gripes"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'gripes' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Gripes
               {% if nav_gripes %}
               <span class="ml-1 inline-flex items-center justify-center rounded-full bg-violet-500 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_gripes }}</span>
               {% endif %}
             </a>
-            <a href="/alerts"
+            <a href="/alerts" data-tour="nav-alerts"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'alerts' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Alerts
               {% if nav_alerts %}
@@ -169,6 +171,17 @@
               <input name="q" placeholder="🔍 search everything…"
                      class="bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all" />
             </form>
+            {# "?" tour launcher — only on a page a tour manifest's route
+               matches (nav.py::nav_badges, server-side, no extra fetch).
+               ?tour=<slug> is what static/tour.js watches for; the href
+               is built server-side so this template stays dumb. #}
+            {% if tour_slug %}
+            <a href="{{ tour_href }}" data-tour-launch
+               title="Take a tour of this page" aria-label="Take a tour of this page"
+               class="ml-1 inline-flex items-center justify-center h-6 w-6 rounded-full text-[10px] font-semibold bg-slate-700 text-slate-200 hover:bg-slate-600 hover:text-white transition">
+              ?
+            </a>
+            {% endif %}
             {# Account — your own login: password, profile, podcast link.
                Signed in, this is the abbrev chip (the same short handle
                that will tag your edits); with PRECIS_WEB_AUTH off there
@@ -379,5 +392,11 @@
       }
     });
   </script>
+  {# In-app guided tour overlay (docs/backlog/user-guide-demo.md): a no-op on
+     every page unless ?tour=<slug> is present, in which case it fetches
+     /manual/tour/<slug>.json (routes/manual.py) and renders the callouts.
+     Dependency-free (no Alpine/htmx), so this one injection covers every
+     page regardless of what else that page loads. #}
+  <script src="/static/tour.js" defer></script>
 </body>
 </html>

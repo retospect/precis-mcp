@@ -1,0 +1,24 @@
+{
+  "title": "The loop",
+  "route": "/todo",
+  "steps": [
+    {
+      "anchor": "todo-vitals",
+      "heading": "Is the factory alive",
+      "text": "Running, queued, stuck, parked, halted — counted over the whole tree, not just what's on screen. A non-zero stuck or parked badge is one click from its cause.",
+      "placement": "bottom"
+    },
+    {
+      "anchor": "todo-tree",
+      "heading": "The hierarchical tree",
+      "text": "Strategic roots branch into tactical work and subtasks; jobs are the leaves a worker actually claims. Drag a row to reparent it, or drop it on the bar above the tree to promote it to a root.",
+      "placement": "right"
+    },
+    {
+      "anchor": "todo-doable",
+      "heading": "Doable next",
+      "text": "What the planner would pick up right now, in its own words — the same read a worker gets when it comes looking for something to do.",
+      "placement": "left"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {% extends "base.html.j2" %}
 {% block title %}Needs you{% endblock %}
 {% block content %}
-<div class="flex items-baseline justify-between mb-4">
+<div class="flex items-baseline justify-between mb-4" data-tour="needs-you-queue">
   <h1 class="text-lg font-semibold">Needs you</h1>
   <span class="text-sm text-slate-500">
     {{ asks|length }} ask{{ '' if asks|length == 1 else 's' }} ·

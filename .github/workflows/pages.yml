@@ -1,0 +1,50 @@
+# Publishes guide/ (the marketing/demo site, docs/backlog/user-guide-demo.md
+# slice 3) to GitHub Pages on every push to main that touches guide/**.
+#
+# NOTE: Pages must be enabled in this repo's Settings -> Pages, with
+# Source set to "GitHub Actions" — that's a one-time, human-only toggle
+# this workflow cannot flip itself. Until it's flipped, this job runs (and
+# the build step still gates guide/build.py) but the deploy step will fail
+# with "Pages site not found".
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'guide/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: uv run python guide/build.py
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: guide
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
