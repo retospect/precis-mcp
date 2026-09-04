@@ -375,14 +375,20 @@ class NumericRefHandler(Handler):
         # F8: surface the link graph for this ref so the agent's
         # recall step actually sees connections the write step made.
         # gr311344: capped the same way paper.py's overview append is
-        # (limit=12, priority=True) — an unbounded links section on a
-        # heavily-linked numeric ref (a long-lived quest/gripe can
-        # accumulate thousands of links) rendered every row on the
-        # request thread, hanging a bare get(). priority=True surfaces
-        # evidential relations (contradicts/supports/…) ahead of the
-        # catch-all related-to flood; the overflow line still points at
-        # view='links' for the full graph.
-        body += self._render_links_section(ref, limit=12, priority=True)
+        # (DEFAULT_LINK_ROW_CAP, priority=True) — an unbounded links
+        # section on a heavily-linked numeric ref (a long-lived
+        # quest/gripe can accumulate thousands of links) rendered every
+        # row on the request thread, hanging a bare get(). priority=True
+        # surfaces evidential relations (contradicts/supports/…) ahead of
+        # the catch-all related-to flood; the overflow line still points
+        # at view='links' for the full graph. gr311679: the cap moved to
+        # a named module constant (shared with paper.py's identical
+        # callsite) instead of a bare literal, so the two never drift.
+        from precis.handlers._links_render import DEFAULT_LINK_ROW_CAP
+
+        body += self._render_links_section(
+            ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
+        )
         return Response(body=body)
 
     def _event_log_source(self) -> str | None:

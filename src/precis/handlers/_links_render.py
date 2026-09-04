@@ -75,6 +75,20 @@ _REL_PRIORITY: list[str] = [
 _REL_PRIORITY_INDEX: dict[str, int] = {rel: i for i, rel in enumerate(_REL_PRIORITY)}
 
 
+#: gr311679: the shared bare-``get`` link-row cap. gr311344 first capped
+#: the numeric-ref bare-``get`` append at a bare literal (``limit=12``,
+#: matching what ``paper.py``'s overview append already used); named here
+#: as a single constant so every capped callsite agrees on one number
+#: instead of two literals drifting apart, and bumped to 20 — enough
+#: headroom for ``priority=True`` to surface the full evidential set
+#: (cites/supports/contradicts/…) on most refs before falling back to the
+#: catch-all ``related-to`` bucket, while still keeping the response
+#: bounded regardless of how many thousands of links a hot quest/gripe
+#: accumulates. The full graph stays reachable via the overflow line's
+#: ``view='links'`` pointer.
+DEFAULT_LINK_ROW_CAP = 20
+
+
 def _priority_sort_key(pair: tuple[Link, str]) -> tuple[int, int]:
     """Sort key for ``priority=True``: rel-priority bucket, then link.id."""
     link, _direction = pair
@@ -316,4 +330,4 @@ def _get_call_for(
     return f"get(kind={ref.kind!r}, id={ident_repr})"
 
 
-__all__ = ["render_links_section", "render_links_view"]
+__all__ = ["DEFAULT_LINK_ROW_CAP", "render_links_section", "render_links_view"]

@@ -1404,9 +1404,17 @@ class PaperHandler(Handler):
         # supports, contradicts, …). Capped + priority-sorted so a
         # heavily-linked paper doesn't blow the response budget; the
         # overflow line points at ``view='links'`` for the rest.
-        from precis.handlers._links_render import render_links_section
+        # gr311679: shares ``DEFAULT_LINK_ROW_CAP`` with the numeric-ref
+        # bare-``get`` callsite instead of a duplicated ``limit=12``
+        # literal.
+        from precis.handlers._links_render import (
+            DEFAULT_LINK_ROW_CAP,
+            render_links_section,
+        )
 
-        body += render_links_section(self.store, ref, limit=12, priority=True)
+        body += render_links_section(
+            self.store, ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
+        )
         return Response(body=body)
 
     def _render_view(self, ref: Ref, view: str) -> Response:

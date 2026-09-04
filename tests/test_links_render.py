@@ -271,3 +271,58 @@ class TestRenderLinksSectionCapAndPriority:
         section = render_links_section(store, ref, limit=12, priority=True)
         assert "Links:" in section
         assert "more ·" not in section
+
+    def test_truncation_is_deterministic_not_reshuffled(self, store: Store) -> None:
+        """gr311679: repeated calls over the same over-cap link set must
+        render byte-identical output — truncation slices a stable sort,
+        it must never resettle to a different top-N on a re-render."""
+        a = store.insert_ref(kind="paper", slug="subj2020e", title="subject paper").id
+        for i in range(25):
+            target = store.insert_ref(
+                kind="paper", slug=f"target{i}2020e", title=f"target paper {i}"
+            ).id
+            relation = "cites" if i % 5 == 0 else "related-to"
+            store.add_link(src_ref_id=a, dst_ref_id=target, relation=relation)
+        ref = store.get_ref(kind="paper", id=a)
+        assert ref is not None
+
+        first = render_links_section(store, ref, limit=12, priority=True)
+        second = render_links_section(store, ref, limit=12, priority=True)
+        assert first == second
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_LINK_ROW_CAP — gr311679: named module constant, shared cap
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultLinkRowCap:
+    def test_synthetic_scale_stays_bounded_and_deterministic(
+        self, store: Store
+    ) -> None:
+        """gr311679 dossier evidence: an unbounded links section grows
+        linearly with link count (78KB @ N=1231 real, 671KB @ N=10k
+        synthetic). At a synthetic scale well past DEFAULT_LINK_ROW_CAP,
+        the rendered section must stay capped, carry the honest
+        remainder count, and be stable across repeat renders."""
+        from precis.handlers._links_render import DEFAULT_LINK_ROW_CAP
+
+        a = store.insert_ref(kind="paper", slug="subj2020f", title="subject paper").id
+        n = 500
+        for i in range(n):
+            target = store.insert_ref(
+                kind="paper", slug=f"target{i}2020f", title=f"target paper {i}"
+            ).id
+            store.add_link(src_ref_id=a, dst_ref_id=target, relation="related-to")
+        ref = store.get_ref(kind="paper", id=a)
+        assert ref is not None
+
+        section = render_links_section(store, ref, limit=DEFAULT_LINK_ROW_CAP)
+        assert f"Links ({DEFAULT_LINK_ROW_CAP} of {n}):" in section
+        assert f"\n+{n - DEFAULT_LINK_ROW_CAP} more ·" in section
+        assert "view='links')" in section
+        rendered_titles = sum(
+            1 for i in range(n) if f"target paper {i}" in section
+        )
+        assert rendered_titles == DEFAULT_LINK_ROW_CAP
+        assert render_links_section(store, ref, limit=DEFAULT_LINK_ROW_CAP) == section

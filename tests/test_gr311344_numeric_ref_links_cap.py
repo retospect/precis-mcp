@@ -1,18 +1,21 @@
-"""gr311344: bare ``get`` on a heavily-linked numeric ref hung.
+"""gr311344 / gr311679: bare ``get`` on a heavily-linked numeric ref hung.
 
 ``NumericRefHandler.get`` appended ``_render_links_section(ref)`` with
 no cap, so ``render_links_section``'s default ``limit=None`` rendered
 *every* link on the request thread — a live quest with ~1900 links
 made a bare ``get`` unbounded work. Fixed by capping the bare-``get``
 callsite the same way ``handlers/paper.py``'s overview append already
-does (``limit=12, priority=True``), keeping the existing overflow
-affordance ("+N more · view='links'") so the full graph stays
-reachable via ``get(..., view='links')``.
+does (``DEFAULT_LINK_ROW_CAP``, ``priority=True``), keeping the existing
+overflow affordance ("+N more · view='links'") so the full graph stays
+reachable via ``get(..., view='links')``. gr311679 named the shared
+literal ``DEFAULT_LINK_ROW_CAP`` (bumped 12 -> 20) so both capped
+callsites can't drift apart.
 """
 
 from __future__ import annotations
 
 from precis.dispatch import Hub
+from precis.handlers._links_render import DEFAULT_LINK_ROW_CAP
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store
 
@@ -39,9 +42,9 @@ class TestNumericRefBareGetLinksCap:
 
         # Capped header, not the plain "Links:" — the truncation is
         # visible rather than silent.
-        assert "Links (12 of 80):" in resp.body
+        assert f"Links ({DEFAULT_LINK_ROW_CAP} of 80):" in resp.body
         # The overflow line points at the full-graph escape hatch.
-        assert "+68 more ·" in resp.body
+        assert f"+{80 - DEFAULT_LINK_ROW_CAP} more ·" in resp.body
         assert "view='links')" in resp.body
         # Only a fraction of the 80 targets/sources are enumerated —
         # bare get must not render all of them.
@@ -50,7 +53,7 @@ class TestNumericRefBareGetLinksCap:
             for i in range(40)
             if f"outbound target {i}" in resp.body or f"inbound source {i}" in resp.body
         )
-        assert rendered_titles <= 12
+        assert rendered_titles <= DEFAULT_LINK_ROW_CAP
 
     def test_bare_get_under_cap_keeps_plain_header(self, hub: Hub) -> None:
         store = hub.live_store
