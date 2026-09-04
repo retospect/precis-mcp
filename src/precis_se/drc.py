@@ -17,19 +17,21 @@ measure on a missing block).
 The DOF probe is deliberately modest (spec: "the rotational probe is its
 missing twin … may slip a slice" — it did): only ``revolute`` (axis travel
 expected *bounded* — a pin that can slide out of its bore axially is a
-finding) and ``prismatic``/``cylindrical`` (axis travel expected *free* —
-a slide blocked at zero travel is a finding), and only when the declared
-axis aligns with a principal axis (±x/y/z — ``translational_dof`` probes
-exactly those; an off-principal axis is reported as skipped, honestly,
-rather than approximated). Advisory warn-tier throughout: envelope
-geometry legitimately understates a joint (circlips, shoulders and threads
-live at L3).
+finding) and ``prismatic``/``cylindrical``/``screw`` (axis travel expected
+*free* — a slide blocked at zero travel is a finding, and one unbounded in
+*both* directions has no end stop, the same slides-off physics), and only
+when the declared axis aligns with a principal axis (±x/y/z —
+``translational_dof`` probes exactly those; an off-principal axis is
+reported as skipped, honestly, rather than approximated). Advisory
+warn-tier throughout: envelope geometry legitimately understates a joint
+(circlips, shoulders and threads live at L3).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from precis.cad import bulk as cad_bulk
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis_se import joints as se_joints
@@ -40,7 +42,7 @@ from precis_se.validate import ValidationIssue, _posed_component
 
 #: kinematic classes the axis-travel probe covers, with the expectation.
 _PROBE_BOUNDED = frozenset({"revolute"})
-_PROBE_FREE = frozenset({"prismatic", "cylindrical"})
+_PROBE_FREE = frozenset({"prismatic", "cylindrical", "screw"})
 
 #: classes that permit relative motion — a ``rigid`` connect between the
 #: same block pair contradicts any of these (the spec's "a block both
@@ -49,8 +51,13 @@ _PROBE_FREE = frozenset({"prismatic", "cylindrical"})
 #: deliberately left out — it states topology (interlocked), not a motion
 #: posture; rigid+captive is redundant, not contradictory.
 _MOVING_CLASSES = frozenset(
-    {"revolute", "prismatic", "cylindrical", "planar", "ball", "compliant"}
+    {"revolute", "prismatic", "cylindrical", "screw", "planar", "ball", "compliant"}
 )
+
+#: A measure value this many times the whole design's posed extent is
+#: almost certainly a unit slip (15 "metres" of axle on a 0.25 m design =
+#: millimetres entered as metres — the single most common agent error).
+_MAGNITUDE_FACTOR = 10.0
 
 
 @dataclass
@@ -93,6 +100,42 @@ def _principal_axis(axis: list[float]) -> str | None:
 
 def _flip(direction: str) -> str:
     return ("-" if direction[0] == "+" else "+") + direction[1]
+
+
+def _design_extent(tree: SeTree) -> float:
+    """Diagonal of the union AABB over every posed envelope, metres — the
+    design's characteristic size for the unit-slip advisory. 0.0 (callers
+    skip the advisory, honestly) when no block has a boundable envelope,
+    or when the tree has array nodes — ``_posed_component`` poses an
+    array at its single own pose, so the extent would understate an
+    array-dominated footprint and turn legitimate measures into
+    false unit-slip warnings (reviewer finding)."""
+    if any(node.array for node in tree.blocks.values()):
+        return 0.0
+    design = CadDesign()
+    lo: list[float] | None = None
+    hi: list[float] | None = None
+    for name, node in sorted(tree.blocks.items()):
+        env = effective_envelope(tree, node)
+        if not env:
+            continue
+        expr = _posed_component(design, name, env, node)
+        if expr is None:
+            continue
+        try:
+            raw_lo, raw_hi = cad_bulk.expr_aabb(design, expr)
+        except ValueError:
+            # unbounded envelope (a bare half-space chamfer) — no finite
+            # box to contribute; skip it like the sibling AABB consumers
+            # (reviewer finding: this must never crash the drc() read).
+            continue
+        elo = [float(v) for v in raw_lo]
+        ehi = [float(v) for v in raw_hi]
+        lo = elo if lo is None else [min(a, b) for a, b in zip(lo, elo, strict=True)]
+        hi = ehi if hi is None else [max(a, b) for a, b in zip(hi, ehi, strict=True)]
+    if lo is None or hi is None:
+        return 0.0
+    return float(sum((h - x) ** 2 for h, x in zip(hi, lo, strict=True)) ** 0.5)
 
 
 def drc(tree: SeTree) -> DrcReport:
@@ -294,6 +337,27 @@ def drc(tree: SeTree) -> DrcReport:
                     severity="error",
                 )
             )
+
+    # 5b. unit-slip advisory: a declared value dwarfing the whole posed
+    # design is millimetres-as-metres until proven otherwise. Honest skip
+    # (no finding either way) when nothing has an envelope to scale by.
+    extent = _design_extent(tree)
+    if extent > 0.0:
+        for m in tree.measures:
+            if m.value is not None and abs(m.value) > _MAGNITUDE_FACTOR * extent:
+                findings.append(
+                    ValidationIssue(
+                        rule="implausible_magnitude",
+                        subject=f"{m.block}.{m.name}",
+                        detail=(
+                            f"value {m.value:g} m is ~{abs(m.value) / extent:.0f}× "
+                            f"the whole design's posed extent ({extent:g} m) — "
+                            "millimetres entered as metres? (measures are "
+                            "metres; set_measure to repair)"
+                        ),
+                        severity="warn",
+                    )
+                )
     stack = stackup(tree.measures)
     _STACK_RULES = {
         "mismatch": ("tolerance_mismatch", "warn"),
@@ -363,7 +427,13 @@ def drc(tree: SeTree) -> DrcReport:
             )
             continue
         result = cad_relate.translational_dof(
-            design, moving=c.b_block, fixed=c.a_block, tol=1e-4
+            design,
+            moving=c.b_block,
+            fixed=c.a_block,
+            tol=1e-4,
+            # only the declared axis is read — the other four directions
+            # each cost a full contact scan (the 104 s leadscrew tree).
+            dirs=(direction, _flip(direction)),
         )
         fwd = result.travel.get(direction, 0.0)
         back = result.travel.get(_flip(direction), 0.0)
@@ -393,6 +463,23 @@ def drc(tree: SeTree) -> DrcReport:
                         f"declared {klass!r} but the envelopes block axis "
                         f"translation at zero travel ({travel_txt}) — the "
                         "declared slide cannot move"
+                    ),
+                    severity="warn",
+                )
+            )
+        elif klass in _PROBE_FREE and fwd == float("inf") and back == float("inf"):
+            # same slides-off-the-end physics the revolute check catches —
+            # a slide with no end stop in either direction (the rack
+            # carriage that sails off a finite rail).
+            probes.append(DofProbe(subject, klass, f"FINDING — {travel_txt}"))
+            findings.append(
+                ValidationIssue(
+                    rule="dof_disagreement",
+                    subject=subject,
+                    detail=(
+                        f"declared {klass!r} but nothing limits the stroke in "
+                        f"either direction ({travel_txt}) — the slide can "
+                        "leave its rail (advisory: end stops often live at L3)"
                     ),
                     severity="warn",
                 )

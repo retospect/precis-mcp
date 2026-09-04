@@ -83,10 +83,12 @@ kind is hidden from the catalogue/dispatcher until the flag is set. See
 registry, manufacturing modes, the propose/interrogate loop); the
 agent-facing skill lands last (ship order step 8). Unshipped past this
 round: the rotational DOF probe (translational_dof's missing twin),
-notes ledger, ``se_propose``, process DRC + the capability rows behind
-it, catalog-derived geometry/ports for a bound component,
-mechanism→geometry propagation, compliance advisories (ship-order step
-6), the profile tier.
+notes ledger + design-freedom vocabulary (interval measures,
+``origin``, ``view='freedom'`` — slice 4), ``se_propose``, couplings
+(gear/rack/belt ratios — ship-order step 6), process DRC + the
+capability rows behind it, catalog-derived geometry/ports for a bound
+component, mechanism→geometry propagation, compliance advisories
+(ship-order step 6), the profile tier.
 """
 
 from __future__ import annotations

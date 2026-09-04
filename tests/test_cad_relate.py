@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from precis.cad.dsl import build_config
 from precis.cad.graph import Design
 from precis.cad.primitives import CircularFrustum
@@ -109,3 +111,22 @@ def test_dof_box_toward_wall() -> None:
     assert math.isclose(res.travel["+x"], 10.0, abs_tol=0.2)  # contact after 10 mm
     assert res.travel["-x"] == float("inf")  # nothing behind it
     assert res.travel["+y"] == float("inf")
+
+
+def test_dof_dirs_subset_probes_only_named_directions() -> None:
+    # each direction costs a full contact scan — callers reading one axis
+    # (the se DOF probe) pass dirs and get exactly those keys, with the
+    # same values the full probe reports.
+    d = Design()
+    d.add_component("block", d.prim("block", build_config("box:w10d10h10")))
+    d.add_component(
+        "wall", d.prim("wall", build_config("box:w10d10h10"), translation(20, 0, 0))
+    )
+    res = translational_dof(d, "block", "wall", reach=40.0, dirs=("+x", "-x"))
+    assert set(res.travel) == {"+x", "-x"}
+    assert math.isclose(res.travel["+x"], 10.0, abs_tol=0.2)
+    assert res.travel["-x"] == float("inf")
+    with pytest.raises(ValueError, match="unknown probe direction"):
+        translational_dof(d, "block", "wall", dirs=("+x", "sideways"))
+    with pytest.raises(ValueError, match="at least one probe direction"):
+        translational_dof(d, "block", "wall", dirs=())

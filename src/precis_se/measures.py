@@ -63,7 +63,19 @@ def validate_relation(raw: dict[str, Any]) -> dict[str, Any]:
             "relation is {'source': 'block.measure', 'offset': <m>, "
             "'tol': <m ≥ 0>}"
         )
-    source = str(raw.get("source") or "").strip()
+    source_raw = raw.get("source")
+    if not isinstance(source_raw, str):
+        # str() would happily stringify a list/dict into a dot-containing
+        # name that passes the shape check and lands as an unresolvable
+        # relation (gameplay finding, 2026-09-04) — reject loudly instead.
+        raise MeasureError(
+            f"relation 'source' must be a single 'block.measure' string, "
+            f"got {source_raw!r} — a relation has exactly one source; a "
+            "sum of two measures (center distance = r1 + r2) is not yet "
+            "expressible: give this measure a declared value and relate "
+            "it to ONE source, folding the other term into 'offset'"
+        )
+    source = source_raw.strip()
     blk, sep, msr = source.rpartition(".")
     if not sep or not blk.strip() or not msr.strip():
         raise MeasureError(

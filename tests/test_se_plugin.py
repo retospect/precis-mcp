@@ -1869,3 +1869,192 @@ def test_set_measure_explicit_null_pushes_back() -> None:
             [{"op": "set_measure", "block": "hub", "name": "od_d", "value": None}],
         )
     assert tree.measures[0].value == 0.016  # untouched
+
+
+def test_relation_source_must_be_a_single_string() -> None:
+    # str() of a list contains a dot and used to pass the shape check,
+    # landing as an unresolvable relation (gameplay finding) — every
+    # non-string source must be rejected at write with the single-source
+    # contract named.
+    tree = _l2_tree()
+    for bad in (["hub.od_d", "wheel.rim_d"], {"a": "hub.od_d"}, 7):
+        with pytest.raises(OpError, match="exactly one source"):
+            apply_ops(
+                tree,
+                [
+                    {
+                        "op": "add_measure",
+                        "block": "wheel",
+                        "name": "center_dist",
+                        "relation": {"source": bad, "offset": 0, "tol": 1e-4},
+                    }
+                ],
+            )
+    assert not tree.measures  # nothing landed
+
+
+def test_screw_class_is_a_helical_pair() -> None:
+    # 'screw' the kinematic class (leadscrew nut) is distinct from
+    # 'screw' the fastening mechanism; it takes an axis, counts as a
+    # moving class, and normalizes like the others.
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {
+                    "class": "screw",
+                    "axis": [2, 0, 0],
+                    "params": {"lead": 0.008},
+                },
+            },
+            {"op": "add_port", "block": "hub", "name": "flange"},
+            {"op": "add_port", "block": "wheel", "name": "face"},
+            {
+                "op": "connect",
+                "a": "wheel.face",
+                "b": "hub.flange",
+                "joint": {"class": "rigid"},
+            },
+        ],
+    )
+    assert tree.connects[0].joint == {
+        "class": "screw",
+        "axis": [1.0, 0.0, 0.0],
+        "params": {"lead": 0.008},
+    }
+    report = se_drc.drc(tree)
+    assert any(f.rule == "joint_contradiction" for f in report.findings)
+    # the helical pair is probed like the other along-axis sliders.
+    assert any(p.klass == "screw" for p in report.dof_probes)
+
+
+def test_unknown_joint_key_names_the_coupling_gap() -> None:
+    # the old message steered gear ratios into 'params', where nothing
+    # consumes them — the push-back must name the limitation instead.
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="not yet representable"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "joint": {"class": "revolute", "ratio": 10},
+                }
+            ],
+        )
+
+
+def test_prismatic_unbounded_both_ways_warns() -> None:
+    # a slide with no end stop in either direction can leave its rail —
+    # the same slides-off physics the revolute boundedness check catches
+    # (rack-and-pinion gameplay finding).
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "track", "envelope": "box:w0.1d0.02h0.01"},
+            {
+                "op": "add_block",
+                "name": "carriage",
+                "envelope": "box:w0.02d0.02h0.01",
+                "pose": [0, 0, 0.02],
+            },
+            {"op": "add_port", "block": "track", "name": "rail"},
+            {"op": "add_port", "block": "carriage", "name": "slider"},
+            {
+                "op": "connect",
+                "a": "carriage.slider",
+                "b": "track.rail",
+                "joint": {"class": "prismatic", "axis": [1, 0, 0]},
+            },
+        ],
+    )
+    report = se_drc.drc(tree)
+    hits = [f for f in report.findings if f.rule == "dof_disagreement"]
+    assert len(hits) == 1
+    assert "limits the stroke" in hits[0].detail
+    assert hits[0].severity == "warn"
+
+
+def test_unit_slip_advisory_flags_metres_that_meant_millimetres() -> None:
+    # value 15 on a ~0.2 m design is the mm-as-m slip; a plausible value
+    # stays quiet, and a design with no envelopes skips (no extent to
+    # scale by — honest absence, not a pass).
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_measure", "block": "hub", "name": "od_d", "value": 15},
+            {"op": "add_measure", "block": "wheel", "name": "rim_d", "value": 0.08},
+        ],
+    )
+    rules = [
+        (f.rule, f.subject)
+        for f in se_drc.drc(tree).findings
+        if f.rule == "implausible_magnitude"
+    ]
+    assert rules == [("implausible_magnitude", "hub.od_d")]
+    bare = SeTree()
+    apply_ops(
+        bare,
+        [
+            {"op": "add_block", "name": "a"},
+            {"op": "add_measure", "block": "a", "name": "big", "value": 1000},
+        ],
+    )
+    assert not any(f.rule == "implausible_magnitude" for f in se_drc.drc(bare).findings)
+
+
+def test_unit_slip_advisory_survives_unbounded_envelope() -> None:
+    # a bare half-space chamfer envelope has no finite AABB — the extent
+    # helper must skip it, never crash the whole drc() read (reviewer
+    # finding).
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "a", "envelope": "chamfer:1x45"},
+            {"op": "add_measure", "block": "a", "name": "x", "value": 0.01},
+        ],
+    )
+    report = se_drc.drc(tree)  # must not raise
+    assert not any(f.rule == "implausible_magnitude" for f in report.findings)
+
+
+def test_unit_slip_advisory_skips_array_designs() -> None:
+    # an array poses at its single own pose today, so the extent would
+    # understate an array-dominated footprint — the advisory skips
+    # rather than firing false unit-slip warnings (reviewer finding).
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "array_block",
+                "name": "spokes",
+                "template": "hub",
+                "polar": {"count": 4, "radius": 0.1, "axis": [0, 0, 1]},
+            },
+            {"op": "add_measure", "block": "hub", "name": "od_d", "value": 15},
+        ],
+    )
+    assert not any(f.rule == "implausible_magnitude" for f in se_drc.drc(tree).findings)
+
+
+def test_measures_view_glosses_millimetres() -> None:
+    # sub-metre values render with the mm gloss so a unit slip is visible
+    # on the very next read.
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [{"op": "add_measure", "block": "hub", "name": "od_d", "value": 0.016}],
+    )
+    from precis_se.handler import _render_measures
+
+    assert "0.016 (16 mm)" in _render_measures(tree)

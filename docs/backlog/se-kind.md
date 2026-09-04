@@ -246,8 +246,13 @@ level-k object; a move at level k dirties only levels above.
     sliding, rotating, flexible … snap together, screws, keyed" — the
     original flat list conflated them). The *kinematic class* says what
     motion the connection permits: `rigid | revolute | prismatic |
-    cylindrical | planar | ball | compliant | captive`, with axis and
-    allowed-DOF. `compliant` is a DOF with stiffness rather than
+    cylindrical | screw | planar | ball | compliant | captive`, with
+    axis and allowed-DOF. `screw` is the classical helical lower pair
+    (leadscrew nut — rotation coupled to translation by `params.lead`;
+    added 2026-09-04, gameplay found agents guessing it first) — NOT
+    the `screw` *mechanism*, which means threaded fastening; the
+    collision is documented in both registries. `compliant` is a DOF
+    with stiffness rather than
     freedom (TPU living hinge, flexure); stiffness is an annotation,
     advisory-tier until a real consumer exists. The *mechanism* says
     how the relation is physically realized — a separate, optional,
@@ -481,10 +486,41 @@ live in the tables, never chunks (nm/ADR-0041 storage rule).
    press/bearing/snap demand a tolerance relation (bearing's BOM demand
    deferred to se_bom); worst-case-linear stack-up (RSS later);
    translational probe only, principal-axis-aligned joints only (the
-   rotational twin slipped, as anticipated).
+   rotational twin slipped, as anticipated). Gameplay follow-up SHIPPED
+   2026-09-04: `screw` class, single-string relation source, coupling
+   gap named in the unknown-key push-back, unbounded-slide advisory,
+   `implausible_magnitude` unit-slip advisory + mm gloss, probe rents
+   only the declared axis (`dirs=`, was 104 s → ~30 s on a leadscrew
+   tree).
 4. **Propose/interrogate** — `se_notes` ledger + `view='interview'`
    first (it's pure store work and useful for hand design alone), then
    the `se_propose` job + dry-run gate wired to read/answer notes.
+   **Design-freedom vocabulary rides this slice** (research: set-based
+   concurrent engineering + generative-design practice,
+   `perplexity-reasoning:310975`; the split is: human declares
+   invariants and acceptable *sets*, solver owns detail, system reports
+   remaining freedom honestly). Four pieces, all on the slice's own
+   migration (0004 — 0003 went to se_bom) with se_notes:
+   - **Interval measures** — optional `min`/`max` as the alternative to
+     a point `value` ("bore ≥ 4 mm" is declarative; a forced point
+     value is overspecification). Stack-up treats an interval anchor
+     as a band.
+   - **`origin: user | proposed`** on measures/envelopes/poses —
+     se_propose may freely revise its own choices, treats the user's
+     as contract (RFdiffusion's fixed-motif/free-scaffold split,
+     `perplexity-reasoning:310941`).
+   - **`view='freedom'`** (or a validate section) — open DOFs per
+     block, unvalued/interval measures, envelope-less blocks,
+     unevaluated soft objectives: what is still undecided, and by
+     whom. The honest counterpart to DRC.
+   - **Measure-layer growth**: relation `scale` factor
+     (`this = scale·source + offset ± tol`, default 1 — makes 1:10
+     tooth relations and half-diameter relations honest; stack-up
+     carries a running multiplier, still linear) + a closed `unit`
+     registry (`m` default | `count` | `ratio` | `deg`; views render
+     per-unit, relations require unit agreement, scale is
+     dimensionless). Minimum-constraint advisory (a `hard` measure no
+     consumer needs hard) is cheap here too.
 5. **Realization + first mode** — L3 binding (cad node sets, instancing,
    component binding); `envelope_fit` port; **the profile tier lands in
    the cad kernel here** (arc-polyline + extrude/revolve as a new
@@ -515,6 +551,17 @@ live in the tables, never chunks (nm/ADR-0041 storage rule).
    - **Bond compression** — same advisory renting the same register
      with nm supplying stiffness (loads are kind-neutral by design);
      lives in the extracted shared core, never an se-only path.
+   - **Couplings** (gameplay 2026-09-04: gear 1:10, rack-and-pinion —
+     higher pairs are unrepresentable; CAD practice models them as
+     ratio-carrying, kinematic-only joints, `perplexity-reasoning:`
+     `310939`) — a third orthogonal connect field next to class ×
+     mechanism: `coupling: {"kind": gear|rack|belt|screw, "ratio"}`,
+     plus kinematic class `mesh` (axis-less higher pair) for the
+     contact connect itself. Two engaged graph-DRC consumers make the
+     ratio checked intent: (1) a coupling demands both endpoint blocks
+     be revolute/prismatic-mounted to a common third block; (2) when
+     both carry `pitch_r` measures, `ratio ≈ r_b/r_a` within tol. May
+     land before the material-blocked bullets — it needs no material.
 7. **More modes** — CNC-2.5ax, SLA, TPU row, print-in-place; the process
    skill catalog (bridge-closing first); atomic mode = nm binding with
    the declared unit boundary. **Off-the-shelf fabrication** (bought
@@ -537,7 +584,22 @@ segments (arc-chain approximation until then); true multi-profile loft
 (generative-fill territory — see the loft rule in Decisions);
 mesh/NURBS import;
 mirror + non-uniform scale in the kernel; gear/thread generators;
-multi-axis CNC; costing; nm renting the extracted shared core.
+multi-axis CNC; costing; nm renting the extracted shared core;
+port positions (ports are name/roles/direction only — port-to-port
+contact or gap is unverifiable at L1, a declared mesh pair with a gap
+goes unflagged; an `at:` field is a later increment); array-member
+connect endpoints (`spokes[3].end` — one connect on the array block
+speaks for all members today; ships with the deferred `overrides`
+machinery); multi-source relation sums (center distance = r1 + r2 —
+`scale`+chaining cover most cases first); vectorized `component_sdf`
+over point batches (kernel work — the DOF probe pays a Python-loop
+14³ grid seed per contact test; `view='drc'` on a leadscrew tree is
+still ~30 s after the 2026-09-04 `dirs=` fix); measure probes
+(`probe: {"kind": "center_distance", "a", "b"}` binding a measure to
+a geometric query so declared-vs-posed agreement becomes checkable —
+wants step 6's evaluator posture); statistical stack-up modes (RSS
+first — molecular tolerances are distributions/yields,
+`perplexity-reasoning:310941`, so the shared core will need this).
 
 ## Open questions for Reto
 

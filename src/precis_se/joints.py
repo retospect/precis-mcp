@@ -31,12 +31,17 @@ from typing import Any
 #: What motion the connection permits. ``compliant`` is a DOF with
 #: stiffness rather than freedom (TPU living hinge, flexure); ``captive``
 #: is interlocked-without-mechanism (a rotaxane) — checked by clearance +
-#: connectivity, not by an axis.
+#: connectivity, not by an axis. ``screw`` (the classical helical lower
+#: pair — a leadscrew nut) is NOT the ``screw`` *mechanism* below: the
+#: class couples rotation to translation by the thread's lead
+#: (``params.lead``, m per revolution — descriptive until a kinematic
+#: consumer lands); the mechanism means threaded *fastening*.
 KINEMATIC_CLASSES: dict[str, str] = {
     "rigid": "no relative motion",
     "revolute": "rotation about the axis only",
     "prismatic": "translation along the axis only",
-    "cylindrical": "rotation about + translation along the axis",
+    "cylindrical": "rotation about + translation along the axis (uncoupled)",
+    "screw": "rotation coupled to translation along the axis (lead in params)",
     "planar": "translation in the plane normal to the axis",
     "ball": "rotation about all axes through the joint point",
     "compliant": "motion with stiffness rather than freedom (flexure)",
@@ -45,7 +50,7 @@ KINEMATIC_CLASSES: dict[str, str] = {
 
 #: Classes whose meaning includes an axis — for these, a declared ``axis``
 #: enables the derived-DOF probe; the others ignore/reject one.
-AXIS_CLASSES = frozenset({"revolute", "prismatic", "cylindrical", "planar"})
+AXIS_CLASSES = frozenset({"revolute", "prismatic", "cylindrical", "screw", "planar"})
 
 #: How the relation is physically realized, each with its implied demand.
 #: ``demands_relation`` is the demand graph-DRC can check *today*: a live
@@ -63,8 +68,9 @@ MECHANISMS: dict[str, dict[str, Any]] = {
         "demands_relation": "an engagement-depth tolerance relation",
         "deferred": "a flexing member (needs L3 solids)",
     },
-    # A screw joint's fastener is bought; the holes it stamps into the
-    # members are rung 3 (se-off-the-shelf-fabrication.md engine 2).
+    # threaded FASTENING — not the 'screw' kinematic class (helical pair).
+    # The fastener is bought; the holes it stamps into the members are
+    # rung 3 (se-off-the-shelf-fabrication.md engine 2).
     "screw": {"demands_relation": None, "demands_bom": "the fastener"},
     "press": {
         "demands_relation": "an interference tolerance relation",
@@ -95,8 +101,11 @@ def validate_joint(raw: dict[str, Any]) -> dict[str, Any]:
     if unknown:
         raise JointError(
             f"unknown joint key(s): {', '.join(sorted(unknown))} — a joint "
-            "is {'class', 'axis'?, 'mechanism'?, 'params'?}; "
-            "mechanism-specific numbers go under 'params'"
+            "is {'class', 'axis'?, 'mechanism'?, 'params'?}. NOTE: "
+            "couplings between separately-mounted parts (gear/rack/belt "
+            "ratios) are not yet representable — a ratio stored under "
+            "'params' is kept but consumed by nothing; note the intent in "
+            "'desc'/'reason' prose instead of relying on it"
         )
     klass = str(raw.get("class") or "").strip()
     if klass not in KINEMATIC_CLASSES:

@@ -952,10 +952,19 @@ def test_op_place_never_computes_inline(pcb, store, monkeypatch):
     only ever enqueuing a job."""
     from precis.pcb import optimize as pcb_optimize
 
+    # Import the job module BEFORE patching: the registry imports it lazily
+    # and it binds `optimize` into its own globals at import time — if the
+    # first import happens while the patch is live (this test's enqueue),
+    # _boom is captured into pcb_place's namespace permanently, outliving
+    # monkeypatch teardown and exploding every later pcb_place drain in
+    # this worker. Patch both bindings so teardown restores both.
+    from precis.workers.job_types import pcb_place as pcb_place_job
+
     def _boom(*_a, **_k):
         raise AssertionError("optimize() must never run inline from put()")
 
     monkeypatch.setattr(pcb_optimize, "optimize", _boom)
+    monkeypatch.setattr(pcb_place_job, "optimize", _boom)
     pcb.put(id="op-place-noinline", args=_CROSSED)
     resp = pcb.put(id="op-place-noinline", args={"op": "place"})
     assert "enqueued" in resp.body

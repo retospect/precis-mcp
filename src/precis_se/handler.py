@@ -848,6 +848,16 @@ def _fmt_num(v: Any) -> str:
         return repr(v)
 
 
+def _fmt_len(v: float) -> str:
+    """A metre value with a millimetre gloss for the sub-metre range —
+    ``0.015 (15 mm)`` — so an agent thinking in millimetres sees its unit
+    slip in the very next read (values ≥ 1 m are the drc
+    ``implausible_magnitude`` advisory's territory instead)."""
+    if 0.0 < abs(v) < 1.0:
+        return f"{v:g} ({v * 1000:g} mm)"
+    return f"{v:g}"
+
+
 def _measure_row(m: Any) -> dict[str, str]:
     rel = "—"
     if m.relation is not None:
@@ -857,7 +867,7 @@ def _measure_row(m: Any) -> dict[str, str]:
         )
     return {
         "measure": f"{m.block}.{m.name}",
-        "value": f"{m.value:g}" if m.value is not None else "—",
+        "value": _fmt_len(m.value) if m.value is not None else "—",
         "relation": rel,
         "strength": m.strength,
         "reason": m.reason or "—",
@@ -868,9 +878,11 @@ def _stackup_rows(results: list[Any]) -> list[dict[str, str]]:
     return [
         {
             "measure": r.measure,
-            "declared": f"{r.declared:g}" if r.declared is not None else "—",
+            "declared": _fmt_len(r.declared) if r.declared is not None else "—",
             "derived": (
-                f"{r.derived:g} ± {r.tol_accum:g}" if r.derived is not None else "—"
+                f"{_fmt_len(r.derived)} ± {_fmt_len(r.tol_accum)}"
+                if r.derived is not None
+                else "—"
             ),
             "chain": " → ".join(r.chain),
             "status": r.problem or "ok",

@@ -110,12 +110,18 @@ def _min_max_sdf(
     grid: int = 14,
     iters: int = 120,
     step: float = 1.0,
+    stop_at_contact: bool = False,
 ) -> tuple[float, Vec3]:
     """Minimise ``max(d_A(p − offset), d_B(p))`` over the region.
 
     The minimum value is the half-gap between ``A`` (shifted by ``offset``)
     and ``B`` — positive when separate, negative when overlapping. Seeded
     on a coarse grid, refined by gradient descent to analytic precision.
+
+    ``stop_at_contact`` returns the first value ≤ 0 found (grid or
+    descent) without finishing the minimisation — for callers that only
+    need the overlap *boolean* (the DOF probe's contact scan), not the
+    true minimum; the returned value is then merely "some overlap depth".
     """
     lo, hi = region
     offset = as_vec3(offset)
@@ -126,6 +132,8 @@ def _min_max_sdf(
     axes = [np.linspace(lo[i], hi[i], grid) for i in range(3)]
     best_p = vec3(*(0.5 * (lo + hi)))
     best_v = g(best_p)
+    if stop_at_contact and best_v <= 0.0:
+        return best_v, best_p
     for x in axes[0]:
         for y in axes[1]:
             for z in axes[2]:
@@ -133,6 +141,8 @@ def _min_max_sdf(
                 v = g(p)
                 if v < best_v:
                     best_v, best_p = v, p
+                    if stop_at_contact and best_v <= 0.0:
+                        return best_v, best_p
     p, cur, s = best_p, best_v, step
     for _ in range(iters):
         grad = _grad(g, p)
@@ -143,6 +153,8 @@ def _min_max_sdf(
         cv = g(cand)
         if cv < cur - 1e-12:
             p, cur = cand, cv
+            if stop_at_contact and cur <= 0.0:
+                break
         else:
             s *= 0.5
             if s < 1e-8:
@@ -307,8 +319,13 @@ def translational_dof(
     *,
     reach: float | None = None,
     tol: float = 1e-3,
+    dirs: tuple[str, ...] | None = None,
 ) -> DofResult:
-    """How far ``moving`` can translate along ±x/±y/±z before hitting ``fixed``."""
+    """How far ``moving`` can translate along ±x/±y/±z before hitting
+    ``fixed``. ``dirs`` restricts the probe to a subset of ``('+x', '-x',
+    '+y', '-y', '+z', '-z')`` — each direction costs a full contact scan,
+    so callers that read only one axis (the se DOF probe) should name it;
+    ``None`` probes all six."""
     em, ef = design.components[moving], design.components[fixed]
     mlo, mhi = _region(design, [em])
     flo, fhi = _region(design, [ef])
@@ -322,11 +339,11 @@ def translational_dof(
             return False
         lo = np.minimum(slo, flo)
         hi = np.maximum(shi, fhi)
-        half, _ = _min_max_sdf(design, em, ef, offset, (lo, hi))
+        half, _ = _min_max_sdf(design, em, ef, offset, (lo, hi), stop_at_contact=True)
         return half <= 0.0
 
     travel: dict[str, float] = {}
-    dirs = {
+    all_dirs = {
         "+x": vec3(1, 0, 0),
         "-x": vec3(-1, 0, 0),
         "+y": vec3(0, 1, 0),
@@ -334,8 +351,21 @@ def translational_dof(
         "+z": vec3(0, 0, 1),
         "-z": vec3(0, 0, -1),
     }
+    if dirs is not None:
+        if not dirs:
+            raise ValueError(
+                "dirs must name at least one probe direction "
+                f"({', '.join(all_dirs)}) — pass None for all six"
+            )
+        unknown = set(dirs) - set(all_dirs)
+        if unknown:
+            raise ValueError(
+                f"unknown probe direction(s) {sorted(unknown)} — "
+                f"valid: {', '.join(all_dirs)}"
+            )
+        all_dirs = {name: all_dirs[name] for name in dirs}
     scan = 120  # coarse first-contact scan; AABB fast-reject keeps it cheap
-    for name, d in dirs.items():
+    for name, d in all_dirs.items():
         d = normalize(d)
         if contact_at(0.0 * d):
             travel[name] = 0.0
