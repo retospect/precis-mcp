@@ -1006,6 +1006,99 @@ class TestHarvest:
         assert step2.ruled_out == 0
         assert len(gripe_calls) == 1  # unchanged
 
+    def test_infra_gripe_names_the_real_executor_and_carries_the_error(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr309200: the auto-filed gripe must name the job's actual
+        ``lease_host`` (not a hardcoded "spark/executor"), and its detail
+        must carry the failure ``error`` text that ``record_failure`` now
+        mirrors onto ``refs.meta`` alongside ``failure_class``."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_infra_retries": 1})  # already retried once
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="struct_relax",
+            meta={
+                "job_type": "struct_relax",
+                "failure_class": "infra",
+                "error": "container exited 137",
+                "lease_host": "pollux",
+            },
+            parent_id=sid,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_relax", lambda *_a, **_kw: "relax[ml]"
+        )
+
+        gripe_calls: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                self.hub = hub
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripe_calls.append({"text": text, "tags": tags})
+
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert len(gripe_calls) == 1
+        text = gripe_calls[0]["text"]
+        assert "pollux" in text
+        assert "spark/executor" not in text
+        assert "container exited 137" in text
+
+    def test_infra_gripe_falls_back_to_generic_executor_when_no_lease_host(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A job that never made it to a claim never got ``lease_host``
+        stamped — the gripe should still file cleanly, naming the generic
+        "executor" fallback rather than crashing or leaving a blank."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_infra_retries": 1})  # already retried once
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="struct_relax",
+            meta={"job_type": "struct_relax", "failure_class": "infra"},
+            parent_id=sid,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_relax", lambda *_a, **_kw: "relax[ml]"
+        )
+
+        gripe_calls: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                self.hub = hub
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripe_calls.append({"text": text, "tags": tags})
+
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert len(gripe_calls) == 1
+        assert "— executor." in gripe_calls[0]["text"]
+
     # ── autocatpath (barrier lane) — §C mirror; a crashed NEB never rules out ──
 
     def _reaction_quest(self, store: Any) -> int:

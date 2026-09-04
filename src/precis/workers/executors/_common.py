@@ -1013,6 +1013,14 @@ def set_meta(conn: Connection, ref_id: int, **fields: Any) -> None:
     )
 
 
+#: Cap on the ``reason`` string mirrored into ``refs.meta.error`` by
+#: :func:`record_failure` — the full text always lands in the ``job_event``
+#: chunk regardless; this is just a bounded breadcrumb so a downstream
+#: consumer (e.g. an auto-filed gripe's ``detail`` dict) has *something*
+#: actionable without risking a huge traceback bloating ``refs.meta``.
+_ERROR_META_CAP = 500
+
+
 def record_failure(
     store: Store,
     ref_id: int,
@@ -1030,7 +1038,13 @@ def record_failure(
     ``"non-convergence"`` (the compute actually ran and reported a genuine
     physical/numeric failure) — stamped onto ``refs.meta.failure_class`` so a
     downstream harvest can tell "couldn't run" apart from "ran and failed"
-    instead of laundering both into the same bare ``STATUS:failed``.
+    instead of laundering both into the same bare ``STATUS:failed``. When
+    ``failure_class`` is given, ``reason`` (truncated to
+    ``_ERROR_META_CAP``) is also stamped onto ``refs.meta.error`` alongside
+    it — the full, untruncated ``reason`` always lands in the ``job_event``
+    chunk either way; the meta copy exists so a downstream consumer that
+    only reads ``meta`` (e.g. an auto-filed infra gripe) isn't stuck with
+    a bare ``failure_class`` and no idea what actually happened.
 
     ``open_tag`` (optional, parked-leaf-recovery,
     docs/backlog/parked-leaf-recovery.md) stamps an ``OPEN:<open_tag>`` tag
@@ -1052,7 +1066,12 @@ def record_failure(
         append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
         set_status(store, ref_id, FAILED, conn=conn)
         if failure_class is not None:
-            set_meta(conn, ref_id, failure_class=failure_class)
+            set_meta(
+                conn,
+                ref_id,
+                failure_class=failure_class,
+                error=reason[:_ERROR_META_CAP],
+            )
         if gripe_rollback is not None:
             set_status(store, gripe_rollback, "open", conn=conn)
         # Slice-5 failure bubble.

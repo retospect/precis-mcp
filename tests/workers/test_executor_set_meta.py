@@ -8,6 +8,12 @@ so an unsanitized ``Jsonb(fields)`` write raised
 misclassifying them as ``infra:child-killed``. Real PG on purpose: a mocked
 store cannot catch this class of bug (see ``psycopg_percent_like_
 fakestore_gap``).
+
+Also covers ``record_failure``'s ``meta.error`` mirror (gr309200): before
+this, the only place a job's failure reason landed was a ``job_event``
+chunk, so a downstream consumer that reads only ``refs.meta`` (e.g. quest's
+auto-filed infra gripe, ``precis.quest.compute._file_infra_gripe``) had
+nothing to show.
 """
 
 from __future__ import annotations
@@ -62,3 +68,45 @@ def test_set_meta_persists_a_payload_carrying_inf_and_nan(store: Store) -> None:
             "states": {"N": {"evidence": {"min_dist_A": None, "state": "N"}}},
             "score": None,
         }
+
+
+class TestRecordFailureErrorMeta:
+    def test_stamps_reason_into_meta_error_alongside_failure_class(
+        self, store: Store
+    ) -> None:
+        job = store.insert_ref(kind="job", slug=None, title="struct_relax")
+        _common.record_failure(
+            store,
+            job.id,
+            "container exited with code 137 (OOM-killed)",
+            gripe_rollback=None,
+            failure_class="infra",
+        )
+        meta = store.fetch_refs_by_ids({job.id})[job.id].meta or {}
+        assert meta.get("failure_class") == "infra"
+        assert meta.get("error") == "container exited with code 137 (OOM-killed)"
+
+    def test_truncates_an_oversized_reason_to_the_meta_cap(self, store: Store) -> None:
+        job = store.insert_ref(kind="job", slug=None, title="struct_relax")
+        reason = "x" * (_common._ERROR_META_CAP + 250)
+        _common.record_failure(
+            store, job.id, reason, gripe_rollback=None, failure_class="infra"
+        )
+        meta = store.fetch_refs_by_ids({job.id})[job.id].meta or {}
+        assert meta.get("error") == reason[: _common._ERROR_META_CAP]
+        assert len(meta["error"]) == _common._ERROR_META_CAP
+
+        # the full, untruncated reason still lands in the job_event chunk
+        chunks = store.chunks.list_chunks_for_ref(job.id)
+        job_events = [c for c in chunks if c.chunk_kind == "job_event"]
+        assert len(job_events) == 1
+        assert job_events[0].text == reason
+
+    def test_no_meta_error_when_no_failure_class_given(self, store: Store) -> None:
+        """Unclassified failures keep their old shape — no ``failure_class``
+        means no meta write at all (still logged to the job_event chunk)."""
+        job = store.insert_ref(kind="job", slug=None, title="struct_relax")
+        _common.record_failure(store, job.id, "some non-infra reason", gripe_rollback=None)
+        meta = store.fetch_refs_by_ids({job.id})[job.id].meta or {}
+        assert "error" not in meta
+        assert "failure_class" not in meta

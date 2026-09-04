@@ -1250,7 +1250,16 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
             from precis.workers.job_types import struct_relax
 
             target_node = (meta.get("params") or {}).get("target_node")
-            struct_relax.kill_container(ref_id, node=target_node)
+            # kill_container now verifies removal (gripe 310809) instead of
+            # reporting success on a bare "command issued" — log the honest
+            # outcome rather than assuming the old always-True.
+            if not struct_relax.kill_container(ref_id, node=target_node):
+                log.warning(
+                    "sweeper: container kill for job #%d on %s was not verified "
+                    "removed — it may still be occupying the node/GPU",
+                    ref_id,
+                    target_node,
+                )
     except Exception:  # pragma: no cover - defensive
         log.warning("sweeper: container kill for job #%d raised", ref_id, exc_info=True)
 

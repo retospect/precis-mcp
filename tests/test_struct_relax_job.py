@@ -92,6 +92,15 @@ def _relaxed_poscar(structure, ident: str, moved_to: float) -> str:
     return to_poscar(scene)
 
 
+def _no_stale_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the pre-clean presence check (gripe 310809, defect C) to report
+    "nothing there" — so tests that aren't exercising the pre-clean guard
+    itself don't pay a real (ssh-hopped) ``docker ps`` subprocess call."""
+    monkeypatch.setattr(
+        struct_relax, "_container_still_present", lambda *a, **kw: False
+    )
+
+
 def _stub_runner(relaxed_poscar: str, *, ok: bool = True, e_tot: float = -3.21):
     """A RUNNER that writes a fake result.json into out_dir (no cluster)."""
 
@@ -137,6 +146,7 @@ def test_dispatch_populates_the_run_cube(structure, tmp_path, monkeypatch):
         "RUNNER",
         _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
     )
+    _no_stale_container(monkeypatch)
     ctx, events = _fake_ctx(structure.store, params)
     struct_relax._dispatch(ctx, struct_relax.SPEC)
 
@@ -166,6 +176,7 @@ def test_seam_a_later_handler_relax_is_a_zero_compute_hit(
         "RUNNER",
         _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
     )
+    _no_stale_container(monkeypatch)
     ctx, _ = _fake_ctx(structure.store, params)
     struct_relax._dispatch(ctx, struct_relax.SPEC)
 
@@ -190,6 +201,7 @@ def test_dispatch_failure_records_no_cache_row(structure, tmp_path, monkeypatch)
         "RUNNER",
         _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24), ok=False),
     )
+    _no_stale_container(monkeypatch)
     ctx, events = _fake_ctx(structure.store, params)
     struct_relax._dispatch(ctx, struct_relax.SPEC)
 
@@ -207,6 +219,7 @@ def test_dispatch_self_aborts_on_wall_clock_timeout(structure, tmp_path, monkeyp
     structure.put(id="pd_pair", text=_PD)
     params = _build_params(structure)
     monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    _no_stale_container(monkeypatch)
 
     def _hanging_runner(
         argv: list[str],
@@ -251,6 +264,148 @@ def test_dispatch_self_aborts_on_wall_clock_timeout(structure, tmp_path, monkeyp
     assert fails[0]["failure_class"] == "infra"
     assert ("status", "succeeded") not in events
     assert structure.store.structure_find_cached_run(params["cache_key"]) is None
+
+
+def test_dispatch_self_abort_is_honest_when_kill_fails(
+    structure, tmp_path, monkeypatch
+):
+    """DEFECT B: when ``kill_container`` can't verify removal, the self-abort
+    event/failure text must NOT claim the container was force-removed, and
+    MUST name the surviving container (and node) so an operator or the next
+    retry knows the truth instead of a false all-clear. Gripe 310809."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    _no_stale_container(monkeypatch)
+
+    def _hanging_runner(
+        argv: list[str],
+        *,
+        node: str,
+        in_dir: str,
+        out_dir: str,
+        timeout: float | None = None,
+    ) -> tuple[int, str]:
+        raise subprocess.TimeoutExpired(cmd=["docker", "run"], timeout=1)
+
+    monkeypatch.setattr(struct_relax, "RUNNER", _hanging_runner)
+    monkeypatch.setattr(struct_relax, "kill_container", lambda *a, **kw: False)
+    monkeypatch.setattr(struct_relax, "reset_gpu", lambda *a, **kw: False)
+
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    expected_name = f"precis-job-{params['structure_ref_id']}"
+    job_events = [t for k, t in events if k == "job_event"]
+    abort_event = job_events[-1]
+    assert "force-removed" not in abort_event
+    assert expected_name in abort_event
+    assert struct_relax._NODE in abort_event
+
+    fails = [payload for k, payload in events if k == "fail"]
+    assert len(fails) == 1
+    assert fails[0]["failure_class"] == "infra"
+    reason = fails[0]["reason"]
+    assert "force-removed" not in reason
+    assert expected_name in reason
+    assert struct_relax._NODE in reason
+    assert ("status", "succeeded") not in events
+    assert structure.store.structure_find_cached_run(params["cache_key"]) is None
+
+
+def test_pre_clean_removes_a_stale_container_before_a_healthy_run(
+    structure, tmp_path, monkeypatch
+):
+    """DEFECT C: a stale ``precis-job-<ref_id>`` container left over from a
+    prior attempt is verified-killed before dispatch runs — a retry that
+    would otherwise die on ``rc=125`` name-conflict now proceeds normally.
+    Gripe 310809."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    monkeypatch.setattr(
+        struct_relax,
+        "RUNNER",
+        _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
+    )
+    monkeypatch.setattr(struct_relax, "_container_still_present", lambda *a, **kw: True)
+    kill_calls: list[tuple[int, str | None]] = []
+
+    def _fake_kill(ref_id: int, *, node: str | None = None, **kw: Any) -> bool:
+        kill_calls.append((ref_id, node))
+        return True
+
+    monkeypatch.setattr(struct_relax, "kill_container", _fake_kill)
+
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert kill_calls == [(params["structure_ref_id"], struct_relax._NODE)]
+    assert ("status", "succeeded") in events
+    assert structure.store.structure_find_cached_run(params["cache_key"]) is not None
+
+
+def test_pre_clean_un_removable_stale_container_fails_fast(
+    structure, tmp_path, monkeypatch
+):
+    """DEFECT C: when the verified kill can't clear the stale container, the
+    job fails fast with an honest infra event instead of colliding with
+    ``docker run`` — the RUNNER must never be invoked. Gripe 310809."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    runner_calls: list[Any] = []
+
+    def _runner_should_not_run(argv, *, node, in_dir, out_dir, timeout=None):
+        runner_calls.append(argv)
+        return 0, ""
+
+    monkeypatch.setattr(struct_relax, "RUNNER", _runner_should_not_run)
+    monkeypatch.setattr(struct_relax, "_container_still_present", lambda *a, **kw: True)
+    monkeypatch.setattr(struct_relax, "kill_container", lambda *a, **kw: False)
+
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert runner_calls == []
+    fails = [payload for k, payload in events if k == "fail"]
+    assert len(fails) == 1
+    assert fails[0]["failure_class"] == "infra"
+    expected_name = f"precis-job-{params['structure_ref_id']}"
+    assert expected_name in fails[0]["reason"]
+    assert struct_relax._NODE in fails[0]["reason"]
+    assert ("status", "succeeded") not in events
+    assert structure.store.structure_find_cached_run(params["cache_key"]) is None
+
+
+def test_pre_clean_healthy_path_pays_one_docker_ps_check(
+    structure, tmp_path, monkeypatch
+):
+    """A retry with no stale container pays exactly one cheap ``docker ps``
+    presence check — no kill, no extra subprocess calls. Gripe 310809."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    monkeypatch.setattr(
+        struct_relax,
+        "RUNNER",
+        _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")  # nothing there
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    assert len(calls) == 1  # the one pre-clean presence check
+    remote_argv = shlex.split(calls[0][2]) if calls[0][0] == "ssh" else calls[0]
+    assert remote_argv[1] == "ps"
 
 
 def test_relax_timeout_s_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,6 +496,7 @@ def test_dispatch_infra_failure_is_classed_infra(structure, tmp_path, monkeypatc
     structure.put(id="pd_pair", text=_PD)
     params = _build_params(structure)
     monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    _no_stale_container(monkeypatch)
 
     def _crashing_runner(argv, *, node, in_dir, out_dir, timeout=None):
         return 137, "OOM-killed"  # no result.json written — container died
@@ -361,13 +517,15 @@ def test_dispatch_infra_failure_is_classed_infra(structure, tmp_path, monkeypatc
 
 def test_kill_container_local_runs_docker_rm(monkeypatch: pytest.MonkeyPatch) -> None:
     """When this worker *is* the DFT node, ``kill_container`` shells out to
-    ``docker rm -f precis-job-<ref_id>`` directly (no ssh hop)."""
+    ``docker rm -f precis-job-<ref_id>`` directly (no ssh hop), then verifies
+    the container is actually gone (gripe 310809) via an anchored
+    ``docker ps -a`` before reporting success."""
     monkeypatch.setenv("PRECIS_NODE", "spark")
     calls: list[list[str]] = []
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")  # empty ps ⇒ gone
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
     monkeypatch.setattr(struct_relax, "_NODE", "spark")
@@ -375,28 +533,46 @@ def test_kill_container_local_runs_docker_rm(monkeypatch: pytest.MonkeyPatch) ->
     ok = struct_relax.kill_container(42, node="spark")
 
     assert ok is True
-    assert calls == [["docker", "rm", "-f", "precis-job-42"]]
+    assert calls == [
+        ["docker", "rm", "-f", "precis-job-42"],
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            "name=^/precis-job-42$",
+            "--format",
+            "{{.Names}}",
+        ],
+    ]
 
 
 def test_kill_container_remote_hops_via_ssh(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When the job's node isn't this worker, the kill is ssh'd to the node —
-    the container runs on the remote GPU box, not the sweeper's host. The
-    remote command is a single shell-quoted argv element (not exploded into
-    separate ssh argv items) so the remote shell's IFS re-split can't break
-    a token apart."""
+    """When the job's node isn't this worker, the kill (and its verify check)
+    are ssh'd to the node — the container runs on the remote GPU box, not
+    the sweeper's host. Each remote command is a single shell-quoted argv
+    element (not exploded into separate ssh argv items) so the remote
+    shell's IFS re-split can't break a token apart."""
     monkeypatch.setenv("PRECIS_NODE", "caspar")
     calls: list[list[str]] = []
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")  # empty ps ⇒ gone
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
     ok = struct_relax.kill_container(42, node="spark")
 
     assert ok is True
-    assert calls == [["ssh", "spark", "docker rm -f precis-job-42"]]
+    assert calls == [
+        ["ssh", "spark", "docker rm -f precis-job-42"],
+        [
+            "ssh",
+            "spark",
+            "docker ps -a --filter 'name=^/precis-job-42$' --format '{{.Names}}'",
+        ],
+    ]
 
 
 def test_kill_container_never_raises_on_subprocess_failure(
@@ -409,6 +585,41 @@ def test_kill_container_never_raises_on_subprocess_failure(
         raise OSError("no such host")
 
     monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
+
+    assert struct_relax.kill_container(42, node="spark") is False
+
+
+def test_kill_container_false_on_nonzero_rc_without_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT A regression pin: ``docker rm -f`` exiting nonzero (a wedged
+    dockerd/GPU) must flip ``kill_container`` to ``False`` even though
+    ``subprocess.run`` itself never raised — before the fix, only a Python
+    exception counted as failure and this rm was logged/returned as a
+    success. Gripe 310809."""
+
+    def fake_run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1, "", "device or resource busy")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+
+    assert struct_relax.kill_container(42, node="spark") is False
+
+
+def test_kill_container_false_when_still_listed_after_rm_rc0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT A: even an ``rm -f`` that exits 0 must be verified — a wedged
+    dockerd can report success while the container still lists. Gripe
+    310809."""
+
+    def fake_run(argv, **kw):
+        if argv[1] == "rm":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        # the verify `docker ps -a` still shows it.
+        return subprocess.CompletedProcess(argv, 0, "precis-job-42\n", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
     assert struct_relax.kill_container(42, node="spark") is False
 
@@ -439,9 +650,13 @@ def test_reap_stale_containers_kills_old_not_fresh(
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        if argv[1] == "ps":
+        # The initial listing call asks for CreatedAt too; the post-rm verify
+        # call (defect A) is a bare name-anchored `docker ps -a` — distinguish
+        # them so the verify doesn't re-see the stale listing and undo the
+        # reap.
+        if argv[1] == "ps" and "CreatedAt" in argv[-1]:
             return subprocess.CompletedProcess(argv, 0, ps_output, "")
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")  # rm, or verify ⇒ gone
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
@@ -450,6 +665,18 @@ def test_reap_stale_containers_kills_old_not_fresh(
     assert reaped == 1
     rm_calls = [c for c in calls if c[1] == "rm"]
     assert rm_calls == [["docker", "rm", "-f", "precis-job-1"]]
+    verify_calls = [c for c in calls if c[1] == "ps" and "CreatedAt" not in c[-1]]
+    assert verify_calls == [
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            "name=^/precis-job-1$",
+            "--format",
+            "{{.Names}}",
+        ]
+    ]
 
 
 def test_remote_argv_quotes_a_token_containing_a_tab() -> None:
@@ -489,18 +716,28 @@ def test_reap_stale_containers_over_ssh_kills_old_container(
         assert argv[0] == "ssh" and argv[1] == "spark"
         assert len(argv) == 3  # one shell-quoted remote command string
         remote_argv = shlex.split(argv[2])
-        if remote_argv[1] == "ps":
+        if remote_argv[1] == "ps" and "CreatedAt" in remote_argv[-1]:
             return subprocess.CompletedProcess(argv, 0, ps_output, "")
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")  # rm, or verify ⇒ gone
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
     reaped = struct_relax.reap_stale_containers(max_age_hours=6.0, node="spark")
 
     assert reaped == 1
-    assert len(calls) == 2  # one ps, one rm
+    assert len(calls) == 3  # listing ps, rm, verify ps (defect A)
     rm_argv = shlex.split(calls[1][2])
     assert rm_argv == ["docker", "rm", "-f", "precis-job-9"]
+    verify_argv = shlex.split(calls[2][2])
+    assert verify_argv == [
+        "docker",
+        "ps",
+        "-a",
+        "--filter",
+        "name=^/precis-job-9$",
+        "--format",
+        "{{.Names}}",
+    ]
 
 
 def test_reap_stale_containers_never_raises_on_listing_failure(
@@ -512,6 +749,32 @@ def test_reap_stale_containers_never_raises_on_listing_failure(
     monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
 
     assert struct_relax.reap_stale_containers(max_age_hours=6.0, node="spark") == 0
+
+
+def test_reap_stale_containers_rc_gated_not_just_no_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT A regression pin, watchdog side: an ``rm -f`` that exits
+    nonzero (no exception) must not be counted as reaped. Gripe 310809."""
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setattr(struct_relax, "_NODE", "spark")
+
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    old_ts = (now - timedelta(hours=60)).strftime("%Y-%m-%d %H:%M:%S +0000 UTC")
+    ps_output = f"precis-job-3\t{old_ts}\n"
+
+    def fake_run(argv, **kw):
+        if argv[1] == "ps" and "CreatedAt" in argv[-1]:
+            return subprocess.CompletedProcess(argv, 0, ps_output, "")
+        if argv[1] == "rm":
+            return subprocess.CompletedProcess(argv, 1, "", "device or resource busy")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+
+    assert struct_relax.reap_stale_containers(max_age_hours=6.0) == 0
 
 
 def _stage(tmp_path, ref_id: int) -> tuple[str, str]:

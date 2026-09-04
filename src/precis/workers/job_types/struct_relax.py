@@ -34,14 +34,26 @@ node migrates.
 the sweeper) close gripe 50905 — the container is deterministically named
 (``precis-job-<ref_id>``) so it can be found and force-removed by name even
 after its owning job's DB row is gone, rather than holding the GPU
-indefinitely.
+indefinitely. Both VERIFY the removal (``docker ps -a`` on the exact
+anchored name) rather than trusting ``rm -f``'s exit code alone — a wedged
+dockerd/GPU can report success and lie (gripe 310809).
 
 **Self-abort.** :func:`_dispatch` also caps the runner call at
 :func:`_relax_timeout_s` (default well under the 6h stale-container
 watchdog), so a GPU-driver-wedged relax self-aborts on its own instead of
-waiting for the watchdog: the container is force-removed and a
-:func:`reset_gpu` (``nvidia-smi --gpu-reset``) is attempted, before the
-nightly-reboot last resort (gripe 171381).
+waiting for the watchdog: :func:`kill_container` and :func:`reset_gpu`
+(``nvidia-smi --gpu-reset``) are attempted, and the recorded event/failure
+text is honest about whether the container actually came down — a failed
+removal names the surviving container and the operator escalation
+(``docker rm -f`` / the nightly-reboot last resort, gripe 171381) instead of
+claiming success it can't back up.
+
+**Pre-run guard.** Before staging a run, :func:`_dispatch` checks for a
+stale ``precis-job-<ref_id>`` container left over from a prior attempt
+(the deterministic name is the per-structure mutex, so a leftover
+guarantees an ``rc=125`` name-conflict on every retry) and verified-kills
+it; an un-removable stale container fails the job fast with an honest
+infra event instead of colliding with ``docker run`` (gripe 310809).
 """
 
 from __future__ import annotations
@@ -232,18 +244,69 @@ def _remote_argv(target: str, argv: list[str]) -> list[str]:
     return ["ssh", target, shlex.join(argv)]
 
 
+def _container_still_present(
+    name: str, *, target: str, local: bool, container_cmd: str
+) -> bool:
+    """True iff a container named exactly ``name`` still lists (any state,
+    ``docker ps -a``) on ``target``. Anchored (``^/<name>$`` — docker's
+    internal name carries the leading ``/``) so ``precis-job-1`` never
+    matches ``precis-job-12``. Used both to verify an ``rm -f`` actually
+    took effect (:func:`kill_container`, :func:`reap_stale_containers`) and,
+    in :func:`_dispatch`, to detect a stale container before a retry
+    collides with it on the deterministic ``--name`` mutex (gripe 310809).
+
+    Fails conservative: a listing failure (unreachable node, docker down)
+    reports "still present" — the safer read for a mutex-collision guard,
+    where a false negative (reporting gone when it isn't) would let a
+    doomed retry through."""
+    list_argv = [
+        container_cmd,
+        "ps",
+        "-a",
+        "--filter",
+        f"name=^/{name}$",
+        "--format",
+        "{{.Names}}",
+    ]
+    cmd = list_argv if local else _remote_argv(target, list_argv)
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning(
+            "struct_relax: presence check for %s on %s failed — assuming present",
+            name,
+            target,
+            exc_info=True,
+        )
+        return True
+    if res.returncode != 0:
+        log.warning(
+            "struct_relax: presence check for %s on %s rc=%d — assuming present",
+            name,
+            target,
+            res.returncode,
+        )
+        return True
+    return bool((res.stdout or "").strip())
+
+
 def kill_container(
     ref_id: int, *, node: str | None = None, container_cmd: str = _CONTAINER_CMD
 ) -> bool:
-    """Best-effort force-remove of job ``ref_id``'s compute container by its
-    deterministic ``precis-job-<ref_id>`` name (see :func:`build_run_argv`).
+    """Force-remove job ``ref_id``'s compute container by its deterministic
+    ``precis-job-<ref_id>`` name (see :func:`build_run_argv`), and VERIFY it
+    is actually gone (gripe 310809 — an ``rm -f`` that exits nonzero, or
+    that lies about success on a wedged dockerd/GPU, used to be reported as
+    a kill regardless).
 
     Runs on ``node`` (default :data:`_NODE`) — locally when this worker
     *is* that node, over ``ssh`` otherwise, mirroring :func:`_default_runner`.
     Never raises: any ``docker``/``ssh`` failure is logged and swallowed so a
     caller (the sweeper) can invoke this unconditionally. Returns ``True``
-    when the command was issued (not a guarantee the container existed —
-    ``rm -f`` on a missing name is a harmless no-op)."""
+    only when the container is confirmed absent afterward — callers can now
+    trust the return value instead of assuming success."""
     name = f"{_CONTAINER_PREFIX}{ref_id}"
     target = node or _NODE
     if target is None:
@@ -257,14 +320,35 @@ def kill_container(
     argv = [container_cmd, "rm", "-f", name]
     cmd = argv if local else _remote_argv(target, argv)
     try:
-        subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
-        log.info("struct_relax: killed container %s on %s", name, target)
-        return True
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30, check=False
+        )
     except (OSError, subprocess.SubprocessError):
         log.warning(
             "struct_relax: kill_container %s on %s failed", name, target, exc_info=True
         )
         return False
+    if res.returncode != 0:
+        log.warning(
+            "struct_relax: docker rm -f %s on %s rc=%d stderr=%s",
+            name,
+            target,
+            res.returncode,
+            (res.stderr or "")[:500],
+        )
+        return False
+    if _container_still_present(
+        name, target=target, local=local, container_cmd=container_cmd
+    ):
+        log.warning(
+            "struct_relax: docker rm -f %s on %s exited 0 but the container still "
+            "lists — treating as a failed kill",
+            name,
+            target,
+        )
+        return False
+    log.info("struct_relax: killed container %s on %s", name, target)
+    return True
 
 
 def reset_gpu(*, node: str | None = None, container_cmd: str = _CONTAINER_CMD) -> bool:
@@ -387,20 +471,40 @@ def reap_stale_containers(
         rm_argv = [container_cmd, "rm", "-f", name]
         rm_cmd = rm_argv if local else _remote_argv(target, rm_argv)
         try:
-            subprocess.run(
+            rm_res = subprocess.run(
                 rm_cmd, capture_output=True, text=True, timeout=30, check=False
-            )
-            reaped += 1
-            log.warning(
-                "struct_relax: reaped stale container %s (age %.1fh > %.1fh threshold)",
-                name,
-                age_hours,
-                threshold,
             )
         except (OSError, subprocess.SubprocessError):
             log.warning(
                 "struct_relax: rm -f %s on %s failed", name, target, exc_info=True
             )
+            continue
+        if rm_res.returncode != 0:
+            log.warning(
+                "struct_relax: rm -f %s on %s rc=%d stderr=%s",
+                name,
+                target,
+                rm_res.returncode,
+                (rm_res.stderr or "")[:500],
+            )
+            continue
+        if _container_still_present(
+            name, target=target, local=local, container_cmd=container_cmd
+        ):
+            log.warning(
+                "struct_relax: rm -f %s on %s exited 0 but the container still "
+                "lists — treating as a failed reap",
+                name,
+                target,
+            )
+            continue
+        reaped += 1
+        log.warning(
+            "struct_relax: reaped stale container %s (age %.1fh > %.1fh threshold)",
+            name,
+            age_hours,
+            threshold,
+        )
     return reaped
 
 
@@ -512,6 +616,38 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
 
+    # Pre-clean (gripe 310809, defect C): the container name is a per-structure
+    # mutex (deterministic --name precis-job-<ref_id>), so a container left
+    # over from a prior attempt guarantees rc=125 name-conflict on every
+    # retry forever unless it's cleared first. One cheap `docker ps` check on
+    # the healthy path; only pays for a verified kill (defect A) when a stale
+    # container is actually found.
+    container_name = f"{_CONTAINER_PREFIX}{structure_ref_id}"
+    local = node == os.environ.get("PRECIS_NODE")
+    if _container_still_present(
+        container_name, target=node, local=local, container_cmd=_CONTAINER_CMD
+    ):
+        log.warning(
+            "struct_relax: pre-clean found a stale container %s on %s from a "
+            "prior attempt — force-removing before dispatch",
+            container_name,
+            node,
+        )
+        if not kill_container(structure_ref_id, node=node):
+            ctx.append_chunk(
+                "job_event",
+                f"relax[{fidelity}] on {node}: stale container {container_name} from "
+                "a prior attempt could not be removed — failing fast instead of "
+                "colliding on the container name",
+            )
+            ctx.record_failure(
+                f"struct_relax: stale container {container_name} from a prior "
+                f"attempt is un-removable on {node} — operator cleanup required "
+                "(docker rm -f, or the nightly reboot) before this job can run",
+                failure_class="infra",
+            )
+            return
+
     in_dir, out_dir = STAGER(structure_ref_id)
     Path(in_dir, "POSCAR").write_text(poscar, encoding="utf-8")
     run_params: dict[str, Any] = {"fidelity": fidelity, "model": model, "steps": steps}
@@ -539,18 +675,35 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "struct_relax: relax exceeded %.0fs wall-clock cap — self-aborting",
             _relax_timeout_s(),
         )
-        kill_container(structure_ref_id, node=node)
-        reset_gpu(node=node)
+        kill_ok = kill_container(structure_ref_id, node=node)
+        reset_ok = reset_gpu(node=node)
+        # Honest, conditional text (gripe 310809, defect B) — the old text
+        # unconditionally claimed the container was force-removed even when
+        # the removal itself had failed or was never verified; a caller
+        # (operator or the next retry) needs to know the truth, not the
+        # aspiration.
+        if kill_ok:
+            container_note = "container force-removed"
+        else:
+            container_note = (
+                f"container {container_name} NOT removed — it survives on {node}; "
+                "operator docker rm -f (or the nightly reboot) is required before "
+                "a retry can run"
+            )
+        gpu_note = (
+            "nvidia-smi --gpu-reset attempted (succeeded)"
+            if reset_ok
+            else "nvidia-smi --gpu-reset attempted (failed)"
+        )
         ctx.append_chunk(
             "job_event",
             f"relax[{fidelity}] on {node}: exceeded {_relax_timeout_s():.0f}s "
-            "wall-clock cap — self-aborted (container force-removed, "
-            "nvidia-smi --gpu-reset attempted)",
+            f"wall-clock cap — self-aborted ({container_note}; {gpu_note})",
         )
         ctx.record_failure(
             f"struct_relax: relax exceeded {_relax_timeout_s():.0f}s wall-clock cap — "
-            "self-aborted (container force-removed, nvidia-smi --gpu-reset attempted; "
-            "nightly reboot is the last resort)",
+            f"self-aborted ({container_note}; {gpu_note}); nightly reboot is the last "
+            "resort",
             failure_class="infra",
         )
         return

@@ -2294,10 +2294,16 @@ def _file_infra_gripe(
         for k in ("failure_class", "error", "note", "job_type")
         if k in job_meta
     }
+    # ``lease_host`` is stamped at claim time (see the executor claim path in
+    # ``precis.workers.executors._common``) onto the job's own ``refs.meta``,
+    # so it names the actual node/executor that ran (and failed) this job —
+    # falls back to the generic "executor" only for a job that never made it
+    # to a claim (so ``lease_host`` was never stamped).
+    executor = job_meta.get("lease_host") or "executor"
     GripeHandler(hub=hub).put(
         text=(
             f"quest {quest_id} candidate {handle} {sim_kind} sim infra-failing "
-            "repeatedly (2×) — spark/executor. "
+            f"repeatedly (2×) — {executor}. "
             f"Latest {sim_kind} job failure detail: {detail}"
         ),
         tags=["quest-infra-failure"],
