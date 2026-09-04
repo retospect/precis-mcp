@@ -495,10 +495,30 @@ live in the tables, never chunks (nm/ADR-0041 storage rule).
    defaults + model override, printer-specific tuning optional later),
    each field with `source`/`retrieved`; orientation search + process
    DRC; export through cad's existing routes.
-6. **More modes** — CNC-2.5ax, SLA, TPU row, print-in-place; the process
+6. **Compliance advisories** (Reto 2026-09-04: tolerance analysis for
+   "deformation, wiggling, shafts, bond compression") — L4 evaluation
+   rungs in the DOF-probe posture: pure evaluators, advisory findings
+   through `view='drc'`, honest skips when an input (material,
+   stiffness, geometry) is absent. Never grow `stackup()` into a
+   physics engine — it stays dimensional-chain math (RSS is its one
+   refinement). Four scoped analyses:
+   - **Fit class** — judge each mechanism-demanded relation as
+     clearance/transition/interference from its signed offset ± tol;
+     needs no material, may land early with slice 5's fit views.
+   - **Play/backlash** — linear play from the clearance stack-up;
+     angular backlash = clearance ÷ radius (closed form).
+   - **Deformation under load** — beam/buckling closed forms from the
+     nm `mechanics.py` register, consuming stored loads; this is the
+     first engaged consumer of the `compliant` stiffness annotation
+     (which un-warns it per the Annotations contract). Blocked on
+     slice 5's material/component bindings for modulus + section.
+   - **Bond compression** — same advisory renting the same register
+     with nm supplying stiffness (loads are kind-neutral by design);
+     lives in the extracted shared core, never an se-only path.
+7. **More modes** — CNC-2.5ax, SLA, TPU row, print-in-place; the process
    skill catalog (bridge-closing first); atomic mode = nm binding with
    the declared unit boundary.
-7. **Skill file last** (`precis-se-help.md`) — after behavior exists;
+8. **Skill file last** (`precis-se-help.md`) — after behavior exists;
    a skill describing target state misdirects agents.
 
 Deferred, named so they aren't re-derived: FEA/load simulation beyond

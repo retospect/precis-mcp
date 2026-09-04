@@ -68,10 +68,11 @@ Ships **dark** behind the ``se.enabled`` setting (the ``se`` kind's
 kind is hidden from the catalogue/dispatcher until the flag is set. See
 ``docs/backlog/se-kind.md`` for the full design (annotations superset
 registry, manufacturing modes, the propose/interrogate loop); the
-agent-facing skill lands last (ship order step 7). Unshipped past this
+agent-facing skill lands last (ship order step 8). Unshipped past this
 round: the rotational DOF probe (translational_dof's missing twin),
 notes ledger, ``se_propose``, modes/process DRC, realization bindings,
-``se_bom``, the profile tier.
+``se_bom``, compliance advisories (ship-order step 6), the profile
+tier.
 """
 
 from __future__ import annotations
