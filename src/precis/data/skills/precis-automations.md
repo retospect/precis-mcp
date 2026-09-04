@@ -1,13 +1,13 @@
 ---
 id: precis-automations
 title: precis — find and edit standing automations (recurring agent behaviours)
-summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are recurring (meta.schedule set) todos tagged `automation`; find them with search(kind='todo', tags=['automation']), edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
+summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are recurring (meta.schedule set) todos; find them with search(kind='todo', view='roots') (the Watches umbrella), edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
 answers:
   - how do I find the recurring todos that drive automated behaviours like the podcast cast?
   - how do I change what an automation does?
   - how do I mark a recurring todo as an automation?
   - how do I link an automation to the artifact it produced?
-applies-to: recurring (meta.schedule set) todos tagged 'automation'; search(kind='todo', tags=['automation']); the podcast casts + briefing
+applies-to: recurring (meta.schedule set) todos; search(kind='todo', view='roots'); the podcast casts + briefing
 status: active
 ---
 
@@ -39,17 +39,15 @@ text/params *are* the prompt that shapes the output.
 ## Find the automations
 
 ```python
-search(kind="todo", tags=["automation"])
-search(kind="todo", tags=["automation", "cast-morning"])
+search(kind="todo", view="roots")  # → "## Watches (N recurring)" section
 ```
 
-A recurring is an automation when it carries the **`automation`** tag
-(recurring-ness itself is `meta.schedule` presence, not a tag — the
-`automation` tag alone is a sufficient practical filter here since only
-recurring roots carry it by convention). A
-second open tag names *which* one (`cast-morning`, `cast-evening`,
-`briefing`). This is a curated convention, not a validated axis — keep the
-subtype short and kebab-cased.
+The de-facto discovery path: `view='roots'` lists every recurring
+(`meta.schedule` set) todo under a **Watches** umbrella — the podcast
+casts, the news poll, the morning briefing. The `automation`
+tag described below is not applied at mint time (`search(kind='todo',
+tags=['automation'])` returns nothing live) — don't rely on it as a
+filter until that's fixed.
 
 ## Mark a recurring as an automation
 
@@ -58,7 +56,11 @@ tag(kind="todo", id=42, add=["automation", "cast-morning"])
 ```
 
 Un-mark with `remove=['automation']`. Marking is additive and needs no
-schema change — `automation` is a normal open tag on `kind='todo'`.
+schema change — `automation` is a normal open tag on `kind='todo'`; a
+second open tag can name *which* one (`cast-morning`, `cast-evening`,
+`briefing`) as a curated convention, kept short and kebab-cased. Since
+nothing mints with this tag today, treat it as an opt-in label to add
+by hand, not a reliable filter — use `view='roots'` to find automations.
 
 ## Edit what an automation does — edit its text (push-mode) or params (job-mode)
 

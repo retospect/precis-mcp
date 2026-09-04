@@ -37,6 +37,13 @@ caches). `search(kind='math', q=…)` does **not** call Wolfram — it
 only searches prior cached results by semantic similarity, so a query
 never asked before returns nothing. Use `get` to compute.
 
+`get(kind='math', id='/recent')` lists the most recently cached
+queries, newest first — same cache-backed shape as `perplexity-*`.
+A **failed** Wolfram call (timeout, no-parse, empty result) still
+caches its own failure text as the row's body, so it shows up in
+`/recent` and in `search` right alongside a real answer — a hit
+there isn't evidence the query actually resolved; read the row.
+
 ## When to use math vs calc
 
 | Use `math` for | Use `calc` for |

@@ -46,6 +46,7 @@ positional `~N` ordinals (they rot on insert).
 | `get(id='dc<id>-B..A')` | that chunk + B before, A after |
 | `get(id='dc<id>', view='fisheye')` | verbatim center + graduated neighborhood |
 | `get(id='dc<id>', view='fisheye+1hop')` | fisheye + cited/cross-ref/note ring |
+| `get(id=<scope>, view='toc')` | heading skeleton (whole draft, or one heading's subtree) |
 | `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |
@@ -175,7 +176,7 @@ resolves the project todo and returns the bound draft's outline
 (mutually exclusive with `id=`):
 
 ```python
-get(kind="draft")  # list ALL drafts (no project filter yet)
+get(kind="draft")  # list ALL drafts
 get(kind="draft", project="<project-todo-id>")  # → that project's draft outline
 ```
 

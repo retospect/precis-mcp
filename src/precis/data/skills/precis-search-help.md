@@ -21,7 +21,9 @@ status: active
 Hybrid lexical + semantic search. Returns ranked handles (`pc<chunk_id>`,
 e.g. `pc40`) you paste straight into `get(id=…)` to drill in — the handle's
 prefix infers the kind. Order is the relevance signal — there is no honest
-numeric score.
+numeric score. Exception: `search(kind='conv', …)` (lexical-only) prints a
+real `score=0.0333`-style lexical rank per hit — a `conv`-only quirk, not a
+general search contract.
 
 ## What knobs does search have?
 ## Quick reference for search arguments

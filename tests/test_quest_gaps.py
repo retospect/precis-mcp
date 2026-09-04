@@ -10,12 +10,19 @@ fixture) so the ``serves`` walk + tag/ref_events SQL is exercised end to end.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.handlers.todo import TodoHandler
-from precis.quest.gaps import quest_alignment, quest_gaps, quest_momentum
+from precis.quest.gaps import (
+    _GAPS_TAG_MAX_STRUCTURES,
+    quest_alignment,
+    quest_gaps,
+    quest_momentum,
+)
+from precis.store import Store, Tag
 
 
 def _handler(store: Any) -> QuestHandler:
@@ -92,6 +99,106 @@ class TestGaps:
         assert "open-hypothesis" not in _gap_kinds(store, qid)
 
 
+# ── structure fan-out cap (gr311678) ────────────────────────────────────
+
+
+def _seed_synthetic_structures(store: Store, quest_id: int, n: int) -> list[int]:
+    """Bulk-insert ``n`` ``structure`` refs, each ``serves``-linked to
+    ``quest_id`` — a single round trip per statement so N=10,000 stays fast
+    to set up (mirrors the gr311344 dossier's synthetic-fan-out repro)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "INSERT INTO refs (kind, set_by, title) "
+            "SELECT 'structure', 'system', 'synthetic structure ' || g "
+            "FROM generate_series(1, %s) AS g "
+            "RETURNING ref_id",
+            (n,),
+        ).fetchall()
+        ids = [int(r[0]) for r in rows]
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by) "
+            "SELECT unnest(%s::bigint[]), %s, 'serves', 'system'",
+            (ids, quest_id),
+        )
+        conn.commit()
+    return ids
+
+
+class TestGapsStructureFanoutCap:
+    """``quest_gaps`` bounds the per-structure ``tags_for`` fan-out the same
+    way ``quest_alignment`` bounds its per-server embedding fan-out
+    (``_ALIGN_MAX_SERVERS``) — an unbounded N+1 here scaled linearly with a
+    quest's ``serves`` fan-out (gr311678, 2.86s at N=10,000 in the dossier
+    repro)."""
+
+    def test_needs_experiment_gap_preserved_under_cap(self, store: Any) -> None:
+        """Well under the cap: the needs-experiment gap still fires for the
+        tagged structures, and no fan-out cap warning appears."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with graduated candidates"))
+        ids = _seed_synthetic_structures(store, qid, 5)
+        graduated = set(ids[:2])
+        for sid in graduated:
+            store.add_tag(sid, Tag.open("needs-experiment"), set_by="system")
+
+        gaps = quest_gaps(store, qid)
+        kinds = [g.kind for g in gaps]
+        assert kinds.count("needs-experiment") == len(graduated)
+        flagged_handles = {
+            g.handle for g in gaps if g.kind == "needs-experiment"
+        }
+        assert flagged_handles == {f"st{sid}" for sid in graduated}
+        assert "fanout-capped" not in kinds
+
+    def test_fanout_capped_gap_is_honest_when_truncated(self, store: Any) -> None:
+        """Past the cap, the excess structures are (honestly) not checked —
+        a ``fanout-capped`` gap says so instead of silently under-reporting,
+        and a needs-experiment tag past the cap boundary is not surfaced."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with a huge structure fan-out"))
+        n = _GAPS_TAG_MAX_STRUCTURES + 5
+        ids = _seed_synthetic_structures(store, qid, n)
+        # Tag one structure inside the checked window and one past it.
+        store.add_tag(ids[0], Tag.open("needs-experiment"), set_by="system")
+        store.add_tag(ids[-1], Tag.open("needs-experiment"), set_by="system")
+
+        gaps = quest_gaps(store, qid)
+        capped = [g for g in gaps if g.kind == "fanout-capped"]
+        assert len(capped) == 1
+        assert "5" in capped[0].detail
+
+        flagged_handles = {g.handle for g in gaps if g.kind == "needs-experiment"}
+        assert flagged_handles == {f"st{ids[0]}"}  # the past-cap tag is skipped
+
+    def test_wall_clock_budget_at_10k_synthetic_serves(self, store: Any) -> None:
+        """gaps + tree views stay well under budget at N=10,000 synthetic
+        ``serves`` edges — was 2.86s / 1.53s pre-fix (gr311344 dossier).
+
+        Budget is deliberately generous (10s, not ~2s) so it stays
+        congestion-proof on a shared/contended gate runner while still
+        catching the linear-with-fan-out regression this test guards: an
+        uncapped re-introduction of the N+1 would need ~3.5x today's
+        pre-fix time (2.86s) to even approach 10s, and the cap makes the
+        capped path roughly O(1) in server count regardless.
+        """
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with a huge server fan-out"))
+        _seed_synthetic_structures(store, qid, 10_000)
+
+        t0 = time.monotonic()
+        gaps = quest_gaps(store, qid)
+        gaps_elapsed = time.monotonic() - t0
+        # 10k structures, no papers → "no-literature" plus the fanout-capped hint.
+        assert gaps
+        assert gaps_elapsed < 10.0, f"view='gaps' path took {gaps_elapsed:.2f}s"
+
+        t0 = time.monotonic()
+        body = h.get(id=qid, view="tree").body
+        tree_elapsed = time.monotonic() - t0
+        assert body
+        assert tree_elapsed < 10.0, f"view='tree' took {tree_elapsed:.2f}s"
+
+
 # ── momentum ──────────────────────────────────────────────────────────
 
 
@@ -132,7 +239,6 @@ class TestMomentum:
         assert m_short.label == m_default.label == "active"
 
     def test_open_and_blocked_todo_servers(self, store: Any) -> None:
-        from precis.store import Tag
         from tests.conftest import id_of
 
         th = TodoHandler(hub=Hub(store=store))

@@ -36,8 +36,10 @@ get(kind="markdown", id="/Users/me/notes/meeting.md")  # absolute path also acce
 ```
 
 `/` and `--` are interchangeable in the file portion. `..` parent
-traversal is rejected. Full address grammar lives in
-`precis-files-help`.
+traversal is rejected. Path-form lookup is **case-insensitive** —
+each segment is lowercased before resolving to the slug, so
+`id="AGENTS.md"` resolves the same file as `agents.md`. Full address
+grammar lives in `precis-files-help`.
 
 ## Chunk grammar
 

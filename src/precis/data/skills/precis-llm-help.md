@@ -100,6 +100,12 @@ control: `{placement: 'local'|'cloud', thinking: bool, effort:
 optional. `placement` is **strict** — pinning `'local'` and having no local
 rung for the tier fails the call rather than silently falling back to cloud.
 
+## tag / link on a catalog card
+
+`tag`/`link` are allowed on `kind='llm'` (the generic numeric-ref
+surface) but nothing here reads them back — no special semantics,
+no facet UI. Allowed, not currently used for anything.
+
 ## See also
 
 ```python

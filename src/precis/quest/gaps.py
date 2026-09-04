@@ -57,6 +57,13 @@ ALIGN_SIM_FLOOR = 0.35
 #: server fan-out still reads cheaply; the rest render without an align flag.
 _ALIGN_MAX_SERVERS = 40
 
+#: Bound the "needs-experiment" tag check's per-structure lookups — same
+#: fan-out concern as ``_ALIGN_MAX_SERVERS`` above, applied to the graduated-
+#: candidate gap: a quest with a huge ``serves`` fan-out of structures still
+#: computes gaps cheaply; the rest are simply not checked (see the
+#: ``fanout-capped`` Gap this truncation appends).
+_GAPS_TAG_MAX_STRUCTURES = _ALIGN_MAX_SERVERS
+
 _LOG_KIND = "quest_log"
 
 
@@ -191,22 +198,49 @@ def quest_gaps(
 
     # 5. Graduated candidates — a strong in-silico result that has crossed the
     #    quest's ceiling and now needs a real-world experiment (slice 4e). The
-    #    loop can't close this; it's a call to a human / lab.
-    for r in live:
-        if r.kind != "structure":
+    #    loop can't close this; it's a call to a human / lab. Bound the per-
+    #    structure tags_for fan-out the same way the alignment floor bounds
+    #    its per-server embedding fan-out (_ALIGN_MAX_SERVERS) — an unbounded
+    #    N+1 here scales linearly with a quest's serves fan-out (gr311678).
+    structures = [r for r in live if r.kind == "structure"]
+    checked_structures = structures[:_GAPS_TAG_MAX_STRUCTURES]
+    graduated_ids: set[int] = set()
+    if checked_structures:
+        struct_ids = [r.id for r in checked_structures]
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT rt.ref_id FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN' AND t.value = %s",
+                (struct_ids, "needs-experiment"),
+            ).fetchall()
+        graduated_ids = {int(row[0]) for row in rows}
+    for r in checked_structures:
+        if r.id not in graduated_ids:
             continue
-        if any(str(t) == "needs-experiment" for t in store.tags_for(r.id)):
-            title = (r.title or "").splitlines()[0] if r.title else ""
-            gaps.append(
-                Gap(
-                    kind="needs-experiment",
-                    detail=(
-                        "graduated candidate needs a real-world experiment — "
-                        f"{title[:60]}"
-                    ),
-                    handle=_handle("structure", r.id),
-                )
+        title = (r.title or "").splitlines()[0] if r.title else ""
+        gaps.append(
+            Gap(
+                kind="needs-experiment",
+                detail=(
+                    "graduated candidate needs a real-world experiment — "
+                    f"{title[:60]}"
+                ),
+                handle=_handle("structure", r.id),
             )
+        )
+    if len(structures) > len(checked_structures):
+        skipped = len(structures) - len(checked_structures)
+        gaps.append(
+            Gap(
+                kind="fanout-capped",
+                detail=(
+                    f"{skipped} more structure server(s) not checked for "
+                    "needs-experiment — quest's structure fan-out exceeds "
+                    f"the {_GAPS_TAG_MAX_STRUCTURES}-server cap"
+                ),
+            )
+        )
 
     return gaps
 

@@ -826,15 +826,44 @@ class FusedBlockSearch:
             # "of K" headline AND mis-gate the pagination trailer). Pass
             # total=None (headline renders the plain count, no "of K") and
             # gate the nav on ``broad_has_more`` instead.
+            #
+            # Mode-aware total (gr311338): each ``mode=`` runs a genuinely
+            # different retrieval query against a different candidate pool
+            # (search_chunks_lexical / _semantic / _keywords are three
+            # different WHERE clauses) — the header must count THAT
+            # mode's universe, not always the plain-lexical one, or it
+            # reports a K the caller never actually searched (verbatim's
+            # keyword-containment pool is routinely orders of magnitude
+            # smaller than the lexical FTS pool for the same query).
+            # ``mode='verbatim'`` gets its own honest count
+            # (count_chunks_keywords mirrors search_chunks_keywords's
+            # ``c.keywords @> terms`` clause); ``mode='semantic'`` has no
+            # honest count available (cosine hits aren't gated by the
+            # lexical tsquery at all) so it gets ``total=None`` — same
+            # "no of-K header, gate nav on presence" treatment broad mode
+            # already uses, for the same reason.
             if not broad:
-                total = self.store.chunks.count_chunks_lexical(
-                    q=q,
-                    kind=self.kind,
-                    scope_ref_id=scope_ref_id,
-                    tags=normalized_tags,
-                    exclude_ref_ids=exclude_ref_ids or None,
-                    card_kinds=("card_combined",),
-                )
+                m = (mode or "hybrid").strip().lower()
+                if m == "verbatim":
+                    total = self.store.chunks.count_chunks_keywords(
+                        terms=q.split(),
+                        kind=self.kind,
+                        scope_ref_id=scope_ref_id,
+                        tags=normalized_tags,
+                        exclude_ref_ids=exclude_ref_ids or None,
+                        card_kinds=("card_combined",),
+                    )
+                elif m == "semantic":
+                    total = None
+                else:
+                    total = self.store.chunks.count_chunks_lexical(
+                        q=q,
+                        kind=self.kind,
+                        scope_ref_id=scope_ref_id,
+                        tags=normalized_tags,
+                        exclude_ref_ids=exclude_ref_ids or None,
+                        card_kinds=("card_combined",),
+                    )
 
         return BlockSearchResult(
             kind=kind,

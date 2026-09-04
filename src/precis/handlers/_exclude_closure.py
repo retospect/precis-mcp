@@ -66,6 +66,21 @@ def resolve_exclude_paper_ids(
     paper_ids: set[int] = set()
     bare_slugs: list[str] = []
     seen_slugs: set[str] = set()
+    # Record-form universal handles (``pa<id>``, never chunk-form
+    # ``pc<id>``) skip the per-item ``store.resolve_handle()`` round trip
+    # entirely: the handle's decimal body IS the ref_id (no lookup
+    # needed to find it), so every such entry across the whole
+    # ``exclude=`` list resolves in ONE bulk ``fetch_refs_by_ids`` call
+    # below instead of N sequential ``resolve_handle`` connections (the
+    # gr311339 hang — a 4-entry exclude took >1800s where a 1-entry
+    # exclude was fast). Chunk-form handles (``pc<id>``) and anything
+    # that doesn't survive the bulk fetch (dead / superseded / kind
+    # mismatch) still fall through to the original per-item
+    # ``_normalise_exclude_slug`` path below — rare enough not to be
+    # worth a second bulk shape, and it preserves that path's existing
+    # supersede-follow / redirect-hint behavior exactly.
+    record_handle_pks: dict[str, int] = {}
+    other_entries: list[str] = []
     for raw in entries:
         entry = (raw or "").strip()
         if not entry:
@@ -74,6 +89,25 @@ def resolve_exclude_paper_ids(
         if texts is not None:
             paper_ids |= _cite_closure_paper_ids(texts, store=store)
             continue
+        parsed = handle_registry.parse(entry)
+        if parsed is not None and not parsed[1] and parsed[0] == kind:
+            record_handle_pks[entry] = parsed[2]
+        else:
+            other_entries.append(entry)
+
+    if record_handle_pks:
+        refs_map = store.fetch_refs_by_ids(list(set(record_handle_pks.values())))
+        for entry, pk in record_handle_pks.items():
+            ref = refs_map.get(pk)
+            if ref is not None and ref.retired_at is None and ref.kind == kind:
+                paper_ids.add(pk)
+            else:
+                # Dead / superseded / not found in the bulk fetch — fall
+                # back to the original per-item resolution (handles the
+                # merge-redirect / supersede-chain case correctly).
+                other_entries.append(entry)
+
+    for entry in other_entries:
         slug = _normalise_exclude_slug(entry, store=store)
         if slug is not None and slug not in seen_slugs:
             seen_slugs.add(slug)

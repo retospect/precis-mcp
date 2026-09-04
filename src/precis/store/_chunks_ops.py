@@ -452,6 +452,70 @@ class ChunkStore:
         assert row is not None
         return int(row[0])
 
+    def count_chunks_keywords(
+        self,
+        *,
+        terms: list[str],
+        kind: str | None = None,
+        kinds: list[str] | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
+        distinct_refs: bool = False,
+    ) -> int:
+        """Count chunks matching the ``mode='verbatim'`` keyword-containment
+        filter (no LIMIT). Companion to :meth:`search_chunks_keywords` for
+        the "N of K" header — same ``c.keywords @> terms`` WHERE clause, so
+        the header matches verbatim's actual (usually much smaller) pool
+        rather than :meth:`count_chunks_lexical`'s plain-FTS universe
+        (gr311338: the header used to report the lexical K unconditionally,
+        even for verbatim/semantic modes whose retrieval pool is genuinely
+        different — prod-measured 846 lexical vs 8 verbatim for a two-word
+        query).
+
+        Empty (post-lowercase-filter) ``terms`` returns 0, mirroring
+        :meth:`search_chunks_keywords`'s "empty containment matches
+        nothing" contract.
+        """
+        norm = [t.lower() for t in terms if t.strip()]
+        if not norm:
+            return 0
+        count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
+        clauses = [
+            "r.retired_at IS NULL",
+            "c.retired_at IS NULL",
+            _ord_card_clause(card_kinds),
+            "c.keywords @> %s::text[]",
+            *_chunk_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = [norm]
+        if kinds is not None:
+            params.append(list(kinds))
+            clauses.append("r.kind = ANY(%s)")
+        elif kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
+        sql = (
+            f"SELECT {count_expr} FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            f"WHERE {' AND '.join(clauses)}"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
+
     def count_paper_yearless_matches(
         self,
         *,

@@ -950,8 +950,16 @@ class RefsMixin:
         Returns the ref ids for slugs that resolve in this kind;
         unknown / deleted slugs are silently dropped. Used by the
         search ``exclude=`` path so an agent passing back the slugs
-        from a prior response gets a "skip these" filter without
-        N round-trips and without a ``BadInput`` on a stale slug.
+        from a prior response gets a "skip these" filter — this call
+        itself is always ONE round trip for the whole batch. The
+        surrounding ``exclude=`` path only avoids N round-trips
+        *overall* for bare slugs/DOIs and record-form universal handles
+        (``pa<id>``) — both of those resolve to their slug/id without a
+        DB call before reaching here (see
+        ``handlers._exclude_closure.resolve_exclude_paper_ids``, gr311339);
+        a chunk-form handle (``pc<id>``) or a dead/superseded handle
+        still costs its own ``resolve_handle`` round trip upstream of
+        this function.
 
         Order of the input is not preserved — callers that care
         should map results back via the returned set membership.

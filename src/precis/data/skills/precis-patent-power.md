@@ -32,6 +32,14 @@ The string is forwarded to OPS verbatim and merged with local
 hits the same way as bare keywords. `[local]` marks hits already
 in the store.
 
+**The local leg keyword/embedding-matches the literal CQL string, not
+the parsed query** — field prefixes, booleans, and quoted numbers all
+stay in the string, so a stray token like the `2024` in `pd within
+"2020 2024"` pulls unrelated already-ingested patents that happen to
+mention 2024. Only the remote (OPS) leg actually parses the CQL. Pin
+`reach='remote'` to skip the noisy local leg on a query with digits or
+operators in it.
+
 ## CQL field reference
 ## What fields can I scope to?
 ## Which CQL operators does OPS accept?

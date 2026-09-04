@@ -250,3 +250,62 @@ def test_bogus_dr_raises_bad_input_naming_entry(store: Store) -> None:
 def test_bogus_dc_raises_bad_input_naming_entry(store: Store) -> None:
     with pytest.raises(BadInput, match="dc999999"):
         resolve_exclude_paper_ids(["dc999999"], store=store)
+
+
+# ── gr311339: multi-handle exclude batches into ONE round trip ──────────
+
+
+def _spy(obj: object, name: str, calls: list) -> None:
+    """Wrap ``obj.<name>`` (instance attribute shadowing the class method)
+    so each call is recorded in ``calls`` before delegating to the real
+    implementation."""
+    orig = getattr(obj, name)
+
+    def _wrapped(*args: object, **kw: object) -> object:
+        calls.append((args, kw))
+        return orig(*args, **kw)
+
+    object.__setattr__(obj, name, _wrapped)
+
+
+def test_multi_record_handle_exclude_batches_into_one_fetch(store: Store) -> None:
+    """N ``pa<id>`` (record-form, universal-handle) exclude entries must
+    resolve via ONE bulk ``fetch_refs_by_ids`` call — not N sequential
+    ``resolve_handle`` round trips (gr311339: a 4-entry exclude hung
+    >1800s where a 1-entry exclude was fast, because each extra handle
+    entry was its own serial connection checkout + SELECT)."""
+    ids = [_mk_paper(store, slug=f"batch-handle-{i}") for i in range(4)]
+    handles = [handle_registry.format_handle("paper", rid) for rid in ids]
+
+    resolve_calls: list = []
+    fetch_calls: list = []
+    _spy(store, "resolve_handle", resolve_calls)
+    _spy(store, "fetch_refs_by_ids", fetch_calls)
+
+    got = resolve_exclude_paper_ids(handles, store=store, kind="paper")
+
+    assert got == set(ids)  # unchanged results
+    assert resolve_calls == []  # zero per-item handle round trips
+    assert len(fetch_calls) == 1  # exactly one batched fetch for all 4
+    (args, kw) = fetch_calls[0]
+    fetched_ids = args[0] if args else kw["ref_ids"]
+    assert set(fetched_ids) == set(ids)
+
+
+def test_multi_record_handle_exclude_falls_back_for_dead_handle(store: Store) -> None:
+    """A dead/unresolvable handle mixed into the batch still gets its
+    per-item ``resolve_handle`` fallback (correctness preserved for the
+    rare case the bulk fetch can't answer), while the live handles in the
+    same call still cost only the one batched fetch."""
+    live = _mk_paper(store, slug="batch-live")
+    live_handle = handle_registry.format_handle("paper", live)
+    dead_handle = "pa999999999"  # well-formed handle shape, no such ref
+
+    resolve_calls: list = []
+    _spy(store, "resolve_handle", resolve_calls)
+
+    got = resolve_exclude_paper_ids([live_handle, dead_handle], store=store, kind="paper")
+
+    assert got == {live}  # dead handle silently drops, same as before
+    assert len(resolve_calls) == 1  # only the dead one falls back
+    assert resolve_calls[0][0] == (dead_handle,)

@@ -27,8 +27,9 @@ notes = get(kind="perplexity-research", id="<id>")
 
 # You (the planner) read the notes and identify cited papers — DOIs,
 # arXiv IDs, paper titles with authors. For each one not yet in
-# corpus, call acquire so the fetch_oa worker enriches it:
-paper.acquire(
+# corpus, mint a stub so the fetch_oa worker enriches it:
+put(
+    kind="paper",
     identifier="10.1038/nature10352",
     title="Graphene field-effect transistors",
     reason="cited by perplexity-research:847 on CNT mobility",
@@ -36,7 +37,8 @@ paper.acquire(
 )
 ```
 
-`acquire` accepts:
+`put(kind='paper', …)` (a thin adapter over the internal `acquire`
+method — `doi=`/`arxiv=` are shorthand for `identifier=`) accepts:
 
 - `identifier=` — `'doi:10.1038/...'`, `'arxiv:2401.00001'`,
   `'s2:<id>'`, `'pubmed:<id>'`, or bare DOI / arXiv ID (`'10.…'` and
@@ -74,31 +76,32 @@ The text you're reading has noisy citation forms — bracketed
 strings, full URLs, and titles without identifiers. A regex catches
 some but misses many; the LLM reads sentence context, knows
 "Javey et al. 2003 Nature 424:654" is one paper, and emits the
-right `identifier=` / `title=` to `acquire`. Default to that.
+right `identifier=` / `title=` to `put(kind='paper', …)`. Default to
+that.
 
 ## When to call vs when to skip
 
-- **Call `acquire`** when you encounter a paper that supports a
+- **Mint a stub** when you encounter a paper that supports a
   quantitative claim, a method choice, a counterargument, or a
   citation you intend to write. The fetch pass is cheap and
   idempotent (a stub minted again is a no-op via DOI alias matching).
-- **Skip `acquire`** for review papers / textbooks named only as
+- **Skip it** for review papers / textbooks named only as
   general background and not cited specifically. The corpus grows
   with what you'll actually need to verify.
 
 ## Verify the corpus before re-acquiring
 
 ```python
-# Cheap check before acquire — DOI / arXiv both resolve in get():
+# Cheap check before minting a stub — DOI / arXiv both resolve in get():
 try:
     get(kind='paper', id='10.1038/nature10352')
-    # Already in corpus; skip acquire.
+    # Already in corpus; skip put.
 except NotFound:
-    paper.acquire(identifier='10.1038/nature10352', ...)
+    put(kind='paper', identifier='10.1038/nature10352', ...)
 ```
 
-The acquire path also dedups via DOI aliases, but the explicit `get`
-short-circuit avoids the fetch_oa pass touching a stub it'll just
+`put(kind='paper', …)` also dedups via DOI aliases, but the explicit
+`get` short-circuit avoids the fetch_oa pass touching a stub it'll just
 collapse into the existing ref.
 
 ## See also

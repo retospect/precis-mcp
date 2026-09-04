@@ -120,7 +120,15 @@ search by topic on Semantic Scholar — each hit carries a DOI to stub:
 get(kind="semanticscholar", id="refs:<held-doi>")  # papers it cites
 get(kind="semanticscholar", id="cites:<held-doi>")  # papers citing it
 get(kind="semanticscholar", id="<title or topic>")  # search → ranked hits + DOIs
+search(kind="semanticscholar", q="<title or topic>")  # re-query rows already cached above — no live S2 call
 ```
+
+`search(kind='semanticscholar', …)` never calls S2 — it's a
+lexical/semantic re-query over whatever `get` has already fetched and
+cached, so a topic never `get`-searched before returns nothing.
+`reach=` (patent/EDGAR's local-vs-remote knob) has no effect here — it's
+silently swallowed like any unhonoured kwarg — so this *is* the
+local-cache-only leg; `get` is the only way to reach S2 live.
 
 ## What don't we have yet, on this topic?
 
