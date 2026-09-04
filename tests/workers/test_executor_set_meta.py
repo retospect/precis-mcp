@@ -106,7 +106,9 @@ class TestRecordFailureErrorMeta:
         """Unclassified failures keep their old shape — no ``failure_class``
         means no meta write at all (still logged to the job_event chunk)."""
         job = store.insert_ref(kind="job", slug=None, title="struct_relax")
-        _common.record_failure(store, job.id, "some non-infra reason", gripe_rollback=None)
+        _common.record_failure(
+            store, job.id, "some non-infra reason", gripe_rollback=None
+        )
         meta = store.fetch_refs_by_ids({job.id})[job.id].meta or {}
         assert "error" not in meta
         assert "failure_class" not in meta
