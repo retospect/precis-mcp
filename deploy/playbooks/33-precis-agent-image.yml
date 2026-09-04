@@ -99,6 +99,20 @@
 # fast with a diagnostic message instead of burning the context transfer; it
 # doubles as a warm pull cache for the build task that follows.
 #
+# MIRROR FALLBACK (gr307314 comments 4-6, 2026-09-04): two further Hub outage
+# modes hit the same day — an upstream routing blackhole to a slice of AWS
+# us-east-1, then upstream DNS rotation serving a MIX of live and blackholed
+# IPs (docker dials a dead one and times out while curl in the same VM lands
+# lucky; colima restart does NOT help). mirror.gcr.io (Google's pull-through
+# Hub cache) stayed reachable throughout both. The pre-pull now falls back to
+# mirror.gcr.io refs when the canonical pulls fail, and the build task rides
+# the same fallback via --build-arg BUILDKIT_SYNTAX (frontend ref override)
+# + PYTHON_IMAGE (FROM base name; docker/Dockerfile parameterizes it, digest
+# pin unchanged so the substitution is byte-identical). The assert only
+# reddens when BOTH registries are unreachable, and its message discriminates
+# the VM-resolver mode (colima restart helps) from the upstream-rotation mode
+# (it doesn't — wait + spaced re-runs).
+#
 # Standalone runs:
 #   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_target_sha=<sha>
 #   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_force_agent_image_build=true
@@ -222,19 +236,43 @@
             [
               (lookup('file', playbook_dir + '/../../docker/Dockerfile').splitlines()[0]
                 | regex_replace('^# syntax=', '')),
-              'python:3.12-slim-bookworm@' ~
+              (lookup('file', playbook_dir + '/../../docker/Dockerfile')
+                | regex_search('ARG PYTHON_IMAGE=(\S+)', '\1'))[0] ~ '@' ~
                 (lookup('file', playbook_dir + '/../../docker/Dockerfile')
                   | regex_search('ARG PYTHON_DIGEST=(\S+)', '\1'))[0]
             ] | unique
           }}
 
-    - name: "Preflight: pre-pull build images through the docker daemon (gr307314 — warm cache + daemon-side registry reachability check)"
+    # mirror.gcr.io equivalents (gr307314 comments 4-6): Google's pull-through
+    # Hub cache stayed reachable through both 09-04 outage modes. Digest pins
+    # are registry-independent (same manifest bytes), so a mirror pull is
+    # byte-identical. Hub-official images gain the implicit `library/` prefix.
+    - name: "Compute mirror.gcr.io fallback refs for the same images"
+      when: agent_runtime.rc == 0
+      ansible.builtin.set_fact:
+        _agent_mirror_refs: >-
+          {{ _agent_pull_refs
+             | map('regex_replace', '^([^/]+)$', 'library/\1')
+             | map('regex_replace', '^', 'mirror.gcr.io/')
+             | list }}
+
+    - name: "Preflight: pre-pull build images through the docker daemon, mirror fallback (gr307314 — warm cache + daemon-side registry reachability check)"
       when: agent_runtime.rc == 0
       ansible.builtin.shell: |
-        set -euo pipefail
+        set -uo pipefail
+        canonical_ok=1
         {% for ref in _agent_pull_refs %}
-        {{ _agent_container_bin }} pull {{ ref }}
+        {{ _agent_container_bin }} pull {{ ref }} || canonical_ok=0
         {% endfor %}
+        if [ "$canonical_ok" = "1" ]; then
+          echo "PULL_SOURCE=canonical"
+          exit 0
+        fi
+        echo "canonical registry unreachable — falling back to mirror.gcr.io" >&2
+        {% for ref in _agent_mirror_refs %}
+        {{ _agent_container_bin }} pull {{ ref }} || exit 1
+        {% endfor %}
+        echo "PULL_SOURCE=mirror"
       args:
         executable: /bin/bash
       register: agent_pull_probe
@@ -248,7 +286,7 @@
       until: agent_pull_probe.rc == 0
       failed_when: false
 
-    - name: "Fail this host if the daemon-side registry pre-pull is still unreachable (gr307314)"
+    - name: "Fail this host if BOTH the canonical registry and the mirror are unreachable through the daemon (gr307314)"
       when: agent_runtime.rc == 0
       ansible.builtin.assert:
         that: agent_pull_probe.rc == 0
@@ -256,13 +294,22 @@
         fail_msg: >-
           {{ inventory_hostname }}: `{{ _agent_container_bin }} pull` failed after 3
           attempts (rc={{ agent_pull_probe.rc }}) for {{ _agent_pull_refs | join(', ') }}
-          — gr307314: this is the known daemon-side DNS cache poisoning failure mode.
-          Symptoms: a TLS certificate for the WRONG domain (e.g. *.ezcld.net) or a
-          connection to a dead recycled IP for registry-1.docker.io, while the HOST's
-          own resolver is healthy (`curl https://registry-1.docker.io/v2/` succeeds from
-          the shell) — only the lima/colima VM's DNS forwarder has the poisoned cache
-          entry. Spaced retries alone don't reliably clear it. Remedy: `colima restart`
-          (or otherwise flush the lima forwarder's DNS cache), then re-run this play.
+          AND their mirror.gcr.io fallbacks — gr307314. Two known Hub failure modes
+          would each have been rescued by the mirror, so a red here means broader
+          registry unreachability. Discriminate from the HOST shell with
+          `curl -m 8 https://registry-1.docker.io/v2/` (healthy = HTTP 401):
+          (a) host curl healthy but daemon pulls dead = VM-side resolver trouble —
+          a stale /etc/hosts pin inside the colima VM or a poisoned lima forwarder
+          cache (`colima restart` helps ONLY this mode); (b) host curl also
+          timing out, or intermittent = upstream DNS rotation serving a mix of
+          live and blackholed IPs — no local remedy; wait and re-run this play
+          spaced (back-to-back retries lose). Details + probe recipes: gr307314.
+
+    - name: "Record whether the build must use the mirror refs (canonical registry was unreachable)"
+      when: agent_runtime.rc == 0
+      ansible.builtin.set_fact:
+        _agent_pull_via_mirror: >-
+          {{ 'PULL_SOURCE=mirror' in (agent_pull_probe.stdout | default('')) }}
 
     - name: Read the resident precis-agent image's baked sha (OCI label)
       when: agent_runtime.rc == 0
@@ -346,12 +393,20 @@
             state: absent
 
         - name: docker build --target agent (BuildKit; label stamps the built sha)
+          # When the pre-pull fell back to mirror.gcr.io, point the build's two
+          # registry fetches there too: BUILDKIT_SYNTAX overrides the
+          # `# syntax=` frontend ref, PYTHON_IMAGE the FROM base name (digest
+          # pin unchanged — same bytes, different registry). gr307314.
           ansible.builtin.command:
             cmd: >-
               {{ _agent_container_bin }} build
               --target agent
               -t {{ _agent_image }}
               --label org.precis.sha={{ _agent_image_ref }}
+              {% if _agent_pull_via_mirror | default(false) | bool %}
+              --build-arg BUILDKIT_SYNTAX={{ _agent_mirror_refs[0] }}
+              --build-arg PYTHON_IMAGE={{ _agent_mirror_refs[1] | regex_replace('@.*$', '') }}
+              {% endif %}
               -f docker/Dockerfile
               .
             chdir: "{{ _agent_build_dir }}"

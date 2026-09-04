@@ -54,6 +54,10 @@
 # docs/decisions/0009-dockerfile-relocation-container-first.md, and
 # docs/design/bake-models-into-image.md (premodels seed mechanism).
 
+# PYTHON_IMAGE is overridable so a deploy can substitute a registry mirror
+# (e.g. mirror.gcr.io/library/python) when Docker Hub is unreachable
+# (gr307314); the digest pin makes the substitution byte-identical.
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 ARG PYTHON_DIGEST=sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2
 ARG UV_VERSION=0.11.14
 
@@ -69,7 +73,7 @@ FROM scratch AS premodels
 # `src/precis/**` does NOT invalidate this layer, so the ~1.5 GB model
 # bake in Stage `models` also stays cached across source edits.
 # =============================================================================
-FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps
+FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS deps
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -172,7 +176,7 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # Consumed by both `runtime` and `dev-system` so the apt layer is computed
 # once for both image variants.
 # =============================================================================
-FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS system-base
+FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS system-base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -490,7 +494,7 @@ CMD ["bash"]
 # (marker→torch) and `embed` (sentence-transformers→torch), so this venv
 # carries no torch at all.
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps-lite
+FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS deps-lite
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -578,7 +582,7 @@ CMD ["precis", "watch"]
 # as a follow-up. macOS runs the embedder NATIVELY (launchd + MPS), not in
 # this container, because a Mac container cannot reach Metal.
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps-embed
+FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS deps-embed
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -659,7 +663,7 @@ CMD ["precis", "serve-embeddings"]
 # (code-task-run.sh) ships with the harvest slice; slice 1 has the executor pass
 # the command. Design: docs/design/sandbox-run.md.
 # =============================================================================
-FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS code-task
+FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS code-task
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

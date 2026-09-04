@@ -321,8 +321,6 @@ class TestDefaultLinkRowCap:
         assert f"Links ({DEFAULT_LINK_ROW_CAP} of {n}):" in section
         assert f"\n+{n - DEFAULT_LINK_ROW_CAP} more ·" in section
         assert "view='links')" in section
-        rendered_titles = sum(
-            1 for i in range(n) if f"target paper {i}" in section
-        )
+        rendered_titles = sum(1 for i in range(n) if f"target paper {i}" in section)
         assert rendered_titles == DEFAULT_LINK_ROW_CAP
         assert render_links_section(store, ref, limit=DEFAULT_LINK_ROW_CAP) == section
