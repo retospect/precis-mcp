@@ -31,6 +31,7 @@ from precis import settings
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
+from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -51,7 +52,6 @@ from precis.handlers._paper_search import (
     FusedBlockSearch,
     PaperSearchResultRenderer,
     _dedup_card_hits,
-    _normalise_exclude_slug,
 )
 from precis.handlers._paper_text import (
     _is_image_only_block,
@@ -139,10 +139,13 @@ _DOI_EDIT_TITLE_MISMATCH_THRESHOLD = 0.6
 # to live here — they're pure ``search()``-only helpers, moved alongside the
 # BylineSearch / FusedBlockSearch / PaperSearchResultRenderer collaborators in
 # ``_paper_search.py`` (OPEN-ITEMS "Refactor handlers/paper.py::search()").
-# ``_normalise_exclude_slug`` / ``_dedup_card_hits`` / ``_BROAD_LEG_CAP`` moved
-# there too but are re-imported at the top of this module: the first two are
-# also used by ``search_hits()`` below, and ``_normalise_exclude_slug`` is
-# additionally imported directly by ``tests/test_handle_resolution.py``.
+# ``_dedup_card_hits`` / ``_BROAD_LEG_CAP`` moved there too but are
+# re-imported at the top of this module: both are also used by
+# ``search_hits()`` below. ``search_hits()``'s ``exclude=`` resolution
+# (gr312636) reuses ``resolve_exclude_paper_ids`` from
+# ``_exclude_closure.py`` — the same batched resolver ``search()``'s
+# single-kind path uses via ``FusedBlockSearch`` — instead of
+# ``_normalise_exclude_slug`` per entry.
 
 
 def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> list[str]:
@@ -892,24 +895,24 @@ class PaperHandler(Handler):
         kind merge has no per-paper scope.
 
         ``exclude=`` mirrors the ``search`` shape (coarse, ref-level
-        slug list). Cross-kind callers can pass it through so
-        pagination works across the merged stream. ``exclude_ref_ids=``
-        is the pre-resolved numeric complement (``uncited=``'s closure).
+        slug list, plus the ``dr…``/``dc…`` draft-container forms
+        ``resolve_exclude_paper_ids`` supports). Cross-kind callers can
+        pass it through so pagination works across the merged stream.
+        ``exclude_ref_ids=`` is the pre-resolved numeric complement
+        (``uncited=``'s closure).
         """
         if not (q and q.strip()):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind=self.spec.kind)
         resolved_exclude_ref_ids: set[int] = set(exclude_ref_ids or ())
-        if exclude:
-            normalised: list[str] = []
-            for raw in exclude:
-                slug = _normalise_exclude_slug(str(raw), store=self.store)
-                if slug is not None:
-                    normalised.append(slug)
-            if normalised:
-                resolved_exclude_ref_ids.update(
-                    self.store.fetch_ref_ids_by_slugs(normalised, kind=self.spec.kind)
-                )
+        # gr312636: batched (one ``fetch_refs_by_ids``/``fetch_ref_ids_by_slugs``
+        # for the whole list, per-item fallback only for a genuine miss) —
+        # same shared resolver ``search()``'s single-kind path uses via
+        # ``FusedBlockSearch`` (gr311339), reused here instead of a serial
+        # per-entry ``_normalise_exclude_slug`` loop.
+        resolved_exclude_ref_ids |= resolve_exclude_paper_ids(
+            exclude, store=self.store, kind=self.spec.kind
+        )
         # query_vec= may be pre-supplied by the runtime cross-kind
         # dispatcher (computed once for all kinds), avoiding an
         # extra embed_one(q) per fanned-out kind.

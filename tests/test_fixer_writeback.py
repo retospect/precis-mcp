@@ -8,11 +8,15 @@ Two things load-bearing enough to pin down:
   and possibly shipped the fix by the time write-back runs, so a
   crash here must not undo reporting that success.
 * **The pure outcome helper.** ``tick._gripe_outcome`` maps
-  ``(report.status, autonomy)`` to a (comment, status) pair without
-  touching the network — the comment never starts with ``DIAGNOSIS``
-  (that prefix is the diagnose_gripe promotion signal;
+  ``(report.status, autonomy, shipped)`` to a (comment, status) pair
+  without touching the network — the comment never starts with
+  ``DIAGNOSIS`` (that prefix is the diagnose_gripe promotion signal;
   ``intake._is_diagnosed`` would wrongly treat a write-back comment as
-  a fresh diagnosis) and only ``NEEDS_YOU`` yields a ``None`` status.
+  a fresh diagnosis) and only an unshipped ``NEEDS_YOU`` yields a
+  ``None`` status — a shipped-but-unverified ``NEEDS_YOU`` (full
+  autonomy's deploy/prod-check failing after a successful ship, gr313409)
+  still flips to ``in_review`` and says so honestly instead of "did not
+  land".
 """
 
 from __future__ import annotations
@@ -139,7 +143,7 @@ def test_gripe_writeback_no_status_skips_add_tag(
 
 def test_gripe_outcome_report_autonomy_ok_is_in_review() -> None:
     report = Report(ReportStatus.OK, "t", "branch fix/gr42 built + gate green")
-    comment, status = _gripe_outcome(report, Autonomy.REPORT, _item())
+    comment, status = _gripe_outcome(report, Autonomy.REPORT, _item(), shipped=False)
     assert comment.startswith("FIXER (auto):")
     assert not comment.startswith("DIAGNOSIS")
     assert "fix/gr42" in comment
@@ -148,7 +152,7 @@ def test_gripe_outcome_report_autonomy_ok_is_in_review() -> None:
 
 def test_gripe_outcome_ship_autonomy_ok_is_in_review() -> None:
     report = Report(ReportStatus.OK, "t", "shipped fix/gr42 to main")
-    comment, status = _gripe_outcome(report, Autonomy.SHIP, _item())
+    comment, status = _gripe_outcome(report, Autonomy.SHIP, _item(), shipped=True)
     assert comment.startswith("FIXER (auto):")
     assert not comment.startswith("DIAGNOSIS")
     assert "shipped" in comment
@@ -157,7 +161,7 @@ def test_gripe_outcome_ship_autonomy_ok_is_in_review() -> None:
 
 def test_gripe_outcome_full_autonomy_ok_is_in_review() -> None:
     report = Report(ReportStatus.OK, "t", "shipped + deployed; /readyz 200")
-    comment, status = _gripe_outcome(report, Autonomy.FULL, _item())
+    comment, status = _gripe_outcome(report, Autonomy.FULL, _item(), shipped=True)
     assert comment.startswith("FIXER (auto):")
     assert not comment.startswith("DIAGNOSIS")
     assert "/readyz 200" in comment
@@ -168,17 +172,53 @@ def test_gripe_outcome_needs_you_has_no_status_flip() -> None:
     report = Report(
         ReportStatus.NEEDS_YOU, "t", "gate failed: mypy\nline1\nline2\nline3\nline4"
     )
-    comment, status = _gripe_outcome(report, Autonomy.REPORT, _item())
+    comment, status = _gripe_outcome(report, Autonomy.REPORT, _item(), shipped=False)
     assert comment.startswith("FIXER (auto):")
     assert not comment.startswith("DIAGNOSIS")
+    assert "did not land" in comment
     assert status is None
 
 
 def test_gripe_outcome_needs_you_truncates_detail_to_three_lines() -> None:
     detail = "\n".join(f"line{i}" for i in range(10))
     report = Report(ReportStatus.NEEDS_YOU, "t", detail)
-    comment, _status = _gripe_outcome(report, Autonomy.REPORT, _item())
+    comment, _status = _gripe_outcome(report, Autonomy.REPORT, _item(), shipped=False)
     assert "line0" in comment
     assert "line1" in comment
     assert "line2" in comment
     assert "line9" not in comment
+
+
+# ── gr313409: shipped-but-unverified NEEDS_YOU is told honestly ─────
+
+
+def test_gripe_outcome_shipped_needs_you_is_honest_and_flips_in_review() -> None:
+    """Full autonomy: ``scripts/ship`` succeeded (fix landed on main) but
+    the post-ship deploy/prod-check failed — the write-back must NOT say
+    "did not land" (it did) and must still flip the gripe to
+    ``in_review`` since a human needs to look at the fix-forward, not
+    re-pick the gripe from ``open``."""
+    report = Report(
+        ReportStatus.NEEDS_YOU,
+        "t",
+        "deployed but prod check failed — fix-forward needed. /readyz unreachable",
+    )
+    comment, status = _gripe_outcome(report, Autonomy.FULL, _item(), shipped=True)
+    assert comment.startswith("FIXER (auto):")
+    assert not comment.startswith("DIAGNOSIS")
+    assert "did not land" not in comment
+    assert "shipped" in comment.lower()
+    assert "not verified" in comment.lower() or "fix-forward" in comment.lower()
+    assert status == "in_review"
+
+
+def test_gripe_outcome_unshipped_needs_you_wording_unchanged() -> None:
+    """The pre-ship NEEDS_YOU path (build/gate failure, never reached
+    ``scripts/ship``) keeps its existing "did not land" wording and
+    ``None`` status — unaffected by the ``shipped`` threading."""
+    report = Report(ReportStatus.NEEDS_YOU, "t", "gate failed: mypy\nboom")
+    comment, status = _gripe_outcome(report, Autonomy.SHIP, _item(), shipped=False)
+    assert (
+        comment == "FIXER (auto): build attempt did not land — gate failed: mypy\nboom"
+    )
+    assert status is None

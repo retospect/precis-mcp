@@ -301,6 +301,60 @@ def test_run_tick_calls_gripe_writeback_once_on_needs_you(
     assert status is None
 
 
+def test_run_tick_shipped_needs_you_writeback_is_honest_and_in_review(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr313409: full autonomy — ``scripts/ship`` succeeds (fix lands on
+    main) but the post-ship deploy/prod-check fails. The write-back must
+    NOT claim the build "did not land" (it did) and must still flip
+    ``STATUS:in_review`` (fix-forward needed, not a re-pick from open)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    cfg = _cfg(tmp_path, repo, Autonomy.FULL, gripe_db_url="postgresql://example/db")
+    item = _gripe_item()
+
+    monkeypatch.setattr(tick_mod, "_spawn_claude", _fake_spawn_claude)
+    monkeypatch.setattr(tick_mod, "_autofix_lint", lambda worktree: None)
+    monkeypatch.setattr(
+        tick_mod, "_quick_gate", lambda cfg, worktree: (True, "gate green (fake)")
+    )
+    monkeypatch.setattr(
+        tick_mod,
+        "_run_script_in_worktree",
+        lambda worktree, script, msg: (True, "shipped (fake)"),
+    )
+    monkeypatch.setattr(
+        tick_mod, "_run_script", lambda cfg, script, *args: (True, "deploy ok (fake)")
+    )
+    monkeypatch.setattr(
+        tick_mod, "_look_at_prod", lambda cfg: (False, "/readyz unreachable")
+    )
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
+
+    calls: list[tuple[Any, ...]] = []
+
+    def _record_writeback(*a: Any) -> bool:
+        calls.append(a)
+        return True
+
+    monkeypatch.setattr(tick_mod, "gripe_writeback", _record_writeback)
+
+    result = tick_mod.run_tick(cfg)
+
+    assert result.report is not None
+    assert result.report.status is ReportStatus.NEEDS_YOU
+    assert len(calls) == 1
+    db_url, ref_id, comment, status = calls[0]
+    assert db_url == "postgresql://example/db"
+    assert ref_id == 42
+    assert comment.startswith("FIXER (auto):")
+    assert "did not land" not in comment
+    assert "shipped" in comment.lower()
+    assert status == "in_review"
+
+
 def test_run_tick_skips_writeback_for_proposal_kind(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

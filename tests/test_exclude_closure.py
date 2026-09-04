@@ -16,11 +16,13 @@ from dataclasses import dataclass
 import pytest
 
 from precis.dispatch import Hub
+from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers.draft import DraftHandler
+from precis.handlers.paper import PaperHandler
 from precis.handlers.todo import TodoHandler
-from precis.store import Store
+from precis.store import ChunkInsert, Store
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.utils import handle_registry
@@ -379,3 +381,40 @@ def test_multi_record_handle_exclude_falls_back_for_dead_handle(store: Store) ->
     assert got == {live}  # dead handle silently drops, same as before
     assert len(resolve_calls) == 1  # only the dead one falls back
     assert resolve_calls[0][0] == (dead_handle,)
+
+
+# ── gr312636: PaperHandler.search_hits reuses the batched resolver ──────
+
+
+def test_search_hits_multi_record_handle_exclude_batches(store: Store) -> None:
+    """The cross-kind fan-out path (``PaperHandler.search_hits``) must
+    resolve a multi-handle ``exclude=`` the same batched way ``search()``
+    already does — one ``fetch_refs_by_ids`` call, zero per-item
+    ``resolve_handle`` round trips — instead of the old serial
+    ``_normalise_exclude_slug`` loop (gr312636)."""
+    e = MockEmbedder(dim=1024)
+    text = "single-atom copper catalyst nitrate reduction ammonia"
+    kept = _mk_paper(store, slug="hits-kept")
+    excluded_ids = [_mk_paper(store, slug=f"hits-excluded-{i}") for i in range(3)]
+    for rid in (kept, *excluded_ids):
+        store.chunks.insert_chunks(
+            rid, [ChunkInsert(ord=0, text=text, embedding=e.embed_one(text))]
+        )
+    exclude_handles = [
+        handle_registry.format_handle("paper", rid) for rid in excluded_ids
+    ]
+
+    resolve_calls: list = []
+    fetch_calls: list = []
+    _spy(store, "resolve_handle", resolve_calls)
+    _spy(store, "fetch_refs_by_ids", fetch_calls)
+
+    hits = PaperHandler(hub=Hub(store=store, embedder=e)).search_hits(
+        q="copper nitrate ammonia", exclude=exclude_handles
+    )
+
+    assert resolve_calls == []  # zero per-item handle round trips
+    assert len(fetch_calls) == 1  # exactly one batched fetch for all 3
+    hit_ref_ids = {hit.ref_id for hit in hits}
+    assert hit_ref_ids.isdisjoint(set(excluded_ids))
+    assert kept in hit_ref_ids

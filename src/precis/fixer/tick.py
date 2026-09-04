@@ -356,19 +356,34 @@ _WRITEBACK_PREFIX = "FIXER (auto):"
 
 
 def _gripe_outcome(
-    report: Report, autonomy: Autonomy, item: WorkItem
+    report: Report, autonomy: Autonomy, item: WorkItem, *, shipped: bool
 ) -> tuple[str, str | None]:
     """The (comment, status) write-back for one gripe-kind tick's report.
 
-    ``status`` is ``None`` only for ``NEEDS_YOU`` — a build attempt that
-    didn't land leaves the gripe ``STATUS:open``; the local ``fix/grN``
-    branch surviving the tick (never cleaned up on a NEEDS_YOU return —
-    see ``run_tick``) is what stops a re-pick, not a status flip. Every
-    ``OK`` path flips to ``in_review``: even a full-autonomy ship+deploy
-    still wants a human look before the gripe is closed to done.
+    ``status`` is ``None`` only for the ``NEEDS_YOU`` / not-``shipped``
+    case — a build attempt that didn't land leaves the gripe
+    ``STATUS:open``; the local ``fix/grN`` branch surviving the tick
+    (never cleaned up on a NEEDS_YOU return — see ``run_tick``) is what
+    stops a re-pick, not a status flip. Every ``OK`` path flips to
+    ``in_review``: even a full-autonomy ship+deploy still wants a human
+    look before the gripe is closed to done.
+
+    ``shipped`` (threaded from ``run_tick``'s local of the same name)
+    distinguishes a ``NEEDS_YOU`` that happened *before* ``scripts/ship``
+    ran (the build/gate never landed) from one that happened *after* a
+    successful ship — full-autonomy's deploy or prod-check failing.
+    The latter's fix IS on main; only verification failed, so the lead
+    phrase says that honestly (not "did not land") and the gripe still
+    flips to ``in_review`` (fix-forward needed, not a re-pick).
     """
     if report.status is ReportStatus.NEEDS_YOU:
         head = "\n".join(report.detail.splitlines()[:3])
+        if shipped:
+            return (
+                f"{_WRITEBACK_PREFIX} shipped to main but not verified — "
+                f"deploy/prod check failed; fix-forward needed — {head}",
+                "in_review",
+            )
         return f"{_WRITEBACK_PREFIX} build attempt did not land — {head}", None
     if autonomy is Autonomy.REPORT:
         return (
@@ -494,7 +509,9 @@ def run_tick(cfg: FixerConfig) -> TickResult:
             and item.ref_id is not None
             and cfg.gripe_db_url
         ):
-            comment, status = _gripe_outcome(result.report, cfg.autonomy, item)
+            comment, status = _gripe_outcome(
+                result.report, cfg.autonomy, item, shipped=shipped
+            )
             gripe_writeback(cfg.gripe_db_url, item.ref_id, comment, status)
 
 

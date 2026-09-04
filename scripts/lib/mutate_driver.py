@@ -141,9 +141,7 @@ def covering_tests_for_file(
     return result
 
 
-def select_covering_tests(
-    tests: list[str], rel_path: str, max_tests: int
-) -> list[str]:
+def select_covering_tests(tests: list[str], rel_path: str, max_tests: int) -> list[str]:
     """Order-preserving covering-test selection capped at ``max_tests``,
     preferring tests whose OWN file names the mutated module (``stem`` in
     ``test_<stem>.py`` or a path containing the stem) — a plain ``[:
@@ -265,7 +263,9 @@ def _operator_tokens_between(
             _, tok_end_col = tok.end
             abs_lineno = left_end_lineno + (tok_line - 1)
             col_shift = left_end_col if tok_line == 1 else 0
-            out.append((abs_lineno, tok_col + col_shift, tok_end_col + col_shift, tok.string))
+            out.append(
+                (abs_lineno, tok_col + col_shift, tok_end_col + col_shift, tok.string)
+            )
     except (tokenize.TokenError, IndentationError, SyntaxError):
         return None
     return out
@@ -611,9 +611,7 @@ def _build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def _covering_tests_for_mutant(
-    covering: dict[int, list[str]], m: Mutant
-) -> list[str]:
+def _covering_tests_for_mutant(covering: dict[int, list[str]], m: Mutant) -> list[str]:
     """Covering tests for ``m.lineno``, falling back to the nearest covered
     line within the originating node's own span (``m.node_lineno`` ..
     ``m.node_end_lineno``) when the operator's own physical line carries no
@@ -632,7 +630,9 @@ def _covering_tests_for_mutant(
         return tests
     node_start = m.node_lineno if m.node_lineno is not None else m.lineno
     node_end = m.node_end_lineno if m.node_end_lineno is not None else m.lineno
-    for ln in sorted(range(node_start, node_end + 1), key=lambda ln: abs(ln - m.lineno)):
+    for ln in sorted(
+        range(node_start, node_end + 1), key=lambda ln: abs(ln - m.lineno)
+    ):
         candidate = covering.get(ln)
         if candidate:
             return candidate
@@ -692,7 +692,9 @@ def _plan(
             continue
         source = src_path.read_text(encoding="utf-8")
         try:
-            mutants = generate_mutants(source, covered_lines, path=rel_path, stats=stats)
+            mutants = generate_mutants(
+                source, covered_lines, path=rel_path, stats=stats
+            )
         except SyntaxError:
             continue
         if not mutants:

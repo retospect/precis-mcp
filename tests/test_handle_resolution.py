@@ -207,7 +207,7 @@ def test_parse_link_target_legacy_kindslug_still_works(store: Store) -> None:
 
 @_NEEDS_PAPER_EXTRA
 def test_paper_exclude_accepts_handle(store: Store) -> None:
-    from precis.handlers.paper import _normalise_exclude_slug
+    from precis.handlers._paper_search import _normalise_exclude_slug
 
     ref = store.insert_ref(kind="paper", slug="uh36-excl", title="p")
     chunk_id = _insert_chunk(store, ref.id)
