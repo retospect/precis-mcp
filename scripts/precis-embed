@@ -5,11 +5,11 @@
 # worker handles both by default — see ADR 0007). This wrapper exposes
 # the embed slice; `scripts/precis-summarize` is its symmetric twin.
 #
-# NOTE on concurrency: the always-on `precis-worker` daemon already
-# processes BOTH handlers. Running embed + summarize daemons in
-# parallel would double-claim chunks and double the RAM cost (bge-m3
-# alone is ~3 GiB resident). Use one daemon; use one-shot mode for
-# ad-hoc backfills.
+# NOTE on concurrency: the always-on `precis worker` daemon (production:
+# ansible-managed via deploy/roles/precis_worker) already processes BOTH
+# handlers. Running embed + summarize daemons in parallel would
+# double-claim chunks and double the RAM cost (bge-m3 alone is ~3 GiB
+# resident). Use one daemon; use one-shot mode for ad-hoc backfills.
 #
 # Usage:
 #   scripts/precis-embed                 # one-shot drain (one batch, then exit)
@@ -23,7 +23,7 @@
 #   scripts/precis-embed once --batch-size 8 --embedder bge-m3
 #   scripts/precis-embed once --embedder mock      # skip model load (smoke test)
 #
-# See: src/precis/cli/worker.py, infra compose `precis-worker:` service.
+# See: src/precis/cli/worker.py, deploy/roles/precis_worker (production daemon).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

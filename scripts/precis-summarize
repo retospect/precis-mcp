@@ -13,14 +13,15 @@
 #   scripts/precis-summarize stop        # stop the daemon
 #   scripts/precis-summarize logs        # tail daemon logs
 #
-# One-shot uses the precis-cli compose service. Daemon ops manage the
-# precis-worker compose service. The daemon is the production path;
-# the one-shot is for ad-hoc backfills and smoke tests.
+# One-shot uses the precis-cli compose service, for local dev. In
+# production the daemon is ansible-managed (deploy/roles/precis_worker),
+# a native process, not a compose service — the one-shot path here is
+# for ad-hoc backfills and smoke tests.
 #
 # Pass extra flags after a `--` separator for the one-shot path, e.g.:
 #   scripts/precis-summarize -- --batch-size 8 --summarizer-model rake-lemma
 #
-# See: src/precis/cli/worker.py, infra compose `precis-worker:` service.
+# See: src/precis/cli/worker.py, deploy/roles/precis_worker (production daemon).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

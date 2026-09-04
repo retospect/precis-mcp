@@ -1317,6 +1317,41 @@ def test_host_dark_ages_out_past_lookback(store: Store) -> None:
     assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
 
 
+def test_host_dark_ignores_ephemeral_container_identity(store: Store) -> None:
+    """gr306275: a worker booted in a container with no --hostname advertises
+    the container's throwaway ID; ``heartbeat`` stamps ``meta.ephemeral`` for
+    it, and host-dark must not page critical for a "host" that never
+    existed and will never come back once the container is torn down."""
+    host = _host()
+    _seed_worker_log(
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=HOST_DARK_SILENCE_MIN + 5,
+        meta={"ephemeral": True},
+    )
+
+    findings = _detect_host_dark(store)
+    assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_host_dark_still_fires_for_named_host_not_marked_ephemeral(
+    store: Store,
+) -> None:
+    """The complement of the ephemeral-skip test above: an identical stale
+    row with no ``ephemeral`` marker (a real, named host) still fires."""
+    host = _host()
+    _seed_worker_log(
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)
+
+    findings = _detect_host_dark(store)
+    assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
 def test_dead_worker_message_is_hedged_across_platforms() -> None:
     """gr180078: no hardcoded launchctl-only text."""
     for plat in ("Darwin", "Linux", "darwin", "linux", None):

@@ -7,6 +7,7 @@ the parsing / fallback logic is exercised deterministically.
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -50,6 +51,83 @@ def test_resolve_host_precedence(monkeypatch) -> None:
     assert heartbeat.resolve_host(None) == "envhost"  # env next
     monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
     assert heartbeat.resolve_host(None)  # hostname fallback, non-empty
+
+
+# ── gr306275: unset-container-ID identities are marked ephemeral ─────────
+
+
+def test_resolve_host_ephemeral_flags_bare_container_id(monkeypatch, caplog) -> None:
+    """No ``PRECIS_HOST_NAME``/flag + a 12-lowercase-hex hostname (Docker's
+    unset-container short ID shape) is marked ephemeral, with a warning."""
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "725f7e94fb1a", raising=False)
+    with caplog.at_level("WARNING"):
+        resolved, ephemeral = heartbeat._resolve_host_ephemeral(None)
+    assert resolved == "725f7e94fb1a"
+    assert ephemeral is True
+    assert any("ephemeral" in rec.message for rec in caplog.records)
+
+
+def test_resolve_host_ephemeral_ignores_named_host(monkeypatch) -> None:
+    """A real hostname shape (not 12 lowercase hex chars) is never ephemeral."""
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "melchior", raising=False)
+    resolved, ephemeral = heartbeat._resolve_host_ephemeral(None)
+    assert resolved == "melchior"
+    assert ephemeral is False
+
+
+def test_resolve_host_ephemeral_never_when_env_set(monkeypatch) -> None:
+    """``PRECIS_HOST_NAME`` set — even to a container-ID-shaped value — is
+    an explicit identity and is never marked ephemeral."""
+    monkeypatch.setenv("PRECIS_HOST_NAME", "725f7e94fb1a")
+    resolved, ephemeral = heartbeat._resolve_host_ephemeral(None)
+    assert resolved == "725f7e94fb1a"
+    assert ephemeral is False
+
+
+def test_resolve_host_ephemeral_never_when_flag_set(monkeypatch) -> None:
+    """An explicit ``--hostname`` flag override is never marked ephemeral,
+    whatever its shape."""
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    resolved, ephemeral = heartbeat._resolve_host_ephemeral("725f7e94fb1a")
+    assert resolved == "725f7e94fb1a"
+    assert ephemeral is False
+
+
+class _EphemeralRecordingStore:
+    """Records the ``meta`` dict :func:`_collect_and_upsert` writes, so a
+    test can assert on the ``ephemeral`` marker without a real DB.
+
+    Everything :func:`_report_resource_slots`/``record_heartbeat_history``
+    touch beyond ``record_heartbeat`` is absent on purpose (best-effort,
+    swallowed — same pattern as ``tests/workers/test_heartbeat_thread.py``'s
+    ``_FakeStore``).
+    """
+
+    def __init__(self) -> None:
+        self.meta: dict | None = None
+
+    def record_heartbeat(self, host: str, **kwargs: object) -> None:
+        self.meta = kwargs.get("meta")  # type: ignore[assignment]
+
+
+def test_collect_and_report_stamps_ephemeral_meta(monkeypatch) -> None:
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "725f7e94fb1a", raising=False)
+    store = _EphemeralRecordingStore()
+    heartbeat.collect_and_report(store)  # type: ignore[arg-type]
+    assert store.meta is not None
+    assert store.meta.get("ephemeral") is True
+
+
+def test_collect_and_report_no_ephemeral_meta_for_named_host(monkeypatch) -> None:
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "melchior", raising=False)
+    store = _EphemeralRecordingStore()
+    heartbeat.collect_and_report(store)  # type: ignore[arg-type]
+    assert store.meta is not None
+    assert "ephemeral" not in store.meta
 
 
 def _fake_ps(stdout: str, returncode: int = 0):

@@ -1458,6 +1458,15 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
     row in the last :data:`HOST_DARK_LOOKBACK_DAYS` so a decommissioned
     host — whose ``host_heartbeat`` UPSERT row lingers forever — ages out
     instead of alarming critical forever.
+
+    Excludes rows whose ``meta.ephemeral`` is set (gr306275): a worker
+    booted inside a container with no ``--hostname``/``PRECIS_HOST_NAME``
+    advertises the container's throwaway ID as its identity
+    (``heartbeat._resolve_host_ephemeral``) — once the container is torn
+    down, that "host" never comes back and never existed as a fleet
+    member, so it must not page critical for up to
+    :data:`HOST_DARK_LOOKBACK_DAYS`. A named-host row is never marked
+    ephemeral and is unaffected.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -1465,6 +1474,7 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
             SELECT hh.host, hh.ts, hh.meta->>'platform' AS platform
               FROM host_heartbeat hh
              WHERE hh.ts < now() - (%(silence)s || ' minutes')::interval
+               AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
                AND EXISTS (
                    SELECT 1 FROM worker_logs wl
                     WHERE wl.host = hh.host

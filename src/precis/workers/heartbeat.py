@@ -126,6 +126,41 @@ def resolve_host(override: str | None = None) -> str:
     return os.environ.get("PRECIS_HOST_NAME") or socket.gethostname()
 
 
+#: A Docker container booted with no ``--hostname`` gets the short (12
+#: lowercase hex char) form of its container ID as ``socket.gethostname()``
+#: — gr306275: a worker booted this way with no ``PRECIS_HOST_NAME``
+#: advertises that throwaway ID as its fleet identity into
+#: ``host_heartbeat``/``worker_logs``, and once the container is torn down,
+#: nursery's host-dark detector pages critical for up to
+#: ``HOST_DARK_LOOKBACK_DAYS`` for a "host" that never existed.
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _resolve_host_ephemeral(override: str | None) -> tuple[str, bool]:
+    """Resolve the host like :func:`resolve_host`, plus whether this
+    identity is EPHEMERAL (gr306275): unset ``PRECIS_HOST_NAME`` (and no
+    explicit ``override``/flag either — both are a deliberately-set
+    identity, whatever shape they take) with a resolved hostname shaped
+    like an unset Docker container ID.
+
+    Logs one loud warning per call when ephemeral, so the operator sees
+    it at resolve time (heartbeat cadence, not once ever) rather than only
+    discovering it later via a bogus host-dark page.
+    """
+    resolved = resolve_host(override)
+    ephemeral = (
+        not override
+        and not os.environ.get("PRECIS_HOST_NAME")
+        and bool(_CONTAINER_ID_RE.match(resolved))
+    )
+    if ephemeral:
+        log.warning(
+            "worker hostname looks like an unset container ID — set "
+            "PRECIS_HOST_NAME to join the fleet; heartbeat marked ephemeral"
+        )
+    return resolved, ephemeral
+
+
 def collect_loads() -> tuple[float | None, float | None, float | None]:
     """Return the 1/5/15-minute load averages, or ``(None, None, None)``.
 
@@ -611,11 +646,18 @@ def _report_resource_slots(store: object, host: str) -> str:
 
 
 def _collect_and_upsert(
-    store: Store, host: str
+    store: Store, host: str, *, ephemeral: bool = False
 ) -> tuple[float | None, float | None, str]:
     """Collect this host's snapshot and UPSERT it into ``host_heartbeat`` +
     ``resource_slots``. Returns ``(temp_c, load1, slots_summary)`` for a
-    caller to report."""
+    caller to report.
+
+    ``ephemeral`` (gr306275): stamps ``meta.ephemeral = True`` when the
+    caller resolved an unset-container-ID identity — nursery's host-dark
+    detector (``workers/nursery.py::_detect_host_dark``) excludes these
+    rows from its symptom list, since the "host" is a torn-down container
+    that will never advertise again, not a machine that went dark.
+    """
     load1, load5, load15 = collect_loads()
     temp_c = read_temp_c()
     meta: dict[str, Any] = {
@@ -623,6 +665,8 @@ def _collect_and_upsert(
         "release": platform.release(),
         "top_cpu": collect_top_cpu(),
     }
+    if ephemeral:
+        meta["ephemeral"] = True
     meta.update(_probe_nas())
     # §H boot epoch: this process's own {process: boot_id} entry, merged
     # (never clobbered) with any other process's entry on the same host row
@@ -691,8 +735,8 @@ def collect_and_report(store: Store, host: str | None = None) -> str:
     """Unconditional collect+upsert — always fires (this is what the CLI
     ``precis heartbeat`` invokes, and the still-live launchd/systemd timers
     keep calling it directly too, until §L). Returns the CLI's summary line."""
-    resolved = resolve_host(host)
-    temp_c, load1, slots = _collect_and_upsert(store, resolved)
+    resolved, ephemeral = _resolve_host_ephemeral(host)
+    temp_c, load1, slots = _collect_and_upsert(store, resolved, ephemeral=ephemeral)
     temp_str = f"{temp_c:.1f}C" if temp_c is not None else "n/a"
     load_str = f"{load1:.2f}" if load1 is not None else "n/a"
     return f"heartbeat: {resolved} temp={temp_str} load1={load_str} slots={slots}"
@@ -741,9 +785,9 @@ def run_heartbeat_pass(
     ):
         return BatchResult(handler="heartbeat", claimed=0, ok=0, failed=0)
 
-    resolved = resolve_host(host)
+    resolved, ephemeral = _resolve_host_ephemeral(host)
     try:
-        _collect_and_upsert(store, resolved)
+        _collect_and_upsert(store, resolved, ephemeral=ephemeral)
     except Exception:
         log.exception("heartbeat: pass failed")
         return BatchResult(handler="heartbeat", claimed=1, ok=0, failed=1)
@@ -899,9 +943,9 @@ def advertise_boot_id_now(store: Store, *, host: str | None = None) -> str:
     global _last_beat_monotonic
     process = _resolve_process_name_for_boot()
     boot_id = mint_boot_id(process)
-    resolved = resolve_host(host)
+    resolved, ephemeral = _resolve_host_ephemeral(host)
     try:
-        _collect_and_upsert(store, resolved)
+        _collect_and_upsert(store, resolved, ephemeral=ephemeral)
     except Exception:
         log.warning("heartbeat: boot-time boot_id advertise failed", exc_info=True)
     _last_beat_monotonic = time.monotonic()
