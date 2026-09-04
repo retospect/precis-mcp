@@ -182,23 +182,50 @@ def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
     return procs[:n]
 
 
-def _probe_nas() -> dict[str, Any]:
-    """Probe NAS readability from THIS process's context.
+def _nas_probe_timeout_s() -> float:
+    """``PRECIS_NAS_PROBE_TIMEOUT_SECONDS`` (default 5s) — how long
+    :func:`_probe_nas` waits on its worker thread before giving up."""
+    raw = os.environ.get("PRECIS_NAS_PROBE_TIMEOUT_SECONDS")
+    if raw:
+        try:
+            val = float(raw)
+        except ValueError:
+            val = 0.0
+        if val > 0:
+            return val
+    return 5.0
 
-    The heartbeat runs as ``deploy`` under launchd — the same context the
-    watch/worker daemons use — so an EPERM here means every launchd/cron
-    process on this host is locked out of the NAS. That happens when the
-    venv python's Full Disk Access grant breaks after ``brew upgrade
-    python`` changes its cdhash (OPEN-ITEMS: 'melchior daemon NAS lockout').
+
+# ── gr270434: bounding the NAS probe against an NFS hang ───────────────────
+#
+# A stale NFS handle / unresponsive server makes os.scandir() block in an
+# uninterruptible kernel syscall FOREVER — no Python exception, no signal,
+# no thread.join(timeout=...) can preempt it from the inside. The only lever
+# is to run it on a throwaway worker thread and have the CALLER stop
+# waiting once the timeout elapses; the worker thread itself is abandoned
+# (it cannot be killed) and may never return. That's accepted: the point is
+# that _collect_and_upsert's heartbeat UPSERT proceeds regardless, so the
+# process's liveness signal is never wedged behind one hung mount.
+#
+# ``_nas_probe_thread`` + ``_NAS_PROBE_LOCK`` guard against pile-up: if a
+# previous probe is still stuck when the next tick fires (in-rotation pass
+# and the dedicated heartbeat thread both call this, so overlap is real),
+# we do NOT spawn a second abandoned thread per tick — we report the
+# already-stuck state and move on.
+_NAS_PROBE_LOCK = threading.Lock()
+_nas_probe_thread: threading.Thread | None = None
+
+
+def _probe_nas_body(path: str) -> dict[str, Any]:
+    """The actual (blocking) scandir probe — run on a worker thread by
+    :func:`_probe_nas` so a hang there can't wedge the heartbeat.
 
     Returns meta fields merged into the heartbeat row:
       - readable NAS      -> {'nas_ok': True,  'nas_path': <p>}
       - EPERM (the break) -> {'nas_ok': False, 'nas_path': <p>, 'nas_errno': <n>}
       - path absent       -> {}  (host doesn't mount the NAS -> no signal, never alerts)
       - other OSError     -> {'nas_probe_err': <str>, 'nas_path': <p>}  (transient; recorded, not alerted)
-    Never raises — heartbeat liveness must not depend on the NAS.
     """
-    path = os.environ.get("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
     try:
         with os.scandir(path) as it:
             next(
@@ -211,6 +238,60 @@ def _probe_nas() -> dict[str, Any]:
     except OSError as e:
         return {"nas_probe_err": str(e), "nas_path": path}
     return {"nas_ok": True, "nas_path": path}
+
+
+def _probe_nas() -> dict[str, Any]:
+    """Probe NAS readability from THIS process's context, bounded so an
+    NFS hang can't wedge the caller (see the gr270434 note above).
+
+    The heartbeat runs as ``deploy`` under launchd — the same context the
+    watch/worker daemons use — so an EPERM here means every launchd/cron
+    process on this host is locked out of the NAS. That happens when the
+    venv python's Full Disk Access grant breaks after ``brew upgrade
+    python`` changes its cdhash (OPEN-ITEMS: 'melchior daemon NAS lockout').
+
+    Runs :func:`_probe_nas_body` on a daemon worker thread and joins with a
+    ``PRECIS_NAS_PROBE_TIMEOUT_SECONDS`` bound (default 5s). Additional
+    return shapes beyond :func:`_probe_nas_body`'s:
+      - timed out         -> {'nas_probe_err': 'timeout', 'nas_path': <p>}
+      - prior probe stuck -> {'nas_probe_err': 'previous probe still stuck', 'nas_path': <p>}
+        (skips launching a second abandoned thread rather than piling one
+        up per tick)
+    Never raises — heartbeat liveness must not depend on the NAS.
+    """
+    global _nas_probe_thread
+    path = os.environ.get("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
+
+    with _NAS_PROBE_LOCK:
+        if _nas_probe_thread is not None and _nas_probe_thread.is_alive():
+            return {
+                "nas_probe_err": "previous probe still stuck",
+                "nas_path": path,
+            }
+
+        result: dict[str, Any] = {}
+
+        def _run() -> None:
+            result.update(_probe_nas_body(path))
+
+        thread = threading.Thread(target=_run, name="nas-probe", daemon=True)
+        _nas_probe_thread = thread
+        thread.start()
+
+    thread.join(timeout=_nas_probe_timeout_s())
+
+    if thread.is_alive():
+        # Still stuck (likely an uninterruptible NFS syscall) — stop
+        # waiting and report it as a non-fatal, recorded-not-alerted
+        # marker, same grain as the "other OSError" branch. Leave
+        # ``_nas_probe_thread`` pointed at this thread so the NEXT call
+        # sees "still stuck" above instead of leaking another thread.
+        return {"nas_probe_err": "timeout", "nas_path": path}
+
+    with _NAS_PROBE_LOCK:
+        if _nas_probe_thread is thread:
+            _nas_probe_thread = None
+    return result
 
 
 def _parse_first_float(text: str) -> float | None:

@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -288,6 +290,49 @@ def test_probe_nas_other_oserror_is_recorded_not_alerted(monkeypatch) -> None:
     assert result["nas_path"] == "/opt/nas/botshome"
     assert "stale NFS file handle" in result["nas_probe_err"]
     assert "nas_ok" not in result
+
+
+def test_probe_nas_hang_times_out_and_second_call_skips_cleanly(monkeypatch) -> None:
+    """gr270434: a stale-handle/unresponsive-NFS hang blocks os.scandir in
+    an uninterruptible syscall that no exception handler can catch. The
+    probe must bound its OWN wait (the worker thread stays stuck forever —
+    that part is unfixable) and a second call while the first is still
+    stuck must report that rather than piling up another abandoned
+    thread."""
+    monkeypatch.setenv("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
+    monkeypatch.setenv("PRECIS_NAS_PROBE_TIMEOUT_SECONDS", "0.2")
+    # Reset module state so this test doesn't inherit another test's thread.
+    monkeypatch.setattr(heartbeat, "_nas_probe_thread", None)
+
+    release = threading.Event()
+
+    def _hang(_p):
+        # Simulates the uninterruptible-syscall hang: blocks well past the
+        # probe timeout. Released at the end of the test (not left to hang
+        # for the rest of the process) via the Event.
+        release.wait(timeout=10)
+        return _FakeScandirIter()
+
+    monkeypatch.setattr(heartbeat.os, "scandir", _hang)
+
+    start = time.monotonic()
+    result = heartbeat._probe_nas()
+    elapsed = time.monotonic() - start
+    assert result == {"nas_probe_err": "timeout", "nas_path": "/opt/nas/botshome"}
+    assert elapsed < 5.0  # bounded by the 0.2s timeout, not the 10s hang
+
+    # The abandoned worker thread is still stuck — a second call must skip
+    # launching a new one rather than leaking another thread per tick.
+    start2 = time.monotonic()
+    result2 = heartbeat._probe_nas()
+    elapsed2 = time.monotonic() - start2
+    assert result2 == {
+        "nas_probe_err": "previous probe still stuck",
+        "nas_path": "/opt/nas/botshome",
+    }
+    assert elapsed2 < 1.0  # returns immediately, no join wait
+
+    release.set()  # let the abandoned thread finish so it doesn't linger
 
 
 # ── slice 6b: the resource-slot self-probe wiring ────────────────────────
