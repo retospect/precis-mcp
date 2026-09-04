@@ -14,6 +14,8 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+import coverage
+
 _DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "mutate_driver.py"
 
 
@@ -390,11 +392,164 @@ def test_only_changed_lines_produce_mutants() -> None:
     assert {m.lineno for m in mutants} == {1}
 
 
-def test_multiline_node_is_skipped() -> None:
+def test_multiline_compare_now_yields_a_mutant() -> None:
+    # gr307655: the Compare node spans lines 2-3 (a parenthesized
+    # continuation, common under ruff's 88-col formatting). Both operands
+    # (`a`, `b`) each fit on their own single line, so the operator token is
+    # locatable across the break — this used to silently yield zero mutants.
     src = "x = (\n    a\n    == b\n)\n"
-    # The Compare node spans lines 2-3 — _single_line_span rejects it, so no
-    # mutant is produced even though line 3 is "changed".
-    assert _mutants(src, {2, 3}) == []
+    (m,) = _mutants(src, {2, 3})
+    assert (m.lineno, m.col, m.end_col) == (3, 4, 6)  # single-line span
+    assert md.apply_mutant(src, m) == "x = (\n    a\n    != b\n)\n"
+
+
+def test_multiline_binop_a_plus_b_plus_c_yields_the_inner_operator_mutant() -> None:
+    # `a + b + c` parses left-associatively as `(a + b) + c` — the outer
+    # BinOp's own left operand (`a + b`) itself spans two lines, so its
+    # operator genuinely can't be pinned down by this scheme (stays
+    # unspannable, counted below); the inner `a + b` operator, whose two
+    # operands each sit on one line, DOES now get located and mutated.
+    src = textwrap.dedent(
+        """\
+        def f(a, b, c):
+            return (
+                a
+                + b
+                + c
+            )
+        """
+    )
+    lines = {3, 4, 5}
+    stats: dict[str, int] = {"unspannable": 0}
+    mutants = md.generate_mutants(src, lines, path="<t>", stats=stats)
+    assert [m.description for m in mutants] == ["arith + -> -"]
+    (m,) = mutants
+    assert m.lineno == 4  # the "+ b" line — the operator token's own line
+    mutated = md.apply_mutant(src, m)
+    assert mutated != src
+    compile(mutated, "<t>", "exec")  # still valid Python
+    # semantics actually differ — the classic "KILLED" check: exec both and
+    # compare results (hand-verifying a mutant that would get KILLED).
+    ns_orig: dict[str, object] = {}
+    ns_mut: dict[str, object] = {}
+    exec(compile(src, "<orig>", "exec"), ns_orig)
+    exec(compile(mutated, "<mut>", "exec"), ns_mut)
+    assert ns_orig["f"](2, 3, 4) != ns_mut["f"](2, 3, 4)  # type: ignore[operator]
+    assert stats["unspannable"] == 1  # the outer (a + b) + c operator
+
+
+def test_multiline_operator_skips_a_same_line_comment_containing_the_token() -> None:
+    # `a  # +\n+ b` — a bare textual scan of the gap text would match the
+    # `+` inside the comment; the real tokenizer must not.
+    src = textwrap.dedent(
+        """\
+        def f(a, b):
+            return (
+                a  # +
+                + b
+            )
+        """
+    )
+    (m,) = md.generate_mutants(src, {3, 4}, path="<t>")
+    assert m.lineno == 4
+    assert (
+        md.apply_mutant(src, m)
+        == "def f(a, b):\n    return (\n        a  # +\n        - b\n    )\n"
+    )
+
+
+def test_multiline_boolop_and_chain_generates_the_and_or_mutant() -> None:
+    src = textwrap.dedent(
+        """\
+        def f(x, y):
+            return (
+                x > 0
+                and y > 0
+            )
+        """
+    )
+    mutants = md.generate_mutants(src, {3, 4}, path="<t>")
+    descriptions = [m.description for m in mutants]
+    assert "boolop and -> or" in descriptions
+    m = next(m for m in mutants if m.description == "boolop and -> or")
+    assert m.lineno == 4  # the "and y > 0" line — the operator token's own line
+    mutated = md.apply_mutant(src, m)
+    assert (
+        mutated
+        == "def f(x, y):\n    return (\n        x > 0\n        or y > 0\n    )\n"
+    )
+    compile(mutated, "<t>", "exec")
+
+
+def test_multiline_operator_unspannable_when_operand_itself_spans_lines() -> None:
+    # `(a + b) + c` — the outer operator's own left operand isn't
+    # single-line, so it genuinely can't be located; it's counted rather
+    # than silently dropped.
+    src = "x = (\n    a\n    + b\n) + c\n"
+    stats: dict[str, int] = {"unspannable": 0}
+    mutants = md.generate_mutants(src, {1, 2, 3, 4}, path="<t>", stats=stats)
+    assert stats["unspannable"] >= 1
+    # the inner `a + b` (fully spannable) still produced its own mutant.
+    assert any(m.description == "arith + -> -" for m in mutants)
+
+
+def test_unspannable_counter_stays_zero_when_everything_is_spannable() -> None:
+    src = "x = a == b\ny = c and d\n"
+    stats: dict[str, int] = {"unspannable": 0}
+    md.generate_mutants(src, {1, 2}, path="<t>", stats=stats)
+    assert stats["unspannable"] == 0
+
+
+def test_covering_tests_for_file_attributes_inner_lines_of_short_circuit_and_chain(
+    tmp_path: Path,
+) -> None:
+    """Real ``coverage`` run (not the fake stand-in) pinning that on this
+    stack, inner physical lines of a multi-line short-circuit ``and`` chain
+    get their OWN per-test contexts — a test that never reaches the RHS
+    truly does not cover the RHS's line. This is the empirical basis for
+    gr307655's fix (operator mutants can be safely attributed to the
+    operator's own line) and documents why gr307552/gr251648's "coverage
+    misattributes multi-line short-circuits" framing was invalid.
+    """
+    src_path = tmp_path / "mod_under_test.py"
+    src_path.write_text(
+        "def check(x, y):\n"
+        "    return (\n"
+        "        x > 0\n"
+        "        and y > 0\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    cov_path = tmp_path / ".coverage"
+
+    spec = importlib.util.spec_from_file_location("mod_under_test", src_path)
+    assert spec and spec.loader
+    under_test = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(under_test)
+
+    cov = coverage.Coverage(data_file=str(cov_path))
+    cov.start()
+    cov.switch_context("tests/test_x.py::test_short_circuit|run")
+    assert under_test.check(-1, 5) is False  # short-circuits: RHS never runs
+    cov.switch_context("tests/test_x.py::test_both_true|run")
+    assert under_test.check(1, 1) is True  # RHS runs too
+    cov.stop()
+    cov.save()
+
+    data = coverage.CoverageData(basename=str(cov_path))
+    data.read()
+    result = md.covering_tests_for_file(data, "mod_under_test.py")
+
+    # line 3 (`x > 0`) ran under both tests — always evaluated. (Context
+    # insertion order isn't a guarantee coverage.py's sqlite backend makes,
+    # so compare as a set.)
+    assert set(result[3]) == {
+        "tests/test_x.py::test_short_circuit",
+        "tests/test_x.py::test_both_true",
+    }
+    # line 4 (`and y > 0`) ran ONLY under the test that didn't short-circuit
+    # — coverage correctly narrows the covering-test set per inner line.
+    assert result[4] == ["tests/test_x.py::test_both_true"]
 
 
 def test_all_generated_mutants_compile() -> None:
