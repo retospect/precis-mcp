@@ -59,7 +59,7 @@ and persists it.
    Siemens AG · 2024 · cpc=B01J27/24
    > "…visible-light driven Z-scheme heterojunction…"
 
-2. wo2023123456a1                Method for selective NOxRR over MOF surfaces
+2. wo2023123456a1  [ops]         Method for selective NOxRR over MOF surfaces
    Univ. Limerick · 2023 · cpc=B01J27/24
    Abstract preview: …
 ```
@@ -67,9 +67,9 @@ and persists it.
 `[local]` rows lead with their `pt<id>` **handle** and return
 instantly from `get(id='pt812')` — the DOCDB pub-number
 (`ep4123456a1`) stays alongside as the OPS fetch key (like a DOI).
-Untagged rows are remote-only, not yet ingested, so they have no
-handle; `get(id='wo2023123456a1')` fetches and persists them, minting
-one.
+`[ops]` rows are remote-only, not yet ingested — no `pt<id>` handle
+has been minted for them yet; `get(id='wo2023123456a1')` fetches and
+persists them, minting one.
 
 ## Filter patents by CPC, applicant, country
 ## Narrow patent search by tag axis

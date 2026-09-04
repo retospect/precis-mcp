@@ -248,6 +248,15 @@ class PaperHandler(Handler):
     ``refs.meta``.
     """
 
+    #: Empty-corpus message for :meth:`_render_list_papers`. Subclasses
+    #: (cfp, datasheet) that don't share paper's ingest pipeline invocation
+    #: override this — without it they'd inherit "no papers ingested yet -
+    #: use `precis jobs ingest-bundles`", which is paper-pipeline phrasing
+    #: that doesn't apply to a spec/evidence-role sibling kind (gr311347 #12).
+    _empty_corpus_message: ClassVar[str] = (
+        "no papers ingested yet - use `precis jobs ingest-bundles <dir>` to populate"
+    )
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="paper",
         title="Paper",
@@ -890,8 +899,7 @@ class PaperHandler(Handler):
             if page > 1 and total > 0:
                 return Response(
                     body=(
-                        f"page {page}: no {kind} entries tagged {tags} "
-                        f"— {total} total"
+                        f"page {page}: no {kind} entries tagged {tags} — {total} total"
                     )
                 )
             body = f"no {kind} entries tagged {tags}"
@@ -2205,12 +2213,7 @@ class PaperHandler(Handler):
         refs = self.store.list_refs(kind=self.spec.kind, limit=limit)
         total = self.store.count_refs(kind=self.spec.kind)
         if not refs:
-            return Response(
-                body=(
-                    "no papers ingested yet - "
-                    "use `precis jobs ingest-bundles <dir>` to populate"
-                )
-            )
+            return Response(body=self._empty_corpus_message)
         suffix = "" if total <= limit else f" of {total}"
         # Surface total corpus depth so the agent doesn't have to
         # estimate chunk volume from per-paper counts (#38683).

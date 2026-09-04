@@ -71,6 +71,16 @@ _PAPER_EDIT_FIELDS: tuple[str, ...] = (
 class DatasheetHandler(PaperHandler):
     """Read-only component datasheet (evidence role)."""
 
+    # A datasheet isn't acquired via `precis jobs ingest-bundles` (that's
+    # the paper backlog) — it's lazily ingested from a part's
+    # `datasheet_url` or dropped into `<inbox>/datasheets/`; the
+    # empty-listing hint says so instead of leaking paper-pipeline
+    # phrasing (gr311347 #12).
+    _empty_corpus_message: ClassVar[str] = (
+        "no datasheets ingested yet - link a part's `datasheet_url` or "
+        "drop a PDF into `<inbox>/datasheets/` to add one"
+    )
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="datasheet",
         title="Datasheet",

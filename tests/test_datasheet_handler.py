@@ -110,3 +110,15 @@ def test_datasheet_empty_search_names_datasheet_not_paper(store: Store) -> None:
     resp = lex_only.search(q="zzqqxx-no-such-token")
     assert "no datasheet blocks match" in resp.body
     assert "paper" not in resp.body
+
+
+def test_datasheet_empty_list_names_datasheet_not_paper(store: Store) -> None:
+    """Regression (gr311347 #12): the ``get(id=None)`` empty-corpus
+    listing inherited PaperHandler's "no papers ingested yet - use
+    `precis jobs ingest-bundles`" — paper-pipeline phrasing that doesn't
+    apply to a datasheet (acquired via a part's ``datasheet_url`` or the
+    ``<inbox>/datasheets/`` watch dir, never that job)."""
+    resp = DatasheetHandler(hub=Hub(store=store)).get()
+    assert "no datasheets ingested yet" in resp.body
+    assert "ingest-bundles" not in resp.body
+    assert "datasheets/" in resp.body

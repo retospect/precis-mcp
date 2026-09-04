@@ -52,6 +52,15 @@ _CFP_VIEWS: tuple[str, ...] = (
 class CfpHandler(PaperHandler):
     """Read-only call-for-proposal / requirements document (spec role)."""
 
+    # A CFP isn't acquired via `precis jobs ingest-bundles` (that's the
+    # paper backlog) — it's dropped into `inbox/cfp/` or added directly
+    # with `precis add --as cfp`; the empty-listing hint says so instead
+    # of leaking paper-pipeline phrasing (gr311347 #12).
+    _empty_corpus_message: ClassVar[str] = (
+        "no CFPs cached yet - drop a PDF into `inbox/cfp/` or run "
+        "`precis add --as cfp <file>` to add one"
+    )
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="cfp",
         title="Call for Proposal",

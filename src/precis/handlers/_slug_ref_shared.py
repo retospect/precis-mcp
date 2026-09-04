@@ -275,7 +275,15 @@ def resolve_live_slug_ref(
         ref = store.get_ref(kind=kind, id=int(slug))
         if ref is not None:
             handle = handle_registry.try_format(kind, ref.id)
-            if handle is not None:
+            # A slug-addressed kind's own slug can itself be a bare
+            # numeral (e.g. a plan named after its owning project's id).
+            # When that's what just resolved, the caller's digits WERE
+            # this ref's real, canonical slug all along — narrating "you
+            # meant the handle, use it next time" is a false
+            # self-correction in that case (gr311347 #13). Only admonish
+            # when the digits were a genuine ref_id guess, i.e. they
+            # don't match the ref's own registered slug.
+            if handle is not None and ref.slug != slug:
                 store.emit_hint(bare_numeric_hint(kind, slug, handle))
     if ref is None:
         raise NotFound(

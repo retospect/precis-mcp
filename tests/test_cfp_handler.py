@@ -60,3 +60,15 @@ def test_cfp_empty_search_names_cfp_not_paper(store: Store) -> None:
     resp = lex_only.search(q="zzqqxx-no-such-token")
     assert "no cfp blocks match" in resp.body
     assert "paper" not in resp.body
+
+
+def test_cfp_empty_list_names_cfp_not_paper(store: Store) -> None:
+    """Regression (gr311347 #12): the ``get(id=None)`` empty-corpus
+    listing inherited PaperHandler's "no papers ingested yet - use
+    `precis jobs ingest-bundles`" — paper-pipeline phrasing that doesn't
+    apply to a cfp (never ingested via that job; acquired by dropping a
+    PDF into ``inbox/cfp/`` or ``precis add --as cfp``)."""
+    resp = CfpHandler(hub=Hub(store=store)).get()
+    assert "no CFPs cached yet" in resp.body
+    assert "ingest-bundles" not in resp.body
+    assert "inbox/cfp/" in resp.body or "add --as cfp" in resp.body
