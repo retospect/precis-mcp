@@ -561,3 +561,131 @@ def discover_guide_sections(root: Path | None = None) -> list[GuideSection]:
             )
         )
     return sections
+
+
+# ---------------------------------------------------------------------------
+# Video assembly helpers (``scripts/guide-video``) — the pure, testable
+# parts: mp3-duration parsing (the static imageio-ffmpeg binary ships no
+# ffprobe, so duration comes from ``ffmpeg -i`` stderr), even frame timing,
+# and ffconcat playlist rendering. The ffmpeg invocations themselves live in
+# the script; nothing here spawns a process.
+# ---------------------------------------------------------------------------
+
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
+
+
+def parse_ffmpeg_duration(text: str) -> float:
+    """Seconds from an ``ffmpeg -i <file>`` stderr dump (``Duration:
+    HH:MM:SS.cc``). ``ffmpeg -i`` with no output exits non-zero by design —
+    callers pass its stderr here regardless of exit code."""
+    m = _DURATION_RE.search(text)
+    if m is None:
+        raise GuideError("could not parse a Duration: line from ffmpeg output")
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+
+def even_frame_durations(n_frames: int, total_seconds: float) -> list[float]:
+    """Split ``total_seconds`` evenly across ``n_frames`` (the spec's "step
+    PNGs timed across that section's mp3"). The last frame absorbs rounding
+    so the list sums to exactly ``total_seconds`` (at ms precision)."""
+    if n_frames <= 0:
+        raise GuideError(f"even_frame_durations: n_frames must be >= 1, got {n_frames}")
+    if total_seconds <= 0:
+        raise GuideError(
+            f"even_frame_durations: total_seconds must be > 0, got {total_seconds}"
+        )
+    per = round(total_seconds / n_frames, 3)
+    durations = [per] * (n_frames - 1)
+    durations.append(round(total_seconds - per * (n_frames - 1), 3))
+    return durations
+
+
+def ffconcat_playlist(frames: list[Path], durations: list[float]) -> str:
+    """An ``ffconcat version 1.0`` playlist showing each frame for its
+    duration. The final frame is listed once more without a duration — the
+    concat demuxer convention that keeps the last frame on screen instead of
+    ending the video track a frame early."""
+    if len(frames) != len(durations):
+        raise GuideError(
+            f"ffconcat_playlist: {len(frames)} frame(s) vs {len(durations)} duration(s)"
+        )
+    if not frames:
+        raise GuideError("ffconcat_playlist: no frames")
+    lines = ["ffconcat version 1.0"]
+    for frame, duration in zip(frames, durations, strict=True):
+        lines.append(f"file '{frame}'")
+        lines.append(f"duration {duration:.3f}")
+    lines.append(f"file '{frames[-1]}'")
+    return "\n".join(lines) + "\n"
+
+
+def section_video_frames(assets: Path, slug: str) -> list[Path]:
+    """The section's annotated step PNGs in step order (numeric — ``step-10``
+    sorts after ``step-2``). Empty list when the section has no captures
+    (section 00): the video script renders a title card instead."""
+    step_re = re.compile(r"^step-(\d+)-annotated\.png$")
+    found: list[tuple[int, Path]] = []
+    section_dir = assets / slug
+    if section_dir.is_dir():
+        for p in section_dir.iterdir():
+            m = step_re.match(p.name)
+            if m:
+                found.append((int(m.group(1)), p))
+    return [p for _, p in sorted(found)]
+
+
+def render_title_card(
+    out_path: Path,
+    title: str,
+    subtitle: str,
+    *,
+    size: tuple[int, int] = (1600, 1000),
+) -> None:
+    """A dark title-card PNG for a section with no captures (section 00) —
+    same canvas size as the screenshots so the video filter chain treats
+    every frame identically. Amber brand + white title + wrapped subtitle,
+    matching the callout style. Needs Pillow (the ``guide`` extra), like
+    :func:`annotate_png`."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as exc:  # pragma: no cover — exercised by install state
+        raise GuideError(
+            "render_title_card needs Pillow — install 'precis-mcp[guide]'"
+        ) from exc
+
+    def _font(font_size: int) -> Any:
+        for cand in (
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",  # macOS
+            "/System/Library/Fonts/Helvetica.ttc",  # macOS
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
+        ):
+            try:
+                return ImageFont.truetype(cand, font_size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    width, height = size
+    img = Image.new("RGB", size, (15, 23, 42))
+    draw = ImageDraw.Draw(img)
+    draw.text(
+        (width // 2, int(height * 0.32)),
+        "precis",
+        fill=(245, 158, 11),
+        font=_font(72),
+        anchor="mm",
+    )
+    draw.text(
+        (width // 2, int(height * 0.46)),
+        title,
+        fill=(226, 232, 240),
+        font=_font(44),
+        anchor="mm",
+    )
+    y = int(height * 0.58)
+    for line in _wrap_text(subtitle, 70)[:4]:
+        draw.text(
+            (width // 2, y), line, fill=(148, 163, 184), font=_font(26), anchor="mm"
+        )
+        y += 40
+    img.save(out_path)

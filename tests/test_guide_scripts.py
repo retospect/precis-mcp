@@ -935,3 +935,87 @@ def test_pages_workflow_parses_and_builds_guide() -> None:
         "pages": "write",
         "id-token": "write",
     }
+
+
+# ---------------------------------------------------------------------------
+# scripts/guide-video — the pure helpers (duration parsing, frame timing,
+# ffconcat playlists, frame discovery, title card). No ffmpeg is spawned.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ffmpeg_duration() -> None:
+    stderr = "Input #0, mp3, from 'x.mp3':\n  Duration: 00:01:04.80, start: 0.02\n"
+    assert gl.parse_ffmpeg_duration(stderr) == pytest.approx(64.8)
+
+
+def test_parse_ffmpeg_duration_hours() -> None:
+    assert gl.parse_ffmpeg_duration("Duration: 01:02:03.50,") == pytest.approx(3723.5)
+
+
+def test_parse_ffmpeg_duration_missing_is_hard_error() -> None:
+    with pytest.raises(gl.GuideError, match="Duration"):
+        gl.parse_ffmpeg_duration("ffmpeg said nothing useful")
+
+
+def test_even_frame_durations_sum_and_count() -> None:
+    durs = gl.even_frame_durations(4, 44.6)
+    assert len(durs) == 4
+    assert sum(durs) == pytest.approx(44.6, abs=0.001)
+    assert durs[0] == durs[1] == durs[2]
+
+
+def test_even_frame_durations_single_frame_gets_everything() -> None:
+    assert gl.even_frame_durations(1, 64.8) == [64.8]
+
+
+@pytest.mark.parametrize(("n", "total"), [(0, 10.0), (-1, 10.0), (3, 0.0)])
+def test_even_frame_durations_rejects_degenerate(n: int, total: float) -> None:
+    with pytest.raises(gl.GuideError):
+        gl.even_frame_durations(n, total)
+
+
+def test_ffconcat_playlist_format_and_trailing_repeat(tmp_path: Path) -> None:
+    frames = [tmp_path / "step-1.png", tmp_path / "step-2.png"]
+    text = gl.ffconcat_playlist(frames, [1.5, 2.25])
+    lines = text.splitlines()
+    assert lines[0] == "ffconcat version 1.0"
+    assert lines[1] == f"file '{frames[0]}'"
+    assert lines[2] == "duration 1.500"
+    # Last frame repeated without a duration (concat-demuxer convention).
+    assert lines[-1] == f"file '{frames[1]}'"
+    assert text.endswith("\n")
+
+
+def test_ffconcat_playlist_rejects_mismatch_and_empty(tmp_path: Path) -> None:
+    with pytest.raises(gl.GuideError, match="frame"):
+        gl.ffconcat_playlist([tmp_path / "a.png"], [1.0, 2.0])
+    with pytest.raises(gl.GuideError, match="no frames"):
+        gl.ffconcat_playlist([], [])
+
+
+def test_section_video_frames_numeric_order(tmp_path: Path) -> None:
+    d = tmp_path / "drive"
+    d.mkdir()
+    for n in (10, 2, 1):
+        (d / f"step-{n}-annotated.png").write_bytes(b"png")
+    (d / "step-3.png").write_bytes(b"png")  # clean capture — not a video frame
+    (d / "steps.json").write_text("{}", encoding="utf-8")
+    frames = gl.section_video_frames(tmp_path, "drive")
+    assert [p.name for p in frames] == [
+        "step-1-annotated.png",
+        "step-2-annotated.png",
+        "step-10-annotated.png",
+    ]
+
+
+def test_section_video_frames_missing_section_is_empty(tmp_path: Path) -> None:
+    assert gl.section_video_frames(tmp_path, "nope") == []
+
+
+@pytest.mark.skipif(not HAVE_PIL, reason="Pillow not installed in this env")
+def test_render_title_card_writes_canvas_sized_png(tmp_path: Path) -> None:
+    out = tmp_path / "card.png"
+    gl.render_title_card(out, "What is precis", "an untiring research collaborator")
+    img = Image.open(out)
+    assert img.size == (1600, 1000)
+    assert img.mode == "RGB"

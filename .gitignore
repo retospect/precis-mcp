@@ -48,6 +48,10 @@ feed.xml
 # shows it inline, no Pages dependency). Regenerate + commit it after any
 # narration/capture change; tests/test_guide_scripts.py tripwires drift.
 guide/index.html
+# guide/guide.mp4 is assembled by scripts/guide-video from the committed
+# assets; its canonical home is YouTube (upload is manual), so the large
+# binary stays out of git — anyone can reproduce it from a clean tree.
+guide/guide.mp4
 
 # usability harness output
 scripts/exercise-mcp/out/

@@ -1,0 +1,228 @@
+#!/usr/bin/env -S uv run python
+"""scripts/guide-video — assemble ``guide/guide.mp4`` (1080p, for YouTube)
+from the committed guide assets (docs/backlog/guide-video.md, slice 4).
+
+Per section (order = ``discover_guide_sections``, same source of truth as
+``guide/build.py``): the annotated step PNGs
+(``guide/assets/<slug>/step-N-annotated.png``) are timed evenly across that
+section's narration mp3 (``guide/assets/audio/<slug>.mp3``); a section with
+no captures (00, the concept chapter) gets a rendered title card instead.
+Each section is encoded once, then all sections are stream-concatenated
+into one file. Upload to YouTube is manual — this script only produces the
+file (git-ignored: a large binary whose canonical home is YouTube).
+
+ffmpeg: the host has no brew ffmpeg — ``~/bin/ffmpeg`` symlinks the static
+imageio-ffmpeg binary (``uv run --with imageio-ffmpeg python -c "import
+imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"``). That build
+ships NO ffprobe, so mp3 durations are parsed from ``ffmpeg -i`` stderr
+(``parse_ffmpeg_duration``). Override the binary with ``--ffmpeg`` or
+``$PRECIS_FFMPEG``.
+
+Geometry: captures are 1600x1000; scale 1.08 -> 1728x1080 exactly, then pad
+to 1920x1080 with the slate background. Title cards render at 1600x1000 so
+one filter chain serves every frame.
+
+Usage:
+    scripts/guide-video                  # -> guide/guide.mp4
+    scripts/guide-video --out /tmp/x.mp4 --keep-temp
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from guide_lib import (
+    GuideError,
+    assets_dir,
+    discover_guide_sections,
+    even_frame_durations,
+    ffconcat_playlist,
+    parse_ffmpeg_duration,
+    render_title_card,
+    repo_root,
+    section_video_frames,
+)
+
+_VF = "scale=1728:1080,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0f172a,format=yuv420p"
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output mp4 path (default guide/guide.mp4).",
+    )
+    p.add_argument(
+        "--ffmpeg",
+        default=None,
+        help="ffmpeg binary (default $PRECIS_FFMPEG, else ~/bin/ffmpeg, "
+        "else 'ffmpeg' on PATH).",
+    )
+    p.add_argument(
+        "--keep-temp",
+        action="store_true",
+        help="Keep the per-section work dir (debugging).",
+    )
+    return p.parse_args(argv)
+
+
+def _find_ffmpeg(explicit: str | None) -> str:
+    for cand in (
+        explicit,
+        os.environ.get("PRECIS_FFMPEG"),
+        str(Path.home() / "bin" / "ffmpeg"),
+        shutil.which("ffmpeg"),
+    ):
+        if cand and Path(cand).is_file():
+            return cand
+    raise GuideError(
+        "no ffmpeg binary found — pass --ffmpeg, set $PRECIS_FFMPEG, or "
+        "symlink one at ~/bin/ffmpeg (see this script's docstring)"
+    )
+
+
+def _run(cmd: list[str]) -> None:
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    if proc.returncode != 0:
+        tail = "\n".join(proc.stderr.splitlines()[-12:])
+        raise GuideError(f"ffmpeg failed ({cmd[1:3]}...):\n{tail}")
+
+
+def _mp3_duration(ffmpeg: str, mp3: Path) -> float:
+    # `ffmpeg -i <file>` with no output exits non-zero by design; the
+    # Duration line lands on stderr either way.
+    proc = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", str(mp3)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return parse_ffmpeg_duration(proc.stderr)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    root = repo_root()
+    out = args.out or (root / "guide" / "guide.mp4")
+    try:
+        ffmpeg = _find_ffmpeg(args.ffmpeg)
+        sections = discover_guide_sections(root)
+        assets = assets_dir(root)
+
+        work = Path(tempfile.mkdtemp(prefix="guide-video-"))
+        section_mp4s: list[Path] = []
+        total = 0.0
+        for s in sections:
+            mp3 = assets / "audio" / f"{s.slug}.mp3"
+            if not mp3.is_file():
+                raise GuideError(
+                    f"section {s.slug}: no narration mp3 at {mp3} — run "
+                    "scripts/guide-narrate first"
+                )
+            frames = section_video_frames(assets, s.slug)
+            if not frames:
+                card = work / f"{s.slug}-card.png"
+                render_title_card(card, s.title, "an untiring research collaborator")
+                frames = [card]
+            duration = _mp3_duration(ffmpeg, mp3)
+            playlist = work / f"{s.slug}.ffconcat"
+            playlist.write_text(
+                ffconcat_playlist(frames, even_frame_durations(len(frames), duration)),
+                encoding="utf-8",
+            )
+            section_mp4 = work / f"{s.index}-{s.slug}.mp4"
+            _run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(playlist),
+                    "-i",
+                    str(mp3),
+                    "-vf",
+                    _VF,
+                    "-r",
+                    "30",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "medium",
+                    "-crf",
+                    "20",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "160k",
+                    "-shortest",
+                    str(section_mp4),
+                ]
+            )
+            section_mp4s.append(section_mp4)
+            total += duration
+            print(
+                f"guide-video: {s.index} {s.slug} — {len(frames)} frame(s) "
+                f"across {duration:.1f}s",
+                file=sys.stderr,
+            )
+
+        final_list = work / "sections.ffconcat"
+        final_list.write_text(
+            "ffconcat version 1.0\n" + "".join(f"file '{p}'\n" for p in section_mp4s),
+            encoding="utf-8",
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(final_list),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(out),
+            ]
+        )
+        if args.keep_temp:
+            print(f"guide-video: temp kept at {work}", file=sys.stderr)
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+    except GuideError as exc:
+        print(f"guide-video: {exc}", file=sys.stderr)
+        return 1
+
+    size_mb = out.stat().st_size / 1_000_000
+    print(
+        f"guide-video: wrote {out} — {len(sections)} section(s), "
+        f"{total / 60:.1f} min, {size_mb:.1f} MB"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
