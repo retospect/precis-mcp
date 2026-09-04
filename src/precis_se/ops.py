@@ -96,6 +96,28 @@ joints/measures/loads):
   hard/soft/gauge strength (:mod:`precis_se.measures`; stack-up +
   unresolvable-relation findings are :mod:`precis_se.drc`'s read-time
   job — a forward-referenced relation source is legal at write time).
+
+Off-the-shelf rung 1 (docs/backlog/se-off-the-shelf-fabrication.md) adds
+the ops for things you *don't* make:
+
+- ``set_mode``        — assign a block's manufacturing mode
+  (:mod:`precis_se.modes` — ``purchase``, ``fdm/asa``, ``laser/acrylic``,
+  …), or clear it with ``null``. An unknown *family* is rejected; a known
+  family with no implementer yet is accepted and reads back as recorded
+  intent, never as a checked plan.
+- ``set_binding``     — bind a block's L3 realization to an existing
+  design or catalog row: ``kind`` ∈ ``cad|nm|component|part`` +
+  ``design`` (the slug / C-number), or ``clear=true``. The binding is
+  name/slug-keyed text resolved at read time — binding a component that
+  doesn't exist yet is legal and reported, not rejected.
+- ``add_bom`` / ``remove_bom`` — a bought ``component``/``part`` hung off
+  a block (``block=``) or a connect (``a=``/``b=``), with a
+  per-occurrence ``qty`` (:mod:`precis_se.bom`, which owns the
+  multiplicity arithmetic). A repeat ``add_bom`` for the same
+  (target, item) *replaces* that line rather than minting a second — the
+  quantity is the statement, and two lines saying different numbers is
+  the ambiguity this avoids. Lines whose target is removed go with it
+  (the vacancy rule ``remove_block``/``disconnect`` already follow).
 """
 
 from __future__ import annotations
@@ -106,7 +128,15 @@ from typing import Any
 
 from precis.cad import dsl as cad_dsl
 from precis_se import joints as se_joints
+from precis_se.bom import BomError, BomLine, vet_bom_fields
 from precis_se.measures import MeasureError, MeasureSpec, validate_relation
+from precis_se.modes import ModeError, parse_mode
+
+#: What an L3 realization binding may point at — the two *designed*
+#: realizations (a cad node set, an nm design) and the two *bought* ones
+#: (an engineering-store component, a catalog part). Mirrors migration
+#: 0003's ``se_blocks_bound_kind_check``.
+_BINDING_KINDS: tuple[str, ...] = ("cad", "nm", "component", "part")
 
 
 class OpError(ValueError):
@@ -171,6 +201,13 @@ class SeBlock:
     #: loads on the block — the registered objectives vocabulary
     #: (:func:`precis_se.joints.validate_objectives`), real units.
     objectives: dict[str, Any] = field(default_factory=dict)
+    #: L5 manufacturing mode (:mod:`precis_se.modes`) — ``None`` is
+    #: honest: unassigned, not "assume it's printed".
+    mode: str | None = None
+    #: L3 realization binding: ``('cad'|'nm'|'component'|'part', slug)``,
+    #: both ``None`` when the block's solid is still just its envelope.
+    bound_kind: str | None = None
+    bound: str | None = None
 
 
 @dataclass
@@ -185,6 +222,9 @@ class SeTree:
     #: named measures + tolerance relations (:mod:`precis_se.measures`),
     #: unordered — identity is ``(block, name)``.
     measures: list[MeasureSpec] = field(default_factory=list)
+    #: bought items (:mod:`precis_se.bom`), unordered — identity is
+    #: (target, item_kind, item).
+    bom: list[BomLine] = field(default_factory=list)
 
 
 def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
@@ -630,6 +670,16 @@ def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
     # deliberately kept — it dangles, and DRC's unresolvable_relation
     # finding reports it, read-time honesty over silent cleanup.
     tree.measures = [m for m in tree.measures if m.block not in subtree]
+    # BOM lines follow their target: a block line in the subtree, and a
+    # connect line on a connect that was just dropped above.
+    tree.bom = [
+        line
+        for line in tree.bom
+        if line.block not in subtree
+        and not (
+            line.is_connect and (line.a_block in subtree or line.b_block in subtree)
+        )
+    ]
     for n in subtree:
         del tree.blocks[n]
 
@@ -760,6 +810,14 @@ def _op_disconnect(tree: SeTree, op: dict[str, Any]) -> None:
     for i, c in enumerate(tree.connects):
         if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:
             del tree.connects[i]
+            # BOM lines hung off this connect go with it (same vacancy
+            # rule as remove_block) — a bearing bought *for a joint* has
+            # no meaning once the joint is gone.
+            tree.bom = [
+                line
+                for line in tree.bom
+                if not (line.is_connect and _bom_pair(line) == pair)
+            ]
             return
     live = (
         ", ".join(
@@ -1037,6 +1095,188 @@ def _op_remove_measure(tree: SeTree, op: dict[str, Any]) -> None:
     tree.measures.remove(m)
 
 
+def _template_owned(tree: SeTree, name: str, *, opname: str, what: str) -> SeBlock:
+    """Resolve ``name`` to an *ordinary* block, rejecting an instance/array
+    node — realization facets (envelope, mode, binding) live on the
+    template and resolve from it at read time, so setting one on an
+    instance would be a silently ignored write."""
+    node = tree.blocks.get(name)
+    if node is None:
+        raise OpError(_no_block_msg(tree, name, what="block"))
+    if node.template is not None:
+        raise OpError(
+            f"block {name!r} is an instance (of {node.template!r}) — the "
+            f"{what} lives on the template; {opname} on {node.template!r} "
+            "instead"
+        )
+    return node
+
+
+def _op_set_mode(tree: SeTree, op: dict[str, Any]) -> None:
+    """Assign (or clear, with ``mode=null``) a block's manufacturing mode
+    — ``'purchase'``, ``'fdm/asa'``, ``'laser/acrylic'``, … An unknown
+    family is rejected with the legal list; a known family whose
+    implementer hasn't shipped is accepted, and reads back as *recorded
+    intent* (se-kind.md's suggestive-by-contract posture, applied to L5:
+    stating how you mean to make something is worth storing before the
+    checker exists)."""
+    name = _require_name(op, "block", "set_mode")
+    node = _template_owned(tree, name, opname="set_mode", what="manufacturing mode")
+    if "mode" not in op:
+        raise OpError("set_mode needs 'mode' (a mode key, or null to clear)")
+    raw = op.get("mode")
+    if raw is None:
+        node.mode = None
+        return
+    try:
+        parse_mode(raw)
+    except ModeError as exc:
+        raise OpError(f"set_mode: {exc}") from exc
+    node.mode = str(raw).strip()
+
+
+def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
+    """Bind a block's L3 realization to a design or catalog row:
+    ``kind`` ∈ ``cad|nm|component|part`` + ``design`` (slug / C-number),
+    or ``clear=true``. Slug-keyed text resolved at read time — binding a
+    component that doesn't exist yet is a legal, honest state (and a DRC
+    finding), never a write-time rejection: the design language must let
+    you name what you intend to buy before it's in the store."""
+    name = _require_name(op, "block", "set_binding")
+    node = _template_owned(tree, name, opname="set_binding", what="realization binding")
+    if op.get("clear"):
+        if op.get("kind") is not None or op.get("design") is not None:
+            raise OpError("set_binding: 'clear' and kind/design are mutually exclusive")
+        node.bound_kind = None
+        node.bound = None
+        return
+    kind = str(op.get("kind") or "").strip()
+    if kind not in _BINDING_KINDS:
+        known = " | ".join(_BINDING_KINDS)
+        raise OpError(
+            f"set_binding needs 'kind' ∈ {known} (or clear=true); got {kind!r}"
+        )
+    design = str(op.get("design") or "").strip()
+    if not design:
+        raise OpError(
+            f"set_binding needs 'design' — the {kind} "
+            f"{'C-number' if kind == 'part' else 'slug'} this block realizes as"
+        )
+    node.bound_kind = kind
+    node.bound = design
+
+
+def _bom_pair(line: BomLine) -> frozenset[tuple[str, str]]:
+    """A connect-targeted line's endpoint pair, for identity comparison."""
+    assert line.a_block is not None and line.a_port is not None
+    assert line.b_block is not None and line.b_port is not None
+    return _connects_endpoint_pair(line.a_block, line.a_port, line.b_block, line.b_port)
+
+
+def _same_bom_target(a: BomLine, b: BomLine) -> bool:
+    if a.is_connect != b.is_connect:
+        return False
+    if not a.is_connect:
+        return a.block == b.block
+    return _bom_pair(a) == _bom_pair(b)
+
+
+def _bom_target(tree: SeTree, op: dict[str, Any], *, opname: str) -> BomLine:
+    """Resolve the ``block=`` / ``a=``+``b=`` half of a BOM op into a
+    target-only line (the item half is the caller's). Both forms must name
+    something live — a BOM line against a block that isn't there is a typo,
+    and the ops layer is where a typo still costs nothing."""
+    has_block = op.get("block") is not None
+    has_edge = op.get("a") is not None or op.get("b") is not None
+    if has_block == has_edge:
+        raise OpError(
+            f"{opname} targets exactly one of a block (block=) or a connect "
+            "(a= and b=, each 'block.port')"
+        )
+    if has_block:
+        name = _require_name(op, "block", opname)
+        if name not in tree.blocks:
+            raise OpError(_no_block_msg(tree, name, what="block"))
+        return BomLine(item_kind="component", item="", block=name)
+    c = _find_connect(tree, op, opname=opname)
+    return BomLine(
+        item_kind="component",
+        item="",
+        a_block=c.a_block,
+        a_port=c.a_port,
+        b_block=c.b_block,
+        b_port=c.b_port,
+    )
+
+
+def _op_add_bom(tree: SeTree, op: dict[str, Any]) -> None:
+    """Hang a bought ``component``/``part`` off a block or a connect, with
+    a **per-occurrence** quantity — the tree's arrays multiply it
+    (:mod:`precis_se.bom`). Re-adding the same item to the same target
+    replaces that line: the quantity is a statement about the target, and
+    two lines disagreeing about it is exactly the ambiguity a BOM must not
+    have."""
+    target = _bom_target(tree, op, opname="add_bom")
+    try:
+        kind, item, qty, uom, why = vet_bom_fields(
+            item_kind=op.get("item_kind"),
+            item=op.get("item"),
+            qty=op.get("qty"),
+            uom=op.get("uom"),
+            reason=op.get("reason"),
+            opname="add_bom",
+        )
+    except BomError as exc:
+        raise OpError(str(exc)) from exc
+    target.item_kind = kind
+    target.item = item
+    target.qty = qty
+    target.uom = uom
+    target.reason = why
+    for i, existing in enumerate(tree.bom):
+        if (
+            _same_bom_target(existing, target)
+            and existing.item_kind == kind
+            and existing.item == item
+        ):
+            tree.bom[i] = target
+            return
+    tree.bom.append(target)
+
+
+def _op_remove_bom(tree: SeTree, op: dict[str, Any]) -> None:
+    """Drop one BOM line, addressed by its target + item."""
+    target = _bom_target(tree, op, opname="remove_bom")
+    try:
+        kind, item, _qty, _uom, _why = vet_bom_fields(
+            item_kind=op.get("item_kind"),
+            item=op.get("item"),
+            qty=None,
+            opname="remove_bom",
+        )
+    except BomError as exc:
+        raise OpError(str(exc)) from exc
+    for i, existing in enumerate(tree.bom):
+        if (
+            _same_bom_target(existing, target)
+            and existing.item_kind == kind
+            and existing.item == item
+        ):
+            del tree.bom[i]
+            return
+    live = (
+        ", ".join(
+            f"{line.item_kind}:{line.item}"
+            for line in tree.bom
+            if _same_bom_target(line, target)
+        )
+        or "(none)"
+    )
+    raise OpError(
+        f"remove_bom: no {kind} {item!r} on {target.target!r}. Live items there: {live}"
+    )
+
+
 _OPS = {
     "add_block": _op_add_block,
     "instance_block": _op_instance_block,
@@ -1053,4 +1293,8 @@ _OPS = {
     "add_measure": _op_add_measure,
     "set_measure": _op_set_measure,
     "remove_measure": _op_remove_measure,
+    "set_mode": _op_set_mode,
+    "set_binding": _op_set_binding,
+    "add_bom": _op_add_bom,
+    "remove_bom": _op_remove_bom,
 }

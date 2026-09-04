@@ -28,8 +28,8 @@ above level *k* leaves a valid level-*k* object):
   tolerances as relations between named measures, loads as objective
   vectors — stored explicitly, never derived from L3 geometry.
 - **L3 — realized solids.** Per block: cad node sets, instanced
-  templates, ``component`` bindings, or (atomic mode) a bound ``nm``
-  design.
+  templates, ``component``/``part`` bindings (``set_binding``), or
+  (atomic mode) a bound ``nm`` design.
 - **L4 — metrics/agreement.** ``envelope_fit``, interface fit, stack-up,
   design DRC — the realized solid checked against the spec, never stored
   twice.
@@ -63,6 +63,19 @@ the declared-vs-derived axis-travel probe renting
 lockstep with fresh block ids), and migrations ``0001_se_kind.sql`` +
 ``0002_se_l2.sql``.
 
+**Off-the-shelf rung 1** (docs/backlog/se-off-the-shelf-fabrication.md,
+migration ``0003_se_bom.sql``) adds the layer for things you *don't*
+make: :mod:`precis_se.bom` (a bought ``component``/``part`` hung off a
+block or a connect, and the multiplicity rollup that turns one authored
+line into the number you actually order — arrays and instances multiply
+through) and :mod:`precis_se.modes` (the manufacturing-mode families;
+``purchase`` is the one with an implementer, the rest are recordable
+intent until theirs ship). Surfaced as ``view='bom'`` — priced and massed
+through the ``component`` kind's own spec values, never a second copy of
+them — with ``set_mode``/``set_binding``/``add_bom``/``remove_bom`` ops
+and the DRC demands they make checkable (a ``bearing``/``screw`` joint
+with nothing on the BOM; a ``purchase`` block that names nothing to buy).
+
 Ships **dark** behind the ``se.enabled`` setting (the ``se`` kind's
 ``requires_setting``; DB row → ``PRECIS_SE_ENABLED`` env fallback) — the
 kind is hidden from the catalogue/dispatcher until the flag is set. See
@@ -70,9 +83,10 @@ kind is hidden from the catalogue/dispatcher until the flag is set. See
 registry, manufacturing modes, the propose/interrogate loop); the
 agent-facing skill lands last (ship order step 8). Unshipped past this
 round: the rotational DOF probe (translational_dof's missing twin),
-notes ledger, ``se_propose``, modes/process DRC, realization bindings,
-``se_bom``, compliance advisories (ship-order step 6), the profile
-tier.
+notes ledger, ``se_propose``, process DRC + the capability rows behind
+it, catalog-derived geometry/ports for a bound component,
+mechanism→geometry propagation, compliance advisories (ship-order step
+6), the profile tier.
 """
 
 from __future__ import annotations

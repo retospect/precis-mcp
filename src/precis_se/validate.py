@@ -34,6 +34,7 @@ from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis_se import bom as se_bom
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 
 
@@ -198,4 +199,23 @@ def validate(tree: SeTree) -> list[ValidationIssue]:
                 severity="warn",
             )
         )
+
+    # 5. dangling_bom (error) — a bought item hung off a target that no
+    # longer resolves (defense in depth: ops' vacancy rules drop these
+    # with their target; a hand-corrected row still has to surface).
+    for line in tree.bom:
+        occurrences, note = se_bom.line_occurrences(tree, line)
+        if occurrences is None:
+            findings.append(
+                ValidationIssue(
+                    rule="dangling_bom",
+                    subject=f"{line.item_kind}:{line.item}",
+                    detail=(
+                        f"hung off {line.target!r} — {note}; the quantity "
+                        "can't be counted (remove_bom, or restore the "
+                        "target)"
+                    ),
+                    severity="error",
+                )
+            )
     return findings

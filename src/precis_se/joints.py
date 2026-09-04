@@ -51,23 +51,29 @@ AXIS_CLASSES = frozenset({"revolute", "prismatic", "cylindrical", "planar"})
 #: ``demands_relation`` is the demand graph-DRC can check *today*: a live
 #: tolerance relation between measures of the two endpoint blocks (a press
 #: fit without an interference relation is folklore, not engineering).
-#: Deferred demands are named in ``deferred`` so they aren't re-derived —
-#: reported nowhere until their substrate (se_bom, flexing-member
-#: detection) exists; flagging what a designer cannot yet satisfy is noise.
+#: ``demands_bom`` is the second checkable demand, live since se_bom
+#: (migration 0003): a mechanism realized by a *bought* thing needs a BOM
+#: line saying which one — a bearing joint with nothing to buy is a
+#: drawing, not a machine. Deferred demands are named in ``deferred`` so
+#: they aren't re-derived — reported nowhere until their substrate
+#: (flexing-member detection) exists; flagging what a designer cannot yet
+#: satisfy is noise.
 MECHANISMS: dict[str, dict[str, Any]] = {
     "snap": {
         "demands_relation": "an engagement-depth tolerance relation",
         "deferred": "a flexing member (needs L3 solids)",
     },
-    "screw": {"demands_relation": None},
+    # A screw joint's fastener is bought; the holes it stamps into the
+    # members are rung 3 (se-off-the-shelf-fabrication.md engine 2).
+    "screw": {"demands_relation": None, "demands_bom": "the fastener"},
     "press": {
         "demands_relation": "an interference tolerance relation",
     },
     "key": {"demands_relation": None},
-    "magnet": {"demands_relation": None},
+    "magnet": {"demands_relation": None, "demands_bom": "the magnet(s)"},
     "bearing": {
         "demands_relation": "bore/OD tolerance relations",
-        "deferred": "a BOM component (se_bom lands a later slice)",
+        "demands_bom": "the bearing",
     },
     "bond": {"demands_relation": None},  # atomic scale: one covalent bond
     "integral": {"demands_relation": None},  # print-in-place, same body

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis_se import joints as se_joints
+from precis_se import modes as se_modes
 from precis_se.measures import StackupResult, stackup
 from precis_se.ops import SeTree, effective_envelope
 from precis_se.validate import ValidationIssue, _posed_component
@@ -173,6 +174,82 @@ def drc(tree: SeTree) -> DrcReport:
                     severity="warn",
                 )
             )
+
+    # 3b. mechanism-implied BOM demands (live since se_bom): a mechanism
+    # realized by a bought thing needs a line saying which one — on the
+    # connect itself, or on either endpoint block (a designer may well
+    # hang "2 bearings" on the hub rather than on the joint; both state
+    # the same purchase, so either satisfies the demand).
+    bom_targets: set[str] = set()
+    block_bom_targets: set[str] = set()
+    for line in tree.bom:
+        if line.block is not None:
+            bom_targets.add(line.block)
+            block_bom_targets.add(line.block)
+        else:
+            bom_targets.add(str(line.a_block))
+            bom_targets.add(str(line.b_block))
+    for c in tree.connects:
+        if not c.joint:
+            continue
+        mech = c.joint.get("mechanism")
+        spec = se_joints.MECHANISMS.get(mech) if isinstance(mech, str) else None
+        if spec is None or spec.get("demands_bom") is None:
+            continue
+        if {c.a_block, c.b_block} & bom_targets:
+            continue
+        findings.append(
+            ValidationIssue(
+                rule="mechanism_bom",
+                subject=f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}",
+                detail=(
+                    f"mechanism {mech!r} is realized by a bought part "
+                    f"({spec['demands_bom']}) — nothing is on the BOM for "
+                    "this joint or its blocks (add_bom with the component)"
+                ),
+                severity="warn",
+            )
+        )
+
+    # 3c. a mode whose realization *is* a bought thing (purchase,
+    # stock-cut) needs one: a component/part binding, or a BOM line on the
+    # block. Assigning the mode is the claim; this is the receipt.
+    for name, block in sorted(tree.blocks.items()):
+        family = se_modes.family_of(block.mode)
+        if block.mode and family is None:
+            findings.append(
+                ValidationIssue(
+                    rule="unknown_mode",
+                    subject=name,
+                    detail=(
+                        f"stored mode {block.mode!r} has no known family — "
+                        f"known: {' | '.join(se_modes.MODE_FAMILIES)} "
+                        "(set_mode to repair)"
+                    ),
+                    severity="error",
+                )
+            )
+            continue
+        if family is None or not family.demands_item:
+            continue
+        # Only a line hung on the block *itself* counts here: a bearing
+        # bought for a joint this block happens to sit on says nothing
+        # about what the block itself is.
+        bound = block.bound_kind in ("component", "part") and bool(block.bound)
+        if bound or name in block_bom_targets:
+            continue
+        findings.append(
+            ValidationIssue(
+                rule="mode_without_item",
+                subject=name,
+                detail=(
+                    f"mode {block.mode!r} means this block is bought, not "
+                    "made — but it names nothing to buy (set_binding to a "
+                    "component/part, or add_bom)"
+                ),
+                severity="warn",
+            )
+        )
 
     # 4. stored objectives re-checked — an unregistered key is a
     # declared-but-unchecked facet (warn, the annotations contract-class

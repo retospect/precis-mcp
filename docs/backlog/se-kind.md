@@ -517,7 +517,12 @@ live in the tables, never chunks (nm/ADR-0041 storage rule).
      lives in the extracted shared core, never an se-only path.
 7. **More modes** — CNC-2.5ax, SLA, TPU row, print-in-place; the process
    skill catalog (bridge-closing first); atomic mode = nm binding with
-   the declared unit boundary.
+   the declared unit boundary. **Off-the-shelf fabrication** (bought
+   parts, laser-cut sheet, stock pipe/profile) is scoped separately in
+   `se-off-the-shelf-fabrication.md` — three engines (catalog→geometry,
+   mechanism→geometry propagation, stock-constrained realizability) whose
+   first rung (`se_bom` + component binding + `purchase` mode) is the
+   only one that doesn't wait on slice 5, and shipped 2026-09-04.
 8. **Skill file last** (`precis-se-help.md`) — after behavior exists;
    a skill describing target state misdirects agents.
 

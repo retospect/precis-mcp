@@ -26,7 +26,10 @@ round (se slices 1-3, docs/backlog/se-kind.md "Ship order"):
   at metres — the nm clearance view's design, transferred), or the
   graph-tier DRC report (``view='drc'`` — :mod:`precis_se.drc`: joint
   contradictions, mechanism-implied demands, unresolvable relations,
-  the declared-vs-derived axis-travel probe).
+  the declared-vs-derived axis-travel probe), or the bought-item rollup
+  (``view='bom'`` — :mod:`precis_se.bom`: quantities multiplied through
+  the tree's array multiplicities, priced and massed from the
+  ``component`` kind's own spec values).
 - ``delete`` — soft-retire a whole design.
 - ``search`` — find designs by intent over each design's one
   ``card_combined`` chunk; ``search_hits`` opts into the cross-kind
@@ -64,7 +67,9 @@ from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis_se import bom as se_bom
 from precis_se import drc as se_drc
+from precis_se import modes as se_modes
 from precis_se import persist
 from precis_se import validate as se_validate
 from precis_se.measures import stackup as se_stackup
@@ -102,9 +107,10 @@ class SeHandler(Handler):
             "instancing, and first-class arrays. put/edit take typed ops "
             "(add_block/instance_block/array_block/set_pose/set_envelope/"
             "remove_block/add_port/remove_port/connect/disconnect/"
-            "set_joint/set_load/add_measure/set_measure/remove_measure); "
+            "set_joint/set_load/add_measure/set_measure/remove_measure/"
+            "set_mode/set_binding/add_bom/remove_bom); "
             "get lists designs or renders one (view='tree'|'block'|"
-            "'ports'|'measures'|'validate'|'clearance'|'drc'; block takes "
+            "'ports'|'measures'|'validate'|'clearance'|'drc'|'bom'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes); delete soft-retires; search finds "
@@ -125,6 +131,14 @@ class SeHandler(Handler):
             "cad mini-DSL (e.g. 'cyl:r0.02h0.01' = a 2 cm-radius disc) — "
             "every field beyond a block's name is optional (suggestive "
             "by contract; an empty design reads as unfilled, not done). "
+            "A thing BOUGHT is never a block: add_bom hangs a "
+            "component/part on a block (block=) or a connect (a=/b=) with "
+            "a per-occurrence qty, and view='bom' rolls it up through the "
+            "array multiplicities with cost/mass from the component kind. "
+            "set_mode assigns how a block gets made ('purchase' today; "
+            "fdm/laser/stock-cut/cnc-2.5ax/sla/atomic are recordable "
+            "intent until their implementers ship); set_binding points a "
+            "block's realization at a cad|nm|component|part row. "
             "array_block patterns a template block N times "
             "(linear={'count','pitch','axis'} in metres, or "
             "polar={'count','radius','axis'}, axis default +z) — the "
@@ -143,7 +157,16 @@ class SeHandler(Handler):
         placement="artifact",
         corpus_role="none",
         can_own_jobs=False,
-        views=("tree", "block", "ports", "measures", "validate", "clearance", "drc"),
+        views=(
+            "tree",
+            "block",
+            "ports",
+            "measures",
+            "validate",
+            "clearance",
+            "drc",
+            "bom",
+        ),
         # Dark-ship: hidden until the `se.enabled` setting resolves.
         requires_setting=("se.enabled",),
     )
@@ -296,14 +319,144 @@ class SeHandler(Handler):
             return Response(body=_render_clearance(tree, args))
         if v == "drc":
             return Response(body=_render_drc(tree))
+        if v == "bom":
+            return Response(body=self._render_bom(tree))
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='ports' | view='measures' "
             "(+ stack-up) | view='validate' | view='clearance' "
             "(args={'a':...,'b':...}) | view='drc' (graph tier + DOF "
-            "probe)",
+            "probe) | view='bom' (bought items, multiplied through the "
+            "arrays, with cost/mass)",
         )
+
+    def _render_bom(self, tree: SeTree) -> str:
+        """The bought-item rollup: one row per ``component``/``part``,
+        quantities multiplied through the tree's array multiplicities
+        (:mod:`precis_se.bom`), with unit cost and mass resolved from the
+        ``component`` kind's own sourced spec values.
+
+        The one place in se that touches another kind's store surface, and
+        deliberately read-only: a BOM is a *view over* the component store,
+        never a second copy of it. An item that isn't in the store yet
+        renders `—` and is counted as uncovered, exactly as an unpriced
+        component does in `component`'s own BOM."""
+        totals = se_bom.rollup(tree)
+        lines = ["# BOM — bought items (quantities include array multiplicity)"]
+        if not totals:
+            lines.append("")
+            lines.append(
+                "(nothing bought yet — add_bom hangs a component/part off a "
+                "block or a connect)"
+            )
+            return "\n".join(lines)
+
+        rows: list[dict[str, Any]] = []
+        total_cost = 0.0
+        cost_covered = 0
+        total_mass = 0.0
+        mass_covered = 0
+        unknown: list[str] = []
+        unresolved: list[str] = []
+
+        for total in totals:
+            resolved = self._resolve_item(total.item_kind, total.item)
+            qty_display = "?" if total.total is None else f"{total.total:g}"
+            if total.mixed_uom:
+                # Summing metres and each is not a quantity — say so
+                # instead of picking one and printing a number.
+                qty_display += f" ⚠ mixed uom: {', '.join(sorted(total.uoms))}"
+            elif total.uom:
+                qty_display += f" {total.uom}"
+            cost_display = "—"
+            mass_display = "—"
+            item_display = f"{total.item_kind}:{total.item}"
+            if resolved is None:
+                unknown.append(item_display)
+            else:
+                ref_id, label = resolved
+                item_display = f"{label} ({item_display})"
+                if total.item_kind == "component":
+                    cost_num = self._spec_number(ref_id, "unit_cost")
+                    if cost_num is not None:
+                        cost_display = f"{cost_num:g}"
+                        if total.total is not None:
+                            total_cost += total.total * cost_num
+                            cost_covered += 1
+                    mass_num = self._spec_number(ref_id, "mass")
+                    if mass_num is not None:
+                        mass_display = f"{mass_num:g}"
+                        if total.total is not None:
+                            total_mass += total.total * mass_num
+                            mass_covered += 1
+            if total.unresolved:
+                unresolved.extend(
+                    f"{target} ({total.item_kind}:{total.item})"
+                    for target, _qty, occ in total.contributions
+                    if occ is None
+                )
+            rows.append(
+                {
+                    "item": item_display,
+                    "qty": qty_display,
+                    "unit_cost": cost_display,
+                    "unit_mass": mass_display,
+                    "for": ", ".join(
+                        f"{target} {qty:g}×{'?' if occ is None else occ}"
+                        for target, qty, occ in total.contributions
+                    ),
+                }
+            )
+
+        n = len(rows)
+        lines.append(
+            render_agent_table(
+                rows, schema=["item", "qty", "unit_cost", "unit_mass", "for"]
+            )
+        )
+        lines.append("")
+        lines.append(
+            f"unit_cost total: {total_cost:g} — priced: {cost_covered} of {n} item(s)"
+        )
+        lines.append(
+            f"mass total: {total_mass:g} — massed: {mass_covered} of {n} item(s)"
+        )
+        if unknown:
+            lines.append("")
+            lines.append(
+                f"⚠ not in the store: {', '.join(sorted(set(unknown)))} — "
+                "totals exclude them (put the component first, or fix the slug)"
+            )
+        if unresolved:
+            lines.append(
+                f"⚠ target not in the tree: {', '.join(sorted(set(unresolved)))} "
+                "— quantity unknown, excluded from totals"
+            )
+        return "\n".join(lines)
+
+    def _spec_number(self, ref_id: int, spec_id: str) -> float | None:
+        """One component's current numeric value for ``spec_id``, through
+        the component store's own single "current value" authority
+        (``component_current_spec_value``) — so an se BOM and a
+        ``component`` BOM can never disagree about a price."""
+        row = self.store.component_current_spec_value(ref_id, spec_id)
+        if row is None:
+            return None
+        value = row.get("value_num")
+        return None if value is None else float(value)
+
+    def _resolve_item(self, item_kind: str, item: str) -> tuple[int, str] | None:
+        """``(ref_id, label)`` for a BOM line's item, or ``None`` when the
+        store has no such row. Never raises — an unresolvable item is a
+        *report*, not a failed read."""
+        try:
+            ref = self.store.get_ref(kind=item_kind, id=item)
+        except Exception:  # pragma: no cover — defensive: a kind may be dark
+            return None
+        if ref is None:
+            return None
+        return ref.id, str(ref.title or ref.slug or ref.id)
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
@@ -548,6 +701,11 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
     lines.append(f"use: {node.use or '—'}")
     if node.objectives:
         lines.append(f"loads: {json.dumps(node.objectives)}")
+    lines.append(_mode_line(tree, node))
+    lines.append(_binding_line(tree, node))
+    occurrences = se_bom.design_occurrences(tree).get(node.name, 0)
+    if occurrences != 1:
+        lines.append(f"realized: ×{occurrences} (arrays/instances included)")
 
     measures_owner = node.template or node.name
     own_measures = [m for m in tree.measures if m.block == measures_owner]
@@ -600,7 +758,59 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
         lines.append(render_agent_table(rows, schema=["a", "b", "joint", "objectives"]))
     else:
         lines.append("## connects\n(none)")
+
+    bought = [
+        line
+        for line in tree.bom
+        if line.block == node.name
+        or (line.is_connect and node.name in (line.a_block, line.b_block))
+    ]
+    if bought:
+        lines.append("")
+        lines.append("## bought (per occurrence)")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "item": f"{line.item_kind}:{line.item}",
+                        "qty": f"{line.qty:g}" + (f" {line.uom}" if line.uom else ""),
+                        "for": line.target,
+                        "reason": line.reason or "—",
+                    }
+                    for line in bought
+                ],
+                schema=["item", "qty", "for", "reason"],
+            )
+        )
     return "\n".join(lines)
+
+
+def _mode_line(tree: SeTree, node: SeBlock) -> str:
+    """The block's manufacturing mode, with the honesty marker: a family
+    whose implementer hasn't shipped reads as *intent*, never as a checked
+    plan (:mod:`precis_se.modes`). An instance shows its template's."""
+    owner = tree.blocks.get(node.template) if node.template else node
+    mode = owner.mode if owner is not None else None
+    if not mode:
+        return "mode: — (unassigned)"
+    via = f" (from {node.template})" if node.template else ""
+    family = se_modes.family_of(mode)
+    if family is None:
+        return f"mode: {mode}{via}  ⚠ unknown family — set_mode to repair"
+    if not family.implemented:
+        return f"mode: {mode}{via}  (recorded intent — no implementer yet)"
+    return f"mode: {mode}{via}  — {family.summary}"
+
+
+def _binding_line(tree: SeTree, node: SeBlock) -> str:
+    """The block's L3 realization binding — what its solid actually *is*
+    (a cad/nm design, or a bought component/part). An instance shows its
+    template's."""
+    owner = tree.blocks.get(node.template) if node.template else node
+    if owner is None or not owner.bound_kind or not owner.bound:
+        return "realization: — (envelope only)"
+    via = f" (from {node.template})" if node.template else ""
+    return f"realization: {owner.bound_kind}:{owner.bound}{via}"
 
 
 def _render_ports(tree: SeTree) -> str:
