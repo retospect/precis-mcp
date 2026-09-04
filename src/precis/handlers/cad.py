@@ -43,8 +43,16 @@ from precis.cad.probe import (
 from precis.cad.relate import clearance as cad_clearance
 from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.relate import translational_dof
-from precis.cad.scene import SceneError, build_design, parse_source
+from precis.cad.scene import (
+    SceneError,
+    SceneSpec,
+    build_design,
+    expand_instances,
+    instance_slug,
+    parse_source,
+)
 from precis.cad.vec import Vec3, vec3
+from precis.cad_resolve import design_resolver
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
@@ -94,7 +102,8 @@ class CadHandler(Handler):
             "Parametric solid-model design. put creates/replaces a "
             "design from a text source (one node per line: '<name> <add|cut|"
             "intersect> <config> [@x,y,z] [rot:..] [polar:nNrR|linear:..]', "
-            "config e.g. cyl:r3h12 box:w40d20h10); get lists designs, shows a "
+            "config e.g. cyl:r3h12 box:w40d20h10; 'use <slug> as <name>' "
+            "instances another design as a sub-assembly); get lists designs, shows a "
             "design's node tree (id=slug), one node (id='ca<id>'), or probes "
             "analytically (view='ray|point|arc|section|clearance|connectivity|"
             "dof|volume', args={...}; connectivity: what touches what, path "
@@ -119,6 +128,28 @@ class CadHandler(Handler):
             raise InitError("cad: store required")
         self.store = hub.store
         self.embedder = hub.embedder
+        self._resolve = design_resolver(self.store)
+
+    def _expand(self, spec: SceneSpec, *, own_slug: str | None = None) -> SceneSpec:
+        """The spec every probe / export / warning runs on: sub-assemblies
+        inlined as real bodies. Identity for a design with no ``use`` node.
+
+        ``own_slug`` refuses a design that instances *itself*: the resolver
+        would hand back the previously stored version, so the new design
+        would silently contain a frozen copy of its own last save — bounded
+        (the cycle guard stops it recursing) but never what was meant.
+        """
+        if own_slug is not None:
+            for node in spec.nodes:
+                if instance_slug(node.config) == own_slug:
+                    raise BadInput(
+                        f"design {own_slug!r} instances itself (node {node.name!r})",
+                        next="a design cannot 'use' its own slug",
+                    )
+        try:
+            return expand_instances(spec, self._resolve)
+        except SceneError as exc:
+            raise BadInput(f"cad instance error: {exc}") from exc
 
     # ── link: placement only ─────────────────────────────
 
@@ -181,8 +212,9 @@ class CadHandler(Handler):
         if not spec.nodes:
             raise BadInput("cad design has no nodes")
         # Build eagerly so a bad config / geometry surfaces on put.
+        built = self._expand(spec, own_slug=slug)
         try:
-            design = build_design(spec)
+            design = build_design(built)
         except Exception as exc:  # kernel build error
             raise BadInput(f"cad build error: {exc}") from exc
 
@@ -191,14 +223,14 @@ class CadHandler(Handler):
             slug=slug,
             title=ttl,
             spec=spec,
-            card_text=self._card_text(ttl, spec, design),
+            card_text=self._card_text(ttl, built, design),
         )
         _spec2, handles = self.store.cad_load(ref.id)
         verb = "created" if created else "updated"
         head = (
-            f"# {slug} — {verb}: {len(spec.components)} part(s), {n} node(s)"
-            f"{self._interference_note(design, spec)}"
-            f"{self._connectivity_note(design, spec)}"
+            f"# {slug} — {verb}: {len(built.components)} part(s), {n} node(s)"
+            f"{self._interference_note(design, built)}"
+            f"{self._connectivity_note(design, built)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -235,8 +267,9 @@ class CadHandler(Handler):
             raise BadInput(f"cad source error: {exc}") from exc
         if not spec.nodes:
             raise BadInput("derived cad design has no nodes")
+        built = self._expand(spec, own_slug=to_slug)
         try:
-            design = build_design(spec)
+            design = build_design(built)
         except Exception as exc:  # kernel build error
             raise BadInput(f"cad build error: {exc}") from exc
 
@@ -245,7 +278,7 @@ class CadHandler(Handler):
             slug=to_slug,
             title=ttl,
             spec=spec,
-            card_text=self._card_text(ttl, spec, design),
+            card_text=self._card_text(ttl, built, design),
         )
         # lineage: the derived design points back to its parent
         self.store.add_link(
@@ -254,9 +287,9 @@ class CadHandler(Handler):
         _spec2, handles = self.store.cad_load(ref.id)
         head = (
             f"# {to_slug} — derived from {parent.slug}: "
-            f"{len(spec.components)} part(s), {n} node(s)"
-            f"{self._interference_note(design, spec)}"
-            f"{self._connectivity_note(design, spec)}"
+            f"{len(built.components)} part(s), {n} node(s)"
+            f"{self._interference_note(design, built)}"
+            f"{self._connectivity_note(design, built)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -285,9 +318,13 @@ class CadHandler(Handler):
             )
             return Response(body=head + "\n" + self._tree_table(spec, handles))
         if view == "scad":
-            return Response(body=to_openscad(spec, name=str(ref.slug or s)))
+            return Response(
+                body=to_openscad(self._expand(spec), name=str(ref.slug or s))
+            )
         if view in ("stl", "3mf", "step"):
-            return self._render_export(spec, str(ref.slug or s), view, args or {})
+            return self._render_export(
+                self._expand(spec), str(ref.slug or s), view, args or {}
+            )
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -299,8 +336,9 @@ class CadHandler(Handler):
                 f"unknown cad view {view!r}",
                 next=f"view= one of {list(_VIEWS)}, or omit for the node tree",
             )
-        design = build_design(spec)
-        return self._render_probe(view, design, spec, args or {})
+        built = self._expand(spec)
+        design = build_design(built)
+        return self._render_probe(view, design, built, args or {})
 
     # ── export ───────────────────────────────────────────────────────
     def _render_export(

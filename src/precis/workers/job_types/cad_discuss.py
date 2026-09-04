@@ -32,6 +32,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from precis.cad.scene import build_design, spec_to_source
+from precis.cad_resolve import design_resolver
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.workers.job_types import JobTypeSpec
 
@@ -103,7 +104,7 @@ def _design_facts(store: Store, cad_ref_id: int) -> tuple[str, str]:
         from precis.cad.bulk import volume as cad_volume
         from precis.cad.relate import connectivity as cad_connectivity
 
-        design = build_design(scene_spec)
+        design = build_design(scene_spec, resolve=design_resolver(store))
         lines.append(_CONVENTION)
         lo, hi = expr_aabb(design, design.whole())
         lines.append(

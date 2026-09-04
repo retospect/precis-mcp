@@ -55,9 +55,16 @@ from precis.cad.export import (
 )
 from precis.cad.gltf import component_colors, solid_available, to_glb
 from precis.cad.relate import connectivity as cad_connectivity
-from precis.cad.scene import build_design
+from precis.cad.scene import (
+    SceneError,
+    SceneSpec,
+    build_design,
+    expand_instances,
+    has_instances,
+)
 from precis.cad.tessellate import design_aabb, halfspace_clamp_params
 from precis.cad.vec import Vec3, euler_deg_from_matrix
+from precis.cad_resolve import design_resolver
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
@@ -133,6 +140,17 @@ def _pose_str(node: Any) -> str:
     return pose
 
 
+def _expanded(store: Store, ref_id: int) -> SceneSpec:
+    """The design with every ``use <slug> as <name>`` sub-assembly inlined.
+
+    Everything that renders or measures *geometry* (glTF, scene.json, the
+    analysis panel, exports) works on this; only the editable source /
+    node-list view shows the compact instance node the author typed.
+    """
+    spec, _handles = store.cad_load(ref_id)
+    return expand_instances(spec, design_resolver(store))
+
+
 def _detail_ctx(store: Store, ref: Any) -> dict[str, Any]:
     """The cheap-to-render context: node list (coloured per part), a per-part
     legend, and counts. The heavy analysis (volume + interference) is computed
@@ -197,7 +215,12 @@ def _analysis(store: Store, ref_id: int, version: str) -> dict[str, Any]:
     if cached is not None:
         return cached
 
-    spec, _handles = store.cad_load(ref_id)
+    stored, _handles = store.cad_load(ref_id)
+    # An instancing design's geometry also moves when a *sub-design* is
+    # re-put, which this ref's own updated_at can't see — so don't memoise
+    # it rather than serve a stale assembly.
+    cacheable = not has_instances(stored)
+    spec = expand_instances(stored, design_resolver(store))
     analysis: dict[str, Any] = {"parts": spec.components, "warnings": []}
     try:
         design = build_design(spec)
@@ -240,10 +263,11 @@ def _analysis(store: Store, ref_id: int, version: str) -> dict[str, Any]:
     except Exception:  # pragma: no cover - a bad build shouldn't blank the panel
         log.debug("cad analysis: build failed", exc_info=True)
 
-    with _ANALYSIS_CACHE_LOCK:
-        if len(_ANALYSIS_CACHE) >= _ANALYSIS_CACHE_MAX:
-            _ANALYSIS_CACHE.clear()  # simple bound — the set is tiny, cheap to refill
-        _ANALYSIS_CACHE[key] = analysis
+    if cacheable:
+        with _ANALYSIS_CACHE_LOCK:
+            if len(_ANALYSIS_CACHE) >= _ANALYSIS_CACHE_MAX:
+                _ANALYSIS_CACHE.clear()  # simple bound — tiny set, cheap to refill
+            _ANALYSIS_CACHE[key] = analysis
     return analysis
 
 
@@ -443,8 +467,7 @@ async def cad_model(request: Request, slug: str, mode: str = "features") -> Resp
     m = "solid" if mode == "solid" and solid_available() else "features"
 
     def _build() -> bytes:
-        spec, _handles = store.cad_load(ref.id)
-        return to_glb(spec, mode=m)
+        return to_glb(_expanded(store, ref.id), mode=m)
 
     try:
         glb = await asyncio.to_thread(_build)
@@ -478,7 +501,10 @@ async def cad_scene(request: Request, slug: str) -> JSONResponse:
         ref = _require_ref(store, slug)
     except NotFound:
         return JSONResponse({"error": "not found"}, status_code=404)
-    spec, _handles = store.cad_load(ref.id)
+    try:
+        spec = _expanded(store, ref.id)
+    except SceneError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
     colors = component_colors(spec.components)
     aabb: tuple[Vec3, Vec3] | None = None
     nodes: list[dict[str, Any]] = []
@@ -572,7 +598,7 @@ async def cad_export(request: Request, slug: str, fmt: str) -> Response:
     export_stem = ref.slug or f"cad-{ref.id}"
 
     def _build() -> bytes:
-        spec, _handles = store.cad_load(ref.id)
+        spec = _expanded(store, ref.id)
         if fmt == "scad":
             return to_openscad(spec, name=export_stem).encode("utf-8")
         with tempfile.TemporaryDirectory() as td:

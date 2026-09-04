@@ -20,6 +20,10 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   design *is* and what it's *for*; folded into the searchable card.
 - ``component <name>`` opens a part; nodes until the next ``component``
   belong to it (default part name ``part`` if none is declared).
+- ``use <slug> as <name> [@x,y,z] [rot:...] [polar:/linear:]`` instances
+  *another design* as a sub-assembly (:func:`expand_instances`). It is a
+  top-level directive like ``component`` — it does not join, or close, the
+  enclosing component block.
 - ``<name> <op> <config> [@x,y,z] [rot:rx,ry,rz] [polar:nNrR] [linear:nNdx..dy..dz..]``
   — ``op`` ∈ {``add``, ``cut``, ``intersect``}; ``config`` is the §11
   mini-DSL (:mod:`precis.cad.dsl`). The first node in a part is its base;
@@ -33,17 +37,42 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypedDict
 
 from precis.cad.dsl import build, build_config, parse
 from precis.cad.fold import Expr
 from precis.cad.graph import Design
-from precis.cad.vec import Transform, identity, rotation, translation
+from precis.cad.vec import (
+    Transform,
+    euler_deg_from_matrix,
+    identity,
+    rotation,
+    translation,
+)
 
 log = logging.getLogger(__name__)
 
 _OPS = ("add", "cut", "intersect")
+
+#: A node whose ``config`` starts with this instances another design rather
+#: than building a primitive — see :func:`expand_instances`.
+INSTANCE_PREFIX = "use:"
+
+#: Separator between an instance's name and the sub-design's own node /
+#: component names once inlined (``f1.plate``).
+NAMESPACE_SEP = "."
+
+#: How deep ``use`` may nest before we call it a runaway.
+MAX_INSTANCE_DEPTH = 8
+
+#: Ceiling on the expanded node count — a 6-deep tree of 6-way polar
+#: instances is 46656 nodes, which would wedge a worker rather than fail.
+MAX_EXPANDED_NODES = 20_000
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LOC_RE = re.compile(r"^@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
 _ROT_RE = re.compile(r"^rot:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
 _POLAR_RE = re.compile(r"^polar:n(\d+)r(-?\d+(?:\.\d+)?)$")
@@ -135,13 +164,31 @@ def coerce_pattern(raw: Any) -> NodePattern | None:
     return None
 
 
+def instance_slug(config: str) -> str | None:
+    """The design slug a ``use:`` node instances, or ``None`` for a shape.
+
+    The one place the ``config`` encoding of an instance is decoded, so
+    every consumer (parser, expander, exporter, tree render) agrees on what
+    an instance node looks like without re-deriving the prefix test.
+    """
+    if config.startswith(INSTANCE_PREFIX):
+        return config[len(INSTANCE_PREFIX) :] or None
+    return None
+
+
 @dataclass(frozen=True)
 class NodeSpec:
-    """One parsed design node — the serialisable unit the handler stores."""
+    """One parsed design node — the serialisable unit the handler stores.
+
+    Two flavours share the row: a **shape** node (``config`` is the §11
+    mini-DSL) and an **instance** node (``config`` is ``use:<slug>``, whose
+    ``component`` is the instance's namespace). Instancing therefore needs
+    no schema change — see :func:`expand_instances`.
+    """
 
     name: str
     op: str  # add | cut | intersect
-    config: str  # the mini-DSL shape string
+    config: str  # the mini-DSL shape string, or "use:<slug>"
     component: str
     loc: tuple[float, float, float] = (0.0, 0.0, 0.0)
     rot: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -185,6 +232,34 @@ class SceneSpec:
     meta: dict[str, Any] = field(default_factory=lambda: {"units": "mm"})
 
 
+def _parse_placement(
+    toks: list[str], lineno: int
+) -> tuple[tuple[float, float, float], tuple[float, float, float], NodePattern | None]:
+    """Parse the trailing ``@x,y,z`` / ``rot:`` / ``polar:`` / ``linear:``
+    tokens shared by shape nodes and ``use`` instance directives."""
+    loc = (0.0, 0.0, 0.0)
+    rot = (0.0, 0.0, 0.0)
+    pattern: NodePattern | None = None
+    for tok in toks:
+        if m := _LOC_RE.match(tok):
+            loc = (float(m[1]), float(m[2]), float(m[3]))
+        elif m := _ROT_RE.match(tok):
+            rot = (float(m[1]), float(m[2]), float(m[3]))
+        elif m := _POLAR_RE.match(tok):
+            pattern = PolarPattern(kind="polar", n=float(m[1]), r=float(m[2]))
+        elif m := _LINEAR_RE.match(tok):
+            pattern = LinearPattern(
+                kind="linear",
+                n=float(m[1]),
+                dx=float(m[2] or 0.0),
+                dy=float(m[3] or 0.0),
+                dz=float(m[4] or 0.0),
+            )
+        else:
+            raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
+    return loc, rot, pattern
+
+
 def parse_source(text: str) -> SceneSpec:
     """Parse the line-based design language into a :class:`SceneSpec`."""
     spec = SceneSpec()
@@ -192,6 +267,7 @@ def parse_source(text: str) -> SceneSpec:
     seen_components: list[str] = []
     seen_names: set[str] = set()
     components_with_nodes: set[str] = set()
+    instance_names: set[str] = set()
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
@@ -213,8 +289,50 @@ def parse_source(text: str) -> SceneSpec:
             if len(toks) != 2:
                 raise SceneError(f"line {lineno}: 'component' needs exactly a name")
             current = toks[1]
+            if current in instance_names:
+                raise SceneError(
+                    f"line {lineno}: component {current!r} collides with the "
+                    "instance of the same name"
+                )
             if current not in seen_components:
                 seen_components.append(current)
+            continue
+        if toks[0] == "use":
+            # `use <slug> as <name> [pose] [pattern]` — a sub-assembly. It is
+            # a peer of `component`, so it neither joins nor closes the
+            # enclosing component block (`current` is deliberately untouched).
+            if len(toks) < 4 or toks[2] != "as":
+                raise SceneError(
+                    f"line {lineno}: expected "
+                    "'use <design> as <name> [@x,y,z] [rot:...] [pattern]'"
+                )
+            sub_slug, inst = toks[1], toks[3]
+            if not _SLUG_RE.match(sub_slug):
+                raise SceneError(f"line {lineno}: bad design slug {sub_slug!r}")
+            if not _IDENT_RE.match(inst):
+                raise SceneError(
+                    f"line {lineno}: bad instance name {inst!r} — letters, "
+                    f"digits, '_' and '-' only (no {NAMESPACE_SEP!r}, which "
+                    "separates an instance from the parts it brings in)"
+                )
+            if inst in seen_names or inst in seen_components:
+                raise SceneError(f"line {lineno}: duplicate name {inst!r}")
+            loc, rot, pattern = _parse_placement(toks[4:], lineno)
+            seen_names.add(inst)
+            seen_components.append(inst)
+            components_with_nodes.add(inst)
+            instance_names.add(inst)
+            spec.nodes.append(
+                NodeSpec(
+                    name=inst,
+                    op="add",
+                    config=f"{INSTANCE_PREFIX}{sub_slug}",
+                    component=inst,
+                    loc=loc,
+                    rot=rot,
+                    pattern=pattern,
+                )
+            )
             continue
         if len(toks) < 3:
             raise SceneError(
@@ -243,26 +361,7 @@ def parse_source(text: str) -> SceneSpec:
                     "finite solid; add a bounded base node before chamfering it"
                 )
 
-        loc = (0.0, 0.0, 0.0)
-        rot = (0.0, 0.0, 0.0)
-        pattern: NodePattern | None = None
-        for tok in toks[3:]:
-            if m := _LOC_RE.match(tok):
-                loc = (float(m[1]), float(m[2]), float(m[3]))
-            elif m := _ROT_RE.match(tok):
-                rot = (float(m[1]), float(m[2]), float(m[3]))
-            elif m := _POLAR_RE.match(tok):
-                pattern = PolarPattern(kind="polar", n=float(m[1]), r=float(m[2]))
-            elif m := _LINEAR_RE.match(tok):
-                pattern = LinearPattern(
-                    kind="linear",
-                    n=float(m[1]),
-                    dx=float(m[2] or 0.0),
-                    dy=float(m[3] or 0.0),
-                    dz=float(m[4] or 0.0),
-                )
-            else:
-                raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
+        loc, rot, pattern = _parse_placement(toks[3:], lineno)
 
         if current not in seen_components:
             seen_components.append(current)
@@ -309,7 +408,11 @@ def _pattern_token(pat: NodePattern) -> str:
 
 def _node_line(node: NodeSpec) -> str:
     """Serialise one node back to a source line (inverse of the parser)."""
-    parts = [node.name, node.op, node.config]
+    sub = instance_slug(node.config)
+    if sub is None:
+        parts = [node.name, node.op, node.config]
+    else:
+        parts = ["use", sub, "as", node.name]
     if node.loc != (0.0, 0.0, 0.0):
         parts.append("@" + ",".join(_fmt_num(v) for v in node.loc))
     if node.rot != (0.0, 0.0, 0.0):
@@ -338,6 +441,12 @@ def spec_to_source(spec: SceneSpec) -> str:
 
     current: str | None = None
     for node in spec.nodes:
+        if instance_slug(node.config) is not None:
+            # A `use` directive owns its own component namespace but does not
+            # open a block — emit it bare and leave `current` alone, mirroring
+            # the parser.
+            lines.append(_node_line(node))
+            continue
         if node.component != current:
             if lines and lines[-1] != "":
                 lines.append("")
@@ -384,8 +493,160 @@ def _pattern_transforms(node: NodeSpec) -> list[Transform]:
     return out
 
 
-def build_design(spec: SceneSpec) -> Design:
-    """Build a live :class:`Design` from a :class:`SceneSpec`."""
+#: Resolves a design slug to its stored :class:`SceneSpec`. Injected because
+#: this package imports nothing from the DB — see
+#: :func:`precis.cad_resolve.design_resolver` for the production one.
+Resolver = Callable[[str], SceneSpec]
+
+
+def has_instances(spec: SceneSpec) -> bool:
+    """True when ``spec`` instances another design (needs expansion)."""
+    return any(instance_slug(n.config) is not None for n in spec.nodes)
+
+
+def _decompose(
+    xf: Transform,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """A rigid transform → the ``(loc, rot)`` pair a :class:`NodeSpec` carries.
+
+    Exact inverse of :func:`_node_xform`, which builds ``translate(loc) ∘
+    rotate(rot)`` — so ``t`` *is* the location and ``R`` *is* the rotation;
+    only the Euler extraction (:func:`~precis.cad.vec.euler_deg_from_matrix`)
+    does any work.
+    """
+    rx, ry, rz = euler_deg_from_matrix(xf.R)
+    return (float(xf.t[0]), float(xf.t[1]), float(xf.t[2])), (rx, ry, rz)
+
+
+def _placements(node: NodeSpec) -> list[tuple[str, Transform]]:
+    """The node's ``(name, world transform)`` copies — one per pattern
+    instance (``name#1``…), or a single unpatterned placement."""
+    if node.pattern is None:
+        return [(node.name, _node_xform(node.loc, node.rot))]
+    return [
+        (f"{node.name}#{i}", xf)
+        for i, xf in enumerate(_pattern_transforms(node), start=1)
+    ]
+
+
+def _inline(
+    spec: SceneSpec,
+    resolve: Resolver,
+    xf: Transform,
+    prefix: str,
+    out: list[NodeSpec],
+    stack: tuple[str, ...],
+) -> None:
+    """Append ``spec``'s nodes to ``out``, re-placed under ``xf`` and
+    namespaced under ``prefix``, recursing through its own instances."""
+    for node in spec.nodes:
+        sub_slug = instance_slug(node.config)
+        if sub_slug is None:
+            if node.pattern is not None and node.op == "intersect":
+                # A patterned node folds as `intersect(cur, union(copies))`;
+                # flattened to one node per copy it would fold as a *chain* of
+                # intersections, which is a different (near-empty) solid. Add /
+                # cut are associative that way, intersect is not — so refuse
+                # rather than silently change the sub-design's meaning.
+                raise SceneError(
+                    f"cannot instance a design whose node {node.name!r} is a "
+                    "patterned 'intersect' — flattening it under an instance "
+                    "pose would change the solid; split it into explicit nodes"
+                )
+            for name, local in _placements(node):
+                loc, rot = _decompose(xf.compose(local))
+                out.append(
+                    replace(
+                        node,
+                        name=f"{prefix}{name}",
+                        component=f"{prefix}{node.component}",
+                        loc=loc,
+                        rot=rot,
+                        pattern=None,
+                    )
+                )
+            continue
+
+        if sub_slug in stack:
+            chain = " → ".join((*stack, sub_slug))
+            raise SceneError(f"instance cycle: {chain}")
+        if len(stack) + 1 > MAX_INSTANCE_DEPTH:
+            raise SceneError(
+                f"instance nesting deeper than {MAX_INSTANCE_DEPTH} at {sub_slug!r}"
+            )
+        try:
+            sub = resolve(sub_slug)
+        except SceneError:
+            raise
+        except Exception as exc:
+            raise SceneError(f"cannot resolve design {sub_slug!r}: {exc}") from exc
+        for name, local in _placements(node):
+            _inline(
+                sub,
+                resolve,
+                xf.compose(local),
+                f"{prefix}{name}{NAMESPACE_SEP}",
+                out,
+                (*stack, sub_slug),
+            )
+        if len(out) > MAX_EXPANDED_NODES:
+            raise SceneError(
+                f"expanded design exceeds {MAX_EXPANDED_NODES} nodes — "
+                "reduce instance nesting or pattern counts"
+            )
+
+
+def expand_instances(spec: SceneSpec, resolve: Resolver | None = None) -> SceneSpec:
+    """Inline every ``use <slug> as <name>`` into a flat, self-contained spec.
+
+    The stored spec keeps the compact instance node; *this* is what the probe,
+    relate, export and tessellate layers consume, so a sub-assembly is a real
+    multi-body part everywhere without any of them learning about instancing.
+    Names and components are namespaced ``<instance>.<name>`` and the
+    sub-design's poses are composed under the instance's own.
+
+    A spec with no instances is returned **unchanged** (identity fast path),
+    so non-instanced designs are byte-identical through this code.
+    """
+    if not has_instances(spec):
+        return spec
+    if resolve is None:
+        raise SceneError(
+            "this design instances another ('use <slug> as <name>') but no "
+            "resolver was supplied to expand it"
+        )
+    out: list[NodeSpec] = []
+    for node in spec.nodes:
+        if instance_slug(node.config) is None:
+            # Top-level nodes are kept verbatim — pattern included — so an
+            # unrelated instance elsewhere in the design cannot perturb them.
+            out.append(node)
+            continue
+        _inline(SceneSpec(nodes=[node]), resolve, identity(), "", out, ())
+
+    components: list[str] = []
+    seen: set[str] = set()
+    for node in out:
+        if node.component not in seen:
+            seen.add(node.component)
+            components.append(node.component)
+    names = [n.name for n in out]
+    if len(set(names)) != len(names):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise SceneError(
+            f"instance expansion produced duplicate node names: {dupes} — "
+            "rename the colliding instance or part"
+        )
+    return SceneSpec(nodes=out, components=components, meta=dict(spec.meta))
+
+
+def build_design(spec: SceneSpec, *, resolve: Resolver | None = None) -> Design:
+    """Build a live :class:`Design` from a :class:`SceneSpec`.
+
+    ``resolve`` is required only when ``spec`` instances another design; it is
+    threaded through :func:`expand_instances`.
+    """
+    spec = expand_instances(spec, resolve)
     design = Design()
     per_component: dict[str, Expr] = {}
 

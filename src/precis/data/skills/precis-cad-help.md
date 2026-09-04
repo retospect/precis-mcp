@@ -62,6 +62,45 @@ bolts     cut  cyl:r2.5h10  @18,0,-1  polar:n6r18
 )
 ```
 
+### Reuse a design — `use <slug> as <name>`
+
+A design can **instance another design** as a sub-assembly, so a machine is
+built from parts you already authored instead of one flat node list:
+
+```python
+put(
+    kind="cad",
+    id="deck",
+    text="""
+component base
+slab  add  box:w60d60h4
+use standoff as sw  @-20,-20,4
+use standoff as se  @20,-20,4
+use standoff as nw  @-20,20,4  rot:0,0,90
+""",
+)
+```
+
+`use` is a **top-level directive** like `component` — it doesn't join or
+close the component block above it. `@x,y,z` / `rot:` pose the whole
+sub-assembly, and `polar:` / `linear:` replicate it (`use bolt as b @18,0,0
+polar:n6r18` is six bolts).
+
+The sub-design's parts arrive **namespaced** under the instance name, and
+that is what every probe answers in: `standoff`'s `post` component becomes
+`sw.post`, its `pillar` node becomes `sw.pillar`. So `clearance`,
+`connectivity` and `dof` treat an instanced part as the real separate body
+it is, and the exports carry it as a named body like any other component.
+
+- The **stored** design keeps the one compact `use:` line (that's what
+  `get(id='deck')` shows); the inlining happens on the way into every
+  probe/export.
+- Instancing a design that doesn't exist — or was `delete`d — is a hard
+  error, never a silently-missing part. Put the sub-design first.
+- Cycles (`a` uses `b` uses `a`) are refused by name.
+- Edit the sub-design and every assembly using it picks the change up on
+  its next read; there is no stale copy to re-sync.
+
 ### Describe what it's *for* — `desc:` / `use:`
 
 Add free-text lines so the design is findable by purpose, not just by
@@ -311,8 +350,13 @@ delete(kind="cad", id="flange")  # soft-retire the whole design (recoverable)
 
 Primitives: frustum family (box / cyl / cone / tcone / n-gon prism /
 pyramid), sphere, torus, chamfer half-space bevel tool. Ops: merge /
-subtract / intersect, place, polar / linear pattern. Probes: point /
+subtract / intersect, place, polar / linear pattern, **instance another
+design** (`use <slug> as <name>`). Probes: point /
 ray / arc / section(z). Relations: clearance / interference /
 translational DOF. Bulk: geometric volume (sampled). **Deferred to
 phase 2**: threads / gears, rotational DOF, fillets / rounds, datums,
 persisted observers, mass/density.
+
+One limit worth knowing: a design whose node is *both* patterned and
+`intersect` can't be instanced (flattening it under a pose would change the
+solid) — split that node into explicit nodes and it instances fine.

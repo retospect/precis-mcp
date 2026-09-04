@@ -276,3 +276,69 @@ def test_derive_refuses_existing_slug(cad):
     cad.put(id="taken", text="p add box:w4d4h4")
     with pytest.raises(BadInput):
         cad.derive(id="flange", to="taken", text="p add cyl:r1h1")
+
+
+# ── sub-assembly instancing (`use <slug> as <name>`) ─────────────────────
+_STANDOFF = """
+component post
+pillar add cyl:r3h20
+"""
+
+
+def test_use_instances_a_stored_design(cad):
+    cad.put(id="standoff", text=_STANDOFF)
+    resp = cad.put(
+        id="deck",
+        text=(
+            "component base\n"
+            "slab add box:w60d60h4\n"
+            "use standoff as sw @-20,-20,4\n"
+            "use standoff as se @20,-20,4\n"
+        ),
+    )
+    # the head counts the *expanded* bodies, not the compact instance nodes
+    assert "3 part(s)" in resp.body
+    # the tree keeps the author's compact `use:` nodes
+    tree = cad.get(id="deck")
+    assert "use:standoff" in tree.body
+
+    # probes see the inlined, namespaced bodies
+    pt = cad.get(id="deck", view="point", args={"p": [-20, -20, 14]})
+    assert "sw.pillar" in pt.body
+    conn = cad.get(id="deck", view="connectivity")
+    assert "sw.post" in conn.body and "se.post" in conn.body
+
+
+def test_instanced_design_exports(cad):
+    cad.put(id="standoff", text=_STANDOFF)
+    cad.put(
+        id="deck",
+        text="component base\nslab add box:w60d60h4\nuse standoff as p @0,0,4\n",
+    )
+    scad = cad.get(id="deck", view="scad")
+    # the export is meshable source, never the unresolved `use:` node
+    assert "use:" not in scad.body
+    assert "cylinder" in scad.body
+
+
+def test_use_of_missing_design_is_bad_input(cad):
+    with pytest.raises(BadInput, match="not found"):
+        cad.put(id="deck", text="use nosuch as p\n")
+
+
+def test_self_instancing_refused(cad):
+    # otherwise the resolver hands back this slug's *previous* save and the
+    # design quietly contains a frozen copy of itself
+    cad.put(id="deck", text="component base\nslab add box:w60d60h4\n")
+    with pytest.raises(BadInput, match="itself"):
+        cad.put(
+            id="deck", text="component base\nslab add box:w60d60h4\nuse deck as d\n"
+        )
+
+
+def test_use_of_retired_design_is_bad_input(cad):
+    cad.put(id="standoff", text=_STANDOFF)
+    cad.put(id="deck", text="use standoff as p\n")
+    cad.delete(id="standoff")
+    with pytest.raises(BadInput, match="not found"):
+        cad.get(id="deck", view="volume")

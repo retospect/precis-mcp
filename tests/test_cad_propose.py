@@ -172,7 +172,7 @@ def test_dry_run_skips_component_whose_volume_cannot_be_computed(monkeypatch):
 
 
 def test_dry_run_reports_kernel_build_error(monkeypatch):
-    def _boom(spec):
+    def _boom(spec, **_kw):
         raise RuntimeError("kernel exploded")
 
     monkeypatch.setattr(cp, "build_design", _boom)

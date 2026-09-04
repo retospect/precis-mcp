@@ -10,6 +10,14 @@ This package deliberately imports **nothing** from the rest of precis
 (no DB, no handler, no store) so it stays unit-testable in isolation and
 swappable behind the same node-list. Units are
 millimetres, ``float64`` throughout.
+
+That boundary is why sub-assembly instancing (``use <slug> as <name>``)
+takes an *injected* ``resolve`` callable rather than reaching for the
+store: :func:`~precis.cad.scene.expand_instances` inlines the referenced
+design into a flat spec, and the one production resolver lives outside
+this package in :mod:`precis.cad_resolve`. Everything downstream — probe,
+relate, export, tessellate — therefore still sees a plain flat spec and
+never learns that instancing exists.
 """
 
 from __future__ import annotations

@@ -135,6 +135,25 @@ def test_cad_scene_json_serves_recipe(cad_client, runtime_with_store) -> None:
     assert all("color" in n and "loc" in n and "rot" in n for n in body["nodes"])
 
 
+def test_cad_scene_json_expands_instances(cad_client, runtime_with_store) -> None:
+    # The browser tessellator only knows shapes — an unexpanded `use:` node
+    # would parse as an unknown config and silently draw nothing, so the
+    # route must serve the inlined sub-assembly.
+    cad = CadHandler(hub=runtime_with_store.hub)
+    cad.put(id="web_post", text="component post\npillar add cyl:r3h20\n")
+    cad.put(
+        id="web_deck",
+        text="component base\nslab add box:w60d60h4\nuse web_post as p @0,0,4\n",
+    )
+    r = cad_client.get("/cad/web_deck/scene.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["components"] == ["base", "p.post"]
+    names = {n["name"]: n for n in body["nodes"]}
+    assert names["p.pillar"]["shape"]["alias"] == "cyl"
+    assert names["p.pillar"]["loc"] == [0, 0, 4]
+
+
 def test_cad_scene_json_substitutes_chamfer_with_clamped_box(
     cad_client, runtime_with_store
 ) -> None:

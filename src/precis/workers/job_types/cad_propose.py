@@ -35,7 +35,14 @@ from typing import Any
 from precis.cad.bulk import volume as cad_volume
 from precis.cad.graph import Design
 from precis.cad.relate import ConnectivityResult, connectivity
-from precis.cad.scene import SceneError, build_design, parse_source, spec_to_source
+from precis.cad.scene import (
+    Resolver,
+    SceneError,
+    build_design,
+    parse_source,
+    spec_to_source,
+)
+from precis.cad_resolve import design_resolver
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.workers.job_types import JobTypeSpec
 
@@ -66,6 +73,10 @@ _DSL_CRIB = (
     "One node per line: '<name> <op> <config> [@x,y,z] [rot:rx,ry,rz] "
     "[polar:nNrR | linear:nNdx..dy..dz..]'. op ∈ add|cut|intersect. "
     "'component <name>' opens a part. 'desc:'/'use:' lines record intent. "
+    "'use <design-slug> as <name> [@x,y,z] [rot:..] [pattern]' instances "
+    "ANOTHER stored design as a sub-assembly — keep such lines verbatim "
+    "unless the instruction is about them; its parts arrive namespaced "
+    "'<name>.<part>'. Never invent a slug that doesn't exist. "
     "config shapes: box:wWdDhH, cyl:rRhH, cone:rRhH, tcone:rBrThH, sphere:rR, "
     "torus:RRrr, hex:rRhH, ngon:nNrRhH, frustum:nNrBrThH, pyramid:nNrRhH, "
     "chamfer:SxA. "
@@ -175,7 +186,9 @@ def _interference_warnings(result: ConnectivityResult) -> list[str]:
     ]
 
 
-def dry_run(source: str) -> tuple[str | None, list[str]]:
+def dry_run(
+    source: str, *, resolve: Resolver | None = None
+) -> tuple[str | None, list[str]]:
     """Parse + build the proposed source, then run cheap geometry lint on it,
     to catch errors before a human sees it.
 
@@ -193,7 +206,7 @@ def dry_run(source: str) -> tuple[str | None, list[str]]:
     if not spec.nodes:
         return "design has no nodes", []
     try:
-        design = build_design(spec)
+        design = build_design(spec, resolve=resolve)
     except Exception as exc:  # kernel build error
         return f"build error: {exc}", []
 
@@ -275,7 +288,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"cad_propose: {exc}")
         return
 
-    err, warnings = dry_run(proposal["source"])
+    err, warnings = dry_run(proposal["source"], resolve=design_resolver(ctx.store))
     proposal["valid"] = err is None
     if err is not None:
         proposal["error"] = err
