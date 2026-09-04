@@ -270,6 +270,33 @@ def test_load_skill_expands_includes(skill: SkillHandler) -> None:
     assert "Quote verbatim" in body
 
 
+def test_common_reviewer_fenced_example_not_expanded(skill: SkillHandler) -> None:
+    """Regression for gr311346.
+
+    ``precis-common-reviewer.md`` teaches personas the ``{{include}}``
+    syntax inside a fenced code example — and that example happens to
+    be a syntactically valid, self-referential directive (it names
+    sections of ``precis-common-reviewer`` itself). Fence-unaware
+    expansion spliced the resolved sections mid-fence, duplicating
+    "Picky reviewer stance" / "Output findings table format" and
+    leaving a dangling ``` fence. The fenced example must survive
+    verbatim and each section must render exactly once.
+    """
+    from precis.handlers.skill import _load_skill
+
+    body = _load_skill("precis-common-reviewer")
+    assert body is not None
+    assert "{{include doc:precis-common-reviewer#picky-reviewer-stance}}" in body
+    assert (
+        "{{include doc:precis-common-reviewer#output-findings-table-format}}"
+        in body
+    )
+    assert body.count("## Picky reviewer stance") == 1
+    assert body.count("## Output findings table format") == 1
+    # Fences balance -- no dangling ``` left by a mid-fence splice.
+    assert body.count("```") % 2 == 0
+
+
 def test_get_skill_returns_expanded_body(skill: SkillHandler) -> None:
     """`get(kind='skill', id='precis-adversarial-reviewer')` returns
     expanded content — agents fetching via MCP see resolved includes,

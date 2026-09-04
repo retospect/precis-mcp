@@ -159,14 +159,14 @@ class SearchMixin(RuntimeShape):
                     "open a stub to see what links to it",
                 ),
                 (
-                    # A single-kind ``search(kind='paper', tags=[...])``
-                    # has no q= and paper's own search() requires one —
-                    # the tags-only sweep only exists on the cross-kind
-                    # branch (``kind='*'``/comma-list). ``DREAM:acquire``
-                    # is only ever set on paper stubs (PaperHandler.acquire),
-                    # so the wildcard fan-out still answers "just the
-                    # papers a dream wanted" correctly.
-                    "search(kind='*', tags=['DREAM:acquire'])",
+                    # gr311340: single-kind ``search(kind='paper',
+                    # tags=[...])`` with no q= now has its own
+                    # recency-ordered tags-only path (PaperHandler.
+                    # _list_by_tags), so this doesn't need the
+                    # cross-kind wildcard fan-out anymore —
+                    # ``DREAM:acquire`` is only ever set on paper stubs
+                    # (PaperHandler.acquire) anyway.
+                    "search(kind='paper', tags=['DREAM:acquire'])",
                     "just the papers a dream wanted",
                 ),
                 (

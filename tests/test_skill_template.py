@@ -239,6 +239,74 @@ def test_includer_with_docresolver_e2e() -> None:
     assert "{{include" not in out
 
 
+# ── fence-awareness (gr311346) ──────────────────────────────────────
+
+
+def test_parse_directives_skips_fenced_code_block() -> None:
+    text = (
+        "before\n"
+        "```\n"
+        "{{include doc:a#b}}\n"
+        "```\n"
+        "after {{include doc:c#d}}\n"
+    )
+    ds = parse_directives(text)
+    assert [d.label() for d in ds] == ["doc:c#d"]
+
+
+def test_parse_directives_skips_fenced_block_with_info_string() -> None:
+    # Fences carrying a language info string (```text, ```python, …)
+    # are just as much a fence as a bare ```.
+    text = "```text\n{{include doc:a#b}}\n```\n"
+    assert parse_directives(text) == []
+
+
+def test_parse_directives_skips_tilde_fence() -> None:
+    text = "~~~\n{{include doc:a#b}}\n~~~\n"
+    assert parse_directives(text) == []
+
+
+def test_parse_directives_skips_inline_code_span() -> None:
+    text = "Use `{{include doc:a#b}}` to pull in a section."
+    assert parse_directives(text) == []
+
+
+def test_parse_directives_unterminated_fence_excludes_rest() -> None:
+    # A broken/unterminated fence is treated as fenced through
+    # end-of-text — better to under-expand than to splice mid-fence.
+    text = "```\n{{include doc:a#b}}\n"
+    assert parse_directives(text) == []
+
+
+def test_expand_leaves_fenced_directive_untouched() -> None:
+    text = "```\n{{include doc:a#b}}\n```\n{{include doc:a#b}}\n"
+    includer = Includer(resolvers={"doc": _stub({"a#b": "RESOLVED"})})
+    out = includer.expand(text)
+    # The fenced occurrence survives verbatim; the live one outside
+    # the fence expands.
+    assert out.count("{{include doc:a#b}}") == 1
+    assert "RESOLVED" in out
+
+
+def test_self_referential_fenced_example_is_not_expanded() -> None:
+    """Regression for gr311346: a doc that teaches the ``{{include}}``
+    syntax inside a fenced example, where the shown directive happens
+    to resolve against a section of the very same doc, must not
+    self-expand and duplicate that section."""
+    body = (
+        "Example:\n"
+        "```\n"
+        "{{include doc:self#foo}}\n"
+        "```\n"
+        "## Foo\n"
+        "foo body\n"
+    )
+    includer = Includer(resolvers={"doc": DocResolver(docs={"self": body})})
+    out = includer.expand(body)
+    assert out == body
+    assert out.count("## Foo") == 1
+
+
 def test_directive_span_round_trip() -> None:
     # Sanity check that the span captures the directive precisely.
     text = "X {{include doc:a#b}} Y"

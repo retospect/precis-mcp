@@ -673,6 +673,45 @@ class TestSearch:
         with pytest.raises(BadInput):
             handler.search(q="")
 
+    def test_search_no_q_no_tags_raises_with_link_free_message(
+        self, handler: PaperHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="search requires q= or tags="):
+            handler.search()
+
+    # ── tags= alone, no q= (gr311340) ─────────────────────────────────
+    # precis-paper-tag-axes documents a bare
+    # ``search(kind='paper', tags=['studytype:review'])`` as a working
+    # tag-only enumeration shape. Before this fix single-kind paper
+    # search unconditionally required q=, even though tag-only
+    # enumeration already worked on gripe/job/alert/etc.
+
+    def test_search_tags_only_enumerates_matching_papers(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        review_id = _seed_paper(
+            store, slug="review-paper", title="A review", doi="10.1/review"
+        )
+        store.add_tag(review_id, Tag.open("studytype:review"), set_by="system")
+        other_id = _seed_paper(
+            store, slug="other-paper", title="Not a review", doi="10.1/other"
+        )
+        store.add_tag(other_id, Tag.open("studytype:synthesis"), set_by="system")
+
+        resp = handler.search(tags=["studytype:review"])
+        assert "A review" in resp.body
+        assert handle_registry.format_handle("paper", review_id) in resp.body
+        assert "Not a review" not in resp.body
+        assert "1 paper entr" in resp.body
+        assert "(by recency)" in resp.body
+
+    def test_search_tags_only_no_matches_is_a_clean_empty_answer(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, slug="unrelated-paper")
+        resp = handler.search(tags=["studytype:review"])
+        assert "no paper entries tagged" in resp.body
+
     def test_search_unknown_scope_raises(self, handler: PaperHandler) -> None:
         with pytest.raises(NotFound):
             handler.search(q="x", scope="nonexistent")

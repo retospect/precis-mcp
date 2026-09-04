@@ -121,9 +121,23 @@ class Includer:
 
 
 def parse_directives(text: str) -> list[IncludeDirective]:
-    """Return every ``{{include …}}`` directive in ``text``, in order."""
+    """Return every ``{{include …}}`` directive in ``text``, in order.
+
+    Directives inside fenced code blocks (``` ``` `` or ``~~~``, with
+    or without an info string) or inline code spans (single
+    backticks) are **not** treated as live directives — they're
+    markdown showing an author the include syntax, not an include to
+    resolve. See ``precis-common-reviewer.md`` for the motivating
+    example: it teaches personas the ``{{include …}}`` syntax inside
+    a fenced block, and those examples happen to be syntactically
+    valid (and even self-referential) directives that must not
+    actually expand.
+    """
+    literal_spans = _code_spans(text)
     out: list[IncludeDirective] = []
     for m in _INCLUDE_RE.finditer(text):
+        if _in_any_span(m.start(), m.end(), literal_spans):
+            continue
         out.append(
             IncludeDirective(
                 source=m.group(1),
@@ -133,6 +147,67 @@ def parse_directives(text: str) -> list[IncludeDirective]:
             )
         )
     return out
+
+
+_FENCE_LINE_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(`{3,}|~{3,})")
+_INLINE_CODE_RE: Final[re.Pattern[str]] = re.compile(r"`[^`\n]+`")
+
+
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """Return char spans of fenced code blocks and inline code spans.
+
+    Used to keep the include-directive scan from firing on markdown
+    that merely *shows* the ``{{include …}}`` syntax rather than
+    using it.
+    """
+    spans = _fenced_block_spans(text)
+    # Inline code spans only matter outside fenced blocks (a fence's
+    # interior is already excluded wholesale).
+    for m in _INLINE_CODE_RE.finditer(text):
+        if not _in_any_span(m.start(), m.end(), spans):
+            spans.append(m.span())
+    return spans
+
+
+def _fenced_block_spans(text: str) -> list[tuple[int, int]]:
+    """Return char spans covering ```/~~~ fenced code blocks.
+
+    A fence opens with a line of 3+ backticks or tildes (optionally
+    preceded by whitespace, optionally followed by an info string)
+    and closes with a line carrying at least as many of the same
+    fence character and nothing else. An unterminated fence runs to
+    end-of-text — better to over-exclude than to expand inside a
+    broken fence.
+    """
+    spans: list[tuple[int, int]] = []
+    fence_char: str | None = None
+    fence_len = 0
+    fence_start = 0
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        m = _FENCE_LINE_RE.match(line)
+        if fence_char is None:
+            if m:
+                fence_char = m.group(1)[0]
+                fence_len = len(m.group(1))
+                fence_start = offset
+        else:
+            if (
+                m
+                and m.group(1)[0] == fence_char
+                and len(m.group(1)) >= fence_len
+                and line[m.end() :].strip() == ""
+            ):
+                spans.append((fence_start, offset + len(line)))
+                fence_char = None
+        offset += len(line)
+    if fence_char is not None:
+        spans.append((fence_start, len(text)))
+    return spans
+
+
+def _in_any_span(start: int, end: int, spans: list[tuple[int, int]]) -> bool:
+    return any(s <= start and end <= e for s, e in spans)
 
 
 # ─────────────────────────────────────────────────────────────────────

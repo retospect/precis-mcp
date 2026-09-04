@@ -408,11 +408,10 @@ def test_view_stubs_lists_backlog(runtime_with_store: PrecisRuntime) -> None:
     assert "DREAM:acquire" in out  # the Next: block points at the tag view
     # The stub-mint hint uses the same handle, quoted as a get() id=.
     assert f"get(kind='paper', id='{_pa(rid)}')" in out
-    # And the tag-sweep hint uses the working cross-kind form (item 4):
-    # a single-kind ``search(kind='paper', tags=[...])`` has no q= and
-    # paper's search() requires one — the tags-only sweep only exists
-    # on the cross-kind branch.
-    assert "search(kind='*', tags=['DREAM:acquire'])" in out
+    # And the tag-sweep hint uses the single-kind form (gr311340: paper
+    # search now has its own recency-ordered tags-only path, so the
+    # cross-kind wildcard is no longer needed here).
+    assert "search(kind='paper', tags=['DREAM:acquire'])" in out
 
 
 def test_view_stubs_shows_prio_when_ranked(runtime_with_store: PrecisRuntime) -> None:

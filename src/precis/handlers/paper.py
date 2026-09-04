@@ -719,11 +719,13 @@ class PaperHandler(Handler):
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
 
-        Four shapes, checked in order: ``title=``/``author=`` (byline
-        record lookup), ``good=True`` (deep-search campaign submit),
-        else the block-hit fused search (single-leg or broad). This
-        method only validates + routes; the actual retrieval and
-        rendering live in :mod:`precis.handlers._paper_search`.
+        Five shapes, checked in order: ``title=``/``author=`` (byline
+        record lookup), a bare ``tags=`` with no ``q=`` (recency-ordered
+        ref listing, gr311340 — see :meth:`_list_by_tags`), ``good=True``
+        (deep-search campaign submit), else the block-hit fused search
+        (single-leg or broad). This method only validates + routes; the
+        actual retrieval and rendering live in
+        :mod:`precis.handlers._paper_search`.
         """
         kind = self.spec.kind
         # Field-scoped byline lookup — ``title=`` / ``author=`` return
@@ -756,9 +758,31 @@ class PaperHandler(Handler):
             )
 
         if q is None or not q.strip():
+            # gr311340: precis-paper-tag-axes documents a bare
+            # ``search(kind='paper', tags=[...])`` — the "everything
+            # tagged X" shape every numeric-ref kind already answers via
+            # ``NumericRefHandler._list_by_tags``. Paper's block-hit
+            # ``FusedBlockSearch`` has no q=-less shape of its own (block
+            # ranking needs a query to rank against), so a tags-only call
+            # used to fall straight through to "search requires q=" —
+            # this branch gives it the same recency-ordered, ref-level
+            # listing the other kinds get instead.
+            normalized_tags = Tag.normalize_filter(tags, kind=kind)
+            if normalized_tags:
+                offset = max(0, (int(page) - 1) * int(page_size))
+                return self._list_by_tags(
+                    normalized_tags,
+                    kind=kind,
+                    page_size=page_size,
+                    offset=offset,
+                    page=page,
+                )
             raise BadInput(
-                "search requires q=",
-                next=f"search(kind='{kind}', q='your query')",
+                "search requires q= or tags=",
+                next=(
+                    f"search(kind='{kind}', q='your query') or "
+                    f"search(kind='{kind}', tags=['<tag>'])"
+                ),
             )
 
         # Broad-retrieval boundary checks — same caps + messages as the
@@ -835,6 +859,74 @@ class PaperHandler(Handler):
             extra_exclude_ref_ids=exclude_ref_ids,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
+
+    def _list_by_tags(
+        self,
+        tags: list[str],
+        *,
+        kind: str,
+        page_size: int,
+        offset: int = 0,
+        page: int = 1,
+    ) -> Response:
+        """Recency-ordered list of ``kind`` refs matching ``tags``, no
+        ranking (gr311340).
+
+        Reached from :meth:`search` when ``tags=`` is given with no
+        ``q=``. A ref-level listing (title/year/handle), deliberately
+        separate from the block-hit ``FusedBlockSearch`` path — that
+        engine ranks *blocks* against a query and has no natural
+        q=-less shape, whereas "every paper tagged X" is a ref-level
+        question with an exact answer. Mirrors
+        ``NumericRefHandler._list_by_tags``'s shape/wording so the
+        "show me everything tagged X" affordance reads the same
+        across every kind.
+        """
+        refs = self.store.list_refs(
+            kind=kind, tags=tags, limit=page_size, offset=offset
+        )
+        total = self.store.count_refs(kind=kind, tags=tags)
+        if not refs:
+            if page > 1 and total > 0:
+                return Response(
+                    body=(
+                        f"page {page}: no {kind} entries tagged {tags} "
+                        f"— {total} total"
+                    )
+                )
+            body = f"no {kind} entries tagged {tags}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind={kind!r}, q='topic', tags={tags!r})",
+                        "rank within the tagged set",
+                    ),
+                ]
+            )
+            return Response(body=body)
+        shown = len(refs)
+        if page > 1:
+            first_row = offset + 1
+            last_row = offset + shown
+            count_frag = f"rows {first_row}-{last_row} of {total}"
+        elif total > shown:
+            count_frag = f"{shown} of {total}"
+        else:
+            count_frag = f"{shown}"
+        header = (
+            f"# {count_frag} {kind} entr{'y' if total == 1 else 'ies'} "
+            f"tagged {tags} (by recency)"
+        )
+        rows = [
+            {
+                "handle": _pa(ref),
+                "title": (ref.title or "")[:80],
+                "year": str(ref.year) if ref.year else "",
+            }
+            for ref in refs
+        ]
+        table = render_agent_table(rows, schema=["handle", "title", "year"])
+        return Response(body="\n".join([header, table]))
 
     # -- search_hits: structured form for cross-kind merge -------------------
 

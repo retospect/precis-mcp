@@ -394,6 +394,7 @@ class NumericRefHandler(Handler):
         q: str | None = None,
         status: str | None = None,
         tags: list[str] | None = None,
+        link: str | None = None,
         page_size: int = 10,
         page: int = 1,
         mode: str | None = None,
@@ -431,11 +432,28 @@ class NumericRefHandler(Handler):
                     offset=offset,
                     page=page,
                 )
+            # gr311342: ``link=`` alone is a fully-determined filter (the
+            # target ref is resolved to an exact id, not a fuzzy match),
+            # so — unlike a bare/absent ``q=`` — it's a complete search
+            # shape on its own. precis-job-help / precis-fix-gripe-help
+            # document exactly this bare shape ("what jobs have run on
+            # this gripe?": search(kind='job', link='gripe:42')), which
+            # used to fall straight through to the "requires q= or
+            # tags=" error below.
+            if link is not None:
+                return self._list_by_link(
+                    link,
+                    page_size=page_size,
+                    note=status_note,
+                    offset=offset,
+                    page=page,
+                )
             raise BadInput(
-                "search requires q= or tags=",
+                "search requires q= or tags= or link=",
                 next=(
                     f"search(kind={self.kind!r}, q='your query') or "
-                    f"search(kind={self.kind!r}, tags=['<tag>'])"
+                    f"search(kind={self.kind!r}, tags=['<tag>']) or "
+                    f"search(kind={self.kind!r}, link='kind:id')"
                 ),
             )
 
@@ -681,6 +699,84 @@ class NumericRefHandler(Handler):
         header = (
             f"# {count_frag} {self._sense()} entr"
             f"{'y' if total == 1 else 'ies'} tagged {tags} "
+            f"(by recency)"
+        )
+        parts = [header]
+        if note:
+            parts.append(note)
+        parts.append(self._render_hits_table(refs))
+        return Response(body="\n".join(parts))
+
+    def _list_by_link(
+        self,
+        link: str,
+        *,
+        page_size: int,
+        note: str = "",
+        offset: int = 0,
+        page: int = 1,
+    ) -> Response:
+        """Recency-ordered list of ``self.kind`` refs linked to ``link``.
+
+        Reached when ``search(kind=K, link='kind:id')`` is called with
+        no ``q=``/``tags=`` — the "what jobs have run on this gripe?"
+        shape (gr311342). ``link=`` resolves to one exact ref (via
+        :func:`parse_link_target`, the same resolver ``put(link=...)``/
+        ``link(target=...)`` use), so unlike a free-text ``q=`` it's
+        already a complete filter with nothing left to rank — mirrors
+        :meth:`_list_by_tags`'s "recency, no ranking" shape for the same
+        reason.
+
+        Direction-agnostic (``links_for(..., direction='both')``):
+        the caller asking "what jobs touched this gripe" doesn't know
+        or care which side of the edge the job row landed on.
+        """
+        target = parse_link_target(link, store=self.store)
+        touching = self.store.links_for(target.ref_id, direction="both")
+        other_ids = sorted(
+            {
+                (lk.dst_ref_id if lk.src_ref_id == target.ref_id else lk.src_ref_id)
+                for lk in touching
+            }
+        )
+        label = handle_registry.try_format(target.kind, target.ref_id) or link
+        refs = self.store.recent_refs(
+            [self.kind], ref_ids=other_ids, limit=page_size, offset=offset
+        )
+        total = self.store.count_recent_refs([self.kind], ref_ids=other_ids)
+        if not refs:
+            if page > 1 and total > 0:
+                body = (
+                    f"page {page}: no {self._sense()} entries linked to {label} "
+                    f"— {total} total"
+                )
+                if note:
+                    body += f"\n{note}"
+                return Response(body=body)
+            body = f"no {self._sense()} entries linked to {label}"
+            if note:
+                body += f"\n{note}"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind={target.kind!r}, id={label!r})",
+                        "check what IS linked to it",
+                    ),
+                ]
+            )
+            return Response(body=body)
+        shown = len(refs)
+        if page > 1:
+            first_row = offset + 1
+            last_row = offset + shown
+            count_frag = f"rows {first_row}-{last_row} of {total}"
+        elif total > shown:
+            count_frag = f"{shown} of {total}"
+        else:
+            count_frag = f"{shown}"
+        header = (
+            f"# {count_frag} {self._sense()} entr"
+            f"{'y' if total == 1 else 'ies'} linked to {label} "
             f"(by recency)"
         )
         parts = [header]

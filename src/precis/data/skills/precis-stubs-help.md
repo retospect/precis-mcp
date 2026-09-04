@@ -68,9 +68,10 @@ search(kind='*', tags=['DREAM:acquire'])
 
 `view='stubs'` is the whole backlog (chase-worker stubs included);
 the `DREAM:acquire` tag marks only the ones a dream explicitly wanted.
-A tags-only sweep needs the cross-kind branch — `search(kind='paper',
-tags=[…])` alone raises "search requires q=" since single-kind paper
-search has no tags-only path.
+`search(kind='paper', tags=['DREAM:acquire'])` alone also works
+(single-kind paper search has a tags-only, recency-ordered path);
+the cross-kind form above is only needed when the tag might also be
+set on a non-paper kind.
 
 ## Open a stub to see where it came up
 

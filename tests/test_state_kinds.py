@@ -400,6 +400,49 @@ class TestJob:
         with pytest.raises(BadInput, match="fix_gripe requires link"):
             handler.put(job_type="fix_gripe")
 
+    # ── search(link=...) with no q=/tags= (gr311342) ─────────────────
+    # precis-job-help / precis-fix-gripe-help document a bare
+    # ``search(kind='job', link='gripe:42')`` — "what jobs have run on
+    # this gripe?" — as a complete shape. Before this fix it fell
+    # through to "search requires q= or tags=" because link= was
+    # swallowed by ``**_kw`` and never consulted.
+
+    def test_search_link_only_enumerates_linked_jobs(
+        self, job: JobHandler, hub: Hub
+    ) -> None:
+        gripe = GripeHandler(hub=hub)
+        gripe.put(text="something worth fixing")
+        gripe_id = gripe.store.list_refs(kind="gripe", limit=1)[0].id
+        # Insert the job ref + link directly (job.put's fix_gripe path
+        # pulls in unrelated submit-time validation — PRECIS_FIX_WORK_DIR,
+        # parent_id — that's orthogonal to what this test is pinning:
+        # search()'s link= handling, not put()'s).
+        job_ref = job.store.insert_ref(kind="job", slug=None, title="fix attempt")
+        job.store.add_link(
+            src_ref_id=job_ref.id, dst_ref_id=gripe_id, relation="fixes"
+        )
+
+        body = job.search(link=f"gripe:{gripe_id}").body
+        assert "1 job entr" in body
+        assert "linked to" in body
+
+    def test_search_link_only_zero_matches_is_a_clean_empty_answer(
+        self, job: JobHandler, hub: Hub
+    ) -> None:
+        """A real ref with no linked jobs answers cleanly, not an error."""
+        gripe = GripeHandler(hub=hub)
+        gripe.put(text="nothing links to this one")
+        gripe_id = gripe.store.list_refs(kind="gripe", limit=1)[0].id
+
+        body = job.search(link=f"gripe:{gripe_id}").body
+        assert "no job entries linked to" in body
+
+    def test_search_no_q_no_tags_no_link_still_rejected(
+        self, job: JobHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="requires q= or tags= or link="):
+            job.search()
+
 
 # ── OracleHandler — slug-addressed, read-only ────────────────────────
 
