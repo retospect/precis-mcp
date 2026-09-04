@@ -397,10 +397,11 @@ def load_config() -> PrecisConfig:
 # through the secrets vault). Callers read these instead of the raw env.
 # ---------------------------------------------------------------------------
 
-#: A descriptive default User-Agent for SEC EDGAR. SEC blocks anonymous
-#: requests but only wants an identifying string; the repo URL is enough.
-#: Override with ``PRECIS_EDGAR_USER_AGENT`` (e.g. to add a contact email).
-DEFAULT_EDGAR_USER_AGENT = "precis-mcp (+https://github.com/retospect/precis-mcp)"
+#: A descriptive default User-Agent for SEC EDGAR. SEC's fair-access policy
+#: requires an app/company name *and* a contact email in the string — a bare
+#: repo URL (no ``@``) gets a blanket 403 (verified live). Override with
+#: ``PRECIS_EDGAR_USER_AGENT`` to swap in a different contact.
+DEFAULT_EDGAR_USER_AGENT = "precis-mcp reto@retostamm.com"
 
 
 def cache_root(name: str) -> Path:

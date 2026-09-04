@@ -314,3 +314,41 @@ def test_ingest_sim_same_basename_in_different_subdirs_no_collision(
     assert c1.id != c2.id
     assert (root / "sim" / "fixture-sim" / "case1" / "findings.md").exists()
     assert (root / "sim" / "fixture-sim" / "case2" / "findings.md").exists()
+
+
+def test_ingest_sim_multi_dot_stem_not_double_stripped(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    """gr311326 sibling defect, mirrored in ``_slug_for``: an output
+    stem with a further ``.`` (e.g. ``report.v2.md``) must not lose the
+    ``v2`` segment to a double extension-strip (pre-strip ``.md``, then
+    ``file_slug_from_path`` strips ``.v2`` again)."""
+    repo = tmp_path / "fixture-sim"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "report.v2.md").write_text(
+        "# Report v2\n\nRevised findings.\n", encoding="utf-8"
+    )
+    manifest = SimManifest(
+        run="python run.py",
+        outputs=("docs/report.v2.md",),
+        verify=(),
+        writeup="fixture-writeup",
+    )
+    root = tmp_path / "precis_root"
+    root.mkdir()
+
+    outcome = ingest_sim(
+        slug="fixture-sim",
+        entry=_entry(repo),
+        manifest=manifest,
+        root=root,
+        hub=hub,
+        store=store,
+    )
+
+    assert outcome.failed == 0
+    assert outcome.ingested == 1
+    ref = store.get_ref(kind="markdown", id="sim--fixture-sim--docs--report-v2")
+    assert ref is not None
+    # The double-stripped (buggy) slug must NOT exist.
+    assert store.get_ref(kind="markdown", id="sim--fixture-sim--docs--report") is None

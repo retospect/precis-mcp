@@ -26,6 +26,16 @@ rather quietly skip than fail the whole call), a *container* entry that
 doesn't resolve (an unknown ``dr…`` / ``dc…``) is a caller-visible mistake —
 they named a specific container expecting its cites to be excluded — so it
 raises :class:`~precis.errors.BadInput` naming the offending entry.
+
+Round-trip note (gr311339): a bare ``pa<id>``-style handle of the target
+``kind`` never goes through :func:`~precis.handlers._paper_search.
+_normalise_exclude_slug`'s per-entry ``store.resolve_handle`` call — the
+handle's own body IS the ``ref_id``, so every such entry across the whole
+``exclude=`` list resolves via ONE bulk ``store.fetch_refs_by_ids`` existence
+check in :func:`resolve_exclude_paper_ids`. Only a genuine miss (soft-
+deleted / merged / kind-mismatched) pays the slower ``resolve_handle`` round
+trip, and only for that one entry — preserving the merge-redirect behavior
+for the rare case without paying its cost for the common one.
 """
 
 from __future__ import annotations
@@ -66,21 +76,19 @@ def resolve_exclude_paper_ids(
     paper_ids: set[int] = set()
     bare_slugs: list[str] = []
     seen_slugs: set[str] = set()
-    # Record-form universal handles (``pa<id>``, never chunk-form
-    # ``pc<id>``) skip the per-item ``store.resolve_handle()`` round trip
-    # entirely: the handle's decimal body IS the ref_id (no lookup
-    # needed to find it), so every such entry across the whole
-    # ``exclude=`` list resolves in ONE bulk ``fetch_refs_by_ids`` call
-    # below instead of N sequential ``resolve_handle`` connections (the
-    # gr311339 hang — a 4-entry exclude took >1800s where a 1-entry
-    # exclude was fast). Chunk-form handles (``pc<id>``) and anything
-    # that doesn't survive the bulk fetch (dead / superseded / kind
-    # mismatch) still fall through to the original per-item
-    # ``_normalise_exclude_slug`` path below — rare enough not to be
-    # worth a second bulk shape, and it preserves that path's existing
-    # supersede-follow / redirect-hint behavior exactly.
-    record_handle_pks: dict[str, int] = {}
-    other_entries: list[str] = []
+    # gr311339: a ``pa<id>``-style handle (record-level, right kind)
+    # already encodes its own ``ref_id`` in the handle body — collected
+    # here for ONE bulk existence/kind check below instead of a serial
+    # ``store.resolve_handle()`` round trip per entry (the old path also
+    # threw away that ref_id and re-derived it via a second bulk
+    # ``fetch_ref_ids_by_slugs`` lookup keyed on the *slug string*
+    # ``resolve_handle`` had already resolved it to — a redundant
+    # store round trip on top of the serial one). Chunk handles
+    # (``pc<id>``) and handles of a different kind keep the slower
+    # per-entry path below (``_normalise_exclude_slug``), same as a bare
+    # slug/DOI.
+    handle_pks: list[int] = []
+    handle_entry_by_pk: dict[int, str] = {}
     for raw in entries:
         entry = (raw or "").strip()
         if not entry:
@@ -91,27 +99,31 @@ def resolve_exclude_paper_ids(
             continue
         parsed = handle_registry.parse(entry)
         if parsed is not None and not parsed[1] and parsed[0] == kind:
-            record_handle_pks[entry] = parsed[2]
-        else:
-            other_entries.append(entry)
-
-    if record_handle_pks:
-        refs_map = store.fetch_refs_by_ids(list(set(record_handle_pks.values())))
-        for entry, pk in record_handle_pks.items():
-            ref = refs_map.get(pk)
-            if ref is not None and ref.retired_at is None and ref.kind == kind:
-                paper_ids.add(pk)
-            else:
-                # Dead / superseded / not found in the bulk fetch — fall
-                # back to the original per-item resolution (handles the
-                # merge-redirect / supersede-chain case correctly).
-                other_entries.append(entry)
-
-    for entry in other_entries:
+            pk = parsed[2]
+            handle_pks.append(pk)
+            handle_entry_by_pk.setdefault(pk, entry)
+            continue
         slug = _normalise_exclude_slug(entry, store=store)
         if slug is not None and slug not in seen_slugs:
             seen_slugs.add(slug)
             bare_slugs.append(slug)
+    if handle_pks:
+        # One bulk fetch covers the common (live, non-merged) case
+        # regardless of how many handle-form entries were passed.
+        live_refs = store.fetch_refs_by_ids(handle_pks, include_deleted=False)
+        for pk in handle_pks:
+            ref = live_refs.get(pk)
+            if ref is not None and ref.kind == kind:
+                paper_ids.add(pk)
+            else:
+                # Rare miss (soft-deleted / merged / kind mismatch) — fall
+                # back to the slow, merge-aware path ONLY for this entry,
+                # so a superseded handle still redirects to its live
+                # survivor (``Store.resolve_handle``'s follow-supersede)
+                # instead of being silently dropped.
+                resolved_handle = store.resolve_handle(handle_entry_by_pk[pk])
+                if resolved_handle is not None:
+                    paper_ids.add(resolved_handle.ref_id)
     if bare_slugs:
         paper_ids.update(store.fetch_ref_ids_by_slugs(bare_slugs, kind=kind))
     return paper_ids

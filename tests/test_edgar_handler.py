@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import Unsupported
-from precis.handlers._edgar_client import FakeEdgarClient
+from precis.errors import NotFound, Unsupported
+from precis.handlers._edgar_client import EdgarRateLimited, FakeEdgarClient
 from precis.handlers.edgar import EdgarHandler
 
 CIK = "320193"
@@ -158,6 +158,24 @@ class TestListViews:
         resp = handler.get(id="ticker:aapl")
         assert "Apple Inc." in resp.body
         assert "0000320193-24-000010" in resp.body
+
+    def test_ticker_resolve_failure_surfaces_upstream_error(
+        self, hub: Hub, raw_root: Path
+    ) -> None:
+        # gr311335 defect 2: a resolver-level fetch failure (e.g. SEC 403)
+        # must not read as "unknown ticker" — mirror the cik: path, which
+        # already names the upstream failure in the NotFound message.
+        client = FakeEdgarClient(
+            raises={
+                ("resolve_ticker", "nvda"): EdgarRateLimited(
+                    "EDGAR 403 (throttled/blocked): forbidden"
+                )
+            }
+        )
+        handler = EdgarHandler(hub=hub, client=client, raw_root=raw_root)
+        with pytest.raises(NotFound, match="403") as exc_info:
+            handler.get(id="ticker:nvda")
+        assert "unknown ticker" not in str(exc_info.value)
 
     def test_cik_list(self, handler: EdgarHandler) -> None:
         resp = handler.get(id="cik:320193")

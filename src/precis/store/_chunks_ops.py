@@ -463,20 +463,38 @@ class ChunkStore:
         exclude_ref_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         distinct_refs: bool = False,
+        include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
     ) -> int:
-        """Count chunks matching the ``mode='verbatim'`` keyword-containment
-        filter (no LIMIT). Companion to :meth:`search_chunks_keywords` for
-        the "N of K" header — same ``c.keywords @> terms`` WHERE clause, so
-        the header matches verbatim's actual (usually much smaller) pool
-        rather than :meth:`count_chunks_lexical`'s plain-FTS universe
-        (gr311338: the header used to report the lexical K unconditionally,
-        even for verbatim/semantic modes whose retrieval pool is genuinely
-        different — prod-measured 846 lexical vs 8 verbatim for a two-word
-        query).
+        """Count chunks matching the ``mode='verbatim'`` keyword-
+        containment filter (no LIMIT). Companion to
+        :meth:`search_chunks_keywords` for the "N of K" header — same
+        ``keywords @>`` WHERE clause (noise-floor guard, ``card_kinds``
+        opt-in, control-tag fences, year range) so a verbatim search's
+        header reports *its own* universe rather than
+        :meth:`count_chunks_lexical`'s FTS one (gr311338 — the header
+        used to always report the lexical count regardless of the mode
+        actually searched, so a verbatim query with e.g. zero keyword
+        hits could still claim "N of 386" from an unrelated FTS
+        universe; prod-measured 846 lexical vs 8 verbatim for a
+        two-word query).
 
-        Empty (post-lowercase-filter) ``terms`` returns 0, mirroring
-        :meth:`search_chunks_keywords`'s "empty containment matches
-        nothing" contract.
+        The ``DREAM:speculative`` / ``ORIGIN:wikipedia`` / ``STATUS:refuted``
+        fences and the ``after=``/``before=`` year-range predicate MUST
+        mirror :meth:`search_chunks_keywords` exactly — omitting them
+        (as a prior version of this method did) lets a fenced chunk
+        that matches the keywords count toward the header total while
+        never appearing in the results it's supposedly counting.
+
+        ``terms`` mirrors :meth:`search_chunks_keywords`: lowercased,
+        blank entries dropped; an all-blank list returns ``0`` (an
+        empty ``@>`` would otherwise match every row — never what a
+        count of "verbatim hits" should mean).
+
+        ``distinct_refs`` counts distinct ``ref_id`` rather than chunk
+        rows — for callers that report a ref-grouped total (paired with
+        :meth:`count_chunks_lexical`'s ``distinct_refs``).
         """
         norm = [t.lower() for t in terms if t.strip()]
         if not norm:
@@ -503,6 +521,13 @@ class ChunkStore:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        if self._fence_speculative(tags, include_speculative):
+            clauses.append(speculative_fence("r"))
+        if self._fence_wiki(tags, kind):
+            clauses.append(wiki_fence("r"))
+        if self._fence_refuted(tags):
+            clauses.append(refuted_fence("r"))
+        clauses.extend(_year_range_clauses(year_from, year_to))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")

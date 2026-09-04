@@ -525,14 +525,20 @@ class TodoHandler(NumericRefHandler):
         # (``parent_int`` set — minted under a project, a planner tick, or a
         # change request) so a deliberately-created **root** still gets the
         # "no auto-run" reminder instead of silently auto-running. Skip
-        # when the caller already chose a tier / executor, or it's a
-        # recurring umbrella (``meta.schedule`` set).
+        # when the caller already chose a tier / executor, it's a
+        # recurring umbrella (``meta.schedule`` set), or it's a parked
+        # ``meta.auto_check`` leaf (gr311333) — those are meant to sit
+        # inert until their evaluator flips them, not become a
+        # ``plan_tick`` dispatch candidate; stamping ``llm_tier`` there
+        # both defeats the parking and silently bills opus for a leaf
+        # that never should have run.
         if (
             id is None
             and parent_int is not None
             and not (isinstance(meta, dict) and "llm_tier" in meta)
             and not (isinstance(meta, dict) and meta.get("executor"))
             and not (isinstance(meta, dict) and "schedule" in meta)
+            and not (isinstance(meta, dict) and "auto_check" in meta)
         ):
             meta = {**(meta or {}), "llm_tier": "opus"}
         # Default parent_id for a recurring root (``meta.schedule`` set) to

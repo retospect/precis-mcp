@@ -172,6 +172,59 @@ def test_overview_for_missing_file_raises(handler: PlaintextHandler) -> None:
         handler.get(id="nonexistent")
 
 
+# ── gr311326: suggester options= must all resolve ───────────────────
+#
+# ``file_slug_from_path`` strips the file's (one true) extension
+# itself; ``_list_file_slugs_on_disk`` used to pre-strip via
+# ``_strip_ext`` and hand the already-bare base to
+# ``file_slug_from_path``, which then double-stripped any *further*
+# '.' in the stem — the paper-ingest error-log naming convention
+# (``<citekey>.error.log``) hits this exactly. The truncated slug was
+# still listed/suggested, but could never resolve back.
+
+
+def test_multidot_stem_slug_lists_full_and_round_trips(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    _write(pt_root, "errors/yang2023explainable.error.log", "boom")
+    on_disk = handler._list_file_slugs_on_disk()
+    # Pre-fix this double-stripped to 'errors--yang2023explainable'
+    # (the '.error' silently dropped), which then 404'd on get().
+    assert "errors--yang2023explainable-error" in on_disk
+    assert "errors--yang2023explainable" not in on_disk
+    for slug in on_disk:
+        handler.get(id=slug)  # must not raise — gr311326
+
+
+def test_notfound_options_all_resolve_for_multidot_stem(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    _write(pt_root, "errors/yang2023explainable.error.log", "boom")
+    with pytest.raises(NotFound) as excinfo:
+        # A one-character typo close enough for the fuzzy-match
+        # suggester to surface the real slug as an option.
+        handler.get(id="errors--yang2023explainable-errer")
+    options = excinfo.value.options or []
+    assert options
+    for slug in options:
+        handler.get(id=slug)  # every suggested id must resolve, not 404 again
+
+
+def test_ensure_ingested_falls_back_to_disk_scan_for_lossy_slug(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """``normalize()`` folds any char outside ``[a-z0-9_-]`` (a space,
+    an interior '.', ...) to '-' — irreversibly. ``'my notes.txt'``
+    encodes to slug ``'my-notes'``, but naively rebuilding
+    ``'my-notes.txt'`` misses the real (space-named) file.
+    ``ensure_ingested`` falls back to the same disk-scan map the
+    suggester/index draw from, so the listed slug still resolves
+    (gr311326)."""
+    _write(pt_root, "my notes.txt", "hello there")
+    out = handler.get(id="my-notes")
+    assert "my-notes" in out.body
+
+
 def test_get_block_by_slug_and_pos(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "doc.txt", "para one here.\n\npara two here.\n")
     # Force ingest via overview.
@@ -252,6 +305,89 @@ def test_put_create_refuses_overwrite(handler: PlaintextHandler, pt_root: Path) 
     _write(pt_root, "exists.txt", "already here.\n")
     with pytest.raises(BadInput, match="file already exists"):
         handler.put(id="exists", text="new", mode="create")
+
+
+# ── gr311325: read-only PRECIS_ROOT mount surfaces a typed error ────
+
+
+def test_put_create_on_readonly_mount_raises_unsupported(
+    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the write path hits EROFS (a ``:ro`` mount), ``put`` must
+    raise a typed ``Unsupported`` — never the raw ``OSError`` that used
+    to surface as ``[error:Internal] internal error in put: OSError``."""
+    import errno
+
+    from precis.handlers import plaintext as plaintext_mod
+
+    def _erofs_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(plaintext_mod.tempfile, "mkstemp", _erofs_mkstemp)
+    with pytest.raises(Unsupported, match="read-only") as exc_info:
+        handler.put(id="new-file", text="hello world.\n", mode="create")
+    assert "operator" in (exc_info.value.next or "") or "rw" in (
+        exc_info.value.next or ""
+    )
+    # The failed write must not have landed a partial file.
+    assert not (pt_root / "new-file.txt").exists()
+
+
+def test_edit_on_readonly_mount_raises_unsupported(
+    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same translation on the ``edit`` verb (append writes through
+    ``_atomic_write`` too)."""
+    import errno
+
+    from precis.handlers import plaintext as plaintext_mod
+
+    _write(pt_root, "foo.txt", "original paragraph.\n")
+
+    def _erofs_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(plaintext_mod.tempfile, "mkstemp", _erofs_mkstemp)
+    with pytest.raises(Unsupported, match="read-only"):
+        handler.edit(id="foo", text="new paragraph", mode="append")
+
+
+def test_delete_file_on_readonly_mount_raises_unsupported(
+    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whole-file delete goes through ``os.remove``, not
+    ``_atomic_write`` — must translate too."""
+    import errno
+
+    from precis.handlers import plaintext as plaintext_mod
+
+    _write(pt_root, "doc.txt", "x.\n")
+    handler.get(id="doc")  # force ingest so the ref exists
+
+    def _erofs_remove(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(plaintext_mod.os, "remove", _erofs_remove)
+    with pytest.raises(Unsupported, match="read-only"):
+        handler.delete(id="doc", confirm="delete-file-doc")
+
+
+def test_put_create_non_readonly_oserror_still_raises_oserror(
+    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-EROFS ``OSError`` (disk full, etc.) is a real problem and
+    must NOT be masked as "read-only" — it should still surface
+    unchanged so it isn't silently misdiagnosed."""
+    import errno
+
+    from precis.handlers import plaintext as plaintext_mod
+
+    def _enospc_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(plaintext_mod.tempfile, "mkstemp", _enospc_mkstemp)
+    with pytest.raises(OSError, match="No space left"):
+        handler.put(id="new-file", text="hello world.\n", mode="create")
 
 
 def test_put_append(handler: PlaintextHandler, pt_root: Path) -> None:

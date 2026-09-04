@@ -51,6 +51,30 @@ _SEVERITY_LABEL: dict[Severity, str] = {
 }
 
 
+def _title_claims_retraction(title: str | None) -> bool:
+    """True if the paper title itself flags a retraction.
+
+    Crossref sometimes prepends a marker (``RETRACTED:``, ``[RETRACTED]``,
+    ``Retracted Article: ...``) to a paper's title ahead of depositing the
+    proper ``update-to`` relation, and the local Retraction Watch cache can
+    be empty/stale too — leaving ``notices`` empty even though the title
+    itself says the paper is retracted. That's the exact gap a plain "🟢
+    Clean" render papers over (gr311334): an agent skimming the emoji never
+    reads the title. Checked at render time, not persisted.
+    """
+    if not title:
+        return False
+    stripped = title.strip().lstrip("[({").strip()
+    return stripped.upper().startswith("RETRACTED")
+
+
+_TITLE_RETRACTION_WARNING = (
+    "title claims retraction but no notice found — treat as retracted "
+    "until verified (likely a Crossref pre-CrossMark deposit gap or an "
+    "empty local Retraction Watch cache; see gr311334)"
+)
+
+
 def _format_authors(authors: list[dict[str, str]] | None) -> str:
     """Render an author list as ``Smith, J., Doe, A.`` or fall back to ``—``."""
     if not authors:
@@ -190,10 +214,13 @@ def render_single(result: ProvenanceResult) -> str:
     glyph = _SEVERITY_GLYPH[overall]
     label = _SEVERITY_LABEL[overall]
     if not result.notices:
-        lines.append(
-            "🟢 **Clean** — Crossref reports no retraction, expression of "
-            "concern, or correction notices on this DOI."
-        )
+        if _title_claims_retraction(result.paper_title):
+            lines.append(f"🟠 **Needs review** — {_TITLE_RETRACTION_WARNING}.")
+        else:
+            lines.append(
+                "🟢 **Clean** — Crossref reports no retraction, expression of "
+                "concern, or correction notices on this DOI."
+            )
         lines.append("")
         if result.paper_in_store:
             lines.append(
@@ -444,7 +471,11 @@ def _bucket_by_severity(
         elif r.status == "check_failed":
             key = "check_failed"
         elif not r.notices and not r.cited_findings:
-            key = "info_clean"
+            # Same title-claims-retraction defensive check as the
+            # single-DOI path (gr311334) — a "clean" result whose title
+            # says otherwise gets promoted out of info_clean so it
+            # doesn't render as a silent 🟢.
+            key = "review" if _title_claims_retraction(r.paper_title) else "info_clean"
         elif not r.notices and r.cited_findings:
             # Promoted: clean paper, but cites contested work.
             key = "review"
@@ -465,7 +496,16 @@ def _format_summary(results: list[ProvenanceResult]) -> str:
     }
     blockers = sum(1 for r in results if r.overall_severity == "blocker")
     review = sum(
-        1 for r in results if r.status == "ok" and r.overall_severity == "review"
+        1
+        for r in results
+        if r.status == "ok"
+        and (
+            r.overall_severity == "review"
+            # Title-claims-retraction promotion (gr311334) — no notices,
+            # so overall_severity computes 'info', but the bucketer moves
+            # these into the review section; keep the summary count honest.
+            or (not r.notices and _title_claims_retraction(r.paper_title))
+        )
     )
     corrections = sum(
         1 for r in results if r.status == "ok" and r.overall_severity == "note"
@@ -646,6 +686,8 @@ def _render_per_doi_block(r: ProvenanceResult, bucket_key: str) -> list[str]:
         ):
             continue
         lines.append(_format_notice_line(n))
+    if not r.notices and _title_claims_retraction(r.paper_title):
+        lines.append(f"- 🟠 {_TITLE_RETRACTION_WARNING}")
     # Phase 4 cited findings — compact form, one bullet per cited
     # retraction/EoC. Always shown when present, regardless of bucket;
     # a clean citing paper can have cited-findings, which is the

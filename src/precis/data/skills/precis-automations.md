@@ -1,7 +1,7 @@
 ---
 id: precis-automations
 title: precis — find and edit standing automations (recurring agent behaviours)
-summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are recurring (meta.schedule set) todos; find them with search(kind='todo', view='roots') (the Watches umbrella), edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
+summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are recurring (meta.schedule set) todos under the Watches umbrella; find them with search(kind='todo', view='roots') — the `automation` tag is opt-in, not reliable for discovery — edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
 answers:
   - how do I find the recurring todos that drive automated behaviours like the podcast cast?
   - how do I change what an automation does?
@@ -38,16 +38,37 @@ text/params *are* the prompt that shapes the output.
 
 ## Find the automations
 
+The `automation` tag is opt-in and, in practice, not consistently applied —
+`search(kind='todo', tags=['automation'])` can come back empty even while
+real automations are ticking. The recipe that actually finds every recurring,
+tag or no tag, is the **Watches umbrella dashboard**:
+
+```python
+search(kind="todo", view="roots")
+```
+
+Read the `## Watches (N recurring)` panel. A row with a `→ <target>`
+suffix is a **push-mode** automation (`meta.deliver.target` — the podcast
+casts, most Discord-delivered automations). A row with no suffix is either a
+**job-mode** automation (`meta.executor`+`meta.job_type` — e.g. the news
+briefing) or a plain queue-mode watch (spawns an ordinary subtask, no
+producer behaviour); tell them apart with `get(kind='todo', id=<id>)` and
+check `meta` for `executor`/`job_type`.
+
+If a recurring *does* carry the `automation` tag, narrow with it:
+
 ```python
 search(kind="todo", view="roots")  # → "## Watches (N recurring)" section
 ```
 
 The de-facto discovery path: `view='roots'` lists every recurring
 (`meta.schedule` set) todo under a **Watches** umbrella — the podcast
-casts, the news poll, the morning briefing. The `automation`
-tag described below is not applied at mint time (`search(kind='todo',
-tags=['automation'])` returns nothing live) — don't rely on it as a
-filter until that's fixed.
+casts, the news poll, the morning briefing. The `automation` tag isn't
+applied at mint time (`search(kind='todo', tags=['automation'])` returns
+nothing live), so don't rely on it as a filter. When present by hand, a
+second open tag can name *which* one (`cast-morning`, `cast-evening`,
+`briefing`) — a curated convention, not a validated axis; treat a 0-hit
+tag search as "nothing tagged," not "nothing running."
 
 ## Mark a recurring as an automation
 

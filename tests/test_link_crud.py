@@ -309,6 +309,68 @@ class TestStoreLinkCRUD:
         assert ref_level.dst_chunk_id is None
 
 
+# ── linked_refs_page / count_linked_refs: bounded link-scoped listing ──
+
+
+class TestLinkedRefsPage:
+    """``Store.linked_refs_page``/``count_linked_refs`` — the DB-level
+    LIMIT/OFFSET pair behind ``search(kind=K, link='<kind>:<id>')``
+    (gr311344-sibling fix). Bypasses the unbounded ``links_for`` +
+    Python sort/slice a heavily-linked target would otherwise force."""
+
+    def test_filters_by_kind_and_pages(self, store: Store) -> None:
+        target = _seed_memory(store, title="popular target")
+        memory_ids = []
+        for i in range(5):
+            m = _seed_memory(store, title=f"linked memory {i}")
+            store.add_link(src_ref_id=m, dst_ref_id=target, relation="related-to")
+            memory_ids.append(m)
+        # A paper linked to the same target must never show up when
+        # kind='memory' is requested.
+        paper = _seed_paper(store, slug="unrelated-paper")
+        store.add_link(src_ref_id=paper, dst_ref_id=target, relation="related-to")
+
+        assert store.count_linked_refs(target, kind="memory") == 5
+        assert store.count_linked_refs(target, kind="paper") == 1
+
+        page1 = store.linked_refs_page(target, kind="memory", limit=2, offset=0)
+        page2 = store.linked_refs_page(target, kind="memory", limit=2, offset=2)
+        assert len(page1) == 2
+        assert len(page2) == 2
+        assert {r.id for r in page1}.isdisjoint({r.id for r in page2})
+        assert {r.id for r in page1} | {r.id for r in page2} <= set(memory_ids)
+
+    def test_direction_filter(self, store: Store) -> None:
+        target = _seed_memory(store)
+        out_m = _seed_memory(store, title="outbound from target")
+        in_m = _seed_memory(store, title="inbound to target")
+        store.add_link(src_ref_id=target, dst_ref_id=out_m, relation="related-to")
+        store.add_link(src_ref_id=in_m, dst_ref_id=target, relation="related-to")
+
+        out_only = store.linked_refs_page(target, kind="memory", direction="out")
+        in_only = store.linked_refs_page(target, kind="memory", direction="in")
+        both = store.linked_refs_page(target, kind="memory", direction="both")
+
+        assert {r.id for r in out_only} == {out_m}
+        assert {r.id for r in in_only} == {in_m}
+        assert {r.id for r in both} == {out_m, in_m}
+
+    def test_no_links_is_empty(self, store: Store) -> None:
+        target = _seed_memory(store)
+        assert store.linked_refs_page(target, kind="memory") == []
+        assert store.count_linked_refs(target, kind="memory") == 0
+
+    def test_default_direction_matches_links_for_both(self, store: Store) -> None:
+        # Same universe as links_for(direction='both') restricted to a
+        # kind — the "no LIMIT" count must equal the true total.
+        target = _seed_memory(store)
+        for i in range(3):
+            m = _seed_memory(store, title=f"m{i}")
+            store.add_link(src_ref_id=m, dst_ref_id=target, relation="related-to")
+        edges = store.links_for(target, direction="both")
+        assert store.count_linked_refs(target, kind="memory") == len(edges)
+
+
 # ── link_rel_summary_for_refs: Change A batch rel-count map ────────
 
 

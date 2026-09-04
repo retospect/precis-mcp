@@ -41,15 +41,18 @@ from psycopg_pool import ConnectionPool
 from precis.errors import BadInput
 from precis.store._argument_ops import retracted_endpoint
 from precis.store._mappers import (
+    _REFS_COLS_ALIASED,
     _lookup_chunk_id,
     _row_to_bib_entry,
     _row_to_link,
+    _row_to_ref,
     _row_to_s2_neighbor,
 )
 from precis.store.types import (
     ActorSlug,
     BibEntry,
     Link,
+    Ref,
     Relation,
     S2Direction,
     S2Neighbor,
@@ -100,6 +103,37 @@ _LINK_SELECT_FROM = (
     "LEFT JOIN chunks sc ON sc.chunk_id = l.src_chunk_id "
     "LEFT JOIN chunks dc ON dc.chunk_id = l.dst_chunk_id"
 )
+
+
+def _linked_refs_where(
+    ref_id: int, *, kind: str, direction: Literal["out", "in", "both"]
+) -> tuple[list[str], list[Any]]:
+    """WHERE clauses + params shared by :meth:`LinksMixin.linked_refs_page`
+    and :meth:`LinksMixin.count_linked_refs` — a correlated ``EXISTS``
+    against ``links`` (indexed on ``src_ref_id``/``dst_ref_id``) rather
+    than a JOIN, so a ref touched by both an outbound and an inbound edge
+    to the same target contributes one row, not two."""
+    if direction == "out":
+        exists = (
+            "EXISTS (SELECT 1 FROM links l WHERE l.src_ref_id = %s "
+            "AND l.dst_ref_id = r.ref_id)"
+        )
+        dir_params: list[Any] = [ref_id]
+    elif direction == "in":
+        exists = (
+            "EXISTS (SELECT 1 FROM links l WHERE l.dst_ref_id = %s "
+            "AND l.src_ref_id = r.ref_id)"
+        )
+        dir_params = [ref_id]
+    else:
+        exists = (
+            "EXISTS (SELECT 1 FROM links l WHERE "
+            "(l.src_ref_id = %s AND l.dst_ref_id = r.ref_id) "
+            "OR (l.dst_ref_id = %s AND l.src_ref_id = r.ref_id))"
+        )
+        dir_params = [ref_id, ref_id]
+    clauses = ["r.retired_at IS NULL", "r.kind = %s", exists]
+    return clauses, [kind, *dir_params]
 
 
 class LinksMixin:
@@ -398,7 +432,11 @@ class LinksMixin:
         sql = (
             f"SELECT {_LINK_SELECT_PROJ} {_LINK_SELECT_FROM} "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY l.created_at ASC"
+            # link_id tie-break: created_at alone is nondeterministic for
+            # links minted in one transaction (now() is txn-frozen), which
+            # shuffles every capped-window consumer (e.g. quest gaps'
+            # _GAPS_TAG_MAX_STRUCTURES slice) under parallel load.
+            "ORDER BY l.created_at ASC, l.link_id ASC"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -415,6 +453,62 @@ class LinksMixin:
             seen.add(link_id)
             out.append(_row_to_link(r))
         return out
+
+    def linked_refs_page(
+        self,
+        ref_id: int,
+        *,
+        kind: str,
+        direction: Literal["out", "in", "both"] = "both",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[Ref]:
+        """Page of live ``kind`` refs linked (any relation) to ``ref_id``,
+        newest-``updated_at``-first, with a true DB-level LIMIT/OFFSET.
+
+        Companion to :meth:`links_for` for callers that only want the
+        *other-side refs* touching a heavily-linked target (gr311344's
+        sibling fix — ``search(kind='job', link='gripe:42')``).
+        :meth:`links_for` is unbounded: fetching every edge of a target
+        with thousands of links (a long-lived quest/gripe), then every
+        endpoint ref, then sorting/slicing in Python, does unbounded
+        request-thread work before the caller ever reaches a page — the
+        same hang class the bare-``get()`` links cap eliminates. This
+        pushes the kind filter + ordering + LIMIT/OFFSET into one
+        indexed SQL query instead, mirroring how
+        :meth:`RefsMixin.list_refs` pages a ``tags=``-filtered listing.
+
+        Relation-agnostic (no ``relation=`` filter, no inverse-relation
+        rewrite) — the current caller wants every edge touching the
+        target regardless of relation. Pair with
+        :meth:`count_linked_refs` for the "N of K" header.
+        """
+        clauses, params = _linked_refs_where(ref_id, kind=kind, direction=direction)
+        params = [*params, limit, offset]
+        sql = (
+            f"SELECT {_REFS_COLS_ALIASED} FROM refs r WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY r.updated_at DESC LIMIT %s OFFSET %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_ref(r) for r in rows]
+
+    def count_linked_refs(
+        self,
+        ref_id: int,
+        *,
+        kind: str,
+        direction: Literal["out", "in", "both"] = "both",
+    ) -> int:
+        """Exact count for :meth:`linked_refs_page` — the honest "N of K"
+        denominator for a link-scoped listing (same WHERE, no LIMIT)."""
+        clauses, params = _linked_refs_where(ref_id, kind=kind, direction=direction)
+        sql = "SELECT count(*) FROM refs r WHERE " + " AND ".join(clauses)
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
 
     def count_links_for_refs(self, ref_ids: list[int]) -> dict[int, int]:
         """Return ``{ref_id: total_link_count}`` for a batch of refs.

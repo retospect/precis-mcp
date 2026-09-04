@@ -8,7 +8,10 @@ import time
 
 import pytest
 
+from precis.config import DEFAULT_EDGAR_USER_AGENT
 from precis.handlers._edgar_client import (
+    EdgarClient,
+    EdgarError,
     EdgarNotFound,
     EdgarRateLimited,
     FakeEdgarClient,
@@ -107,6 +110,51 @@ class TestFakeClient:
         resp = client.search({"q": "climate"})
         assert resp.json == b'{"hits":{}}'
         assert resp.bytes_out == len(b'{"hits":{}}')
+
+
+class TestTickerMapErrorSurfacing:
+    """gr311335 defect 2: a fetch failure with no prior map must not
+    masquerade as an unknown-ticker miss. No live SEC calls — ``_get`` is
+    monkeypatched to simulate the transport-level 403."""
+
+    def test_cold_403_surfaces_upstream_error_not_unknown_ticker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = EdgarClient(user_agent="precis-mcp test test@example.com")
+
+        def fake_get(self: EdgarClient, url: str, *, params=None) -> bytes:
+            raise EdgarRateLimited("EDGAR 403 (throttled/blocked): forbidden")
+
+        monkeypatch.setattr(EdgarClient, "_get", fake_get)
+
+        # A real "unknown ticker" would return None, not raise. Distinguish:
+        # the caller must see the upstream failure, not a false NotFound.
+        with pytest.raises(EdgarError):
+            client.resolve_ticker("nvda")
+
+    def test_stale_map_keeps_serving_when_refresh_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = EdgarClient(user_agent="precis-mcp test test@example.com")
+        # Simulate a prior successful fetch that's now past its TTL.
+        client._ticker_map = {"nvda": "1045810"}
+        client._ticker_map_fetched_at = 0.0  # far in the past → stale
+
+        def fake_get(self: EdgarClient, url: str, *, params=None) -> bytes:
+            raise EdgarRateLimited("EDGAR 403 (throttled/blocked): forbidden")
+
+        monkeypatch.setattr(EdgarClient, "_get", fake_get)
+
+        # Refresh fails, but the stale map still resolves known tickers
+        # instead of raising or wiping the cache.
+        assert client.resolve_ticker("nvda") == "1045810"
+
+
+class TestDefaultUserAgent:
+    def test_default_ua_has_contact_email(self) -> None:
+        # SEC's fair-access policy requires a contact email in the UA; a
+        # future regression to a bare app-name string must fail loudly.
+        assert "@" in DEFAULT_EDGAR_USER_AGENT
 
 
 @pytest.mark.skipif(

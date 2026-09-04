@@ -29,11 +29,71 @@ def _engine() -> Any | None:
     return mermaidx
 
 
+#: Diagram types the in-process render engine (mermaidx / QuickJS, no browser
+#: DOM) cannot render — kept in lock-step with the ``precis-mermaid-unsupported``
+#: skill (gr311345: the doc used to also claim gantt/pie/C4Context "will
+#: validate-fail" on write, but the mermaidx>=0.9 bump quietly fixed all
+#: three — only sankey-beta/block-beta genuinely still fail to compile. The
+#: engine-absent dark path accepted anything unconditionally, so nothing
+#: actually checked this at the ``put`` layer either way). Checked up front,
+#: independent of whether ``mermaidx`` is installed, so rejection is
+#: deterministic rather than depending on the deploy's extras. Keyed by the
+#: diagram's first-line directive (lowercased); value is the doc-facing name
+#: used in the rejection message.
+UNSUPPORTED_TYPES: tuple[tuple[str, str], ...] = (
+    ("sankey", "sankey-beta"),
+    ("block", "block-beta"),
+)
+
+#: Doc-facing list of diagram types the engine *does* render — echoed in the
+#: rejection message so an agent immediately sees the alternative.
+_SUPPORTED_TYPES_HINT = (
+    "flowchart, sequenceDiagram, classDiagram, stateDiagram(-v2), erDiagram, "
+    "journey, quadrantChart, requirementDiagram, gitGraph, timeline, "
+    "xychart, mindmap, gantt, pie, C4Context"
+)
+
+
+def _first_directive(source: str) -> str:
+    """The first non-blank, non-comment line, lowercased and stripped —
+    mermaid's diagram-type keyword lives here."""
+    for ln in source.splitlines():
+        s = ln.strip().lower()
+        if not s or s.startswith("%%"):
+            continue
+        return s
+    return ""
+
+
+def unsupported_type(source: str) -> str | None:
+    """The doc-facing name of the diagram's type if the in-process engine
+    cannot render it (see :data:`UNSUPPORTED_TYPES`), else ``None``."""
+    first = _first_directive(source)
+    for prefix, label in UNSUPPORTED_TYPES:
+        if first.startswith(prefix):
+            return label
+    return None
+
+
 def compile_error(source: str) -> str | None:
-    """``None`` if the mermaid source renders, else a one-line reason. When the
-    engine is absent we cannot validate, so we accept (the kind is dark then)."""
+    """``None`` if the mermaid source renders, else a one-line reason.
+
+    The unsupported-diagram-type check runs first and unconditionally
+    (gr311345) — it doesn't depend on ``mermaidx`` being installed, so a
+    ``sankey-beta``/``block-beta`` write is rejected the same way on every
+    deploy. Beyond that, when the engine is absent we cannot validate
+    further, so we accept (the kind is dark then).
+    """
     if not source.strip():
         return "empty mermaid source"
+    bad = unsupported_type(source)
+    if bad is not None:
+        return (
+            f"{bad} diagrams are not supported by the in-process render "
+            "engine (mermaidx/QuickJS, no browser DOM). Supported types: "
+            f"{_SUPPORTED_TYPES_HINT}. See "
+            "get(kind='skill', id='precis-mermaid-unsupported')."
+        )
     mx = _engine()
     if mx is None:
         return None
@@ -158,9 +218,10 @@ _REQ_BLOCK = (
     "element",
 )
 #: First-token → diagram-kind dispatch for :func:`_diagram_kind`. ``"data"`` is
-#: the family of data-series diagrams (journey / timeline / xychart / quadrant)
-#: and the engine-unsupported ones (gantt / pie / sankey / c4 / block): they
-#: carry no stable, bindable node ids, so extraction returns ``[]`` rather than
+#: the family of data-series diagrams (journey / timeline / xychart / quadrant,
+#: gantt, pie) plus C4/sankey/block: none of these carry stable, bindable node
+#: ids (independent of :data:`UNSUPPORTED_TYPES` — a diagram can render fine
+#: and still have no bindable nodes), so extraction returns ``[]`` rather than
 #: misparsing their data rows as nodes.
 _KIND_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sequence", ("sequencediagram",)),

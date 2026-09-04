@@ -520,6 +520,12 @@ def search(
     # text-driven recall. Declared at the verb level so strict-schema MCP
     # clients don't strip it.
     uncited: str | None = None,
+    # link-only filter (job kind — see precis-job-help): search(kind='job',
+    # link='gripe:42') lists every job linked to the given target,
+    # most-recently-updated first, no q=/tags= required. Declared at the
+    # verb level so strict-schema clients don't strip it before it ever
+    # reaches the handler.
+    link: str | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -744,6 +750,10 @@ def search(
     # trips the uncited= resolution path in the runtime dispatcher.
     if uncited is not None:
         payload["uncited"] = uncited
+    # link-only filter — forwarded only when set so a plain search never
+    # trips the link= resolution path in the runtime dispatcher.
+    if link is not None:
+        payload["link"] = link
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
@@ -1386,8 +1396,11 @@ def more(cursor: str) -> _ToolReturn:
     cursor verbatim to retrieve the tail, and keep following each
     page's cursor until no footer remains before acting on the body.
 
-    Cursors are single-use and expire after a few minutes — if you
-    miss the window, re-issue the original call to start fresh.
+    Cursors are single-use, expire after a few minutes, and are pinned
+    to the minting backend process — never batch `more()` in parallel
+    with other calls (a parallel call can land on another worker →
+    "no such cursor in this process"). Drain pages sequentially; if
+    the cursor expired, re-issue the original call.
     """
     runtime = _get_runtime()
     started = _monotonic()

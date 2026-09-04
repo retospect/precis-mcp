@@ -38,15 +38,31 @@ Key choices
   guarantee idempotent, content-derived slugs (so re-ingesting
   the same file produces the same slugs and the agent's
   selectors keep resolving).
+
+* **Embed failure degrades, it doesn't raise.** A batch embed call
+  can fail for the same reasons a query embed can (cold model,
+  remote endpoint down, degenerate input) — see
+  :func:`precis.utils.embed_query.embed_query` for the read-path
+  twin of this guard. Before this guard, an ingest-time embed
+  failure propagated straight out of ``ensure_ingested`` as a raw
+  exception; the worst site was ``TexHandler``'s ``/toc`` view,
+  which calls ``ensure_ingested`` once per ``\\input{}`` child
+  found during the walk — one flaky embedder call could abort the
+  whole TOC (gr311327). ``embedding IS NULL`` is a legal row state
+  (the embed-fill cascade backfills it later), so on failure this
+  helper inserts the batch unembedded instead of raising.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from precis.embedder import Embedder
 from precis.store.types import ChunkInsert
+
+log = logging.getLogger(__name__)
 
 
 class ParsedTextChunk(Protocol):
@@ -106,7 +122,19 @@ def to_chunk_inserts[BlockT: ParsedTextChunk](
     if embedder is not None:
         # Batch in one call so production bge-m3 can vectorise the
         # whole file. The mock embedder fans this out internally.
-        embeddings = embedder.embed([b.text for b in blocks])
+        try:
+            embeddings = embedder.embed([b.text for b in blocks])
+        except Exception:
+            # Degrade to unembedded rows rather than raising — mirrors
+            # embed_query's degrade-on-failure. embedding=None is a
+            # legal chunk state; the embed-fill cascade backfills it.
+            log.warning(
+                "to_chunk_inserts: batch embed failed for %d block(s); "
+                "inserting without embeddings",
+                len(blocks),
+                exc_info=True,
+            )
+            embeddings = None
 
     return [
         ChunkInsert(

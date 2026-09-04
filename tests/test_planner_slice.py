@@ -338,6 +338,32 @@ def test_generated_child_defaults_to_llm_opus_root_does_not(
     assert root not in ids  # root → no default → not auto-run
 
 
+def test_parented_auto_check_leaf_exempt_from_llm_tier_default(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr311333: a parented ``meta.auto_check`` leaf must NOT get the
+    auto-``llm_tier='opus'`` stamp — it's meant to sit inert until its
+    evaluator resolves it, not become a ``plan_tick`` dispatch candidate
+    (which would both defeat the parking and silently bill opus)."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    root = _id_of(handler.put(text="deliberate root").body)
+    leaf = _id_of(
+        handler.put(
+            text="[auto] wait for something",
+            parent_id=root,
+            meta={
+                "auto_check": {"type": "time_past", "at": "2099-01-01T00:00:00+00:00"}
+            },
+        ).body
+    )
+    ref = store.get_ref(kind="todo", id=leaf)
+    assert ref is not None
+    assert "llm_tier" not in ref.meta
+    ids = _candidate_parent_ids(store, limit=50)
+    assert leaf not in ids  # parked auto_check leaf → never auto-dispatched
+
+
 def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
     """A change-request todo with meta.anchor='¶<handle>' must put the
     anchored chunk's text in the agent's prompt — so it acts on that

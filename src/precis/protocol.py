@@ -62,6 +62,22 @@ class KindSpec:
     is_numeric: bool = False  # public id is int (else str slug)
     id_required: bool = True  # False if get may omit id
 
+    #: Explicit opt-in for whether this kind's ``get`` understands the
+    #: ``slug~ord`` chunk-selector grammar that
+    #: :meth:`~precis.runtime.dispatch.DispatchMixin._maybe_infer_kind_from_handle`
+    #: synthesizes when it resolves a chunk handle (``pc<id>``, ``nc<id>``, …)
+    #: to its owning ref. ``True``/``False`` are read directly; ``None``
+    #: (the default) means "not yet declared" — the dispatcher falls back to
+    #: the historical public_id-vs-ref_id numeric proxy (true for the
+    #: hand-rolled slug-document kinds — paper/patent/edgar/… — that already
+    #: implement the grammar without ever declaring this flag). Declared
+    #: explicitly by :class:`~precis.handlers._cache_base.CacheBackedHandler`
+    #: subclasses that opt in (gr311336: a news chunk handle rewrote to
+    #: ``slug~0`` but ``CacheBackedHandler.get`` had zero selector grammar,
+    #: so the numeric proxy alone was wrong — it conflated "slug-addressed"
+    #: with "understands ``~ord``").
+    supports_chunk_selectors: bool | None = None
+
     #: Corpus role for the document family (paper / patent / cfp / …).
     #: ``"evidence"`` — a citable source that participates in literature
     #: search (paper, patent). ``"spec"`` — a read-only requirements

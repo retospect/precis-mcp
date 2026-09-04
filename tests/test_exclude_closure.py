@@ -11,6 +11,7 @@ resolver's own store calls, since the whole point is the SQL walk.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import pytest
 
@@ -250,6 +251,73 @@ def test_bogus_dr_raises_bad_input_naming_entry(store: Store) -> None:
 def test_bogus_dc_raises_bad_input_naming_entry(store: Store) -> None:
     with pytest.raises(BadInput, match="dc999999"):
         resolve_exclude_paper_ids(["dc999999"], store=store)
+
+
+# ── gr311339: pa<id> handles batch-resolve in O(1) store round trips ────
+
+
+@dataclass
+class _FakeRef:
+    kind: str
+
+
+class _CountingHandleStore:
+    """Spy double covering exactly what the ``pa<id>`` fast path touches.
+
+    ``fetch_refs_by_ids`` is the ONE bulk existence/kind check every
+    handle-form entry should share, regardless of list length;
+    ``resolve_handle`` is the slow, merge-aware fallback that must be
+    paid ONLY for a miss (unknown here — every id in ``live_ids`` is
+    live paper).
+    """
+
+    def __init__(self, live_ids: set[int]) -> None:
+        self.live_ids = live_ids
+        self.fetch_refs_by_ids_calls = 0
+        self.resolve_handle_calls = 0
+
+    def fetch_refs_by_ids(
+        self, ref_ids: list[int], *, include_deleted: bool = True
+    ) -> dict[int, _FakeRef]:
+        self.fetch_refs_by_ids_calls += 1
+        return {rid: _FakeRef(kind="paper") for rid in ref_ids if rid in self.live_ids}
+
+    def resolve_handle(self, handle: str) -> None:
+        self.resolve_handle_calls += 1
+        return None
+
+
+@pytest.mark.parametrize("n", [1, 20])
+def test_pa_handle_exclude_batches_into_one_round_trip(n: int) -> None:
+    """A list of N ``pa<id>`` handles must cost exactly ONE
+    ``fetch_refs_by_ids`` call and ZERO ``resolve_handle`` calls —
+    O(1) regardless of N (gr311339), not N serial round trips."""
+    ids = list(range(1, n + 1))
+    fake = _CountingHandleStore(live_ids=set(ids))
+    entries = [handle_registry.format_handle("paper", i) for i in ids]
+
+    got = resolve_exclude_paper_ids(entries, store=fake)  # type: ignore[arg-type]
+
+    assert got == set(ids)
+    assert fake.fetch_refs_by_ids_calls == 1
+    assert fake.resolve_handle_calls == 0
+
+
+def test_pa_handle_exclude_falls_back_per_miss_only() -> None:
+    """A handle that misses the bulk existence check (stale/merged) pays
+    the slow ``resolve_handle`` round trip — but ONLY for that entry,
+    not for the whole batch."""
+    fake = _CountingHandleStore(live_ids={1, 2})
+    entries = [handle_registry.format_handle("paper", i) for i in (1, 2, 999)]
+
+    got = resolve_exclude_paper_ids(entries, store=fake)  # type: ignore[arg-type]
+
+    # 999 misses the bulk check; resolve_handle(...) returns None for
+    # it (fake's default), so it's silently dropped — same contract as
+    # the legacy bare-slug path.
+    assert got == {1, 2}
+    assert fake.fetch_refs_by_ids_calls == 1
+    assert fake.resolve_handle_calls == 1
 
 
 # ── gr311339: multi-handle exclude batches into ONE round trip ──────────

@@ -444,29 +444,35 @@ def runtime(store: Store) -> PrecisRuntime:
     )
 
 
-# ── missing-kind hint points at the most-recent kind ────────────
+# ── missing-kind hint stays session-honest (gr311329) ────────────
 
 
 class TestMissingKindRecentHint:
-    """A non-search verb called without kind= bounces back a runnable
-    retry naming the kind the agent was just working on, instead of a
-    bare 30-item menu — kills the empty-call retry loop."""
+    """A non-search verb called without kind= used to bounce back a
+    "you were last working on kind=X" retry sourced from
+    ``Store.most_recent_kind`` — an un-scoped ``ORDER BY updated_at
+    DESC`` over the whole (multi-session, shared-prod) corpus, so "X"
+    was frequently another session's most recent write, not this
+    caller's (gr311329). The hint is now the generic "pick one" only,
+    regardless of what else has recently touched the corpus."""
 
-    def test_delete_without_kind_suggests_recent(self, runtime: PrecisRuntime) -> None:
+    def test_delete_without_kind_has_no_cross_session_recent_hint(
+        self, runtime: PrecisRuntime
+    ) -> None:
         runtime.dispatch("put", {"kind": "memory", "text": "a recent thought"})
         out = runtime.dispatch("delete", {})
         assert "[error:BadInput]" in out
         assert "missing kind" in out
-        # The most-recently-touched kind is surfaced as a runnable retry.
-        assert "kind='memory'" in out
-        assert "delete(kind='memory'" in out
+        # No "you were last working on" claim — nothing here can vouch
+        # that *this* session touched 'memory' rather than a sibling one.
+        assert "last working on" not in out
+        assert "pass kind=" in out
 
     def test_missing_kind_generic_when_store_empty(
         self, runtime: PrecisRuntime
     ) -> None:
         out = runtime.dispatch("delete", {})
         assert "missing kind" in out
-        # No refs yet → no recent-kind line, but the generic hint stands.
         assert "pass kind=" in out
 
 

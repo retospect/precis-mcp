@@ -400,43 +400,106 @@ class TestJob:
         with pytest.raises(BadInput, match="fix_gripe requires link"):
             handler.put(job_type="fix_gripe")
 
-    # ── search(link=...) with no q=/tags= (gr311342) ─────────────────
-    # precis-job-help / precis-fix-gripe-help document a bare
-    # ``search(kind='job', link='gripe:42')`` — "what jobs have run on
-    # this gripe?" — as a complete shape. Before this fix it fell
-    # through to "search requires q= or tags=" because link= was
-    # swallowed by ``**_kw`` and never consulted.
-
-    def test_search_link_only_enumerates_linked_jobs(
-        self, job: JobHandler, hub: Hub
+    def test_search_link_only_no_q_lists_linked_jobs(
+        self, job: JobHandler, store: Store
     ) -> None:
-        gripe = GripeHandler(hub=hub)
-        gripe.put(text="something worth fixing")
-        gripe_id = gripe.store.list_refs(kind="gripe", limit=1)[0].id
-        # Insert the job ref + link directly (job.put's fix_gripe path
-        # pulls in unrelated submit-time validation — PRECIS_FIX_WORK_DIR,
-        # parent_id — that's orthogonal to what this test is pinning:
-        # search()'s link= handling, not put()'s).
-        job_ref = job.store.insert_ref(kind="job", slug=None, title="fix attempt")
-        job.store.add_link(src_ref_id=job_ref.id, dst_ref_id=gripe_id, relation="fixes")
+        """``search(kind='job', link='gripe:N')`` alone must enumerate
+        the jobs linked to that gripe, not raise — precis-job-help /
+        precis-fix-gripe-help document exactly this call as "history of
+        fix attempts for a gripe" (gr311342)."""
+        from precis.utils import handle_registry
 
-        body = job.search(link=f"gripe:{gripe_id}").body
-        assert "1 job entr" in body
-        assert "linked to" in body
+        gripe = store.insert_ref(kind="gripe", slug=None, title="a bug")
+        other_gripe = store.insert_ref(kind="gripe", slug=None, title="another bug")
+        linked_job = store.insert_ref(kind="job", slug=None, title="fix_gripe (linked)")
+        unrelated_job = store.insert_ref(
+            kind="job", slug=None, title="fix_gripe (unrelated)"
+        )
+        store.add_link(
+            src_ref_id=linked_job.id,
+            dst_ref_id=gripe.id,
+            relation="fixes",
+            set_by="agent",
+        )
+        store.add_link(
+            src_ref_id=unrelated_job.id,
+            dst_ref_id=other_gripe.id,
+            relation="fixes",
+            set_by="agent",
+        )
 
-    def test_search_link_only_zero_matches_is_a_clean_empty_answer(
-        self, job: JobHandler, hub: Hub
+        resp = job.search(link=f"gripe:{gripe.id}")
+        assert handle_registry.format_handle("job", linked_job.id) in resp.body
+        assert handle_registry.format_handle("job", unrelated_job.id) not in resp.body
+
+    def test_search_link_only_no_matches(self, job: JobHandler, store: Store) -> None:
+        gripe = store.insert_ref(kind="gripe", slug=None, title="a bug")
+        resp = job.search(link=f"gripe:{gripe.id}")
+        assert "no job entries linked to" in resp.body
+
+    def test_search_link_only_pages_true_db_level(
+        self, job: JobHandler, store: Store
     ) -> None:
-        """A real ref with no linked jobs answers cleanly, not an error."""
-        gripe = GripeHandler(hub=hub)
-        gripe.put(text="nothing links to this one")
-        gripe_id = gripe.store.list_refs(kind="gripe", limit=1)[0].id
+        """gr311344-sibling fix: ``search(link=...)`` must page via
+        ``Store.linked_refs_page``'s DB-level LIMIT/OFFSET, same as the
+        ``tags=`` path — page 2 must not re-show page 1's rows, and the
+        header must show the actual row window (not a bare "2 of 5" that
+        reads as "the first 2")."""
+        gripe = store.insert_ref(kind="gripe", slug=None, title="a popular bug")
+        for i in range(5):
+            j = store.insert_ref(kind="job", slug=None, title=f"fix attempt {i}")
+            store.add_link(
+                src_ref_id=j.id, dst_ref_id=gripe.id, relation="fixes", set_by="agent"
+            )
 
-        body = job.search(link=f"gripe:{gripe_id}").body
-        assert "no job entries linked to" in body
+        page1 = job.search(link=f"gripe:{gripe.id}", page_size=2, page=1).body
+        page2 = job.search(link=f"gripe:{gripe.id}", page_size=2, page=2).body
 
-    def test_search_no_q_no_tags_no_link_still_rejected(self, job: JobHandler) -> None:
-        with pytest.raises(BadInput, match="requires q= or tags= or link="):
+        titles1 = {i for i in range(5) if f"fix attempt {i}" in page1}
+        titles2 = {i for i in range(5) if f"fix attempt {i}" in page2}
+        assert len(titles1) == 2
+        assert len(titles2) == 2
+        assert titles1.isdisjoint(titles2)
+        assert "rows 3-4 of 5" in page2
+
+    def test_search_link_only_fetches_bounded_rows(
+        self, job: JobHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A target with more links than ``page_size`` must be paged
+        entirely inside SQL (``LIMIT``/``OFFSET``) — never by pulling
+        every edge (``links_for``) onto the request thread and slicing
+        in Python. Spy on both store methods to prove the bound."""
+        gripe = store.insert_ref(kind="gripe", slug=None, title="a linky bug")
+        for i in range(6):
+            j = store.insert_ref(kind="job", slug=None, title=f"attempt {i}")
+            store.add_link(
+                src_ref_id=j.id, dst_ref_id=gripe.id, relation="fixes", set_by="agent"
+            )
+
+        seen_limits: list[int] = []
+        real_page = store.linked_refs_page
+
+        def _spy_page(ref_id: int, **kwargs: Any) -> Any:
+            seen_limits.append(kwargs["limit"])
+            return real_page(ref_id, **kwargs)
+
+        links_for_calls: list[Any] = []
+        real_links_for = store.links_for
+
+        def _spy_links_for(*args: Any, **kwargs: Any) -> Any:
+            links_for_calls.append((args, kwargs))
+            return real_links_for(*args, **kwargs)
+
+        monkeypatch.setattr(store, "linked_refs_page", _spy_page)
+        monkeypatch.setattr(store, "links_for", _spy_links_for)
+
+        job.search(link=f"gripe:{gripe.id}", page_size=2, page=1)
+
+        assert seen_limits == [2]  # bounded to page_size, not the full 6-edge set
+        assert links_for_calls == []  # never falls back to the unbounded reader
+
+    def test_search_no_q_no_tags_no_link_still_raises(self, job: JobHandler) -> None:
+        with pytest.raises(BadInput, match="search requires q= or tags= or link="):
             job.search()
 
 

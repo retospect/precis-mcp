@@ -221,9 +221,19 @@ delete(kind="gripe", id=42)
 ## Who filed this gripe?
 ## Was this filed by a human or an agent?
 
-`get(kind='gripe', id=N)` surfaces the filer identity in the
-header — humans show up by their CLI identity, agents by their
-session label. No separate verb needed.
+Not tracked on this surface. `put(kind='gripe', ...)` — and the
+read-only carve-out it always routes through
+(`file_gripe_readonly`, migration 0079) — insert the ref with no
+`set_by`, by design (gr311332). `get(kind='gripe', id=N)`'s header
+shows `filed by: ...` only on the rare pre-migration row that has
+it; in practice, assume it's absent. If you need provenance, say
+who you are in the body text or a follow-up comment.
+
+(The `/gripes` **web form** is a separate surface with its own
+attribution: it appends a `— filed by <login> via the /gripes web
+form` line to the *body text* itself. That's a web-only convention,
+invisible here — it doesn't populate the header either, and MCP
+`put` has no equivalent.)
 
 ## Link a gripe to a related paper or chunk
 

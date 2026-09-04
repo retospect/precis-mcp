@@ -89,6 +89,14 @@ get(kind="markdown", id="notes/meeting.md/raw")  # source
 get(kind="markdown", id="/Users/bots/notes/meeting.md")  # absolute path also works
 ```
 
+**Path-form lookup is case-folded to lowercase**, silently — a
+path-form `id=` (this section) is converted to its `--`-encoded slug
+before resolving, and that encoding lowercases every segment
+(`file_slug_from_path`). `id="Notes/Meeting.md"` and
+`id="notes/meeting.md"` address the same ref; there's no case-
+sensitivity error to catch a typo'd case. Don't rely on preserved
+case in a path-form id round-trip.
+
 ## Coordinate-form vs name-form addressing
 ## When should I use ~L<n>-<m> vs ~<name>?
 ## Two tracks: line-numbers vs durable slugs

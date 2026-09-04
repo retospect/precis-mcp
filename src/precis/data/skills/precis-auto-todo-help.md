@@ -23,12 +23,27 @@ nursery sweep surfaces the abandoned wait for triage).
 The mechanism is one JSON dict on the existing
 `refs.meta` column — no schema work needed.
 
+**A parented `auto_check` leaf can silently get real compute
+dispatched too.** `meta.auto_check` isn't one of the fields the todo
+handler checks before defaulting a *parented* write to
+`meta.llm_tier='opus'` (see `precis-todo-tree-help`'s "silently
+auto-dispatch" note). A leaf with `parent_id=` set, no
+`waiting-for:*`/`halt`/`ask-user` tag, and no explicit
+`llm_tier`/`executor`/`schedule` gets `llm_tier='opus'` stamped on
+write and is a `plan_tick` dispatch candidate, defeating the point of
+parking it (an `ask-user`-tagged leaf like Pattern 2 below is
+separately excluded from dispatch by that tag, but still gets the
+field stamped untidily). Set `meta={"llm_tier": None, "auto_check":
+{...}}` explicitly — as below — if the leaf should only ever be
+resolved by the evaluator, never picked up as work.
+
 ```python
 put(
     kind="todo",
     text="[auto] wait for paper 10.x/y1 ingested+indexed",
     parent_id=98,
     meta={
+        "llm_tier": None,  # opt out of the parented-write default
         "auto_check": {
             "type": "paper_ingested",
             "doi": "10.x/y1",
@@ -70,6 +85,8 @@ for doi in ["10.x/y1", "10.x/y2", "10.x/y3"]:
         parent_id=98,
         text=f"[auto] wait for paper {doi} ingested+indexed",
         meta={
+            "llm_tier": None,  # parented + no explicit tier auto-defaults
+            # to 'opus' otherwise — see the note above.
             "auto_check": {
                 "type": "paper_ingested",
                 "doi": doi,
@@ -101,6 +118,7 @@ ask = put(
     text="Decide: cite Tanaka 2024 in §3 — asked the owner",
     tags=["ask-user"],
     meta={
+        "llm_tier": None,  # see the parented-auto-dispatch note above
         "auto_check": {
             "type": "discord_reply_received",
             "ask_message_id": str(msg.id),

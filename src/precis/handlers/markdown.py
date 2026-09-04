@@ -251,8 +251,11 @@ class MarkdownHandler(PlaintextHandler):
         for path in on_disk:
             try:
                 rel = str(path.relative_to(self.root))
-                base, _ext = self._strip_ext(rel)
-                slug = file_slug_from_path(base)
+                # ``file_slug_from_path`` strips the extension itself —
+                # don't pre-strip via ``_strip_ext`` first, or a stem
+                # with a further ``.`` (e.g. ``foo.error.log``) gets
+                # double-stripped and the slug can't resolve (gr311326).
+                slug = file_slug_from_path(rel)
             except ValueError:
                 continue
             if not is_valid_file_slug(slug):

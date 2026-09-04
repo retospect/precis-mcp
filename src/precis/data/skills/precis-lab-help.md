@@ -22,6 +22,11 @@ autonomous planner tick (`plan_tick`) working a todo with a `meta.llm_tier`
 (model tier) set. Augmentation, not foundation — read the per-kind skills
 for depth.
 
+`route` (retrosynthesis: which bonds to break/form to reach a target
+molecule) is unrelated to `kind='pathway'` (`precis-pathway-help`) —
+reaction-*network* exploration on a catalyst surface (intermediates,
+barriers, NEB). Don't confuse the two on "pathway"/"route" wording alone.
+
 Each recipe is a **toolpath**: the minimal verb sequence for one goal. All the
 heavy compute (a plan, a fold, a relax) runs **off the request path** on the
 compute lane — you mint it and poll, never block. Everything is grounded in the

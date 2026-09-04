@@ -723,31 +723,23 @@ class DispatchMixin(RuntimeShape):
     def _missing_kind_hints(self, verb: str) -> list[str]:
         """Recovery hints for a non-``search`` verb called without ``kind=``.
 
-        Leads with the most-recently-touched kind — the agent almost
-        always means to keep operating on whatever it was just working
-        on, so ``edit({})`` / ``delete({})`` should bounce back a
-        runnable ``edit(kind='draft', id=…)`` rather than a 30-item
-        menu. This kills the empty-call retry loop a small model gets
-        stuck in: a bare "missing kind=" with every kind listed gives it
-        nothing to pick, so it re-fires the same empty call. Falls back
-        to the generic "pick one" when the corpus is empty or the
-        recency lookup fails. The per-verb help-skill pointer is still
-        appended by :meth:`_maybe_add_skill_hint` after this.
+        Used to lead with :meth:`Store.most_recent_kind` — "you were
+        last working on kind=X" — but that query is
+        ``ORDER BY refs.updated_at DESC`` over the *whole corpus*, with
+        no session/connection scoping column to filter on. On a
+        single-tenant deployment that reads as "your session", but this
+        MCP is multi-session (many concurrent agents against one prod
+        DB — see any ``scripts/inflight`` table): the "most recently
+        updated ref" is often another session's write, so the hint
+        actively misdirects ("you were last working on kind='alert'" in
+        a session that never touched ``alert``, gr311329). Without a
+        real per-session touch log there is no session-accurate kind to
+        offer, so this now falls straight back to the generic "pick
+        one" — honest is better than a plausible-sounding guess. The
+        per-verb help-skill pointer is still appended by
+        :meth:`_maybe_add_skill_hint` after this.
         """
-        recent: str | None = None
-        if self.store is not None:
-            try:
-                recent = self.store.most_recent_kind()
-            except Exception:  # pragma: no cover — store outage etc.
-                log.exception("most_recent_kind lookup failed")
-        hints: list[str] = []
-        if recent is not None:
-            hints.append(
-                f"you were last working on kind={recent!r} — retry e.g. "
-                f"{verb}(kind={recent!r}, id=…)"
-            )
-        hints.append("pass kind=<one of the listed options>")
-        return hints
+        return ["pass kind=<one of the listed options>"]
 
     def _resolve_handler(self, kind: str, verb: str) -> Handler:
         """Look up the handler for ``kind`` and verify it supports ``verb``.
@@ -1267,6 +1259,33 @@ class DispatchMixin(RuntimeShape):
         args["id"] = selector
         return True
 
+    def _kind_supports_chunk_selectors(
+        self, kind: str, public_id: str, ref_id: int
+    ) -> bool:
+        """Whether ``kind``'s ``get`` understands the ``slug~ord`` chunk
+        selector this dispatcher synthesizes for a resolved chunk handle.
+
+        Reads the explicit :attr:`KindSpec.supports_chunk_selectors` opt-in
+        when the handler has declared it; falls back to the historical
+        public_id-vs-ref_id numeric proxy (True for slug-addressed kinds,
+        False for numeric-id kinds) when it hasn't. The fallback preserves
+        existing routing for every hand-rolled slug-document handler
+        (paper/patent/edgar/markdown/plaintext/tex/…) without requiring each
+        one to declare the flag — but it's no longer the *only* signal: a
+        kind that IS slug-addressed but whose ``get`` has zero ``~ord``
+        grammar (gr311336: news, via ``CacheBackedHandler``) can now declare
+        ``supports_chunk_selectors=False`` explicitly to opt out, and a
+        kind that implements the grammar (news, once fixed) can declare
+        ``True`` regardless of its id shape.
+        """
+        handler = self.hub.handler_for(kind) if self.hub is not None else None
+        declared = (
+            getattr(handler.spec, "supports_chunk_selectors", None) if handler else None
+        )
+        if declared is not None:
+            return declared
+        return public_id != str(ref_id)
+
     def _maybe_infer_kind_from_handle(self, args: dict[str, Any], ident: str) -> bool:
         """Universal-handle surface dispatch: route a universal handle.
 
@@ -1312,7 +1331,9 @@ class DispatchMixin(RuntimeShape):
             if (
                 suffix
                 or resolved.chunk_ord is None
-                or resolved.public_id == str(resolved.ref_id)
+                or not self._kind_supports_chunk_selectors(
+                    resolved.kind, resolved.public_id, resolved.ref_id
+                )
             ):
                 return False
             args["kind"] = resolved.kind
@@ -1341,12 +1362,22 @@ class DispatchMixin(RuntimeShape):
         2-char code + decimal body from the string alone — so it still
         yields ``(kind, is_chunk, pk)``. Routed only for non-chunk
         handles (a chunk has no per-kind selector to synthesize without
-        the row) and kinds where ``KindSpec.is_numeric`` (memory, todo,
-        gripe, …), whose public id IS ``str(ref_id)``, so ``str(pk)``
-        works as ``id=`` the same way a live handle's ``public_id``
-        would. Slug-addressed kinds (e.g. paper) are left alone — no
-        live row means no slug to read — and keep falling through to
-        bare-slug inference.
+        the row). Kinds where ``KindSpec.is_numeric`` (memory, todo,
+        gripe, …) have a public id that IS ``str(ref_id)``, so
+        ``str(pk)`` works as ``id=`` the same way a live handle's
+        ``public_id`` would — routed through to the per-kind handler so
+        it can still tell a soft-deleted row (``Gone``) from a
+        never-existed one (``NotFound``). Slug-addressed kinds (e.g.
+        paper) have no live row to read a slug from, so there's nothing
+        to hand the per-kind handler — raise the honest ``NotFound``
+        directly instead of falling through to bare-slug inference
+        (which also finds nothing) and on to a "missing kind=" ``
+        BadInput`` a caller can't act on by adding ``kind=`` (gr311329:
+        a nonexistent ``pa5`` misdirected the caller to spell out a
+        kind= that was never the problem). Slug kinds have no
+        Gone-detection today regardless of routing (``get_ref`` already
+        filters out soft-deleted rows before any handler sees them), so
+        raising here loses nothing.
         """
         parsed = handle_registry.parse(normalized)
         if parsed is None:
@@ -1358,8 +1389,13 @@ class DispatchMixin(RuntimeShape):
         if explicit is not None and explicit != kind:
             return False
         handler = self.hub.handler_for(kind) if self.hub is not None else None
-        if handler is None or not handler.spec.is_numeric:
+        if handler is None:
             return False
+        if not handler.spec.is_numeric:
+            raise NotFound(
+                f"{kind} {normalized + suffix!r} not found",
+                next=f"search(kind={kind!r}, q='...') to find existing",
+            )
         args["kind"] = kind
         args["id"] = str(pk) + suffix
         return True

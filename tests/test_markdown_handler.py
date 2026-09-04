@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from precis.dispatch import Hub
+from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.markdown import MarkdownHandler
 from precis.runtime import PrecisRuntime
@@ -93,6 +94,22 @@ def test_path_form_index(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "x.md", "# X")
     out = handler.get(id="/")
     assert "1 markdown file" in out.body
+
+
+def test_multidot_stem_index_lists_full_slug(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """gr311326: markdown's index re-derives the on-disk slug map with
+    its own copy of the same encode logic as the plaintext suggester —
+    pre-stripping the extension via ``_strip_ext`` then handing the
+    bare base to ``file_slug_from_path`` (which strips an extension
+    itself) double-strips any further ``.`` in the stem. A stem with
+    an interior dot (``notes.v2.md``) must be listed in full and
+    resolve, not silently truncated to a slug ``get`` then 404s on."""
+    _write(md_root, "notes.v2.md", "# v2")
+    out = handler.get()
+    assert "notes-v2" in out.body
+    handler.get(id="notes-v2")  # must not raise
 
 
 # ── overview ─────────────────────────────────────────────────────────
@@ -866,3 +883,45 @@ def test_put_edit_cascades_stale_embedding_away(
     assert new_vector is not None
     # Freshly derived from "cat", not the old "fox" vector.
     assert new_vector != old_vector
+
+
+# ── ingest-time embed guard (gr311327) ─────────────────────────────────
+#
+# gr311327's ROOT CAUSE was TexHandler's ``/toc`` \input walker calling
+# ``ensure_ingested`` many times synchronously with no embed guard —
+# markdown's own ``/toc`` is single-file (no recursive include walk,
+# confirmed: ``_render_toc`` only touches the already-ingested ``ref``
+# it's handed), so the "N ensure_ingested calls in one request" defect
+# class doesn't reproduce here. What markdown DOES share with tex is
+# the underlying ingest primitive (``ensure_ingested`` ->
+# ``to_chunk_inserts``) — this test pins that a failing embedder
+# degrades a markdown ingest to unembedded chunks instead of raising,
+# same as the tex-side fix in ``tests/test_tex_handler.py``.
+
+
+class _RaisingBatchEmbedder(MockEmbedder):
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("remote embed endpoint down")
+
+    def embed_one(self, text: str) -> list[float]:
+        raise RuntimeError("remote embed endpoint down")
+
+
+def test_ingest_survives_raising_embedder_with_unembedded_chunks(
+    store: Store, md_root: Path
+) -> None:
+    handler = MarkdownHandler(
+        hub=Hub(store=store, embedder=_RaisingBatchEmbedder()), root=md_root
+    )
+    out = handler.put(id="doc", text="# Title\n\nSome body text.\n", mode="create")
+    assert "created markdown" in out.body
+
+    ref = store.get_ref(kind="markdown", id="doc")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        for block in store.chunks.list_chunks_for_ref(ref.id):
+            row = conn.execute(
+                "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s",
+                (block.id,),
+            ).fetchone()
+            assert row is None

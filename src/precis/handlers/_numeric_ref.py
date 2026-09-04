@@ -374,7 +374,15 @@ class NumericRefHandler(Handler):
         body = self._render_one(ref, tags)
         # F8: surface the link graph for this ref so the agent's
         # recall step actually sees connections the write step made.
-        body += self._render_links_section(ref)
+        # gr311344: capped the same way paper.py's overview append is
+        # (limit=12, priority=True) — an unbounded links section on a
+        # heavily-linked numeric ref (a long-lived quest/gripe can
+        # accumulate thousands of links) rendered every row on the
+        # request thread, hanging a bare get(). priority=True surfaces
+        # evidential relations (contradicts/supports/…) ahead of the
+        # catch-all related-to flood; the overflow line still points at
+        # view='links' for the full graph.
+        body += self._render_links_section(ref, limit=12, priority=True)
         return Response(body=body)
 
     def _event_log_source(self) -> str | None:
@@ -440,7 +448,7 @@ class NumericRefHandler(Handler):
             # this gripe?": search(kind='job', link='gripe:42')), which
             # used to fall straight through to the "requires q= or
             # tags=" error below.
-            if link is not None:
+            if link is not None and str(link).strip():
                 return self._list_by_link(
                     link,
                     page_size=page_size,
@@ -453,7 +461,7 @@ class NumericRefHandler(Handler):
                 next=(
                     f"search(kind={self.kind!r}, q='your query') or "
                     f"search(kind={self.kind!r}, tags=['<tag>']) or "
-                    f"search(kind={self.kind!r}, link='kind:id')"
+                    f"search(kind={self.kind!r}, link='<kind>:<id>')"
                 ),
             )
 
@@ -718,33 +726,40 @@ class NumericRefHandler(Handler):
     ) -> Response:
         """Recency-ordered list of ``self.kind`` refs linked to ``link``.
 
-        Reached when ``search(kind=K, link='kind:id')`` is called with
-        no ``q=``/``tags=`` — the "what jobs have run on this gripe?"
-        shape (gr311342). ``link=`` resolves to one exact ref (via
-        :func:`parse_link_target`, the same resolver ``put(link=...)``/
-        ``link(target=...)`` use), so unlike a free-text ``q=`` it's
-        already a complete filter with nothing left to rank — mirrors
-        :meth:`_list_by_tags`'s "recency, no ranking" shape for the same
-        reason.
+        Reached when ``search(kind=K, link='<kind>:<id>')`` is called
+        without ``q=``/``tags=`` — e.g. "what jobs have run on this
+        gripe?" (``search(kind='job', link='gripe:42')``, gr311342).
+        ``link=`` resolves to one exact ref (via :func:`parse_link_target`,
+        the same resolver ``put(link=...)``/``link(target=...)`` use), so
+        unlike a free-text ``q=`` it's already a complete filter with
+        nothing left to rank — mirrors :meth:`_list_by_tags`'s "recency,
+        no ranking" shape for the same reason.
 
-        Direction-agnostic (``links_for(..., direction='both')``):
-        the caller asking "what jobs touched this gripe" doesn't know
-        or care which side of the edge the job row landed on.
+        Direction-agnostic (either side of the edge, most-recently-updated
+        first): the caller asking "what jobs touched this gripe" doesn't
+        know or care which side of the edge the job row landed on.
+
+        Pages via :meth:`Store.linked_refs_page`/:meth:`count_linked_refs`
+        — a true DB-level LIMIT/OFFSET (mirrors :meth:`_list_by_tags`'s
+        ``list_refs``/``count_refs`` pair), so a heavily-linked target (a
+        long-lived quest/gripe can carry thousands of edges) doesn't pull
+        every edge plus every endpoint ref onto the request thread before
+        slicing to a page — the same hang class gr311344 fixed for a bare
+        ``get()``.
         """
         target = parse_link_target(link, store=self.store)
-        touching = self.store.links_for(target.ref_id, direction="both")
-        other_ids = sorted(
-            {
-                (lk.dst_ref_id if lk.src_ref_id == target.ref_id else lk.src_ref_id)
-                for lk in touching
-            }
-        )
         label = handle_registry.try_format(target.kind, target.ref_id) or link
-        refs = self.store.recent_refs(
-            [self.kind], ref_ids=other_ids, limit=page_size, offset=offset
+        page_rows = self.store.linked_refs_page(
+            target.ref_id,
+            kind=self.kind,
+            direction="both",
+            limit=page_size,
+            offset=offset,
         )
-        total = self.store.count_recent_refs([self.kind], ref_ids=other_ids)
-        if not refs:
+        total = self.store.count_linked_refs(
+            target.ref_id, kind=self.kind, direction="both"
+        )
+        if not page_rows:
             if page > 1 and total > 0:
                 body = (
                     f"page {page}: no {self._sense()} entries linked to {label} "
@@ -765,7 +780,7 @@ class NumericRefHandler(Handler):
                 ]
             )
             return Response(body=body)
-        shown = len(refs)
+        shown = len(page_rows)
         if page > 1:
             first_row = offset + 1
             last_row = offset + shown
@@ -782,7 +797,7 @@ class NumericRefHandler(Handler):
         parts = [header]
         if note:
             parts.append(note)
-        parts.append(self._render_hits_table(refs))
+        parts.append(self._render_hits_table(page_rows))
         return Response(body="\n".join(parts))
 
     # ── search_hits: structured form for cross-kind merge ──────────
@@ -1706,7 +1721,9 @@ class NumericRefHandler(Handler):
         body += self._render_links_section(ref)
         return body
 
-    def _render_links_section(self, ref: Ref) -> str:
+    def _render_links_section(
+        self, ref: Ref, *, limit: int | None = None, priority: bool = False
+    ) -> str:
         """F8: render the Links: TOON sub-section for a single-ref get.
 
         Thin delegate to the shared free function (extracted so
@@ -1714,11 +1731,16 @@ class NumericRefHandler(Handler):
         plan, pres, patent — that aren't ``NumericRefHandler``
         subclasses can render the same section from their own
         ``view='links'`` without duplicating the logic — the paper
-        link-blindness fix). Pure refactor — behaviour unchanged.
+        link-blindness fix).
+
+        ``limit``/``priority`` default to the original unbounded/id-order
+        behaviour so ``view='raw'`` (the "hides nothing" debug view,
+        which also calls this) stays byte-identical; the bare-``get``
+        callsite passes ``limit=12, priority=True`` (gr311344).
         """
         from precis.handlers._links_render import render_links_section
 
-        return render_links_section(self.store, ref)
+        return render_links_section(self.store, ref, limit=limit, priority=priority)
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Default single-ref view: id header + body + tag line.

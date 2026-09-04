@@ -80,6 +80,18 @@ deleted), and be a `todo`. Cycles are rejected at write time
 exceed 10 deep — if you hit the wall, attach a `waiting-for:*` tag
 or a `blocked-by` link instead of splitting further.
 
+**This can silently auto-dispatch real compute.** A parented `put`
+that doesn't set `meta.llm_tier` / `meta.executor` / `meta.schedule`
+itself defaults to `meta.llm_tier='opus'` — a leaf with no auto-run
+signal would otherwise sit `open` forever, so a generated child is
+made to actually run. `dispatch` mints a `plan_tick` job for any
+`llm_tier`-set todo, so the child above can start a real (billed)
+planner run before you've finished setting it up. Pass
+`meta={"llm_tier": None}` — or any explicit tier you want — to opt
+out deliberately; a bare `parent_id=` write does not opt out.
+Cancel a job already dispatched: `tag(kind='job', id=<job_id>,
+add=['STATUS:cancel_requested'])` (`precis-job-help`).
+
 ## Attach a details body to a todo
 
 The `text=` title is the header — keep it a short imperative. For

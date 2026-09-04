@@ -392,3 +392,32 @@ class TestRenderRwOnly:
         assert "connection reset" in out
         # Notice still renders normally
         assert "(RW)" in out
+
+    def test_title_claims_retraction_no_notice_warns_not_clean(self) -> None:
+        """gr311334: a 'RETRACTED:'-prefixed title with an empty notices
+        list (Crossref pre-CrossMark gap / empty local RW cache) must not
+        render as a bare 🟢 Clean — bump to a warn line instead."""
+        from precis.ingest.provenance import ProvenanceResult
+
+        r = ProvenanceResult(
+            doi="10.1234/retracted-title",
+            status="ok",
+            paper_title="RETRACTED: Some title",
+        )
+        out = render_single(r)
+        assert "🟢 **Clean**" not in out
+        assert "title claims retraction but no notice found" in out
+
+    def test_clean_title_without_marker_still_renders_clean(self) -> None:
+        """Control: an ordinary title with no notices keeps the plain
+        Clean render — the defensive check must not over-fire."""
+        from precis.ingest.provenance import ProvenanceResult
+
+        r = ProvenanceResult(
+            doi="10.1234/clean",
+            status="ok",
+            paper_title="An ordinary paper about ordinary things",
+        )
+        out = render_single(r)
+        assert "🟢 **Clean**" in out
+        assert "title claims retraction" not in out

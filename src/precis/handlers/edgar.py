@@ -142,7 +142,14 @@ class EdgarHandler(Handler):
             return self._render_company_list(cik=id[4:].strip())
         if id.startswith("ticker:"):
             ticker = id[7:].strip()
-            cik = self.client.resolve_ticker(ticker)
+            try:
+                cik = self.client.resolve_ticker(ticker)
+            except EdgarError as e:
+                raise NotFound(
+                    f"could not resolve ticker {ticker!r} via SEC: {e}",
+                    next="check `precis settings set contact.edgar_user_agent` "
+                    "(or PRECIS_EDGAR_USER_AGENT) and SEC availability",
+                ) from e
             if not cik:
                 raise NotFound(
                     f"unknown ticker {ticker!r}",

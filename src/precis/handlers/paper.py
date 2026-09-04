@@ -730,7 +730,7 @@ class PaperHandler(Handler):
 
         Five shapes, checked in order: ``title=``/``author=`` (byline
         record lookup), a bare ``tags=`` with no ``q=`` (recency-ordered
-        ref listing, gr311340 — see :meth:`_list_by_tags`), ``good=True``
+        ref listing, gr311340 — see :meth:`_render_tags_only_search`), ``good=True``
         (deep-search campaign submit), else the block-hit fused search
         (single-leg or broad). This method only validates + routes; the
         actual retrieval and rendering live in
@@ -767,24 +767,19 @@ class PaperHandler(Handler):
             )
 
         if q is None or not q.strip():
-            # gr311340: precis-paper-tag-axes documents a bare
-            # ``search(kind='paper', tags=[...])`` — the "everything
-            # tagged X" shape every numeric-ref kind already answers via
-            # ``NumericRefHandler._list_by_tags``. Paper's block-hit
-            # ``FusedBlockSearch`` has no q=-less shape of its own (block
-            # ranking needs a query to rank against), so a tags-only call
-            # used to fall straight through to "search requires q=" —
-            # this branch gives it the same recency-ordered, ref-level
-            # listing the other kinds get instead.
-            normalized_tags = Tag.normalize_filter(tags, kind=kind)
-            if normalized_tags:
-                offset = max(0, (int(page) - 1) * int(page_size))
-                return self._list_by_tags(
-                    normalized_tags,
-                    kind=kind,
-                    page_size=page_size,
-                    offset=offset,
-                    page=page,
+            # ``tags=`` alone is a valid call — precis-paper-tag-axes
+            # documents ``search(kind='paper', tags=['studytype:review'])``
+            # as the tag-only recipe (gr311340). Without q= there's
+            # nothing to rank against, so this degrades to a filter-only
+            # enumeration (recency order) rather than the FTS/semantic
+            # block search below — same shape as ``_numeric_ref.py``'s
+            # ``tags=``-only path. ``good=``/``queries=``/``answers=`` are
+            # ranking-mode flags that need a real query; if any of those
+            # are set we fall through to the original "requires q=" error
+            # instead of silently ignoring them.
+            if tags and not good and not queries and not answers:
+                return self._render_tags_only_search(
+                    tags=tags, page=page, page_size=page_size
                 )
             raise BadInput(
                 "search requires q= or tags=",
@@ -868,73 +863,6 @@ class PaperHandler(Handler):
             extra_exclude_ref_ids=exclude_ref_ids,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
-
-    def _list_by_tags(
-        self,
-        tags: list[str],
-        *,
-        kind: str,
-        page_size: int,
-        offset: int = 0,
-        page: int = 1,
-    ) -> Response:
-        """Recency-ordered list of ``kind`` refs matching ``tags``, no
-        ranking (gr311340).
-
-        Reached from :meth:`search` when ``tags=`` is given with no
-        ``q=``. A ref-level listing (title/year/handle), deliberately
-        separate from the block-hit ``FusedBlockSearch`` path — that
-        engine ranks *blocks* against a query and has no natural
-        q=-less shape, whereas "every paper tagged X" is a ref-level
-        question with an exact answer. Mirrors
-        ``NumericRefHandler._list_by_tags``'s shape/wording so the
-        "show me everything tagged X" affordance reads the same
-        across every kind.
-        """
-        refs = self.store.list_refs(
-            kind=kind, tags=tags, limit=page_size, offset=offset
-        )
-        total = self.store.count_refs(kind=kind, tags=tags)
-        if not refs:
-            if page > 1 and total > 0:
-                return Response(
-                    body=(
-                        f"page {page}: no {kind} entries tagged {tags} — {total} total"
-                    )
-                )
-            body = f"no {kind} entries tagged {tags}"
-            body += render_next_section(
-                [
-                    (
-                        f"search(kind={kind!r}, q='topic', tags={tags!r})",
-                        "rank within the tagged set",
-                    ),
-                ]
-            )
-            return Response(body=body)
-        shown = len(refs)
-        if page > 1:
-            first_row = offset + 1
-            last_row = offset + shown
-            count_frag = f"rows {first_row}-{last_row} of {total}"
-        elif total > shown:
-            count_frag = f"{shown} of {total}"
-        else:
-            count_frag = f"{shown}"
-        header = (
-            f"# {count_frag} {kind} entr{'y' if total == 1 else 'ies'} "
-            f"tagged {tags} (by recency)"
-        )
-        rows = [
-            {
-                "handle": _pa(ref),
-                "title": (ref.title or "")[:80],
-                "year": str(ref.year) if ref.year else "",
-            }
-            for ref in refs
-        ]
-        table = render_agent_table(rows, schema=["handle", "title", "year"])
-        return Response(body="\n".join([header, table]))
 
     # -- search_hits: structured form for cross-kind merge -------------------
 
@@ -2252,6 +2180,66 @@ class PaperHandler(Handler):
         )
         return Response(body=body)
 
+    def _render_tags_only_search(
+        self, *, tags: list[str], page: int, page_size: int
+    ) -> Response:
+        """Filter-only enumeration for ``search(kind=..., tags=[...])``.
+
+        No q= means no lex/semantic ranking to fuse — this lists live
+        refs matching the tag filter, most-recently-updated first, the
+        same shape ``_numeric_ref.py``'s ``_list_by_tags`` gives the
+        numeric-ref kinds. Kept separate from :meth:`_render_list_papers`
+        (unfiltered) so the tag filter and its "N of TOTAL" count stay
+        exact — this refs.count(*) doesn't share the unfiltered path's
+        chunk-count callout, which isn't tag-scoped.
+        """
+        kind = self.spec.kind
+        normalized_tags = Tag.normalize_filter(tags, kind=kind)
+        page_size = max(1, int(page_size))
+        offset = max(0, (int(page) - 1) * page_size)
+        refs = self.store.list_refs(
+            kind=kind, tags=normalized_tags, limit=page_size, offset=offset
+        )
+        total = self.store.count_refs(kind=kind, tags=normalized_tags)
+        if not refs:
+            body = f"no {kind} entries tagged {normalized_tags}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='{kind}', q='your topic')",
+                        "drop the tag filter and search by topic instead",
+                    ),
+                ]
+            )
+            return Response(body=body)
+        suffix = "" if total <= len(refs) and page == 1 else f" of {total}"
+        lines = [
+            f"# {len(refs)} {kind}{'s' if len(refs) != 1 else ''} tagged "
+            f"{normalized_tags}{suffix}"
+        ]
+        for r in refs:
+            year = (r.meta or {}).get("year") or ""
+            preview = _excerpt(_clean_inline_text(r.title), limit=80)
+            yr = f"  ({year})" if year else ""
+            lines.append(f"  {_pa(r):<30}{yr}  {preview}")
+        body = "\n".join(lines)
+        next_ops: list[tuple[str, str]] = []
+        if offset + len(refs) < total:
+            next_ops.append(
+                (
+                    f"search(kind='{kind}', tags={normalized_tags!r}, page={page + 1})",
+                    "next page",
+                )
+            )
+        next_ops.append(
+            (
+                f"get(id='{_pa(refs[0])}')",
+                "open one paper from the list (paste any handle above)",
+            )
+        )
+        body += render_next_section(next_ops)
+        return Response(body=body)
+
 
 # ---------------------------------------------------------------------------
 # Slug + chunk parsing
@@ -2456,23 +2444,28 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
     if slug is None:
         # The old headline recovery here was
         # ``put(kind='finding', cited_in='doi:{doi}', ...)`` —
-        # ``FindingHandler._resolve_cited_in`` explicitly rejects a bare
-        # ``doi:`` (only corpus handles resolve, per precis-finding-help),
-        # so it failed 100% of the time (gr311341). The DOI has to
-        # become a real paper stub — and get fetched/ingested — before
-        # any chunk exists for ``cited_in`` to point at. Mirrors the fix
-        # already applied to the DOI-miss branch of
-        # ``PaperSearchResultRenderer.render`` in ``_paper_search.py``.
+        # ``FindingHandler._resolve_cited_in`` (via the shared link
+        # parser) explicitly rejects a bare ``doi:`` (only corpus
+        # handles resolve — "unknown kind 'doi' in link target"), so it
+        # failed 100% of the time (gr311341). Point at the two paths
+        # that actually work: mint the paper stub directly, or (per
+        # precis-finding-help's acquisition mode) register the claim
+        # now with ``wants=``/``provenance=`` instead of ``cited_in=``.
         raise NotFound(
             f"paper with DOI {doi!r} not ingested",
             next=(
-                f"put(kind='paper', doi='{doi}')  to mint a stub for "
-                "this DOI — the fetcher (Unpaywall/arXiv/S2) tries an "
-                "OA pull next pass. Once it's ingested, "
+                f"put(kind='paper', doi='{doi}')  "
+                "to mint a stub for this DOI — the fetcher "
+                "(Unpaywall/arXiv/S2) tries an OA pull next pass; once "
+                "it lands, cite its chunk directly "
+                "(cited_in='<slug-once-fetched>~0'). To register the "
+                "claim right now instead of waiting: "
                 "put(kind='finding', title='<short claim>', "
-                "body='<...>', cited_in='<slug>~0') registers a claim "
-                "against its first chunk — cited_in wants a corpus "
-                "chunk handle, not a bare 'doi:'. Alternatively: "
+                "body='<claim + setup>', "
+                f"wants=[{{'doi': '{doi}'}}], "
+                "provenance='<chunk you read the claim in>')  "
+                "— acquisition mode; a bare 'doi:' cited_in is rejected, "
+                "the link parser has no 'doi' kind. Alternatively: "
                 "search(kind='paper', q='<title>') for an existing slug."
             ),
         )

@@ -7,7 +7,7 @@ answers:
   - how do I see whether a model has actually been good, cheap, or reliable here?
   - how do I leave a note about how a model performed?
   - what's the difference between meta.llm_tier and a specific model?
-applies-to: get/search (kind='llm')
+applies-to: get/search/put (append a review)/tag/link (kind='llm')
 status: active
 ---
 
@@ -100,11 +100,18 @@ control: `{placement: 'local'|'cloud', thinking: bool, effort:
 optional. `placement` is **strict** — pinning `'local'` and having no local
 rung for the tier fails the call rather than silently falling back to cloud.
 
-## tag / link on a catalog card
+## Tag and link a card
 
-`tag`/`link` are allowed on `kind='llm'` (the generic numeric-ref
-surface) but nothing here reads them back — no special semantics,
-no facet UI. Allowed, not currently used for anything.
+`tag`/`link` work like any other kind — bookmark a card or cross-
+reference it from the ref that motivated the note. `get()` echoes
+tags back in the rendered card (and the generic links section), but
+there's no llm-specific facet UI or search-filter semantics beyond that:
+
+```python
+tag(kind="llm", id="claude-opus-4-8", add=["topic:sql-migration"])
+link(kind="llm", id="claude-opus-4-8", target="memory:me812", rel="see-also")
+```
+
 
 ## See also
 

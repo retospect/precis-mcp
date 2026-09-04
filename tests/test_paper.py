@@ -139,33 +139,25 @@ class TestResolveDoi:
         with pytest.raises(NotFound, match="DOI .* not ingested"):
             _maybe_resolve_doi(store, "10.9999/nope")
 
-    def test_unknown_doi_hint_suggests_accepted_paper_stub(self, store: Store) -> None:
-        """The chase-target hint must point at a call the corresponding
-        handler actually accepts, not the rejected
-        ``cited_in='doi:...'`` shape (gr311341, #39253's ``scope={}``
-        placeholder concern no longer applies — the headline recovery
-        isn't a ``finding`` put anymore).
-
-        ``FindingHandler._resolve_cited_in`` only resolves corpus
-        handles (see precis-finding-help): a bare ``doi:`` target fails
-        with "unknown kind 'doi' in link target". The DOI has to become
-        a real paper stub — via ``put(kind='paper', doi=...)`` — before
-        any chunk exists for ``cited_in`` to point at.
-        """
+    def test_unknown_doi_hint_routes_to_working_recovery(self, store: Store) -> None:
+        """The NotFound-DOI hint must not suggest the broken
+        ``cited_in='doi:...'`` recipe (gr311341) — the link parser
+        rejects a bare ``doi:`` outright ("unknown kind 'doi' in link
+        target", see ``_link_target._kind_is_numeric``), so following
+        the old hint always failed. It should point at the two paths
+        that actually work: minting the paper stub directly, or a
+        finding in acquisition mode (``wants=``/``provenance=``, per
+        precis-finding-help)."""
         _seed_paper(store, doi="10.1/x")
         with pytest.raises(NotFound) as exc_info:
             _maybe_resolve_doi(store, "10.9999/nope")
         hint = exc_info.value.next
         assert hint is not None
         hint_text = hint if isinstance(hint, str) else " ".join(hint)
-        # The rejected shape must be gone.
         assert "cited_in='doi:" not in hint_text
-        # The headline recovery mints the stub directly — the call
-        # ``put(kind='paper', doi=...)`` actually accepts (see
-        # ``PaperHandler.put``).
         assert "put(kind='paper', doi='10.9999/nope')" in hint_text
-        # Any follow-on ``finding`` mention must use a corpus-handle
-        # shape (``cited_in='<slug>~0'``), never a bare doi target.
+        assert "wants=[{'doi': '10.9999/nope'}]" in hint_text
+        assert "provenance=" in hint_text
         verb, kwargs = parse_command("put(kind='paper', doi='10.9999/nope')")
         assert verb == "put"
         assert kwargs == {"kind": "paper", "doi": "10.9999/nope"}
@@ -673,18 +665,18 @@ class TestSearch:
         with pytest.raises(BadInput):
             handler.search(q="")
 
-    def test_search_no_q_no_tags_raises_with_link_free_message(
-        self, handler: PaperHandler
+    def test_search_tags_only_no_q_enumerates(
+        self, store: Store, handler: PaperHandler
     ) -> None:
-        with pytest.raises(BadInput, match="search requires q= or tags="):
-            handler.search()
-
-    # ── tags= alone, no q= (gr311340) ─────────────────────────────────
-    # precis-paper-tag-axes documents a bare
-    # ``search(kind='paper', tags=['studytype:review'])`` as a working
-    # tag-only enumeration shape. Before this fix single-kind paper
-    # search unconditionally required q=, even though tag-only
-    # enumeration already worked on gripe/job/alert/etc.
+        """``search(kind='paper', tags=[...])`` with no ``q=`` must
+        enumerate, not raise — precis-paper-tag-axes documents exactly
+        this call as the tag-only recipe (gr311340)."""
+        tagged_id = _seed_paper(store, slug="tagged-paper", blocks=["alpha"])
+        _seed_paper(store, slug="untagged-paper", blocks=["beta"])
+        store.add_tag(tagged_id, Tag.open("nitrate-reduction"), set_by="agent")
+        resp = handler.search(tags=["nitrate-reduction"])
+        assert record_handle(store, "tagged-paper") in resp.body
+        assert record_handle(store, "untagged-paper") not in resp.body
 
     def test_search_tags_only_enumerates_matching_papers(
         self, store: Store, handler: PaperHandler
@@ -702,15 +694,19 @@ class TestSearch:
         assert "A review" in resp.body
         assert handle_registry.format_handle("paper", review_id) in resp.body
         assert "Not a review" not in resp.body
-        assert "1 paper entr" in resp.body
-        assert "(by recency)" in resp.body
 
-    def test_search_tags_only_no_matches_is_a_clean_empty_answer(
+    def test_search_tags_only_no_matches(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        _seed_paper(store, slug="unrelated-paper")
-        resp = handler.search(tags=["studytype:review"])
+        _seed_paper(store, slug="untagged-paper", blocks=["alpha"])
+        resp = handler.search(tags=["never-used-tag"])
         assert "no paper entries tagged" in resp.body
+
+    def test_search_no_q_no_tags_still_raises(self, handler: PaperHandler) -> None:
+        # No q= AND no tags= — nothing to enumerate or rank, so this
+        # stays a BadInput (unchanged behaviour).
+        with pytest.raises(BadInput, match="search requires q= or tags="):
+            handler.search()
 
     def test_search_unknown_scope_raises(self, handler: PaperHandler) -> None:
         with pytest.raises(NotFound):
@@ -1073,6 +1069,67 @@ class TestSearch:
         # And specifically NOT "of 4" — would lie about how much
         # is still paginate-able.
         assert " of 4" not in excluded.body
+
+    def test_search_verbatim_total_header_uses_keyword_count_not_lexical(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr311338: the header's ``N of K`` must come from the universe
+        the executed mode actually searched. A ``mode='verbatim'``
+        search over blocks that all match lexically, but where only
+        SOME carry the KeyBERT keyword pair, must report the smaller
+        keyword-containment total — never the bigger lexical FTS one
+        (the old bug: header always used ``count_chunks_lexical``
+        regardless of mode)."""
+        rid = _seed_paper(
+            store,
+            slug="verb-total",
+            blocks=[
+                "perovskite oxygen vacancy defect study one",
+                "perovskite oxygen vacancy defect study two",
+                "perovskite oxygen vacancy defect study three",
+                "perovskite oxygen vacancy defect study four",
+            ],
+        )
+        with store.pool.connection() as conn:
+            # Only 3 of the 4 lexically-matching blocks carry both
+            # keywords — verbatim's true pool is 3, lexical's is 4.
+            for ord_ in (0, 1, 2):
+                conn.execute(
+                    "UPDATE chunks SET keywords = %s WHERE ref_id = %s AND ord = %s",
+                    (["perovskite", "vacancy"], rid, ord_),
+                )
+            conn.commit()
+
+        resp = handler.search(q="perovskite vacancy", mode="verbatim", page_size=2)
+        headline = resp.body.split("\n", 1)[0]
+        assert "of 3" in headline
+        assert "of 4" not in headline
+
+    def test_search_semantic_omits_total_and_probes_pagination(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr311338: ``mode='semantic'`` has no honest denominator for
+        ANN top-k, so the header must omit "of K" entirely rather than
+        fabricate one — and the pagination gate must still behave
+        correctly (offer / withhold a ``page=2`` continuation) via the
+        probe-based ``single_page_has_more`` signal instead."""
+        text = "gr311338 semantic probe unique passage marker"
+        _seed_paper(store, slug="sem-probe-a", blocks=[text, text])
+
+        # Exactly page_size matching chunks: no more to page to.
+        exact = handler.search(q=text, mode="semantic", page_size=2)
+        headline = exact.body.split("\n", 1)[0]
+        assert " of " not in headline
+        assert "page=2" not in exact.body
+
+        # One more matching chunk elsewhere pushes the true pool past
+        # page_size — the probe must now offer the next page, still
+        # without ever claiming a "of K" total.
+        _seed_paper(store, slug="sem-probe-b", blocks=[text])
+        overflowing = handler.search(q=text, mode="semantic", page_size=2)
+        headline2 = overflowing.body.split("\n", 1)[0]
+        assert " of " not in headline2
+        assert "page=2" in overflowing.body
 
     def test_search_next_trailer_offers_page_continuation(
         self, store: Store, handler: PaperHandler

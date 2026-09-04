@@ -72,3 +72,10 @@ def test_cfp_empty_list_names_cfp_not_paper(store: Store) -> None:
     assert "no CFPs cached yet" in resp.body
     assert "ingest-bundles" not in resp.body
     assert "inbox/cfp/" in resp.body or "add --as cfp" in resp.body
+
+    # Control: PaperHandler itself keeps its own message unchanged.
+    from precis.handlers.paper import PaperHandler
+
+    paper_resp = PaperHandler(hub=Hub(store=store)).get()
+    assert "no papers ingested yet" in paper_resp.body
+    assert "ingest-bundles" in paper_resp.body

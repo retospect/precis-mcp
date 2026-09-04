@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.python import PythonHandler
 
 # ---------------------------------------------------------------------------
@@ -261,6 +261,33 @@ def test_replace_whole_file(handler: PythonHandler, repo: Path) -> None:
 def test_replace_requires_text(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="requires text"):
         handler.edit(id="r::pkg.m.helper", mode="replace")
+
+
+def test_replace_wholly_out_of_range_raises_bad_input(
+    handler: PythonHandler, repo: Path
+) -> None:
+    """Follow-up to gr311337: the write path must reject a selector
+    entirely past EOF the same way the GET path does — not silently
+    clamp/splice into the wrong lines. `pkg/m.py` has well under 100
+    lines, so L99999-100010 doesn't touch the file at all."""
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
+    with pytest.raises(BadInput, match="outside file"):
+        handler.edit(
+            id="r/pkg/m.py~L99999-100010",
+            text="x = 1\n",
+            mode="replace",
+        )
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
+
+
+def test_delete_wholly_out_of_range_raises_bad_input(
+    handler: PythonHandler, repo: Path
+) -> None:
+    """Same check on the delete path (shares ``_resolve_replace_region``)."""
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
+    with pytest.raises(BadInput, match="outside file"):
+        handler.delete(id="r/pkg/m.py~L99999-100010")
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 # ---------------------------------------------------------------------------
@@ -994,6 +1021,99 @@ def test_replace_identical_body_under_package_root_is_noop(
     )
     assert "ast.parse" in out.body
     assert "qualname preserved" in out.body
+
+
+# ---------------------------------------------------------------------------
+# gr311350: read-only repo root mount surfaces a typed error (python's
+# sibling of plaintext.py's gr311325 fix — python is a Handler-direct kind,
+# not a PlaintextHandler subclass, so it never got the decorator for free).
+# ---------------------------------------------------------------------------
+
+
+def test_put_create_on_readonly_mount_raises_unsupported(
+    handler: PythonHandler, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the atomic-write path hits EROFS (a ``:ro`` mount), ``put``
+    must raise a typed ``Unsupported`` — never the raw ``OSError``."""
+    import errno
+
+    from precis.handlers import _python_write
+
+    def _erofs_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(_python_write.tempfile, "mkstemp", _erofs_mkstemp)
+    with pytest.raises(Unsupported, match="read-only") as exc_info:
+        handler.put(
+            id="r/pkg/new.py",
+            text='"""New module."""\n\n\ndef foo():\n    return 1\n',
+            mode="create",
+        )
+    assert "operator" in (exc_info.value.next or "") or "rw" in (
+        exc_info.value.next or ""
+    )
+    # The failed write must not have landed a partial file.
+    assert not (repo / "pkg" / "new.py").exists()
+
+
+def test_edit_on_readonly_mount_raises_unsupported(
+    handler: PythonHandler, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same translation on the ``edit`` verb (replace writes through
+    ``atomic_write`` too)."""
+    import errno
+
+    from precis.handlers import _python_write
+
+    def _erofs_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(_python_write.tempfile, "mkstemp", _erofs_mkstemp)
+    with pytest.raises(Unsupported, match="read-only"):
+        handler.edit(
+            id="r::pkg.m.helper",
+            text="def helper(x: int) -> int:\n    return x * 2\n",
+            mode="replace",
+        )
+
+
+def test_delete_on_readonly_mount_raises_unsupported(
+    handler: PythonHandler, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Delete rewrites the file (drops a region) through the same
+    ``atomic_write`` choke point — must translate too."""
+    import errno
+
+    from precis.handlers import _python_write
+
+    def _erofs_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(_python_write.tempfile, "mkstemp", _erofs_mkstemp)
+    with pytest.raises(Unsupported, match="read-only"):
+        handler.delete(id="r::pkg.m.helper")
+
+
+def test_put_create_non_readonly_oserror_still_raises_oserror(
+    handler: PythonHandler, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-EROFS ``OSError`` (disk full, etc.) is a real problem and
+    must NOT be masked as "read-only" — it should still surface
+    unchanged so it isn't silently misdiagnosed."""
+    import errno
+
+    from precis.handlers import _python_write
+
+    def _enospc_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(_python_write.tempfile, "mkstemp", _enospc_mkstemp)
+    with pytest.raises(OSError, match="No space left"):
+        handler.put(
+            id="r/pkg/new.py",
+            text='"""New module."""\n\n\ndef foo():\n    return 1\n',
+            mode="create",
+        )
 
 
 def test_replace_identical_body_under_package_root_via_line_range(

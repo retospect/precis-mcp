@@ -20,10 +20,12 @@ status: active
 
 Hybrid lexical + semantic search. Returns ranked handles (`pc<chunk_id>`,
 e.g. `pc40`) you paste straight into `get(id=…)` to drill in — the handle's
-prefix infers the kind. Order is the relevance signal — there is no honest
-numeric score. Exception: `search(kind='conv', …)` (lexical-only) prints a
-real `score=0.0333`-style lexical rank per hit — a `conv`-only quirk, not a
-general search contract.
+prefix infers the kind. Order is the relevance signal — for a fused
+hybrid or cross-kind result there is no honest numeric score to sort
+by. `kind='conv'` is the one exception: it's lexical-only (no
+semantic leg yet), so its hits carry a real `(score=0.1234)` — a raw
+lexical rank, comparable within that one response, not a probability
+or a cross-kind-comparable number, and not a general search contract.
 
 ## What knobs does search have?
 ## Quick reference for search arguments
@@ -218,6 +220,16 @@ Broad-retrieval searches paginate the same way, but the `page=N+1`
 call must repeat the same `queries=`/`answers=`/`per_paper=` arguments
 (see "Broad retrieval" above) — dropping them switches to the
 single-query ordering mid-walk.
+
+`page=`/`page_size=` above is a **search-level** knob — each call is
+independent, safe to fire however you like. Don't confuse it with
+`more(cursor=...)`, the separate **MCP-transport** mechanism that
+continues a single response too large for one frame (a `⚠️ Truncated`
+footer on an oversized hit table). A `more()` cursor is single-use,
+expires in a few minutes, and lives only in the backend process that
+minted it — drain it sequentially, never fire several `more()` calls
+in parallel (a batched call gets "no such cursor in this process").
+Full mechanics: `precis-toon`.
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X

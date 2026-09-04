@@ -30,6 +30,11 @@ Seven verbs, no new ones: `put` (create/replace), `edit` (apply ops / relax),
 `get` (list / TOC / probe / nav / runs / export), `search` (by **intent**),
 `delete` (soft-retire), plus `tag`/`link`.
 
+A `kind='pathway'` run (`precis-pathway-help`) doesn't have its own atom-graph
+kind — each relaxed/NEB intermediate along the reaction network is written
+here, as a `structure` design, and drilled into with the probes/views this
+skill documents (`get(kind='structure', id=<handle>, view='atom'|'runs')`).
+
 ## Handles & atom labels
 
 - A design has an `st<id>` handle (shown in the TOC).

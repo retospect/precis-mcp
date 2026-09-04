@@ -223,6 +223,12 @@ class NewsHandler(CacheBackedHandler):
         supports_link=True,
         is_numeric=False,
         id_required=True,
+        # gr311336: news is the only CacheBackedHandler subclass with a
+        # CHUNK_CODES entry (``nc<id>``), so it's the only one that ever
+        # hit the dispatcher's chunk-handle rewrite — this declares that
+        # `get` now understands the resulting `slug~ord` selector
+        # (CacheBackedHandler._render_chunk_selector).
+        supports_chunk_selectors=True,
     )
 
     provider: ClassVar[str] = "news"

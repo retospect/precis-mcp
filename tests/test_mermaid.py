@@ -242,16 +242,84 @@ def test_compile_valid_and_invalid() -> None:
     assert err and "arse error" in err  # mermaid's "Parse error on line …"
 
 
+# ── unsupported diagram types (gr311345) ────────────────────────────────────
+#
+# ``precis-mermaid-unsupported`` used to document gantt/pie/sankey-beta/
+# C4Context/block-beta as types that "will validate-fail" on write, but
+# nothing checked this at the put layer — the engine-absent dark path
+# accepted anything unconditionally. Meanwhile the mermaidx>=0.9 bump quietly
+# fixed gantt/pie/C4Context, leaving that blanket claim stale — only
+# sankey-beta/block-beta genuinely still fail to compile. The put-layer
+# check (added here) fires without ``mermaidx`` installed (it's a
+# source-prefix check, run before the engine is even looked up) — no
+# ``importorskip`` on those; the "previously claimed unsupported… now
+# compile" pair below needs the real engine to lock in the correction.
+
+
+@pytest.mark.parametrize(
+    "src,label",
+    [
+        ("sankey-beta\n  A,B,10", "sankey-beta"),
+        ("block-beta\n  columns 1\n  a", "block-beta"),
+    ],
+)
+def test_unsupported_type_detected(src: str, label: str) -> None:
+    from precis.mermaid.mermaid import unsupported_type
+
+    assert unsupported_type(src) == label
+
+
+def test_unsupported_type_none_for_supported_types() -> None:
+    from precis.mermaid.mermaid import unsupported_type
+
+    assert unsupported_type(_FLOW) is None
+    assert unsupported_type("journey\n  title A\n  section S\n  A: 5: Me") is None
+    # gr311345: these used to be on the unsupported list; mermaidx>=0.9
+    # renders them fine, so the put-layer check must not reject them.
+    assert unsupported_type('pie title Share\n  "A" : 40\n  "B" : 60') is None
+    assert (
+        unsupported_type(
+            "gantt\n  title Schedule\n  section S\n  Task1: 2024-01-01, 3d"
+        )
+        is None
+    )
+    assert unsupported_type('C4Context\n  Person(a, "A")') is None
+
+
+def test_compile_error_rejects_unsupported_type_without_engine() -> None:
+    """The rejection is deterministic — it fires even when ``mermaidx`` is
+    not importable (the container-gate dark path), because the check runs
+    before the engine is looked up at all."""
+    err = LANG.parse_error("block-beta\n  columns 1\n  a")
+    assert err is not None
+    assert "block-beta" in err
+    assert "not supported" in err
+    # Names the supported set, per gr311345 — gantt/pie/C4Context included
+    # now that mermaidx>=0.9 actually renders them.
+    assert "flowchart" in err
+    assert "gantt" in err
+    assert "precis-mermaid-unsupported" in err
+
+
+def test_put_rejects_block_diagram(store, mh) -> None:
+    """End-to-end: put(kind='mermaid', text='block-beta …') must raise, not
+    silently create the ref (gr311345)."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput) as exc_info:
+        mh.put(id="chart", title="Chart", text="block-beta\n  columns 1\n  a")
+    assert "block-beta" in str(exc_info.value)
+    assert store.get_ref(kind="mermaid", id="chart") is None
+
+
 # ── gr311345: precis-mermaid-unsupported's list vs the real engine ─────────
 #
-# The skill used to claim gantt/pie/sankey-beta/C4Context/block-beta all
-# "validate-fail" on write. put()/edit() already run the real mermaidx
-# engine at write time (DiagramHandler._validate_source → LANG.parse_error),
-# so there was never a missing check — but the mermaidx>=0.9 bump quietly
-# fixed gantt/pie/C4Context, leaving the skill's blanket claim stale (a type
-# it called unsupported now writes silently, matching the reported symptom).
-# These lock in which types the *current* pinned engine actually rejects, so
-# a future mermaidx bump/regression is caught here instead of by a stale doc.
+# put()/edit() already run the real mermaidx engine at write time
+# (DiagramHandler._validate_source → LANG.parse_error), so the put-layer
+# check above is a fast-path in front of it, not a replacement — these lock
+# in which types the *current* pinned engine actually accepts/rejects, so a
+# future mermaidx bump/regression (in either direction) is caught here
+# instead of by a stale doc.
 
 
 @pytest.mark.parametrize(

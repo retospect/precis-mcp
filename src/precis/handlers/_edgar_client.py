@@ -153,7 +153,10 @@ class EdgarClientProto(Protocol):
 
     def company_tickers(self) -> bytes: ...
 
-    def resolve_ticker(self, ticker: str) -> str | None: ...
+    def resolve_ticker(self, ticker: str) -> str | None:
+        """May raise :class:`EdgarError` on a cold-fetch failure (no
+        previously-cached map to fall back on)."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +222,14 @@ class EdgarClient:
         return self._get(COMPANY_TICKERS_URL)
 
     def resolve_ticker(self, ticker: str) -> str | None:
-        """Ticker symbol → CIK digit string, via the cached SEC map."""
+        """Ticker symbol → CIK digit string, via the cached SEC map.
+
+        ``None`` means "map fetched fine, ticker isn't in it". If the map
+        has never been successfully fetched, a failure fetching it raises
+        :class:`EdgarError` instead — distinguishing a genuinely unknown
+        ticker from an upstream fetch failure (e.g. a 403) that would
+        otherwise masquerade as one.
+        """
         key = (ticker or "").strip().lower()
         if not key:
             return None
@@ -242,10 +252,15 @@ class EdgarClient:
             self._ticker_map = parse_company_tickers(raw)
             self._ticker_map_fetched_at = now
         except EdgarError:
-            # Keep any stale map on a fetch failure rather than wiping
-            # resolution entirely; only initialise to empty on cold miss.
+            # A refresh failure with a previously-fetched map in hand keeps
+            # serving the stale map rather than wiping resolution entirely.
+            # But on a *cold* miss (never fetched successfully) there is no
+            # map to fall back on — swallowing the error here used to set
+            # ``{}`` and make every ticker look "unknown", masking real
+            # upstream failures (e.g. a blanket SEC 403) as NotFound. Let it
+            # propagate so the caller sees the actual failure.
             if self._ticker_map is None:
-                self._ticker_map = {}
+                raise
 
     def _get(self, url: str, *, params: dict[str, str] | None = None) -> bytes:
         from precis.utils.http import http_client, require_httpx
@@ -371,7 +386,11 @@ class FakeEdgarClient:
         ).encode()
 
     def resolve_ticker(self, ticker: str) -> str | None:
-        return self._tickers.get((ticker or "").strip().lower())
+        key = (ticker or "").strip().lower()
+        if ("resolve_ticker", key) in self._raises:
+            self.calls.append(("resolve_ticker", key))
+            raise self._raises[("resolve_ticker", key)]
+        return self._tickers.get(key)
 
     def _lookup(self, endpoint: str, key: str, bag: dict[str, bytes]) -> bytes:
         self.calls.append((endpoint, key))

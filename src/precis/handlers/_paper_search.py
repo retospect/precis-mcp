@@ -39,6 +39,8 @@ multiplicative-penalty reasoning.
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +59,12 @@ from precis.utils.search_header import format_search_headline
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+#: Shared with the other module-local ``logging.getLogger`` call sites in
+#: this file (``_embed_query_batch`` / ``_inject_title_matches``) — same
+#: channel, so an operator filtering on it sees every paper-search
+#: diagnostic together.
+_log = logging.getLogger("precis.handlers.paper")
 
 #: Broad-retrieval fan-out cap: ``queries=`` and ``answers=`` each accept
 #: at most this many entries. Mirrored at the MCP boundary
@@ -463,6 +471,12 @@ class BlockSearchResult:
     year_notice: str
     broad: bool
     broad_has_more: bool
+    #: Non-broad-only pagination fallback (gr311338): ``True`` when a
+    #: single-leg search over-fetched one row past ``page_size`` — the
+    #: honest "more beyond this page" signal for a mode (``semantic``)
+    #: whose ``total`` is ``None``. Ignored when ``total`` is set (the
+    #: renderer prefers the exact count there).
+    single_page_has_more: bool = False
     extra_queries: list[str] = field(default_factory=list)
     hyde_answers: list[str] = field(default_factory=list)
     per_paper_cap: int | None = None
@@ -652,9 +666,21 @@ class FusedBlockSearch:
         # into the same ``exclude_ref_ids`` the ``exclude=`` slug/container
         # list resolves to, so both filters run in the ONE SQL query below
         # rather than a post-hoc cull after ranking.
+        # gr311339 hardening: timing breadcrumb around exclude resolution
+        # — batched (see ``_exclude_closure``'s module docstring) but
+        # still a store round trip per *container*/DOI entry, so a large
+        # or pathological exclude= list is a plausible hang suspect.
+        # DEBUG-only; never fatal, never changes behavior.
+        _stage_t0 = time.monotonic()
         exclude_ref_ids: list[int] = sorted(
             resolve_exclude_paper_ids(exclude, store=self.store, kind=kind)
             | set(extra_exclude_ref_ids or ())
+        )
+        _log.debug(
+            "paper search: exclude-resolution stage took %.3fs (%d entries -> %d ids)",
+            time.monotonic() - _stage_t0,
+            len(exclude or []),
+            len(exclude_ref_ids),
         )
 
         # ``max_distance`` enforces a semantic relevance floor so a
@@ -692,6 +718,14 @@ class FusedBlockSearch:
         # universe for fused results (it can be < len(hits), or 0 when
         # only a rephrasing/HyDE leg matched).
         broad_has_more = False
+        # Single-leg fallback pagination signal (gr311338): a probe-based
+        # "more beyond this page" flag, populated below for the non-broad
+        # path. Exists because ``mode='semantic'`` has no honest lexical
+        # "of K" total to gate on (see the ``total`` computation further
+        # down) — ``search_chunks`` over-fetches one extra row so the
+        # renderer can offer/withhold a next-page hint without claiming a
+        # count it never searched for.
+        single_page_has_more = False
         if broad:
             # Semantic legs embed q + each reformulation + each HyDE
             # answer — in ONE batch call (q is NOT embedded separately;
@@ -704,11 +738,18 @@ class FusedBlockSearch:
             q_texts = [q, *extra_queries]
             query_vecs: list[list[float]] = []
             if (mode or "hybrid").strip().lower() not in ("lexical", "verbatim"):
+                _stage_t0 = time.monotonic()
                 query_vecs = _embed_query_batch(
                     self.embedder, [q, *extra_queries, *hyde_answers], mode
                 )
+                _log.debug(
+                    "paper search: embed stage (broad, %d texts) took %.3fs",
+                    1 + len(extra_queries) + len(hyde_answers),
+                    time.monotonic() - _stage_t0,
+                )
             # Probe one row past the page so ``broad_has_more`` is exact
             # for the next-page trailer, then slice back to page_size.
+            _stage_t0 = time.monotonic()
             probe = self.store.chunks.search_chunks_multi(
                 q_texts=q_texts,
                 query_vecs=query_vecs,
@@ -725,6 +766,12 @@ class FusedBlockSearch:
                 card_kinds=("card_combined",),
                 per_paper=per_paper_cap,
             )
+            _log.debug(
+                "paper search: SQL legs stage (broad, mode=%s, %d legs) took %.3fs",
+                mode,
+                len(q_texts) + len(query_vecs),
+                time.monotonic() - _stage_t0,
+            )
             broad_has_more = len(probe) > page_size
             hits = probe[:page_size]
         else:
@@ -734,15 +781,26 @@ class FusedBlockSearch:
             # search — the lexical leg still answers (gripe #38684). An
             # explicit mode='semantic' with a failing embedder raises
             # instead (gripe #254606). See :func:`query_vec_for`.
+            _stage_t0 = time.monotonic()
             query_vec = query_vec_for(self.embedder, q, mode)
-            hits = self.store.chunks.search_chunks(
+            _log.debug(
+                "paper search: embed stage (single-leg, mode=%s) took %.3fs",
+                mode,
+                time.monotonic() - _stage_t0,
+            )
+            # Probe one row past the page — same trick as the broad leg
+            # above — so ``single_page_has_more`` is exact for the
+            # renderer's continuation hint even when ``mode='semantic'``
+            # leaves no honest ``total`` to compare against.
+            _stage_t0 = time.monotonic()
+            probe = self.store.chunks.search_chunks(
                 q=q,
                 query_vec=query_vec,
                 mode=mode,
                 kind=kind,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
-                limit=page_size,
+                limit=page_size + 1,
                 offset=search_offset,
                 max_distance=SEMANTIC_DISTANCE_FLOOR,
                 exclude_ref_ids=exclude_ref_ids or None,
@@ -750,6 +808,13 @@ class FusedBlockSearch:
                 year_to=year_to,
                 card_kinds=("card_combined",),
             )
+            _log.debug(
+                "paper search: SQL legs stage (single-leg, mode=%s) took %.3fs",
+                mode,
+                time.monotonic() - _stage_t0,
+            )
+            single_page_has_more = len(probe) > page_size
+            hits = probe[:page_size]
         hits = _dedup_card_hits(hits)
         # Retraction downrank — must run before title injection below,
         # which stamps a float('inf') sentinel score that a
@@ -805,11 +870,14 @@ class FusedBlockSearch:
             # One set-based bump; no-op for dream-actor reads.
             self.store.chunks.bump_salience([block.id for block, _ref, _score in hits])
 
-            # Total-hits header: count blocks the lexical filter would
-            # match without the LIMIT, so the agent sees "10 of K" when
-            # paginated. RRF only re-ranks lexically-matching rows, so
-            # the lexical count is the meaningful "K". (MCP critic
-            # MAJOR #10b.)
+            # Total-hits header: count the universe the *executed mode*
+            # actually searched, so the agent sees an honest "10 of K"
+            # (gr311338 — this used to be ``count_chunks_lexical`` for
+            # EVERY mode, so a ``mode='verbatim'`` search with e.g. zero
+            # keyword-containment hits could still report "10 of 386"
+            # from the unrelated FTS universe; the "N of K" pagination
+            # gate below then invited a continuation that mode could
+            # never honor).
             #
             # ``exclude_ref_ids`` is forwarded so the K reported in the
             # header is the *remaining* universe — i.e. when the caller
@@ -843,8 +911,12 @@ class FusedBlockSearch:
             # "no of-K header, gate nav on presence" treatment broad mode
             # already uses, for the same reason.
             if not broad:
+                _stage_t0 = time.monotonic()
                 m = (mode or "hybrid").strip().lower()
                 if m == "verbatim":
+                    # search_chunks(mode='verbatim') ran
+                    # search_chunks_keywords(terms=q.split()) — mirror the
+                    # exact terms so the count is the same universe.
                     total = self.store.chunks.count_chunks_keywords(
                         terms=q.split(),
                         kind=self.kind,
@@ -852,10 +924,32 @@ class FusedBlockSearch:
                         tags=normalized_tags,
                         exclude_ref_ids=exclude_ref_ids or None,
                         card_kinds=("card_combined",),
+                        year_from=year_from,
+                        year_to=year_to,
                     )
                 elif m == "semantic":
+                    # ANN top-k has no honest denominator to report — an
+                    # explicit mode='semantic' either raises (embedder
+                    # down) or returns a real vector (query_vec_for), so
+                    # this branch always means the search genuinely ran
+                    # semantic-only; omit "of K" rather than fabricate
+                    # one. ``single_page_has_more`` (the +1 probe above)
+                    # drives pagination instead — see the renderer.
                     total = None
                 else:
+                    # lexical, or hybrid/fused (default): the same
+                    # ``websearch_to_tsquery`` predicate this counts is
+                    # also ``search_chunks_fused``'s ``lex`` CTE verbatim
+                    # (identical WHERE clauses) — RRF fuses it via UNION
+                    # with a ``sem`` CTE, so the true fused-reachable set
+                    # can be a *superset* (a chunk that only matches
+                    # semantically still surfaces). This count is
+                    # therefore a safe lower bound on fused's universe —
+                    # never a fabricated one, occasionally conservative —
+                    # which keeps the "never claim a universe the mode
+                    # didn't search" invariant even though it isn't an
+                    # exact fused total. mode='lexical' has no such caveat
+                    # (this *is* its exact universe).
                     total = self.store.chunks.count_chunks_lexical(
                         q=q,
                         kind=self.kind,
@@ -864,6 +958,11 @@ class FusedBlockSearch:
                         exclude_ref_ids=exclude_ref_ids or None,
                         card_kinds=("card_combined",),
                     )
+                _log.debug(
+                    "paper search: SQL legs stage (total count, mode=%s) took %.3fs",
+                    m,
+                    time.monotonic() - _stage_t0,
+                )
 
         return BlockSearchResult(
             kind=kind,
@@ -875,6 +974,7 @@ class FusedBlockSearch:
             year_notice=year_notice,
             broad=broad,
             broad_has_more=broad_has_more,
+            single_page_has_more=single_page_has_more,
             extra_queries=extra_queries,
             hyde_answers=hyde_answers,
             per_paper_cap=per_paper_cap,
@@ -1150,17 +1250,29 @@ class PaperSearchResultRenderer:
             if broad
             else ""
         )
-        more_available = (
-            result.broad_has_more if broad else total is not None and total > len(hits)
-        )
+        # Pagination gate (gr311338): prefer the exact ``total`` when the
+        # mode produced one; fall back to the probe-based ``*_has_more``
+        # signal when it didn't (broad fusion, or mode='semantic' single-
+        # leg) rather than defaulting to "no more" — see
+        # ``single_page_has_more``'s docstring on :class:`BlockSearchResult`.
+        if broad:
+            more_available = result.broad_has_more
+        elif total is not None:
+            more_available = total > len(hits)
+        else:
+            more_available = result.single_page_has_more
         if more_available:
             if len(hits) == 1:
+                if broad:
+                    more_desc = "see more of the fused matches"
+                elif total is not None:
+                    more_desc = f"see more of the {total} matches"
+                else:
+                    more_desc = "see more matches"
                 nav.append(
                     (
                         f"search(kind='{kind}', q={q!r}{broad_suffix}, page_size=10)",
-                        "see more of the fused matches"
-                        if broad
-                        else f"see more of the {total} matches",
+                        more_desc,
                     )
                 )
             else:
@@ -1176,20 +1288,27 @@ class PaperSearchResultRenderer:
                 # filter for known-irrelevant refs (kept available via
                 # the arg but no longer the recommended next-step
                 # because it bloats the call with a slug list).
-                show_next_page = (
-                    result.broad_has_more
-                    if broad
-                    else total is not None and total > result.page_size * result.page
-                )
+                if broad:
+                    show_next_page = result.broad_has_more
+                elif total is not None:
+                    show_next_page = total > result.page_size * result.page
+                else:
+                    show_next_page = result.single_page_has_more
                 if show_next_page:
+                    if broad:
+                        next_desc = (
+                            "see the next fused page (keep the same "
+                            "queries=/answers= or the ordering shifts)"
+                        )
+                    elif total is not None:
+                        next_desc = f"see the next {result.page_size} of {total} hits"
+                    else:
+                        next_desc = f"see the next {result.page_size} hits"
                     nav.append(
                         (
                             f"search(kind='{kind}', q={q!r}{broad_suffix}, "
                             f"page={result.page + 1})",
-                            "see the next fused page (keep the same "
-                            "queries=/answers= or the ordering shifts)"
-                            if broad
-                            else f"see the next {result.page_size} of {total} hits",
+                            next_desc,
                         )
                     )
 

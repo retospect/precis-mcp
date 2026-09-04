@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from precis.dispatch import Hub
+from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound
 from precis.handlers.plaintext import PlaintextHandler
 from precis.handlers.tex import TexHandler
@@ -534,3 +535,159 @@ def test_handler_root_is_resolved_to_absolute(store, tmp_path: Path) -> None:
     h = TexHandler(hub=Hub(store=store), root=rel)
     assert h.root.is_absolute()
     assert h.root == rel.resolve()
+
+
+# ── /toc ingest budget + embed-failure degrade (gr311327) ─────────────
+#
+# A large \input tree used to make ``/toc`` call ``ensure_ingested``
+# once per child, synchronously, on the request thread — each a full
+# parse + store write + (formerly unguarded) embedder call. One flaky
+# embedder call anywhere in a ~100-file tree raised straight out of the
+# walk; a healthy-but-slow embedder just made the call serially slow.
+# These tests pin the two-part fix: (1) a per-walk ingest budget that
+# renders "not yet indexed" markers instead of ingesting past the cap,
+# and (2) an ingest-time embed guard (shared with every other
+# ``ensure_ingested`` caller via ``to_chunk_inserts``) that degrades to
+# unembedded chunks instead of raising.
+
+
+class _RaisingBatchEmbedder(MockEmbedder):
+    """Fake embedder whose batch ``embed()`` always raises.
+
+    Mirrors ``tests/test_embed_query.py``'s ``_RaisingBatchEmbedder``
+    (the read-path twin) — this is the ingest-path shape.
+    """
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("remote embed endpoint down")
+
+    def embed_one(self, text: str) -> list[float]:
+        raise RuntimeError("remote embed endpoint down")
+
+
+def _write_input_tree(root: Path, *, n_children: int) -> None:
+    """A ``main.tex`` that ``\\input{}``s ``n_children`` never-before-
+    ingested sibling files, each with its own section."""
+    inputs = "\n\n".join(f"\\input{{child{i}}}" for i in range(n_children))
+    _write(root, "main.tex", r"\section{Root}" + "\n\n" + inputs + "\n")
+    for i in range(n_children):
+        _write(root, f"child{i}.tex", f"\\section{{Child {i}}}\n")
+
+
+def test_toc_caps_ingests_and_marks_pending(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """25 never-ingested \\input children on a handler capped at
+    ``MAX_TOC_INGESTS=20`` (the default): the walk completes (doesn't
+    hang/raise), the first 20 children are indexed inline, the
+    remaining 5 render as "not yet indexed" markers, and the response
+    ends with a trailer naming the count."""
+    n = 25
+    _write_input_tree(tex_root, n_children=n)
+
+    out = handler.get(id="main", view="toc")
+    body = out.body
+
+    assert r"\section{Root}" in body
+    # Indexed children show their real section title inline; pending
+    # ones show only the "not yet indexed" marker for their slug.
+    indexed = sum(1 for i in range(n) if f"Child {i}" in body)
+    pending = sum(1 for i in range(n) if f"child{i} (not yet indexed)" in body)
+    assert indexed == TexHandler.MAX_TOC_INGESTS
+    assert pending == n - TexHandler.MAX_TOC_INGESTS
+    assert f"{n - TexHandler.MAX_TOC_INGESTS} file(s) not yet indexed" in body
+    assert "re-run the toc view" in body
+
+
+def test_toc_second_call_indexes_more(handler: TexHandler, tex_root: Path) -> None:
+    """A follow-up ``/toc`` call must make progress: children indexed
+    by the first call are free (mtime-current) on the second call, so
+    the fresh budget goes entirely toward previously-pending children."""
+    n = 25
+    _write_input_tree(tex_root, n_children=n)
+
+    first = handler.get(id="main", view="toc").body
+    assert "not yet indexed" in first
+
+    second = handler.get(id="main", view="toc").body
+    for i in range(n):
+        assert f"Child {i}" in second
+    assert "not yet indexed" not in second
+
+
+def test_toc_within_cap_is_unaffected(handler: TexHandler, tex_root: Path) -> None:
+    """Sanity: a tree smaller than the cap renders every child inline
+    on the first call, with no pending trailer — the cap must not
+    change behavior for the common case."""
+    n = 3
+    _write_input_tree(tex_root, n_children=n)
+    body = handler.get(id="main", view="toc").body
+    for i in range(n):
+        assert f"Child {i}" in body
+    assert "not yet indexed" not in body
+
+
+def test_toc_survives_raising_embedder_with_unembedded_chunks(
+    store, tex_root: Path
+) -> None:
+    """A wired-but-failing embedder must not abort the TOC walk (raw
+    ``EmbedderUnavailable``/``RuntimeError`` leak) or leave a
+    partially-ingested tree behind an unhandled exception. Ingested
+    chunks (both the root file and its \\input child) land with
+    ``embedding IS NULL`` instead — a legal row state the fill-cascade
+    backfills later."""
+    handler = TexHandler(
+        hub=Hub(store=store, embedder=_RaisingBatchEmbedder()), root=tex_root
+    )
+    _write_input_tree(tex_root, n_children=3)
+
+    out = handler.get(id="main", view="toc")
+    body = out.body
+    assert r"\section{Root}" in body
+    for i in range(3):
+        assert f"Child {i}" in body
+
+    root_ref = store.get_ref(kind="tex", id="main")
+    assert root_ref is not None
+    child_ref = store.get_ref(kind="tex", id="child0")
+    assert child_ref is not None
+
+    with store.pool.connection() as conn:
+        for ref in (root_ref, child_ref):
+            for block in store.chunks.list_chunks_for_ref(ref.id):
+                row = conn.execute(
+                    "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s",
+                    (block.id,),
+                ).fetchone()
+                assert row is None, (
+                    f"expected no chunk_embeddings row for {ref.slug}~{block.slug} "
+                    "(degrade-on-embed-failure should leave it unembedded)"
+                )
+
+
+def test_toc_residual_db_error_names_the_child(
+    handler: TexHandler, tex_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-embedder failure during a child ingest (e.g. a DB error)
+    must surface as ONE typed error naming the offending child file,
+    not a raw internal exception leaking out of the walk."""
+    from precis.errors import Upstream
+
+    _write(
+        tex_root,
+        "main.tex",
+        r"\section{Root}" + "\n\n" + r"\input{broken}" + "\n",
+    )
+    _write(tex_root, "broken.tex", r"\section{Broken}" + "\n")
+
+    real_ensure_ingested = TexHandler.ensure_ingested
+
+    def boom(self, slug, *, force=False):
+        if slug == "broken":
+            raise RuntimeError("connection reset by peer")
+        return real_ensure_ingested(self, slug, force=force)
+
+    monkeypatch.setattr(TexHandler, "ensure_ingested", boom)
+
+    with pytest.raises(Upstream, match="broken"):
+        handler.get(id="main", view="toc")

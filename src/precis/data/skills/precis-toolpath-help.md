@@ -77,7 +77,7 @@ their own view set instead, is in `precis-overview`.
 | Soft-delete a ref | `delete(kind='gripe', id=42)` | `precis-delete-help` |
 | Classify / prioritise | `tag(kind='todo', id=122, add=['STATUS:done'])` | `precis-tag-help`, `precis-tags` |
 | Connect two refs | `link(kind='todo', id=141, target='todo:158', rel='blocked-by')` | `precis-link-help`, `precis-relations` |
-| Page a long response | `more(cursor='...')` (from a `Next: more(...)` footer) | — |
+| Page a long response | `more(cursor='...')` (from a `Next: more(...)` footer) — single-use, expires in minutes, drain sequentially, never batch in parallel | `precis-toon` |
 
 Closed-prefix (`STATUS:`/`PRIO:`/`SRC:`/`CACHE:`) replace-within-axis
 semantics live in `precis-tags`.
@@ -146,13 +146,21 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 ## Chemistry / biology (the in-silico lab)
 
 Compute kinds — the engine runs off the request path (mint → poll), the IR is
-what you read. Plugin kinds (`route`/`protein`), on where the tool-pack is enabled.
+what you read. Plugin kinds (`route`/`protein`), on where the tool-pack is
+enabled; `pathway` is additionally **host-gated** — it's registered only on
+the host(s) running the GPU compute lane, so calling it elsewhere raises
+`NotFound` with a `routes through host(s): …` hint (expected, not a bug).
+
+`route` (retrosynthesis) and `pathway` (catalyst reaction-*network*
+exploration — intermediates, NEB barriers) are unrelated kinds despite the
+similar-sounding names — don't conflate them.
 
 | Goal | Toolpath | Depth |
 |---|---|---|
 | Plan a synthesis to a target | `put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth')` → `get(kind='route', id='<slug>')` / `view='metrics'` | `precis-lab-help` |
 | Fold a protein from its sequence | `put(kind='protein', id='<slug>', sequence='<AA>', engine='alphafold3')` → `get(kind='protein', id='<slug>')` | `precis-protein-help` |
 | See a fold in 3D | `get(kind='protein', id='<slug>', view='structure')` → `get(kind='structure', id='<slug>-fold')` | `precis-structure-help` |
+| Explore a catalyst reaction network (barriers, rate-limiting step) | `put(kind='pathway', id='<slug>', mode='preview', text='...')` → drop `mode='preview'` to compute | `precis-pathway-help` |
 | Compose them toward a research goal | search prior art → mint route/fold → read metrics/pLDDT → iterate | `precis-lab-help` |
 
 ## See also

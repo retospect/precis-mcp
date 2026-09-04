@@ -316,6 +316,86 @@ def test_surface_get_chunk_handle_routes_to_selector(
     assert via_handle == via_selector
 
 
+# --- gr311336: a CacheBackedHandler chunk handle (news) must render the
+# chunk, not misroute into a URL-validation error. Regression coverage for
+# the capability-gating change: the paper case above (a hand-rolled
+# slug-document kind) must keep routing exactly as before, unaffected by
+# the switch away from the public_id-vs-ref_id numeric proxy.
+
+
+def _put_news_ref(store: Store, *, slug: str, blocks: list[tuple[int, str]]):
+    from precis.store.types import ChunkInsert
+
+    return store.put_cache_entry(
+        kind="news",
+        slug=slug,
+        title="a news article",
+        body_blocks=[ChunkInsert(ord=o, text=t) for o, t in blocks],
+        provider="news",
+        request_hash=f"uh311336-{slug}",
+        ttl_seconds=None,
+    )
+
+
+@_NEEDS_PAPER_EXTRA
+def test_news_chunk_handle_renders_the_chunk_not_a_bad_input(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr311336: ``get(id='nc<id>')`` from a news search hit used to
+    rewrite to ``slug~0`` and then blow up inside the base
+    ``CacheBackedHandler.get`` (zero ``slug~ord`` grammar → BadInput "not
+    a fetchable article URL"). It must now render that one chunk's body —
+    not the whole article, not an error."""
+    ref, _cache = _put_news_ref(
+        store,
+        slug="uh311336-news-chunks",
+        blocks=[(0, "first paragraph body"), (1, "second paragraph body")],
+    )
+    target = next(c for c in store.chunks.list_chunks_for_ref(ref.id) if c.ord == 1)
+    h = handle_registry.format_handle("news", target.id, chunk=True)  # 'nc<id>'
+    assert h[:2] == handle_registry.CHUNK_CODES["news"]
+
+    out, is_error = runtime_with_store.dispatch_with_status("get", {"id": h})
+    assert not is_error, out
+    assert "[error:" not in out
+    assert "second paragraph body" in out
+    # It's the ONE chunk, not the whole document.
+    assert "first paragraph body" not in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_news_record_handle_still_works(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The record handle (``nw<id>``) path is untouched by the chunk-
+    selector capability gating."""
+    ref, _cache = _put_news_ref(
+        store, slug="uh311336-news-record", blocks=[(0, "article body text")]
+    )
+    h = handle_registry.format_handle("news", ref.id)  # 'nw<id>'
+    assert h[:2] == handle_registry.KIND_CODES["news"]
+
+    out, is_error = runtime_with_store.dispatch_with_status("get", {"id": h})
+    assert not is_error, out
+    assert "article body text" in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_news_recent_listing_carries_record_handle(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr311336: ``/recent`` must advertise the record handle alongside the
+    slug — "the handle is its stable address" wasn't true from listings
+    before this."""
+    ref, _cache = _put_news_ref(
+        store, slug="uh311336-news-recent", blocks=[(0, "listed article body")]
+    )
+    h = handle_registry.format_handle("news", ref.id)
+    out = runtime_with_store.dispatch("get", {"kind": "news", "id": "/recent"})
+    assert h in out
+    assert "uh311336-news-recent" in out
+
+
 # --- syntactic fallback for a soft-deleted / never-existed handle ------
 #
 # resolve_handle only returns a live row (or a merge survivor), so it
@@ -351,6 +431,42 @@ def test_surface_get_never_existed_handle_is_not_found(
     assert "[error:NotFound]" in out
     assert "not found" in out
     assert "must be an integer" not in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_never_existed_slug_kind_handle_is_not_found(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr311329: a well-formed handle for a *slug*-addressed kind
+    (paper) has no live row to read a slug from, so it used to fall
+    all the way through bare-slug inference to the generic "missing
+    kind=" ``BadInput`` — misleading, since adding ``kind=`` fixes
+    nothing (the ref was simply never there). It must resolve straight
+    to ``NotFound``, same as the numeric-kind case above."""
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"id": "pa999999999"}
+    )
+    assert is_error
+    assert "[error:NotFound]" in out
+    assert "not found" in out
+    assert "missing kind" not in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_never_existed_slug_kind_handle_no_recent_hint_leak(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr311329 sub-issue: the (now-removed) "you were last working on
+    kind=X" hint was sourced from an un-scoped
+    ``ORDER BY refs.updated_at DESC`` over the whole corpus, not this
+    call's own history — writing an unrelated kind here must not leak
+    into this NotFound's hint text."""
+    store.insert_ref(kind="memory", slug=None, title="unrelated write", meta={})
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"id": "pa999999999"}
+    )
+    assert is_error
+    assert "last working on" not in out
 
 
 @_NEEDS_PAPER_EXTRA

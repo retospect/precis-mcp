@@ -71,11 +71,20 @@ keyword clustering). It stops sub-grouping only when a range is small
 enough to be a leaf — then it shows those chunks directly. So you never
 hit a wall of undrillable one-row-per-chunk singletons on the way down.
 
+## A drilled-in range came back truncated
+
+A wide `~A..B` range can still overflow the MCP frame budget; the body
+ends with a `⚠️ Truncated` footer carrying `more(cursor='...')`.
+**Drain it sequentially — never fire several `more()` calls in
+parallel.** Each cursor is single-use and expires in a few minutes;
+a batched second call gets "no such cursor in this process", not a
+retryable error. Full mechanics: `precis-toon`.
+
 ## See also
 
 ```python
 get(kind="skill", id="precis-paper-help")  # paper-specific TOC + drill-in
 get(kind="skill", id="precis-overview")  # address grammar (slug~N, /toc)
 get(kind="skill", id="precis-search-help")  # search returns pc<id> chunk handles
-get(kind="skill", id="precis-toon")  # the table wire format
+get(kind="skill", id="precis-toon")  # the table wire format + more(cursor=...)
 ```

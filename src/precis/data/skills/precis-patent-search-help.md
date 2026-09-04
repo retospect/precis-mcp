@@ -69,7 +69,9 @@ instantly from `get(id='pt812')` — the DOCDB pub-number
 (`ep4123456a1`) stays alongside as the OPS fetch key (like a DOI).
 `[ops]` rows are remote-only, not yet ingested — no `pt<id>` handle
 has been minted for them yet; `get(id='wo2023123456a1')` fetches and
-persists them, minting one.
+persists them, minting one. (The row marker is `[ops]` — the source
+system's name — even though the `reach=` search kwarg spells the same
+leg `'remote'`.)
 
 ## Filter patents by CPC, applicant, country
 ## Narrow patent search by tag axis

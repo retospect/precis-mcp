@@ -1140,6 +1140,59 @@ def test_build_instructions_handles_missing_root_directory() -> None:
     assert "Kinds: markdown." in out
 
 
+def test_build_instructions_notes_readonly_mount_with_files(
+    tmp_path, monkeypatch
+) -> None:
+    """gr311325: when ``PRECIS_ROOT`` exists but is mounted read-only
+    (this session's dev-stdio MCP mounts the workspace ``:ro``), the
+    banner should say so instead of silently advertising a ``put`` that
+    will raw-OSError."""
+    from precis import server
+
+    (tmp_path / "a.md").write_text("# a", encoding="utf-8")
+    runtime = _runtime_with_root(str(tmp_path), file_kinds=("markdown",))
+
+    monkeypatch.setattr(server.os, "access", lambda path, mode: path != str(tmp_path))
+    out = server._build_instructions(runtime)
+
+    assert "read-only" in out
+    assert "1 markdown" in out
+
+
+def test_build_instructions_notes_readonly_mount_when_empty(
+    tmp_path, monkeypatch
+) -> None:
+    """Same read-only note on the empty-sandbox branch — the empty
+    banner's ``put(..., mode='create')`` invite would be actively
+    misleading on a read-only mount."""
+    from precis import server
+
+    runtime = _runtime_with_root(str(tmp_path), file_kinds=("markdown",))
+
+    monkeypatch.setattr(server.os, "access", lambda path, mode: path != str(tmp_path))
+    out = server._build_instructions(runtime)
+
+    assert "empty" in out
+    assert "read-only" in out
+    assert "mode='create'" not in out
+
+
+def test_build_instructions_missing_root_is_not_flagged_readonly(
+    monkeypatch,
+) -> None:
+    """A not-yet-created root (will be ``mkdir``'d on first write) is
+    NOT read-only — it just doesn't exist yet. Must keep inviting the
+    agent to create a file, not falsely claim the mount is read-only."""
+    from precis import server
+
+    runtime = _runtime_with_root("/this/path/does/not/exist", file_kinds=("markdown",))
+    out = server._build_instructions(runtime)
+
+    assert "empty" in out
+    assert "read-only" not in out
+    assert "mode='create'" in out
+
+
 def test_apply_instructions_mutates_underlying_mcp_server(tmp_path) -> None:
     """The ``_apply_instructions`` helper must write through to
     ``fastmcp._mcp_server.instructions`` so the handshake payload

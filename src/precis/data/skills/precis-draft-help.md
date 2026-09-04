@@ -49,6 +49,9 @@ positional `~N` ordinals (they rot on insert).
 | `get(id=<scope>, view='toc')` | heading skeleton (whole draft, or one heading's subtree) |
 | `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
+| `get(id=<scope>, view='toc')` | heading skeleton (§-numbers + gist/keywords), whole draft or one subtree |
+| `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
+| `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes) |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |
 
 **`edit` — params** (`text=` rewrite is the default; one param family per

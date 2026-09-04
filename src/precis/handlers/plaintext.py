@@ -44,6 +44,7 @@ from precis.handlers._link_tag_ops import (
     validate_link_mode,
 )
 from precis.handlers._mode_help import require_mode
+from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -82,6 +83,13 @@ from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
 
 log = logging.getLogger(__name__)
+
+
+# gr311325: the EROFS→Unsupported translation (``_translate_readonly_fs``)
+# moved to ``precis.handlers._readonly_fs`` (gr311350) so python's write
+# verbs — a ``Handler``-direct kind with its own mkstemp+``os.replace``
+# write path, not a ``PlaintextHandler`` subclass — can share it instead
+# of duplicating the errno/message logic.
 
 
 # After the seven-verb cutover, ``put`` on a file kind is creation-only.
@@ -598,6 +606,7 @@ class PlaintextHandler(Handler):
         "find-replace",
     )
 
+    @_translate_readonly_fs
     def put(
         self,
         *,
@@ -1168,7 +1177,8 @@ class PlaintextHandler(Handler):
 
     # ── seven-verb surface ─────────────────────────────────────────
 
-    def edit(  # type: ignore[override]
+    @_translate_readonly_fs
+    def edit(
         self,
         *,
         id: str | int,
@@ -1220,7 +1230,8 @@ class PlaintextHandler(Handler):
             dry_run=dry_run,
         )
 
-    def delete(  # type: ignore[override]
+    @_translate_readonly_fs
+    def delete(
         self,
         *,
         id: str | int,
@@ -1360,6 +1371,21 @@ class PlaintextHandler(Handler):
 
     def ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
         path = self._resolve_path(slug, must_exist=False)
+        if not path.exists():
+            # ``_resolve_path`` reconstructs a path by pure string
+            # transform (split the slug on ``--``, rejoin with ``/``,
+            # append a probed extension) — it can't always invert the
+            # (lossy) path->slug encoding: a real filename containing a
+            # char ``_normalize_segment`` folds to ``-`` (a stray ``.``,
+            # a space, …) round-trips to a *different* literal path.
+            # Before giving up, consult the same disk-scan map the
+            # suggester/index draw from — anything an agent can see
+            # listed there must also resolve here (gr311326: the
+            # NotFound suggester's own options= listed ids that 404'd
+            # on direct get because this reconstruction missed).
+            real_rel = self._list_file_slugs_on_disk().get(slug)
+            if real_rel is not None:
+                path = (self.root / real_rel).resolve()
         ref = self.store.get_ref(kind=self._KIND, id=slug)
 
         if not path.exists():
@@ -1440,8 +1466,13 @@ class PlaintextHandler(Handler):
         for path in sorted(self._walk_files()):
             try:
                 rel = str(path.relative_to(self.root))
-                base, _ext = self._strip_ext(rel)
-                slug = file_slug_from_path(base)
+                # ``file_slug_from_path`` strips the (one true) extension
+                # itself — pre-stripping via ``_strip_ext`` and handing it
+                # the already-bare base double-strips any further ``.`` in
+                # the stem (e.g. ``foo.error.log`` lost ``.error``
+                # entirely), producing a slug that collides with/masks
+                # other files and can't resolve back (gr311326).
+                slug = file_slug_from_path(rel)
             except ValueError:
                 continue
             if not is_valid_file_slug(slug):

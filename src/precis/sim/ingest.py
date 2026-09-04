@@ -98,15 +98,17 @@ def _resolve_outputs(entry: SimEntry, manifest: SimManifest) -> list[Path]:
 def _slug_for(rel: str, *, extensions: tuple[str, ...]) -> str | None:
     """Derive the file-kind ref slug for *rel* (relative to PRECIS_ROOT).
 
-    Mirrors ``cli/ingest.py:_ingest_one_kind``'s ``slug_for`` — strip a
-    known extension, then encode via the shared ``md_parse`` helpers.
+    Mirrors ``cli/ingest.py:_ingest_one_kind``'s ``slug_for`` — encode
+    via the shared ``md_parse`` helpers.
+
+    ``file_slug_from_path`` strips the extension itself — don't
+    pre-strip via ``extensions`` first, or a stem with a further ``.``
+    (e.g. ``report.v2.txt``) gets double-stripped and the slug loses a
+    segment (gr311326's defect, mirrored here). ``extensions`` is kept
+    on the signature for the caller's handler-kind dispatch; it plays
+    no further part in the slug derivation.
     """
-    base = rel
-    for ext in extensions:
-        if base.lower().endswith(ext):
-            base = base[: -len(ext)]
-            break
-    slug = file_slug_from_path(base)
+    slug = file_slug_from_path(rel)
     return slug if is_valid_file_slug(slug) else None
 
 

@@ -6,7 +6,7 @@ answers:
   - how do I pull DOIs or arXiv ids out of a Perplexity/search result and mint stubs?
   - why does DOI extraction use an LLM instead of a regex?
   - when should I skip DOI extraction entirely?
-applies-to: planner step after perplexity-research / web search; put (kind=paper via acquire)
+applies-to: planner step after perplexity-research / web search; put(kind='paper', identifier=/doi=/arxiv=/title=)
 status: active
 ---
 
@@ -27,7 +27,7 @@ notes = get(kind="perplexity-research", id="<id>")
 
 # You (the planner) read the notes and identify cited papers — DOIs,
 # arXiv IDs, paper titles with authors. For each one not yet in
-# corpus, mint a stub so the fetch_oa worker enriches it:
+# corpus, put() a stub so the fetch_oa worker enriches it:
 put(
     kind="paper",
     identifier="10.1038/nature10352",
@@ -37,8 +37,18 @@ put(
 )
 ```
 
-`put(kind='paper', …)` (a thin adapter over the internal `acquire`
-method — `doi=`/`arxiv=` are shorthand for `identifier=`) accepts:
+This is `put(kind='paper', ...)` — the real MCP verb, not a special
+tool. `PaperHandler.put` is a thin adapter over the handler's own
+`acquire()` method (`identifier=`/`doi=`/`arxiv=` all fold to the
+same call); `doi=`/`arxiv=` are shorthand for `identifier=` — either
+of these works too:
+
+```python
+put(kind="paper", doi="10.1038/nature10352")
+put(kind="paper", arxiv="2401.00001", title="…")
+```
+
+`put(kind='paper', ...)` accepts:
 
 - `identifier=` — `'doi:10.1038/...'`, `'arxiv:2401.00001'`,
   `'s2:<id>'`, `'pubmed:<id>'`, or bare DOI / arXiv ID (`'10.…'` and
@@ -97,7 +107,7 @@ try:
     get(kind='paper', id='10.1038/nature10352')
     # Already in corpus; skip put.
 except NotFound:
-    put(kind='paper', identifier='10.1038/nature10352', ...)
+    put(kind='paper', identifier='10.1038/nature10352', reason='...')
 ```
 
 `put(kind='paper', …)` also dedups via DOI aliases, but the explicit

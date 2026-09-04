@@ -30,8 +30,11 @@ for recipes and ``precis-files-help`` for the shared file protocol.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, ClassVar
 
+from precis.errors import PrecisError, Upstream
 from precis.handlers.plaintext import PlaintextHandler
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -39,6 +42,46 @@ from precis.store import Ref
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.utils.tex_parse import TEX_SECTION_NAMES, TexChunk, parse_tex
+
+
+@dataclass
+class _TocIngestBudget:
+    """Mutable per-``/toc``-invocation ingest budget (gr311327).
+
+    ``_toc_walk`` calls :meth:`TexHandler.ensure_ingested` once per
+    ``\\input{}``/``\\include{}`` child it discovers — on a large
+    ``\\input`` tree (the reported repro has 105 directives across 92
+    files) that is up to 105 synchronous parse+store(+embed) writes on
+    one request thread. ``remaining`` counts down only for children
+    that need REAL ingest work; a child whose on-disk mtime already
+    matches its stored ``ref.meta['mtime_ns']`` is a free re-read
+    (``ensure_ingested`` short-circuits before touching the store or
+    the embedder) and doesn't decrement the budget. ``pending``
+    collects the slugs skipped once the budget is exhausted, for the
+    TOC's closing trailer.
+    """
+
+    remaining: int
+    pending: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _InputResolution:
+    """Result of resolving one ``\\input{}``/``\\include{}`` argument.
+
+    Three outcomes ``_toc_walk`` renders differently:
+
+    - ``ref`` set: resolved + ingested (or already current) — walk
+      recurses into it.
+    - ``pending=True``: resolved to a real file but the ingest budget
+      is exhausted — rendered as a "not yet indexed" marker.
+    - neither: the target didn't resolve to a file under ``root`` at
+      all — rendered as the pre-existing "not found" marker.
+    """
+
+    ref: Ref | None
+    child_slug: str | None
+    pending: bool = False
 
 
 class TexHandler(PlaintextHandler):
@@ -82,6 +125,12 @@ class TexHandler(PlaintextHandler):
     _EXTENSIONS: ClassVar[tuple[str, ...]] = (".tex",)
     _DEFAULT_EXT: ClassVar[str] = ".tex"
     _SUPPORTED_VIEWS: ClassVar[tuple[str, ...]] = ("raw", "toc")
+
+    #: Cap on the number of REAL (non-free) ``ensure_ingested`` calls
+    #: one ``/toc`` walk will perform (gr311327). Beyond the cap,
+    #: children render as "not yet indexed" markers; a follow-up
+    #: ``/toc`` call (or a direct ``get()``) indexes more.
+    MAX_TOC_INGESTS: ClassVar[int] = 20
 
     # ── parser hooks (override PlaintextHandler) ──────────────────────
 
@@ -130,9 +179,18 @@ class TexHandler(PlaintextHandler):
             lines.append(f"_{ref.title}_")
         lines.append("")
         visited: set[str] = set()
-        n_sections = self._toc_walk(ref, visited=visited, lines=lines, depth=0)
+        budget = _TocIngestBudget(remaining=self.MAX_TOC_INGESTS)
+        n_sections = self._toc_walk(
+            ref, visited=visited, lines=lines, depth=0, budget=budget
+        )
         if n_sections == 0:
             lines.append("(no sectioning commands found)")
+        if budget.pending:
+            lines.append("")
+            lines.append(
+                f"{len(budget.pending)} file(s) not yet indexed — re-run the "
+                "toc view (or get() them) to index more."
+            )
         handle = handle_registry.format_handle(self._KIND, ref.id)
         body = "\n".join(lines)
         body += render_next_section(
@@ -157,6 +215,7 @@ class TexHandler(PlaintextHandler):
         visited: set[str],
         lines: list[str],
         depth: int,
+        budget: _TocIngestBudget,
     ) -> int:
         """Recursive TOC walker. Returns the number of section entries
         emitted from this ref (not counting the ``↺`` cycle marker)."""
@@ -200,33 +259,66 @@ class TexHandler(PlaintextHandler):
             # block — both inside section blocks and in plain
             # paragraphs (preamble usage is common).
             for input_arg in meta.get("inputs", ()) or ():
-                child_ref = self._resolve_input_ref(ref, input_arg)
-                if child_ref is None:
-                    indent = "  " * (depth + 1)
+                resolution = self._resolve_input_ref(ref, input_arg, budget=budget)
+                indent = "  " * (depth + 1)
+                if resolution.pending:
                     lines.append(
-                        f"{indent}\u26a0 \\input{{{input_arg}}} \u2192 not found"
+                        f"{indent}… \\input{{{input_arg}}} → "
+                        f"{resolution.child_slug} (not yet indexed)"
                     )
                     continue
-                indent = "  " * (depth + 1)
+                if resolution.ref is None:
+                    lines.append(f"{indent}⚠ \\input{{{input_arg}}} → not found")
+                    continue
                 lines.append(
-                    f"{indent}\u2937 \\input{{{input_arg}}} \u2192 {child_ref.slug}"
+                    f"{indent}⤷ \\input{{{input_arg}}} → {resolution.ref.slug}"
                 )
                 self._toc_walk(
-                    child_ref,
+                    resolution.ref,
                     visited=visited,
                     lines=lines,
                     depth=depth + 1,
+                    budget=budget,
                 )
 
         return n_emitted
 
     # ── \input{} / \include{} resolver ────────────────────────────────
 
-    def _resolve_input_ref(self, parent_ref: Ref, target: str) -> Ref | None:
-        """Resolve a single ``\\input{path}`` argument to an ingested
-        :class:`Ref`. Returns ``None`` if the file isn't found or
-        resolves outside :attr:`root` (the latter is silently dropped
-        from the TOC; the ``\\input`` line still appears in the source).
+    def _is_toc_child_fresh(self, slug: str, abs_path: Path) -> bool:
+        """True if *slug* is already ingested and current for *abs_path*.
+
+        Mirrors the cheap first fast-path branch of
+        :meth:`PlaintextHandler.ensure_ingested` (mtime_ns match) —
+        this is the "free, doesn't count against the TOC ingest
+        budget" case. A stale mtime but unchanged content (the sha256
+        fallback branch inside ``ensure_ingested``) still counts
+        against the budget here; that's a deliberately conservative
+        simplification, not a correctness issue — it just means the
+        walker may spend one extra budget slot on a touched-but-
+        unchanged file.
+        """
+        ref = self.store.get_ref(kind=self._KIND, id=slug)
+        if ref is None:
+            return False
+        try:
+            mtime_ns = abs_path.stat().st_mtime_ns
+        except OSError:
+            return False
+        return (ref.meta or {}).get("mtime_ns") == mtime_ns
+
+    def _resolve_input_ref(
+        self, parent_ref: Ref, target: str, *, budget: _TocIngestBudget
+    ) -> _InputResolution:
+        """Resolve a single ``\\input{path}`` argument.
+
+        Returns an :class:`_InputResolution`: neither ``ref`` nor
+        ``pending`` set if the file isn't found or resolves outside
+        :attr:`root` (the latter is silently dropped from the TOC;
+        the ``\\input`` line still appears in the source);
+        ``pending=True`` if the target resolves to a real file but the
+        per-walk ingest *budget* is exhausted (gr311327); ``ref`` set
+        otherwise.
 
         Path resolution mirrors LaTeX:
 
@@ -238,7 +330,7 @@ class TexHandler(PlaintextHandler):
         """
         cleaned = target.strip()
         if not cleaned:
-            return None
+            return _InputResolution(ref=None, child_slug=None)
         parent_path = self._resolve_path(parent_ref.slug or "", must_exist=False)
         parent_dir = parent_path.parent
 
@@ -265,12 +357,44 @@ class TexHandler(PlaintextHandler):
                 rel = abs_path.relative_to(self.root)
             except ValueError:
                 continue
-            base, _ext = self._strip_ext(str(rel))
             from precis.utils.md_parse import file_slug_from_path, is_valid_file_slug
 
-            child_slug = file_slug_from_path(base)
+            # ``file_slug_from_path`` strips the extension itself — don't
+            # pre-strip via ``_strip_ext`` first, or a stem with a further
+            # ``.`` gets double-stripped and the slug can't resolve
+            # (gr311326).
+            child_slug = file_slug_from_path(str(rel))
             if not is_valid_file_slug(child_slug):
                 continue
-            return self.ensure_ingested(child_slug)
 
-        return None
+            if not self._is_toc_child_fresh(child_slug, abs_path):
+                if budget.remaining <= 0:
+                    budget.pending.append(child_slug)
+                    return _InputResolution(
+                        ref=None, child_slug=child_slug, pending=True
+                    )
+                budget.remaining -= 1
+
+            try:
+                child_ref = self.ensure_ingested(child_slug)
+            except PrecisError:
+                # Already a typed, agent-facing error — surface as-is.
+                raise
+            except Exception as exc:
+                # A guarded embedder failure no longer raises here (see
+                # to_chunk_inserts) — anything that still escapes is a
+                # genuine ingest failure (e.g. a DB error). Wrap it as
+                # ONE typed error naming the offending child rather
+                # than letting the walk abort mid-tree with a raw
+                # internal leak (gr311327).
+                raise Upstream(
+                    f"failed to index \\input child {child_slug!r} "
+                    f"(from {parent_ref.slug!r}): {exc}",
+                    next=(
+                        f"get(kind='{self._KIND}', id='{child_slug}') to see "
+                        "the file directly, or retry the toc view"
+                    ),
+                ) from exc
+            return _InputResolution(ref=child_ref, child_slug=child_slug)
+
+        return _InputResolution(ref=None, child_slug=None)

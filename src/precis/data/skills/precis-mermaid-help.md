@@ -41,8 +41,9 @@ Each supported type has its own discoverable skill (search by intent —
 | xychart | bar chart, line chart, plot, graph of values | `precis-mermaid-xychart` |
 | mindmap | mind map, concept map, idea tree, brainstorm | `precis-mermaid-mindmap` |
 
-**Not renderable yet** (in-process engine gap): gantt, pie, sankey, C4,
-block — see `precis-mermaid-unsupported` for what to use instead.
+**Not renderable** (in-process engine gap): sankey, block — see
+`precis-mermaid-unsupported` for what to use instead. gantt/pie/C4 render
+fine (mermaidx>=0.9); a stale claim they didn't was gr311345.
 
 ## The documents
 

@@ -81,8 +81,29 @@ text.
 - Wolfram doesn't parse the query: response includes `Did you mean: …`.
 - Empty result: response says so explicitly.
 
+**A failure caches too — and pins.** All three shapes above are
+ordinary Wolfram responses, not exceptions, so they're written to
+the cache and pinned exactly like a real answer. Retrying the same
+`q=` returns the cached failure forever, not a fresh attempt. Recover
+with the same delete-then-get dance as changing intent:
+
+```python
+delete(kind="math", id="<canonicalised-query>")
+get(kind="math", q="<query>")  # actually re-fetches this time
+```
+
 Every response carries Wolfram's attribution footer with a verify
 link and a paste-ready citation.
+
+## List recent math lookups
+
+```python
+get(kind="math", id="/recent")
+```
+
+The generic cache-backed listing (`CacheBackedHandler`, shared with
+`web`/`youtube`) — most recent cached queries first, including
+pinned failures (above).
 
 ## Required env
 

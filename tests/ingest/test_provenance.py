@@ -638,6 +638,45 @@ class TestRenderBatch:
         assert first["overall_severity"] == "blocker"
         assert first["doi"] == "10.x/bad1"
 
+    def _make_title_retracted_but_no_notice(
+        self, doi: str = "10.x/retracted-title"
+    ) -> ProvenanceResult:
+        """gr311334: title says retracted, notices came back empty —
+        the Crossref pre-CrossMark gap / empty local RW cache edge case.
+        """
+        return ProvenanceResult(
+            doi=doi,
+            status="ok",
+            paper_title="RETRACTED: A paper that says so in the title",
+            paper_year=2021,
+        )
+
+    def test_title_claims_retraction_promoted_out_of_clean(self) -> None:
+        """gr311334: a 'RETRACTED:' title with zero notices must not
+        render as a silent 🟢 Clean — it's bumped to the review tier
+        with an explicit warning line."""
+        from precis.handlers._provenance_report import render_batch
+
+        results = [
+            self._make_title_retracted_but_no_notice(),
+            self._make_clean("10.x/actually-clean"),
+        ]
+        out = render_batch(results, view="default")
+        assert "🟢 Clean (1)" in out
+        assert "10.x/retracted-title" not in out.split("🟢 Clean")[1]
+        assert "🟠 Review (1)" in out
+        assert "title claims retraction but no notice found" in out
+
+    def test_title_claims_retraction_survives_blockers_view(self) -> None:
+        """The promoted entry is a review-tier hazard, so it must not be
+        suppressed by view='blockers' the way ordinary clean entries are."""
+        from precis.handlers._provenance_report import render_batch
+
+        results = [self._make_title_retracted_but_no_notice()]
+        out = render_batch(results, view="blockers")
+        assert "title claims retraction but no notice found" in out
+        assert "entries hidden" not in out
+
     def test_default_view_surfaces_malformed(self) -> None:
         from precis.handlers._provenance_report import render_batch
 

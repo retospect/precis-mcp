@@ -306,6 +306,24 @@ def test_get_file_source_clamps_oversize_range(handler: PythonHandler) -> None:
     assert end < 1000
 
 
+def test_get_file_source_wholly_out_of_range_raises_bad_input(
+    handler: PythonHandler,
+) -> None:
+    """gr311337: a range entirely past EOF must raise BadInput, not
+    silently clamp to an empty body. `pkg/m.py` has well under 100
+    lines, so L99999-100010 doesn't touch the file at all."""
+    with pytest.raises(BadInput, match="outside file"):
+        handler.get(id="r/pkg/m.py~L99999-100010")
+
+
+def test_get_file_source_wholly_out_of_range_single_line(
+    handler: PythonHandler,
+) -> None:
+    """Same check for a single-line selector (no ``-end``) past EOF."""
+    with pytest.raises(BadInput, match="outside file"):
+        handler.get(id="r/pkg/m.py~L99999")
+
+
 # ---------------------------------------------------------------------------
 # get — symbol drill-down
 # ---------------------------------------------------------------------------

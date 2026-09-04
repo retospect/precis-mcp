@@ -42,10 +42,12 @@ search(kind="md", q="ship gate", scope="docs")  # restrict to one root
 search(kind="md", q="ship gate", scope="docs/backlog")  # restrict to a subtree or file
 ```
 
-`folder=` is **not** supported on `kind='md'` — it forces the
-cross-kind fan-out, and `md` opts out of that (`BadInput: kind(s) do
-not support cross-kind search`). `scope=` is the supported way to
-narrow a search; there's no folder-tree scoping.
+`folder=` (the corpus-kind scoping kwarg) is **not supported here** —
+a single-kind `search(kind='md', ...)` never enters the cross-kind
+fan-out (only a comma-list or wildcard `kind=` does), so `folder=` is
+silently swallowed by `md`'s handler, not an error. Use `scope=`
+instead; it's `md`'s own root/subtree/file restriction, above.
+
 
 Hits are ranked; each carries its heading breadcrumb and a
 `<alias>/<file>~<slug>` address you paste into `get`. A search

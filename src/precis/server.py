@@ -220,17 +220,33 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
         return core + tail
     counts = _file_kind_counts(root, file_kinds)
     total = sum(counts.values())
+    # A root that doesn't exist yet is *not* read-only — it'll be
+    # created on first write via ``mkdir(parents=True)`` — so only
+    # flag the read-only case when the directory is actually there and
+    # actually unwritable (gr311325: this session's dev-stdio MCP
+    # mounts the workspace ``:ro``, which used to surface as a raw
+    # OSError deep in ``put`` instead of an honest banner + typed
+    # error).
+    writable = not os.path.isdir(root) or os.access(root, os.W_OK)
     if total == 0:
-        preamble = (
-            "Sandbox PRECIS_ROOT empty: "
-            "put(kind='markdown'|'plaintext'|'tex', id, text, mode='create'). "
-            "tags=['workspace'] scopes.\n"
-        )
+        if writable:
+            preamble = (
+                "Sandbox PRECIS_ROOT empty: "
+                "put(kind='markdown'|'plaintext'|'tex', id, text, mode='create'). "
+                "tags=['workspace'] scopes.\n"
+            )
+        else:
+            preamble = (
+                "Sandbox PRECIS_ROOT empty and mounted read-only: "
+                "get(kind='markdown'|'plaintext'|'tex') — file writes are "
+                "disabled in this deployment.\n"
+            )
     else:
         summary = ", ".join(f"{counts[k]} {k}" for k in file_kinds if counts[k])
         kinds_str = "|".join(f"'{k}'" for k in file_kinds)
+        ro_note = "" if writable else " (read-only mount — writes disabled)"
         preamble = (
-            f"Sandbox PRECIS_ROOT ({summary}): get(kind={kinds_str}). "
+            f"Sandbox PRECIS_ROOT ({summary}){ro_note}: get(kind={kinds_str}). "
             "tags=['workspace'] scopes.\n"
         )
     return preamble + core + tail

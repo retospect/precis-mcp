@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from abc import abstractmethod
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -181,6 +182,25 @@ class FetchResult:
 
     meta: dict[str, Any] = field(default_factory=dict)
     """Extra structured metadata; lands in `cache_state.meta`."""
+
+
+# ---------------------------------------------------------------------------
+# Chunk-selector grammar (gr311336)
+# ---------------------------------------------------------------------------
+#
+# The dispatcher (``DispatchMixin._maybe_infer_kind_from_handle``) resolves a
+# chunk handle (``nc<chunk_id>``) to its owning ref's slug and rewrites the
+# call to ``get(id='<slug>~<ord>')`` — the same ``slug~ord`` grammar the
+# corpus kinds (paper/patent/edgar/…) hand-implement. A subclass that
+# declares ``KindSpec.supports_chunk_selectors=True`` (news does) must be
+# able to parse that shape and return the ONE chunk it names — not the whole
+# document (a search hit's ``nc<id>`` used to route to a URL-validation
+# BadInput because the base ``get`` had zero selector grammar).
+
+#: ``<anything>~<digits>`` at the end of the string — the base's slugs never
+#: contain ``~`` (``_slug_for`` sanitises to alnum/``-``/``_``), so this
+#: can't collide with a real query/slug.
+_CHUNK_SELECTOR_RE = re.compile(r"^(.+)~(\d+)$")
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +358,19 @@ class CacheBackedHandler(Handler):
                     f"get(kind={self.spec.kind!r}, id='/recent') to list recent refs"
                 ),
             )
+
+        # Chunk selector: ``get(id='<slug>~<ord>')`` — the shape the
+        # dispatcher rewrites a resolved chunk handle (``nc<id>``) into for
+        # any kind declaring ``supports_chunk_selectors=True`` (gr311336).
+        # Gated on the explicit opt-in so kinds that never declared it
+        # (math/web/youtube/perplexity today) keep treating a literal
+        # ``~digits``-suffixed string as an ordinary query, unchanged.
+        if self.spec.supports_chunk_selectors and isinstance(id, str):
+            sel = _CHUNK_SELECTOR_RE.match(id.strip())
+            if sel is not None:
+                return self._render_chunk_selector(
+                    sel.group(1), int(sel.group(2)), tags=tags, untags=untags
+                )
 
         # ``mode=`` validation. Today only ``refresh`` is honoured —
         # bypass the freshness check, force ``_fetch``, write the
@@ -597,6 +630,53 @@ class CacheBackedHandler(Handler):
             tags=tags,
             untags=untags,
         )
+
+    def _render_chunk_selector(
+        self,
+        slug: str,
+        ord_: int,
+        *,
+        tags: list[str] | None,
+        untags: list[str] | None,
+    ) -> Response:
+        """Render ONE stored chunk of a cached ref — the ``slug~ord``
+        chunk-selector target (gr311336).
+
+        Never triggers a fetch: the slug must already be cached (a chunk
+        handle only exists for a chunk that's already in ``chunks``), so a
+        miss here is a clean ``NotFound`` rather than an upstream call.
+        """
+        cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
+        if cached is None:
+            raise NotFound(
+                f"{self.spec.kind} {slug!r} not found",
+                next=f"get(kind={self.spec.kind!r}, id='/recent') to list cached refs",
+            )
+        ref, _cache = cached
+        self._apply_tag_ops_if_any(ref.id, tags, untags)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        block = next((b for b in blocks if b.ord == ord_), None)
+        if block is None:
+            raise NotFound(
+                f"{self.spec.kind} {slug!r} has no chunk at ord={ord_}",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id={slug!r}, no_fetch=True) "
+                    "for the whole document"
+                ),
+            )
+        handle = (
+            handle_registry.try_format(self.spec.kind, block.id, chunk=True)
+            or f"{slug}~{ord_}"
+        )
+        lines = [
+            f"# {ref.title}",
+            f"_chunk {handle} of `{slug}` (ord={ord_})_",
+            "",
+            block.text,
+            "",
+            f"- {self.attribution}",
+        ]
+        return Response(body="\n".join(lines))
 
     def _attribute_touch(self, ref_id: int) -> None:
         """Attribute a freshly-created cache ref's chunks to the current
@@ -881,7 +961,12 @@ class CacheBackedHandler(Handler):
             title = ref.title
             if len(title) > 80:
                 title = title[:77] + "..."
-            lines.append(f"- `{ref.slug}` - {title}  _({day})_")
+            # Lead with the universal record handle (the stable address,
+            # gr311336 — the listing previously advertised only the slug,
+            # contradicting "the handle is its stable address").
+            handle = handle_registry.try_format(self.spec.kind, ref.id)
+            handle_part = f"`{handle}` " if handle else ""
+            lines.append(f"- {handle_part}`{ref.slug}` - {title}  _({day})_")
         lines.append("")
         # Only claim "of at most N" when the page was actually capped
         # (count == limit, so more may exist). At less than the cap the

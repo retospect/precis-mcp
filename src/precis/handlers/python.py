@@ -35,6 +35,7 @@ from precis.handlers import _python_render as render
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
 from precis.handlers._mode_help import require_mode
+from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._roots import parse_alias_roots
 from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import Handler, KindSpec
@@ -491,6 +492,7 @@ class PythonHandler(Handler):
         "edit",
     )
 
+    @_translate_readonly_fs
     def put(
         self,
         *,
@@ -538,7 +540,8 @@ class PythonHandler(Handler):
 
     # ── seven-verb surface ─────────────────────────────────────────
 
-    def edit(  # type: ignore[override]
+    @_translate_readonly_fs
+    def edit(
         self,
         *,
         id: str | int,
@@ -583,7 +586,8 @@ class PythonHandler(Handler):
             dry_run=dry_run,
         )
 
-    def delete(  # type: ignore[override]
+    @_translate_readonly_fs
+    def delete(
         self,
         *,
         id: str | int,
@@ -949,10 +953,26 @@ class PythonHandler(Handler):
             )
 
         if parsed.start_line is not None:
+            end_line = parsed.end_line or parsed.start_line
+            # A range that doesn't touch the file at all (start past EOF,
+            # or start below line 1) is a caller error, not something to
+            # silently clamp into an empty/misplaced splice — mirrors the
+            # GET-path check in ``_render_file`` (gr311337's follow-up):
+            # a write-path selector should reject the same way a read
+            # does, not clamp and edit the wrong lines.
+            text = (root / parsed.file).read_text(encoding="utf-8")
+            total_lines = len(text.splitlines())
+            if parsed.start_line < 1 or parsed.start_line > max(total_lines, 1):
+                raise BadInput(
+                    f"line range L{parsed.start_line}-{end_line} outside file "
+                    f"(1-{total_lines})",
+                    next=f"get(kind='python', id='{parsed.alias}/{parsed.file}', "
+                    f"view='outline')",
+                )
             return (
                 root / parsed.file,
                 mod,
-                (parsed.start_line, parsed.end_line or parsed.start_line),
+                (parsed.start_line, end_line),
             )
         if parsed.block_selector is not None:
             sym = _resolve_block_selector(mod, parsed.block_selector)
@@ -1150,12 +1170,26 @@ class PythonHandler(Handler):
         # Line-range selector → source slice (overrides view).
         if parsed.start_line is not None:
             text = (idx.root / mod.file).read_text(encoding="utf-8")
+            end_line = parsed.end_line or parsed.start_line
+            total_lines = len(text.splitlines())
+            # A range that doesn't touch the file at all (start past EOF,
+            # or start below line 1) is a caller error, not something to
+            # silently clamp into an empty slice (gr311337 — the inverted
+            # case already raised in `_parse_id`; this is the mirror check
+            # for the "entirely past EOF" case).
+            if parsed.start_line < 1 or parsed.start_line > max(total_lines, 1):
+                raise BadInput(
+                    f"line range L{parsed.start_line}-{end_line} outside file "
+                    f"(1-{total_lines})",
+                    next=f"get(kind='python', id='{parsed.alias}/{mod.file}', "
+                    f"view='outline')",
+                )
             return Response(
                 body=render.render_source(
                     text,
                     file_label=f"{parsed.alias}/{mod.file}",
                     start_line=parsed.start_line,
-                    end_line=parsed.end_line or parsed.start_line,
+                    end_line=end_line,
                 )
             )
 

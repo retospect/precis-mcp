@@ -1,13 +1,14 @@
 ---
 id: precis-fisheye-help
 title: precis — the fisheye neighborhood render (focus + context)
-summary: view='fisheye'/'fisheye+1hop' on a draft/plan/paper/patent/memory chunk — the extent ladder, the spatial neighborhood, the reference ring
+summary: view='fisheye'/'fisheye+1hop' on a draft or finding chunk — the extent ladder, the spatial neighborhood, the reference ring. Partial rollout — see "which kinds actually support this today".
 answers:
   - how do I read a chunk along with the text around it, not just the chunk itself?
   - what's the difference between the fisheye neighborhood and fisheye+1hop?
   - how is fisheye different from view='toc'?
   - does the fisheye neighborhood shape change per kind?
-applies-to: get(kind='draft'|'plan'|'paper'|'patent'|'web'|'datasheet'|'cfp'|'memory'|'finding'|..., view=)
+  - why does view='fisheye' on a paper or memory raise Unsupported?
+applies-to: get(kind='draft'|'finding', view=)
 status: active
 ---
 
@@ -18,6 +19,16 @@ node and get it **plus its surroundings**, scaled by distance — not a
 bare chunk floating with no context, and not the whole document either.
 It is pure assembly of data that already exists (reading order, chunk
 summaries/keywords, link edges) — no new storage, no background job.
+
+**Partial rollout.** `view='fisheye'`/`'fisheye+1hop'` is live on
+`get(kind='draft', …)` and `get(kind='finding', …)` today. Every other
+kind — `plan`, `paper`, `patent`, `web`, `datasheet`, `cfp`, `memory` —
+raises `Unsupported`; the per-kind renderer described below
+(`precis.utils.eye_render`) exists in code but isn't wired into those
+handlers' `view=` dispatch yet, so it's reachable only internally (the
+planner/dream working-set composer), not through `get()`. Don't infer
+availability from the shape of this skill — try the kind and read the
+error.
 
 ## Read a chunk with its surroundings
 ## What does view='fisheye' return?
@@ -107,17 +118,26 @@ A memory that's merely *about* the section but was never linked is a
 
 ## Per-kind scope — the neighborhood shape depends on the kind
 
-Rendering dispatches by kind — the ladder generalizes, the
-neighborhood shape does not:
+The renderer (`precis.utils.eye_render`) is written generically per
+kind-family, but each kind's `get(view=)` dispatch has to be wired to
+it separately — the ladder generalizes in code, live availability
+does not:
 
 - **Tree kinds** (`draft`, `plan`) — the reading-order span above.
+  **`draft` is live.** `plan` is not wired (`PlanHandler.get` has no
+  `extent=` kwarg and silently ignores one) — `view='fisheye'` on a
+  plan is `Unsupported`.
 - **Doc kinds** (`paper`, `patent`, `web`, `datasheet`, `cfp`) — no
-  heading tree, so the "neighborhood" is the per-chunk keyword-cluster TOC
-  (F20/ADR-0018) around the focused chunk: a whole-doc handle (`pa5`)
-  renders the **cluster map** (one row per cluster); a chunk handle
-  (`pc13234`) renders the **fisheye split within its cluster** —
-  before/after chunks as gloss lines, the eye chunk verbatim, every
-  *other* cluster collapsed to a label.
+  heading tree, so the "neighborhood" *would be* the per-chunk
+  keyword-cluster TOC (F20/ADR-0018) around the focused chunk: a
+  whole-doc handle (`pa5`) rendering the **cluster map** (one row per
+  cluster); a chunk handle (`pc13234`) rendering the **fisheye split
+  within its cluster** — before/after chunks as gloss lines, the eye
+  chunk verbatim, every *other* cluster collapsed to a label. **None
+  of these five kinds are wired today** — `view='fisheye'` on
+  `paper`/`patent`/`web`/`datasheet`/`cfp` raises `Unsupported`
+  (their `accepted_views()` lists don't include `fisheye`/
+  `fisheye+1hop`). Use `view='toc'` (`precis-toc-help`) instead.
 - **Link kinds** (`memory`, `finding`, and anything else not above) —
   the ref renders as its note (title → gist → body); `fisheye+1hop`
   grows the **link neighborhood** — every ref linked to it, either
@@ -129,16 +149,22 @@ neighborhood shape does not:
   `contradicts`, `refines`, `conjunct-of`, `motivated-by`), so a claim
   hub eye shows its evidence and its refines chain. A `finding` that is
   a claim hub additionally leads with its trust posture — see
-  `precis-finding-help`.
+  `precis-finding-help`. **`finding` is the only live link-kind eye.**
+  `memory` is not wired (`MemoryHandler`'s base-view allowlist is
+  `links`/`log`/`raw` only) — `view='fisheye'` on a memory raises
+  `Unsupported`; read a memory's link neighborhood via
+  `view='links'` instead.
 - **Skill eyes** (`sk:<slug>`) — file-backed, no corpus position, so
   there's no neighborhood to have: `kwd`/`none` collapse to a bookmark,
-  anything richer is the verbatim skill body.
+  anything richer is the verbatim skill body. Not directly reachable
+  through `get(kind='skill', …)` either (`accepted_views()` there is
+  `['toc']` only) — a skill eye only renders as a *neighbor* inside
+  another ref's `fisheye+1hop` ring.
 
 ```python
-get(kind="paper", id="pa5", view="fisheye")  # cluster map (whole-doc handle)
-get(kind="paper", id="pc13234", view="fisheye")  # fisheye split (chunk handle)
-get(kind="memory", id="me9", view="fisheye+1hop")  # note + its link neighborhood
-get(kind="finding", id="fi42", view="fisheye+1hop")  # hub + its claim graph
+get(kind="finding", id="fi42", view="fisheye+1hop")  # hub + its claim graph — LIVE
+# paper/patent/web/datasheet/cfp/plan/memory: view='fisheye' raises
+# Unsupported today — see the availability note above.
 ```
 
 ## Read the same neighborhood in a browser
@@ -155,11 +181,11 @@ overlay:
 
 `view='toc'` (`precis-toc-help`) is a **separate, recursive drill-down**
 render for long documents (paper/skill) — you pick a range, it
-re-clusters, you drill again. `fisheye` is the opposite move: you've
-already picked one node, and want its immediate surroundings rendered
-around it. A doc-kind whole-doc `fisheye` (the cluster map, above) looks
-similar to a top-level TOC but is centered on nothing in particular;
-focus a chunk handle to get an actual fisheye.
+re-clusters, you drill again, and it's the one that actually works on
+`paper`/`patent`/`web`/`datasheet`/`cfp` today. `fisheye` is the
+opposite move: you've already picked one node, and want its immediate
+surroundings rendered around it — live on `draft` and `finding` only
+(see the availability note above).
 
 ## See also
 
