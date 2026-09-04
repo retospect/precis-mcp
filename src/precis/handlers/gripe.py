@@ -53,7 +53,7 @@ class GripeHandler(NumericRefHandler):
             "The project's bug tracker. Numeric id assigned on "
             "create. Body + append-only comment timeline live as "
             "chunks. Status tracked via "
-            "STATUS:open|triaged|ready_for_fix|in_review|wontfix."
+            "STATUS:open|triaged|ready_for_fix|in_review|done|wontfix."
         ),
         supports_get=True,
         supports_search=True,

@@ -16,8 +16,8 @@ status: active
 
 Gripe is **the project's bug tracker**. File a complaint, find
 existing ones, add context as comments, hand off to an agent to
-prepare a candidate fix, retire when resolved. Same surface for
-humans and LLMs.
+prepare a candidate fix, close as `STATUS:done` when resolved
+(`delete` only junk/test artifacts). Same surface for humans and LLMs.
 
 The canonical address is the **handle** `gr<id>` (e.g. `gr42`) — copy
 it from search/get output.
@@ -347,8 +347,9 @@ citation audit emits findings and todos, not gripes.
 | `STATUS:triaged`       | Human reviewed; real; not yet ready     |
 | `STATUS:ready_for_fix` | Ready for a `fix_gripe` job to claim    |
 | `STATUS:in_review`     | A fix landed on a branch; awaits merge  |
+| `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
-| (deleted)              | Retired via `delete`; history preserved |
+| (deleted)              | Retired via `delete` — for junk/test artifacts and duplicates-with-nothing-to-keep; history preserved. A *fixed* gripe closes as `STATUS:done` (with a closing comment naming the fix), so the resolution stays searchable |
 
 ## See also
 

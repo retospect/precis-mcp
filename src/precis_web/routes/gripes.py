@@ -55,8 +55,9 @@ router = APIRouter(prefix="/gripes", tags=["gripes"])
 #: STATUS transitions the detail page offers, in workflow order.
 #: Mirrors ``GripeHandler.default_tags_on_create`` + the lifecycle
 #: documented in ``precis-gripe-help``. Deliberately no "done" button —
-#: a gripe whose fix has landed is *retired* (``delete``), not statused;
-#: see the ``retire`` route below.
+#: a close-as-done should name the fixing commit in a closing comment
+#: (the agents' flow), which a bare button click can't supply; the
+#: ``retire`` route below handles junk/test artifacts via ``delete``.
 STATUS_VALUES: tuple[str, ...] = (
     "open",
     "triaged",
@@ -66,16 +67,14 @@ STATUS_VALUES: tuple[str, ...] = (
 )
 
 #: Terminal STATUS values the "live" queue (and the nav badge,
-#: ``nav.py::_gripes_count``) excludes. ``wontfix`` is the vocabulary's
-#: own final state; ``done`` isn't in the gripe lifecycle at all
-#: (retire = ``delete``) but the STATUS axis vocabulary is a cross-kind
-#: union (``store/types.py::_CLOSED_VOCAB``), so agents drifting into
-#: the todo lifecycle do tag gripes ``STATUS:done`` — treat those as
-#: resolved, not live.
+#: ``nav.py::_gripes_count``) excludes. ``done`` = fixed/resolved
+#: (the documented terminal state since gr207238 blessed the de facto
+#: practice — see ``precis-gripe-help``'s lifecycle table); ``wontfix``
+#: = decided not to act. ``delete`` retires junk/test artifacts only.
 TERMINAL_VALUES: tuple[str, ...] = ("done", "wontfix")
 
 #: Every STATUS value the list can render, in display order — the
-#: transition vocabulary plus the tolerated ``done`` drift, terminal
+#: transition vocabulary plus the ``done`` terminal state, terminal
 #: states last. Drives the list's CASE-rank sort and grouping.
 _RANKED_VALUES: tuple[str, ...] = (
     "open",

@@ -87,6 +87,18 @@
 # no-op, same shape as 32's `/opt/asa/venv` stat guard. A real build failure
 # still reddens the deploy (`failed_when` honest on the build task itself).
 #
+# DAEMON-SIDE REGISTRY PREFLIGHT (gr307314, 2026-09-04): a build died in ~10s
+# unable to resolve/pull the BuildKit syntax frontend (`docker/dockerfile:1.7`)
+# — colima/lima's VM-side DNS forwarder had a dead recycled AWS IP cached for
+# registry-1.docker.io (TLS cert for a wrong domain, e.g. *.ezcld.net), while
+# the HOST's own resolver was healthy the whole time. The buildx preflight
+# above only checks the CLI plugin is present — nothing exercised daemon-side
+# registry reachability before the (expensive) build-context transfer. A new
+# pre-pull task below `docker pull`s the syntax frontend + base image THROUGH
+# the daemon right after the buildx preflight, so a poisoned VM resolver fails
+# fast with a diagnostic message instead of burning the context transfer; it
+# doubles as a warm pull cache for the build task that follows.
+#
 # Standalone runs:
 #   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_target_sha=<sha>
 #   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_force_agent_image_build=true
@@ -198,6 +210,60 @@
           self-heal task should have done this automatically — a red here means that
           install itself failed (check its output above).
 
+    # ── daemon-side registry pre-pull (gr307314) — fail fast, BEFORE the
+    # build-context transfer, on the SAME kind of daemon-side-only failure
+    # the buildx preflight above can't see (buildx presence != registry
+    # reachability through the daemon's own resolver).
+    - name: "Resolve the images the agent build needs (BuildKit syntax frontend + FROM base), from the controller's docker/Dockerfile"
+      when: agent_runtime.rc == 0
+      ansible.builtin.set_fact:
+        _agent_pull_refs: >-
+          {{
+            [
+              (lookup('file', playbook_dir + '/../../docker/Dockerfile').splitlines()[0]
+                | regex_replace('^# syntax=', '')),
+              'python:3.12-slim-bookworm@' ~
+                (lookup('file', playbook_dir + '/../../docker/Dockerfile')
+                  | regex_search('ARG PYTHON_DIGEST=(\S+)', '\1'))[0]
+            ] | unique
+          }}
+
+    - name: "Preflight: pre-pull build images through the docker daemon (gr307314 — warm cache + daemon-side registry reachability check)"
+      when: agent_runtime.rc == 0
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {% for ref in _agent_pull_refs %}
+        {{ _agent_container_bin }} pull {{ ref }}
+        {% endfor %}
+      args:
+        executable: /bin/bash
+      register: agent_pull_probe
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      changed_when: >-
+        'Downloaded newer image' in (agent_pull_probe.stdout | default(''))
+        or 'Pulled' in (agent_pull_probe.stdout | default(''))
+      retries: 3
+      delay: 30
+      until: agent_pull_probe.rc == 0
+      failed_when: false
+
+    - name: "Fail this host if the daemon-side registry pre-pull is still unreachable (gr307314)"
+      when: agent_runtime.rc == 0
+      ansible.builtin.assert:
+        that: agent_pull_probe.rc == 0
+        quiet: true
+        fail_msg: >-
+          {{ inventory_hostname }}: `{{ _agent_container_bin }} pull` failed after 3
+          attempts (rc={{ agent_pull_probe.rc }}) for {{ _agent_pull_refs | join(', ') }}
+          — gr307314: this is the known daemon-side DNS cache poisoning failure mode.
+          Symptoms: a TLS certificate for the WRONG domain (e.g. *.ezcld.net) or a
+          connection to a dead recycled IP for registry-1.docker.io, while the HOST's
+          own resolver is healthy (`curl https://registry-1.docker.io/v2/` succeeds from
+          the shell) — only the lima/colima VM's DNS forwarder has the poisoned cache
+          entry. Spaced retries alone don't reliably clear it. Remedy: `colima restart`
+          (or otherwise flush the lima forwarder's DNS cache), then re-run this play.
+
     - name: Read the resident precis-agent image's baked sha (OCI label)
       when: agent_runtime.rc == 0
       ansible.builtin.shell: |
@@ -292,8 +358,11 @@
           environment:
             DOCKER_BUILDKIT: "1"
           register: agent_build
-          retries: 2
-          delay: 10
+          # retries=3/delay=30 (was 2/10, gr307314): back-to-back retries hit
+          # the SAME poisoned daemon-side DNS cache entry every time — only a
+          # wider spacing gives a stale/expired record a chance to clear.
+          retries: 3
+          delay: 30
           until: agent_build.rc == 0
           changed_when: >-
             'Successfully' in (agent_build.stdout + agent_build.stderr)
