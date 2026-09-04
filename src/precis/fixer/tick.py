@@ -2,7 +2,7 @@
 
     pick (ready-gated proposals + promoted gripes) → build (Claude, host OAuth) → gate
       → [ship → deploy → look-at-prod → fix-forward]   (autonomy≥ship/full)
-      → report (by exception)
+      → report (by exception) → gripe write-back (comment + STATUS, gripe items only)
 
 Run once via ``scripts/fixer-tick`` (launchd, skip-on-battery). Serial
 by a lockfile: a second tick that finds the lock held **exits** rather
@@ -41,6 +41,7 @@ from pathlib import Path
 
 from precis.fixer.intake import WorkItem, all_items, pick_next
 from precis.fixer.report import Report, ReportStatus, emit_report
+from precis.fixer.writeback import gripe_writeback
 
 log = logging.getLogger("precis.fixer")
 
@@ -345,6 +346,44 @@ def _append_tick_log(work_dir: Path, item: WorkItem, report: Report) -> None:
         fh.write(line + "\n")
 
 
+# ── gripe write-back ───────────────────────────────────────────────
+
+#: Prefix distinguishes fixer-authored comments in the timeline and — just
+#: as important — never starts with ``DIAGNOSIS``, the diagnose_gripe
+#: promotion signal (``intake._is_diagnosed``) a write-back comment must
+#: not accidentally re-trigger.
+_WRITEBACK_PREFIX = "FIXER (auto):"
+
+
+def _gripe_outcome(
+    report: Report, autonomy: Autonomy, item: WorkItem
+) -> tuple[str, str | None]:
+    """The (comment, status) write-back for one gripe-kind tick's report.
+
+    ``status`` is ``None`` only for ``NEEDS_YOU`` — a build attempt that
+    didn't land leaves the gripe ``STATUS:open``; the local ``fix/grN``
+    branch surviving the tick (never cleaned up on a NEEDS_YOU return —
+    see ``run_tick``) is what stops a re-pick, not a status flip. Every
+    ``OK`` path flips to ``in_review``: even a full-autonomy ship+deploy
+    still wants a human look before the gripe is closed to done.
+    """
+    if report.status is ReportStatus.NEEDS_YOU:
+        head = "\n".join(report.detail.splitlines()[:3])
+        return f"{_WRITEBACK_PREFIX} build attempt did not land — {head}", None
+    if autonomy is Autonomy.REPORT:
+        return (
+            f"{_WRITEBACK_PREFIX} candidate fix built on branch {item.branch}; "
+            "quick gate green (ruff + mypy) — run /go to ship.",
+            "in_review",
+        )
+    if autonomy is Autonomy.SHIP:
+        return (
+            f"{_WRITEBACK_PREFIX} fix shipped to main (branch {item.branch}).",
+            "in_review",
+        )
+    return f"{_WRITEBACK_PREFIX} fix shipped + deployed; {report.detail}", "in_review"
+
+
 # ── orchestration ──────────────────────────────────────────────────
 
 
@@ -449,6 +488,14 @@ def run_tick(cfg: FixerConfig) -> TickResult:
             # squash-merged branch's commits aren't ancestors of the
             # squash commit, so -d would refuse.
             _git(cfg.repo_root, "branch", "-D", item.branch, check=False)
+        if (
+            result.report is not None
+            and item.kind == "gripe"
+            and item.ref_id is not None
+            and cfg.gripe_db_url
+        ):
+            comment, status = _gripe_outcome(result.report, cfg.autonomy, item)
+            gripe_writeback(cfg.gripe_db_url, item.ref_id, comment, status)
 
 
 def _run_script_in_worktree(worktree: Path, script: str, msg: str) -> tuple[bool, str]:

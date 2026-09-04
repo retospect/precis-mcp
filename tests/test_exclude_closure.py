@@ -304,7 +304,9 @@ def test_multi_record_handle_exclude_falls_back_for_dead_handle(store: Store) ->
     resolve_calls: list = []
     _spy(store, "resolve_handle", resolve_calls)
 
-    got = resolve_exclude_paper_ids([live_handle, dead_handle], store=store, kind="paper")
+    got = resolve_exclude_paper_ids(
+        [live_handle, dead_handle], store=store, kind="paper"
+    )
 
     assert got == {live}  # dead handle silently drops, same as before
     assert len(resolve_calls) == 1  # only the dead one falls back

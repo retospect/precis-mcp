@@ -287,10 +287,7 @@ def test_common_reviewer_fenced_example_not_expanded(skill: SkillHandler) -> Non
     body = _load_skill("precis-common-reviewer")
     assert body is not None
     assert "{{include doc:precis-common-reviewer#picky-reviewer-stance}}" in body
-    assert (
-        "{{include doc:precis-common-reviewer#output-findings-table-format}}"
-        in body
-    )
+    assert "{{include doc:precis-common-reviewer#output-findings-table-format}}" in body
     assert body.count("## Picky reviewer stance") == 1
     assert body.count("## Output findings table format") == 1
     # Fences balance -- no dangling ``` left by a mid-fence splice.

@@ -10,10 +10,12 @@ ride precis dispatch (which is content-only); precis
 is touched as both a source and a sink. As a source: proposals under
 ``docs/backlog/`` always, plus — behind the ``PRECIS_FIXER_GRIPE_DB``
 dial — promoted (open + ``auto-fix``-tagged + diagnosed) gripes, one
-normalized queue via ``intake.all_items``. As a sink: today just the
-report/status surface; writing back to a gripe (status flip, timeline
-comment) on build is a follow-on, not this slice. The proven ``/go``
-core (``scripts/ship`` + ``scripts/deploy``) is the deploy heart; this
+normalized queue via ``intake.all_items``. As a sink: the report/status
+surface always, plus — for a gripe-kind item — ``writeback.py`` reflects
+the build outcome onto the gripe itself (a timeline comment, and a
+``STATUS:in_review`` flip on every build that lands; a failed build
+comments without flipping status). The proven ``/go`` core
+(``scripts/ship`` + ``scripts/deploy``) is the deploy heart; this
 package is the autonomous intake + verify-and-fix wrap.
 
 Entry point: ``python -m precis.fixer.tick`` (via ``scripts/fixer-tick``).

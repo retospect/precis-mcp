@@ -144,9 +144,7 @@ class TestGapsStructureFanoutCap:
         gaps = quest_gaps(store, qid)
         kinds = [g.kind for g in gaps]
         assert kinds.count("needs-experiment") == len(graduated)
-        flagged_handles = {
-            g.handle for g in gaps if g.kind == "needs-experiment"
-        }
+        flagged_handles = {g.handle for g in gaps if g.kind == "needs-experiment"}
         assert flagged_handles == {f"st{sid}" for sid in graduated}
         assert "fanout-capped" not in kinds
 

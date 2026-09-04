@@ -38,7 +38,13 @@ from precis.fixer.tick import (
 )
 
 
-def _cfg(tmp_path: Path, repo_root: Path, autonomy: Autonomy) -> FixerConfig:
+def _cfg(
+    tmp_path: Path,
+    repo_root: Path,
+    autonomy: Autonomy,
+    *,
+    gripe_db_url: str | None = None,
+) -> FixerConfig:
     return FixerConfig(
         repo_root=repo_root,
         backlog_dir=repo_root / "docs" / "proposals",
@@ -50,6 +56,7 @@ def _cfg(tmp_path: Path, repo_root: Path, autonomy: Autonomy) -> FixerConfig:
         gate_cmds=(("true",),),
         discord_webhook=None,
         readyz_url=None,
+        gripe_db_url=gripe_db_url,
     )
 
 
@@ -201,3 +208,154 @@ def test_run_tick_report_mode_leaves_local_branch_in_place(
     # Deliberately left behind: a successor's `blocked-by` must keep
     # blocking until an actual ship happens.
     assert branch_exists(repo, item.branch) is True
+
+
+# ── run_tick: gripe write-back ───────────────────────────────────────
+
+
+def _gripe_item(**kwargs: Any) -> WorkItem:
+    base: dict[str, Any] = dict(
+        kind="gripe",
+        slug="gr42",
+        title="Something broke",
+        branch="fix/gr42",
+        spec_text="x",
+        ref_id=42,
+    )
+    base.update(kwargs)
+    return WorkItem(**base)
+
+
+def test_run_tick_calls_gripe_writeback_once_on_ok_report_autonomy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    cfg = _cfg(tmp_path, repo, Autonomy.REPORT, gripe_db_url="postgresql://example/db")
+    item = _gripe_item()
+
+    monkeypatch.setattr(tick_mod, "_spawn_claude", _fake_spawn_claude)
+    monkeypatch.setattr(tick_mod, "_autofix_lint", lambda worktree: None)
+    monkeypatch.setattr(
+        tick_mod, "_quick_gate", lambda cfg, worktree: (True, "gate green (fake)")
+    )
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
+
+    calls: list[tuple[Any, ...]] = []
+
+    def _record_writeback(*a: Any) -> bool:
+        calls.append(a)
+        return True
+
+    monkeypatch.setattr(tick_mod, "gripe_writeback", _record_writeback)
+
+    result = tick_mod.run_tick(cfg)
+
+    assert result.report is not None
+    assert result.report.status is ReportStatus.OK
+    assert len(calls) == 1
+    db_url, ref_id, comment, status = calls[0]
+    assert db_url == "postgresql://example/db"
+    assert ref_id == 42
+    assert comment.startswith("FIXER (auto):")
+    assert status == "in_review"
+
+
+def test_run_tick_calls_gripe_writeback_once_on_needs_you(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    cfg = _cfg(tmp_path, repo, Autonomy.REPORT, gripe_db_url="postgresql://example/db")
+    item = _gripe_item()
+
+    def _fake_spawn_claude_fails(
+        cfg: FixerConfig, cwd: Path, prompt: str, item: WorkItem
+    ) -> types.SimpleNamespace:
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(tick_mod, "_spawn_claude", _fake_spawn_claude_fails)
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
+
+    calls: list[tuple[Any, ...]] = []
+
+    def _record_writeback(*a: Any) -> bool:
+        calls.append(a)
+        return True
+
+    monkeypatch.setattr(tick_mod, "gripe_writeback", _record_writeback)
+
+    result = tick_mod.run_tick(cfg)
+
+    assert result.report is not None
+    assert result.report.status is ReportStatus.NEEDS_YOU
+    assert len(calls) == 1
+    db_url, ref_id, comment, status = calls[0]
+    assert db_url == "postgresql://example/db"
+    assert ref_id == 42
+    assert comment.startswith("FIXER (auto):")
+    assert status is None
+
+
+def test_run_tick_skips_writeback_for_proposal_kind(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    cfg = _cfg(tmp_path, repo, Autonomy.REPORT, gripe_db_url="postgresql://example/db")
+    item = _item()  # kind="proposal"
+
+    monkeypatch.setattr(tick_mod, "_spawn_claude", _fake_spawn_claude)
+    monkeypatch.setattr(tick_mod, "_autofix_lint", lambda worktree: None)
+    monkeypatch.setattr(
+        tick_mod, "_quick_gate", lambda cfg, worktree: (True, "gate green (fake)")
+    )
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
+
+    calls: list[tuple[Any, ...]] = []
+
+    def _record_writeback(*a: Any) -> bool:
+        calls.append(a)
+        return True
+
+    monkeypatch.setattr(tick_mod, "gripe_writeback", _record_writeback)
+
+    tick_mod.run_tick(cfg)
+
+    assert calls == []
+
+
+def test_run_tick_skips_writeback_when_gripe_db_url_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    cfg = _cfg(tmp_path, repo, Autonomy.REPORT, gripe_db_url=None)
+    item = _gripe_item()
+
+    monkeypatch.setattr(tick_mod, "_spawn_claude", _fake_spawn_claude)
+    monkeypatch.setattr(tick_mod, "_autofix_lint", lambda worktree: None)
+    monkeypatch.setattr(
+        tick_mod, "_quick_gate", lambda cfg, worktree: (True, "gate green (fake)")
+    )
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
+
+    calls: list[tuple[Any, ...]] = []
+
+    def _record_writeback(*a: Any) -> bool:
+        calls.append(a)
+        return True
+
+    monkeypatch.setattr(tick_mod, "gripe_writeback", _record_writeback)
+
+    tick_mod.run_tick(cfg)
+
+    assert calls == []

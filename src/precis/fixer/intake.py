@@ -23,9 +23,10 @@ Three risky small bits flagged at design time live here:
   fully dark and **no store/DB import is attempted** —
   :func:`gripe_items` imports :mod:`precis.store` lazily, only when
   called with a URL, so the proposals-only path never pays for it and
-  never needs a DB reachable. This slice is read-only: SELECT the
-  promoted gripe + its timeline, never write back (status flip /
-  timeline append on build is a follow-on).
+  never needs a DB reachable. This module is read-only: SELECT the
+  promoted gripe + its timeline; write-back (status flip / timeline
+  append on build) is :mod:`precis.fixer.writeback`, called from
+  ``tick.py`` once a picked gripe finishes building.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ class WorkItem:
     model: str | None = None  # front-matter "model:" tier (sonnet/opus/haiku)
     blocked_by: str | None = None  # front-matter "blocked-by:" predecessor slug
     prio: str = "normal"  # front-matter "prio:" bucket — high | normal | low
+    ref_id: int | None = None  # gripe refs.id (unset for proposals) — writeback key
 
 
 def parse_front_matter(text: str) -> dict[str, str]:
@@ -271,6 +273,7 @@ def _work_item_from_gripe(
         spec_text=_render_gripe_spec(title, entries),
         model=None,
         prio=_gripe_prio_bucket(prio),
+        ref_id=ref_id,
     )
 
 

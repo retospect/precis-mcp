@@ -39,9 +39,10 @@ failed `diagnose_gripe` jobs so the scan re-mints (done for the 08-14→16
 casualties in the same session).
 
 Follow-ons parked at build time (all small, none blocking arming):
-- Fixer lane write-back: append a timeline note / flip STATUS on the
-  gripe when a build lands, so the gripe reflects the pushed branch
-  (v1's sink is the report + branch only).
+- Fixer lane write-back: SHIPPED (`precis/fixer/writeback.py`) — every
+  build outcome appends a timeline comment; a landed build (report/ship/
+  full autonomy) also flips `STATUS:in_review`, a failed build comments
+  without flipping status.
 - Canary verify via boot-id epoch (`src/precis/liveness.py`) instead of
   heartbeat freshness — stronger "actually restarted onto new code".
 - Re-diagnosis staleness window (v1: one diagnosis per gripe ever,

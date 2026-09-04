@@ -418,9 +418,7 @@ class TestJob:
         # parent_id — that's orthogonal to what this test is pinning:
         # search()'s link= handling, not put()'s).
         job_ref = job.store.insert_ref(kind="job", slug=None, title="fix attempt")
-        job.store.add_link(
-            src_ref_id=job_ref.id, dst_ref_id=gripe_id, relation="fixes"
-        )
+        job.store.add_link(src_ref_id=job_ref.id, dst_ref_id=gripe_id, relation="fixes")
 
         body = job.search(link=f"gripe:{gripe_id}").body
         assert "1 job entr" in body
@@ -437,9 +435,7 @@ class TestJob:
         body = job.search(link=f"gripe:{gripe_id}").body
         assert "no job entries linked to" in body
 
-    def test_search_no_q_no_tags_no_link_still_rejected(
-        self, job: JobHandler
-    ) -> None:
+    def test_search_no_q_no_tags_no_link_still_rejected(self, job: JobHandler) -> None:
         with pytest.raises(BadInput, match="requires q= or tags= or link="):
             job.search()
 

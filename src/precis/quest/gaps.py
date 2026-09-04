@@ -223,8 +223,7 @@ def quest_gaps(
             Gap(
                 kind="needs-experiment",
                 detail=(
-                    "graduated candidate needs a real-world experiment — "
-                    f"{title[:60]}"
+                    f"graduated candidate needs a real-world experiment — {title[:60]}"
                 ),
                 handle=_handle("structure", r.id),
             )

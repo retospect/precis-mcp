@@ -243,13 +243,7 @@ def test_includer_with_docresolver_e2e() -> None:
 
 
 def test_parse_directives_skips_fenced_code_block() -> None:
-    text = (
-        "before\n"
-        "```\n"
-        "{{include doc:a#b}}\n"
-        "```\n"
-        "after {{include doc:c#d}}\n"
-    )
+    text = "before\n```\n{{include doc:a#b}}\n```\nafter {{include doc:c#d}}\n"
     ds = parse_directives(text)
     assert [d.label() for d in ds] == ["doc:c#d"]
 
@@ -293,14 +287,7 @@ def test_self_referential_fenced_example_is_not_expanded() -> None:
     syntax inside a fenced example, where the shown directive happens
     to resolve against a section of the very same doc, must not
     self-expand and duplicate that section."""
-    body = (
-        "Example:\n"
-        "```\n"
-        "{{include doc:self#foo}}\n"
-        "```\n"
-        "## Foo\n"
-        "foo body\n"
-    )
+    body = "Example:\n```\n{{include doc:self#foo}}\n```\n## Foo\nfoo body\n"
     includer = Includer(resolvers={"doc": DocResolver(docs={"self": body})})
     out = includer.expand(body)
     assert out == body
