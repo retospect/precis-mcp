@@ -513,11 +513,7 @@ def test_covering_tests_for_file_attributes_inner_lines_of_short_circuit_and_cha
     """
     src_path = tmp_path / "mod_under_test.py"
     src_path.write_text(
-        "def check(x, y):\n"
-        "    return (\n"
-        "        x > 0\n"
-        "        and y > 0\n"
-        "    )\n",
+        "def check(x, y):\n    return (\n        x > 0\n        and y > 0\n    )\n",
         encoding="utf-8",
     )
     cov_path = tmp_path / ".coverage"
