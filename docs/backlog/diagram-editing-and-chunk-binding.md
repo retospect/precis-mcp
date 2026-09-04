@@ -11,12 +11,16 @@ validation/render/export, the `diagram_propose` tick executor, and the
 
 ## Open scope (residuals)
 
-- **Engine gaps:** gantt / pie / sankey / C4 / block don't render —
-  the in-process QuickJS engine lacks browser globals (offsetWidth,
-  structuredClone, …). Bump `mermaidx` when upstream ships a fuller
-  shim, evaluate termaid, or polyfill the cheap globals
-  (`precis-mermaid-unsupported` steers models to renderable
-  alternatives meanwhile). Owner: `src/precis/mermaid/mermaid.py`.
+- **Engine gaps:** sankey-beta / block-beta don't render — the
+  in-process QuickJS engine lacks some browser globals mermaid.js
+  reaches for. gantt / pie / C4Context used to be on this list too;
+  the `mermaidx>=0.9` bump (gr311345, 2026-09-04) fixed them —
+  the stale skill claim (promising validate-fail for all five) was
+  the actual gr311345 bug, not a missing put-time check (put already
+  validates via the real engine). Bump `mermaidx` further when
+  upstream covers sankey/block, evaluate termaid, or polyfill the
+  remaining globals (`precis-mermaid-unsupported` steers models to
+  renderable alternatives meanwhile). Owner: `src/precis/mermaid/mermaid.py`.
 - **`diagram_propose`:** render richer per-kind seed content (a
   figure's SVG, a cad cross-section) instead of a titled reference.
 - **Self-directed drawer:** mermaid L1/L2 auto-context (owning-draft

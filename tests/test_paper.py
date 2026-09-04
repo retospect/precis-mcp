@@ -139,19 +139,36 @@ class TestResolveDoi:
         with pytest.raises(NotFound, match="DOI .* not ingested"):
             _maybe_resolve_doi(store, "10.9999/nope")
 
-    def test_unknown_doi_hint_has_no_empty_scope_placeholder(
-        self, store: Store
-    ) -> None:
-        """The chase-target hint must not carry an unfilled ``scope={}``
-        placeholder — it should show a concrete example dict (#39253)."""
+    def test_unknown_doi_hint_suggests_accepted_paper_stub(self, store: Store) -> None:
+        """The chase-target hint must point at a call the corresponding
+        handler actually accepts, not the rejected
+        ``cited_in='doi:...'`` shape (gr311341, #39253's ``scope={}``
+        placeholder concern no longer applies — the headline recovery
+        isn't a ``finding`` put anymore).
+
+        ``FindingHandler._resolve_cited_in`` only resolves corpus
+        handles (see precis-finding-help): a bare ``doi:`` target fails
+        with "unknown kind 'doi' in link target". The DOI has to become
+        a real paper stub — via ``put(kind='paper', doi=...)`` — before
+        any chunk exists for ``cited_in`` to point at.
+        """
         _seed_paper(store, doi="10.1/x")
         with pytest.raises(NotFound) as exc_info:
             _maybe_resolve_doi(store, "10.9999/nope")
         hint = exc_info.value.next
         assert hint is not None
         hint_text = hint if isinstance(hint, str) else " ".join(hint)
-        assert "scope={}" not in hint_text
-        assert "scope={'electrode': 'Cu'" in hint_text
+        # The rejected shape must be gone.
+        assert "cited_in='doi:" not in hint_text
+        # The headline recovery mints the stub directly — the call
+        # ``put(kind='paper', doi=...)`` actually accepts (see
+        # ``PaperHandler.put``).
+        assert "put(kind='paper', doi='10.9999/nope')" in hint_text
+        # Any follow-on ``finding`` mention must use a corpus-handle
+        # shape (``cited_in='<slug>~0'``), never a bare doi target.
+        verb, kwargs = parse_command("put(kind='paper', doi='10.9999/nope')")
+        assert verb == "put"
+        assert kwargs == {"kind": "paper", "doi": "10.9999/nope"}
 
     def test_get_by_doi_end_to_end(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")

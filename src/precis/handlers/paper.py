@@ -2359,17 +2359,26 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
     doi, selector = m.group(1), (m.group(2) or "")
     slug = store.find_paper_slug_by_doi(doi)
     if slug is None:
+        # The old headline recovery here was
+        # ``put(kind='finding', cited_in='doi:{doi}', ...)`` —
+        # ``FindingHandler._resolve_cited_in`` explicitly rejects a bare
+        # ``doi:`` (only corpus handles resolve, per precis-finding-help),
+        # so it failed 100% of the time (gr311341). The DOI has to
+        # become a real paper stub — and get fetched/ingested — before
+        # any chunk exists for ``cited_in`` to point at. Mirrors the fix
+        # already applied to the DOI-miss branch of
+        # ``PaperSearchResultRenderer.render`` in ``_paper_search.py``.
         raise NotFound(
             f"paper with DOI {doi!r} not ingested",
             next=(
-                f"put(kind='finding', title='<short claim>', body='<...>', "
-                f"cited_in='doi:{doi}', "
-                "scope={'electrode': 'Cu', 'ambient': 'N2'})  "
-                "to register the DOI as a chase target; the fetcher "
-                "(Unpaywall/arXiv/S2) will try to pull the PDF next "
-                "pass. Alternatively: search(kind='paper', q='<title>') "
-                "for an existing slug. Legacy: append to "
-                f"./request_doi.md (deprecated)."
+                f"put(kind='paper', doi='{doi}')  to mint a stub for "
+                "this DOI — the fetcher (Unpaywall/arXiv/S2) tries an "
+                "OA pull next pass. Once it's ingested, "
+                "put(kind='finding', title='<short claim>', "
+                "body='<...>', cited_in='<slug>~0') registers a claim "
+                "against its first chunk — cited_in wants a corpus "
+                "chunk handle, not a bare 'doi:'. Alternatively: "
+                "search(kind='paper', q='<title>') for an existing slug."
             ),
         )
     return slug + selector

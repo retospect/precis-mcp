@@ -242,6 +242,47 @@ def test_compile_valid_and_invalid() -> None:
     assert err and "arse error" in err  # mermaid's "Parse error on line …"
 
 
+# ── gr311345: precis-mermaid-unsupported's list vs the real engine ─────────
+#
+# The skill used to claim gantt/pie/sankey-beta/C4Context/block-beta all
+# "validate-fail" on write. put()/edit() already run the real mermaidx
+# engine at write time (DiagramHandler._validate_source → LANG.parse_error),
+# so there was never a missing check — but the mermaidx>=0.9 bump quietly
+# fixed gantt/pie/C4Context, leaving the skill's blanket claim stale (a type
+# it called unsupported now writes silently, matching the reported symptom).
+# These lock in which types the *current* pinned engine actually rejects, so
+# a future mermaidx bump/regression is caught here instead of by a stale doc.
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        'pie title Pets\n  "Dogs" : 40\n  "Cats" : 60',
+        "gantt\n    title A Gantt Diagram\n    dateFormat YYYY-MM-DD\n"
+        "    section Section\n    A task          :a1, 2014-01-01, 30d",
+        'C4Context\n    Person(customerA, "Banking Customer A", "desc")\n'
+        '    System(SystemAA, "Internet Banking System", "desc")\n'
+        '    Rel(customerA, SystemAA, "Uses")',
+    ],
+)
+def test_previously_claimed_unsupported_types_now_compile(src: str) -> None:
+    pytest.importorskip("mermaidx")
+    assert LANG.parse_error(src) is None
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "sankey-beta\n\nAgricultural,Bio-conversion,124.729\n"
+        "Bio-conversion,Liquid,42.6",
+        "block-beta\ncolumns 3\na b c",
+    ],
+)
+def test_genuinely_unsupported_types_still_fail_to_compile(src: str) -> None:
+    pytest.importorskip("mermaidx")
+    assert LANG.parse_error(src) is not None
+
+
 # ── handler ────────────────────────────────────────────────────────────────
 
 
@@ -272,6 +313,35 @@ def _source_chunk_id(store, ref_id: int) -> int:
         if c.chunk_kind == "mermaid_node":
             return c.chunk_id
     raise AssertionError("no mermaid_node")
+
+
+def test_put_rejects_genuinely_unsupported_diagram_type(store, mh) -> None:
+    # gr311345: put already runs the real engine at write time — a source the
+    # engine truly can't render (sankey-beta) must raise, not silently create.
+    pytest.importorskip("mermaidx")
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput):
+        mh.put(
+            id="flow-sankey",
+            title="Flow",
+            text="sankey-beta\n\nAgricultural,Bio-conversion,124.729",
+        )
+    assert store.get_ref(kind="mermaid", id="flow-sankey") is None
+
+
+def test_put_accepts_pie_diagram_now_supported_by_the_engine(store, mh) -> None:
+    # gr311345: pie used to be on the "unsupported" skill list; mermaidx>=0.9
+    # renders it fine, so put must succeed (this was reported as a "silent"
+    # success — it's correct behaviour, not a validation gap).
+    pytest.importorskip("mermaidx")
+    out = mh.put(
+        id="pets",
+        title="Pets",
+        text='pie title Pets\n  "Dogs" : 40\n  "Cats" : 60',
+    )
+    assert "created mermaid 'pets'" in out.body
+    assert store.get_ref(kind="mermaid", id="pets") is not None
 
 
 def test_put_creates_and_get_renders(store, mh, diagram) -> None:
