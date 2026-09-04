@@ -36,6 +36,18 @@
 # deliberately out of scope; stopping those needs a liveness judgment
 # (scripts/inflight), not a file test.
 #
+# Network-only sweep (gr311857): the container-label reconciliation above
+# needs a container to read the worktree path off. A project that never has
+# one left (a bare `docker network create`, or the last container gone via
+# some path other than `down -v`) leaves an orphaned `precis-test-*_default`
+# network sitting on the Docker daemon's address-pool ceiling forever — the
+# structural cause of gr311857 (fresh worktrees locked out of minting their
+# first network once the fleet's pool fills up). Since a network carries no
+# path label to reconcile against, that half instead asks the inverse
+# question — "does any CURRENT git worktree still mint this project name?" —
+# via the same `compose_project_for` every caller uses, so it can never
+# disagree with what scripts/test/scripts/dev/scripts/ship would create next.
+#
 # Note on volumes: docker/dev/compose.yaml declares no named volumes (pgdata
 # lives on the container overlay), so `down -v` is belt-and-braces — there is
 # no dangling-volume population for this to miss.
@@ -102,6 +114,53 @@ while IFS='|' read -r proj cfg; do
 done < <(docker ps -a --format \
     '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.config_files"}}' \
     2>/dev/null)
+
+# Network-only sweep (gr311857): `docker compose up -d` mints the project's
+# ONE network for its whole lifetime, but a `run --rm` container (scripts/
+# test's/scripts/dev's test/tool invocations) never sticks around, and even
+# the persistent `precis-test-db` container can go missing without the
+# network following it (a half-finished `compose down`, a manual `docker rm`,
+# `docker container prune`, …). Those networks are invisible to the
+# container-label sweep above (SEEN only ever holds projects that still have
+# AT LEAST ONE container) — and they still count against the Docker daemon's
+# address-pool ceiling (gr311857: observed pegged at the ~32-network cap,
+# starving new worktrees of their first network). So: also look at bare
+# networks and, for any `precis-test-*` project with NO container at all
+# (not in SEEN), tear it down UNLESS a currently-existing git worktree would
+# still mint that exact project name — computed the same way scripts/test/
+# scripts/dev/scripts/ship do, via compose_project_for, never by trying to
+# invert the (deliberately non-injective) project name back into a path.
+# Best-effort throughout: a missing git/compose-project.sh, or a `docker
+# network rm` racing a concurrent reaper, must never fail this hook.
+ROOT="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P || true)"
+if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
+    && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    source "$ROOT/scripts/lib/compose-project.sh"
+    LIVE_PROJECTS=""
+    while IFS= read -r wt_path; do
+        [ -z "$wt_path" ] && continue
+        p="$(compose_project_for "$wt_path" 2>/dev/null || true)"
+        [ -n "$p" ] && LIVE_PROJECTS="$LIVE_PROJECTS $p"
+    done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+
+    while IFS='|' read -r net proj; do
+        [ -z "$net" ] && continue
+        case "$proj" in
+            precis-test-*) ;;
+            *) continue ;;
+        esac
+        case " $SEEN " in *" $proj "*) continue ;; esac   # has a container — handled above
+        case " $LIVE_PROJECTS " in *" $proj "*) continue ;; esac   # a live worktree still owns this name
+
+        if [ "$DRY_RUN" = 1 ]; then
+            REAPED+=("$net")
+            continue
+        fi
+        if docker network rm "$net" >/dev/null 2>&1; then
+            REAPED+=("$net")
+        fi
+    done < <(docker network ls --format '{{.Name}}|{{.Label "com.docker.compose.project"}}' 2>/dev/null)
+fi
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
     echo "reap-test-dbs: nothing to reap"

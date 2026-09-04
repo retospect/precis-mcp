@@ -27,7 +27,14 @@ if [[ ! -f "${INFRA_COMPOSE}" ]]; then
     exit 1
 fi
 
+# Per-worktree compose project so this worktree's one-off run doesn't collide
+# with every sibling's on the default project name `dev` (gr176375's fix for
+# scripts/test/scripts/ship, extended here — gr311857). See
+# scripts/lib/compose-project.sh.
+source "${WORKTREE}/scripts/lib/compose-project.sh"
+COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+
 # `--no-deps` skips bringing up any depends_on services. precis-dev has
 # none right now, but make it explicit so we never accidentally spin up
 # heavier siblings (acatome-watch, corpus-server).
-exec docker compose -f "${INFRA_COMPOSE}" --profile dev run --rm --no-deps -v "${WORKTREE}":/app precis-dev "$@"
+exec docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev run --rm --no-deps -v "${WORKTREE}":/app precis-dev "$@"
