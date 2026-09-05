@@ -49,7 +49,9 @@ from precis.cad.scene import (
     build_design,
     expand_instances,
     instance_slug,
+    mates_of,
     parse_source,
+    ports_of,
 )
 from precis.cad.vec import Vec3, vec3
 from precis.cad_resolve import design_resolver
@@ -530,9 +532,26 @@ class CadHandler(Handler):
                     "pose": self._pose(node),
                 }
             )
-        return render_agent_table(
+        out = render_agent_table(
             rows, schema=["handle", "name", "part", "op", "config", "pose"]
         )
+        return out + self._interfaces_block(spec)
+
+    def _interfaces_block(self, spec: Any) -> str:
+        """The design's ports and mates, appended under the node tree.
+
+        Neither is a node, so neither has a row above — but they are the
+        assembly's whole structure. Rendered as the source lines the author
+        wrote, so the reply doubles as the text to hand back to ``put``.
+        """
+        try:
+            ports, mates = ports_of(spec), mates_of(spec)
+        except SceneError:  # pragma: no cover - malformed stored meta
+            return ""
+        if not ports and not mates:
+            return ""
+        lines = ["", *(p.to_source() for p in ports), *(m.to_source() for m in mates)]
+        return "\n".join(lines) + "\n"
 
     def _render_node(self, chunk_id: int) -> Response:
         rec = self.store.cad_node(chunk_id)
@@ -559,6 +578,13 @@ class CadHandler(Handler):
             )
         except Exception:  # pragma: no cover - bbox is best-effort
             pass
+        # Ports are the design's advertised interfaces — "does anything here
+        # have a NEMA-17 face?" is a search, not a geometry query.
+        try:
+            port_names = ", ".join(pt.name for pt in ports_of(spec))
+        except SceneError:  # pragma: no cover - malformed stored meta
+            port_names = ""
+        ports = f" Ports: {port_names}." if port_names else ""
         intent = ""
         desc = (spec.meta.get("description") or "").strip()
         use = (spec.meta.get("use") or "").strip()
@@ -568,7 +594,7 @@ class CadHandler(Handler):
             intent += f" Used for: {use}"
         return (
             f"{title} (CAD design).{intent} Parts: {comps}. "
-            f"Features: {names}. Shapes: {shapes}.{dims}"
+            f"Features: {names}. Shapes: {shapes}.{ports}{dims}"
         )
 
     def _interference_note(self, design: Any, spec: Any) -> str:

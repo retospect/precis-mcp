@@ -342,3 +342,66 @@ def test_use_of_retired_design_is_bad_input(cad):
     cad.delete(id="standoff")
     with pytest.raises(BadInput, match="not found"):
         cad.get(id="deck", view="volume")
+
+
+# ── ports + mates (assembly by interface) ────────────────────────────────
+_MOTOR = """
+component body
+case  add  box:w42d42h40
+port shaft @0,0,40
+"""
+
+
+def test_ports_and_mates_round_trip_through_the_store(cad):
+    cad.put(id="motor", text=_MOTOR)
+    cad.put(
+        id="rig",
+        text="port deck @0,0,100\nuse motor as m\nmate m.shaft to deck\n",
+    )
+    # ports/mates live on refs.meta, so they must survive the save→load trip
+    body = cad.get(id="rig").body
+    assert "port deck @0,0,100" in body
+    assert "mate m.shaft to deck" in body
+    # ...and the mate must actually have placed the motor: its case runs from
+    # z=60 up to the deck at z=100, so a point inside that span is material.
+    hit = cad.get(id="rig", view="point", args={"p": [0, 0, 90]})
+    assert "m.case" in hit.body
+
+
+def test_mated_design_exports_without_ports(cad):
+    cad.put(id="motor", text=_MOTOR)
+    cad.put(id="rig", text="port deck @0,0,100\nuse motor as m\nmate m.shaft to deck\n")
+    scad = cad.get(id="rig", view="scad").body
+    # a port is a frame, never geometry — nothing named `port` reaches export
+    assert "port" not in scad
+    assert "cube" in scad
+
+
+def test_ports_go_into_the_search_card(cad, store):
+    cad.put(id="motor", text=_MOTOR)
+    ref = store.get_ref(kind="cad", id="motor")
+    with store.pool.connection() as conn:
+        (card,) = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
+            (ref.id,),
+        ).fetchone()
+    # designs are findable by the interfaces they advertise, not just shapes
+    assert "Ports: shaft" in card
+
+
+def test_over_constrained_mate_is_bad_input(cad):
+    cad.put(id="motor", text=_MOTOR)
+    with pytest.raises(BadInput, match="both mated and explicitly placed"):
+        cad.put(
+            id="rig",
+            text="port deck @0,0,0\nuse motor as m @1,2,3\nmate m.shaft to deck\n",
+        )
+
+
+def test_mate_to_an_undeclared_port_is_bad_input(cad):
+    cad.put(id="motor", text=_MOTOR)
+    with pytest.raises(BadInput, match="has no port 'flange'"):
+        cad.put(
+            id="rig",
+            text="port deck @0,0,0\nuse motor as m\nmate m.flange to deck\n",
+        )

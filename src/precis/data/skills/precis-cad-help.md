@@ -101,6 +101,55 @@ it is, and the exports carry it as a named body like any other component.
 - Edit the sub-design and every assembly using it picks the change up on
   its next read; there is no stale copy to re-sync.
 
+### Assemble by interface — `port` and `mate`
+
+Typing world coordinates for every sub-assembly is where designs (and
+models) drift. Declare a **port** — a named frame on a design — and let a
+**mate** compute the pose:
+
+```python
+put(kind="cad", id="nema17", text="""
+component body
+case   add  box:w42d42h40
+port   shaft  @0,0,40          # the output face, 40 mm up its own z
+""")
+
+put(kind="cad", id="drivetrain", text="""
+port deck @0,0,12                # a frame on THIS design
+
+use gearbox as g
+use nema17  as m
+
+mate g.input to deck             # anchor = one of this design's ports
+mate m.shaft to g.output flip    # anchor = another instance's port
+""")
+```
+
+- `port <name> [@x,y,z] [rot:rx,ry,rz]` is a **top-level directive** like
+  `component` / `use` — it names a frame, not geometry, so it never becomes
+  a node, never appears in a probe, and never exports.
+- `mate <instance>.<port> to <anchor> [flip] [spin:<deg>]` places
+  `<instance>`. The anchor is either `<port>` (this design's own, fixed) or
+  `<instance>.<port>` (another instance, posed first).
+- **The default is coincidence** — the two frames land exactly on top of
+  each other, same origin, same axes. That is "put your connection point
+  right here". `flip` adds an explicit 180° about x (the two faces then
+  oppose, which is what you want for a shaft entering a bore); `spin:<deg>`
+  rotates about the port's z, for clocking a bolt pattern.
+- Addressing is **one level**: `m.shaft`, not `m.inner.shaft`.
+- An instance with no mate sits where you placed it (the origin by default)
+  — a frame or base part needs no mate.
+
+Refused at `put`, each naming the offender: mating an instance twice, or
+mating one that also carries `@`/`rot:` (both over-constrained — a mate
+already fixes all six DOF); mating a `polar:`/`linear:` instance; a mate
+cycle (`a` mated to `b` mated to `a`); an unknown instance or port (the
+error lists the ports the design actually declares).
+
+Ports are also **searchable**: they go into the design's one card, so
+`search(kind='cad', q='nema17 mount port')` finds designs by the interfaces
+they advertise.
+
 ### Describe what it's *for* — `desc:` / `use:`
 
 Add free-text lines so the design is findable by purpose, not just by

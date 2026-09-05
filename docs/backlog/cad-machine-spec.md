@@ -87,11 +87,11 @@ as a real multi-body assembly; `connectivity` reports contacts across the
 instance boundary; a cycle is a clean `BadInput`; the no-instance path is
 unchanged.
 
-## Slice 2 — ports + mates
+## Slice 2 — ports + mates — **SHIPPED**
 
-`port drive @0,0,12 rot:0,0,0` declares a named interface on a component;
+`port drive @0,0,12 rot:0,0,0` declares a named frame on a design;
 `mate motor.shaft to gearbox.drive` places one instance by making its port
-coincide with another's (with the usual flip convention: mating faces oppose).
+coincide with another's.
 
 Machines are assembled by mating named interfaces, not by typing world
 coordinates. This is also the largest **LLM authoring** win available: today
@@ -104,9 +104,80 @@ pose from an already-placed one) — a spanning tree over the mate graph, not a
 general constraint solver. Over-constrained or cyclic mate graphs are a
 `SceneError` naming the cycle. A general iterative solver is out of scope.
 
-**Acceptance:** a two-part assembly authored with zero world coordinates
-builds to the same geometry as the hand-placed version; an unreachable
-(unmated, unplaced) instance is reported at `put`.
+### Decisions taken during the build
+
+**Persistence: `spec.meta`, not pseudo-nodes.** Ports and mates round-trip as
+`spec.meta['ports']` / `spec.meta['mates']` (lists of plain dicts), which
+`cad_save`/`cad_load` already carry verbatim through `refs.meta` — so, like
+slice 1, **no migration**. The rejected alternative was a `cad_nodes` row with
+`config="port:"` (the slice-1 trick). A port is a *frame* and a mate is a
+*placement constraint*; neither is geometry. As a node row, every consumer that
+iterates `spec.nodes` — `build_design`, `to_openscad`, tessellate, the card
+text, the node-handle map, the web tree — would have to learn to skip them, and
+each missed filter is a wrong solid or a broken export rather than a visible
+error.
+
+**Default is frame coincidence, `flip` is opt-in** — a deviation from the
+"mating faces oppose" line this file originally carried. An authored port frame
+reads as *"put the other thing's connection point right here"*, which is
+coincidence; and an LLM gets coincidence right without holding a surface-normal
+convention in its head, whereas an implicit 180° flip is exactly the kind of
+invisible convention it gets backwards. `flip` (a literal `Rx(180)`) and
+`spin:<deg>` (about the port z) are explicit modifiers.
+
+**Placement math.** With `P_s` the subject port's frame inside its sub-design,
+`P_a` the anchor port's frame in this design's coordinates, the moving
+instance's pose is
+
+```
+X = P_a ∘ Rz(spin) ∘ (Rx(180) if flip) ∘ inv(P_s)
+```
+
+solved in topological order over the mate graph, then handed to the existing
+slice-1 inliner as the instance node's `loc`/`rot`. Solved poses are ephemeral
+— the stored spec keeps the `mate` line, exactly as it keeps the `use` line.
+
+**Addressing is one level.** A mate subject is `<instance>.<port>`; an anchor is
+either `<port>` (this design's own, fixed in the design frame) or
+`<instance>.<port>`. Re-exporting a nested sub-assembly's port
+(`b1.inner.drive`) is deliberately out of slice 2.
+
+**Expansion consumes the mates.** `expand_instances` drops `meta['mates']`
+from what it returns, because the solved poses are baked into the inlined
+nodes and the instances the mates addressed no longer exist. Found by test:
+`build_design` re-expands whatever it is handed, so an already-expanded spec
+was re-solving mates against a node list that no longer had any instances.
+Ports are kept — they still describe the design's interfaces, and the search
+card reads them off the expanded spec.
+
+**The node tree grew an interfaces block.** `get(id=…)` renders a node table,
+and neither a port nor a mate is a node — so without this an agent could
+author an assembly and then have no way to read back its structure. They are
+appended under the table as the source lines the author wrote, so the reply
+doubles as text to hand straight back to `put`.
+
+**Refused combinations** (each a `SceneError`, so they surface as `BadInput` at
+`put`): a mate subject that also carries an explicit `@`/`rot:`
+(over-constrained); two mates on the same instance (over-constrained); a
+patterned instance as a mate subject *or* anchor (a mate places one body against one frame; a `polar:` instance is neither); a cycle in the mate graph; an unknown instance or port on either side.
+
+**Unplaced instances stay legal.** The acceptance line below originally called
+for reporting an "unreachable (unmated, unplaced) instance" at `put`. That
+would retroactively invalidate every slice-1 design that instances at the
+origin without an `@`, and a base or frame instance sitting at the origin is
+legitimate authoring. Unreachability is therefore reported only where it is
+genuinely unresolvable — a mate cycle.
+
+**Acceptance:** a two-part assembly authored with zero world coordinates builds
+to the same geometry as the hand-placed version; each refused combination above
+is a clean `BadInput` naming the offender.
+
+### Not in this slice
+
+- Ports scoped to a *component* rather than the design (wanted by slice 3's
+  `at:port shoulder`, cheap to add then).
+- Rendering port frames/axes in the web viewer.
+- `check:`-style assertions over mates.
 
 ## Slice 3 — joints
 

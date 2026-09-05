@@ -24,6 +24,12 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   *another design* as a sub-assembly (:func:`expand_instances`). It is a
   top-level directive like ``component`` — it does not join, or close, the
   enclosing component block.
+- ``port <name> [@x,y,z] [rot:...]`` names a frame on *this* design — the
+  interface another design mates to.
+- ``mate <inst>.<port> to <anchor> [flip] [spin:<deg>]`` places instance
+  ``<inst>`` by making its port coincide with ``<anchor>`` (this design's own
+  ``<port>``, or another instance's ``<inst>.<port>``) — see
+  :func:`_solve_mates`. Also top-level.
 - ``<name> <op> <config> [@x,y,z] [rot:rx,ry,rz] [polar:nNrR] [linear:nNdx..dy..dz..]``
   — ``op`` ∈ {``add``, ``cut``, ``intersect``}; ``config`` is the §11
   mini-DSL (:mod:`precis.cad.dsl`). The first node in a part is its base;
@@ -46,6 +52,7 @@ from precis.cad.fold import Expr
 from precis.cad.graph import Design
 from precis.cad.vec import (
     Transform,
+    as_float3,
     euler_deg_from_matrix,
     identity,
     rotation,
@@ -76,6 +83,7 @@ _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LOC_RE = re.compile(r"^@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
 _ROT_RE = re.compile(r"^rot:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
 _POLAR_RE = re.compile(r"^polar:n(\d+)r(-?\d+(?:\.\d+)?)$")
+_SPIN_RE = re.compile(r"^spin:(-?\d+(?:\.\d+)?)$")
 _LINEAR_RE = re.compile(
     r"^linear:n(\d+)"
     r"(?:dx(-?\d+(?:\.\d+)?))?"
@@ -232,6 +240,139 @@ class SceneSpec:
     meta: dict[str, Any] = field(default_factory=lambda: {"units": "mm"})
 
 
+@dataclass(frozen=True)
+class PortSpec:
+    """A named frame on a design — the interface a :class:`MateSpec` targets.
+
+    A port is not geometry, so it lives in ``SceneSpec.meta`` (which
+    round-trips verbatim through ``refs.meta``) rather than as a node row:
+    every consumer of ``spec.nodes`` would otherwise have to learn to skip
+    it, and a missed skip is a wrong solid, not a visible error.
+    """
+
+    name: str
+    loc: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rot: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def to_meta(self) -> dict[str, Any]:
+        return {"name": self.name, "loc": list(self.loc), "rot": list(self.rot)}
+
+    @classmethod
+    def from_meta(cls, raw: Any) -> PortSpec:
+        if not isinstance(raw, dict) or not str(raw.get("name") or ""):
+            raise SceneError(f"malformed stored port {raw!r}")
+        return cls(
+            name=str(raw["name"]),
+            loc=as_float3(raw.get("loc")),
+            rot=as_float3(raw.get("rot")),
+        )
+
+    def to_source(self) -> str:
+        """The ``port …`` source line (also what the node tree shows)."""
+        parts = ["port", self.name]
+        if self.loc != (0.0, 0.0, 0.0):
+            parts.append("@" + ",".join(_fmt_num(v) for v in self.loc))
+        if self.rot != (0.0, 0.0, 0.0):
+            parts.append("rot:" + ",".join(_fmt_num(v) for v in self.rot))
+        return " ".join(parts)
+
+    def frame(self) -> Transform:
+        """The port's pose in its own design's coordinates."""
+        return _node_xform(self.loc, self.rot)
+
+
+@dataclass(frozen=True)
+class MateSpec:
+    """``mate <instance>.<port> to <anchor> [flip] [spin:<deg>]``.
+
+    ``anchor_instance`` is ``None`` when the anchor is one of *this* design's
+    own ports (fixed in the design frame); otherwise it names another
+    instance whose pose must be solved first.
+    """
+
+    instance: str
+    port: str
+    anchor_instance: str | None
+    anchor_port: str
+    flip: bool = False
+    spin: float = 0.0
+
+    @property
+    def subject(self) -> str:
+        return f"{self.instance}{NAMESPACE_SEP}{self.port}"
+
+    @property
+    def anchor(self) -> str:
+        if self.anchor_instance is None:
+            return self.anchor_port
+        return f"{self.anchor_instance}{NAMESPACE_SEP}{self.anchor_port}"
+
+    def to_source(self) -> str:
+        """The ``mate …`` source line (also what the node tree shows)."""
+        parts = ["mate", self.subject, "to", self.anchor]
+        if self.flip:
+            parts.append("flip")
+        if self.spin:
+            parts.append(f"spin:{_fmt_num(self.spin)}")
+        return " ".join(parts)
+
+    def to_meta(self) -> dict[str, Any]:
+        m: dict[str, Any] = {"subject": self.subject, "anchor": self.anchor}
+        if self.flip:
+            m["flip"] = True
+        if self.spin:
+            m["spin"] = self.spin
+        return m
+
+    @classmethod
+    def from_meta(cls, raw: Any) -> MateSpec:
+        if not isinstance(raw, dict):
+            raise SceneError(f"malformed stored mate {raw!r}")
+        return cls.build(
+            subject=str(raw.get("subject") or ""),
+            anchor=str(raw.get("anchor") or ""),
+            flip=bool(raw.get("flip")),
+            spin=float(raw.get("spin") or 0.0),
+            where="stored mate",
+        )
+
+    @classmethod
+    def build(
+        cls, *, subject: str, anchor: str, flip: bool, spin: float, where: str
+    ) -> MateSpec:
+        """Parse the two dotted addresses. ``where`` prefixes any error."""
+        parts = subject.split(NAMESPACE_SEP)
+        if len(parts) != 2 or not all(_IDENT_RE.match(x) for x in parts):
+            raise SceneError(
+                f"{where}: mate subject must be '<instance>{NAMESPACE_SEP}<port>', "
+                f"got {subject!r}"
+            )
+        a_parts = anchor.split(NAMESPACE_SEP)
+        if len(a_parts) > 2 or not all(_IDENT_RE.match(x) for x in a_parts):
+            raise SceneError(
+                f"{where}: mate anchor must be '<port>' or "
+                f"'<instance>{NAMESPACE_SEP}<port>', got {anchor!r}"
+            )
+        return cls(
+            instance=parts[0],
+            port=parts[1],
+            anchor_instance=a_parts[0] if len(a_parts) == 2 else None,
+            anchor_port=a_parts[-1],
+            flip=flip,
+            spin=spin,
+        )
+
+
+def ports_of(spec: SceneSpec) -> list[PortSpec]:
+    """This design's declared ports (empty when it declares none)."""
+    return [PortSpec.from_meta(r) for r in spec.meta.get("ports") or ()]
+
+
+def mates_of(spec: SceneSpec) -> list[MateSpec]:
+    """This design's declared mates (empty when it declares none)."""
+    return [MateSpec.from_meta(r) for r in spec.meta.get("mates") or ()]
+
+
 def _parse_placement(
     toks: list[str], lineno: int
 ) -> tuple[tuple[float, float, float], tuple[float, float, float], NodePattern | None]:
@@ -268,6 +409,8 @@ def parse_source(text: str) -> SceneSpec:
     seen_names: set[str] = set()
     components_with_nodes: set[str] = set()
     instance_names: set[str] = set()
+    ports: list[PortSpec] = []
+    mates: list[MateSpec] = []
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
@@ -334,6 +477,52 @@ def parse_source(text: str) -> SceneSpec:
                 )
             )
             continue
+        if toks[0] == "port":
+            # `port <name> [@x,y,z] [rot:...]` — a named frame on this design.
+            # Top-level like `component`/`use`: `current` is untouched.
+            if len(toks) < 2:
+                raise SceneError(
+                    f"line {lineno}: expected 'port <name> [@x,y,z] [rot:...]'"
+                )
+            pname = toks[1]
+            if not _IDENT_RE.match(pname):
+                raise SceneError(f"line {lineno}: bad port name {pname!r}")
+            if any(pt.name == pname for pt in ports):
+                raise SceneError(f"line {lineno}: duplicate port {pname!r}")
+            ploc, prot, ppat = _parse_placement(toks[2:], lineno)
+            if ppat is not None:
+                raise SceneError(
+                    f"line {lineno}: port {pname!r} cannot carry a pattern — "
+                    "a port is a single frame; declare one port per interface"
+                )
+            ports.append(PortSpec(name=pname, loc=ploc, rot=prot))
+            continue
+        if toks[0] == "mate":
+            # `mate <inst>.<port> to <anchor> [flip] [spin:<deg>]`.
+            if len(toks) < 4 or toks[2] != "to":
+                raise SceneError(
+                    f"line {lineno}: expected 'mate <instance>{NAMESPACE_SEP}<port> "
+                    "to <anchor> [flip] [spin:<deg>]'"
+                )
+            flip = False
+            spin = 0.0
+            for tok in toks[4:]:
+                if tok == "flip":
+                    flip = True
+                elif m := _SPIN_RE.match(tok):
+                    spin = float(m[1])
+                else:
+                    raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
+            mates.append(
+                MateSpec.build(
+                    subject=toks[1],
+                    anchor=toks[3],
+                    flip=flip,
+                    spin=spin,
+                    where=f"line {lineno}",
+                )
+            )
+            continue
         if len(toks) < 3:
             raise SceneError(
                 f"line {lineno}: expected '<name> <op> <config> [@x,y,z] [...]'"
@@ -378,6 +567,10 @@ def parse_source(text: str) -> SceneSpec:
             )
         )
 
+    if ports:
+        spec.meta["ports"] = [pt.to_meta() for pt in ports]
+    if mates:
+        spec.meta["mates"] = [mt.to_meta() for mt in mates]
     spec.components = seen_components or ["part"]
     return spec
 
@@ -436,6 +629,7 @@ def spec_to_source(spec: SceneSpec) -> str:
         lines.append(f"desc: {desc}")
     if use:
         lines.append(f"use: {use}")
+    lines.extend(port.to_source() for port in ports_of(spec))
     if lines:
         lines.append("")
 
@@ -453,6 +647,13 @@ def spec_to_source(spec: SceneSpec) -> str:
             lines.append(f"component {node.component}")
             current = node.component
         lines.append(_node_line(node))
+
+    # Mates last: they address instances by name, so they read in dependency
+    # order after the `use` lines that declare them (parsing is order-free).
+    mates = mates_of(spec)
+    if mates:
+        lines.append("")
+    lines.extend(mate.to_source() for mate in mates)
     return "\n".join(lines) + "\n"
 
 
@@ -596,6 +797,158 @@ def _inline(
             )
 
 
+def _solve_mates(spec: SceneSpec, resolve: Resolver | None) -> SceneSpec:
+    """Rewrite each mated instance node's ``loc``/``rot`` from its mate.
+
+    A mate fully determines one instance's pose from an already-placed one,
+    so this is direct substitution over a spanning tree — never an iterative
+    constraint solve. With ``P_s`` the subject port's frame inside its own
+    sub-design and ``P_a`` the anchor port's frame in *this* design's
+    coordinates::
+
+        X = P_a ∘ Rz(spin) ∘ (Rx(180) if flip) ∘ inv(P_s)
+
+    The default is frame **coincidence**; ``flip`` is opt-in. An authored
+    port reads as "put the other thing's connection point here", and an
+    implicit 180° convention is the kind of thing an author (human or model)
+    silently gets backwards.
+
+    Solved poses are ephemeral — the stored spec keeps the ``mate`` line,
+    exactly as it keeps the ``use`` line.
+    """
+    mates = mates_of(spec)
+    if not mates:
+        return spec
+
+    instances = {n.name: n for n in spec.nodes if instance_slug(n.config) is not None}
+    own_ports = {pt.name: pt for pt in ports_of(spec)}
+
+    by_inst: dict[str, MateSpec] = {}
+    for mate in mates:
+        node = instances.get(mate.instance)
+        if node is None:
+            raise SceneError(
+                f"mate subject {mate.subject!r}: {mate.instance!r} is not an "
+                f"instance in this design (declare it with "
+                f"'use <design> as {mate.instance}')"
+            )
+        if mate.instance in by_inst:
+            raise SceneError(
+                f"instance {mate.instance!r} is mated twice — over-constrained; "
+                "a single mate already fixes all six degrees of freedom"
+            )
+        if node.pattern is not None:
+            raise SceneError(
+                f"mate subject {mate.instance!r} is a patterned instance — a "
+                "mate places one body; drop the pattern or place the copies "
+                "explicitly"
+            )
+        if node.loc != (0.0, 0.0, 0.0) or node.rot != (0.0, 0.0, 0.0):
+            raise SceneError(
+                f"instance {mate.instance!r} is both mated and explicitly "
+                "placed (@ / rot:) — over-constrained; drop one"
+            )
+        by_inst[mate.instance] = mate
+
+    sub_ports: dict[str, dict[str, PortSpec]] = {}
+
+    def ports_for(inst: str) -> dict[str, PortSpec]:
+        """The ports the sub-design behind instance ``inst`` declares."""
+        if inst not in sub_ports:
+            slug = instance_slug(instances[inst].config) or ""
+            if resolve is None:
+                raise SceneError(
+                    "this design uses 'mate' but no resolver was supplied to "
+                    "read the mated designs' ports"
+                )
+            try:
+                sub = resolve(slug)
+            except SceneError:
+                raise
+            except Exception as exc:
+                raise SceneError(f"cannot resolve design {slug!r}: {exc}") from exc
+            sub_ports[inst] = {pt.name: pt for pt in ports_of(sub)}
+        return sub_ports[inst]
+
+    def require_port(inst: str, port: str) -> PortSpec:
+        available = ports_for(inst)
+        found = available.get(port)
+        if found is None:
+            known = ", ".join(sorted(available)) or "none"
+            slug = instance_slug(instances[inst].config) or "?"
+            raise SceneError(
+                f"design {slug!r} (instance {inst!r}) has no port {port!r} "
+                f"— declared ports: {known}"
+            )
+        return found
+
+    solved: dict[str, Transform] = {}
+
+    def pose_of(inst: str, stack: tuple[str, ...]) -> Transform:
+        if inst in solved:
+            return solved[inst]
+        if inst in stack:
+            raise SceneError("mate cycle: " + " → ".join((*stack, inst)))
+        mate = by_inst.get(inst)
+        node = instances[inst]
+        if mate is None:
+            # Not mated: it sits where it was placed (the origin by default).
+            # Deliberately not an error — a frame or base instance at the
+            # origin is legitimate authoring, and slice-1 designs rely on it.
+            xf = _node_xform(node.loc, node.rot)
+            solved[inst] = xf
+            return xf
+
+        if mate.anchor_instance is None:
+            anchor_port = own_ports.get(mate.anchor_port)
+            if anchor_port is None:
+                known = ", ".join(sorted(own_ports)) or "none"
+                raise SceneError(
+                    f"mate anchor {mate.anchor!r} is not a port of this design "
+                    f"— declared ports: {known} (an anchor is either "
+                    f"'<port>' here or '<instance>{NAMESPACE_SEP}<port>')"
+                )
+            anchor_world = anchor_port.frame()
+        else:
+            if mate.anchor_instance not in instances:
+                raise SceneError(
+                    f"mate anchor {mate.anchor!r}: {mate.anchor_instance!r} is "
+                    "not an instance in this design"
+                )
+            if instances[mate.anchor_instance].pattern is not None:
+                # A patterned anchor is N frames, not one — picking the base
+                # copy would silently place the subject against an arbitrary
+                # member of the array.
+                raise SceneError(
+                    f"mate anchor {mate.anchor!r}: instance "
+                    f"{mate.anchor_instance!r} is patterned, so its port is "
+                    "many frames, not one — mate against an unpatterned "
+                    "instance or place the subject explicitly"
+                )
+            anchor_port = require_port(mate.anchor_instance, mate.anchor_port)
+            anchor_world = pose_of(mate.anchor_instance, (*stack, inst)).compose(
+                anchor_port.frame()
+            )
+
+        xf = anchor_world
+        if mate.spin:
+            xf = xf.compose(rotation(0.0, 0.0, mate.spin))
+        if mate.flip:
+            xf = xf.compose(rotation(180.0, 0.0, 0.0))
+        xf = xf.compose(require_port(inst, mate.port).frame().inverse())
+        solved[inst] = xf
+        return xf
+
+    out: list[NodeSpec] = []
+    for node in spec.nodes:
+        if node.name in by_inst:
+            loc, rot = _decompose(pose_of(node.name, ()))
+            out.append(replace(node, loc=loc, rot=rot))
+        else:
+            out.append(node)
+    return SceneSpec(nodes=out, components=list(spec.components), meta=dict(spec.meta))
+
+
 def expand_instances(spec: SceneSpec, resolve: Resolver | None = None) -> SceneSpec:
     """Inline every ``use <slug> as <name>`` into a flat, self-contained spec.
 
@@ -605,11 +958,16 @@ def expand_instances(spec: SceneSpec, resolve: Resolver | None = None) -> SceneS
     Names and components are namespaced ``<instance>.<name>`` and the
     sub-design's poses are composed under the instance's own.
 
-    A spec with no instances is returned **unchanged** (identity fast path),
-    so non-instanced designs are byte-identical through this code.
+    Mates are solved first (:func:`_solve_mates`), which rewrites each mated
+    instance node's pose in place — so from here down a mated instance is
+    indistinguishable from a hand-placed one.
+
+    A spec with no instances and no mates is returned **unchanged** (identity
+    fast path), so non-instanced designs are byte-identical through this code.
     """
-    if not has_instances(spec):
+    if not has_instances(spec) and not spec.meta.get("mates"):
         return spec
+    spec = _solve_mates(spec, resolve)
     if resolve is None:
         raise SceneError(
             "this design instances another ('use <slug> as <name>') but no "
@@ -637,7 +995,14 @@ def expand_instances(spec: SceneSpec, resolve: Resolver | None = None) -> SceneS
             f"instance expansion produced duplicate node names: {dupes} — "
             "rename the colliding instance or part"
         )
-    return SceneSpec(nodes=out, components=components, meta=dict(spec.meta))
+    # Expansion *consumes* the mates: their poses are now baked into the
+    # inlined nodes, and the instances they addressed no longer exist. Leaving
+    # them on the meta would make a second pass over an already-expanded spec
+    # (build_design re-runs this) fail with "not an instance". Ports stay —
+    # they still describe this design's interfaces, and the search card reads
+    # them off the expanded spec.
+    meta = {k: v for k, v in spec.meta.items() if k != "mates"}
+    return SceneSpec(nodes=out, components=components, meta=meta)
 
 
 def build_design(spec: SceneSpec, *, resolve: Resolver | None = None) -> Design:
