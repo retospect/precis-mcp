@@ -72,64 +72,14 @@ flagged **extrapolative before any result exists**, suggesting DFT.
 Mech mirror: a beam model reused to justify local stress at a fastener hole
 is the same failure — scope on the model class, not only the run.
 
-## v1 — SHIPPED 2026-09-05 (this worktree)
+## Status
 
-The staleness spine is in: `cad_save` records a content sha per save
-(`ref_events` source=cad event=saved; `updated_at` bump fixed in passing);
-`link(kind='cad', rel='analyzed-by', target='finding:N')` writes the
-`analyzed-by` edge (migration 0153) pinning `{sha, at}` in `links.meta`
-(`merge_meta` — re-attach refreshes); `view='links'` flags stale
-attachments; the `analysis-stale` condition probe rides the hourly
-alert→gripe lane with per-instance auto-close. **Design deviation from
-the notes below:** the anchor is a content sha in `ref_events`, NOT a
-`meta.rev` — for cad refs `refs.meta` IS the spec meta, a rev key would
-leak into the spec round-trip; and content-addressing makes no-op
-re-saves free. Export staleness also in: file exports (stl/3mf/step) append a
-`cad`/`exported` event carrying the content sha and say so in the reply.
-
-**`scope=` key convention for analysis findings** (guidance, not a closed
-registry — keys harden into linted vocabulary with their consumers, the
-se annotation-registry rule): `fidelity` (analytic | beam-shell | fea |
-multiphysics | mlp | semi-empirical | dft), `engine` (+version),
-`loads`/`constraints` (what was applied/fixed, named by **port** where
-possible — the port type is the validity boundary), `temp_range`,
-`mesh`/`basis` where meaningful. Prose in scope values forks hubs that
-should converge (the identity hash) — keep values short and structured.
-
-Remaining in this item: the MLP/engine model-level registry (flag the
-model, not just the run), engine job_types.
-
-## v1 implementation notes (survey 2026-09-05, verified against the tree)
-
-- **Version anchor first — cad_save records nothing today.** No rev
-  counter, `refs.updated_at` not bumped (no trigger; the re-save UPDATE
-  omits it — arguably a standalone bug), no `ref_events` row. v1
-  prerequisite, all inside `cad_save`'s existing tx: bump
-  `updated_at`, a monotonic `meta.rev`, and
-  `append_event(source="cad", event="saved", payload={"rev": …})`.
-- **The pin rides `links.meta`** (jsonb, precedent: 0095's `{qty, ref}`):
-  `add_link(…, relation="analyzed-by", meta={"rev": N, "at": iso},
-  merge_meta=True)` — re-analysis updates the pin. Staleness check is
-  then one SQL comparison (`links.meta->>'rev'` vs `refs.meta->>'rev'`),
-  no event-scan needed; the `ref_events` row stays as audit trail + the
-  export-drift case.
-- **Watcher = one `Condition` row** in `src/precis/workers/conditions.py`
-  (probe over links⋈refs), evaluated hourly by health_digest — inherits
-  the alert-sync → router → gripe machinery (marker-line dedupe,
-  fingerprint e.g. `cad:<slug>/analysis:<fi>`, flood cap, auto-close on
-  refresh) for free. Only fall back to a standalone scanner
-  (`draft_refresh_scan.py` shape) if the hourly cadence doesn't fit.
-- **Do NOT use `STATUS:stale` on findings** — `STATUS:` is a closed
-  one-value axis (tracing/acquiring/established/refuted/canonical); stale
-  would clobber the lifecycle value. Staleness is derivable from the pin;
-  if a tag is wanted for search, use a separate flag axis.
-- **Relation minting**: `analyzed-by` (+ inverse `analysis-of`) enters
-  with this item — see `design-graph-relations.md` for the per-consumer
-  revision. Migration pattern: `0095_component_contains.sql`; 0152 is
-  taken (se component_geometry_specs), use the next free number.
-- Links are chunk-addressable (`src_chunk_id`/`dst_chunk_id`), so an
-  attachment can target one cad node — but cad node chunk ids are rebuilt
-  every save, so v1 pins **ref-level only**.
+v1 SHIPPED 2026-09-05 (content-sha anchor in `cad_save`→`ref_events`,
+`analyzed-by` mig 0153 with `{sha, at}` pinned in `links.meta`, stale
+flags in `view='links'`, the `analysis-stale` condition lane, export
+events + `scope=` key convention). Git log has the decision detail; the
+anchor is a content sha, NOT `meta.rev` (refs.meta IS the cad spec meta
+— a rev key would leak into the round-trip). Open below.
 
 ## Sequencing
 

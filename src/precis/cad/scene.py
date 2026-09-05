@@ -707,6 +707,7 @@ def parse_source(text: str) -> SceneSpec:
     instance_names: set[str] = set()
     ports: list[PortSpec] = []
     payloads: list[tuple[str, PayloadSpec, int]] = []  # (at-port, spec, lineno)
+    materials: dict[str, str] = {}  # component -> material slug
     mates: list[MateSpec] = []
     cjoints: list[ComponentJointSpec] = []
     couples: list[CoupleSpec] = []
@@ -865,6 +866,27 @@ def parse_source(text: str) -> SceneSpec:
                     lineno,
                 )
             )
+            continue
+        if toks[0] == "material":
+            # `material <component> <slug>` — assign a material kind slug to
+            # a component (view='mass' joins its sourced density). Top-level
+            # and order-free like `port`; validated against components at
+            # the end of the parse.
+            if len(toks) != 3:
+                raise SceneError(
+                    f"line {lineno}: expected 'material <component> <slug>'"
+                )
+            mcomp, mslug = toks[1], toks[2]
+            if not _IDENT_RE.match(mcomp):
+                raise SceneError(f"line {lineno}: bad component name {mcomp!r}")
+            if not _SLUG_RE.match(mslug):
+                raise SceneError(f"line {lineno}: bad material slug {mslug!r}")
+            if mcomp in materials:
+                raise SceneError(
+                    f"line {lineno}: component {mcomp!r} already has material "
+                    f"{materials[mcomp]!r}"
+                )
+            materials[mcomp] = mslug
             continue
         if toks[0] == "mate" or (
             toks[0] == "joint" and len(toks) >= 3 and toks[2] == "to"
@@ -1033,6 +1055,13 @@ def parse_source(text: str) -> SceneSpec:
                 )
             ports[i] = replace(ports[i], payloads=(*ports[i].payloads, pl))
 
+    for mcomp in materials:
+        if mcomp not in seen_components or mcomp in instance_names:
+            raise SceneError(
+                f"material for {mcomp!r}: must name a component of this "
+                "design (an instance's materials belong to its own design)"
+            )
+
     _validate_interfaces(
         ports=ports,
         mates=mates,
@@ -1041,6 +1070,8 @@ def parse_source(text: str) -> SceneSpec:
         seen_components=seen_components,
         instance_names=instance_names,
     )
+    if materials:
+        spec.meta["materials"] = dict(materials)
     if ports:
         spec.meta["ports"] = [pt.to_meta() for pt in ports]
     if mates:
@@ -1195,6 +1226,8 @@ def spec_to_source(spec: SceneSpec) -> str:
         lines.append(f"use: {use}")
     for port in ports_of(spec):
         lines.extend(port.source_lines())
+    for mcomp, mslug in (spec.meta.get("materials") or {}).items():
+        lines.append(f"material {mcomp} {mslug}")
     if lines:
         lines.append("")
 
@@ -1307,6 +1340,7 @@ def _inline(
     prefix: str,
     out: list[NodeSpec],
     stack: tuple[str, ...],
+    materials: dict[str, str] | None = None,
 ) -> None:
     """Append ``spec``'s nodes to ``out``, re-placed under ``xf`` and
     namespaced under ``prefix``, recursing through its own instances."""
@@ -1361,13 +1395,18 @@ def _inline(
             sub = _solve_mates(sub, resolve, sub_states, sub_cworld)
             sub = _pose_component_joints(sub, sub_cworld)
         for name, local in _placements(node):
+            sub_prefix = f"{prefix}{name}{NAMESPACE_SEP}"
+            if materials is not None:
+                for mcomp, mslug in (sub.meta.get("materials") or {}).items():
+                    materials.setdefault(f"{sub_prefix}{mcomp}", mslug)
             _inline(
                 sub,
                 resolve,
                 xf.compose(local),
-                f"{prefix}{name}{NAMESPACE_SEP}",
+                sub_prefix,
                 out,
                 (*stack, sub_slug),
+                materials,
             )
         if len(out) > MAX_EXPANDED_NODES:
             raise SceneError(
@@ -1885,13 +1924,22 @@ def expand_instances(
                 "no resolver was supplied to expand it"
             )
         out: list[NodeSpec] = []
+        sub_materials: dict[str, str] = {}
         for node in spec.nodes:
             if instance_slug(node.config) is None:
                 # Top-level nodes are kept verbatim — pattern included — so an
                 # unrelated instance elsewhere cannot perturb them.
                 out.append(node)
                 continue
-            _inline(SceneSpec(nodes=[node]), resolve, identity(), "", out, ())
+            _inline(
+                SceneSpec(nodes=[node]),
+                resolve,
+                identity(),
+                "",
+                out,
+                (),
+                sub_materials,
+            )
     else:
         out = list(spec.nodes)
 
@@ -1918,6 +1966,13 @@ def expand_instances(
     meta = {
         k: v for k, v in spec.meta.items() if k not in ("mates", "joints", "couples")
     }
+    if has_instances(spec):
+        # Sub-designs' material assignments follow their components in,
+        # namespaced. Disjoint from the top design's own keys by
+        # construction (namespaced vs bare component names).
+        merged = {**sub_materials, **(meta.get("materials") or {})}
+        if merged:
+            meta["materials"] = merged
     return SceneSpec(nodes=out, components=components, meta=meta)
 
 

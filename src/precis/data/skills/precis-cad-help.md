@@ -281,6 +281,25 @@ sub-designs not aligned to any step (`⚠ make-coverage`). Steps track
 handle. Two make-orders over the same design (placed assembly vs bulk
 synthesis) are just two `make` refs.
 
+### Weigh it — `material <component> <slug>` + `view='mass'`
+
+Assign each component a `material` kind slug; the mass view joins that
+material's **sourced** density (canonical kg/m3) against sampled
+per-component volume:
+
+```
+component frame
+slab add box:w100d100h10
+material frame 6061-t6
+```
+
+`get(view='mass')` → per-component table (volume ±err, density, mass,
+**source** — the numbers arrive cited), total ± sampled-volume error,
+CoM. Components without a material are listed as excluded, loudly —
+never silently zeroed. Sub-designs bring their own assignments in
+(namespaced), and `state=` poses the design first, so CoM at a joint
+state is one call.
+
 ### Describe what it's *for* — `desc:` / `use:`
 
 Add free-text lines so the design is findable by purpose, not just by

@@ -82,6 +82,7 @@ _PROBE_VIEWS = (
     "connectivity",
     "dof",
     "volume",
+    "mass",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
 _OTHER_VIEWS = ("links", "sweep")
@@ -121,7 +122,7 @@ class CadHandler(Handler):
             "{'<joint>': deg_or_mm}}); get lists designs, shows a "
             "design's node tree (id=slug), one node (id='ca<id>'), or probes "
             "analytically (view='ray|point|arc|section|clearance|connectivity|"
-            "dof|volume', args={...}; connectivity: what touches what, path "
+            "dof|volume|mass', args={...}; mass: cited per-component density × sampled volume, CoM; connectivity: what touches what, path "
             "a→b, is-it-one-solid; view='sweep': motion interference across "
             "joint travel); search over names; delete soft-retires; link "
             "rel='analyzed-by' target='finding:N' attaches an analysis "
@@ -1246,6 +1247,8 @@ class CadHandler(Handler):
                 body=f"translational DOF {mv} vs {fx}\n"
                 + render_agent_table(rows, schema=["axis", "travel_mm"])
             )
+        if view == "mass":
+            return self._render_mass(design, spec)
         # volume
         vol = cad_volume(design, component=comp)
         return Response(
@@ -1256,6 +1259,97 @@ class CadHandler(Handler):
                 f"{self._payload_contribution(spec, comp, vol.volume)}"
             )
         )
+
+    def _render_mass(self, design: Any, spec: Any) -> Response:
+        """Mass / CoM from per-component `material` assignments — every
+        density is the material kind's *sourced* value (canonical kg/m3),
+        so the numbers arrive cited. Volume is sampled with a ±error;
+        that error is carried into each mass, never laundered. Components
+        without a material are listed loudly and excluded from the total
+        — a silent zero would be a lie."""
+        mats: dict[str, str] = dict(spec.meta.get("materials") or {})
+        if not mats:
+            raise BadInput(
+                "view='mass' needs material assignments",
+                next="add 'material <component> <slug>' lines to the design "
+                "source (slugs are kind='material' refs with a density value)",
+            )
+        rows: list[dict[str, Any]] = []
+        total_g = 0.0
+        err_g = 0.0
+        moment = [0.0, 0.0, 0.0]
+        for comp in spec.components:
+            slug = mats.get(comp)
+            if not slug:
+                continue
+            mref = self.store.get_ref(kind="material", id=slug)
+            if mref is None:
+                raise BadInput(
+                    f"material {slug!r} (component {comp!r}) not found",
+                    next=f"put(kind='material', id={slug!r}, title='…') "
+                    "and give it a density first",
+                )
+            dens = next(
+                (
+                    v
+                    for v in self.store.material_values_for_ref(mref.id)
+                    if v.get("property_id") == "density"
+                    and v.get("value_num") is not None
+                ),
+                None,
+            )
+            if dens is None:
+                raise BadInput(
+                    f"material {slug!r} has no density value",
+                    next=f"put(kind='material', id={slug!r}, "
+                    "property='density', value=…, unit='kg/m3')",
+                )
+            rho = float(dens["value_num"])  # canonical kg/m3
+            vol = cad_volume(design, component=comp)
+            mass_g = vol.volume * rho * 1e-6
+            total_g += mass_g
+            err_g += mass_g * vol.rel_err
+            for i in range(3):
+                moment[i] += mass_g * float(vol.centroid[i])
+            if dens.get("source_ref_id") and dens.get("source_kind"):
+                src = handle_registry.format_handle(
+                    str(dens["source_kind"]), int(dens["source_ref_id"])
+                )
+            else:
+                src = str(dens.get("source_url") or "unsourced")
+            rows.append(
+                {
+                    "component": comp,
+                    "material": slug,
+                    "volume_mm3": f"{vol.volume:g} ±{vol.rel_err * 100:.1f}%",
+                    "density_kg_m3": f"{rho:g}",
+                    "mass_g": f"{mass_g:g}",
+                    "source": src,
+                }
+            )
+        com = tuple(round(m / total_g, 3) for m in moment) if total_g else (0, 0, 0)
+        body = (
+            render_agent_table(
+                rows,
+                schema=[
+                    "component",
+                    "material",
+                    "volume_mm3",
+                    "density_kg_m3",
+                    "mass_g",
+                    "source",
+                ],
+            )
+            + f"\ntotal: {total_g:g} g ±{err_g:g} (sampled volume error); "
+            + f"CoM {com} mm"
+        )
+        unassigned = [c for c in spec.components if c not in mats]
+        if unassigned:
+            body += (
+                "\n⚠ excluded (no material — their mass is NOT in the "
+                "total): " + ", ".join(unassigned)
+            )
+        return Response(body=body)
 
     def _payload_contribution(self, spec: Any, comp: str | None, total: float) -> str:
         """Attribution crosses boundaries loudly: when the probed scope

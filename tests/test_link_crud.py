@@ -851,9 +851,7 @@ class TestGr250037FixesRelation:
         raw FK violation."""
         todo_id = id_of(TodoHandler(hub=hub).put(text="fix it").body)
         with pytest.raises(NotFound):
-            TodoHandler(hub=hub).link(
-                id=todo_id, target="gripe:999999999", rel="fixes"
-            )
+            TodoHandler(hub=hub).link(id=todo_id, target="gripe:999999999", rel="fixes")
 
     def test_add_link_unregistered_relation_raises_badinput_not_raw_fk(
         self, store: Store

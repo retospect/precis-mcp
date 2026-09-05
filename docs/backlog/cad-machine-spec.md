@@ -305,12 +305,15 @@ see `make-tree-vs-design-tree.md`.
 
 ## Parallel track (independent of 1–4)
 
-- **`material: <slug>` per component → `view='mass'`.** The `material` kind
-  already stores sourced density; wiring it in yields mass, CoM and an inertia
-  tensor that arrive **cited**, which no other CAD tool does. `volume` is
-  sampled with a ±error — carry that error through to mass, never launder it.
-  Then `view='balance'`: is CoM inside the support polygon, what are the
-  support reactions, does it tip.
+- ~~**`material: <slug>` per component → `view='mass'`.**~~ **SHIPPED
+  2026-09-05** as `material <component> <slug>` lines (order-free,
+  duplicate/unknown-component refused; sub-design assignments merge in
+  namespaced on expansion): `view='mass'` = sampled volume × the material
+  kind's sourced density (canonical kg/m3), per-component table with the
+  **source** column, total ± sampled error (carried, never laundered),
+  CoM; unassigned components listed loudly as excluded. Deferred from
+  that slice: the inertia tensor (needs second moments from the bulk
+  sampler) and `view='balance'` (CoM vs support polygon, reactions, tip).
 - **Catalog atoms backed by `component`** — `part bolt1 M6x20-hex`,
   `bearing:6202`, `rail:MGN12`, `extrusion:2020`, `nema:17`, `gear:m1z20`.
   These are the literal building blocks of machines and precis is unusually
