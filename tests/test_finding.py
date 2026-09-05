@@ -2348,3 +2348,82 @@ class TestRefutedLifecycle:
         assert str(hyp_id) not in out_default.body
         out_explicit = h.search(q="d-gate hypothesis", status="refuted")
         assert str(hyp_id) in out_explicit.body
+
+
+# ── delete backref guard (gr265228 ask 1) ────────────────────────────
+#
+# Soft-deleting a finding hub while a live chunk still carries a bare
+# ``[fi<id>]`` cite strands a citation that keeps rendering as grounded
+# after its target is gone. The guard lives in ``store.retire_ref``
+# itself — the one seam both ``FindingHandler.delete`` (via the base
+# ``NumericRefHandler._delete``) and ``taproot.hub``'s merge-loser
+# retire share — so this exercises it through the handler's ``delete``
+# verb, the only door findings normally use.
+
+
+class TestDeleteBackrefGuard:
+    def _mint_finding(self, store, *, title: str, cite_key: str) -> int:
+        _seed_paper(store, cite_key=cite_key)
+        h = _make_handler(store)
+        resp = h.put(title=title, body=f"{title} body text", cited_in=cite_key)
+        return int(_search(r"id=(\d+)", resp.body).group(1))
+
+    def _seed_citer(self, store, *, text: str) -> int:
+        """A live chunk carrying ``text``. Any ref kind works — the
+        backref query isn't scoped to ``draft`` chunks (mirrors
+        gr265228's measured predicate, which wasn't either)."""
+        from precis.store.types import ChunkInsert
+
+        ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
+        store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, meta={})])
+        return ref.id
+
+    def test_delete_refuses_when_live_chunk_cites_it(self, store) -> None:
+        fid = self._mint_finding(store, title="cited claim", cite_key="paper-del1")
+        citer_id = self._seed_citer(store, text=f"As shown, X holds [fi{fid}].")
+        h = _make_handler(store)
+
+        with pytest.raises(BadInput) as exc:
+            h.delete(id=fid)
+        msg = str(exc.value)
+        assert f"fi{fid}" in msg
+        assert "1 live chunk" in msg
+        assert f"me{citer_id}" in msg
+        assert exc.value.next  # names the fix-cites-first recovery path
+
+        # The finding is untouched — still live.
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = %s", (fid,)
+            ).fetchone()
+        assert row is not None and row[0] is None
+
+    def test_delete_succeeds_when_uncited(self, store) -> None:
+        """An uncited finding deletes exactly as before — unchanged
+        behaviour, the guard only fires when there's something to strand."""
+        fid = self._mint_finding(store, title="uncited claim", cite_key="paper-del2")
+        h = _make_handler(store)
+
+        resp = h.delete(id=fid)
+        assert f"id={fid}" in resp.body
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = %s", (fid,)
+            ).fetchone()
+        assert row is not None and row[0] is not None
+
+    def test_delete_ignores_pinned_and_other_id_cites(self, store) -> None:
+        """The guard's regex is the exact bare ``[fi<id>]`` bracket (same
+        scope as the draft-lint's dangling-handle check) — a pinned form
+        or a cite naming a *different* finding id doesn't block."""
+        fid = self._mint_finding(store, title="claim A", cite_key="paper-del3")
+        other_fid = self._mint_finding(store, title="claim B", cite_key="paper-del4")
+        self._seed_citer(
+            store,
+            text=f"Pinned [fi{fid}>pc1] and a different finding [fi{other_fid}].",
+        )
+        h = _make_handler(store)
+
+        resp = h.delete(id=fid)
+        assert f"id={fid}" in resp.body

@@ -9,10 +9,12 @@ doesn't re-nag about a problem it didn't introduce) and returns either ``""``
 Covers: undefined/inline-only abbreviations, non-canonical citation forms
 (bare ``paper:`` mentions, whole-paper vs. chunk cites, literal
 ``\\cite{...}``), a Taproot claim-hub cite nudge, malformed temperature/unit
-notation, and dangling ``[...]``/``finding #slug`` references. Pure
-functions over an explicit :class:`~precis.store.store.Store` (no handler
-`self`) — ``handlers/draft.py::DraftHandler`` is the sole caller, wiring
-these into its ``put``/``edit``/``get`` bodies.
+notation, dangling ``[...]``/``finding #slug`` references, and — reported
+distinctly from a plain dangling reference — a ``[...]`` cite whose target
+is a real ref that has since been soft-deleted (a tombstone, gr265228).
+Pure functions over an explicit :class:`~precis.store.store.Store` (no
+handler `self`) — ``handlers/draft.py::DraftHandler`` is the sole caller,
+wiring these into its ``put``/``edit``/``get`` bodies.
 """
 
 from __future__ import annotations
@@ -450,11 +452,29 @@ def dangling_finding_hint(store: Store, text: str) -> str:
     )
 
 
-def dangling_chunk_tokens(store: Store, text: str) -> list[str]:
-    """The ``[<handle>]`` references in ``text`` that resolve to nothing —
-    a pure numeric id (``[45650]``) or a known type-code prefix that no
-    store row backs. A bare ``[ab12]`` with an unknown code is left as
-    literal prose, not flagged. Order-preserving, deduped.
+def _classify_chunk_ref_tokens(
+    store: Store, text: str
+) -> tuple[list[str], list[tuple[str, int]]]:
+    """One pass over ``_CHUNK_REF`` handle-attempt tokens in ``text``,
+    split into ``(fully-unresolvable, tombstone)``:
+
+    * **fully-unresolvable** — a pure numeric id (``[45650]``) or a known
+      type-code prefix that backs no store row at all (:func:`dangling_
+      chunk_tokens`'s return).
+    * **tombstone** — ``(handle, ref_id)`` for a handle naming a *real*,
+      ref-level target (e.g. ``[fi42]``) that ``store.resolve_handle``
+      can't resolve because the ref has been soft-deleted (gr265228),
+      not because it never existed. Reported distinctly: the token still
+      *looks* like a live citation, so lumping it in with "resolves to
+      nothing" would understate the failure — a reader (or a conversion
+      agent scanning for "does this chunk already carry a grounding
+      cite?") can't tell a tombstone from a real one without this.
+      Scoped to ref-level handles (chunk-level tombstones — e.g. a
+      retired paper chunk under a still-live paper — fall through to
+      the plain dangling bucket, same as before this split).
+
+    A bare ``[ab12]`` with an unknown code is left as literal prose,
+    flagged as neither. Order-preserving, deduped.
 
     A numeric match lexically bound to surrounding prose is IUPAC
     supramolecular nomenclature, not a handle attempt: ``[2]rotaxane``
@@ -465,6 +485,7 @@ def dangling_chunk_tokens(store: Store, text: str) -> list[str]:
     like ``pa``/``dc`` never collides with a chemical name here."""
     seen: list[str] = []
     dangling: list[str] = []
+    tombstones: list[tuple[str, int]] = []
     for m in _CHUNK_REF.finditer(text):
         h = m.group("h").strip()
         if h in seen:
@@ -485,8 +506,44 @@ def dangling_chunk_tokens(store: Store, text: str) -> list[str]:
                 continue
         except Exception:  # pragma: no cover — store hiccup, don't nag
             continue
+        # Unresolved: nothing there at all, or a real ref-level row
+        # that's been soft-deleted underneath the cite (a tombstone).
+        parsed = handle_registry.parse(h)
+        if parsed is not None:
+            kind, is_chunk, pk = parsed
+            if not is_chunk:
+                try:
+                    target = store.fetch_refs_by_ids(
+                        [pk], include_deleted=True
+                    ).get(pk)
+                except Exception:  # pragma: no cover — store hiccup
+                    target = None
+                if (
+                    target is not None
+                    and target.kind == kind
+                    and target.retired_at is not None
+                ):
+                    tombstones.append((h, pk))
+                    continue
         dangling.append(h)
+    return dangling, tombstones
+
+
+def dangling_chunk_tokens(store: Store, text: str) -> list[str]:
+    """The ``[<handle>]`` references in ``text`` that resolve to *nothing
+    at all* — see :func:`_classify_chunk_ref_tokens`. A handle naming a
+    real but soft-deleted ref-level target is reported separately by
+    :func:`tombstone_chunk_tokens`, not here."""
+    dangling, _ = _classify_chunk_ref_tokens(store, text)
     return dangling
+
+
+def tombstone_chunk_tokens(store: Store, text: str) -> list[tuple[str, int]]:
+    """``[(handle, ref_id), ...]`` for ``[<handle>]`` references in
+    ``text`` naming a real ref-level target that has been soft-deleted
+    (gr265228) — see :func:`_classify_chunk_ref_tokens`."""
+    _, tombstones = _classify_chunk_ref_tokens(store, text)
+    return tombstones
 
 
 def dangling_chunk_hint(store: Store, text: str) -> str:
@@ -507,6 +564,27 @@ def dangling_chunk_hint(store: Store, text: str) -> str:
     )
 
 
+def tombstone_chunk_hint(store: Store, text: str) -> str:
+    """Flag ``[<handle>]`` references whose target is a real ref that has
+    been soft-deleted (gr265228) — distinct from :func:`dangling_chunk_hint`'s
+    "resolves to nothing" case: the token still LOOKS like a live citation
+    (a conversion agent scanning the chunk for "already cited?" reads it as
+    grounded), but the ref underneath it is gone, so the prose it decorates
+    is silently ungrounded. One line per offender, matching the audit's
+    wording (gr265228)."""
+    tombstones = tombstone_chunk_tokens(store, text)
+    if not tombstones:
+        return ""
+    lines = [
+        f"\n\n⚠ cite target {h} is deleted (tombstone) — the ref was "
+        "soft-deleted; the citation still renders but grounds nothing. "
+        "Re-point it to the successor (if this hub was merged/superseded) "
+        "or remove the cite."
+        for h, _ref_id in tombstones
+    ]
+    return "".join(lines)
+
+
 def newly_dangling(
     store: Store, new_text: str, old_text: str
 ) -> tuple[list[str], list[str]]:
@@ -520,9 +598,21 @@ def newly_dangling(
     old-vs-new diff into a **hard** save-block ("comes back at you if you
     broke something serious"), while the MCP/CLI edit path
     (`dangling_edit_hint`) surfaces it as a **non-blocking** ⚠ so an
-    autonomous planner minting a forward reference is warned, not stalled."""
-    old_bad = set(dangling_chunk_tokens(store, old_text))
-    chunk = [h for h in dangling_chunk_tokens(store, new_text) if h not in old_bad]
+    autonomous planner minting a forward reference is warned, not stalled.
+
+    A tombstone cite (:func:`tombstone_chunk_tokens` — a handle naming a
+    real but soft-deleted ref-level target, gr265228) folds into the
+    ``chunk`` leg here too: this diff gate's job is "did the edit newly
+    break a reference", and a tombstone is broken by that measure even
+    though it's reported with its own distinct wording on the read path
+    (:func:`tombstone_chunk_hint`)."""
+
+    def _broken(text: str) -> list[str]:
+        dangling, tombstones = _classify_chunk_ref_tokens(store, text)
+        return dangling + [h for h, _ref_id in tombstones]
+
+    old_bad = set(_broken(old_text))
+    chunk = [h for h in _broken(new_text) if h not in old_bad]
     old_find = set(dangling_finding_tokens(store, old_text))
     find = [s for s in dangling_finding_tokens(store, new_text) if s not in old_find]
     return chunk, find

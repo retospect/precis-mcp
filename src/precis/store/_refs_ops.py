@@ -36,7 +36,7 @@ from psycopg import Connection, errors
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.hints import Hint, merged_redirect_hint
 from precis.store._mappers import (
     _REFS_COLS,
@@ -52,6 +52,59 @@ from precis.store._stub_predicate import (
 from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
+
+
+#: A live prose citation of a finding hub (gr265228's audit predicate):
+#: ``ord >= 0`` excludes synthesized card variants (``chunks_check``
+#: reserves negative ``ord`` for those), ``c.retired_at``/``r.retired_at``
+#: keep both the chunk and its owning document live — a cite stranded
+#: under an already-retired document carries no operational risk. The
+#: pattern is a literal ``[fi<id>]`` bracket, matching :mod:`._draft_lint`'s
+#: bare-bracket handle scope; a pinned ``[fi<id>>pc<id>]`` token isn't
+#: matched (same scope gap as that lint).
+_LIVE_FI_CITERS_SQL = (
+    "SELECT c.chunk_id, c.ref_id, r.kind "
+    "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+    "WHERE c.retired_at IS NULL AND c.ord >= 0 AND r.retired_at IS NULL "
+    "AND c.text ~ %s "
+    "ORDER BY c.ref_id, c.chunk_id "
+    "LIMIT 25"
+)
+
+
+def _refuse_if_finding_cited(conn: Connection, ref_id: int) -> None:
+    """Raise :class:`~precis.errors.BadInput` when a live chunk still
+    carries a bare ``[fi<ref_id>]`` cite (gr265228).
+
+    Soft-deleting the finding underneath that cite doesn't remove the
+    token — it keeps rendering, and a conversion agent (or a human)
+    scanning the chunk for "does this already carry a grounding cite?"
+    reads it as cited when the target is gone, silently un-grounding the
+    prose while every census counts it done. One indexed-ish regexp
+    query per delete — cheap at delete frequency.
+    """
+    rows = conn.execute(_LIVE_FI_CITERS_SQL, (rf"\[fi{ref_id}\]",)).fetchall()
+    if not rows:
+        return
+    citers: list[str] = []
+    for chunk_id, doc_ref_id, kind in rows:
+        doc = handle_registry.try_format(kind, doc_ref_id) or f"ref:{doc_ref_id}"
+        chunk = handle_registry.try_format(kind, chunk_id, chunk=True)
+        citers.append(f"{doc}~{chunk}" if chunk else f"{doc} (chunk_id={chunk_id})")
+    docs = sorted({int(r[1]) for r in rows})
+    shown = ", ".join(citers[:10])
+    truncated = "" if len(citers) <= 10 else f", … ({len(citers) - 10} more)"
+    raise BadInput(
+        f"fi{ref_id} is still cited by {len(rows)} live chunk(s) across "
+        f"{len(docs)} document(s) — deleting it would strand the cite(s): "
+        f"{shown}{truncated}",
+        next=(
+            f"re-point or remove each [fi{ref_id}] cite first — "
+            "edit(kind='draft', id=<doc>, chunk_kind=..., text=<revised text "
+            "without the cite, or citing the successor hub instead>) — then "
+            "retry delete(kind='finding', id=" + str(ref_id) + ")"
+        ),
+    )
 
 
 class RefsMixin:
@@ -1586,16 +1639,35 @@ class RefsMixin:
         ``conn`` lets the delete join an outer transaction (e.g. the
         memory ``supersede`` merge, where retiring the originals must
         be atomic with minting the survivor + migrating links).
+
+        A ``kind='finding'`` ref is additionally guarded (gr265228):
+        :func:`_refuse_if_finding_cited` runs first and raises
+        :class:`~precis.errors.BadInput` if a live chunk still carries a
+        bare ``[fi<ref_id>]`` cite. This is the one seam every
+        finding-retiring door shares — ``FindingHandler.delete`` (via the
+        base ``NumericRefHandler._delete``) *and* ``taproot.hub``'s merge
+        apply (which retires a merge loser directly, bypassing the
+        handler) — so the guard lives here once rather than at each door.
         """
         sql = (
             "UPDATE refs SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL"
         )
+
+        def _do(c: Connection) -> int:
+            row = c.execute(
+                "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is not None and row[0] == "finding":
+                _refuse_if_finding_cited(c, ref_id)
+            return c.execute(sql, (ref_id,)).rowcount
+
         if conn is not None:
-            rowcount = conn.execute(sql, (ref_id,)).rowcount
+            rowcount = _do(conn)
         else:
             with self.pool.connection() as c:
-                rowcount = c.execute(sql, (ref_id,)).rowcount
+                rowcount = _do(c)
         if rowcount == 0:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
 

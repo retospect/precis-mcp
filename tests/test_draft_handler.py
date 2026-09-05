@@ -1574,6 +1574,82 @@ def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
     assert "unresolved reference" not in out
 
 
+# ── gr265228 ask 3: a cite target that's a real, soft-deleted ref is
+#    reported as a distinct tombstone, not a plain "resolves to nothing"
+#    dangling reference ─────────────────────────────────────────────
+
+
+def _mint_retired_finding(hub: Hub) -> int:
+    """A finding ref that exists but has been soft-deleted — the
+    tombstone case, distinct from a handle that never resolved to
+    anything at all."""
+    ref = hub.live_store.insert_ref(kind="finding", slug=None, title="dead claim", meta={})
+    hub.live_store.retire_ref(ref.id)
+    return ref.id
+
+
+def test_tombstone_cite_flagged_distinctly(draft: DraftHandler, hub: Hub) -> None:
+    fid = _mint_retired_finding(hub)
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].dc
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"As shown, X holds [fi{fid}].",
+        at={"after": title_h},
+    )
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
+    assert f"fi{fid} is deleted (tombstone)" in out
+    # Not double-counted as a plain "resolves to nothing" dangling ref.
+    assert "unresolved reference(s)" not in out
+
+
+def test_tombstone_cite_distinct_from_plain_dangling(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A chunk with BOTH a tombstone cite and a genuinely-nowhere handle
+    gets both hints, each with its own wording."""
+    fid = _mint_retired_finding(hub)
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].dc
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Cites a dead hub [fi{fid}] and a bogus handle [dc999999].",
+        at={"after": title_h},
+    )
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
+    assert f"fi{fid} is deleted (tombstone)" in out
+    # Exactly [dc999999] on the plain-dangling line — the tombstone
+    # handle is reported separately, not folded into this list.
+    assert "unresolved reference(s): [dc999999]." in out
+
+
+def test_uncited_pinned_finding_tombstone_not_flagged(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A pinned cite (``[fi<id>>pc<id>]``) is out of this check's scope —
+    same bare-bracket-only scope as the pre-existing dangling-handle
+    check (:data:`precis.handlers._draft_lint._CHUNK_REF`)."""
+    fid = _mint_retired_finding(hub)
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].dc
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Pinned cite [fi{fid}>pc1] stays out of scope.",
+        at={"after": title_h},
+    )
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
+    assert "tombstone" not in out
+
+
 # ── word count + word targets (proposal writing) ─────────────────────
 
 

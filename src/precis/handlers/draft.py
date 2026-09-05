@@ -3014,6 +3014,7 @@ class DraftHandler(Handler):
         window_text = "\n\n".join(c.text for c in window)
         body += _draft_lint.dangling_finding_hint(self.store, window_text)
         body += _draft_lint.dangling_chunk_hint(self.store, window_text)
+        body += _draft_lint.tombstone_chunk_hint(self.store, window_text)
         if len(window) == 1:
             body += self._fisheye_affordance()
         return Response(body=body)
@@ -3051,6 +3052,13 @@ class DraftHandler(Handler):
         nothing. See :func:`~precis.handlers._draft_lint.
         dangling_chunk_tokens`."""
         return _draft_lint.dangling_chunk_tokens(self.store, text)
+
+    def _tombstone_chunk_tokens(self, text: str) -> list[tuple[str, int]]:
+        """``[<handle>]`` references naming a real ref that has been
+        soft-deleted (gr265228). See :func:`~precis.handlers._draft_lint.
+        tombstone_chunk_tokens` — reported distinctly from
+        ``_dangling_chunk_tokens``' "resolves to nothing at all"."""
+        return _draft_lint.tombstone_chunk_tokens(self.store, text)
 
     def _newly_dangling(
         self, new_text: str, old_text: str
