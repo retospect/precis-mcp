@@ -692,6 +692,10 @@ def test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias(
     monkeypatch.delenv(
         "PRECIS_SUMMARIZE_MODEL", raising=False
     )  # tier default = summarizer
+    # The cloud fallback rung is openai_compat — needs a real base url or
+    # resolve_chain's PRECIS_LLM_BASE_URL guard (gr259631) degrades the
+    # whole chain, including the local rung 0 this test is exercising.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     acquired: list[str] = []
 
@@ -1704,6 +1708,68 @@ def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
     assert calls["model"] == "claude-haiku-4-5-20251001"
 
 
+# ── _dispatch_openai_compat: PRECIS_LLM_BASE_URL validation (gr259631) ──
+#
+# route()'s Backend.OPENAI-without-a-base-url guard (the test above) never
+# runs when a chain override pins an openai_compat rung directly — see the
+# resolve_chain guard tests below for that half. This half covers the
+# transport's own defense: even reached with an unset/malformed base url (a
+# rung built any other way — a future call site, a test double), it must
+# fail with a named config error instead of letting `LlmConfig.url` become a
+# bare path and blow up urlopen with "unknown url type: '/chat/completions'"
+# — 40k ERROR log lines from one misconfigured host, prod.
+
+
+@pytest.mark.parametrize("bad_base_url", ["", "not-a-url", "/v1"])
+def test_dispatch_openai_compat_missing_base_url_returns_config_error(
+    bad_base_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if bad_base_url:
+        monkeypatch.setenv("PRECIS_LLM_BASE_URL", bad_base_url)
+    else:
+        monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    out = router._dispatch_openai_compat(
+        LlmRequest(tier=Tier.MEDIUM, prompt="x"), model="m"
+    )
+
+    assert out.error is not None
+    assert "PRECIS_LLM_BASE_URL" in out.error
+    assert "unknown url type" not in out.error
+    assert out.paused is False  # a config error, not a retryable outage
+    assert out.text == ""
+
+
+def test_dispatch_openai_compat_valid_base_url_still_dispatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The validation is a pure guard — a well-formed base url reaches the
+    client unchanged (no regression on the working path)."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["url"] = getattr(config, "url", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="ok", total_tokens=3)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    out = router._dispatch_openai_compat(
+        LlmRequest(tier=Tier.MEDIUM, prompt="x"), model="m"
+    )
+
+    assert out.error is None
+    assert out.text == "ok"
+    assert seen["url"] == "https://openrouter.ai/api/v1"
+
+
 def test_dispatch_openai_backend_tools_routes_to_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2526,6 +2592,104 @@ def test_resolve_chain_empty_override_falls_back_to_default(
     assert chain == default
 
 
+# ── resolve_chain: an openai_compat rung needs PRECIS_LLM_BASE_URL (gr259631) ──
+#
+# route()'s Backend.OPENAI-without-a-base-url guard flips the backend to
+# ANTHROPIC *before* resolve_chain runs — but that guard only sees the
+# auto-resolved backend. An operator ``llm.chain.<tier>`` override pins its
+# rungs' transports directly, bypassing it: a chain that pins openai_compat
+# with no base url set would build a rung that urlopens a bare
+# '/chat/completions' path on every single call. resolve_chain must degrade
+# it the same way route()'s guard degrades the auto path — fall back to the
+# default chain — rather than handing FailoverProvider a rung doomed to fail.
+
+
+def test_resolve_chain_override_openai_compat_without_base_url_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "cloud",
+                "model": "z-ai/glm-5.2",
+                "transport": "openai_compat",
+            }
+        ],
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+
+    with caplog.at_level("WARNING"):
+        chain = router.resolve_chain(
+            Tier.FRONTIER, tools_needed=False, backend=Backend.ANTHROPIC
+        )
+
+    default = router._default_chain(
+        Tier.FRONTIER, tools_needed=False, backend=Backend.ANTHROPIC
+    )
+    assert chain == default
+    assert Transport.OPENAI_COMPAT not in [r.transport for r in chain]
+    assert any("llm-chain" in rec.message for rec in caplog.records)
+
+
+def test_resolve_chain_override_openai_compat_with_base_url_is_honored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard only fires on a missing base url — a properly configured
+    override keeps pinning openai_compat exactly as the operator wrote it."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "cloud",
+                "model": "z-ai/glm-5.2",
+                "transport": "openai_compat",
+            }
+        ],
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    chain = router.resolve_chain(
+        Tier.FRONTIER, tools_needed=False, backend=Backend.ANTHROPIC
+    )
+
+    assert chain == [
+        Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-5.2", label="cloud")
+    ]
+
+
+def test_dispatch_chain_override_openai_compat_without_base_url_falls_back_to_claude(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: the same misconfiguration reaching a real ``route()`` call
+    degrades to the claude fallback rung instead of raising per-call."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "cloud",
+                "model": "z-ai/glm-5.2",
+                "transport": "openai_compat",
+            }
+        ],
+    )
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
+
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert out.error is None
+    assert out.text == '{"ok": true}'
+
+
 # ── resolve_chain: a tool-using call never lands on a completion wire ────
 #
 # The regression this pins ran in prod for days. `llm.chain.medium` was set
@@ -2554,6 +2718,7 @@ def test_resolve_chain_tool_less_rung_dropped_for_tool_using_call(
         ],
     )
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     with caplog.at_level("WARNING"):
         chain = router.resolve_chain(
@@ -2578,6 +2743,7 @@ def test_resolve_chain_tool_less_rung_kept_for_completion_call(
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override", lambda _tier: override
     )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     chain = router.resolve_chain(
         Tier.MEDIUM, tools_needed=False, backend=Backend.ANTHROPIC
@@ -2705,6 +2871,7 @@ def test_dispatch_single_rung_chain_override_honors_pinned_model(
     )
     compat = _FakeProv(_ok("ok", model="z-ai/glm-4.7"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, compat)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 

@@ -1493,6 +1493,19 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
             transport = Transport(transport_raw)
         except ValueError:
             return _fallback("has an unknown transport", i, transport_raw)
+        if transport is Transport.OPENAI_COMPAT and not os.environ.get(
+            "PRECIS_LLM_BASE_URL"
+        ):
+            # Mirrors `route()`'s Backend.OPENAI-without-a-base-url guard
+            # (falls back to ANTHROPIC before ever reaching a chain) for the
+            # one path that guard can't see: an operator override that pins
+            # openai_compat explicitly, regardless of the resolved backend.
+            # Left unguarded, this rung would urlopen a bare
+            # '/chat/completions' path on every call (gr259631) instead of
+            # degrading once, here, at chain-resolution time.
+            return _fallback(
+                "pins openai_compat with PRECIS_LLM_BASE_URL unset", i, transport_raw
+            )
         placement = raw.get("placement")
         bare_raw = raw.get("bare", False)
         if not isinstance(bare_raw, bool):
@@ -2629,12 +2642,39 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     (:func:`_provider_api_key`). When the request carries a booked
     ``endpoint``, the OpenRouter ``provider:{}``/``reasoning:{}`` pin merges
     into the body so the call hits that exact provider×quant.
+
+    A missing/malformed ``PRECIS_LLM_BASE_URL`` fails here with a named
+    :attr:`LlmResult.error` (gr259631) rather than reaching
+    :class:`~precis.workers.llm_summarize.LlmClient` and urlopen-ing a bare
+    ``/chat/completions`` path.
     """
     from dataclasses import replace
 
     from precis.workers.llm_summarize import LlmClient, LlmConfig
 
     base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    parsed_base_url = urlparse(base_url)
+    if not parsed_base_url.scheme or not parsed_base_url.netloc:
+        # An empty/malformed PRECIS_LLM_BASE_URL reaches here whenever this
+        # rung runs without going through route()'s Backend.OPENAI-without-a-
+        # base-url guard first — a chain override that pins openai_compat
+        # directly (resolve_chain has its own matching guard, but a rung
+        # built any other way still lands here). Without this check,
+        # LlmClient.complete concatenates it into a bare '/chat/completions'
+        # path and urlopen raises "unknown url type" once per call
+        # (gr259631) instead of one clear, named config error.
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=(
+                f"PRECIS_LLM_BASE_URL is unset or invalid ({base_url!r}) — the "
+                "openai_compat transport needs a full http(s) base url"
+            ),
+            paused=False,
+        )
     api_key = _provider_api_key(base_url)
     cfg = replace(
         LlmConfig.from_env(),
