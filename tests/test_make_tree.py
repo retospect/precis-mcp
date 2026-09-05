@@ -139,26 +139,26 @@ def test_delete_step_and_tree(make):
     assert "retired make tree" in make.delete(id="mt-del").body
 
 
-_PIP_LEAF = """
+_PRINTED_LEAF = """
 component knuckle
 lug add box:w8d6h12 @4,0,0
-port leaf @0,0,6 rot:0,90,0 type:pip-hinge of:knuckle
+port leaf @0,0,6 rot:0,90,0 type:printed-hinge of:knuckle
 """
 
-_PIP_TRAY = """
+_PRINTED_TRAY = """
 component tray
 wall add box:w60d40h4
-port hp @30,0,2 rot:0,90,0 type:pip-hinge of:tray
-use pip_leaf as h
+port hp @30,0,2 rot:0,90,0 type:printed-hinge of:tray
+use printed_leaf as h
 joint h.leaf to hp revolute limits:0..170
 """
 
 
-def test_pip_joint_across_different_print_steps_is_flagged(make, cad):
-    # a pip- typed interface is a captive printed joint: both hosts must
+def test_printed_joint_across_different_print_steps_is_flagged(make, cad):
+    # a printed- typed interface is a captive printed joint: both hosts must
     # come out of the SAME print step (cad-print-in-place.md).
-    cad.put(id="pip_leaf", text=_PIP_LEAF)
-    cad.put(id="pip_tray", text=_PIP_TRAY)
+    cad.put(id="printed_leaf", text=_PRINTED_LEAF)
+    cad.put(id="printed_tray", text=_PRINTED_TRAY)
     make.put(id="print-plan", title="print jobs")
     (s1,) = _step_handles(make.put(id="print-plan", text="print the tray").body)
     (s2,) = _step_handles(
@@ -166,15 +166,15 @@ def test_pip_joint_across_different_print_steps_is_flagged(make, cad):
     )
 
     # no alignment info yet → the lint stays silent (can't know)
-    assert "print-in-place" not in cad.get(id="pip_tray", view="links").body
+    assert "print-in-place" not in cad.get(id="printed_tray", view="links").body
 
     # hosts in DIFFERENT print steps → loud
-    cad.link(id="pip_tray", target=s1, rel="made-by")
-    cad.link(id="pip_leaf", target=s2, rel="made-by")
-    body = cad.get(id="pip_tray", view="links").body
+    cad.link(id="printed_tray", target=s1, rel="made-by")
+    cad.link(id="printed_leaf", target=s2, rel="made-by")
+    body = cad.get(id="printed_tray", view="links").body
     assert "print-in-place" in body and "SAME print" in body
 
     # move the leaf into the tray's print step → quiet again
-    cad.link(id="pip_leaf", target=s2, rel="made-by", mode="remove")
-    cad.link(id="pip_leaf", target=s1, rel="made-by")
-    assert "print-in-place" not in cad.get(id="pip_tray", view="links").body
+    cad.link(id="printed_leaf", target=s2, rel="made-by", mode="remove")
+    cad.link(id="printed_leaf", target=s1, rel="made-by")
+    assert "print-in-place" not in cad.get(id="printed_tray", view="links").body

@@ -231,6 +231,21 @@ get(kind="cad", id="crane", view="sweep")
   with the state range where it interferes, plus the swept envelope per
   moving body. `args={'joint': 'jib'}` sweeps one joint only.
 
+### Print-in-place joints — the `printed-` type convention
+
+For 3D-printed realizations, hinges/slides/pins can be **built in** —
+printed captive, no assembly. Express one as a module: its own pin as a
+node reaching into the host, the bore as a `cut` payload (pin radius +
+process clearance), the `joint … revolute|prismatic` line, and a port
+`type:printed-hinge` (the `printed-` prefix marks the interface as
+captive-printed — "pip" in 3D-printing parlance, spelled out here to
+avoid the Python-pip collision). Put the clearance floor in a dim
+(`dim clearance >= 0.3` for FDM) so an undersized joint refuses at
+parse. The honesty rule rides make-tree alignment: a `printed-` mate
+whose two hosts are `made-by` **different print steps** is flagged on
+the design's `view='links'` — a captive joint needs both sides in the
+same print.
+
 ### Attach analysis results — `link` `rel='analyzed-by'`
 
 An analysis number (FEA stress, a multiphysics result — stored as a

@@ -380,9 +380,9 @@ class CadHandler(Handler):
         except Exception:  # pragma: no cover - lint is best-effort
             return ""
 
-    def _pip_print_check(self, ref: Any, spec: Any) -> str:
+    def _printed_joint_check(self, ref: Any, spec: Any) -> str:
         """Print-in-place honesty (cad-print-in-place.md): a mate across a
-        ``pip-``-typed port is a captive printed joint — its two hosts must
+        ``printed-``-typed port is a captive printed joint — its two hosts must
         come out of the SAME print. When both sides' designs are aligned to
         make steps and the steps differ, the joint cannot exist; say so."""
         try:
@@ -436,7 +436,7 @@ class CadHandler(Handler):
                 t = port_type(mate.instance, mate.port) or port_type(
                     mate.anchor_instance, mate.anchor_port
                 )
-                if not t.startswith("pip-"):
+                if not t.startswith("printed-"):
                     continue
                 a = side_ref_id(mate.instance)
                 b = side_ref_id(mate.anchor_instance)
@@ -670,7 +670,7 @@ class CadHandler(Handler):
             from precis.handlers._links_render import render_links_view
 
             resp = render_links_view(self.store, ref, sense="cad")
-            extra = self._make_coverage(ref) + self._pip_print_check(ref, spec)
+            extra = self._make_coverage(ref) + self._printed_joint_check(ref, spec)
             stale = self._stale_analyses(ref)
             if stale:
                 extra += "\n⚠ STALE analyses (re-run or detach): " + "; ".join(stale)

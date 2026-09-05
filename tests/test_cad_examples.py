@@ -364,28 +364,28 @@ def test_state_on_a_jointless_design_is_refused():
 # FDM), so an undersized printed joint is refused at parse — not
 # discovered on the build plate.
 
-_PIP_HINGE = """
+_PRINTED_HINGE = """
 desc: print-in-place hinge, FDM clearances
 dim pin_r = 2
 dim clearance >= 0.3
 component knuckle
 lug add box:w8d6h12 @4,0,0
 pin add cyl:r2h10 @0,0,6 rot:0,-90,0
-port leaf @0,0,6 rot:0,90,0 type:pip-hinge of:knuckle
+port leaf @0,0,6 rot:0,90,0 type:printed-hinge of:knuckle
 payload bore cut cyl:r2.3h12 at:leaf @0,0,-12
 """
 
-_PIP_LID = """
+_PRINTED_LID = """
 component tray
 wall add box:w60d40h4
-port hp @30,0,2 rot:0,90,0 type:pip-hinge of:tray
-use pip_hinge as h
+port hp @30,0,2 rot:0,90,0 type:printed-hinge of:tray
+use printed_hinge as h
 joint h.leaf to hp revolute limits:0..170
 """
 
 
-def test_pip_hinge_pin_is_captive_with_real_clearance():
-    d = _build(_PIP_LID, {"pip_hinge": _PIP_HINGE})
+def test_printed_hinge_pin_is_captive_with_real_clearance():
+    d = _build(_PRINTED_LID, {"printed_hinge": _PRINTED_HINGE})
     # the bore is carved out of the tray along the hinge axis...
     assert not d.classify_point(vec3(25, 0, 2), component="tray").inside
     # ...the module's pin runs inside it...
@@ -398,7 +398,7 @@ def test_pip_hinge_pin_is_captive_with_real_clearance():
     assert d.classify_point(vec3(25, 3, 3.5), component="tray").inside
 
 
-def test_pip_clearance_floor_is_enforced_by_dims():
+def test_printed_clearance_floor_is_enforced_by_dims():
     # an undersized clearance contradicts the process floor → refused
     import pytest as _pytest
 
