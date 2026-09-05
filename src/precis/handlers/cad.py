@@ -65,6 +65,7 @@ from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store._cad_ops import cad_source_sha
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
@@ -245,7 +246,6 @@ class CadHandler(Handler):
             validate_link_mode,
         )
         from precis.handlers._link_target import parse_link_target
-        from precis.store._cad_ops import cad_source_sha
 
         mode = validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
@@ -281,8 +281,6 @@ class CadHandler(Handler):
     def _stale_analyses(self, ref: Any) -> list[str]:
         """The attached analyses whose pinned sha no longer matches the
         design — never render an attached number without its flag."""
-        from precis.store._cad_ops import cad_source_sha
-
         try:
             links = self.store.links_for(
                 ref.id, direction="out", relation="analyzed-by"
@@ -480,12 +478,13 @@ class CadHandler(Handler):
                 )
             )
         if view in ("stl", "3mf", "step"):
-            return self._render_export(
+            resp = self._render_export(
                 self._expand(spec, state=self._state_arg(args or {})),
                 str(ref.slug or s),
                 view,
                 args or {},
             )
+            return self._note_export(ref, spec, view, resp)
         if view == "sweep":
             return self._render_sweep(spec, args or {})
         if view == "links":
@@ -554,6 +553,28 @@ class CadHandler(Handler):
                 "args={'path': '/abs/out."
                 f"{fmt}'}} to choose the location."
             )
+        )
+
+    def _note_export(
+        self, ref: Any, source_spec: Any, fmt: str, resp: Response
+    ) -> Response:
+        """Exports are scoped artefacts too (attached-models layer): record
+        which design version left the building, so a drifted STL/STEP is
+        detectable the same way a stale analysis is. Best-effort — an event
+        failure never fails the export."""
+        sha = ""
+        try:
+            sha = cad_source_sha(source_spec)
+            self.store.append_event(
+                ref.id, source="cad", event="exported", payload={"sha": sha, "fmt": fmt}
+            )
+        except Exception:  # pragma: no cover - audit trail is best-effort
+            log.warning("cad: export event failed for %s", ref.id)
+        if not sha:
+            return resp
+        return Response(
+            body=resp.body + f"\ndesign version {sha} recorded — a later design change "
+            "makes this file stale"
         )
 
     # ── sweep ────────────────────────────────────────────────────────

@@ -247,9 +247,15 @@ and the system says so loudly: `view='links'` appends
 condition check files/auto-closes an alert per stale attachment. Re-run
 the analysis and re-attach (same call — the pin refreshes), or
 `mode='remove'` to detach. A whitespace-only re-save does not trip it —
-staleness is content-driven. Put the analysis's assumptions (loads,
-constraints, temperature range, which ports were assumed fixed) in the
-finding's `scope=` dict — that is the validity boundary a reuser checks.
+staleness is content-driven. Put the analysis's assumptions in the finding's `scope=` dict — that is
+the validity boundary a reuser checks. Recommended keys: `fidelity`
+(analytic|fea|multiphysics|mlp|dft…), `engine`, `loads`/`constraints`
+(named by port where possible), `temp_range`. Keep values short and
+structured — prose scope values fork hubs that should converge.
+
+File exports are version-anchored the same way: `view='stl'|'3mf'|'step'`
+records the design version it wrote, so a drifted artifact is detectable
+(`design version <sha> recorded` in the reply).
 
 ### Describe what it's *for* — `desc:` / `use:`
 

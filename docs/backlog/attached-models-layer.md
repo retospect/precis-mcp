@@ -84,9 +84,20 @@ alert→gripe lane with per-instance auto-close. **Design deviation from
 the notes below:** the anchor is a content sha in `ref_events`, NOT a
 `meta.rev` — for cad refs `refs.meta` IS the spec meta, a rev key would
 leak into the spec round-trip; and content-addressing makes no-op
-re-saves free. Remaining in this item: finding-side `scope=` conventions
-(which keys, lint), export staleness (record the sha on export events),
-the MLP/engine model-level registry, engine job_types.
+re-saves free. Export staleness also in: file exports (stl/3mf/step) append a
+`cad`/`exported` event carrying the content sha and say so in the reply.
+
+**`scope=` key convention for analysis findings** (guidance, not a closed
+registry — keys harden into linted vocabulary with their consumers, the
+se annotation-registry rule): `fidelity` (analytic | beam-shell | fea |
+multiphysics | mlp | semi-empirical | dft), `engine` (+version),
+`loads`/`constraints` (what was applied/fixed, named by **port** where
+possible — the port type is the validity boundary), `temp_range`,
+`mesh`/`basis` where meaningful. Prose in scope values forks hubs that
+should converge (the identity hash) — keep values short and structured.
+
+Remaining in this item: the MLP/engine model-level registry (flag the
+model, not just the run), engine job_types.
 
 ## v1 implementation notes (survey 2026-09-05, verified against the tree)
 

@@ -97,3 +97,22 @@ def test_analyzed_by_target_must_be_an_analysis_kind(cad, store):
     other = store.insert_ref(kind="cad", slug="not_an_analysis", title="x", meta={})
     with pytest.raises(BadInput, match="finding or estimate"):
         cad.link(id="analyzed_demo2", target=f"cad:{other.slug}", rel="analyzed-by")
+
+
+def test_export_event_carries_the_content_sha(cad, store, tmp_path):
+    from precis.cad.export import manifold_available
+
+    if not manifold_available():
+        pytest.skip("manifold3d not installed")
+    cad.put(id="export_demo", text=_V1)
+    ref = store.get_ref(kind="cad", id="export_demo")
+    out = cad.get(id="export_demo", view="stl", args={"path": str(tmp_path / "d.stl")})
+    assert "design version" in out.body and "recorded" in out.body
+    with store.pool.connection() as conn:
+        (sha,) = conn.execute(
+            "SELECT payload->>'sha' FROM ref_events "
+            "WHERE ref_id = %s AND source = 'cad' AND event = 'exported'",
+            (ref.id,),
+        ).fetchone()
+    # the exported sha equals the save-time sha — same content anchor
+    assert sha == _shas(store, ref.id)[-1]

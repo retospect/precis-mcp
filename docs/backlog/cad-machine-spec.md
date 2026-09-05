@@ -365,6 +365,15 @@ you state intent and the kernel keeps it true.
   a kernel; do not grow one inside an analytic IR.
 - **A general constraint solver** for mates (slice 2 is substitution over a
   spanning tree).
+- **Whole-structure mobility/rigidity analysis** — and a tripwire if it
+  ever lands (agreed with the se track, 2026-09-05): naive
+  constraint-vs-DOF counting over the joint graph MUST report
+  "first-order mobile; may be prestress-stabilized — not checked" unless
+  Maxwell/Calladine `m − s` null-space counting is present. Every joint
+  class here (and in se) is bilateral; ropes/prestress are
+  unrepresentable, so plain counting is confidently wrong about
+  tensegrity-class structures. Docstring contract for whoever builds it.
+  (se's mirror: `se-tension-elements-and-prestress.md`.)
 - Any change that makes `precis.cad` import from the DB or the store.
 
 ## Target + blast radius
