@@ -154,6 +154,14 @@ def disallowed_tools(env: Envelope) -> tuple[str, ...]:
     Cooperative: a determined agent that ignored the deny would still hit
     the DB role (:func:`db_role`) or the no-net container
     (:func:`network_mode`) — the real boundaries.
+
+    These ``mcp__precis__*`` names are **profile-dependent**: they only exist
+    under the default ``typed`` MCP profile. Under ``PRECIS_MCP_PROFILE=
+    command`` the server collapses to a single ``precis(command, ...)`` tool
+    and none of these names match anything — the chokepoint guards that
+    combination by refusing the call outright rather than running with a
+    silently inert deny (see
+    ``docs/backlog/agent-deny-lists-are-profile-dependent.md``).
     """
     deny: list[str] = []
     if env.write == "none":

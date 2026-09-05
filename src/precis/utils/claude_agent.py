@@ -94,6 +94,29 @@ class ClaudeAgentError(ClaudeProcessError):
     """
 
 
+class InertDenyListError(RuntimeError):
+    """Raised by :func:`call_claude_agent` (via :func:`_resolve_agent_args`)
+    when the active ``PRECIS_MCP_PROFILE`` would make a requested precis-verb
+    deny silently inert.
+
+    Under ``PRECIS_MCP_PROFILE=command`` (see ``server.py::_mcp_profile``)
+    the MCP server collapses the whole precis surface into one
+    ``precis(command, text=...)`` tool, so a deny list naming per-verb tools
+    (``mcp__precis__put``/``edit``/``delete``/``tag``/``link`` — see
+    :func:`precis.workers.envelope.disallowed_tools`) matches nothing: the
+    agent can still call the denied verb through
+    ``precis("delete(kind='paper', id=…)")`` with no gate. This is the
+    stopgap from ``docs/backlog/agent-deny-lists-are-profile-dependent.md``
+    (option 2) — refuse the call outright rather than run with a deny list
+    that looks load-bearing but silently isn't. Denies of built-in tools
+    (``WebFetch``/``WebSearch``/etc.) are unaffected — those are registered
+    identically under both profiles — so this only fires when the *combination*
+    (``command`` profile + a ``mcp__precis__*`` deny name) is present. The
+    durable fix (verb-level deny in ``runtime/dispatch.py``, which both
+    profiles funnel through) is tracked in that doc, not implemented here.
+    """
+
+
 class ContainerRequiredError(RuntimeError):
     """Raised by :func:`call_claude_agent` when ``require_container=True`` but
     the container path is unavailable — disabled, probe-failed, or an infra
@@ -251,6 +274,10 @@ def call_claude_agent(
             binary was missing.
         ContainerRequiredError: ``require_container=True`` and the container
             path is unavailable.
+        InertDenyListError: the effective deny list (``disallowed_tools`` +
+            the envelope's tier-1 deny) names a ``mcp__precis__*`` tool while
+            ``PRECIS_MCP_PROFILE=command`` is active, where that name would
+            be silently inert — see :class:`InertDenyListError`.
     """
     binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
         prompt,
@@ -562,6 +589,12 @@ def _resolve_agent_args(
     lives in exactly one place. Returns ``(binary, args, model, timeout_s,
     max_usd, active_env)`` — ``active_env`` (the resolved envelope, if any)
     is threaded to :func:`_prepare_agent_env` so it isn't re-resolved.
+
+    Raises:
+        InertDenyListError: the merged deny list (explicit
+            ``disallowed_tools`` + the envelope's tier-1 deny) names a
+            ``mcp__precis__*`` tool while ``PRECIS_MCP_PROFILE=command`` is
+            active — see :func:`_check_deny_list_profile_safety`.
     """
     binary = resolve_binary()
     model = (
@@ -637,6 +670,8 @@ def _resolve_agent_args(
             if tool not in effective_deny:
                 effective_deny.append(tool)
 
+    _check_deny_list_profile_safety(effective_deny)
+
     if effective_deny:
         # ``claude -p`` declares ``--disallowed-tools <tools...>`` as a
         # Commander.js *variadic* — it greedily consumes every subsequent
@@ -671,6 +706,57 @@ def _resolve_agent_args(
         "yes" if mcp_config else "no",
     )
     return binary, args, model, timeout_s, max_usd, active_env
+
+
+#: Prefix identifying a precis per-verb MCP tool name (``mcp__precis__put``,
+#: ``mcp__precis__edit``, ...) — the shape the ``typed`` profile registers
+#: and the shape every current ``disallowed_tools``/envelope deny uses.
+_PRECIS_VERB_TOOL_PREFIX = "mcp__precis__"
+
+#: ``PRECIS_MCP_PROFILE`` — kept as a private alias (rather than importing
+#: ``precis.server``, which builds a live FastMCP instance at import time and
+#: is documented "tests should not import this module") so this module's
+#: profile check stays a cheap ``os.environ`` read matching
+#: ``server.py::_mcp_profile``'s exact env var name + default.
+_MCP_PROFILE_ENV_NAME = "PRECIS_MCP_PROFILE"
+
+
+def _check_deny_list_profile_safety(effective_deny: list[str]) -> None:
+    """Refuse rather than silently run when a precis-verb deny would be
+    inert under the active MCP profile.
+
+    Resolves ``PRECIS_MCP_PROFILE`` the same way ``server.py::_mcp_profile``
+    does (``os.environ.get("PRECIS_MCP_PROFILE", "typed")``) — this is a
+    best-effort read of the *ambient* env the spawned ``precis serve`` will
+    inherit; a caller using ``env_base``/``env_overlay`` to hand the
+    subprocess a different profile than the current process's own
+    ``os.environ`` sees isn't covered (out of scope for this stopgap — see
+    the doc below).
+
+    No-op when the profile isn't ``command``, or when none of the merged
+    deny names target a precis verb (a built-in-only deny like
+    ``WebFetch``/``WebSearch`` is registered identically under both
+    profiles and is never inert).
+
+    Raises:
+        InertDenyListError: ``PRECIS_MCP_PROFILE=command`` AND
+            ``effective_deny`` contains a ``mcp__precis__*`` name.
+    """
+    if os.environ.get(_MCP_PROFILE_ENV_NAME, "typed") != "command":
+        return
+    inert = [t for t in effective_deny if t.startswith(_PRECIS_VERB_TOOL_PREFIX)]
+    if not inert:
+        return
+    raise InertDenyListError(
+        "call_claude_agent: PRECIS_MCP_PROFILE=command collapses the precis "
+        "MCP surface into a single `precis(command, text=...)` tool, so the "
+        f"per-verb deny name(s) {inert} match nothing and would be silently "
+        "inert if this call proceeded — refusing rather than running with a "
+        "deny list that looks load-bearing but isn't. Denies of built-in "
+        "tools only (WebFetch/Write/etc.) are unaffected by this refusal. "
+        "See docs/backlog/agent-deny-lists-are-profile-dependent.md for the "
+        "tracked durable fix (verb-level deny in runtime/dispatch.py)."
+    )
 
 
 def _prepare_agent_env(
@@ -1309,6 +1395,7 @@ __all__ = [
     "AgentResult",
     "ClaudeAgentError",
     "ContainerRequiredError",
+    "InertDenyListError",
     "call_claude_agent",
     "call_claude_agent_async",
     "stream_final_text",

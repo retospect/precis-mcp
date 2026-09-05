@@ -23,6 +23,7 @@ from precis.store import Store
 from precis.utils.claude_agent import (
     AgentResult,
     ClaudeAgentError,
+    InertDenyListError,
     call_claude_agent,
     call_claude_agent_async,
 )
@@ -503,6 +504,105 @@ def test_default_envelope_denies_nothing_and_no_role(stub_bin: Path) -> None:
     res = call_claude_agent("do")
     assert "--settings" not in res.final_text
     assert "DB_ROLE=unset" in res.final_text
+
+
+# ── PRECIS_MCP_PROFILE=command inert-deny guard (backlog stopgap) ──
+# docs/backlog/agent-deny-lists-are-profile-dependent.md — option 2.
+
+
+def test_command_profile_precis_verb_deny_refuses(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``command`` profile + a ``mcp__precis__*`` deny → refuse outright.
+
+    The name would match nothing under the collapsed single-tool surface;
+    the guard converts that silent capability grant into a visible refusal
+    naming the profile, the inert deny name(s), and the tracking doc.
+    """
+    monkeypatch.setenv("PRECIS_MCP_PROFILE", "command")
+    with pytest.raises(InertDenyListError) as excinfo:
+        call_claude_agent("do", disallowed_tools=("mcp__precis__delete",))
+    msg = str(excinfo.value)
+    assert "command" in msg
+    assert "mcp__precis__delete" in msg
+    assert "docs/backlog/agent-deny-lists-are-profile-dependent.md" in msg
+
+
+def test_command_profile_envelope_deny_refuses(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard also catches a precis-verb deny arriving via the envelope
+    (not just an explicit ``disallowed_tools=``) — same merge point."""
+    from precis.workers.envelope import Envelope
+
+    monkeypatch.setenv("PRECIS_MCP_PROFILE", "command")
+    with pytest.raises(InertDenyListError):
+        call_claude_agent("do", envelope=Envelope(write="none"))
+
+
+def test_command_profile_builtin_only_deny_allowed(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``command`` profile + a built-in-only deny (no precis verb) → runs
+    normally. ``WebFetch``/``WebSearch`` are registered identically under
+    both profiles, so there's nothing inert to refuse."""
+    monkeypatch.setenv("PRECIS_MCP_PROFILE", "command")
+    stub_bin.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            printf '%s\\n' "$@"
+            """
+        ),
+        encoding="utf-8",
+    )
+    stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
+    res = call_claude_agent("do", disallowed_tools=("WebFetch", "WebSearch"))
+    assert "--settings" in res.final_text
+    assert "WebFetch" in res.final_text
+
+
+def test_typed_profile_precis_verb_deny_unchanged(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``typed`` profile (explicit) + a ``mcp__precis__*`` deny → unchanged
+    behavior, the deny rides through as before."""
+    monkeypatch.setenv("PRECIS_MCP_PROFILE", "typed")
+    stub_bin.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            printf '%s\\n' "$@"
+            """
+        ),
+        encoding="utf-8",
+    )
+    stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
+    res = call_claude_agent("do", disallowed_tools=("mcp__precis__delete",))
+    assert "--settings" in res.final_text
+    assert "mcp__precis__delete" in res.final_text
+
+
+def test_unset_profile_precis_verb_deny_unchanged(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``PRECIS_MCP_PROFILE`` set (the deploy default) + a
+    ``mcp__precis__*`` deny → unchanged behavior — ``typed`` is the implicit
+    default both here and in ``server.py::_mcp_profile``."""
+    monkeypatch.delenv("PRECIS_MCP_PROFILE", raising=False)
+    stub_bin.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            printf '%s\\n' "$@"
+            """
+        ),
+        encoding="utf-8",
+    )
+    stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
+    res = call_claude_agent("do", disallowed_tools=("mcp__precis__delete",))
+    assert "--settings" in res.final_text
+    assert "mcp__precis__delete" in res.final_text
 
 
 # ── §13 container executor selection (dark) ────────────────────────

@@ -53,6 +53,19 @@ roughly cheapest first:
 capability grant into a visible refusal, and is worth doing first if the
 `command` profile is going anywhere near a worker.
 
+**Option 2 is in**, at `claude_agent.py::_check_deny_list_profile_safety`
+(called from `_resolve_agent_args`, the choke point every deny-carrying
+caller funnels through — `call_claude_agent`/`call_claude_agent_async`, and
+`dream_agent.py` via `router.route`/`ClaudeAgentProvider`): `PRECIS_MCP_
+PROFILE=command` + any `mcp__precis__*` name in the merged deny list now
+raises `InertDenyListError` naming the profile, the inert names, and this
+doc, instead of running unguarded. (1) — verb-level deny in
+`runtime/dispatch.py` — is still open. Note: `workers/executors/
+agent_container.py::build_agent_run`/`build_claude_command` is a *second*,
+currently-unwired (test-only) deny-list assembly path that does not funnel
+through this guard — would need its own check if it's ever wired to a live
+executor.
+
 ## Scope note
 
 This is not dream-specific. Any pass setting `disallowed_tools` with
