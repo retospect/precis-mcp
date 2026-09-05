@@ -39,8 +39,21 @@ adds:
    awareness proper (which joints are printable vs need hardware) joins
    the `realizes` edge when it lands (`design-graph-relations.md`).
 
-## Sequencing
+## Status
 
-dims kernel → seed library + examples → same-print-step lint →
-process-clearance profiles (a small table per process; entering with the
-lint that reads it, per the enter-with-consumer rule).
+Shipped 2026-09-05 (13187799, with the dims kernel de851f3f preceding):
+the `pip-` port-type convention, the same-print-step lint on the
+design's `view='links'` (fires when both hosts of a pip-typed mate are
+`made-by` different print steps; silent without alignment info), and the
+worked pip-hinge example (module-owned pin + clearance-bore payload,
+clearance floor as a `dim`). Open below.
+
+## Remaining
+
+- **Seed library as stored refs** (`pip-hinge`, `pip-slide`, `pip-pin`
+  as prod cad designs reusable via `use`) — a deliberate prod-write
+  session, not an autonomous one.
+- **Process-clearance profiles** (per-process floors: FDM 0.3, SLA less,
+  milled = fit classes) — enters with the consumer that ties a joint's
+  clearance dim to its realization process, which wants the `realizes`
+  edge (`design-graph-relations.md`).
