@@ -155,6 +155,32 @@ Ports take two optional tags: `type:<t>` (free compatibility tag — two
 and `of:<component>` (scopes the frame to a component — required for the
 pivot of a component `joint` below).
 
+### Straddling modules — `payload … at:<port>`
+
+A port may carry **payload geometry** — features the module machines into
+whatever it mates against (a hinge's knuckle recess, its pin bore):
+
+```
+component body
+barrel  add cyl:r4h20
+port leaf_a @-10,0,0 of:body type:hinge-leaf
+payload recess   cut box:w8d3h20 at:leaf_a @0,0,-10
+payload pin_bore cut cyl:r2h24   at:leaf_a @0,0,-2
+```
+
+`payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]` — placement is
+relative to the port's frame; `op` is `add`/`cut` only. On the module
+itself the payload is dormant. When the port **mates**, each payload is
+spliced into the component on the *other* side as a node named
+`<instance>~<name>` — so the host's tree and `view='volume'` (which adds a
+"payload contribution" delta line) attribute the change to the module,
+never silently. Requirements and refusals: the far side's port must be
+scoped `of:` a component (the host body — refused otherwise, a payload
+needs a host); across an articulated `joint …` the payload stays rigid in
+the host (a recess doesn't swing with the hinge). An instanced module
+whose payload port is never mated is flagged at `put`
+(`⚠ payload port(s) never mated`) — the geometry would exist in no host.
+
 ### Articulate — `joint`, `state`, and `view='sweep'`
 
 A **mate is a `fixed` joint**. The articulated kinds insert one degree of

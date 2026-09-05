@@ -29,6 +29,13 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   is a free compatibility tag (two typed ports may only mate when the types
   match); ``of:`` scopes the port to a component (required for the pivot of
   a component ``joint``).
+- ``payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]`` — geometry
+  the port *brings to whatever it mates against* (a hinge's knuckle recess,
+  its pin bore): when the port mates, each payload is spliced into the
+  component on the **other** side of the mate as a node named
+  ``<instance>~<name>``. Placement is relative to the port frame; ``op`` ∈
+  {``add``, ``cut``}; the far side's port must be scoped ``of:`` a
+  component (the host body). See :class:`PayloadSpec`.
 - ``mate <inst>.<port> to <anchor> [flip] [spin:<deg>]`` places instance
   ``<inst>`` by making its port coincide with ``<anchor>`` (this design's own
   ``<port>``, or another instance's ``<inst>.<port>``) — see
@@ -80,6 +87,16 @@ from precis.cad.vec import (
 log = logging.getLogger(__name__)
 
 _OPS = ("add", "cut", "intersect")
+
+#: Ops a port payload may use. Never ``intersect`` — an intersect payload
+#: would replace its whole host with the overlap, not feature it.
+_PAYLOAD_OPS = ("add", "cut")
+
+#: Separator in expansion-generated payload node names
+#: (``<instance>~<payload>``). Outside :data:`_IDENT_RE`, so a spliced node
+#: can never collide with an authored one — and the handler recognises a
+#: spliced payload row by it for attribution.
+PAYLOAD_SEP = "~"
 
 #: A node whose ``config`` starts with this instances another design rather
 #: than building a primitive — see :func:`expand_instances`.
@@ -274,6 +291,56 @@ class SceneSpec:
 
 
 @dataclass(frozen=True)
+class PayloadSpec:
+    """Geometry a port *brings to whatever it mates against* — the
+    straddling-module half of an interface (a hinge's knuckle recess, its
+    pin bore), cad slice 5.
+
+    Declared ``payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]``;
+    ``loc``/``rot`` are relative to the owning port's frame. When the port
+    mates, :func:`_solve_mates` splices each payload into the component on
+    the **other** side of the mate as a plain node named
+    ``<instance>~<name>`` — the host's numbers change, but its node tree
+    names who did it (attribution crosses boundaries loudly).
+    """
+
+    name: str
+    op: str  # one of _PAYLOAD_OPS
+    config: str  # the §11 mini-DSL shape string
+    loc: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rot: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def to_meta(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "op": self.op,
+            "config": self.config,
+            "loc": list(self.loc),
+            "rot": list(self.rot),
+        }
+
+    @classmethod
+    def from_meta(cls, raw: Any) -> PayloadSpec:
+        if not isinstance(raw, dict) or not str(raw.get("name") or ""):
+            raise SceneError(f"malformed stored payload {raw!r}")
+        return cls(
+            name=str(raw["name"]),
+            op=str(raw.get("op") or "cut"),
+            config=str(raw.get("config") or ""),
+            loc=as_float3(raw.get("loc")),
+            rot=as_float3(raw.get("rot")),
+        )
+
+    def to_source(self, port: str) -> str:
+        parts = ["payload", self.name, self.op, self.config, f"at:{port}"]
+        if self.loc != (0.0, 0.0, 0.0):
+            parts.append("@" + ",".join(_fmt_num(v) for v in self.loc))
+        if self.rot != (0.0, 0.0, 0.0):
+            parts.append("rot:" + ",".join(_fmt_num(v) for v in self.rot))
+        return " ".join(parts)
+
+
+@dataclass(frozen=True)
 class PortSpec:
     """A named frame on a design — the interface a :class:`MateSpec` targets.
 
@@ -291,6 +358,8 @@ class PortSpec:
     #: Component this frame rides on ("" = the design as a whole). Required
     #: on the pivot port of a component ``joint``.
     component: str = ""
+    #: Geometry this port splices into whatever it mates to (slice 5).
+    payloads: tuple[PayloadSpec, ...] = ()
 
     def to_meta(self) -> dict[str, Any]:
         m: dict[str, Any] = {
@@ -302,6 +371,8 @@ class PortSpec:
             m["type"] = self.type
         if self.component:
             m["component"] = self.component
+        if self.payloads:
+            m["payloads"] = [p.to_meta() for p in self.payloads]
         return m
 
     @classmethod
@@ -314,6 +385,9 @@ class PortSpec:
             rot=as_float3(raw.get("rot")),
             type=str(raw.get("type") or ""),
             component=str(raw.get("component") or ""),
+            payloads=tuple(
+                PayloadSpec.from_meta(p) for p in (raw.get("payloads") or ())
+            ),
         )
 
     def to_source(self) -> str:
@@ -328,6 +402,10 @@ class PortSpec:
         if self.component:
             parts.append(f"of:{self.component}")
         return " ".join(parts)
+
+    def source_lines(self) -> list[str]:
+        """The port line plus its ``payload …`` lines (parse round-trip)."""
+        return [self.to_source(), *(p.to_source(self.name) for p in self.payloads)]
 
     def frame(self) -> Transform:
         """The port's pose in its own design's coordinates."""
@@ -628,6 +706,7 @@ def parse_source(text: str) -> SceneSpec:
     components_with_nodes: set[str] = set()
     instance_names: set[str] = set()
     ports: list[PortSpec] = []
+    payloads: list[tuple[str, PayloadSpec, int]] = []  # (at-port, spec, lineno)
     mates: list[MateSpec] = []
     cjoints: list[ComponentJointSpec] = []
     couples: list[CoupleSpec] = []
@@ -729,6 +808,62 @@ def parse_source(text: str) -> SceneSpec:
                 )
             ports.append(
                 PortSpec(name=pname, loc=ploc, rot=prot, type=ptype, component=pcomp)
+            )
+            continue
+        if toks[0] == "payload":
+            # `payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]` —
+            # geometry the port splices into whatever it mates to (slice 5).
+            # Top-level like `port`; placement is relative to the port frame.
+            if len(toks) < 5:
+                raise SceneError(
+                    f"line {lineno}: expected 'payload <name> <op> <config> "
+                    "at:<port> [@x,y,z] [rot:...]'"
+                )
+            plname, plop, plconfig = toks[1], toks[2], toks[3]
+            if not _IDENT_RE.match(plname):
+                raise SceneError(f"line {lineno}: bad payload name {plname!r}")
+            if plname in seen_names:
+                raise SceneError(f"line {lineno}: duplicate node name {plname!r}")
+            seen_names.add(plname)
+            if plop not in _PAYLOAD_OPS:
+                raise SceneError(
+                    f"line {lineno}: payload op {plop!r} not one of "
+                    f"{_PAYLOAD_OPS} — an 'intersect' payload would replace "
+                    "its whole host with the overlap, not feature it"
+                )
+            pl_spec = parse(plconfig)
+            build(pl_spec)
+            if pl_spec.alias == "chamfer" and plop == "add":
+                raise SceneError(
+                    f"line {lineno}: chamfer payload {plname!r} cannot use op "
+                    "'add' — an added half-space is an unbounded infinite solid"
+                )
+            at_port = ""
+            rest = []
+            for tok in toks[4:]:
+                if m := _AT_RE.match(tok):
+                    at_port = m[1]
+                else:
+                    rest.append(tok)
+            if not at_port:
+                raise SceneError(
+                    f"line {lineno}: payload {plname!r} needs at:<port> — the "
+                    "port whose mate splices it into the other body"
+                )
+            plloc, plrot, plpat = _parse_placement(rest, lineno)
+            if plpat is not None:
+                raise SceneError(
+                    f"line {lineno}: payload {plname!r} cannot carry a pattern "
+                    "— a payload splices once per mate; declare one per feature"
+                )
+            payloads.append(
+                (
+                    at_port,
+                    PayloadSpec(
+                        name=plname, op=plop, config=plconfig, loc=plloc, rot=plrot
+                    ),
+                    lineno,
+                )
             )
             continue
         if toks[0] == "mate" or (
@@ -883,6 +1018,20 @@ def parse_source(text: str) -> SceneSpec:
                 pattern=pattern,
             )
         )
+
+    # Attach payloads to their ports (order-free: a payload line may precede
+    # its port's declaration).
+    if payloads:
+        idx = {pt.name: i for i, pt in enumerate(ports)}
+        for at_port, pl, pl_lineno in payloads:
+            i = idx.get(at_port)
+            if i is None:
+                known = ", ".join(pt.name for pt in ports) or "none"
+                raise SceneError(
+                    f"line {pl_lineno}: payload {pl.name!r}: at:{at_port} is "
+                    f"not a declared port — declared ports: {known}"
+                )
+            ports[i] = replace(ports[i], payloads=(*ports[i].payloads, pl))
 
     _validate_interfaces(
         ports=ports,
@@ -1044,7 +1193,8 @@ def spec_to_source(spec: SceneSpec) -> str:
         lines.append(f"desc: {desc}")
     if use:
         lines.append(f"use: {use}")
-    lines.extend(port.to_source() for port in ports_of(spec))
+    for port in ports_of(spec):
+        lines.extend(port.source_lines())
     if lines:
         lines.append("")
 
@@ -1464,6 +1614,7 @@ def _solve_mates(
         by_inst[mate.instance] = mate
 
     sub_ports: dict[str, dict[str, PortSpec]] = {}
+    sub_specs: dict[str, SceneSpec] = {}
 
     def ports_for(inst: str) -> dict[str, PortSpec]:
         """The ports the sub-design behind instance ``inst`` declares.
@@ -1487,6 +1638,7 @@ def _solve_mates(
                 raise
             except Exception as exc:
                 raise SceneError(f"cannot resolve design {slug!r}: {exc}") from exc
+            sub_specs[inst] = sub
             found = {pt.name: pt for pt in ports_of(sub)}
             if sub.meta.get("joints"):
                 sub_cw = _component_joint_worlds(sub, _resolve_states(sub, None))
@@ -1537,6 +1689,10 @@ def _solve_mates(
                     f"'<port>' here or '<instance>{NAMESPACE_SEP}<port>')"
                 )
             anchor_world = anchor_port.frame()
+            # Payload splices into an own component carry the *pre-joint*
+            # frame: _pose_component_joints bakes cworld into every node of
+            # a jointed component later, payload rows included.
+            anchor_host_frame = anchor_world
             w = cworld.get(anchor_port.component)
             if w is not None:
                 # The port rides a component with its own joint — follow it.
@@ -1561,6 +1717,10 @@ def _solve_mates(
             anchor_world = pose_of(mate.anchor_instance, (*stack, inst)).compose(
                 anchor_port.frame()
             )
+            # An instance's components are never in cworld (only this
+            # design's own jointed components are), so the world frame IS
+            # the host-rigid frame.
+            anchor_host_frame = anchor_world
 
         subject_port = require_port(inst, mate.port)
         if (
@@ -1575,15 +1735,100 @@ def _solve_mates(
                 "like"
             )
         xf = anchor_world
+        host_iface = anchor_host_frame
         if mate.spin:
             xf = xf.compose(rotation(0.0, 0.0, mate.spin))
+            host_iface = host_iface.compose(rotation(0.0, 0.0, mate.spin))
         if mate.flip:
             xf = xf.compose(rotation(180.0, 0.0, 0.0))
+            host_iface = host_iface.compose(rotation(180.0, 0.0, 0.0))
         if mate.kind != "fixed":
             xf = xf.compose(_joint_xform(mate.kind, states[inst], mate.pitch))
         xf = xf.compose(subject_port.frame().inverse())
+
+        # Straddling modules (slice 5): each side's port payloads splice
+        # into the body on the *other* side of the mate, as plain nodes
+        # named `<instance>~<payload>` so the host's tree attributes them.
+        # A subject payload is rigid in the host — it sits at the interface
+        # frame *before* J(q) (a hinge's recess is machined into the host;
+        # it does not swing with the hinge). An anchor payload rides the
+        # subject, so its frame includes J(q).
+        if subject_port.payloads:
+            if not anchor_port.component:
+                raise SceneError(
+                    f"mate {mate.subject} to {mate.anchor}: port "
+                    f"{mate.port!r} carries payload geometry, but the anchor "
+                    f"port {mate.anchor_port!r} is not scoped of: a component "
+                    "— a payload needs a host body to splice into"
+                )
+            host = (
+                anchor_port.component
+                if mate.anchor_instance is None
+                else f"{mate.anchor_instance}{NAMESPACE_SEP}{anchor_port.component}"
+            )
+            _require_host_body(
+                mate,
+                spec
+                if mate.anchor_instance is None
+                else sub_specs[mate.anchor_instance],
+                anchor_port.component,
+                host,
+            )
+            _splice(inst, subject_port.payloads, host, host_iface)
+        if anchor_port.payloads:
+            if not subject_port.component:
+                raise SceneError(
+                    f"mate {mate.subject} to {mate.anchor}: port "
+                    f"{mate.anchor_port!r} carries payload geometry, but the "
+                    f"subject port {mate.port!r} is not scoped of: a "
+                    "component — a payload needs a host body to splice into"
+                )
+            host = f"{inst}{NAMESPACE_SEP}{subject_port.component}"
+            _require_host_body(mate, sub_specs[inst], subject_port.component, host)
+            _splice(
+                inst,
+                anchor_port.payloads,
+                host,
+                xf.compose(subject_port.frame()),
+            )
+
         solved[inst] = xf
         return xf
+
+    spliced: list[NodeSpec] = []
+
+    def _require_host_body(
+        mate: MateSpec, host_spec: SceneSpec, comp: str, host: str
+    ) -> None:
+        """A payload features an *existing* body. Splicing into a component
+        with no shape nodes of its own would make the payload that
+        component's base — and a base ignores its op, so a ``cut`` payload
+        would silently *add* material. Refuse instead."""
+        if not any(
+            n.component == comp and instance_slug(n.config) is None
+            for n in host_spec.nodes
+        ):
+            raise SceneError(
+                f"mate {mate.subject} to {mate.anchor}: payload host "
+                f"component {host!r} has no geometry of its own — a payload "
+                "modifies an existing body; give it a base node first"
+            )
+
+    def _splice(
+        inst: str, pls: tuple[PayloadSpec, ...], host: str, frame: Transform
+    ) -> None:
+        for pl in pls:
+            loc, rot = _decompose(frame.compose(_node_xform(pl.loc, pl.rot)))
+            spliced.append(
+                NodeSpec(
+                    name=f"{inst}{PAYLOAD_SEP}{pl.name}",
+                    op=pl.op,
+                    config=pl.config,
+                    component=host,
+                    loc=loc,
+                    rot=rot,
+                )
+            )
 
     out: list[NodeSpec] = []
     for node in spec.nodes:
@@ -1592,6 +1837,10 @@ def _solve_mates(
             out.append(replace(node, loc=loc, rot=rot))
         else:
             out.append(node)
+    # Payload rows land after every authored node, so each host's own
+    # geometry folds first and the payload adds/cuts apply to the finished
+    # body (build_design folds a component's nodes in list order).
+    out.extend(spliced)
     return SceneSpec(nodes=out, components=list(spec.components), meta=dict(spec.meta))
 
 
@@ -1657,7 +1906,7 @@ def expand_instances(
         dupes = sorted({n for n in names if names.count(n) > 1})
         raise SceneError(
             f"instance expansion produced duplicate node names: {dupes} — "
-            "rename the colliding instance or part"
+            "rename the colliding instance, part, or payload"
         )
     # Expansion *consumes* the mates / joints / couples: their poses are now
     # baked into the nodes, and the instances/components they addressed may

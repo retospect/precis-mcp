@@ -47,11 +47,30 @@ consumer.
 
 - `contains`: SHIPPED — `cad_save`/`derive` sync design→design links
   from the `use` lines; `view='links'` shows the assembly tree.
-- The other three ship dark with the row but gain their first consumers from
-  their owning backlog items (`attached-models-layer.md`,
-  `make-tree-vs-design-tree.md`, se_bom's realization write). Minting them
-  in the same migration is deliberate: relation rows are pure vocabulary,
-  and a second migration per consumer is churn without safety.
+
+**Revision 2026-09-05 (coordinated with the se track): mint per-consumer,
+not all-at-once.** The all-three-in-one-migration plan assumed se_bom
+would consume `realizes` — it won't: the se plugin stores its
+block→bought-thing binding in plugin-local tables keyed by block *name*
+(`se_blocks.bound_kind`/`bound_design`, `se_bom`), because its
+retire-all/reinsert-all persist rebuilds row ids on every save — a
+`links` row would have nothing stable to point at. Same story for se's
+analysis layer (`se-feasibility-and-cost.md`). So the cad track is the
+honest consumer for all three, and each row enters with its consumer:
+
+- **`analyzed-by`** (+ inverse `analysis-of`): enters with
+  `attached-models-layer.md` v1 — the next migration this track mints.
+- **`realizes`** (+ `realized-by`): waits for the cad-side realization
+  write (catalog atoms → bom, `cad-machine-spec.md` parallel track).
+- **`made-by`** (+ `makes`): waits for `make-tree-vs-design-tree.md`.
+
+Migration numbering: 0152 is claimed by se (`component_geometry_specs`);
+pattern to copy is `0095_component_contains.sql`; runtime validation
+needs no Python change (`store.valid_relations()` reads the DB; the
+`Relation` Literal in `store/types.py` is optional polish). Terminology
+note for readers near se: se's `demands_relation`
+(`precis_se.joints.MECHANISMS`) is a *tolerance* relation between named
+measures, unrelated to the `relations` table.
 
 ## Non-goals
 

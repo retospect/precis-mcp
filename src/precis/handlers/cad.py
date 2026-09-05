@@ -45,6 +45,7 @@ from precis.cad.relate import clearance as cad_clearance
 from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.relate import translational_dof
 from precis.cad.scene import (
+    PAYLOAD_SEP,
     SceneError,
     SceneSpec,
     build_design,
@@ -112,7 +113,9 @@ class CadHandler(Handler):
             "intersect> <config> [@x,y,z] [rot:..] [polar:nNrR|linear:..]', "
             "config e.g. cyl:r3h12 box:w40d20h10; 'use <slug> as <name>' "
             "instances another design as a sub-assembly; 'port'/'mate' "
-            "assemble by named interface; 'joint … revolute|prismatic|"
+            "assemble by named interface; 'payload … at:<port>' splices "
+            "geometry into the mated host (straddling modules); 'joint … "
+            "revolute|prismatic|"
             "cylindrical|screw' articulates, posed via args={'state': "
             "{'<joint>': deg_or_mm}}); get lists designs, shows a "
             "design's node tree (id=slug), one node (id='ca<id>'), or probes "
@@ -266,6 +269,7 @@ class CadHandler(Handler):
             f"# {slug} — {verb}: {len(built.components)} part(s), {n} node(s)"
             f"{self._interference_note(design, built)}"
             f"{self._connectivity_note(design, built)}"
+            f"{self._payload_note(spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -326,6 +330,7 @@ class CadHandler(Handler):
             f"{len(built.components)} part(s), {n} node(s)"
             f"{self._interference_note(design, built)}"
             f"{self._connectivity_note(design, built)}"
+            f"{self._payload_note(spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -787,7 +792,7 @@ class CadHandler(Handler):
         """
         try:
             decls = [
-                *(p.to_source() for p in ports_of(spec)),
+                *(ln for p in ports_of(spec) for ln in p.source_lines()),
                 *(m.to_source() for m in mates_of(spec)),
                 *(j.to_source() for j in joints_of(spec)),
                 *(c.to_source() for c in couples_of(spec)),
@@ -828,7 +833,25 @@ class CadHandler(Handler):
         # ports carry the type into the card for the same reason.
         try:
             port_names = ", ".join(
-                pt.name + (f" ({pt.type})" if pt.type else "") for pt in ports_of(spec)
+                pt.name
+                + (
+                    " ({})".format(
+                        ", ".join(
+                            t
+                            for t in (
+                                pt.type,
+                                f"{len(pt.payloads)} payload"
+                                + ("s" if len(pt.payloads) > 1 else "")
+                                if pt.payloads
+                                else "",
+                            )
+                            if t
+                        )
+                    )
+                    if pt.type or pt.payloads
+                    else ""
+                )
+                for pt in ports_of(spec)
             )
         except SceneError:  # pragma: no cover - malformed stored meta
             port_names = ""
@@ -889,6 +912,40 @@ class CadHandler(Handler):
             return f"  ⚠ floating (touches nothing): {', '.join(iso)}"
         bodies = " | ".join("+".join(g) for g in conn.groups)
         return f"  ⚠ {len(conn.groups)} disconnected bodies: {bodies}"
+
+    def _payload_note(self, spec: SceneSpec) -> str:
+        """Straddling-module lint: an instanced design's payload-carrying
+        port that never mates leaves its payload geometry in **no host** —
+        almost always a forgotten ``mate`` line. (A design's *own* payload
+        ports are its advertised interface — dormant until a consumer mates
+        them — so only instance ports are checked.)"""
+        try:
+            mates = mates_of(spec)
+        except SceneError:  # pragma: no cover - malformed stored meta
+            return ""
+        bound = {m.subject for m in mates} | {m.anchor for m in mates}
+        warns: list[str] = []
+        by_slug: dict[str, list[Any]] = {}  # one resolve per distinct slug
+        for node in spec.nodes:
+            slug = instance_slug(node.config)
+            if slug is None:
+                continue
+            if slug not in by_slug:
+                try:
+                    by_slug[slug] = list(ports_of(self._resolve(slug)))
+                except Exception:
+                    by_slug[slug] = []
+            warns.extend(
+                f"{node.name}.{pt.name} ({slug})"
+                for pt in by_slug[slug]
+                if pt.payloads and f"{node.name}.{pt.name}" not in bound
+            )
+        if not warns:
+            return ""
+        return (
+            "  ⚠ payload port(s) never mated (geometry lands in no host): "
+            + ", ".join(warns)
+        )
 
     def _render_probe(
         self, view: str, design: Any, spec: Any, args: dict[str, Any]
@@ -1000,7 +1057,36 @@ class CadHandler(Handler):
                 f"volume{f' [{comp}]' if comp else ''}: {vol.volume:g} mm³ "
                 f"(sampled, ±{vol.rel_err * 100:.1f}%); "
                 f"centroid {tuple(round(float(x), 3) for x in vol.centroid)}"
+                f"{self._payload_contribution(spec, comp, vol.volume)}"
             )
+        )
+
+    def _payload_contribution(self, spec: Any, comp: str | None, total: float) -> str:
+        """Attribution crosses boundaries loudly: when the probed scope
+        contains spliced payload nodes (``<inst>~<name>``), quantify what
+        the mated modules did to the host — the host's number changed, and
+        this line says by how much and by whom (re-sampling the scope with
+        the payload rows stripped)."""
+        hit = [
+            n
+            for n in spec.nodes
+            if PAYLOAD_SEP in n.name and (not comp or n.component == comp)
+        ]
+        if not hit:
+            return ""
+        names = {n.name for n in hit}
+        kept = SceneSpec(
+            nodes=[n for n in spec.nodes if n.name not in names],
+            components=list(spec.components),
+            meta=dict(spec.meta),
+        )
+        try:
+            base = cad_volume(build_design(kept), component=comp)
+        except Exception:  # pragma: no cover - attribution is best-effort
+            return ""
+        return (
+            f"; payload contribution {total - base.volume:+g} mm³ "
+            f"({', '.join(sorted(names))})"
         )
 
     def _render_connectivity(

@@ -259,6 +259,50 @@ just a boolean — a collision you can't locate is not actionable.
 and the state at first contact; a clear mechanism reports its minimum
 clearance over travel and where it occurs.
 
+## Slice 5 — straddling modules (port payloads) — **SHIPPED**
+
+`payload <name> <add|cut> <config> at:<port> [@x,y,z] [rot:...]` — geometry
+a port splices into whatever it mates against (a hinge's knuckle recess, its
+pin bore). Decisions, 2026-09-05:
+
+- **Separate `payload` lines, not inline port tokens** (the backlog sketch
+  left syntax open): order-free like every declaration, placement relative
+  to the port frame, names share the node namespace (unique, probe-visible).
+- `op` ∈ add|cut only — an *intersect* payload would replace its host with
+  the overlap, not feature it. `chamfer` payloads may not `add` (unbounded
+  half-space), mirroring the node rule. No patterns on payloads.
+- **Splice target = the far side of the mate**, both directions (subject
+  port's payloads → anchor's host; anchor port's payloads → subject's
+  component). The far port must be scoped `of:` a component — refused
+  otherwise (a payload needs a host body). A host component with **no
+  geometry of its own** is also refused: the payload would become its base
+  node, and a base ignores its op, so a `cut` would silently *add*
+  material (reviewer finding, 2026-09-05).
+- Spliced rows are plain nodes named `<instance>~<name>` (`PAYLOAD_SEP`
+  outside the ident charset — collision-free with authored names, and how
+  the handler recognises attribution rows), appended **after every authored
+  node** so each host's own geometry folds first.
+- **Articulated mates:** a subject payload is rigid in the *host* — its
+  frame is the interface before `J(q)` (a recess doesn't swing with the
+  hinge); an anchor payload rides the subject (after `J(q)`).
+- A payload spliced into a jointed own component carries the pre-pose frame;
+  `_pose_component_joints` bakes `cworld` exactly once (payload rows
+  included).
+- **Patterned hosts need no new rule:** the slice-2/3 refusals (patterned
+  mate subject/anchor) already make a patterned host unreachable.
+- **Attribution is loud:** the host's tree shows the `<inst>~<name>` rows;
+  `view='volume'` re-samples the scope with payload rows stripped and
+  appends `payload contribution ±N mm³ (<names>)`.
+- **Lint:** `put` warns when an *instanced* design's payload port is never
+  mated (geometry lands in no host); a design's own payload ports are its
+  advertised interface — dormant by design, never warned.
+- No migration: payloads ride the port meta (`payloads` key only when
+  present — slice-2/3 stored bytes unchanged).
+
+The molecular mirror (a bond-forming interface consuming atoms/valences of
+both blocks) is the eventual second consumer of the same splice semantics —
+see `make-tree-vs-design-tree.md`.
+
 ## Parallel track (independent of 1–4)
 
 - **`material: <slug>` per component → `view='mass'`.** The `material` kind
@@ -350,4 +394,5 @@ you state intent and the kernel keeps it true.
    four-relation migration (`contains`/`realizes`/`analyzed-by`/`made-by`)
    → `design-graph-relations.md`. Sibling designs from the same session:
    `attached-models-layer.md`, `make-tree-vs-design-tree.md`,
-   `cad-straddling-modules.md` (slice 5), `margin-budget-tree.md`.
+   `margin-budget-tree.md` (slice 5, straddling modules, shipped from the
+   same session — decisions above).

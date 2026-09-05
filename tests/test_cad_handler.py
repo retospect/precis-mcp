@@ -540,3 +540,61 @@ def test_sweep_sees_gear_driven_collisions(cad):
     # the driven arm's swept envelope is reported too
     env = resp.body.split("swept envelope", 1)[1]
     assert "a2" in env
+
+
+_HINGE_P = """
+component body
+barrel add cyl:r4h20
+port leaf_a @-10,0,0 of:body
+payload recess cut box:w8d3h20 at:leaf_a @0,0,-10
+"""
+
+_HINGED_BRACKET = """
+component bracket
+slab add box:w60d40h10 @0,0,5
+port hp @20,0,10 of:bracket
+
+use hinge_p as h
+mate h.leaf_a to hp
+"""
+
+
+def test_unmated_payload_port_warns_on_put(cad):
+    cad.put(id="hinge_p", text=_HINGE_P)
+    resp = cad.put(
+        id="loose",
+        text="component base\nslab add box:w40d40h5\nuse hinge_p as h @30,0,0",
+    )
+    assert "payload port(s) never mated" in resp.body
+    assert "h.leaf_a (hinge_p)" in resp.body
+
+
+def test_mated_payload_is_quiet_and_tree_shows_payload_line(cad):
+    cad.put(id="hinge_p", text=_HINGE_P)
+    resp = cad.put(id="hinged", text=_HINGED_BRACKET)
+    assert "payload port(s) never mated" not in resp.body
+    # the payload line renders on the module's own tree (its interface block)
+    tree = cad.get(id="hinge_p").body
+    assert "payload recess cut box:w8d3h20 at:leaf_a @0,0,-10" in tree
+
+
+def test_volume_attributes_payload_contribution(cad):
+    cad.put(id="hinge_p", text=_HINGE_P)
+    cad.put(id="hinged", text=_HINGED_BRACKET)
+    resp = cad.get(id="hinged", view="volume", args={"component": "bracket"})
+    assert "payload contribution" in resp.body
+    assert "h~recess" in resp.body
+    # the recess removes material, so the delta is negative
+    delta = resp.body.split("payload contribution ", 1)[1].split(" mm")[0]
+    assert float(delta) < 0
+
+
+def test_payload_card_marks_the_port(cad, store):
+    cad.put(id="hinge_p", text=_HINGE_P)
+    ref = store.get_ref(kind="cad", id="hinge_p")
+    with store.pool.connection() as conn:
+        (card,) = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
+            (ref.id,),
+        ).fetchone()
+    assert "leaf_a (1 payload)" in card

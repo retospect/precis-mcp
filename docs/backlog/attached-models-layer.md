@@ -26,8 +26,11 @@ block it describes** (`design-graph-relations.md`), carrying:
   climbs (tier-1 analytic probes exist today).
 - **validity scope** — the load-bearing field: which ports/interfaces the
   result assumed, and what it assumed across them (terminating H's, fixed
-  constraint, applied torque, temperature range). `conditions=` on the
-  finding put path already exists as the carrier.
+  constraint, applied torque, temperature range). Carrier: **`scope=`** on
+  the finding put path (a structured dict → `meta.scope`, already part of
+  the identity hash, already card-rendered as `key=value` pairs, already
+  linted). *Correction 2026-09-05: this doc previously said `conditions=`
+  — that kwarg exists only on the material/component sourced-value path.*
 - **provenance chain** — which geometry/structure version, which mesh or
   basis settings, which engine version. Cite durable anchors, not blobs.
 
@@ -68,6 +71,38 @@ coverage (compositions, bonding environments); a use outside that domain is
 flagged **extrapolative before any result exists**, suggesting DFT.
 Mech mirror: a beam model reused to justify local stress at a fastener hole
 is the same failure — scope on the model class, not only the run.
+
+## v1 implementation notes (survey 2026-09-05, verified against the tree)
+
+- **Version anchor first — cad_save records nothing today.** No rev
+  counter, `refs.updated_at` not bumped (no trigger; the re-save UPDATE
+  omits it — arguably a standalone bug), no `ref_events` row. v1
+  prerequisite, all inside `cad_save`'s existing tx: bump
+  `updated_at`, a monotonic `meta.rev`, and
+  `append_event(source="cad", event="saved", payload={"rev": …})`.
+- **The pin rides `links.meta`** (jsonb, precedent: 0095's `{qty, ref}`):
+  `add_link(…, relation="analyzed-by", meta={"rev": N, "at": iso},
+  merge_meta=True)` — re-analysis updates the pin. Staleness check is
+  then one SQL comparison (`links.meta->>'rev'` vs `refs.meta->>'rev'`),
+  no event-scan needed; the `ref_events` row stays as audit trail + the
+  export-drift case.
+- **Watcher = one `Condition` row** in `src/precis/workers/conditions.py`
+  (probe over links⋈refs), evaluated hourly by health_digest — inherits
+  the alert-sync → router → gripe machinery (marker-line dedupe,
+  fingerprint e.g. `cad:<slug>/analysis:<fi>`, flood cap, auto-close on
+  refresh) for free. Only fall back to a standalone scanner
+  (`draft_refresh_scan.py` shape) if the hourly cadence doesn't fit.
+- **Do NOT use `STATUS:stale` on findings** — `STATUS:` is a closed
+  one-value axis (tracing/acquiring/established/refuted/canonical); stale
+  would clobber the lifecycle value. Staleness is derivable from the pin;
+  if a tag is wanted for search, use a separate flag axis.
+- **Relation minting**: `analyzed-by` (+ inverse `analysis-of`) enters
+  with this item — see `design-graph-relations.md` for the per-consumer
+  revision. Migration pattern: `0095_component_contains.sql`; 0152 is
+  taken (se component_geometry_specs), use the next free number.
+- Links are chunk-addressable (`src_chunk_id`/`dst_chunk_id`), so an
+  attachment can target one cad node — but cad node chunk ids are rebuilt
+  every save, so v1 pins **ref-level only**.
 
 ## Sequencing
 
