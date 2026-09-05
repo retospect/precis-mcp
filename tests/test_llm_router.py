@@ -2655,9 +2655,7 @@ def test_resolve_chain_override_openai_compat_with_base_url_is_honored(
         Tier.FRONTIER, tools_needed=False, backend=Backend.ANTHROPIC
     )
 
-    assert chain == [
-        Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-5.2", label="cloud")
-    ]
+    assert chain == [Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-5.2", label="cloud")]
 
 
 def test_dispatch_chain_override_openai_compat_without_base_url_falls_back_to_claude(

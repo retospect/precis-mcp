@@ -1,0 +1,146 @@
+{
+  "_note": "Component SERIES registry — versioned DATA, the standards-table half of docs/backlog/se-off-the-shelf-fabrication.md engine 1. A `component` ref is one SKU; hand-entering 400 screws is not viable, so a series carries a family plus its VALID-COMBINATION size table (M6x2 does not exist; DN50 wall thicknesses are a fixed list) and an entity is minted from a series row on first use. Deliberately a file, not a table: these are published standards dimensions, not agent-authored rows — same posture as pcb_capabilities.json (curated, versioned, diffable, no migration to change a number). Runtime rows the mint produces are ordinary component_spec_values with method='standard' and the series `source` as provenance. Every numeric value here is MILLIMETRES, one unit for the whole file (a per-value unit column on curated data is a place for a typo to hide). The mint converts to each spec's canonical_unit on the way in — component_specs is mostly mm but `length_overall` is metres, so a 2000mm tube must not land as 2000m; see component_series.to_canonical and migration 0152's unit note. `sizes[].specs` are the per-size dimensions; `specs` at the series level apply to every size; `lengths` (present only where the series has a length variable) is the discrete length list, and a size key without one of these lengths is not a real part. Confidence: the ISO fastener series are transcribed from the published dimension tables and are exact; en-10255-medium is the EN 10255 medium (M) series; acrylic-sheet-cast is a STOCK RANGE, not a standard — it is what European cast-acrylic suppliers commonly hold, and it carries no designation for that reason.",
+  "series": [
+    {
+      "series_id": "iso-4762",
+      "name": "Hexagon socket head cap screw",
+      "designation": "ISO 4762",
+      "category": "fastener",
+      "aliases": ["socket cap", "socket head cap screw", "shcs", "cap head", "allen bolt", "din 912"],
+      "source": "ISO 4762:2004 dimension table (mm)",
+      "retrieved": "2026-09-05",
+      "length_spec": "length",
+      "specs": {"drive_type": "socket"},
+      "sizes": [
+        {"key": "M3", "specs": {"thread_size": "M3", "thread_pitch": 0.5, "outer_diameter": 3.0, "head_diameter": 5.5, "head_height": 3.0, "drive_size": 2.5},
+         "lengths": [5, 6, 8, 10, 12, 16, 20, 25, 30, 35, 40, 45, 50]},
+        {"key": "M4", "specs": {"thread_size": "M4", "thread_pitch": 0.7, "outer_diameter": 4.0, "head_diameter": 7.0, "head_height": 4.0, "drive_size": 3.0},
+         "lengths": [6, 8, 10, 12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60]},
+        {"key": "M5", "specs": {"thread_size": "M5", "thread_pitch": 0.8, "outer_diameter": 5.0, "head_diameter": 8.5, "head_height": 5.0, "drive_size": 4.0},
+         "lengths": [8, 10, 12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80]},
+        {"key": "M6", "specs": {"thread_size": "M6", "thread_pitch": 1.0, "outer_diameter": 6.0, "head_diameter": 10.0, "head_height": 6.0, "drive_size": 5.0},
+         "lengths": [8, 10, 12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100]},
+        {"key": "M8", "specs": {"thread_size": "M8", "thread_pitch": 1.25, "outer_diameter": 8.0, "head_diameter": 13.0, "head_height": 8.0, "drive_size": 6.0},
+         "lengths": [12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120]},
+        {"key": "M10", "specs": {"thread_size": "M10", "thread_pitch": 1.5, "outer_diameter": 10.0, "head_diameter": 16.0, "head_height": 10.0, "drive_size": 8.0},
+         "lengths": [16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140, 150]},
+        {"key": "M12", "specs": {"thread_size": "M12", "thread_pitch": 1.75, "outer_diameter": 12.0, "head_diameter": 18.0, "head_height": 12.0, "drive_size": 10.0},
+         "lengths": [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200]},
+        {"key": "M16", "specs": {"thread_size": "M16", "thread_pitch": 2.0, "outer_diameter": 16.0, "head_diameter": 24.0, "head_height": 16.0, "drive_size": 14.0},
+         "lengths": [25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200]},
+        {"key": "M20", "specs": {"thread_size": "M20", "thread_pitch": 2.5, "outer_diameter": 20.0, "head_diameter": 30.0, "head_height": 20.0, "drive_size": 17.0},
+         "lengths": [30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200]}
+      ]
+    },
+    {
+      "series_id": "iso-4017",
+      "name": "Hexagon head screw, fully threaded",
+      "designation": "ISO 4017",
+      "category": "fastener",
+      "aliases": ["hex head bolt", "hex bolt", "setscrew", "din 933"],
+      "source": "ISO 4017:2014 dimension table (mm)",
+      "retrieved": "2026-09-05",
+      "length_spec": "length",
+      "specs": {"drive_type": "hex"},
+      "sizes": [
+        {"key": "M5", "specs": {"thread_size": "M5", "thread_pitch": 0.8, "outer_diameter": 5.0, "across_flats": 8.0, "head_height": 3.5},
+         "lengths": [10, 12, 16, 20, 25, 30, 35, 40, 45, 50]},
+        {"key": "M6", "specs": {"thread_size": "M6", "thread_pitch": 1.0, "outer_diameter": 6.0, "across_flats": 10.0, "head_height": 4.0},
+         "lengths": [10, 12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80]},
+        {"key": "M8", "specs": {"thread_size": "M8", "thread_pitch": 1.25, "outer_diameter": 8.0, "across_flats": 13.0, "head_height": 5.3},
+         "lengths": [12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100]},
+        {"key": "M10", "specs": {"thread_size": "M10", "thread_pitch": 1.5, "outer_diameter": 10.0, "across_flats": 16.0, "head_height": 6.4},
+         "lengths": [16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120]},
+        {"key": "M12", "specs": {"thread_size": "M12", "thread_pitch": 1.75, "outer_diameter": 12.0, "across_flats": 18.0, "head_height": 7.5},
+         "lengths": [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140, 150]},
+        {"key": "M16", "specs": {"thread_size": "M16", "thread_pitch": 2.0, "outer_diameter": 16.0, "across_flats": 24.0, "head_height": 10.0},
+         "lengths": [25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160]},
+        {"key": "M20", "specs": {"thread_size": "M20", "thread_pitch": 2.5, "outer_diameter": 20.0, "across_flats": 30.0, "head_height": 12.5},
+         "lengths": [35, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200]}
+      ]
+    },
+    {
+      "series_id": "iso-4032",
+      "name": "Hexagon nut, style 1",
+      "designation": "ISO 4032",
+      "category": "fastener",
+      "aliases": ["hex nut", "nut", "din 934"],
+      "source": "ISO 4032:2012 dimension table (mm)",
+      "retrieved": "2026-09-05",
+      "sizes": [
+        {"key": "M3", "specs": {"thread_size": "M3", "thread_pitch": 0.5, "inner_diameter": 3.0, "across_flats": 5.5, "height": 2.4}},
+        {"key": "M4", "specs": {"thread_size": "M4", "thread_pitch": 0.7, "inner_diameter": 4.0, "across_flats": 7.0, "height": 3.2}},
+        {"key": "M5", "specs": {"thread_size": "M5", "thread_pitch": 0.8, "inner_diameter": 5.0, "across_flats": 8.0, "height": 4.7}},
+        {"key": "M6", "specs": {"thread_size": "M6", "thread_pitch": 1.0, "inner_diameter": 6.0, "across_flats": 10.0, "height": 5.2}},
+        {"key": "M8", "specs": {"thread_size": "M8", "thread_pitch": 1.25, "inner_diameter": 8.0, "across_flats": 13.0, "height": 6.8}},
+        {"key": "M10", "specs": {"thread_size": "M10", "thread_pitch": 1.5, "inner_diameter": 10.0, "across_flats": 16.0, "height": 8.4}},
+        {"key": "M12", "specs": {"thread_size": "M12", "thread_pitch": 1.75, "inner_diameter": 12.0, "across_flats": 18.0, "height": 10.8}},
+        {"key": "M16", "specs": {"thread_size": "M16", "thread_pitch": 2.0, "inner_diameter": 16.0, "across_flats": 24.0, "height": 14.8}},
+        {"key": "M20", "specs": {"thread_size": "M20", "thread_pitch": 2.5, "inner_diameter": 20.0, "across_flats": 30.0, "height": 18.0}}
+      ]
+    },
+    {
+      "series_id": "iso-7089",
+      "name": "Plain washer, 200 HV, product grade A",
+      "designation": "ISO 7089",
+      "category": "fastener",
+      "aliases": ["washer", "flat washer", "plain washer", "din 125"],
+      "source": "ISO 7089:2000 dimension table (mm)",
+      "retrieved": "2026-09-05",
+      "sizes": [
+        {"key": "M3", "specs": {"thread_size": "M3", "inner_diameter": 3.2, "outer_diameter": 7.0, "thickness": 0.5}},
+        {"key": "M4", "specs": {"thread_size": "M4", "inner_diameter": 4.3, "outer_diameter": 9.0, "thickness": 0.8}},
+        {"key": "M5", "specs": {"thread_size": "M5", "inner_diameter": 5.3, "outer_diameter": 10.0, "thickness": 1.0}},
+        {"key": "M6", "specs": {"thread_size": "M6", "inner_diameter": 6.4, "outer_diameter": 12.0, "thickness": 1.6}},
+        {"key": "M8", "specs": {"thread_size": "M8", "inner_diameter": 8.4, "outer_diameter": 16.0, "thickness": 1.6}},
+        {"key": "M10", "specs": {"thread_size": "M10", "inner_diameter": 10.5, "outer_diameter": 20.0, "thickness": 2.0}},
+        {"key": "M12", "specs": {"thread_size": "M12", "inner_diameter": 13.0, "outer_diameter": 24.0, "thickness": 2.5}},
+        {"key": "M16", "specs": {"thread_size": "M16", "inner_diameter": 17.0, "outer_diameter": 30.0, "thickness": 3.0}},
+        {"key": "M20", "specs": {"thread_size": "M20", "inner_diameter": 21.0, "outer_diameter": 37.0, "thickness": 3.0}}
+      ]
+    },
+    {
+      "series_id": "en-10255-medium",
+      "name": "Non-alloy steel tube for screwing, medium series",
+      "designation": "EN 10255 M",
+      "category": "pipe",
+      "aliases": ["steel pipe", "gas pipe", "bsp tube", "conduit", "medium series tube"],
+      "source": "EN 10255:2004 medium (M) series dimension table (mm)",
+      "retrieved": "2026-09-05",
+      "length_spec": "length_overall",
+      "sizes": [
+        {"key": "DN15", "specs": {"outer_diameter": 21.3, "wall_thickness": 2.65, "inner_diameter": 16.0}},
+        {"key": "DN20", "specs": {"outer_diameter": 26.9, "wall_thickness": 2.65, "inner_diameter": 21.6}},
+        {"key": "DN25", "specs": {"outer_diameter": 33.7, "wall_thickness": 3.25, "inner_diameter": 27.2}},
+        {"key": "DN32", "specs": {"outer_diameter": 42.4, "wall_thickness": 3.25, "inner_diameter": 35.9}},
+        {"key": "DN40", "specs": {"outer_diameter": 48.3, "wall_thickness": 3.25, "inner_diameter": 41.8}},
+        {"key": "DN50", "specs": {"outer_diameter": 60.3, "wall_thickness": 3.65, "inner_diameter": 53.0}},
+        {"key": "DN65", "specs": {"outer_diameter": 76.1, "wall_thickness": 3.65, "inner_diameter": 68.8}},
+        {"key": "DN80", "specs": {"outer_diameter": 88.9, "wall_thickness": 4.05, "inner_diameter": 80.8}},
+        {"key": "DN100", "specs": {"outer_diameter": 114.3, "wall_thickness": 4.5, "inner_diameter": 105.3}}
+      ]
+    },
+    {
+      "series_id": "acrylic-sheet-cast",
+      "name": "Cast acrylic sheet",
+      "designation": null,
+      "category": "laminate",
+      "aliases": ["acrylic", "plexiglass", "plexiglas", "perspex", "pmma sheet", "cast acrylic"],
+      "source": "Common European cast-acrylic stock thickness range (supplier stock, not a standard) — the discrete set a laser-cut part must snap to",
+      "retrieved": "2026-09-05",
+      "sizes": [
+        {"key": "2mm", "specs": {"thickness": 2.0}},
+        {"key": "3mm", "specs": {"thickness": 3.0}},
+        {"key": "4mm", "specs": {"thickness": 4.0}},
+        {"key": "5mm", "specs": {"thickness": 5.0}},
+        {"key": "6mm", "specs": {"thickness": 6.0}},
+        {"key": "8mm", "specs": {"thickness": 8.0}},
+        {"key": "10mm", "specs": {"thickness": 10.0}},
+        {"key": "12mm", "specs": {"thickness": 12.0}},
+        {"key": "15mm", "specs": {"thickness": 15.0}},
+        {"key": "20mm", "specs": {"thickness": 20.0}},
+        {"key": "25mm", "specs": {"thickness": 25.0}}
+      ]
+    }
+  ]
+}

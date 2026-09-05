@@ -942,6 +942,16 @@ def put(
     contains: str | None = None,
     qty: int | None = None,
     ref_designator: str | None = None,
+    # component series mint (see precis-component-help): put(kind=
+    # 'component', series='iso-4762', size='M6x30') materializes one size
+    # of a standards series — entity plus its dimension values — instead of
+    # hand-entering each SKU. id= is optional there (a deterministic slug
+    # is derived, so two agents minting the same part converge on one ref).
+    # Declared at the verb level, not tunnelled: an undeclared kwarg is
+    # silently dropped by the dispatcher, which would make the whole mint
+    # path unreachable over MCP while handler tests kept passing.
+    series: str | None = None,
+    size: str | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -1057,6 +1067,8 @@ def put(
             "contains": contains,
             "qty": qty,
             "ref_designator": ref_designator,
+            "series": series,
+            "size": size,
         },
     )
 

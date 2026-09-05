@@ -86,13 +86,89 @@ and its solid + attachment points are *derived from the spec row*.
   designation as a first-class spec — `DIN 912`, `ISO 4762`, `EN 10255`)
   maps that to a component row, the `part`/C-number precedent one level
   up. Without it the kind is unusable by the propose loop.
-- **Series, not SKUs.** `component` is entity-per-SKU; hand-entering 400
-  screws is not viable. A **series** row carries a family + a
-  **valid-combination size table** (M6×2 does not exist; DN50 wall
-  thicknesses are a fixed list), and an entity is minted from a series
-  row on first use. This is the one genuine schema addition on the
-  `component` side, and it is also what makes engine 3's snap-to-stock
-  possible.
+- **Series, not SKUs.** *(rung 2a is built; rungs 2b–5 of this item are
+  not — do not delete this file.)* `component` is
+  entity-per-SKU; hand-entering 400 screws is not viable. A **series**
+  carries a family + a **valid-combination size table** (M6×2 does not
+  exist; DN50 wall thicknesses are a fixed list), and an entity is minted
+  from a size row on first use — `put(kind='component', series='iso-4762',
+  size='M6x30')`, deterministic slug, idempotent re-mint, off-list length
+  warns rather than refuses. It is also what makes engine 3's
+  snap-to-stock possible.
+
+  **It landed as a file, not a table** — `precis/data/component_series.json`
+  + `precis/component_series.py`, the `pcb_capabilities.json` posture. The
+  schema addition the design sketch expected turned out to be unnecessary:
+  these are published standards dimensions, so they are curated, versioned
+  and diffable, changed by a commit rather than a migration, and nothing
+  agent-authored ever lands in them. The only DB change was migration
+  0152, which seeds ten **universal geometric-extent specs**
+  (`outer_diameter`, `inner_diameter`, `wall_thickness`, `thickness`,
+  `width`, `height`, `across_flats`, `head_diameter`, `head_height`,
+  `drive_size`, all mm) — 0093 seeded the specs an agent *shops* by, none
+  of which says how big the thing is.
+
+### Where the catalog data comes from (surveyed 2026-09-05)
+
+Reto asked whether there's an EU McMaster-Carr to integrate. There isn't
+— and McMaster itself has no open API (account-gated, data explicitly
+not redistributable, scraping against ToS). The useful answer is that
+the question splits in two, and the split is already the series-vs-SKU
+line above:
+
+- **Geometry + valid sizes = standards data, not supplier data.** DIN/ISO
+  fastener tables are published and there are open, redistributable
+  encodings of them: **BOLTS** (open library of technical
+  specifications) and the **FreeCAD Fasteners workbench**, which between
+  them cover ISO 4017/4762/4032/4033/4035, DIN 557/562/985, ISO
+  7089/7090/7093/7094 and more, as parametric tables. Seed the series +
+  size tables from these — offline, deterministic, no account, no
+  vendor lock — and rung 2's envelope generators fall out of the same
+  numbers. **Decision this implies:** the series table is standards
+  data, so it belongs in core beside `component`, not plugin-local
+  (resolving that open question below).
+- **Price / stock / lead time = supplier data, a later enrichment layer**
+  on rows that stay supplier-neutral and are keyed by standards
+  designation. Candidates when we want it, all EU-reachable:
+  **TraceParts** (French; a real REST developer hub — catalog list, CAD
+  availability, CAD request — aggregating hundreds of supplier catalogs
+  and 100M+ models; built for distributors, so keys are a commercial
+  arrangement); **Würth** (the EU fastener giant, offers an API for
+  availability and product data); **Misumi Europe** (configurable
+  mechanical parts — the closest thing to McMaster's *mechanical*
+  breadth; integration path is eProcurement punchout/EDI rather than a
+  public REST API); **RS** (750k MRO products across 32 countries — the
+  closest to McMaster's catalog *shape*); **Fabory** (NL, ~400k fastener
+  articles). Electronics already has its path: the `part` kind's
+  LCSC/JLCPCB ingest, plus Würth Elektronik's customer API.
+
+- **The Chinese option is the strongest supplier candidate, because we
+  already own the ingest pattern.** **JLCMC** (jlcmc.com) is the
+  JLCPCB/LCSC group's *mechanical* store — ~1M hardware / mechanical /
+  automation parts (linear motion, bearings, fasteners, extrusion), no
+  MOQ, same-day shipping: the Chinese McMaster analogue, from the same
+  family whose catalog machinery is already in-tree
+  (`precis/pcb/jlc_api.py`, the `parts_refresh` worker, the community
+  `jlcparts` dump). Access is `api.jlcpcb.com` (Parts / Components APIs
+  — real-time price, stock, specs), but **gated**: applications are
+  reviewed against the applicant's order history and company standing,
+  so it is not a signup. For electronics there's also the community
+  fallback (the `jlcparts` dump, and jlcsearch's `.json`-suffix
+  endpoints); no equivalent public dump for the *mechanical* catalog was
+  found. Same platform also exposes **3D-printing/CNC ordering APIs**
+  (JLC3DP), which is the other half — see below.
+- **Fabrication services are a second, separate integration** and land
+  with rungs 4–5, not here: once we emit a DXF cut file or a STEP, an
+  instant-quote endpoint turns it into a price and an order. JLC3DP
+  (3D print / CNC / sheet metal) and PCBWay are the Chinese route;
+  Xometry / Protolabs the EU-US one. Deliberately *not* rung 2 work —
+  it consumes the outputs rung 5 produces.
+
+Sequencing that falls out: **do not integrate a supplier for rung 2.**
+Standards data alone makes "M6×30 8.8 socket cap" resolvable to geometry,
+ports and a size table; a supplier only becomes necessary when someone
+wants a price, and by then the `component` row it enriches already
+exists.
 
 ## Engine 2 — mechanism → geometry propagation
 
@@ -102,7 +178,8 @@ never made a mechanism *change a part*. Off-the-shelf assembly is almost
 entirely this:
 
 - `screw` ⇒ a clearance hole through every intermediate member (Ø from a
-  fit class — M6 close/normal/loose = 6.4/6.6/7), a counterbore or head
+  fit class — ISO 273 fine/medium/coarse for M6 = 6.4/6.6/7.0, house
+  default `d + 0.2` = 6.2; see the resolved open question), a counterbore or head
   clearance at the near end, and a tapped hole, nut pocket, or captive
   T-slot at the far end.
 - sheet ⇒ **finger joints / tab-and-slot** cut into both members, kerf
@@ -217,8 +294,10 @@ from "OpenSCAD / STL-3MF / STEP" to:
 - **Stamped features** need no table: they are derived from the connect +
   its mechanism at read/realize time, cached nowhere (the
   copper-derived rule). Their *provenance* is the connect name.
-- **Component series + size table** on the `component` side, in core's
-  migration namespace — the one addition outside the plugin.
+- ~~**Component series + size table**~~ — **not a schema addition after
+  all** (rung 2a): the series registry is a versioned data *file* in core
+  (`precis/data/component_series.json`), and the only migration it needed
+  was 0152's ten universal geometric-extent specs.
 
 ## Ship order
 
@@ -231,6 +310,13 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
    only one that does not depend on slice 5.
 2. **Catalog → geometry + port templates** — bought parts join
    clearance / DOF / connectivity / `envelope_fit`.
+   - **2a (built)** — the series registry + mint (above): a bought part
+     now has *dimensions*, in core, resolvable from a colloquial name.
+   - **2b — next**, and the se half: envelope generators per category
+     (spec values → a cad DSL config) and port templates per category, so
+     `connect` can attach to a bought part at all. Reads
+     `component_specs.canonical_unit` and converts to metres; se is
+     float64 metres everywhere and the component store is mm.
 3. **Mechanism → geometry propagation**, `screw` first (hole stamping +
    grip stack-up + tool access). Where it stops being a diagram.
 4. **`laser/*` + `stock-cut/*`** — capability rows, realizability
@@ -250,10 +336,34 @@ customer demands it); path planning for assembly (existence only).
 
 ## Open questions for Reto
 
-- **Series table home**: extend `component` in core (one more table, the
-  whole tree can use it) or keep a stock series table plugin-local to
-  `precis_se`? Leaning core — pipes and screws are not se-specific.
-- **Fit classes as data or as a table?** Clearance-hole Ø per thread
-  size is a published table (ISO 273 medium/close/coarse); seeding it as
-  capability data means every mode reads it through the one resolver.
-  Leaning data.
+- ~~**Series table home**~~ — **resolved 2026-09-05**: core, beside
+  `component`. The catalog survey settled it: a series table is
+  *standards* data (BOLTS/ISO tables), not se-specific and not
+  supplier-specific, so the whole tree can use it.
+- ~~**Fit classes as data or as a table?**~~ — **resolved 2026-09-05
+  (Reto): data, four tiers, house default `d + 0.2`.** Splits the same
+  way the series question did:
+  - **The published table is standards data** — ISO 273 (= DIN EN 20273)
+    gives three classes, fine / medium / coarse, keyed by thread size:
+    M3 3.2/3.4/3.6 · M4 4.3/4.5/4.8 · M5 5.3/5.5/5.8 · M6 6.4/6.6/7.0 ·
+    M8 8.4/9.0/10.0 · M10 10.5/11.0/12.0 · M12 13.0/13.5/14.5 ·
+    M16 17.0/17.5/18.5 · M20 21.0/22.0/24.0. Lands beside
+    `component_series.json` in core, same posture: a file, keyed by
+    `thread_size`. (Consistency check the data already passes: the ISO
+    273 *fine* column is exactly the ISO 7089 washer bore — 3.2, 4.3,
+    5.3, 6.4, 8.4, 10.5, 13, 17, 21 — so the two tables agree where they
+    overlap.)
+  - **The class you build to is a house/process choice** — se-side
+    capability data, one lookup, so no consumer hardcodes a number.
+    **House default is `d + 0.2`** (M6 → 6.2), Reto's shop rule.
+  - Worth recording because it bites in two places: `d + 0.2` is
+    *tighter* than ISO 273 fine (6.4 for M6), so it assumes accurately
+    located holes — 0.1 mm radial slack per hole means a two-hole pattern
+    binds on a 0.1 mm position error, and the stamping pass should say so
+    rather than silently emit a pattern that won't assemble. And on a
+    laser (rung 4) the kerf widens the hole beyond nominal, so `+0.2` in
+    the cut file is not `+0.2` in the part — the fit lookup and the kerf
+    compensation have to compose, not both be applied.
+
+  Unbuilt: the table lands with **rung 3**, its first and only consumer
+  (clearance-hole stamping). Nothing in rungs 1–2 reads it.

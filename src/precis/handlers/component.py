@@ -32,13 +32,24 @@ Two writes share one ``put``, discriminated by whether ``spec=`` is present:
   ``component`` ref; ``qty=0`` removes the edge; ``qty`` omitted on an
   existing edge preserves its current quantity; a cycle (self or transitive
   ancestor) is rejected.
+* ``put(kind='component', series=<series_id>, size='M6x30')`` — **mint from
+  the standards series registry** (:mod:`precis.component_series`,
+  ``se-off-the-shelf-fabrication.md`` engine 1): materialize one size of a
+  published family (ISO 4762, EN 10255, …) into an entity plus its dimension
+  values, instead of hand-entering four hundred screws. ``id=`` is optional
+  (a deterministic slug is derived, so two agents minting the same part
+  converge on one ref); the values land as ordinary
+  ``component_spec_values`` rows with ``method='standard'``, and a spec
+  already carrying that value is skipped rather than re-appended.
 
 ``get`` renders the component page (specs grouped by spec, plus entity
 facts and the made-of material), ``view='table'`` (tidy one-row-per-value),
 ``view='specs'`` (universal + this component's category specs),
 ``view='categories'`` (the category registry), ``view='tree'`` (the nested
 assembly tree), or ``view='bom'`` (the flattened BOM with cost/mass rollup,
-optionally annotated by ``spec=`` for a cross-leaf consistency check).
+optionally annotated by ``spec=`` for a cross-leaf consistency check), or
+``view='series'`` (the standards registry — bare = the index, ``id=`` = one
+family's size table, ``q=`` = the ranked colloquial resolver).
 ``search`` matches name/alias/mpn/manufacturer/category with ``q=``, or
 does the range-filter read (``spec=/min=/max=/maturity=``, optionally
 narrowed by ``category=``).
@@ -50,6 +61,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, TypedDict
 
+from precis import component_series as cseries
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -65,7 +77,7 @@ from precis.utils import handle_registry
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
-_VIEWS: tuple[str, ...] = ("table", "specs", "categories", "tree", "bom")
+_VIEWS: tuple[str, ...] = ("table", "specs", "categories", "tree", "bom", "series")
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
@@ -91,6 +103,11 @@ class ComponentHandler(Handler):
             "view='tree' is the nested assembly tree; view='bom' is the "
             "flattened BOM with cost/mass rollup (add spec=<spec_id> for a "
             "cross-leaf consistency check). "
+            "put(id=<slug>, series=<series_id>, size='M6x30') MINTS the "
+            "entity from the standards series registry (id= optional — a "
+            "deterministic slug is derived). get(view='series') lists the "
+            "series; view='series' with id=<series_id> is its size table, "
+            "with q='<colloquial>' the ranked resolver. "
             "search(spec=<spec_id>, min=, max=, maturity=, category=) is "
             "the range filter read; plain q= matches name/mpn/manufacturer/"
             "category. See precis-component-help."
@@ -137,8 +154,19 @@ class ComponentHandler(Handler):
         qty: int | None = None,
         ref_designator: str | None = None,
         meta: dict[str, Any] | None = None,
+        series: str | None = None,
+        size: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if series is not None or size is not None:
+            return self._mint_from_series(
+                id=id,
+                series=series,
+                size=size,
+                title=title,
+                uom=uom,
+                meta=meta,
+            )
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='component') requires id=<slug>",
@@ -248,6 +276,280 @@ class ComponentHandler(Handler):
         name = category_id.replace("_", " ").replace("-", " ").strip().title()
         return self.store.component_category_mint(
             category_id=category_id, name=name or category_id
+        )
+
+    # -- mint from the standards series registry -------------------------
+
+    def _mint_from_series(
+        self,
+        *,
+        id: str | int | None,
+        series: str | None,
+        size: str | None,
+        title: str | None,
+        uom: str | None,
+        meta: dict[str, Any] | None,
+    ) -> Response:
+        """Materialize one size of a standards series into a real entity
+        plus its dimension values (``component_series.py``).
+
+        Idempotent by construction: the entity upsert is an upsert, and a
+        spec whose *current* value already equals what the series would
+        write is skipped rather than re-appended — re-minting the same
+        part twice must not silently grow the fact table, which is
+        append-only and where a BOM rollup reads its one current value
+        from."""
+        if not series:
+            raise BadInput(
+                "put(kind='component', size=...) also needs series=",
+                next=(
+                    "get(kind='component', view='series') to list the "
+                    "series, then put(kind='component', series='iso-4762', "
+                    "size='M6x30')"
+                ),
+            )
+        srs = cseries.find_series(str(series).strip())
+        if srs is None:
+            known = ", ".join(s.series_id for s in cseries.load_series())
+            raise BadInput(
+                f"unknown series {series!r}; known: {known}",
+                next="get(kind='component', view='series') for the registry",
+            )
+        if not size:
+            raise BadInput(
+                f"put(kind='component', series={srs.series_id!r}) needs size=",
+                next=(
+                    f"get(kind='component', id={srs.series_id!r}, "
+                    "view='series') for the size table"
+                ),
+            )
+        size_key, length = cseries.split_designation(str(size).strip())
+        row = srs.size(size_key)
+        if row is None:
+            keys = ", ".join(s.key for s in srs.sizes)
+            raise BadInput(
+                f"{srs.series_id} has no size {size_key!r}; sizes: {keys}",
+                next=(
+                    f"get(kind='component', id={srs.series_id!r}, "
+                    "view='series') for the size table"
+                ),
+            )
+        warn = cseries.check_length(srs, row, length)
+        if warn is not None and length is None and srs.length_spec is not None:
+            # A missing length on a series that has one is a hard miss, not
+            # an advisory: the part would be dimensionless.
+            raise BadInput(
+                warn,
+                next=(
+                    f"put(kind='component', series={srs.series_id!r}, "
+                    f"size='{row.key}x20')"
+                ),
+            )
+
+        slug = (
+            str(id).strip()
+            if id is not None and str(id).strip()
+            else cseries.suggest_slug(srs, row, length)
+        )
+        entity_meta = dict(meta or {})
+        entity_meta["series"] = srs.series_id
+        entity_meta["size"] = row.key if length is None else f"{row.key}x{length:g}"
+        if srs.designation:
+            entity_meta["designation"] = srs.designation
+        resp = self._put_entity(
+            slug,
+            title=title or cseries.title_for(srs, row, length),
+            category=srs.category,
+            uom=uom or "each",
+            meta=entity_meta,
+        )
+        ref = self.store.get_ref(kind="component", id=slug)
+        assert ref is not None  # _put_entity just upserted it
+
+        specs = cseries.mint_specs(srs, row, length)
+        written, skipped, missing = self._write_series_specs(
+            ref.id, specs, category=srs.category, source=srs.source
+        )
+        lines = [resp.body, f"series: {srs.series_id} ({srs.source})"]
+        lines.append(
+            f"specs: {written} written, {skipped} already current"
+            + (f", {len(missing)} skipped ({'; '.join(missing)})" if missing else "")
+        )
+        if warn is not None:
+            lines.append(f"⚠ {warn}")
+        lines.append(f"Next: get(kind='component', id='{slug}')")
+        return Response(body="\n".join(lines))
+
+    def _write_series_specs(
+        self,
+        ref_id: int,
+        specs: dict[str, Any],
+        *,
+        category: str,
+        source: str,
+    ) -> tuple[int, int, list[str]]:
+        """Write the series' dimensions as ordinary sourced values.
+
+        Returns ``(written, already_current, unconvertible_or_unknown)``.
+        A spec the registry doesn't know — or one whose canonical unit
+        this file's millimetre convention can't reach — is *reported*,
+        never written: the series file is curated data, so a miss there is
+        a data bug to fix in the file, and either silently minting a
+        ``proposed`` spec or writing an unconverted number would bury
+        it."""
+        written = 0
+        skipped = 0
+        missing: list[str] = []
+        for spec_id in sorted(specs):
+            spec_row = self.store.component_spec_get(spec_id)
+            if spec_row is None:
+                missing.append(spec_id)
+                continue
+            self._check_applicability(spec_row, category)
+            raw = specs[spec_id]
+            if spec_row["value_type"] in ("quantity", "ratio"):
+                converted, complaint = cseries.to_canonical(
+                    float(raw),
+                    canonical_unit=spec_row["canonical_unit"],
+                    dimension=spec_row["dimension"],
+                )
+                if complaint is not None:
+                    missing.append(f"{spec_id} ({complaint})")
+                    continue
+                raw = converted
+            routed = self._route_value(spec_row, raw)
+            current = self.store.component_current_spec_value(ref_id, spec_id)
+            if current is not None and all(
+                current.get(k) == v for k, v in routed.items()
+            ):
+                skipped += 1
+                continue
+            self.store.component_value_insert(
+                component_ref_id=ref_id,
+                spec_id=spec_id,
+                maturity="commercial",
+                method="standard",
+                notes=source,
+                **routed,
+            )
+            written += 1
+        return written, skipped, missing
+
+    # -- series registry views (view='series') ---------------------------
+
+    def _render_series(self, *, id: str | None, q: str | None) -> Response:
+        if id:
+            return self._render_one_series(id)
+        if q:
+            return self._render_series_resolve(q)
+        rows = [
+            {
+                "series": s.series_id,
+                "designation": s.designation or "—",
+                "category": s.category,
+                "sizes": str(len(s.sizes)),
+                "name": s.name,
+            }
+            for s in cseries.load_series()
+        ]
+        return Response(
+            body=f"# {len(rows)} component series (standards tables)\n"
+            + render_agent_table(
+                rows, schema=["series", "designation", "category", "sizes", "name"]
+            )
+            + "\n\nNext: get(kind='component', id='<series>', view='series') "
+            "for a size table, or view='series' with q='M6x30 socket cap' "
+            "to resolve a colloquial name."
+        )
+
+    def _render_one_series(self, series_id: str) -> Response:
+        srs = cseries.find_series(series_id)
+        if srs is None:
+            known = ", ".join(s.series_id for s in cseries.load_series())
+            raise NotFound(
+                f"unknown series {series_id!r}; known: {known}",
+                next="get(kind='component', view='series') for the registry",
+            )
+        spec_ids: list[str] = []
+        for row in srs.sizes:
+            for k in row.specs:
+                if k not in spec_ids:
+                    spec_ids.append(k)
+        rows = []
+        for row in srs.sizes:
+            entry = {"size": row.key}
+            entry.update({k: _fmt_spec(row.specs.get(k)) for k in spec_ids})
+            if srs.length_spec is not None:
+                entry["lengths"] = (
+                    ", ".join(f"{x:g}" for x in row.lengths) if row.lengths else "—"
+                )
+            rows.append(entry)
+        schema = ["size", *spec_ids]
+        if srs.length_spec is not None:
+            schema.append("lengths")
+        head = [f"# {srs.series_id} — {srs.name}"]
+        if srs.designation:
+            head.append(f"designation: {srs.designation}")
+        head.append(f"category: {srs.category} · source: {srs.source}")
+        if srs.specs:
+            head.append(
+                "every size: "
+                + ", ".join(f"{k}={v}" for k, v in sorted(srs.specs.items()))
+            )
+        if srs.aliases:
+            head.append("aka: " + ", ".join(srs.aliases))
+        tail = (
+            f"\n\nNext: put(kind='component', series='{srs.series_id}', "
+            f"size='{srs.sizes[0].key}"
+            + (
+                f"x{srs.sizes[0].lengths[0]:g}'"
+                if srs.length_spec is not None and srs.sizes[0].lengths
+                else "'"
+            )
+            + ") to mint one."
+            if srs.sizes
+            else ""
+        )
+        return Response(
+            body="\n".join(head) + "\n" + render_agent_table(rows, schema=schema) + tail
+        )
+
+    def _render_series_resolve(self, q: str) -> Response:
+        hits = cseries.resolve(q)
+        if not hits:
+            return Response(
+                body=f"no series matches {q!r}\n\n"
+                "Next: get(kind='component', view='series') to see the "
+                "registry — it is standards families only (ISO fasteners, "
+                "EN 10255 tube, cast acrylic sheet), not a supplier catalog."
+            )
+        rows = []
+        for c in hits:
+            designation = (
+                c.size.key if c.length is None else f"{c.size.key}x{c.length:g}"
+            )
+            note = cseries.check_length(c.series, c.size, c.length)
+            rows.append(
+                {
+                    "series": c.series.series_id,
+                    "size": designation,
+                    "name": c.series.name,
+                    "matched": c.why,
+                    "note": note or "",
+                }
+            )
+        best = hits[0]
+        best_size = (
+            best.size.key if best.length is None else f"{best.size.key}x{best.length:g}"
+        )
+        return Response(
+            body=f"# {len(rows)} candidate(s) for {q!r}\n"
+            + render_agent_table(
+                rows, schema=["series", "size", "name", "matched", "note"]
+            )
+            + "\n\nRanked, not picked — name the one you meant.\n"
+            f"Next: put(kind='component', series='{best.series.series_id}', "
+            f"size='{best_size}')"
         )
 
     def _put_made_of(self, slug: str, *, made_of: str, base: Response) -> Response:
@@ -777,8 +1079,14 @@ class ComponentHandler(Handler):
         id: str | int | None = None,
         view: str | None = None,
         spec: str | None = None,
+        q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if view == "series":
+            return self._render_series(
+                id=str(id).strip() if id is not None else None,
+                q=str(q).strip() if q else None,
+            )
         if view == "categories":
             return self._render_categories()
         if view == "specs" and id is None:
@@ -1204,6 +1512,16 @@ class ComponentHandler(Handler):
                 rows, schema=["component", "value", "conditions", "maturity", "source"]
             )
         )
+
+
+def _fmt_spec(value: Any) -> str:
+    """One series-table cell. ``—`` for a spec this size doesn't carry (a
+    hex nut has no head diameter) — an absence, never a zero."""
+    if value is None:
+        return "—"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{float(value):g}"
+    return str(value)
 
 
 def _validate_qty(qty: Any) -> int:

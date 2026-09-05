@@ -131,8 +131,12 @@ def test_reopen_stuck_batch_only_touches_its_own_rows(
     the alert promises: reopen flips exactly the named batch's rows,
     leaves other anchored rows alone, and the freed rows are picked up by
     the next ``stamp_batch`` sweep."""
-    row_a = _signed_hub(store, monkeypatch, "DFT finds the stuck-batch claim one holds.")
-    row_b = _signed_hub(store, monkeypatch, "DFT finds the stuck-batch claim two holds.")
+    row_a = _signed_hub(
+        store, monkeypatch, "DFT finds the stuck-batch claim one holds."
+    )
+    row_b = _signed_hub(
+        store, monkeypatch, "DFT finds the stuck-batch claim two holds."
+    )
     stuck_batch = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
     assert stuck_batch is not None
 

@@ -165,11 +165,21 @@ def test_tools_list_under_byte_budget() -> None:
     lenient ``__extras__`` channel, so a strict-schema client's op edits
     silently no-opped). ~380 B of list/dict input-schema + short param
     comments. Schema-side growth only, same shape as the prior bumps.
+
+    2026-09-05: cap raised from 24 KB → 25 KB to absorb ``series=``/
+    ``size=`` on ``put`` — the ``component`` standards-series mint
+    (``se-off-the-shelf-fabrication.md`` rung 2a), which materializes one
+    size of a published family (ISO 4762, EN 10255, …) instead of
+    hand-entering each SKU. ~130 B of string input-schema. Declared rather
+    than tunnelled for the usual reason: an undeclared kwarg is stripped
+    by a strict-schema client and dropped by the dispatcher, which would
+    make the whole mint path unreachable over MCP. Schema-side growth
+    only, same shape as the prior bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 24 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 24 KB). "
+    assert size < 25 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 25 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

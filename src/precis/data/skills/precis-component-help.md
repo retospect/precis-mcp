@@ -1,9 +1,11 @@
 ---
 id: precis-component-help
 title: precis — the component kind (general procurable-part store)
-summary: bolts/hoses/pipes/bearings/... with per-value sources — entity vs value writes, category + spec registries, the canonical-unit rule, made_of, and the range-filter search
+summary: bolts/hoses/pipes/bearings/... with per-value sources — entity vs value writes, minting from the standards series registry, category + spec registries, the canonical-unit rule, made_of, and the range-filter search
 answers:
   - how do I register a procurable part like a bolt or hose with sourced spec values?
+  - how do I add a standard part like an M6x30 socket cap without typing its dimensions?
+  - what sizes/lengths does ISO 4762 actually come in, and which acrylic sheet thicknesses are stocked?
   - why did put(kind='component', spec=..., unit=...) reject my unit?
   - how do I search components by a spec range, like 'hoses rated above 20 MPa'?
   - what's the difference between the category registry and the spec registry?
@@ -167,6 +169,58 @@ false "uniform". This answers the motivating "are the washer *and* the
 screw both galvanized?" question directly; it's a **uniformity summary**
 (distinct values + counts), not a pass/fail against a target.
 
+## Don't hand-enter a standard part — mint it from a series
+
+Four hundred screws is not a data-entry job. The **series registry**
+carries published standards families and their **valid-combination size
+tables** (M6 exists, M6×2 doesn't; DN50 has one wall thickness, not a
+continuum), and one `put` materializes a size into a real entity plus all
+its dimensions.
+
+```python
+get(kind="component", view="series")                 # the registry index
+get(kind="component", view="series", q="M6x30 socket cap")  # resolve a name
+get(kind="component", id="iso-4762", view="series")  # one family's size table
+
+put(kind="component", series="iso-4762", size="M6x30")
+# → component iso-4762-m6x30 ("M6x30 hexagon socket head cap screw (ISO 4762)")
+#   category fastener; thread_size M6, thread_pitch 1, outer_diameter 6,
+#   head_diameter 10, head_height 6, drive_size 5, drive_type socket, length 30
+```
+
+- **`id=` is optional.** The slug is derived (`iso-4762-m6x30`), so two
+  agents minting the same part converge on **one** ref instead of two.
+  Pass `id=` when you want a design-local name (`frame-bolt`).
+- **Idempotent.** The values land as ordinary `component_spec_values` rows
+  (`method='standard'`, the series' source in `notes`); re-minting skips
+  every spec whose *current* value already matches, so the append-only
+  fact table doesn't grow on a repeat.
+- **`size=` is the designation**, length included where the family has a
+  length axis: `M6x30`, `DN25x2000`, `M6` (a nut has no length), `3mm` (a
+  sheet thickness). Separators are forgiving — `M6 x 30`, `m6x30`, `M6×30`.
+- **An off-list length still mints, with a `⚠`** naming the nearest
+  stocked one: the size table is what suppliers *hold*, not what physics
+  allows, and paying for a cut is a decision, not an error. A *missing*
+  length on a family that has one is refused — that part would be
+  dimensionless.
+- `q=` **ranks, it never picks.** You get candidates with the tokens that
+  matched; name the one you meant.
+
+Seeded families: `iso-4762` (socket cap screw), `iso-4017` (hex head
+screw), `iso-4032` (hex nut), `iso-7089` (plain washer),
+`en-10255-medium` (steel tube), `acrylic-sheet-cast` (cast acrylic stock
+thicknesses). These are **standards data, not a supplier catalog** — no
+price, no stock, no lead time, and nothing here reaches a network. A
+price/availability enrichment layer keyed by designation is a separate,
+later integration.
+
+The dimension specs a mint writes (`outer_diameter`, `inner_diameter`,
+`wall_thickness`, `thickness`, `width`, `height`, `across_flats`,
+`head_diameter`, `head_height`, `drive_size`) are **universal** and in
+**mm** — an outside diameter means the same thing on a screw shank, a
+pipe and a bearing race. Read `canonical_unit` off the spec registry
+before doing arithmetic: `length_overall` is the metres outlier.
+
 ## The category registry — core and proposed
 
 `get(kind='component', view='categories')` lists every category and its
@@ -320,6 +374,9 @@ get(kind="component")  # list every component
 get(kind="component", id="enclosure", view="tree")  # nested assembly tree
 get(kind="component", id="enclosure", view="bom")  # flat BOM + rollup
 get(kind="component", id="enclosure", view="bom", spec="coating")  # + consistency check
+get(kind="component", view="series")  # the standards series registry
+get(kind="component", id="iso-4762", view="series")  # one family's size table
+get(kind="component", view="series", q="3mm plexiglass")  # ranked resolver
 ```
 
 The component page also shows the `made-of` material, if linked.
