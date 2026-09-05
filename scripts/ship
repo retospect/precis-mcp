@@ -91,16 +91,23 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # Flags accepted in any order.
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
+MSG=""
 while :; do
     case "${1:-}" in
         --impacted) IMPACTED=1; shift ;;
         --mutate)   MUTATE=1; shift ;;
         --quick)    QUICK=1; shift ;;
+        # git-commit muscle memory: accept -m/--message rather than letting
+        # the literal "-m" become the shipped subject and the real message
+        # get silently dropped (gr209915).
+        -m|--message) MSG="${2:-}"; shift 2 ;;
+        --) shift; break ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
 
-MSG="${1:-}"
+MSG="${MSG:-${1:-}}"
 CO_AUTHOR="Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
