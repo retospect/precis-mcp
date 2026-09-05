@@ -66,10 +66,19 @@ fixed condition leaves the open list on the next pass.
 get(kind='alert', id='/open')          # currently-open alerts
 get(kind='alert', id='/recent')        # recent (open + resolved)
 get(kind='alert', id=42)               # one alert + tags
+get(kind='alert', id=42, view='detail')  # triage shape (below); 'full' is an alias
+get(kind='alert', id=42, view='links')   # link graph to/from this alert
+get(kind='alert', id=42, view='raw')     # verbatim record — every meta key
 search(kind='alert', q='spin loop')    # lexical over titles
 search(kind='alert', tags=['alert-source:nursery:spin-loop'])
 search(kind='alert', tags=['severity:critical'])
 ```
+
+`view='detail'` (alias `'full'`) is the one-call triage shape: body +
+`detail`, severity/source/state, `fingerprint`, `seen_count`,
+`subject_ref_id`, `created_at`/`updated_at`/`resolved_at`, and the link
+graph — everything a doctor/health-digest tick needs without stitching
+together a bare `get` + `view='raw'` + `view='links'`.
 
 Or browse the **Alerts** tab in `precis web` (`/alerts`) — open by
 default, grouped by source, severity-sorted; `?state=resolved` shows

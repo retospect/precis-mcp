@@ -27,6 +27,7 @@ from precis.dispatch import Hub
 from precis.handlers.alert import AlertHandler
 from precis.store import Store
 from precis.store.types import Tag
+from tests.conftest import id_of
 
 
 def _tags(store: Store, ref_id: int) -> set[str]:
@@ -572,6 +573,101 @@ def test_handler_get_by_id_reads_one_alert(hub: Hub, store: Store) -> None:
     aid, _ = raise_alert(store, source="s", fingerprint="fp:1", title="readable alert")
     resp = handler.get(id=aid)
     assert "readable alert" in resp.body
+
+
+# ── handler: view='detail' / 'full' (gr259632) ─────────────────────
+
+
+def test_handler_view_detail_renders_body_lifecycle_and_fingerprint(
+    hub: Hub, store: Store
+) -> None:
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(
+        store,
+        source="nursery:spin-loop",
+        fingerprint="spin-loop:99",
+        title="[spin-loop] chase on #99",
+        detail="1872 chase events in 24h",
+        severity="critical",
+    )
+    resp = handler.get(id=aid, view="detail")
+    body = resp.body
+    assert "[spin-loop] chase on #99" in body
+    assert "1872 chase events in 24h" in body
+    assert "[open]" in body
+    assert "severity: critical" in body
+    assert "source: nursery:spin-loop" in body
+    assert "fingerprint: spin-loop:99" in body
+    assert "seen_count: 1" in body
+    assert "created_at:" in body
+    assert "updated_at:" in body
+    assert "resolved_at:" not in body  # still open — no resolved timestamp
+
+
+def test_handler_view_detail_reuses_shared_links_rendering(
+    hub: Hub, store: Store
+) -> None:
+    """view='detail' surfaces the ref's link graph via the same shared
+    renderer as view='links' / view='raw' — not a duplicated formatter."""
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:linked", title="cond")
+    other, _ = raise_alert(store, source="s", fingerprint="fp:target", title="target")
+    handler.link(id=aid, target=f"alert:{other}")
+    body = handler.get(id=aid, view="detail").body
+    assert "Links:" in body
+    assert "target" in body  # the linked alert's title, via the shared renderer
+
+
+def test_handler_view_full_is_alias_of_detail(hub: Hub, store: Store) -> None:
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(
+        store, source="s", fingerprint="fp:alias", title="cond", severity="warn"
+    )
+    detail_resp = handler.get(id=aid, view="detail")
+    full_resp = handler.get(id=aid, view="full")
+    assert detail_resp.body == full_resp.body
+
+
+def test_handler_view_detail_shows_resolved_state_and_timestamp(
+    hub: Hub, store: Store
+) -> None:
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:resolved-detail", title="t")
+    alerts_mod.resolve_alert(store, aid, resolved_by="operator")
+    body = handler.get(id=aid, view="detail").body
+    assert "[resolved]" in body
+    assert "resolved_at:" in body
+
+
+def test_handler_unknown_view_lists_detail_and_full_as_options(
+    hub: Hub, store: Store
+) -> None:
+    from precis.errors import Unsupported
+
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:bogus", title="t")
+    with pytest.raises(Unsupported) as exc:
+        handler.get(id=aid, view="bogus")
+    assert exc.value.options is not None
+    assert "detail" in exc.value.options
+    assert "full" in exc.value.options
+    assert "links" in exc.value.options
+    assert "raw" in exc.value.options
+
+
+def test_other_numeric_ref_kind_does_not_gain_detail_view(hub: Hub) -> None:
+    """The 'detail'/'full' alias lives on AlertHandler only — a sibling
+    numeric-ref kind (memory) must not pick it up as a side effect of the
+    shared base class."""
+    from precis.errors import Unsupported
+    from precis.handlers.memory import MemoryHandler
+
+    handler = MemoryHandler(hub=hub)
+    mid = id_of(handler.put(text="a memory").body)
+    with pytest.raises(Unsupported) as exc:
+        handler.get(id=mid, view="detail")
+    assert exc.value.options is not None
+    assert "detail" not in exc.value.options
 
 
 # ── handler: tag-verb lifecycle sync (resolved_at ↔ alert-state) ───

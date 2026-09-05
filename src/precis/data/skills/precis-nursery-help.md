@@ -101,6 +101,10 @@ get(kind='alert', id='/open')
 search(kind='alert', tags=['alert-source:nursery:spin-loop'])
 ```
 
+To triage one alert in a single call (body + severity/source/state +
+fingerprint/seen_count + timestamps + links), use
+`get(kind='alert', id=N, view='detail')` — see `precis-alert-help`.
+
 …or browse the **Alerts** tab in `precis web` (`/alerts`).
 
 ## Dedup + auto-resolve

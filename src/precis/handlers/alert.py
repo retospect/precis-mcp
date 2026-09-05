@@ -9,10 +9,19 @@ Alerts are *produced* by background passes through
 by agents — so this handler intentionally omits ``put``. What it offers
 the agent surface is the read / triage half:
 
-    - get(kind='alert', id=N)        — read one alert + its tags
-    - get(kind='alert', id='/recent')— recent alerts (open + resolved)
-    - get(kind='alert', id='/open')  — currently-open alerts only
-    - search(kind='alert', q=...)    — lexical search over alert titles
+    - get(kind='alert', id=N)             — read one alert + its tags
+    - get(kind='alert', id=N, view='detail'/'full')
+                                           — the triage-tick shape: body +
+                                             severity/source/state +
+                                             fingerprint/seen_count +
+                                             lifecycle timestamps + links,
+                                             in one call ('full' is an
+                                             alias of 'detail')
+    - get(kind='alert', id=N, view='links'/'log'/'raw')
+                                           — generic numeric-ref views
+    - get(kind='alert', id='/recent')     — recent alerts (open + resolved)
+    - get(kind='alert', id='/open')       — currently-open alerts only
+    - search(kind='alert', q=...)         — lexical search over alert titles
     - tag(id=N, add/remove=[...])    — ack / reclassify (resolve via
                                         add=['alert-state:resolved'],
                                         remove=['alert-state:open'];
@@ -32,10 +41,20 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.alerts import STATE_OPEN, STATE_RESOLVED, sync_resolved_at_with_tags
-from precis.handlers._numeric_ref import NumericRefHandler
+from precis.errors import Unsupported
+from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import Tag
+from precis.store.types import Ref, Tag
+
+#: Views this kind adds on top of the base ``links``/``log``/``raw``.
+#: ``full`` is an alias of ``detail`` — both were observed as recurring
+#: doctor/health-digest guesses (gr259632: 26 ``view='detail'`` + 6
+#: ``view='full'`` calls a tick, hit ``[error:Unsupported]``, then
+#: re-guessed the same shape next tick since each tick starts a fresh
+#: context). The alias lives here (AlertHandler), not on the shared
+#: base — other numeric-ref kinds keep their existing view set.
+_DETAIL_VIEWS: tuple[str, ...] = ("detail", "full")
 
 
 class AlertHandler(NumericRefHandler):
@@ -86,6 +105,78 @@ class AlertHandler(NumericRefHandler):
             return Response(body="no open alerts — all clear.")
         header = f"# {len(refs)} open alert{'' if len(refs) == 1 else 's'}"
         return Response(body=f"{header}\n{self._render_hits_table(refs)}")
+
+    # ── get: base views + view='detail' (alias 'full') ─────────────
+
+    def get(
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        q: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        # gr259632: recurring health-digest/nursery ticks repeatedly
+        # guessed view='detail' / view='full' on a concrete id and hit
+        # the generic [error:Unsupported] every tick (each tick is a
+        # fresh context, so the guess never got corrected). Mirrors
+        # MemoryHandler.get's view='argument' dispatch shape — a
+        # concrete-id-only extra view layered in front of the base
+        # links/log/raw set.
+        concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if concrete and view in _DETAIL_VIEWS:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return self._render_detail_view(ref)
+        if concrete and view is not None and view not in _BASE_VIEWS:
+            raise Unsupported(
+                f"unknown view {view!r} for kind='alert'",
+                options=[*_DETAIL_VIEWS, *_BASE_VIEWS],
+                next=(
+                    "view='detail' (triage shape: body + severity/source/"
+                    "state + fingerprint/seen_count + timestamps + links; "
+                    "'full' is an alias) · links, log, raw (generic)"
+                ),
+            )
+        return super().get(id=id, view=view, q=q, **_kw)
+
+    def _render_detail_view(self, ref: Ref) -> Response:
+        """``view='detail'``/``'full'``: the one-call triage shape.
+
+        Everything a doctor/health-digest tick actually wants — body,
+        lifecycle state, dedup identity, timestamps, and the link graph
+        — instead of stitching together a bare ``get`` (title + tags
+        only) with ``view='raw'`` (meta dump) and ``view='links'``.
+        Terse and data-dense on purpose (MCP payload, not prose).
+        """
+        tags = self.store.tags_for(ref.id)
+        meta = ref.meta or {}
+        is_open = any(t.namespace == "open" and t.value == STATE_OPEN for t in tags)
+        state = "open" if is_open else "resolved" if ref.resolved_at else "unknown"
+
+        out = [f"# alert {ref.id} [{state}]", "", ref.title]
+        detail = meta.get("detail")
+        if detail:
+            out += ["", detail]
+
+        out.append("")
+        fields: list[tuple[str, Any]] = [
+            ("severity", meta.get("severity")),
+            ("source", ref.alert_source or meta.get("alert_source")),
+            ("fingerprint", ref.fingerprint or meta.get("fingerprint")),
+            ("seen_count", meta.get("seen_count")),
+            ("subject_ref_id", meta.get("subject_ref_id")),
+            ("created_at", ref.created_at),
+            ("updated_at", ref.updated_at),
+            ("resolved_at", ref.resolved_at),
+        ]
+        out += [f"{k}: {v}" for k, v in fields if v is not None]
+
+        if tags:
+            out += ["", "tags: " + " ".join(str(t) for t in tags)]
+
+        body = "\n".join(out)
+        body += self._render_links_section(ref)
+        return Response(body=body)
 
     # ── tag-verb lifecycle sync ─────────────────────────────────────
 

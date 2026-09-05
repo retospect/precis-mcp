@@ -90,6 +90,10 @@ capped to `info`/`warn` — nursery keeps the `critical` severity class, this
 pass never pages. `resolve_stale_alerts` auto-closes whatever goes fresh again, same
 dedup/lifecycle as nursery (see `precis-alert-help`).
 
+To read one open alert in a single call — body, severity/source/state,
+fingerprint, seen_count, timestamps, and its links — use
+`get(kind='alert', id=N, view='detail')` (see `precis-alert-help`).
+
 ## Remediation router (Phase 2)
 
 An open `watchdog:<group>` alert that outlives its class's **self-heal
