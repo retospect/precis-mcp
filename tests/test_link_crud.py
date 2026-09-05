@@ -25,7 +25,9 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_target import LinkTarget, parse_link_target
+from precis.handlers.gripe import GripeHandler
 from precis.handlers.memory import MemoryHandler
+from precis.handlers.todo import TodoHandler
 from precis.store import ChunkInsert, Store
 from precis.store.types import Relation
 from precis.utils import handle_registry
@@ -796,3 +798,89 @@ class TestMemoryHandlerLinksView:
 
         out = memory_handler.get(id=a_id, view="links")
         assert "(deleted)" in out.body
+
+
+# ── gr250037: rel='fixes' from a todo, and FK-violation hardening ──
+
+
+class TestGr250037FixesRelation:
+    """``link(kind='todo', id=N, target='gripe:M', rel='fixes')`` — the
+    exact call `precis-fix-gripe-help`'s Slice-5 canonical pattern
+    documents — must succeed (the ``fixes``/``fixed-by`` pair is
+    seeded by 0006_fix_gripe_relation.sql, re-affirmed idempotently by
+    0155_reseed_fixes_relation.sql for a deployment whose vocabulary
+    drifted). And when a link write's FK genuinely can't be satisfied
+    (an unregistered relation or a missing endpoint), the failure must
+    surface as a clean :class:`BadInput`, never a raw
+    ``ForeignKeyViolation`` escaping as ``[error:Internal]``.
+    """
+
+    def test_todo_fixes_gripe_succeeds(self, hub: Hub, store: Store) -> None:
+        gripe_id = id_of(GripeHandler(hub=hub).put(text="a bug").body)
+        todo_id = id_of(TodoHandler(hub=hub).put(text="fix it").body)
+
+        resp = TodoHandler(hub=hub).link(
+            id=todo_id, target=f"gripe:{gripe_id}", rel="fixes"
+        )
+        assert "linked" in resp.body
+
+        links = store.links_for(todo_id, direction="out", relation="fixes")
+        assert len(links) == 1
+        assert links[0].dst_ref_id == gripe_id
+        assert links[0].relation == "fixes"
+
+    def test_todo_related_to_gripe_default_still_works(
+        self, hub: Hub, store: Store
+    ) -> None:
+        """(d) the default relation (``rel`` omitted) is unaffected."""
+        gripe_id = id_of(GripeHandler(hub=hub).put(text="a bug").body)
+        todo_id = id_of(TodoHandler(hub=hub).put(text="fix it").body)
+
+        resp = TodoHandler(hub=hub).link(id=todo_id, target=f"gripe:{gripe_id}")
+        assert "linked" in resp.body
+
+        links = store.links_for(todo_id, direction="out")
+        assert len(links) == 1
+        assert links[0].relation == "related-to"
+
+    def test_link_to_nonexistent_target_id_is_clean_notfound(
+        self, hub: Hub, store: Store
+    ) -> None:
+        """(b) a nonexistent target id rejects at the handler layer
+        (``parse_link_target``) with a clean ``NotFound`` — never a
+        raw FK violation."""
+        todo_id = id_of(TodoHandler(hub=hub).put(text="fix it").body)
+        with pytest.raises(NotFound):
+            TodoHandler(hub=hub).link(
+                id=todo_id, target="gripe:999999999", rel="fixes"
+            )
+
+    def test_add_link_unregistered_relation_raises_badinput_not_raw_fk(
+        self, store: Store
+    ) -> None:
+        """Store-level hardening: even bypassing the handler's
+        ``validate_relation`` pre-flight entirely (simulating a
+        deployment where a built-in relation's vocabulary seed
+        migration hasn't landed), :meth:`Store.add_link` itself
+        converts the resulting ``links_relation_fkey`` violation into
+        a clean ``BadInput`` naming the relation — not a raw
+        ``ForeignKeyViolation``."""
+        a = _seed_paper(store, slug="gr250037-src")
+        b = _seed_paper(store, slug="gr250037-dst")
+        with pytest.raises(BadInput, match="not-a-real-relation"):
+            store.add_link(
+                src_ref_id=a,
+                dst_ref_id=b,
+                relation=cast(Relation, "not-a-real-relation"),
+            )
+
+    def test_add_link_nonexistent_dst_ref_raises_badinput_not_raw_fk(
+        self, store: Store
+    ) -> None:
+        """Store-level hardening for the ``dst_ref_id`` FK: a caller
+        that bypasses target resolution (a nonexistent ref_id reaching
+        the INSERT directly) gets a clean ``BadInput``, not a raw
+        ``ForeignKeyViolation``."""
+        a = _seed_paper(store, slug="gr250037-src2")
+        with pytest.raises(BadInput, match="does not exist"):
+            store.add_link(src_ref_id=a, dst_ref_id=999999999, relation="related-to")

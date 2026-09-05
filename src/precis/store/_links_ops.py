@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from psycopg import Connection
+from psycopg.errors import ForeignKeyViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
@@ -80,6 +81,74 @@ def _resolve_chunk_id_for_link(
             next=f"check chunks: get(kind=..., id={ref_id})",
         )
     return chunk_id
+
+
+#: ``links`` FK constraint names → the (relation-owning) app-layer
+#: explanation for a caller. Mirrors the ``ADD CONSTRAINT`` names in
+#: ``0001_initial.sql`` — Postgres reports the *name*, not the column,
+#: in ``ForeignKeyViolation.diag.constraint_name``.
+_LINK_FK_CONSTRAINT_HINT: dict[str, str] = {
+    "links_relation_fkey": "relation",
+    "links_src_ref_id_fkey": "src ref",
+    "links_dst_ref_id_fkey": "dst ref",
+    "links_src_chunk_id_fkey": "src chunk",
+    "links_dst_chunk_id_fkey": "dst chunk",
+    "links_set_by_fkey": "set_by actor",
+}
+
+
+def _reraise_link_fk_violation(
+    exc: ForeignKeyViolation,
+    *,
+    relation: str,
+    src_ref_id: int,
+    dst_ref_id: int,
+) -> BadInput:
+    """Translate a raw ``links`` INSERT FK violation into a clean ``BadInput``.
+
+    gr250037: ``link(kind='todo', id=N, target='gripe:M', rel='fixes')``
+    raised a raw ``[error:Internal] ... ForeignKeyViolation`` on a
+    deployment whose ``relations`` table was missing the ``fixes``/
+    ``fixed-by`` seed rows. The handler-layer pre-flight
+    (:func:`precis.handlers._link_tag_ops.validate_relation`) doesn't
+    catch this class of gap: a **built-in** relation (one already in the
+    static ``Relation`` Literal) is accepted via the fast literal-only
+    path *without* a live ``relations`` table check — that live check
+    only runs for relations the literal doesn't already know. So a
+    stale/drifted vocabulary sails past the app-layer guard and the raw
+    FK reaches Postgres.
+
+    ``src_chunk_id``/``dst_chunk_id`` can't actually reach this (already
+    guarded by :func:`_resolve_chunk_id_for_link` above, which raises
+    ``BadInput`` before the INSERT); named here anyway for defense in
+    depth against a future caller that skips that helper.
+    """
+    constraint = getattr(exc.diag, "constraint_name", None) or ""
+    what = _LINK_FK_CONSTRAINT_HINT.get(constraint, constraint or "an endpoint")
+    if constraint == "links_relation_fkey":
+        return BadInput(
+            f"unknown relation: {relation!r} (not registered in the "
+            "relations vocabulary)",
+            next=(
+                "pick a registered relation, or if this should be a "
+                "built-in relation, the vocabulary seed migration hasn't "
+                "landed on this deployment — file a gripe"
+            ),
+        )
+    if constraint == "links_src_ref_id_fkey":
+        return BadInput(
+            f"link source ref_id={src_ref_id} does not exist",
+            next=f"check it exists: get(id={src_ref_id})",
+        )
+    if constraint == "links_dst_ref_id_fkey":
+        return BadInput(
+            f"link target ref_id={dst_ref_id} does not exist",
+            next=f"check it exists: get(id={dst_ref_id})",
+        )
+    return BadInput(
+        f"link write rejected: {what} does not exist",
+        next="check both endpoints exist and the relation is registered",
+    )
 
 
 # Standard SELECT projection for links: maps link_id back to id and
@@ -275,18 +344,31 @@ class LinksMixin:
                 f"DO UPDATE SET set_by = links.set_by{meta_clause} "
                 "RETURNING link_id"
             )
-            row = c.execute(
-                sql,
-                (
-                    src_ref_id,
-                    src_chunk_id,
-                    dst_ref_id,
-                    dst_chunk_id,
-                    relation,
-                    set_by,
-                    Jsonb(meta or {}),
-                ),
-            ).fetchone()
+            try:
+                row = c.execute(
+                    sql,
+                    (
+                        src_ref_id,
+                        src_chunk_id,
+                        dst_ref_id,
+                        dst_chunk_id,
+                        relation,
+                        set_by,
+                        Jsonb(meta or {}),
+                    ),
+                ).fetchone()
+            except ForeignKeyViolation as exc:
+                # gr250037 — a raw FK violation here would otherwise
+                # escape as ``[error:Internal] ... ForeignKeyViolation``
+                # (dispatch's generic exception fallback). Translate to
+                # the clean ``BadInput`` naming the actual gap; see
+                # :func:`_reraise_link_fk_violation`.
+                raise _reraise_link_fk_violation(
+                    exc,
+                    relation=relation,
+                    src_ref_id=src_ref_id,
+                    dst_ref_id=dst_ref_id,
+                ) from exc
             assert row is not None, (
                 "links INSERT returned no row — schema invariant violated"
             )

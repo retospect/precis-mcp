@@ -140,6 +140,19 @@ class TestPutValidation:
         with pytest.raises((BadInput, NotFound)):
             h.put(title="t", body="b", cited_in="does-not-exist")
 
+    def test_nonexistent_chunk_handle_is_clean_notfound(self, store) -> None:
+        """gr250037 (c): ``cited_in`` naming a real paper but a chunk
+        position that doesn't exist rejects with a clean ``NotFound``
+        naming the handle — resolved by ``parse_link_target`` before
+        any DB write, so it can never surface as a raw
+        ``ForeignKeyViolation``."""
+        from precis.errors import NotFound
+
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        with pytest.raises(NotFound, match="miller23a~999"):
+            h.put(title="t", body="b", cited_in="miller23a~999")
+
 
 # ── put happy path ──────────────────────────────────────────────────
 
