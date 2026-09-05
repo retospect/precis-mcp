@@ -179,9 +179,19 @@ def _mint_dryrun(
     ):
         violations.setdefault(v.gate, []).append(v.message)
     artifact_type = gates.resolve_artifact_type(bundle, payload)
+    # gr245768: the grounding passage(s), when this hub has any resolved --
+    # sharpens `all-caps-artifact` from allowlist-only to also clearing a
+    # token genuinely capitalized in the source ("The GLYMPHATIC system...").
+    source_text = (
+        "\n".join(c.text for c in bundle.grounding_chunks)
+        if bundle.grounding_chunks
+        else None
+    )
     return {
         "violations": violations,
-        "advisories": gates.advisory_lint(bundle.sentence, artifact_type=artifact_type),
+        "advisories": gates.advisory_lint(
+            bundle.sentence, artifact_type=artifact_type, source_text=source_text
+        ),
     }
 
 

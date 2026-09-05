@@ -653,3 +653,80 @@ def test_mixed_point_range_does_not_fire_on_negative_number() -> None:
         "DFT predicts a stress of −3.2 GPa near the interface."
     )
     assert not any("mixed-point-range" in w for w in warnings)
+
+
+# ── all-caps-artifact (gr245768) ──────────────────────────────────────────
+# The taproot extraction LLM (Tier.SMALL) occasionally capitalizes an
+# ordinary common noun ("The GLYMPHATIC system..."); nothing between
+# extraction and mint used to check casing. `source_text` is optional
+# (default None, existing callers unaffected) -- when given, a token that
+# is genuinely capitalized in the source clears; without it, the rule is
+# allowlist-only.
+
+_GLYMPHATIC_SENTENCE = (
+    "The GLYMPHATIC system clears metabolic waste from the brain during sleep."
+)
+
+
+def test_all_caps_artifact_fires_when_absent_from_source() -> None:
+    source_text = (
+        "The glymphatic system is a network that clears metabolic waste "
+        "from the central nervous system, primarily during sleep."
+    )
+    warnings = lint_claim_sentence(_GLYMPHATIC_SENTENCE, source_text=source_text)
+    hits = [w for w in warnings if w.startswith("all-caps-artifact")]
+    assert len(hits) == 1
+    assert "'GLYMPHATIC'" in hits[0]
+    assert "not found capitalized in source" in hits[0]
+
+
+def test_all_caps_artifact_does_not_fire_when_present_in_source() -> None:
+    # Same sentence, but the source itself writes the token in caps (a
+    # genuine acronym/heading in the passage, not an extraction artifact).
+    source_text = (
+        "GLYMPHATIC clearance was measured by two-photon imaging of "
+        "perivascular tracer influx during sleep and wakefulness."
+    )
+    warnings = lint_claim_sentence(_GLYMPHATIC_SENTENCE, source_text=source_text)
+    assert not any(w.startswith("all-caps-artifact") for w in warnings)
+
+
+def test_all_caps_artifact_does_not_fire_on_allowlisted_acronym() -> None:
+    sentence = (
+        "AGNR field-effect transistors reach an on/off ratio near 1e5 in "
+        "transport measurements."
+    )
+    source_text = "This device uses armchair graphene nanoribbon channels."
+    warnings = lint_claim_sentence(sentence, source_text=source_text)
+    assert not any(w.startswith("all-caps-artifact") for w in warnings)
+
+
+def test_all_caps_artifact_allowlist_only_without_source_text() -> None:
+    # No source_text at all: the rule still fires on an unknown ALL-CAPS
+    # token (allowlist-only mode), but never on a known acronym.
+    warnings = lint_claim_sentence(_GLYMPHATIC_SENTENCE)
+    hits = [w for w in warnings if w.startswith("all-caps-artifact")]
+    assert len(hits) == 1
+    assert "'GLYMPHATIC'" in hits[0]
+    assert "source text unavailable" in hits[0]
+
+    allowlisted_sentence = (
+        "AGNR field-effect transistors reach an on/off ratio near 1e5 in "
+        "transport measurements."
+    )
+    assert not any(
+        w.startswith("all-caps-artifact")
+        for w in lint_claim_sentence(allowlisted_sentence)
+    )
+
+
+def test_all_caps_artifact_ignores_three_letter_acronyms() -> None:
+    # DFT/TEM/SEM-style 3-letter acronyms sit under the >=4 floor and are
+    # never flagged, allowlisted or not, with or without source text.
+    assert not any(
+        w.startswith("all-caps-artifact") for w in lint_claim_sentence(_CLEAN_SENTENCE)
+    )
+    assert not any(
+        w.startswith("all-caps-artifact")
+        for w in lint_claim_sentence(_CLEAN_SENTENCE, source_text="unrelated text")
+    )

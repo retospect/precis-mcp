@@ -596,7 +596,9 @@ def check_claim_sentence(
     return out
 
 
-def advisory_lint(sentence: str, *, artifact_type: str = "claim") -> list[str]:
+def advisory_lint(
+    sentence: str, *, artifact_type: str = "claim", source_text: str | None = None
+) -> list[str]:
     """The NON-blocking half of the sentence lints — every
     ``lint_notation`` / ``lint_claim_sentence`` warning whose code is
     advisory for ``artifact_type`` (outside the scoped
@@ -604,7 +606,15 @@ def advisory_lint(sentence: str, *, artifact_type: str = "claim") -> list[str]:
     These never gate a mint; the review surface shows them as
     considerations beside a passing claim-sentence gate, so "passed" and
     "passed, but look at this" stay distinguishable. Never raises; an
-    empty sentence returns ``[]``."""
+    empty sentence returns ``[]``.
+
+    ``source_text`` (gr245768, optional) threads straight to
+    ``lint_claim_sentence``'s own ``source_text`` — the grounding passage
+    text, when a caller has it (e.g. the review page's pre-approve dry-run,
+    which has ``bundle.grounding_chunks`` in hand), sharpens
+    ``all-caps-artifact`` from allowlist-only to also clearing a token that
+    is genuinely capitalized in the source. Omitting it changes nothing for
+    every other lint code."""
     if not sentence:
         return []
     blocking = _BLOCKING_LINT_CODES - _ARTIFACT_LINT_EXEMPTIONS.get(
@@ -612,7 +622,9 @@ def advisory_lint(sentence: str, *, artifact_type: str = "claim") -> list[str]:
     )
     out: list[str] = []
     seen: set[str] = set()
-    for w in lint_notation(sentence) + lint_claim_sentence(sentence):
+    for w in lint_notation(sentence) + lint_claim_sentence(
+        sentence, source_text=source_text
+    ):
         code = w.split(":", 1)[0].strip()
         if code in blocking or code in seen:
             continue

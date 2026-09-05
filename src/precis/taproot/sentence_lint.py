@@ -924,6 +924,71 @@ def _mixed_point_range_hit(sentence: str) -> tuple[str, str] | None:
     return None
 
 
+# ── all-caps-artifact (gr245768) ──────────────────────────────────────────
+#
+# The taproot extraction LLM (Tier.SMALL, `canon.extract_claim`) occasionally
+# capitalizes an ordinary common noun that has no business being an acronym
+# ("The GLYMPHATIC system clears...") -- nothing between extraction and mint
+# previously checked casing (`canon._parse_claim_item` only `.strip()`s), so
+# the artifact rode straight through to a signed nanopublication. This rule
+# flags any ALL-CAPS token of >=4 letters that is neither a known acronym
+# nor (when the source passage is available) capitalized the same way in
+# the source. The >=4 floor is deliberate: DFT/TEM/SEM/XRD/NMR/... style
+# 3-letter method acronyms (`EPISTEMIC_MODE_TOKENS`) stay under it and never
+# need allowlisting at all.
+
+#: Known >=4-letter ALL-CAPS acronyms this corpus actually uses, so this
+#: rule doesn't fire on every legitimate one. Two sources, both corpus
+#: evidence rather than invention: the single-token, all-uppercase entries
+#: already vetted into `EPISTEMIC_MODE_TOKENS` (NEGF, DFTB, SAXS, FTIR --
+#: `spin-polarized DFT`-style multi-word/mixed-case entries there don't
+#: apply here, a different shape), plus acronyms this module's own test
+#: fixtures already use in admissible claim sentences (AGNR, EDRR, NUPACK,
+#: SERS, SWRO) and the corpus example this module's own `_ACRONYM_PLURAL_RE`
+#: docstring cites (MOSFET). Extend as needed, same "corpus evidence, not
+#: invention" bar as `_VERB_SHAPE_EXCEPTIONS`/`EPISTEMIC_MODE_TOKENS`.
+_CAPS_ARTIFACT_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "NEGF",
+        "DFTB",
+        "SAXS",
+        "FTIR",
+        "MOSFET",
+        "AGNR",
+        "EDRR",
+        "NUPACK",
+        "SERS",
+        "SWRO",
+    }
+)
+
+#: A run of >=4 uppercase letters, word-bounded -- doesn't match a plural
+#: (`MOSFETs`) or a mixed-case/digit-bearing token (`DB18C6`, `UV-vis`)
+#: since a lowercase or digit character adjoining the run blocks the
+#: trailing `\b`/leading `\b` from landing where this pattern needs it.
+_ALLCAPS_TOKEN_RE = re.compile(r"\b[A-Z]{4,}\b")
+
+
+def _allcaps_artifact_hit(sentence: str, source_text: str | None) -> str | None:
+    """First ALL-CAPS token (>=4 letters) in ``sentence`` that is neither a
+    known acronym nor -- when ``source_text`` is given -- present verbatim
+    (same casing) in the source passage. ``None`` when nothing qualifies.
+
+    Without ``source_text`` this is allowlist-only: every ALL-CAPS token
+    not in :data:`_CAPS_ARTIFACT_ALLOWLIST` fires, noisier but still
+    advisory-safe (see the module docstring's advisory-only contract) --
+    a caller that hasn't wired the source through yet still gets a signal.
+    """
+    for m in _ALLCAPS_TOKEN_RE.finditer(sentence):
+        token = m.group(0)
+        if token in _CAPS_ARTIFACT_ALLOWLIST:
+            continue
+        if source_text is not None and token in source_text:
+            continue  # appears capitalized the same way in the source too
+        return token
+    return None
+
+
 # ── author-name ───────────────────────────────────────────────────────────
 
 _AUTHOR_NAME_RE = re.compile(
@@ -940,13 +1005,21 @@ _AUTHOR_NAME_RE = re.compile(
 _OVER_LONG_CHARS = 250
 
 
-def lint_claim_sentence(sentence: str) -> list[str]:
+def lint_claim_sentence(sentence: str, *, source_text: str | None = None) -> list[str]:
     """Return human-readable admissibility/grammar warnings about
     ``sentence``.
 
     Advisory only: never raises (any input, including ``""``, returns a
     list -- possibly empty), never rewrites ``sentence``. Heuristic by
     construction -- it flags for judgment, never blocks a write.
+
+    ``source_text`` (gr245768, optional, default ``None``) is the grounding
+    passage the sentence was extracted from, when a caller has it in hand
+    (mint/approve time: :func:`~precis.nanopub.gates.advisory_lint`'s
+    caller can pass ``bundle.grounding_chunks`` text). It powers
+    ``all-caps-artifact``'s second check only -- every other rule in this
+    function ignores it, and every existing caller that doesn't pass it
+    keeps working unchanged.
     """
     if not sentence:
         return []
@@ -1071,6 +1144,22 @@ def lint_claim_sentence(sentence: str) -> list[str]:
             "this also makes the multi-clause-collapse failure mode "
             "structurally impossible."
         )
+
+    caps_hit = _allcaps_artifact_hit(sentence, source_text)
+    if caps_hit:
+        if source_text is not None:
+            warnings.append(
+                f"all-caps-artifact: {caps_hit!r} not found capitalized in "
+                "source -- likely an extraction artifact; downcase before "
+                "approving."
+            )
+        else:
+            warnings.append(
+                f"all-caps-artifact: {caps_hit!r} found -- not a known "
+                "acronym (source text unavailable to confirm either way); "
+                "likely a Tier.SMALL extraction artifact (gr245768) -- "
+                "check against the source before approving."
+            )
 
     m = _AUTHOR_NAME_RE.search(sentence)
     if m:
