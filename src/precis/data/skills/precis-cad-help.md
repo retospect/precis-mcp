@@ -231,6 +231,26 @@ get(kind="cad", id="crane", view="sweep")
   with the state range where it interferes, plus the swept envelope per
   moving body. `args={'joint': 'jib'}` sweeps one joint only.
 
+### Attach analysis results — `link` `rel='analyzed-by'`
+
+An analysis number (FEA stress, a multiphysics result — stored as a
+`finding`, later `estimate`) attaches to the design it describes:
+
+```python
+link(kind="cad", id="bracket", target="finding:189542", rel="analyzed-by")
+```
+
+The attach **pins the design version** (a content sha of the source) into
+the link. If the design's geometry later changes, the analysis is stale
+and the system says so loudly: `view='links'` appends
+`⚠ STALE analyses (re-run or detach): …`, and the hourly `analysis-stale`
+condition check files/auto-closes an alert per stale attachment. Re-run
+the analysis and re-attach (same call — the pin refreshes), or
+`mode='remove'` to detach. A whitespace-only re-save does not trip it —
+staleness is content-driven. Put the analysis's assumptions (loads,
+constraints, temperature range, which ports were assumed fixed) in the
+finding's `scope=` dict — that is the validity boundary a reuser checks.
+
 ### Describe what it's *for* — `desc:` / `use:`
 
 Add free-text lines so the design is findable by purpose, not just by

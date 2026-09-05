@@ -283,6 +283,14 @@ Relation = Literal[
     # `refines`/`motivated-by` convention). Keep in sync with the
     # `relations` seed in 0142_quest_tests_relation.sql.
     "tests",
+    # Attached-models edge — migration 0153. `analyzed-by` (design/block →
+    # analysis finding/estimate with fidelity + validity scope; links.meta
+    # {sha, at} pins the analyzed design version) ↔ `analysis-of`. Written
+    # by CadHandler.link; staleness watched by the `analysis-stale`
+    # condition probe. Keep in sync with the `relations` seed in
+    # 0153_analyzed_by_relation.sql.
+    "analyzed-by",
+    "analysis-of",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and
@@ -383,6 +391,9 @@ _INVERSE_RELATIONS: dict[str, str] = {
     # Component assembly tree (0095).
     "contains": "part-of",
     "part-of": "contains",
+    # Attached models (0153).
+    "analyzed-by": "analysis-of",
+    "analysis-of": "analyzed-by",
 }
 
 

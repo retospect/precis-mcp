@@ -58,8 +58,9 @@ retire-all/reinsert-all persist rebuilds row ids on every save — a
 analysis layer (`se-feasibility-and-cost.md`). So the cad track is the
 honest consumer for all three, and each row enters with its consumer:
 
-- **`analyzed-by`** (+ inverse `analysis-of`): enters with
-  `attached-models-layer.md` v1 — the next migration this track mints.
+- **`analyzed-by`** (+ inverse `analysis-of`): SHIPPED 2026-09-05
+  (migration 0153) with its consumer — `CadHandler.link` + the
+  `analysis-stale` condition probe (`attached-models-layer.md` v1).
 - **`realizes`** (+ `realized-by`): waits for the cad-side realization
   write (catalog atoms → bom, `cad-machine-spec.md` parallel track).
 - **`made-by`** (+ `makes`): waits for `make-tree-vs-design-tree.md`.

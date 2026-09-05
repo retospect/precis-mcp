@@ -192,9 +192,11 @@ def test_unfile_wrong_current_folder_rejected(folder: FolderHandler, store) -> N
 
 
 def test_cad_link_rejects_other_relations(store) -> None:
+    # cad's link surface is deliberately narrow: rel='parent' (placement)
+    # and rel='analyzed-by' (attached models, mig 0153) — nothing else.
     store.insert_ref(kind="cad", slug="gizmo", title="a gizmo", meta={})
     cad = CadHandler(hub=Hub(store=store))
-    with pytest.raises(BadInput, match="only rel='parent'"):
+    with pytest.raises(BadInput, match="rel='parent'.*analyzed-by"):
         cad.link(id="gizmo", target="cad:gizmo", rel="related-to")
 
 

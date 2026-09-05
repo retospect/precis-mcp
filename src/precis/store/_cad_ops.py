@@ -18,12 +18,24 @@ Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from precis.cad.scene import NodeSpec, SceneSpec, coerce_pattern
+from precis.cad.scene import NodeSpec, SceneSpec, coerce_pattern, spec_to_source
 from precis.cad.vec import as_float3
+
+
+def cad_source_sha(spec: SceneSpec) -> str:
+    """Content fingerprint of a design — sha256 of its canonical source.
+
+    The version anchor for attached analyses (`analyzed-by` links pin it
+    in ``links.meta``, ``cad_save`` records it in the ``ref_events`` row):
+    content-derived, so a no-op re-save does not change it and cannot
+    false-flag an analysis as stale.
+    """
+    return hashlib.sha256(spec_to_source(spec).encode("utf-8")).hexdigest()[:16]
 
 
 class CadMixin:
@@ -32,6 +44,7 @@ class CadMixin:
     insert_ref: Any
     get_ref: Any
     chunks: Any  # ChunkStore sub-store — the shared card_combined write
+    append_event: Any  # EventsMixin — the cad-saved version-anchor row
 
     def cad_save(
         self,
@@ -61,7 +74,8 @@ class CadMixin:
                     (ref.id,),
                 )
                 conn.execute(
-                    "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
+                    "UPDATE refs SET title = %s, meta = %s, updated_at = now() "
+                    "WHERE ref_id = %s",
                     (title, Jsonb(dict(spec.meta)), ref.id),
                 )
             n = 0
@@ -87,6 +101,17 @@ class CadMixin:
                 )
                 n += 1
             self.chunks._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
+            # Version anchor: one ref_events row per save carrying the
+            # content sha, so `analyzed-by` attachments (which pin the sha
+            # they analyzed into links.meta) can be compared for staleness
+            # in SQL — and exports gain the same audit trail.
+            self.append_event(
+                ref.id,
+                source="cad",
+                event="saved",
+                payload={"sha": cad_source_sha(spec), "n_nodes": n},
+                conn=conn,
+            )
         return ref, created, n
 
     # -- read ------------------------------------------------------------

@@ -72,6 +72,22 @@ flagged **extrapolative before any result exists**, suggesting DFT.
 Mech mirror: a beam model reused to justify local stress at a fastener hole
 is the same failure — scope on the model class, not only the run.
 
+## v1 — SHIPPED 2026-09-05 (this worktree)
+
+The staleness spine is in: `cad_save` records a content sha per save
+(`ref_events` source=cad event=saved; `updated_at` bump fixed in passing);
+`link(kind='cad', rel='analyzed-by', target='finding:N')` writes the
+`analyzed-by` edge (migration 0153) pinning `{sha, at}` in `links.meta`
+(`merge_meta` — re-attach refreshes); `view='links'` flags stale
+attachments; the `analysis-stale` condition probe rides the hourly
+alert→gripe lane with per-instance auto-close. **Design deviation from
+the notes below:** the anchor is a content sha in `ref_events`, NOT a
+`meta.rev` — for cad refs `refs.meta` IS the spec meta, a rev key would
+leak into the spec round-trip; and content-addressing makes no-op
+re-saves free. Remaining in this item: finding-side `scope=` conventions
+(which keys, lint), export staleness (record the sha on export events),
+the MLP/engine model-level registry, engine job_types.
+
 ## v1 implementation notes (survey 2026-09-05, verified against the tree)
 
 - **Version anchor first — cad_save records nothing today.** No rev

@@ -122,7 +122,10 @@ class CadHandler(Handler):
             "analytically (view='ray|point|arc|section|clearance|connectivity|"
             "dof|volume', args={...}; connectivity: what touches what, path "
             "a→b, is-it-one-solid; view='sweep': motion interference across "
-            "joint travel); search over names; delete soft-retires. Postgres-"
+            "joint travel); search over names; delete soft-retires; link "
+            "rel='analyzed-by' target='finding:N' attaches an analysis "
+            "result, pinning the design version (stale analyses are "
+            "flagged). Postgres-"
             "canonical, no meshing in the design loop. See precis-cad-help."
         ),
         supports_get=True,
@@ -199,26 +202,104 @@ class CadHandler(Handler):
         rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Folder placement via the reserved virtual ``rel='parent'``.
+        """Folder placement (``rel='parent'``) or an analysis attachment
+        (``rel='analyzed-by'``, target a ``finding``/``estimate``).
 
-        CAD designs have no stored-link surface (yet) — the only
-        accepted relation is ``parent``, a ``refs.parent_id`` write
-        into a ``kind='folder'`` container.
+        The attachment pins the design version it analyzed — the content
+        sha of the current source — into ``links.meta`` (attached-models
+        layer). When the design later changes, the ``analysis-stale``
+        condition probe flags the drift and ``view='links'`` warns.
         """
         from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 
         if rel == RESERVED_PARENT_REL:
             ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
             return place_ref(self.store, kind="cad", ref=ref, target=target, mode=mode)
+        if rel == "analyzed-by":
+            return self._link_analysis(id=id, target=target, mode=mode)
         raise BadInput(
-            "cad link supports only rel='parent' (folder placement)",
+            "cad link supports rel='parent' (folder placement) or "
+            "rel='analyzed-by' (attach an analysis result)",
             next=(
                 "link(kind='cad', id='<slug>', target='folder:N', "
-                "rel='parent') places; mode='remove' unfiles"
+                "rel='parent') places; link(kind='cad', id='<slug>', "
+                "target='finding:<id>', rel='analyzed-by') attaches an "
+                "analysis (pins the design version); mode='remove' detaches"
             ),
         )
 
     # ── put ──────────────────────────────────────────────────────────
+    def _link_analysis(
+        self, *, id: str | int, target: str | None, mode: str
+    ) -> Response:
+        """Attach/detach an analysis result (``rel='analyzed-by'``).
+
+        On attach, the design's *current* content sha is pinned into
+        ``links.meta`` — that pin, versus the sha `cad_save` records on
+        every save, is the whole staleness mechanism.
+        """
+        from datetime import UTC, datetime
+
+        from precis.handlers._link_tag_ops import (
+            require_link_target,
+            validate_link_mode,
+        )
+        from precis.handlers._link_target import parse_link_target
+        from precis.store._cad_ops import cad_source_sha
+
+        mode = validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
+        tgt = parse_link_target(require_link_target("cad", target), store=self.store)
+        if tgt.kind not in ("finding", "estimate"):
+            raise BadInput(
+                f"rel='analyzed-by' target must be a finding or estimate, "
+                f"got kind={tgt.kind!r}",
+                next="link(kind='cad', id='<slug>', target='finding:<id>', "
+                "rel='analyzed-by')",
+            )
+        if mode == "remove":
+            n = self.store.remove_link(
+                src_ref_id=ref.id, dst_ref_id=tgt.ref_id, relation="analyzed-by"
+            )
+            return Response(body=f"detached {n} analyzed-by link(s)")
+        spec, _handles = self.store.cad_load(ref.id)
+        sha = cad_source_sha(spec)
+        self.store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=tgt.ref_id,
+            relation="analyzed-by",
+            meta={"sha": sha, "at": datetime.now(UTC).isoformat(timespec="seconds")},
+            merge_meta=True,
+        )
+        return Response(
+            body=(
+                f"analyzed-by: {ref.slug} → {tgt.raw} (pinned design version "
+                f"{sha}; a later design change flags this analysis stale)"
+            )
+        )
+
+    def _stale_analyses(self, ref: Any) -> list[str]:
+        """The attached analyses whose pinned sha no longer matches the
+        design — never render an attached number without its flag."""
+        from precis.store._cad_ops import cad_source_sha
+
+        try:
+            links = self.store.links_for(
+                ref.id, direction="out", relation="analyzed-by"
+            )
+            if not links:
+                return []
+            spec, _h = self.store.cad_load(ref.id)
+            current = cad_source_sha(spec)
+        except Exception:  # pragma: no cover - the flag is best-effort
+            return []
+        return [
+            f"fi{lk.dst_ref_id} (analyzed {lk.meta.get('at', '?')}, "
+            f"design has changed since)"
+            for lk in links
+            if (lk.meta or {}).get("sha") and lk.meta["sha"] != current
+        ]
+
     def put(
         self,
         *,
@@ -412,7 +493,15 @@ class CadHandler(Handler):
             # every Handler-direct kind alongside the paper fix.
             from precis.handlers._links_render import render_links_view
 
-            return render_links_view(self.store, ref, sense="cad")
+            resp = render_links_view(self.store, ref, sense="cad")
+            stale = self._stale_analyses(ref)
+            if stale:
+                resp = Response(
+                    body=resp.body
+                    + "\n⚠ STALE analyses (re-run or detach): "
+                    + "; ".join(stale)
+                )
+            return resp
         if view not in _PROBE_VIEWS:
             raise BadInput(
                 f"unknown cad view {view!r}",

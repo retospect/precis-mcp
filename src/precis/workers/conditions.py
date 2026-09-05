@@ -517,7 +517,55 @@ def _probe_settings_env_shadowed(store: Store) -> list[ConditionFinding]:
     return out
 
 
+_ANALYSIS_STALE_SQL = """
+SELECT COALESCE((SELECT id_value FROM ref_identifiers
+                  WHERE ref_id = src.ref_id AND id_kind = 'cite_key'
+                  ORDER BY created_at DESC LIMIT 1),
+                src.ref_id::text) AS slug,
+       src.title, l.dst_ref_id,
+       l.meta->>'sha' AS pinned, l.meta->>'at' AS pinned_at, e.sha AS current
+  FROM links l
+  JOIN refs src ON src.ref_id = l.src_ref_id AND src.retired_at IS NULL
+  JOIN refs dst ON dst.ref_id = l.dst_ref_id AND dst.retired_at IS NULL
+  JOIN LATERAL (
+      SELECT payload->>'sha' AS sha
+        FROM ref_events
+       WHERE ref_id = l.src_ref_id AND source = 'cad' AND event = 'saved'
+       ORDER BY event_id DESC
+       LIMIT 1
+  ) e ON TRUE
+ WHERE l.relation = 'analyzed-by'
+   AND COALESCE(l.meta->>'sha', '') <> ''
+   AND e.sha IS DISTINCT FROM l.meta->>'sha'
+ ORDER BY slug, l.dst_ref_id
+"""
+
+
+def _probe_analysis_stale(store: Store) -> list[ConditionFinding]:
+    """Attached-models staleness (attached-models-layer.md): an
+    ``analyzed-by`` link pins the content sha of the design version the
+    analysis ran against; ``cad_save`` records the current sha in a
+    ``ref_events`` row. A mismatch means the design changed under the
+    analysis — the number is stale and must be flagged loudly (a
+    declared-but-drifted result is worse than none). Auto-closes when the
+    analysis is re-attached (fresh pin) or either side is retired."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(_ANALYSIS_STALE_SQL).fetchall()
+    return [
+        ConditionFinding(
+            key=f"analysis-stale:{slug}/fi{dst_id}",
+            detail=(
+                f"analysis fi{dst_id} of cad {slug!r} ({title}) predates the "
+                f"current design (pinned {pinned} at {pinned_at}, design now "
+                f"{current}) — re-run the analysis and re-attach, or detach it"
+            ),
+        )
+        for slug, title, dst_id, pinned, pinned_at, current in rows
+    ]
+
+
 CONDITIONS: tuple[Condition, ...] = (
+    Condition("analysis-stale", "warn", _probe_analysis_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),
     Condition("pass-wedged", "warn", _probe_pass_wedged),
