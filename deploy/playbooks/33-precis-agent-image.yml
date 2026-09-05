@@ -427,9 +427,12 @@
             chdir: "{{ _agent_build_dir }}"
           environment: "{{ _agent_docker_env }}"
           # async watchdog (2026-09-05 wedge): a build that hangs on a dead
-          # socket never exits, so retries/until never fire — kill it after
-          # 30 min and let the retry ladder take over.
-          async: 1800
+          # socket never exits, so retries/until never fire — kill it and let
+          # the retry ladder take over. 3600s, not 1800: a legit cold build
+          # measured 43 min on melchior (2026-09-05), and a killed-but-alive
+          # buildx keeps building behind ansible's back, so a too-tight
+          # watchdog reports failure on a build that then succeeds.
+          async: 3600
           poll: 15
           register: agent_build
           # retries=3/delay=30 (was 2/10, gr307314): back-to-back retries hit
@@ -437,11 +440,15 @@
           # wider spacing gives a stale/expired record a chance to clear.
           retries: 3
           delay: 30
-          until: agent_build.rc == 0
+          # A timed-out/killed async result has no rc/stdout at all — bare
+          # `agent_build.rc` ERRORS the until-expression and aborts the task
+          # instead of retrying (defeating the ladder this watchdog exists
+          # for). default() every field so timeout counts as a failed attempt.
+          until: (agent_build.rc | default(1)) == 0
           changed_when: >-
-            'Successfully' in (agent_build.stdout + agent_build.stderr)
-            or 'naming to' in (agent_build.stdout + agent_build.stderr)
-          failed_when: agent_build.rc != 0
+            'Successfully' in ((agent_build.stdout | default('')) + (agent_build.stderr | default('')))
+            or 'naming to' in ((agent_build.stdout | default('')) + (agent_build.stderr | default('')))
+          failed_when: (agent_build.rc | default(1)) != 0
 
         - name: Clean up old precis-agent build dirs (gr302869 pt.2 — keep only the current sha)
           ansible.builtin.shell: |
