@@ -167,6 +167,26 @@ def test_gate_addressed_replies_and_engages_thread(monkeypatch):
     assert len(client.posted) == 2
 
 
+def test_gate_dm_always_replies(monkeypatch):
+    import asyncio
+
+    # A D-prefixed channel id alone marks a DM (no channel_type in the
+    # event), and an im channel_type alone does too — each signal must
+    # suffice by itself.
+    instance, _captures = _make_bot(monkeypatch)
+    client = _FakeClient()
+    asyncio.run(
+        instance._handle_message(_event("anything at all", channel="D0DMCHAN"), client)
+    )
+    assert len(client.posted) == 1
+    instance2, _captures2 = _make_bot(monkeypatch)
+    client2 = _FakeClient()
+    asyncio.run(
+        instance2._handle_message(_event("anything at all", channel_type="im"), client2)
+    )
+    assert len(client2.posted) == 1
+
+
 def test_gate_off_restores_reply_to_everything(monkeypatch):
     import asyncio
     import dataclasses
