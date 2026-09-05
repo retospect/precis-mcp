@@ -214,6 +214,10 @@ def test_active_routing_ctx_reflects_an_operator_chain(monkeypatch) -> None:
         "chain_override",
         lambda tier: small_chain if tier is Tier.SMALL else None,
     )
+    # The cloud rung is openai_compat — needs a real base url or
+    # resolve_chain's PRECIS_LLM_BASE_URL guard (gr259631) degrades the
+    # whole chain back to the compiled default instead of honoring it.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     rows = {r["tier"]: r for r in _active_routing_ctx(_FakeStore([]))["active_routing"]}
     small = rows["small"]
     assert small["source"] == "operator chain"

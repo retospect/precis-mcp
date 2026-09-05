@@ -64,7 +64,7 @@
     <span class="font-mono">batch {{ b.id }} ({{ b.created_at.strftime('%Y-%m-%d') }})</span>{{ ", " if not loop.last }}
     {% endfor %}
     — calendar may have lost the commitment; re-stamp via
-    <code>precis nanopub anchor --live</code>.
+    <code>precis nanopub re-stamp &lt;batch id&gt;</code>.
   </div>
   {% endif %}
 

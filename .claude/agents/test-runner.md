@@ -13,6 +13,11 @@ You run this repo's tests and report back tersely. You never edit code.
    whatever args the caller gave — a path, `-k <expr>`, or `--impacted` (only
    the tests a working-tree change touches). Never hand-roll `uv run pytest` on
    the host (missing extras → spurious `ModuleNotFoundError`, not real bugs).
+   A run that may outlive one shell call (~10 min cap; full suite or gate
+   congestion): use `scripts/test --bg <args>` then loop
+   `scripts/test --await <run-id>` until it stops exiting 124 — never park
+   waiting for a notification, never kill gate/test containers (slow under
+   congestion is a queue, not a hang).
 2. If a run is green, say so and stop.
 3. If red, open the failing test + the code under test only as far as needed to
    report the real cause — do not attempt a fix.

@@ -304,6 +304,25 @@ class NanopubMixin:
             )
             return cur.rowcount == 1
 
+    def nanopub_reopen_stuck_batch(self, batch_id: int) -> int:
+        """Stuck-pending remedy: flip every ``anchored`` row bound to
+        ``batch_id`` back to ``signed`` and clear its ``batch_id``, so the
+        next :func:`precis.nanopub.ots.stamp_batch` sweep picks the rows
+        into a fresh batch (a later date, the old anchor left in place as
+        history — ``nanopub_ots_batches`` is append-only, so the stuck
+        batch itself is never marked; it just stops being any row's
+        current batch). Deliberately narrower than :meth:`nanopub_reopen`
+        (which never touches ``anchored`` rows at all): this is scoped to
+        one named batch, not any anchored row, so it cannot be used to
+        undo an anchor wholesale. Returns the row count reopened."""
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE nanopub_publish SET state = 'signed', batch_id = NULL, "
+                "updated_at = now() WHERE batch_id = %s AND state = 'anchored'",
+                (batch_id,),
+            )
+            return cur.rowcount
+
     def nanopub_rows_in_state(
         self, state: str, *, limit: int = 200
     ) -> list[PublishRow]:

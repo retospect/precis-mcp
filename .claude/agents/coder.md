@@ -33,11 +33,17 @@ guess. Those decisions belong on Opus.
    density. Read the file's neighbors, don't invent a new style.
 3. **Verify it.** Run `scripts/test --impacted` (the tightest loop) or the
    subset the caller named. Iterate until green. Never report done on red.
-   Run test/lint commands in the **foreground** (blocking), never as
-   background tasks — you stop executing the moment you idle, so a
-   "wait for the notification" plan strands the whole job mid-verification
-   and the caller has to resume you by hand. Slow under gate congestion is
-   fine; parked is not.
+   Your harness hard-kills any single shell call at ~10 min, and a killed
+   test run restarts from the back of the shared gate queue — so a long run
+   (full suite, first `--impacted` map build, gate congestion) can never fit
+   one foreground call. For those, use the two-call protocol, NOT the
+   harness's background-task machinery: `scripts/test --bg <args>` once,
+   then `scripts/test --await <run-id>` repeatedly — each await blocks ≤8
+   min and exits 124 while the run is still going; just run it again until
+   it returns the run's real exit code. One run at a time. NEVER end your
+   turn "waiting for a notification" while a run is unfinished — you stop
+   executing the moment you idle, stranding the job mid-verification. Never
+   kill gate/test containers: slow under congestion is a queue, not a hang.
 4. Respect the repo's conventions that bite: forward-only migrations, `uv` for
    everything, `safe_fetch` for outbound HTTP, append-only body chunks, container
    tests via `scripts/test`. When unsure whether a convention applies, check

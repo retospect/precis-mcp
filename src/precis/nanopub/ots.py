@@ -259,8 +259,8 @@ def upgrade_sweep(
                 batch.id,
                 f"proof still pending after {age.days}d (threshold "
                 f"{STUCK_PENDING_DAYS}d) — calendar lost the commitment? "
-                "Re-stamp the batch (raw bytes are retained; the re-stamp "
-                "carries a later date)",
+                f"Re-stamp: `precis nanopub re-stamp {batch.id}` (raw bytes "
+                "are retained; the re-stamp carries a later date)",
             )
     return upgraded
 

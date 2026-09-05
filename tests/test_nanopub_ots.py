@@ -122,6 +122,57 @@ def test_audit_flags_index_drift_and_alerts(store: Any) -> None:
     )
 
 
+def test_reopen_stuck_batch_only_touches_its_own_rows(
+    store: Any, monkeypatch: Any
+) -> None:
+    """The stuck-pending alert names a re-stamp remedy (gr316504): without
+    a dedicated reopen, ``anchored`` rows had no path back to ``signed``
+    and the advertised fix was a dead end. This exercises the round trip
+    the alert promises: reopen flips exactly the named batch's rows,
+    leaves other anchored rows alone, and the freed rows are picked up by
+    the next ``stamp_batch`` sweep."""
+    row_a = _signed_hub(store, monkeypatch, "DFT finds the stuck-batch claim one holds.")
+    row_b = _signed_hub(store, monkeypatch, "DFT finds the stuck-batch claim two holds.")
+    stuck_batch = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
+    assert stuck_batch is not None
+
+    # A second batch, anchored separately — must stay untouched.
+    row_c = _signed_hub(store, monkeypatch, "DFT finds the other-batch claim holds.")
+    other_batch = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
+    assert other_batch is not None
+    assert other_batch != stuck_batch
+
+    n = store.nanopub_reopen_stuck_batch(stuck_batch)
+    assert n == 2
+
+    for row in (row_a, row_b):
+        refreshed = store.nanopub_publish_row_by_id(row.id)
+        assert refreshed.state == "signed"
+        assert refreshed.batch_id is None
+
+    # The other batch's row is untouched.
+    refreshed_c = store.nanopub_publish_row_by_id(row_c.id)
+    assert refreshed_c.state == "anchored"
+    assert refreshed_c.batch_id == other_batch
+
+    # Re-running on an already-reopened batch is a no-op (nothing left in
+    # 'anchored' bound to it).
+    assert store.nanopub_reopen_stuck_batch(stuck_batch) == 0
+
+    # The freed rows are picked back up into a fresh, later batch.
+    fresh_batch = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
+    assert fresh_batch is not None
+    assert fresh_batch not in (stuck_batch, other_batch)
+    for row in (row_a, row_b):
+        refreshed = store.nanopub_publish_row_by_id(row.id)
+        assert refreshed.state == "anchored"
+        assert refreshed.batch_id == fresh_batch
+
+    # The old (stuck) batch's proof row is untouched — history, not deleted.
+    old_state, _proof = store.nanopub_latest_proof(stuck_batch)
+    assert old_state == "pending"
+
+
 def test_sweep_pass_runs_audit_even_when_dark(store: Any, monkeypatch: Any) -> None:
     monkeypatch.delenv("PRECIS_OTS_ENABLED", raising=False)
     row = _signed_hub(store, monkeypatch, "DFT finds the dark-mode hub claim holds.")

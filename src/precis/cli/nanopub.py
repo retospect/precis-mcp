@@ -23,6 +23,11 @@ Subcommands:
   introduction nanopub (``--live`` to POST; then add its trusty URI to
   the ORCID record out-of-band — that back-link is the actual binding).
 * ``reopen FI``         — flip a pre-anchor row back to candidate.
+* ``re-stamp BATCH_ID`` — the stuck-pending remedy: flip a named batch's
+  ``anchored`` rows back to ``signed`` (batch id cleared) so the next
+  ``anchor --live`` sweep picks them into a fresh batch. The old batch's
+  proof stays as history (the proof store is append-only); this is
+  scoped to one batch, never a general anchored→signed reopen.
 * ``view FI``           — the TriG rendering (same as
   ``get(kind='finding', view='nanopub')``).
 * ``anchor --live``     — one manual OTS sweep (stamp + upgrade);
@@ -108,6 +113,12 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
     p_reopen = s.add_parser("reopen", help="Flip a pre-anchor row back to candidate.")
     p_reopen.add_argument("hub")
+
+    p_restamp = s.add_parser(
+        "re-stamp",
+        help="Stuck-pending remedy: flip a named batch's rows back to signed.",
+    )
+    p_restamp.add_argument("batch_id", type=int)
 
     p_view = s.add_parser("view", help="TriG rendering (draft or signed bytes).")
     p_view.add_argument("hub")
@@ -248,6 +259,8 @@ def run(args: argparse.Namespace) -> None:
             _sign(args, store)
         elif cmd == "reopen":
             _reopen(args, store)
+        elif cmd == "re-stamp":
+            _restamp(args, store)
         elif cmd == "view":
             _view(args, store)
         elif cmd == "anchor":
@@ -389,6 +402,19 @@ def _reopen(args: argparse.Namespace, store) -> None:
         print(f"reopened publish row {row.id} → candidate")
     else:
         print(f"row {row.id} is {row.state!r} — only reviewed/signed reopen")
+        sys.exit(1)
+
+
+def _restamp(args: argparse.Namespace, store) -> None:
+    n = store.nanopub_reopen_stuck_batch(args.batch_id)
+    if n:
+        print(
+            f"reopened {n} row(s) from batch {args.batch_id}: anchored → "
+            "signed (batch id cleared) — run `precis nanopub anchor --live` "
+            "to stamp them into a fresh batch"
+        )
+    else:
+        print(f"no anchored rows on batch {args.batch_id} — nothing to reopen")
         sys.exit(1)
 
 
