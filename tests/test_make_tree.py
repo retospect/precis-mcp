@@ -137,3 +137,44 @@ def test_delete_step_and_tree(make):
     assert f"retired {mk1}" in make.delete(id=mk1).body
     assert "0 step" in make.get(id="mt-del").body
     assert "retired make tree" in make.delete(id="mt-del").body
+
+
+_PIP_LEAF = """
+component knuckle
+lug add box:w8d6h12 @4,0,0
+port leaf @0,0,6 rot:0,90,0 type:pip-hinge of:knuckle
+"""
+
+_PIP_TRAY = """
+component tray
+wall add box:w60d40h4
+port hp @30,0,2 rot:0,90,0 type:pip-hinge of:tray
+use pip_leaf as h
+joint h.leaf to hp revolute limits:0..170
+"""
+
+
+def test_pip_joint_across_different_print_steps_is_flagged(make, cad):
+    # a pip- typed interface is a captive printed joint: both hosts must
+    # come out of the SAME print step (cad-print-in-place.md).
+    cad.put(id="pip_leaf", text=_PIP_LEAF)
+    cad.put(id="pip_tray", text=_PIP_TRAY)
+    make.put(id="print-plan", title="print jobs")
+    (s1,) = _step_handles(make.put(id="print-plan", text="print the tray").body)
+    (s2,) = _step_handles(
+        make.put(id="print-plan", text="print the hinge leaf", at={"last": True}).body
+    )
+
+    # no alignment info yet → the lint stays silent (can't know)
+    assert "print-in-place" not in cad.get(id="pip_tray", view="links").body
+
+    # hosts in DIFFERENT print steps → loud
+    cad.link(id="pip_tray", target=s1, rel="made-by")
+    cad.link(id="pip_leaf", target=s2, rel="made-by")
+    body = cad.get(id="pip_tray", view="links").body
+    assert "print-in-place" in body and "SAME print" in body
+
+    # move the leaf into the tray's print step → quiet again
+    cad.link(id="pip_leaf", target=s2, rel="made-by", mode="remove")
+    cad.link(id="pip_leaf", target=s1, rel="made-by")
+    assert "print-in-place" not in cad.get(id="pip_tray", view="links").body

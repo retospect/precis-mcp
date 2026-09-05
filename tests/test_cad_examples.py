@@ -353,3 +353,59 @@ def test_state_only_addresses_the_top_designs_joints():
 def test_state_on_a_jointless_design_is_refused():
     with pytest.raises(SceneError, match="joints: none"):
         _build(_GIMBAL_RIG, _GIMBAL_LIB, state={"head": 10})
+
+
+# ── 8. Print-in-place hinge — payloads + joint + dims in one module ──
+#
+# A printed hinge: the module's own pin reaches into the host; the bore
+# (pin radius + FDM clearance) is a `cut` payload carved out of the host
+# around it. Printed together, the pin is captive in the bore with real
+# air between them. The clearance floor is a named dim (`>= 0.3` for
+# FDM), so an undersized printed joint is refused at parse — not
+# discovered on the build plate.
+
+_PIP_HINGE = """
+desc: print-in-place hinge, FDM clearances
+dim pin_r = 2
+dim clearance >= 0.3
+component knuckle
+lug add box:w8d6h12 @4,0,0
+pin add cyl:r2h10 @0,0,6 rot:0,-90,0
+port leaf @0,0,6 rot:0,90,0 type:pip-hinge of:knuckle
+payload bore cut cyl:r2.3h12 at:leaf @0,0,-12
+"""
+
+_PIP_LID = """
+component tray
+wall add box:w60d40h4
+port hp @30,0,2 rot:0,90,0 type:pip-hinge of:tray
+use pip_hinge as h
+joint h.leaf to hp revolute limits:0..170
+"""
+
+
+def test_pip_hinge_pin_is_captive_with_real_clearance():
+    d = _build(_PIP_LID, {"pip_hinge": _PIP_HINGE})
+    # the bore is carved out of the tray along the hinge axis...
+    assert not d.classify_point(vec3(25, 0, 2), component="tray").inside
+    # ...the module's pin runs inside it...
+    assert d.classify_point(vec3(25, 0, 2), component="h.knuckle").inside
+    # ...with real air in the clearance annulus (r2 pin, r2.3 bore):
+    gap = vec3(25, 2.15, 2)
+    assert not d.classify_point(gap, component="tray").inside
+    assert not d.classify_point(gap, component="h.knuckle").inside
+    # and the tray wall away from the bore is untouched
+    assert d.classify_point(vec3(25, 3, 3.5), component="tray").inside
+
+
+def test_pip_clearance_floor_is_enforced_by_dims():
+    # an undersized clearance contradicts the process floor → refused
+    import pytest as _pytest
+
+    from precis.cad.scene import SceneError
+
+    with _pytest.raises(SceneError, match="empty combined range"):
+        parse_source(
+            "plate add box:w10d10h2\n"
+            "dim clearance >= 0.3\ndim gap = 0.1\nconstrain clearance = gap"
+        )

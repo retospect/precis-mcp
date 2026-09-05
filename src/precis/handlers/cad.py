@@ -380,6 +380,81 @@ class CadHandler(Handler):
         except Exception:  # pragma: no cover - lint is best-effort
             return ""
 
+    def _pip_print_check(self, ref: Any, spec: Any) -> str:
+        """Print-in-place honesty (cad-print-in-place.md): a mate across a
+        ``pip-``-typed port is a captive printed joint — its two hosts must
+        come out of the SAME print. When both sides' designs are aligned to
+        make steps and the steps differ, the joint cannot exist; say so."""
+        try:
+            mates = mates_of(spec)
+        except SceneError:  # pragma: no cover - malformed stored meta
+            return ""
+        if not mates:
+            return ""
+
+        own_types = {pt.name: pt.type for pt in ports_of(spec)}
+        sub_types: dict[str, dict[str, str]] = {}
+        inst_slug = {
+            n.name: instance_slug(n.config)
+            for n in spec.nodes
+            if instance_slug(n.config) is not None
+        }
+
+        def port_type(inst: str | None, port: str) -> str:
+            if inst is None:
+                return own_types.get(port, "")
+            if inst not in sub_types:
+                slug = inst_slug.get(inst) or ""
+                try:
+                    sub_types[inst] = {
+                        pt.name: pt.type for pt in ports_of(self._resolve(slug))
+                    }
+                except Exception:
+                    sub_types[inst] = {}
+            return sub_types[inst].get(port, "")
+
+        def print_step(side_ref_id: int) -> tuple[int, int] | None:
+            for lk in self.store.links_for(
+                side_ref_id, direction="out", relation="made-by"
+            ):
+                if lk.dst_chunk_id is not None:
+                    return (lk.dst_ref_id, lk.dst_chunk_id)
+            return None
+
+        def side_ref_id(inst: str | None) -> int | None:
+            if inst is None:
+                return ref.id
+            slug = inst_slug.get(inst)
+            if not slug:
+                return None
+            r = self.store.get_ref(kind="cad", id=slug)
+            return r.id if r is not None else None
+
+        warns: list[str] = []
+        try:
+            for mate in mates:
+                t = port_type(mate.instance, mate.port) or port_type(
+                    mate.anchor_instance, mate.anchor_port
+                )
+                if not t.startswith("pip-"):
+                    continue
+                a = side_ref_id(mate.instance)
+                b = side_ref_id(mate.anchor_instance)
+                if a is None or b is None:
+                    continue
+                sa, sb = print_step(a), print_step(b)
+                if sa is not None and sb is not None and sa != sb:
+                    warns.append(
+                        f"{mate.subject} ↔ {mate.anchor} ({t}) — hosts are "
+                        "made in different print steps; a captive printed "
+                        "joint needs both sides in the SAME print"
+                    )
+        except Exception:  # pragma: no cover - lint is best-effort
+            return ""
+        if not warns:
+            return ""
+        return "\n⚠ print-in-place: " + "; ".join(warns)
+
     def _stale_analyses(self, ref: Any) -> list[str]:
         """The attached analyses whose pinned sha no longer matches the
         design — never render an attached number without its flag."""
@@ -595,7 +670,7 @@ class CadHandler(Handler):
             from precis.handlers._links_render import render_links_view
 
             resp = render_links_view(self.store, ref, sense="cad")
-            extra = self._make_coverage(ref)
+            extra = self._make_coverage(ref) + self._pip_print_check(ref, spec)
             stale = self._stale_analyses(ref)
             if stale:
                 extra += "\n⚠ STALE analyses (re-run or detach): " + "; ".join(stale)
