@@ -516,8 +516,11 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
 #: docs/backlog/draft-inline-editor.md). Prose kinds + the verbatim-text kinds
 #: (code / listing — you edit their source). Math is not a kind: display math
 #: is a `paragraph` carrying `$$…$$`, edited like any other paragraph. Excludes
-#: figure (bytes), table (derived from meta.table, in DERIVED_KINDS), and the
-#: ulist/olist containers, which keep their own affordances.
+#: figure and table — both in ``draft_regex.NON_PROSE_KINDS`` (a figure's
+#: caption IS hand-editable prose, just via the dedicated caption-form
+#: affordance, not this contenteditable path; a table's markdown is
+#: regenerated from ``meta.table``) — and the ulist/olist containers, which
+#: keep their own affordances.
 #: NB: keep the client editable-kinds set (smartdraft/view.html.j2) in sync
 #: with this.
 _EDITABLE_KINDS = frozenset(

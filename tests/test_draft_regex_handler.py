@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 
 import pytest
@@ -12,6 +13,14 @@ from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
+
+# A real 1×1 PNG — same fixture bytes as tests/test_draft_figures.py.
+_PNG_B64 = base64.b64encode(
+    base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+        "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+).decode()
 
 
 def _proj(hub: Hub, text: str = "Project root") -> int:
@@ -241,3 +250,56 @@ def test_sub_skips_table_chunk(draft: DraftHandler, seeded: dict[str, str]) -> N
     )
     # the two prose chunks change; the table is reported as skipped
     assert "skipped" in out.body
+    assert "table" in out.body
+
+
+def test_sub_rewrites_figure_caption_but_skips_table(
+    draft: DraftHandler, seeded: dict[str, str], hub: Hub
+) -> None:
+    """gr240050: a figure's ``text`` IS its hand-authored caption (not
+    machine-derived like a table's markdown), so a draft-wide sub= sweep
+    must reach it — routed through the same in-place ``edit_text`` op as any
+    other prose chunk, so it logs a ``chunk_events`` row too. The table stays
+    skipped, and the skip note is table-only (no more "table/figure")."""
+    fig = draft.put(
+        id=seeded["slug"],
+        chunk_kind="figure",
+        text="A bold figure caption.",
+        image=_PNG_B64,
+        origin="original",
+        at={"last": True},
+    )
+    fig_dc = _h(fig.body)
+    draft.put(
+        id=seeded["slug"],
+        chunk_kind="table",
+        table={"header": ["k", "v"], "rows": [["bold", "1"]]},
+        caption="bold caption",
+        at={"last": True},
+    )
+    fig_chunk_id = int(fig_dc[2:])
+    with hub.live_store.pool.connection() as conn:
+        before = conn.execute(
+            "SELECT count(*) FROM chunk_events "
+            "WHERE chunk_id = %s AND event_kind = 'edited'",
+            (fig_chunk_id,),
+        ).fetchone()[0]
+
+    out = draft.edit(
+        id=seeded["slug"], sub={"find": "bold", "replace": "BOLD"}, apply=True
+    )
+    fig_chunk = hub.live_store.drafts.get_draft_chunk(fig_dc)
+    assert fig_chunk is not None
+    assert fig_chunk.text == "A BOLD figure caption."
+    # skip note names only the table, not "table/figure"
+    assert "skipped" in out.body
+    assert "table" in out.body
+    assert "table/figure" not in out.body
+
+    with hub.live_store.pool.connection() as conn:
+        after = conn.execute(
+            "SELECT count(*) FROM chunk_events "
+            "WHERE chunk_id = %s AND event_kind = 'edited'",
+            (fig_chunk_id,),
+        ).fetchone()[0]
+    assert after == before + 1

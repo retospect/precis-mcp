@@ -795,7 +795,9 @@ class DraftHandler(Handler):
         diagnosed the MCP wedge as this path before reading it).
 
         Replacement is a Python regex template, so ``\\1`` backreferences
-        resolve. Table/figure chunks are skipped (derived / blob text)."""
+        resolve. Table chunks are skipped (markdown regenerated from
+        ``meta.table``); figure chunks ARE substituted — their ``text`` is
+        the hand-authored caption (gr240050)."""
         find, replace, flags = self._parse_sub_expr(sub)
         rx = draft_regex.compile_pattern(find, flags)
         pairs, where = self._scope_chunks(scope, allow_all=False)
@@ -810,7 +812,7 @@ class DraftHandler(Handler):
         skipped: list[str] = []  # derived chunks a substitution would have hit
         for slug, c in pairs:
             old = c.text or ""
-            if c.chunk_kind in draft_regex.DERIVED_KINDS:
+            if c.chunk_kind in draft_regex.TEXT_DERIVED_KINDS:
                 if rx.search(old):
                     skipped.append(c.dc)
                 continue
@@ -823,7 +825,7 @@ class DraftHandler(Handler):
             note = ""
             if skipped:
                 note = (
-                    f"\n\n(skipped {len(skipped)} derived table/figure chunk(s) "
+                    f"\n\n(skipped {len(skipped)} derived table chunk(s) "
                     f"that match: {', '.join(skipped[:8])} — edit their data, not text)"
                 )
             return Response(
@@ -854,7 +856,8 @@ class DraftHandler(Handler):
         )
         if skipped:
             body += (
-                f"; skipped {len(skipped)} derived chunk(s) ({', '.join(skipped[:8])})"
+                f"; skipped {len(skipped)} derived table chunk(s) "
+                f"({', '.join(skipped[:8])})"
             )
         body += (
             "\n\nEach edited chunk re-embeds on the worker's next pass (not "
@@ -893,7 +896,7 @@ class DraftHandler(Handler):
             lines.append(f"… +{len(changes) - self._RX_PREVIEW_CHUNKS} more chunk(s)")
         if skipped:
             lines.append(
-                f"\nskipped {len(skipped)} derived table/figure chunk(s) that match: "
+                f"\nskipped {len(skipped)} derived table chunk(s) that match: "
                 f"{', '.join(skipped[:8])} (edit their data, not text)"
             )
         # The scope label echoes back as a copy-ready apply call.
@@ -1545,7 +1548,8 @@ class DraftHandler(Handler):
             # branch routes it to ``_edit_table``. Otherwise (a slug, a
             # subtree, or a non-table chunk) keep the original multi-chunk
             # substitute, which treats 'table' as a derived kind and skips it
-            # (draft_regex.DERIVED_KINDS).
+            # (draft_regex.TEXT_DERIVED_KINDS) — a 'figure' chunk's caption
+            # substitutes normally, same as any other prose chunk.
             _sub_target = None
             if id is not None and _is_draft_chunk_handle(str(id).strip()):
                 _sub_target = self.store.drafts.get_draft_chunk(str(id).strip())

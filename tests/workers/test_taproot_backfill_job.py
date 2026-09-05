@@ -15,6 +15,7 @@ monkeypatched module attribute is picked up each dispatch.
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -56,6 +57,14 @@ def _proj(hub: Hub) -> int:
 #: mostly-lowercase sentence. A two-word stub reads as title/author front
 #: matter and is refused as evidence grounding (gripe 245842).
 _PROSE = "The measured ribbons remain semiconducting at room temperature."
+
+# A real 1×1 PNG — same fixture bytes as tests/test_draft_figures.py.
+_PNG_B64 = base64.b64encode(
+    base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+        "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+).decode()
 
 
 def _pc_of(store: Store, *, paper_title: str = "src paper") -> tuple[int, str]:
@@ -272,6 +281,70 @@ def test_dispatch_converts_pc_cites_and_lands_evidence(
     assert ctx.meta_set.get("converted", 0) >= 1
     assert _chunk_id(handles["para_a1"]) in ctx.meta_set.get("done_chunk_ids", [])
     assert _chunk_id(handles["para_b1"]) in ctx.meta_set.get("done_chunk_ids", [])
+
+
+def test_dispatch_converts_figure_caption_citation_and_skips_table(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr240050: a figure's ``text`` IS its hand-authored caption, which can
+    carry a ``[pc]``/``[pa]`` marker ('Reproduced from [pa2069]') — the
+    backfill must reach it same as any prose chunk. A table chunk (markdown
+    regenerated from ``meta.table``) is still skipped entirely — never
+    handed to ``apply_chunk`` at all."""
+    draft = DraftHandler(hub=hub)
+    _paper_a, pc1 = _pc_of(store, paper_title="paper A")
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_dc = hub.live_store.drafts.reading_order(ref.id)[0].dc
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="figure",
+        text=f"Reproduced from [{pc1}].",
+        image=_PNG_B64,
+        origin="original",
+        at={"after": title_dc},
+    )
+    fig_dc = _dc(r.body)
+    fig_chunk_id = _chunk_id(fig_dc)
+
+    draft.put(
+        id="nt",
+        chunk_kind="table",
+        table={"header": ["k", "v"], "rows": [["x", "1"]]},
+        caption="a table",
+        at={"after": fig_dc},
+    )
+    table_chunk_id = next(
+        c.chunk_id
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "table"
+    )
+
+    calls: list[int] = []
+    real_fake = _wrap_apply_chunk(lambda _cid: "A claim.")
+
+    def _recording_fake(
+        store: Any, embedder: Any, draft_handler: Any, chunk_id: int, **kw: Any
+    ) -> Any:
+        calls.append(chunk_id)
+        return real_fake(store, embedder, draft_handler, chunk_id, **kw)
+
+    monkeypatch.setattr("precis.taproot.backfill.apply_chunk", _recording_fake)
+
+    ctx = _FakeCtx(store=store, meta={"params": {"scope": "nt"}})
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    assert fig_chunk_id in calls  # the figure's caption WAS scanned/converted
+    assert table_chunk_id not in calls  # the table was never handed to apply_chunk
+
+    fig_chunk = store.drafts.get_draft_chunk(fig_dc)
+    assert fig_chunk is not None
+    assert "[fi" in fig_chunk.text, fig_chunk.text
+    assert f"[{pc1}]" not in fig_chunk.text
 
 
 def test_dispatch_isolates_one_chunk_failure(

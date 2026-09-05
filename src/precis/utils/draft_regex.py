@@ -29,13 +29,24 @@ from precis.errors import BadInput
 #: this is nowhere near a legitimate ceiling.
 MAX_PATTERN_LEN = 1000
 
-#: Chunk kinds whose ``text`` is **not** hand-editable prose, so a
-#: substitution must skip them: a ``table``'s markdown is *derived* from its
-#: canonical ``meta.table`` (editing the text is rejected), and
-#: a ``figure`` is an image blob whose ``text`` is only the caption — but the
-#: caption is provenance-bearing and edited through its own path. Find still
-#: reads them (read-only); substitute leaves them untouched and reports them.
-DERIVED_KINDS = frozenset({"table", "figure"})
+#: A ``table`` chunk's ``text`` is markdown machine-**regenerated** from its
+#: canonical ``meta.table`` on every data edit — never hand-edit it, or the
+#: next regen silently clobbers the hand edit. This is the narrow, "genuinely
+#: derived" meaning: a substitution/rewrite consumer must skip it. Find still
+#: reads it (read-only); substitute/backfill leave it untouched and report it
+#: as skipped. (gr240050 split this out of the old ``DERIVED_KINDS``, which
+#: wrongly lumped ``figure`` in here too — a figure's ``text`` is its caption,
+#: hand-authored prose that a rename sweep or a citation backfill must reach.)
+TEXT_DERIVED_KINDS = frozenset({"table"})
+
+#: The wider "not a running paragraph" meaning: ``TEXT_DERIVED_KINDS`` plus
+#: ``figure`` — an image blob whose ``text`` is the caption. A caption IS
+#: hand-editable, provenance-bearing prose (rewritten through the same
+#: ``edit_text`` in-place path as any other chunk), but it renders as a
+#: picture, not body prose, so a consumer distinguishing "structural /
+#: non-flowing" from "running paragraph" (e.g. an editor's plain
+#: contenteditable-text affordance) wants this wider set instead.
+NON_PROSE_KINDS = TEXT_DERIVED_KINDS | frozenset({"figure"})
 
 #: The ``flags`` letters we accept, vi/sed-style. ``m`` is a no-op (multiline
 #: is always on) but accepted so an author can write it without an error.

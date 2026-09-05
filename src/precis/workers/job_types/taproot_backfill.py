@@ -119,8 +119,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     n_ungrounded = 0
 
     for _slug, c in pairs:
-        if c.chunk_kind in draft_regex.DERIVED_KINDS:
-            continue  # table/figure: derived text, no citations
+        if c.chunk_kind in draft_regex.TEXT_DERIVED_KINDS:
+            continue  # table: markdown regenerated from meta.table, no citations
+        # figure: text IS the (hand-authored) caption, which can carry
+        # [pc]/[pa] markers (e.g. "Reproduced from [pa2069]") — run the
+        # cascade on it same as prose (gr240050).
         if c.chunk_id in done_set:
             continue  # checkpoint: already converted by a prior run
         n_scanned += 1
