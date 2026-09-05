@@ -32,6 +32,13 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+#: THE "current value" tie-break for an append-only
+#: ``component_spec_values`` history, in ONE place so the single-spec and
+#: batched readers below cannot drift apart. Unqualified on purpose —
+#: both queries touch exactly one table, so it composes with an aliased
+#: FROM as well as a bare one.
+_CURRENT_ORDER = "as_of DESC NULLS LAST, created_at DESC"
+
 _CATEGORY_COLS = "category_id, name, status, description"
 
 _SPEC_COLS = (
@@ -480,23 +487,49 @@ class ComponentMixin:
         self, ref_id: int, spec_id: str
     ) -> ComponentValueRow | None:
         """THE single "current value" authority for one (component, spec):
-        the most-recent row (``ORDER BY as_of DESC NULLS LAST, created_at
-        DESC LIMIT 1``), or ``None`` if none is recorded. A
-        ``component_spec_values`` row is append-only and a (component,
-        spec) may legitimately hold many values (``unit_cost`` explicitly
-        so — as_of + price-break conditions); both the BOM rollup and the
-        consistency-query annotation resolve to exactly one value per leaf
-        per spec through this one helper, so they never disagree."""
+        the most-recent row (:data:`_CURRENT_ORDER`), or ``None`` if none
+        is recorded. A ``component_spec_values`` row is append-only and a
+        (component, spec) may legitimately hold many values (``unit_cost``
+        explicitly so — as_of + price-break conditions); the BOM rollup,
+        the consistency-query annotation and the se catalog derivation all
+        resolve to exactly one value per leaf per spec through this rule,
+        so they never disagree."""
         cols = ", ".join(_VALUE_COLS.split(", "))
         with self.pool.connection() as conn:
             row = _fetchone(
                 conn,
                 f"SELECT {cols} FROM component_spec_values "
                 "WHERE component_ref_id = %s AND spec_id = %s "
-                "ORDER BY as_of DESC NULLS LAST, created_at DESC LIMIT 1",
+                f"ORDER BY {_CURRENT_ORDER} LIMIT 1",
                 (ref_id, spec_id),
             )
         return None if row is None else cast(ComponentValueRow, row)
+
+    def component_current_spec_values(
+        self, ref_id: int
+    ) -> dict[str, ComponentValueRow]:
+        """Every spec's *current* value for one component, in one query —
+        the batched form of :meth:`component_current_spec_value`, keyed by
+        ``spec_id``.
+
+        Exists because a caller that needs a dozen specs at once (the se
+        catalog→geometry derivation, which turns a bound component into an
+        envelope) would otherwise either issue a dozen round trips or —
+        far worse — hand-roll its own "latest row" query and silently
+        disagree with the authority above the first time a value carried
+        an ``as_of``. Both share :data:`_CURRENT_ORDER`; the DISTINCT ON
+        prefix must stay ``spec_id`` for that ordering to be legal."""
+        cols = ", ".join("v." + c.strip() for c in _VALUE_COLS.split(", "))
+        with self.pool.connection() as conn:
+            rows = _fetchall(
+                conn,
+                f"SELECT DISTINCT ON (v.spec_id) {cols} "
+                "FROM component_spec_values v "
+                "WHERE v.component_ref_id = %s "
+                f"ORDER BY v.spec_id, {_CURRENT_ORDER}",
+                (ref_id,),
+            )
+        return {str(r["spec_id"]): cast(ComponentValueRow, r) for r in rows}
 
     # -- search ----------------------------------------------------------
 

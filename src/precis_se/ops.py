@@ -208,6 +208,14 @@ class SeBlock:
     #: both ``None`` when the block's solid is still just its envelope.
     bound_kind: str | None = None
     bound: str | None = None
+    #: Catalog-**derived** envelope/ports for a `component` binding
+    #: (:mod:`precis_se.catalog`), filled at load time by
+    #: :func:`precis_se.persist.load_tree`. DERIVED, never stored: it is
+    #: recomputed from the component's spec rows on every read, the same
+    #: sketch-canonical / copper-derived rule the rest of the tree
+    #: follows, so ``save_tree`` must never write it back. A block that
+    #: authors its own envelope always wins over this.
+    derived: Any = None
 
 
 @dataclass
@@ -366,11 +374,21 @@ def effective_envelope(tree: SeTree, node: SeBlock) -> str | None:
     ``envelope`` field is always ``None``; see the template-metadata
     rejection in :func:`_instance_shared`). A dangling ``template``
     resolves to ``None`` rather than raising, so defense-in-depth callers
-    (render, validate) stay total functions."""
+    (render, validate) stay total functions.
+
+    Third source (rung 2b): a block bound to a `component` with no
+    envelope of its own falls back to the **catalog-derived** one
+    (:mod:`precis_se.catalog`) — a bought part's solid comes from its
+    spec row, not from something a designer drew. An authored envelope
+    always wins: overriding the catalog is a legitimate act (a part
+    modified after purchase), and silently preferring the catalog would
+    discard it."""
     if node.template is not None:
         template_node = tree.blocks.get(node.template)
         return template_node.envelope if template_node is not None else None
-    return node.envelope
+    if node.envelope is not None:
+        return node.envelope
+    return getattr(node.derived, "envelope", None)
 
 
 def effective_ports(tree: SeTree, node: SeBlock) -> dict[str, PortSpec]:
@@ -378,10 +396,21 @@ def effective_ports(tree: SeTree, node: SeBlock) -> dict[str, PortSpec]:
     ports, or — when ``node`` is an instance/array — its template's (an
     instance never owns ports itself; see ``add_port``'s rejection). A
     dangling ``template`` resolves to no ports rather than raising —
-    same total-function tolerance as :func:`effective_envelope`."""
+    same total-function tolerance as :func:`effective_envelope`.
+
+    Third source (rung 2b): a block bound to a `component` gets the
+    **catalog's** port templates when it declares none of its own —
+    without them ``connect`` cannot attach to a bought part at all. Own
+    ports still win, and they win *per name*, so a designer can rename or
+    re-role one port of a bought part without losing the rest."""
     if node.template is not None:
         template_node = tree.blocks.get(node.template)
         return template_node.ports if template_node is not None else {}
+    derived = getattr(node.derived, "ports", None)
+    if derived:
+        merged = dict(derived)
+        merged.update(node.ports)
+        return merged
     return node.ports
 
 

@@ -30,7 +30,9 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from precis_se import catalog
 from precis_se.bom import BomLine
+from precis_se.catalog import Derived
 from precis_se.measures import MeasureSpec
 from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree
 
@@ -156,7 +158,77 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 reason=b["reason"],
             )
         )
+    attach_catalog(store, tree)
     return tree
+
+
+def attach_catalog(store: Any, tree: SeTree) -> None:
+    """Fill every `component`-bound block's ``derived`` facets from the
+    catalog (:mod:`precis_se.catalog`) — rung 2b of
+    ``se-off-the-shelf-fabrication.md``.
+
+    Runs on **load**, so the derivation is recomputed from the
+    component's live spec rows on every read and never persisted: the
+    same sketch-canonical / copper-derived rule the rest of the tree
+    follows. Re-pricing or re-dimensioning a component therefore reaches
+    every design bound to it without a migration or a rebuild.
+
+    Batched per distinct slug, not per block — a frame with twenty
+    identical bolts binds one component — and **total**: an unresolvable
+    slug, a missing category or a thin spec set leaves ``derived``
+    carrying only its ``why_not``, never raises. A load that failed
+    because a catalog row was deleted would take the whole design with
+    it, which is exactly the fragility name-keyed identity exists to
+    avoid.
+
+    ``store`` may be a fake without the component ops (plugin tests that
+    never touch a catalog); the whole pass no-ops in that case rather
+    than demanding the surface.
+    """
+    slugs = {
+        node.bound
+        for node in tree.blocks.values()
+        if node.bound_kind == "component" and node.bound
+    }
+    if not slugs or not hasattr(store, "component_current_spec_values"):
+        return
+    by_slug: dict[str, Derived] = {}
+    for slug in sorted(slugs):
+        by_slug[slug] = _derive_one(store, slug)
+    for node in tree.blocks.values():
+        if node.bound_kind == "component" and node.bound:
+            node.derived = by_slug.get(node.bound)
+
+
+def _derive_one(store: Any, slug: str) -> Derived:
+    """One component slug → its catalog derivation, in metres."""
+    ref = store.get_ref(kind="component", id=slug)
+    if ref is None:
+        return Derived(why_not=f"component {slug!r} not found")
+    category = (ref.meta or {}).get("category")
+    specs: dict[str, Any] = {}
+    for spec_id, row in store.component_current_spec_values(ref.id).items():
+        spec_row = store.component_spec_get(spec_id)
+        if spec_row is None:  # pragma: no cover — FK makes this unreachable
+            continue
+        if row.get("value_num") is None:
+            # categorical/text/boolean — carried through unconverted for
+            # the generators that read them (thread_size, drive_type).
+            specs[spec_id] = (
+                row.get("value_text")
+                if row.get("value_text") is not None
+                else row.get("value_bool")
+            )
+            continue
+        metres = catalog.to_metres(
+            float(row["value_num"]), spec_row.get("canonical_unit")
+        )
+        # A numeric spec in a unit this bridge doesn't know (USD, kg, N)
+        # is not a length and simply isn't geometry input — dropping it
+        # is correct, and `to_metres` returning None is how it says so.
+        if metres is not None:
+            specs[spec_id] = metres
+    return catalog.derive(category, specs)
 
 
 def _topo_order(tree: SeTree) -> list[str]:

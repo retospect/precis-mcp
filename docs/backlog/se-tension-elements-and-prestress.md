@@ -11,11 +11,21 @@ Design session 2026-09-05 (Reto + agent), precious-juggling-map worktree,
 from Reto's question: *"Do we understand springs and ropes
 (tensegrity)?"*
 
-**Today: no.** And the honest version of that answer is worse than a
-missing vocabulary entry — the current model does not merely *lack* these
-elements, it would **confidently give a wrong answer** about a structure
-built from them. That is the reason this is `prio: high` rather than a
-nice-to-have.
+**Today: no.** Every kinematic class in the vocabulary is bilateral, and
+a rope is not; there is no spring rate anything reads; and there is no
+whole-structure mobility or stability analysis at all.
+
+It is `prio: high` for the *bolted-joint* payoff rather than the
+tensegrity one: preload plus a unilateral interface is what makes
+`se-off-the-shelf-fabrication.md`'s grip stack-up mean something, and it
+is the difference between a joint that survives fatigue and one that does
+not. Tensegrity is the case that proves the model is right, not the case
+that pays for it.
+
+(An earlier draft justified `prio: high` on the claim that se would
+*confidently give a wrong answer* about a prestressed structure. That was
+false — see the correction in §3. The priority survives on the
+bolted-joint argument; the alarm did not.)
 
 ## What's actually missing, in increasing order of depth
 
@@ -66,25 +76,42 @@ A coil spring is a different animal in three ways:
 So a spring needs all three layers: a kinematic class (or a mechanism), a
 component category with specs, and a consumer that reads the rate.
 
-### 3. Tensegrity breaks the DOF probe — this is the dangerous one
+### 3. Tensegrity has nothing to break yet — and that is the trap
 
 A tensegrity is a structure that is rigid **only because it is
 prestressed**. Discharge the pretension and it is a mechanism: it flops.
 That is not an edge case, it is the definition.
 
-The consequence for se is specific and bad. `relate.translational_dof`
-walks the joint graph and reports mobility. Handed a tensegrity mast it
-would report **"mobile — this is a mechanism, it will collapse"**, which
-is:
+**Correction, 2026-09-05 — an earlier draft of this item claimed
+`relate.translational_dof` would report a tensegrity as "mobile, it will
+collapse". That was wrong, and the error mattered enough to record
+rather than quietly delete.** `cad.relate.translational_dof` is a
+*geometric clearance probe* — "how far can block A translate along ±x/y/z
+before it contacts block B" — and `precis_se.drc` rents it as a
+**declared-vs-derived** per-joint check: a declared `prismatic`/
+`cylindrical`/`screw` axis whose travel is blocked at zero, or unbounded
+in both directions, is a **warn-tier finding**, and an off-principal axis
+is reported as *skipped* rather than approximated. It never analyses
+whole-structure mobility and never says "collapses".
 
-- **correct** as first-order linear kinematics, and
-- **wrong** as an engineering answer about a structure that is standing
-  up in the room.
+So the honest statement of the gap is narrower and more useful:
 
-A tool that is confidently wrong about a real structure is worse than one
-that declines to answer. At minimum the probe must learn to say *"first-
-order mobile; may be prestress-stabilized — not checked"* rather than
-"collapses".
+- **se has no whole-structure mobility or stability analysis at all** —
+  no Maxwell/Calladine counting, no equilibrium matrix. It is not
+  confidently wrong about a tensegrity today; it has nothing to say about
+  one, which is the correct behaviour for a tool that hasn't been taught.
+- **The danger is prospective, not present.** The obvious way to add
+  mobility analysis — walk the joint graph, count constraints against
+  DOFs — *would* be confidently wrong, because every class in the
+  vocabulary is bilateral and prestress is unrepresentable. This item
+  exists partly to make sure that implementation never ships without the
+  `m − s` counting alongside it.
+- **The existing per-joint probe is already honest** in the house style
+  (warn-tier, "skipped" rather than approximated). It is a model for what
+  the structural version should do, not a thing to fix.
+
+The theory, when we do build it, is not exotic and is implementable with
+numpy:
 
 The established theory is not exotic and is implementable with numpy:
 
@@ -246,10 +273,26 @@ one thing.
    every existing check that assumes bilateral either handles it or
    *declares that it does not* (the suggestive-by-contract posture —
    report absence, never silently assume taut).
-2. **Teach the DOF probe to say "may be prestress-stabilized"** instead
-   of "mobile". Cheapest fix with the largest correctness gain: it
-   converts a confidently-wrong answer into an honest one, and it can
-   land before any of the analysis below.
+2. **A guard on the mobility analysis that doesn't exist yet.** There is
+   no rung-2 honesty fix to make — the existing per-joint DOF probe is
+   already correctly scoped (see the correction above). What this rung
+   buys instead is a **tripwire**: whoever adds whole-structure mobility
+   analysis must emit "first-order mobile; may be prestress-stabilized —
+   not checked" rather than a bare "mechanism" verdict, unless rung 4's
+   `m − s` counting is present. Cheap to state, and it is the difference
+   between the naive implementation being merely incomplete and being
+   confidently wrong. Land it as a docstring contract on whatever
+   function first counts constraints, not as speculative code.
+
+   **Cross-track agreement, 2026-09-05:** the cad track accepted this
+   tripwire for its own side — if structural mobility/rigidity analysis
+   lands there first, naive constraint-vs-DOF counting emits
+   "first-order mobile; may be prestress-stabilized — not checked"
+   unless the `m − s` counting is present, to be recorded in
+   `cad-machine-spec.md`. Written down here too, deliberately: at the
+   time of the agreement that half lived only in a mid-gate session's
+   memory, and a two-party contract that exists in one volatile place is
+   a contract with one party.
 3. **`spring` component category + specs** (`spring_rate` N/m,
    `free_length`, `solid_length`, `max_deflection`, `wire_diameter`;
    `outer_diameter` is already universal from migration 0152) and a
@@ -324,15 +367,18 @@ represent).
   it is the argument for se's eventual coupling class reusing cad's
   `belt`/`gear` spelling rather than coining a third.
 
-- **Ownership, settled 2026-09-05:** `relate.translational_dof` is not
-  in the cad track's scope (slices 3–5 shipped without touching it and
-  no plans on it), so the "first-order mobile; may be
-  prestress-stabilized — not checked" honesty fix belongs to this item.
+- **Ownership, settled 2026-09-05:** `relate.translational_dof` is not in
+  the cad track's scope (slices 3–5 shipped without touching it, no plans
+  on it). Recorded for completeness — but note the correction above:
+  **that function needs no change**, so the ownership question turned out
+  to be moot. Whoever adds *structural* mobility analysis owns the
+  tripwire.
 - **Is the tensegrity classifier worth building before a real design
-  needs it?** My lean: build rung 2 (the honest "may be
-  prestress-stabilized") now regardless, defer rung 4 until a design
-  exists — but do not let the probe keep saying "collapses" in the
-  meantime.
+  needs it?** My lean: **no** — defer rung 4 until a design needs it.
+  With the correction above, nothing is currently giving a wrong answer,
+  so the urgency argument the earlier draft made was based on a false
+  premise. Rungs 1 and 3 (unilateral members, the `spring` category)
+  stand on their own; rung 4 waits for a consumer.
 - **Do se and nm share the axial-capacity code, or only its shape?**
   `precis_nm.mechanics` already has Euler buckling, a min-cut tension
   ceiling and harmonic strain; the formulas se needs are identical. But
