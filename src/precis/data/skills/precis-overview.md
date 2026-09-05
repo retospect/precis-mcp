@@ -58,6 +58,7 @@ name/path.
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
 | `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. See `precis-draft-help`. | store |
 | `plan` | `po3` | A thread's reasoning outline — hierarchical todo-list + notes, never exported. One per project (`plan-of` link). See `precis-plan-help`. | store |
+| `make` | `mt3` | A make-tree: assembly/synthesis ORDER for a design — first-class steps (`mk<id>`) with conditions in meta; blocks align via `made-by` links from the design side. See `precis-cad-help`. | store |
 | `figure` | `fg7` | Interactive SVG canvas you draw *with* the model — a chunk-tree, never exported, rendered in the browser (`/figure`). See `precis-figure-help`. | store |
 | `mermaid` | `mm7` | A mermaid diagram you draw *with* the model (flowchart / sequence / state / class …), never exported. Web editor `/mermaid`; each diagram type has a `precis-mermaid-<type>` skill. See `precis-mermaid-help`. | store |
 | `cad` | `cd7` | Parametric solid-model design — a boolean DAG of placed analytic primitives authored as a text node-list (`cyl:r3h12`, `box:w40d20h10`); no meshing in the design loop. See `precis-cad-help`. | store |

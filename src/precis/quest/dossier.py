@@ -226,9 +226,7 @@ def _parse_ledger(text: str) -> list[AttemptNode]:
                 continue
             indent = len(line) - len(line.lstrip(" "))
             depth = indent // _INDENT_WIDTH
-            node = AttemptNode(
-                text=node_text, status=status, children=[], seq=next_seq
-            )
+            node = AttemptNode(text=node_text, status=status, children=[], seq=next_seq)
             next_seq += 1
             while stack and stack[-1][0] >= depth:
                 stack.pop()
@@ -695,7 +693,9 @@ def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
     """
     roots = _parse_ledger(ledger) if isinstance(ledger, str) else ledger
     open_nodes = [
-        n for n, _parent in _flatten_with_parent(roots) if n.status in ("open", "active")
+        n
+        for n, _parent in _flatten_with_parent(roots)
+        if n.status in ("open", "active")
     ]
     if not open_nodes:
         return "(none yet)"
@@ -719,7 +719,7 @@ def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
         lines.append(
             f"(+{omitted} more open direction{plural} pinned but not shown this "
             "tick for space — they still exist and are still open; do NOT "
-            "re-add them or treat their absence here as \"not yet raised\". "
+            're-add them or treat their absence here as "not yet raised". '
             "They are not addressable THIS tick (you cannot `mark` a node you "
             "cannot see), but will resurface in a future tick as budget allows.)"
         )

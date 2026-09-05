@@ -218,14 +218,19 @@ class CadHandler(Handler):
             return place_ref(self.store, kind="cad", ref=ref, target=target, mode=mode)
         if rel == "analyzed-by":
             return self._link_analysis(id=id, target=target, mode=mode)
+        if rel == "made-by":
+            return self._link_made_by(id=id, target=target, mode=mode)
         raise BadInput(
-            "cad link supports rel='parent' (folder placement) or "
-            "rel='analyzed-by' (attach an analysis result)",
+            "cad link supports rel='parent' (folder placement), "
+            "rel='analyzed-by' (attach an analysis result), or "
+            "rel='made-by' (align to a make-tree / step)",
             next=(
                 "link(kind='cad', id='<slug>', target='folder:N', "
                 "rel='parent') places; link(kind='cad', id='<slug>', "
                 "target='finding:<id>', rel='analyzed-by') attaches an "
-                "analysis (pins the design version); mode='remove' detaches"
+                "analysis (pins the design version); link(kind='cad', "
+                "id='<slug>', target='make:<slug>' or 'mk<id>', "
+                "rel='made-by') aligns; mode='remove' detaches"
             ),
         )
 
@@ -277,6 +282,88 @@ class CadHandler(Handler):
                 f"{sha}; a later design change flags this analysis stale)"
             )
         )
+
+    def _link_made_by(
+        self, *, id: str | int, target: str | None, mode: str
+    ) -> Response:
+        """Align this design (a block) to a make-tree (``target='make:<slug>'``
+        — "this design is made by this process") or to one of its steps
+        (``target='mk<id>'`` — chunk-scoped, many-to-many by design)."""
+        from precis.handlers._link_tag_ops import (
+            require_link_target,
+            validate_link_mode,
+        )
+        from precis.handlers._link_target import parse_link_target
+
+        mode = validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
+        tgt = parse_link_target(require_link_target("cad", target), store=self.store)
+        if tgt.kind != "make":
+            raise BadInput(
+                f"rel='made-by' target must be a make tree or step, got "
+                f"kind={tgt.kind!r}",
+                next="link(kind='cad', id='<slug>', target='make:<slug>' "
+                "(whole tree) or 'mk<id>' (one step), rel='made-by')",
+            )
+        if mode == "remove":
+            n = self.store.remove_link(
+                src_ref_id=ref.id,
+                dst_ref_id=tgt.ref_id,
+                relation="made-by",
+                dst_pos=tgt.pos,
+            )
+            return Response(body=f"detached {n} made-by link(s)")
+        self.store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=tgt.ref_id,
+            relation="made-by",
+            dst_pos=tgt.pos,
+        )
+        scope = "whole make-tree" if tgt.pos is None else f"step {tgt.raw}"
+        return Response(body=f"made-by: {ref.slug} → {tgt.raw} ({scope})")
+
+    def _make_coverage(self, ref: Any) -> str:
+        """Alignment coverage lint: once a design declares a make-tree
+        (ref-level ``made-by``), every sub-design it ``contains`` should be
+        reachable from some step — an unaligned child is un-planned work
+        (or a forgotten alignment), and silence would hide it."""
+        try:
+            mine = self.store.links_for(ref.id, direction="out", relation="made-by")
+            if not mine:
+                return ""
+            children = [
+                lk.dst_ref_id
+                for lk in self.store.links_for(
+                    ref.id, direction="out", relation="contains"
+                )
+            ]
+            missing = [
+                cid
+                for cid in children
+                if not self.store.links_for(cid, direction="out", relation="made-by")
+            ]
+            if not missing:
+                return ""
+            with self.store.pool.connection() as conn:
+                rows = conn.execute(
+                    """SELECT COALESCE((SELECT id_value FROM ref_identifiers
+                                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                                 ORDER BY created_at DESC LIMIT 1),
+                                r.ref_id::text)
+                         FROM refs r
+                        WHERE r.ref_id = ANY(%s) AND r.kind = 'cad'
+                          AND r.retired_at IS NULL""",
+                    (missing,),
+                ).fetchall()
+            names = [r[0] for r in rows]
+            if not names:
+                return ""
+            return (
+                "\n⚠ make-coverage: sub-designs not aligned to any make "
+                "step: " + ", ".join(sorted(names))
+            )
+        except Exception:  # pragma: no cover - lint is best-effort
+            return ""
 
     def _stale_analyses(self, ref: Any) -> list[str]:
         """The attached analyses whose pinned sha no longer matches the
@@ -493,13 +580,12 @@ class CadHandler(Handler):
             from precis.handlers._links_render import render_links_view
 
             resp = render_links_view(self.store, ref, sense="cad")
+            extra = self._make_coverage(ref)
             stale = self._stale_analyses(ref)
             if stale:
-                resp = Response(
-                    body=resp.body
-                    + "\n⚠ STALE analyses (re-run or detach): "
-                    + "; ".join(stale)
-                )
+                extra += "\n⚠ STALE analyses (re-run or detach): " + "; ".join(stale)
+            if extra:
+                resp = Response(body=resp.body + extra)
             return resp
         if view not in _PROBE_VIEWS:
             raise BadInput(

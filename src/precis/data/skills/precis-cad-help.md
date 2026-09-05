@@ -257,6 +257,30 @@ File exports are version-anchored the same way: `view='stl'|'3mf'|'step'`
 records the design version it wrote, so a drifted artifact is detectable
 (`design version <sha> recorded` in the reply).
 
+### Plan how it's built — `kind='make'` + `rel='made-by'`
+
+A design tree says what a thing IS; a **make-tree** (`kind='make'`) says
+the ORDER it comes together — and the two need not align (a step may
+bundle parts across subsystems). Steps are first-class, ordered nodes
+addressed `mk<id>`, each carrying its conditions in `meta`:
+
+```python
+put(kind="make", id="crane-assembly", title="crane assembly order")
+put(kind="make", id="crane-assembly", text="bolt tower to base",
+    meta={"fixture": "torque wrench", "torque": "40 Nm"})
+# align blocks from the design side — many-to-many, ref- or step-level:
+link(kind="cad", id="crane", target="make:crane-assembly", rel="made-by")
+link(kind="cad", id="tower_sub", target="mk123", rel="made-by")
+```
+
+`get(kind='make', id=…)` renders the step tree with each step's
+conditions and its aligned blocks (`⛓`). Once a design declares a
+make-tree, `view='links'` on the design warns about `contains`
+sub-designs not aligned to any step (`⚠ make-coverage`). Steps track
+`status=open|wip|done`; `edit` moves/rewords a step without changing its
+handle. Two make-orders over the same design (placed assembly vs bulk
+synthesis) are just two `make` refs.
+
 ### Describe what it's *for* — `desc:` / `use:`
 
 Add free-text lines so the design is findable by purpose, not just by

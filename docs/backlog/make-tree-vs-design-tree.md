@@ -35,6 +35,22 @@ on the same answer independently, which is strong evidence it's right.
   what the designer drew as one block. Forcing one-to-one is the named
   failure mode.
 
+## v1 — SHIPPED 2026-09-05 (this worktree)
+
+`kind='make'` (migration 0154) on the draft chunk-tree substrate: steps
+are first-class ordered chunks (`mk<chunk_id>`, stable across edit/move),
+conditions in step meta, `status` per step; deliberately NOT `plan` (no
+project/`plan-of` binding, so plan_tick never mistakes an assembly
+procedure for a reasoning outline) and NOT `route` (engine-authored blob,
+no step identity). Alignment: `made-by`/`makes` minted in the same
+migration; written from the design side (`CadHandler.link
+rel='made-by'`), ref-level (design→tree, "makes:" on the tree header) or
+chunk-scoped (block→step, `⛓` on the step line), many-to-many.
+Coverage lint on the design's `view='links'`: contains-children not
+aligned to any step once a tree is declared. Remaining below: stock
+termination (route/se-side), synthesizability scores (attached-models),
+nm/structure wiring, route search engines.
+
 ## The atomic side is the hard case — and has TWO make-orders
 
 Raised by Reto 2026-09-04 ("have you considered this also with the atomic

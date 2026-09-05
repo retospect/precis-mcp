@@ -184,6 +184,11 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         ("plan", "edit", "belief"),
         ("plan", "edit", "cursor"),
         ("plan", "edit", "status"),
+        # -- make-tree step state (mirrors plan's status decision: not in
+        # the core verb schema; MCP callers set it via meta={'status': …}
+        # on put, and step-status flips ride the same in-process path) ----
+        ("make", "put", "status"),
+        ("make", "edit", "status"),
     }
 )
 

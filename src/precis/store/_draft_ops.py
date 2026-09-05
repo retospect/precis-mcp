@@ -1828,23 +1828,28 @@ class DraftStore(_AbbrevMixin):
         *,
         name: str,
         title: str,
-        project_ref_id: int,
+        project_ref_id: int | None = None,
         meta: dict[str, Any] | None = None,
         kind: str = "draft",
         relation: str = "draft-of",
     ) -> tuple[Any, DraftChunk]:
-        """Create a draft (or ``kind='plan'``) ref bound 1:1 to its
-        project, born with a title `heading` chunk so it is never empty.
-        ``relation`` is the project-binding link (``draft-of``/``plan-of``),
-        each 1:1 per project — so a project can own both without
-        collision. Returns ``(ref, title_chunk)``."""
+        """Create a draft (or ``kind='plan'``/``'make'``) ref, born with a
+        title `heading` chunk so it is never empty. With ``project_ref_id``
+        it is bound 1:1 to that project via ``relation``
+        (``draft-of``/``plan-of``, each 1:1 per project — so a project can
+        own both without collision); ``None`` skips the binding entirely
+        (a ``make`` tree hangs off the design graph instead).
+        Returns ``(ref, title_chunk)``."""
         with self.tx() as conn:
-            dup = conn.execute(
-                "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = %s",
-                (project_ref_id, relation),
-            ).fetchone()
-            if dup is not None:
-                raise ValueError(f"project ref {project_ref_id} already has a {kind}")
+            if project_ref_id is not None:
+                dup = conn.execute(
+                    "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = %s",
+                    (project_ref_id, relation),
+                ).fetchone()
+                if dup is not None:
+                    raise ValueError(
+                        f"project ref {project_ref_id} already has a {kind}"
+                    )
             ref = self._host.insert_ref(
                 kind=kind,
                 slug=name,
@@ -1862,12 +1867,13 @@ class DraftStore(_AbbrevMixin):
                 source={"reason": "draft-title"},
                 kind=kind,
             )
-            self._host.add_link(
-                src_ref_id=ref.id,
-                dst_ref_id=project_ref_id,
-                relation=relation,
-                conn=conn,
-            )
+            if project_ref_id is not None:
+                self._host.add_link(
+                    src_ref_id=ref.id,
+                    dst_ref_id=project_ref_id,
+                    relation=relation,
+                    conn=conn,
+                )
         return ref, title_chunk
 
     def draft_title_chunk_id(

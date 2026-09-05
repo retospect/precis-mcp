@@ -800,6 +800,7 @@ def boot(
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
         from precis.handlers.llm import LlmHandler
+        from precis.handlers.make import MakeHandler
         from precis.handlers.material import MaterialHandler
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.mermaid import MermaidHandler
@@ -839,6 +840,7 @@ def boot(
         _gated(PresentationHandler)
         _gated(DraftHandler)
         _gated(PlanHandler)
+        _gated(MakeHandler)
         _gated(FigureHandler)
         # mermaid — the second instance of the diagram core. A
         # first-class kind (like figure): registered unconditionally; its

@@ -291,6 +291,12 @@ Relation = Literal[
     # 0153_analyzed_by_relation.sql.
     "analyzed-by",
     "analysis-of",
+    # Make-tree alignment — migration 0154. `made-by` (design/block →
+    # make-tree ref, or chunk-scoped to one mk step; many-to-many by
+    # design) ↔ `makes`. Written by CadHandler.link; rendered per-step by
+    # MakeHandler. Keep in sync with 0154_make_kind_and_made_by.sql.
+    "made-by",
+    "makes",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and
@@ -394,6 +400,9 @@ _INVERSE_RELATIONS: dict[str, str] = {
     # Attached models (0153).
     "analyzed-by": "analysis-of",
     "analysis-of": "analyzed-by",
+    # Make-tree alignment (0154).
+    "made-by": "makes",
+    "makes": "made-by",
 }
 
 

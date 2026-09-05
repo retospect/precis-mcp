@@ -65,6 +65,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "material",
         "component",
         "plan",
+        "make",
         "figure",
         "mermaid",
     }

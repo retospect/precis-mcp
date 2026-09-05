@@ -803,7 +803,9 @@ class TestLedgerOpenNodes:
         assert add_attempt(store, qid, older_one) is True
         assert add_attempt(store, qid, older_two) is True
         # ...an active direction added next (status beats recency)...
-        active_text = "measure the branching ratio temperature dependence experimentally"
+        active_text = (
+            "measure the branching ratio temperature dependence experimentally"
+        )
         assert add_attempt(store, qid, active_text, status="active") is True
         # ...and the most-recently-added open direction.
         newest_open = "compare humid versus dry conditions for overall selectivity"

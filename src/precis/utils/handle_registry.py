@@ -105,6 +105,7 @@ KIND_CODES: dict[str, str] = {
     # proposal) — a slug entity; per-value sourced facts live in
     # material_values, not a chunk table, so no CHUNK_CODES entry.
     "material": "ma",
+    "make": "mt",  # make-tree ref (assembly/synthesis order)
     # General procurable-part store (``component-kind`` (git-only)) — a
     # slug entity; per-value sourced facts live in component_spec_values,
     # not a chunk table, so no CHUNK_CODES entry, same as material.
@@ -156,6 +157,7 @@ CHUNK_CODES: dict[str, str] = {
     # mermaid source nodes (``mn<id>``) — a mermaid diagram's addressable
     # source chunk; disjoint from figure's ``fn``.
     "mermaid": "mn",
+    "make": "mk",  # make-tree step node
     # quest logbook entries (``ql<id>``) — the append-only WORM ledger rows.
     "quest": "ql",
     # llm catalog review-log entries (``lr<id>``) — the append-only, typed,
