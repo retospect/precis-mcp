@@ -281,6 +281,25 @@ sub-designs not aligned to any step (`⚠ make-coverage`). Steps track
 handle. Two make-orders over the same design (placed assembly vs bulk
 synthesis) are just two `make` refs.
 
+### Declare dimensions — `dim` / `constrain` (refuse the impossible)
+
+Name your driving dimensions and let the kernel catch contradictions
+**before any geometry exists**:
+
+```
+dim a = 200            # mm, exact
+dim c >= 100           # one-sided bounds are first-class ("longer than
+dim c <= 500           # 10cm" is a valid open-ended requirement)
+constrain a = c        # equality between dims
+```
+
+Bounds on one name intersect; `constrain` merges dims into an equality
+class; a class whose combined range is empty — `a = 200`, `b = 150`,
+`constrain a = b` — is **refused at put** with the members and their
+bounds named. v1 dims are declarative (configs don't reference them
+yet); they're the carrier for process rules like print clearances
+(`clearance >= 0.3` for FDM) and for estimates that narrow over time.
+
 ### Weigh it — `material <component> <slug>` + `view='mass'`
 
 Assign each component a `material` kind slug; the mass view joins that

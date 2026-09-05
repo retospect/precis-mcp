@@ -279,11 +279,13 @@ def test_sub_rewrites_figure_caption_but_skips_table(
     )
     fig_chunk_id = int(fig_dc[2:])
     with hub.live_store.pool.connection() as conn:
-        before = conn.execute(
+        row = conn.execute(
             "SELECT count(*) FROM chunk_events "
             "WHERE chunk_id = %s AND event_kind = 'edited'",
             (fig_chunk_id,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        before = row[0]
 
     out = draft.edit(
         id=seeded["slug"], sub={"find": "bold", "replace": "BOLD"}, apply=True
@@ -297,9 +299,11 @@ def test_sub_rewrites_figure_caption_but_skips_table(
     assert "table/figure" not in out.body
 
     with hub.live_store.pool.connection() as conn:
-        after = conn.execute(
+        row = conn.execute(
             "SELECT count(*) FROM chunk_events "
             "WHERE chunk_id = %s AND event_kind = 'edited'",
             (fig_chunk_id,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        after = row[0]
     assert after == before + 1

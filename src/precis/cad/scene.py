@@ -29,6 +29,14 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   is a free compatibility tag (two typed ports may only mate when the types
   match); ``of:`` scopes the port to a component (required for the pivot of
   a component ``joint``).
+- ``dim <name> =|>=|<= <mm>`` / ``constrain <a> = <b>`` — named
+  dimension bounds (one-sided allowed; bounds intersect) and equality
+  constraints between dims. An impossible combination — ``a = 200``,
+  ``b = 150``, ``constrain a = b`` — is **refused at parse**
+  (:func:`_check_dim_constraints`); the kernel never carries known-false
+  declarations. v1 dims are declarative (configs don't reference them yet).
+- ``material <component> <slug>`` — assign a ``material`` kind slug
+  (drives the handler's ``view='mass'``).
 - ``payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]`` — geometry
   the port *brings to whatever it mates against* (a hinge's knuckle recess,
   its pin bore): when the port mates, each payload is spliced into the
@@ -125,6 +133,12 @@ _AT_RE = re.compile(r"^at:([A-Za-z_][A-Za-z0-9_-]*)$")
 _LIMITS_RE = re.compile(r"^limits:(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)$")
 _PITCH_RE = re.compile(r"^pitch:(\d+(?:\.\d+)?)$")
 _RATIO_RE = re.compile(r"^ratio:(-?\d+(?:\.\d+)?)$")
+_DIM_RE = re.compile(
+    r"^dim\s+([A-Za-z_][A-Za-z0-9_-]*)\s*(=|>=|<=)\s*(-?\d+(?:\.\d+)?)$"
+)
+_CONSTRAIN_RE = re.compile(
+    r"^constrain\s+([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*([A-Za-z_][A-Za-z0-9_-]*)$"
+)
 
 #: Joint kinds and their one state parameter (about/along the joint frame's
 #: local z): revolute = degrees, prismatic = mm, screw = degrees (z advance
@@ -708,6 +722,8 @@ def parse_source(text: str) -> SceneSpec:
     ports: list[PortSpec] = []
     payloads: list[tuple[str, PayloadSpec, int]] = []  # (at-port, spec, lineno)
     materials: dict[str, str] = {}  # component -> material slug
+    dims: dict[str, list[float | None]] = {}  # name -> [lo, hi] (None=open)
+    constraints: list[tuple[str, str]] = []  # equality pairs
     mates: list[MateSpec] = []
     cjoints: list[ComponentJointSpec] = []
     couples: list[CoupleSpec] = []
@@ -866,6 +882,42 @@ def parse_source(text: str) -> SceneSpec:
                     lineno,
                 )
             )
+            continue
+        if toks[0] == "dim":
+            # `dim <name> =|>=|<= <mm>` — a named dimension bound. Bounds on
+            # the same name accumulate by intersection; an empty interval is
+            # refused immediately (an impossible declaration must not parse).
+            m = _DIM_RE.match(line)
+            if m is None:
+                raise SceneError(f"line {lineno}: expected 'dim <name> =|>=|<= <mm>'")
+            dname, dop, dval = m[1], m[2], float(m[3])
+            lo, hi = dims.get(dname, [None, None])
+            if dop in ("=", ">="):
+                lo = dval if lo is None else max(lo, dval)
+            if dop in ("=", "<="):
+                hi = dval if hi is None else min(hi, dval)
+            if lo is not None and hi is not None and lo > hi:
+                raise SceneError(
+                    f"line {lineno}: dim {dname!r} is impossible — bounds "
+                    f"reduce to an empty range ({_fmt_interval([lo, hi])})"
+                )
+            dims[dname] = [lo, hi]
+            continue
+        if toks[0] == "constrain":
+            # `constrain <a> = <b>` — two dims must be equal. Satisfiability
+            # is checked at end of parse (declarations are order-free).
+            m = _CONSTRAIN_RE.match(line)
+            if m is None:
+                raise SceneError(
+                    f"line {lineno}: expected 'constrain <dim> = <dim>' "
+                    "(v1 supports equality between dims; numeric bounds go "
+                    "on 'dim' lines)"
+                )
+            if m[1] == m[2]:
+                raise SceneError(
+                    f"line {lineno}: constrain {m[1]} = {m[1]} is a tautology"
+                )
+            constraints.append((m[1], m[2]))
             continue
         if toks[0] == "material":
             # `material <component> <slug>` — assign a material kind slug to
@@ -1055,6 +1107,8 @@ def parse_source(text: str) -> SceneSpec:
                 )
             ports[i] = replace(ports[i], payloads=(*ports[i].payloads, pl))
 
+    _check_dim_constraints(dims, constraints)
+
     for mcomp in materials:
         if mcomp not in seen_components or mcomp in instance_names:
             raise SceneError(
@@ -1070,6 +1124,10 @@ def parse_source(text: str) -> SceneSpec:
         seen_components=seen_components,
         instance_names=instance_names,
     )
+    if dims:
+        spec.meta["dims"] = {k: list(v) for k, v in dims.items()}
+    if constraints:
+        spec.meta["constraints"] = [list(c) for c in sorted(set(constraints))]
     if materials:
         spec.meta["materials"] = dict(materials)
     if ports:
@@ -1170,6 +1228,71 @@ def _validate_interfaces(
             cur = driven_by.get(cur)
 
 
+def _fmt_interval(iv: list[float | None]) -> str:
+    lo, hi = iv
+    if lo is not None and hi is not None and lo == hi:
+        return f"= {_fmt_num(lo)}"
+    parts = []
+    if lo is not None:
+        parts.append(f">= {_fmt_num(lo)}")
+    if hi is not None:
+        parts.append(f"<= {_fmt_num(hi)}")
+    return " and ".join(parts) if parts else "unbounded"
+
+
+def _check_dim_constraints(
+    dims: dict[str, list[float | None]], constraints: list[tuple[str, str]]
+) -> None:
+    """Refuse the impossible before geometry exists: union-find over the
+    equality constraints, one interval per class (intersection of every
+    member's bounds). An empty class interval means the declarations
+    contradict each other — e.g. ``a = 200``, ``b = 150``,
+    ``constrain a = b`` — and the design must not parse."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    for a, b in constraints:
+        for nm in (a, b):
+            if nm not in dims:
+                known = ", ".join(sorted(dims)) or "none"
+                raise SceneError(
+                    f"constrain {a} = {b}: {nm!r} is not a declared dim — "
+                    f"declared: {known}"
+                )
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    classes: dict[str, list[str]] = {}
+    for nm in dims:
+        classes.setdefault(find(nm), []).append(nm)
+    for members in classes.values():
+        if len(members) < 2:
+            continue
+        lo: float | None = None
+        hi: float | None = None
+        for nm in members:
+            dlo, dhi = dims[nm]
+            if dlo is not None:
+                lo = dlo if lo is None else max(lo, dlo)
+            if dhi is not None:
+                hi = dhi if hi is None else min(hi, dhi)
+        if lo is not None and hi is not None and lo > hi:
+            detail = "; ".join(
+                f"{nm} {_fmt_interval(dims[nm])}" for nm in sorted(members)
+            )
+            raise SceneError(
+                "impossible constraints: "
+                + " = ".join(sorted(members))
+                + f" has an empty combined range ({detail})"
+            )
+
+
 def _fmt_num(x: float) -> str:
     """Round-trip-safe number formatting for the source language.
 
@@ -1228,6 +1351,17 @@ def spec_to_source(spec: SceneSpec) -> str:
         lines.extend(port.source_lines())
     for mcomp, mslug in (spec.meta.get("materials") or {}).items():
         lines.append(f"material {mcomp} {mslug}")
+    for dname, iv in (spec.meta.get("dims") or {}).items():
+        lo, hi = iv
+        if lo is not None and hi is not None and lo == hi:
+            lines.append(f"dim {dname} = {_fmt_num(lo)}")
+        else:
+            if lo is not None:
+                lines.append(f"dim {dname} >= {_fmt_num(lo)}")
+            if hi is not None:
+                lines.append(f"dim {dname} <= {_fmt_num(hi)}")
+    for pair in spec.meta.get("constraints") or []:
+        lines.append(f"constrain {pair[0]} = {pair[1]}")
     if lines:
         lines.append("")
 

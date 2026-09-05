@@ -73,6 +73,20 @@ from precis.utils.search_merge import SearchHit
 
 log = logging.getLogger(__name__)
 
+
+def _fmt_interval_line(iv: Any) -> str:
+    """A dim's bounds as source-ish text ("= 200" / ">= 100 <= 500")."""
+    lo, hi = iv
+    if lo is not None and hi is not None and lo == hi:
+        return f"= {lo:g}"
+    parts = []
+    if lo is not None:
+        parts.append(f">= {lo:g}")
+    if hi is not None:
+        parts.append(f"<= {hi:g}")
+    return " ".join(parts) or "unbounded"
+
+
 _PROBE_VIEWS = (
     "ray",
     "point",
@@ -990,6 +1004,18 @@ class CadHandler(Handler):
         try:
             decls = [
                 *(ln for p in ports_of(spec) for ln in p.source_lines()),
+                *(
+                    f"material {mc} {ms}"
+                    for mc, ms in (spec.meta.get("materials") or {}).items()
+                ),
+                *(
+                    f"dim {dn} {_fmt_interval_line(iv)}"
+                    for dn, iv in (spec.meta.get("dims") or {}).items()
+                ),
+                *(
+                    f"constrain {pr[0]} = {pr[1]}"
+                    for pr in spec.meta.get("constraints") or []
+                ),
                 *(m.to_source() for m in mates_of(spec)),
                 *(j.to_source() for j in joints_of(spec)),
                 *(c.to_source() for c in couples_of(spec)),
