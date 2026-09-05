@@ -142,9 +142,23 @@
     _agent_homebrew_bin: "{{ _agent_homebrew_prefix }}/bin/brew"
     # ONE tarball, cut on the controller — see BUILD SOURCE above.
     _agent_archive_tar: "/tmp/precis-agent-build-context-{{ _agent_image_ref }}.tar"
+    # colima's socket lives under the deploy user's HOME on macOS, and the
+    # docker CLI only finds it via DOCKER_HOST / a docker context. Context
+    # resolution has proven flaky under become (2026-09-05 deploy wedge:
+    # the build sat 1h53m at 14s CPU waiting on a socket that never
+    # answered, past every retry because the process never exited) — so
+    # export DOCKER_HOST explicitly on darwin for EVERY docker call here.
+    # Harmless where the context already works; linux keeps the default
+    # /var/run/docker.sock.
+    _agent_docker_env: >-
+      {{ {'DOCKER_BUILDKIT': '1'}
+         | combine({'DOCKER_HOST': 'unix:///Users/' + _agent_build_user
+                    + '/.colima/docker.sock'}
+                   if os_family == 'darwin' else {}) }}
   tasks:
     - name: Probe the container runtime (docker/colima) — absence is a clean no-op
       ansible.builtin.command: "{{ _agent_container_bin }} version --format '{{ '{{' }}.Server.Version{{ '}}' }}'"
+      environment: "{{ _agent_docker_env }}"
       register: agent_runtime
       become: true
       become_user: "{{ _agent_build_user }}"
@@ -200,8 +214,7 @@
     - name: "Preflight: docker buildx must be reachable (gr303169 — fail fast, before the context transfer)"
       when: agent_runtime.rc == 0
       ansible.builtin.command: "{{ _agent_container_bin }} buildx version"
-      environment:
-        DOCKER_BUILDKIT: "1"
+      environment: "{{ _agent_docker_env }}"
       register: agent_buildx_probe
       become: true
       become_user: "{{ _agent_build_user }}"
@@ -275,6 +288,7 @@
         echo "PULL_SOURCE=mirror"
       args:
         executable: /bin/bash
+      environment: "{{ _agent_docker_env }}"
       register: agent_pull_probe
       become: true
       become_user: "{{ _agent_build_user }}"
@@ -319,6 +333,7 @@
           -f '{{ "{{" }}index .Config.Labels "org.precis.sha"{{ "}}" }}' 2>/dev/null || true
       args:
         executable: /bin/bash
+      environment: "{{ _agent_docker_env }}"
       register: agent_label_probe
       become: true
       become_user: "{{ _agent_build_user }}"
@@ -410,8 +425,12 @@
               -f docker/Dockerfile
               .
             chdir: "{{ _agent_build_dir }}"
-          environment:
-            DOCKER_BUILDKIT: "1"
+          environment: "{{ _agent_docker_env }}"
+          # async watchdog (2026-09-05 wedge): a build that hangs on a dead
+          # socket never exits, so retries/until never fire — kill it after
+          # 30 min and let the retry ladder take over.
+          async: 1800
+          poll: 15
           register: agent_build
           # retries=3/delay=30 (was 2/10, gr307314): back-to-back retries hit
           # the SAME poisoned daemon-side DNS cache entry every time — only a
@@ -446,6 +465,7 @@
     - name: Assert the precis-agent image is present
       when: agent_runtime.rc == 0
       ansible.builtin.command: "{{ _agent_container_bin }} image inspect {{ _agent_image }}"
+      environment: "{{ _agent_docker_env }}"
       become: true
       become_user: "{{ _agent_build_user }}"
       register: agent_img
