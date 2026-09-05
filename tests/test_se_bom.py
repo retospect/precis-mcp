@@ -181,8 +181,11 @@ def test_unresolved_target_is_excluded_from_totals_and_reported() -> None:
     (total,) = se_bom.rollup(tree)
     assert total.total == pytest.approx(8.0)  # the ghost line contributes nothing
     assert total.unresolved == 1
-    rules = {f.rule for f in se_validate.validate(tree)}
-    assert "dangling_bom" in rules
+    dangling = [f for f in se_validate.validate(tree) if f.rule == "dangling_bom"]
+    # exactly the ghost — the healthy line must not be reported
+    assert len(dangling) == 1
+    assert "ghost" in dangling[0].detail
+    assert dangling[0].severity == "error"
 
 
 def test_two_lines_in_different_units_are_flagged_not_silently_summed() -> None:
@@ -360,14 +363,19 @@ def test_removing_a_block_takes_its_bom_lines() -> None:
     assert tree.bom == []
 
 
-def test_disconnecting_takes_the_joints_bom_lines() -> None:
+def test_disconnecting_takes_only_that_joints_bom_lines() -> None:
+    """The vacancy rule is surgical: a second joint's line, and any
+    block-targeted line, survive untouched."""
     tree = _tree(
         [
             *_WHEELS,
             {"op": "add_block", "name": "axle", "parent": "cart"},
             {"op": "add_port", "block": "axle", "name": "shaft"},
+            {"op": "add_port", "block": "axle", "name": "collar"},
             {"op": "add_port", "block": "wheel", "name": "bore"},
+            {"op": "add_port", "block": "cart", "name": "mount"},
             {"op": "connect", "a": "axle.shaft", "b": "wheel.bore"},
+            {"op": "connect", "a": "axle.collar", "b": "cart.mount"},
             {
                 "op": "add_bom",
                 "a": "axle.shaft",
@@ -376,10 +384,23 @@ def test_disconnecting_takes_the_joints_bom_lines() -> None:
                 "item": "bearing-608",
                 "qty": 2,
             },
+            {
+                "op": "add_bom",
+                "a": "axle.collar",
+                "b": "cart.mount",
+                "item_kind": "component",
+                "item": "circlip-8",
+            },
+            {
+                "op": "add_bom",
+                "block": "wheel",
+                "item_kind": "component",
+                "item": "caster-wheel-100",
+            },
             {"op": "disconnect", "a": "axle.shaft", "b": "wheel.bore"},
         ]
     )
-    assert tree.bom == []
+    assert sorted(line.item for line in tree.bom) == ["caster-wheel-100", "circlip-8"]
 
 
 # ── modes and bindings ──────────────────────────────────────────────────
@@ -600,6 +621,42 @@ def test_bom_mode_and_binding_survive_a_round_trip(
     assert line.reason == "one pair per wheel"
 
 
+def test_connect_targeted_line_round_trips_its_four_endpoint_names(
+    handler: SeHandler, store: Store
+) -> None:
+    """The endpoint columns are written in canonicalized (sorted) order —
+    the same order ``se_connects`` uses — so the stored tuple names the
+    same edge from either direction."""
+    handler.put(
+        id="jointed",
+        text=json.dumps(
+            {
+                "ops": [
+                    *_WHEELS,
+                    {"op": "add_block", "name": "axle", "parent": "cart"},
+                    {"op": "add_port", "block": "axle", "name": "shaft"},
+                    {"op": "add_port", "block": "wheel", "name": "bore"},
+                    {"op": "connect", "a": "axle.shaft", "b": "wheel.bore"},
+                    {
+                        "op": "add_bom",
+                        "a": "wheel.bore",
+                        "b": "axle.shaft",
+                        "item_kind": "component",
+                        "item": "bearing-608",
+                        "qty": 2,
+                    },
+                ]
+            }
+        ),
+    )
+    ref = store.get_ref(kind="se", id="jointed")
+    assert ref is not None
+    (line,) = persist.load_tree(store, ref.id).bom
+    assert line.block is None
+    assert (line.a_block, line.a_port) == ("axle", "shaft")
+    assert (line.b_block, line.b_port) == ("wheel", "bore")
+
+
 def test_bom_view_prices_and_masses_through_the_component_kind(
     handler: SeHandler, hub: Hub
 ) -> None:
@@ -620,8 +677,8 @@ def test_bom_view_prices_and_masses_through_the_component_kind(
     assert "wheels 2×4" in body  # 2 per member, 4 members
     # 8 × 0.55 and 8 × 0.012 — the totals come from the component kind's
     # own current-value authority, never a copy of it.
-    assert "unit_cost total: 4.4" in body
-    assert "mass total: 0.096" in body
+    assert "unit_cost total: 4.4 — priced: 1 of 1" in body
+    assert "mass total: 0.096 — massed: 1 of 1" in body
 
 
 def test_bom_view_reports_an_item_that_is_not_in_the_store(
@@ -649,7 +706,8 @@ def test_bom_view_reports_an_item_that_is_not_in_the_store(
     body = handler.get(id="unsourced", view="bom").body
     assert "not in the store" in body
     assert "component:no-such-bearing-in-the-store" in body
-    assert "unit_cost total: 0" in body
+    assert "unit_cost total: 0 — priced: 0 of 1" in body
+    assert "mass total: 0 — massed: 0 of 1" in body
 
 
 def test_bom_view_says_mixed_uom_instead_of_a_bogus_total(
