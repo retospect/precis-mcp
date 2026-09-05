@@ -766,6 +766,125 @@ class TestSearch:
             if verb == "put" and kwargs.get("kind") == "paper":
                 assert kwargs["doi"] == "10.1038/nature10352"
 
+    def test_search_bare_doi_hit_returns_the_paper(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr244678: a bare-DOI ``q=`` for an *already-ingested* paper
+        must resolve to that paper — not fall through to block search
+        (where a raw DOI string essentially never matches tokenized
+        chunk text) and land on the "not in the local corpus" guidance
+        for a paper that IS held.
+        """
+        rid = _seed_paper(
+            store,
+            slug="ddu099-paper",
+            title="A dopamine study",
+            doi="10.1093/hmg/ddu099",
+            blocks=["Introduction.", "Methods.", "Results."],
+        )
+        resp = handler.search(q="10.1093/hmg/ddu099")
+        body = resp.body
+        assert "not in the local corpus" not in body
+        assert "no paper blocks match" not in body
+        assert handle_registry.format_handle("paper", rid) in body
+        # The record callout answers "is this here?" without decoding a
+        # block row — reuses the title-introducer's callout mechanism,
+        # labelled for a DOI match rather than a title match.
+        assert "DOI match" in body
+
+    def test_search_bare_doi_hit_with_no_chunks_still_says_present(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Belt-and-braces (fix 2): a DOI that resolves to a real paper
+        with zero readable chunks (a bare stub) must still say the
+        paper is already in the corpus — never "not in the local
+        corpus", which would invite a duplicate stub mint.
+        """
+        rid = _seed_paper(
+            store,
+            slug="chunkless-stub",
+            doi="10.1234/chunkless",
+            blocks=[],
+        )
+        resp = handler.search(q="10.1234/chunkless")
+        body = resp.body
+        assert "not in the local corpus" not in body
+        assert "already in the local corpus" in body
+        assert handle_registry.format_handle("paper", rid) in body
+
+    def test_search_doi_hit_with_scope_falls_through_but_still_names_it(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Belt-and-braces (fix 2), the other trigger: an extra knob
+        (``scope=`` here) declines the short-circuit fast path on
+        purpose (the caller is intentionally filtering), and the real
+        scoped search then finds nothing (the literal DOI string
+        doesn't appear in the *other* paper's blocks) — the empty-hits
+        guidance must still say the DOI's paper is already held, not
+        "not in the local corpus".
+        """
+        _seed_paper(
+            store,
+            slug="ddu099-paper2",
+            doi="10.1093/hmg/ddu100",
+            blocks=["Introduction."],
+        )
+        other_id = _seed_paper(
+            store, slug="other-scope-paper", blocks=["unrelated body text"]
+        )
+        resp = handler.search(
+            q="10.1093/hmg/ddu100",
+            scope=handle_registry.format_handle("paper", other_id),
+        )
+        body = resp.body
+        assert "not in the local corpus" not in body
+        assert "already in the local corpus" in body
+
+    def test_search_doi_embedded_in_longer_query_is_unaffected(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Decision (gr244678, part d): the short-circuit is bare-DOI-only
+        — a DOI embedded in a longer free-text query is NOT extracted
+        and checked; it falls through to the ordinary search path
+        unchanged (same as before this fix), since ``_DOI_RE`` is
+        anchored ``^...$``.
+        """
+        _seed_paper(
+            store,
+            slug="ddu099-paper3",
+            doi="10.1093/hmg/ddu099",
+            blocks=["Introduction."],
+        )
+        lex_only = PaperHandler(hub=Hub(store=store))
+        resp = lex_only.search(q="see 10.1093/hmg/ddu099 please")
+        body = resp.body
+        # Not treated as a DOI query at all — no DOI-specific guidance,
+        # just the ordinary no-match path (the phrase doesn't literally
+        # appear in any seeded block).
+        assert "not in the local corpus" not in body
+        assert "already in the local corpus" not in body
+        assert "no paper blocks match" in body
+
+    def test_search_ordinary_query_unchanged(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Pin: a plain (non-DOI) query's rendering is untouched by the
+        DOI short-circuit — the DOI resolution check is a fast no-op
+        for the common case.
+        """
+        _seed_paper(
+            store,
+            slug="paper-plain",
+            title="Plain",
+            blocks=["nitrate reduction copper catalyst"],
+        )
+        resp = handler.search(q="nitrate reduction", page_size=5)
+        body = resp.body
+        assert "block hit" in body
+        assert chunk_handle(store, "paper-plain") in body
+        assert "DOI match" not in body
+        assert "not in the local corpus" not in body
+
     def test_singleton_hit_no_redundant_trailer(
         self, store: Store, handler: PaperHandler
     ) -> None:

@@ -152,12 +152,38 @@ def _title_match_line(ref: Any) -> tuple[str, str]:
     return str(handle), f"{handle} [{held}] — {authors} ({year}). {title}{suffix}"
 
 
-def _render_title_callout(matches: list[tuple[str, str]]) -> str:
-    """The ``Title match:`` block that precedes the block-hit table."""
+def _render_title_callout(
+    matches: list[tuple[str, str]], *, label: str = "Title match"
+) -> str:
+    """The ``Title match:`` block that precedes the block-hit table.
+
+    ``label`` overrides the leading word for a callout populated by a
+    different promotion source than title similarity — see the
+    bare-DOI short-circuit in :meth:`FusedBlockSearch.run`, which
+    reuses this exact mechanism (the callout + the "record is here"
+    guarantee) but names the match by DOI, not title.
+    """
     if not matches:
         return ""
-    head = "Title match — the paper record" + ("s" if len(matches) > 1 else "") + ":"
+    head = f"{label} — the paper record" + ("s" if len(matches) > 1 else "") + ":"
     return "\n\n" + head + "\n" + "\n".join(f"  {ln}" for _h, ln in matches)
+
+
+def _representative_block_for_ref(store: Store, rid: int) -> Any | None:
+    """First body chunk for ``rid``, falling back to its combined card.
+
+    Shared by the title-similarity introducer
+    (:meth:`FusedBlockSearch._inject_title_matches`) and the bare-DOI
+    short-circuit — both need "some readable block for a ref we
+    already know the id of" to render a promoted hit row alongside
+    the record callout. ``None`` when the ref has no chunks at all
+    (a bare stub, or a card-only ref whose card lookup also misses).
+    """
+    block = store.chunks.get_chunk(rid, pos=0) or store.chunks.get_chunk(rid, pos=-1)
+    if block is None:
+        body = store.chunks.list_chunks_for_ref(rid)
+        block = body[0] if body else None
+    return block
 
 
 def _apply_retraction_downrank(
@@ -485,6 +511,22 @@ class BlockSearchResult:
     #: (2017). Attention is All you Need"), rendered above the block
     #: table. See :meth:`FusedBlockSearch._inject_title_matches`.
     title_matches: list[tuple[str, str]] = field(default_factory=list)
+    #: ``True`` when ``title_matches`` was populated by the bare-DOI
+    #: short-circuit (gr244678) rather than title similarity — the
+    #: renderer swaps the callout's leading word ("DOI match" instead
+    #: of "Title match") accordingly. See
+    #: :meth:`FusedBlockSearch.run`'s DOI short-circuit block.
+    doi_match: bool = False
+    #: Set whenever ``q`` is bare-DOI-shaped (``_DOI_RE`` full match)
+    #: AND ``store.find_paper_slug_by_doi`` resolved it — to the
+    #: resolved paper's display handle — regardless of whether the
+    #: short-circuit above actually ran (it may have been skipped for
+    #: an extra filter like ``scope=``). Belt-and-braces for the
+    #: empty-hits renderer branch (gr244678 fix 2): a DOI that
+    #: resolves but still lands here with zero hits (e.g. the
+    #: resolved paper has no readable chunk) must say the paper
+    #: exists and name it, never "not in the local corpus".
+    doi_resolved_id: str | None = None
 
 
 @dataclass
@@ -554,12 +596,7 @@ class FusedBlockSearch:
                     continue
                 if ref is None:
                     continue
-                block = self.store.chunks.get_chunk(
-                    rid, pos=0
-                ) or self.store.chunks.get_chunk(rid, pos=-1)
-                if block is None:
-                    body = self.store.chunks.list_chunks_for_ref(rid)
-                    block = body[0] if body else None
+                block = _representative_block_for_ref(self.store, rid)
                 if block is None:
                     continue
                 front.append((block, ref, float("inf")))
@@ -598,9 +635,98 @@ class FusedBlockSearch:
         # time ``run`` executes paper.py is fully loaded; see this
         # module's docstring for why the import is deferred rather than
         # top-level.
-        from precis.handlers.paper import _maybe_resolve_doi, _suggest_paper_slugs
+        from precis.handlers.paper import (
+            _DOI_RE,
+            _maybe_resolve_doi,
+            _suggest_paper_slugs,
+        )
 
         kind = self.kind
+
+        # Bare-DOI short-circuit (gr244678): ``q=`` shaped exactly like a
+        # DOI (``_DOI_RE`` is anchored ``^...$``, so a DOI embedded in a
+        # longer free-text query never matches here — that case falls
+        # through to the ordinary lexical/semantic path below, on
+        # purpose: extracting a DOI substring out of free text is a much
+        # less certain feature than an exact-DOI query) for an
+        # already-ingested paper used to run the ordinary block search
+        # anyway. A raw DOI string essentially never appears verbatim in
+        # tokenized chunk text, so that search came back empty and the
+        # renderer's empty-hits branch — which pattern-matches the same
+        # DOI shape — asserted "not in the local corpus" for a paper
+        # that WAS fully ingested (e.g. ``10.1093/hmg/ddu099`` / pa244039).
+        #
+        # Resolve the DOI first — the same ``find_paper_slug_by_doi``
+        # lookup ``scope=``'s DOI resolution already uses via
+        # ``_maybe_resolve_doi`` below — and when it hits, short-circuit
+        # straight to that paper as the sole result via the exact same
+        # "record callout + promoted representative block" mechanism the
+        # title-similarity introducer uses (see
+        # ``_inject_title_matches`` / ``_representative_block_for_ref``)
+        # rather than inventing a new rendering shape.
+        #
+        # Only takes the fast path on an otherwise-plain call (no
+        # scope=/tags=/after=/before=/exclude=/broad-retrieval knobs, and
+        # page=1) — any of those means the caller is intentionally
+        # filtering/paginating, so fall through to the real search
+        # instead of second-guessing it. ``doi_resolved_id`` is still
+        # computed either way and threaded onto the returned
+        # ``BlockSearchResult`` so the renderer's empty-hits branch can
+        # give correct guidance even when the fast path was skipped
+        # (fix 2 — belt-and-braces).
+        doi_query_match = _DOI_RE.match(q.strip())
+        doi_query = doi_query_match.group(1) if doi_query_match is not None else None
+        doi_resolved_slug = (
+            self.store.find_paper_slug_by_doi(doi_query)
+            if doi_query is not None
+            else None
+        )
+        doi_resolved_id: str | None = None
+        doi_resolved_ref: Any | None = None
+        if doi_resolved_slug is not None:
+            doi_resolved_ref = resolve_live_slug_ref(
+                self.store, kind=kind, id=doi_resolved_slug
+            )
+            doi_resolved_id = (
+                handle_registry.try_format(doi_resolved_ref.kind, doi_resolved_ref.id)
+                or doi_resolved_ref.slug
+                or f"{kind}:{doi_resolved_ref.id}"
+            )
+            if (
+                page == 1
+                and scope is None
+                and after is None
+                and before is None
+                and not tags
+                and not exclude
+                and not queries
+                and not answers
+                and per_paper is None
+            ):
+                block = _representative_block_for_ref(self.store, doi_resolved_ref.id)
+                hits = (
+                    [(block, doi_resolved_ref, float("inf"))]
+                    if block is not None
+                    else []
+                )
+                return BlockSearchResult(
+                    kind=kind,
+                    q=q,
+                    page=page,
+                    page_size=page_size,
+                    scope=scope,
+                    hits=hits,
+                    year_notice="",
+                    broad=False,
+                    broad_has_more=False,
+                    single_page_has_more=False,
+                    total=(1 if hits else None),
+                    title_matches=(
+                        [_title_match_line(doi_resolved_ref)] if hits else []
+                    ),
+                    doi_match=True,
+                    doi_resolved_id=doi_resolved_id,
+                )
 
         # Publish-date filter: ``after`` / ``before`` are inclusive
         # publication-year bounds (the corpus stores year, not full
@@ -980,6 +1106,13 @@ class FusedBlockSearch:
             per_paper_cap=per_paper_cap,
             total=total,
             title_matches=title_matches,
+            # ``doi_resolved_id`` survives even when the fast-path guard
+            # above declined to short-circuit (e.g. an explicit
+            # ``scope=``/``exclude=`` alongside a bare-DOI ``q=``) — the
+            # renderer's empty-hits branch still needs it so a DOI that
+            # DOES resolve, but whose filtered/real search still came
+            # back empty, never says "not in the local corpus" (fix 2).
+            doi_resolved_id=doi_resolved_id,
         )
 
 
@@ -1025,10 +1158,16 @@ class PaperSearchResultRenderer:
             # so a literal "paper" leaked the wrong kind
             # (`no paper blocks match` on a cfp/datasheet search).
             body = f"no {kind} blocks match {q!r}"
-            # A title match with no promotable block still answers the
+            # A title/DOI match with no promotable block still answers the
             # question the caller actually asked ("is this paper here?").
-            body += _render_title_callout(result.title_matches)
+            callout_label = "DOI match" if result.doi_match else "Title match"
+            body += _render_title_callout(result.title_matches, label=callout_label)
             if result.title_matches:
+                open_desc = (
+                    "open the matched paper — TOC reading entry point"
+                    if result.doi_match
+                    else "open the title-matched paper — TOC reading entry point"
+                )
                 return Response(
                     body=body
                     + render_next_section(
@@ -1036,8 +1175,7 @@ class PaperSearchResultRenderer:
                             (
                                 f"get(kind='{kind}', "
                                 f"id='{result.title_matches[0][0]}', view='toc')",
-                                "open the title-matched paper — TOC "
-                                "reading entry point",
+                                open_desc,
                             ),
                             (
                                 f"search(kind='{kind}', title={q!r})",
@@ -1047,9 +1185,34 @@ class PaperSearchResultRenderer:
                     )
                     + year_notice
                 )
-            doi_match = _DOI_RE.match(q.strip())
-            if doi_match is not None:
-                doi = doi_match.group(1)
+            doi_re_match = _DOI_RE.match(q.strip())
+            if doi_re_match is not None and result.doi_resolved_id is not None:
+                # Belt-and-braces (fix 2): FusedBlockSearch already
+                # confirmed via ``find_paper_slug_by_doi`` that this DOI
+                # resolves to an ingested paper — via the short-circuit
+                # above (skipped here only when the block lookup itself
+                # came up empty, e.g. a bare stub with no chunks) or
+                # because an extra knob (``scope=``/``exclude=``/etc.)
+                # declined the fast path but the underlying paper is
+                # still there. Never claim "not in the local corpus" for
+                # a paper we just proved IS there.
+                return Response(
+                    body=body
+                    + "\n\nThis DOI is already in the local corpus as "
+                    f"{result.doi_resolved_id!r} — the search above just "
+                    "found no matching block for it."
+                    + render_next_section(
+                        [
+                            (
+                                f"get(id='{result.doi_resolved_id}')",
+                                "open the paper record directly",
+                            ),
+                        ]
+                    )
+                    + year_notice
+                )
+            if doi_re_match is not None:
+                doi = doi_re_match.group(1)
                 body += "\n\nThis DOI is not in the local corpus. "
                 body += (
                     "Pull it into the corpus via the paper-stub + "
@@ -1180,7 +1343,10 @@ class PaperSearchResultRenderer:
         body = (
             head
             + year_notice
-            + _render_title_callout(result.title_matches)
+            + _render_title_callout(
+                result.title_matches,
+                label="DOI match" if result.doi_match else "Title match",
+            )
             + "\n\n"
             + rendered_table
         )
@@ -1211,7 +1377,9 @@ class PaperSearchResultRenderer:
             nav.append(
                 (
                     f"get(kind='{kind}', id='{top_paper}', view='toc')",
-                    "open the title-matched paper — TOC reading entry point",
+                    "open the matched paper — TOC reading entry point"
+                    if result.doi_match
+                    else "open the title-matched paper — TOC reading entry point",
                 )
             )
         if hits:
