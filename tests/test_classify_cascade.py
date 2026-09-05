@@ -400,3 +400,100 @@ def test_concurrency_below_1_floors_to_1(store: Any, bad: int) -> None:
         store, client=_AlwaysOwnClient(), batch_size=5, concurrency=bad
     )
     assert result["ok"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Stale-claim reclaim (gr279488): a worker that crashes mid-batch must not
+# permanently orphan its `chunk_claims` lease.
+# ---------------------------------------------------------------------------
+
+
+def _insert_stale_claim(store: Any, *, chunk_id: int, age_min: int) -> None:
+    """Back-date a ``chunk_claims`` row for ``chunk_id`` under this pass's
+    artifact — simulates a worker that leased the chunk and then crashed
+    before writing the ``ROLE3`` tag / deleting the claim."""
+    from precis.workers import classify as c
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact, claimed_at) "
+            "VALUES (%s, %s, now() - (%s * interval '1 minute'))",
+            (chunk_id, c.ARTIFACT, age_min),
+        )
+        conn.commit()
+
+
+def test_reclaim_picks_up_a_stale_untagged_claim(store: Any) -> None:
+    """The gr279488 orphan shape exactly: a chunk_claims row past cooldown
+    whose chunk was never tagged (crash before write) is reclaimed and
+    returned to the pool — not stuck forever."""
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    cid = seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+    _insert_stale_claim(store, chunk_id=cid, age_min=c._CLAIM_COOLDOWN_MIN + 1)
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=5)
+        conn.commit()
+
+    assert [r["chunk_id"] for r in rows] == [cid]
+
+
+def test_reclaim_end_to_end_processes_the_orphaned_chunk(store: Any) -> None:
+    """Full pass: a chunk stuck under an abandoned stale claim gets
+    reclaimed, classified, and tagged — the orphan actually unsticks, not
+    just the claim-query in isolation."""
+    ref = seed_ref(store)
+    cid = seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+
+    class _CascadeClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls += 1
+            val = "not_junk" if self.calls == 1 else "own"
+            return SimpleNamespace(text=f'{{"value": "{val}"}}', total_tokens=5)
+
+    from precis.workers import classify as c
+
+    _insert_stale_claim(store, chunk_id=cid, age_min=c._CLAIM_COOLDOWN_MIN + 5)
+
+    result = run_classify_pass(store, client=_CascadeClient("unused"), batch_size=10)
+
+    assert result["claimed"] == 1
+    assert result["ok"] == 1
+    assert _role3_tags(store, ref) == ["own"]
+
+
+def test_fresh_claim_within_cooldown_is_not_reclaimed(store: Any) -> None:
+    """A claim younger than the cooldown is a live in-flight lease, not an
+    abandoned one — it must not be double-claimed by a concurrent pass."""
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    cid = seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+    _insert_stale_claim(store, chunk_id=cid, age_min=1)  # well under cooldown
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=5)
+        conn.commit()
+
+    assert rows == []
+
+
+def test_stale_claim_on_an_already_tagged_chunk_is_never_reclaimed(store: Any) -> None:
+    """If the chunk already carries its ``ROLE3`` tag (the pass's "done"
+    signal), a lingering stale claim row for it must never be reclaimed —
+    that outcome is already complete, not orphaned."""
+    from precis.store.types import Tag
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    cid = seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+    store.add_tag(ref, Tag.closed(c.OUTPUT_NAMESPACE, "own"), pos=0, set_by="agent")
+    _insert_stale_claim(store, chunk_id=cid, age_min=c._CLAIM_COOLDOWN_MIN + 1)
+
+    with store.pool.connection() as conn:
+        rows = c._reclaim_slice(conn, limit=5, ref_ids=None)
+        conn.commit()
+
+    assert rows == []

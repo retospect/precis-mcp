@@ -56,23 +56,72 @@ def _log_runner_batch(
 
 
 def test_backlog_last_done_reads_handler_not_pass(store: Any) -> None:
-    """``last_ts`` comes from ``payload->>'handler'``, not ``pass``.
+    """``last_ts`` comes from ``payload->>'handler'``, not ``pass``, for the
+    passes still routed through ``worker_logs`` (``embed`` has its own
+    truthful source since gr204324 — see
+    ``test_backlog_embed_last_ts_from_chunk_embeddings`` below).
 
-    A productive ``embed:bge-m3`` batch logged under ``pass='runner'``
-    must still stamp the ``embed`` backlog row's ``last_ts``. The
-    ``summarize`` row has no productive batch → no ``last_ts``.
+    A productive ``summarize:rake-lemma`` batch logged under ``pass='runner'``
+    must still stamp the ``summarize`` backlog row's ``last_ts``. The
+    ``chunk_keywords`` row only logged an idle batch → no ``last_ts``.
     """
-    _log_runner_batch(store, handler="embed:bge-m3", ok=32, claimed=32)
-    # An idle (claimed/ok = 0) embed batch must NOT count as productive.
+    _log_runner_batch(store, handler="summarize:rake-lemma", ok=10, claimed=10)
+    # An idle (claimed/ok = 0) batch must NOT count as productive.
     _log_runner_batch(store, handler="chunk_keywords", ok=0, claimed=0)
 
     backlog = _backlog_counts(store)
 
-    assert backlog["embed"].get("last_ts") is not None
+    assert backlog["summarize"].get("last_ts") is not None
     # chunk_keywords only logged an idle batch → no productive timestamp.
     assert backlog["chunk_keywords"].get("last_ts") is None
-    # summarize never logged at all → no timestamp.
-    assert backlog["summarize"].get("last_ts") is None
+
+
+def test_backlog_embed_last_ts_from_chunk_embeddings(store: Any) -> None:
+    """gr204324: embed dispatches via ``embed_batch`` -> ``job_inproc`` since
+    the dispatch refactor, so it never logs a ``payload->>'handler'``
+    matching ``'embed'`` under ``pass='runner'`` — the generic join every
+    other pass uses can never match, and the check read "last batch never"
+    forever even while ``chunk_embeddings`` was actively being written. The
+    embed row's ``last_ts`` must instead come straight from
+    ``max(chunk_embeddings.created_at)``, which a fresh write moves forward
+    with NO ``worker_logs`` row at all."""
+    with store.pool.connection() as conn:
+        before = conn.execute("SELECT now()").fetchone()[0]
+        conn.commit()
+
+    ref = store.insert_ref(kind="memory", slug=None, title="t", meta={})
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', 'x') RETURNING chunk_id",
+            (ref.id,),
+        ).fetchone()
+        assert row is not None
+        cid = int(row[0])
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, status) "
+            "VALUES (%s, 'bge-m3', 'ok')",
+            (cid,),
+        )
+        conn.commit()
+
+    backlog = _backlog_counts(store)
+
+    last_ts = backlog["embed"].get("last_ts")
+    assert last_ts is not None
+    assert last_ts >= before  # tracks the fresh write, not a stale/absent join
+
+
+def test_backlog_embed_last_ts_is_none_on_an_empty_table(store: Any) -> None:
+    """No ``chunk_embeddings`` rows at all → truthfully "never", not a stale
+    leftover from the (now-unused) ``worker_logs`` join."""
+    # A worker_logs row that would have (wrongly) satisfied the old join must
+    # NOT resurrect a last_ts now that the source is chunk_embeddings itself.
+    _log_runner_batch(store, handler="embed:bge-m3", ok=32, claimed=32)
+
+    backlog = _backlog_counts(store)
+
+    assert backlog["embed"].get("last_ts") is None
 
 
 def _seed_kw_chunk(

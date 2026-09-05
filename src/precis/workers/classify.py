@@ -79,6 +79,21 @@ ARTIFACT = f"classify:cascade-v{CLASSIFY_VERSION}"
 _AXES_DIR = Path(__file__).resolve().parent.parent / "data" / "axes"
 _ROLE3_VALS = {"own", "background", "furniture"}
 
+#: A ``chunk_claims`` row older than this many minutes is treated as
+#: abandoned (worker crashed/stalled mid-batch) and re-claimed — same
+#: semantics/value as ``WorkerHandler._CLAIM_COOLDOWN_MIN``
+#: (``workers/base.py``), mirrored here rather than imported because this
+#: module's claim shape (a shared lease table keyed by an *absent tag*, not
+#: a per-artifact output-table row) doesn't fit the base class's
+#: ``claim_batch``/``process`` contract (see the module docstring: this pass
+#: is self-contained, not a ``WorkerHandler`` subclass). gr279488: without
+#: this, a worker that dies mid-batch orphans its ``chunk_claims`` rows
+#: forever — the claim query's ``NOT EXISTS chunk_claims`` predicate treats
+#: *any* claim row (fresh or abandoned) as "already spoken for", so the
+#: eligible-unclaimed pool silently drains to zero while thousands of
+#: claimed-but-never-tagged chunks sit stuck.
+_CLAIM_COOLDOWN_MIN = 20
+
 #: Env var hard-capping the effective in-pass concurrency (``run_classify_pass``'s
 #: ``concurrency=``) regardless of what a ``service_config`` row / caller asks
 #: for — guards a fat-fingered ``/categorizers`` value (or a bad caller) from
@@ -259,6 +274,70 @@ def _claim_slice(
     ]
 
 
+def _reclaim_slice(
+    conn,
+    *,
+    limit: int,
+    ref_ids: list[int] | None,
+) -> list[dict]:
+    """Re-lease up to ``limit`` stale ``chunk_claims`` rows for this artifact —
+    the cooldown-based crash-recovery pass mirroring
+    ``WorkerHandler._claim_reclaim`` (``workers/base.py``). "Stale" is
+    ``claimed_at`` older than :data:`_CLAIM_COOLDOWN_MIN`; "still eligible"
+    (this pass's notion of "not done yet") is the chunk still lacking the
+    ``ROLE3`` tag :func:`run_classify_pass` writes on success — the same
+    completion signal :func:`_claim_slice`'s ``NOT EXISTS chunk_tags``
+    predicate uses for a fresh claim. A claim whose chunk *does* carry the
+    tag already (the worker wrote it, then crashed before ``DELETE``-ing the
+    claim — not this pass's failure mode today, since nothing currently
+    deletes a claim row, but kept correct defensively) is never reclaimed.
+    Bumping ``claimed_at`` in place (not delete+re-insert) keeps the same
+    primary-key row so a concurrent claimant's ``FOR UPDATE ... SKIP LOCKED``
+    still serializes on it."""
+    ref_filter = "AND c.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
+    sql = f"""
+    WITH cand AS (
+      SELECT cl.chunk_id, c.ref_id, c.ord, c.text, c.section_path
+        FROM chunk_claims cl
+        JOIN chunks c ON c.chunk_id = cl.chunk_id
+       WHERE cl.artifact = %(art)s
+         AND cl.claimed_at < now() - (%(cooldown_min)s * interval '1 minute')
+         AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
+                         WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(ns)s)
+         {ref_filter}
+       ORDER BY cl.claimed_at
+       LIMIT %(limit)s
+         FOR UPDATE OF cl SKIP LOCKED
+    ), reclaimed AS (
+      UPDATE chunk_claims cl SET claimed_at = now()
+        FROM cand
+       WHERE cl.chunk_id = cand.chunk_id AND cl.artifact = %(art)s
+      RETURNING cl.chunk_id
+    )
+    SELECT cand.chunk_id, cand.ref_id, cand.ord, cand.text, cand.section_path
+      FROM cand JOIN reclaimed USING (chunk_id)
+    """
+    params: dict[str, Any] = {
+        "ns": OUTPUT_NAMESPACE,
+        "art": ARTIFACT,
+        "cooldown_min": _CLAIM_COOLDOWN_MIN,
+        "limit": limit,
+    }
+    if ref_ids:
+        params["ref_ids"] = list(ref_ids)
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "chunk_id": r[0],
+            "ref_id": r[1],
+            "ord": r[2],
+            "text": r[3],
+            "section_path": list(r[4] or []),
+        }
+        for r in rows
+    ]
+
+
 def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
     """Lease up to ``limit`` body chunks needing a ROLE3 tag.
 
@@ -279,19 +358,33 @@ def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
 
     (``llm_summarize`` deliberately does NOT do this — its ``ref_id, ord``
     contiguity is a llama.cpp prefix-cache optimization; see that module.)
+
+    Two sources per claim, fresh then reclaim (mirrors
+    ``WorkerHandler.claim_batch``, ``workers/base.py``): FRESH chunks first
+    (never claimed at all), then — only if that leaves the batch short —
+    :func:`_reclaim_slice` tops up from stale abandoned claims (gr279488: a
+    worker that crashed mid-batch must not permanently orphan its lease).
     """
     if ref_ids:
-        return _claim_slice(
+        rows = _claim_slice(
             conn, limit=limit, ref_ids=ref_ids, floor=None, floor_cmp=">="
         )
+        if len(rows) < limit:
+            rows += _reclaim_slice(conn, limit=limit - len(rows), ref_ids=ref_ids)
+        return rows
     floor = _random_chunk_anchor(conn)
     if floor is None:  # empty corpus
-        return _claim_slice(conn, limit=limit, ref_ids=None, floor=None, floor_cmp=">=")
-    rows = _claim_slice(conn, limit=limit, ref_ids=None, floor=floor, floor_cmp=">=")
-    if len(rows) < limit:
-        rows += _claim_slice(
-            conn, limit=limit - len(rows), ref_ids=None, floor=floor, floor_cmp="<"
+        rows = _claim_slice(conn, limit=limit, ref_ids=None, floor=None, floor_cmp=">=")
+    else:
+        rows = _claim_slice(
+            conn, limit=limit, ref_ids=None, floor=floor, floor_cmp=">="
         )
+        if len(rows) < limit:
+            rows += _claim_slice(
+                conn, limit=limit - len(rows), ref_ids=None, floor=floor, floor_cmp="<"
+            )
+    if len(rows) < limit:
+        rows += _reclaim_slice(conn, limit=limit - len(rows), ref_ids=None)
     return rows
 
 

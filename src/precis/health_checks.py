@@ -201,18 +201,31 @@ def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
 
     for pass_name in rows:
         try:
-            row = conn.execute(
-                """
-                SELECT ts FROM worker_logs
-                 WHERE pass = 'runner'
-                   AND ts > now() - interval '6 hours'
-                   AND COALESCE((payload->>'ok')::int, 0) > 0
-                   AND split_part(payload->>'handler', ':', 1) = %s
-                 ORDER BY ts DESC
-                 LIMIT 1
-                """,
-                (pass_name,),
-            ).fetchone()
+            if pass_name == "embed":
+                # gr204324: embed dispatches via embed_batch -> job_inproc
+                # since the dispatch refactor, so it never logs a
+                # `worker_logs.payload->>'handler'` row split-part-matching
+                # 'embed' — the generic join below can never match and the
+                # check reads "last batch never" forever even while the pass
+                # is actively draining. `chunk_embeddings.created_at` is the
+                # truthful write-time signal instead of a proxy through a
+                # logging path this pass doesn't use.
+                row = conn.execute(
+                    "SELECT max(created_at) FROM chunk_embeddings"
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT ts FROM worker_logs
+                     WHERE pass = 'runner'
+                       AND ts > now() - interval '6 hours'
+                       AND COALESCE((payload->>'ok')::int, 0) > 0
+                       AND split_part(payload->>'handler', ':', 1) = %s
+                     ORDER BY ts DESC
+                     LIMIT 1
+                    """,
+                    (pass_name,),
+                ).fetchone()
             if row and row[0] is not None:
                 rows[pass_name]["last_ts"] = row[0]
         except Exception:
