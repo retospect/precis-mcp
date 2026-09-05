@@ -1197,8 +1197,7 @@ class PaperSearchResultRenderer:
                 # still there. Never claim "not in the local corpus" for
                 # a paper we just proved IS there.
                 return Response(
-                    body=body
-                    + "\n\nThis DOI is already in the local corpus as "
+                    body=body + "\n\nThis DOI is already in the local corpus as "
                     f"{result.doi_resolved_id!r} — the search above just "
                     "found no matching block for it."
                     + render_next_section(

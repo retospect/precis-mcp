@@ -297,3 +297,40 @@ class TestToMetres:
         2000m one — an envelope is the last place a silently-wrong
         magnitude should reach."""
         assert catalog.to_metres(2000.0, unit) is None
+
+
+class TestMissingSpecReporting:
+    """``_need`` collects the WHOLE missing set rather than stopping at the
+    first gap: "screw needs head_height, length" tells you what to go and
+    record, where "screw needs head_height" sends you back for a second
+    round trip.
+
+    Two independent early-outs reach that list — an *absent* key (which
+    fails to coerce) and a *present but invalid* one (zero, negative,
+    nan) — and each needs its own plural case. The rung-2b mutation pass
+    found the second: a ``continue``→``break`` survived, and the first
+    test written for it passed *with the mutation applied* because it
+    only exercised the absent-key path."""
+
+    def test_absent_keys_are_all_named(self) -> None:
+        d = catalog.derive("fastener", {"head_diameter": 0.010})
+        assert not d.ok
+        assert d.why_not is not None
+        assert "head_height" in d.why_not
+        assert "length" in d.why_not
+
+    def test_an_invalid_value_does_not_hide_the_gaps_after_it(self) -> None:
+        """head_diameter is present-but-zero (the invalid-value branch);
+        length is absent. Both must be reported — stopping at the first
+        would report only head_diameter."""
+        d = catalog.derive("fastener", {"head_diameter": 0.0, "head_height": 0.006})
+        assert not d.ok
+        assert d.why_not is not None
+        assert "head_diameter" in d.why_not
+        assert "length" in d.why_not
+
+    def test_a_present_spec_is_not_reported_missing(self) -> None:
+        d = catalog.derive("fastener", {"head_diameter": 0.010, "length": 0.030})
+        assert d.why_not is not None
+        assert "head_height" in d.why_not
+        assert "length" not in d.why_not

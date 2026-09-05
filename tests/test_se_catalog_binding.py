@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+import precis
 import precis_se
 from precis.dispatch import Hub
 from precis.handlers.component import ComponentHandler
@@ -28,6 +29,41 @@ from precis_se.handler import SeHandler
 from precis_se.ops import PortSpec, SeBlock, SeTree, effective_envelope, effective_ports
 
 _MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
+_CORE_MIGRATIONS = Path(precis.__file__).parent / "migrations"
+
+
+#: 0093's *category-scoped* core specs — the ones a fastener mint needs.
+#: Distinct from 0152's universal geometry specs, which is the whole
+#: point of :func:`_ensure_fastener_specs`.
+_FASTENER_SPECS = ("thread_size", "thread_pitch", "length", "grade", "drive_type")
+
+
+def _ensure_fastener_specs(store: Store) -> None:
+    """Guarantee 0093's category-scoped spec seed before minting.
+
+    Works around a test-DB defect (see
+    ``docs/backlog/component-seed-guard-misses-scoped-specs.md``): on the
+    gate's per-worker clones these rows are absent while 0093's
+    *universal* specs and 0152's are present, so a series mint silently
+    skips four specs and the catalog derivation later reports "screw
+    needs length". conftest's ``_ensure_component_seed`` is the intended
+    guard and does not reliably reach those clones.
+
+    A fixture asserting its own precondition is legitimate; hiding the
+    gap would not be, which is why the mint below still asserts a
+    complete write rather than tolerating a partial one."""
+    core = _CORE_MIGRATIONS / "0093_component_kind.sql"
+    if not core.exists():  # pragma: no cover — checkout predates component
+        return
+    with store.pool.connection() as c:
+        row = c.execute(
+            "SELECT count(*) FROM component_specs "
+            "WHERE status = 'core' AND category_id IS NOT NULL"
+        ).fetchone()
+        if row is not None and row[0] > 0:
+            return
+        body = core.read_text(encoding="utf-8")
+        c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
 
 
 @pytest.fixture
@@ -37,14 +73,21 @@ def handler(hub: Hub, store: Store) -> SeHandler:
             body = sql.read_text(encoding="utf-8")
             body = body.replace("BEGIN;", "").replace("COMMIT;", "")
             c.execute(body)
+    _ensure_fastener_specs(store)
     return SeHandler(hub=hub)
 
 
 def _bolt(hub: Hub, slug: str = "iso-4762-m6x30") -> str:
     """Mint the M6x30 socket cap through the rung-2a series path — the
     real producer of these spec rows, so the test covers the seam rather
-    than a hand-built fixture."""
-    ComponentHandler(hub=hub).put(id=slug, series="iso-4762", size="M6x30")
+    than a hand-built fixture.
+
+    The assertion is load-bearing, not decoration: every test below
+    assumes the mint wrote *all* the dimensions, and a partial mint would
+    otherwise surface far downstream as a mystifying "screw needs length"
+    from the catalog. Failing here says plainly which half is broken."""
+    resp = ComponentHandler(hub=hub).put(id=slug, series="iso-4762", size="M6x30")
+    assert "skipped" not in resp.body, f"incomplete mint: {resp.body}"
     return slug
 
 

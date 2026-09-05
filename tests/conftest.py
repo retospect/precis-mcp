@@ -962,11 +962,30 @@ def _ensure_component_seed(dsn: str) -> None:
         ).fetchone()
         if not (exists and exists[0]):
             return  # 0093 hasn't applied yet; apply_all's own run will seed it
-        core_count = conn.execute(
-            "SELECT count(*) FROM component_categories WHERE status = 'core'"
+        # BOTH halves of 0093's seed, and the spec half is probed with a
+        # discriminator that only 0093 can satisfy: a core spec **scoped
+        # to a category**. A bare "any core spec exists" test is not
+        # enough — 0152 seeds ten *universal* core specs of its own, so
+        # after it runs the table is non-empty even when every one of
+        # 0093's rows is missing.
+        #
+        # That state is reachable, and was: the baseline dump carries the
+        # `_migrations` ledger but no seed rows, so a DB built from it has
+        # 0093 marked applied (its INSERTs never re-run) while 0152, being
+        # newer than the baseline, runs for real. Categories-only guard →
+        # early return → 0093's category-scoped specs (thread_size,
+        # thread_pitch, length, grade, drive_type, …) stay missing. It
+        # surfaced far downstream as an se catalog derivation reporting
+        # "screw needs length" for a component whose mint had silently
+        # skipped exactly those four specs.
+        counts = conn.execute(
+            "SELECT (SELECT count(*) FROM component_categories "
+            "        WHERE status = 'core'), "
+            "       (SELECT count(*) FROM component_specs "
+            "        WHERE status = 'core' AND category_id IS NOT NULL)"
         ).fetchone()
-        if core_count and core_count[0] > 0:
-            return  # seed intact — nothing to repair
+        if counts and counts[0] > 0 and counts[1] > 0:
+            return  # both halves intact — nothing to repair
         log.warning(
             "conftest: component_categories core seed missing on %r — "
             "re-applying 0093's seed directly (see _ensure_component_seed)",
