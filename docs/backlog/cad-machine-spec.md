@@ -179,7 +179,7 @@ is a clean `BadInput` naming the offender.
 - Rendering port frames/axes in the web viewer.
 - `check:`-style assertions over mates.
 
-## Slice 3 — joints
+## Slice 3 — joints — **SHIPPED**
 
 `joint arm revolute axis:0,0,1 at:port shoulder limits:-90..90`, plus
 `prismatic`, `cylindrical`, `screw` (pitch), `fixed`, and ratio pairs
@@ -189,10 +189,19 @@ vector**; `get(..., args={'state': {...}})` poses it.
 Joints are declarations layered on the mate graph — they do not change the
 static geometry, they parameterize it.
 
+Amendments from the 2026-09-04 design session (`perplexity-research:317035`):
+**a mate IS a fixed joint** — slice 3 generalizes slice 2's solver rather
+than adding a sibling (`mate` stays as sugar for `joint … fixed`). Ports
+gain an optional **`type:`** (compatibility-checked at mate/joint time;
+registry shared with se-kind's annotation registry posture — the joint
+vocabulary is the scale-free piece: a σ-bond is a revolute, a double bond
+is planar-rigid). Slice 2's deferred component-scoped ports land here
+(`at:port shoulder` must know which body the frame rides on).
+
 **Acceptance:** a posed design probes correctly at any legal state; an
 out-of-limit state is rejected; joint-free designs behave exactly as today.
 
-## Slice 4 — `view='sweep'` (motion interference)
+## Slice 4 — `view='sweep'` (motion interference) — **SHIPPED**
 
 Pose the joint chain across its declared limits; report collisions (which two
 bodies, at which state) and the swept envelope per moving body.
@@ -204,6 +213,47 @@ for slices 2–3 and the point of the whole sequence.
 Sampling strategy: coarse sweep over the state space, then bisect toward first
 contact on any pair whose clearance goes negative. Report the *state*, not
 just a boolean — a collision you can't locate is not actionable.
+
+### Decisions taken during the build (2026-09-05)
+
+- **Grammar deviation:** the instance form is `joint <inst>.<port> to
+  <anchor> <kind> [limits:lo..hi] [pitch:<mm>] [flip] [spin:]` (the mate
+  grammar generalised, stored in the same `meta['mates']` list with a
+  `kind` field — slice-2 rows read back as `fixed`); the component form
+  keeps the spec's shape as `joint <component> <kind> at:<port>`. No
+  `axis:` token — **the joint axis is the anchor/pivot port frame's z**,
+  so an axis is authored by rotating the port, never duplicated on the
+  joint line.
+- Joint names = subject instance/component; `state={name: q}` in any
+  probe/export view's args. Defaults clamp 0 into `limits:`; explicit
+  out-of-limits is refused, never clamped. `state` addresses only the top
+  design (sub-designs pose at defaults).
+- `gear`/`belt` are one coupling (`b = r × a`); the sign carries the
+  sense; chains resolve through the driver graph, cycles refused at parse.
+- Component joints conjugate (`F ∘ J(q) ∘ F⁻¹`); a mate anchored on a
+  port `of:` a jointed component follows it. Patterned nodes in a posed
+  component flatten per-copy (patterned `intersect` refused, same rule as
+  instancing); at neutral state the pattern survives byte-identical.
+- Typed ports (`type:`): mate refused only when BOTH sides are typed and
+  differ. Registry/vocabulary deliberately free-form until se-kind's
+  shared annotation registry exists.
+- **Latent slice-2 bug found & fixed:** `_inline` never solved a
+  sub-design's own mates — instancing a design that itself mates arrived
+  with its instances frozen at the origin. Sub-designs now solve at
+  defaults before inlining (test: `test_instancing_a_design_that_itself_mates`).
+- Sweep v1 samples (`args.n`, default 9, max 25) per joint with others
+  held neutral — **no bisection yet** (the report gives the sample range,
+  not the exact contact state) and no multi-joint cartesian product;
+  driven (coupled) joints are skipped as swept-via-their-drive. Bisection
+  + pairwise joint products are the obvious tier-2 upgrade if sweeps prove
+  too coarse in use.
+- Web viewer renders the **neutral state only** (no state slider yet) —
+  the joint lines show in the source panel; a pose control is future
+  viewer work, not a kernel gap.
+- Decision 4 needed **no migration**: `contains`/`part-of` shipped in
+  migration 0095 (component kind). `cad_save`/`derive` now sync
+  design→design `contains` links from the `use` lines (pruning on drop);
+  `view='links'` shows the assembly tree.
 
 **Acceptance:** a deliberately-colliding mechanism reports the offending pair
 and the state at first contact; a clear mechanism reports its minimum
@@ -295,4 +345,9 @@ you state intent and the kernel keeps it true.
 3. Does `use` of a *retired* design resolve? (Lean: no — a hard error, since a
    silently-empty sub-assembly is the worst possible failure mode.)
 4. Should slice 1 also emit `contains` links design→design, so `view='links'`
-   shows the assembly tree? (Lean yes, cheap, and the graph machinery exists.)
+   shows the assembly tree? **DECIDED yes** (Reto, 2026-09-04: "a dense graph
+   with all the info within a hop or two is our goal") and widened to a
+   four-relation migration (`contains`/`realizes`/`analyzed-by`/`made-by`)
+   → `design-graph-relations.md`. Sibling designs from the same session:
+   `attached-models-layer.md`, `make-tree-vs-design-tree.md`,
+   `cad-straddling-modules.md` (slice 5), `margin-budget-tree.md`.

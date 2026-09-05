@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
 
+from precis.cad.bulk import expr_aabb
 from precis.cad.bulk import volume as cad_volume
 from precis.cad.export import (
     ExportError,
@@ -47,8 +48,10 @@ from precis.cad.scene import (
     SceneError,
     SceneSpec,
     build_design,
+    couples_of,
     expand_instances,
     instance_slug,
+    joints_of,
     mates_of,
     parse_source,
     ports_of,
@@ -79,8 +82,11 @@ _PROBE_VIEWS = (
     "volume",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
-_OTHER_VIEWS = ("links",)
+_OTHER_VIEWS = ("links", "sweep")
 _VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_OTHER_VIEWS)
+
+#: view='sweep' samples per joint (args.n overrides, clamped here).
+_SWEEP_N_DEFAULT, _SWEEP_N_MIN, _SWEEP_N_MAX = 9, 3, 25
 
 
 def _vec(args: dict[str, Any], key: str) -> Vec3:
@@ -105,12 +111,15 @@ class CadHandler(Handler):
             "design from a text source (one node per line: '<name> <add|cut|"
             "intersect> <config> [@x,y,z] [rot:..] [polar:nNrR|linear:..]', "
             "config e.g. cyl:r3h12 box:w40d20h10; 'use <slug> as <name>' "
-            "instances another design as a sub-assembly); get lists designs, shows a "
+            "instances another design as a sub-assembly; 'port'/'mate' "
+            "assemble by named interface; 'joint … revolute|prismatic|"
+            "cylindrical|screw' articulates, posed via args={'state': "
+            "{'<joint>': deg_or_mm}}); get lists designs, shows a "
             "design's node tree (id=slug), one node (id='ca<id>'), or probes "
             "analytically (view='ray|point|arc|section|clearance|connectivity|"
             "dof|volume', args={...}; connectivity: what touches what, path "
-            "a→b, is-it-one-solid); search over names; delete soft-retires. "
-            "Postgres-"
+            "a→b, is-it-one-solid; view='sweep': motion interference across "
+            "joint travel); search over names; delete soft-retires. Postgres-"
             "canonical, no meshing in the design loop. See precis-cad-help."
         ),
         supports_get=True,
@@ -132,9 +141,16 @@ class CadHandler(Handler):
         self.embedder = hub.embedder
         self._resolve = design_resolver(self.store)
 
-    def _expand(self, spec: SceneSpec, *, own_slug: str | None = None) -> SceneSpec:
+    def _expand(
+        self,
+        spec: SceneSpec,
+        *,
+        own_slug: str | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> SceneSpec:
         """The spec every probe / export / warning runs on: sub-assemblies
-        inlined as real bodies. Identity for a design with no ``use`` node.
+        inlined as real bodies, joints posed at ``state`` (default neutral).
+        Identity for a design with no ``use`` / interface lines.
 
         ``own_slug`` refuses a design that instances *itself*: the resolver
         would hand back the previously stored version, so the new design
@@ -149,9 +165,25 @@ class CadHandler(Handler):
                         next="a design cannot 'use' its own slug",
                     )
         try:
-            return expand_instances(spec, self._resolve)
+            return expand_instances(spec, self._resolve, state)
         except SceneError as exc:
-            raise BadInput(f"cad instance error: {exc}") from exc
+            raise BadInput(f"cad design error: {exc}") from exc
+
+    @staticmethod
+    def _state_arg(args: dict[str, Any]) -> dict[str, Any] | None:
+        raw = args.get("state")
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise BadInput(
+                "args.state must be a dict of joint states, keyed by the "
+                "joint's subject instance / component name",
+                next=(
+                    "get(kind='cad', id='<slug>', view='point', "
+                    "args={'state': {'arm': 45}, 'p': [0, 0, 0]})"
+                ),
+            )
+        return raw
 
     # ── link: placement only ─────────────────────────────
 
@@ -225,8 +257,9 @@ class CadHandler(Handler):
             slug=slug,
             title=ttl,
             spec=spec,
-            card_text=self._card_text(ttl, built, design),
+            card_text=self._card_text(ttl, built, design, spec),
         )
+        self._sync_contains(ref.id, spec)
         _spec2, handles = self.store.cad_load(ref.id)
         verb = "created" if created else "updated"
         head = (
@@ -280,12 +313,13 @@ class CadHandler(Handler):
             slug=to_slug,
             title=ttl,
             spec=spec,
-            card_text=self._card_text(ttl, built, design),
+            card_text=self._card_text(ttl, built, design, spec),
         )
         # lineage: the derived design points back to its parent
         self.store.add_link(
             src_ref_id=ref.id, dst_ref_id=parent.id, relation="derived-from"
         )
+        self._sync_contains(ref.id, spec)
         _spec2, handles = self.store.cad_load(ref.id)
         head = (
             f"# {to_slug} — derived from {parent.slug}: "
@@ -294,6 +328,39 @@ class CadHandler(Handler):
             f"{self._connectivity_note(design, built)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
+
+    def _sync_contains(self, ref_id: int, spec: SceneSpec) -> None:
+        """Mirror the design's ``use`` lines as ``contains`` links
+        (design → instanced design), so ``view='links'`` shows the assembly
+        tree — the decision-4 dense-graph edge. Idempotent and pruning: a
+        dropped ``use`` drops its link on the next save. Best-effort by
+        design — a link failure must never fail the put."""
+        try:
+            want: set[int] = set()
+            for slug in {
+                s
+                for s in (instance_slug(n.config) for n in spec.nodes)
+                if s is not None
+            }:
+                sub = self.store.get_ref(kind="cad", id=slug)
+                if sub is not None:
+                    want.add(sub.id)
+            have = {
+                lk.dst_ref_id
+                for lk in self.store.links_for(
+                    ref_id, direction="out", relation="contains"
+                )
+            }
+            for dst in want - have:
+                self.store.add_link(
+                    src_ref_id=ref_id, dst_ref_id=dst, relation="contains"
+                )
+            for dst in have - want:
+                self.store.remove_link(
+                    src_ref_id=ref_id, dst_ref_id=dst, relation="contains"
+                )
+        except Exception:  # pragma: no cover - defensive
+            log.warning("cad: contains-link sync failed for ref %s", ref_id)
 
     # ── get ──────────────────────────────────────────────────────────
     def get(
@@ -321,12 +388,20 @@ class CadHandler(Handler):
             return Response(body=head + "\n" + self._tree_table(spec, handles))
         if view == "scad":
             return Response(
-                body=to_openscad(self._expand(spec), name=str(ref.slug or s))
+                body=to_openscad(
+                    self._expand(spec, state=self._state_arg(args or {})),
+                    name=str(ref.slug or s),
+                )
             )
         if view in ("stl", "3mf", "step"):
             return self._render_export(
-                self._expand(spec), str(ref.slug or s), view, args or {}
+                self._expand(spec, state=self._state_arg(args or {})),
+                str(ref.slug or s),
+                view,
+                args or {},
             )
+        if view == "sweep":
+            return self._render_sweep(spec, args or {})
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -338,7 +413,7 @@ class CadHandler(Handler):
                 f"unknown cad view {view!r}",
                 next=f"view= one of {list(_VIEWS)}, or omit for the node tree",
             )
-        built = self._expand(spec)
+        built = self._expand(spec, state=self._state_arg(args or {}))
         design = build_design(built)
         return self._render_probe(view, design, built, args or {})
 
@@ -386,6 +461,171 @@ class CadHandler(Handler):
                 f"{fmt}'}} to choose the location."
             )
         )
+
+    # ── sweep ────────────────────────────────────────────────────────
+    def _render_sweep(self, spec: SceneSpec, args: dict[str, Any]) -> Response:
+        """``view='sweep'`` — "does anything hit anything, anywhere in the
+        travel?" Each joint is swept across its ``limits:`` (others held at
+        neutral), sampling ``args.n`` states; at each state the design is
+        rebuilt and its contact graph checked for interference between the
+        moving body and everything it doesn't move with. Also reports the
+        swept envelope (accumulated bbox) per moving component."""
+        try:
+            joints: list[tuple[str, str, tuple[float, float] | None]] = [
+                (m.instance, m.kind, m.limits)
+                for m in mates_of(spec)
+                if m.kind != "fixed"
+            ] + [(j.component, j.kind, j.limits) for j in joints_of(spec)]
+            driven = {c.driven: c for c in couples_of(spec)}
+        except SceneError as exc:  # pragma: no cover - malformed stored meta
+            raise BadInput(f"cad design error: {exc}") from exc
+        if not joints:
+            raise BadInput(
+                "this design declares no joints — nothing to sweep",
+                next=(
+                    "declare 'joint <inst>.<port> to <anchor> revolute "
+                    "limits:lo..hi' (or the component form) first"
+                ),
+            )
+        only = args.get("joint")
+        if only is not None:
+            names = [j[0] for j in joints]
+            joints = [j for j in joints if j[0] == str(only)]
+            if not joints:
+                raise BadInput(f"no joint {only!r} in this design — joints: {names}")
+        n = max(_SWEEP_N_MIN, min(_SWEEP_N_MAX, int(args.get("n", _SWEEP_N_DEFAULT))))
+
+        couples = couples_of(spec)
+        # hit samples per (joint, a, b): (sample index, state) — indices keep
+        # non-contiguous collision windows separable in the report.
+        hit_states: dict[tuple[str, str, str], list[tuple[int, float]]] = {}
+        envelope: dict[str, list[float]] = {}
+        swept: list[str] = []
+        skipped: list[str] = []
+        for name, kind, limits in joints:
+            if name in driven:
+                c = driven[name]
+                skipped.append(f"{name} (driven {c.ratio:g}× by {c.drive})")
+                continue
+            if limits is None:
+                if kind == "prismatic":
+                    raise BadInput(
+                        f"joint {name!r} is prismatic with no limits: — an "
+                        "unbounded slide has no sweepable range",
+                        next="add limits:lo..hi to the joint line",
+                    )
+                limits = (-180.0, 180.0)  # a full turn, either way
+            lo, hi = limits
+            swept.append(f"{name} {kind} {lo:g}..{hi:g}")
+            # Sweeping this joint also moves everything gear/belt-coupled
+            # downstream of it — each such joint's subtree is its own rigid
+            # group (two coupled arms move *differently*, so they can hit
+            # each other, not just the static parts).
+            chain = {name}
+            grew = True
+            while grew:
+                grew = False
+                for cp in couples:
+                    if cp.drive in chain and cp.driven not in chain:
+                        chain.add(cp.driven)
+                        grew = True
+            for i in range(n):
+                q = lo + (hi - lo) * i / (n - 1)
+                state: dict[str, Any] = {name: [q, 0.0] if kind == "cylindrical" else q}
+                built = self._expand(spec, state=state)
+                design = build_design(built)
+                group: dict[str, str] = {}
+                for jn in chain:
+                    for comp in built.components:
+                        if comp == jn or comp.startswith(jn + "."):
+                            group[comp] = jn
+                conn = cad_connectivity(design)
+                for c2 in conn.contacts:
+                    ga, gb = group.get(c2.a), group.get(c2.b)
+                    if c2.interfering and ga != gb and not (ga is None and gb is None):
+                        a, b = sorted((c2.a, c2.b))
+                        hit_states.setdefault((name, a, b), []).append((i, q))
+                for comp in group:
+                    expr = design.components.get(comp)
+                    if expr is None:  # pragma: no cover - defensive
+                        continue
+                    lo3, hi3 = expr_aabb(design, expr)
+                    cur = envelope.setdefault(
+                        comp,
+                        [
+                            float(lo3[0]),
+                            float(lo3[1]),
+                            float(lo3[2]),
+                            float(hi3[0]),
+                            float(hi3[1]),
+                            float(hi3[2]),
+                        ],
+                    )
+                    for k in range(3):
+                        cur[k] = min(cur[k], float(lo3[k]))
+                        cur[3 + k] = max(cur[3 + k], float(hi3[k]))
+
+        verdict = (
+            "no interference anywhere in the travel ✓"
+            if not hit_states
+            else f"⚠ {len(hit_states)} colliding pair(s) in the travel"
+        )
+        lines = [
+            f"# sweep — {len(swept)} joint(s), {n} states each: {verdict}",
+            "swept: " + "; ".join(swept),
+        ]
+        if skipped:
+            lines.append("coupled (swept via their drive): " + "; ".join(skipped))
+
+        def _runs(samples: list[tuple[int, float]]) -> str:
+            """Contiguous collision windows ('-170..-130, 90..130'), not one
+            min..max band — an arm that clips near 90° and again near 270°
+            is clear in between, and the table must say so."""
+            out: list[str] = []
+            start = prev_i = samples[0][0]
+            start_q = prev_q = samples[0][1]
+            for i, q in samples[1:]:
+                if i != prev_i + 1:
+                    out.append(
+                        f"{start_q:g}"
+                        if start == prev_i
+                        else f"{start_q:g}..{prev_q:g}"
+                    )
+                    start, start_q = i, q
+                prev_i, prev_q = i, q
+            out.append(
+                f"{start_q:g}" if start == prev_i else f"{start_q:g}..{prev_q:g}"
+            )
+            return ", ".join(out)
+
+        rows = [
+            {
+                "joint": jn,
+                "pair": f"{a} ↔ {b}",
+                "collides_at": _runs(qs),
+                "states": f"{len(qs)}/{n}",
+            }
+            for (jn, a, b), qs in sorted(hit_states.items())
+        ]
+        body = "\n".join(lines) + "\n"
+        if rows:
+            body += render_agent_table(
+                rows, schema=["joint", "pair", "collides_at", "states"]
+            )
+        env_rows = [
+            {
+                "moving_part": comp,
+                "x": f"{v[0]:g}..{v[3]:g}",
+                "y": f"{v[1]:g}..{v[4]:g}",
+                "z": f"{v[2]:g}..{v[5]:g}",
+            }
+            for comp, v in sorted(envelope.items())
+        ]
+        if env_rows:
+            body += "\nswept envelope (mm):\n" + render_agent_table(
+                env_rows, schema=["moving_part", "x", "y", "z"]
+            )
+        return Response(body=body)
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
@@ -538,20 +778,25 @@ class CadHandler(Handler):
         return out + self._interfaces_block(spec)
 
     def _interfaces_block(self, spec: Any) -> str:
-        """The design's ports and mates, appended under the node tree.
+        """The design's ports, mates, joints and couplings, appended under
+        the node tree.
 
-        Neither is a node, so neither has a row above — but they are the
+        None of them is a node, so none has a row above — but they are the
         assembly's whole structure. Rendered as the source lines the author
         wrote, so the reply doubles as the text to hand back to ``put``.
         """
         try:
-            ports, mates = ports_of(spec), mates_of(spec)
+            decls = [
+                *(p.to_source() for p in ports_of(spec)),
+                *(m.to_source() for m in mates_of(spec)),
+                *(j.to_source() for j in joints_of(spec)),
+                *(c.to_source() for c in couples_of(spec)),
+            ]
         except SceneError:  # pragma: no cover - malformed stored meta
             return ""
-        if not ports and not mates:
+        if not decls:
             return ""
-        lines = ["", *(p.to_source() for p in ports), *(m.to_source() for m in mates)]
-        return "\n".join(lines) + "\n"
+        return "\n" + "\n".join(decls) + "\n"
 
     def _render_node(self, chunk_id: int) -> Response:
         rec = self.store.cad_node(chunk_id)
@@ -562,7 +807,9 @@ class CadHandler(Handler):
         payload = {"handle": handle, "name": name, **meta}
         return Response(body=render_agent_table([payload]))
 
-    def _card_text(self, title: str, spec: Any, design: Any) -> str:
+    def _card_text(
+        self, title: str, spec: Any, design: Any, source_spec: Any | None = None
+    ) -> str:
         """The one embeddable summary per design — built from the author's
         own names (hub_bore, bolts, ...) so search lands on intent."""
         comps = ", ".join(spec.components)
@@ -570,8 +817,6 @@ class CadHandler(Handler):
         shapes = ", ".join(sorted({n.config.split(":")[0] for n in spec.nodes}))
         dims = ""
         try:
-            from precis.cad.bulk import expr_aabb
-
             lo, hi = expr_aabb(design, design.whole())
             dims = (
                 f" Bbox {hi[0] - lo[0]:.3g}x{hi[1] - lo[1]:.3g}x{hi[2] - lo[2]:.3g} mm."
@@ -579,12 +824,28 @@ class CadHandler(Handler):
         except Exception:  # pragma: no cover - bbox is best-effort
             pass
         # Ports are the design's advertised interfaces — "does anything here
-        # have a NEMA-17 face?" is a search, not a geometry query.
+        # have a NEMA-17 face?" is a search, not a geometry query. Typed
+        # ports carry the type into the card for the same reason.
         try:
-            port_names = ", ".join(pt.name for pt in ports_of(spec))
+            port_names = ", ".join(
+                pt.name + (f" ({pt.type})" if pt.type else "") for pt in ports_of(spec)
+            )
         except SceneError:  # pragma: no cover - malformed stored meta
             port_names = ""
         ports = f" Ports: {port_names}." if port_names else ""
+        # Joints live on the *source* spec (expansion consumes them).
+        joints = ""
+        if source_spec is not None:
+            try:
+                jn = [
+                    f"{m.instance} ({m.kind})"
+                    for m in mates_of(source_spec)
+                    if m.kind != "fixed"
+                ] + [f"{j.component} ({j.kind})" for j in joints_of(source_spec)]
+            except SceneError:  # pragma: no cover - malformed stored meta
+                jn = []
+            if jn:
+                joints = f" Joints: {', '.join(jn)}."
         intent = ""
         desc = (spec.meta.get("description") or "").strip()
         use = (spec.meta.get("use") or "").strip()
@@ -594,7 +855,7 @@ class CadHandler(Handler):
             intent += f" Used for: {use}"
         return (
             f"{title} (CAD design).{intent} Parts: {comps}. "
-            f"Features: {names}. Shapes: {shapes}.{ports}{dims}"
+            f"Features: {names}. Shapes: {shapes}.{ports}{joints}{dims}"
         )
 
     def _interference_note(self, design: Any, spec: Any) -> str:

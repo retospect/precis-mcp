@@ -150,6 +150,61 @@ Ports are also **searchable**: they go into the design's one card, so
 `search(kind='cad', q='nema17 mount port')` finds designs by the interfaces
 they advertise.
 
+Ports take two optional tags: `type:<t>` (free compatibility tag — two
+*typed* ports only mate when the types match, an untyped side always may)
+and `of:<component>` (scopes the frame to a component — required for the
+pivot of a component `joint` below).
+
+### Articulate — `joint`, `state`, and `view='sweep'`
+
+A **mate is a `fixed` joint**. The articulated kinds insert one degree of
+freedom at the interface, about/along the **anchor frame's z axis**:
+
+```python
+put(kind="cad", id="crane", text="""
+component tower
+mast add box:w20d20h200
+
+component jib
+beam add box:w150d10h10 @75,0,205
+port slew @0,0,205 of:jib
+
+joint jib revolute at:slew limits:-170..170     # component form
+
+use hook_block as h
+joint h.eye to jib.tip prismatic limits:0..180  # instance form
+""")
+
+# pose it — a joint's name is its subject instance / component:
+get(kind="cad", id="crane", view="point",
+    args={"state": {"jib": 45, "h": 120}, "p": [0, 90, 205]})
+
+# the payoff question — does anything hit anything, anywhere in the travel?
+get(kind="cad", id="crane", view="sweep")
+```
+
+- Kinds: `revolute` (deg) · `prismatic` (mm) · `cylindrical`
+  (`[deg, mm]`, two DOF) · `screw` (deg, advances `pitch:<mm>` per rev) ·
+  `fixed` (= `mate`).
+- **Two forms**: `joint <inst>.<port> to <anchor> <kind> [opts]` poses an
+  instance (a generalised mate — `flip`/`spin:` still apply);
+  `joint <component> <kind> at:<port>` articulates a whole component of
+  *this* design about a port scoped `of:` that component.
+- `state=` in any probe/export view's `args` poses the design. Missing
+  joints default to 0 (clamped into `limits:`); an **explicit** state
+  outside `limits:` is an error, never clamped. `state` addresses only the
+  top design's joints — instanced sub-designs pose at their defaults.
+- `gear <a> to <b> ratio:<r>` / `belt …` couple two joint states
+  (`b = r × a`; the sign carries the sense, so contact gears want a
+  negative ratio). A driven joint derives; setting it explicitly to a
+  conflicting value is an error.
+- A mate/joint anchored on a port `of:` a jointed component **follows**
+  that component — a motor mated onto an articulated arm swings with it.
+- `view='sweep'` sweeps each joint across its `limits:` (others held
+  neutral, `args.n` samples, default 9), reporting every colliding pair
+  with the state range where it interferes, plus the swept envelope per
+  moving body. `args={'joint': 'jib'}` sweeps one joint only.
+
 ### Describe what it's *for* — `desc:` / `use:`
 
 Add free-text lines so the design is findable by purpose, not just by

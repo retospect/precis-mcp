@@ -405,3 +405,138 @@ def test_mate_to_an_undeclared_port_is_bad_input(cad):
             id="rig",
             text="port deck @0,0,0\nuse motor as m\nmate m.flange to deck\n",
         )
+
+
+# ── joints + state + sweep + contains links (slice 3/4 + decision 4) ─────
+_MOTOR_J = """
+component body
+case  add  box:w42d42h40
+port shaft @0,0,40
+"""
+
+#: Crank on a motor shaft; the crank tip passes a post at some angles only.
+_CRANK_RIG = """
+component post
+pillar add box:w6d6h20 @0,28,0
+use motor_j as m
+port base @0,0,-40
+mate m.shaft to base
+component arm
+bar add box:w30d6h6 @15,0,3
+port hub of:arm
+joint arm revolute at:hub limits:-180..180
+"""
+
+
+def test_state_poses_a_probe(cad):
+    cad.put(id="motor_j", text=_MOTOR_J)
+    cad.put(id="crank_rig", text=_CRANK_RIG)
+    # at neutral the bar reaches +x: material at (25, 0, 3)
+    hit = cad.get(id="crank_rig", view="point", args={"p": [25, 0, 3]})
+    assert "contains" in hit.body and "bar" in hit.body
+    # posed at 90° that point is empty; the bar reaches +y instead
+    posed = cad.get(
+        id="crank_rig", view="point", args={"p": [25, 0, 3], "state": {"arm": 90}}
+    )
+    assert "empty" in posed.body.splitlines()[0]
+    posed_y = cad.get(
+        id="crank_rig", view="point", args={"p": [0, 25, 3], "state": {"arm": 90}}
+    )
+    assert "contains" in posed_y.body and "bar" in posed_y.body
+
+
+def test_out_of_limits_state_is_bad_input(cad):
+    cad.put(id="motor_j", text=_MOTOR_J)
+    cad.put(id="crank_rig", text=_CRANK_RIG)
+    with pytest.raises(BadInput, match="outside limits"):
+        cad.get(
+            id="crank_rig", view="point", args={"p": [0, 0, 0], "state": {"arm": 900}}
+        )
+    with pytest.raises(BadInput, match="must be a dict"):
+        cad.get(id="crank_rig", view="point", args={"p": [0, 0, 0], "state": 5})
+
+
+def test_sweep_reports_collision_and_envelope(cad):
+    cad.put(id="motor_j", text=_MOTOR_J)
+    cad.put(id="crank_rig", text=_CRANK_RIG)
+    resp = cad.get(id="crank_rig", view="sweep", args={"n": 9})
+    # the bar sweeps a circle of r 0..30 at z 0..6; the post pillar sits at
+    # y=28 in that band, so somewhere near 90° they collide
+    assert "colliding pair" in resp.body
+    assert "arm" in resp.body and "post" in resp.body
+    # swept envelope covers the full ±30 reach of the bar
+    assert "swept envelope" in resp.body
+    assert "-30" in resp.body
+
+
+def test_sweep_without_joints_is_bad_input(cad):
+    cad.put(id="plain", text="solo add cyl:r5h5")
+    with pytest.raises(BadInput, match="declares no joints"):
+        cad.get(id="plain", view="sweep")
+
+
+def test_sweep_unknown_joint_arg(cad):
+    cad.put(id="motor_j", text=_MOTOR_J)
+    cad.put(id="crank_rig", text=_CRANK_RIG)
+    with pytest.raises(BadInput, match="no joint 'ghost'"):
+        cad.get(id="crank_rig", view="sweep", args={"joint": "ghost"})
+
+
+def test_contains_links_track_use_lines(cad, store):
+    cad.put(id="motor_j", text=_MOTOR_J)
+    cad.put(id="rig_c", text="use motor_j as m @0,0,0\nsolo add cyl:r5h5")
+    rig = store.get_ref(kind="cad", id="rig_c")
+    sub = store.get_ref(kind="cad", id="motor_j")
+    out = store.links_for(rig.id, direction="out", relation="contains")
+    assert {lk.dst_ref_id for lk in out} == {sub.id}
+    # dropping the use line prunes the link on the next save
+    cad.put(id="rig_c", text="solo add cyl:r5h5")
+    assert store.links_for(rig.id, direction="out", relation="contains") == []
+
+
+def test_joints_reach_the_search_card(cad, store):
+    cad.put(id="motor_j", text=_MOTOR_J)
+    cad.put(id="crank_rig", text=_CRANK_RIG)
+    ref = store.get_ref(kind="cad", id="crank_rig")
+    with store.pool.connection() as conn:
+        (card,) = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
+            (ref.id,),
+        ).fetchone()
+    assert "Joints: arm (revolute)" in card
+
+
+def test_jointed_tree_shows_interface_lines(cad):
+    cad.put(id="motor_j", text=_MOTOR_J)
+    cad.put(id="crank_rig", text=_CRANK_RIG)
+    body = cad.get(id="crank_rig").body
+    assert "joint arm revolute at:hub limits:-180..180" in body
+    assert "port hub of:arm" in body
+
+
+_GEARED_RIG = """
+component post
+pillar add box:w6d6h20 @0,28,0
+component a1
+bar1 add box:w20d6h6 @10,0,3
+port h1 of:a1
+component a2
+bar2 add box:w30d6h6 @15,0,13
+port h2 of:a2
+joint a1 revolute at:h1 limits:-180..180
+joint a2 revolute at:h2 limits:-180..180
+gear a1 to a2 ratio:1
+"""
+
+
+def test_sweep_sees_gear_driven_collisions(cad):
+    # finding-1 regression: sweeping the DRIVER must also score and
+    # envelope the driven joint's parts — bar1 (r20) clears the post at
+    # y=28, but the geared bar2 (r30) hits it near 90°.
+    cad.put(id="geared_rig", text=_GEARED_RIG)
+    resp = cad.get(id="geared_rig", view="sweep", args={"n": 9})
+    assert "colliding pair" in resp.body
+    assert "a2" in resp.body and "post" in resp.body
+    # the driven arm's swept envelope is reported too
+    env = resp.body.split("swept envelope", 1)[1]
+    assert "a2" in env

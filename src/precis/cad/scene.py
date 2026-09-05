@@ -24,12 +24,30 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   *another design* as a sub-assembly (:func:`expand_instances`). It is a
   top-level directive like ``component`` — it does not join, or close, the
   enclosing component block.
-- ``port <name> [@x,y,z] [rot:...]`` names a frame on *this* design — the
-  interface another design mates to.
+- ``port <name> [@x,y,z] [rot:...] [type:<t>] [of:<component>]`` names a
+  frame on *this* design — the interface another design mates to. ``type:``
+  is a free compatibility tag (two typed ports may only mate when the types
+  match); ``of:`` scopes the port to a component (required for the pivot of
+  a component ``joint``).
 - ``mate <inst>.<port> to <anchor> [flip] [spin:<deg>]`` places instance
   ``<inst>`` by making its port coincide with ``<anchor>`` (this design's own
   ``<port>``, or another instance's ``<inst>.<port>``) — see
-  :func:`_solve_mates`. Also top-level.
+  :func:`_solve_interfaces`. Also top-level. A mate is sugar for a ``fixed``
+  joint.
+- ``joint <inst>.<port> to <anchor> <kind> [limits:lo..hi] [pitch:<mm>]
+  [flip] [spin:<deg>]`` — an articulated mate: ``kind`` ∈ {``fixed``,
+  ``revolute``, ``prismatic``, ``cylindrical``, ``screw``}. Motion is about /
+  along the **anchor frame's z axis**; state is degrees (revolute, screw,
+  cylindrical angle) or mm (prismatic, cylindrical slide).
+- ``joint <component> <kind> at:<port> [limits:lo..hi] [pitch:<mm>]`` —
+  articulates a whole component of *this* design about a port scoped
+  ``of:`` that component (the port names which body the frame rides on).
+- ``gear <a> to <b> ratio:<r>`` / ``belt …`` — couples joint ``b``'s state
+  to ``ratio × a``'s (the sign carries the sense; ``gear``/``belt`` record
+  intent, the math is identical).
+- Posing: ``expand_instances(..., state={'<joint>': q})`` — a joint's name
+  is its subject instance / component. Defaults to 0 (clamped into
+  ``limits:``); an *explicit* out-of-limits state is an error.
 - ``<name> <op> <config> [@x,y,z] [rot:rx,ry,rz] [polar:nNrR] [linear:nNdx..dy..dz..]``
   — ``op`` ∈ {``add``, ``cut``, ``intersect``}; ``config`` is the §11
   mini-DSL (:mod:`precis.cad.dsl`). The first node in a part is its base;
@@ -84,6 +102,21 @@ _LOC_RE = re.compile(r"^@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$"
 _ROT_RE = re.compile(r"^rot:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
 _POLAR_RE = re.compile(r"^polar:n(\d+)r(-?\d+(?:\.\d+)?)$")
 _SPIN_RE = re.compile(r"^spin:(-?\d+(?:\.\d+)?)$")
+_TYPE_RE = re.compile(r"^type:([A-Za-z_][A-Za-z0-9_-]*)$")
+_OF_RE = re.compile(r"^of:([A-Za-z_][A-Za-z0-9_-]*)$")
+_AT_RE = re.compile(r"^at:([A-Za-z_][A-Za-z0-9_-]*)$")
+_LIMITS_RE = re.compile(r"^limits:(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)$")
+_PITCH_RE = re.compile(r"^pitch:(\d+(?:\.\d+)?)$")
+_RATIO_RE = re.compile(r"^ratio:(-?\d+(?:\.\d+)?)$")
+
+#: Joint kinds and their one state parameter (about/along the joint frame's
+#: local z): revolute = degrees, prismatic = mm, screw = degrees (z advance
+#: coupled via ``pitch`` mm/rev), cylindrical = ``[degrees, mm]`` (two DOF),
+#: fixed = no state (what a plain ``mate`` is).
+JOINT_KINDS = ("fixed", "revolute", "prismatic", "cylindrical", "screw")
+
+#: A joint's state: one number, or ``[angle_deg, slide_mm]`` for cylindrical.
+JointState = float | tuple[float, float]
 _LINEAR_RE = re.compile(
     r"^linear:n(\d+)"
     r"(?:dx(-?\d+(?:\.\d+)?))?"
@@ -253,9 +286,23 @@ class PortSpec:
     name: str
     loc: tuple[float, float, float] = (0.0, 0.0, 0.0)
     rot: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    #: Free compatibility tag — two typed ports may only mate when equal.
+    type: str = ""
+    #: Component this frame rides on ("" = the design as a whole). Required
+    #: on the pivot port of a component ``joint``.
+    component: str = ""
 
     def to_meta(self) -> dict[str, Any]:
-        return {"name": self.name, "loc": list(self.loc), "rot": list(self.rot)}
+        m: dict[str, Any] = {
+            "name": self.name,
+            "loc": list(self.loc),
+            "rot": list(self.rot),
+        }
+        if self.type:
+            m["type"] = self.type
+        if self.component:
+            m["component"] = self.component
+        return m
 
     @classmethod
     def from_meta(cls, raw: Any) -> PortSpec:
@@ -265,6 +312,8 @@ class PortSpec:
             name=str(raw["name"]),
             loc=as_float3(raw.get("loc")),
             rot=as_float3(raw.get("rot")),
+            type=str(raw.get("type") or ""),
+            component=str(raw.get("component") or ""),
         )
 
     def to_source(self) -> str:
@@ -274,6 +323,10 @@ class PortSpec:
             parts.append("@" + ",".join(_fmt_num(v) for v in self.loc))
         if self.rot != (0.0, 0.0, 0.0):
             parts.append("rot:" + ",".join(_fmt_num(v) for v in self.rot))
+        if self.type:
+            parts.append(f"type:{self.type}")
+        if self.component:
+            parts.append(f"of:{self.component}")
         return " ".join(parts)
 
     def frame(self) -> Transform:
@@ -283,11 +336,14 @@ class PortSpec:
 
 @dataclass(frozen=True)
 class MateSpec:
-    """``mate <instance>.<port> to <anchor> [flip] [spin:<deg>]``.
+    """``mate <instance>.<port> to <anchor> [flip] [spin:<deg>]`` — or its
+    articulated generalisation ``joint … to … <kind> [limits:] [pitch:]``.
 
-    ``anchor_instance`` is ``None`` when the anchor is one of *this* design's
-    own ports (fixed in the design frame); otherwise it names another
-    instance whose pose must be solved first.
+    A mate **is** a ``fixed`` joint (``kind`` defaults to it); the other
+    kinds insert a state-dependent transform at the interface — see
+    :func:`_joint_xform`. ``anchor_instance`` is ``None`` when the anchor is
+    one of *this* design's own ports (fixed in the design frame); otherwise
+    it names another instance whose pose must be solved first.
     """
 
     instance: str
@@ -296,6 +352,9 @@ class MateSpec:
     anchor_port: str
     flip: bool = False
     spin: float = 0.0
+    kind: str = "fixed"
+    limits: tuple[float, float] | None = None
+    pitch: float = 0.0
 
     @property
     def subject(self) -> str:
@@ -308,8 +367,17 @@ class MateSpec:
         return f"{self.anchor_instance}{NAMESPACE_SEP}{self.anchor_port}"
 
     def to_source(self) -> str:
-        """The ``mate …`` source line (also what the node tree shows)."""
-        parts = ["mate", self.subject, "to", self.anchor]
+        """The ``mate …`` / ``joint …`` source line (also the node tree)."""
+        if self.kind == "fixed":
+            parts = ["mate", self.subject, "to", self.anchor]
+        else:
+            parts = ["joint", self.subject, "to", self.anchor, self.kind]
+            if self.limits is not None:
+                parts.append(
+                    f"limits:{_fmt_num(self.limits[0])}..{_fmt_num(self.limits[1])}"
+                )
+            if self.pitch:
+                parts.append(f"pitch:{_fmt_num(self.pitch)}")
         if self.flip:
             parts.append("flip")
         if self.spin:
@@ -322,6 +390,12 @@ class MateSpec:
             m["flip"] = True
         if self.spin:
             m["spin"] = self.spin
+        if self.kind != "fixed":
+            m["kind"] = self.kind
+        if self.limits is not None:
+            m["limits"] = list(self.limits)
+        if self.pitch:
+            m["pitch"] = self.pitch
         return m
 
     @classmethod
@@ -333,12 +407,24 @@ class MateSpec:
             anchor=str(raw.get("anchor") or ""),
             flip=bool(raw.get("flip")),
             spin=float(raw.get("spin") or 0.0),
+            kind=str(raw.get("kind") or "fixed"),
+            limits=_coerce_limits(raw.get("limits"), where="stored mate"),
+            pitch=float(raw.get("pitch") or 0.0),
             where="stored mate",
         )
 
     @classmethod
     def build(
-        cls, *, subject: str, anchor: str, flip: bool, spin: float, where: str
+        cls,
+        *,
+        subject: str,
+        anchor: str,
+        flip: bool,
+        spin: float,
+        where: str,
+        kind: str = "fixed",
+        limits: tuple[float, float] | None = None,
+        pitch: float = 0.0,
     ) -> MateSpec:
         """Parse the two dotted addresses. ``where`` prefixes any error."""
         parts = subject.split(NAMESPACE_SEP)
@@ -353,6 +439,7 @@ class MateSpec:
                 f"{where}: mate anchor must be '<port>' or "
                 f"'<instance>{NAMESPACE_SEP}<port>', got {anchor!r}"
             )
+        _check_joint_options(kind, limits, pitch, where=where)
         return cls(
             instance=parts[0],
             port=parts[1],
@@ -360,6 +447,126 @@ class MateSpec:
             anchor_port=a_parts[-1],
             flip=flip,
             spin=spin,
+            kind=kind,
+            limits=limits,
+            pitch=pitch,
+        )
+
+
+def _coerce_limits(raw: Any, *, where: str) -> tuple[float, float] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        raise SceneError(f"{where}: malformed limits {raw!r}")
+    return (float(raw[0]), float(raw[1]))
+
+
+def _check_joint_options(
+    kind: str, limits: tuple[float, float] | None, pitch: float, *, where: str
+) -> None:
+    """The shared kind/limits/pitch consistency rules for both joint forms."""
+    if kind not in JOINT_KINDS:
+        raise SceneError(f"{where}: joint kind {kind!r} not one of {list(JOINT_KINDS)}")
+    if kind == "fixed" and (limits is not None or pitch):
+        raise SceneError(f"{where}: 'fixed' has no state — limits:/pitch: don't apply")
+    if kind == "screw" and pitch <= 0.0:
+        raise SceneError(f"{where}: 'screw' requires pitch:<mm-per-rev>")
+    if kind != "screw" and pitch:
+        raise SceneError(f"{where}: pitch: only applies to 'screw'")
+    if limits is not None and limits[0] >= limits[1]:
+        raise SceneError(
+            f"{where}: limits lo must be < hi, got {limits[0]:g}..{limits[1]:g}"
+        )
+
+
+@dataclass(frozen=True)
+class ComponentJointSpec:
+    """``joint <component> <kind> at:<port> [limits:lo..hi] [pitch:<mm>]``.
+
+    Articulates a whole component of *this* design about/along the z axis of
+    ``port``'s frame — the port must be scoped ``of:`` the jointed component
+    (it names which body the frame rides on). Never ``fixed``: a fixed
+    component joint is a no-op (components are already rigid in the design
+    frame).
+    """
+
+    component: str
+    kind: str
+    port: str
+    limits: tuple[float, float] | None = None
+    pitch: float = 0.0
+
+    def to_source(self) -> str:
+        parts = ["joint", self.component, self.kind, f"at:{self.port}"]
+        if self.limits is not None:
+            parts.append(
+                f"limits:{_fmt_num(self.limits[0])}..{_fmt_num(self.limits[1])}"
+            )
+        if self.pitch:
+            parts.append(f"pitch:{_fmt_num(self.pitch)}")
+        return " ".join(parts)
+
+    def to_meta(self) -> dict[str, Any]:
+        m: dict[str, Any] = {
+            "component": self.component,
+            "kind": self.kind,
+            "port": self.port,
+        }
+        if self.limits is not None:
+            m["limits"] = list(self.limits)
+        if self.pitch:
+            m["pitch"] = self.pitch
+        return m
+
+    @classmethod
+    def from_meta(cls, raw: Any) -> ComponentJointSpec:
+        if not isinstance(raw, dict) or not str(raw.get("component") or ""):
+            raise SceneError(f"malformed stored joint {raw!r}")
+        kind = str(raw.get("kind") or "")
+        limits = _coerce_limits(raw.get("limits"), where="stored joint")
+        pitch = float(raw.get("pitch") or 0.0)
+        _check_joint_options(kind, limits, pitch, where="stored joint")
+        return cls(
+            component=str(raw["component"]),
+            kind=kind,
+            port=str(raw.get("port") or ""),
+            limits=limits,
+            pitch=pitch,
+        )
+
+
+@dataclass(frozen=True)
+class CoupleSpec:
+    """``gear <drive> to <driven> ratio:<r>`` / ``belt …`` — the driven
+    joint's state is ``ratio × drive``'s. The sign carries the sense (contact
+    gears reverse: write a negative ratio); ``via`` records the author's
+    intent, the math is identical."""
+
+    via: str  # "gear" | "belt"
+    drive: str
+    driven: str
+    ratio: float
+
+    def to_source(self) -> str:
+        return f"{self.via} {self.drive} to {self.driven} ratio:{_fmt_num(self.ratio)}"
+
+    def to_meta(self) -> dict[str, Any]:
+        return {
+            "via": self.via,
+            "drive": self.drive,
+            "driven": self.driven,
+            "ratio": self.ratio,
+        }
+
+    @classmethod
+    def from_meta(cls, raw: Any) -> CoupleSpec:
+        if not isinstance(raw, dict) or not str(raw.get("drive") or ""):
+            raise SceneError(f"malformed stored couple {raw!r}")
+        return cls(
+            via=str(raw.get("via") or "gear"),
+            drive=str(raw["drive"]),
+            driven=str(raw.get("driven") or ""),
+            ratio=float(raw.get("ratio") or 0.0),
         )
 
 
@@ -369,8 +576,19 @@ def ports_of(spec: SceneSpec) -> list[PortSpec]:
 
 
 def mates_of(spec: SceneSpec) -> list[MateSpec]:
-    """This design's declared mates (empty when it declares none)."""
+    """This design's declared mates *and* instance joints (a mate is a
+    ``fixed`` joint, so both live in ``meta['mates']``)."""
     return [MateSpec.from_meta(r) for r in spec.meta.get("mates") or ()]
+
+
+def joints_of(spec: SceneSpec) -> list[ComponentJointSpec]:
+    """This design's component joints (empty when it declares none)."""
+    return [ComponentJointSpec.from_meta(r) for r in spec.meta.get("joints") or ()]
+
+
+def couples_of(spec: SceneSpec) -> list[CoupleSpec]:
+    """This design's gear/belt couplings (empty when it declares none)."""
+    return [CoupleSpec.from_meta(r) for r in spec.meta.get("couples") or ()]
 
 
 def _parse_placement(
@@ -411,6 +629,8 @@ def parse_source(text: str) -> SceneSpec:
     instance_names: set[str] = set()
     ports: list[PortSpec] = []
     mates: list[MateSpec] = []
+    cjoints: list[ComponentJointSpec] = []
+    couples: list[CoupleSpec] = []
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
@@ -478,39 +698,66 @@ def parse_source(text: str) -> SceneSpec:
             )
             continue
         if toks[0] == "port":
-            # `port <name> [@x,y,z] [rot:...]` — a named frame on this design.
-            # Top-level like `component`/`use`: `current` is untouched.
+            # `port <name> [@x,y,z] [rot:...] [type:<t>] [of:<component>]` —
+            # a named frame on this design. Top-level like `component`/`use`:
+            # `current` is untouched (scope is the explicit `of:`, never the
+            # enclosing block, so slice-2 sources keep their meaning).
             if len(toks) < 2:
                 raise SceneError(
-                    f"line {lineno}: expected 'port <name> [@x,y,z] [rot:...]'"
+                    f"line {lineno}: expected 'port <name> [@x,y,z] [rot:...] "
+                    "[type:<t>] [of:<component>]'"
                 )
             pname = toks[1]
             if not _IDENT_RE.match(pname):
                 raise SceneError(f"line {lineno}: bad port name {pname!r}")
             if any(pt.name == pname for pt in ports):
                 raise SceneError(f"line {lineno}: duplicate port {pname!r}")
-            ploc, prot, ppat = _parse_placement(toks[2:], lineno)
+            ptype = pcomp = ""
+            rest: list[str] = []
+            for tok in toks[2:]:
+                if m := _TYPE_RE.match(tok):
+                    ptype = m[1]
+                elif m := _OF_RE.match(tok):
+                    pcomp = m[1]
+                else:
+                    rest.append(tok)
+            ploc, prot, ppat = _parse_placement(rest, lineno)
             if ppat is not None:
                 raise SceneError(
                     f"line {lineno}: port {pname!r} cannot carry a pattern — "
                     "a port is a single frame; declare one port per interface"
                 )
-            ports.append(PortSpec(name=pname, loc=ploc, rot=prot))
+            ports.append(
+                PortSpec(name=pname, loc=ploc, rot=prot, type=ptype, component=pcomp)
+            )
             continue
-        if toks[0] == "mate":
-            # `mate <inst>.<port> to <anchor> [flip] [spin:<deg>]`.
-            if len(toks) < 4 or toks[2] != "to":
+        if toks[0] == "mate" or (
+            toks[0] == "joint" and len(toks) >= 3 and toks[2] == "to"
+        ):
+            # `mate <inst>.<port> to <anchor> [flip] [spin:<deg>]`, or the
+            # articulated `joint <inst>.<port> to <anchor> <kind> [opts]`.
+            is_joint = toks[0] == "joint"
+            if len(toks) < (5 if is_joint else 4) or toks[2] != "to":
                 raise SceneError(
-                    f"line {lineno}: expected 'mate <instance>{NAMESPACE_SEP}<port> "
-                    "to <anchor> [flip] [spin:<deg>]'"
+                    f"line {lineno}: expected '{toks[0]} "
+                    f"<instance>{NAMESPACE_SEP}<port> to <anchor>"
+                    + (" <kind>" if is_joint else "")
+                    + " [options]'"
                 )
+            kind = toks[4] if is_joint else "fixed"
             flip = False
             spin = 0.0
-            for tok in toks[4:]:
+            limits: tuple[float, float] | None = None
+            pitch = 0.0
+            for tok in toks[5 if is_joint else 4 :]:
                 if tok == "flip":
                     flip = True
                 elif m := _SPIN_RE.match(tok):
                     spin = float(m[1])
+                elif is_joint and (m := _LIMITS_RE.match(tok)):
+                    limits = (float(m[1]), float(m[2]))
+                elif is_joint and (m := _PITCH_RE.match(tok)):
+                    pitch = float(m[1])
                 else:
                     raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
             mates.append(
@@ -519,8 +766,78 @@ def parse_source(text: str) -> SceneSpec:
                     anchor=toks[3],
                     flip=flip,
                     spin=spin,
+                    kind=kind,
+                    limits=limits,
+                    pitch=pitch,
                     where=f"line {lineno}",
                 )
+            )
+            continue
+        if toks[0] == "joint":
+            # `joint <component> <kind> at:<port> [limits:lo..hi] [pitch:<mm>]`
+            # — articulate a whole component of this design.
+            if len(toks) < 4:
+                raise SceneError(
+                    f"line {lineno}: expected 'joint <component> <kind> "
+                    "at:<port> [limits:lo..hi] [pitch:<mm>]' (or the instance "
+                    f"form 'joint <inst>{NAMESPACE_SEP}<port> to <anchor> <kind>')"
+                )
+            jcomp, jkind = toks[1], toks[2]
+            if not _IDENT_RE.match(jcomp):
+                raise SceneError(f"line {lineno}: bad component name {jcomp!r}")
+            jport = ""
+            limits = None
+            pitch = 0.0
+            for tok in toks[3:]:
+                if m := _AT_RE.match(tok):
+                    jport = m[1]
+                elif m := _LIMITS_RE.match(tok):
+                    limits = (float(m[1]), float(m[2]))
+                elif m := _PITCH_RE.match(tok):
+                    pitch = float(m[1])
+                else:
+                    raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
+            if not jport:
+                raise SceneError(
+                    f"line {lineno}: component joint needs at:<port> — the "
+                    "pivot frame, a port declared of: the jointed component"
+                )
+            _check_joint_options(jkind, limits, pitch, where=f"line {lineno}")
+            if jkind == "fixed":
+                raise SceneError(
+                    f"line {lineno}: a fixed component joint is a no-op — "
+                    "components are already rigid in the design frame"
+                )
+            if any(j.component == jcomp for j in cjoints):
+                raise SceneError(f"line {lineno}: component {jcomp!r} is jointed twice")
+            cjoints.append(
+                ComponentJointSpec(
+                    component=jcomp,
+                    kind=jkind,
+                    port=jport,
+                    limits=limits,
+                    pitch=pitch,
+                )
+            )
+            continue
+        if toks[0] in ("gear", "belt"):
+            # `gear <drive> to <driven> ratio:<r>` — couple two joint states.
+            m = _RATIO_RE.match(toks[4]) if len(toks) == 5 else None
+            if len(toks) != 5 or toks[2] != "to" or m is None:
+                raise SceneError(
+                    f"line {lineno}: expected "
+                    f"'{toks[0]} <drive-joint> to <driven-joint> ratio:<r>'"
+                )
+            ratio = float(m[1])
+            if ratio == 0.0:
+                raise SceneError(f"line {lineno}: ratio must be non-zero")
+            for nm in (toks[1], toks[3]):
+                if not _IDENT_RE.match(nm):
+                    raise SceneError(f"line {lineno}: bad joint name {nm!r}")
+            if toks[1] == toks[3]:
+                raise SceneError(f"line {lineno}: a joint cannot be coupled to itself")
+            couples.append(
+                CoupleSpec(via=toks[0], drive=toks[1], driven=toks[3], ratio=ratio)
             )
             continue
         if len(toks) < 3:
@@ -567,12 +884,110 @@ def parse_source(text: str) -> SceneSpec:
             )
         )
 
+    _validate_interfaces(
+        ports=ports,
+        mates=mates,
+        cjoints=cjoints,
+        couples=couples,
+        seen_components=seen_components,
+        instance_names=instance_names,
+    )
     if ports:
         spec.meta["ports"] = [pt.to_meta() for pt in ports]
     if mates:
         spec.meta["mates"] = [mt.to_meta() for mt in mates]
+    if cjoints:
+        spec.meta["joints"] = [j.to_meta() for j in cjoints]
+    if couples:
+        spec.meta["couples"] = [c.to_meta() for c in couples]
     spec.components = seen_components or ["part"]
     return spec
+
+
+def _validate_interfaces(
+    *,
+    ports: list[PortSpec],
+    mates: list[MateSpec],
+    cjoints: list[ComponentJointSpec],
+    couples: list[CoupleSpec],
+    seen_components: list[str],
+    instance_names: set[str],
+) -> None:
+    """Cross-line consistency for ports / joints / couples, run once at the
+    end of the parse (declarations are order-free, so per-line checks can't
+    see forward references)."""
+    by_port = {pt.name: pt for pt in ports}
+    for pt in ports:
+        if pt.component and (
+            pt.component not in seen_components or pt.component in instance_names
+        ):
+            raise SceneError(
+                f"port {pt.name!r}: of:{pt.component} must name a component "
+                "of this design (not an instance — an instance's ports are "
+                "declared in its own design)"
+            )
+    for j in cjoints:
+        if j.component in instance_names:
+            raise SceneError(
+                f"joint {j.component!r}: that's an instance — articulate it "
+                f"with 'joint {j.component}{NAMESPACE_SEP}<port> to <anchor> "
+                f"{j.kind}'"
+            )
+        if j.component not in seen_components:
+            raise SceneError(f"joint {j.component!r}: no such component in this design")
+        pivot = by_port.get(j.port)
+        if pivot is None:
+            known = ", ".join(sorted(by_port)) or "none"
+            raise SceneError(
+                f"joint {j.component!r}: at:{j.port} is not a declared port "
+                f"— declared ports: {known}"
+            )
+        if pivot.component != j.component:
+            raise SceneError(
+                f"joint {j.component!r}: pivot port {j.port!r} must be "
+                f"scoped 'of:{j.component}' — the port names which body the "
+                f"joint frame rides on (it is "
+                + (f"of:{pivot.component}" if pivot.component else "unscoped")
+                + ")"
+            )
+    # Couples reference articulated joints by name (subject instance /
+    # component). Fixed mates have no state to couple.
+    joint_names = {m.instance for m in mates if m.kind != "fixed"} | {
+        j.component for j in cjoints
+    }
+    two_dof = {m.instance for m in mates if m.kind == "cylindrical"} | {
+        j.component for j in cjoints if j.kind == "cylindrical"
+    }
+    driven_by: dict[str, str] = {}
+    for c in couples:
+        for nm in (c.drive, c.driven):
+            if nm not in joint_names:
+                known = ", ".join(sorted(joint_names)) or "none"
+                raise SceneError(
+                    f"{c.via} {c.drive} to {c.driven}: {nm!r} is not an "
+                    f"articulated joint — joints: {known}"
+                )
+            if nm in two_dof:
+                raise SceneError(
+                    f"{c.via} {c.drive} to {c.driven}: {nm!r} is cylindrical "
+                    "(two DOF) — couple only single-DOF joints"
+                )
+        if c.driven in driven_by:
+            raise SceneError(
+                f"joint {c.driven!r} is driven by two couplings — over-constrained"
+            )
+        driven_by[c.driven] = c.drive
+    for start in driven_by:
+        seen: set[str] = set()
+        cur: str | None = start
+        while cur is not None:
+            if cur in seen:
+                raise SceneError(
+                    f"coupling cycle through joint {start!r} — a driven "
+                    "chain must end at a free joint"
+                )
+            seen.add(cur)
+            cur = driven_by.get(cur)
 
 
 def _fmt_num(x: float) -> str:
@@ -648,12 +1063,17 @@ def spec_to_source(spec: SceneSpec) -> str:
             current = node.component
         lines.append(_node_line(node))
 
-    # Mates last: they address instances by name, so they read in dependency
-    # order after the `use` lines that declare them (parsing is order-free).
-    mates = mates_of(spec)
-    if mates:
+    # Mates/joints/couples last: they address instances and components by
+    # name, so they read in dependency order after the lines that declare
+    # them (parsing is order-free).
+    trailing = [
+        *(mate.to_source() for mate in mates_of(spec)),
+        *(j.to_source() for j in joints_of(spec)),
+        *(c.to_source() for c in couples_of(spec)),
+    ]
+    if trailing:
         lines.append("")
-    lines.extend(mate.to_source() for mate in mates)
+        lines.extend(trailing)
     return "\n".join(lines) + "\n"
 
 
@@ -781,6 +1201,15 @@ def _inline(
             raise
         except Exception as exc:
             raise SceneError(f"cannot resolve design {sub_slug!r}: {exc}") from exc
+        if sub.meta.get("mates") or sub.meta.get("joints"):
+            # The sub-design's own mates/joints solve at their defaults
+            # before its nodes inline — otherwise its mated instances would
+            # arrive frozen at the origin. (state= never reaches down here:
+            # it addresses only the top design's joints.)
+            sub_states = _resolve_states(sub, None)
+            sub_cworld = _component_joint_worlds(sub, sub_states)
+            sub = _solve_mates(sub, resolve, sub_states, sub_cworld)
+            sub = _pose_component_joints(sub, sub_cworld)
         for name, local in _placements(node):
             _inline(
                 sub,
@@ -797,25 +1226,209 @@ def _inline(
             )
 
 
-def _solve_mates(spec: SceneSpec, resolve: Resolver | None) -> SceneSpec:
-    """Rewrite each mated instance node's ``loc``/``rot`` from its mate.
+def _coerce_state(
+    name: str,
+    kind: str,
+    value: Any,
+    limits: tuple[float, float] | None,
+) -> JointState:
+    """Validate one explicit state entry. Out-of-limits is an error (the
+    acceptance rule: an explicit illegal pose is rejected, never clamped)."""
+    if kind == "cylindrical":
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise SceneError(
+                f"state[{name!r}]: cylindrical takes [angle_deg, slide_mm]"
+            )
+        ang, dist = float(value[0]), float(value[1])
+        if limits is not None and not (limits[0] <= ang <= limits[1]):
+            raise SceneError(
+                f"state[{name!r}]: angle {ang:g} outside limits "
+                f"{limits[0]:g}..{limits[1]:g}"
+            )
+        return (ang, dist)
+    try:
+        q = float(value)
+    except (TypeError, ValueError):
+        raise SceneError(f"state[{name!r}] must be a number") from None
+    if limits is not None and not (limits[0] <= q <= limits[1]):
+        raise SceneError(
+            f"state[{name!r}]={q:g} outside limits {limits[0]:g}..{limits[1]:g}"
+        )
+    return q
+
+
+def _default_state(kind: str, limits: tuple[float, float] | None) -> JointState:
+    """Neutral pose: 0, clamped into ``limits:`` when 0 lies outside them
+    (a 10..80 mm actuator defaults to 10, not an illegal 0)."""
+    q = 0.0
+    if limits is not None:
+        q = min(max(0.0, limits[0]), limits[1])
+    return (q, 0.0) if kind == "cylindrical" else q
+
+
+def _resolve_states(
+    spec: SceneSpec, state: dict[str, Any] | None
+) -> dict[str, JointState]:
+    """Every joint's final state: defaults, overlaid with the caller's
+    ``state=``, with gear/belt couplings derived (or consistency-checked
+    when the driven joint was also given explicitly)."""
+    joints: dict[str, tuple[str, tuple[float, float] | None]] = {}
+    for m in mates_of(spec):
+        if m.kind != "fixed":
+            joints[m.instance] = (m.kind, m.limits)
+    for j in joints_of(spec):
+        joints[j.component] = (j.kind, j.limits)
+
+    raw = dict(state or {})
+    unknown = sorted(set(raw) - set(joints))
+    if unknown:
+        known = ", ".join(sorted(joints)) or "none"
+        raise SceneError(
+            f"state names unknown joint(s) {unknown} — this design's joints: {known}"
+        )
+
+    out: dict[str, JointState] = {}
+    for name, (kind, limits) in joints.items():
+        if name in raw:
+            out[name] = _coerce_state(name, kind, raw[name], limits)
+        else:
+            out[name] = _default_state(kind, limits)
+
+    driver = {c.driven: c for c in couples_of(spec)}
+    resolved: set[str] = set()
+
+    def chain_q(name: str) -> float:
+        cur = out[name]
+        assert isinstance(cur, float)  # couplings refuse 2-DOF joints at parse
+        c = driver.get(name)
+        if c is None or name in resolved:
+            return cur
+        resolved.add(name)
+        want = c.ratio * chain_q(c.drive)
+        if name in raw:
+            if abs(cur - want) > 1e-9:
+                raise SceneError(
+                    f"state[{name!r}]={cur:g} conflicts with its {c.via} "
+                    f"coupling (= {c.ratio:g} × {c.drive} = {want:g}) — "
+                    "drop one"
+                )
+            return cur
+        _kind, limits = joints[name]
+        if limits is not None and not (limits[0] <= want <= limits[1]):
+            raise SceneError(
+                f"{c.via} coupling drives joint {name!r} to {want:g}, "
+                f"outside limits {limits[0]:g}..{limits[1]:g}"
+            )
+        out[name] = want
+        return want
+
+    for name in driver:
+        chain_q(name)
+    return out
+
+
+def _joint_xform(kind: str, q: JointState, pitch: float) -> Transform:
+    """The state-dependent transform a joint inserts at its interface —
+    about/along the joint frame's local z."""
+    if kind == "fixed":
+        return identity()
+    if kind == "cylindrical":
+        ang, dist = q  # type: ignore[misc]
+        return translation(0.0, 0.0, dist).compose(rotation(0.0, 0.0, ang))
+    assert isinstance(q, float)
+    if kind == "revolute":
+        return rotation(0.0, 0.0, q)
+    if kind == "prismatic":
+        return translation(0.0, 0.0, q)
+    if kind == "screw":
+        return translation(0.0, 0.0, q * pitch / 360.0).compose(rotation(0.0, 0.0, q))
+    raise SceneError(f"unknown joint kind {kind!r}")  # pragma: no cover
+
+
+def _is_neutral(q: JointState) -> bool:
+    return q == 0.0 or q == (0.0, 0.0)
+
+
+def _component_joint_worlds(
+    spec: SceneSpec, states: dict[str, JointState]
+) -> dict[str, Transform]:
+    """Per jointed component, the world transform its joint state applies:
+    ``F ∘ J(q) ∘ F⁻¹`` with ``F`` the pivot port's frame (conjugation, so
+    the motion happens about the port, not the origin). Components at
+    neutral state are omitted — identity by construction."""
+    out: dict[str, Transform] = {}
+    own_ports = {pt.name: pt for pt in ports_of(spec)}
+    for j in joints_of(spec):
+        q = states[j.component]
+        if _is_neutral(q):
+            continue
+        frame = own_ports[j.port].frame()
+        out[j.component] = frame.compose(_joint_xform(j.kind, q, j.pitch)).compose(
+            frame.inverse()
+        )
+    return out
+
+
+def _pose_component_joints(spec: SceneSpec, cworld: dict[str, Transform]) -> SceneSpec:
+    """Bake each jointed component's world transform into its nodes.
+
+    Patterned nodes flatten to explicit per-copy nodes (a joint pose about
+    an off-origin port cannot be expressed as another ``polar:``/``linear:``
+    token), with the same patterned-``intersect`` refusal as
+    :func:`_inline` and for the same reason.
+    """
+    if not cworld:
+        return spec
+    out: list[NodeSpec] = []
+    for node in spec.nodes:
+        w = cworld.get(node.component)
+        if w is None:
+            out.append(node)
+            continue
+        if node.pattern is not None and node.op == "intersect":
+            raise SceneError(
+                f"cannot pose component {node.component!r}: node "
+                f"{node.name!r} is a patterned 'intersect' — flattening it "
+                "under a joint pose would change the solid; split it into "
+                "explicit nodes"
+            )
+        for name, local in _placements(node):
+            loc, rot = _decompose(w.compose(local))
+            out.append(replace(node, name=name, loc=loc, rot=rot, pattern=None))
+    return SceneSpec(nodes=out, components=list(spec.components), meta=dict(spec.meta))
+
+
+def _solve_mates(
+    spec: SceneSpec,
+    resolve: Resolver | None,
+    states: dict[str, JointState] | None = None,
+    cworld: dict[str, Transform] | None = None,
+) -> SceneSpec:
+    """Rewrite each mated/jointed instance node's ``loc``/``rot``.
 
     A mate fully determines one instance's pose from an already-placed one,
     so this is direct substitution over a spanning tree — never an iterative
     constraint solve. With ``P_s`` the subject port's frame inside its own
-    sub-design and ``P_a`` the anchor port's frame in *this* design's
-    coordinates::
+    sub-design, ``P_a`` the anchor port's frame in *this* design's
+    coordinates, and ``J(q)`` the joint transform at state ``q``
+    (:func:`_joint_xform`; identity for a plain mate)::
 
-        X = P_a ∘ Rz(spin) ∘ (Rx(180) if flip) ∘ inv(P_s)
+        X = P_a ∘ Rz(spin) ∘ (Rx(180) if flip) ∘ J(q) ∘ inv(P_s)
 
     The default is frame **coincidence**; ``flip`` is opt-in. An authored
     port reads as "put the other thing's connection point here", and an
     implicit 180° convention is the kind of thing an author (human or model)
     silently gets backwards.
 
+    An anchor port scoped ``of:`` a component with its own joint follows
+    that component's pose (``cworld``) — a motor mated onto an articulated
+    arm swings with the arm.
+
     Solved poses are ephemeral — the stored spec keeps the ``mate`` line,
     exactly as it keeps the ``use`` line.
     """
+    states = states or {}
+    cworld = cworld or {}
     mates = mates_of(spec)
     if not mates:
         return spec
@@ -853,7 +1466,14 @@ def _solve_mates(spec: SceneSpec, resolve: Resolver | None) -> SceneSpec:
     sub_ports: dict[str, dict[str, PortSpec]] = {}
 
     def ports_for(inst: str) -> dict[str, PortSpec]:
-        """The ports the sub-design behind instance ``inst`` declares."""
+        """The ports the sub-design behind instance ``inst`` declares.
+
+        A port scoped ``of:`` one of the sub-design's own jointed components
+        is conjugated to that joint's **default** pose — the same pose
+        :func:`_inline` bakes into the geometry — so mating onto it lands on
+        the deflected frame, not the undeflected authored one (matters when
+        a joint's ``limits:`` exclude 0 and the default clamps away from it).
+        """
         if inst not in sub_ports:
             slug = instance_slug(instances[inst].config) or ""
             if resolve is None:
@@ -867,7 +1487,15 @@ def _solve_mates(spec: SceneSpec, resolve: Resolver | None) -> SceneSpec:
                 raise
             except Exception as exc:
                 raise SceneError(f"cannot resolve design {slug!r}: {exc}") from exc
-            sub_ports[inst] = {pt.name: pt for pt in ports_of(sub)}
+            found = {pt.name: pt for pt in ports_of(sub)}
+            if sub.meta.get("joints"):
+                sub_cw = _component_joint_worlds(sub, _resolve_states(sub, None))
+                for pname, pt in found.items():
+                    w = sub_cw.get(pt.component)
+                    if w is not None:
+                        ploc, prot = _decompose(w.compose(pt.frame()))
+                        found[pname] = replace(pt, loc=ploc, rot=prot)
+            sub_ports[inst] = found
         return sub_ports[inst]
 
     def require_port(inst: str, port: str) -> PortSpec:
@@ -909,6 +1537,10 @@ def _solve_mates(spec: SceneSpec, resolve: Resolver | None) -> SceneSpec:
                     f"'<port>' here or '<instance>{NAMESPACE_SEP}<port>')"
                 )
             anchor_world = anchor_port.frame()
+            w = cworld.get(anchor_port.component)
+            if w is not None:
+                # The port rides a component with its own joint — follow it.
+                anchor_world = w.compose(anchor_world)
         else:
             if mate.anchor_instance not in instances:
                 raise SceneError(
@@ -930,12 +1562,26 @@ def _solve_mates(spec: SceneSpec, resolve: Resolver | None) -> SceneSpec:
                 anchor_port.frame()
             )
 
+        subject_port = require_port(inst, mate.port)
+        if (
+            subject_port.type
+            and anchor_port.type
+            and subject_port.type != anchor_port.type
+        ):
+            raise SceneError(
+                f"port type mismatch: {mate.subject} is "
+                f"type:{subject_port.type} but {mate.anchor} is "
+                f"type:{anchor_port.type} — typed ports only mate like with "
+                "like"
+            )
         xf = anchor_world
         if mate.spin:
             xf = xf.compose(rotation(0.0, 0.0, mate.spin))
         if mate.flip:
             xf = xf.compose(rotation(180.0, 0.0, 0.0))
-        xf = xf.compose(require_port(inst, mate.port).frame().inverse())
+        if mate.kind != "fixed":
+            xf = xf.compose(_joint_xform(mate.kind, states[inst], mate.pitch))
+        xf = xf.compose(subject_port.frame().inverse())
         solved[inst] = xf
         return xf
 
@@ -949,7 +1595,11 @@ def _solve_mates(spec: SceneSpec, resolve: Resolver | None) -> SceneSpec:
     return SceneSpec(nodes=out, components=list(spec.components), meta=dict(spec.meta))
 
 
-def expand_instances(spec: SceneSpec, resolve: Resolver | None = None) -> SceneSpec:
+def expand_instances(
+    spec: SceneSpec,
+    resolve: Resolver | None = None,
+    state: dict[str, Any] | None = None,
+) -> SceneSpec:
     """Inline every ``use <slug> as <name>`` into a flat, self-contained spec.
 
     The stored spec keeps the compact instance node; *this* is what the probe,
@@ -958,29 +1608,43 @@ def expand_instances(spec: SceneSpec, resolve: Resolver | None = None) -> SceneS
     Names and components are namespaced ``<instance>.<name>`` and the
     sub-design's poses are composed under the instance's own.
 
-    Mates are solved first (:func:`_solve_mates`), which rewrites each mated
-    instance node's pose in place — so from here down a mated instance is
-    indistinguishable from a hand-placed one.
+    Interfaces are solved first: joint states resolve
+    (:func:`_resolve_states` — ``state=`` overlays the defaults, couplings
+    derive), then mates/joints rewrite each subject's pose in place
+    (:func:`_solve_mates`, :func:`_pose_component_joints`) — so from here
+    down a mated instance is indistinguishable from a hand-placed one.
+    ``state=`` addresses only *this* design's joints; an instanced
+    sub-design's own joints pose at their defaults.
 
-    A spec with no instances and no mates is returned **unchanged** (identity
-    fast path), so non-instanced designs are byte-identical through this code.
+    A spec with no instances, mates, or joints is returned **unchanged**
+    (identity fast path), so plain designs are byte-identical through here.
     """
-    if not has_instances(spec) and not spec.meta.get("mates"):
+    has_iface = bool(spec.meta.get("mates") or spec.meta.get("joints"))
+    if not has_instances(spec) and not has_iface:
+        if state:
+            raise SceneError("args.state was given but this design declares no joints")
         return spec
-    spec = _solve_mates(spec, resolve)
-    if resolve is None:
-        raise SceneError(
-            "this design instances another ('use <slug> as <name>') but no "
-            "resolver was supplied to expand it"
-        )
-    out: list[NodeSpec] = []
-    for node in spec.nodes:
-        if instance_slug(node.config) is None:
-            # Top-level nodes are kept verbatim — pattern included — so an
-            # unrelated instance elsewhere in the design cannot perturb them.
-            out.append(node)
-            continue
-        _inline(SceneSpec(nodes=[node]), resolve, identity(), "", out, ())
+    states = _resolve_states(spec, state)
+    cworld = _component_joint_worlds(spec, states)
+    spec = _solve_mates(spec, resolve, states, cworld)
+    spec = _pose_component_joints(spec, cworld)
+
+    if has_instances(spec):
+        if resolve is None:
+            raise SceneError(
+                "this design instances another ('use <slug> as <name>') but "
+                "no resolver was supplied to expand it"
+            )
+        out: list[NodeSpec] = []
+        for node in spec.nodes:
+            if instance_slug(node.config) is None:
+                # Top-level nodes are kept verbatim — pattern included — so an
+                # unrelated instance elsewhere cannot perturb them.
+                out.append(node)
+                continue
+            _inline(SceneSpec(nodes=[node]), resolve, identity(), "", out, ())
+    else:
+        out = list(spec.nodes)
 
     components: list[str] = []
     seen: set[str] = set()
@@ -995,23 +1659,32 @@ def expand_instances(spec: SceneSpec, resolve: Resolver | None = None) -> SceneS
             f"instance expansion produced duplicate node names: {dupes} — "
             "rename the colliding instance or part"
         )
-    # Expansion *consumes* the mates: their poses are now baked into the
-    # inlined nodes, and the instances they addressed no longer exist. Leaving
-    # them on the meta would make a second pass over an already-expanded spec
-    # (build_design re-runs this) fail with "not an instance". Ports stay —
-    # they still describe this design's interfaces, and the search card reads
-    # them off the expanded spec.
-    meta = {k: v for k, v in spec.meta.items() if k != "mates"}
+    # Expansion *consumes* the mates / joints / couples: their poses are now
+    # baked into the nodes, and the instances/components they addressed may
+    # no longer exist under those names. Leaving them on the meta would make
+    # a second pass over an already-expanded spec (build_design re-runs
+    # this) fail with "not an instance". Ports stay — they still describe
+    # this design's interfaces, and the search card reads them off the
+    # expanded spec.
+    meta = {
+        k: v for k, v in spec.meta.items() if k not in ("mates", "joints", "couples")
+    }
     return SceneSpec(nodes=out, components=components, meta=meta)
 
 
-def build_design(spec: SceneSpec, *, resolve: Resolver | None = None) -> Design:
+def build_design(
+    spec: SceneSpec,
+    *,
+    resolve: Resolver | None = None,
+    state: dict[str, Any] | None = None,
+) -> Design:
     """Build a live :class:`Design` from a :class:`SceneSpec`.
 
-    ``resolve`` is required only when ``spec`` instances another design; it is
-    threaded through :func:`expand_instances`.
+    ``resolve`` is required only when ``spec`` instances another design;
+    ``state=`` poses its joints — both are threaded through
+    :func:`expand_instances`.
     """
-    spec = expand_instances(spec, resolve)
+    spec = expand_instances(spec, resolve, state)
     design = Design()
     per_component: dict[str, Expr] = {}
 
