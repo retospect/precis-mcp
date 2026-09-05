@@ -20,6 +20,11 @@ Flow per inbound message (human or bot, any channel the app is in):
   1. resolve sender identity (Slack ``users.info`` / ``bots.info``, cached)
   2. capture the observed turn -> precis put(kind='conv', ...) — every
      message asa sees is captured, not just the ones that trigger a reply
+  2b. addressed-only gate (``slack.respond_only_when_addressed``, default
+     on): reply only to a DM, an @-mention, asa's name in the text, or a
+     follow-up in a thread asa already replied in — otherwise stop here
+     (captured, no reply). Operator directive: on shared channels asa
+     listens by default and only talks when spoken to.
   3. post an in-thread "thinking..." placeholder
   4. build the system prompt (SOUL + Slack hints + who's talking, via
      ``asa_bot.preamble.build`` — its per-user ``memory`` note mechanism
@@ -38,6 +43,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -76,6 +82,32 @@ _IGNORED_SUBTYPES = frozenset(
         "thread_broadcast",
     }
 )
+
+
+def _is_addressed(
+    *,
+    text: str,
+    own_user_id: str,
+    address_names: tuple[str, ...],
+    is_dm: bool,
+    parent_user_id: str | None,
+    thread_engaged: bool,
+) -> bool:
+    """Was this message spoken *to* asa (vs. merely near it)?
+
+    True for a DM, an explicit ``<@asa>`` mention, any of
+    ``address_names`` on a word boundary, a reply in a thread rooted on
+    asa's own message, or a thread asa has already replied in.
+    """
+    if is_dm or thread_engaged:
+        return True
+    if own_user_id and (f"<@{own_user_id}>" in text or parent_user_id == own_user_id):
+        return True
+    return any(
+        re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE)
+        for name in address_names
+        if name
+    )
 
 
 def _dispatch_warm(req: LlmRequest) -> LlmResult:
@@ -128,6 +160,10 @@ class AsaSlack:
         self._identity_cache: dict[str, Identity] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._thread_locks: dict[str, asyncio.Lock] = {}
+        # Thread slugs asa has replied in — follow-ups there don't need a
+        # re-mention. In-memory only: after a restart a thread needs one
+        # fresh mention to re-engage.
+        self._engaged_threads: set[str] = set()
         self._team_id: str = ""
         self._team_name: str = ""
         self._own_user_id: str = ""
@@ -163,7 +199,8 @@ class AsaSlack:
         bot_id = event.get("bot_id")
         user_id = event.get("user")
         # Self-loop guard only — every other sender (human or bot: Rocky,
-        # Bullwinkle, Natasha, ...) is a valid interlocutor and gets a reply.
+        # Bullwinkle, Natasha, ...) is a valid interlocutor; whether they
+        # get a *reply* is the addressed-only gate below.
         if bot_id and bot_id == self._own_bot_id:
             return
         if user_id and user_id == self._own_user_id:
@@ -179,6 +216,16 @@ class AsaSlack:
             team_id=self._team_id, channel_id=channel_id, thread_ts=thread_ts
         )
 
+        is_dm = event.get("channel_type") == "im" or channel_id.startswith("D")
+        respond = not self._cfg.slack.respond_only_when_addressed or _is_addressed(
+            text=text,
+            own_user_id=self._own_user_id,
+            address_names=self._cfg.slack.address_names,
+            is_dm=is_dm,
+            parent_user_id=event.get("parent_user_id"),
+            thread_engaged=slug in self._engaged_threads,
+        )
+
         # Serialize turns within one thread (cross-thread runs concurrently).
         lock = self._thread_locks.setdefault(slug, asyncio.Lock())
         async with lock:
@@ -190,6 +237,7 @@ class AsaSlack:
                 ts=ts,
                 text=text,
                 who=who,
+                respond=respond,
             )
 
     async def _resolve_identity(
@@ -249,6 +297,7 @@ class AsaSlack:
         ts: str,
         text: str,
         who: Identity,
+        respond: bool,
     ) -> None:
         # 1. Capture the observed turn unconditionally — every message asa
         # sees (human or bot) lands in the transcript, whether or not it's
@@ -263,6 +312,13 @@ class AsaSlack:
             slack_id=who.slack_id,
             is_bot=who.is_bot,
         )
+
+        # 2b. Addressed-only gate — captured above, but not spoken to:
+        # stay quiet.
+        if not respond:
+            log.info("asa-slack: listening only, not addressed (slug=%s)", slug)
+            return
+        self._engaged_threads.add(slug)
 
         # 2. Placeholder — always in-thread, never the channel root.
         try:

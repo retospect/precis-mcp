@@ -7,8 +7,11 @@ semi-trusted multi-user surface, so turns carry a hard kind-allowlist
 (:mod:`asa_slack.kind_policy`, baked in via ``LlmRequest.env_overlay``'s
 ``PRECIS_KINDS_DISABLED``): research lookups + memory only —
 job/quest/cron/todo are *unreachable*, not just prompt-discouraged.
-Replies are thread-only (never a channel root); every message asa sees is
-captured as a ``conv`` turn, not just the ones that trigger a reply.
+Replies are thread-only (never a channel root) and addressed-only by
+default (``slack.respond_only_when_addressed``): a DM, an @-mention,
+asa's name, or a thread asa already replied in — everything else is
+listened to, not answered. Every message asa sees is captured as a
+``conv`` turn either way, not just the ones that trigger a reply.
 Per-person memory rides ``asa_bot.preamble.build()``'s ``user:<handle>``
 memory notes, keyed on the resolved sender identity.
 """

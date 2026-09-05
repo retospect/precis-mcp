@@ -12,6 +12,10 @@ slack:
   # want to pin one. Set asa_slack_expected_bot_user_id in inventory to enable.
   expected_bot_user_id: "{{ asa_slack_expected_bot_user_id | default('') }}"
   allowed_channels: {{ asa_slack_allowed_channels | default([]) | to_json }}
+  # Listen everywhere, reply only when spoken to (DM / @-mention / name /
+  # engaged thread). Operator directive 2026-09-05.
+  respond_only_when_addressed: {{ asa_slack_respond_only_when_addressed | default(true) | to_json }}
+  address_names: {{ asa_slack_address_names | default(["asa"]) | to_json }}
   max_message_chars: 3500
 
 router:

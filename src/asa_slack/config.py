@@ -49,6 +49,14 @@ class SlackConfig:
     #: Only respond in these channel ids (empty = every channel the app
     #: is invited into).
     allowed_channels: tuple[str, ...] = ()
+    #: Reply only when spoken to: a DM, an @-mention, one of
+    #: ``address_names`` in the text, or a follow-up in a thread asa is
+    #: already part of. Every message is still captured to the transcript
+    #: either way. Off = the pre-2026-09 behavior (reply to everything).
+    respond_only_when_addressed: bool = True
+    #: Names that count as addressing asa (matched case-insensitively on
+    #: word boundaries).
+    address_names: tuple[str, ...] = ("asa",)
     max_message_chars: int = 3500
 
 
