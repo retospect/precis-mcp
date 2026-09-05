@@ -429,7 +429,7 @@
           # async watchdog (2026-09-05 wedge): a build that hangs on a dead
           # socket never exits, so retries/until never fire — kill it and let
           # the retry ladder take over. 3600s, not 1800: a legit cold build
-          # measured 43 min on melchior (2026-09-05), and a killed-but-alive
+          # measured 43 min on a cluster node (2026-09-05), and a killed-but-alive
           # buildx keeps building behind ansible's back, so a too-tight
           # watchdog reports failure on a build that then succeeds.
           async: 3600
