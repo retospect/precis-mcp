@@ -30,6 +30,7 @@ from precis.quest.dossier import (
     dossier_ref_id,
     ensure_dossier,
     ensure_ledger_chunk,
+    ledger_open_nodes,
     mark_attempt,
     paper_ref_id,
     read_dossier,
@@ -706,6 +707,125 @@ class TestAttemptTree:
         node_after = next(c for c in chunks_after if c.handle == node.handle)
         assert node_after.text == "a direction"  # untouched by the rewrite
         assert node.text not in read_narrative(store, qid)
+
+
+class TestLedgerOpenNodes:
+    """``ledger_open_nodes`` (gr263256): the open/active section of the tick
+    prompt must never truncate a node's own text — `ledger_ops`'
+    `mark`/`add` addressing (:func:`precis.quest.dossier._match_nodes`)
+    requires the model to quote a node's stored text back EXACTLY, so
+    truncating the very thing that must be quotable made most nodes
+    permanently unaddressable. The section is instead budgeted by NODE
+    COUNT (:data:`precis.quest.dossier._OPEN_LEDGER_BUDGET_ENV`)."""
+
+    def test_long_open_node_renders_full_text_and_is_addressable_via_mark(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        long_text = (
+            "identify whether the rate-limiting step shifts when the support "
+            "is switched from alumina to ceria under humid conditions at 300C, "
+            "and whether that shift also changes the dominant side product"
+        )
+        assert len(long_text) > 140
+        assert add_attempt(store, qid, long_text) is True
+
+        rendered = ledger_open_nodes(read_ledger(store, qid))
+        assert long_text in rendered  # full text, byte-identical
+        assert "…" not in rendered  # no truncation marker anywhere
+
+        # what renders is exactly what `mark` must be able to quote back
+        assert mark_attempt(store, qid, long_text, "active") is True
+        assert "- [active] " + long_text in read_ledger(store, qid)
+
+    def test_under_budget_all_nodes_shown_no_omitted_line(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "short open lead") is True
+        assert (
+            add_attempt(store, qid, "an active line of inquiry", status="active")
+            is True
+        )
+        rendered = ledger_open_nodes(read_ledger(store, qid))
+        assert "- [active] an active line of inquiry" in rendered
+        assert "- [open] short open lead" in rendered
+        assert "not shown" not in rendered
+        assert rendered != "(none yet)"
+
+    def test_budget_pressure_drops_whole_nodes_never_truncates_text(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.quest.dossier import _OPEN_LEDGER_BUDGET_ENV
+
+        qid = _mk_quest(store, "A striving")
+        # deliberately distinct directions (below the near-dup Jaccard floor,
+        # dossier-hygiene design) — each add must mint its own node, not
+        # merge into an existing one, so all five stay addressable targets.
+        texts = [
+            "identify the rate-limiting elementary step across the mechanism",
+            "screen alternative promoter metals for the reaction pathway",
+            "characterize the poison species accumulating on the active site",
+            "measure the branching ratio temperature dependence experimentally",
+            "compare humid versus dry conditions for overall selectivity",
+        ]
+        for t in texts:
+            assert add_attempt(store, qid, t) is True
+
+        # all five are "open" — priority ties break on most-recently-added
+        # first, so the LAST one added (texts[-1]) is the highest priority
+        # and the only one a budget fitting just one line should keep.
+        top_line = f"- [open] {texts[-1]}"
+        monkeypatch.setenv(_OPEN_LEDGER_BUDGET_ENV, str(len(top_line) + 5))
+
+        rendered = ledger_open_nodes(read_ledger(store, qid))
+        assert "…" not in rendered  # never truncates a shown node's text
+        shown_lines = [ln for ln in rendered.splitlines() if ln.startswith("- [")]
+        assert len(shown_lines) == 1  # at least one node always shows
+        assert shown_lines[0] == top_line
+        # every shown bullet is a WHOLE, byte-identical node text — never a
+        # partial/truncated one
+        for line in shown_lines:
+            assert line[len("- [open] ") :] in texts
+        omitted_line = [ln for ln in rendered.splitlines() if "not shown" in ln]
+        assert len(omitted_line) == 1
+        assert "+4 more open directions" in omitted_line[0]
+        assert "not shown this tick" in omitted_line[0]
+
+    def test_priority_active_before_open_then_most_recently_added_first(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.quest.dossier import _OPEN_LEDGER_BUDGET_ENV
+
+        qid = _mk_quest(store, "A striving")
+        # two older, mutually-distinct open directions (added first, so the
+        # lowest recency priority)...
+        older_one = "screen alternative promoter metals for the reaction pathway"
+        older_two = "characterize the poison species accumulating on the active site"
+        assert add_attempt(store, qid, older_one) is True
+        assert add_attempt(store, qid, older_two) is True
+        # ...an active direction added next (status beats recency)...
+        active_text = "measure the branching ratio temperature dependence experimentally"
+        assert add_attempt(store, qid, active_text, status="active") is True
+        # ...and the most-recently-added open direction.
+        newest_open = "compare humid versus dry conditions for overall selectivity"
+        assert add_attempt(store, qid, newest_open) is True
+
+        line1 = f"- [active] {active_text}"
+        line2 = f"- [open] {newest_open}"
+        # a budget that fits exactly the two highest-priority lines (each
+        # line costs its length plus one separator char) and no more
+        budget = len(line1) + 1 + len(line2) + 1
+        monkeypatch.setenv(_OPEN_LEDGER_BUDGET_ENV, str(budget))
+
+        rendered = ledger_open_nodes(read_ledger(store, qid))
+        lines = rendered.splitlines()
+        # active status wins over open regardless of add-order, and the most
+        # recently added open node wins over the two older open ones
+        assert lines[0] == line1
+        assert lines[1] == line2
+        assert older_one not in rendered
+        assert older_two not in rendered
+        assert "+2 more open directions" in lines[2]
+        assert "not shown this tick" in lines[2]
 
 
 # ── owner generalization ──────────────────────────────────

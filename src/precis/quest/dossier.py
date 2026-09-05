@@ -73,6 +73,7 @@ same op-mutated, never-rewritten shape as the ledger (:func:`read_dialectic`,
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -158,13 +159,21 @@ class AttemptNode:
     from storage (:func:`_load_ledger_nodes`), ``None`` only for a node that
     exists solely as a parsed-but-not-yet-written :class:`AttemptNode` (the
     legacy-markdown parse result before :func:`_migrate_legacy_ledger`
-    materializes it).
+    materializes it). ``seq`` is a monotonic recency proxy — the node
+    chunk's own ``chunk_id`` when loaded from storage (higher = created
+    later; a node's ``chunk_id`` never changes across a `mark`, only its
+    ``ATTEMPT:`` tag does, so this reflects add-order, not last-marked
+    time), or a parse-order counter for a node materialized from legacy
+    markdown text (:func:`_parse_ledger`) that has no chunk_id yet. Used by
+    :func:`ledger_open_nodes` to prioritize which open directions survive
+    its budget cutoff (gr263256).
     """
 
     text: str
     status: str
     children: list[AttemptNode] = field(default_factory=list)
     handle: str | None = None
+    seq: int = 0
 
 
 def _parse_ledger(text: str) -> list[AttemptNode]:
@@ -181,10 +190,16 @@ def _parse_ledger(text: str) -> list[AttemptNode]:
       each bullet (no status prefix) becomes a depth-0 node whose status is
       that heading's — so a pre-attempt-tree ledger parses without loss and
       needs no migration.
+
+    Each node's :attr:`AttemptNode.seq` is a simple top-to-bottom parse-order
+    counter (this text form carries no real ``chunk_id``) — later bullets get
+    a higher ``seq``, the same "more recent" direction storage-backed nodes
+    use (:func:`_load_ledger_nodes`).
     """
     roots: list[AttemptNode] = []
     mode: str | None = None  # "tree" | a legacy status | None (unrecognised)
     stack: list[tuple[int, AttemptNode]] = []
+    next_seq = 0
     for line in text.splitlines():
         stripped = line.strip()
         if stripped == _ATTEMPTS_HEADING:
@@ -211,13 +226,19 @@ def _parse_ledger(text: str) -> list[AttemptNode]:
                 continue
             indent = len(line) - len(line.lstrip(" "))
             depth = indent // _INDENT_WIDTH
-            node = AttemptNode(text=node_text, status=status, children=[])
+            node = AttemptNode(
+                text=node_text, status=status, children=[], seq=next_seq
+            )
+            next_seq += 1
             while stack and stack[-1][0] >= depth:
                 stack.pop()
             (stack[-1][1].children if stack else roots).append(node)
             stack.append((depth, node))
         else:
-            roots.append(AttemptNode(text=bullet, status=mode, children=[]))
+            roots.append(
+                AttemptNode(text=bullet, status=mode, children=[], seq=next_seq)
+            )
+            next_seq += 1
     return roots
 
 
@@ -593,16 +614,39 @@ def ledger_do_not_repropose(ledger: list[AttemptNode] | str) -> str:
     return "\n".join(lines) if lines else "(nothing pinned yet)"
 
 
-#: Truncation length for one node's text in :func:`ledger_open_nodes` — the
-#: prompt block is a compact "what's already open" reminder, not a full
-#: ledger re-render (that's :func:`read_ledger`'s job).
-_OPEN_NODE_TRUNCATE = 140
+#: Env var overriding :data:`_OPEN_LEDGER_BUDGET_CHARS_DEFAULT` — mirrors the
+#: ``PRECIS_QUEST_*`` budget-knob convention used elsewhere in the package
+#: (:mod:`precis.quest.allocator`, :mod:`precis.quest.cascade`,
+#: :mod:`precis.quest.tick`).
+_OPEN_LEDGER_BUDGET_ENV = "PRECIS_QUEST_LEDGER_OPEN_BUDGET_CHARS"
+#: Default char budget for the WHOLE rendered open-ledger section
+#: (:func:`ledger_open_nodes`'s return value) — generous: a full,
+#: untruncated node line is well under 200 chars for a typical direction, so
+#: this comfortably fits 60+ nodes before cutting off, while still bounding
+#: the pathological case that motivated this budget (gr263256: 188 open
+#: nodes, this section alone 55.6k chars of a 90.3k-char prompt, because the
+#: OLD per-node truncation made most nodes un-quotable — see
+#: :func:`ledger_open_nodes`'s docstring). Cuts by NODE COUNT, never by
+#: truncating a node's own text — the fix's whole point is that what renders
+#: here must be exactly what :func:`_match_nodes` will accept.
+_OPEN_LEDGER_BUDGET_CHARS_DEFAULT = 12_000
+
+
+def _open_ledger_budget_chars() -> int:
+    """:data:`_OPEN_LEDGER_BUDGET_ENV`, parsed as an int, falling back to
+    :data:`_OPEN_LEDGER_BUDGET_CHARS_DEFAULT` when unset or non-numeric."""
+    raw = os.environ.get(_OPEN_LEDGER_BUDGET_ENV)
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return _OPEN_LEDGER_BUDGET_CHARS_DEFAULT
 
 
 def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
     """The pinned ledger's ``open``/``active`` directions — a compact
-    status+text bullet per node, each truncated to
-    :data:`_OPEN_NODE_TRUNCATE` chars — the upsert counterpart to
+    status+text bullet per node — the upsert counterpart to
     :func:`ledger_do_not_repropose`'s tried/ruled-out list.
 
     Model-facing purpose: the proposer only ever saw the tried/ruled-out
@@ -616,20 +660,70 @@ def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
     catches the case where the model adds one anyway, so this is a
     prompt-quality aid, not the correctness backstop.
 
+    **A node's text is NEVER truncated here** (gr263256 fix — this function
+    used to cut every node to 140 chars, but `ledger_ops`' `mark`/`add`
+    addressing (:func:`_match_nodes`) requires the model to quote a node's
+    text back EXACTLY: truncating the very thing that must be quotable made
+    most nodes (78% of open nodes on the audited quest, all longer than 140
+    chars) permanently unaddressable — every `mark` targeting one silently
+    no-opped, so the model just re-added the same direction as a new node
+    every tick instead, and the section accreted (measured: 188 open nodes,
+    55.6k of a 90.3k-char prompt). What renders here must always be exactly
+    what :func:`_match_nodes` will accept.
+
+    Instead, **the budget is on node COUNT, not text length**
+    (:data:`_OPEN_LEDGER_BUDGET_CHARS_DEFAULT`, env-tunable via
+    :data:`_OPEN_LEDGER_BUDGET_ENV`) — mirrors the fill-to-budget/report-the-
+    remainder shape :mod:`precis.quest.tick`'s `_served_papers_detail` uses
+    for the literature section (commit d8e2ddc4), applied to whole nodes
+    here rather than truncated snippets. Nodes are ordered by priority
+    before filling: ``active`` before ``open`` (a direction currently being
+    pursued is the one most likely to need a `mark` this tick), then
+    most-recently-added first within a status tier (:attr:`AttemptNode.seq`
+    — newer directions are the freshest ask and the likeliest to otherwise
+    get re-proposed if dropped from view). At least one node always shows
+    when any open/active node exists, even if it alone exceeds the budget
+    (avoids a false-empty section). When the budget cuts a node off
+    entirely, a trailing line reports how many were omitted — worded to
+    discourage re-adding: an omitted node is simply not addressable THIS
+    tick, which is still strictly better than the old truncate-but-show
+    behaviour (visible yet equally unaddressable).
+
     Takes the forest directly or the legacy markdown text, mirroring
     :func:`ledger_do_not_repropose`. ``"(none yet)"`` when nothing
     qualifies.
     """
     roots = _parse_ledger(ledger) if isinstance(ledger, str) else ledger
+    open_nodes = [
+        n for n, _parent in _flatten_with_parent(roots) if n.status in ("open", "active")
+    ]
+    if not open_nodes:
+        return "(none yet)"
+    ordered = sorted(
+        open_nodes, key=lambda n: (0 if n.status == "active" else 1, -n.seq)
+    )
+    budget = _open_ledger_budget_chars()
     lines: list[str] = []
-    for n, _parent in _flatten_with_parent(roots):
-        if n.status not in ("open", "active"):
-            continue
-        text = n.text
-        if len(text) > _OPEN_NODE_TRUNCATE:
-            text = text[: _OPEN_NODE_TRUNCATE - 1].rstrip() + "…"
-        lines.append(f"- [{n.status}] {text}")
-    return "\n".join(lines) if lines else "(none yet)"
+    used = 0
+    shown = 0
+    for n in ordered:
+        line = f"- [{n.status}] {n.text}"
+        if shown and used + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        shown += 1
+    omitted = len(ordered) - shown
+    if omitted > 0:
+        plural = "" if omitted == 1 else "s"
+        lines.append(
+            f"(+{omitted} more open direction{plural} pinned but not shown this "
+            "tick for space — they still exist and are still open; do NOT "
+            "re-add them or treat their absence here as \"not yet raised\". "
+            "They are not addressable THIS tick (you cannot `mark` a node you "
+            "cannot see), but will resurface in a future tick as budget allows.)"
+        )
+    return "\n".join(lines)
 
 
 #: The second pinned chunk (Slice 4c-4): the candidate lineage tree. Unlike
@@ -1026,6 +1120,7 @@ def _load_ledger_nodes(store: Store, dossier_id: int) -> list[AttemptNode]:
             status=statuses.get(c.chunk_id, "open"),
             children=[],
             handle=str(c.handle),
+            seq=c.chunk_id,
         )
         by_chunk_id[c.chunk_id] = node
         if c.parent_chunk_id == container.chunk_id:
