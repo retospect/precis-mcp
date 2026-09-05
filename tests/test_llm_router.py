@@ -403,6 +403,112 @@ def test_dispatch_cloud_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["model"] == "claude-haiku-4-5-20251001"
 
 
+# ── gr255847: claude_p rung 0 tier-aware default max_usd ────────────────
+#
+# Before this fix every claude_p (rung 0) dispatch fell through to
+# claude_p.py's own Haiku-sized _DEFAULT_MAX_USD=0.10 regardless of tier, so
+# a real BIG/FRONTIER call busted its budget on essentially every call and
+# guaranteed a failover to the claude_agent rung. router._claude_p_max_usd
+# resolves LlmRequest.max_usd > PRECIS_CLAUDE_MAX_USD (env) > the per-tier
+# default table — see router._CLAUDE_P_TIER_MAX_USD.
+
+
+def _fake_claude_p_capturing(
+    calls: dict[str, object],
+) -> Callable[..., ClaudePResult]:
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        calls["max_usd"] = kwargs.get("max_usd")
+        return ClaudePResult(
+            data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.02
+        )
+
+    return fake_p
+
+
+def test_claude_p_big_tier_defaults_to_two_dollars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A BIG-tier claude_p rung with no explicit max_usd and no env override
+    must get the tier default (2.00), not claude_p.py's Haiku-sized 0.10 —
+    the guaranteed-fail probe this gripe is about."""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(router, "call_claude_p", _fake_claude_p_capturing(calls))
+    monkeypatch.delenv("PRECIS_CLAUDE_MAX_USD", raising=False)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="judge this", tools_needed=False))
+
+    assert out.error is None
+    assert calls["max_usd"] == 2.00
+
+
+def test_claude_p_env_override_wins_over_tier_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PRECIS_CLAUDE_MAX_USD must still win over the router's tier default —
+    the env knob cannot go dead just because the router now always supplies
+    a non-None max_usd."""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(router, "call_claude_p", _fake_claude_p_capturing(calls))
+    monkeypatch.setenv("PRECIS_CLAUDE_MAX_USD", "3.25")
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="judge this", tools_needed=False))
+
+    assert out.error is None
+    assert calls["max_usd"] == 3.25
+
+
+def test_claude_p_explicit_max_usd_wins_over_env_and_tier_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit LlmRequest.max_usd beats both the env override and the
+    tier default — the strongest signal in the precedence chain."""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(router, "call_claude_p", _fake_claude_p_capturing(calls))
+    monkeypatch.setenv("PRECIS_CLAUDE_MAX_USD", "3.25")
+
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG, prompt="judge this", tools_needed=False, max_usd=0.42
+        )
+    )
+
+    assert out.error is None
+    assert calls["max_usd"] == 0.42
+
+
+def test_claude_p_small_tier_keeps_existing_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SMALL is unchanged by this fix: still the original 0.10 default.
+
+    Exercised against ``_claude_p_max_usd`` directly rather than through
+    ``route`` — ``select_transport`` always sends SMALL to the local/hosted-
+    OSS transport (never ``claude_p``), so a real SMALL dispatch never
+    reaches this resolver in production; the table entry still needs
+    covering since :class:`ClaudePProvider` would use it if a caller ever
+    constructed one directly for SMALL (tests, a future rung).
+    """
+    monkeypatch.delenv("PRECIS_CLAUDE_MAX_USD", raising=False)
+
+    got = router._claude_p_max_usd(
+        LlmRequest(tier=Tier.SMALL, prompt="judge this", tools_needed=False)
+    )
+
+    assert got == 0.10
+
+
+def test_claude_p_tier_max_usd_table_is_total() -> None:
+    """Every :class:`Tier` must have a row — an added tier without one is a
+    load-time failure via the module's own totality assert, but pin the
+    values here too so a silent edit is caught at test time."""
+    assert router._CLAUDE_P_TIER_MAX_USD == {
+        Tier.SMALL: 0.10,
+        Tier.MEDIUM: 0.50,
+        Tier.BIG: 2.00,
+        Tier.FRONTIER: 5.00,
+    }
+
+
 def test_dispatch_local(monkeypatch: pytest.MonkeyPatch) -> None:
     # Patch the lazily-imported LlmClient so no proxy is hit.
     import precis.workers.llm_summarize as summ

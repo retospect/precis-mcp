@@ -31,6 +31,17 @@ Knobs (all overridable per call, project defaults via env):
 * ``PRECIS_CLAUDE_MAX_USD``   — per-call cost cap (default ``0.10``).
 * ``PRECIS_CLAUDE_TIMEOUT_S`` — wall-clock timeout (default ``120``).
 
+The ``0.10`` default here is Haiku-sized — this module has no notion of
+*tier*, so it cannot know a BIG/FRONTIER caller needs a bigger budget. A
+router-dispatched call (:class:`precis.utils.llm.router.ClaudePProvider`)
+never hits this default in practice: :func:`~precis.utils.llm.router._claude_p_max_usd`
+resolves ``LlmRequest.max_usd`` > ``PRECIS_CLAUDE_MAX_USD`` > a
+per-tier default (``precis.utils.llm.router._CLAUDE_P_TIER_MAX_USD``) and
+always passes a concrete float down, so ``PRECIS_CLAUDE_MAX_USD`` still wins
+over the *router's* tier default when set, but this module's own ``0.10``
+constant is only reachable from a direct, non-router caller. See
+gr255847 / ``docs/backlog/llm-tier-ladder-cloud-cutover.md``.
+
 Concurrency: each call is a separate subprocess; no shared state.
 Thread-safe by construction.
 """

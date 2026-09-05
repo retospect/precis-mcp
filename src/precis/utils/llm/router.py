@@ -18,6 +18,11 @@ Four pieces:
 * :class:`LlmResult` + the ``result_from_*`` adapters — one normalized shape
   unifying the JSON-block / stream-json result-event / OpenAI-choices
   outputs.
+* :func:`_claude_p_max_usd` — tier-aware ``--max-budget-usd`` default for the
+  ``claude_p`` rung (:class:`ClaudePProvider`), since
+  :mod:`precis.utils.claude_p` itself has no notion of tier. Precedence:
+  ``LlmRequest.max_usd`` (explicit) > ``PRECIS_CLAUDE_MAX_USD`` (env) >
+  :data:`_CLAUDE_P_TIER_MAX_USD` (tier default) — see gr255847.
 
 :class:`Tier` aligns with :class:`~precis.utils.prompt.model.Profile`: a
 ``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
@@ -257,6 +262,62 @@ _TIER_GEN_DEFAULTS: dict[Tier, tuple[bool, float | None]] = {
 assert set(_TIER_GEN_DEFAULTS) == set(Tier), (
     "_tier_gen_defaults: tier table is not total"
 )
+
+#: Per-tier default ``--max-budget-usd`` for the :data:`Transport.CLAUDE_P`
+#: rung, applied by :class:`ClaudePProvider` when a caller leaves
+#: :attr:`LlmRequest.max_usd` unset. ``claude_p.py`` itself only knows
+#: ``_DEFAULT_MAX_USD = 0.10`` (Haiku-sized, per its own comment) because it
+#: has no notion of tier — the router does, so tier-awareness lives here, not
+#: there. Without this table every BIG/FRONTIER ``claude_p`` rung (the
+#: deliberate tool-less-first probe ahead of ``claude_agent`` — see
+#: ``docs/backlog/llm-tier-ladder-cloud-cutover.md``) was capped at Haiku
+#: money and blew its budget on essentially every real Sonnet/Opus call,
+#: guaranteeing a failover to the ``claude_agent`` rung on every single
+#: dispatch: pure cost + latency waste (gr255847). Values are engineering
+#: defaults, not measured p99s — sized so rung 0 stops being a
+#: guaranteed-fail probe while the fleet-wide budget breaker
+#: (``PRECIS_DAILY_COST_CEILING``) remains the real backstop:
+#:
+#: * ``SMALL``    — 0.10 (unchanged; already right-sized for Haiku-class).
+#: * ``MEDIUM``   — 0.50 (Haiku-class judge with more headroom).
+#: * ``BIG``      — 2.00 (Sonnet-class; matches ``claude_agent``'s own
+#:   ``_DEFAULT_MAX_USD`` for the same tier, so failing over rung-to-rung
+#:   doesn't also change the budget class).
+#: * ``FRONTIER`` — 5.00 (Opus-class).
+#:
+#: Precedence (see :func:`_claude_p_max_usd`): an explicit
+#: ``LlmRequest.max_usd`` always wins; failing that, ``PRECIS_CLAUDE_MAX_USD``
+#: (if set) wins over this table — the operator env knob must not go dead
+#: just because the router now supplies a non-``None`` default.
+_CLAUDE_P_TIER_MAX_USD: dict[Tier, float] = {
+    Tier.SMALL: 0.10,
+    Tier.MEDIUM: 0.50,
+    Tier.BIG: 2.00,
+    Tier.FRONTIER: 5.00,
+}
+
+# Import-time totality guard, mirroring _TIER_MODEL's above.
+assert set(_CLAUDE_P_TIER_MAX_USD) == set(Tier), (
+    "_CLAUDE_P_TIER_MAX_USD: tier table is not total"
+)
+
+
+def _claude_p_max_usd(req: LlmRequest) -> float:
+    """Resolve the ``--max-budget-usd`` for one :data:`Transport.CLAUDE_P`
+    call: ``req.max_usd`` (explicit per-call override) > ``PRECIS_CLAUDE_MAX_USD``
+    (operator env override) > :data:`_CLAUDE_P_TIER_MAX_USD` (tier-aware
+    default). Resolving the env var here — not letting it fall through to
+    :func:`~precis.utils.claude_p.call_claude_p`'s own ``max_usd is None``
+    check — is required: once this function always returns a float, the
+    router never again passes ``None`` down, so ``call_claude_p``'s env
+    fallback would otherwise never fire.
+    """
+    if req.max_usd is not None:
+        return req.max_usd
+    env_usd = os.environ.get("PRECIS_CLAUDE_MAX_USD")
+    if env_usd:
+        return float(env_usd)
+    return _CLAUDE_P_TIER_MAX_USD[req.tier]
 
 
 def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
@@ -1204,7 +1265,7 @@ class ClaudePProvider:
             pres = call_claude_p(
                 req.prompt,
                 model=model,
-                max_usd=req.max_usd,
+                max_usd=_claude_p_max_usd(req),
                 timeout_s=req.timeout_s,
                 extra_args=req.extra_args,
                 bare=self._bare,

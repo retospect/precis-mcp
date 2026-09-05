@@ -87,7 +87,16 @@ dispatched 2026-08-15.
    FRONTIER=opus traffic. Scope note: these gate only the `claude_p`
    one-shot rung; `claude_agent` has its own budget/timeout knobs. Env-
    template change — can ride the same deploy that activates the drain
-   fixes.
+   fixes. **Code-side landed (gr255847):** the `claude_p` rung 0 now gets a
+   tier-aware default `max_usd` from the router
+   (`_CLAUDE_P_TIER_MAX_USD` in `utils/llm/router.py`) instead of
+   `claude_p.py`'s flat Haiku-sized 0.10 — SMALL 0.10, MEDIUM 0.50, BIG
+   2.00, FRONTIER 5.00 — so a real BIG/FRONTIER call no longer
+   guarantee-fails rung 0 before even trying it. `PRECIS_CLAUDE_MAX_USD`
+   still wins over the tier default when set (precedence: explicit
+   `LlmRequest.max_usd` > env > tier default), so this env knob remains
+   useful for a host-wide override; it's just no longer load-bearing for
+   BIG/FRONTIER to work at all.
 
 The proposal below is kept as written for the findings and mechanism notes;
 where it names sonnet/opus/fable as the ladder, the applied values above
