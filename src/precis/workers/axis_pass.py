@@ -64,6 +64,19 @@ axis ``version`` is bumped — the same failure-lease behaviour as the
 ``classify`` cascade. A per-axis failed-lease reaper is a prerequisite
 before any chunk-level axis is swept corpus-wide (tracked in OPEN-ITEMS).
 
+**Pre-claim viability guard** (:func:`_llm_lane_viable`, gr243945): before
+claiming anything, :func:`run_axis_pass` cheaply (no network call) checks
+whether ``dispatch``'s tier can reach an LLM at all via the router's own
+``resolve_backend``/``resolve_chain`` seam. A worker whose config pins the
+``openai`` backend but is missing ``PRECIS_LLM_BASE_URL`` (a copied env
+template minus its endpoint — the ``openai_compat`` transport's one hard
+requirement) would otherwise still win the claim race every sweep and fail
+every item, starving a cluster worker that could actually serve it. On that
+one known-dead config shape the pass logs once and returns without claiming;
+any other viability-probe outcome (including a probe error) falls through to
+claim as before — fail-open, so this guard can never itself idle a healthy
+worker.
+
 Default-OFF: each axis registers under its own ``service_config`` service
 name ``axis:<id>`` (``cli/worker.py``'s per-axis wiring), off unless a
 ``service_config`` row (or the ``PRECIS_AXES_ENABLED`` seed list) turns it
@@ -73,6 +86,8 @@ block there + ``workers/registry.py``'s ``"axis"`` ``ServiceSpec``.
 
 from __future__ import annotations
 
+import logging
+import os
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -81,10 +96,13 @@ import yaml
 
 from precis.store.types import Tag
 from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.llm.router import Backend, Transport, resolve_backend, resolve_chain
 from precis.workers import ref_lease
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+log = logging.getLogger(__name__)
 
 _AXES_DIR = Path(__file__).resolve().parent.parent / "data" / "axes"
 _ABSTRACT_CHARS = 2000
@@ -540,6 +558,57 @@ def _enrich_ref(conn: Any, rows: list[dict[str, Any]]) -> None:
         row["abstract"] = _abstract(conn, row["ref_id"])
 
 
+# ── pre-claim viability guard (gr243945) ────────────────────────────────
+
+
+def _llm_lane_viable(dispatch: Any) -> bool:
+    """Cheap, no-network check: can ``dispatch`` actually reach an LLM at
+    all, or is this worker's config the known-dead-on-arrival shape (backend
+    pinned to ``openai`` — an operator config/env intent — with
+    ``PRECIS_LLM_BASE_URL`` unset, e.g. a compose stack that copied the
+    backend flag but not the endpoint url)?
+
+    Reuses the router's own :func:`~precis.utils.llm.router.resolve_backend`
+    + :func:`~precis.utils.llm.router.resolve_chain` — the exact seam
+    ``route()`` walks — rather than re-deriving env logic here. Returns
+    ``False`` only when the resolved chain is empty, or when *every* rung in
+    it is :data:`~precis.utils.llm.router.Transport.OPENAI_COMPAT` with no
+    base url configured (the one transport that hard-needs it — an
+    ``OPENAI_TOOLS`` rung can still serve locally via a ``served_by`` slot,
+    and any surviving claude-fallback rung means the lane is NOT dead). A
+    tier that never reaches ``OPENAI_COMPAT`` (the default ``ANTHROPIC``
+    backend routes ``SMALL`` to the local loopback) is always viable here —
+    this guard targets the one config-only, always-reproducible dead state,
+    not every way a transport might transiently fail.
+
+    ``dispatch`` with no ``tier`` attribute (a bare test double, or a future
+    caller passing something other than
+    :class:`~precis.utils.llm.router.DispatchClient`) is treated as viable —
+    this guard only engages for a caller shaped like the real dispatch seam.
+    Fail-open on any resolution error: never let this probe itself become a
+    new way to silently idle a healthy worker.
+    """
+    tier = getattr(dispatch, "tier", None)
+    if tier is None:
+        return True
+    try:
+        tools_needed = bool(getattr(dispatch, "tools_needed", False))
+        backend = resolve_backend()
+        chain = resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+        if not chain:
+            return False
+        if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
+            if all(rung.transport is Transport.OPENAI_COMPAT for rung in chain):
+                return False
+        return True
+    except Exception:
+        log.warning(
+            "axis: LLM lane viability probe failed — proceeding to claim as usual",
+            exc_info=True,
+        )
+        return True
+
+
 # ── the pass ─────────────────────────────────────────────────────────────
 
 
@@ -562,6 +631,14 @@ def run_axis_pass(
     backfill / tests, mirroring the two existing passes); ``None`` sweeps
     the whole corpus.
     """
+    if not _llm_lane_viable(dispatch):
+        log.warning(
+            "axis:%s: no viable LLM endpoint (PRECIS_LLM_BASE_URL unset for "
+            "openai_compat) — skipping claim, lane idle on this worker",
+            axis_id,
+        )
+        return {"claimed": 0, "ok": 0, "failed": 0}
+
     axis = _load_axis(axis_id)
     ns = axis_id.upper()
     marker_ns = f"{ns}CASCADE"

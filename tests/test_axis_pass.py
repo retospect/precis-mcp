@@ -11,12 +11,16 @@ and ``patent_example`` (chunk-level, ``applies_to_kinds: [patent]``).
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
+from precis.utils.llm.router import Tier
 from precis.workers.axis_pass import _SYS, prompt_preview, run_axis_pass
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -31,6 +35,17 @@ class _FakeClient:
     def complete(self, messages: list[dict[str, str]]) -> Any:
         self.calls.append(messages)
         return SimpleNamespace(text=f'{{"value": "{self.value}"}}', total_tokens=5)
+
+
+class _TieredFakeClient(_FakeClient):
+    """Same as :class:`_FakeClient` but shaped like the real
+    ``DispatchClient`` seam (``tier``/``tools_needed`` attributes) — the
+    pre-claim viability guard (gr243945) only engages for a dispatch that
+    carries these, matching the real ``axis:<id>`` wiring
+    (``cli/worker.py``: ``DispatchClient(tier=Tier.SMALL)``)."""
+
+    tier = Tier.SMALL
+    tools_needed = False
 
 
 _LONG_PARA = (
@@ -553,6 +568,89 @@ def test_dispatch_raise_on_ref_level_axis_is_not_reclaimed_next_sweep(
     )
     assert second == {"claimed": 0, "ok": 0, "failed": 0}
     assert retry_client.calls == []
+
+
+# ── pre-claim LLM-lane viability guard (gr243945) ───────────────────────
+
+
+def test_misconfigured_openai_compat_env_skips_claim(
+    store: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The Mac-compose-stack shape: PRECIS_LLM_BACKEND=openai but no
+    PRECIS_LLM_BASE_URL — SMALL's only rung is openai_compat, dead on
+    arrival. The pass must skip the claim entirely (zero DB claim attempts)
+    and log exactly one clear line, instead of claiming + failing the row
+    every sweep."""
+    ref_id = seed_ref(store, title="A study of Pd catalysts")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    client = _TieredFakeClient("chemistry")
+    with caplog.at_level(logging.WARNING, logger="precis.workers.axis_pass"):
+        result = run_axis_pass(
+            store, dispatch=client, axis_id="domain", batch_size=10, ref_ids=[ref_id]
+        )
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert client.calls == []  # never even reached the LLM
+    assert _ref_tag(store, ref_id, "DOMAIN") is None
+    skip_lines = [
+        r.message
+        for r in caplog.records
+        if "no viable LLM endpoint" in r.message
+    ]
+    assert len(skip_lines) == 1
+    assert "axis:domain" in skip_lines[0]
+    assert "PRECIS_LLM_BASE_URL" in skip_lines[0]
+
+
+def test_healthy_env_claims_proceed_as_before(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Companion positive: the default (ANTHROPIC) backend routes SMALL to
+    the local loopback transport, not openai_compat — the guard must not
+    engage, and the claim proceeds exactly as it did before gr243945."""
+    ref_id = seed_ref(store, title="A study of Pd catalysts")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    client = _TieredFakeClient("chemistry")
+    result = run_axis_pass(
+        store, dispatch=client, axis_id="domain", batch_size=10, ref_ids=[ref_id]
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"chemistry": 1}}
+    assert len(client.calls) == 1
+    assert _ref_tag(store, ref_id, "DOMAIN") == "chemistry"
+
+
+def test_viability_probe_exception_fails_open_and_claims(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken probe (e.g. a `resolve_chain` regression) must never become
+    a new way to silently idle a healthy worker — fail-open, proceed to
+    claim exactly as if the guard didn't exist."""
+    ref_id = seed_ref(store, title="A study of Pd catalysts")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("resolve_backend blew up")
+
+    # axis_pass imports `resolve_backend` by name (`from ... import
+    # resolve_backend`), so the patch target is axis_pass's own binding, not
+    # the router module's — patching `router.resolve_backend` would silently
+    # miss it.
+    monkeypatch.setattr("precis.workers.axis_pass.resolve_backend", _boom)
+
+    client = _TieredFakeClient("chemistry")
+    result = run_axis_pass(
+        store, dispatch=client, axis_id="domain", batch_size=10, ref_ids=[ref_id]
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"chemistry": 1}}
+    assert len(client.calls) == 1
 
 
 # ── prompt_preview (no DB — pure YAML + prompt-builder) ─────────────────
