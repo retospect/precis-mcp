@@ -25,6 +25,22 @@
 # Fire-and-forget: SessionEnd's exit code/stdout aren't read by the harness —
 # this is pure side effect and never reports back. Backstopped by
 # scripts/reap-worktrees on the NEXT SessionStart if this is skipped/fails.
+#
+# gr260192 / docs/backlog/reaper-removed-live-session-worktree.md (proposals
+# 1+2): scripts/reap-worktrees, the SIBLING-session backstop, now re-verifies
+# the bucket after a grace-period sleep and treats a fresh `.claude/purpose`
+# as a tripwire before removing someone ELSE's worktree, because it's
+# deciding another session's liveness from possibly-stale information.
+# Deliberately NOT duplicated here: this hook only ever reaps THIS session's
+# OWN worktree (matched by `cwd`), on ITS OWN genuine end-of-session signal,
+# and only after the ownership guard above has already proven the ending
+# session is the one that held the lock (or that the lock was already dead).
+# There is no "is someone else still using this tree" question left to ask —
+# the answer is "no, I am that someone, and I am the one ending" — so a
+# sleep here would just delay a normal fast-session ship for no safety
+# benefit (worse: SessionEnd is fire-and-forget and not meant to block), and
+# a fresh purpose here is the ordinary shape of a short session that just
+# finished its task, not a liveness false positive.
 set -uo pipefail
 
 [ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0

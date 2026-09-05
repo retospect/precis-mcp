@@ -51,6 +51,15 @@ These exercise the real ``scripts/lib/session-lock.sh`` + real
 ``scripts/hooks/session-end-reap.sh`` (also staged byte-for-byte, alongside
 the three already listed above) under the same synthetic-process-tree
 technique.
+
+Also covers gr260192's hardening of the two open proposals in
+``docs/backlog/reaper-removed-live-session-worktree.md`` (1: grace-period
+re-verify right before removal; 2: a fresh ``.claude/purpose`` tripwire),
+against the real ``scripts/reap-worktrees`` staged into a SEPARATE small
+fixture (``guard_repo``, below) rather than ``repo_trio`` — it needs a
+``.gitignore`` for ``.claude/*`` (mirroring this repo's own) so writing
+``.claude/purpose`` into the throwaway worktree doesn't itself make it
+"dirty" via an untracked file and mask what's actually being tested.
 """
 
 from __future__ import annotations
@@ -906,6 +915,190 @@ def test_reassert_session_lock_noops_on_the_primary_checkout(
     finally:
         session.kill()
         session.wait(timeout=10)
+
+
+@pytest.fixture
+def guard_repo(tmp_path: Path) -> dict[str, Path]:
+    """A throwaway repo with the same post-ship 'merged + clean' shape for
+    worktree B as ``repo_trio``, but with a ``.gitignore`` for ``.claude/*``
+    (mirroring THIS repo's own — see the module docstring) and only the two
+    scripts these tests actually exercise (``inflight``, ``reap-worktrees`` —
+    no hooks/lock lib, since none of the gr260192 guards touch locking).
+    Kept separate from ``repo_trio`` rather than risking a change to a
+    fixture several other tests in this module already pin the exact shape
+    of.
+    """
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+
+    scripts_dir = primary / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    (scripts_dir / "inflight").chmod(0o755)
+    (scripts_dir / "reap-worktrees").chmod(0o755)
+
+    (primary / ".gitignore").write_text(".claude/*\n", encoding="utf-8")
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "initial")
+
+    b = primary / ".claude" / "worktrees" / "B"
+    _git(primary, "worktree", "add", "-q", "-b", "worktree-B", str(b), "main")
+
+    # Real work, squash-merged into main, then B reset onto shipped main —
+    # merged + clean, the safe_remove trigger shape (see repo_trio).
+    (b / "feature.txt").write_text("feature work\n", encoding="utf-8")
+    _git(b, "add", "-A")
+    _git(b, "commit", "-q", "-m", "feature work")
+    _git(primary, "merge", "-q", "--squash", "worktree-B")
+    _git(primary, "commit", "-q", "-m", "feature work (squashed)")
+    _git(b, "reset", "-q", "--hard", "main")
+
+    return {"primary": primary, "b": b}
+
+
+def _reap_env(**overrides: str) -> dict[str, str]:
+    env = _test_env()
+    env.update(overrides)
+    return env
+
+
+def test_reap_worktrees_purpose_tripwire_blocks_removal(
+    guard_repo: dict[str, Path],
+) -> None:
+    """docs/backlog/reaper-removed-live-session-worktree.md proposal 2: a
+    FRESH ``.claude/purpose`` file in an otherwise safe_remove tree (merged +
+    clean, per the fixture) demotes it to not-removed even though nothing
+    else about the bucket changed — the false positive the tripwire exists
+    to catch: a session that just wrote its purpose and is mid-turn in a
+    tree that momentarily looks removable.
+    """
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    reap = primary / "scripts" / "reap-worktrees"
+    inflight = primary / "scripts" / "inflight"
+
+    before = _bucket_for(_run([str(inflight), "--json"], primary).stdout, b)
+    assert before["bucket"] == "safe_remove", (
+        "fixture must start safe_remove for this test to mean anything"
+    )
+
+    purpose_dir = b / ".claude"
+    purpose_dir.mkdir(parents=True, exist_ok=True)
+    (purpose_dir / "purpose").write_text("mid-task work\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", str(reap)],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "purpose" in result.stdout.lower(), result.stdout
+
+    assert b.exists()
+    wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
+    assert str(b) in wt_list
+
+
+def test_reap_worktrees_purpose_tripwire_respects_staleness_threshold(
+    guard_repo: dict[str, Path],
+) -> None:
+    """The tripwire is a THRESHOLD, not "any purpose file ever blocks reap
+    forever": an old purpose file (mtime older than
+    PRECIS_REAP_PURPOSE_FRESH_SECONDS) must not shield a genuinely-abandoned,
+    merged+clean tree from the normal safe_remove path — otherwise a stale
+    purpose left over from a long-finished task would leak worktrees forever.
+    """
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    reap = primary / "scripts" / "reap-worktrees"
+
+    purpose_dir = b / ".claude"
+    purpose_dir.mkdir(parents=True, exist_ok=True)
+    purpose_file = purpose_dir / "purpose"
+    purpose_file.write_text("old task, long done\n", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(purpose_file, (old, old))
+
+    result = subprocess.run(
+        ["bash", str(reap)],
+        cwd=str(primary),
+        env=_reap_env(
+            PRECIS_REAP_GRACE_SECONDS="1",
+            PRECIS_REAP_PURPOSE_FRESH_SECONDS="60",
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assert not b.exists()
+    wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
+    assert str(b) not in wt_list
+
+
+def test_reap_worktrees_grace_period_skips_a_tree_that_goes_dirty_mid_sleep(
+    guard_repo: dict[str, Path],
+) -> None:
+    """docs/backlog/reaper-liveness-race.md / proposal 1: the bucket is
+    re-verified a SECOND time, right before removal, after a grace-period
+    sleep — not just once up front. A tree that was safe_remove at the start
+    of the sleep but picks up untracked work during it (a session resuming
+    mid-turn) must survive.
+    """
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    reap = primary / "scripts" / "reap-worktrees"
+
+    proc = subprocess.Popen(
+        ["bash", str(reap)],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_REAP_GRACE_SECONDS="3"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        time.sleep(0.5)
+        assert b.exists(), "worktree removed before the grace sleep even elapsed"
+        (b / "resumed-work.txt").write_text("mid-turn edit\n", encoding="utf-8")
+
+        stdout, stderr = proc.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    assert proc.returncode == 0, stderr
+    assert "skip" in stdout.lower(), stdout
+
+    assert b.exists()
+    wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
+    assert str(b) in wt_list
+
+
+def test_reap_worktrees_grace_period_still_reaps_when_nothing_changes(
+    guard_repo: dict[str, Path],
+) -> None:
+    """Guards against over-correcting proposal 1 into a reaper that never
+    removes anything: a tree that is STILL safe_remove after the grace sleep
+    (nothing changed) must be reaped normally, same as before the hardening.
+    """
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    reap = primary / "scripts" / "reap-worktrees"
+
+    result = subprocess.run(
+        ["bash", str(reap)],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assert not b.exists()
+    wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
+    assert str(b) not in wt_list
 
 
 def test_ship_wires_the_lock_re_assertion_at_both_windows() -> None:

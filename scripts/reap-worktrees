@@ -14,6 +14,31 @@
 # scripts/hooks/session-start-lock.sh — was never released): `git worktree
 # remove` unconditionally refuses a locked worktree, so this unlocks first.
 #
+# Two belt-and-braces guards around that bucketing, both mechanical fallout
+# of gr260192 / docs/backlog/reaper-removed-live-session-worktree.md
+# (proposals 1+2 — proposal 3, ship re-asserting its own lock, already
+# shipped) and docs/backlog/reaper-liveness-race.md: a lockless+clean+merged
+# tree is `safe_remove` even when its session is mid-turn (a dropped lock, a
+# ship that just landed), so the bucket alone is not proof nothing is using
+# the tree.
+#
+#   1. Grace-period re-verify: right before removing a `safe_remove` tree,
+#      re-run the FULL bucket check a second time after a shared sleep
+#      (PRECIS_REAP_GRACE_SECONDS, default 60s — one sleep total, not one per
+#      tree). A tree whose re-check comes back anything other than
+#      `safe_remove` (a lock reappeared, the tree went dirty, it's gone
+#      already) is skipped with a log line instead of removed.
+#   2. Fresh-purpose tripwire: a `.claude/purpose` file newer than
+#      PRECIS_REAP_PURPOSE_FRESH_SECONDS (default 6h) demotes `safe_remove` to
+#      not-removed — sessions write purpose at task start and a clean
+#      SessionEnd deletes it with the tree, so a fresh purpose surviving in an
+#      otherwise-removable tree means a live or very recent session. Checked
+#      both up front and again after the grace sleep (a session can start its
+#      task, and write purpose, DURING the sleep).
+#
+# Neither guard changes what `scripts/inflight` computes — they only decide
+# whether THIS reaper acts on a `safe_remove` verdict right now.
+#
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op.
 # Usage: scripts/reap-worktrees [--dry-run]
 #
@@ -24,6 +49,9 @@ set -uo pipefail
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+GRACE_SECONDS="${PRECIS_REAP_GRACE_SECONDS:-60}"
+PURPOSE_FRESH_SECONDS="${PRECIS_REAP_PURPOSE_FRESH_SECONDS:-21600}"  # 6h
 
 cd "$(dirname "$0")/.." || exit 0
 command -v git >/dev/null 2>&1 || exit 0
@@ -41,39 +69,54 @@ git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 # own guard — git refuses anyway, we just don't rely on that).
 PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
 
+# fresh_purpose <path> — true (exit 0) if <path>/.claude/purpose exists and
+# its mtime is younger than PURPOSE_FRESH_SECONDS. Proposal 2: a fresh
+# purpose file is a tripwire for "a session recently started work here",
+# independent of whatever the lock says.
+fresh_purpose() {
+    python3 - "$1/.claude/purpose" "$PURPOSE_FRESH_SECONDS" <<'PY'
+import os
+import sys
+import time
+
+pf, threshold = sys.argv[1], float(sys.argv[2])
+try:
+    age = time.time() - os.path.getmtime(pf)
+except OSError:
+    sys.exit(1)
+sys.exit(0 if age < threshold else 1)
+PY
+}
+
+# bucket_for <json-blob> <path> — prints the `bucket` field of the
+# `scripts/inflight --json` entry matching <path> (realpath-compared), empty
+# if the tree isn't in the blob at all (already gone). Used for proposal 1's
+# second look, immediately before removal.
+bucket_for() {
+    printf '%s' "$1" | TARGET="$2" python3 -c '
+import json, os, sys
+
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+target = os.path.realpath(os.environ["TARGET"])
+for wt in data.get("worktrees", []):
+    if os.path.realpath(wt.get("path", "")) == target:
+        print(wt.get("bucket", ""))
+        break
+'
+}
+
 JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
 [ -z "$JSON" ] && exit 0
 
-REAPED=()
+# First pass: every worktree the bucketing currently calls safe_remove.
+CANDIDATES=()
 while IFS=$'\t' read -r name path branch; do
     [ -z "$path" ] && continue
     [ "$path" = "$PRIMARY" ] && continue
-    if [ "$DRY_RUN" = 1 ]; then
-        REAPED+=("$name")
-        continue
-    fi
-    # `safe_remove` includes the dead-lock case (a session that crashed
-    # without a clean SessionEnd never released its SessionStart lock) —
-    # `git worktree remove` unconditionally refuses a locked worktree, so
-    # unlock first. Harmless no-op (swallowed) if it was never locked.
-    git worktree unlock "$path" >/dev/null 2>&1 || true
-    if git worktree remove "$path" 2>/dev/null; then
-        # safe_remove already means the bucket vetted mergedness (either a
-        # true ancestor merge or squash-absorbed); -D deletes both, -d would
-        # refuse the squash case despite it being safe.
-        git branch -D "$branch" >/dev/null 2>&1 || true
-        # Reclaim this worktree's isolated test-DB project (container + volume)
-        # now the tree is gone — `down -p <name>` finds it by label, no compose
-        # file needed (gr176375). Only after a successful removal, so a
-        # still-wanted tree never loses its DB. Best-effort: missing docker / an
-        # already-gone project must never break the reap.
-        if command -v docker >/dev/null 2>&1 && command -v compose_project_for >/dev/null 2>&1; then
-            proj="$(compose_project_for "$path" 2>/dev/null || true)"
-            [ -n "$proj" ] && env UID="$(id -u)" GID="$(id -g)" \
-                docker compose -p "$proj" down -v >/dev/null 2>&1 || true
-        fi
-        REAPED+=("$name")
-    fi
+    CANDIDATES+=("${name}"$'\t'"${path}"$'\t'"${branch}")
 done < <(printf '%s' "$JSON" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -81,6 +124,79 @@ for wt in data.get("worktrees", []):
     if wt.get("bucket") == "safe_remove":
         print("\t".join([wt.get("name", ""), wt.get("path", ""), wt.get("branch", "")]))
 ')
+
+# Proposal 2, up front: drop anything with a fresh .claude/purpose before
+# even considering the grace period — no point sleeping on a tree we already
+# know not to touch.
+FILTERED=()
+for rec in "${CANDIDATES[@]:-}"; do
+    [ -z "$rec" ] && continue
+    IFS=$'\t' read -r name path branch <<<"$rec"
+    if fresh_purpose "$path"; then
+        echo "reap-worktrees: $name has a fresh .claude/purpose (< ${PURPOSE_FRESH_SECONDS}s old) — skipping, likely a live or very recent session (gr260192 proposal 2)"
+        continue
+    fi
+    FILTERED+=("$rec")
+done
+
+REAPED=()
+if [ "$DRY_RUN" = 1 ]; then
+    # Dry-run never removes anything, so there's nothing for the grace-period
+    # re-check to protect against — report the purpose-filtered set as-is.
+    for rec in "${FILTERED[@]:-}"; do
+        [ -z "$rec" ] && continue
+        IFS=$'\t' read -r name _path _branch <<<"$rec"
+        REAPED+=("$name")
+    done
+else
+    # Proposal 1: one shared sleep for however many candidates survived the
+    # purpose filter, then re-verify EACH individually right before removal —
+    # never a sleep per tree, but also never skip the re-check.
+    JSON2=""
+    if [ "${#FILTERED[@]}" -gt 0 ]; then
+        sleep "$GRACE_SECONDS"
+        JSON2=$(scripts/inflight --json 2>/dev/null) || JSON2=""
+    fi
+    for rec in "${FILTERED[@]:-}"; do
+        [ -z "$rec" ] && continue
+        IFS=$'\t' read -r name path branch <<<"$rec"
+
+        recheck=$(bucket_for "$JSON2" "$path")
+        if [ "$recheck" != "safe_remove" ]; then
+            echo "reap-worktrees: $name no longer safe_remove after ${GRACE_SECONDS}s grace period (now '${recheck:-gone}') — skipping (gr260192 proposal 1)"
+            continue
+        fi
+        # A purpose file can appear DURING the sleep (a session starting its
+        # task right in the window) — re-check, don't just trust the first pass.
+        if fresh_purpose "$path"; then
+            echo "reap-worktrees: $name grew a fresh .claude/purpose during the grace period — skipping (gr260192 proposal 2)"
+            continue
+        fi
+
+        # `safe_remove` includes the dead-lock case (a session that crashed
+        # without a clean SessionEnd never released its SessionStart lock) —
+        # `git worktree remove` unconditionally refuses a locked worktree, so
+        # unlock first. Harmless no-op (swallowed) if it was never locked.
+        git worktree unlock "$path" >/dev/null 2>&1 || true
+        if git worktree remove "$path" 2>/dev/null; then
+            # safe_remove already means the bucket vetted mergedness (either a
+            # true ancestor merge or squash-absorbed); -D deletes both, -d would
+            # refuse the squash case despite it being safe.
+            git branch -D "$branch" >/dev/null 2>&1 || true
+            # Reclaim this worktree's isolated test-DB project (container + volume)
+            # now the tree is gone — `down -p <name>` finds it by label, no compose
+            # file needed (gr176375). Only after a successful removal, so a
+            # still-wanted tree never loses its DB. Best-effort: missing docker / an
+            # already-gone project must never break the reap.
+            if command -v docker >/dev/null 2>&1 && command -v compose_project_for >/dev/null 2>&1; then
+                proj="$(compose_project_for "$path" 2>/dev/null || true)"
+                [ -n "$proj" ] && env UID="$(id -u)" GID="$(id -g)" \
+                    docker compose -p "$proj" down -v >/dev/null 2>&1 || true
+            fi
+            REAPED+=("$name")
+        fi
+    done
+fi
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
     echo "reap-worktrees: nothing to reap"

@@ -143,3 +143,21 @@ is sitting in it. The lock remains a single point of failure being used as a
 liveness proof, and 08-25 showed it can be dropped by something as ordinary as
 an LLM call. Proposals 1 and 2 (grace period / `.claude/purpose` tripwire)
 remain available if a third event lands from a window ship doesn't cover.
+
+### Hardened 2026-09-05 — proposals 1+2 implemented
+
+`scripts/reap-worktrees` now re-verifies a `safe_remove` candidate's bucket a
+second time after a shared grace-period sleep (`PRECIS_REAP_GRACE_SECONDS`,
+default 60s) immediately before `git worktree remove`, and separately treats
+a `.claude/purpose` file younger than `PRECIS_REAP_PURPOSE_FRESH_SECONDS`
+(default 6h) as a tripwire that skips the tree instead of removing it —
+checked both before and after the grace sleep, since a session can start its
+task (and write purpose) during the window. Either mismatch is skipped with a
+log line, never removed. `scripts/hooks/session-end-reap.sh` deliberately
+does NOT get the same two guards: it only ever reaps the ending session's own
+worktree, after its existing ownership check has already proven the ending
+session held the lock — there is no other session's liveness left to
+re-verify. Proposal 3 (ship re-asserting its own lock) was already
+implemented; proposal 4 (the harness kill/SessionEnd coupling) remains
+unresolved but is no longer the only thing standing between a race and a
+deletion.
