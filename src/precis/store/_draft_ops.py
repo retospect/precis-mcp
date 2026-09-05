@@ -1877,16 +1877,40 @@ class DraftStore(_AbbrevMixin):
         root heading first in reading order, the chunk ``create_draft``
         laid down. ``None`` for a draft that has none (imported, first
         block not a root heading) — not an error; the caller renames the
-        ref alone."""
-        row = conn.execute(
-            """SELECT chunk_id, text FROM chunks
+        ref alone.
+
+        Reading order on ``pos`` (a fractional key over
+        :data:`precis.utils.fractional.DIGITS`, i.e. byte order) MUST sort
+        ``COLLATE "C"``, matching ``_children`` — the default connection
+        collation is locale-aware (``en_US``), which ranks e.g. ``'k' <
+        'V'`` despite ``'V' < 'k'`` byte-wise, so plain ``ORDER BY pos ASC``
+        can silently return a *later* heading as "first" (gr262873: a
+        two-heading draft had its title overwritten into the second,
+        unrelated heading). Two live root headings tying on the exact same
+        ``pos`` (should not happen — fractional keys are per-insert-unique
+        — but would leave "first" genuinely undefined) refuse rather than
+        pick one to clobber."""
+        rows = conn.execute(
+            """SELECT chunk_id, text, pos FROM chunks
                 WHERE ref_id = %s AND chunk_kind = 'heading'
                   AND parent_chunk_id IS NULL
                   AND pos IS NOT NULL AND retired_at IS NULL
-                ORDER BY pos ASC LIMIT 1""",
+                ORDER BY pos COLLATE "C" ASC LIMIT 2""",
             (ref_id,),
-        ).fetchone()
-        return (int(row[0]), row[1] or "") if row is not None else None
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) > 1 and rows[0][2] == rows[1][2]:
+            raise BadInput(
+                f"draft ref {ref_id} has two root headings tied at the same "
+                "position — the title heading is ambiguous, refusing to "
+                "guess which one to rename",
+                next="edit(kind='draft', id='dc<id>', text='…') the intended "
+                "heading directly, then fix the tie (move it before/after "
+                "its sibling)",
+            )
+        row = rows[0]
+        return (int(row[0]), row[1] or "")
 
     def set_draft_title(
         self, ref_id: int, title: str, *, source: dict[str, Any] | None = None

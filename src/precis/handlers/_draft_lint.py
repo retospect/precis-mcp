@@ -68,6 +68,22 @@ _FINDING_MARKER = re.compile(r"finding\s+#(?P<slug>[A-Za-z][A-Za-z0-9-]+)")
 _CHUNK_REF = re.compile(r"\[(?P<h>[a-z]{2}\d+|\d+)\]")
 
 
+def _bracket_number_bound_to_prose(text: str, start: int, end: int) -> bool:
+    """True when the ``[<digits>]`` span ``text[start:end]`` is lexically
+    fused to surrounding prose — IUPAC supramolecular nomenclature
+    (``[2]rotaxane``, ``[24]crown-8``, ``calix[4]arene``, ``pillar[5]arene``,
+    ``[60]fullerene``) rather than a bracketed handle attempt. Suffix form:
+    the closing ``]`` is immediately followed by a letter, no space. Infix
+    form: the opening ``[`` is immediately preceded by a letter. A
+    standalone numeric like ``[45650]`` has neither neighbor and stays
+    flagged."""
+    if end < len(text) and text[end].isalpha():
+        return True
+    if start > 0 and text[start - 1].isalpha():
+        return True
+    return False
+
+
 def find_whole_ref_citations(text: str) -> list[str]:
     """Bare non-chunk ``[pa<id>]``/``[pk<id>]`` handles in ``text`` — a
     citable-kind (paper/patent) reference to the *whole* document rather
@@ -438,7 +454,15 @@ def dangling_chunk_tokens(store: Store, text: str) -> list[str]:
     """The ``[<handle>]`` references in ``text`` that resolve to nothing —
     a pure numeric id (``[45650]``) or a known type-code prefix that no
     store row backs. A bare ``[ab12]`` with an unknown code is left as
-    literal prose, not flagged. Order-preserving, deduped."""
+    literal prose, not flagged. Order-preserving, deduped.
+
+    A numeric match lexically bound to surrounding prose is IUPAC
+    supramolecular nomenclature, not a handle attempt: ``[2]rotaxane``
+    (suffix — ``]`` directly followed by a letter) or ``calix[4]arene``
+    (infix — ``[`` directly preceded by a letter). Those are skipped
+    (gr263760); a standalone ``[45650]`` bounded by space/punctuation is
+    still flagged. Non-numeric handles are unaffected — a handle prefix
+    like ``pa``/``dc`` never collides with a chemical name here."""
     seen: list[str] = []
     dangling: list[str] = []
     for m in _CHUNK_REF.finditer(text):
@@ -454,6 +478,8 @@ def dangling_chunk_tokens(store: Store, text: str) -> list[str]:
                 handle_registry.kind_for_code(h[:2])
             except KeyError:
                 continue
+        elif _bracket_number_bound_to_prose(text, m.start(), m.end()):
+            continue
         try:
             if store.resolve_handle(h) is not None:
                 continue

@@ -1533,6 +1533,31 @@ def test_numeric_chunk_ref_flagged(draft: DraftHandler, hub: Hub) -> None:
     assert "[45650]" in out
 
 
+def test_bracket_number_chemical_nomenclature_not_flagged(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr263760: IUPAC supramolecular nomenclature uses a bracketed number
+    lexically fused to prose — suffix (``[2]rotaxane``) or infix
+    (``calix[4]arene``) — and must NOT be mistaken for a dangling handle
+    attempt. A standalone bracketed number (space/punctuation on both
+    sides) still is — covered by ``test_numeric_chunk_ref_flagged``."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].dc
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=(
+            "The [2]rotaxane and [24]crown-8 host bind within calix[4]arene, "
+            "pillar[5]arene, and [60]fullerene cages."
+        ),
+        at={"after": title_h},
+    )
+    para_h = _order(hub, "nt")[1].dc
+    out = draft.get(id=para_h).body
+    assert "unresolved reference" not in out
+
+
 def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
     # A real, resolvable [[dc<id>]] reference must NOT trip the warning.
     proj = _proj(hub)
@@ -2133,3 +2158,56 @@ def test_machine_write_path_bypasses_handler_and_still_works(
     hub.live_store.drafts.add_chunks(
         ref_id=dossier_ref_id.id, chunk_kind="paragraph", text="scratch", split=False
     )
+
+
+def test_title_edit_retitles_the_first_heading_not_a_later_one(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr262873: a draft with two root-level headings — the actual title
+    heading (first, in reading order) and an unrelated heading further
+    down (e.g. 'Glossary') — must have `title=` rewrite the FIRST/title
+    heading only. The regression: ``ORDER BY pos ASC`` without
+    ``COLLATE "C"`` sorts under the connection's locale collation, where a
+    later-inserted key can rank ahead of an earlier one byte-wise (e.g.
+    ``'k' < 'V'`` under en_US despite ``'V' < 'k'`` in the byte order
+    ``key_between`` assumes) — silently overwriting the WRONG heading."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="Original Title", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt", chunk_kind="heading", text="Glossary", at={"after": "¶" + title_h}
+    )
+    glossary_h = _handle_of(hub, "Glossary")
+
+    r = draft.edit(id="nt", title="New Title")
+    assert "Original Title" in r.body and "New Title" in r.body
+
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None and ref.title == "New Title"
+    assert _chunk_text(hub, "¶" + title_h) == "New Title"
+    assert _chunk_text(hub, "¶" + glossary_h) == "Glossary"
+
+
+def test_title_edit_refuses_when_root_headings_tie_on_position(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Two live root headings sharing the exact same ``pos`` (a data
+    integrity anomaly — fractional keys are per-insert-unique in normal
+    operation) leave "first in reading order" genuinely undefined. The
+    store op refuses rather than picking one to clobber."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="Original Title", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_chunk = hub.live_store.drafts.reading_order(ref.id)[0]
+
+    with hub.live_store.drafts.tx() as conn:
+        conn.execute(
+            """INSERT INTO chunks
+                 (ref_id, ord, chunk_kind, text, handle, pos, parent_chunk_id)
+               VALUES (%s, %s, 'heading', 'Glossary', %s, %s, NULL)""",
+            (ref.id, 1, "tiedheading1", title_chunk.pos),
+        )
+
+    with pytest.raises(BadInput, match="ambiguous"):
+        draft.edit(id="nt", title="New Title")
