@@ -101,6 +101,17 @@ def validate_auto_check_spec(spec: Any) -> None:
                 f"registered types: {sorted(REGISTRY.keys())}"
             ),
         )
+    on_resolve = spec.get("on_resolve")
+    if on_resolve is not None and on_resolve not in ("done", "open"):
+        raise BadInput(
+            f"meta.auto_check.on_resolve {on_resolve!r} is not valid",
+            options=["done", "open"],
+            next=(
+                "'done' (default) completes the leaf on resolve; 'open' "
+                "WAKES it instead — STATUS:open, waiting-for:* park tags "
+                "dropped, the spec consumed (the snooze shape)"
+            ),
+        )
     timeout_at = spec.get("timeout_at")
     if timeout_at is not None:
         from datetime import datetime

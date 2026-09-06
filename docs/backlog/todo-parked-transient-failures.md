@@ -1,13 +1,14 @@
 ---
 status: draft
 prio: high
-title: Transient child failures park todos permanently; no wake-to-open snooze
+title: Transient child failures park todos permanently (retryable child-failed)
 ---
 
-# Transient child failures park todos permanently; no wake-to-open snooze
+# Transient child failures park todos permanently
 
 Todo-infra review (2026-09-06), goal frame: self-continuing long-running
-tasks. Two related gaps where the park mechanism has no self-healing exit.
+tasks. (The sibling gap — no wake-to-open snooze — shipped as
+`auto_check.on_resolve: 'open'`; see git log.)
 
 ## child-failed should distinguish retryable from terminal
 
@@ -26,22 +27,5 @@ transient causes must self-heal:
   by the existing resume-streak cap so a hard-down dependency still
   escalates to the terminal form.
 
-## auto_check needs `on_resolve: open` (wake/snooze)
-
-`time_past` flips a leaf to `STATUS:done` — `precis-auto-todo-help`
-Pattern 3 itself admits the workaround ("if the intent is to re-open,
-write a sibling"). The honest primitive for "snooze until date" /
-"re-check next week" is a resolution target on the spec:
-
-- `auto_check.on_resolve: 'done' (default) | 'open'` — `open` returns the
-  leaf to the doable pool instead of completing it.
-- Applies to every evaluator, not just `time_past` (e.g. "when the paper
-  is ingested, wake the reading task" reads better than done-flipping a
-  fake wait-leaf and wiring blocked-by).
-- Note: the tree audit rejected rich due-dates "until a real consumer
-  asks" — a self-continuing fleet is that consumer; this is the minimal
-  form (no new columns, one meta key).
-
 test: retryable child-failed clears after backoff and the leaf re-enters
-doable; `time_past` with `on_resolve: open` lands the leaf back in
-doable, not done.
+doable.

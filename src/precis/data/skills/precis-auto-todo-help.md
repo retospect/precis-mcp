@@ -58,10 +58,12 @@ leaf.
 | `child_job_succeeded` | A non-deleted child `kind='job'` of *this leaf* hits `STATUS:succeeded`. Auto-injected by the dispatch worker when a writer sets `meta.executor` but no `auto_check` (Slice 5) | none — scoped to the calling leaf's children |
 | `derived_job_succeeded` | A `kind='job'` this leaf `requested` (link, ADR 0044) hits `STATUS:succeeded`. The compute-lane twin of `child_job_succeeded` for a *derived* build (DFT relax / route / compile) that parents on its subject artifact, not the leaf — so it's reached by the `requested` link, not by walking children. Auto-injected by the dispatch when the requester is named (e.g. relax `requested_by=<todo>`) | none — follows the leaf's `requested` links |
 
-All shapes accept the optional `timeout_at` field. When the
+All shapes accept two optional fields: `timeout_at` — when the
 timeout passes before the evaluator resolves, the leaf flips to
-`STATUS:auto-timeout` rather than `STATUS:done`. No further
-evaluation happens on a timed-out leaf.
+`STATUS:auto-timeout` rather than resolving, and no further
+evaluation happens; and `on_resolve: 'done'|'open'` — what
+resolution does (`'done'` completes the leaf, `'open'` wakes it —
+see Pattern 3).
 
 ## Pattern 1 — wait on the ingest pipeline
 
@@ -122,28 +124,35 @@ The chatter side detects the owner's in-thread reply and stamps a
 memory `replied-to:<msg_id>`; the auto-check worker resolves the
 ask on the next tick.
 
-## Pattern 3 — scheduled wake
+## Pattern 3 — snooze / scheduled wake (`on_resolve: 'open'`)
 
-A leaf that should reappear next week:
+A leaf that should re-surface next week: park it with a
+`waiting-for:*` tag (drops it out of `doable`) and let the wake
+clear the park:
 
 ```python
 put(
     kind="todo",
     text="Revisit the API rate-limit decision",
+    tags=["waiting-for:2026-06-20"],
     meta={
         "auto_check": {
             "type": "time_past",
             "at": "2026-06-20T09:00:00+00:00",
+            "on_resolve": "open",
         }
     },
 )
 ```
 
-The leaf carries `STATUS:open` until the timestamp passes — and
-the `auto_check` flow then flips it to `done`, which moves the
-"revisit" out of the doable view. (If the intent is to *re-open*
-the leaf next week, write a sibling that point instead — the
-auto-check surface is fire-once by design.)
+`on_resolve` picks what resolution means: `'done'` (the default)
+completes the leaf; `'open'` **wakes** it — STATUS flips to `open`,
+every `waiting-for:*` tag is dropped (so it re-enters `doable`), and
+the spec is consumed (fire-once; re-snoozing is a fresh `auto_check`
+write). Works with every evaluator, not just `time_past` — e.g.
+"when the paper is ingested, wake the reading task" reads better than
+done-flipping a fake wait-leaf. `ask-user` / `halt` / `child-failed`
+parks are deliberately NOT cleared by a wake.
 
 ## Pattern 4 — wait for a child job to succeed (Slice 5)
 

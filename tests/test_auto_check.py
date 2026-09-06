@@ -936,3 +936,70 @@ def test_route_complete_true_when_all_realized(store: Store) -> None:
         conn.commit()
     assert route_complete.evaluate(store, {"pcb": "route-done"}) is True
     assert route_complete.evaluate(store, {"pcb": ref_id}) is True
+
+
+# ── on_resolve='open' (snooze / wake) ──────────────────────────────
+
+
+def test_pass_wakes_leaf_with_on_resolve_open(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The snooze shape: a waiting-for-parked leaf with
+    ``on_resolve='open'`` WAKES on resolve — STATUS:open, park tag
+    dropped, spec consumed (fire-once), ``auto-woken`` event — instead
+    of completing. The pre-``on_resolve`` workaround was done-flipping
+    the leaf and writing a sibling."""
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    r = handler.put(
+        text="Revisit the rate-limit decision",
+        tags=["waiting-for:next-week"],
+        meta={"auto_check": {"type": "time_past", "at": past, "on_resolve": "open"}},
+    )
+    rid = _id_of(r.body)
+    assert "Revisit the rate-limit" not in handler.search(view="doable").body
+
+    result = run_auto_check_pass(store, limit=50)
+    assert result.ok >= 1
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "STATUS:open" in tags
+    assert not any(t.startswith("waiting-for:") for t in tags)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and "auto_check" not in ref.meta  # consumed
+    assert "Revisit the rate-limit" in handler.search(view="doable").body
+
+    # Fire-once: the consumed spec drops the leaf from the candidate set.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind='todo' AND retired_at IS NULL"
+            "  AND meta ? 'auto_check' AND ref_id = %s",
+            (rid,),
+        ).fetchall()
+    assert rows == []
+
+
+def test_validator_rejects_bad_on_resolve(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="on_resolve"):
+        handler.put(
+            text="bad spec",
+            meta={
+                "auto_check": {
+                    "type": "time_past",
+                    "at": "2099-01-01T00:00:00+00:00",
+                    "on_resolve": "reopen",
+                }
+            },
+        )
+
+
+def test_on_resolve_done_default_still_completes(
+    handler: TodoHandler, store: Store
+) -> None:
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    r = handler.put(
+        text="default resolve",
+        meta={"auto_check": {"type": "time_past", "at": past}},
+    )
+    rid = _id_of(r.body)
+    run_auto_check_pass(store, limit=50)
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "STATUS:done" in tags

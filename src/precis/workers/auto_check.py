@@ -5,7 +5,11 @@ each to the registered evaluator, and either:
 
 * flips ``STATUS:open|doing|blocked`` → ``STATUS:done`` when the
   evaluator returns ``True``, appending an ``auto-resolved`` event
-  on ``ref_events``; or
+  on ``ref_events``; or — with ``on_resolve='open'`` in the spec —
+  *wakes* the leaf instead (STATUS→open, ``waiting-for:*`` park tags
+  dropped, the spec consumed so the wake fires exactly once,
+  ``auto-woken`` event): the snooze/wake shape, for "re-surface this
+  when X" rather than "X completes this"; or
 * flips ``STATUS:...`` → ``STATUS:auto-timeout`` when
   ``meta.auto_check.timeout_at`` is in the past, appending an
   ``auto-timeout`` event.
@@ -205,6 +209,10 @@ def _process_one(store: Store, ref_id: int, spec: dict[str, Any]) -> str:
     # (``time_past``, ``paper_ingested``, etc.) accept and ignore it
     # via ``**_kw``.
     verdict = evaluator(store, spec, ref_id=ref_id)
+    if verdict is True and spec.get("on_resolve") == "open":
+        _wake(store, ref_id)
+        log.info("auto_check: todo id=%d → woken (STATUS:open, spec consumed)", ref_id)
+        return "done"
     if verdict is True:
         # Success clears stale bubbles (parked-leaf-recovery, docs/
         # backlog/parked-leaf-recovery.md): a parent can carry
@@ -273,6 +281,42 @@ def _flip_status(
         if clear_child_failed:
             removed = remove_child_failed_tags(store, ref_id, conn=conn)
     return removed
+
+
+def _wake(store: Store, ref_id: int) -> None:
+    """Resolve to *open* instead of done (``on_resolve='open'`` — snooze).
+
+    One tx: STATUS→open, ``waiting-for:*`` park tags dropped, the spec
+    CONSUMED (``meta - 'auto_check'``) so the wake fires exactly once —
+    without consumption a still-true evaluator would re-fire every
+    cycle, spamming events. Re-snoozing is a fresh ``auto_check`` write.
+    Deliberately does NOT touch ask-user / halt / child-failed parks —
+    those have their own (partly owner-only) release semantics.
+    """
+    with store.tx() as conn:
+        store.add_tag(
+            ref_id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        conn.execute(
+            "DELETE FROM ref_tags rt USING tags t"
+            " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+            "   AND t.namespace = 'OPEN' AND t.value LIKE 'waiting-for:%%'",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE refs SET meta = meta - 'auto_check' WHERE ref_id = %s",
+            (ref_id,),
+        )
+        store.append_event(
+            ref_id,
+            source="auto-check",
+            event="auto-woken",
+            conn=conn,
+        )
 
 
 __all__ = ["run_auto_check_pass"]
