@@ -239,3 +239,92 @@ def test_edit_todo_meta_rejected_loudly_not_swallowed(
     live = store.get_ref(kind="todo", id=ref.id)
     assert live is not None
     assert live.meta.get("llm_tier") != "opus"
+
+
+def test_put_todo_prio_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``put(kind='todo', prio=…)`` through the real MCP callable lands on
+    the ``refs.prio`` column — ``TodoHandler.put`` accepted ``prio=`` all
+    along (with validation whose error text even said ``put(prio=N)``), but
+    the tool-layer ``put()`` neither declared nor forwarded it, so priority
+    was uncallable over MCP and the operational workaround was raw SQL
+    (``UPDATE refs SET prio=1``)."""
+    out = tools_core.put(kind="todo", text="expedite the gate fix", prio=2)
+
+    assert not _is_error(out), _body(out)
+    ref = store.list_refs(kind="todo", limit=1)[0]
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.prio == 2
+
+
+def test_tag_todo_prio_kwarg_and_prio_tag_alias_set_the_column(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``tag(kind='todo', id=…, prio=…)`` sets the column over the MCP door,
+    and the ``PRIO:`` tag alias translates + strips (the gripe/quest
+    semantics, now shared by todo): ``add=['PRIO:high']`` → ``prio=3`` with
+    no ``PRIO:`` tag row left behind; removing the alias clears the column."""
+    tools_core.put(kind="todo", text="prio surface round-trip")
+    ref = store.list_refs(kind="todo", limit=1)[0]
+
+    out = tools_core.tag(kind="todo", id=ref.id, prio=1)
+    assert not _is_error(out), _body(out)
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.prio == 1
+
+    out = tools_core.tag(kind="todo", id=ref.id, add=["PRIO:high"])
+    assert not _is_error(out), _body(out)
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.prio == 3
+    assert not any(str(t).startswith("PRIO:") for t in store.tags_for(ref.id))
+
+    out = tools_core.tag(kind="todo", id=ref.id, remove=["PRIO:high"])
+    assert not _is_error(out), _body(out)
+    assert "prio=cleared" in _body(out)  # not the misreadable "prio=None"
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.prio is None
+
+
+def test_tag_gripe_and_quest_prio_kwarg_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """The verb-level ``prio=`` door opens for gripe and quest too — their
+    ``tag()`` used to swallow the kwarg via ``**_kw`` (silent no-op), the
+    exact bug class the verb declaration exists to prevent."""
+    tools_core.put(kind="gripe", text="doable view drops claimed leaves")
+    gripe = store.list_refs(kind="gripe", limit=1)[0]
+    out = tools_core.tag(kind="gripe", id=gripe.id, prio=2)
+    assert not _is_error(out), _body(out)
+    live = store.get_ref(kind="gripe", id=gripe.id)
+    assert live is not None
+    assert live.prio == 2
+
+    tools_core.put(kind="quest", text="ship a self-continuing todo tree")
+    quest = store.list_refs(kind="quest", limit=1)[0]
+    out = tools_core.tag(kind="quest", id=quest.id, prio=4)
+    assert not _is_error(out), _body(out)
+    live = store.get_ref(kind="quest", id=quest.id)
+    assert live is not None
+    assert live.prio == 4
+
+
+def test_put_todo_prio_out_of_range_rejected_loudly(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """An out-of-range ``prio=`` fails with the teaching BadInput, not a DB
+    CHECK violation — pins that validation runs at the handler boundary
+    even when the value arrives through the newly-opened verb door."""
+    out = tools_core.put(kind="todo", text="bad prio", prio=99)
+
+    assert _is_error(out), _body(out)
+    assert "[error:BadInput]" in _body(out)
+    assert "1..10" in _body(out)

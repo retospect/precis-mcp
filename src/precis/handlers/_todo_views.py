@@ -1263,23 +1263,55 @@ def render_waiting(store: Store) -> Response:
 
 
 def render_blocked(store: Store) -> Response:
-    """Leaves with at least one non-done ``blocked-by`` link."""
+    """Leaves with a non-done ``blocked-by`` link, OR ``STATUS:blocked``.
+
+    The union closes a triage hole: a leaf tagged ``STATUS:blocked``
+    with no ``blocked-by`` link recorded is excluded from ``doable``
+    (only open/doing pass) yet used to be invisible here too — parked
+    on no surface at all, the worst state for a self-continuing tree.
+    Such rows render with ``blocked-by (nothing recorded)`` so the
+    missing edge is itself the visible defect to fix.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
             SELECT r.ref_id, r.title,
-                   array_agg(l.dst_ref_id ORDER BY l.dst_ref_id) AS blockers
+                   array_agg(l.dst_ref_id ORDER BY l.dst_ref_id)
+                       FILTER (WHERE l.dst_ref_id IS NOT NULL) AS blockers
               FROM refs r
-              JOIN links l ON l.src_ref_id = r.ref_id AND l.relation = 'blocked-by'
-              JOIN refs b ON b.ref_id = l.dst_ref_id
+              LEFT JOIN links l
+                     ON l.src_ref_id = r.ref_id AND l.relation = 'blocked-by'
+                    AND EXISTS (
+                        SELECT 1 FROM refs b
+                         WHERE b.ref_id = l.dst_ref_id
+                           AND b.retired_at IS NULL
+                           AND COALESCE(
+                                 (SELECT t.value FROM ref_tags rt
+                                    JOIN tags t ON t.tag_id = rt.tag_id
+                                   WHERE rt.ref_id = b.ref_id
+                                     AND t.namespace = 'STATUS' LIMIT 1),
+                                 'open'
+                               ) NOT IN ('done', 'won''t-do')
+                    )
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
-               AND b.retired_at IS NULL
+               -- Defensive parity with render_ask_user: a terminal leaf
+               -- can't normally also be STATUS:blocked (closed-prefix
+               -- replace), but a direct-SQL backfill could violate that —
+               -- keep finished leaves out of the triage view regardless.
                AND COALESCE(
-                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     (SELECT t2.value FROM ref_tags rt2
+                        JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id
+                         AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) NOT IN ('done', 'won''t-do')
              GROUP BY r.ref_id, r.title
+            HAVING count(l.dst_ref_id) > 0
+                OR EXISTS (
+                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id
+                       AND t.namespace = 'STATUS' AND t.value = 'blocked'
+                )
              ORDER BY r.ref_id DESC
              LIMIT 50
             """,
@@ -1289,7 +1321,11 @@ def render_blocked(store: Store) -> Response:
     lines = [f"# {len(rows)} blocked"]
     for ref_id, title, blockers in rows:
         first_line = (title or "").split("\n", 1)[0]
-        blocker_ids = ", ".join(_h(b) for b in blockers)
+        blocker_ids = (
+            ", ".join(_h(b) for b in blockers)
+            if blockers
+            else "(nothing recorded — add a blocked-by link)"
+        )
         lines.append(f"{_h(ref_id):<6} {first_line:<60}  blocked-by {blocker_ids}")
     return Response(body="\n".join(lines))
 

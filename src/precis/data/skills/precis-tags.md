@@ -33,12 +33,19 @@ tag(
     kind="todo",
     id=48,
     add=[
-        "PRIO:high",  # replaces any other PRIO:* on this ref
+        "PRIO:high",  # alias → sets prio=3 on the column, stored as no tag
         "topic:co2-capture",  # adds (lowercase tags accumulate)
         "star",  # bare flag set
     ],
 )
 ```
+
+On the workflow kinds (`todo` / `gripe` / `quest`) `PRIO:` is an
+**alias for the `prio` column** (`urgent`→1 · `high`→3 · `normal`→5 ·
+`low`→8, lower = hotter): translated on write and stripped, so
+priority lives in one sortable place. Prefer the direct kwarg —
+`tag(kind='todo', id=48, prio=3)` / `put(..., prio=3)`. Don't filter
+by `tags=['PRIO:...']`; nothing stores it.
 
 Closed prefixes are **kind-gated** — `PRIO:` and `STATUS:` only apply
 to workflow kinds (`todo`, `gripe`); `memory` and other
@@ -79,7 +86,7 @@ search(kind="paper", q="photocatalysis", tags=["topic:co2-capture"])
 ```
 
 ```python
-search(kind="todo", q="write", tags=["STATUS:open", "PRIO:high"])
+search(kind="todo", q="write", tags=["STATUS:open", "project:precis-v2"])
 ```
 
 ```python
@@ -148,7 +155,7 @@ the canonical list:
 | Prefix | Values | Writer |
 |---|---|---|
 | `STATUS:` | see table below — value subset depends on kind | agent |
-| `PRIO:` | `low` / `normal` / `high` / `urgent` | agent |
+| `PRIO:` | `low` / `normal` / `high` / `urgent` — alias for the `prio` column on todo/gripe/quest (translated + stripped on write) | agent |
 | `SRC:` | `primary` / `secondary` | agent |
 | `CACHE:` | `fresh` / `stale` / `pinned` | system |
 | `WATCH:` | `hourly` / `daily` / `weekly` / `monthly` | agent (cache-backed refs) |

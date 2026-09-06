@@ -44,13 +44,6 @@ High-impact, called out by name:
 - **`draft.put(image=)`** — self-evidencing: `tools/core.py:818`'s own
   comment documents `image=<base64> for an uploaded image`, and the
   signature never declares it. The door documents a parameter it drops.
-- **`todo.put(prio=)`** — self-evidencing: `handlers/todo.py:193` raises an
-  error whose text tells the agent to `put(prio=N)`. Same self-inflicted
-  shape as `planner_prompt.py` teaching the broken `wants=` call
-  (gr262482's "NEW EVIDENCE" comment) — the door teaches a call it then
-  rejects. This is why the operational workaround for expediting a job is
-  raw SQL (`UPDATE refs SET prio=1`, see memory
-  `job_claim_prio_direction_flipped`) instead of the tool surface.
 - **`protein.put(sequence=)`** (+ `engine=`/`requested_by=`/`seeds=`) — a
   protein-structure mint with no `sequence=` reachable is not a mint at all;
   worth confirming whether `protein.put` is callable over MCP in *any* shape

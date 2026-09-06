@@ -42,7 +42,7 @@ from typing import Any, ClassVar
 from precis.errors import BadInput, Unsupported
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
-from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio
+from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.protocol import KindSpec
 from precis.quest.logbook import (
     BY_VALUES as _BY_VALUES,
@@ -178,6 +178,9 @@ class QuestHandler(NumericRefHandler):
         auto_refresh_days: int | None = None,
     ) -> Response:
         tags, prio_from_tag = _split_prio(tags)
+        if self._pending_prio is not None:
+            # An explicit ``put(prio=)`` wins over the tag alias.
+            prio_from_tag = self._pending_prio
         resp = super()._create(
             text=text,
             tags=tags,
@@ -213,6 +216,7 @@ class QuestHandler(NumericRefHandler):
         id: str | int,
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        prio: int | None = None,
         **_kw: Any,
     ) -> Response:
         # A quest never completes: reject any STATUS value outside the
@@ -230,26 +234,27 @@ class QuestHandler(NumericRefHandler):
                     )
         # ``PRIO:`` → the canonical prio column (the striving weight slice 2's
         # reweighting reads), stripped from the tag set like todo does. A bare
-        # ``PRIO:*`` in remove clears the column.
+        # ``PRIO:*`` in remove clears the column. An explicit ``prio=`` kwarg
+        # (declared at the verb level alongside todo's) wins over the tag
+        # alias.
+        prio = validate_prio(prio)
         add, prio_from_tag = _split_prio(add)
         clear_prio = False
         if remove:
             kept = [t for t in remove if t not in _PRIO_TAG_TO_INT]
             clear_prio = len(kept) != len(remove)
             remove = kept or None
-        if prio_from_tag is not None or clear_prio:
+        if prio is None:
+            prio = prio_from_tag
+        if prio is not None or clear_prio:
             ref_id = self._coerce_id(id)
             self._resolve_live_ref(ref_id)
-            self.store.set_prio(ref_id, None if clear_prio else prio_from_tag)
+            self.store.set_prio(ref_id, prio)
             if not add and not remove:
                 # Only a prio write happened — the base tag() would reject an
                 # otherwise-empty call.
-                return Response(
-                    body=(
-                        f"set prio={None if clear_prio else prio_from_tag} "
-                        f"on {self._sense()} id={ref_id}"
-                    )
-                )
+                shown = f"prio={prio}" if prio is not None else "prio=cleared"
+                return Response(body=f"set {shown} on {self._sense()} id={ref_id}")
         return super().tag(id=id, add=add, remove=remove, **_kw)
 
     # ── put: create or append a logbook entry ───────────────────────
@@ -268,6 +273,7 @@ class QuestHandler(NumericRefHandler):
         entry: str | None = None,
         by: str | None = None,
         cost: float | None = None,
+        prio: int | None = None,
         **_kw: Any,
     ) -> Response:
         # ``put(id=N, text=…)`` appends a quest_log chunk — the logbook-entry
@@ -275,6 +281,13 @@ class QuestHandler(NumericRefHandler):
         # NumericRefHandler.put rejects id-presence unconditionally, so we
         # intercept before delegating.
         if id is not None:
+            if prio is not None:
+                # Reject rather than silently drop — priority mutation on
+                # an existing quest goes through tag().
+                raise BadInput(
+                    "prio= is not accepted when appending a logbook entry",
+                    next=f"use tag(kind={self.kind!r}, id={id}, prio={prio})",
+                )
             if text is None or not text.strip():
                 raise BadInput(
                     f"appending a logbook entry to {self._sense()} id={id!r} "
@@ -306,16 +319,27 @@ class QuestHandler(NumericRefHandler):
                     next=f"delete(kind={self.kind!r}, id={id})",
                 )
             return self._append_log(id=id, text=text, entry=entry, by=by, cost=cost)
-        return super().put(
-            id=id,
-            text=text,
-            mode=mode,
-            tags=tags,
-            untags=untags,
-            link=link,
-            unlink=unlink,
-            rel=rel,
-        )
+        # Create path: plumb a create-time ``prio=`` into ``_create`` via a
+        # per-call slot (the todo / gripe pending-slot pattern). The
+        # ``PRIO:`` tag alias keeps working; the explicit kwarg wins.
+        self._pending_prio = validate_prio(prio)
+        try:
+            return super().put(
+                id=id,
+                text=text,
+                mode=mode,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+            )
+        finally:
+            self._pending_prio = None
+
+    #: Per-call slot plumbing a create-time ``prio=`` from ``put`` into
+    #: ``_create`` (which the base class calls with a fixed arg set).
+    _pending_prio: int | None = None
 
     def _append_log(
         self,

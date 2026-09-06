@@ -23,16 +23,17 @@ Todos are work items in the store. The canonical address is the
 
 ```python
 put(kind="todo", text="Review section 3 of abazari2024design.")
-put(kind="todo", text="Draft the abstract.", tags=["PRIO:high"])
+put(kind="todo", text="Draft the abstract.", prio=3)
 put(
     kind="todo",
     text="Wait on reviewer feedback.",
-    tags=["PRIO:normal", "project:precis-v2"],
+    tags=["project:precis-v2"],
 )
 ```
 
 Server assigns the integer id and defaults to `STATUS:open`. Pass
-`tags=` on `put` to set priority or project in one round-trip.
+`prio=` / `tags=` on `put` to set priority or project in one
+round-trip.
 
 ## See what's on my plate
 ## List my todos
@@ -73,12 +74,18 @@ tag(kind="todo", id=122, add=["STATUS:won't-do"])  # decided not to do it
 ## Bump a todo to urgent
 
 ```python
-tag(kind="todo", id=141, add=["PRIO:urgent"])
-tag(kind="todo", id=141, add=["PRIO:low"])
+tag(kind="todo", id=141, prio=1)  # hottest — preempts the rotation
+tag(kind="todo", id=141, prio=8)  # cold
+tag(kind="todo", id=141, add=["PRIO:urgent"])  # alias for prio=1
+put(kind="todo", text="Fix the gate.", prio=3)  # set at create
 ```
 
-Values: `low` / `normal` / `high` / `urgent`. Overwrite is atomic
-within the `PRIO:` prefix.
+Priority is the `prio` column (1..10, **lower = hotter**, default 5) —
+it drives the doable/dispatch ordering. The `PRIO:` tag form is an
+alias, translated on write (`urgent`→1 · `high`→3 · `normal`→5 ·
+`low`→8) and **stripped** — priority lives in the column only, never a
+tag row, so don't filter by `tags=['PRIO:...']` (nothing stores it).
+Removing a `PRIO:*` tag clears the column back to the default.
 
 ## Block a todo on another ref
 ## Mark a todo as waiting on something else
@@ -153,7 +160,7 @@ filter via `search(tags=['due:<date>'])`.
 ```python
 search(kind="todo", q="abstract draft")
 search(kind="todo", q="precis-v2 review", tags=["STATUS:open"])
-search(kind="todo", q="reviewer", tags=["STATUS:open", "PRIO:high"])
+search(kind="todo", q="reviewer", tags=["STATUS:open", "project:precis-v2"])
 ```
 
 `tags=` filters with AND semantics. Combine with `q=` to rank

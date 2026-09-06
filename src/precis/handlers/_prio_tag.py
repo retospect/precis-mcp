@@ -23,6 +23,31 @@ PRIO_TAG_TO_INT: dict[str, int] = {
 }
 
 
+def validate_prio(prio: int | None) -> int | None:
+    """Range-check a ``prio=`` kwarg (1..10) at the handler boundary.
+
+    Returns ``prio`` on success (None passes through). Raises
+    :class:`~precis.errors.BadInput` naming the accepted range and the
+    conventional anchor values, so the agent-facing error teaches the
+    scale rather than just rejecting.
+    """
+    from precis.errors import BadInput
+
+    if prio is None:
+        return None
+    if not isinstance(prio, int) or isinstance(prio, bool):
+        raise BadInput(
+            f"prio must be an int 1..10, got {type(prio).__name__} {prio!r}",
+            next="prio=1 (chat / preempt), prio=2 (cron), prio=5 (default)",
+        )
+    if prio < 1 or prio > 10:
+        raise BadInput(
+            f"prio out of range: {prio} (must be 1..10)",
+            next="prio=1 preempts strategic rotation; 3..10 ride the 1/N share",
+        )
+    return prio
+
+
 def split_prio(tags: list[str] | None) -> tuple[list[str] | None, int | None]:
     """Pull the last ``PRIO:`` tag out of ``tags`` and translate it to an int.
 

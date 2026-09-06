@@ -34,7 +34,7 @@ from psycopg.errors import ForeignKeyViolation
 from precis.errors import BadInput, Upstream
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
-from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio
+from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
@@ -120,6 +120,7 @@ class GripeHandler(NumericRefHandler):
         link: str | None = None,
         unlink: str | None = None,
         rel: str | None = None,
+        prio: int | None = None,
         **_kw: Any,
     ) -> Response:
         # ``put(id=N, text='...')`` appends a gripe_comment chunk —
@@ -127,6 +128,13 @@ class GripeHandler(NumericRefHandler):
         # NumericRefHandler.put rejects id-presence unconditionally
         # so we intercept before delegating.
         if id is not None:
+            if prio is not None:
+                # Reject rather than silently drop — priority mutation on
+                # an existing gripe goes through tag().
+                raise BadInput(
+                    f"prio= is not accepted when appending a {self._sense()} comment",
+                    next=f"use tag(kind={self.kind!r}, id={id}, prio={prio})",
+                )
             if text is None or not text.strip():
                 raise BadInput(
                     f"appending a comment to {self._sense()} id={id!r} requires text=",
@@ -155,16 +163,28 @@ class GripeHandler(NumericRefHandler):
             if mode is not None:
                 require_mode(spec=self.spec, verb="put", mode=mode)
             return self._append_comment(id=id, text=text)
-        return super().put(
-            id=id,
-            text=text,
-            mode=mode,
-            tags=tags,
-            untags=untags,
-            link=link,
-            unlink=unlink,
-            rel=rel,
-        )
+        # Create path: plumb a create-time ``prio=`` into ``_create`` via a
+        # per-call slot (the todo pending-slot pattern — the base put's
+        # signature stays untouched). The ``PRIO:`` tag alias keeps working;
+        # the explicit kwarg wins.
+        self._pending_prio = validate_prio(prio)
+        try:
+            return super().put(
+                id=id,
+                text=text,
+                mode=mode,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+            )
+        finally:
+            self._pending_prio = None
+
+    #: Per-call slot plumbing a create-time ``prio=`` from ``put`` into
+    #: ``_create`` (which the base class calls with a fixed arg set).
+    _pending_prio: int | None = None
 
     # ── tag: sync a PRIO: alias into the canonical prio column ───────
 
@@ -174,32 +194,34 @@ class GripeHandler(NumericRefHandler):
         id: str | int,
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        prio: int | None = None,
         **_kw: Any,
     ) -> Response:
         # ``PRIO:`` → the canonical prio column (which the backlog groomer
         # inherits onto the minted fix_gripe todo, so a human tagging a gripe
         # PRIO:high actually hastens its fix), stripped from the tag set like
         # quest/todo. A bare ``PRIO:*`` in remove clears the column back to
-        # the sort-time default. Mirrors QuestHandler.tag.
+        # the sort-time default. An explicit ``prio=`` kwarg (declared at the
+        # verb level alongside todo's) wins over the tag alias. Mirrors
+        # QuestHandler.tag.
+        prio = validate_prio(prio)
         add, prio_from_tag = split_prio(add)
         clear_prio = False
         if remove:
             kept = [t for t in remove if t not in PRIO_TAG_TO_INT]
             clear_prio = len(kept) != len(remove)
             remove = kept or None
-        if prio_from_tag is not None or clear_prio:
+        if prio is None:
+            prio = prio_from_tag
+        if prio is not None or clear_prio:
             ref_id = self._coerce_id(id)
             self._resolve_live_ref(ref_id)
-            self.store.set_prio(ref_id, None if clear_prio else prio_from_tag)
+            self.store.set_prio(ref_id, prio)
             if not add and not remove:
                 # Only a prio write happened — the base tag() would reject an
                 # otherwise-empty call.
-                return Response(
-                    body=(
-                        f"set prio={None if clear_prio else prio_from_tag} "
-                        f"on {self._sense()} id={ref_id}"
-                    )
-                )
+                shown = f"prio={prio}" if prio is not None else "prio=cleared"
+                return Response(body=f"set {shown} on {self._sense()} id={ref_id}")
         return super().tag(id=id, add=add, remove=remove, **_kw)
 
     # ── create: ref + body chunk + default tags + (optional) link ──
@@ -246,8 +268,11 @@ class GripeHandler(NumericRefHandler):
         relation = validate_relation(rel)
         # A create-time ``PRIO:`` alias syncs to the canonical prio column
         # (which the backlog groomer inherits onto the fix todo), not a
-        # decorative tag row. Strip it before strict tag parsing.
+        # decorative tag row. Strip it before strict tag parsing. An
+        # explicit ``put(prio=)`` (plumbed via the pending slot) wins.
         tags, prio_from_tag = split_prio(tags)
+        if self._pending_prio is not None:
+            prio_from_tag = self._pending_prio
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
 
         with self.store.tx() as conn:

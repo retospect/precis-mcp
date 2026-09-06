@@ -59,6 +59,7 @@ from precis.handlers import _todo_guards as guards
 from precis.handlers import _todo_views as views
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
+from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -185,27 +186,9 @@ def _inherit_workspace_from_parent(
     return ws
 
 
-def _validate_prio(prio: int | None) -> int | None:
-    """Range-check ``prio`` (1..10) at the handler boundary.
-
-    Returns ``prio`` on success (None passes through). Raises
-    :class:`BadInput` with the catalogue on out-of-range / non-int
-    input — the DB CHECK would catch it too, but we want the message
-    to mention ``put(prio=N)`` rather than ``check_violation``.
-    """
-    if prio is None:
-        return None
-    if not isinstance(prio, int) or isinstance(prio, bool):
-        raise BadInput(
-            f"prio must be an int 1..10, got {type(prio).__name__} {prio!r}",
-            next="prio=1 (chat / preempt), prio=2 (cron), prio=5 (default)",
-        )
-    if prio < 1 or prio > 10:
-        raise BadInput(
-            f"prio out of range: {prio} (must be 1..10)",
-            next="prio=1 preempts strategic rotation; 3..10 ride the 1/N share",
-        )
-    return prio
+#: Shared range check (moved to ``_prio_tag`` so gripe / quest validate
+#: their ``prio=`` kwarg identically).
+_validate_prio = validate_prio
 
 
 class TodoHandler(NumericRefHandler):
@@ -409,6 +392,13 @@ class TodoHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         prio = _validate_prio(prio)
+        # A create-time ``PRIO:`` alias syncs to the canonical prio column
+        # (the doable ORDER BY), stripped from the tag set — same
+        # translation gripe / quest already do (``_prio_tag``). An explicit
+        # ``prio=`` kwarg wins over the tag form.
+        tags, prio_from_tag = split_prio(tags)
+        if prio is None:
+            prio = prio_from_tag
         # ``meta.schedule`` may carry the ``every:`` shorthand; validate
         # and rewrite to canonical cron so the runtime only ever sees
         # one shape. The recurring spawner trusts the stored form.
@@ -541,6 +531,12 @@ class TodoHandler(NumericRefHandler):
             and not (isinstance(meta, dict) and "auto_check" in meta)
         ):
             meta = {**(meta or {}), "llm_tier": "opus"}
+            # Surface the stamp in the create ack — the default silently
+            # arms billed compute (dispatch mints a plan_tick for any
+            # llm_tier-set leaf), and a write receipt must state
+            # consequential state the server added, not just what the
+            # caller sent.
+            self._stamped_default_tier = True
         # Default parent_id for a recurring root (``meta.schedule`` set) to
         # the seeded Watches umbrella — every recurring lives under it by
         # default, so the operator gets a tidy two-panel ``view='roots'``
@@ -589,6 +585,7 @@ class TodoHandler(NumericRefHandler):
             self._pending_meta = None
             self._pending_prio = None
             self._pending_body = None
+            self._stamped_default_tier = False
 
     # Per-call slots for plumbing parent_id / meta / prio / body from ``put``
     # into ``_create`` without changing the base class's signature.
@@ -596,6 +593,10 @@ class TodoHandler(NumericRefHandler):
     _pending_meta: dict[str, Any] | None = None
     _pending_prio: int | None = None
     _pending_body: str | None = None
+    #: True when this call's parented-write default stamped
+    #: ``meta.llm_tier='opus'`` (auto-dispatch armed) — the create ack
+    #: announces it so the arming is never silent.
+    _stamped_default_tier: bool = False
 
     def _create(
         self,
@@ -820,6 +821,18 @@ class TodoHandler(NumericRefHandler):
             add, _redirected_chunks = redirect_long_tag_values(
                 self.store, ref_id=self._coerce_id(id), tags=add
             )
+        # ``PRIO:`` → the canonical prio column (the doable ORDER BY),
+        # stripped from the tag set like gripe / quest. A bare ``PRIO:*``
+        # in remove clears the column back to the sort-time default. An
+        # explicit ``prio=`` kwarg wins over the tag form.
+        add, prio_from_tag = split_prio(add)
+        clear_prio = False
+        if remove:
+            kept = [t for t in remove if t not in PRIO_TAG_TO_INT]
+            clear_prio = len(kept) != len(remove)
+            remove = kept or None
+        if prio is None and prio_from_tag is not None:
+            prio = prio_from_tag
         # ``meta=`` is the facet-promotion surface (§M facet
         # normalization): ``rotation_root`` / ``worker_mintable`` /
         # ``schedule`` (owner-only gradient) and ``llm_tier`` (the
@@ -851,6 +864,8 @@ class TodoHandler(NumericRefHandler):
         ref_id = self._coerce_id(id)
         if prio is not None:
             self.store.set_prio(ref_id, prio)
+        elif clear_prio:
+            self.store.set_prio(ref_id, None)
         if meta:
             meta_out = dict(meta)
             if "schedule" in meta_out:
@@ -867,10 +882,16 @@ class TodoHandler(NumericRefHandler):
                             "backfill_missed": parsed.backfill_missed,
                         }
             self.store.stamp_ref_meta(ref_id, meta_out)
-        if not add and not remove and (prio is not None or meta):
+        if not add and not remove and (prio is not None or clear_prio or meta):
             # Only a PRIO / meta write happened; the base handler would
-            # reject an empty ``tag`` call.
-            suffix = f"prio={prio}" if prio is not None else f"meta={meta}"
+            # reject an empty ``tag`` call. A bare clear renders as
+            # "cleared", not the misreadable "prio=None".
+            if prio is not None:
+                suffix = f"prio={prio}"
+            elif clear_prio:
+                suffix = "prio=cleared (back to the default)"
+            else:
+                suffix = f"meta={meta}"
             return Response(body=f"set {suffix} on {self._sense()} id={ref_id}")
         resp = super().tag(id=id, add=add, remove=remove, **_kw)
         # Picks-7d accounting (plan's Accounting section): when a
@@ -1093,7 +1114,17 @@ class TodoHandler(NumericRefHandler):
         body = f"created {self.kind} {handle} (STATUS:open)"
         if parent is not None:
             body += f" under {handle_registry.format_handle('todo', parent)}"
+        if self._pending_prio is not None:
+            body += f", prio={self._pending_prio}"
         body += "."
+        if self._stamped_default_tier:
+            # The parented-write default armed billed compute; a write
+            # receipt must say so (silent side effects erode agent trust).
+            body += (
+                " meta.llm_tier='opus' stamped (parented default) — the"
+                " dispatcher will auto-run this leaf as a plan_tick; pass"
+                " meta={'llm_tier': None} to park it instead."
+            )
         body += render_next_section(
             [
                 (

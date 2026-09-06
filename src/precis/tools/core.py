@@ -844,6 +844,14 @@ def put(
     # the ad-hoc put(kind='job', parent_id=…) submit path is uncallable over
     # MCP (JobHandler.put requires it, but it never reached the schema).
     parent_id: int | str | None = None,
+    # todo / gripe / quest priority (see precis-todo-tree-help): the
+    # canonical ``refs.prio`` column (1..10, lower = hotter) that the
+    # doable-view / dispatch ORDER BY sorts on. Declared at the verb level
+    # (the gr262482 pattern) so strict-schema MCP clients don't strip it —
+    # the handlers accepted ``prio=`` all along, but it never reached the
+    # schema nor the dispatch payload, so priority was uncallable over MCP
+    # (operators fell back to raw ``UPDATE refs SET prio=…``).
+    prio: int | None = None,
     # job retry (see precis-job-help): re-run a failed job —
     # put(kind='job', id=<failed>, mode='retry'[, model='sonnet']). model=
     # swaps the parent todo's meta.llm_tier so the re-minted tick runs on
@@ -1020,6 +1028,7 @@ def put(
             "params": params,
             "idem_key": idem_key,
             "parent_id": parent_id,
+            "prio": prio,
             "model": model,
             "pos": pos,
             "meta": meta,
@@ -1331,6 +1340,11 @@ def tag(
     # promotion; only this door was missing (gr301897). Other kinds' tag()
     # don't declare meta and swallow it via **_kw (a no-op, not an error).
     meta: dict[str, Any] | None = None,
+    # todo / gripe / quest (see precis-todo-tree-help): the canonical
+    # ``refs.prio`` column (1..10, lower = hotter). Same declared-at-the-
+    # verb-level story as meta= above — the handlers took ``prio=`` all
+    # along but it never reached the MCP schema or the dispatch payload.
+    prio: int | None = None,
 ) -> str:
     """Add and/or remove tags on an existing ref (atomic).
 
@@ -1341,21 +1355,29 @@ def tag(
 
     Per-kind closed-prefix gating (summary):
     todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
-    finding: unrestricted (STATUS/AUDIT/TAPROOT). job: STATUS (lifecycle subsets).
-    memory: DREAM (dreaming-worker provenance). anki/conv: none.
-    paper/patent: SRC+CACHE.
-    web/perplexity-research/perplexity-reasoning/websearch/youtube:
-    CACHE+WATCH. oracle/skill: none. python/calc/math: tag unsupported.
+    finding: unrestricted. job: STATUS (lifecycle subsets).
+    memory: DREAM. anki/conv: none. paper/patent: SRC+CACHE.
+    web/perplexity-*/websearch/youtube: CACHE+WATCH.
+    oracle/skill: none. python/calc/math: tag unsupported.
 
     `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
     onto the ref's meta dict — see precis-todo-tree-help.
+    `prio=` (todo/gripe/quest): priority column, 1..10, lower=hotter.
 
     Full reference: get(kind='skill', id='precis-tag-help'), or
     search(kind='skill', q='classifying refs') for a topical lookup.
     `precis-tags` is the authoritative axis matrix.
     """
     return _dispatch(
-        "tag", {"kind": kind, "id": id, "add": add, "remove": remove, "meta": meta}
+        "tag",
+        {
+            "kind": kind,
+            "id": id,
+            "add": add,
+            "remove": remove,
+            "meta": meta,
+            "prio": prio,
+        },
     )
 
 

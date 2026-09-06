@@ -11,7 +11,8 @@ Layers:
 * the push-delivery tick path (``meta.deliver``) and the
   one-shot resolve-and-retire path;
 * the PRIO column wiring (``put(prio=N)``, ``tag(prio=N)``; the
-  ``PRIO:*`` tag is a plain searchable tag, not a column alias);
+  ``PRIO:*`` tag is a column alias — translated + stripped on write,
+  the shared ``_prio_tag`` semantics);
 * delete-protection on builtin refs.
 """
 
@@ -364,17 +365,20 @@ def test_put_rejects_out_of_range_prio(handler: TodoHandler) -> None:
         handler.put(text="bad", prio=0)
 
 
-def test_put_with_prio_tag_is_stored_not_translated(
+def test_put_with_prio_tag_translates_to_column(
     handler: TodoHandler, store: Store
 ) -> None:
-    """``PRIO:*`` is a plain searchable tag (Layer B) — it is stored as-is
-    and does NOT set the ``prio`` column. Canonical is ``put(prio=N)``."""
+    """``PRIO:*`` is an alias for the ``prio`` column — translated on write
+    and stripped, the gripe/quest semantics (``_prio_tag``). The 2026-07
+    de-aliasing ("canonical is put(prio=N)") left todo with NO working
+    priority surface over MCP, because ``prio=`` was never declared on the
+    verb — restored alongside wiring the kwarg through tools/core.py."""
     resp = handler.put(text="urgent", tags=["PRIO:urgent"])
     rid = _id_of(resp.body)
     ref = store.get_ref(kind="todo", id=rid)
-    assert ref is not None and ref.prio is None
+    assert ref is not None and ref.prio == 1
     tags = {str(t) for t in store.tags_for(rid)}
-    assert "PRIO:urgent" in tags
+    assert "PRIO:urgent" not in tags  # stripped — priority lives in one place
 
 
 def test_tag_prio_kwarg_writes_column(handler: TodoHandler, store: Store) -> None:
@@ -385,18 +389,18 @@ def test_tag_prio_kwarg_writes_column(handler: TodoHandler, store: Store) -> Non
     assert ref is not None and ref.prio == 3
 
 
-def test_tag_remove_prio_tag_does_not_clear_column(
-    handler: TodoHandler, store: Store
-) -> None:
-    """Removing a ``PRIO:*`` tag no longer clears the ``prio`` column — that
-    translation shim is gone. The column only changes via explicit
-    ``prio=`` on put()/tag()."""
+def test_tag_remove_prio_tag_clears_column(handler: TodoHandler, store: Store) -> None:
+    """Removing a ``PRIO:*`` alias clears the ``prio`` column back to the
+    sort-time default — the gripe/quest semantics, shared by todo again
+    (see test_put_with_prio_tag_translates_to_column)."""
     resp = handler.put(text="y", prio=8)
     rid = _id_of(resp.body)
     handler.tag(id=rid, add=["PRIO:low"])
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.prio == 8  # PRIO:low → 8
     handler.tag(id=rid, remove=["PRIO:low"])
     ref = store.get_ref(kind="todo", id=rid)
-    assert ref is not None and ref.prio == 8
+    assert ref is not None and ref.prio is None
 
 
 # ── spawn loop ─────────────────────────────────────────────────────

@@ -80,11 +80,12 @@ deleted), and be a `todo`. Cycles are rejected at write time
 exceed 10 deep — if you hit the wall, attach a `waiting-for:*` tag
 or a `blocked-by` link instead of splitting further.
 
-**This can silently auto-dispatch real compute.** A parented `put`
-that doesn't set `meta.llm_tier` / `meta.executor` / `meta.schedule`
-itself defaults to `meta.llm_tier='opus'` — a leaf with no auto-run
-signal would otherwise sit `open` forever, so a generated child is
-made to actually run. `dispatch` mints a `plan_tick` job for any
+**This can auto-dispatch real compute.** A parented `put` that doesn't
+set `meta.llm_tier` / `meta.executor` / `meta.schedule` /
+`meta.auto_check` itself defaults to `meta.llm_tier='opus'` — a leaf
+with no auto-run signal would otherwise sit `open` forever, so a
+generated child is made to actually run (the create ack states the
+stamp when it happens). `dispatch` mints a `plan_tick` job for any
 `llm_tier`-set todo, so the child above can start a real (billed)
 planner run before you've finished setting it up. Pass
 `meta={"llm_tier": None}` — or any explicit tier you want — to opt
@@ -210,7 +211,7 @@ Nothing in the subtree gets touched; counts and decay continue.
 
 ```python
 search(kind="todo", view="waiting")  # any waiting-for:* tagged leaf
-search(kind="todo", view="blocked")  # any open blocked-by link
+search(kind="todo", view="blocked")  # open blocked-by link or STATUS:blocked
 search(kind="todo", view="ask-user")  # parked-on-owner-reply leaves
 ```
 
@@ -247,9 +248,12 @@ The level tier is `meta`, not a tag:
 | `child-failed:<job_id>` | A child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |
 | `halt` | Explicit "robot stay away" marker. Pulls the leaf out of `view='doable'` AND out of the dispatch worker's candidate query. Workers MAY add it (escalation: "I think this needs human eyes / I don't know how to proceed") but only the owner may remove it (the resume edge). Surfaces under `view='attention'` so halted leaves don't vanish. | anyone may add; owner only removes |
 
-Priority is set with the `prio=N` kwarg (1..10, lower = hotter).
-`PRIO:urgent|high|normal|low` remains a **searchable tag** but does not
-set priority — use `prio=N` for that.
+Priority is set with the `prio=N` kwarg on `put`/`tag` (1..10, lower =
+hotter, default 5). `PRIO:urgent|high|normal|low` in `tags=`/`add=` is
+an accepted **alias** (`urgent`→1 · `high`→3 · `normal`→5 · `low`→8),
+translated to the column and stripped — priority lives in one place,
+never a tag row. An explicit `prio=` wins when both are passed;
+removing a `PRIO:*` tag clears the column to the default.
 
 The flat list surface (`/recent`, `/open`, `/done`, …) keeps
 working — see `precis-todo-help`. This skill adds the tree

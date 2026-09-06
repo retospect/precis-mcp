@@ -148,8 +148,6 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         ("route", "put", "requested_by"),
         # -- put: structure (crystal/molecule) edit ops ---------------------
         ("structure", "put", "normalize"),
-        # -- put: todo prio shortcut (the operational workaround is raw SQL)
-        ("todo", "put", "prio"),
         # -- edit: bibliographic-metadata repair, paper-like kinds --------
         ("cfp", "edit", "abstract"),
         ("cfp", "edit", "entry_type"),

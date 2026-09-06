@@ -235,6 +235,37 @@ def test_blocked_lists_only_actively_blocked(handler: TodoHandler) -> None:
     assert "Blocked leaf." not in out2.body
 
 
+def test_blocked_includes_status_blocked_without_a_link(
+    handler: TodoHandler,
+) -> None:
+    """A leaf tagged ``STATUS:blocked`` with no ``blocked-by`` link recorded
+    must surface in ``view='blocked'`` — it's excluded from ``doable`` (only
+    open/doing pass), so before the union it was parked on NO triage surface
+    at all: not doable, not blocked, not waiting, not attention. The render
+    flags the missing edge so the fix (record the blocker) is taught inline."""
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    leaf = handler.put(text="Linklessly blocked leaf.", parent_id=root_id)
+    leaf_id = _id_of(leaf.body)
+    handler.tag(id=leaf_id, add=["STATUS:blocked"])
+
+    out = handler.search(view="blocked")
+    assert "Linklessly blocked leaf." in out.body
+    assert "nothing recorded" in out.body
+
+    # And it leaves the view when unblocked.
+    handler.tag(id=leaf_id, add=["STATUS:open"])
+    out2 = handler.search(view="blocked")
+    assert "Linklessly blocked leaf." not in out2.body
+
+    # Terminal states leave the view too (STATUS: is closed-prefix
+    # replace, so blocked → done swaps the value).
+    handler.tag(id=leaf_id, add=["STATUS:blocked"])
+    handler.tag(id=leaf_id, add=["STATUS:done"])
+    out3 = handler.search(view="blocked")
+    assert "Linklessly blocked leaf." not in out3.body
+
+
 # ── view='ask-user' ───────────────────────────────────────────────
 
 

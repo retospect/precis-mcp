@@ -338,6 +338,26 @@ def test_generated_child_defaults_to_llm_opus_root_does_not(
     assert root not in ids  # root → no default → not auto-run
 
 
+def test_llm_tier_stamp_announced_in_create_ack(handler: TodoHandler) -> None:
+    """The parented-write default arms billed compute — the create ack must
+    say so (a write receipt states consequential state the server added; a
+    silent stamp is a surprising side effect). An explicit tier, and a
+    root create, stay unannounced."""
+    root = _id_of(handler.put(text="deliberate root").body)
+
+    stamped = handler.put(text="generated child", parent_id=root)
+    assert "llm_tier='opus' stamped" in stamped.body
+    assert "llm_tier" in stamped.body
+
+    explicit = handler.put(
+        text="explicit tier child", parent_id=root, meta={"llm_tier": "haiku"}
+    )
+    assert "stamped" not in explicit.body
+
+    plain_root = handler.put(text="another root")
+    assert "stamped" not in plain_root.body
+
+
 def test_parented_auto_check_leaf_exempt_from_llm_tier_default(
     handler: TodoHandler, store: Store
 ) -> None:
