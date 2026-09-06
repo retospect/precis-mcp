@@ -66,10 +66,18 @@ downstream stages "failing" past that point are symptoms, not the cause.
 
 Your only write this tick is `put(kind='gripe', ...)`.
 
-- **Dedup first.** `search(kind="gripe", q="<the failure mode>")` before
-  filing. If an open gripe already covers it, annotate instead of
-  duplicating: `put(kind="gripe", id=<id>, text="<what you found this
-  tick>")`.
+- **Dedup first — two searches, both against GRIPES.**
+  `search(kind="gripe", q="<the failure mode>")` AND, when the finding
+  traces to an alert or a specific ref, `search(kind="gripe",
+  q="<the alert/ref id, e.g. al314976>")` — prior trackers usually name
+  the id verbatim even when their wording differs. Searching alerts for
+  siblings is NOT dedup; the tracker you must not duplicate is a gripe.
+  A match in ANY non-terminal status counts as covering it — open,
+  triaged, ready_for_fix, AND in_review (in_review means a fix shipped
+  and is awaiting verification: annotate it with your fresh sighting,
+  don't re-file). Only `done`/`wontfix` don't block a new filing.
+  Annotate instead of duplicating: `put(kind="gripe", id=<id>,
+  text="<what you found this tick>")`.
 - **File new only for something you diagnosed**, not for a bare "X looks
   off" — name the classification + the localized cause in the body.
 - **Never raise, resolve, or otherwise touch an alert.** Alerts are the
