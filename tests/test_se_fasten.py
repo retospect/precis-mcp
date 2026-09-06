@@ -21,7 +21,6 @@ from typing import Any
 
 import pytest
 
-from precis import fit_classes as core_fit
 from precis_se import catalog, fasten
 from precis_se.handler import _render_fasten
 from precis_se.ops import ConnectSpec, SeBlock, SeTree
@@ -93,70 +92,6 @@ def _only(tree: SeTree) -> fasten.FastenResult:
 
 def _rules(res: fasten.FastenResult) -> set[str]:
     return {f.rule for f in res.findings}
-
-
-class TestFitClasses:
-    def test_the_house_rule_is_the_default_and_is_d_plus_02(self) -> None:
-        fit = core_fit.clearance_hole("M6")
-        assert fit is not None
-        assert fit.fit_class == core_fit.default_class() == "house"
-        assert fit.hole_mm == pytest.approx(6.2)
-        assert fit.hole_m == pytest.approx(0.0062)
-
-    @pytest.mark.parametrize(
-        ("fit_class", "expected"),
-        [("fine", 6.4), ("medium", 6.6), ("coarse", 7.0)],
-    )
-    def test_the_iso_273_columns(self, fit_class: str, expected: float) -> None:
-        fit = core_fit.clearance_hole("M6", fit_class)
-        assert fit is not None and fit.hole_mm == pytest.approx(expected)
-
-    def test_the_house_rule_is_tighter_than_iso_fine(self) -> None:
-        """The fact the pattern finding exists for: 0.1 mm of radial slack
-        against ISO fine's 0.2 mm."""
-        house = core_fit.clearance_hole("M6", "house")
-        fine = core_fit.clearance_hole("M6", "fine")
-        assert house is not None and fine is not None
-        assert house.hole_mm < fine.hole_mm
-        assert house.radial_slack_mm == pytest.approx(0.1)
-        assert fine.radial_slack_mm == pytest.approx(0.2)
-
-    def test_size_is_matched_case_insensitively(self) -> None:
-        assert core_fit.clearance_hole("m6") == core_fit.clearance_hole(" M6 ")
-
-    def test_an_unknown_size_or_class_is_none_not_a_guess(self) -> None:
-        # M14 is a real thread the ISO 273 table here does not list; a
-        # rule class cannot rescue it either, because the nominal
-        # diameter it would apply to lives in the same size table.
-        assert core_fit.clearance_hole("M14") is None
-        assert core_fit.clearance_hole("M14", "house") is None
-        assert core_fit.clearance_hole("M6", "snug") is None
-
-    def test_every_size_resolves_in_every_class(self) -> None:
-        for size in core_fit.sizes():
-            for cls in core_fit.classes():
-                fit = core_fit.clearance_hole(size, cls)
-                assert fit is not None, f"{size}/{cls}"
-                assert fit.hole_mm > fit.nominal_mm, f"{size}/{cls} does not clear"
-
-    def test_the_fine_column_agrees_with_the_iso_7089_washer_bore(self) -> None:
-        """The consistency check `fit_classes.json`'s note claims, run as
-        a test: two independently transcribed standards tables overlap at
-        every shared size, so a typo in either shows up here."""
-        from precis import component_series
-
-        washer = component_series.find_series("iso-7089")
-        assert washer is not None
-        checked = 0
-        for size in washer.sizes:
-            fit = core_fit.clearance_hole(str(size.specs["thread_size"]), "fine")
-            if fit is None:
-                continue
-            assert fit.hole_mm == pytest.approx(float(size.specs["inner_diameter"])), (
-                f"ISO 273 fine and the ISO 7089 bore disagree at {size.key}"
-            )
-            checked += 1
-        assert checked >= 8
 
 
 class TestAxisWalk:

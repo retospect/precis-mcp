@@ -370,6 +370,25 @@ different unfold math from laser flat pattern — do not conflate them);
 supplier stock/price APIs (the `part` refresh pattern applies, but no
 customer demands it); path planning for assembly (existence only).
 
+## Cross-track, undecided (surfaced 2026-09-05, cad ↔ se)
+
+Both are real and neither is urgent; recording them beats re-deriving
+them, and neither track should decide alone.
+
+- **Three transcriptions of the same ISO fastener tables.**
+  `precis/cad/catalog.py` (store-free by design — `precis.cad` imports
+  nothing from the DB and must stay that way), `component_series.json`
+  (the `component` mint) and `fit_classes.json` (ISO 273). Verified to
+  agree at every shared size on 2026-09-05, and held there by
+  `tests/test_standards_table_agreement.py`, which asserts all three
+  pairwise plus coarse-pitch agreement across ISO 4017/4032/4762. The
+  guard is the cheap answer; consolidation is the real one and nobody
+  has picked a home that satisfies cad's no-DB constraint.
+- **`realized-by` (cad, mig 0156) vs se's `set_binding`** — two
+  spellings of "this design is that component", fine at two consumers
+  and not at three. Owned by whichever track grows the next one; options
+  sketched in `docs/backlog/realized-by-vs-se-binding.md`.
+
 ## Open questions for Reto
 
 - **Sizes beyond the ISO 273 table.** `fit_classes.json` covers M3–M20

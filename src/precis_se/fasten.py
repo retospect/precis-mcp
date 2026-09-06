@@ -43,7 +43,15 @@ member's outline, which arrives with the profile tier); counterbores and
 countersinks (a head-form question, and the head forms are one flat
 `fastener` category today); washers as load-spreaders in the stack-up
 (they are members here, which is geometrically right and mechanically
-silent).
+silent); **a screw bottoming out in a blind hole** — the checks below are
+all "is it long enough", never "is it too long", because nothing in the
+tree says whether a tapped hole is blind or through, and warning on every
+through-hole would train designers to ignore the finding; and the
+**position-tolerance relation** each stamped hole should carry
+(``se-feasibility-and-cost.md``: a joint stamps features *and the
+relations that make them meaningful*) — blocked on the measure layer
+having no derived-row concept, so :func:`_pattern_findings` reports the
+slack in prose as a stopgap.
 """
 
 from __future__ import annotations
