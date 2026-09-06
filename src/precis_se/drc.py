@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from precis.cad import bulk as cad_bulk
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
+from precis_se import fasten as se_fasten
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se.measures import StackupResult, stackup
@@ -486,5 +487,13 @@ def drc(tree: SeTree) -> DrcReport:
             )
         else:
             probes.append(DofProbe(subject, klass, f"ok — {travel_txt}"))
+
+    # 7. mechanism → geometry (rung 3): a screw joint's grip stack-up,
+    # length check and fit-class consequences. Its own module owns the
+    # numbers and the full report (``view='fasten'``); only the findings
+    # belong in the one DRC list, so a designer running `view='drc'` sees
+    # a screw that cannot reach alongside a joint that contradicts
+    # itself.
+    findings.extend(se_fasten.findings(se_fasten.fasten(tree)))
 
     return DrcReport(findings=findings, stackup=stack, dof_probes=probes)

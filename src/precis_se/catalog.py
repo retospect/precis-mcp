@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from precis_se.ops import PortSpec
@@ -96,11 +96,19 @@ class Derived:
     """What a catalog row yields: an envelope, ports, and — when either
     is absent — the reason. ``why_not`` is prose for a human/agent
     reader; it is never a status code, because the useful thing to say is
-    *which spec was missing*."""
+    *which spec was missing*.
+
+    ``specs`` is the converted spec set the generators were handed
+    (metres for lengths, categoricals untouched), carried through so a
+    downstream pass does not have to re-read the store to learn a
+    fastener's pitch or thread size — :mod:`precis_se.fasten` is the
+    consumer. It is the *input*, not a second derivation: everything in
+    it came from ``component_current_spec_values``."""
 
     envelope: str | None = None
     ports: dict[str, PortSpec] | None = None
     why_not: str | None = None
+    specs: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -245,6 +253,21 @@ _FASTENER_FORMS: tuple[tuple[str, str, Callable[[dict[str, Any]], Derived]], ...
 )
 
 
+def fastener_form(specs: dict[str, Any]) -> str | None:
+    """Which fastener form this spec set describes — ``'screw'``,
+    ``'nut'``, ``'washer'`` — or ``None`` when nothing identifies it.
+
+    Same precedence as :func:`_fastener` (one tuple, so the two can never
+    disagree about what a hex-head screw is). Downstream passes need the
+    *name* without the geometry: :mod:`precis_se.fasten` tells the screw
+    from the nut it threads into, and neither is inferable from the
+    envelope, which is a cylinder either way."""
+    for key, form, _fn in _FASTENER_FORMS:
+        if specs.get(key) is not None:
+            return form
+    return None
+
+
 def _fastener(specs: dict[str, Any]) -> Derived:
     for key, _form, fn in _FASTENER_FORMS:
         if specs.get(key) is not None:
@@ -353,15 +376,21 @@ def derive(category: str | None, specs: dict[str, Any]) -> Derived:
     ``specs`` values must already be **metres** (module docstring). An
     unknown or absent category, or a spec set too thin for its generator,
     yields a :class:`Derived` carrying only ``why_not`` — which callers
-    render as an honest gap, never as a fallback shape."""
+    render as an honest gap, never as a fallback shape.
+
+    Every return carries ``specs`` back, *including* the failures: a
+    fastener too thin to draw can still have the pitch and thread size a
+    stack-up needs, and losing them on the geometry path would make one
+    absent dimension hide four present ones."""
     if not category:
-        return Derived(why_not="component has no category")
+        return Derived(why_not="component has no category", specs=dict(specs))
     fn = GENERATORS.get(category)
     if fn is None:
         return Derived(
             why_not=(
                 f"no envelope generator for category {category!r} "
                 f"(have: {', '.join(sorted(GENERATORS))})"
-            )
+            ),
+            specs=dict(specs),
         )
-    return fn(specs)
+    return replace(fn(specs), specs=dict(specs))

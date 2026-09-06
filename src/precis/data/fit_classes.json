@@ -1,0 +1,38 @@
+{
+  "_note": "CLEARANCE-HOLE fit classes — versioned DATA, the standards half of docs/backlog/se-off-the-shelf-fabrication.md engine 2 (rung 3). Same posture as component_series.json: published table, curated, diffable, changed by a commit rather than a migration, nothing agent-authored lands here. Every number is MILLIMETRES, one unit for the whole file; consumers convert (se is metres everywhere — see precis.fit_classes.Fit, whose field names carry the unit so a bare float cannot be mistaken for one). A class is either TABULATED (a per-size column, `holes`) or a RULE (`offset_mm` applied to the nominal diameter); `house` is the rule kind, which is why it needs no column. Consistency check the data passes: the ISO 273 fine column equals the ISO 7089 washer bore at every shared size (3.2, 4.3, 5.3, 6.4, 8.4, 10.5, 13, 17, 21), so the two tables agree where they overlap. Confidence: the ISO 273 columns are transcribed from the published table and are exact; `house` is a shop rule, not a standard, and is marked as such.",
+  "default_class": "house",
+  "classes": {
+    "house": {
+      "title": "House rule (d + 0.2 mm)",
+      "offset_mm": 0.2,
+      "source": "house/shop rule — NOT a standard",
+      "note": "Tighter than ISO 273 fine at every size above M3, so it assumes accurately located holes: 0.1 mm radial slack means a multi-hole pattern binds on a 0.1 mm position error. Use `fine` or looser for a pattern whose positions are not controlled to that."
+    },
+    "fine": {
+      "title": "ISO 273 fine",
+      "source": "ISO 273:1979 (= DIN EN 20273), fine series",
+      "retrieved": "2026-09-05"
+    },
+    "medium": {
+      "title": "ISO 273 medium",
+      "source": "ISO 273:1979 (= DIN EN 20273), medium series",
+      "retrieved": "2026-09-05"
+    },
+    "coarse": {
+      "title": "ISO 273 coarse",
+      "source": "ISO 273:1979 (= DIN EN 20273), coarse series",
+      "retrieved": "2026-09-05"
+    }
+  },
+  "sizes": [
+    {"thread_size": "M3",  "nominal_diameter": 3.0,  "holes": {"fine": 3.2,  "medium": 3.4,  "coarse": 3.6}},
+    {"thread_size": "M4",  "nominal_diameter": 4.0,  "holes": {"fine": 4.3,  "medium": 4.5,  "coarse": 4.8}},
+    {"thread_size": "M5",  "nominal_diameter": 5.0,  "holes": {"fine": 5.3,  "medium": 5.5,  "coarse": 5.8}},
+    {"thread_size": "M6",  "nominal_diameter": 6.0,  "holes": {"fine": 6.4,  "medium": 6.6,  "coarse": 7.0}},
+    {"thread_size": "M8",  "nominal_diameter": 8.0,  "holes": {"fine": 8.4,  "medium": 9.0,  "coarse": 10.0}},
+    {"thread_size": "M10", "nominal_diameter": 10.0, "holes": {"fine": 10.5, "medium": 11.0, "coarse": 12.0}},
+    {"thread_size": "M12", "nominal_diameter": 12.0, "holes": {"fine": 13.0, "medium": 13.5, "coarse": 14.5}},
+    {"thread_size": "M16", "nominal_diameter": 16.0, "holes": {"fine": 17.0, "medium": 17.5, "coarse": 18.5}},
+    {"thread_size": "M20", "nominal_diameter": 20.0, "holes": {"fine": 21.0, "medium": 22.0, "coarse": 24.0}}
+  ]
+}

@@ -92,10 +92,23 @@ hole without its position tolerance is the same folklore as a press fit
 without an interference relation — which se already refuses
 (`MECHANISMS['press']['demands_relation']`).
 
-Storage: a design-level facet (`fit_class`, default `house`), overridable
-per connect. **Not** a global constant — a chassis and a jig want
-different answers, and the whole point of the per-assembly choice is that
-it is a decision with a recorded reason.
+Storage: **built per joint** (`joint.params.fit_class`, default `house`)
+with rung 3; a design-level default is additive and unbuilt. **Not** a
+global constant — a chassis and a jig want different answers, and the
+whole point of the per-assembly choice is that it is a decision with a
+recorded reason.
+
+**What rung 3 did NOT do, and it is this section's own requirement:** the
+stamping pass emits the holes and the *table's* left-hand columns
+(diameter, and a `hole_pattern_tolerance` finding that names the radial
+slack), but **it does not yet emit the position-tolerance relation
+alongside each hole**. So a stamped hole is currently geometry without
+its tolerance — the exact folklore the paragraph above says se refuses.
+The finding is a stopgap that tells a human the number; the relation is
+what a stack-up could consume. Closing it means an `add_measure`-shaped
+derived relation per hole, which needs the measure layer to accept
+derived (non-authored) rows — that is the actual blocker, and it is why
+this did not ride along with rung 3.
 
 ## The three analyses
 
@@ -233,8 +246,11 @@ is shown insufficient on a real design).
 
 ## Open questions for Reto
 
-- **Where does `fit_class` sit** — a design-level facet with per-connect
-  override (my lean), or purely per-connect with no design default?
+- ~~**Where does `fit_class` sit**~~ — **built 2026-09-05 as
+  `joint.params.fit_class`** (per joint, default `house`), because
+  `params` was already the declared slot for mechanism-specific numbers
+  and needed no op/column/migration. The design-level default is a strict
+  superset the joint param overrides; say the word if you want it.
 - **Is the re-orientation count worth its own hard floor?** ("more than N
   flips" as an error rather than a penalty) — my lean is no: it is the
   archetypal *painful but working* case, which is exactly what the soft

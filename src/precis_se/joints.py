@@ -21,6 +21,13 @@ rejected loudly at write time (the ``**_kw`` swallowed-facet lesson);
 ``params`` is the deliberate open slot for mechanism-specific numbers
 (engagement depth, stiffness for ``compliant`` — advisory/descriptive tier
 until a real consumer exists, per the annotations contract-class rule).
+
+Two params have since **earned contract class** by acquiring a consumer
+(:mod:`precis_se.fasten`, rung 3) and are checked here: ``fit_class``,
+which picks the clearance hole a `screw` mechanism stamps, and ``lead``,
+the metres-per-revolution of a `screw` *class*. The rest of ``params``
+stays open and descriptive — that is the rule working, not an exception
+to it.
 """
 
 from __future__ import annotations
@@ -28,14 +35,18 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from precis import fit_classes as core_fit_classes
+
 #: What motion the connection permits. ``compliant`` is a DOF with
 #: stiffness rather than freedom (TPU living hinge, flexure); ``captive``
 #: is interlocked-without-mechanism (a rotaxane) — checked by clearance +
 #: connectivity, not by an axis. ``screw`` (the classical helical lower
 #: pair — a leadscrew nut) is NOT the ``screw`` *mechanism* below: the
 #: class couples rotation to translation by the thread's lead
-#: (``params.lead``, m per revolution — descriptive until a kinematic
-#: consumer lands); the mechanism means threaded *fastening*.
+#: (``params.lead``, m per revolution — consumed since rung 3 by
+#: :mod:`precis_se.fasten`, which cross-checks it against the catalog
+#: pitch of the bound fastener); the mechanism means threaded
+#: *fastening*.
 KINEMATIC_CLASSES: dict[str, str] = {
     "rigid": "no relative motion",
     "revolute": "rotation about the axis only",
@@ -69,8 +80,9 @@ MECHANISMS: dict[str, dict[str, Any]] = {
         "deferred": "a flexing member (needs L3 solids)",
     },
     # threaded FASTENING — not the 'screw' kinematic class (helical pair).
-    # The fastener is bought; the holes it stamps into the members are
-    # rung 3 (se-off-the-shelf-fabrication.md engine 2).
+    # The fastener is bought; the clearance holes it stamps into the
+    # members it passes through, and the grip stack-up that says whether
+    # it is long enough, are :mod:`precis_se.fasten` (rung 3).
     "screw": {"demands_relation": None, "demands_bom": "the fastener"},
     "press": {
         "demands_relation": "an interference tolerance relation",
@@ -147,8 +159,44 @@ def validate_joint(raw: dict[str, Any]) -> dict[str, Any]:
                 f"joint 'params' must be a JSON object, got {params_raw!r}"
             )
         if params_raw:
-            out["params"] = dict(params_raw)
+            out["params"] = _vet_params(dict(params_raw))
     return out
+
+
+def _vet_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Check the two contract-classed params (module docstring) and pass
+    everything else through untouched. Absent is always fine — a joint
+    that names no fit class gets the house default at read time, which is
+    a *decision recorded once* rather than a number every consumer
+    guesses."""
+    fit = params.get("fit_class")
+    if fit is not None:
+        known = core_fit_classes.classes()
+        if not isinstance(fit, str) or fit.strip().lower() not in known:
+            raise JointError(
+                f"joint param 'fit_class' must be one of "
+                f"{' | '.join(sorted(known))}; got {fit!r} — it picks the "
+                "clearance hole a screw stamps into the members it passes "
+                f"through (default: {core_fit_classes.default_class()!r})"
+            )
+        params["fit_class"] = fit.strip().lower()
+    lead = params.get("lead")
+    if lead is not None:
+        try:
+            lead_m = float(lead)
+        except (TypeError, ValueError) as exc:
+            raise JointError(
+                f"joint param 'lead' must be a number > 0 (metres per "
+                f"revolution), got {lead!r}"
+            ) from exc
+        if not math.isfinite(lead_m) or lead_m <= 0.0:
+            raise JointError(
+                f"joint param 'lead' must be a number > 0 (metres per "
+                f"revolution), got {lead!r} — an M6 coarse thread is "
+                "0.001, i.e. 1 mm of travel per turn"
+            )
+        params["lead"] = lead_m
+    return params
 
 
 #: Registered objective (loads) keys — the kind-neutral vocabulary, real

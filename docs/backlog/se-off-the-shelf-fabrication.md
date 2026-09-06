@@ -172,10 +172,12 @@ exists.
 
 ## Engine 2 — mechanism → geometry propagation
 
-**The highest-leverage building block, and nothing in the tree does any
-of it today.** se slice 3 made a mechanism *demand a relation*; it has
-never made a mechanism *change a part*. Off-the-shelf assembly is almost
-entirely this:
+**The highest-leverage building block.** se slice 3 made a mechanism
+*demand a relation*; it had never made a mechanism *change a part*.
+Rung 3 built the `screw` instance (`precis_se/fasten.py`,
+`view='fasten'`, findings folded into `view='drc'`); the sheet/tube/press
+instances below are unbuilt. Off-the-shelf assembly is almost entirely
+this:
 
 - `screw` ⇒ a clearance hole through every intermediate member (Ø from a
   fit class — ISO 273 fine/medium/coarse for M6 = 6.4/6.6/7.0, house
@@ -200,16 +202,33 @@ edit, exactly as se-kind.md decided for process skills.
 
 Checks that come with it, all reusing shipped machinery:
 
-- **Fastener stack-up along the joint axis** — grip = Σ member
-  thicknesses on the axis; screw length ≥ grip + nut height +
-  protrusion; thread engagement ≥ 1×D into a blind tapped hole. Pure
-  reuse of slice 3's `measures.py` stack-up; the axis walk is the new
-  part.
-- **Tool access** — a socket driver needs a clear cylinder above the
-  head, a spanner a swept annulus around a nut. The one genuinely new
-  *geometric* check, answerable with the existing clearance/DOF probes
-  against a swept solid; needs driver envelopes per `drive_type` × size
-  as capability data.
+- **Fastener stack-up along the joint axis** — *(built, rung 3)* grip =
+  Σ member thicknesses on the axis; screw length ≥ grip + nut height +
+  protrusion; thread engagement ≥ 1×D into a blind tapped hole. The axis
+  walk was the new part, and it turned out to want `cad.probe.probe_ray`
+  rather than `measures.py`: one ray per posed envelope gives the member
+  order, the entry/exit and the thickness in one analytic pass, so the
+  stack is **measured from the poses** and nobody declares it.
+
+  Two things fell out that the sketch did not anticipate, both better
+  than what it proposed. **The axis comes from the fastener, not the
+  joint**: a screw's catalog envelope runs head-at-local-origin to
+  thread-end at `+z`, so the drive direction is the block's own rotation
+  applied to `+z`, and a declared `joint.axis` becomes something to
+  *check* (a `fastener_axis` finding at >2.5°, with ±180° treated as the
+  same line, because a joint axis is a line). And **the thread is a lead
+  with limits** — Reto's framing, and the right one: pitch × starts is
+  metres per turn, the engagement the stack leaves is the bound, so
+  "5.2 turns from first thread to seated" is a derived number. That also
+  gives `params.lead` (the `screw` *kinematic class*) its first consumer:
+  declared-vs-catalog disagreement is a finding. The two `screw`
+  registries meet exactly there.
+- **Tool access** — *(unbuilt — rung 3b)* a socket driver needs a clear
+  cylinder above the head, a spanner a swept annulus around a nut. The
+  one genuinely new *geometric* check, answerable with the existing
+  clearance/DOF probes against a swept solid; needs driver envelopes per
+  `drive_type` × size as capability data, which is why it is its own
+  rung rather than part of 3.
 - **Assembly-order existence** — each part insertable along *some* free
   direction against the partial assembly (`relate.translational_dof`
   against a growing union). An existence check, explicitly **not** path
@@ -317,15 +336,32 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
      `connect` can attach to a bought part at all. Reads
      `component_specs.canonical_unit` and converts to metres; se is
      float64 metres everywhere and the component store is mm.
-3. **Mechanism → geometry propagation**, `screw` first (hole stamping +
-   grip stack-up + tool access). Where it stops being a diagram.
+3. **Mechanism → geometry propagation**, `screw` first. Where it stops
+   being a diagram.
+   - **3a (built)** — `precis_se/fasten.py` + `precis/fit_classes.py`
+     (+ `precis/data/fit_classes.json`): the axis walk, the grip
+     stack-up and length/engagement checks, clearance holes into every
+     *designed* member (a bought nut arrives threaded — you do not drill
+     it), a tapped hole (d − P) in the terminal member of a nutless
+     stack, the thread's lead + travel limits, and the multi-hole
+     pattern-tolerance warning the house fit class implies. `view=
+     'fasten'`; findings also in `view='drc'`. No migration — the fit
+     table is a file and the stamped features are derived.
+   - **3b — next**: tool access (driver envelopes per `drive_type` ×
+     size as capability data, swept against the assembly), assembly-order
+     existence, edge distance.
 4. **`laser/*` + `stock-cut/*`** — capability rows, realizability
    predicates, snap-to-stock, series/size tables.
 5. **Flat pattern DXF/SVG + nesting; cut lists + offcut yield.**
 
 ## Deferred, named so they are not re-derived
 
-Thread geometry (a thread port + a relation, always); weld/braze as a
+Thread *geometry* — still deferred, and rung 3 kept the deferral honest:
+a thread is a **port**, a **lead** (metres per turn) and an
+**engagement** (the limit), which is enough for turns-to-seated, the
+tapping drill and the declared-vs-catalog check, and none of it needs a
+helix. Nothing downstream should read the absence of helical geometry as
+a gap to fill. Also deferred: weld/braze as a
 mechanism (a bond variant, no geometry propagation modelled); bending
 and roll-forming beyond a declared bend radius; multi-axis CNC (already
 deferred in se-kind.md); sheet-metal bend allowance / k-factor (a
@@ -336,6 +372,17 @@ customer demands it); path planning for assembly (existence only).
 
 ## Open questions for Reto
 
+- **Sizes beyond the ISO 273 table.** `fit_classes.json` covers M3–M20
+  (skipping M14/M18, which the standard lists but nobody stocks). An
+  unlisted size returns `None` and stamps nothing, *including* for the
+  `house` rule — the rule needs a nominal diameter, and the size table is
+  where diameters live. Fine as-is; say so if your shop uses M14, M18 or
+  anything imperial and the rows go in.
+- **A design-level `fit_class` default?** Rung 3 put it on the joint
+  (`params.fit_class`, defaulting to `house`) — see the resolved
+  fit-class question below for why. If you want one place per design to
+  say "this whole thing is ISO fine", that is a facet the joint param
+  overrides, and it is additive.
 - ~~**Series table home**~~ — **resolved 2026-09-05**: core, beside
   `component`. The catalog survey settled it: a series table is
   *standards* data (BOLTS/ISO tables), not se-specific and not
@@ -365,5 +412,26 @@ customer demands it); path planning for assembly (existence only).
     the cut file is not `+0.2` in the part — the fit lookup and the kerf
     compensation have to compose, not both be applied.
 
-  Unbuilt: the table lands with **rung 3**, its first and only consumer
-  (clearance-hole stamping). Nothing in rungs 1–2 reads it.
+  **Built with rung 3** as `precis/data/fit_classes.json` +
+  `precis/fit_classes.py`. Two shapes, not one: `fine`/`medium`/`coarse`
+  are *tabulated* columns, `house` is a *rule* (`offset_mm: 0.2`), so a
+  shop rule applies wherever the nominal diameter is known instead of
+  needing a hand-transcribed column. The lookup returns a `Fit`, never a
+  bare float, because `hole_mm` beside `hole_m` is the only reliable
+  guard against the millimetre/metre slip this subsystem keeps making.
+  The ISO 273 fine column is asserted equal to the ISO 7089 washer bore
+  at every shared size — two independently transcribed tables checking
+  each other, so a typo in either reddens the gate.
+
+  **Where `fit_class` sits — decided (agent, revisable):** on the joint,
+  as `joint.params.fit_class`, defaulting to `house`. `params` was
+  already the declared open slot for mechanism-specific numbers, so this
+  needed no op, no column and no migration; and it is per-joint, which is
+  the granularity that turned out to matter (the pattern warning is
+  per-member-per-fit, and a design legitimately mixes a tight fit on a
+  located pattern with a loose one on a bracket). The design-level
+  default Reto floated is a strict superset — add it later as a facet
+  the joint param overrides, without moving anything. This also promoted
+  `fit_class` and `lead` from descriptive to **contract-classed** params
+  (validated at write time), which is the annotations rule working: they
+  acquired a consumer.

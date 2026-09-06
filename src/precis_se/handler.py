@@ -69,6 +69,7 @@ from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
 from precis_se import bom as se_bom
 from precis_se import drc as se_drc
+from precis_se import fasten as se_fasten
 from precis_se import modes as se_modes
 from precis_se import persist
 from precis_se import validate as se_validate
@@ -166,6 +167,7 @@ class SeHandler(Handler):
             "clearance",
             "drc",
             "bom",
+            "fasten",
         ),
         # Dark-ship: hidden until the `se.enabled` setting resolves.
         requires_setting=("se.enabled",),
@@ -321,6 +323,8 @@ class SeHandler(Handler):
             return Response(body=_render_drc(tree))
         if v == "bom":
             return Response(body=self._render_bom(tree))
+        if v == "fasten":
+            return Response(body=_render_fasten(tree))
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
@@ -328,7 +332,8 @@ class SeHandler(Handler):
             "(+ stack-up) | view='validate' | view='clearance' "
             "(args={'a':...,'b':...}) | view='drc' (graph tier + DOF "
             "probe) | view='bom' (bought items, multiplied through the "
-            "arrays, with cost/mass)",
+            "arrays, with cost/mass) | view='fasten' (screw joints: grip "
+            "stack-up, clearance holes, thread lead)",
         )
 
     def _render_bom(self, tree: SeTree) -> str:
@@ -977,6 +982,109 @@ def _render_drc(tree: SeTree) -> str:
                 schema=["measure", "declared", "derived", "chain", "status"],
             )
         )
+    return "\n".join(lines)
+
+
+def _mm(value: float | None) -> str:
+    """One length in millimetres for a human reader. se stores metres;
+    every number in this view is converted once, here, and the column
+    headers say ``mm`` — a view that mixed the two would be the unit bug
+    this subsystem keeps having, printed."""
+    return "—" if value is None else f"{value * 1000:.2f}"
+
+
+def _render_fasten(tree: SeTree) -> str:
+    """``view='fasten'`` — what each screw joint does to the parts it
+    joins (:mod:`precis_se.fasten`): the stack its axis walks through, the
+    grip and length check, the thread's lead and travel limits, and the
+    clearance/tapped holes it stamps.
+
+    The holes are **derived**: regenerated from the connect on every read,
+    stored nowhere, so this view is the feature list — there is no other
+    copy of it to drift."""
+    results = se_fasten.fasten(tree)
+    if not results:
+        return (
+            "✓ no screw joints\n"
+            "This view covers connects whose joint declares the `screw` "
+            "mechanism (threaded fastening) or the `screw` kinematic class "
+            "(a helical pair). Nothing here declares either yet."
+        )
+    lines: list[str] = [f"# {len(results)} screw joint(s)"]
+    for res in results:
+        who = res.component or res.fastener or "no fastener"
+        head = f"\n## {res.subject} — {who}"
+        if res.thread_size:
+            head += f" ({res.thread_size})"
+        lines.append(head)
+        if res.why_not:
+            lines.append(f"⚠ {res.why_not}")
+        if res.members:
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "member": m.block,
+                            "from_mm": _mm(m.t_in),
+                            "to_mm": _mm(m.t_out),
+                            "thickness_mm": _mm(m.thickness_m),
+                            "note": (
+                                f"bought {m.form}"
+                                if m.bought and m.form
+                                else "bought"
+                                if m.bought
+                                else "designed"
+                            ),
+                        }
+                        for m in res.members
+                    ],
+                    schema=["member", "from_mm", "to_mm", "thickness_mm", "note"],
+                )
+            )
+            lines.append(
+                f"grip {_mm(res.grip_m)} mm · stack {_mm(res.stack_m)} mm · "
+                f"terminated by a {res.termination} · screw is "
+                f"{_mm(res.length_m)} mm under the head, needs "
+                f"{_mm(res.required_length_m)} mm"
+            )
+        if res.thread is not None:
+            t = res.thread
+            txt = (
+                f"thread: {_mm(t.lead_m)} mm of travel per turn "
+                f"(pitch {_mm(t.pitch_m)} mm × {t.starts} start)"
+            )
+            if t.engagement_m is not None and t.turns is not None:
+                txt += (
+                    f" — {_mm(t.engagement_m)} mm engaged, "
+                    f"{t.turns:.1f} turns from first thread to seated"
+                )
+            if res.declared_lead_m is not None:
+                txt += f" · joint declares {_mm(res.declared_lead_m)} mm/turn"
+            lines.append(txt)
+        if res.holes:
+            lines.append(
+                f"holes stamped by this joint (derived from the connect, "
+                f"regenerated on every read) — fit {res.fit.fit_class!r}"
+                if res.fit
+                else "holes stamped by this joint"
+            )
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "feature": h.name,
+                            "member": h.block,
+                            "kind": h.kind,
+                            "diameter_mm": _mm(h.diameter_m),
+                            "depth_mm": _mm(h.depth_m),
+                        }
+                        for h in res.holes
+                    ],
+                    schema=["feature", "member", "kind", "diameter_mm", "depth_mm"],
+                )
+            )
+        for f in res.findings:
+            lines.append(f"⚠ {f.rule}: {f.detail}")
     return "\n".join(lines)
 
 

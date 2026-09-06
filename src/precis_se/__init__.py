@@ -76,6 +76,23 @@ them — with ``set_mode``/``set_binding``/``add_bom``/``remove_bom`` ops
 and the DRC demands they make checkable (a ``bearing``/``screw`` joint
 with nothing on the BOM; a ``purchase`` block that names nothing to buy).
 
+**Rungs 2–3** turn a bought part from a line item into geometry, and a
+joint from a diagram into a change to the parts it joins:
+:mod:`precis_se.catalog` (rung 2b — pure ``component`` spec values →
+envelope + port templates per category, in metres; reached at load time
+by ``persist.attach_catalog`` and **derived, never stored**, so
+re-dimensioning a component reaches every design bound to it) and
+:mod:`precis_se.fasten` (rung 3 — a `screw` joint's clearance and tapped
+holes, the grip stack-up walked along the fastener's own axis with
+``cad.probe.probe_ray``, the length/engagement checks, and the thread
+read as a **lead with limits**: metres per turn from the catalog pitch,
+bounded by the engagement the stack leaves, cross-checked against a
+declared ``params.lead``). Surfaced as ``view='fasten'``, with the
+findings folded into ``view='drc'``. The clearance-hole table itself is
+core data, not se's — :mod:`precis.fit_classes` (ISO 273 fine/medium/
+coarse plus the house ``d + 0.2`` rule), the same file-not-a-table
+posture as :mod:`precis.component_series`.
+
 Ships **dark** behind the ``se.enabled`` setting (the ``se`` kind's
 ``requires_setting``; DB row → ``PRECIS_SE_ENABLED`` env fallback) — the
 kind is hidden from the catalogue/dispatcher until the flag is set. See
@@ -86,9 +103,11 @@ round: the rotational DOF probe (translational_dof's missing twin),
 notes ledger + design-freedom vocabulary (interval measures,
 ``origin``, ``view='freedom'`` — slice 4), ``se_propose``, couplings
 (gear/rack/belt ratios — ship-order step 6), process DRC + the
-capability rows behind it, catalog-derived geometry/ports for a bound
-component, mechanism→geometry propagation, compliance advisories
-(ship-order step 6), the profile tier.
+capability rows behind it, compliance advisories (ship-order step 6),
+the profile tier, and the rest of mechanism→geometry: tool access
+(a swept driver envelope per drive type × size), assembly-order
+existence, edge distance, and the sheet/tube instances of the stamping
+engine (finger joints, cope/fishmouth, press seats).
 """
 
 from __future__ import annotations
