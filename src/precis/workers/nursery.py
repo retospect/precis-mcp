@@ -607,17 +607,17 @@ def _detect_stuck_doable(store: Store) -> list[Symptom]:
                )
                -- Not a recurring root
                AND NOT (r.meta ? 'schedule')
-               -- No claim, and none of the shared doable-exclusion tags
+               -- None of the shared doable-exclusion tags (the clause
+               -- includes live claimed-by leases; an EXPIRED claim no
+               -- longer shields the leaf — a dead claimer's work is
+               -- exactly what this sweep should surface)
                AND NOT EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
                       AND t.namespace = 'OPEN'
-                      AND (
-                          t.value LIKE 'claimed-by:%%'
-                          OR """
+                      AND """
             + _doable_exclusion_clause()
             + """
-                      )
                )
                -- Not blocked
                AND NOT EXISTS (

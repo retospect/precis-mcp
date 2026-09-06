@@ -312,14 +312,41 @@ def test_stuck_doable_detector_skips_non_candidate_leaf(
 def test_stuck_doable_detector_skips_claimed_leaf(
     handler: TodoHandler, store: Store
 ) -> None:
+    # Claim through the handler so the lease gets stamped — a LIVE lease
+    # shields the leaf from the stuck sweep (someone is on it).
     r = handler.put(text="Old + claimed", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
-    store.add_tag(rid, Tag.open("claimed-by:asa-worker"), set_by="agent")
+    handler.tag(id=rid, add=["claimed-by:asa-worker"])
     _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
 
     findings = _detect_stuck_doable(store)
     ids = {f.ref_id for f in findings}
     assert rid not in ids
+
+
+def test_stuck_doable_detector_flags_expired_claim(
+    handler: TodoHandler, store: Store
+) -> None:
+    """An EXPIRED lease stops shielding — a dead claimer's stalled work is
+    exactly what this sweep exists to surface (pre-lease, a stale
+    ``claimed-by:`` tag hid the leaf from the sweep forever)."""
+    r = handler.put(text="Old + dead claimer", meta={"llm_tier": "opus"})
+    rid = _id_of(r.body)
+    handler.tag(id=rid, add=["claimed-by:asa-worker"])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET expires_at = now() - interval '1 minute'"
+            "  FROM tags t"
+            " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+            "   AND t.namespace = 'OPEN' AND t.value LIKE 'claimed-by:%%'",
+            (rid,),
+        )
+        conn.commit()
+    _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
+
+    findings = _detect_stuck_doable(store)
+    ids = {f.ref_id for f in findings}
+    assert rid in ids
 
 
 def test_stuck_doable_detector_skips_waiting_leaf(

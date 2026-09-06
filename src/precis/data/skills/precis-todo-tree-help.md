@@ -191,7 +191,9 @@ search(kind="todo", view="doable", args={"under": 67})  # within a subtree
 open blocked-by links, no `waiting-for:*` tag, no `ask-user`
 tag, no `child-failed:*` tag
 (a child job failed and is awaiting
-the owner's decision), no `paused` ancestor, and not a recurring
+the owner's decision), no live `claimed-by:*` lease (an expired
+lease stops excluding, so a dead claimer's work re-surfaces), no
+`paused` ancestor, and not a recurring
 (`meta.schedule` set) umbrella row. Ordering: `prio` int column ASC,
 then least-picked strategic, then ref_id (sibling order). PRIO 1
 preempts the 1/N rotation; cron-spawned subtasks default to PRIO 2.
@@ -242,7 +244,7 @@ The level tier is `meta`, not a tag:
 | Tag | Purpose | Who writes |
 |---|---|---|
 | `proposed-tactical` | Worker's tactical pitch | anyone |
-| `claimed-by:<handle>` | Atomic claim marker | the claimer |
+| `claimed-by:<handle>` | Claim **lease** (CAS): claiming a leaf whose live lease another handle holds is rejected naming the holder (owner sources may take over). Auto-expires 4h after the last (re-)claim — re-claim to extend; a live lease excludes the leaf from `doable`/dispatch; released automatically on done / won't-do | the claimer |
 | `waiting-for:<target>` | External wait | anyone |
 | `ask-user` / `ask-user:<question>` | Parked on a human's reply; bare = "any human", `ask-user:<text>` carries the question inline. Add `user:<who>` to address a specific person | anyone |
 | `child-failed:<job_id>` | A child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |

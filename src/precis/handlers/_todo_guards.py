@@ -985,12 +985,68 @@ def check_deliver_in_meta(meta: dict[str, object] | None) -> dict[str, str] | No
     return {"target": target.strip()}
 
 
+#: ``claimed-by:`` lease constants (shared with the exclusion clause in
+#: :mod:`precis.handlers._todo_views` and the expiry stamp in
+#: :meth:`TodoHandler._after_tag_mutation`).
+CLAIM_PREFIX = "claimed-by:"
+CLAIM_TTL_HOURS = 4
+
+
+def check_claim_takeover(store: Store, ref_id: int, add: list[str] | None) -> None:
+    """CAS guard: reject claiming a leaf whose live lease another holds.
+
+    ``claimed-by:<handle>`` is a *lease*, not a permanent mark — the tag
+    row carries ``expires_at`` (stamped ``now() + CLAIM_TTL_HOURS`` by
+    ``_after_tag_mutation``; re-claiming refreshes it). This guard makes
+    the claim a compare-and-set for worker sources: a second claimer
+    hitting a live, differently-held lease gets a BadInput naming the
+    holder instead of silently double-claiming (the pre-lease behaviour
+    — two open tags coexisting, both agents believing they own the
+    leaf). Expired leases and legacy rows (``expires_at IS NULL`` —
+    minted before the lease semantics) are free to take over, and owner
+    sources always may.
+    """
+    claims = [
+        t for t in (add or []) if isinstance(t, str) and t.startswith(CLAIM_PREFIX)
+    ]
+    if not claims:
+        return
+    if len(set(claims)) > 1:
+        raise BadInput(
+            "pass at most one claimed-by: tag per call",
+            next=f"tag(add=['{claims[-1]}'])",
+        )
+    holder = claims[0]
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id"
+            " WHERE rt.ref_id = %s AND t.namespace = 'OPEN'"
+            "   AND t.value LIKE 'claimed-by:%%' AND t.value <> %s"
+            "   AND rt.expires_at IS NOT NULL AND rt.expires_at > now()"
+            " LIMIT 1",
+            (ref_id, holder),
+        ).fetchone()
+    if row is not None and not is_owner():
+        current = str(row[0])[len(CLAIM_PREFIX) :]
+        raise BadInput(
+            f"todo id={ref_id} is already claimed by {current!r} (live lease)",
+            next=(
+                "pick another leaf from view='doable', or retry later — a "
+                f"claim lease expires {CLAIM_TTL_HOURS}h after its last "
+                "re-assert; owner sources may take over by re-claiming"
+            ),
+        )
+
+
 __all__ = [
+    "CLAIM_PREFIX",
+    "CLAIM_TTL_HOURS",
     "MAX_DEPTH",
     "META_ROTATION_ROOT",
     "META_WORKER_MINTABLE",
     "PROPOSED_TACTICAL",
     "TAG_META_ALLOWED_KEYS",
+    "check_claim_takeover",
     "check_deliver_in_meta",
     "check_depth_under",
     "check_executor_tag",

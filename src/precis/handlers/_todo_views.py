@@ -74,17 +74,26 @@ _DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
 )
 
 
-def _doable_exclusion_clause(tag_alias: str = "t") -> str:
+def _doable_exclusion_clause(tag_alias: str = "t", reftag_alias: str = "rt") -> str:
     """Return the SQL OR clause matching every exclusion tag.
 
     The returned expression is parenthesised, suitable for embedding
     in a ``NOT EXISTS (... AND <clause>)`` shape. The caller is
     responsible for the surrounding ``ref_tags`` ⋈ ``tags`` join and
-    the ``namespace = 'OPEN'`` filter.
+    the ``namespace = 'OPEN'`` filter (``reftag_alias`` must name the
+    ``ref_tags`` side of that join — every current caller uses ``rt``).
 
     Centralising the clause means the doable view, the dispatch
     candidate query, and any future "skip robot-stay-away leaves"
     surface share the same logic — drift between them is impossible.
+
+    ``claimed-by:`` rides along as a *lease*, not a registry tag: it
+    excludes only while its ``expires_at`` is in the future (stamped
+    ``now() + CLAIM_TTL_HOURS`` by ``TodoHandler._after_tag_mutation``;
+    re-claiming refreshes). A legacy claim row (``expires_at IS NULL``,
+    minted before the lease semantics) deliberately does NOT exclude —
+    that matches its pre-lease behaviour, so old stale claims can't
+    suddenly park live leaves.
     """
     parts: list[str] = []
     for t in _DOABLE_EXCLUSION_TAGS:
@@ -92,6 +101,11 @@ def _doable_exclusion_clause(tag_alias: str = "t") -> str:
             parts.append(f"{tag_alias}.value LIKE '{t}%%'")
         else:
             parts.append(f"{tag_alias}.value = '{t}'")
+    parts.append(
+        f"({tag_alias}.value LIKE 'claimed-by:%%'"
+        f" AND {reftag_alias}.expires_at IS NOT NULL"
+        f" AND {reftag_alias}.expires_at > now())"
+    )
     return "(" + " OR ".join(parts) + ")"
 
 

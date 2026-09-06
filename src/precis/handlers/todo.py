@@ -848,6 +848,13 @@ class TodoHandler(NumericRefHandler):
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
         guards.check_halt_remove(remove=remove)
+        # Claim CAS: a worker claiming a leaf whose live lease another
+        # handle holds gets a BadInput naming the holder, instead of the
+        # pre-lease double-claim (two claimed-by tags coexisting). The
+        # lease upkeep itself (expiry stamp, single-holder invariant,
+        # release on terminal STATUS) runs in ``_after_tag_mutation``,
+        # atomic with the tag write.
+        guards.check_claim_takeover(self.store, self._coerce_id(id), add)
         # No STATUS:done from a worker without artifact evidence.
         # Prevents the cheating mode where the LLM marks itself done
         # without producing a file / citation / successful child job.
@@ -906,6 +913,56 @@ class TodoHandler(NumericRefHandler):
                 event="status:done",
             )
         return resp
+
+    def _after_tag_mutation(
+        self,
+        ref_id: int,
+        added: list[Tag],
+        removed: list[Tag],
+        *,
+        conn: Any,
+    ) -> None:
+        """Claim-lease upkeep, atomic with the tag write.
+
+        Two invariants (see ``guards.check_claim_takeover`` for the CAS
+        half that runs *before* the write):
+
+        * A freshly-(re)added ``claimed-by:<x>`` becomes the *only*
+          claim row (other holders' rows — expired, or overridden by an
+          owner source — are dropped) and gets its lease stamped:
+          ``expires_at = now() + CLAIM_TTL_HOURS``. ``add_tag``'s
+          ON CONFLICT path resets ``expires_at`` to NULL on a re-add,
+          so the stamp here is what makes re-claiming *extend* the
+          lease rather than silently un-lease it.
+        * A terminal STATUS (done / won't-do) releases every claim —
+          finished leaves don't accumulate stale leases.
+        """
+        claim_vals = [str(t) for t in added if str(t).startswith(guards.CLAIM_PREFIX)]
+        if claim_vals:
+            holder = claim_vals[-1]
+            conn.execute(
+                "DELETE FROM ref_tags rt USING tags t"
+                " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+                "   AND t.namespace = 'OPEN'"
+                "   AND t.value LIKE 'claimed-by:%%' AND t.value <> %s",
+                (ref_id, holder),
+            )
+            conn.execute(
+                "UPDATE ref_tags rt"
+                "   SET expires_at = now() + make_interval(hours => %s)"
+                "  FROM tags t"
+                " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+                "   AND t.namespace = 'OPEN' AND t.value = %s",
+                (guards.CLAIM_TTL_HOURS, ref_id, holder),
+            )
+        if any(str(t) in ("STATUS:done", "STATUS:won't-do") for t in added):
+            conn.execute(
+                "DELETE FROM ref_tags rt USING tags t"
+                " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+                "   AND t.namespace = 'OPEN'"
+                "   AND t.value LIKE 'claimed-by:%%'",
+                (ref_id,),
+            )
 
     # ── link: reserved virtual rel='parent' is the move surface ───
 
