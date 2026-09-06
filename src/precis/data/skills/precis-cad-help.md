@@ -341,9 +341,16 @@ constrain a = c        # equality between dims
 Bounds on one name intersect; `constrain` merges dims into an equality
 class; a class whose combined range is empty — `a = 200`, `b = 150`,
 `constrain a = b` — is **refused at put** with the members and their
-bounds named. v1 dims are declarative (configs don't reference them
-yet); they're the carrier for process rules like print clearances
-(`clearance >= 0.3` for FDM) and for estimates that narrow over time.
+bounds named. They're the carrier for process rules like print
+clearances (`clearance >= 0.3` for FDM) and for estimates that narrow
+over time.
+
+**Configs can reference dims**: `slab add box:w{a}d{b}h10` — the stored
+source stays parametric (edit the `dim` line, geometry follows). A
+referenced dim must be **pinned** to an exact value (directly or through
+its equality class); a still-open bound is refused, never silently
+averaged. Sub-designs resolve `{…}` against their own dims; payload
+configs may not reference dims.
 
 ### Weigh it — `material <component> <slug>` + `view='mass'`
 

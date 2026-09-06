@@ -40,8 +40,14 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   dimension bounds (one-sided allowed; bounds intersect) and equality
   constraints between dims. An impossible combination — ``a = 200``,
   ``b = 150``, ``constrain a = b`` — is **refused at parse**
-  (:func:`_check_dim_constraints`); the kernel never carries known-false
-  declarations. v1 dims are declarative (configs don't reference them yet).
+  (:func:`_effective_dims`); the kernel never carries known-false
+  declarations. A config may reference a dim as ``{name}``
+  (``box:w{a}d{b}h10``): the stored spec keeps the parametric string and
+  geometry resolves it at expansion (:func:`_resolve_node_dims`) — the
+  dim (or its equality class) must be **pinned** to an exact value; a
+  still-open bound is refused, never silently averaged. Sub-designs
+  resolve against their own dim namespace. Payload configs may not
+  reference dims (they splice into another design's namespace).
 - ``material <component> <slug>`` — assign a ``material`` kind slug
   (drives the handler's ``view='mass'``).
 - ``payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]`` — geometry
@@ -760,6 +766,7 @@ def parse_source(text: str) -> SceneSpec:
     materials: dict[str, str] = {}  # component -> material slug
     dims: dict[str, list[float | None]] = {}  # name -> [lo, hi] (None=open)
     constraints: list[tuple[str, str]] = []  # equality pairs
+    pending_dim_configs: list[tuple[int, str, str]] = []  # (lineno, name, config)
     mates: list[MateSpec] = []
     cjoints: list[ComponentJointSpec] = []
     couples: list[CoupleSpec] = []
@@ -924,6 +931,13 @@ def parse_source(text: str) -> SceneSpec:
                     f"line {lineno}: payload op {plop!r} not one of "
                     f"{_PAYLOAD_OPS} — an 'intersect' payload would replace "
                     "its whole host with the overlap, not feature it"
+                )
+            if "{" in plconfig:
+                raise SceneError(
+                    f"line {lineno}: payload {plname!r} config cannot "
+                    "reference dims yet — a payload splices into another "
+                    "design, whose dim namespace is not this one; use "
+                    "literal numbers"
                 )
             pl_spec = parse(plconfig)
             build(pl_spec)
@@ -1136,10 +1150,19 @@ def parse_source(text: str) -> SceneSpec:
         if name in seen_names:
             raise SceneError(f"line {lineno}: duplicate node name {name!r}")
         seen_names.add(name)
-        # validate the shape config eagerly (raises on bad DSL)
-        node_spec = parse(config)
-        build(node_spec)
-        if node_spec.alias == "chamfer":
+        if "{" in config:
+            # A parametrized config (`box:w{a}d{b}h10`) — dims are
+            # order-free declarations, so shape validation defers to the
+            # post-pass once every `dim` line is in (the alias is still
+            # checkable now: it's the literal prefix).
+            pending_dim_configs.append((lineno, name, config))
+            alias = config.split(":", 1)[0].strip()
+        else:
+            # validate the shape config eagerly (raises on bad DSL)
+            node_spec = parse(config)
+            build(node_spec)
+            alias = node_spec.alias
+        if alias == "chamfer":
             if op == "add":
                 raise SceneError(
                     f"line {lineno}: chamfer node {name!r} cannot use op 'add' "
@@ -1184,7 +1207,13 @@ def parse_source(text: str) -> SceneSpec:
                 )
             ports[i] = replace(ports[i], payloads=(*ports[i].payloads, pl))
 
-    _check_dim_constraints(dims, constraints)
+    eff_dims = _effective_dims(dims, constraints)
+    for cfg_lineno, cfg_name, cfg in pending_dim_configs:
+        # dims are all in now — resolve the parametrized configs and
+        # validate the resulting shape, so a bad ref or a bad shape still
+        # refuses at put with the offending line named.
+        resolved = _subst_dims(cfg, eff_dims, f"line {cfg_lineno}: node {cfg_name!r}")
+        build(parse(resolved))
 
     for mcomp in materials:
         if mcomp not in seen_components or mcomp in instance_names:
@@ -1317,14 +1346,18 @@ def _fmt_interval(iv: list[float | None]) -> str:
     return " and ".join(parts) if parts else "unbounded"
 
 
-def _check_dim_constraints(
+def _effective_dims(
     dims: dict[str, list[float | None]], constraints: list[tuple[str, str]]
-) -> None:
-    """Refuse the impossible before geometry exists: union-find over the
-    equality constraints, one interval per class (intersection of every
-    member's bounds). An empty class interval means the declarations
-    contradict each other — e.g. ``a = 200``, ``b = 150``,
-    ``constrain a = b`` — and the design must not parse."""
+) -> dict[str, list[float | None]]:
+    """Refuse the impossible before geometry exists — and hand back what a
+    ``{name}`` config reference resolves against.
+
+    Union-find over the equality constraints, one interval per class
+    (intersection of every member's bounds). An empty class interval means
+    the declarations contradict each other — e.g. ``a = 200``, ``b = 150``,
+    ``constrain a = b`` — and the design must not parse. Returns each dim's
+    **effective** interval — its class's intersection, so ``dim a = 200``
+    + ``constrain a = b`` pins ``b`` too."""
     parent: dict[str, str] = {}
 
     def find(x: str) -> str:
@@ -1348,9 +1381,8 @@ def _check_dim_constraints(
     classes: dict[str, list[str]] = {}
     for nm in dims:
         classes.setdefault(find(nm), []).append(nm)
+    effective: dict[str, list[float | None]] = {}
     for members in classes.values():
-        if len(members) < 2:
-            continue
         lo: float | None = None
         hi: float | None = None
         for nm in members:
@@ -1359,7 +1391,7 @@ def _check_dim_constraints(
                 lo = dlo if lo is None else max(lo, dlo)
             if dhi is not None:
                 hi = dhi if hi is None else min(hi, dhi)
-        if lo is not None and hi is not None and lo > hi:
+        if len(members) > 1 and lo is not None and hi is not None and lo > hi:
             detail = "; ".join(
                 f"{nm} {_fmt_interval(dims[nm])}" for nm in sorted(members)
             )
@@ -1368,6 +1400,69 @@ def _check_dim_constraints(
                 + " = ".join(sorted(members))
                 + f" has an empty combined range ({detail})"
             )
+        for nm in members:
+            effective[nm] = [lo, hi]
+    return effective
+
+
+_DIM_REF_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_-]*)\}")
+
+
+def _subst_dims(
+    config: str, effective: dict[str, list[float | None]], where: str
+) -> str:
+    """Resolve every ``{name}`` in a config against the effective dims.
+
+    A reference must resolve to a **number**: the dim (or its equality
+    class) must be pinned to an exact value. A one-sided or range dim is a
+    spec still narrowing — geometry cannot be built from it, and picking a
+    representative silently would launder the openness the author declared.
+    """
+
+    def rep(m: re.Match[str]) -> str:
+        nm = m[1]
+        iv = effective.get(nm)
+        if iv is None:
+            known = ", ".join(sorted(effective)) or "none"
+            raise SceneError(
+                f"{where}: config references unknown dim {nm!r} — "
+                f"declared dims: {known}"
+            )
+        lo, hi = iv
+        if lo is None or hi is None or lo != hi:
+            raise SceneError(
+                f"{where}: dim {nm!r} is not pinned to an exact value "
+                f"({_fmt_interval(iv)}) — a config needs a number; add "
+                f"'dim {nm} = <mm>' (or pin it via a constrained dim)"
+            )
+        return _fmt_num(lo)
+
+    return _DIM_REF_RE.sub(rep, config)
+
+
+def _resolve_node_dims(spec: SceneSpec) -> SceneSpec:
+    """Substitute ``{name}`` config references from the spec's own dims.
+
+    The stored spec keeps the parametric string (edit the ``dim`` line and
+    geometry follows on the next build); *this* is what geometry consumers
+    see, applied per design inside expansion — a sub-design's configs
+    resolve against its own dim namespace, never the parent's. Identity
+    fast path when no config carries a reference."""
+    if not any("{" in n.config for n in spec.nodes):
+        return spec
+    raw = {
+        str(k): [None if b is None else float(b) for b in v]
+        for k, v in (spec.meta.get("dims") or {}).items()
+    }
+    cons = [(str(a), str(b)) for a, b in (spec.meta.get("constraints") or [])]
+    effective = _effective_dims(raw, cons)
+    nodes = [
+        replace(n, config=_subst_dims(n.config, effective, f"node {n.name!r}"))
+        if "{" in n.config
+        else n
+        for n in spec.nodes
+    ]
+    return SceneSpec(nodes=nodes, components=list(spec.components), meta=spec.meta)
 
 
 def _fmt_num(x: float) -> str:
@@ -1617,6 +1712,9 @@ def _inline(
                 raise
             except Exception as exc:
                 raise SceneError(f"cannot resolve design {sub_slug!r}: {exc}") from exc
+            # a sub-design's parametrized configs resolve against its OWN
+            # dim namespace, before its nodes inline under ours
+            sub = _resolve_node_dims(sub)
         if sub.meta.get("mates") or sub.meta.get("joints"):
             # The sub-design's own mates/joints solve at their defaults
             # before its nodes inline — otherwise its mated instances would
@@ -2151,6 +2249,10 @@ def expand_instances(
     A spec with no instances, mates, or joints is returned **unchanged**
     (identity fast path), so plain designs are byte-identical through here.
     """
+    # Parametrized configs resolve first (against THIS design's dims);
+    # identity when nothing references a dim, so plain specs stay
+    # byte-identical through the fast path below.
+    spec = _resolve_node_dims(spec)
     has_iface = bool(spec.meta.get("mates") or spec.meta.get("joints"))
     if not has_instances(spec) and not has_iface:
         if state:
