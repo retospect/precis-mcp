@@ -43,6 +43,10 @@
       "length_spec": "length",
       "specs": {"drive_type": "hex"},
       "sizes": [
+        {"key": "M3", "specs": {"thread_size": "M3", "thread_pitch": 0.5, "outer_diameter": 3.0, "across_flats": 5.5, "head_height": 2.0},
+         "lengths": [6, 8, 10, 12, 16, 20, 25, 30, 35, 40]},
+        {"key": "M4", "specs": {"thread_size": "M4", "thread_pitch": 0.7, "outer_diameter": 4.0, "across_flats": 7.0, "head_height": 2.8},
+         "lengths": [8, 10, 12, 16, 20, 25, 30, 35, 40, 45, 50]},
         {"key": "M5", "specs": {"thread_size": "M5", "thread_pitch": 0.8, "outer_diameter": 5.0, "across_flats": 8.0, "head_height": 3.5},
          "lengths": [10, 12, 16, 20, 25, 30, 35, 40, 45, 50]},
         {"key": "M6", "specs": {"thread_size": "M6", "thread_pitch": 1.0, "outer_diameter": 6.0, "across_flats": 10.0, "head_height": 4.0},

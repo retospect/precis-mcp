@@ -1,28 +1,26 @@
-"""The same published standards are transcribed in three places. These
-tests are the drift guard.
+"""Two standards data files, and the invariants that keep them honest.
 
-The tree has grown three independent encodings of ISO fastener dimensions,
-each for a good reason and none of them wrong:
+**History matters for reading this file.** It was written on 2026-09-05
+to guard *three* transcriptions of the same ISO fastener dimensions —
+``precis/cad/catalog.py``'s private dicts, ``component_series.json`` and
+``fit_classes.json``. On 2026-09-06 the duplication was removed instead:
+``cad.catalog`` now reads the series file (its no-DB rule was never a
+no-*data-file* rule), so the cad↔series assertions became tautologies and
+are gone. Asserting that a value equals itself is worse than no test — it
+reports green for work it is not doing.
 
-- ``precis/cad/catalog.py`` — envelopes for the design language's ``part``
-  line. Lives in ``precis.cad``, which imports nothing from the DB and
-  must stay that way, so it cannot read a data file that a store consumer
-  owns.
-- ``precis/data/component_series.json`` — the series/size tables the
-  `component` mint turns into spec rows.
-- ``precis/data/fit_classes.json`` — ISO 273 clearance holes.
+What is left is what is still genuinely two things:
 
-Three transcriptions of one standard is a drift generator: the numbers
-agree **today** (verified 2026-09-05, when the third arrived), and the
-cheapest way to keep that true is to assert it. Consolidating them is a
-real option and is recorded in ``docs/backlog/se-off-the-shelf-
-fabrication.md``; until someone does, a divergence should redden a gate
-rather than surface as a bolt that fits in one view and not another.
-
-These import the private family tables from ``cad.catalog`` on purpose:
-the public :func:`resolve_part` returns *rendered cad source*, and
-recovering a head height by parsing that string would make the guard
-weaker than the thing it guards.
+- **ISO 273 (clearance holes) vs ISO 7089 (washers)** — separate
+  standards, separately transcribed, written to agree where they
+  overlap. A typo in either still shows up here.
+- **The series file's internal consistency** — three size tables in one
+  file that must agree about the coarse pitch of a given thread.
+- **Completeness for `cad.catalog`'s consumers** — the series file is now
+  load-bearing for the design language, so a size it advertises must
+  carry every dimension the generators read. This replaces the deleted
+  agreement tests: same failure caught, one layer earlier, without the
+  tautology.
 """
 
 from __future__ import annotations
@@ -40,61 +38,10 @@ def _series_specs(series_id: str) -> dict[str, dict]:
     return {str(s.specs["thread_size"]): dict(s.specs) for s in series.sizes}
 
 
-class TestBoltHeads:
-    def test_iso_4017_head_dimensions_agree(self) -> None:
-        rows = _series_specs("iso-4017")
-        checked = 0
-        for m_size, (head_h, across_flats) in cad_catalog._BOLT_HEADS.items():
-            row = rows.get(f"M{m_size}")
-            if row is None:
-                continue
-            assert row["head_height"] == pytest.approx(head_h), f"M{m_size} head height"
-            assert row["across_flats"] == pytest.approx(across_flats), (
-                f"M{m_size} across flats"
-            )
-            checked += 1
-        assert checked >= 5
-
-
-class TestNuts:
-    def test_iso_4032_heights_and_across_flats_agree(self) -> None:
-        rows = _series_specs("iso-4032")
-        checked = 0
-        for m_size, height in cad_catalog._NUT_HEIGHTS.items():
-            row = rows.get(f"M{m_size}")
-            if row is None:
-                continue
-            assert row["height"] == pytest.approx(height), f"M{m_size} nut height"
-            # cad.catalog shares the bolt's across-flats with the nut; the
-            # series file states it separately, so this is a real check.
-            head = cad_catalog._BOLT_HEADS.get(m_size)
-            if head is not None:
-                assert row["across_flats"] == pytest.approx(head[1]), (
-                    f"M{m_size} nut across flats"
-                )
-            checked += 1
-        assert checked >= 5
-
-
-class TestWashers:
-    def test_iso_7089_dimensions_agree(self) -> None:
-        rows = _series_specs("iso-7089")
-        checked = 0
-        for m_size, (bore, outer, thickness) in cad_catalog._WASHERS.items():
-            row = rows.get(f"M{m_size}")
-            if row is None:
-                continue
-            assert row["inner_diameter"] == pytest.approx(bore), f"M{m_size} bore"
-            assert row["outer_diameter"] == pytest.approx(outer), f"M{m_size} OD"
-            assert row["thickness"] == pytest.approx(thickness), f"M{m_size} thickness"
-            checked += 1
-        assert checked >= 5
-
-
-class TestClearanceHoles:
+class TestClearanceHolesVsWashers:
     """ISO 273's *fine* column and the ISO 7089 washer bore are the same
-    number at every shared size — the two standards were written to
-    agree, so a typo in either shows up here."""
+    number at every shared size — the standards were written to agree, so
+    this catches a transcription slip in either."""
 
     def test_the_fine_column_is_the_washer_bore(self) -> None:
         rows = _series_specs("iso-7089")
@@ -108,16 +55,6 @@ class TestClearanceHoles:
             )
             checked += 1
         assert checked >= 8
-
-    def test_the_cad_washer_bore_is_the_fine_column_too(self) -> None:
-        """Closes the triangle: cad.catalog ↔ fit_classes directly, so a
-        change to either that keeps the JSON pair consistent still fails
-        if it broke the third corner."""
-        for m_size, (bore, _od, _t) in cad_catalog._WASHERS.items():
-            fit = fit_classes.clearance_hole(f"M{m_size}", "fine")
-            if fit is None:
-                continue
-            assert fit.hole_mm == pytest.approx(bore), f"M{m_size}"
 
     def test_every_clearance_hole_clears_its_own_thread(self) -> None:
         """The invariant that makes the table usable at all: a hole a bolt
@@ -136,7 +73,7 @@ class TestClearanceHoles:
             assert fine.hole_mm <= medium.hole_mm <= coarse.hole_mm, size
 
 
-class TestThreadPitch:
+class TestSeriesInternalConsistency:
     def test_the_series_files_agree_on_coarse_pitch(self) -> None:
         """Every series that states a pitch states the same one — the ISO
         coarse pitch is a property of the thread, not of the part."""
@@ -149,3 +86,51 @@ class TestThreadPitch:
         assert by_size, "no series states a thread pitch"
         for thread_size, pitches in sorted(by_size.items()):
             assert len(pitches) == 1, f"{thread_size} has pitches {sorted(pitches)}"
+
+    def test_a_nut_and_a_bolt_of_one_size_share_across_flats(self) -> None:
+        """They are turned by the same spanner. Stated independently in
+        ISO 4017 and ISO 4032, so this is a real check, not a tautology —
+        and `cad.catalog._nut` reads the *nut's* row, which is only
+        correct because of this."""
+        bolts = _series_specs("iso-4017")
+        nuts = _series_specs("iso-4032")
+        shared = sorted(set(bolts) & set(nuts))
+        assert len(shared) >= 7
+        for thread_size in shared:
+            assert bolts[thread_size]["across_flats"] == pytest.approx(
+                nuts[thread_size]["across_flats"]
+            ), thread_size
+
+
+class TestCadCatalogCompleteness:
+    """`cad.catalog` reads the series file for its ISO fastener families
+    (consolidated 2026-09-06), so the file is load-bearing for the design
+    language. A size it advertises must fully resolve."""
+
+    @pytest.mark.parametrize("family", ["bolt", "nut", "washer"])
+    def test_every_advertised_size_resolves_to_a_part(self, family: str) -> None:
+        sizes = cad_catalog._fastener_sizes(family)
+        assert sizes, f"{family} has no sizes"
+        for m_size in sizes:
+            code = (
+                f"{family}:m{m_size}x20" if family == "bolt" else f"{family}:m{m_size}"
+            )
+            info = cad_catalog.resolve_part(code)
+            assert info.source.strip(), code
+            # Every generated envelope must carry real dimensions — a
+            # missing spec would otherwise render as a zero-radius solid.
+            assert "r0h" not in info.source and "h0\n" not in info.source, code
+
+    def test_the_families_cover_the_sizes_a_designer_expects(self) -> None:
+        """M3 through M12 is the working range; it regressed to M5 once
+        when the series file was the only source and lacked the small hex
+        heads."""
+        for family in ("bolt", "nut", "washer"):
+            covered = set(cad_catalog._fastener_sizes(family))
+            assert {3, 4, 5, 6, 8, 10, 12} <= covered, f"{family}: {sorted(covered)}"
+
+    def test_an_unknown_size_still_refuses_by_name(self) -> None:
+        with pytest.raises(ValueError, match="unknown nut size"):
+            cad_catalog.resolve_part("nut:m7")
+        with pytest.raises(ValueError, match="unknown bolt code"):
+            cad_catalog.resolve_part("bolt:m7x20")

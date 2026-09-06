@@ -91,7 +91,16 @@ declared ``params.lead``). Surfaced as ``view='fasten'``, with the
 findings folded into ``view='drc'``. The clearance-hole table itself is
 core data, not se's — :mod:`precis.fit_classes` (ISO 273 fine/medium/
 coarse plus the house ``d + 0.2`` rule), the same file-not-a-table
-posture as :mod:`precis.component_series`.
+posture as :mod:`precis.component_series` (whose ISO fastener tables the
+cad catalog also reads since 2026-09-06 — one transcription, not three).
+
+A `component` binding additionally **projects onto a ``realized-by``
+link** on every save (``persist.sync_realized_by``, migration 0156's
+realization edge, the same one cad writes for its ``part`` lines). The
+plugin table stays authoritative and the link is derived and rebuilt, so
+one `links` query answers "what does this artifact resolve to" — and its
+inverse "who calls for this component" — across both tracks instead of
+requiring a consumer to know two spellings.
 
 Ships **dark** behind the ``se.enabled`` setting (the ``se`` kind's
 ``requires_setting``; DB row → ``PRECIS_SE_ENABLED`` env fallback) — the

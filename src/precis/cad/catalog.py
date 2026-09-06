@@ -15,7 +15,14 @@ the length-free identity a `component` ref is expected under (`bearing-6202`,
 `extrusion-2020`), which the handler resolves into ``realized-by`` links and
 the design's ``view='bom'``.
 
-Codes are case-insensitive; dimensions are mm. Families:
+Codes are case-insensitive; dimensions are mm. The three **ISO fastener**
+families take their dimensions from `precis/data/component_series.json`
+(see :data:`_FASTENER_SERIES`) rather than a second transcription of the
+same standard; the rest are tabulated here, having no series counterpart.
+That keeps the no-DB property — the series loader is stdlib-only over
+packaged data — while there is exactly one place to fix a number.
+
+Families:
 
 - ``bearing:6202`` — deep-groove ball bearings (ISO 15 + the 60x minis).
 - ``bolt:m6x20`` / ``nut:m6`` / ``washer:m6`` — ISO 4017 / 4032 / 7089.
@@ -34,7 +41,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from typing import Any
+
+from precis import component_series
 
 __all__ = ["PartInfo", "known_families", "resolve_part"]
 
@@ -88,38 +98,46 @@ _BEARINGS: dict[str, tuple[float, float, float]] = {
     "6302": (15, 42, 13),
 }
 
-#: M-size -> (head height k, across-flats s) — ISO 4017 hex bolts.
-_BOLT_HEADS: dict[int, tuple[float, float]] = {
-    3: (2.0, 5.5),
-    4: (2.8, 7.0),
-    5: (3.5, 8.0),
-    6: (4.0, 10.0),
-    8: (5.3, 13.0),
-    10: (6.4, 16.0),
-    12: (7.5, 18.0),
+#: The three ISO fastener families read their dimensions from the **one**
+#: transcription in `precis/data/component_series.json`
+#: (:mod:`precis.component_series`) rather than carrying a second copy.
+#:
+#: Consolidated 2026-09-06 (Reto's call). Three tables of the same
+#: standard had grown up independently — here, the series file, and
+#: `fit_classes.json` — and they agreed only because a test said so. A
+#: drift guard is a good answer to duplication; not duplicating is a
+#: better one.
+#:
+#: **This does not weaken the no-DB rule.** `precis.component_series` is
+#: a pure JSON loader over packaged data: stdlib only, no store, no
+#: network. A parts-only design still resolves with no DB access, which
+#: is the property that mattered — the constraint was never "no data
+#: file".
+_FASTENER_SERIES: dict[str, str] = {
+    "bolt": "iso-4017",
+    "nut": "iso-4032",
+    "washer": "iso-7089",
 }
 
-#: M-size -> nut height m — ISO 4032 (across-flats shared with the bolt).
-_NUT_HEIGHTS: dict[int, float] = {
-    3: 2.4,
-    4: 3.2,
-    5: 4.7,
-    6: 5.2,
-    8: 6.8,
-    10: 8.4,
-    12: 10.8,
-}
 
-#: M-size -> (clearance d1, OD d2, thickness h) — ISO 7089 plain washers.
-_WASHERS: dict[int, tuple[float, float, float]] = {
-    3: (3.2, 7, 0.5),
-    4: (4.3, 9, 0.8),
-    5: (5.3, 10, 1.0),
-    6: (6.4, 12, 1.6),
-    8: (8.4, 16, 1.6),
-    10: (10.5, 20, 2.0),
-    12: (13, 24, 2.5),
-}
+@cache
+def _fastener_sizes(family: str) -> dict[int, dict[str, Any]]:
+    """``{6: {'across_flats': 10.0, 'head_height': 4.0, …}}`` — one
+    family's size table, keyed by M-size, dimensions in mm.
+
+    Empty when the series is missing, which the callers below turn into
+    the ordinary "unknown code" refusal rather than a crash: a truncated
+    data file should narrow what resolves, never break the parser."""
+    series = component_series.find_series(_FASTENER_SERIES[family])
+    if series is None:  # pragma: no cover — packaged data, always present
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for size in series.sizes:
+        m = _MSIZE_RE.match(str(size.key).strip().lower())
+        if m:
+            out[int(m[1])] = dict(size.specs)
+    return out
+
 
 #: profile -> (w, d) cross-section — T-slot aluminium extrusions.
 _EXTRUSIONS: dict[str, tuple[float, float]] = {
@@ -164,11 +182,18 @@ def _known(mapping: Mapping[Any, object]) -> str:
 
 
 def _msize(family: str, code: str) -> int:
+    """Parse ``m6`` against **that family's own** size table.
+
+    Each family validates against its own series now — before
+    consolidation all three checked the bolt table, so a nut size was
+    legal because a *bolt* of that size existed. They happen to cover the
+    same sizes today; relying on that was luck."""
+    sizes = _fastener_sizes(family)
     m = _MSIZE_RE.match(code)
-    if not m or int(m[1]) not in _BOLT_HEADS:
+    if not m or int(m[1]) not in sizes:
         raise ValueError(
             f"unknown {family} size {code!r} — known: "
-            + ", ".join(f"m{k}" for k in sorted(_BOLT_HEADS))
+            + ", ".join(f"m{k}" for k in sorted(sizes))
         )
     return int(m[1])
 
@@ -209,16 +234,18 @@ def _bearing(code: str) -> PartInfo:
 
 
 def _bolt(code: str) -> PartInfo:
+    sizes = _fastener_sizes("bolt")
     m = _BOLT_RE.match(code)
-    if not m or int(m[1]) not in _BOLT_HEADS:
+    if not m or int(m[1]) not in sizes:
         raise ValueError(
             f"unknown bolt code {code!r} — expected 'm<size>x<length>' with "
-            "size one of: " + ", ".join(f"m{k}" for k in sorted(_BOLT_HEADS))
+            "size one of: " + ", ".join(f"m{k}" for k in sorted(sizes))
         )
     d, length = int(m[1]), float(m[2])
     if not 2 <= length <= 300:
         raise ValueError(f"bolt length {length:g} mm out of range (2..300)")
-    k, s = _BOLT_HEADS[d]
+    k = float(sizes[d]["head_height"])
+    s = float(sizes[d]["across_flats"])
     e = s * _HEX_OVER_FLATS
     desig = f"hex head bolt M{d}x{_g(length)}"
     src = (
@@ -236,7 +263,12 @@ def _bolt(code: str) -> PartInfo:
 
 def _nut(code: str) -> PartInfo:
     d = _msize("nut", code)
-    m_h, (_, s) = _NUT_HEIGHTS[d], _BOLT_HEADS[d]
+    specs = _fastener_sizes("nut")[d]
+    # ISO 4032 states the nut's own across-flats; it equals the bolt's at
+    # every shared size, but reading it from the nut's row is the honest
+    # source rather than a coincidence held in place by a test.
+    m_h = float(specs["height"])
+    s = float(specs["across_flats"])
     e = s * _HEX_OVER_FLATS
     desig = f"hex nut M{d}"
     src = (
@@ -251,7 +283,10 @@ def _nut(code: str) -> PartInfo:
 
 def _washer(code: str) -> PartInfo:
     d = _msize("washer", code)
-    d1, d2, h = _WASHERS[d]
+    specs = _fastener_sizes("washer")[d]
+    d1 = float(specs["inner_diameter"])
+    d2 = float(specs["outer_diameter"])
+    h = float(specs["thickness"])
     desig = f"plain washer M{d}"
     src = (
         f"desc: {desig} (ISO 7089 envelope)\n"

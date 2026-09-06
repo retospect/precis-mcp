@@ -300,7 +300,10 @@ syncs `realized-by` links design→component for resolved parts;
 hand-name extra candidates with
 `link(kind='cad', id=…, target='component:<slug>', rel='realized-by')`
 (never pruned by the sync). Fabricated bodies are make-tree territory,
-not BOM lines.
+not BOM lines. **`se` designs emit the same edge** from their
+`set_binding` bindings, so asking a component what calls for it
+(`rel='realizes'`) reaches both tracks in one query; each sync prunes
+only its own managed rows.
 
 ### Plan how it's built — `kind='make'` + `rel='made-by'`
 

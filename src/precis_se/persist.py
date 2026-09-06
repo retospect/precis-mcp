@@ -24,6 +24,7 @@ just minted, never a stale one).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from psycopg import Connection
@@ -35,6 +36,17 @@ from precis_se.bom import BomLine
 from precis_se.catalog import Derived
 from precis_se.measures import MeasureSpec
 from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree
+
+log = logging.getLogger(__name__)
+
+#: Marks the ``realized-by`` links :func:`sync_realized_by` manages, so it
+#: prunes only its own rows. Deliberately a bare flag and not a list of
+#: the blocks that bind the component: ``add_link`` is idempotent on the
+#: edge tuple and does not rewrite ``meta`` on conflict, so anything
+#: richer here would go stale the first time a design was edited. The
+#: block list lives in ``se_blocks``, which is the authority; the link
+#: carries only what makes it prunable.
+_SE_MANAGED = "se_binding"
 
 _BLOCK_COLS = (
     "id, parent_block_id, template_block_id, name, pose_xyz, pose_rot, "
@@ -198,6 +210,74 @@ def attach_catalog(store: Any, tree: SeTree) -> None:
     for node in tree.blocks.values():
         if node.bound_kind == "component" and node.bound:
             node.derived = by_slug.get(node.bound)
+
+
+def sync_realized_by(store: Any, ref_id: int, tree: SeTree) -> None:
+    """Mirror the design's `component` bindings as ``realized-by`` links
+    (se design → the procurable ``component`` ref) — migration 0156's
+    realization edge, the same one ``CadHandler._sync_realized_by``
+    writes for ``part`` lines.
+
+    **Why se emits a link at all**, given that se relations are otherwise
+    plugin-local: because two subsystems had grown two spellings of "this
+    design is that component" (``docs/backlog/``, decided 2026-09-06), and
+    a consumer asking "everything this artifact resolves to" would have
+    had to know both. The reconciliation keeps each layer doing what it is
+    good at — ``se_blocks.bound_kind``/``bound_design`` stays
+    **authoritative** (name-keyed, plugin-local, where the block tree
+    lives), and the link is a **derived projection**, rebuilt on every
+    save, so one `links` query now answers that question across both
+    tracks. It is the sketch-canonical / copper-derived rule applied to a
+    cross-kind edge, not a second home for the binding.
+
+    Only rows carrying ``meta.se_binding`` are pruned here, so cad's
+    catalog-managed rows and any hand-authored candidate realization
+    survive untouched — the same courtesy cad's sync extends.
+
+    ``part`` bindings are deliberately **not** linked: ``realized-by``
+    targets a procurable `component` ref (``CadHandler.link`` rejects
+    anything else), and an LCSC C-number is a `part`. That is a gap in
+    the *relation's* scope, not something to paper over here.
+
+    Best-effort and total: a fake store without the link surface, a
+    binding whose component ref does not exist, or a transient failure
+    all leave the design saved and the projection incomplete. A design
+    must never fail to save because a derived index could not be
+    updated."""
+    if not all(
+        hasattr(store, name) for name in ("links_for", "add_link", "remove_link")
+    ):
+        return
+    try:
+        want: set[int] = set()
+        for slug in sorted(
+            {
+                node.bound
+                for node in tree.blocks.values()
+                if node.bound_kind == "component" and node.bound
+            }
+        ):
+            comp = store.get_ref(kind="component", id=slug)
+            if comp is not None:
+                want.add(int(comp.id))
+        have = {
+            int(lk.dst_ref_id): lk
+            for lk in store.links_for(ref_id, direction="out", relation="realized-by")
+        }
+        for dst in sorted(want - set(have)):
+            store.add_link(
+                src_ref_id=ref_id,
+                dst_ref_id=dst,
+                relation="realized-by",
+                meta={_SE_MANAGED: True},
+            )
+        for dst, lk in sorted(have.items()):
+            if dst not in want and (lk.meta or {}).get(_SE_MANAGED):
+                store.remove_link(
+                    src_ref_id=ref_id, dst_ref_id=dst, relation="realized-by"
+                )
+    except Exception:  # pragma: no cover — defensive, mirrors cad's sync
+        log.warning("se: realized-by link sync failed for ref %s", ref_id)
 
 
 def _derive_one(store: Any, slug: str) -> Derived:

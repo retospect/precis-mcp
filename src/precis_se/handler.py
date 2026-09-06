@@ -234,6 +234,10 @@ class SeHandler(Handler):
                 card_text=_card_text(ttl, description, tree),
                 conn=conn,
             )
+        # After the tx, not inside it: the projection is derived, and a
+        # link-sync hiccup must not roll back a saved design (cad's sync
+        # sits outside its write for the same reason).
+        persist.sync_realized_by(self.store, ref.id, tree)
         verb = "created" if created else "replaced"
         body = f"# se design '{slug}' {verb}\n\n" + _render_tree(tree, ttl, description)
         return Response(body=body)
@@ -274,6 +278,7 @@ class SeHandler(Handler):
             tree=tree,
             card_text=_card_text(ttl, description, tree),
         )
+        persist.sync_realized_by(self.store, ref.id, tree)
         body = f"# se design '{ref.slug}' edited\n\n" + _render_tree(
             tree, ttl, description
         )

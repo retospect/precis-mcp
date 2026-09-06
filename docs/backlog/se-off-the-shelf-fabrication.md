@@ -370,24 +370,43 @@ different unfold math from laser flat pattern — do not conflate them);
 supplier stock/price APIs (the `part` refresh pattern applies, but no
 customer demands it); path planning for assembly (existence only).
 
-## Cross-track, undecided (surfaced 2026-09-05, cad ↔ se)
+## Cross-track, both resolved 2026-09-06 (Reto's call)
 
-Both are real and neither is urgent; recording them beats re-deriving
-them, and neither track should decide alone.
+Surfaced 2026-09-05 in cad ↔ se coordination, decided and built the next
+day. Kept here because the *reasoning* is what a future session needs;
+the code is in git.
 
-- **Three transcriptions of the same ISO fastener tables.**
-  `precis/cad/catalog.py` (store-free by design — `precis.cad` imports
-  nothing from the DB and must stay that way), `component_series.json`
-  (the `component` mint) and `fit_classes.json` (ISO 273). Verified to
-  agree at every shared size on 2026-09-05, and held there by
-  `tests/test_standards_table_agreement.py`, which asserts all three
-  pairwise plus coarse-pitch agreement across ISO 4017/4032/4762. The
-  guard is the cheap answer; consolidation is the real one and nobody
-  has picked a home that satisfies cad's no-DB constraint.
-- **`realized-by` (cad, mig 0156) vs se's `set_binding`** — two
-  spellings of "this design is that component", fine at two consumers
-  and not at three. Owned by whichever track grows the next one; options
-  sketched in `docs/backlog/realized-by-vs-se-binding.md`.
+- **~~Three transcriptions of the same ISO fastener tables~~ —
+  consolidated.** `precis/cad/catalog.py` now reads
+  `component_series.json` for its `bolt`/`nut`/`washer` families instead
+  of carrying its own dicts. The constraint everyone had been respecting
+  was cad's *no-DB* rule, and `precis.component_series` is a stdlib-only
+  loader over packaged data — a parts-only design still resolves with no
+  store access, so the rule was never a no-*data-file* rule and the
+  duplication was avoidable all along. Three consequences worth knowing:
+  the series file gained the ISO 4017 **M3/M4** rows it was missing (cad
+  had them, and losing sizes would have been a silent regression); cad's
+  bolt/nut/washer coverage **grew to M16/M20** for free; and each family
+  now validates against **its own** series rather than all three against
+  the bolt table, which had been correct only by luck.
+  `fit_classes.json` stays separate — ISO 273 is a different standard
+  with a different scope, and its agreement with the ISO 7089 bore is a
+  real cross-check, not duplication.
+- **~~`realized-by` (cad, mig 0156) vs se's `set_binding`~~ —
+  reconciled**, option (a) from the (now deleted)
+  `realized-by-vs-se-binding.md`: se's binding **emits** a `realized-by`
+  link on every save (`persist.sync_realized_by`), the plugin table stays
+  **authoritative**, and the link is a derived projection rebuilt from
+  it. So one `links` query answers "what does this resolve to" and one
+  inverse query answers "who calls for this component" across both
+  tracks. Each sync marks and prunes only its own managed rows
+  (`meta.se_binding` here, `meta.catalog` in cad), so hand-authored
+  candidate realizations survive both. This does not reopen the
+  plugin-local agreement: se's *own* relations (joints, connects) remain
+  in plugin tables — what crossed into `links` is a cross-kind edge,
+  which is what `links` is for. `part` bindings are out of scope because
+  `realized-by` targets a procurable `component`; that gap belongs to the
+  relation, not to se.
 
 ## Open questions for Reto
 
