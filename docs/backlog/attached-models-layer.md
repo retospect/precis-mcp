@@ -19,7 +19,7 @@ change.
 ## The shape
 
 A model result is a **`finding`/`estimate` ref linked `analyzed-by` to the
-block it describes** (`design-graph-relations.md`), carrying:
+block it describes** (`analyzed-by`, mig 0153 — shipped), carrying:
 
 - **fidelity tier + engine** — analytic probe / beam-shell FEA / full
   multiphysics; MLP / semi-empirical / DFT. The tier ladder cad already
@@ -83,7 +83,7 @@ anchor is a content sha, NOT `meta.rev` (refs.meta IS the cad spec meta
 
 ## Sequencing
 
-1. Not before `design-graph-relations.md` (needs `analyzed-by`).
+1. ~~Not before the `analyzed-by` relation~~ (shipped, mig 0153).
 2. v1 = schema + manual attach + staleness watcher + card rendering
    ("stress 42 MPa (FEA, STALE since <event>)"). No engine integration.
 3. Engines arrive as job_types per tier (multiphysics; DFT/MLP rides the

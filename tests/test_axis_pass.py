@@ -596,9 +596,7 @@ def test_misconfigured_openai_compat_env_skips_claim(
     assert client.calls == []  # never even reached the LLM
     assert _ref_tag(store, ref_id, "DOMAIN") is None
     skip_lines = [
-        r.message
-        for r in caplog.records
-        if "no viable LLM endpoint" in r.message
+        r.message for r in caplog.records if "no viable LLM endpoint" in r.message
     ]
     assert len(skip_lines) == 1
     assert "axis:domain" in skip_lines[0]

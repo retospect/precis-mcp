@@ -20,7 +20,7 @@ on the same answer independently, which is strong evidence it's right.
 
 **Two trees over shared leaves, linked, never forced to align.**
 
-- The **design tree** (`contains` links, `design-graph-relations.md`) is
+- The **design tree** (`contains` links, mig 0095 + cad sync) is
   structure: what the thing IS. Owned by the design.
 - The **make-tree** is process: the order things come together. A separate
   ref (`route` for chemistry; a plan-shaped ref for mech assembly) whose
@@ -84,7 +84,7 @@ a property of the design, it's a *strategy over* the design.
 
 ## Non-goals / sequencing
 
-- Not before `design-graph-relations.md` (needs `made-by`).
+- ~~Not before the `made-by` relation~~ (shipped, mig 0154).
 - v1 is representation + lint (store a make-tree, align it, check stock
   termination and full coverage), NOT route *search*. Retrosynthesis/assembly
   planning engines plug in behind the same schema later.

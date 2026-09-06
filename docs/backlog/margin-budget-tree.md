@@ -53,6 +53,7 @@ exists and someone actually asks for reliability.
 
 ## Sequencing
 
-Blocked on: estimate kind (carrier) + `design-graph-relations.md`
-(`contains` tree to allocate over). Then: v1 = mass budget on a cad
+Blocked on: the estimate kind (carrier) only — the `contains` tree to
+allocate over has shipped (all four design-graph relations are live;
+git log). Then: v1 = mass budget on a cad
 contains-tree, one lint, one gripe path — the smallest end-to-end slice.

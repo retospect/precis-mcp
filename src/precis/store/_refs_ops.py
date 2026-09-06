@@ -53,7 +53,6 @@ from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
 
-
 #: A live prose citation of a finding hub (gr265228's audit predicate):
 #: ``ord >= 0`` excludes synthesized card variants (``chunks_check``
 #: reserves negative ``ord`` for those), ``c.retired_at``/``r.retired_at``

@@ -314,14 +314,22 @@ see `make-tree-vs-design-tree.md`.
   CoM; unassigned components listed loudly as excluded. Deferred from
   that slice: the inertia tensor (needs second moments from the bulk
   sampler) and `view='balance'` (CoM vs support polygon, reactions, tip).
-- **Catalog atoms backed by `component`** — `part bolt1 M6x20-hex`,
-  `bearing:6202`, `rail:MGN12`, `extrusion:2020`, `nema:17`, `gear:m1z20`.
-  These are the literal building blocks of machines and precis is unusually
-  placed here: they resolve to **procurable `component` refs with sourced
-  specs**. Start with an envelope + mount pattern + ports; nobody needs real
-  thread geometry. Feeds `view='bom'` — flatten instances + catalog parts →
-  quantities → `component` refs → cost/lead time. `component` already has a
-  `bom` view with a `spec=` consistency query; feed it, don't grow a second one.
+- ~~**Catalog atoms backed by `component`**~~ **SHIPPED 2026-09-05** as
+  `part <name> <family>:<code>` (`precis.cad.catalog` — pure, in-kernel,
+  envelope + ports, families bearing/bolt/nut/washer/extrusion/rail/nema/
+  gear), riding the instance expansion machinery (config `part:<code>`, no
+  resolver needed for parts-only designs; mates/joints/patterns work
+  unchanged). `view='bom'` flattens patterns × nesting to per-code
+  quantities and resolves each catalog `part_slug` (length-free for cut
+  stock) to a procurable `component` ref + its `unit_cost` spec value —
+  reusing component's value machinery, not growing a second rollup;
+  unsourced parts listed loudly. `cad_save` syncs the **`realized-by`**
+  edge (mig 0156, the last design-graph relation — git log has the
+  decision detail; hand-authored candidate links carry no
+  `links.meta.catalog` and are never pruned; `link(rel='realized-by',
+  target='component:…')` authors them). Deferred: auto-material
+  assignment for parts (mass view lists them as excluded), mount-hole
+  payload ports on catalog parts, catalog growth on demand.
 - **`thread:M6x1` as an annotation**, not geometry — the declaration is what
   engagement checks, fastener BOM and "export as a plain hole" need. Never the
   helix.
@@ -404,7 +412,9 @@ you state intent and the kernel keeps it true.
    shows the assembly tree? **DECIDED yes** (Reto, 2026-09-04: "a dense graph
    with all the info within a hop or two is our goal") and widened to a
    four-relation migration (`contains`/`realizes`/`analyzed-by`/`made-by`)
-   → `design-graph-relations.md`. Sibling designs from the same session:
+   — all four now shipped (migs 0095/0153/0154/0156; the
+   design-graph-relations backlog item is retired, git log has the
+   decisions). Sibling designs from the same session:
    `attached-models-layer.md`, `make-tree-vs-design-tree.md`,
    `margin-budget-tree.md` (slice 5, straddling modules, shipped from the
    same session — decisions above).

@@ -1583,7 +1583,9 @@ def _mint_retired_finding(hub: Hub) -> int:
     """A finding ref that exists but has been soft-deleted — the
     tombstone case, distinct from a handle that never resolved to
     anything at all."""
-    ref = hub.live_store.insert_ref(kind="finding", slug=None, title="dead claim", meta={})
+    ref = hub.live_store.insert_ref(
+        kind="finding", slug=None, title="dead claim", meta={}
+    )
     hub.live_store.retire_ref(ref.id)
     return ref.id
 

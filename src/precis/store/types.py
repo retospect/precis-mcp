@@ -297,6 +297,13 @@ Relation = Literal[
     # MakeHandler. Keep in sync with 0154_make_kind_and_made_by.sql.
     "made-by",
     "makes",
+    # Realization edge — migration 0156. `realized-by` (design/block → the
+    # thing that makes it real: a procurable `component`, a manufacturing
+    # mode, a synthesized molecule; many candidates legal) ↔ `realizes`.
+    # First writer: CadHandler's catalog-part sync (links.meta.catalog
+    # marks the managed rows). Keep in sync with 0156_realizes_relation.sql.
+    "realized-by",
+    "realizes",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and
@@ -403,6 +410,9 @@ _INVERSE_RELATIONS: dict[str, str] = {
     # Make-tree alignment (0154).
     "made-by": "makes",
     "makes": "made-by",
+    # Realization (0156).
+    "realized-by": "realizes",
+    "realizes": "realized-by",
 }
 
 

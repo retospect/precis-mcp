@@ -513,9 +513,7 @@ def _classify_chunk_ref_tokens(
             kind, is_chunk, pk = parsed
             if not is_chunk:
                 try:
-                    target = store.fetch_refs_by_ids(
-                        [pk], include_deleted=True
-                    ).get(pk)
+                    target = store.fetch_refs_by_ids([pk], include_deleted=True).get(pk)
                 except Exception:  # pragma: no cover — store hiccup
                     target = None
                 if (

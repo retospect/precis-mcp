@@ -272,6 +272,36 @@ File exports are version-anchored the same way: `view='stl'|'3mf'|'step'`
 records the design version it wrote, so a drifted artifact is detectable
 (`design version <sha> recorded` in the reply).
 
+### Catalog parts — `part <name> <family>:<code>` → `view='bom'`
+
+Standard procurable parts are built in — envelope + ports, never true
+thread/ball geometry (what matters is honest outer shape, mate frames,
+and procurement identity):
+
+```
+part b1 bearing:6202            # d15 D35 B11; ports: bore (midplane), face
+part bolts bolt:m6x20 @40,0,10 polar:n4r30   # patterns multiply BOM qty
+part m1 nema:17                 # ports: face (mount plane), shaft
+mate b1.face to seat            # parts mate like instances — no coordinates
+```
+
+Families: `bearing:6202` (deep-groove, 60x/62xx/63xx), `bolt:m6x20` /
+`nut:m6` / `washer:m6` (ISO 4017/4032/7089, M3–M12), `extrusion:2020x400`
+and `rail:mgn12x200` (profile × cut length), `nema:17` (11–34),
+`gear:m1z20[w8]` (blank, OD = m·(z+2)). Unknown codes refuse at `put`
+naming what IS known. Parts-only designs need no sub-design resolution.
+
+`view='bom'` flattens the whole assembly (patterns × nesting) to one row
+per distinct code and resolves each to the procurable `component` ref
+under the catalog's slug (`bearing-6202`, `bolt-m6x20`, length-free for
+cut stock) with its recorded `unit_cost`. No matching component ref =
+listed `⚠ unsourced` — seed one under that slug to price it. Each save
+syncs `realized-by` links design→component for resolved parts;
+hand-name extra candidates with
+`link(kind='cad', id=…, target='component:<slug>', rel='realized-by')`
+(never pruned by the sync). Fabricated bodies are make-tree territory,
+not BOM lines.
+
 ### Plan how it's built — `kind='make'` + `rel='made-by'`
 
 A design tree says what a thing IS; a **make-tree** (`kind='make'`) says

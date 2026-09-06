@@ -36,8 +36,8 @@ adds:
    jobs cannot share a captive pin). One-query lint riding the make-tree
    coverage-lint slot (`make-tree-vs-design-tree.md` v1, shipped) — the
    first real consumer of step-level alignment. Realization-mode
-   awareness proper (which joints are printable vs need hardware) joins
-   the `realizes` edge when it lands (`design-graph-relations.md`).
+   awareness proper (which joints are printable vs need hardware) can now
+   build on the `realized-by` edge (shipped, mig 0156).
 
 ## Status
 
@@ -54,6 +54,7 @@ clearance floor as a `dim`). Open below.
   as prod cad designs reusable via `use`) — a deliberate prod-write
   session, not an autonomous one.
 - **Process-clearance profiles** (per-process floors: FDM 0.3, SLA less,
-  milled = fit classes) — enters with the consumer that ties a joint's
-  clearance dim to its realization process, which wants the `realizes`
-  edge (`design-graph-relations.md`).
+  milled = fit classes) — the consumer that ties a joint's clearance dim
+  to its realization process. The `realized-by` edge it wanted shipped
+  2026-09-05 (mig 0156, catalog-parts slice — `cad-machine-spec.md`
+  §Parallel track), so this is now unblocked.

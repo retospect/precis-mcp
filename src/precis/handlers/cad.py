@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
 
+from precis.cad import catalog
 from precis.cad.bulk import expr_aabb
 from precis.cad.bulk import volume as cad_volume
 from precis.cad.export import (
@@ -55,6 +56,8 @@ from precis.cad.scene import (
     joints_of,
     mates_of,
     parse_source,
+    part_code,
+    part_spec,
     ports_of,
 )
 from precis.cad.vec import Vec3, vec3
@@ -99,7 +102,7 @@ _PROBE_VIEWS = (
     "mass",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
-_OTHER_VIEWS = ("links", "sweep")
+_OTHER_VIEWS = ("links", "sweep", "bom")
 _VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_OTHER_VIEWS)
 
 #: view='sweep' samples per joint (args.n overrides, clamped here).
@@ -128,7 +131,12 @@ class CadHandler(Handler):
             "design from a text source (one node per line: '<name> <add|cut|"
             "intersect> <config> [@x,y,z] [rot:..] [polar:nNrR|linear:..]', "
             "config e.g. cyl:r3h12 box:w40d20h10; 'use <slug> as <name>' "
-            "instances another design as a sub-assembly; 'port'/'mate' "
+            "instances another design as a sub-assembly; 'part <name> "
+            "<family>:<code>' places a built-in catalog atom (bearing:6202, "
+            "bolt:m6x20, extrusion:2020x400, rail:mgn12x200, nema:17, "
+            "gear:m1z20, nut/washer:m6) with ports, feeding view='bom' "
+            "(quantities → procurable component refs, realized-by links); "
+            "'port'/'mate' "
             "assemble by named interface; 'payload … at:<port>' splices "
             "geometry into the mated host (straddling modules); 'joint … "
             "revolute|prismatic|"
@@ -235,19 +243,57 @@ class CadHandler(Handler):
             return self._link_analysis(id=id, target=target, mode=mode)
         if rel == "made-by":
             return self._link_made_by(id=id, target=target, mode=mode)
+        if rel == "realized-by":
+            return self._link_realized_by(id=id, target=target, mode=mode)
         raise BadInput(
             "cad link supports rel='parent' (folder placement), "
-            "rel='analyzed-by' (attach an analysis result), or "
-            "rel='made-by' (align to a make-tree / step)",
+            "rel='analyzed-by' (attach an analysis result), "
+            "rel='made-by' (align to a make-tree / step), or "
+            "rel='realized-by' (a candidate procurable realization)",
             next=(
                 "link(kind='cad', id='<slug>', target='folder:N', "
                 "rel='parent') places; link(kind='cad', id='<slug>', "
                 "target='finding:<id>', rel='analyzed-by') attaches an "
                 "analysis (pins the design version); link(kind='cad', "
                 "id='<slug>', target='make:<slug>' or 'mk<id>', "
-                "rel='made-by') aligns; mode='remove' detaches"
+                "rel='made-by') aligns; link(kind='cad', id='<slug>', "
+                "target='component:<slug>', rel='realized-by') names a "
+                "realization; mode='remove' detaches"
             ),
         )
+
+    def _link_realized_by(
+        self, *, id: str | int, target: str | None, mode: str
+    ) -> Response:
+        """A hand-named candidate realization (``target='component:<slug>'``
+        — "this procurable part makes the design real"). Many candidates are
+        legal by design. Catalog ``part`` lines sync their own rows
+        (``links.meta.catalog``) automatically; rows added here carry no
+        catalog marker, so the sync never prunes them."""
+        from precis.handlers._link_tag_ops import (
+            require_link_target,
+            validate_link_mode,
+        )
+        from precis.handlers._link_target import parse_link_target
+
+        mode = validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
+        tgt = parse_link_target(require_link_target("cad", target), store=self.store)
+        if tgt.kind != "component":
+            raise BadInput(
+                f"rel='realized-by' target must be a component, got kind={tgt.kind!r}",
+                next="link(kind='cad', id='<slug>', "
+                "target='component:<slug>', rel='realized-by')",
+            )
+        if mode == "remove":
+            n = self.store.remove_link(
+                src_ref_id=ref.id, dst_ref_id=tgt.ref_id, relation="realized-by"
+            )
+            return Response(body=f"detached {n} realized-by link(s)")
+        self.store.add_link(
+            src_ref_id=ref.id, dst_ref_id=tgt.ref_id, relation="realized-by"
+        )
+        return Response(body=f"realized-by: {ref.slug} → {tgt.raw}")
 
     # ── put ──────────────────────────────────────────────────────────
     def _link_analysis(
@@ -394,21 +440,25 @@ class CadHandler(Handler):
 
         own_types = {pt.name: pt.type for pt in ports_of(spec)}
         sub_types: dict[str, dict[str, str]] = {}
-        inst_slug = {
-            n.name: instance_slug(n.config)
+        inst_cfg = {
+            n.name: n.config
             for n in spec.nodes
-            if instance_slug(n.config) is not None
+            if instance_slug(n.config) is not None or part_code(n.config) is not None
         }
 
         def port_type(inst: str | None, port: str) -> str:
             if inst is None:
                 return own_types.get(port, "")
             if inst not in sub_types:
-                slug = inst_slug.get(inst) or ""
+                cfg = inst_cfg.get(inst) or ""
+                code = part_code(cfg)
                 try:
-                    sub_types[inst] = {
-                        pt.name: pt.type for pt in ports_of(self._resolve(slug))
-                    }
+                    sub = (
+                        part_spec(code)
+                        if code is not None
+                        else self._resolve(instance_slug(cfg) or "")
+                    )
+                    sub_types[inst] = {pt.name: pt.type for pt in ports_of(sub)}
                 except Exception:
                     sub_types[inst] = {}
             return sub_types[inst].get(port, "")
@@ -424,7 +474,9 @@ class CadHandler(Handler):
         def side_ref_id(inst: str | None) -> int | None:
             if inst is None:
                 return ref.id
-            slug = inst_slug.get(inst)
+            # A catalog part has no design ref (and is never printed) —
+            # instance_slug is None for it, so the check skips that side.
+            slug = instance_slug(inst_cfg.get(inst) or "")
             if not slug:
                 return None
             r = self.store.get_ref(kind="cad", id=slug)
@@ -519,6 +571,7 @@ class CadHandler(Handler):
             card_text=self._card_text(ttl, built, design, spec),
         )
         self._sync_contains(ref.id, spec)
+        self._sync_realized_by(ref.id, spec)
         _spec2, handles = self.store.cad_load(ref.id)
         verb = "created" if created else "updated"
         head = (
@@ -580,6 +633,7 @@ class CadHandler(Handler):
             src_ref_id=ref.id, dst_ref_id=parent.id, relation="derived-from"
         )
         self._sync_contains(ref.id, spec)
+        self._sync_realized_by(ref.id, spec)
         _spec2, handles = self.store.cad_load(ref.id)
         head = (
             f"# {to_slug} — derived from {parent.slug}: "
@@ -623,6 +677,141 @@ class CadHandler(Handler):
         except Exception:  # pragma: no cover - defensive
             log.warning("cad: contains-link sync failed for ref %s", ref_id)
 
+    def _sync_realized_by(self, ref_id: int, spec: SceneSpec) -> None:
+        """Mirror the design's ``part`` lines as ``realized-by`` links
+        (design → the procurable ``component`` ref under the catalog's
+        ``part_slug``) — the 0156 realization edge, entering with its first
+        consumer. Only links carrying ``meta.catalog`` are managed here, so
+        a hand-authored candidate realization is never pruned; a part with
+        no matching component ref simply stays unsourced (``view='bom'``
+        says so loudly). Best-effort like :meth:`_sync_contains`."""
+        try:
+            want: dict[int, str] = {}
+            for code in {
+                c for c in (part_code(n.config) for n in spec.nodes) if c is not None
+            }:
+                info = catalog.resolve_part(code)
+                comp = self.store.get_ref(kind="component", id=info.part_slug)
+                if comp is not None:
+                    want[comp.id] = info.code
+            have = {
+                lk.dst_ref_id: lk
+                for lk in self.store.links_for(
+                    ref_id, direction="out", relation="realized-by"
+                )
+            }
+            for dst, code in want.items():
+                if dst not in have:
+                    self.store.add_link(
+                        src_ref_id=ref_id,
+                        dst_ref_id=dst,
+                        relation="realized-by",
+                        meta={"catalog": code},
+                    )
+            for dst, lk in have.items():
+                if dst not in want and (lk.meta or {}).get("catalog"):
+                    self.store.remove_link(
+                        src_ref_id=ref_id, dst_ref_id=dst, relation="realized-by"
+                    )
+        except Exception:  # pragma: no cover - defensive
+            log.warning("cad: realized-by link sync failed for ref %s", ref_id)
+
+    def _collect_parts(
+        self,
+        spec: SceneSpec,
+        mult: int,
+        acc: dict[str, int],
+        stack: tuple[str, ...],
+    ) -> None:
+        """Sum catalog-part quantities over the assembly tree: patterns
+        multiply, nesting multiplies down each path. Sub-designs walk the
+        *stored* specs (cheaper than expansion, and a resolve failure just
+        skips that branch — the put already validated it)."""
+        for node in spec.nodes:
+            qty = mult * (int(node.pattern["n"]) if node.pattern is not None else 1)
+            code = part_code(node.config)
+            if code is not None:
+                acc[code] = acc.get(code, 0) + qty
+                continue
+            slug = instance_slug(node.config)
+            if slug is None or slug in stack:
+                continue
+            try:
+                sub = self._resolve(slug)
+            except Exception:
+                continue
+            self._collect_parts(sub, qty, acc, (*stack, slug))
+
+    def _render_bom(self, ref: Any, spec: SceneSpec) -> Response:
+        """``view='bom'`` — the flattened catalog-part bill of materials.
+
+        Each distinct ``family:code`` rolls up to one row with the summed
+        quantity, the catalog designation/standard, and the procurable
+        ``component`` ref resolved under the catalog ``part_slug`` (with its
+        recorded ``unit_cost`` when present). Unsourced parts — no matching
+        component ref — are listed loudly: seeding one is how a design gets
+        cost/lead-time, and how the ``realized-by`` edge appears."""
+        acc: dict[str, int] = {}
+        self._collect_parts(spec, 1, acc, ())
+        title = f"# BOM: {ref.slug} — "
+        if not acc:
+            return Response(
+                body=title + "no catalog parts\n\n"
+                "'part <name> <family>:<code>' lines (e.g. 'part b1 "
+                "bearing:6202') feed this view; fabricated bodies are "
+                "make-tree territory (made-by), not BOM lines."
+            )
+        rows: list[dict[str, Any]] = []
+        unsourced: list[str] = []
+        total = 0.0
+        covered = 0
+        for code in sorted(acc):
+            info = catalog.resolve_part(code)
+            comp = self.store.get_ref(kind="component", id=info.part_slug)
+            cost = "—"
+            if comp is None:
+                unsourced.append(f"{info.code} (expected component {info.part_slug!r})")
+            else:
+                val = self.store.component_current_spec_value(comp.id, "unit_cost")
+                if val is not None and val["value_num"] is not None:
+                    num = float(val["value_num"])
+                    total += acc[code] * num
+                    covered += 1
+                    unit = val["input_unit"] or ""
+                    cost = f"{num:g}{f' {unit}' if unit else ''}"
+            rows.append(
+                {
+                    "qty": acc[code],
+                    "part": info.code,
+                    "designation": info.designation,
+                    "standard": info.standard or "—",
+                    "component": (comp.slug or comp.id) if comp is not None else "—",
+                    "unit_cost": cost,
+                }
+            )
+        lines = [
+            title + f"{len(rows)} catalog part(s), {sum(acc.values())} pc(s)",
+            render_agent_table(
+                rows,
+                schema=[
+                    "qty",
+                    "part",
+                    "designation",
+                    "standard",
+                    "component",
+                    "unit_cost",
+                ],
+            ),
+            "",
+            f"unit_cost total: {total:g} — priced: {covered} of {len(rows)} part(s)",
+        ]
+        if unsourced:
+            lines.append(
+                "⚠ unsourced (no component ref — seed one under that slug to "
+                "price/source it): " + "; ".join(unsourced)
+            )
+        return Response(body="\n".join(lines))
+
     # ── get ──────────────────────────────────────────────────────────
     def get(
         self,
@@ -664,6 +853,8 @@ class CadHandler(Handler):
             return self._note_export(ref, spec, view, resp)
         if view == "sweep":
             return self._render_sweep(spec, args or {})
+        if view == "bom":
+            return self._render_bom(ref, spec)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.

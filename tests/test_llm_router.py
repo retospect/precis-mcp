@@ -467,9 +467,7 @@ def test_claude_p_explicit_max_usd_wins_over_env_and_tier_default(
     monkeypatch.setenv("PRECIS_CLAUDE_MAX_USD", "3.25")
 
     out = route(
-        LlmRequest(
-            tier=Tier.BIG, prompt="judge this", tools_needed=False, max_usd=0.42
-        )
+        LlmRequest(tier=Tier.BIG, prompt="judge this", tools_needed=False, max_usd=0.42)
     )
 
     assert out.error is None

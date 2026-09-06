@@ -24,6 +24,13 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   *another design* as a sub-assembly (:func:`expand_instances`). It is a
   top-level directive like ``component`` — it does not join, or close, the
   enclosing component block.
+- ``part <name> <family>:<code> [@x,y,z] [rot:...] [polar:/linear:]`` places
+  a **catalog atom** (:mod:`precis.cad.catalog` — bearings, bolts, rails,
+  steppers…): an envelope + ports inlined at expansion exactly like ``use``,
+  but resolved from the built-in catalog, so a parts-only design needs no
+  store resolver. The catalog's ``part_slug`` is the procurement identity
+  the handler links ``realized-by`` to a ``component`` ref and rolls into
+  ``view='bom'``.
 - ``port <name> [@x,y,z] [rot:...] [type:<t>] [of:<component>]`` names a
   frame on *this* design — the interface another design mates to. ``type:``
   is a free compatibility tag (two typed ports may only mate when the types
@@ -80,6 +87,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypedDict
 
+from precis.cad import catalog
 from precis.cad.dsl import build, build_config, parse
 from precis.cad.fold import Expr
 from precis.cad.graph import Design
@@ -109,6 +117,11 @@ PAYLOAD_SEP = "~"
 #: A node whose ``config`` starts with this instances another design rather
 #: than building a primitive — see :func:`expand_instances`.
 INSTANCE_PREFIX = "use:"
+
+#: A node whose ``config`` starts with this places a built-in catalog part
+#: (``part:<family>:<code>`` — :mod:`precis.cad.catalog`); inlined like an
+#: instance but needing no resolver.
+PART_PREFIX = "part:"
 
 #: Separator between an instance's name and the sub-design's own node /
 #: component names once inlined (``f1.plate``).
@@ -246,6 +259,29 @@ def instance_slug(config: str) -> str | None:
     if config.startswith(INSTANCE_PREFIX):
         return config[len(INSTANCE_PREFIX) :] or None
     return None
+
+
+def part_code(config: str) -> str | None:
+    """The ``family:code`` a ``part:`` node places, or ``None`` for a shape.
+
+    Sibling of :func:`instance_slug` — the one decode point for catalog-part
+    nodes, so every consumer agrees on the encoding.
+    """
+    if config.startswith(PART_PREFIX):
+        return config[len(PART_PREFIX) :] or None
+    return None
+
+
+def part_spec(code: str) -> SceneSpec:
+    """A catalog part's envelope+ports as a parsed :class:`SceneSpec`.
+
+    ``ValueError`` from an unknown code in a *stored* spec surfaces as a
+    :class:`SceneError` (the parser refuses bad codes at ``put``, so this
+    only fires on specs stored before a catalog entry was renamed)."""
+    try:
+        return parse_source(catalog.resolve_part(code).source)
+    except ValueError as exc:
+        raise SceneError(f"catalog part {code!r}: {exc}") from None
 
 
 @dataclass(frozen=True)
@@ -793,6 +829,47 @@ def parse_source(text: str) -> SceneSpec:
                 )
             )
             continue
+        if toks[0] == "part":
+            # `part <name> <family>:<code> [pose] [pattern]` — a catalog
+            # atom (precis.cad.catalog). Top-level like `use` (owns its own
+            # component namespace, leaves `current` alone); the code is
+            # validated *here* so a typo refuses at put with a line number,
+            # never at expansion.
+            if len(toks) < 3 or ":" not in toks[2]:
+                raise SceneError(
+                    f"line {lineno}: expected 'part <name> <family>:<code> "
+                    "[@x,y,z] [rot:...] [pattern]' (e.g. 'part b1 bearing:6202')"
+                )
+            part_name, raw_code = toks[1], toks[2].lower()
+            if not _IDENT_RE.match(part_name):
+                raise SceneError(
+                    f"line {lineno}: bad part name {part_name!r} — letters, "
+                    f"digits, '_' and '-' only (no {NAMESPACE_SEP!r}, which "
+                    "separates a part from the bodies it brings in)"
+                )
+            if part_name in seen_names or part_name in seen_components:
+                raise SceneError(f"line {lineno}: duplicate name {part_name!r}")
+            try:
+                catalog.resolve_part(raw_code)
+            except ValueError as exc:
+                raise SceneError(f"line {lineno}: {exc}") from None
+            loc, rot, pattern = _parse_placement(toks[3:], lineno)
+            seen_names.add(part_name)
+            seen_components.append(part_name)
+            components_with_nodes.add(part_name)
+            instance_names.add(part_name)
+            spec.nodes.append(
+                NodeSpec(
+                    name=part_name,
+                    op="add",
+                    config=f"{PART_PREFIX}{raw_code}",
+                    component=part_name,
+                    loc=loc,
+                    rot=rot,
+                    pattern=pattern,
+                )
+            )
+            continue
         if toks[0] == "port":
             # `port <name> [@x,y,z] [rot:...] [type:<t>] [of:<component>]` —
             # a named frame on this design. Top-level like `component`/`use`:
@@ -1320,10 +1397,13 @@ def _pattern_token(pat: NodePattern) -> str:
 def _node_line(node: NodeSpec) -> str:
     """Serialise one node back to a source line (inverse of the parser)."""
     sub = instance_slug(node.config)
-    if sub is None:
-        parts = [node.name, node.op, node.config]
-    else:
+    code = part_code(node.config)
+    if sub is not None:
         parts = ["use", sub, "as", node.name]
+    elif code is not None:
+        parts = ["part", node.name, code]
+    else:
+        parts = [node.name, node.op, node.config]
     if node.loc != (0.0, 0.0, 0.0):
         parts.append("@" + ",".join(_fmt_num(v) for v in node.loc))
     if node.rot != (0.0, 0.0, 0.0):
@@ -1367,10 +1447,10 @@ def spec_to_source(spec: SceneSpec) -> str:
 
     current: str | None = None
     for node in spec.nodes:
-        if instance_slug(node.config) is not None:
-            # A `use` directive owns its own component namespace but does not
-            # open a block — emit it bare and leave `current` alone, mirroring
-            # the parser.
+        if instance_slug(node.config) is not None or part_code(node.config) is not None:
+            # A `use`/`part` directive owns its own component namespace but
+            # does not open a block — emit it bare and leave `current` alone,
+            # mirroring the parser.
             lines.append(_node_line(node))
             continue
         if node.component != current:
@@ -1438,8 +1518,12 @@ Resolver = Callable[[str], SceneSpec]
 
 
 def has_instances(spec: SceneSpec) -> bool:
-    """True when ``spec`` instances another design (needs expansion)."""
-    return any(instance_slug(n.config) is not None for n in spec.nodes)
+    """True when ``spec`` instances another design or places a catalog
+    part (either way, it needs expansion)."""
+    return any(
+        instance_slug(n.config) is not None or part_code(n.config) is not None
+        for n in spec.nodes
+    )
 
 
 def _decompose(
@@ -1469,7 +1553,7 @@ def _placements(node: NodeSpec) -> list[tuple[str, Transform]]:
 
 def _inline(
     spec: SceneSpec,
-    resolve: Resolver,
+    resolve: Resolver | None,
     xf: Transform,
     prefix: str,
     out: list[NodeSpec],
@@ -1477,10 +1561,13 @@ def _inline(
     materials: dict[str, str] | None = None,
 ) -> None:
     """Append ``spec``'s nodes to ``out``, re-placed under ``xf`` and
-    namespaced under ``prefix``, recursing through its own instances."""
+    namespaced under ``prefix``, recursing through its own instances.
+    ``resolve`` may be ``None`` for a parts-only design — only a ``use``
+    node needs it (:func:`expand_instances` pre-checks)."""
     for node in spec.nodes:
         sub_slug = instance_slug(node.config)
-        if sub_slug is None:
+        code = part_code(node.config)
+        if sub_slug is None and code is None:
             if node.pattern is not None and node.op == "intersect":
                 # A patterned node folds as `intersect(cur, union(copies))`;
                 # flattened to one node per copy it would fold as a *chain* of
@@ -1506,19 +1593,30 @@ def _inline(
                 )
             continue
 
-        if sub_slug in stack:
-            chain = " → ".join((*stack, sub_slug))
-            raise SceneError(f"instance cycle: {chain}")
-        if len(stack) + 1 > MAX_INSTANCE_DEPTH:
-            raise SceneError(
-                f"instance nesting deeper than {MAX_INSTANCE_DEPTH} at {sub_slug!r}"
-            )
-        try:
-            sub = resolve(sub_slug)
-        except SceneError:
-            raise
-        except Exception as exc:
-            raise SceneError(f"cannot resolve design {sub_slug!r}: {exc}") from exc
+        if code is not None:
+            # A catalog part: the "sub-design" comes from the built-in
+            # catalog, needs no resolver, and can never nest or cycle.
+            sub = part_spec(code)
+        else:
+            assert sub_slug is not None
+            if sub_slug in stack:
+                chain = " → ".join((*stack, sub_slug))
+                raise SceneError(f"instance cycle: {chain}")
+            if len(stack) + 1 > MAX_INSTANCE_DEPTH:
+                raise SceneError(
+                    f"instance nesting deeper than {MAX_INSTANCE_DEPTH} at {sub_slug!r}"
+                )
+            if resolve is None:
+                raise SceneError(
+                    "this design instances another ('use <slug> as <name>') "
+                    "but no resolver was supplied to expand it"
+                )
+            try:
+                sub = resolve(sub_slug)
+            except SceneError:
+                raise
+            except Exception as exc:
+                raise SceneError(f"cannot resolve design {sub_slug!r}: {exc}") from exc
         if sub.meta.get("mates") or sub.meta.get("joints"):
             # The sub-design's own mates/joints solve at their defaults
             # before its nodes inline — otherwise its mated instances would
@@ -1539,7 +1637,7 @@ def _inline(
                 xf.compose(local),
                 sub_prefix,
                 out,
-                (*stack, sub_slug),
+                (*stack, sub_slug) if sub_slug is not None else stack,
                 materials,
             )
         if len(out) > MAX_EXPANDED_NODES:
@@ -1756,7 +1854,11 @@ def _solve_mates(
     if not mates:
         return spec
 
-    instances = {n.name: n for n in spec.nodes if instance_slug(n.config) is not None}
+    instances = {
+        n.name: n
+        for n in spec.nodes
+        if instance_slug(n.config) is not None or part_code(n.config) is not None
+    }
     own_ports = {pt.name: pt for pt in ports_of(spec)}
 
     by_inst: dict[str, MateSpec] = {}
@@ -1766,7 +1868,8 @@ def _solve_mates(
             raise SceneError(
                 f"mate subject {mate.subject!r}: {mate.instance!r} is not an "
                 f"instance in this design (declare it with "
-                f"'use <design> as {mate.instance}')"
+                f"'use <design> as {mate.instance}' or "
+                f"'part {mate.instance} <family>:<code>')"
             )
         if mate.instance in by_inst:
             raise SceneError(
@@ -1799,18 +1902,22 @@ def _solve_mates(
         a joint's ``limits:`` exclude 0 and the default clamps away from it).
         """
         if inst not in sub_ports:
-            slug = instance_slug(instances[inst].config) or ""
-            if resolve is None:
-                raise SceneError(
-                    "this design uses 'mate' but no resolver was supplied to "
-                    "read the mated designs' ports"
-                )
-            try:
-                sub = resolve(slug)
-            except SceneError:
-                raise
-            except Exception as exc:
-                raise SceneError(f"cannot resolve design {slug!r}: {exc}") from exc
+            code = part_code(instances[inst].config)
+            if code is not None:
+                sub = part_spec(code)
+            else:
+                slug = instance_slug(instances[inst].config) or ""
+                if resolve is None:
+                    raise SceneError(
+                        "this design uses 'mate' but no resolver was supplied "
+                        "to read the mated designs' ports"
+                    )
+                try:
+                    sub = resolve(slug)
+                except SceneError:
+                    raise
+                except Exception as exc:
+                    raise SceneError(f"cannot resolve design {slug!r}: {exc}") from exc
             sub_specs[inst] = sub
             found = {pt.name: pt for pt in ports_of(sub)}
             if sub.meta.get("joints"):
@@ -1828,7 +1935,8 @@ def _solve_mates(
         found = available.get(port)
         if found is None:
             known = ", ".join(sorted(available)) or "none"
-            slug = instance_slug(instances[inst].config) or "?"
+            cfg = instances[inst].config
+            slug = instance_slug(cfg) or part_code(cfg) or "?"
             raise SceneError(
                 f"design {slug!r} (instance {inst!r}) has no port {port!r} "
                 f"— declared ports: {known}"
@@ -1978,7 +2086,9 @@ def _solve_mates(
         component's base — and a base ignores its op, so a ``cut`` payload
         would silently *add* material. Refuse instead."""
         if not any(
-            n.component == comp and instance_slug(n.config) is None
+            n.component == comp
+            and instance_slug(n.config) is None
+            and part_code(n.config) is None
             for n in host_spec.nodes
         ):
             raise SceneError(
@@ -2052,7 +2162,11 @@ def expand_instances(
     spec = _pose_component_joints(spec, cworld)
 
     if has_instances(spec):
-        if resolve is None:
+        if resolve is None and any(
+            instance_slug(n.config) is not None for n in spec.nodes
+        ):
+            # Only `use` needs the store: a parts-only design expands from
+            # the built-in catalog alone.
             raise SceneError(
                 "this design instances another ('use <slug> as <name>') but "
                 "no resolver was supplied to expand it"
@@ -2060,7 +2174,7 @@ def expand_instances(
         out: list[NodeSpec] = []
         sub_materials: dict[str, str] = {}
         for node in spec.nodes:
-            if instance_slug(node.config) is None:
+            if instance_slug(node.config) is None and part_code(node.config) is None:
                 # Top-level nodes are kept verbatim — pattern included — so an
                 # unrelated instance elsewhere cannot perturb them.
                 out.append(node)
