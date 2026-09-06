@@ -425,6 +425,10 @@ get(kind="cad", id="ca7")  # one node as JSON (handle = ca<chunk_id>)
 ```
 
 A node is addressed by its **`ca<chunk_id>` handle** (shown in the tree).
+The bare get also appends the design's **one-hop links** (assembly
+`contains`, attached analyses, make-trees, `realized-by` parts — capped)
+plus a `⚠ STALE analyses` warning when a pinned analysis has drifted —
+`view='links'` has the uncapped detail + coverage lints.
 
 ## Probe it — `get(view=…, args={…})`
 

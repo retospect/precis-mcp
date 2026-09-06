@@ -72,9 +72,11 @@ def test_attach_pin_and_staleness_lifecycle(cad, store):
     assert "STALE" not in cad.get(id="analyzed_demo", view="links").body
     assert not [f for f in _probe_analysis_stale(store) if f"fi{fi}" in f.key]
 
-    # the design changes under the analysis → both channels flag it
+    # the design changes under the analysis → both channels flag it,
+    # and the bare get's one-hop footer warns too (no second call needed)
     cad.put(id="analyzed_demo", text=_V2)
     assert "STALE" in cad.get(id="analyzed_demo", view="links").body
+    assert "STALE" in cad.get(id="analyzed_demo").body
     fired = [f for f in _probe_analysis_stale(store) if f"fi{fi}" in f.key]
     assert fired and fired[0].key == f"analysis-stale:analyzed_demo/fi{fi}"
     assert "re-run" in fired[0].detail

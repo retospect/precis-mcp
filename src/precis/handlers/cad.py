@@ -835,7 +835,12 @@ class CadHandler(Handler):
                 f"# {ref.slug} — {len(spec.components)} part(s), "
                 f"{len(spec.nodes)} node(s)"
             )
-            return Response(body=head + "\n" + self._tree_table(spec, handles))
+            return Response(
+                body=head
+                + "\n"
+                + self._tree_table(spec, handles)
+                + self._one_hop_footer(ref)
+            )
         if view == "scad":
             return Response(
                 body=to_openscad(
@@ -1236,6 +1241,26 @@ class CadHandler(Handler):
         if node.rot != (0.0, 0.0, 0.0):
             pose += f" rot{node.rot}"
         return pose
+
+    def _one_hop_footer(self, ref: Any) -> str:
+        """The design's one-hop neighborhood on the bare ``get`` — the
+        dense-graph goal ("all the info within a hop or two"): assembly
+        `contains`, attached analyses, make-trees, realizations, all in
+        the capped shared Links: section, plus the staleness warning an
+        agent must not have to ask for. Best-effort — a link-layer
+        failure never breaks reading the design; ``view='links'`` has
+        the uncapped detail + coverage lints."""
+        try:
+            from precis.handlers._links_render import render_links_section
+
+            # the section arrives with its own leading blank line
+            out = render_links_section(self.store, ref, limit=12)
+            stale = self._stale_analyses(ref)
+            if stale:
+                out += "\n⚠ STALE analyses (re-run or detach): " + "; ".join(stale)
+            return out
+        except Exception:  # pragma: no cover - defensive
+            return ""
 
     def _tree_table(self, spec: Any, handles: dict[str, int]) -> str:
         rows = []

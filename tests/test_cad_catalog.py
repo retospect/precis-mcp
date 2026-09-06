@@ -172,6 +172,19 @@ def test_part_with_no_component_ref_stays_unsourced_without_links(cad, store):
     assert "expected component 'gear-m2z30'" in body
 
 
+def test_bare_get_shows_one_hop_links(cad, store):
+    """The dense-graph footer: a design's bare get surfaces its one-hop
+    neighborhood (here the realized-by edge from a catalog part) without a
+    second view='links' call."""
+    store.component_entity_upsert(
+        slug="bearing-6202", title="6202 bearing", meta_patch={}
+    )
+    cad.put(id="cat_hop", text=_ASSY)
+    body = cad.get(id="cat_hop").body
+    assert "Links" in body
+    assert "realized-by" in body and "6202 bearing" in body
+
+
 def test_bad_part_code_refuses_at_put(cad):
     with pytest.raises(BadInput, match="unknown bolt code"):
         cad.put(id="cat_bad", text="part x bolt:m7x20\n")
