@@ -1563,12 +1563,35 @@ def _router_nudge(store: Store, cls: str, fingerprint: str) -> str:
     )
 
 
+# STATUS values the marker scan below treats as "still live" — every
+# non-terminal stage of the gripe lifecycle. Mirrors the canonical
+# vocabulary in ``precis_web.routes.gripes`` (``STATUS_VALUES`` /
+# ``TERMINAL_VALUES = ("done", "wontfix")``); duplicated locally rather
+# than imported because ``precis.workers`` -> ``precis_web`` is a
+# forbidden edge under the import-linter contracts. A human/agent
+# triaging a router-filed marker gripe (``open`` -> ``triaged`` etc.) is
+# a normal backlog action and must not make the scan blind to it — only
+# ``done``/``wontfix`` (deliberately closed) drop out.
+_MARKER_GRIPE_LIVE_STATUSES: tuple[str, ...] = (
+    "open",
+    "triaged",
+    "ready_for_fix",
+    "in_review",
+)
+
+
 def _open_marker_gripes(store: Store) -> dict[tuple[str, str], int]:
-    """``{(source, fingerprint): gripe_ref_id}`` for every currently open
-    (``STATUS:open``, not deleted) gripe whose body starts with the
-    :data:`_ROUTER_MARKER_PREFIX` marker line — the single scan both the
-    dedup-before-file check and the auto-close sweep read, so the two
-    can't drift (one query, one truth, every eval)."""
+    """``{(source, fingerprint): gripe_ref_id}`` for every currently live
+    (:data:`_MARKER_GRIPE_LIVE_STATUSES`, not deleted) gripe whose body
+    starts with the :data:`_ROUTER_MARKER_PREFIX` marker line — the
+    single scan both the dedup-before-file check and the auto-close
+    sweep read, so the two can't drift (one query, one truth, every
+    eval). "Live" is any non-terminal STATUS, not just ``open``: a
+    marker gripe that's been triaged (or further along) still tracks a
+    real condition and must keep suppressing duplicate filing / stay
+    eligible for auto-close; only ``done``/``wontfix`` (a deliberate
+    resolution) drop out, so a legitimate re-file is still possible if
+    the condition recurs after one of those."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -1580,10 +1603,10 @@ def _open_marker_gripes(store: Store) -> dict[tuple[str, str], int]:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-               AND t.namespace = 'STATUS' AND t.value = 'open'
+               AND t.namespace = 'STATUS' AND t.value = ANY(%s)
                AND c.text LIKE %s
             """,
-            (f"{_ROUTER_MARKER_PREFIX}%",),
+            (list(_MARKER_GRIPE_LIVE_STATUSES), f"{_ROUTER_MARKER_PREFIX}%"),
         ).fetchall()
     out: dict[tuple[str, str], int] = {}
     for gripe_ref_id, text in rows:

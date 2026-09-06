@@ -1112,6 +1112,100 @@ def test_open_marker_gripes_parses_source_and_fingerprint(store) -> None:
     assert ("watchdog:coherence", "some-pass") in markers
 
 
+def test_router_triaged_marker_gripe_still_dedups(store) -> None:
+    """A router-filed marker gripe that's been triaged (a normal backlog
+    action, not a resolution) must still be visible to the scan — the
+    router must not re-file a duplicate for the same live condition just
+    because a human/agent moved it off ``STATUS:open`` (gr279770/gr322315
+    regression)."""
+    _seed_watchdog_alert(store, group="coherence", name="some-pass", hours_old=30)
+    _route_findings(store)
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    gripe_id = int(gripes[0].id)
+
+    store.add_tag(
+        gripe_id,
+        Tag.closed("STATUS", "triaged"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert ("watchdog:coherence", "some-pass") in _open_marker_gripes(store)
+
+    # Condition is still over budget — a second eval must not file a
+    # duplicate for it.
+    _route_findings(store)
+    with store.pool.connection() as conn:
+        (total,) = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'gripe' AND retired_at IS NULL"
+        ).fetchone()
+    assert total == 1
+
+
+def test_router_auto_closes_triaged_marker_gripe_when_condition_clears(
+    store,
+) -> None:
+    """Auto-close must fire for a marker gripe even after it's been
+    triaged — the condition going fresh is still worth retiring the
+    gripe over, exactly as it would from ``STATUS:open``."""
+    from precis.alerts import resolve_alert
+
+    alert_id = _seed_watchdog_alert(
+        store, group="coherence", name="some-pass", hours_old=30
+    )
+    _route_findings(store)
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    gripe_id = int(gripes[0].id)
+
+    store.add_tag(
+        gripe_id,
+        Tag.closed("STATUS", "triaged"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    resolve_alert(store, alert_id)
+    routed_after = _route_findings(store)
+    assert routed_after == frozenset()
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
+        ).fetchone()
+    assert row[0] is not None  # soft-deleted despite not being STATUS:open
+
+
+def test_router_done_marker_gripe_not_seen_allows_refile(store) -> None:
+    """A marker gripe deliberately closed (``STATUS:done``) is terminal —
+    it must NOT be picked up by the scan, so a recurrence of the same
+    condition is free to file a fresh gripe rather than being silently
+    suppressed forever by a closed record."""
+    _seed_watchdog_alert(store, group="coherence", name="some-pass", hours_old=30)
+    _route_findings(store)
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    gripe_id = int(gripes[0].id)
+
+    store.add_tag(
+        gripe_id,
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert _open_marker_gripes(store) == {}
+
+    # Condition is still over budget and the prior gripe is done, not
+    # tracked live — a re-file is expected (and correct) behavior.
+    routed = _route_findings(store)
+    assert ("coherence", "some-pass") in routed
+    with store.pool.connection() as conn:
+        (total,) = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'gripe' AND retired_at IS NULL"
+        ).fetchone()
+    assert total == 2
+
+
 # ── §D Phase 3 (alert-triage): nursery capped-backlog aggregate hand-off ──
 
 
