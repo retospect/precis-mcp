@@ -117,9 +117,9 @@ class MaterialMixin:
                 "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
                 (title, Jsonb(merged), existing.id),
             )
-            updated = self.get_ref(kind="material", id=slug)
-            assert updated is not None
-            return updated, False
+        updated = self.get_ref(kind="material", id=slug)
+        assert updated is not None
+        return updated, False
 
     # -- property registry -------------------------------------------------
 

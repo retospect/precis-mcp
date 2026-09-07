@@ -170,9 +170,9 @@ class ComponentMixin:
                 "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
                 (title, Jsonb(merged), existing.id),
             )
-            updated = self.get_ref(kind="component", id=slug)
-            assert updated is not None
-            return updated, False
+        updated = self.get_ref(kind="component", id=slug)
+        assert updated is not None
+        return updated, False
 
     # -- category registry ------------------------------------------------
 

@@ -54,6 +54,20 @@ class TestEntity:
         assert ref.meta["material_class"] == "metal"  # survives the second put
         assert ref.meta["aliases"] == ["AA6061-T6"]
 
+    def test_put_again_response_body_reflects_the_new_title_and_alias(
+        self, store: Any
+    ) -> None:
+        """gr329810: the put response is built straight off the ``ref``
+        ``material_entity_upsert`` returns. If that read runs on a second
+        pooled connection while the update's own transaction is still open,
+        READ COMMITTED hands back the pre-update row — a successful write
+        that *renders* as a no-op."""
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6", meta={"material_class": "metal"})
+        resp = h.put(id="6061-t6", title="Aluminum 6061-T6 (renamed)", meta={"aliases": ["AA6061-T6"]})
+        assert "Aluminum 6061-T6 (renamed)" in resp.body
+        assert "AA6061-T6" in resp.body
+
     def test_get_missing_material_raises_not_found(self, store: Any) -> None:
         h = _handler(store)
         with pytest.raises(NotFound):

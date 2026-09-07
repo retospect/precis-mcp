@@ -54,6 +54,24 @@ class TestEntity:
         assert ref.meta["category"] == "fastener"  # survives the second put
         assert ref.meta["mpn"] == "SCS-M6-20-A2"
 
+    def test_put_again_response_body_reflects_the_new_title_and_mpn(
+        self, store: Any
+    ) -> None:
+        """gr329810: the put response is built straight off the ``ref``
+        ``component_entity_upsert`` returns. If that read runs on a second
+        pooled connection while the update's own transaction is still open,
+        READ COMMITTED hands back the pre-update row — a successful write
+        that *renders* as a no-op."""
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        resp = h.put(
+            id="m6-a2-bolt",
+            title="M6x20 A2 socket cap (renamed)",
+            meta={"mpn": "SCS-M6-20-A2"},
+        )
+        assert "M6x20 A2 socket cap (renamed)" in resp.body
+        assert "SCS-M6-20-A2" in resp.body
+
     def test_entity_create_requires_category(self, store: Any) -> None:
         h = _handler(store)
         with pytest.raises(BadInput):
