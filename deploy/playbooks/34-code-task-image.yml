@@ -54,6 +54,15 @@
       become: true
       when: (os_family | default('linux')) == 'linux'
 
+    - name: Read the pinned python base digest off the Dockerfile
+      ansible.builtin.shell:
+        cmd: awk -F= '/^ARG PYTHON_DIGEST=/{print $2}' "{{ playbook_dir }}/../../docker/Dockerfile"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: _ct_digest_probe
+      changed_when: false
+
     - name: Read the resident image's stamped sha (staleness probe)
       ansible.builtin.command:
         cmd: >-
@@ -91,10 +100,44 @@
       become: true
       when: _ct_stale | bool
 
+    # Docker Hub TLS is blocked/flaky from some cluster hosts (the same
+    # outage family 33-precis-agent-image.yml's MIRROR FALLBACK note
+    # documents — first real castor run died on `TLS handshake timeout`
+    # to registry-1.docker.io). Pre-pull the pinned base; fall back to
+    # mirror.gcr.io (Google's pull-through Hub cache). The digest pin is
+    # unchanged either way, so the substitution is byte-identical; the
+    # build below FROMs whichever name actually landed in storage via
+    # --build-arg PYTHON_IMAGE (docker/Dockerfile parameterizes it).
+    - name: Pre-pull the pinned python base (canonical registry)
+      ansible.builtin.command:
+        cmd: podman pull docker.io/library/python@{{ _ct_digest_probe.stdout | trim }}
+      become: true
+      become_user: "{{ _ct_build_user }}"
+      register: _ct_pull
+      failed_when: false
+      changed_when: false
+      when: _ct_stale | bool
+
+    - name: Fall back to mirror.gcr.io for the base (Hub unreachable from this host)
+      ansible.builtin.command:
+        cmd: podman pull mirror.gcr.io/library/python@{{ _ct_digest_probe.stdout | trim }}
+      become: true
+      become_user: "{{ _ct_build_user }}"
+      when: (_ct_stale | bool) and (_ct_pull.rc | default(0)) != 0
+
+    - name: Pick the base image name the build will FROM
+      ansible.builtin.set_fact:
+        _ct_python_image: >-
+          {{ 'mirror.gcr.io/library/python'
+             if ((_ct_pull.rc | default(0)) != 0)
+             else 'docker.io/library/python' }}
+      when: _ct_stale | bool
+
     - name: Build code-task:<sha> + code-task:latest (podman, as the executor's user)
       ansible.builtin.command:
         cmd: >-
           podman build --target code-task
+          --build-arg PYTHON_IMAGE={{ _ct_python_image | trim }}
           -t code-task:{{ _ct_sha_probe.stdout | trim }}
           -t code-task:latest
           --label org.precis.sha={{ _ct_sha_probe.stdout | trim }}
