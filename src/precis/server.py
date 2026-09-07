@@ -419,7 +419,7 @@ def _mcp_profile() -> str:
     return os.environ.get(_MCP_PROFILE_ENV, "typed")
 
 
-def precis(command: str, text: str | None = None) -> Any:
+def precis(command: str, text: str | dict[str, Any] | list[Any] | None = None) -> Any:
     """Execute one precis verb call parsed from ``command``.
 
     Parses via :func:`precis.tools.command_parser.parse_command` and
@@ -431,6 +431,15 @@ def precis(command: str, text: str | None = None) -> Any:
     or an unknown/duplicate keyword surfaces as the same
     ``[error:BadInput] ...`` envelope the typed tools use — never a
     raw crash.
+
+    ``text``'s type is widened past ``str`` for the same reason
+    ``tools.core.put``/``edit`` widen it (gr330034/gr261385): some MCP
+    client bridges auto-parse a JSON-shaped ``text=`` string into a
+    dict/list before this tool's own schema sees it. No re-serializing
+    happens here — ``kwargs["text"]`` rides through
+    :func:`~precis.tools.command_parser.parse_command` unchanged into
+    ``put``/``edit``, which each normalize it back to a JSON string via
+    ``tools.core._coerce_text_body`` before touching a handler.
     """
     from precis.errors import BadInput
     from precis.tools import TOOL_REGISTRY

@@ -107,6 +107,22 @@ def test_text_param_merges_into_kwargs() -> None:
     assert kwargs["text"] == "body"
 
 
+def test_text_param_merges_a_coerced_dict_into_kwargs_unchanged() -> None:
+    """gr330034/gr261385: some MCP client bridges auto-parse a JSON-shaped
+    ``text=`` string into a dict before it reaches ``precis(command,
+    text=)`` at all. ``parse_command`` doesn't need to normalize it —
+    ``kwargs['text']`` rides through unchanged into
+    ``TOOL_REGISTRY[verb]['func'](**kwargs)``, and ``put``/``edit``
+    themselves re-serialize it (``tools.core._coerce_text_body``). This
+    pins the pass-through half of that chain: the dict must survive
+    ``parse_command`` bit-for-bit, not get stringified or rejected here."""
+    verb, kwargs = parse_command(
+        "put(kind='structure', id='x')", text={"cell": {"a": 1}}
+    )
+    assert verb == "put"
+    assert kwargs["text"] == {"cell": {"a": 1}}
+
+
 def test_text_param_and_inline_text_is_ambiguous() -> None:
     with pytest.raises(CommandParseError, match="text="):
         parse_command("put(kind='memory', text='inline')", text="separate")

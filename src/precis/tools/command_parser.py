@@ -33,13 +33,21 @@ class CommandParseError(ValueError):
     """``command`` isn't a single ``verb(kw=literal, ...)`` call."""
 
 
-def parse_command(command: str, text: str | None = None) -> tuple[str, dict[str, Any]]:
+def parse_command(
+    command: str, text: str | dict[str, Any] | list[Any] | None = None
+) -> tuple[str, dict[str, Any]]:
     """Parse ``command`` into ``(verb, kwargs)``, merging ``text=`` in.
 
     ``text``, when given, becomes ``kwargs['text']`` — the escape
     hatch for large bodies that would otherwise need quote-escaping
     inside ``command``. Raises :class:`CommandParseError` if
     ``command`` also names ``text=`` (ambiguous which one wins).
+
+    ``text``'s type is widened past ``str`` to mirror
+    ``server.py::precis`` (gr330034/gr261385: a client bridge may hand
+    it a dict/list after auto-parsing a JSON-shaped string) — this
+    function passes it through unchanged; ``put``/``edit`` normalize
+    it once the verb dispatch actually runs.
     """
     from precis.tools import TOOL_REGISTRY
 

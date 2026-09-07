@@ -19,6 +19,7 @@ the fix are pinned together.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from typing import Any
@@ -390,3 +391,132 @@ def test_put_component_method_reaches_the_handler_over_the_mcp_door(
     assert ref is not None
     values = store.component_values_for_ref(ref.id)
     assert values[0]["method"] == "measured"
+
+
+# ---------------------------------------------------------------------------
+# gr330034 / gr261385: some MCP client bridges auto-parse a JSON-shaped
+# ``text=`` STRING into a dict/list before this tool's declared ``text: str``
+# schema sees it. ``structure``'s only documented authoring entry point is
+# ``put(text=<JSON>)``, so the coercion made the kind uninvokable ("Input
+# should be a valid string ... input_type=dict") from those clients while it
+# stayed silent for kinds whose ``text=`` is ordinary prose (never JSON-
+# shaped) — net effect, structure authoring was write-only-fails-always
+# ("read-only in practice") for such clients. ``tools.core.put``/``edit`` now
+# widen ``text=`` to ``str | dict | list`` and re-serialize the coerced shape
+# back to the canonical JSON string before dispatch.
+# ---------------------------------------------------------------------------
+
+_STRUCT_PD_DICT: dict[str, Any] = {
+    "cell": {"a": 10.0, "b": 10.0, "c": 10.0, "pbc": [True, True, False]},
+    "ops": [
+        {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+        {"op": "add_atom", "element": "Pd", "frac": [0.26, 0.0, 0.0]},
+        {"op": "add_bond", "i": "aPd1", "j": "aPd2", "order": 1},
+    ],
+}
+
+
+def test_put_structure_text_as_coerced_dict_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """The reported repro: a client-side bridge hands ``put(kind='structure',
+    text=...)`` a dict (its own auto-parse of the JSON string the caller
+    actually authored) instead of a string. ``tools_core.put`` must still
+    mint the design — not the pydantic ``Input should be a valid string``
+    crash the coercion produced before the fix."""
+    out = tools_core.put(kind="structure", id="pd_pair_dict", text=_STRUCT_PD_DICT)
+
+    assert not _is_error(out), _body(out)
+    body = _body(out)
+    assert "created" in body
+    assert "Pd2" in body and "aPd1" in body
+
+    ref = store.get_ref(kind="structure", id="pd_pair_dict")
+    assert ref is not None
+
+
+def test_put_structure_text_as_ordinary_string_is_unchanged(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """A client that did NOT coerce (the common case, and the only shape the
+    kind's help docs teach) still round-trips exactly as before — the
+    dict/list branch in ``_coerce_text_body`` must be a no-op for a plain
+    string."""
+    text = json.dumps(_STRUCT_PD_DICT)
+
+    out = tools_core.put(kind="structure", id="pd_pair_str", text=text)
+
+    assert not _is_error(out), _body(out)
+    body = _body(out)
+    assert "created" in body
+    assert "Pd2" in body and "aPd1" in body
+
+
+def test_edit_structure_text_as_coerced_dict_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+) -> None:
+    """``edit(kind='structure', text=...)`` accepts the same JSON-as-``ops``
+    payload as ``put`` (``StructureHandler.edit`` falls back to parsing
+    ``text`` when ``ops=`` is omitted) — a coerced dict there must normalize
+    the same way as on ``put``."""
+    tools_core.put(kind="structure", id="pd_pair_edit_dict", text=_STRUCT_PD_DICT)
+
+    out = tools_core.edit(
+        kind="structure",
+        id="pd_pair_edit_dict",
+        text={"ops": [{"op": "add_atom", "element": "O", "frac": [0.6, 0.5, 0.5]}]},
+    )
+
+    assert not _is_error(out), _body(out)
+    assert "aO1" in _body(out), _body(out)
+
+
+def test_edit_memory_text_as_ordinary_string_is_unchanged(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """A non-JSON-shaped ``edit(text=...)`` (ordinary prose, the common case
+    for most kinds) must pass through ``_coerce_text_body`` untouched —
+    pins the "no coercion happened" branch on ``edit`` the same way the put
+    test above pins it for ``put``."""
+    mint_out = tools_core.put(kind="memory", text="original note body")
+    m = re.search(r"id=(\d+)", mint_out)
+    assert m is not None, mint_out
+    ref_id = int(m.group(1))
+
+    out = tools_core.edit(
+        kind="memory", id=ref_id, mode="replace", text="revised note body"
+    )
+
+    assert not _is_error(out), _body(out)
+    ref = store.get_ref(kind="memory", id=ref_id)
+    assert ref is not None
+
+
+def test_command_profile_put_structure_text_as_coerced_dict_funnels_through(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """The ``PRECIS_MCP_PROFILE=command`` seam: ``server.precis(command,
+    text=...)`` itself widens ``text=`` the same way (a client bridge can
+    coerce it before ``precis()``'s own tool schema sees it), then hands
+    the dict, unchanged, into ``parse_command`` → ``TOOL_REGISTRY['put'][
+    'func'](**kwargs)`` — i.e. ``tools_core.put`` itself, which is where the
+    actual re-serialization happens. This proves the command profile
+    doesn't need its own copy of the normalization logic — it funnels
+    through the exact same verb function pinned by the typed-profile tests
+    above."""
+    from precis.server import precis as command_profile_precis
+
+    out = command_profile_precis(
+        "put(kind='structure', id='pd_pair_command_profile')",
+        text=_STRUCT_PD_DICT,
+    )
+
+    assert not _is_error(out), _body(out)
+    body = _body(out)
+    assert "created" in body
+    assert "Pd2" in body and "aPd1" in body
+    assert store.get_ref(kind="structure", id="pd_pair_command_profile") is not None

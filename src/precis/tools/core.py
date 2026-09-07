@@ -7,6 +7,7 @@ the shared registry in tools/__init__.py.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import TYPE_CHECKING, Any
@@ -368,6 +369,27 @@ def _check_text_payload_size(verb: str, text: str | None) -> str | None:
             )
         )
     )
+
+
+def _coerce_text_body(text: str | dict[str, Any] | list[Any] | None) -> str | None:
+    """Re-serialize a client-coerced JSON body back into the documented str.
+
+    gr330034 (same root as gr261385): some MCP client bridges auto-parse a
+    ``text=`` value that *looks* JSON into a dict/list before it ever
+    reaches this tool's schema — observed for ``put(kind='structure',
+    text='{...}')``, whose only documented authoring entry point is a JSON
+    string, so the coercion made the kind uninvokable ("Input should be a
+    valid string ... input_type=dict") from those clients while unrelated
+    non-JSON strings (e.g. cad's line language) passed fine. Rather than
+    fight the client, ``put``/``edit`` widen ``text=`` to accept the
+    coerced shape too and normalize it back to the canonical JSON string
+    here, at the top of each verb, before dispatch — handlers keep parsing
+    ``text`` as a plain string exactly as before. A client that did NOT
+    coerce (an ordinary string) passes through this function untouched.
+    """
+    if isinstance(text, (dict, list)):
+        return json.dumps(text)
+    return text
 
 
 def get(
@@ -774,7 +796,11 @@ def put(
     kind: str | None = None,
     mode: str | None = None,
     id: str | int | None = None,
-    text: str | None = None,
+    # str is the documented contract every handler parses against; dict/
+    # list is ALSO accepted because some MCP client bridges auto-parse a
+    # JSON-shaped string value before this schema ever sees it — see
+    # ``_coerce_text_body`` (gr330034/gr261385).
+    text: str | dict[str, Any] | list[Any] | None = None,
     tags: list[str] | None = None,
     untags: list[str] | None = None,
     link: str | None = None,
@@ -998,6 +1024,7 @@ def put(
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
+    text = _coerce_text_body(text)
     err = _check_text_payload_size("put", text)
     if err is not None:
         return err
@@ -1121,7 +1148,11 @@ def edit(
     kind: str | None = None,
     id: str | int | None = None,
     mode: str = "find-replace",
-    text: str | None = None,
+    # str is the documented contract every handler parses against; dict/
+    # list is ALSO accepted because some MCP client bridges auto-parse a
+    # JSON-shaped string value before this schema ever sees it — see
+    # ``_coerce_text_body`` (gr330034/gr261385).
+    text: str | dict[str, Any] | list[Any] | None = None,
     # memory (see precis-memory-help): edit(mode='replace') rewrites the body
     # prose; pass title= to also update the short header (omit to keep it).
     title: str | None = None,
@@ -1272,6 +1303,7 @@ def edit(
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """
+    text = _coerce_text_body(text)
     err = _check_text_payload_size("edit", text)
     if err is not None:
         return err
