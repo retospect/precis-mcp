@@ -488,6 +488,8 @@ pathway = "precis_pathway.handles"
 estimate = "precis_estimate.handles"
 nm = "precis_nm.handles"
 se = "precis_se.handles"
+route = "precis_chem.handles"
+protein = "precis_bio.handles"
 
 [dependency-groups]
 dev = [

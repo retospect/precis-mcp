@@ -304,3 +304,76 @@ def test_estimate_handle_code_registers_formats_and_parses(
     # unaffected by registering it.
     assert "estimate" not in hr.KIND_CODES
     assert set(hr.KIND_CODES) == EXPECTED_PERSISTENT_KINDS
+
+
+# --- precis_chem's `route` handle code (gr329871) — same shape as
+# pathway's/estimate's, above. `precis_chem.handles` is a plain dict module
+# (no rdkit/aizynth import), so this doesn't need the `[chem]` extra.
+
+
+def test_route_handle_code_registers_formats_and_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_chem import handles as chem_handles
+
+    _fake_eps_from_module(monkeypatch, chem_handles)
+
+    assert hr.code_for_kind("route") == "rt"
+    assert hr.format_handle("route", 12) == "rt12"
+    assert hr.parse("rt12") == ("route", False, 12)
+    assert hr.is_well_formed("rt12")
+    assert hr.kind_for_code("rt") == ("route", False)
+    # `route` is a plugin kind, not core — the built-in totality SSOT is
+    # unaffected by registering it.
+    assert "route" not in hr.KIND_CODES
+    assert set(hr.KIND_CODES) == EXPECTED_PERSISTENT_KINDS
+
+
+# --- precis_bio's `protein` handle code (gr329871) — same shape as
+# pathway's/estimate's, above. `precis_bio.handles` is a plain dict module
+# (no alphafold/torch import), so this doesn't need the `[bio]` extra.
+
+
+def test_protein_handle_code_registers_formats_and_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_bio import handles as bio_handles
+
+    _fake_eps_from_module(monkeypatch, bio_handles)
+
+    assert hr.code_for_kind("protein") == "pi"
+    assert hr.format_handle("protein", 12) == "pi12"
+    assert hr.parse("pi12") == ("protein", False, 12)
+    assert hr.is_well_formed("pi12")
+    assert hr.kind_for_code("pi") == ("protein", False)
+    # `protein` is a plugin kind, not core — the built-in totality SSOT is
+    # unaffected by registering it.
+    assert "protein" not in hr.KIND_CODES
+    assert set(hr.KIND_CODES) == EXPECTED_PERSISTENT_KINDS
+
+
+def test_all_four_plugin_codes_plus_new_kinds_are_pairwise_distinct() -> None:
+    """Belt-and-suspenders collision check across every registered
+    ``precis.handle_codes`` plugin (pyproject.toml) plus the built-ins —
+    ``_load_plugin_codes`` already drops a colliding plugin code silently
+    (logging a warning), so this asserts nothing was actually dropped."""
+    from precis_bio import handles as bio_handles
+    from precis_chem import handles as chem_handles
+    from precis_estimate import handles as estimate_handles
+    from precis_nm import handles as nm_handles
+    from precis_pathway import handles as pathway_handles
+    from precis_se import handles as se_handles
+
+    plugin_modules = (
+        pathway_handles,
+        estimate_handles,
+        nm_handles,
+        se_handles,
+        chem_handles,
+        bio_handles,
+    )
+    all_codes = [*hr.KIND_CODES.values(), *hr.CHUNK_CODES.values()]
+    for mod in plugin_modules:
+        all_codes.extend(mod.RECORD_CODES.values())
+        all_codes.extend(mod.CHUNK_CODES.values())
+    assert len(all_codes) == len(set(all_codes)), "duplicate handle code"
