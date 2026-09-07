@@ -105,6 +105,12 @@ KIND_CODES: dict[str, str] = {
     # proposal) — a slug entity; per-value sourced facts live in
     # material_values, not a chunk table, so no CHUNK_CODES entry.
     "material": "ma",
+    # Sourced reaction-fact store (docs/backlog/reaction-kind-and-synthesis-cost.md)
+    # — a slug entity; per-value sourced facts live in rxn_values, not a chunk
+    # table, so no CHUNK_CODES entry, same as material/component. The kind is
+    # `rxn`, not `reaction`: "reaction" is already an edge-kind value in the
+    # pathway graph, so the longer name would collide semantically.
+    "rxn": "rx",
     "make": "mt",  # make-tree ref (assembly/synthesis order)
     # General procurable-part store (``component-kind`` (git-only)) — a
     # slug entity; per-value sourced facts live in component_spec_values,

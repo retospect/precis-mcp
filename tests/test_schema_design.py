@@ -112,6 +112,13 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "llm_call_log.features",
         "material_properties.allowed_values",
         "material_values.conditions",
+        # rxn mirrors material's star schema (mig 0157). Both are genuinely
+        # open-ended: `allowed_values` is a per-property closed set whose
+        # members differ per property, and `conditions` holds whatever a
+        # source reported (solvent, catalyst, vendor, pack size, yield_type)
+        # — the whole point is that no fixed column set covers it.
+        "rxn_properties.allowed_values",
+        "rxn_values.conditions",
         "nanopub_artifacts.dois",
         "nanopub_mirror.assertion_predicates",
         "nanopub_mirror.dois",

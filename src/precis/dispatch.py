@@ -813,6 +813,7 @@ def boot(
         from precis.handlers.presentation import PresentationHandler
         from precis.handlers.quest import QuestHandler
         from precis.handlers.random import RandomHandler
+        from precis.handlers.rxn import RxnHandler
         from precis.handlers.skill import SkillHandler
         from precis.handlers.structure import StructureHandler
         from precis.handlers.tag import TagHandler
@@ -860,6 +861,10 @@ def boot(
         # component — general procurable-part store. Mirrors material's star schema plus a
         # category-scoped spec registry; made-of links to a material.
         _gated(ComponentHandler)
+        # rxn — sourced reaction-fact store. Same star schema as material with a
+        # transformation as the entity; many rows per (reaction, property) is the
+        # point, since the spread of reported yields IS the finding.
+        _gated(RxnHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or

@@ -95,6 +95,19 @@ lands off the tick via the compute lane, so a tick never blocks on the GPU — i
 mints, then a later tick reads the result. Depth: `precis-minter-help`,
 `precis-auto-todo-help`.
 
+## SMILES come back in code spans — strip before parsing
+
+`route` renders every SMILES inside backticks, and so does `rxn`. A
+stereocentre followed by a branch (`C[C@H](N)C(=O)O` — alanine, and much of
+drug-like space) matches markdown's inline-link grammar and would otherwise
+render as a *link*, silently deleting the structure from what you read.
+
+So: strip the backticks before handing a SMILES to anything that parses it.
+What is **stored** is always the bare canonical string — the wrapping is
+display-only. Passing SMILES *in* needs no escaping at all (MCP args are JSON,
+which round-trips them intact); it is only shells (`>>` redirects) and YAML
+(bare `NO` is *false*) that need quoting.
+
 ## The discipline (same as the rest of precis)
 
 - **Ground, then assert.** A route or a fold is a *model*; the corpus is the

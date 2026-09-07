@@ -398,6 +398,7 @@ _ARTIFACT_KIND_FALLBACK: tuple[str, ...] = (
     "make",
     "mermaid",
     "plan",
+    "rxn",
     "structure",
     "todo",
 )

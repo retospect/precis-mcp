@@ -49,6 +49,12 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
 
 ### Unbuilt slices
 
+- **Reaction facts + synthesis cost** — the `route` kind plans a graph but
+  records no yield and consumes none of its own `RouteGraph.metrics`. Designed
+  out separately in `reaction-kind-and-synthesis-cost.md` (2026-09-06),
+  including the core-vs-plugin question for the new `reaction` kind; that item
+  is the reconciliation point for "don't grow two chem surfaces".
+
 - **4c — `structure` convergence:** `cif → ASE → Scene.from_ase`
   (ADR 0043) for a 3D viewer / graph probes; a ColabFold MSA-mode
   engine for real accuracy (needs-decision: containerize + pick the

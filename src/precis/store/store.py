@@ -85,6 +85,7 @@ from precis.store._pcb_ops import PcbMixin
 from precis.store._pdf_ops import PdfMixin
 from precis.store._refs_ops import RefsMixin
 from precis.store._resource_slots_ops import ResourceSlotsMixin
+from precis.store._rxn_ops import RxnMixin
 from precis.store._scheduler_ops import SchedulerLeasesMixin
 from precis.store._structure_ops import StructureMixin
 from precis.store._tags_ops import TagsMixin
@@ -105,6 +106,7 @@ class Store(
     StructureMixin,
     PcbMixin,
     MaterialMixin,
+    RxnMixin,
     NanopubMixin,
     NanopubMirrorMixin,
     ComponentMixin,

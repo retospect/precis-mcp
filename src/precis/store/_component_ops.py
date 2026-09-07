@@ -170,6 +170,8 @@ class ComponentMixin:
                 "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
                 (title, Jsonb(merged), existing.id),
             )
+        # Read AFTER the transaction commits — see the note in
+        # ``_material_ops.material_entity_upsert``. gr329810.
         updated = self.get_ref(kind="component", id=slug)
         assert updated is not None
         return updated, False

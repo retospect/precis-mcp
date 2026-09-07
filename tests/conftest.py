@@ -509,6 +509,7 @@ def _initialise_test_db() -> Iterator[None]:
             _truncate_data_tables(PG_TEST_DSN)
             _ensure_material_seed(PG_TEST_DSN)
             _ensure_component_seed(PG_TEST_DSN)
+            _ensure_rxn_seed(PG_TEST_DSN)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)
@@ -796,6 +797,7 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "material_properties",  # seeded property registry, 0092 (core + proposed)
         "component_categories",  # seeded category registry, 0093 (core + proposed)
         "component_specs",  # seeded spec registry, 0093 (core + proposed)
+        "rxn_properties",  # seeded property registry, 0157 (core + proposed)
         "external_rate_limits",  # seeded provider rate/quota limits, 0121
     }
 )
@@ -934,6 +936,43 @@ def _ensure_material_seed(dsn: str) -> None:
         # Same driver Migrator.apply_all uses for a migration's raw SQL body
         # (handles the file's own BEGIN/COMMIT under autocommit=True — see
         # the comment on that call site).
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))
+
+
+def _ensure_rxn_seed(dsn: str) -> None:
+    """Defensive reseed of ``rxn_properties``' ``core`` tier — the ``rxn``
+    kind's analogue of :func:`_ensure_material_seed`. Same rationale: the seed
+    lives only in tail migration ``0157_rxn_kind.sql``'s ``INSERT ... ON
+    CONFLICT DO NOTHING``, which ``Migrator.apply_all`` skips once recorded, so
+    an emptied table never refills on its own.
+
+    Re-executes 0157's own SQL directly (bypassing the ``_migrations`` ledger
+    check) whenever the ``core`` tier is missing. Safe to call any time — the
+    file is idempotent for exactly this reason.
+    """
+    seed_file = MIGRATIONS_DIR / "0157_rxn_kind.sql"
+    if not seed_file.exists():
+        return  # this checkout predates the rxn kind; nothing to seed
+    from precis.store.migrate import _execute_dump_sql
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        exists = conn.execute(
+            "SELECT to_regclass('public.rxn_properties') IS NOT NULL"
+        ).fetchone()
+        if not (exists and exists[0]):
+            return  # 0157 hasn't applied yet; apply_all's own run will seed it
+        core_count = conn.execute(
+            "SELECT count(*) FROM rxn_properties WHERE status = 'core'"
+        ).fetchone()
+        if core_count and core_count[0] > 0:
+            return  # seed intact — nothing to repair
+        log.warning(
+            "conftest: rxn_properties core seed missing on %r — re-applying "
+            "0157's seed directly (see _ensure_rxn_seed)",
+            dsn,
+        )
         with conn.transaction():
             with conn.cursor() as cur:
                 _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))

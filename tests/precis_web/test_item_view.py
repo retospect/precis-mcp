@@ -291,6 +291,7 @@ def test_artifact_kinds_falls_back_when_hub_is_none() -> None:
         "make",
         "mermaid",
         "plan",
+        "rxn",
         "structure",
         "todo",
     ]
@@ -320,6 +321,7 @@ def test_artifact_kinds_falls_back_on_hub_error() -> None:
         "make",
         "mermaid",
         "plan",
+        "rxn",
         "structure",
         "todo",
     ]

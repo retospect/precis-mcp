@@ -511,6 +511,13 @@ def search(
     # category the spec is being read against.
     spec: str | None = None,
     category: str | None = None,
+    # rxn precedent filter (see precis-rxn-help): search(kind='rxn',
+    # property='yield', min=70, reaction_class='RXNO:0000024') — the same
+    # range-filter shape as material's property=, narrowed to one
+    # transformation class. This is the precedent read: "what yields do amide
+    # couplings actually give", answerable for a molecule nobody has made,
+    # unlike an exact-reaction lookup.
+    reaction_class: str | None = None,
     # discovery filter (see precis-search-help / precis-draft-help
     # "backfill"): uncited=<draft handle/slug/id> drops every source that
     # draft already cites — directly, or as a cited claim hub's
@@ -746,6 +753,9 @@ def search(
         payload["spec"] = spec
     if category is not None:
         payload["category"] = category
+    # rxn precedent filter — forwarded only when set, same discipline.
+    if reaction_class is not None:
+        payload["reaction_class"] = reaction_class
     # Discovery filter — forwarded only when set so a plain search never
     # trips the uncited= resolution path in the runtime dispatcher.
     if uncited is not None:
@@ -917,10 +927,25 @@ def put(
     unit: str | None = None,
     conditions: dict[str, Any] | None = None,
     maturity: str | None = None,
-    # material / component: method= how the value was obtained — one of
-    # 'measured'|'datasheet'|'dft'|'estimated' (material) or
-    # 'measured'|'datasheet'|'estimated'|'standard' (component).
+    # material / component / rxn: method= how the value was obtained — one of
+    # 'measured'|'datasheet'|'dft'|'estimated' (material),
+    # 'measured'|'datasheet'|'estimated'|'standard' (component), or
+    # 'measured'|'patent-extracted'|'literature-reported'|'predicted'|
+    # 'estimated'|'computed' (rxn — wider because it ingests bulk-extracted
+    # data, and a curated yield must stay distinguishable from a mined one).
     method: str | None = None,
+    # rxn: the reaction SMILES ('reactants>>products' or
+    # 'reactants>agents>products'). Canonicalised on write; both identity keys
+    # are derived from it. Required when creating a reaction entity.
+    rxn_smiles: str | None = None,
+    # rxn: an RXNO id (CC BY 4.0 reaction ontology) naming the transformation
+    # class. This is the axis precedent transfers on — an exact-reaction key
+    # never hits for a molecule nobody has made.
+    reaction_class: str | None = None,
+    # rxn: licence of the SOURCE a value came from. Load-bearing for anything
+    # published — an NC- or non-redistributable-licensed number must not leak
+    # into a nanopub. NULL means unrecorded, i.e. treat as unpublishable.
+    source_licence: str | None = None,
     source: str | None = None,
     chunk: str | None = None,
     # material / component (see precis-material-help / precis-component-help):
@@ -1067,6 +1092,9 @@ def put(
             "conditions": conditions,
             "maturity": maturity,
             "method": method,
+            "rxn_smiles": rxn_smiles,
+            "reaction_class": reaction_class,
+            "source_licence": source_licence,
             "source": source,
             "chunk": chunk,
             "as_of": as_of,

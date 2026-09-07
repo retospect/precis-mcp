@@ -129,6 +129,8 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | PCB netlist + placement | `kind='pcb'` + `kind='part'` / `kind='datasheet'` | `precis-pcb-help` |
 | Sourced material property (density, yield strength, ...) | `put(kind='material', id='<slug>', property='<prop_id>', value=..., unit='<canonical unit>')` — entity first, canonical units only | `precis-material-help` |
 | Materials with property in a range | `search(kind='material', property='thermal_conductivity', max=0.05)` | `precis-material-help` |
+| Record what a reaction actually yielded | `put(kind='rxn', id='<slug>', rxn_smiles='A.B>>C')` then `put(kind='rxn', id='<slug>', property='yield', value=83, unit='%', conditions={...}, method='measured', source='paper:<slug>', chunk='pc123')` | `precis-rxn-help` |
+| Precedent for a step ("what do amide couplings yield?") | `search(kind='rxn', property='yield', min=70, reaction_class='RXNO:...')` — works for a target nobody has made, since precedent transfers by transformation, not by molecule | `precis-rxn-help` |
 | Sourced component spec (bolt/hose/bearing/...) | `put(kind='component', id='<slug>', spec='<spec_id>', value=..., unit='<canonical unit>')` — entity first (`category=` required), canonical units only | `precis-component-help` |
 | Component made of a material | `put(kind='component', id='<slug>', made_of='material:<slug>')` | `precis-component-help` |
 | Components with spec in a range | `search(kind='component', spec='max_working_pressure', min=20, category='hose')` | `precis-component-help` |

@@ -64,7 +64,11 @@ class TestEntity:
         that *renders* as a no-op."""
         h = _handler(store)
         h.put(id="6061-t6", title="Aluminum 6061-T6", meta={"material_class": "metal"})
-        resp = h.put(id="6061-t6", title="Aluminum 6061-T6 (renamed)", meta={"aliases": ["AA6061-T6"]})
+        resp = h.put(
+            id="6061-t6",
+            title="Aluminum 6061-T6 (renamed)",
+            meta={"aliases": ["AA6061-T6"]},
+        )
         assert "Aluminum 6061-T6 (renamed)" in resp.body
         assert "AA6061-T6" in resp.body
 

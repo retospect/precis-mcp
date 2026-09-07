@@ -68,6 +68,11 @@ a property of the design, it's a *strategy over* the design.
 
 ## Synthesizability / buildability
 
+> The chemistry half of this section is designed out in
+> `reaction-kind-and-synthesis-cost.md` (2026-09-06): a `reaction` sourced-fact
+> store under both make-trees and routes, stock-termination as the hard DRC
+> tier, and the scores below as soft ranking inputs. Build it there, not here.
+
 - A **score on blocks/fragments, not just the whole** (BR-SAScore's move:
   fragment-level building-block and reaction-driven scores). Stored as an
   attached model result (`attached-models-layer.md`) so it carries

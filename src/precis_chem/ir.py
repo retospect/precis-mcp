@@ -126,10 +126,21 @@ class RouteGraph:
 
     # ── renders ──────────────────────────────────────────────────────
     def render(self) -> str:
-        """A markdown route tree the LLM reads. One line per step."""
+        """A markdown route tree the LLM reads. One line per step.
+
+        SMILES go inside code spans. A stereocentre followed by a branch —
+        ``C[C@H](N)C(=O)O``, alanine, and much of drug-like chemical space —
+        matches markdown's inline-link grammar ``[text](target)`` and would
+        otherwise render as a *link* (text ``C@H``, target ``N``), silently
+        deleting the structure from what the reader sees. Backticks are safe
+        unconditionally: SMILES have no backtick in their grammar.
+
+        Display only — ``card_text`` deliberately stays bare, because that
+        string feeds the search index, not a renderer.
+        """
         state = "solved" if self.solved else "unsolved"
         head = (
-            f"# route → {self.target}\n"
+            f"# route → `{self.target}`\n"
             f"engine: {self.engine} ({self.engine_version}) · {state} · "
             f"{len(self.steps)} step(s)"
         )
@@ -139,13 +150,21 @@ class RouteGraph:
             return head + "\n\n(no route found)"
         lines = [head, ""]
         for s in self.steps:
-            precursors = " + ".join(s.reactants) or "—"
+            precursors = " + ".join(f"`{r}`" for r in s.reactants) or "—"
             leaf = "  ✔ in stock" if s.in_stock else ""
             conf = f"  [{s.confidence:.2f}]" if s.confidence is not None else ""
-            tmpl = f"  «{s.template_id}»" if s.template_id else ""
-            lines.append(f"{s.id}. {s.product} ⇐ {precursors}{conf}{tmpl}{leaf}")
+            # template_id is documented as "template / SMARTS the engine
+            # matched"; guillemets are decoration, not an escape, so a SMARTS
+            # value would still be parsed as markdown. Code-span the whole
+            # thing.
+            tmpl = f"  `«{s.template_id}»`" if s.template_id else ""
+            lines.append(f"{s.id}. `{s.product}` ⇐ {precursors}{conf}{tmpl}{leaf}")
             if s.conditions:
-                lines.append(f"   conditions: {s.conditions}")
+                # Free text from the engine — reagents/solvent/catalyst. Ligand
+                # notation like Pd[P(t-Bu)3](OAc)2 hits the same inline-link
+                # grammar as a SMILES stereocentre and would drop the catalyst
+                # from the rendered line.
+                lines.append(f"   conditions: `{s.conditions}`")
         if self.metrics:
             lines += ["", self._metrics_line()]
         return "\n".join(lines)
@@ -180,7 +199,10 @@ class RouteGraph:
     def metrics_render(self) -> str:
         """The ``view='metrics'`` render — route descriptors as a table, the
         substrate for our own scoring. Empty ⇒ no normalizer ran (stub/legacy)."""
-        head = f"# route metrics → {self.target}\nengine: {self.engine} ({self.engine_version})"
+        head = (
+            f"# route metrics → `{self.target}`\n"
+            f"engine: {self.engine} ({self.engine_version})"
+        )
         if not self.metrics:
             return (
                 head

@@ -888,3 +888,62 @@ class _FakeCtx:
 
     def set_meta(self, **fields: Any) -> None:
         self.meta_updates.update(fields)
+
+
+def test_route_render_puts_smiles_in_code_spans() -> None:
+    """A stereocentre followed by a branch matches markdown's inline-link
+    grammar, so a bare SMILES in the route tree renders as a link and the
+    structure vanishes. Measured before the fix on this exact route:
+    `[C@H](N)` became a link with text 'C@H' targeting 'N'."""
+    import re
+
+    from precis_chem.ir import RouteGraph, RouteStep
+
+    g = RouteGraph(
+        target="C[C@H](N)C(=O)OCC",
+        engine="stub",
+        engine_version="0",
+        steps=[
+            RouteStep(
+                id=1,
+                product="C[C@H](N)C(=O)OCC",
+                reactants=["C[C@H](N)C(=O)O", "CCO"],
+                in_stock=True,
+            )
+        ],
+        solved=True,
+    )
+    for body in (g.render(), g.metrics_render()):
+        outside_code = re.sub(r"`[^`]*`", "", body)
+        assert not re.search(r"\[[^\]]*\]\([^)]*\)", outside_code), body
+
+    # card_text feeds the SEARCH INDEX, not a renderer — it must stay bare,
+    # or the backticks end up in the embedded text.
+    assert "`" not in g.card_text()
+
+
+def test_route_render_escapes_conditions_and_template() -> None:
+    """conditions/template_id are free text from the engine — ligand notation
+    (Pd[P(t-Bu)3](OAc)2) and SMARTS both hit the inline-link grammar."""
+    import re
+
+    from precis_chem.ir import RouteGraph, RouteStep
+
+    g = RouteGraph(
+        target="CCO",
+        engine="stub",
+        engine_version="0",
+        steps=[
+            RouteStep(
+                id=1,
+                product="CCO",
+                reactants=["CC=O"],
+                template_id="[C:1]=[O:2]>>[C:1][O:2]",
+                conditions="Pd[P(t-Bu)3](OAc)2, THF, 60C",
+            )
+        ],
+    )
+    body = g.render()
+    outside_code = re.sub(r"`[^`]*`", "", body)
+    assert not re.search(r"\[[^\]]*\]\([^)]*\)", outside_code), body
+    assert "Pd[P(t-Bu)3](OAc)2" in body

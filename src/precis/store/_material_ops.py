@@ -117,6 +117,9 @@ class MaterialMixin:
                 "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
                 (title, Jsonb(merged), existing.id),
             )
+        # Read AFTER the transaction commits: ``get_ref`` takes no ``conn`` and
+        # always opens its own pooled connection, so reading inside the block
+        # above returns the PRE-update row under READ COMMITTED. gr329810.
         updated = self.get_ref(kind="material", id=slug)
         assert updated is not None
         return updated, False
