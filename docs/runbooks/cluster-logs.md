@@ -53,18 +53,18 @@ orphan, stuck-doable, budget) as `kind='alert'` rows. Query the currently
 namespace as colon-strings — `alert-state:open`, `alert-source:…`,
 `severity:critical`):
 
-    ssh caspar 'psql -h 100.126.127.107 -p 6432 -U agent_rw -d precis_prod -F "\t" -tA -c "
+    PRECIS_PROD_PSQL_OPTS='-F "\t" -tA' scripts/prod-psql "
     WITH a AS (
       SELECT r.ref_id, r.title, r.updated_at,
-        max(CASE WHEN t.value LIKE '\''alert-state:%'\'' THEN split_part(t.value,'\'':'\'',2) END) state,
-        max(CASE WHEN t.value LIKE '\''alert-source:%'\'' THEN substr(t.value,14) END) source,
-        max(CASE WHEN t.value LIKE '\''severity:%'\'' THEN split_part(t.value,'\'':'\'',2) END) severity
+        max(CASE WHEN t.value LIKE 'alert-state:%' THEN split_part(t.value,':',2) END) state,
+        max(CASE WHEN t.value LIKE 'alert-source:%' THEN substr(t.value,14) END) source,
+        max(CASE WHEN t.value LIKE 'severity:%' THEN split_part(t.value,':',2) END) severity
       FROM refs r JOIN ref_tags rt ON rt.ref_id=r.ref_id
-                  JOIN tags t ON t.tag_id=rt.tag_id AND t.namespace='\''OPEN'\''
-      WHERE r.kind='\''alert'\'' AND r.retired_at IS NULL
+                  JOIN tags t ON t.tag_id=rt.tag_id AND t.namespace='OPEN'
+      WHERE r.kind='alert' AND r.retired_at IS NULL
       GROUP BY r.ref_id, r.title, r.updated_at)
-    SELECT severity, source, to_char(updated_at,'\''MM-DD HH24:MI'\''), left(title,85)
-    FROM a WHERE state='\''open'\'' ORDER BY (severity='\''critical'\'') DESC, source, updated_at DESC;"'
+    SELECT severity, source, to_char(updated_at,'MM-DD HH24:MI'), left(title,85)
+    FROM a WHERE state='open' ORDER BY (severity='critical') DESC, source, updated_at DESC;"
 
 Only `dead-worker`, `dispatch-stall`, `worker-restart`, `budget`, and
 `quota_check:auth` are `critical` (they page via asa-bot Discord); the rest

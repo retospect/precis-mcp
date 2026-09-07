@@ -20,7 +20,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SSH_HOST="${PRECIS_SCHEMA_SSH_HOST:-caspar}"
-DB_HOST="${PRECIS_SCHEMA_DB_HOST:-100.126.127.107}"
+# Resolved from the gitignored cluster overlay — the address must not live in
+# this public repo (see scripts/lib/pgb-host.sh).
+. "$(dirname "$0")/lib/pgb-host.sh"
+DB_HOST="${PRECIS_SCHEMA_DB_HOST:-$(resolve_pgb_host)}"
 DB_PORT="${PRECIS_SCHEMA_DB_PORT:-6432}"
 DB_USER="${PRECIS_SCHEMA_DB_USER:-agent_rw}"
 DB_NAME="${PRECIS_SCHEMA_DB_NAME:-precis_prod}"

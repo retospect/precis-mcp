@@ -62,6 +62,13 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   read-only); `scripts/db` is local-only.
 - **Agent-supplied-URL fetches → `safe_get`/`safe_stream`**
   (`utils/safe_fetch.py`); raw follow-redirects httpx is an SSRF.
+- **No cluster addresses anywhere — the repo is PUBLIC.** Tailnet/LAN IPs and
+  vault blobs are gated across the *whole* tree
+  (`tests/test_deploy_tree_no_secrets.py`); real node hostnames are gated under
+  `deploy/` only (there they mean an un-parameterised role). Prod coordinates
+  come from the gitignored overlay via `scripts/lib/pgb-host.sh` — use
+  `scripts/prod-psql`, never a literal. Genuine ranges/samples take a
+  `secret-gate: allow — <reason>` marker.
 - **Embeddings come from the worker, not ingest** — ingest stores chunks
   `embedding IS NULL`; never call `fill_embeddings` from ingest.
 - **`uv` for everything; tests via `scripts/test`** (container-mounted;

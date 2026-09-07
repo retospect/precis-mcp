@@ -104,9 +104,9 @@ As of **2026-07-05** (prod, `precis_prod`):
 Refresh with:
 
 ```sh
-ssh caspar 'psql -h 100.126.127.107 -p 6432 -U agent_rw -d precis_prod -c "
+scripts/prod-psql "
   SELECT
-    (SELECT count(*) FROM refs   WHERE kind = '\''paper'\'')                          AS papers_tracked,
-    (SELECT count(*) FROM refs   WHERE kind = '\''paper'\'' AND pdf_sha256 IS NOT NULL) AS papers_ingested,
-    (SELECT count(*) FROM chunks WHERE ord >= 0)                                     AS body_chunks;"'
+    (SELECT count(*) FROM refs   WHERE kind = 'paper')                          AS papers_tracked,
+    (SELECT count(*) FROM refs   WHERE kind = 'paper' AND pdf_sha256 IS NOT NULL) AS papers_ingested,
+    (SELECT count(*) FROM chunks WHERE ord >= 0)                                 AS body_chunks;"
 ```

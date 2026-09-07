@@ -23,7 +23,8 @@ clock.
 ## The pass — prod-hop and run these four scans
 
 Prod-hop as `agent_rw` (read-only; see CLAUDE.md "Peeking at prod"):
-`ssh caspar 'psql -h 100.126.127.107 -p 6432 -U agent_rw -d precis_prod -P pager=off -c "…"'`.
+`scripts/prod-psql "…"` (it wraps the hop, the pgbouncer coordinates and
+the `-X`/pager flags; see `scripts/lib/pgb-host.sh`).
 
 **1. Thrashing now — long-running active queries.** A query with a large
 `runtime`, or several copies of the *same* query, is the smoking gun.

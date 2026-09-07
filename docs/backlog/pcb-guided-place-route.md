@@ -150,11 +150,11 @@ the DB vault was never consulted at all.
 `~/Library/LaunchAgents/com.precis.web.plist` is unreadable to the ssh user
 (`PLIST_NOT_READABLE`) and `/opt/mcps/venv/bin/python` exists (`PY_OK`).
 But `scripts/prod-psql` shows the DSN can be built without it: it SSHes to
-`caspar` and runs psql against pgbouncer at `100.126.127.107:6432` as
+`caspar` and runs psql against pgbouncer at `$PGB_HOST:6432` as
 `agent_rw` on `precis_prod`, with the **password supplied by `.pgpass`**.
 So the probe should run with a password-free DSN —
 
-    PRECIS_DATABASE_URL="postgresql://agent_rw@100.126.127.107:6432/precis_prod"
+    PRECIS_DATABASE_URL="postgresql://agent_rw@$PGB_HOST:6432/precis_prod"
 
 — which libpq/psycopg completes from `.pgpass`, so no secret ever appears
 in the command or the output. Substitute that for `<the web service's DSN>`

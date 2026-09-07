@@ -20,7 +20,10 @@
 set -euo pipefail
 
 HOST="${PRECIS_PROD_SSH_HOST:-caspar}"
-PGB_HOST=100.126.127.107
+# Resolved from the gitignored cluster overlay — the address must not live in
+# this public repo (see scripts/lib/pgb-host.sh).
+. "$(dirname "$0")/lib/pgb-host.sh"
+PGB_HOST="$(resolve_pgb_host)"
 PGB_PORT=6432
 PGUSER=agent_rw
 PGDB=precis_prod

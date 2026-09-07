@@ -8,9 +8,11 @@ on the real embedder.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -23,6 +25,14 @@ from precis.workers.runner import (
     run_loop,
 )
 from precis.workers.summarize import RakeLemmaHandler
+
+
+def _payload(record: logging.LogRecord) -> dict[str, Any] | None:
+    """The runner attaches ``payload`` via ``extra=``, so it is not declared on
+    the stdlib :class:`logging.LogRecord` type — read it dynamically."""
+    return getattr(record, "payload", None)
+
+
 from tests.workers._helpers import make_mock_bge_m3, seed_chunks
 
 # ---------------------------------------------------------------------------
@@ -349,11 +359,11 @@ class TestRunLoopRefPassCrash:
         errored = [
             r
             for r in caplog.records
-            if getattr(r, "payload", None) is not None
-            and r.payload.get("handler") == "stub_rank"
+            if (p := _payload(r)) is not None and p.get("handler") == "stub_rank"
         ]
         assert len(errored) == 1
-        payload = errored[0].payload
+        payload = _payload(errored[0])
+        assert payload is not None
         assert payload["failed"] == 1
         assert payload["claimed"] == 0
         assert payload["ok"] == 0

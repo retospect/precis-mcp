@@ -87,12 +87,12 @@ class SsrfBlocked(Exception):
 _BLOCKED_V4: tuple[ipaddress.IPv4Network, ...] = (
     ipaddress.IPv4Network("0.0.0.0/8"),  # "this" network
     ipaddress.IPv4Network("10.0.0.0/8"),  # RFC1918
-    ipaddress.IPv4Network("100.64.0.0/10"),  # carrier-grade NAT
+    ipaddress.IPv4Network("100.64.0.0/10"),  # secret-gate: allow — CGNAT
     ipaddress.IPv4Network("127.0.0.0/8"),  # loopback
     ipaddress.IPv4Network("169.254.0.0/16"),  # link-local + cloud metadata
     ipaddress.IPv4Network("172.16.0.0/12"),  # RFC1918
     ipaddress.IPv4Network("192.0.0.0/24"),  # IETF protocol assignments
-    ipaddress.IPv4Network("192.168.0.0/16"),  # RFC1918
+    ipaddress.IPv4Network("192.168.0.0/16"),  # secret-gate: allow — RFC1918
     ipaddress.IPv4Network("198.18.0.0/15"),  # benchmark
     ipaddress.IPv4Network("224.0.0.0/4"),  # multicast
     ipaddress.IPv4Network("240.0.0.0/4"),  # reserved

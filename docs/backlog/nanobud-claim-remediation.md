@@ -620,7 +620,7 @@ Unblock, in preference order:
    **not** work, including for a human: an interactive SSH login does
    not unlock the macOS login keychain either.
 3. **Run it from reto's workstation against the prod DSN.** `claude -p`
-   succeeds there and pgbouncer `100.126.127.107:6432` is directly
+   succeeds there and pgbouncer `$PGB_HOST:6432` is directly
    reachable. Blocked for the agent only because the worktree guard
    refuses the nested `ssh …` command substitution needed to fetch the
    DSN, and there is no local `~/.pgpass` entry for `precis_prod`.

@@ -889,7 +889,7 @@ def test_deadman_ping_blocked_without_optin_logs_and_does_not_raise(
     def boom_http_client(**kwargs):
         raise SsrfBlocked("refusing host 'lan-target': private range")
 
-    monkeypatch.setenv(health_digest.DEADMAN_PING_URL_ENV, "http://192.168.1.5/ping")
+    monkeypatch.setenv(health_digest.DEADMAN_PING_URL_ENV, "http://203.0.113.5/ping")
     monkeypatch.delenv(health_digest.DEADMAN_ALLOW_PRIVATE_ENV, raising=False)
     monkeypatch.setattr("precis.utils.http.http_client", boom_http_client)
 
@@ -923,13 +923,13 @@ def test_deadman_ping_optin_allows_private_target(monkeypatch) -> None:
         def Client(**kwargs):
             return _FakeClient()
 
-    monkeypatch.setenv(health_digest.DEADMAN_PING_URL_ENV, "http://192.168.1.5/ping")
+    monkeypatch.setenv(health_digest.DEADMAN_PING_URL_ENV, "http://203.0.113.5/ping")
     monkeypatch.setenv(health_digest.DEADMAN_ALLOW_PRIVATE_ENV, "1")
     monkeypatch.setattr("precis.utils.http.require_httpx", lambda: _FakeHttpx)
 
     _ping_deadman()
 
-    assert calls == ["http://192.168.1.5/ping"]
+    assert calls == ["http://203.0.113.5/ping"]
 
 
 # ── (7) hosts_alive LIMIT matches nursery's host-dark LIMIT ─────────────

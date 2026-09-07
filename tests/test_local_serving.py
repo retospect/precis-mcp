@@ -273,13 +273,13 @@ def test_remote_routable_endpoint_is_acquirable(store) -> None:
         "otherhost",
         "remote-big",
         2,
-        endpoint="http://192.168.6.197:8080/v1",
+        endpoint="http://203.0.113.10:8080/v1",
         served_model="deepseek-v4-flash-0731",
     )
     slot = local_serving.acquire("remote-big")
     assert slot is not None and slot.reserved and not slot.paused
     assert slot.host == "otherhost"
-    assert slot.endpoint == "http://192.168.6.197:8080/v1"
+    assert slot.endpoint == "http://203.0.113.10:8080/v1"
     assert slot.served_model == "deepseek-v4-flash-0731"
     free = {s.resource: s.free for s in store.resource_slots_for_host("otherhost")}
     assert free["llm:remote-big"] == 1
@@ -322,7 +322,7 @@ def test_remote_acquire_pauses_when_fleet_cap_full(store) -> None:
         "otherhost",
         "remote-solo",
         1,
-        endpoint="http://192.168.6.197:8080/v1",
+        endpoint="http://203.0.113.10:8080/v1",
     )
     first = local_serving.acquire("remote-solo")
     assert first is not None and first.reserved
@@ -346,7 +346,7 @@ def test_local_serving_wins_over_remote(store) -> None:
                 {
                     "host": "otherhost",
                     "max_parallel": 4,
-                    "endpoint": "http://192.168.6.197:8080/v1",
+                    "endpoint": "http://203.0.113.10:8080/v1",
                 },
                 {
                     "host": "testnode",

@@ -10,7 +10,7 @@ role), so this class of failure surfaces as a morning outage.
 
 ## Diagnostic chain
 
-1. pgbouncer on caspar `100.126.127.107:6432` answers but returns
+1. pgbouncer on caspar `$PGB_HOST:6432` answers but returns
    `client_login_timeout (server down)` → the backend Postgres on `5432` is
    down, not the pooler.
 2. Check `uptime` — a reboot in the last few hours is the tell.

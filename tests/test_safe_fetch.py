@@ -42,10 +42,10 @@ BLOCKED_LITERALS = [
     "http://127.0.0.1/",  # loopback
     "http://169.254.169.254/",  # cloud metadata
     "http://10.0.0.5/",  # RFC1918
-    "http://192.168.1.1/",  # RFC1918
+    "http://192.168.1.1/",  # RFC1918  # secret-gate: allow — SSRF blocklist sample
     "http://172.16.0.1/",  # RFC1918
     "http://0.0.0.0/",  # "this" network
-    "http://100.64.0.1/",  # CGNAT
+    "http://100.64.0.1/",  # CGNAT  # secret-gate: allow — SSRF blocklist sample
     "http://[::1]/",  # IPv6 loopback
     "http://[fe80::1]/",  # IPv6 link-local
     "http://[fc00::1]/",  # IPv6 ULA
