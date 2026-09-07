@@ -11,13 +11,24 @@
 # toolchain, own nothing" — see the stage header in docker/Dockerfile), so
 # the whole context is the Dockerfile itself, shipped as one file.
 #
-# STALENESS PROBE (mirrors 33): `--label org.precis.sha=<sha>` stamped at
-# build, read back via `podman image inspect`. Missing image / missing
-# label / different sha → rebuild; SAME → skipped.
-# `-e precis_force_code_task_build=true` overrides. The stamped sha is the
-# controller checkout's `main` (or `-e precis_target_sha=<sha>`) — the
-# Dockerfile is the only input, so the stamp is provenance, not a strict
-# content hash.
+# STALENESS PROBE: keyed on the **Dockerfile content hash** (label
+# `org.precis.dockerfile-sha`), NOT the moving git sha — the Dockerfile
+# is this build's ONLY input, so a git-sha key would re-trigger the
+# (long, egress-dependent) build on every main-moving deploy for no
+# content change. Missing image / missing label / different hash →
+# rebuild; SAME → skipped. `-e precis_force_code_task_build=true`
+# overrides. `org.precis.sha` is still stamped as provenance only.
+# The build is wrapped in `timeout` — a sandbox host whose container
+# egress silently blackholes a download host (castor's first run hung
+# 40 min inside `curl deb.nodesource.com`; the UniFi-DPI TLS-block
+# family) must fail the play boundedly, never wedge the deploy. When
+# egress is blocked, build the image on the controller (full egress,
+# same arm64) and hand-carry it:
+#   docker build --target code-task -t code-task:latest \
+#     --label "org.precis.dockerfile-sha=$(shasum -a 256 docker/Dockerfile | awk '{print $1}')" \
+#     -f docker/Dockerfile docker/
+#   docker save code-task:latest | gzip | ssh <host> 'gunzip | podman load'
+# — the probe then converges on the label and skips.
 #
 # BUILDER: podman as `deploy` — the SAME user+runtime the executor launches
 # with (precis-worker.service.j2 User=deploy; launch is deliberately
@@ -91,11 +102,20 @@
       register: _ct_digest_probe
       changed_when: false
 
-    - name: Read the resident image's stamped sha (staleness probe)
+    - name: Hash the Dockerfile (the build's only input — the staleness key)
+      ansible.builtin.shell:
+        cmd: shasum -a 256 "{{ playbook_dir }}/../../docker/Dockerfile" | awk '{print $1}'
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: _ct_df_hash
+      changed_when: false
+
+    - name: Read the resident image's stamped Dockerfile hash (staleness probe)
       ansible.builtin.command:
         cmd: >-
           podman image inspect
-          -f {% raw %}'{{ index .Config.Labels "org.precis.sha" }}'{% endraw %}
+          -f {% raw %}'{{ index .Config.Labels "org.precis.dockerfile-sha" }}'{% endraw %}
           code-task:latest
       become: true
       become_user: "{{ _ct_build_user }}"
@@ -108,7 +128,7 @@
         _ct_stale: >-
           {{ (precis_force_code_task_build | default(false) | bool)
              or (_ct_label.rc != 0)
-             or ((_ct_label.stdout | trim | replace("'", '')) != (_ct_sha_probe.stdout | trim)) }}
+             or ((_ct_label.stdout | trim | replace("'", '')) != (_ct_df_hash.stdout | trim)) }}
 
     - name: Stage the build dir (Dockerfile-only context)
       ansible.builtin.file:
@@ -161,13 +181,15 @@
              else 'docker.io/library/python' }}
       when: _ct_stale | bool
 
-    - name: Build code-task:<sha> + code-task:latest (podman, as the executor's user)
+    - name: Build code-task:<sha> + code-task:latest (podman, bounded, as the executor's user)
       ansible.builtin.command:
         cmd: >-
+          timeout {{ precis_code_task_build_timeout_sec | default(3600) }}
           podman build --target code-task
           --build-arg PYTHON_IMAGE={{ _ct_python_image | trim }}
           -t code-task:{{ _ct_sha_probe.stdout | trim }}
           -t code-task:latest
+          --label org.precis.dockerfile-sha={{ _ct_df_hash.stdout | trim }}
           --label org.precis.sha={{ _ct_sha_probe.stdout | trim }}
           -f {{ _ct_build_dir }}/Dockerfile
           {{ _ct_build_dir }}
