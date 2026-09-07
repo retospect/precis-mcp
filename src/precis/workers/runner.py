@@ -305,27 +305,56 @@ def run_loop(
             if should_stop is not None and should_stop():
                 log.info("worker: stop signal received; exiting loop")
                 return
-            if pass_gate is not None:
-                # Prefer an explicit ``service_name`` attribute (per-axis
-                # closures registered under distinct ``axis:<id>`` services
-                # all share the literal ``__name__`` ``_axis_pass``, so the
-                # name-derived fallback below can't tell them apart) over
-                # the ``__name__``-derived service.
-                service = getattr(ref_pass, "service_name", None)
-                if service is None:
-                    fn_name = getattr(ref_pass, "__name__", "")
-                    if fn_name.startswith("_") and fn_name.endswith("_pass"):
-                        service = fn_name[1:-5]
-                if service is not None and not pass_gate(service):
-                    # Live-disabled via service_config (prio 0). Skip
-                    # this cycle; not counted as work so the loop can
-                    # still idle-sleep when everything else is drained.
-                    continue
+            # Prefer an explicit ``service_name`` attribute (per-axis
+            # closures registered under distinct ``axis:<id>`` services
+            # all share the literal ``__name__`` ``_axis_pass``, so the
+            # name-derived fallback below can't tell them apart) over
+            # the ``__name__``-derived service. Computed unconditionally
+            # (not only under ``pass_gate``) because the crash path below
+            # needs it too, as the payload's ``handler`` key.
+            service = getattr(ref_pass, "service_name", None)
+            if service is None:
+                fn_name = getattr(ref_pass, "__name__", "")
+                if fn_name.startswith("_") and fn_name.endswith("_pass"):
+                    service = fn_name[1:-5]
+            if pass_gate is not None and service is not None and not pass_gate(service):
+                # Live-disabled via service_config (prio 0). Skip
+                # this cycle; not counted as work so the loop can
+                # still idle-sleep when everything else is drained.
+                continue
             activity.set_pass(ref_pass.__name__)
             try:
                 result = ref_pass(batch_size)
-            except Exception:
-                log.exception("worker: ref-pass raised; continuing")
+            except Exception as exc:
+                # A ref-pass that crashes every single cycle must not go
+                # structurally invisible: the pass-dead probe
+                # (workers/conditions.py's ``_PASS_DEAD_SQL``) only counts
+                # ``worker_logs`` rows carrying ``payload ? 'handler'``, so
+                # without a payload here a handler that crashes
+                # deterministically on every tick and one that never runs
+                # at all look identical -- total silence (gr328589). This
+                # errored row closes that structurally: a crash-looping
+                # handler IS still "running" from the scheduler's point of
+                # view, so pass-dead correctly falls quiet once this
+                # lands; the crash itself now surfaces via this row (and,
+                # for a pass hardened to catch its own step failures --
+                # see stub_rank's per-step guards -- via its normal
+                # failed>0 success-path payload instead of even reaching
+                # here).
+                handler_name = service or getattr(ref_pass, "__name__", "ref_pass")
+                log.exception(
+                    "worker: %s ref-pass raised; continuing",
+                    handler_name,
+                    extra={
+                        "payload": {
+                            "handler": handler_name,
+                            "claimed": 0,
+                            "ok": 0,
+                            "failed": 1,
+                            "error": type(exc).__name__,
+                        }
+                    },
+                )
                 continue
             finally:
                 activity.clear()

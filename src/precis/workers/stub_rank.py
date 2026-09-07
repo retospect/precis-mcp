@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -446,18 +447,58 @@ def compute_stub_percentiles(
     hand the same percentile map to the step (d) LLM band without
     recomputing the cosine pass. Returns ``{}`` with no stubs or no
     anchors.
+
+    A stub (or anchor) vector whose element count doesn't match the
+    batch's own modal dimension is quarantined -- logged and dropped --
+    rather than handed to :func:`numpy.array`, which would otherwise
+    raise ``ValueError`` (inhomogeneous shape) and take the *entire*
+    batch down over one malformed row (a partial write, a stray
+    dimension-mismatched embedder swap, row corruption). The expected
+    dimension is derived from the batch itself (most-common length)
+    rather than a hardcoded embedder constant, so this can't
+    false-positive if the corpus's configured embedder ever changes
+    dimension -- the majority of a still-consistent batch always
+    outvotes the stragglers, and a bad row simply stays unranked with a
+    warning naming it instead of silencing the whole pass (gr328589).
     """
     if not stub_vectors or not anchors:
         return {}
 
-    ref_ids = list(stub_vectors.keys())
-    stub_mat = np.array([stub_vectors[rid] for rid in ref_ids], dtype=np.float64)
+    dim_counts = Counter(len(v) for v in stub_vectors.values())
+    expected_dim = dim_counts.most_common(1)[0][0]
+
+    ref_ids: list[int] = []
+    rows: list[list[float]] = []
+    for ref_id, vec in stub_vectors.items():
+        if len(vec) != expected_dim:
+            log.warning(
+                "stub_rank rank: skipping ref %d -- malformed embedding "
+                "(dim %d, expected %d for this batch)",
+                ref_id,
+                len(vec),
+                expected_dim,
+            )
+            continue
+        ref_ids.append(ref_id)
+        rows.append(vec)
+    if not ref_ids:
+        return {}
+
+    stub_mat = np.array(rows, dtype=np.float64)
     stub_norms = np.linalg.norm(stub_mat, axis=1, keepdims=True)
     stub_norms[stub_norms == 0] = 1.0
     stub_unit = stub_mat / stub_norms
 
     scores = np.full(len(ref_ids), -np.inf, dtype=np.float64)
     for anchor_vec, weight in anchors:
+        if len(anchor_vec) != expected_dim:
+            log.warning(
+                "stub_rank rank: skipping anchor -- malformed embedding "
+                "(dim %d, expected %d for this batch)",
+                len(anchor_vec),
+                expected_dim,
+            )
+            continue
         a = np.array(anchor_vec, dtype=np.float64)
         a_norm = np.linalg.norm(a)
         if a_norm == 0:
@@ -1023,6 +1064,18 @@ def run_stub_rank_pass(
     re-ranked / labeled). Individual per-stub failures are logged and
     excluded from both counts rather than raising — a bad S2 id, a poison
     embed, or an unparseable LLM reply must not take the whole pass down.
+
+    Each of the four steps additionally runs behind its own try/except
+    here: an entire *step* raising (not just a per-stub failure inside
+    it -- e.g. step (c)'s numpy pass choking on a corrupt stored vector)
+    is logged and counted into ``failed`` rather than escaping. A step
+    that blows up 100% of the time would otherwise take the exception
+    all the way out to ``runner.run_loop``'s generic ref-pass handler,
+    which logs no payload -- structurally indistinguishable, to the
+    ``pass-dead`` alert, from a handler that never runs at all (the
+    gr328589 incident: a host's stub_rank went silent for 10.6h on
+    exactly this path). Surfacing ``failed>0`` here instead keeps the
+    crash visible via this pass's own normal success-path log line.
     """
     if api_key is None:
         from precis.secrets import get_secret
@@ -1032,19 +1085,46 @@ def run_stub_rank_pass(
     batch_limit = limit if limit is not None else _enrich_batch_size()
     band_batch_limit = band_limit if band_limit is not None else _llm_batch_limit()
 
-    enrich_attempted, enrich_resolved = _run_enrich(
-        store, limit=batch_limit, api_key=api_key, resolve_batch=resolve
-    )
-    embed_attempted, embed_ok = _run_embed(store, embedder=embedder, limit=batch_limit)
-    ranked, percentiles = _run_rank(store)
-    band_attempted, band_labeled = _run_llm_band(
-        store, client=band_client, percentiles=percentiles, limit=band_batch_limit
-    )
+    step_failures = 0
+
+    try:
+        enrich_attempted, enrich_resolved = _run_enrich(
+            store, limit=batch_limit, api_key=api_key, resolve_batch=resolve
+        )
+    except Exception:
+        log.exception("stub_rank: enrich step raised; continuing")
+        enrich_attempted, enrich_resolved = 0, 0
+        step_failures += 1
+
+    try:
+        embed_attempted, embed_ok = _run_embed(
+            store, embedder=embedder, limit=batch_limit
+        )
+    except Exception:
+        log.exception("stub_rank: embed step raised; continuing")
+        embed_attempted, embed_ok = 0, 0
+        step_failures += 1
+
+    try:
+        ranked, percentiles = _run_rank(store)
+    except Exception:
+        log.exception("stub_rank: rank step raised; continuing")
+        ranked, percentiles = 0, {}
+        step_failures += 1
+
+    try:
+        band_attempted, band_labeled = _run_llm_band(
+            store, client=band_client, percentiles=percentiles, limit=band_batch_limit
+        )
+    except Exception:
+        log.exception("stub_rank: band step raised; continuing")
+        band_attempted, band_labeled = 0, 0
+        step_failures += 1
 
     return {
         "claimed": enrich_attempted + embed_attempted + ranked + band_attempted,
         "ok": enrich_resolved + embed_ok + ranked + band_labeled,
-        "failed": 0,
+        "failed": step_failures,
     }
 
 

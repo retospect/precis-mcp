@@ -136,6 +136,46 @@ class TestComputeStubPercentiles:
         out = compute_stub_percentiles({1: _unit(0.0, 1.0)}, [anchor])
         assert out[1] == 1.0
 
+    def test_malformed_vector_row_is_skipped_others_still_ranked(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A single stub whose stored embedding has the wrong dimension
+        (a partial write, a stray dimension-mismatched embedder swap)
+        must not blow up ``np.array`` for the whole batch (gr328589) --
+        it's quarantined (logged, excluded) while every well-formed
+        stub in the same batch still gets ranked."""
+        anchor = (_unit(1.0, 0.0), 1.0)
+        stubs = {
+            1: _unit(1.0, 0.0),  # well-formed, best match
+            2: _unit(-1.0, 0.0),  # well-formed, worst match
+            3: _unit(0.5, 0.5, 0.1),  # malformed: 3 dims, batch is 2
+        }
+        with caplog.at_level("WARNING"):
+            out = compute_stub_percentiles(stubs, [anchor])
+        assert out == {1: 1.0, 2: 0.0}
+        assert 3 not in out
+        assert any(
+            "skipping ref 3" in r.message and "malformed embedding" in r.message
+            for r in caplog.records
+        )
+
+    def test_malformed_anchor_is_skipped_not_raised(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The same dimension guard applies to anchors -- a mismatched
+        anchor (e.g. a stale/different-embedder card vector) is skipped
+        rather than blowing up the ``stub_unit @ (a / a_norm)`` matmul."""
+        good_anchor = (_unit(1.0, 0.0), 1.0)
+        bad_anchor = (_unit(1.0, 0.0, 0.0), 1.0)  # wrong dim vs. the stubs
+        stubs = {1: _unit(1.0, 0.0), 2: _unit(-1.0, 0.0)}
+        with caplog.at_level("WARNING"):
+            out = compute_stub_percentiles(stubs, [good_anchor, bad_anchor])
+        assert out == {1: 1.0, 2: 0.0}
+        assert any(
+            "skipping anchor" in r.message and "malformed embedding" in r.message
+            for r in caplog.records
+        )
+
 
 # ── LLM label delta (applied before _clamp_prio) ────────────────────
 
@@ -938,3 +978,78 @@ class TestRunStubRankPassPriorityWiring:
             band_client=_FakeBandClient([]),
         )
         assert out == {"claimed": 5, "ok": 3, "failed": 0}
+
+
+class TestRunStubRankPassStepGuards:
+    """gr328589: no single step's exception may escape ``run_stub_rank_pass``
+    -- each is caught, logged, and folded into ``failed`` so the crash is
+    visible via this pass's own normal success-path log line instead of
+    bubbling to ``runner.run_loop``'s payload-less generic handler."""
+
+    def test_rank_step_raising_is_caught_others_still_run(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from precis.workers import stub_rank
+
+        monkeypatch.setattr(stub_rank, "_run_enrich", lambda store, **kw: (2, 1))
+        monkeypatch.setattr(stub_rank, "_run_embed", lambda store, **kw: (3, 3))
+
+        def _boom(store: object) -> tuple[int, dict[int, float]]:
+            raise ValueError("malformed vector blew up the whole batch")
+
+        monkeypatch.setattr(stub_rank, "_run_rank", _boom)
+        band_calls: list[dict[int, float]] = []
+
+        def _fake_band(
+            store: object, *, client: object, percentiles: dict[int, float], limit: int
+        ) -> tuple[int, int]:
+            band_calls.append(percentiles)
+            return 0, 0
+
+        monkeypatch.setattr(stub_rank, "_run_llm_band", _fake_band)
+
+        with caplog.at_level("ERROR"):
+            out = stub_rank.run_stub_rank_pass(
+                _FAKE_STORE, api_key="", resolve_batch=lambda *a: []
+            )
+
+        # No exception escaped; enrich still ran (2 attempted, 1 resolved),
+        # embed still ran (3, 3); rank contributes nothing but a failed tick.
+        assert out == {"claimed": 5, "ok": 4, "failed": 1}
+        # The rank step's crash didn't stop the band step from being
+        # called with an empty percentile map (degrade, don't cascade).
+        assert band_calls == [{}]
+        assert any(
+            "rank step raised" in r.message for r in caplog.records
+        )
+
+    def test_every_step_raising_sums_failed_and_never_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers import stub_rank
+
+        def _boom_enrich(store: object, **kw: object) -> tuple[int, int]:
+            raise RuntimeError("S2 batch resolve exploded")
+
+        def _boom_embed(store: object, **kw: object) -> tuple[int, int]:
+            raise RuntimeError("embedder exploded")
+
+        def _boom_rank(store: object) -> tuple[int, dict[int, float]]:
+            raise ValueError("malformed vector")
+
+        def _boom_band(
+            store: object, *, client: object, percentiles: dict[int, float], limit: int
+        ) -> tuple[int, int]:
+            raise RuntimeError("LLM client exploded")
+
+        monkeypatch.setattr(stub_rank, "_run_enrich", _boom_enrich)
+        monkeypatch.setattr(stub_rank, "_run_embed", _boom_embed)
+        monkeypatch.setattr(stub_rank, "_run_rank", _boom_rank)
+        monkeypatch.setattr(stub_rank, "_run_llm_band", _boom_band)
+
+        # Must not raise -- this is the exact call shape cli/worker.py's
+        # ``_stub_rank_pass`` closure makes every tick.
+        out = stub_rank.run_stub_rank_pass(
+            _FAKE_STORE, api_key="", resolve_batch=lambda *a: []
+        )
+        assert out == {"claimed": 0, "ok": 0, "failed": 4}

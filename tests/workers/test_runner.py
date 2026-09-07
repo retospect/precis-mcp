@@ -329,6 +329,61 @@ class TestRunLoop:
 
 
 # ---------------------------------------------------------------------------
+# run_loop — a crashing ref-pass must log a payload-bearing errored row
+# (gr328589): the pass-dead probe only sees worker_logs rows carrying
+# ``payload ? 'handler'``, so a ref-pass that raises every cycle must not
+# go silent (indistinguishable from one that never runs at all).
+# ---------------------------------------------------------------------------
+
+
+class TestRunLoopRefPassCrash:
+    def test_raising_ref_pass_logs_payload_bearing_errored_row(
+        self, store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def _stub_rank_pass(batch_size: int) -> BatchResult:
+            raise ValueError("malformed vector blew up the whole batch")
+
+        with caplog.at_level("ERROR", logger="precis.workers.runner"):
+            run_loop([], store, once=True, ref_passes=[_stub_rank_pass])
+
+        errored = [
+            r
+            for r in caplog.records
+            if getattr(r, "payload", None) is not None
+            and r.payload.get("handler") == "stub_rank"
+        ]
+        assert len(errored) == 1
+        payload = errored[0].payload
+        assert payload["failed"] == 1
+        assert payload["claimed"] == 0
+        assert payload["ok"] == 0
+        assert payload.get("error") == "ValueError"
+        assert errored[0].levelname == "ERROR"
+
+    def test_run_loop_continues_after_ref_pass_crash(self, store) -> None:
+        """The crash must not stop the rest of the cycle -- a second
+        ref-pass after the crashing one still runs, and the loop still
+        returns cleanly under ``once=True``."""
+        calls: list[str] = []
+
+        def _crashing_pass(batch_size: int) -> BatchResult:
+            calls.append("crash")
+            raise RuntimeError("boom")
+
+        def _healthy_pass(batch_size: int) -> BatchResult:
+            calls.append("healthy")
+            return BatchResult(handler="healthy", claimed=0, ok=0, failed=0)
+
+        run_loop(
+            [],
+            store,
+            once=True,
+            ref_passes=[_crashing_pass, _healthy_pass],
+        )
+        assert calls == ["crash", "healthy"]
+
+
+# ---------------------------------------------------------------------------
 # run_loop — drain file pauses claims
 # ---------------------------------------------------------------------------
 
