@@ -1019,9 +1019,7 @@ class TestRunStubRankPassStepGuards:
         # The rank step's crash didn't stop the band step from being
         # called with an empty percentile map (degrade, don't cascade).
         assert band_calls == [{}]
-        assert any(
-            "rank step raised" in r.message for r in caplog.records
-        )
+        assert any("rank step raised" in r.message for r in caplog.records)
 
     def test_every_step_raising_sums_failed_and_never_raises(
         self, monkeypatch: pytest.MonkeyPatch
