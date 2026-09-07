@@ -1,0 +1,70 @@
+# 35-precis-worker-sandbox.yml — the sandbox_run claimant lane on
+# agent_sandbox_hosts (agent-workspace-containers slice 1).
+#
+# WHY A DEDICATED UNIT. The job_claude_docker pass lives in the collapsed
+# `--profile all` worker (20b) — which runs only on gateway+scheduler. The
+# chosen sandbox host (castor; decisions Reto 2026-09-06) is a `serving`
+# node: its system worker is heartbeat-only (20c, no queue claims) and its
+# compute lane is `--only job_ssh_node` (43). Without this unit, an enabled
+# sandbox host has NOTHING running the pass. Same lane shape as 43: one
+# narrow `--only` worker, short idle, detached podman children.
+#
+# SECURITY SHAPE (matches sandbox_run's design): this unit's process holds
+# the worker DSN and resolves CLAUDE_CODE_OAUTH_TOKEN from the DB vault at
+# launch time (secrets.py; no token in this unit's env file). melchior is
+# hard-excluded from agent_sandbox_hosts by the job_type itself.
+#
+# HOME=/home/deploy is load-bearing: the executor launches rootless podman
+# as this unit's user, and podman resolves `code-task:latest` from
+# $HOME-anchored container storage — the SAME storage playbooks/
+# 34-code-task-image.yml builds into (podman as deploy). A diverging HOME
+# (43 uses /var/lib/precis for MACE-cache reasons) would make the built
+# image invisible to the worker.
+
+- name: Deploy the sandbox_run worker lane (agent_sandbox_hosts)
+  hosts: agent_sandbox_hosts
+  become: true
+  vars:
+    _sb_venv: /opt/precis/venv
+    _sb_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  tasks:
+    - name: render + load the sandbox worker lane unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker-sandbox
+        service_unit_run_as: deploy
+        service_unit_working_dir: /tmp
+        service_unit_schedule:
+          mode: keepalive
+        # Restart-storm breaker, same bounds as the compute lane (43).
+        service_unit_start_limit_interval_sec: 600
+        service_unit_start_limit_burst: 8
+        # 60s drain before SIGKILL — sandbox containers are detached
+        # (conmon-owned) and survive a worker bounce; the next pass
+        # re-adopts them by container name (claude_docker's poll).
+        service_unit_timeout_stop_sec: 60
+        # KillMode=process: the detached podman/conmon children must
+        # survive this unit's restart (same reasoning as 43's NEB runs) —
+        # reaping is by container name, never by this cgroup.
+        service_unit_kill_mode: process
+        # --only job_claude_docker: exactly one pass (poll + claim +
+        # launch). --batch-size 1: one NEW launch per tick;
+        # PRECIS_SANDBOX_CONCURRENCY (executor-side, default 2) caps
+        # total in-flight regardless. Short idle so a freed slot refills
+        # in seconds.
+        service_unit_exec: >-
+          {{ _sb_venv }}/bin/precis worker --only job_claude_docker
+          --batch-size 1
+          --idle-seconds {{ precis_worker_sandbox_idle_seconds | default(5) }}
+        service_unit_env: >-
+          {{ precis_shared_env | combine(precis_identity_env | default({})) | combine({
+               'HOME': '/home/deploy',
+               'PATH': _sb_venv + '/bin:/usr/local/bin:/usr/bin:/bin',
+               'PGPASSFILE': '/home/deploy/.pgpass',
+               'PRECIS_DATABASE_URL': _sb_dsn,
+               'PRECIS_PROCESS': 'precis-worker-sandbox',
+               'PRECIS_SOURCE': 'precis-worker-sandbox',
+               'PRECIS_NODE': inventory_hostname,
+               'PRECIS_SANDBOX_HOSTS': (groups['agent_sandbox_hosts'] | default([])) | join(','),
+             }) }}

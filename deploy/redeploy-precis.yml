@@ -963,6 +963,13 @@
 - name: "Rebuild the code-task sandbox image (sha-labelled; podman)"
   ansible.builtin.import_playbook: playbooks/34-code-task-image.yml
 
+# ── 2e. Sandbox worker lane (agent_sandbox_hosts only) ──
+# The job_claude_docker claimant on hosts whose system worker doesn't run
+# the collapsed profile (castor is serving/heartbeat-only) — see the
+# playbook header. No-op while agent_sandbox_hosts is empty.
+- name: "Deploy the sandbox_run worker lane (agent_sandbox_hosts)"
+  ansible.builtin.import_playbook: playbooks/35-precis-worker-sandbox.yml
+
 # ── 3. Remove the vestigial /opt/mcps/venv relic off hosts that never run it ──
 # `precis_web` — the only role that installs the gateway's /opt/mcps/venv —
 # targets the `gateway` group (the gateway) ONLY. `data`/`inference` hosts may
