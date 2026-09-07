@@ -360,6 +360,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "job_claude_inproc",
             "job_inproc",
             "job_ssh_node",
+            "job_claude_docker",
             "dream_agent",
             "auto_check",
             "schedule",

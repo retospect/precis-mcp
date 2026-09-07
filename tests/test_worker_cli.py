@@ -89,6 +89,21 @@ class TestParser:
         assert args.only == "job_inproc"
         assert args.once is True
 
+    def test_only_accepts_job_claude_docker(self, monkeypatch):
+        """``job_claude_docker`` must be a valid ``--only`` choice. The
+        sandbox worker lane (deploy/playbooks/35-precis-worker-sandbox.yml)
+        invokes ``precis worker --only job_claude_docker`` on every
+        agent_sandbox_host — the third instance of the same drift the
+        job_ssh_node (2026-08-08) and job_inproc (gr208523) tests above
+        pin: worker.py's registration comment promised the flag while the
+        argparse ``choices`` tuple never carried it, so the unit exit-2
+        crash-looped on castor's first boot (2026-09-06)."""
+        monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--only", "job_claude_docker", "--once"])
+        assert args.only == "job_claude_docker"
+        assert args.once is True
+
     def test_worker_embedder_reads_env(self, monkeypatch):
         monkeypatch.setenv("PRECIS_EMBEDDER", "remote")
         parser = _build_parser()
