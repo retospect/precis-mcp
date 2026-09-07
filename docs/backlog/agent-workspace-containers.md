@@ -73,11 +73,18 @@ The container never holds push creds (same reasoning as no-DB-creds):
 
 ## Slices (in enable-order; each independently shippable)
 
-1. **Deploy the safety net, light one host.** Deploy the capability probe
-   + unhealthy latch (existing item), set `PRECIS_SANDBOX_ENABLED` on ONE
-   `agent_sandbox_host` (castor or pollux — never melchior), run a
-   mode:build smoke job end-to-end. Exit: a real coding job runs, harvests,
-   and a killed daemon mid-run leaves worker + DB clean.
+1. **Light one host (castor).** In progress 2026-09-06: the capability
+   probe + unhealthy latch are deployed (rode bc3d5b2e); the enable path
+   is service-config keyed on the `agent_sandbox_hosts` inventory group
+   (§L retired `PRECIS_SANDBOX_ENABLED`). Shipped this slice:
+   `PRECIS_SANDBOX_HOSTS` (fail-closed submit allowlist) + per-sandbox-
+   host `PRECIS_NODE` rendered into the worker unit from that same
+   group, and `playbooks/34-code-task-image.yml` (podman build of the
+   never-built `code-task` image, sha-labelled, imported by
+   redeploy-precis.yml). Remaining: add castor to `agent_sandbox_hosts`
+   in the real inventory overlay, deploy, run a mode:build smoke job
+   end-to-end. Exit: a real coding job runs, harvests, and a killed
+   daemon mid-run leaves worker + DB clean.
 2. **Workspace volumes + git staging.** `params.workspace: <slug>` on
    `sandbox_run`; executor ensures the volume, executor-side
    clone/fetch before launch, harvest pushes the work branch. Exit: two

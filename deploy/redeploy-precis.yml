@@ -956,6 +956,13 @@
 - name: "Rebuild the precis-agent container image (sha-pinned; layer-cached)"
   ansible.builtin.import_playbook: playbooks/33-precis-agent-image.yml
 
+# ── 2d. Rebuild the code-task sandbox image (agent_sandbox_hosts only) ──
+# The sandbox_run coding-agent image (agent-workspace-containers slice 1) —
+# Dockerfile-only context, podman as deploy, sha-label staleness probe.
+# No-op while agent_sandbox_hosts is empty.
+- name: "Rebuild the code-task sandbox image (sha-labelled; podman)"
+  ansible.builtin.import_playbook: playbooks/34-code-task-image.yml
+
 # ── 3. Remove the vestigial /opt/mcps/venv relic off hosts that never run it ──
 # `precis_web` — the only role that installs the gateway's /opt/mcps/venv —
 # targets the `gateway` group (the gateway) ONLY. `data`/`inference` hosts may

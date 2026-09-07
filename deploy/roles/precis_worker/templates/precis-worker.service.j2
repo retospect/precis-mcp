@@ -74,6 +74,19 @@ Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
 # service_config (§L control cutover) — the `precis service seed` task
 # mirrors this host's agent_sandbox_hosts membership into a row the first
 # time this lands. No more PRECIS_SANDBOX_ENABLED here.
+# Fail-closed sandbox_run submit allowlist (validate_submit refuses any
+# target_node not named here) — derived from the SAME inventory group as
+# the service seed so the allowlist and the executor-enable can't drift.
+# Empty (no group members) = submits fail closed everywhere.
+Environment=PRECIS_SANDBOX_HOSTS={{ (groups['agent_sandbox_hosts'] | default([])) | join(',') }}
+{% if inventory_hostname in (groups['agent_sandbox_hosts'] | default([])) %}
+# Claim-gate identity: the sandbox executor only claims jobs whose
+# params.target_node matches. Scoped to sandbox hosts — compute lanes set
+# their own PRECIS_NODE in their drop-ins, and setting it on every system
+# worker would flip node-keyed branches (e.g. the struct_relax container
+# sweep) on hosts that never asked for it.
+Environment=PRECIS_NODE={{ inventory_hostname }}
+{% endif %}
 
 # Shared API keys — see inventory/group_vars/all/precis_env.yml. Identity
 # keys (email/API-key contacts) are vault-overridden via precis_identity_env

@@ -1,0 +1,113 @@
+# 34-code-task-image.yml — (Re)build the `code-task` sandbox image on the
+# agent_sandbox_hosts group (agent-workspace-containers slice 1; decisions
+# Reto 2026-09-06: castor first, minimal python+uv+git image).
+#
+# The sandbox_run executor (workers/executors/claude_docker.py) launches
+# rootless-podman containers as `deploy` from `code-task:latest` — an image
+# that, until this play, existed only as a Dockerfile stage nothing built
+# (the same never-built gap 33-precis-agent-image.yml closed for
+# `precis-agent`, gr210220). Unlike 33 there is no build-context transfer
+# problem: the `code-task` stage COPYs nothing from the repo ("rent the
+# toolchain, own nothing" — see the stage header in docker/Dockerfile), so
+# the whole context is the Dockerfile itself, shipped as one file.
+#
+# STALENESS PROBE (mirrors 33): `--label org.precis.sha=<sha>` stamped at
+# build, read back via `podman image inspect`. Missing image / missing
+# label / different sha → rebuild; SAME → skipped.
+# `-e precis_force_code_task_build=true` overrides. The stamped sha is the
+# controller checkout's `main` (or `-e precis_target_sha=<sha>`) — the
+# Dockerfile is the only input, so the stamp is provenance, not a strict
+# content hash.
+#
+# BUILDER: podman as `deploy` — the SAME user+runtime the executor launches
+# with (precis-worker.service.j2 User=deploy; launch is deliberately
+# podman-only), so the built image lands in exactly the storage the worker
+# resolves `code-task:latest` from. melchior must never appear in
+# agent_sandbox_hosts (the job_type hard-excludes it at submit anyway).
+#
+# Standalone runs:
+#   ansible-playbook playbooks/34-code-task-image.yml
+#   ansible-playbook playbooks/34-code-task-image.yml -e precis_force_code_task_build=true
+
+- name: "(Re)build the code-task sandbox image on agent_sandbox_hosts"
+  hosts: agent_sandbox_hosts
+  vars:
+    _ct_image_ref: "{{ precis_target_sha | default('main') }}"
+    _ct_build_user: deploy
+    _ct_build_base_dir: /tmp/precis-code-task-build
+    _ct_build_dir: "{{ _ct_build_base_dir }}/{{ _ct_image_ref }}"
+  tasks:
+    - name: Resolve the sha to stamp (controller checkout)
+      ansible.builtin.command:
+        cmd: git rev-parse {{ _ct_image_ref }}
+        chdir: "{{ playbook_dir }}/../.."
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: _ct_sha_probe
+      changed_when: false
+
+    - name: Ensure rootless podman is present (Linux sandbox host)
+      ansible.builtin.apt:
+        name: [podman, uidmap, slirp4netns]
+        state: present
+      become: true
+      when: (os_family | default('linux')) == 'linux'
+
+    - name: Read the resident image's stamped sha (staleness probe)
+      ansible.builtin.command:
+        cmd: >-
+          podman image inspect
+          -f {% raw %}'{{ index .Config.Labels "org.precis.sha" }}'{% endraw %}
+          code-task:latest
+      become: true
+      become_user: "{{ _ct_build_user }}"
+      register: _ct_label
+      failed_when: false
+      changed_when: false
+
+    - name: Decide staleness
+      ansible.builtin.set_fact:
+        _ct_stale: >-
+          {{ (precis_force_code_task_build | default(false) | bool)
+             or (_ct_label.rc != 0)
+             or ((_ct_label.stdout | trim | replace("'", '')) != (_ct_sha_probe.stdout | trim)) }}
+
+    - name: Stage the build dir (Dockerfile-only context)
+      ansible.builtin.file:
+        path: "{{ _ct_build_dir }}"
+        state: directory
+        owner: "{{ _ct_build_user }}"
+        mode: "0755"
+      become: true
+      when: _ct_stale | bool
+
+    - name: Ship docker/Dockerfile (the only context the code-task stage needs)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../docker/Dockerfile"
+        dest: "{{ _ct_build_dir }}/Dockerfile"
+        owner: "{{ _ct_build_user }}"
+        mode: "0644"
+      become: true
+      when: _ct_stale | bool
+
+    - name: Build code-task:<sha> + code-task:latest (podman, as the executor's user)
+      ansible.builtin.command:
+        cmd: >-
+          podman build --target code-task
+          -t code-task:{{ _ct_sha_probe.stdout | trim }}
+          -t code-task:latest
+          --label org.precis.sha={{ _ct_sha_probe.stdout | trim }}
+          -f {{ _ct_build_dir }}/Dockerfile
+          {{ _ct_build_dir }}
+      become: true
+      become_user: "{{ _ct_build_user }}"
+      when: _ct_stale | bool
+      register: _ct_build
+
+    - name: Sweep the build dir (converged; the image is the artifact)
+      ansible.builtin.file:
+        path: "{{ _ct_build_base_dir }}"
+        state: absent
+      become: true
+      when: _ct_stale | bool
