@@ -723,6 +723,12 @@ def _launch_build(
         _sandbox_run.compose_prompt(str(params.get("prompt") or "")),
         encoding="utf-8",
     )
+    # World-writable staging: the image runs as its non-root `sandbox`
+    # user (uid 1000), which rootless podman maps to a subordinate host
+    # uid — NOT the daemon user that owns these dirs. Without the chmod
+    # the task can't write /work/out and every harvest comes back empty.
+    for p in (work_dir, work_dir / "out", work_dir / "in", work_dir / "_run"):
+        p.chmod(0o777)
 
     # precis_access:read — spawn a per-run,
     # token'd, read-only MCP callback BEFORE the container starts, so

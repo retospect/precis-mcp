@@ -700,9 +700,32 @@ RUN pip install --no-cache-dir \
         mypy==2.1.0 \
         pytest==9.0.3
 
+# Non-root task user + the mode:build run wrapper (the slice-1 exit
+# criterion's missing half — the executor passes NO command, so the old
+# `CMD ["bash"]` made every detached build exit 0 in seconds with an
+# empty out/). The wrapper turns the staged /work/PROMPT.md into the
+# actual `claude -p` run; `--permission-mode bypassPermissions` matches
+# the agent image's headless convention (the throwaway container IS the
+# permission boundary), and a non-root user keeps the CLI's root guard
+# quiet. The executor chmods /work world-writable at staging so the
+# uid-mapped task user can write out/.
+RUN useradd --create-home --uid 1000 sandbox \
+    && printf '%s\n' \
+       '#!/bin/sh' \
+       'set -eu' \
+       'cd /work' \
+       'PROMPT="$(cat /work/PROMPT.md)"' \
+       'if [ -n "${PRECIS_SANDBOX_MODEL:-}" ]; then' \
+       '  exec claude -p "$PROMPT" --model "$PRECIS_SANDBOX_MODEL" --permission-mode bypassPermissions' \
+       'fi' \
+       'exec claude -p "$PROMPT" --permission-mode bypassPermissions' \
+       > /usr/local/bin/code-task-run \
+    && chmod 0755 /usr/local/bin/code-task-run
+
 WORKDIR /work
+USER sandbox
 ENTRYPOINT ["tini", "--"]
-CMD ["bash"]
+CMD ["code-task-run"]
 
 # =============================================================================
 # Stage: agent — the `precis-agent` image (§13, 13-code). serve (torch-free) +
