@@ -58,7 +58,15 @@ would. At the cap, one ``child-failed-final`` tag latches and the leaf
 is never touched again by this phase (human-only from there; see
 ``nursery._detect_child_failed_parked``'s aggregate finding). A manual
 tag removal does not reset ``unpark_attempts`` — only this phase
-advances it.
+advances it. **Transient short-circuit** (retryable child-failed,
+docs/backlog/todo-parked-transient-failures.md): when EVERY job named by
+the leaf's live ``child-failed:<job_id>`` tags carries
+``meta.retry_after`` (stamped by ``executors/_common.record_failure``'s
+reason-text classifier — rate/spend limits, transient API faults), that
+timestamp replaces the exponential cool-down: the leaf unparks as soon
+as the latest ``retry_after`` passes. Attempts still bump and
+:data:`UNPARK_CAP` still latches terminal, so a hard-down cause
+escalates instead of retrying forever.
 
 Pass shape: SQL-only, idempotent, ``system`` profile; per-row
 ``FOR UPDATE OF r SKIP LOCKED`` dedups racing sweepers; cheap enough to
@@ -71,6 +79,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.handlers._job_bubble import bubble_job_failure, remove_child_failed_tags
@@ -83,6 +92,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.nursery import DEAD_WORKER_SILENCE_MIN, WORKER_CONTINUOUS_PROCESSES
 from precis.workers.runner import BatchResult
+
+if TYPE_CHECKING:
+    from psycopg import Connection
 
 #: Cap the unschedulable scan so a huge queue can't make the per-minute
 #: sweep expensive; a genuine capability outage trips the alert on the
@@ -1371,6 +1383,44 @@ def _unpark_cooldown_hours(attempts: int) -> float:
     return _UNPARK_BASE_COOLDOWN_HOURS * (2**attempts)
 
 
+def _transient_retry_after(conn: Connection, ref_id: int) -> datetime | None:
+    """The transient short-circuit's wake time for one parked leaf, or
+    ``None`` when the exponential cool-down governs.
+
+    Reads the jobs named by the leaf's live ``child-failed:<job_id>``
+    tags (exactly the failures currently parking it — not historical
+    children, whose stale ``retry_after`` must not re-arm anything). Only
+    when EVERY such job exists and carries ``meta.retry_after`` is the
+    park transient; one non-transient failure in the set means a
+    human/planner decision is still owed and the normal cool-down
+    applies. Returns the latest ``retry_after`` of the set."""
+    row = conn.execute(
+        r"""
+        SELECT count(*) FILTER (WHERE j.meta ? 'retry_after'),
+               count(*),
+               max((j.meta->>'retry_after')::timestamptz)
+          FROM ref_tags rt
+          JOIN tags t ON t.tag_id = rt.tag_id
+          LEFT JOIN refs j
+            ON j.kind = 'job'
+           AND j.ref_id = NULLIF(
+                 substring(t.value FROM '^child-failed:(\d+)$'), ''
+               )::int
+         WHERE rt.ref_id = %s
+           AND t.namespace = 'OPEN'
+           AND t.value LIKE 'child-failed:%%'
+        """,
+        (ref_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    with_retry, total, retry_after = int(row[0]), int(row[1]), row[2]
+    if total == 0 or with_retry != total or retry_after is None:
+        return None
+    assert isinstance(retry_after, datetime)
+    return retry_after
+
+
 def _transition_unpark(store: Store, ref_id: int) -> str:
     """Lock one parked leaf, re-verify eligibility, and either unpark it,
     latch it terminal, or leave it (still cooling down / lost the race).
@@ -1441,7 +1491,14 @@ def _transition_unpark(store: Store, ref_id: int) -> str:
             return "final"
 
         cooldown_hours = _unpark_cooldown_hours(attempts)
-        if last_parked_at is None or datetime.now(UTC) - last_parked_at < timedelta(
+        retry_after = _transient_retry_after(conn, ref_id)
+        if retry_after is not None:
+            # Transient park (every parking job stamped retry_after):
+            # the stamp IS the cool-down, in both directions — earlier
+            # than 12h·2ᴺ once passed, and binding while still ahead.
+            if datetime.now(UTC) < retry_after:
+                return "cooldown"
+        elif last_parked_at is None or datetime.now(UTC) - last_parked_at < timedelta(
             hours=cooldown_hours
         ):
             return "cooldown"
@@ -1454,7 +1511,11 @@ def _transition_unpark(store: Store, ref_id: int) -> str:
             ref_id,
             source="sweeper",
             event="unparked",
-            payload={"unpark_attempts": new_attempts, "cooldown_hours": cooldown_hours},
+            payload={
+                "unpark_attempts": new_attempts,
+                "cooldown_hours": cooldown_hours,
+                "via": "retry_after" if retry_after is not None else "cooldown",
+            },
             conn=conn,
         )
     return "unparked"

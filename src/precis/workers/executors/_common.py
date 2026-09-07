@@ -15,7 +15,8 @@ import json
 import logging
 import math
 import os
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -1013,6 +1014,51 @@ def set_meta(conn: Connection, ref_id: int, **fields: Any) -> None:
     )
 
 
+# ── transient-failure classification (retryable child-failed,
+#    docs/backlog/todo-parked-transient-failures.md) ─────────────────
+
+#: Reason-text signatures for failures a fresh attempt will plausibly
+#: clear on its own — each entry is ``(pattern, backoff_hours)``. Matched
+#: (case-insensitively) against :func:`record_failure`'s ``reason`` — the
+#: one funnel every executor's failure passes through — so classification
+#: needs no per-executor wiring. Deliberately conservative: a false
+#: negative just keeps today's 12h·2ᴺ unpark cool-down; a false positive
+#: only means one earlier retry, still bounded by ``sweeper.UNPARK_CAP``.
+_TRANSIENT_FAILURE_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
+    # Rate limiting / API overload — clears in minutes.
+    (re.compile(r"rate.?limit|\b429\b|overloaded|\b529\b", re.IGNORECASE), 0.25),
+    # Spend/usage/budget caps — clears on the next window or a top-up.
+    (
+        re.compile(
+            r"usage limit|spend(?:ing)?\s+(?:limit|cap)"
+            r"|budget\s+(?:limit|cap|exceeded)|credit balance|out of credits",
+            re.IGNORECASE,
+        ),
+        2.0,
+    ),
+    # Transient upstream/API/network faults.
+    (
+        re.compile(
+            r"internal server error|service unavailable|bad gateway"
+            r"|temporarily unavailable|connection reset by peer|connection refused",
+            re.IGNORECASE,
+        ),
+        0.5,
+    ),
+)
+
+
+def classify_transient_backoff_hours(reason: str) -> float | None:
+    """Backoff (hours) when ``reason`` reads as a transient failure, else
+    ``None``. First matching pattern in
+    :data:`_TRANSIENT_FAILURE_PATTERNS` wins (rate-limit before spend —
+    a message naming both is retryable at the shorter horizon)."""
+    for pattern, hours in _TRANSIENT_FAILURE_PATTERNS:
+        if pattern.search(reason):
+            return hours
+    return None
+
+
 #: Cap on the ``reason`` string mirrored into ``refs.meta.error`` by
 #: :func:`record_failure` — the full text always lands in the ``job_event``
 #: chunk regardless; this is just a bounded breadcrumb so a downstream
@@ -1059,6 +1105,11 @@ def record_failure(
     ``precis.handlers._job_bubble.INFRA_FAILURE_TAGS`` is guaranteed visible
     to the bubble's infra-classification read — enabling the same bounded
     auto-retry a lease-expiry orphan gets, rather than an immediate latch.
+
+    A ``reason`` matching :func:`classify_transient_backoff_hours`
+    (rate/spend limits, transient API faults) additionally stamps
+    ``meta.retry_after`` on the job — the sweeper's unpark phase re-arms
+    the parked parent at that time instead of the 12h·2ᴺ cool-down.
     """
     with store.pool.connection() as conn:
         if open_tag is not None:
@@ -1072,6 +1123,23 @@ def record_failure(
                 failure_class=failure_class,
                 error=reason[:_ERROR_META_CAP],
             )
+        # Transient classification (docs/backlog/
+        # todo-parked-transient-failures.md): a retryable cause stamps
+        # ``meta.retry_after`` (ISO) on the job — the tag shape the bubble
+        # writes stays uniform; the sweeper's unpark phase reads this to
+        # re-arm the parked parent on the real backoff instead of the
+        # 12h·2ᴺ cool-down. Same tx as the STATUS flip + bubble.
+        backoff_hours = classify_transient_backoff_hours(reason)
+        if backoff_hours is not None:
+            transient_fields: dict[str, Any] = {
+                "retry_after": (
+                    datetime.now(UTC) + timedelta(hours=backoff_hours)
+                ).isoformat()
+            }
+            if failure_class is None:
+                transient_fields["failure_class"] = "transient"
+                transient_fields["error"] = reason[:_ERROR_META_CAP]
+            set_meta(conn, ref_id, **transient_fields)
         if gripe_rollback is not None:
             set_status(store, gripe_rollback, "open", conn=conn)
         # Slice-5 failure bubble.

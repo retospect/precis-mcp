@@ -1489,3 +1489,83 @@ def test_unpark_skips_a_leaf_with_terminal_status(
     tags = {str(t) for t in store.tags_for(rid)}
     assert "child-failed:999" in tags  # untouched
     assert _unpark_attempts_of(store, rid) == 0
+
+
+# ── transient retry_after short-circuit (retryable child-failed,
+#    docs/backlog/todo-parked-transient-failures.md) ─────────────────
+
+
+def _insert_failed_job(store: Store, *, retry_after_hours: float | None) -> int:
+    """A ``kind='job'`` ref, optionally stamped ``meta.retry_after`` at
+    now + the given (possibly negative) offset — the shape
+    ``record_failure``'s transient classifier leaves behind."""
+    job = store.insert_ref(kind="job", slug=None, title="failed child", meta={})
+    if retry_after_hours is not None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'retry_after', to_char(now() + %s::interval, "
+                "                         'YYYY-MM-DD\"T\"HH24:MI:SSOF')"
+                ") WHERE ref_id = %s",
+                (f"{retry_after_hours} hours", job.id),
+            )
+            conn.commit()
+    return job.id
+
+
+def test_unpark_transient_retry_after_short_circuits_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A leaf parked moments ago by a job whose ``retry_after`` has
+    already passed unparks on the very next sweep — the transient stamp
+    replaces the 12h base cool-down. Attempts still bump (the cap still
+    escalates a hard-down cause)."""
+    r = handler.put(text="rate-limited child")
+    rid = _id_of(r.body)
+    job_id = _insert_failed_job(store, retry_after_hours=-0.1)
+    _park_leaf(store, rid, job_id=job_id)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" not in tags
+    assert _unpark_attempts_of(store, rid) == 1
+
+
+def test_unpark_transient_retry_after_in_future_blocks_past_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The stamp binds in both directions: a still-ahead ``retry_after``
+    holds the park even after the exponential window would have elapsed."""
+    r = handler.put(text="spend-limited child, window not over")
+    rid = _id_of(r.body)
+    job_id = _insert_failed_job(store, retry_after_hours=2.0)
+    _park_leaf(store, rid, job_id=job_id, parked_hours_ago=13)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" in tags
+    assert _unpark_attempts_of(store, rid) == 0
+
+
+def test_unpark_mixed_transient_and_content_park_uses_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """One non-transient failure in the parking set (here: a tag whose job
+    carries no ``retry_after``) means a decision is still owed — the
+    exponential cool-down governs, so a fresh park stays latched even
+    though the transient sibling's ``retry_after`` has passed."""
+    r = handler.put(text="one transient, one real failure")
+    rid = _id_of(r.body)
+    transient_job = _insert_failed_job(store, retry_after_hours=-0.1)
+    content_job = _insert_failed_job(store, retry_after_hours=None)
+    _park_leaf(store, rid, job_id=transient_job)
+    store.add_tag(rid, Tag.open(f"child-failed:{content_job}"), set_by="system")
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{transient_job}" in tags
+    assert f"child-failed:{content_job}" in tags
+    assert _unpark_attempts_of(store, rid) == 0

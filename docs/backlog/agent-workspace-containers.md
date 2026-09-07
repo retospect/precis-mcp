@@ -94,17 +94,17 @@ The container never holds push creds (same reasoning as no-DB-creds):
    consumer needs parallel agents on one project; until then the lease's
    serialization IS the concurrency answer.
 
-## Decisions Reto should make (blocking the respective slice)
+## Decisions (Reto, 2026-09-06)
 
-- **S1:** which sandbox host lights first (castor vs pollux; GPU never).
-- **S2:** named podman volumes vs `agent_sandbox`-owned host dirs
-  (volumes are tidier; host dirs are debuggable + NFS-shareable — lean
-  host dirs under `/var/lib/precis-sandbox/ws/`).
-- **S2:** general coder image contents (base + uv + git; per-sim pinned
-  images stay per the sim-harness "never unlimited-pips on the drive
-  path" rule).
-- **S4:** whether sim quest watches may auto-mint `mode:run` jobs, or
-  runs stay human-minted until slice-1 soak ends.
+- **S1 host:** castor (pollux keeps the untested fold lane; melchior/GPU
+  never).
+- **S2 workspace storage:** host dirs under `/var/lib/precis-sandbox/ws/`,
+  owned by `agent_sandbox` (debuggable + NFS-shareable; not podman volumes).
+- **S2 coder image:** minimal — base + python/uv + git. Per-job deps via uv
+  into the workspace; per-sim pinned images unchanged.
+- **S4 auto-mint:** sim quest watches MAY auto-mint `mode:run` jobs from the
+  start — no soak gate. Blast radius is bounded by the quest anti-spin cap +
+  the budget breaker, not by holding runs human-minted.
 
 ## Non-goals
 

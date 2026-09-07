@@ -45,7 +45,11 @@ Not cron. Not celery. Not a subprocess you wait on.
   attempt, capped (3 per 6 h). Content-class failures tag the parent
   `child-failed:<job_id>`; the sweeper's `unpark` phase then retries
   it autonomously on an escalating cool-down (12 h / 24 h / 48 h,
-  cap 3) before latching the terminal `child-failed-final` tag —
+  cap 3) before latching the terminal `child-failed-final` tag.
+  Transient causes retry sooner: a failure reason reading as a
+  rate/spend limit or transient API fault stamps `meta.retry_after`
+  on the job, and the unpark fires at that time (15 min–2 h) instead
+  of the 12 h base — same cap. `child-failed-final` —
   only *that* tag means the substrate has given up and a human (or
   the parent's owner) must decide. The nursery surfaces
   still-recoverable parks per-leaf and finals as one aggregate.
