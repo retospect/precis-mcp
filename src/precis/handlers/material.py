@@ -45,6 +45,11 @@ from precis.response import Response
 from precis.utils import handle_registry
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
+#: ``material_values.method`` (migration 0092's comment: "measured |
+#: datasheet | dft | estimated | ..."). The column carries no DB CHECK
+#: (unlike ``maturity``) — this tuple is the handler-layer enforcement of
+#: that documented vocabulary.
+_METHODS: tuple[str, ...] = ("measured", "datasheet", "dft", "estimated")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
 _VIEWS: tuple[str, ...] = ("table", "properties")
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
@@ -95,6 +100,7 @@ class MaterialHandler(Handler):
         unit: str | None = None,
         conditions: dict[str, Any] | None = None,
         maturity: str | None = None,
+        method: str | None = None,
         source: str | None = None,
         chunk: str | None = None,
         as_of: str | None = None,
@@ -124,6 +130,7 @@ class MaterialHandler(Handler):
                 unit=unit,
                 conditions=conditions,
                 maturity=maturity,
+                method=method,
                 source=source,
                 chunk=chunk,
                 as_of=as_of,
@@ -171,6 +178,7 @@ class MaterialHandler(Handler):
         unit: str | None,
         conditions: dict[str, Any] | None,
         maturity: str | None,
+        method: str | None = None,
         source: str | None,
         chunk: str | None,
         as_of: str | None = None,
@@ -223,6 +231,12 @@ class MaterialHandler(Handler):
                 next=f"put(kind='material', id={slug!r}, property={property!r}, "
                 f"value=..., maturity='lab')",
             )
+        if method is not None and method not in _METHODS:
+            raise BadInput(
+                f"method={method!r} must be one of {list(_METHODS)}",
+                next=f"put(kind='material', id={slug!r}, property={property!r}, "
+                f"value=..., method='measured')",
+            )
 
         source_ref_id, source_chunk, source_url = self._resolve_source(source, chunk)
 
@@ -231,6 +245,7 @@ class MaterialHandler(Handler):
             property_id=prop["prop_id"],
             conditions=conditions,
             maturity=maturity or "lab",
+            method=method,
             source_ref_id=source_ref_id,
             source_chunk=source_chunk,
             source_url=source_url,

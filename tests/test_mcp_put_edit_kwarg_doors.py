@@ -328,3 +328,65 @@ def test_put_todo_prio_out_of_range_rejected_loudly(
     assert _is_error(out), _body(out)
     assert "[error:BadInput]" in _body(out)
     assert "1..10" in _body(out)
+
+
+# ---------------------------------------------------------------------------
+# gr329157: material/component value writes had a store-op ``method=`` param
+# with no handler kwarg and no verb-level door at all — every MCP-written
+# ``material_values``/``component_spec_values`` row had ``method IS NULL``.
+# ---------------------------------------------------------------------------
+
+
+def test_put_material_method_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``put(kind='material', method=…)`` through the real MCP callable lands
+    on ``material_values.method`` — before the fix, ``method=`` fell into
+    ``MaterialHandler.put``'s ``**_kw`` catch-all (the handler didn't even
+    declare it) and was silently dropped."""
+    tools_core.put(kind="material", id="6061-t6", title="Aluminum 6061-T6")
+
+    out = tools_core.put(
+        kind="material",
+        id="6061-t6",
+        property="density",
+        value=2700,
+        unit="kg/m3",
+        method="measured",
+    )
+
+    assert not _is_error(out), _body(out)
+    ref = store.get_ref(kind="material", id="6061-t6")
+    assert ref is not None
+    values = store.material_values_for_ref(ref.id)
+    assert values[0]["method"] == "measured"
+
+
+def test_put_component_method_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """Same door, component side (``component-kind`` copied ``material``'s
+    star schema verbatim, migration 0093 — the same gap, same fix)."""
+    tools_core.put(
+        kind="component",
+        id="m6-a2-bolt",
+        title="M6x20 A2 socket cap",
+        category="fastener",
+    )
+
+    out = tools_core.put(
+        kind="component",
+        id="m6-a2-bolt",
+        spec="thread_pitch",
+        value=1.0,
+        unit="mm",
+        method="measured",
+    )
+
+    assert not _is_error(out), _body(out)
+    ref = store.get_ref(kind="component", id="m6-a2-bolt")
+    assert ref is not None
+    values = store.component_values_for_ref(ref.id)
+    assert values[0]["method"] == "measured"

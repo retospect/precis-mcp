@@ -69,7 +69,9 @@ in the registry (see below); `value=`/`unit=` are the measurement;
 `conditions=` is a free JSONB dict (`{"temper": "T6", "temperature": 298}`)
 for whatever axis distinguishes this sample from another of the same
 property; `maturity=` is `commercial | lab | speculative` (default `lab`)
-— a property of *this measurement*, not of the material.
+— a property of *this measurement*, not of the material. `method=` is how
+the value was obtained — `measured | datasheet | dft | estimated`
+(optional; omit to leave it unset).
 
 ## The canonical-unit rule
 

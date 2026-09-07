@@ -917,6 +917,10 @@ def put(
     unit: str | None = None,
     conditions: dict[str, Any] | None = None,
     maturity: str | None = None,
+    # material / component: method= how the value was obtained — one of
+    # 'measured'|'datasheet'|'dft'|'estimated' (material) or
+    # 'measured'|'datasheet'|'estimated'|'standard' (component).
+    method: str | None = None,
     source: str | None = None,
     chunk: str | None = None,
     # material / component (see precis-material-help / precis-component-help):
@@ -1062,6 +1066,7 @@ def put(
             "unit": unit,
             "conditions": conditions,
             "maturity": maturity,
+            "method": method,
             "source": source,
             "chunk": chunk,
             "as_of": as_of,

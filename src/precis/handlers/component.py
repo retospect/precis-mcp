@@ -76,6 +76,12 @@ from precis.store._component_ops import (
 from precis.utils import handle_registry
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
+#: ``component_spec_values.method`` (migration 0093's comment: "measured |
+#: datasheet | estimated | ..."), plus ``standard`` — already written
+#: (unvalidated) by the series-mint path (``_write_series_specs`` below).
+#: The column carries no DB CHECK (unlike ``maturity``) — this tuple is the
+#: handler-layer enforcement of that vocabulary.
+_METHODS: tuple[str, ...] = ("measured", "datasheet", "estimated", "standard")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
 _VIEWS: tuple[str, ...] = ("table", "specs", "categories", "tree", "bom", "series")
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
@@ -139,6 +145,7 @@ class ComponentHandler(Handler):
         unit: str | None = None,
         conditions: dict[str, Any] | None = None,
         maturity: str | None = None,
+        method: str | None = None,
         source: str | None = None,
         chunk: str | None = None,
         as_of: str | None = None,
@@ -186,6 +193,7 @@ class ComponentHandler(Handler):
                 unit=unit,
                 conditions=conditions,
                 maturity=maturity,
+                method=method,
                 source=source,
                 chunk=chunk,
                 as_of=as_of,
@@ -655,6 +663,7 @@ class ComponentHandler(Handler):
         unit: str | None,
         conditions: dict[str, Any] | None,
         maturity: str | None,
+        method: str | None = None,
         source: str | None,
         chunk: str | None,
         as_of: str | None,
@@ -710,6 +719,12 @@ class ComponentHandler(Handler):
                 next=f"put(kind='component', id={slug!r}, spec={spec!r}, "
                 f"value=..., maturity='lab')",
             )
+        if method is not None and method not in _METHODS:
+            raise BadInput(
+                f"method={method!r} must be one of {list(_METHODS)}",
+                next=f"put(kind='component', id={slug!r}, spec={spec!r}, "
+                f"value=..., method='measured')",
+            )
 
         source_ref_id, source_chunk, source_url = self._resolve_source(source, chunk)
 
@@ -718,6 +733,7 @@ class ComponentHandler(Handler):
             spec_id=spec_row["spec_id"],
             conditions=conditions,
             maturity=maturity or "lab",
+            method=method,
             source_ref_id=source_ref_id,
             source_chunk=source_chunk,
             source_url=source_url,

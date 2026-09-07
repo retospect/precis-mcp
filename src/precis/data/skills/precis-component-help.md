@@ -75,8 +75,10 @@ the spec registry (see below); `value=`/`unit=` are the measurement;
 `conditions=` is a free JSONB dict for whatever axis distinguishes this
 sample from another of the same spec; `maturity=` is `commercial | lab |
 speculative` (default `lab`) — a property of *this measurement*, not of
-the component. `as_of=` (`'YYYY-MM-DD'`) dates the measurement — load-bearing
-for `unit_cost`.
+the component. `method=` is how the value was obtained — `measured |
+datasheet | estimated | standard` (optional; omit to leave it unset —
+`standard` is what the series-mint path below records). `as_of=`
+(`'YYYY-MM-DD'`) dates the measurement — load-bearing for `unit_cost`.
 
 ### 3. made_of — what it's made of
 

@@ -111,6 +111,46 @@ class TestValuePut:
         values = store.material_values_for_ref(ref.id)
         assert str(values[0]["as_of"]) == "2026-07-01"
 
+    def test_method_is_forwarded_to_the_value_row(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="density",
+            value=2700,
+            unit="kg/m3",
+            method="measured",
+        )
+        ref = store.get_ref(kind="material", id="6061-t6")
+        values = store.material_values_for_ref(ref.id)
+        assert values[0]["method"] == "measured"
+
+    def test_omitted_method_is_null(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(id="6061-t6", property="density", value=2700, unit="kg/m3")
+        ref = store.get_ref(kind="material", id="6061-t6")
+        values = store.material_values_for_ref(ref.id)
+        assert values[0]["method"] is None
+
+    def test_invalid_method_is_rejected_naming_options(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                id="6061-t6",
+                property="density",
+                value=2700,
+                unit="kg/m3",
+                method="guessed",
+            )
+        msg = str(excinfo.value)
+        assert "guessed" in msg
+        assert "measured" in msg
+        assert "datasheet" in msg
+        assert "dft" in msg
+        assert "estimated" in msg
+
 
 # ── kind-scoped ref check (AC #5) ───────────────────────────────────
 

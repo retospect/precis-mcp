@@ -134,6 +134,46 @@ class TestValuePut:
         with pytest.raises(NotFound):
             h.put(id="no-such-component", spec="mass", value=1, unit="kg")
 
+    def test_method_is_forwarded_to_the_value_row(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        h.put(
+            id="m6-a2-bolt",
+            spec="thread_pitch",
+            value=1.0,
+            unit="mm",
+            method="measured",
+        )
+        ref = store.get_ref(kind="component", id="m6-a2-bolt")
+        values = store.component_values_for_ref(ref.id)
+        assert values[0]["method"] == "measured"
+
+    def test_omitted_method_is_null(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        h.put(id="m6-a2-bolt", spec="thread_pitch", value=1.0, unit="mm")
+        ref = store.get_ref(kind="component", id="m6-a2-bolt")
+        values = store.component_values_for_ref(ref.id)
+        assert values[0]["method"] is None
+
+    def test_invalid_method_is_rejected_naming_options(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                id="m6-a2-bolt",
+                spec="thread_pitch",
+                value=1.0,
+                unit="mm",
+                method="guessed",
+            )
+        msg = str(excinfo.value)
+        assert "guessed" in msg
+        assert "measured" in msg
+        assert "datasheet" in msg
+        assert "estimated" in msg
+        assert "standard" in msg
+
 
 # ── kind-scoped ref check ────────────────────────────────────────────
 
@@ -674,6 +714,7 @@ class TestCoreParams:
             "contains",
             "qty",
             "ref_designator",
+            "method",
         ):
             assert name in sig.parameters, name
 
