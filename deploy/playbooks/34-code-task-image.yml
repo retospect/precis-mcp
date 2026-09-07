@@ -54,6 +54,34 @@
       become: true
       when: (os_family | default('linux')) == 'linux'
 
+    # Rootless podman needs subordinate uid/gid ranges for the build
+    # user or every layer unpack dies with "insufficient UIDs or GIDs
+    # available in user namespace" (castor's first run — the system
+    # `deploy` user predates any container use, so no range was ever
+    # allocated). Base 655360 sits far above adduser's sequential
+    # 100000+65536 allocations, so it can't collide with ranges the OS
+    # hands to ordinary users. `podman system migrate` makes a running
+    # podman notice the new ranges.
+    - name: Ensure subordinate uid/gid ranges for the rootless build user
+      ansible.builtin.lineinfile:
+        path: "{{ item }}"
+        line: "{{ _ct_build_user }}:655360:65536"
+        regexp: "^{{ _ct_build_user }}:"
+        create: true
+        owner: root
+        mode: "0644"
+      become: true
+      loop: [/etc/subuid, /etc/subgid]
+      register: _ct_subids
+      when: (os_family | default('linux')) == 'linux'
+
+    - name: Apply the new subordinate ranges (podman system migrate)
+      ansible.builtin.command:
+        cmd: podman system migrate
+      become: true
+      become_user: "{{ _ct_build_user }}"
+      when: _ct_subids is changed
+
     - name: Read the pinned python base digest off the Dockerfile
       ansible.builtin.shell:
         cmd: awk -F= '/^ARG PYTHON_DIGEST=/{print $2}' "{{ playbook_dir }}/../../docker/Dockerfile"
