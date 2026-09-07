@@ -210,13 +210,38 @@ def upgrade_sweep(
     a completed proof is INSERTed as a new ``upgraded`` row. Batches
     pending past :data:`STUCK_PENDING_DAYS` raise the stuck-pending
     alert (the survivable-loss remedy is a re-stamp at a later date).
-    Returns the batch ids upgraded this sweep."""
+
+    A re-stamp (:meth:`~precis.store.Store.nanopub_reopen_stuck_batch`)
+    frees every row off the stuck batch without touching the batch row
+    itself (by design — it stays as history); the batch's own latest
+    proof is still, and forever will be, ``pending`` since the calendar
+    lost that commitment. Such a batch is *superseded*, not pending
+    work: :meth:`~precis.store.Store.nanopub_pending_batches` already
+    excludes it from the poll loop below, and this sweep additionally
+    resolves any stuck-pending alert still open for it — otherwise the
+    alert fires forever with nothing left to fix. Returns the batch ids
+    upgraded this sweep."""
     from datetime import datetime, timedelta
 
     from opentimestamps.core.notary import PendingAttestation
 
+    from precis.alerts import resolve_alert_by_fingerprint
+
     fetch = fetch_upgrade or _default_fetch_upgrade
     upgraded: list[int] = []
+
+    for superseded in store.nanopub_superseded_batches():
+        if resolve_alert_by_fingerprint(
+            store,
+            source="nanopub_ots",
+            fingerprint=f"stuck-pending:{superseded.id}",
+        ):
+            log.info(
+                "nanopub ots: batch %s superseded (all rows re-stamped "
+                "elsewhere) — resolved its stuck-pending alert",
+                superseded.id,
+            )
+
     for batch in store.nanopub_pending_batches():
         latest = store.nanopub_latest_proof(batch.id)
         if latest is None:  # defect: batch without proof row

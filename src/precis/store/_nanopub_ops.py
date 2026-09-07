@@ -533,9 +533,30 @@ class NanopubMixin:
         return batch_id
 
     def nanopub_pending_batches(self) -> list[OtsBatchRow]:
-        """Batches whose *latest* proof row is still ``pending``."""
+        """Batches whose *latest* proof row is still ``pending`` AND that
+        still have at least one current ``nanopub_publish`` row pointing
+        at them.
+
+        A stuck-batch re-stamp (:meth:`nanopub_reopen_stuck_batch`) clears
+        every row's ``batch_id`` off the old batch without touching the
+        batch or its (still-pending, forever-unresolvable — the calendar
+        lost the commitment) proof row: that batch is *superseded*, not
+        pending work, so it must not be polled or re-alerted. See
+        :meth:`nanopub_superseded_batches` for its mirror."""
         return self._batches_where(
-            "latest.state = 'pending'",
+            "latest.state = 'pending' AND EXISTS ("
+            "SELECT 1 FROM nanopub_publish np WHERE np.batch_id = b.id)",
+        )
+
+    def nanopub_superseded_batches(self) -> list[OtsBatchRow]:
+        """Batches whose latest proof is still ``pending`` but whose rows
+        have all moved off (a re-stamp cleared every reference) — the
+        mirror image of :meth:`nanopub_pending_batches`'s filter. Any
+        open stuck-pending alert for one of these is stale and should
+        resolve, not keep re-firing forever."""
+        return self._batches_where(
+            "latest.state = 'pending' AND NOT EXISTS ("
+            "SELECT 1 FROM nanopub_publish np WHERE np.batch_id = b.id)",
         )
 
     def nanopub_batches(self, *, limit: int = 500) -> list[OtsBatchRow]:

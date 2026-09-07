@@ -32,6 +32,22 @@ def _fake_upgrade(_url: str, commitment: bytes) -> Timestamp:
     return ts
 
 
+def _fake_still_pending(_url: str, commitment: bytes) -> Timestamp:
+    """A calendar round-trip that never completes — the stuck-forever
+    shape: every fetch just hands back another pending attestation."""
+    ts = Timestamp(commitment)
+    ts.attestations.add(PendingAttestation(_FAKE_CAL))
+    return ts
+
+
+def _make_stuck(monkeypatch: Any) -> None:
+    """Trip the stuck-pending age threshold immediately, without waiting
+    real days — ``nanopub_ots_batches`` is append-only (no UPDATEing
+    ``created_at`` to backdate it), so the sweep's own threshold is what
+    moves instead."""
+    monkeypatch.setattr(ots, "STUCK_PENDING_DAYS", -1)
+
+
 def _signed_hub(store: Any, monkeypatch: Any, sentence: str) -> Any:
     priv, _pub = generate_keypair(2048)
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
@@ -175,6 +191,98 @@ def test_reopen_stuck_batch_only_touches_its_own_rows(
     # The old (stuck) batch's proof row is untouched — history, not deleted.
     old_state, _proof = store.nanopub_latest_proof(stuck_batch)
     assert old_state == "pending"
+
+
+def test_upgrade_sweep_still_polls_batch_with_current_rows(
+    store: Any, monkeypatch: Any
+) -> None:
+    """A batch with rows still bound to it is genuinely stuck work: the
+    sweep must keep polling the calendar and can still raise the alert."""
+    row = _signed_hub(store, monkeypatch, "DFT finds the still-bound claim holds.")
+    batch_id = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
+    assert batch_id is not None
+    _make_stuck(monkeypatch)
+
+    calls: list[bytes] = []
+
+    def _spy(url: str, commitment: bytes) -> Timestamp:
+        calls.append(commitment)
+        return _fake_still_pending(url, commitment)
+
+    assert ots.upgrade_sweep(store, fetch_upgrade=_spy) == []
+    assert len(calls) == 1  # the calendar was actually polled
+
+    from precis.alerts import open_alert_severity
+
+    assert store.nanopub_publish_row_by_id(row.id).batch_id == batch_id
+    assert (
+        open_alert_severity(
+            store, source="nanopub_ots", fingerprint=f"stuck-pending:{batch_id}"
+        )
+        == "warn"
+    )
+
+
+def test_upgrade_sweep_skips_and_resolves_superseded_batch(
+    store: Any, monkeypatch: Any
+) -> None:
+    """gr316504 residual: a re-stamp frees a stuck batch's rows, but the
+    batch row itself is append-only history — its latest proof stays
+    'pending' forever (the calendar lost that commitment). Once no
+    ``nanopub_publish`` row references it any more, the sweep must stop
+    polling it and resolve its stuck-pending alert instead of
+    re-raising it every pass."""
+    row_a = _signed_hub(store, monkeypatch, "DFT finds the ghost claim one holds.")
+    row_b = _signed_hub(store, monkeypatch, "DFT finds the ghost claim two holds.")
+    batch_id = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
+    assert batch_id is not None
+    _make_stuck(monkeypatch)
+
+    calls: list[bytes] = []
+
+    def _spy(url: str, commitment: bytes) -> Timestamp:
+        calls.append(commitment)
+        return _fake_still_pending(url, commitment)
+
+    fingerprint = f"stuck-pending:{batch_id}"
+    from precis.alerts import open_alert_severity
+
+    # First pass, rows still bound: raises the stuck-pending alert.
+    assert ots.upgrade_sweep(store, fetch_upgrade=_spy) == []
+    assert len(calls) == 1
+    assert (
+        open_alert_severity(store, source="nanopub_ots", fingerprint=fingerprint)
+        == "warn"
+    )
+
+    # Operator/auto re-stamp: rows freed, batch left as history.
+    assert store.nanopub_reopen_stuck_batch(batch_id) == 2
+    for row in (row_a, row_b):
+        refreshed = store.nanopub_publish_row_by_id(row.id)
+        assert refreshed.state == "signed"
+        assert refreshed.batch_id is None
+
+    calls.clear()
+    assert ots.upgrade_sweep(store, fetch_upgrade=_spy) == []
+    assert calls == []  # no calendar poll attempted for the ghost batch
+    assert (
+        open_alert_severity(store, source="nanopub_ots", fingerprint=fingerprint)
+        is None
+    )
+
+    # The old (superseded) batch's proof row is untouched — history, not
+    # deleted or "fixed" — only the alert lifecycle changed.
+    old_state, _proof = store.nanopub_latest_proof(batch_id)
+    assert old_state == "pending"
+
+    # A subsequent sweep does not flap the resolved alert back open.
+    calls.clear()
+    assert ots.upgrade_sweep(store, fetch_upgrade=_spy) == []
+    assert calls == []
+    assert (
+        open_alert_severity(store, source="nanopub_ots", fingerprint=fingerprint)
+        is None
+    )
 
 
 def test_sweep_pass_runs_audit_even_when_dark(store: Any, monkeypatch: Any) -> None:

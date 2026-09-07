@@ -27,7 +27,10 @@ safety / uniform shape).
   nursery pass either.
 * **resolve** — :func:`resolve_stale_alerts` closes any open alert of a
   given source whose fingerprint is absent from the current live set
-  (the condition cleared). The row is retained (``alert-state:resolved``)
+  (the condition cleared); :func:`resolve_alert_by_fingerprint` is the
+  narrower single-condition sibling, for a source shared across
+  unrelated alert families where a caller must not clear siblings it
+  knows nothing about. The row is retained (``alert-state:resolved``)
   for history; the ``/alerts`` tab and :func:`list_open_alerts` filter
   on ``alert-state:open``.
 
@@ -284,6 +287,48 @@ def open_alert_severity(store: Store, *, source: str, fingerprint: str) -> str |
             (source, fingerprint, STATE_OPEN),
         ).fetchone()
     return row[0] if row is not None else None
+
+
+def resolve_alert_by_fingerprint(
+    store: Store, *, source: str, fingerprint: str, resolved_by: str = ""
+) -> bool:
+    """Resolve the open alert (if any) for one exact ``(source,
+    fingerprint)`` pair, leaving every other open alert under ``source``
+    untouched. Returns ``True`` if an open alert was flipped.
+
+    :func:`resolve_stale_alerts` closes everything under a source that
+    isn't in a caller-supplied live set — sound when a source hosts
+    exactly one alert family (the common case across this codebase's
+    sweeps), but wrong when a source is shared across unrelated
+    conditions (``nanopub_ots`` carries both the per-batch
+    ``stuck-pending:<id>`` alerts and the single ``audit-mismatch``
+    alert): a caller that only knows about one condition must not have
+    the authority to silently resolve the other by omission. Same
+    dedup lookup as :func:`raise_alert` / :func:`open_alert_severity`,
+    same flip as :func:`resolve_alert`.
+    """
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'alert'
+               AND r.retired_at IS NULL
+               AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
+               AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = %s
+               AND t.namespace = 'OPEN'
+               AND t.value = %s
+             ORDER BY r.created_at DESC
+             LIMIT 1
+            """,
+            (source, fingerprint, STATE_OPEN),
+        ).fetchone()
+        if row is None:
+            return False
+        _flip_resolved(store, conn, int(row[0]), resolved_by=resolved_by)
+    return True
 
 
 def _flip_resolved(

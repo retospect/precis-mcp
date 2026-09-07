@@ -115,6 +115,16 @@ def test_batch_family_is_append_only_and_upgrade_inserts(store: Any) -> None:
         leaves=[(art, 0, "cd" * 32, b"leafproof")],
         pending_proof=b"rootproof-pending",
     )
+    # nanopub_pending_batches() only counts a batch a current publish row
+    # still points at (a re-stamped-away batch is superseded, not
+    # pending work — see test_nanopub_ots.py); wire the binding directly
+    # since this test's row is deliberately kept at 'candidate' below,
+    # short of the 'signed' state nanopub_set_batch's CAS requires.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE nanopub_publish SET batch_id = %s WHERE id = %s",
+            (batch, row.id),
+        )
     assert [b.id for b in store.nanopub_pending_batches()] == [batch]
     state, proof = store.nanopub_latest_proof(batch)
     assert state == "pending" and proof == b"rootproof-pending"
