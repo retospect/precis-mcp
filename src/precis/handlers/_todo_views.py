@@ -1248,6 +1248,76 @@ def _doable_counters(store: Store) -> dict[str, int]:
 # ── view: waiting / blocked / ask-user ───────────────────────────
 
 
+#: Statuses that count as "open work" — the ``view='active'`` union
+#: (formerly the ``id='/open'`` flat list; todo-surface-naming, approved
+#: 2026-09-06: "open" was carrying three meanings — the STATUS value,
+#: this union view, and the OPEN tag namespace — so the union is named
+#: ``active`` and the paths stay as deprecated aliases).
+ACTIVE_STATUSES: frozenset[str] = frozenset(
+    {"open", "doing", "blocked", "paused", "auto-timeout"}
+)
+
+
+def render_status_flat(
+    store: Store, *, statuses: frozenset[str], label: str, limit: int = 200
+) -> Response:
+    """Flat status-filtered list — ``view='active'|'doing'|'done'``.
+
+    One SQL pass (status resolved per-row, ``'open'`` when untagged),
+    newest first. The tree-aware surfaces (``doable``/``blocked``/…)
+    stay separate; this is the plain triage list."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id,
+                   COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) AS status,
+                   r.title
+              FROM refs r
+             WHERE r.kind = 'todo'
+               AND r.retired_at IS NULL
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) = ANY(%s)
+             ORDER BY r.ref_id DESC
+             LIMIT %s
+            """,
+            (sorted(statuses), limit),
+        ).fetchall()
+    if not rows:
+        body = f"no todos with status in {sorted(statuses)}"
+        body += render_next_section(
+            [
+                ("search(kind='todo', view='roots')", "the strategic dashboard"),
+                ("put(kind='todo', text='new task')", "create a new todo"),
+            ]
+        )
+        return Response(body=body)
+    lines = [f"# {len(rows)} todo ({label})"]
+    for ref_id, status, title in rows:
+        first_line = (title or "").split("\n", 1)[0]
+        preview = (first_line[:80] + "…") if len(first_line) > 80 else first_line
+        lines.append(f"  {int(ref_id):>4}  [{status:<7}]  {preview}")
+    body = "\n".join(lines)
+    first_id = int(rows[0][0])
+    body += render_next_section(
+        [
+            (f"get(kind='todo', id={first_id})", "read full todo + tags"),
+            (
+                f"tag(kind='todo', id={first_id}, add=['STATUS:done'])",
+                "mark a todo done (any id above)",
+            ),
+            ("put(kind='todo', text='new task')", "create a new todo"),
+        ]
+    )
+    return Response(body=body)
+
+
 def render_waiting(store: Store) -> Response:
     """Leaves carrying any ``waiting-for:*`` tag."""
     with store.pool.connection() as conn:

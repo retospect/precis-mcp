@@ -650,6 +650,59 @@ def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
         )
 
 
+#: Agent-facing tier vocabulary (todo-surface-naming, approved
+#: 2026-09-06): one ``meta.tier`` enum instead of asking writers to
+#: reason in facet booleans ("worker_mintable=false means tactical").
+#: The booleans stay the STORED form — every SQL read
+#: (``_level_label``, nursery orphan walk, dispatch) is untouched;
+#: ``tier`` is translated at the write boundary and never persisted.
+TIER_TO_FACETS: dict[str, dict[str, bool]] = {
+    "strategic": {META_ROTATION_ROOT: True, META_WORKER_MINTABLE: True},
+    "tactical": {META_ROTATION_ROOT: False, META_WORKER_MINTABLE: False},
+    "subtask": {META_ROTATION_ROOT: False, META_WORKER_MINTABLE: True},
+}
+
+
+def normalize_tier_meta(meta: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Translate ``meta['tier']`` into the stored facet booleans.
+
+    Runs BEFORE the facet guards on both ``put()`` and ``tag()``, so the
+    owner-only gate sees the derived booleans and a worker writing
+    ``tier='strategic'`` is rejected exactly like one writing
+    ``rotation_root=True``. Explicit values are always written for both
+    facets (a demotion must overwrite the old promotion). ``tier``
+    itself never persists.
+    """
+    if not meta or "tier" not in meta:
+        return meta
+    tier = meta["tier"]
+    if tier not in TIER_TO_FACETS:
+        extra = (
+            " ('recurring' is not a settable tier — it is derived from "
+            "meta.schedule presence)"
+            if tier == "recurring"
+            else ""
+        )
+        raise BadInput(
+            f"meta.tier {tier!r} is not a valid tier{extra}",
+            options=sorted(TIER_TO_FACETS),
+            next="tier='strategic' | 'tactical' | 'subtask'",
+        )
+    overlap = sorted(set(meta) & {META_ROTATION_ROOT, META_WORKER_MINTABLE})
+    if overlap:
+        raise BadInput(
+            f"meta.tier conflicts with explicit facet key(s) {overlap} in "
+            "the same write",
+            next=(
+                "pass tier= alone — it derives both "
+                f"{META_ROTATION_ROOT}/{META_WORKER_MINTABLE}"
+            ),
+        )
+    out = {k: v for k, v in meta.items() if k != "tier"}
+    out.update(TIER_TO_FACETS[tier])
+    return out
+
+
 #: The closed set of keys ``tag(meta=...)`` is allowed to promote.
 #: ``tag()`` is a post-creation *mutation* surface, not a general meta
 #: bag — anything not on this list (notably ``deliver``, the cron-folded-into-recurring
@@ -658,7 +711,14 @@ def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
 #: Reject the whole call rather than silently dropping an unpromotable
 #: key, so a caller never believes a write landed that didn't.
 TAG_META_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {META_ROTATION_ROOT, META_WORKER_MINTABLE, "schedule", "llm_tier", "llm_select"}
+    {
+        META_ROTATION_ROOT,
+        META_WORKER_MINTABLE,
+        "tier",  # normalized away before this check; listed for teaching
+        "schedule",
+        "llm_tier",
+        "llm_select",
+    }
 )
 
 
@@ -1046,6 +1106,7 @@ __all__ = [
     "META_WORKER_MINTABLE",
     "PROPOSED_TACTICAL",
     "TAG_META_ALLOWED_KEYS",
+    "TIER_TO_FACETS",
     "check_claim_takeover",
     "check_deliver_in_meta",
     "check_depth_under",
@@ -1065,6 +1126,7 @@ __all__ = [
     "check_status_done_artifact",
     "has_auto_run_signal",
     "is_owner",
+    "normalize_tier_meta",
     "strategic_lacks_auto_run",
     "todo_root_sql",
 ]

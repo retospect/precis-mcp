@@ -297,6 +297,74 @@ def test_tag_meta_allowlist_keys_still_promote(handler: TodoHandler) -> None:
     assert ref.meta.get("llm_select") == {"placement": "local"}
 
 
+# ── meta.tier enum (todo-surface-naming, approved 2026-09-06) ──────
+
+
+def _meta_of(handler: TodoHandler, rid: int) -> dict:
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    return ref.meta or {}
+
+
+def test_put_tier_strategic_stores_facet_booleans(handler: TodoHandler) -> None:
+    """``tier='strategic'`` persists as the facet booleans; the enum key
+    itself never lands in storage."""
+    r = handler.put(text="root", meta={"tier": "strategic"})
+    meta = _meta_of(handler, _id_of(r.body))
+    assert meta.get("rotation_root") is True
+    assert meta.get("worker_mintable") is True
+    assert "tier" not in meta
+
+
+def test_put_tier_tactical_stores_facet_booleans(handler: TodoHandler) -> None:
+    r = handler.put(text="tactical", meta={"tier": "tactical"})
+    meta = _meta_of(handler, _id_of(r.body))
+    assert meta.get("rotation_root") is False
+    assert meta.get("worker_mintable") is False
+    assert "tier" not in meta
+
+
+def test_tag_tier_subtask_demotes_a_tactical(handler: TodoHandler) -> None:
+    """Demotion overwrites both facets explicitly — a former tactical
+    becomes an ordinary worker-mintable subtask."""
+    r = handler.put(text="tactical", meta={"tier": "tactical"})
+    rid = _id_of(r.body)
+    handler.tag(id=rid, meta={"tier": "subtask"})
+    meta = _meta_of(handler, rid)
+    assert meta.get("rotation_root") is False
+    assert meta.get("worker_mintable") is True
+
+
+def test_worker_cannot_set_tier_strategic(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tier spelling rides the same owner-only gate as the raw
+    booleans — a worker source is rejected identically."""
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    with pytest.raises(BadInput, match="owner-only"):
+        handler.put(text="sneaky root", meta={"tier": "strategic"})
+
+
+def test_tier_unknown_value_rejected_with_options(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="not a valid tier"):
+        handler.put(text="typo", meta={"tier": "strateg"})
+
+
+def test_tier_recurring_rejected_with_schedule_hint(handler: TodoHandler) -> None:
+    """``recurring`` is derived from ``meta.schedule`` presence, never a
+    settable tier — the rejection teaches that."""
+    with pytest.raises(BadInput, match="derived from"):
+        handler.put(text="cron-ish", meta={"tier": "recurring"})
+
+
+def test_tier_conflicts_with_explicit_facet_key(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="conflicts with explicit facet"):
+        handler.put(
+            text="both spellings",
+            meta={"tier": "strategic", "rotation_root": True},
+        )
+
+
 # ── meta.llm_select (structured selection) ─────────────────
 
 

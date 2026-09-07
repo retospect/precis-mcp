@@ -15,15 +15,19 @@ status: active
 # precis-todo-tree-help — the hierarchical todo tree
 
 Built on top of `kind='todo'`. Every todo is a node; an optional
-`parent_id` wires it under another todo to form a tree. The tier is two
-boolean `meta` fields, not a tag — `rotation_root` marks a strategic
-root, `worker_mintable=false` marks tactical, and the default (both
-unset) is an ordinary worker-mintable subtask:
+`parent_id` wires it under another todo to form a tree. The tier is
+written as one enum — `meta={'tier': 'strategic'|'tactical'|'subtask'}`
+on `put()`/`tag()` — and stored as two boolean facet fields
+(`rotation_root` marks a strategic root, `worker_mintable=false` marks
+tactical; you may still write the booleans directly, but not together
+with `tier` in one call). The default (nothing set) is an ordinary
+worker-mintable subtask; `recurring` is not a settable tier — it is
+derived from `meta.schedule` presence:
 
 ```
-strategic root  (owner-only, meta.rotation_root=true)
-  └─ tactical    (owner-only, meta.worker_mintable=false)
-      └─ subtask (worker-owned by default — no facet fields set)
+strategic root  (owner-only, tier='strategic')
+  └─ tactical    (owner-only, tier='tactical')
+      └─ subtask (worker-owned default — no tier/facets set)
          └─ subtask
             └─ ...   (depth-10 wall)
 ```
@@ -45,7 +49,7 @@ also covers the depth-10 wall and how to recover from it.
 put(
     kind="todo",
     text="Build the nanocube AI compute platform.",
-    meta={"rotation_root": True},
+    meta={"tier": "strategic"},
 )
 ```
 
@@ -120,6 +124,9 @@ edit(kind="todo", id=42, mode="replace", text="new title", body="new body")
 search(kind="todo", view="roots")  # one row per strategic
 search(kind="todo", view="strategic")  # strategic + tactical layer
 search(kind="todo", view="projects")  # strategics that own a workspace
+search(kind="todo", view="active")  # flat list: open+doing+blocked+paused
+search(kind="todo", view="doing")  # flat list: in-progress only
+search(kind="todo", view="done")  # flat list: completed
 ```
 
 `view='roots'` shows past-tense accounting only: how many leaves
@@ -232,14 +239,14 @@ the agent a follow-up call to figure out why this leaf exists.
 
 ## Facet fields + tag vocabulary specific to the tree
 
-The level tier is `meta`, not a tag:
+The level tier is `meta`, not a tag — write `tier=`, read the booleans:
 
 | `meta` field | Purpose | Who writes |
 |---|---|---|
-| `rotation_root=true` | Strategic root — the picks-7d rotation unit | owner only |
-| `worker_mintable=false` | Tactical (sub-strategic, non-root) tier | owner only |
-| *(both unset)* | Subtask — the worker-mintable default | anyone |
-| `schedule={...}` | Scheduled root — presence IS "recurring" | owner only |
+| `tier='strategic'` | Strategic root — the picks-7d rotation unit (stored as `rotation_root=true`) | owner only |
+| `tier='tactical'` | Tactical (sub-strategic, non-root) tier (stored as `worker_mintable=false`) | owner only |
+| `tier='subtask'` / *(unset)* | Subtask — the worker-mintable default | anyone |
+| `schedule={...}` | Scheduled root — presence IS "recurring" (not a settable tier) | owner only |
 
 | Tag | Purpose | Who writes |
 |---|---|---|

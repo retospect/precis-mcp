@@ -659,3 +659,59 @@ def test_attention_hints_round_trip_and_child_failed_uses_real_tag_value(
     # The bare job id (as producers write it), not the ``jb4711`` handle.
     assert "child-failed:4711" in cf_hints[0]
     assert "jb4711" not in cf_hints[0]
+
+
+# ── flat views on view= + deprecated /path aliases (todo-surface-
+#    naming, approved 2026-09-06) ──────────────────────────────────
+
+
+def test_search_view_active_is_the_open_union(handler: TodoHandler) -> None:
+    """``view='active'`` = open + doing + blocked + paused +
+    auto-timeout — the union the '/open' path used to render."""
+    open_id = _id_of(handler.put(text="still open").body)
+    doing_id = _id_of(handler.put(text="in progress").body)
+    handler.tag(id=doing_id, add=["STATUS:doing"])
+    done_id = _id_of(handler.put(text="finished").body)
+    handler.tag(id=done_id, add=["STATUS:done"])
+
+    out = handler.search(view="active")
+    assert "still open" in out.body
+    assert "in progress" in out.body
+    assert "finished" not in out.body
+    assert str(open_id) in out.body
+
+
+def test_search_view_doing_and_done_are_literal(handler: TodoHandler) -> None:
+    doing_id = _id_of(handler.put(text="working on it").body)
+    handler.tag(id=doing_id, add=["STATUS:doing"])
+    done_id = _id_of(handler.put(text="wrapped up").body)
+    handler.tag(id=done_id, add=["STATUS:done"])
+
+    doing = handler.search(view="doing")
+    assert "working on it" in doing.body
+    assert "wrapped up" not in doing.body
+    done = handler.search(view="done")
+    assert "wrapped up" in done.body
+    assert "working on it" not in done.body
+
+
+def test_open_path_aliases_active_with_deprecation_pointer(
+    handler: TodoHandler,
+) -> None:
+    """The '/open' path still renders (same union), plus one line
+    pointing at the canonical ``view='active'`` spelling."""
+    handler.put(text="alias survivor")
+    out = handler.get(id="/open")
+    assert "alias survivor" in out.body
+    assert "deprecated alias" in out.body
+    assert "view='active'" in out.body
+
+
+def test_blocked_path_aliases_the_tree_aware_view(handler: TodoHandler) -> None:
+    """'/blocked' now lands on the richer blocked view (blocked-by
+    links + STATUS:blocked union), not the old bare status list."""
+    rid = _id_of(handler.put(text="stuck leaf").body)
+    handler.tag(id=rid, add=["STATUS:blocked"])
+    out = handler.get(id="/blocked")
+    assert "stuck leaf" in out.body
+    assert "view='blocked'" in out.body  # deprecation pointer

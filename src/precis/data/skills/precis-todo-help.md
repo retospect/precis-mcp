@@ -42,12 +42,14 @@ round-trip.
 ```python
 get(kind="todo")  # alias for /recent
 get(kind="todo", id="/recent")  # most recent 20, any status
-get(kind="todo", id="/open")  # open + doing + blocked (the queue)
-get(kind="todo", id="/queue")  # alias for /open
-get(kind="todo", id="/doing")  # in-progress only
-get(kind="todo", id="/blocked")  # waiting on something
-get(kind="todo", id="/done")  # completed
+search(kind="todo", view="active")  # open + doing + blocked + paused (the queue)
+search(kind="todo", view="doing")  # in-progress only
+search(kind="todo", view="blocked")  # blocked-by links + STATUS:blocked
+search(kind="todo", view="done")  # completed
 ```
+
+(The old `id='/open'` `/queue` `/doing` `/blocked` `/done` paths still
+work as deprecated aliases of these views.)
 
 ## Start work on a todo
 ## Mark a todo as in-progress

@@ -19,10 +19,12 @@ shape with four first-class extensions:
    old ``level:strategic|tactical`` tags); the guards in
    :mod:`precis.handlers._todo_guards` enforce who can write what.
 
-3. **Tree-aware views** — search views ``roots``, ``projects``,
-   ``strategic``, ``doable``, ``waiting``, ``blocked``, ``ask-user``,
-   ``attention`` (the :class:`TodoView` closed vocabulary; the
-   :data:`_TREE_SEARCH_VIEWS` dispatch table maps each to a renderer in
+3. **Views** — search views ``roots``, ``projects``, ``strategic``,
+   ``doable``, ``waiting``, ``blocked``, ``ask-user``, ``attention``,
+   plus the flat status lists ``active`` (the open+doing+blocked+
+   paused+auto-timeout union), ``doing``, ``done`` (the
+   :class:`TodoView` closed vocabulary; the :data:`_TREE_SEARCH_VIEWS`
+   dispatch table maps each to a renderer in
    :mod:`precis.handlers._todo_views`), plus ``view='tree'`` on ``get``.
    ``projects`` lists strategic roots that own a ``meta.workspace``;
    ``attention`` unions ``ask-user:`` leaves, ``child-failed`` parents,
@@ -36,12 +38,14 @@ shape with four first-class extensions:
    validated at write time. The seeded Watches umbrella is the default
    parent for recurring roots without an explicit ``parent_id``.
 
-List views via ``id='/<view>'`` (legacy flat surface):
-    /recent /open /doing /blocked /done /queue
-Tree views via ``view='<name>'`` on search / get:
+Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
-                              |'waiting'|'blocked'|'ask-user'|'attention')
+                              |'waiting'|'blocked'|'ask-user'|'attention'
+                              |'active'|'doing'|'done')
     get(kind='todo', id=N, view='tree')
+``id='/<view>'`` paths (/open /queue /doing /blocked /done) are
+deprecated aliases — same render, plus a pointer at the ``view=``
+spelling ('/open' and '/queue' land on ``view='active'``).
 
 A ``get(kind='todo', id=N)`` response always includes the walk-up
 ancestry chain when the ref isn't a root — depth ≤ 10, cheap, no
@@ -50,6 +54,7 @@ caching needed.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -98,6 +103,15 @@ class TodoView(StrEnum):
     BLOCKED = "blocked"
     ASK_USER = "ask-user"
     ATTENTION = "attention"
+    # Flat status lists (todo-surface-naming, approved 2026-09-06):
+    # converged here from the id='/<view>' path overload, which stays
+    # as a deprecated alias. ``active`` is the open+doing+blocked+
+    # paused+auto-timeout union the '/open' path used to render —
+    # renamed because "open" already means both a STATUS value and the
+    # OPEN tag namespace.
+    ACTIVE = "active"
+    DOING = "doing"
+    DONE = "done"
 
 
 def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> Response:
@@ -136,6 +150,15 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.BLOCKED: lambda store, args, ps: views.render_blocked(store),
     TodoView.ASK_USER: lambda store, args, ps: views.render_ask_user(store),
     TodoView.ATTENTION: lambda store, args, ps: views.render_attention(store),
+    TodoView.ACTIVE: lambda store, args, ps: views.render_status_flat(
+        store, statuses=views.ACTIVE_STATUSES, label="active", limit=ps or 200
+    ),
+    TodoView.DOING: lambda store, args, ps: views.render_status_flat(
+        store, statuses=frozenset({"doing"}), label="doing", limit=ps or 200
+    ),
+    TodoView.DONE: lambda store, args, ps: views.render_status_flat(
+        store, statuses=frozenset({"done"}), label="done", limit=ps or 200
+    ),
 }
 
 #: Single-source-of-truth guard: every view in the vocabulary must have
@@ -228,12 +251,8 @@ class TodoHandler(NumericRefHandler):
     sense: ClassVar[str] = "todo"
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
-    # Statuses that count as "open work" (i.e. on the agent's queue).
-    _OPEN_STATUSES: ClassVar[frozenset[str]] = frozenset(
-        {"open", "doing", "blocked", "paused", "auto-timeout"}
-    )
-
     # ── list view dispatch (id='/<view>') ─────────────────────────
+    # ("open work" union: views.ACTIVE_STATUSES — the view='active' set.)
 
     def _supported_list_views(self) -> tuple[str, ...]:
         return ("recent", "open", "doing", "blocked", "done", "queue")
@@ -246,59 +265,28 @@ class TodoHandler(NumericRefHandler):
 
     def _list_view(self, view: str) -> Response | None:
         # Default behaviour for /recent / "" stays in the base class.
-        if view in ("open", "doing", "blocked", "done"):
-            return self._render_status_list(view)
-        if view == "queue":  # alias
-            return self._render_status_list("open")
+        # The flat status paths are deprecated aliases of the search
+        # views (todo-surface-naming, approved 2026-09-06): same render,
+        # plus a one-line pointer at the canonical spelling. '/blocked'
+        # now aliases the richer tree-aware blocked view (blocked-by
+        # links + STATUS:blocked union) rather than the bare flat list.
+        if view in ("open", "queue"):
+            return self._deprecated_path_alias(view, TodoView.ACTIVE)
+        if view == "doing":
+            return self._deprecated_path_alias(view, TodoView.DOING)
+        if view == "done":
+            return self._deprecated_path_alias(view, TodoView.DONE)
+        if view == "blocked":
+            return self._deprecated_path_alias(view, TodoView.BLOCKED)
         return super()._list_view(view)
 
-    def _render_status_list(self, status_filter: str) -> Response:
-        """Render todos filtered by STATUS: tag (legacy flat surface).
-
-        ``status_filter='open'`` is the union of open + doing +
-        blocked + paused + auto-timeout (everything that's not
-        terminally closed). Other filters match the literal status.
-        """
-        refs = self.store.list_refs(kind=self.kind, limit=200)
-        if status_filter == "open":
-            wanted = self._OPEN_STATUSES
-        else:
-            wanted = frozenset({status_filter})
-
-        kept: list[tuple[int, str, str]] = []
-        for r in refs:
-            tags = self.store.tags_for(r.id)
-            status = _status_of(tags)
-            if status in wanted:
-                kept.append((r.id, status, r.title))
-
-        if not kept:
-            body = f"no todos with status in {sorted(wanted)}"
-            body += render_next_section(
-                [
-                    ("get(kind='todo', id='/recent')", "list todos in any state"),
-                    ("put(kind='todo', text='new task')", "create a new todo"),
-                ]
-            )
-            return Response(body=body)
-
-        lines = [f"# {len(kept)} todo (status: {status_filter})"]
-        for ref_id, status, title in kept:
-            preview = (title[:80] + "…") if len(title) > 80 else title
-            lines.append(f"  {ref_id:>4}  [{status:<7}]  {preview}")
-        body = "\n".join(lines)
-        first_id = kept[0][0]
-        body += render_next_section(
-            [
-                (f"get(kind='todo', id={first_id})", "read full todo + tags"),
-                (
-                    f"tag(kind='todo', id={first_id}, add=['STATUS:done'])",
-                    "mark a todo done (any id above)",
-                ),
-                ("put(kind='todo', text='new task')", "create a new todo"),
-            ]
+    def _deprecated_path_alias(self, path: str, target: TodoView) -> Response:
+        resp = _TREE_SEARCH_VIEWS[target](self.store, None, 200)
+        hint = (
+            f"\n\n⚠ id='/{path}' is a deprecated alias — use "
+            f"search(kind='todo', view='{target}')"
         )
-        return Response(body=body)
+        return dataclasses.replace(resp, body=resp.body + hint)
 
     # ── get: single-ref ancestry + tree view ──────────────────────
 
@@ -446,6 +434,11 @@ class TodoHandler(NumericRefHandler):
             guards.check_depth_under(self.store, parent_int)
         else:
             parent_int = None
+        # ``meta.tier`` (strategic|tactical|subtask) is the agent-facing
+        # spelling of the facet booleans — translated here so the
+        # owner-only gate below sees the derived booleans and enforces
+        # identically. The booleans are what persists.
+        meta = guards.normalize_tier_meta(meta)
         guards.check_facets_on_create(meta)
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
@@ -843,6 +836,10 @@ class TodoHandler(NumericRefHandler):
         # general meta bag — anything else (``deliver``, ``workspace``,
         # …) has its own validation on the ``put()``/``create()`` path
         # and must not skip it by riding through here unvalidated.
+        # ``meta.tier`` → facet booleans first (same translation as
+        # ``put()``), so the promotable allowlist and the owner-only
+        # facet gate below both see the stored keys.
+        meta = guards.normalize_tier_meta(meta)
         guards.check_meta_keys_promotable(meta)
         guards.check_facets_on_tag(meta)
         guards.check_llm_tier_meta(meta)
@@ -1192,15 +1189,10 @@ class TodoHandler(NumericRefHandler):
                     f"delete(kind={self.kind!r}, id={ref_id})",
                     "delete this todo",
                 ),
-                (f"get(kind={self.kind!r}, id='/open')", "list open todos"),
+                (
+                    f"search(kind={self.kind!r}, view='active')",
+                    "list open work (open/doing/blocked/paused)",
+                ),
             ]
         )
         return Response(body=body, ref_id=ref_id)
-
-
-def _status_of(tags: list) -> str:
-    """Return the STATUS: value from a tag list, or ``'open'`` as default."""
-    for t in tags:
-        if str(t).startswith("STATUS:"):
-            return str(t)[len("STATUS:") :]
-    return "open"

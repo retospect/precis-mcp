@@ -80,9 +80,9 @@ not "all of them" — use `search` for content-driven discovery.
 ## What's the `/<filter>` shape in id=?
 
 ```python
-get(kind="todo", id="/open")  # open + doing + blocked
-get(kind="todo", id="/doing")  # by literal STATUS
-get(kind="todo", id="/done")
+search(kind="todo", view="active")  # open + doing + blocked (id='/open' is a deprecated alias)
+search(kind="todo", view="doing")  # by literal STATUS
+search(kind="todo", view="done")
 get(kind="gripe", id="/wontfix")  # STATUS:wontfix retrospect view
 get(kind="memory", id="/sticky")  # sticky:thread ∪ sticky:global
 search(kind="todo", view="roots")  # recurring schedules panel (cron/at, last tick)
