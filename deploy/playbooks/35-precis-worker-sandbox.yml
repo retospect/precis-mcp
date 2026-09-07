@@ -11,8 +11,8 @@
 #
 # SECURITY SHAPE (matches sandbox_run's design): this unit's process holds
 # the worker DSN and resolves CLAUDE_CODE_OAUTH_TOKEN from the DB vault at
-# launch time (secrets.py; no token in this unit's env file). melchior is
-# hard-excluded from agent_sandbox_hosts by the job_type itself.
+# launch time (secrets.py; no token in this unit's env file). The gateway
+# host is hard-excluded from agent_sandbox_hosts by the job_type itself.
 #
 # HOME=/home/deploy is load-bearing: the executor launches rootless podman
 # as this unit's user, and podman resolves `code-task:latest` from

@@ -22,7 +22,7 @@
 # BUILDER: podman as `deploy` — the SAME user+runtime the executor launches
 # with (precis-worker.service.j2 User=deploy; launch is deliberately
 # podman-only), so the built image lands in exactly the storage the worker
-# resolves `code-task:latest` from. melchior must never appear in
+# resolves `code-task:latest` from. The gateway host must never appear in
 # agent_sandbox_hosts (the job_type hard-excludes it at submit anyway).
 #
 # Standalone runs:
