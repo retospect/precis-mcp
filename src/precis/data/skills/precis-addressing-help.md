@@ -114,8 +114,10 @@ agent-facing copy.
 - **`skill` / `python` / `tag`** carry codes for completeness but are still
   addressed by their slug/path or `kind=`+id — a bare `sk…`/`py…`/`tg…` is not
   yet a resolvable handle. Skills: `get(kind='skill', id='precis-todo-tree-help')`.
-- **`draft`** chunks currently keep their ADR-0033 `¶<handle>` form; the `dr`/`dc`
-  codes are reserved for a later unification.
+- **`draft`** refs are `dr<id>` and their chunks `dc<id>` — the live, current
+  forms (every `put(kind='draft', …)` returns `dc`-form handles). The
+  ADR-0033 legacy `¶<base58>` form still *resolves* as an accepted alias
+  during the transition, but write new references in `dc` form.
 - **Providers** (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,
   `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
   `random`) have **no handle** — addressed by URL / query / compute.
