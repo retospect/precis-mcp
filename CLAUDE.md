@@ -85,6 +85,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   `subprocess(..., text=True)`).
 - `rtk` digests noisy Bash output — you see a filtered digest. →
   `docs/conventions/rtk.md`
+- Never pipe `scripts/ship|deploy|bump` into `tail`/`grep`/`tee` — a pipeline
+  reports the *filter's* status, so a red gate reads as exit 0. Redirect to a
+  log, or `set -o pipefail`.
 - Read/Grep tools over cat/sed/bash-grep; no `echo "==="` narration; don't
   re-Read files already in context.
 - Structure-aware first: `search_code` (MAIN repo path; index is lazy — Grep
