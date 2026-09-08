@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from precis._pagination import _FOOTER_RESERVE_BYTES, _KIND_FALLBACK_RESERVE_BYTES
 from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
 from precis.handlers.folder import FolderHandler
@@ -513,7 +514,17 @@ def test_uncited_note_visible_on_first_page_when_result_paginates(
     # Cursor pagination only engages on long-lived runtimes (gr267466);
     # this test is about which page the note lands on, so opt in.
     rt.long_lived = True
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "500")
+    # Small enough to force truncation across 150 papers, but with
+    # headroom over the footer reserve (this is a ``search(kind='paper'...)``
+    # call, so the footer also carries the gr330197 kind-fallback
+    # sentence) so the leading uncited-note still lands on page one —
+    # sized off the reserve, not a bare literal, so it survives future
+    # footer-wording growth. See the sibling comment in
+    # ``test_pagination.py``.
+    monkeypatch.setenv(
+        "PRECIS_MAX_BODY_BYTES",
+        str(_FOOTER_RESERVE_BYTES + _KIND_FALLBACK_RESERVE_BYTES + 300),
+    )
     body, is_error = _search(rt, uncited=f"dr{draft_ref_id}", page_size=150)
     assert not is_error
     assert "more(cursor=" in body, "test setup didn't actually paginate"

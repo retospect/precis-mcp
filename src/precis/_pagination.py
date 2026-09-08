@@ -34,16 +34,60 @@ incomplete and pagination is in flight.
 The cache is per-process: a worker restart drops all cursors. The
 agent's recovery is to re-issue the original call. Acceptable for
 v1; revisit if cursor reuse across restarts becomes a real need.
+
+Re-derivable cursors (gr330197)
+--------------------------------
+Under fleet load, the few-minute TTL above can lapse before a
+queued follow-up ``more(cursor=...)`` call actually lands — the
+agent then holds an unreadable page 1 with no recovery. For a
+``get()`` call specifically (read-only, deterministic given the
+same ``kind``/``id``/``view`` args — the case
+:meth:`~precis.runtime.dispatch.DispatchMixin.dispatch_with_status`
+opts into via the ``recipe=`` argument below), the cursor doesn't
+have to be an opaque cache key: it can carry enough to *redo* the
+call and re-derive the same page, turning an expired-cursor error
+into a transparent retry.
+
+``RecipeSeed`` is that self-describing payload — ``verb``, ``args``,
+the page number the cursor should produce when redeemed, and a
+``body_hash`` anchor (a hash of the *first* render's
+``response.body``, computed by the dispatcher before hints/cost are
+appended, so a hint-cooldown difference between the original render
+and the replay can never look like drift). :func:`encode_recipe_cursor`
+/ :func:`decode_recipe_cursor` (de)serialise it into the cursor
+string itself (prefixed ``rr1.``, base64 JSON) — no server-side
+lookup needed to recover it. :meth:`PaginationCache.split` still
+caches the tail under that same string for the fast, common,
+same-process case; the cursor only needs decoding when the cache
+entry is actually gone.
+
+The re-render + hash-compare + page reconstruction (via
+:meth:`PaginationCache.render_recipe_page`) lives in
+:meth:`~precis.runtime.dispatch.DispatchMixin.fetch_more`, not here —
+this module has no access to the dispatcher needed to replay a call.
+Restricted to ``verb == "get"`` by the dispatcher (enforced again on
+decode, defensively, in case a cursor is tampered with): ``get()`` is
+the one verb assumed side-effect-free and idempotent, so replaying it
+from an opaque token carries no more risk than the agent re-issuing
+it by hand — which was already the documented manual recovery this
+automates. ``search()`` and everything else keeps the plain opaque
+``uuid4`` cursor: too easy for ranking/embeddings/DB state to shift
+between calls for a hash check to be a reliable "nothing changed"
+signal.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass
 from threading import Lock
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -72,17 +116,26 @@ DEFAULT_MAX_CURSORS = 256
 #: trailing noise, and consumers were treating a first-frame head
 #: as a complete result and acting on it (e.g. a long YouTube
 #: transcript summarised as if it ended mid-sentence). The footer
-#: now states, in order: that the body is *incomplete*, roughly how
-#: much remains, the exact call to continue, and that the reader
-#: must drain every page before acting. ``{cursor}`` and the literal
+#: states, in order: that the body is *incomplete*, roughly how much
+#: remains, the exact call to continue, and that this page must not
+#: be mistaken for the whole result. ``{cursor}`` and the literal
 #: ``more(cursor='...')`` call are preserved for the ``more`` tool.
+#:
+#: gr330197: the original wording forbade summarising/quoting/acting
+#: on the content *at all* until every page was drained — a caller
+#: whose cursor then expired under fleet load was left holding a
+#: page-1 it was explicitly forbidden to use, with no escape hatch.
+#: Softened to forbid the actual failure mode (treating a partial
+#: page *as if it were complete*) rather than all use — a partial
+#: excerpt, honestly labelled partial, is fine.
 _FOOTER_TEMPLATE = (
     "\n\n---\n"
     "⚠️ **Truncated — this is NOT the complete result.** It was cut to fit the "
     "response frame; about {remaining} more follows on the next page. Call "
     "`more(cursor='{cursor}')` to fetch it, then keep following each page's "
-    "cursor until no footer remains — do not summarise, quote, or act on this "
-    "content until you have drained every page.\n"
+    "cursor until no footer remains. Do not summarise, quote, or act on this "
+    "page as if it were the complete result — a partial excerpt is fine as "
+    "long as you say it's partial.\n"
 )
 
 #: Footer for a cursor-incapable (short-lived) caller — a one-shot
@@ -118,49 +171,98 @@ _ALT_HINT_SENTENCE_TEMPLATE = "If you only need part of this document: {alt_hint
 
 #: Byte ceiling on ``alt_hint`` content (post-clamp). Bounds the footer-
 #: reserve contribution below to a fixed constant regardless of what a
-#: caller passes — see :func:`_clamp_alt_hint`.
+#: caller passes — see :func:`_clamp_text`.
 _ALT_HINT_MAX_BYTES = 320
 
+#: Trailing sentence appended after :data:`_FOOTER_TEMPLATE` /
+#: :data:`_SHORT_LIVED_FOOTER_TEMPLATE` when the dispatcher can name the
+#: ``kind`` that produced this body (gr330197). Whether or not a cursor
+#: was minted, the underlying content is *already* indexed and directly
+#: retrievable — a cursor expiring (or never having existed at all, in
+#: the short-lived case) doesn't strand the reader the way the bare
+#: "no such cursor" error used to. Kept as its own sentence (rather than
+#: folded into either footer template) for the same reason as
+#: ``alt_hint``: the no-``kind``-available case must stay byte-identical
+#: to the pre-gr330197 footer.
+_KIND_FALLBACK_SENTENCE_TEMPLATE = (
+    "Also cached and searchable directly: "
+    "search(kind='{kind}', q='<keywords>') skips paging entirely.\n"
+)
 
-def _clamp_alt_hint(alt_hint: str | None) -> str | None:
-    """Normalise/bound ``alt_hint`` so it can never blow the footer reserve.
+#: Byte ceiling on the interpolated ``kind`` (post-clamp) — see
+#: :func:`_clamp_text`. Registered kind names are short identifiers
+#: (the longest today is ~20 bytes); 32 is generous headroom without
+#: letting a future oddly-long kind name blow the reserve below, while
+#: keeping this sentence's footer-reserve cost modest — it rides on
+#: nearly every truncated response (any call with ``kind=``), unlike
+#: ``alt_hint`` (a deliberate per-handler opt-in).
+_KIND_FALLBACK_MAX_BYTES = 32
+
+
+def _clamp_text(text: str | None, max_bytes: int) -> str | None:
+    """Normalise/bound optional footer-sentence text to ``max_bytes``.
 
     Strips to ``None`` on empty input. Truncates on a UTF-8 char boundary
-    to at most :data:`_ALT_HINT_MAX_BYTES` bytes (ellipsis included) so
-    the reserve computed from a fixed-width placeholder below is always a
-    safe upper bound — a caller passing an unexpectedly long hint degrades
-    to a truncated hint, not a frame overflow.
+    (ellipsis included) so a reserve computed from a fixed-width
+    placeholder is always a safe upper bound — a caller passing an
+    unexpectedly long value degrades to a truncated one, not a frame
+    overflow. Shared by :data:`_ALT_HINT_MAX_BYTES` (``alt_hint``) and
+    :data:`_KIND_FALLBACK_MAX_BYTES` (``kind``).
     """
-    if not alt_hint:
+    if not text:
         return None
-    hint = alt_hint.strip()
-    if not hint:
+    value = text.strip()
+    if not value:
         return None
-    raw = hint.encode("utf-8")
-    if len(raw) <= _ALT_HINT_MAX_BYTES:
-        return hint
+    raw = value.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return value
     # Reserve 3 bytes for the "…" marker, then walk back to a valid
     # UTF-8 char boundary (continuation bytes are 10xxxxxx).
-    cut = _ALT_HINT_MAX_BYTES - 3
+    cut = max_bytes - 3
     while cut > 0 and (raw[cut] & 0xC0) == 0x80:
         cut -= 1
     return raw[:cut].decode("utf-8", errors="strict") + "…"
 
 
-def _build_footer(*, cursor: str, remaining: str, alt_hint: str | None) -> str:
-    """Render the full pagination footer, with the optional hint sentence."""
+def _clamp_alt_hint(alt_hint: str | None) -> str | None:
+    """Normalise/bound ``alt_hint`` so it can never blow the footer reserve.
+
+    See :func:`_clamp_text`.
+    """
+    return _clamp_text(alt_hint, _ALT_HINT_MAX_BYTES)
+
+
+def _clamp_kind(kind: str | None) -> str | None:
+    """Normalise/bound ``kind`` so it can never blow the footer reserve.
+
+    See :func:`_clamp_text`.
+    """
+    return _clamp_text(kind, _KIND_FALLBACK_MAX_BYTES)
+
+
+def _build_footer(
+    *, cursor: str, remaining: str, alt_hint: str | None, kind: str | None = None
+) -> str:
+    """Render the full pagination footer, with the optional sentences."""
     footer = _FOOTER_TEMPLATE.format(cursor=cursor, remaining=remaining)
     if alt_hint:
         footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
+    if kind:
+        footer += _KIND_FALLBACK_SENTENCE_TEMPLATE.format(kind=kind)
     return footer
 
 
-def _build_short_lived_footer(*, remaining: str, alt_hint: str | None) -> str:
+def _build_short_lived_footer(
+    *, remaining: str, alt_hint: str | None, kind: str | None = None
+) -> str:
     """Render the truncation footer for a cursor-incapable (short-lived)
     caller — see :data:`_SHORT_LIVED_FOOTER_TEMPLATE`."""
     footer = _SHORT_LIVED_FOOTER_TEMPLATE.format(remaining=remaining)
     if alt_hint:
         footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
+    if kind:
+        footer += _KIND_FALLBACK_SENTENCE_TEMPLATE.format(kind=kind)
     return footer
 
 
@@ -218,6 +320,98 @@ def _ttl_seconds() -> float:
     return value
 
 
+#: Prefix marking a cursor as a self-describing re-derivable recipe
+#: rather than an opaque cache key — see the module docstring's
+#: "Re-derivable cursors" section. Checked by
+#: :func:`decode_recipe_cursor` and, on the dispatcher side, by
+#: ``DispatchMixin.fetch_more`` to decide whether a cache-miss cursor
+#: is worth attempting to replay at all.
+_RECIPE_CURSOR_PREFIX = "rr1."
+
+
+def hash_body(body: str) -> str:
+    """SHA-256 hex digest of ``body``, used as the drift-detection
+    anchor for a :class:`RecipeSeed` chain.
+
+    Callers hash ``response.body`` specifically (not the full
+    ``hints`` + ``cost``-appended render) — hints are best-effort,
+    per-request, cooldown-deduped noise (:class:`precis.hints.HintBus`)
+    that can legitimately differ between the original render and a
+    later replay with nothing in the underlying content having
+    changed; hashing them in would make drift detection cry wolf.
+    """
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeSeed:
+    """Self-describing recipe for a re-derivable pagination cursor.
+
+    ``page`` is the page number *this* cursor, once redeemed (via the
+    ordinary in-process cache hit in :meth:`PaginationCache.pop`, or
+    the re-render fallback in
+    ``DispatchMixin.fetch_more``/:meth:`PaginationCache.render_recipe_page`
+    when the cache entry is gone), must produce. ``body_hash`` is
+    constant across an entire chain — see :func:`hash_body`.
+
+    Passed into :meth:`PaginationCache.split` by the dispatcher only
+    for a ``get()`` call (the one verb assumed side-effect-free and
+    replayable); every other verb keeps the plain opaque ``uuid4``
+    cursor.
+    """
+
+    verb: str
+    args: dict[str, Any]
+    body_hash: str
+    page: int
+
+
+def encode_recipe_cursor(recipe: RecipeSeed) -> str:
+    """Serialise ``recipe`` into a cursor string.
+
+    Raises (``TypeError``/``ValueError`` from ``json.dumps``) if
+    ``recipe.args`` isn't JSON-safe — callers should catch this and
+    fall back to a plain opaque cursor rather than propagate it;
+    :meth:`PaginationCache.split` does exactly that.
+    """
+    payload = {
+        "v": recipe.verb,
+        "a": recipe.args,
+        "p": recipe.page,
+        "h": recipe.body_hash,
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return _RECIPE_CURSOR_PREFIX + base64.urlsafe_b64encode(
+        raw.encode("utf-8")
+    ).decode("ascii")
+
+
+def decode_recipe_cursor(cursor: str) -> RecipeSeed | None:
+    """Inverse of :func:`encode_recipe_cursor`.
+
+    Returns ``None`` for a cursor that isn't ``rr1.``-prefixed (an
+    ordinary opaque cursor, or garbage) or that fails to decode —
+    never raises. Malformed/tampered input degrades to "not a
+    recipe", which the dispatcher treats the same as any other unknown
+    cursor.
+    """
+    if not cursor.startswith(_RECIPE_CURSOR_PREFIX):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(
+            cursor[len(_RECIPE_CURSOR_PREFIX) :].encode("ascii")
+        )
+        payload = json.loads(raw)
+        return RecipeSeed(
+            verb=str(payload["v"]),
+            args=dict(payload["a"]),
+            body_hash=str(payload["h"]),
+            page=int(payload["p"]),
+        )
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class _CachedTail:
     """One pending tail keyed by cursor.
@@ -233,6 +427,16 @@ class _CachedTail:
     #: :meth:`PaginationCache.pop` reuses the same hint on the next
     #: page's footer instead of silently dropping it.
     alt_hint: str | None = None
+    #: The ``kind`` the head page was split with, if any. Carried
+    #: forward the same way as ``alt_hint`` — see gr330197's
+    #: search-fallback footer sentence.
+    kind: str | None = None
+    #: The recipe for *this* tail's own next cursor, if the chain is
+    #: re-derivable. ``None`` for an ordinary opaque-cursor page.
+    #: Carried forward through :meth:`PaginationCache.pop` so the
+    #: re-derivable chain doesn't collapse into an opaque cursor the
+    #: first time a page happens to be served from cache.
+    recipe: RecipeSeed | None = None
 
 
 class PaginationCache:
@@ -287,6 +491,8 @@ class PaginationCache:
         *,
         alt_hint: str | None = None,
         cursor_capable: bool = True,
+        kind: str | None = None,
+        recipe: RecipeSeed | None = None,
     ) -> tuple[str, str | None]:
         """Split ``body`` into a head + cached tail if oversized.
 
@@ -319,14 +525,61 @@ class PaginationCache:
         ``PRECIS_MAX_BODY_BYTES`` / a long-lived session instead of an
         unsatisfiable cursor instruction — see
         :data:`_SHORT_LIVED_FOOTER_TEMPLATE`.
+
+        ``kind``, when given, is appended to the footer as a one-sentence
+        pointer at ``search(kind=..., q=...)`` as a cached-content
+        fallback (gr330197) — see :data:`_KIND_FALLBACK_SENTENCE_TEMPLATE`.
+
+        ``recipe``, when given (only for a ``get()`` call — see
+        :class:`RecipeSeed`), makes the minted cursor self-describing
+        instead of an opaque ``uuid4`` key, so it survives falling out
+        of this cache entirely (TTL expiry under fleet load, gr330197)
+        — ``DispatchMixin.fetch_more`` can decode it and re-render the
+        page from scratch. Falls back to an opaque cursor if encoding
+        ``recipe`` fails (e.g. non-JSON-safe args) rather than raising.
         """
         alt_hint = _clamp_alt_hint(alt_hint)
+        kind = _clamp_kind(kind)
         cap = _max_body_bytes()
         if len(body.encode("utf-8")) <= cap:
             return body, None
 
+        # A recipe cursor's *content* (verb/args/page/body_hash) never
+        # depends on where the split boundary ends up landing — encode
+        # it up front so its (possibly much-longer-than-uuid4) byte
+        # length can be reserved for accurately below, instead of
+        # discovering after the fact that a large ``args`` payload blew
+        # the frame cap.
+        candidate_cursor: str | None = None
+        candidate_recipe: RecipeSeed | None = None
+        if cursor_capable and recipe is not None:
+            try:
+                candidate_cursor = encode_recipe_cursor(recipe)
+                candidate_recipe = RecipeSeed(
+                    verb=recipe.verb,
+                    args=recipe.args,
+                    body_hash=recipe.body_hash,
+                    page=recipe.page + 1,
+                )
+            except Exception:
+                log.debug(
+                    "recipe cursor encoding failed; minting an opaque "
+                    "cursor instead",
+                    exc_info=True,
+                )
+        cursor_len = (
+            len(candidate_cursor.encode("utf-8"))
+            if candidate_cursor is not None
+            else None
+        )
+
         head, tail = _greedy_split(
-            body, cap, alt_hint=alt_hint, cursor_capable=cursor_capable
+            body,
+            cap,
+            alt_hint=alt_hint,
+            kind=kind,
+            cursor_capable=cursor_capable,
+            cursor_len=cursor_len,
         )
         if not tail:
             # Body fits after all (multi-byte UTF-8 made the
@@ -336,11 +589,17 @@ class PaginationCache:
         remaining = _human_bytes(len(tail.encode("utf-8")))
 
         if not cursor_capable:
-            footer = _build_short_lived_footer(remaining=remaining, alt_hint=alt_hint)
+            footer = _build_short_lived_footer(
+                remaining=remaining, alt_hint=alt_hint, kind=kind
+            )
             return head + footer, None
 
-        cursor = uuid.uuid4().hex
-        footer = _build_footer(cursor=cursor, remaining=remaining, alt_hint=alt_hint)
+        cursor = candidate_cursor if candidate_cursor is not None else uuid.uuid4().hex
+        stored_recipe = candidate_recipe
+
+        footer = _build_footer(
+            cursor=cursor, remaining=remaining, alt_hint=alt_hint, kind=kind
+        )
         head_with_footer = head + footer
 
         with self._lock:
@@ -350,6 +609,8 @@ class PaginationCache:
                 body=tail,
                 expires_at=self._now() + _ttl_seconds(),
                 alt_hint=alt_hint,
+                kind=kind,
+                recipe=stored_recipe,
             )
         return head_with_footer, cursor
 
@@ -360,7 +621,9 @@ class PaginationCache:
         too big (recursive cursor — the new cursor is in the
         body's footer). Returns ``None`` when the cursor is
         unknown or expired; the ``more`` tool surfaces that as a
-        clean error to the agent.
+        clean error to the agent (or, for a re-derivable ``get()``
+        cursor, falls back to ``DispatchMixin``'s re-render path
+        instead of erroring — see the module docstring).
 
         Pops the entry: a cursor is single-use. The agent that
         needs to re-read must hold onto the body it received.
@@ -373,10 +636,99 @@ class PaginationCache:
         if entry.expires_at <= self._now():
             return None
         # Recursive split: the tail may itself overflow. Reuse the
-        # original page's alt_hint so it doesn't silently vanish
-        # after the first ``more()`` call.
-        head, _maybe_next_cursor = self.split(entry.body, alt_hint=entry.alt_hint)
+        # original page's alt_hint/kind/recipe so none of them
+        # silently vanish after the first ``more()`` call.
+        head, _maybe_next_cursor = self.split(
+            entry.body, alt_hint=entry.alt_hint, kind=entry.kind, recipe=entry.recipe
+        )
         return head
+
+    def render_recipe_page(
+        self,
+        body: str,
+        page: int,
+        *,
+        alt_hint: str | None,
+        kind: str | None,
+        verb: str,
+        args: dict[str, Any],
+        body_hash: str,
+    ) -> str:
+        """Rebuild page ``page`` (1-based) of a freshly re-rendered ``body``.
+
+        Used only by ``DispatchMixin.fetch_more``'s recipe-cursor
+        fallback, after it has already re-run the original ``get()``
+        call and verified (via :func:`hash_body`) that the content
+        hasn't drifted since the cursor chain was minted — this method
+        does *not* re-check that.
+
+        Walks the same greedy-split boundaries :meth:`split`/:meth:`pop`
+        would have produced (same cap, same ``alt_hint``/``kind``), so
+        page ``N`` here is byte-identical to what an unexpired cursor
+        chain would have served. If more remains after page ``page``,
+        mints (and caches, for the fast same-process path on the *next*
+        call) a further re-derivable cursor for ``page + 1``; if
+        ``page`` is the last page, returns it bare (no footer).
+        """
+        alt_hint = _clamp_alt_hint(alt_hint)
+        kind = _clamp_kind(kind)
+        cap = _max_body_bytes()
+        current = body
+        head = body
+        next_recipe: RecipeSeed | None = None
+        next_cursor: str | None = None
+        for i in range(page):
+            if len(current.encode("utf-8")) <= cap:
+                head, current = current, ""
+                break
+            # This step's own next-cursor (were it minted) — computed
+            # up front, same as :meth:`split`, so its actual byte
+            # length (not the default uuid4 assumption) is reserved
+            # for. Reproduces exactly what the original chain would
+            # have reserved at this same step, so the boundary lands
+            # in the same place.
+            step_recipe = RecipeSeed(verb=verb, args=args, body_hash=body_hash, page=i + 2)
+            try:
+                step_cursor = encode_recipe_cursor(step_recipe)
+            except Exception:
+                log.debug(
+                    "recipe cursor encoding failed during page rebuild; "
+                    "minting an opaque cursor instead",
+                    exc_info=True,
+                )
+                step_recipe = None
+                step_cursor = None
+            head, current = _greedy_split(
+                current,
+                cap,
+                alt_hint=alt_hint,
+                kind=kind,
+                cursor_capable=True,
+                cursor_len=(
+                    len(step_cursor.encode("utf-8")) if step_cursor is not None else None
+                ),
+            )
+            next_recipe, next_cursor = step_recipe, step_cursor
+        if not current:
+            return head
+
+        remaining = _human_bytes(len(current.encode("utf-8")))
+        cursor = next_cursor if next_cursor is not None else uuid.uuid4().hex
+
+        footer = _build_footer(
+            cursor=cursor, remaining=remaining, alt_hint=alt_hint, kind=kind
+        )
+        with self._lock:
+            self._prune_expired()
+            self._maybe_evict_oldest()
+            self._entries[cursor] = _CachedTail(
+                body=current,
+                expires_at=self._now() + _ttl_seconds(),
+                alt_hint=alt_hint,
+                kind=kind,
+                recipe=next_recipe,
+            )
+        return head + footer
 
     def __len__(self) -> int:
         """Number of pending cursors. Useful for tests/diagnostics."""
@@ -390,6 +742,13 @@ class PaginationCache:
 
 _SECTION_DELIMITER = "\n## "
 _PARAGRAPH_DELIMITER = "\n\n"
+#: Length (hex chars = bytes, ASCII) of the opaque ``uuid.uuid4().hex``
+#: cursor the reserve constants below assume. A re-derivable recipe
+#: cursor (:class:`RecipeSeed`) is almost always longer than this
+#: (it carries the verb/args/page/hash as base64 JSON) — see
+#: ``cursor_len`` below for how that extra length gets reserved for.
+_DEFAULT_CURSOR_BYTES = 32
+
 #: Footer space we keep in reserve when picking the head's byte
 #: budget so ``head + footer`` stays under the frame cap. Derived
 #: from the template itself — rendered with a full-width cursor and
@@ -398,7 +757,9 @@ _PARAGRAPH_DELIMITER = "\n\n"
 #: ``remaining`` readout is bounded-width by ``_human_bytes`` (it
 #: steps up to KB/MB), so ``"8888.8 MB"`` is a safe upper bound.
 _FOOTER_RESERVE_BYTES = len(
-    _FOOTER_TEMPLATE.format(cursor="f" * 32, remaining="8888.8 MB").encode("utf-8")
+    _FOOTER_TEMPLATE.format(
+        cursor="f" * _DEFAULT_CURSOR_BYTES, remaining="8888.8 MB"
+    ).encode("utf-8")
 )
 
 #: Extra reserve for the optional ``alt_hint`` sentence, on top of
@@ -414,6 +775,15 @@ _ALT_HINT_RESERVE_BYTES = len(
     )
 )
 
+#: Extra reserve for the optional ``kind`` search-fallback sentence, on
+#: top of :data:`_FOOTER_RESERVE_BYTES` — same idea as
+#: :data:`_ALT_HINT_RESERVE_BYTES`, bounded by :func:`_clamp_kind`.
+_KIND_FALLBACK_RESERVE_BYTES = len(
+    _KIND_FALLBACK_SENTENCE_TEMPLATE.format(
+        kind="x" * _KIND_FALLBACK_MAX_BYTES
+    ).encode("utf-8")
+)
+
 #: Reserve for :data:`_SHORT_LIVED_FOOTER_TEMPLATE`, the cursor-incapable
 #: sibling of :data:`_FOOTER_RESERVE_BYTES` — no cursor placeholder needed
 #: (the footer never mints one), just a bounded-width ``remaining`` readout.
@@ -427,7 +797,9 @@ def _greedy_split(
     cap_bytes: int,
     *,
     alt_hint: str | None = None,
+    kind: str | None = None,
     cursor_capable: bool = True,
+    cursor_len: int | None = None,
 ) -> tuple[str, str]:
     """Return ``(head, tail)`` such that head fits inside ``cap_bytes``.
 
@@ -437,9 +809,18 @@ def _greedy_split(
     2. Fall back to paragraph boundaries (``\\n\\n``) when one
        section alone exceeds the cap.
     3. Last resort: hard-cut on a UTF-8 char boundary.
+
+    ``cursor_len``, when given, is the *actual* byte length of the
+    cursor that will be minted for this split (known ahead of time for
+    a re-derivable :class:`RecipeSeed` cursor, whose length depends on
+    ``args``/``page`` and so can exceed the
+    :data:`_DEFAULT_CURSOR_BYTES` the module-level reserve constants
+    assume). Any excess over that default gets added to the reserve so
+    a large ``args`` payload can never push ``head + footer`` over
+    ``cap_bytes``.
     """
-    # Reserve some bytes for the footer (plus the optional alt_hint
-    # sentence, if one was passed); the rest is available to the head.
+    # Reserve some bytes for the footer (plus the optional alt_hint /
+    # kind sentences, if given); the rest is available to the head.
     # ``cursor_capable`` picks which footer template's reserve applies —
     # the short-lived footer has no cursor placeholder so it reserves a
     # different (fixed) width. For very small caps the reserve can
@@ -450,6 +831,10 @@ def _greedy_split(
     )
     if alt_hint:
         reserve += _ALT_HINT_RESERVE_BYTES
+    if kind:
+        reserve += _KIND_FALLBACK_RESERVE_BYTES
+    if cursor_len is not None and cursor_len > _DEFAULT_CURSOR_BYTES:
+        reserve += cursor_len - _DEFAULT_CURSOR_BYTES
     budget = max(cap_bytes - reserve, 1)
 
     head, tail = _split_on_delimiter(body, _SECTION_DELIMITER, budget)
@@ -546,4 +931,8 @@ __all__ = [
     "DEFAULT_MAX_BODY_BYTES",
     "DEFAULT_TTL_SECONDS",
     "PaginationCache",
+    "RecipeSeed",
+    "decode_recipe_cursor",
+    "encode_recipe_cursor",
+    "hash_body",
 ]

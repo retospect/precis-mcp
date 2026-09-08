@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, Internal, NotFound, PrecisError, Unsupported
 from precis.protocol import _ALL_VERBS, Handler, Verb
@@ -39,6 +39,9 @@ from precis.runtime._shared import (
 )
 from precis.runtime._shared import RuntimeShape
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis._pagination import RecipeSeed
 
 log = logging.getLogger(__name__)
 
@@ -155,10 +158,23 @@ class DispatchMixin(RuntimeShape):
                 # ``response.pagination_alt_hint`` to point at a
                 # cheaper alternative to draining every page (e.g.
                 # the skill handler's targeted-section access).
+                #
+                # ``kind=`` (when the caller passed one explicitly) also
+                # rides along so the footer can point at
+                # ``search(kind=..., q=...)`` as a cached-content
+                # fallback if the cursor falls out of this cache
+                # (gr330197). For ``get()`` specifically — read-only and
+                # deterministic given the same args — a ``RecipeSeed`` is
+                # built too, so the cursor is self-describing (survives
+                # TTL expiry entirely) rather than just an opaque cache
+                # key; see :mod:`precis._pagination`'s module docstring.
+                recipe = self._build_recipe_seed(verb, args, response)
                 body, _cursor = self.pagination.split(
                     self._render(response),
                     alt_hint=response.pagination_alt_hint,
                     cursor_capable=self.long_lived,
+                    kind=args.get("kind"),
+                    recipe=recipe,
                 )
                 self._record_tool_call(verb, args, body, False, started)
                 return body, False
@@ -330,6 +346,34 @@ class DispatchMixin(RuntimeShape):
             "migrate` (scripts/deploy does this), then retry."
         )
 
+    def _build_recipe_seed(
+        self, verb: str, args: dict[str, Any], response: Response
+    ) -> RecipeSeed | None:
+        """Build a :class:`~precis._pagination.RecipeSeed` for a
+        re-derivable cursor, or ``None`` when this call isn't eligible.
+
+        Restricted to ``verb == 'get'`` — the one verb assumed
+        side-effect-free and idempotent, so replaying it from a cursor
+        the agent already holds carries no more risk than the agent
+        re-issuing the call itself (the documented manual recovery this
+        automates, gr330197). ``args`` is the caller's own top-level
+        kwargs (JSON-safe by construction — MCP tool args), and
+        ``body_hash`` anchors on ``response.body`` alone (not the full
+        hints/cost-appended render) so a hint-bus cooldown difference
+        between mint and replay can never look like content drift —
+        see :func:`~precis._pagination.hash_body`.
+        """
+        if verb != "get":
+            return None
+        from precis._pagination import RecipeSeed, hash_body
+
+        return RecipeSeed(
+            verb="get",
+            args=dict(args),
+            body_hash=hash_body(response.body),
+            page=2,
+        )
+
     def fetch_more(self, cursor: str) -> tuple[str, bool]:
         """Return the next page for a pagination cursor.
 
@@ -337,45 +381,124 @@ class DispatchMixin(RuntimeShape):
         return shape so the ``more`` MCP tool's wrapper code is
         identical to the seven-verb wrappers. Returns
         ``(error_body, True)`` when ``cursor`` isn't in this
-        process's :class:`~precis._pagination.PaginationCache` so the
-        protocol-level ``isError`` flag flips.
+        process's :class:`~precis._pagination.PaginationCache` *and*
+        can't be transparently re-derived either, so the protocol-level
+        ``isError`` flag flips.
 
         Recursive cursors: if the popped tail is itself oversized,
         :class:`PaginationCache` re-splits and embeds the new
         cursor in the returned body's footer.
         """
         tail = self.pagination.pop(cursor)
-        if tail is None:
-            # gr267466: ``PaginationCache._prune_expired`` drops an
-            # actually-TTL-expired entry *before* ``pop`` can tell "it
-            # expired" apart from "it never existed in this process" —
-            # both land here as a plain miss. Rather than guess, lead
-            # with the true, always-applicable explanation (process
-            # lifetime) and fold the TTL/single-use case in as a
-            # secondary possibility — never claim "expired", which
-            # would misdirect a `precis eval` caller toward a timing
-            # fix when the real problem is that the cursor's cache
-            # died with the process that minted it.
-            err = BadInput(
-                f"no such cursor in this process: {cursor!r}",
-                next=(
-                    "pagination cursors live only in the process that "
-                    "minted them — a `precis eval` invocation exits (and "
-                    "takes its cursor cache with it) the moment it prints "
-                    "its result, so a cursor from a prior `precis eval` "
-                    "call can never be found here even though it was "
-                    "genuinely valid a moment ago. Set PRECIS_MAX_BODY_BYTES "
-                    "higher to avoid the truncation in the first place, or "
-                    "use a long-lived session (the MCP server, or `precis "
-                    "repl`) where cursors are retrievable for a few "
-                    "minutes. If you're already in a long-lived session and "
-                    "still see this, the cursor was single-use and already "
-                    "consumed, or its few-minute window passed — re-issue "
-                    "the original call to get a fresh page."
-                ),
+        if tail is not None:
+            return tail, False
+
+        # gr330197: a cursor missing from this process's cache isn't
+        # necessarily unrecoverable — if it decodes as a re-derivable
+        # ``get()`` recipe, re-run the call and serve the requested
+        # page transparently instead of erroring.
+        rederived = self._fetch_more_via_recipe(cursor)
+        if rederived is not None:
+            return rederived
+
+        # gr267466: ``PaginationCache._prune_expired`` drops an
+        # actually-TTL-expired entry *before* ``pop`` can tell "it
+        # expired" apart from "it never existed in this process" —
+        # both land here as a plain miss. Rather than guess, lead
+        # with the true, always-applicable explanation (process
+        # lifetime) and fold the TTL/single-use case in as a
+        # secondary possibility — never claim "expired", which
+        # would misdirect a `precis eval` caller toward a timing
+        # fix when the real problem is that the cursor's cache
+        # died with the process that minted it.
+        err = BadInput(
+            f"no such cursor in this process: {cursor!r}",
+            next=(
+                "pagination cursors live only in the process that "
+                "minted them — a `precis eval` invocation exits (and "
+                "takes its cursor cache with it) the moment it prints "
+                "its result, so a cursor from a prior `precis eval` "
+                "call can never be found here even though it was "
+                "genuinely valid a moment ago. Set PRECIS_MAX_BODY_BYTES "
+                "higher to avoid the truncation in the first place, or "
+                "use a long-lived session (the MCP server, or `precis "
+                "repl`) where cursors are retrievable for a few "
+                "minutes. If you're already in a long-lived session and "
+                "still see this, the cursor was single-use and already "
+                "consumed, or its few-minute window passed — re-issue "
+                "the original call to get a fresh page. Either way, the "
+                "content is also cached and searchable directly: if you "
+                "recall which kind you were reading, "
+                "search(kind='<that kind>', q='<topic keywords>') "
+                "retrieves the relevant section(s) without this cursor "
+                "at all."
+            ),
+        )
+        return self.render_error(err), True
+
+    def _fetch_more_via_recipe(self, cursor: str) -> tuple[str, bool] | None:
+        """Transparent-retry fallback for a re-derivable cursor that's
+        fallen out of the in-process cache (gr330197: TTL expiry under
+        fleet load is the common case, but this also covers a
+        genuinely different process).
+
+        Returns ``None`` — not a tuple — when ``cursor`` doesn't decode
+        as a :class:`~precis._pagination.RecipeSeed` at all, so
+        :meth:`fetch_more` falls through to the ordinary "no such
+        cursor" error. Once decoded, ``decoded.verb`` is checked again
+        even though only ``get()`` calls ever mint one of these
+        (:meth:`_build_recipe_seed`) — defense in depth against a
+        tampered cursor string claiming a different verb. Replaying
+        anything but ``get()`` from an opaque client-supplied token
+        would let ``more(cursor=...)`` become a way to invoke a verb
+        the caller didn't actually ask for; ``get()`` alone is safe
+        because it's the verb this module assumes is a side-effect-free
+        read the caller could already invoke directly.
+        """
+        from precis._pagination import decode_recipe_cursor, hash_body
+
+        decoded = decode_recipe_cursor(cursor)
+        if decoded is None or decoded.verb != "get":
+            return None
+
+        with self.hub.request_scope():
+            try:
+                response = self._dispatch_inner("get", dict(decoded.args))
+            except PrecisError as e:
+                return self.render_error(e), True
+            except Exception as e:
+                log.exception(
+                    "recipe-cursor replay failed for get(%r)", decoded.args
+                )
+                err = Internal(
+                    f"internal error re-deriving cursor content: "
+                    f"{type(e).__name__} (see server log)"
+                )
+                return self.render_error(err), True
+
+            if hash_body(response.body) != decoded.body_hash:
+                err = BadInput(
+                    "this cursor's content changed since it was issued — "
+                    f"get({', '.join(f'{k}={v!r}' for k, v in decoded.args.items())}) "
+                    "no longer renders the same body (edited, deleted, or "
+                    "regenerated in the meantime), so serving this page "
+                    "would silently mix content from two different "
+                    "versions.",
+                    next="re-issue the original get() call to see the current version.",
+                )
+                return self.render_error(err), True
+
+            full_body = self._render(response)
+            page_body = self.pagination.render_recipe_page(
+                full_body,
+                decoded.page,
+                alt_hint=response.pagination_alt_hint,
+                kind=decoded.args.get("kind"),
+                verb="get",
+                args=decoded.args,
+                body_hash=decoded.body_hash,
             )
-            return self.render_error(err), True
-        return tail, False
+        return page_body, False
 
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """``search(uncited=...)`` resolution wrapper around

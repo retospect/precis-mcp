@@ -16,9 +16,14 @@ import pytest
 from precis._pagination import (
     _ALT_HINT_RESERVE_BYTES,
     _FOOTER_RESERVE_BYTES,
+    _KIND_FALLBACK_RESERVE_BYTES,
     _SHORT_LIVED_FOOTER_RESERVE_BYTES,
     DEFAULT_MAX_BODY_BYTES,
     PaginationCache,
+    RecipeSeed,
+    decode_recipe_cursor,
+    encode_recipe_cursor,
+    hash_body,
 )
 
 #: Caps that leave a fixed head budget after the footer reserve —
@@ -42,6 +47,13 @@ _SHORT_LIVED_ONE_SECTION_CAP = str(_SHORT_LIVED_FOOTER_RESERVE_BYTES + 340)
 #: alt_hint sentence — used by ``TestAltHint`` below.
 _ALT_HINT_ONE_SECTION_CAP = str(_FOOTER_RESERVE_BYTES + _ALT_HINT_RESERVE_BYTES + 340)
 _ALT_HINT_WIDE_SECTION_CAP = str(_FOOTER_RESERVE_BYTES + _ALT_HINT_RESERVE_BYTES + 410)
+
+#: Same idea, but for the ``kind`` search-fallback sentence (gr330197) —
+#: used by ``TestKindFallback`` below.
+_KIND_WIDE_SECTION_CAP = str(_FOOTER_RESERVE_BYTES + _KIND_FALLBACK_RESERVE_BYTES + 410)
+_KIND_SHORT_LIVED_WIDE_SECTION_CAP = str(
+    _SHORT_LIVED_FOOTER_RESERVE_BYTES + _KIND_FALLBACK_RESERVE_BYTES + 410
+)
 
 
 @pytest.fixture(autouse=True)
@@ -300,12 +312,18 @@ class TestAltHint:
     ) -> None:
         monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ALT_HINT_ONE_SECTION_CAP)
         cache = PaginationCache()
+        # Six sections, not four: gives headroom over the cap so a
+        # small footer-wording change (the reserve is self-correcting,
+        # but total body size here is a plain literal) doesn't flip
+        # this from "splits" to "fits in one page".
         body = (
             "# heading\n"
             "## section one\n" + ("a" * 260) + "\n"
             "## section two\n" + ("b" * 260) + "\n"
             "## section three\n" + ("c" * 260) + "\n"
             "## section four\n" + ("d" * 260) + "\n"
+            "## section five\n" + ("e" * 260) + "\n"
+            "## section six\n" + ("f" * 260) + "\n"
         )
         hint = "get(kind='skill', id='foo/toc') lists sections."
         head, cursor = cache.split(body, alt_hint=hint)
@@ -366,7 +384,18 @@ class TestPop:
     def test_pop_returns_tail(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _WIDE_SECTION_CAP)
         cache = PaginationCache()
-        body = "## one\n" + ("a" * 400) + "\n## two\n" + ("b" * 400) + "\n"
+        # Three sections, not two: headroom over the cap so a small
+        # footer-wording change doesn't flip this from "splits" to
+        # "fits in one page" — see the sibling comment in TestAltHint.
+        body = (
+            "## one\n"
+            + ("a" * 400)
+            + "\n## two\n"
+            + ("b" * 400)
+            + "\n## three\n"
+            + ("c" * 400)
+            + "\n"
+        )
         head, cursor = cache.split(body)
         assert cursor is not None
         assert "## two" not in head
@@ -469,3 +498,270 @@ class TestDefaults:
         out, cursor = cache.split("ok")
         assert out == "ok"
         assert cursor is None
+
+
+# ── Discipline line softened — partial ≠ forbidden (gr330197, fix 3) ──
+
+
+class TestDisciplineLine:
+    def test_forbids_treating_partial_as_complete_not_all_use(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The old wording forbade using the content *at all* before
+        draining every page — a caller whose cursor then expired was
+        stuck holding a page it was told never to touch. The new
+        wording forbids the actual failure mode (misrepresenting a
+        partial page as the complete result), not all use."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+        )
+        head, cursor = cache.split(body)
+        assert cursor is not None
+        assert "as if it were the complete result" in head
+        assert "partial excerpt is fine" in head
+        # The absolute "do not ... until you have drained every page"
+        # ban on all use is gone.
+        assert "until you have drained every page" not in head
+
+
+# ── kind search-fallback sentence (gr330197, fix 1) ──────────────────
+
+
+class TestKindFallback:
+    def test_no_kind_footer_byte_identical_to_baseline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Omitting ``kind`` (the default) must not change the footer —
+        same compatibility guarantee ``alt_hint`` was added under."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+        )
+        head_implicit, cursor_implicit = cache.split(body)
+        head_explicit_none, cursor_explicit_none = cache.split(body, kind=None)
+        assert cursor_implicit is not None and cursor_explicit_none is not None
+        assert head_implicit.replace(
+            cursor_implicit, "X"
+        ) == head_explicit_none.replace(cursor_explicit_none, "X")
+        assert "search(kind=" not in head_implicit
+
+    def test_kind_fallback_names_the_actual_kind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _KIND_WIDE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "## one\n" + ("a" * 400) + "\n"
+            "## two\n" + ("b" * 400) + "\n"
+            "## three\n" + ("c" * 400) + "\n"
+        )
+        head, cursor = cache.split(body, kind="material")
+        assert cursor is not None
+        assert "search(kind='material', q=" in head
+        assert "cached and searchable" in head
+
+    def test_kind_fallback_also_present_when_cursor_incapable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A short-lived (``precis eval``) caller can't page at all —
+        the search fallback is arguably *more* useful there, and
+        doesn't depend on any cursor existing."""
+        monkeypatch.setenv(
+            "PRECIS_MAX_BODY_BYTES", _KIND_SHORT_LIVED_WIDE_SECTION_CAP
+        )
+        cache = PaginationCache()
+        body = (
+            "## one\n" + ("a" * 400) + "\n"
+            "## two\n" + ("b" * 400) + "\n"
+            "## three\n" + ("c" * 400) + "\n"
+        )
+        head, cursor = cache.split(body, kind="paper", cursor_capable=False)
+        assert cursor is None
+        assert "search(kind='paper', q=" in head
+
+    def test_kind_survives_recursive_repage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _KIND_WIDE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "## one\n" + ("a" * 400) + "\n"
+            "## two\n" + ("b" * 400) + "\n"
+            "## three\n" + ("c" * 400) + "\n"
+        )
+        _head, cursor = cache.split(body, kind="material")
+        assert cursor is not None
+        tail = cache.pop(cursor)
+        assert tail is not None
+        if "more(cursor=" in tail:
+            assert "search(kind='material', q=" in tail
+
+
+# ── Re-derivable cursors (gr330197, fix 2) ────────────────────────────
+
+
+class TestRecipeCursor:
+    def test_encode_decode_round_trip(self) -> None:
+        seed = RecipeSeed(
+            verb="get", args={"kind": "calc", "id": "2+3"}, body_hash="deadbeef", page=2
+        )
+        cursor = encode_recipe_cursor(seed)
+        assert cursor.startswith("rr1.")
+        decoded = decode_recipe_cursor(cursor)
+        assert decoded == seed
+
+    def test_decode_rejects_non_recipe_cursor(self) -> None:
+        # An ordinary opaque uuid4 cursor: no "rr1." prefix at all.
+        assert decode_recipe_cursor("a1b2c3d4e5f60718293a4b5c6d7e8f90") is None
+        # "rr1."-prefixed but not valid base64/JSON underneath.
+        assert decode_recipe_cursor("rr1.not-valid-base64-json!!!") is None
+
+    def test_decode_rejects_tampered_recipe(self) -> None:
+        seed = RecipeSeed(verb="get", args={}, body_hash="x", page=2)
+        cursor = encode_recipe_cursor(seed)
+        # Flip the last character — must degrade to "not a recipe",
+        # never raise.
+        tampered = cursor[:-1] + ("a" if cursor[-1] != "a" else "b")
+        # Either it still decodes to *something* (unlikely, but base64
+        # padding differences aren't a bug we're chasing here) or it's
+        # None — the contract is "never raises", assert that directly.
+        decode_recipe_cursor(tampered)  # must not raise
+
+    def test_hash_body_stable_and_sensitive(self) -> None:
+        assert hash_body("hello") == hash_body("hello")
+        assert hash_body("hello") != hash_body("hello!")
+
+    def test_split_with_recipe_mints_self_describing_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "600")
+        cache = PaginationCache()
+        body = "## one\n" + ("a" * 300) + "\n## two\n" + ("b" * 300) + "\n"
+        seed = RecipeSeed(
+            verb="get",
+            args={"kind": "calc", "id": "2+3"},
+            body_hash=hash_body(body),
+            page=2,
+        )
+        head, cursor = cache.split(body, recipe=seed)
+        assert cursor is not None
+        decoded = decode_recipe_cursor(cursor)
+        assert decoded is not None
+        assert decoded.page == 2
+        assert decoded.verb == "get"
+        assert decoded.args == {"kind": "calc", "id": "2+3"}
+        # Fast (same-process) path still works exactly like an opaque
+        # cursor — the recipe encoding doesn't disturb the cache.
+        tail = cache.pop(cursor)
+        assert tail is not None
+        assert "## two" in tail
+
+    def test_recipe_survives_recursive_repage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A tail that's itself still oversized re-splits (via
+        ``pop``) with a *further* re-derivable cursor, not a plain
+        opaque one — the chain must not collapse after one hop."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "550")
+        cache = PaginationCache()
+        body = (
+            "## one\n" + ("a" * 300) + "\n"
+            "## two\n" + ("b" * 300) + "\n"
+            "## three\n" + ("c" * 300) + "\n"
+        )
+        seed = RecipeSeed(
+            verb="get",
+            args={"kind": "calc", "id": "2+3"},
+            body_hash=hash_body(body),
+            page=2,
+        )
+        _head, cursor = cache.split(body, recipe=seed)
+        assert cursor is not None
+        tail1 = cache.pop(cursor)
+        assert tail1 is not None
+        if "more(cursor=" in tail1:
+            import re
+
+            m = re.search(r"more\(cursor='([^']+)'\)", tail1)
+            assert m is not None
+            next_cursor = m.group(1)
+            next_decoded = decode_recipe_cursor(next_cursor)
+            assert next_decoded is not None, (
+                "a re-derivable chain must keep minting re-derivable "
+                "cursors, not fall back to an opaque uuid4 after one hop"
+            )
+            assert next_decoded.page == 3
+
+    def test_render_recipe_page_matches_natural_pop_chain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The slow re-render fallback (``render_recipe_page``, used
+        when a cursor has fallen out of the cache entirely) must
+        reproduce byte-identical content to what the fast in-process
+        ``split`` + ``pop`` chain would have served for the same page."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "550")
+        body = (
+            "## one\n" + ("a" * 300) + "\n"
+            "## two\n" + ("b" * 300) + "\n"
+            "## three\n" + ("c" * 300) + "\n"
+        )
+        args = {"kind": "calc", "id": "2+3"}
+        body_hash = hash_body(body)
+
+        # Natural chain: split (page 1, with the same recipe a real
+        # get() call would mint) -> pop (page 2). The recipe must
+        # match what ``render_recipe_page`` assumes below — its
+        # (longer-than-uuid4) cursor length feeds into the reserve, so
+        # a mismatched recipe would land the split boundary in a
+        # different place and make this comparison meaningless.
+        seed = RecipeSeed(verb="get", args=args, body_hash=body_hash, page=2)
+        natural_cache = PaginationCache()
+        head1, cursor1 = natural_cache.split(body, recipe=seed)
+        assert cursor1 is not None
+        page2_natural = natural_cache.pop(cursor1)
+        assert page2_natural is not None
+
+        # Re-derived: as if the cursor never existed — rebuild page 2
+        # straight from the original body.
+        rederive_cache = PaginationCache()
+        page2_rederived = rederive_cache.render_recipe_page(
+            body,
+            2,
+            alt_hint=None,
+            kind=None,
+            verb="get",
+            args=args,
+            body_hash=body_hash,
+        )
+        # Both carry a footer with a (different-valued) cursor; strip
+        # cursors before comparing content.
+        import re
+
+        def _strip_cursor(text: str) -> str:
+            return re.sub(r"more\(cursor='[^']+'\)", "more(cursor='X')", text)
+
+        assert _strip_cursor(page2_natural) == _strip_cursor(page2_rederived)
+
+    def test_render_recipe_page_last_page_has_no_footer(self) -> None:
+        body = "## one\nshort\n"
+        cache = PaginationCache()
+        page = cache.render_recipe_page(
+            body,
+            1,
+            alt_hint=None,
+            kind=None,
+            verb="get",
+            args={"kind": "calc", "id": "2+3"},
+            body_hash=hash_body(body),
+        )
+        assert page == body
+        assert "more(cursor=" not in page

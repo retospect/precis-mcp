@@ -67,6 +67,12 @@ script, base = sys.argv[1:3]
 args = sys.argv[3:]
 if os.fork() == 0:
     os.setsid()
+    # Detach from the caller's stdio: the forked child inherits the
+    # parent's fds, so a piped invocation (`--bg ... | tail`) would
+    # otherwise never see EOF until the whole run finished.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
     with open(f"{base}.log", "wb") as out:
         try:
             rc = subprocess.call(

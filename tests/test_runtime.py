@@ -578,3 +578,121 @@ def test_fetch_more_miss_error_never_says_expired(runtime: PrecisRuntime) -> Non
     assert is_error is True
     assert "expired" not in body.lower()
     assert "no such cursor in this process" in body
+
+
+# ── gr330197: cached-content fallback + re-derivable cursors ──────────
+#
+# Under fleet load, the few-minute pagination TTL can lapse before a
+# queued ``more(cursor=...)`` follow-up lands — the agent is then stuck
+# holding an unreadable page 1. Three fixes: (1) the footer and the
+# "no such cursor" error both point at ``search(kind=..., q=...)`` as a
+# cached-content fallback; (2) a ``get()``-originated cursor is
+# self-describing enough to survive falling out of the cache entirely,
+# turning expiry into a transparent retry (with a hash-based drift
+# check so a genuinely-changed body errors rather than silently mixing
+# versions); (3) the footer's drain-before-acting warning no longer
+# forbids all use of a partial page, only misrepresenting it as
+# complete (see ``TestDisciplineLine`` in ``test_pagination.py``).
+
+
+def test_footer_names_the_kind_for_search_fallback(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    runtime.long_lived = True
+    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
+    assert is_error is False
+    assert "search(kind='calc', q=" in out
+    assert "cached and searchable" in out
+
+
+def test_fetch_more_miss_hint_mentions_search_fallback(runtime: PrecisRuntime) -> None:
+    """The "no such cursor" ``BadInput`` used to point only at
+    ``PRECIS_MAX_BODY_BYTES`` / a long-lived session — it now also
+    names the cached-content fallback (gr330197)."""
+    body, is_error = runtime.fetch_more("definitely-not-a-real-cursor")
+    assert is_error is True
+    assert "search(kind=" in body
+
+
+def test_fetch_more_rejects_tampered_non_get_recipe_cursor(
+    runtime: PrecisRuntime,
+) -> None:
+    """A recipe cursor is only ever minted for ``get()`` — even a
+    hand-crafted cursor claiming a different verb must never be
+    replayed. It degrades to the ordinary "no such cursor" error, not
+    a live call to whatever verb it names."""
+    from precis._pagination import RecipeSeed, encode_recipe_cursor, hash_body
+
+    seed = RecipeSeed(
+        verb="delete", args={"kind": "calc", "id": "2+3"}, body_hash=hash_body("x"), page=2
+    )
+    cursor = encode_recipe_cursor(seed)
+    body, is_error = runtime.fetch_more(cursor)
+    assert is_error is True
+    assert "no such cursor in this process" in body
+
+
+def test_recipe_cursor_transparent_retry_after_cache_eviction(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    """The core gr330197 scenario: the cursor has fallen out of the
+    process-local cache entirely (simulating TTL expiry under fleet
+    load) by the time the follow-up ``more()`` call lands. For a
+    ``get()``-originated cursor this must transparently serve the
+    correct next page instead of erroring."""
+    import re
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    runtime.long_lived = True
+    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
+    assert is_error is False
+    m = re.search(r"more\(cursor='([^']+)'\)", out)
+    assert m is not None
+    cursor = m.group(1)
+
+    # What the fast (still-cached) path would have served, for
+    # comparison — then actually evict it to force the slow path.
+    assert len(runtime.pagination) == 1
+    runtime.pagination._entries.clear()
+    assert len(runtime.pagination) == 0
+
+    body, is_error = runtime.fetch_more(cursor)
+    assert is_error is False
+    assert "[error:" not in body
+    assert body.startswith("x")  # genuine page-2 content, not an error
+
+
+def test_recipe_cursor_drift_detected_not_silently_served(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    """If the underlying content changed between mint and redemption,
+    the transparent retry must refuse rather than silently splice
+    together two different versions of the body."""
+    import re
+    from dataclasses import replace
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    runtime.long_lived = True
+    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
+    assert is_error is False
+    m = re.search(r"more\(cursor='([^']+)'\)", out)
+    assert m is not None
+    cursor = m.group(1)
+    runtime.pagination._entries.clear()
+
+    real_dispatch_inner = runtime._dispatch_inner
+
+    def _drifted(verb: str, args: dict) -> object:
+        response = real_dispatch_inner(verb, args)
+        return replace(response, body=response.body + " DRIFTED")
+
+    monkeypatch.setattr(runtime, "_dispatch_inner", _drifted)
+
+    body, is_error = runtime.fetch_more(cursor)
+    assert is_error is True
+    assert "changed since" in body
+    assert "[error:BadInput]" in body
