@@ -127,9 +127,14 @@ die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 _deploy_lag_stats() {
     # prints "<undeployed-commit-count> <oldest-undeployed-epoch>", or nothing
     # if .deploy-state is missing/unreadable/stale-referencing a gone sha.
-    [[ -f "${WORKTREE}/.deploy-state" ]] || return 0
-    local deployed_sha count oldest
-    deployed_sha="$(awk '{print $1}' "${WORKTREE}/.deploy-state" 2>/dev/null || true)"
+    local state_file deployed_sha count oldest
+    # Shared marker (git common dir) so a sibling worktree's deploy counts;
+    # falls back to the legacy per-worktree file. See lib/deploy-state.sh.
+    [[ -f "${WORKTREE}/scripts/lib/deploy-state.sh" ]] || return 0
+    . "${WORKTREE}/scripts/lib/deploy-state.sh"
+    state_file="$(deploy_state_read_path "${WORKTREE}")"
+    [[ -n "$state_file" && -f "$state_file" ]] || return 0
+    deployed_sha="$(awk '{print $1}' "$state_file" 2>/dev/null || true)"
     [[ -n "$deployed_sha" ]] || return 0
     git cat-file -e "${deployed_sha}^{commit}" 2>/dev/null || return 0
     count="$(git rev-list --count "${deployed_sha}..main" 2>/dev/null || true)"

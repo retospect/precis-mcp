@@ -45,6 +45,8 @@ class TestDenied:
             "/repo/scripts/ship 'x' | tail",
             # tee masks the status just as thoroughly as tail.
             "scripts/ship 'x' | tee /tmp/out.log",
+            # Leading env assignments keep it in command position.
+            "PRECIS_GATE_N=3 scripts/ship 'x' | tail",
         ],
     )
     def test_denies(self, cmd: str) -> None:
@@ -79,6 +81,12 @@ class TestAllowed:
             # Unrelated commands.
             "git log --oneline | head -3",
             "",
+            # REGRESSION (2026-09-08): the script named as an ARGUMENT is being
+            # READ, not run. The first version fired on these, which blocked
+            # inspecting the very scripts the guard protects.
+            "grep -n pattern scripts/ship scripts/deploy | head",
+            "cat scripts/ship | head -20",
+            "wc -l scripts/deploy | awk '{print $1}'",
         ],
     )
     def test_allows(self, cmd: str) -> None:

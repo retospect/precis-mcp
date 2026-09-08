@@ -184,13 +184,34 @@ rm -f /tmp/precis-deploy-ping.$$
 # this honest — a checkout too old to satisfy the floor is reported, never
 # built and hoped over.
 #
-#   PRECIS_CATPATH_DIR            — catpath checkout (default ~/catpath)
+#   PRECIS_CATPATH_DIR            — catpath checkout. Unset, the sibling
+#                                   layout is probed: <repo>/../catpath,
+#                                   ~/work/projects/code/catpath, ~/catpath
 #   PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 — bypass entirely (hosts already seeded
 #                                   by hand, or a fleet with no plugin hosts)
 if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
     && "${PRECIS_DEPLOY_EXTRA_VARS:-}" != *autocatpath_wheel* ]]; then
     source "${REPO_ROOT}/scripts/lib/autocatpath-wheel.sh"
-    _CATPATH_DIR="${PRECIS_CATPATH_DIR:-${HOME}/catpath}"
+    # Default search, first hit wins. `~/catpath` was the only candidate and it
+    # does not exist on this controller — the real checkout lives beside the
+    # other repos — so every deploy died in preflight with "no wheel that new
+    # exists ... and there is no catpath checkout there", naming a path the
+    # operator had never used. Probing the conventional sibling locations makes
+    # the common layout work with no env var; PRECIS_CATPATH_DIR still wins.
+    if [[ -n "${PRECIS_CATPATH_DIR:-}" ]]; then
+        _CATPATH_DIR="$PRECIS_CATPATH_DIR"
+    else
+        _CATPATH_DIR="${HOME}/catpath"
+        for _cand in \
+            "${REPO_ROOT}/../catpath" \
+            "${HOME}/work/projects/code/catpath" \
+            "${HOME}/catpath"; do
+            if [[ -f "${_cand}/pyproject.toml" ]]; then
+                _CATPATH_DIR="$(cd "$_cand" && pwd)"
+                break
+            fi
+        done
+    fi
     _FLOOR="$(autocatpath_floor "${REPO_ROOT}/pyproject.toml" || true)"
 
     if [[ -z "$_FLOOR" ]]; then
@@ -337,6 +358,11 @@ fi
 {
     DEPLOYED_SHA="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
     if [[ -n "$DEPLOYED_SHA" ]]; then
-        printf '%s %s\n' "$DEPLOYED_SHA" "$(date +%s)" > "${REPO_ROOT}/.deploy-state"
+        # Shared across worktrees (git common dir): the fleet's sha is a global
+        # fact, and a per-worktree marker made every OTHER tree's ship
+        # over-report the lag. See scripts/lib/deploy-state.sh.
+        . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+        printf '%s %s\n' "$DEPLOYED_SHA" "$(date +%s)" \
+            > "$(deploy_state_path "$REPO_ROOT")"
     fi
 } || true

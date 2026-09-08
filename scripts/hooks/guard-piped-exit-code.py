@@ -37,10 +37,24 @@ import sys
 #: Scripts whose exit code is the decision, not a detail.
 _GUARDED = ("ship", "deploy", "bump")
 
-#: ``scripts/<name>`` (optionally ``./scripts/`` or an absolute path) followed
-#: by anything that is not a pipe, then a literal ``|`` that is not ``||``.
+#: ``scripts/<name>`` in COMMAND POSITION — start of the command, or right
+#: after a separator (``;`` ``&&`` ``||`` ``|`` ``(`` newline), allowing leading
+#: ``VAR=val`` assignments — then anything that is not a pipe, then a literal
+#: ``|`` that is not ``||``.
+#:
+#: Command position is the load-bearing part. The first version accepted the
+#: script after ANY whitespace, so it fired on ``grep -n foo scripts/ship``
+#: piped to ``head`` — reading the file, not running it. A guard that blocks
+#: inspecting the very script it guards is worse than no guard: it trains you
+#: to reach for the escape hatch, which then covers real invocations too.
+#:
+#: KNOWN LIMIT: this matches the raw command string, so a guarded shape quoted
+#: as DATA (a heredoc writing these very tests, say) still trips it. Regex
+#: cannot tell code from a string that looks like code without a shell parser.
+#: Use ``ALLOW_PIPED_EXIT=1`` for that case — it is rare and obvious.
 _PIPED_RE = re.compile(
-    r"(?:^|[;&|(]|\s)(?:\./|[\w/.-]*/)?scripts/(" + "|".join(_GUARDED) + r")\b"
+    r"(?:^|[;&|(\n])\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:\./|[\w/.-]*/)?scripts/(" + "|".join(_GUARDED) + r")\b"
     r"[^\n;&|]*\|(?!\|)"
 )
 
