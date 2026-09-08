@@ -1,8 +1,12 @@
-"""Single-threaded HintBus collector.
+"""Per-request HintBus collector, safe under concurrent dispatch.
 
 Any layer can `runtime.hints.emit(Hint(...))` deep in the call tree;
 the dispatcher invokes `bus.collect()` at end-of-request to drain the
 contextvar, deduplicate against recent topics, cap, and return.
+Concurrent requests (see `precis.server._offload_sync`, gr330541) each
+run in their own copied context, so `emit`/`collect` never cross wires
+between requests; a small lock protects the shared dedup ring against
+concurrent access from separate worker threads.
 
 Dedup is novelty-decay: a topic emitted within the last `cooldown`
 requests is suppressed; after that it can re-fire. So "same old advice"
@@ -13,6 +17,7 @@ Hints are non-breaking. Breaking hints live on `PrecisError.next`.
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -72,6 +77,14 @@ class HintBus:
             bus.emit(Hint("cache is stale", topic="cache.stale"))
             ...
             hints = bus.collect()
+
+    ``_pending`` is a `ContextVar` — correctly request-scoped even when
+    concurrent requests run on separate worker threads (each gets its
+    own copy of the calling context, e.g. via `anyio.to_thread.run_sync`
+    — gr330541). ``_req``/``_recent`` are plain shared instance state
+    used only for the best-effort dedup heuristic, so ``_lock`` below
+    protects them against a lost increment / torn read under that same
+    concurrency, not because a race there could corrupt a response.
     """
 
     def __init__(
@@ -84,6 +97,7 @@ class HintBus:
         self._req: int = 0
         self._max = max_per_response
         self._pending: ContextVar[list[Hint]] = ContextVar("precis_hints")
+        self._lock = threading.Lock()
 
     @contextmanager
     def request(self) -> Iterator[int]:
@@ -91,10 +105,12 @@ class HintBus:
 
         Yields the monotonically increasing request id (useful for tests
         and audit logging)."""
-        self._req += 1
+        with self._lock:
+            self._req += 1
+            req = self._req
         token = self._pending.set([])
         try:
-            yield self._req
+            yield req
         finally:
             self._pending.reset(token)
 
@@ -116,18 +132,21 @@ class HintBus:
         except LookupError:
             return []
         out: list[Hint] = []
-        for h in pending:
-            if self._recently_shown(h.topic, h.cooldown):
-                continue
-            out.append(h)
-            if len(out) == self._max:
-                break
-        for h in out:
-            self._recent.append((h.topic, self._req))
+        with self._lock:
+            req = self._req
+            for h in pending:
+                if self._recently_shown_locked(h.topic, h.cooldown, req):
+                    continue
+                out.append(h)
+                if len(out) == self._max:
+                    break
+            for h in out:
+                self._recent.append((h.topic, req))
         # Clear pending so a second call returns []
         pending.clear()
         return out
 
-    def _recently_shown(self, topic: str, cooldown: int) -> bool:
-        threshold = self._req - cooldown
+    def _recently_shown_locked(self, topic: str, cooldown: int, req: int) -> bool:
+        """``_recently_shown``'s body. Caller must hold ``self._lock``."""
+        threshold = req - cooldown
         return any(t == topic and r > threshold for t, r in self._recent)

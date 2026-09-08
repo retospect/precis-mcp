@@ -10,13 +10,31 @@ container reaches over its bounded network mode. Nothing else uses it;
 stdio stays the default and is byte-identical to before it existed.
 
 Seven tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`
-— are registered as plain sync functions. FastMCP runs sync tool
-callables in a worker thread, so the rest of the codebase (runtime,
-store, handlers) stays sync.
+— plus `more` are registered as plain sync functions in
+:mod:`precis.tools` (the rest of the codebase — runtime, store,
+handlers — stays sync). **FastMCP 1.28.1 does NOT run them in a worker
+thread**: `FuncMetadata.call_fn_with_arg_validation` calls a sync tool
+`fn(**args)` in-line on the single asyncio event-loop thread (unlike
+its own `resources/types.py`, which does offload). Since MCP requests
+are concurrent asyncio Tasks on that one thread, one long-blocking sync
+call (e.g. `perplexity-research` holding a synchronous HTTP POST open
+for minutes) head-of-line-blocks every other in-flight call on the same
+session, down to a microsecond skill read (gr330541). Rather than fork
+or monkeypatch the library, `_offload_sync` wraps every tool function
+*at our own registration seam* (`_register_tools_from_registry` /
+`_install_command_profile`, below) in a thin `async def` that runs the
+real sync body via `anyio.to_thread.run_sync`, bounded by a module-
+level semaphore (`_get_tool_semaphore`, sized by
+`PRECIS_MCP_TOOL_CONCURRENCY`) so a concurrent burst can't open more
+connections than the store's pool allows. See `_offload_sync`'s
+docstring for how it preserves the wire schema FastMCP derives from
+the wrapped function's introspected signature.
 
 The runtime — including the postgres connection pool — is built before
-`mcp.run()` and torn down after it returns. Only the FastMCP loop
-itself is async; everything below this file is sync.
+`mcp.run()` and torn down after it returns. The FastMCP loop and the
+`_offload_sync` wrappers are the only async code; everything below
+this file (and everything `dispatch()` calls into) is sync, just no
+longer inline on the loop thread.
 
 Tests should not import this module; they construct `PrecisRuntime`
 directly via fixtures and call `.dispatch(verb, args)` to bypass the
@@ -26,13 +44,17 @@ MCP transport.
 from __future__ import annotations
 
 import atexit
+import functools
+import inspect
 import logging
 import os
 import secrets
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 from precis.runtime import PrecisRuntime, build_runtime
@@ -48,6 +70,112 @@ from precis.tools import TOOL_REGISTRY
 # difference — every wrapper has always grokked the ``[error:Class]
 # cause / options / next`` text.
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
+
+
+# ---------------------------------------------------------------------------
+# Off-loading sync tool dispatch to worker threads (gr330541)
+# ---------------------------------------------------------------------------
+
+#: ``PRECIS_MCP_TOOL_CONCURRENCY`` — how many tool-dispatch worker threads
+#: may run concurrently. A separate, tighter cap than anyio's own
+#: to-thread limiter (default ~40): without one, a burst of concurrent
+#: calls could open more DB connections than the store's pool allows
+#: (``precis.store.pool.DEFAULT_POOL_MAX_SIZE`` = 10) and start blocking
+#: on ``pool.connection()`` instead of just queuing here. Kept well under
+#: that ceiling so the pool — not this semaphore — stays the binding
+#: constraint only under genuinely pathological fan-out.
+_TOOL_CONCURRENCY_ENV = "PRECIS_MCP_TOOL_CONCURRENCY"
+_DEFAULT_TOOL_CONCURRENCY = 4
+
+_tool_semaphore: anyio.Semaphore | None = None
+
+
+def _tool_concurrency_limit() -> int:
+    """Resolve ``PRECIS_MCP_TOOL_CONCURRENCY``, defaulting on bad input."""
+    raw = os.environ.get(_TOOL_CONCURRENCY_ENV)
+    if not raw:
+        return _DEFAULT_TOOL_CONCURRENCY
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_TOOL_CONCURRENCY
+    return value if value > 0 else _DEFAULT_TOOL_CONCURRENCY
+
+
+def _get_tool_semaphore() -> anyio.Semaphore:
+    """Return the module-level tool-dispatch semaphore, building it lazily.
+
+    Lazy so a test can set ``PRECIS_MCP_TOOL_CONCURRENCY`` before the
+    first tool call and have it take effect; anyio semaphores are also
+    safe to construct outside a running event loop (``Semaphore.__new__``
+    falls back to a loop-agnostic adapter — see ``anyio._core
+    ._synchronization``), so this is a convenience, not a correctness
+    requirement.
+    """
+    global _tool_semaphore
+    if _tool_semaphore is None:
+        _tool_semaphore = anyio.Semaphore(_tool_concurrency_limit())
+    return _tool_semaphore
+
+
+def _offload_sync(
+    fn: Callable[..., Any], *, semaphore: anyio.Semaphore | None = None
+) -> Callable[..., Any]:
+    """Wrap a sync tool callable so FastMCP dispatches it off the event loop.
+
+    FastMCP 1.28.1 invokes a registered sync tool in-line
+    (``FuncMetadata.call_fn_with_arg_validation`` does plain ``fn(**args)``
+    when ``is_async`` is False) on the single asyncio event-loop thread
+    shared by every concurrent MCP request in the session. This wraps
+    ``fn`` in an ``async def`` that runs the real call via
+    :func:`anyio.to_thread.run_sync`, gated by
+    :data:`_TOOL_CONCURRENCY_ENV` so an unbounded burst can't outrun the
+    store's connection pool — see the module docstring for why this lives
+    at our own registration seam instead of a library patch.
+
+    **Schema preservation is the whole trick.** FastMCP builds the wire
+    ``inputSchema`` and the pydantic validation model
+    (``Tool.fn_metadata.arg_model``) from ``inspect.signature(fn,
+    eval_str=True)`` — a naive ``async def wrapper(**kwargs)`` would
+    have no parameters of its own and would erase every declared
+    argument. Two things keep the introspected shape byte-identical:
+
+    - ``functools.wraps(fn)`` copies ``__name__``/``__qualname__``/
+      ``__doc__``/``__annotations__``/``__dict__``/``__module__`` — the
+      pydantic arg-model class name (``f"{fn.__name__}Arguments"``,
+      which can leak into the schema's ``title``) and the tool's
+      docstring-derived description both need the *original*
+      function's identity, not the wrapper's.
+    - ``wrapper.__signature__ = inspect.signature(fn, eval_str=True)``
+      is set explicitly. ``inspect.signature`` checks for a
+      ``__signature__`` attribute before anything else and returns it
+      verbatim (no further ``eval_str`` resolution needed — it was
+      already resolved against ``fn``'s own module globals when we
+      built it here), so FastMCP's own ``inspect.signature(wrapper,
+      eval_str=True)`` call in ``func_metadata`` sees exactly ``fn``'s
+      parameters, defaults and annotations.
+
+    ``is_async`` detection (``inspect.iscoroutinefunction``) looks at
+    the wrapper's actual code object, not ``__signature__`` — since
+    ``wrapper`` really is ``async def``, FastMCP correctly ``await``s
+    it, which is what puts the ``to_thread`` offload (and the semaphore
+    acquire around it) on the request path at all.
+
+    ``tests/test_text_coercion_schema.py`` / ``tests/test_edit_schema.py``
+    pin the resulting wire schema for ``put``/``edit`` against the
+    *wrapped* registration this function feeds — they stay green only if
+    the preservation above is exact.
+    """
+    sig = inspect.signature(fn, eval_str=True)
+
+    @functools.wraps(fn)
+    async def wrapper(**kwargs: Any) -> Any:
+        sem = semaphore if semaphore is not None else _get_tool_semaphore()
+        async with sem:
+            return await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))
+
+    wrapper.__signature__ = sig  # type: ignore[attr-defined]
+    return wrapper
 
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
@@ -470,8 +598,12 @@ def _install_command_profile() -> None:
     Mirrors the ``**_TOOL_KW`` FastMCP registration the typed loop
     uses (``structured_output=False``) so the error envelope shaping
     (see the module docstring above ``_TOOL_KW``) applies identically.
+    Registers :func:`_offload_sync`'s wrapper, not ``precis`` itself —
+    ``precis`` stays a plain sync function so
+    ``tests/test_mcp_put_edit_kwarg_doors.py`` and friends can keep
+    calling it directly, synchronously, without going through FastMCP.
     """
-    mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(precis)
+    mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(_offload_sync(precis))
 
 
 def _register_tools_from_registry() -> None:
@@ -481,8 +613,12 @@ def _register_tools_from_registry() -> None:
         return
 
     for tool_name, tool_info in TOOL_REGISTRY.items():
-        # Register the tool function with FastMCP
-        mcp.tool(**_TOOL_KW)(tool_info["func"])
+        # Register the tool function with FastMCP — wrapped by
+        # ``_offload_sync`` (gr330541) so it dispatches off the event-loop
+        # thread; ``TOOL_REGISTRY[...]["func"]`` itself is left untouched,
+        # so the CLI adapter and the command profile's ``precis()`` (which
+        # both call it directly, synchronously) are unaffected.
+        mcp.tool(**_TOOL_KW)(_offload_sync(tool_info["func"]))
 
         # Apply special schema constraints for edit tool
         if tool_name == "edit":
