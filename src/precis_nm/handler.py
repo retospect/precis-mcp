@@ -38,10 +38,9 @@ docs/backlog/nm-kind.md "Slice 3 design"):
   port names/roles); ``search_hits`` opts into the cross-kind fan-out
   (``kind='*'``).
 
-Ships **dark** behind the ``nm.enabled`` setting (``KindSpec.
-requires_setting``; DB row → ``PRECIS_NM_ENABLED`` env → unset/off), the
-``chem.enabled`` plumbing verbatim — the kind is hidden from the catalogue
-and the dispatcher until enabled. Direct construction (as in tests) is
+Ships live: the kind carries no per-plugin dark flag. An operator who
+needs it off uses ``PRECIS_KINDS_DISABLED``, the one general control,
+rather than a private per-kind switch. Direct construction (as in tests) is
 unaffected by the flag; it only gates the registry.
 
 See ``docs/backlog/nm-kind.md`` for the full design and
@@ -59,7 +58,6 @@ from typing import Any, ClassVar
 import numpy as np
 from psycopg.types.json import Jsonb
 
-from precis import settings as _settings
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
@@ -89,19 +87,6 @@ from precis_nm.ops import (
     effective_dof,
     effective_envelope,
     effective_ports,
-)
-
-#: Registered at import time, before ``NmHandler.spec`` is consumed by the
-#: kind gate — mirrors ``precis_chem.route``'s ``chem.enabled`` registration.
-#: ``default=None`` ⇒ unset means unavailable (dark by default).
-_settings.register(
-    _settings.SettingSpec(
-        key="nm.enabled",
-        type="bool",
-        env_var="PRECIS_NM_ENABLED",
-        default=None,
-        doc="Dark-ship flag for the `nm` kind (precis_nm plugin).",
-    )
 )
 
 
@@ -183,8 +168,6 @@ class NmHandler(Handler):
             "mechanics",
             "literature",
         ),
-        # Dark-ship: hidden until the `nm.enabled` setting resolves.
-        requires_setting=("nm.enabled",),
     )
 
     def __init__(self, *, hub: Hub) -> None:

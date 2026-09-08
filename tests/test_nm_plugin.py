@@ -69,13 +69,16 @@ def _indent_of(body: str, name: str) -> int:
     raise AssertionError(f"block {name!r} not found in:\n{body}")
 
 
-# ── dark flag gates the registry only, not direct construction ──────────
+# ── the kind is live: no per-plugin dark flag ───────────────────────────
 
 
-def test_direct_construction_ignores_dark_flag(hub: Hub, store: Store) -> None:
-    # No PRECIS_NM_ENABLED set anywhere in this test — matches
-    # test_estimate_plugin.py's `EstimateHandler(hub=Hub(store=store))`
-    # no-exception assertion for the same dark-ship shape.
+def test_kind_is_available_without_any_flag(hub: Hub, store: Store) -> None:
+    """`nm` carries no private enable flag — it is on wherever the plugin
+    is installed. Pinned so the dark-ship gate cannot creep back: an
+    operator who wants the kind off uses `PRECIS_KINDS_DISABLED`, the one
+    general control, not a per-kind switch."""
+    assert NmHandler.spec.requires_setting == ()
+    assert NmHandler.spec.is_available() is True
     NmHandler(hub=hub)
 
 

@@ -36,7 +36,7 @@ pytest.importorskip("autocatpath")
 pytestmark = pytest.mark.slow
 
 import precis_pathway
-from precis.dispatch import Hub, InitError, _try
+from precis.dispatch import Hub, _try
 from precis.store import Store
 from precis.workers import job_types as jt
 from precis_pathway import job as pathway_job
@@ -822,9 +822,15 @@ def _handler(store: Store) -> PathwayHandler:
     return h
 
 
-def test_handler_gated_off_by_default(store: Store) -> None:
-    with pytest.raises(InitError):
-        PathwayHandler(hub=Hub(store=store))
+def test_constructs_without_any_flag(store: Store) -> None:
+    """`pathway` carries no private enable flag — constructing the handler
+    no longer raises `InitError` for a missing env var. Pinned so the
+    dark-ship gate cannot creep back: an operator who wants the kind off
+    uses `PRECIS_KINDS_DISABLED`, the one general control.
+
+    Note this only makes the *kind* reachable; it does not start compute.
+    An autocatpath run still has to be minted deliberately as a job."""
+    PathwayHandler(hub=Hub(store=store))
 
 
 def test_handler_roundtrip(pathway_store: Store) -> None:

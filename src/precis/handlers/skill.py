@@ -31,6 +31,7 @@ runtime — that's by design (skills are versioned with code).
 
 from __future__ import annotations
 
+import difflib
 import importlib
 import logging
 import os
@@ -545,10 +546,26 @@ class SkillHandler(Handler):
         if text is None:
             available = sorted(_list_skills())
             available.extend(self._SYNTHESIZED_SKILLS)
+            # A guessed slug is the common case here (an agent reasons
+            # "there's an `se` kind, so there's a `precis-se-help`"), and
+            # the useful reply is "did you mean X, else go search" — not
+            # a dump of every skill on the build. The full list was the
+            # old `options=`: ~160 entries of which one might be right,
+            # which is a lot of tokens to say "no". Near-misses first,
+            # then `search` as the door for a genuinely unknown topic —
+            # search matches on summary/answers text, so it finds a
+            # capability whose *slug* the caller could never have
+            # guessed, which is exactly the failing case.
+            close = difflib.get_close_matches(slug, sorted(available), n=5, cutoff=0.5)
             raise NotFound(
                 f"skill {slug!r} not found",
-                options=sorted(available),
-                next="get(kind='skill') to list every skill",
+                options=close or None,
+                next=(
+                    "search(kind='skill', q='<what you want to do>') — "
+                    "it ranks on each skill's summary and its 'answers' "
+                    "list, so describe the goal rather than guessing a "
+                    "slug; get(kind='skill', id='toc') lists every skill"
+                ),
             )
         # Banner if this skill is filtered from the index — the agent
         # asked for it explicitly, so we serve it, but we want them

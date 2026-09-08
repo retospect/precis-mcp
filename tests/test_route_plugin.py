@@ -846,17 +846,17 @@ def test_service_dispatch_no_paths_is_unsolved(
 # ─────────────────────────── dark-ship gate ───────────────────────────
 
 
-def test_dark_ship_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The `chem.enabled` setting gates the kind (DB-resident settings slice
-    3); `PRECIS_CHEM_ENABLED` stays the env fallback tier under it."""
+def test_kind_is_available_without_any_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`route` carries no private enable flag — it is on wherever the
+    plugin is installed. Pinned so the dark-ship gate cannot creep back:
+    an operator who wants the kind off uses `PRECIS_KINDS_DISABLED`, the
+    one general control, not a per-kind switch."""
     from precis import settings as _settings
 
     _settings.bind_store(None)
     _settings.invalidate()
     monkeypatch.delenv("PRECIS_CHEM_ENABLED", raising=False)
-    assert RouteHandler.spec.requires_setting == ("chem.enabled",)
-    assert RouteHandler.spec.is_available() is False
-    monkeypatch.setenv("PRECIS_CHEM_ENABLED", "1")
+    assert RouteHandler.spec.requires_setting == ()
     assert RouteHandler.spec.is_available() is True
     # And it opts into the compute lane.
     assert RouteHandler.spec.can_own_jobs is True

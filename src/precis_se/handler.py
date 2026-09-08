@@ -35,10 +35,9 @@ round (se slices 1-3, docs/backlog/se-kind.md "Ship order"):
   ``card_combined`` chunk; ``search_hits`` opts into the cross-kind
   fan-out (``kind='*'``).
 
-Ships **dark** behind the ``se.enabled`` setting (``KindSpec.
-requires_setting``; DB row → ``PRECIS_SE_ENABLED`` env → unset/off), the
-``nm.enabled`` plumbing verbatim — the kind is hidden from the catalogue
-and the dispatcher until enabled. Direct construction (as in tests) is
+Ships live: the kind carries no per-plugin dark flag. An operator who
+needs it off uses ``PRECIS_KINDS_DISABLED``, the one general control,
+rather than a private per-kind switch. Direct construction (as in tests) is
 unaffected by the flag; it only gates the registry.
 
 See ``docs/backlog/se-kind.md`` for the full design. The agent-facing
@@ -54,7 +53,6 @@ from typing import Any, ClassVar
 
 from psycopg.types.json import Jsonb
 
-from precis import settings as _settings
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
@@ -83,19 +81,6 @@ from precis_se.ops import (
     effective_envelope,
     effective_ports,
     resolve_template,
-)
-
-#: Registered at import time, before ``SeHandler.spec`` is consumed by the
-#: kind gate — mirrors ``precis_nm.handler``'s ``nm.enabled`` registration.
-#: ``default=None`` ⇒ unset means unavailable (dark by default).
-_settings.register(
-    _settings.SettingSpec(
-        key="se.enabled",
-        type="bool",
-        env_var="PRECIS_SE_ENABLED",
-        default=None,
-        doc="Dark-ship flag for the `se` kind (precis_se plugin).",
-    )
 )
 
 
@@ -171,8 +156,6 @@ class SeHandler(Handler):
             "bom",
             "fasten",
         ),
-        # Dark-ship: hidden until the `se.enabled` setting resolves.
-        requires_setting=("se.enabled",),
     )
 
     def __init__(self, *, hub: Hub) -> None:

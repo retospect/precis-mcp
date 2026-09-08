@@ -671,17 +671,17 @@ def test_view_structure_no_model(protein_store: Store) -> None:
 # ─────────────────────────── dark-ship gate ───────────────────────────
 
 
-def test_dark_ship_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The `bio.enabled` setting gates the kind (DB-resident settings slice 3);
-    `PRECIS_BIO_ENABLED` stays the env fallback tier under it."""
+def test_kind_is_available_without_any_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`protein` carries no private enable flag — it is on wherever the
+    plugin is installed. Pinned so the dark-ship gate cannot creep back:
+    an operator who wants the kind off uses `PRECIS_KINDS_DISABLED`, the
+    one general control, not a per-kind switch."""
     from precis import settings as _settings
 
     _settings.bind_store(None)
     _settings.invalidate()
     monkeypatch.delenv("PRECIS_BIO_ENABLED", raising=False)
-    assert ProteinHandler.spec.requires_setting == ("bio.enabled",)
-    assert ProteinHandler.spec.is_available() is False
-    monkeypatch.setenv("PRECIS_BIO_ENABLED", "1")
+    assert ProteinHandler.spec.requires_setting == ()
     assert ProteinHandler.spec.is_available() is True
     assert ProteinHandler.spec.can_own_jobs is True
 

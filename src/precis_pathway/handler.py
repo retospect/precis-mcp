@@ -96,17 +96,6 @@ class PathwayHandler(Handler):
     )
 
     def __init__(self, *, hub: Hub) -> None:
-        # Gated dark: the kind only appears when explicitly enabled, so
-        # the slice merges without exposing an in-process compute path by
-        # default. (Mirrors PRECIS_SANDBOX_ENABLED / PRECIS_CLASSIFY_ENABLED.)
-        if os.environ.get("PRECIS_AUTOCATPATH_ENABLED", "") not in (
-            "1",
-            "true",
-            "True",
-        ):
-            raise InitError(
-                "pathway kind is off; set PRECIS_AUTOCATPATH_ENABLED=1 to enable"
-            )
         # autocatpath (ase/rdkit/networkx) is a hard dep of autocatpath[precis], but
         # guard so a broken env drops the kind cleanly instead of crashing boot.
         try:

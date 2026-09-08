@@ -98,14 +98,27 @@ log = logging.getLogger(__name__)
 #: bigger frames.
 DEFAULT_MAX_BODY_BYTES = 24576
 
-#: How long a cursor lives in the cache. The agent that received
-#: the head has 5 minutes to ask for the tail before it expires.
-#: Tunable via ``PRECIS_PAGINATION_TTL_S``.
-DEFAULT_TTL_SECONDS = 300
+#: How long a cursor lives in the cache: one hour, matching the agent
+#: prompt-cache TTL, so a caller whose context is still warm can always
+#: still drain its own pages. Was 5 minutes, which under fleet load
+#: routinely expired mid-drain — the caller was then holding a page-1 it
+#: could not continue (gr330197). Draining is not a tight loop: an agent
+#: interleaves real work between pages, so the window has to cover a
+#: working session, not a round-trip. Tunable via
+#: ``PRECIS_PAGINATION_TTL_S``.
+DEFAULT_TTL_SECONDS = 3600
 
 #: Hard ceiling on number of pending cursors. Prevents an
 #: adversarial caller from filling RAM with truncated bodies.
-DEFAULT_MAX_CURSORS = 256
+#:
+#: Coupled to :data:`DEFAULT_TTL_SECONDS`: entries hold the whole
+#: remaining body, and steady-state occupancy is arrival-rate × TTL, so
+#: the 5-min → 1-hour change multiplies occupancy ~12×. Raised 256 → 1024
+#: to keep the longer TTL meaningful — evicting a live cursor early is
+#: the very failure the TTL change exists to stop, and eviction is by
+#: soonest-expiry, so under pressure the oldest *valid* cursor dies. The
+#: ceiling stays a real bound: 1024 × a ~50 KiB tail ≈ 50 MiB worst case.
+DEFAULT_MAX_CURSORS = 1024
 
 #: Marker the agent sees at the bottom of a chunked head. The
 #: footer is appended *inside* the body (it's not metadata) so
