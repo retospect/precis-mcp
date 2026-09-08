@@ -44,6 +44,8 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...]] = {
     # -- put: gripe explicitly rejects any mode= (id= dispatches
     #    create-vs-comment instead) -------------------------------------
     ("gripe", "put"): (),
+    # -- put: pathway frames the reaction network without ML compute ----
+    ("pathway", "put"): ("preview",),
     # -- edit: file kinds, the region-rewrite grammar -------------------
     ("markdown", "edit"): ("find-replace", "append", "insert", "replace"),
     ("plaintext", "edit"): ("find-replace", "append", "insert", "replace"),

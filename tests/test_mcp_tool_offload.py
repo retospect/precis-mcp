@@ -43,7 +43,6 @@ import pytest
 
 from precis import server
 
-
 # ── schema preservation ─────────────────────────────────────────────
 
 

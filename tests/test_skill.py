@@ -95,11 +95,19 @@ def test_get_plan_skill_resolves_and_documents_create(skill: SkillHandler) -> No
 
 
 def test_get_missing_raises_with_options(skill: SkillHandler) -> None:
+    # A near-miss slug gets difflib suggestions naming the right skill.
     with pytest.raises(NotFound) as excinfo:
-        skill.get(id="nonexistent-skill")
+        skill.get(id="precis-overvieww")
     err = excinfo.value
     assert err.options is not None
     assert any("precis-overview" in s for s in err.options)
+    # A genuinely unknown slug gets the search redirect, not the old
+    # every-skill options dump.
+    with pytest.raises(NotFound) as excinfo:
+        skill.get(id="nonexistent-skill")
+    err = excinfo.value
+    hints = err.next if isinstance(err.next, list) else [err.next or ""]
+    assert any("search(kind='skill'" in h for h in hints)
 
 
 def test_invalid_slug_raises(skill: SkillHandler) -> None:

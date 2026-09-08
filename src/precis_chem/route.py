@@ -15,7 +15,7 @@ onto the seven verbs:
 - ``get``    — list routes, or render one route graph (``id=slug``).
 - ``delete`` — soft-retire a route.
 
-Ships live: no per-plugin dark flag. An operator who needs it off uses
+Ships live: no per-plugin dark switch. An operator who needs it off uses
 ``PRECIS_KINDS_DISABLED``, the one general control.
 """
 

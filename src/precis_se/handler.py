@@ -35,7 +35,7 @@ round (se slices 1-3, docs/backlog/se-kind.md "Ship order"):
   ``card_combined`` chunk; ``search_hits`` opts into the cross-kind
   fan-out (``kind='*'``).
 
-Ships live: the kind carries no per-plugin dark flag. An operator who
+Ships live: the kind carries no per-plugin dark switch. An operator who
 needs it off uses ``PRECIS_KINDS_DISABLED``, the one general control,
 rather than a private per-kind switch. Direct construction (as in tests) is
 unaffected by the flag; it only gates the registry.

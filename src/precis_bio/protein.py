@@ -15,7 +15,7 @@ seven verbs:
   the raw mmCIF structure (``view='cif'``).
 - ``delete`` — soft-retire a protein.
 
-Ships live: no per-plugin dark flag. An operator who needs it off uses
+Ships live: no per-plugin dark switch. An operator who needs it off uses
 ``PRECIS_KINDS_DISABLED``, the one general control.
 
 """

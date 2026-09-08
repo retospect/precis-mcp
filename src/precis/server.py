@@ -177,6 +177,7 @@ def _offload_sync(
     wrapper.__signature__ = sig  # type: ignore[attr-defined]
     return wrapper
 
+
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
     "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc'). "
