@@ -4,7 +4,8 @@ The :mod:`precis_nm.persist` discipline, transferred whole (see that
 module's docstring for the full reasoning — the "Round-2 landmine" there is
 designed out here from day one): a design's blocks live in dedicated tables
 (``se_blocks``/``se_ports``/``se_connects``, migration ``0001_se_kind.sql``;
-``se_measures`` from ``0002``, ``se_bom`` from ``0003``)
+``se_measures`` from ``0002``, ``se_bom`` from ``0003``, ``se_notes``
+from ``0005``)
 reached over the store's public connection surface (``store.tx()`` /
 ``store.pool.connection()``) — a plugin never joins core's mixin list.
 
@@ -14,8 +15,8 @@ reached over the store's public connection surface (``store.tx()`` /
 every live row for the ref and reinserts the whole tree afresh in
 parent/template-respecting order. Row ids are rebuilt on every save, which
 is exactly why everything cross-referencing (connect endpoints, measure
-blocks + relation sources, later notes) is **name-keyed text, never an FK
-to a block row id** —
+blocks + relation sources, note ``re``/``about`` anchors) is **name-keyed
+text, never an FK to a block row id** —
 the one exception is ``se_ports.block_id``, written **in lockstep** with
 the freshly minted block ids, inside the same transaction (nm's port
 pattern — a port row is always written against the block id that save
@@ -43,6 +44,7 @@ from precis_se import catalog
 from precis_se.bom import BomLine
 from precis_se.catalog import Derived
 from precis_se.measures import MeasureSpec
+from precis_se.notes import NoteSpec
 from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree
 
 log = logging.getLogger(__name__)
@@ -59,12 +61,15 @@ _SE_MANAGED = "se_binding"
 _BLOCK_COLS = (
     "id, parent_block_id, template_ref, name, pose_xyz, pose_rot, "
     "envelope, array_spec, descr, use_, objectives, mode, bound_kind, "
-    "bound_design"
+    "bound_design, origins"
 )
 _PORT_COLS = "block_id, name, roles, direction, annotations"
 _CONNECT_COLS = "a_block, a_port, b_block, b_port, joint, objectives"
-_MEASURE_COLS = "block, name, value, relation, strength, reason"
+_MEASURE_COLS = (
+    "block, name, value, relation, strength, reason, min_value, max_value, origin, unit"
+)
 _BOM_COLS = "block, a_block, a_port, b_block, b_port, item_kind, item, qty, uom, reason"
+_NOTE_COLS = "name, kind, body, re, about, origin, created_at"
 
 
 def load_tree(store: Any, ref_id: int) -> SeTree:
@@ -110,6 +115,13 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 (ref_id,),
             )
             bom_rows = cur.fetchall()
+            cur.execute(
+                f"SELECT {_NOTE_COLS} FROM se_notes "
+                "WHERE ref_id = %s AND retired_at IS NULL "
+                "ORDER BY created_at ASC, id ASC",
+                (ref_id,),
+            )
+            note_rows = cur.fetchall()
     by_id = {r["id"]: r for r in rows}
     tree = SeTree()
     for r in rows:
@@ -129,6 +141,7 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             mode=r["mode"],
             bound_kind=r["bound_kind"],
             bound=r["bound_design"],
+            origins=dict(r["origins"] or {}),
         )
     for p in port_rows:
         block_row = by_id.get(p["block_id"])
@@ -161,6 +174,10 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 relation=dict(m["relation"]) if m["relation"] is not None else None,
                 strength=m["strength"],
                 reason=m["reason"],
+                min_value=m["min_value"],
+                max_value=m["max_value"],
+                origin=m["origin"],
+                unit=m["unit"],
             )
         )
     for b in bom_rows:
@@ -176,6 +193,18 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 b_port=b["b_port"],
                 uom=b["uom"],
                 reason=b["reason"],
+            )
+        )
+    for n in note_rows:
+        tree.notes.append(
+            NoteSpec(
+                name=n["name"],
+                kind=n["kind"],
+                body=n["body"],
+                re=n["re"],
+                about=list(n["about"] or []),
+                origin=n["origin"],
+                created_at=n["created_at"],
             )
         )
     attach_catalog(store, tree)
@@ -387,6 +416,11 @@ def save_tree(
             (ref_id,),
         )
         c.execute(
+            "UPDATE se_notes SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        c.execute(
             "UPDATE se_blocks SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
@@ -399,8 +433,8 @@ def save_tree(
                 "INSERT INTO se_blocks "
                 "(ref_id, parent_block_id, template_ref, name, "
                 " pose_xyz, pose_rot, envelope, array_spec, descr, use_, "
-                " objectives, mode, bound_kind, bound_design) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                " objectives, mode, bound_kind, bound_design, origins) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "RETURNING id",
                 (
                     ref_id,
@@ -418,6 +452,7 @@ def save_tree(
                     node.mode,
                     node.bound_kind,
                     node.bound,
+                    Jsonb(node.origins) if node.origins else None,
                 ),
             ).fetchone()
             assert row is not None
@@ -465,8 +500,9 @@ def save_tree(
         for m in tree.measures:
             c.execute(
                 "INSERT INTO se_measures "
-                "(ref_id, block, name, value, relation, strength, reason) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                "(ref_id, block, name, value, relation, strength, reason, "
+                " min_value, max_value, origin, unit) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     m.block,
@@ -475,6 +511,29 @@ def save_tree(
                     Jsonb(m.relation) if m.relation is not None else None,
                     m.strength,
                     m.reason,
+                    m.min_value,
+                    m.max_value,
+                    m.origin,
+                    m.unit,
+                ),
+            )
+        for note in tree.notes:
+            # ``created_at`` is CARRIED across the retire/reinsert cycle
+            # (COALESCE stamps only a note minted this batch) so the
+            # interview timeline stays truthful — see 0005's header.
+            c.execute(
+                "INSERT INTO se_notes "
+                "(ref_id, name, kind, body, re, about, origin, created_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,COALESCE(%s, now()))",
+                (
+                    ref_id,
+                    note.name,
+                    note.kind,
+                    note.body,
+                    note.re,
+                    Jsonb(note.about),
+                    note.origin,
+                    note.created_at,
                 ),
             )
         for line in tree.bom:
@@ -542,6 +601,11 @@ def retire_design(store: Any, ref_id: int) -> int:
         )
         conn.execute(
             "UPDATE se_bom SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE se_notes SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         )

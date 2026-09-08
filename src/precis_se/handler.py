@@ -6,8 +6,12 @@ with cad-DSL spatial envelopes in **metres**, rough poses, read-time
 template instancing, first-class linear/polar **arrays**, and the L2
 invariant tier: joints (kinematic class × mechanism —
 :mod:`precis_se.joints`), named measures with tolerance relations
-(:mod:`precis_se.measures`), and loads. Maps onto the verbs as of this
-round (se slices 1-3, docs/backlog/se-kind.md "Ship order"):
+(:mod:`precis_se.measures`), and loads; slice 4's interrogation ledger
+(:mod:`precis_se.notes`) and design-freedom vocabulary (interval
+measures, ``origin: user|proposed``, relation ``scale``, the closed unit
+registry — :mod:`precis_se.freedom`). Maps onto the verbs as of this
+round (se slices 1-3 + 4's store half, docs/backlog/se-kind.md "Ship
+order"):
 
 - ``put``    — create/replace a design from a JSON payload
   ``{description?, ops: [...]}`` (``id=`` the design slug). A re-put
@@ -26,10 +30,13 @@ round (se slices 1-3, docs/backlog/se-kind.md "Ship order"):
   at metres — the nm clearance view's design, transferred), or the
   graph-tier DRC report (``view='drc'`` — :mod:`precis_se.drc`: joint
   contradictions, mechanism-implied demands, unresolvable relations,
-  the declared-vs-derived axis-travel probe), or the bought-item rollup
+  the declared-vs-derived axis-travel probe), the bought-item rollup
   (``view='bom'`` — :mod:`precis_se.bom`: quantities multiplied through
   the tree's array multiplicities, priced and massed from the
-  ``component`` kind's own spec values).
+  ``component`` kind's own spec values), the interrogation ledger with
+  open questions first (``view='interview'`` — :mod:`precis_se.notes`),
+  or the what-is-still-undecided report (``view='freedom'`` —
+  :mod:`precis_se.freedom`, DRC's honest counterpart).
 - ``delete`` — soft-retire a whole design.
 - ``search`` — find designs by intent over each design's one
   ``card_combined`` chunk; ``search_hits`` opts into the cross-kind
@@ -69,7 +76,9 @@ from precis.utils.search_merge import SearchHit
 from precis_se import bom as se_bom
 from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
+from precis_se import freedom as se_freedom
 from precis_se import modes as se_modes
+from precis_se import notes as se_notes
 from precis_se import persist
 from precis_se import validate as se_validate
 from precis_se.measures import stackup as se_stackup
@@ -96,9 +105,11 @@ class SeHandler(Handler):
             "(add_block/instance_block/array_block/set_pose/set_envelope/"
             "remove_block/add_port/remove_port/connect/disconnect/"
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
-            "set_mode/set_binding/add_bom/remove_bom); "
+            "set_mode/set_binding/add_bom/remove_bom/add_note/"
+            "remove_note); "
             "get lists designs or renders one (view='tree'|'block'|"
-            "'ports'|'measures'|'validate'|'clearance'|'drc'|'bom'; block takes "
+            "'ports'|'measures'|'validate'|'clearance'|'drc'|'bom'|"
+            "'interview'|'freedom'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes); delete soft-retires; search finds "
@@ -107,10 +118,21 @@ class SeHandler(Handler):
             "planar|ball|compliant|captive, 'axis'?, 'mechanism'?: snap|"
             "screw|press|key|magnet|bearing|bond|integral, 'params'?}. "
             "Loads (set_load): force/torque 3-vectors (N, N·m), duty, "
-            "cycles, on blocks or connects. Measures (add_measure, "
-            "metres) carry tolerance RELATIONS between named measures "
-            "({'source':'block.measure','offset','tol'} + hard/soft/"
-            "gauge); view='measures' shows the stack-up evaluation. "
+            "cycles, on blocks or connects. Measures (add_measure; "
+            "unit m default | count | ratio | deg) carry tolerance "
+            "RELATIONS between named measures ({'source':"
+            "'block.measure','scale':<×, default 1>,'offset','tol'} + "
+            "hard/soft/gauge); prefer declaring an acceptable SET over "
+            "forcing a point: min=/max= declare an interval ('bore ≥ "
+            "4mm'), and origin= (user|proposed, also on set_envelope/"
+            "set_pose) records whose choice a number is — a proposer "
+            "revises its own, treats the user's as contract. "
+            "view='measures' shows the stack-up evaluation; "
+            "view='freedom' lists what is still undecided and by whom. "
+            "add_note keeps the design interview durable (kind=question|"
+            "answer|decision, re= links a response to its question, "
+            "about= anchors blocks/measures); view='interview' renders "
+            "it, open questions first. "
             "view='validate' leads with filled-fraction honesty and "
             "warns on undeclared envelope interpenetration; view='drc' "
             "runs the graph tier (joint contradictions, "
@@ -130,9 +152,10 @@ class SeHandler(Handler):
             "array_block patterns a template block N times "
             "(linear={'count','pitch','axis'} in metres, or "
             "polar={'count','radius','axis'}, axis default +z) — the "
-            "block tree stays canonical, members are derived. Notes/"
-            "propose, realization and manufacturing modes land in later "
-            "slices. The LLM traverses a block tree, never raw geometry."
+            "block tree stays canonical, members are derived. The "
+            "se_propose job, realization and manufacturing modes land in "
+            "later slices. The LLM traverses a block tree, never raw "
+            "geometry."
         ),
         supports_get=True,
         supports_put=True,
@@ -155,6 +178,8 @@ class SeHandler(Handler):
             "drc",
             "bom",
             "fasten",
+            "interview",
+            "freedom",
         ),
     )
 
@@ -349,6 +374,10 @@ class SeHandler(Handler):
             return Response(body=self._render_bom(tree))
         if v == "fasten":
             return Response(body=_render_fasten(tree))
+        if v == "interview":
+            return Response(body=_render_interview(tree))
+        if v == "freedom":
+            return Response(body=_render_freedom(tree))
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
@@ -357,7 +386,9 @@ class SeHandler(Handler):
             "(args={'a':...,'b':...}) | view='drc' (graph tier + DOF "
             "probe) | view='bom' (bought items, multiplied through the "
             "arrays, with cost/mass) | view='fasten' (screw joints: grip "
-            "stack-up, clearance holes, thread lead)",
+            "stack-up, clearance holes, thread lead) | view='interview' "
+            "(the question/answer/decision ledger, open questions first) "
+            "| view='freedom' (what is still undecided, and by whom)",
         )
 
     def _render_bom(self, tree: SeTree) -> str:
@@ -891,57 +922,105 @@ def _fmt_len(v: float) -> str:
     return f"{v:g}"
 
 
+def _fmt_in_unit(v: float | None, unit: str) -> str:
+    """``_fmt_len``'s mm gloss for metre measures; a bare ``:g`` + unit
+    word for the rest of the closed registry."""
+    if v is None:
+        return "—"
+    if unit == "m":
+        return _fmt_len(v)
+    return f"{v:g} {unit}"
+
+
+def _fmt_band(m: Any) -> str:
+    """The declared acceptable band, one-sided ends included — the
+    declarative set a point ``value`` (if any) was chosen from."""
+    if m.min_value is None and m.max_value is None:
+        return "—"
+    if m.max_value is None:
+        return f"≥ {_fmt_in_unit(m.min_value, m.unit)}"
+    if m.min_value is None:
+        return f"≤ {_fmt_in_unit(m.max_value, m.unit)}"
+    return f"[{_fmt_in_unit(m.min_value, m.unit)}, {_fmt_in_unit(m.max_value, m.unit)}]"
+
+
 def _measure_row(m: Any) -> dict[str, str]:
     rel = "—"
     if m.relation is not None:
+        scale = m.relation.get("scale", 1)
+        scale_part = "" if scale == 1 else f"{_fmt_num(scale)} × "
         rel = (
-            f"= {m.relation.get('source')} + {_fmt_num(m.relation.get('offset', 0))} "
+            f"= {scale_part}{m.relation.get('source')} "
+            f"+ {_fmt_num(m.relation.get('offset', 0))} "
             f"± {_fmt_num(m.relation.get('tol', 0))}"
         )
     return {
         "measure": f"{m.block}.{m.name}",
-        "value": _fmt_len(m.value) if m.value is not None else "—",
+        "value": _fmt_in_unit(m.value, m.unit),
+        "band": _fmt_band(m),
         "relation": rel,
         "strength": m.strength,
+        "origin": m.origin,
         "reason": m.reason or "—",
     }
 
 
 def _stackup_rows(results: list[Any]) -> list[dict[str, str]]:
-    return [
-        {
-            "measure": r.measure,
-            "declared": _fmt_len(r.declared) if r.declared is not None else "—",
-            "derived": (
-                f"{_fmt_len(r.derived)} ± {_fmt_len(r.tol_accum)}"
-                if r.derived is not None
-                else "—"
-            ),
-            "chain": " → ".join(r.chain),
-            "status": r.problem or "ok",
-        }
-        for r in results
-    ]
+    rows = []
+    for r in results:
+        if r.derived is not None:
+            derived = (
+                f"{_fmt_in_unit(r.derived, r.unit)} "
+                f"± {_fmt_in_unit(r.tol_accum, r.unit)}"
+            )
+        elif r.derived_min is not None:
+            derived = (
+                f"[{_fmt_in_unit(r.derived_min, r.unit)}, "
+                f"{_fmt_in_unit(r.derived_max, r.unit)}] "
+                f"± {_fmt_in_unit(r.tol_accum, r.unit)}"
+            )
+        else:
+            derived = "—"
+        rows.append(
+            {
+                "measure": r.measure,
+                "declared": _fmt_in_unit(r.declared, r.unit),
+                "derived": derived,
+                "chain": " → ".join(r.chain),
+                "status": r.problem or "ok",
+            }
+        )
+    return rows
 
 
 def _render_measures(tree: SeTree) -> str:
-    """``view='measures'`` — every measure (metres) with its tolerance
-    relation, then the stack-up evaluation (:func:`precis_se.measures.
-    stackup`): each related measure's derived value ± accumulated
-    worst-case tolerance, with unresolved/cyclic/mismatching chains named
-    in the status column (DRC turns those into findings)."""
+    """``view='measures'`` — every measure (its own unit; metres default)
+    with its declared band and tolerance relation, then the stack-up
+    evaluation (:func:`precis_se.measures.stackup`): each related
+    measure's derived value (or band, from an interval anchor) ±
+    accumulated worst-case tolerance, with unresolved/cyclic/mismatching
+    chains named in the status column (DRC turns those into findings)."""
     if not tree.measures:
         return (
-            "# se measures  (units: metres)\n\n(no measures declared yet)\n\n"
+            "# se measures  (units: metres unless a measure declares "
+            "count | ratio | deg)\n\n(no measures declared yet)\n\n"
             "Next: edit(kind='se', id=..., ops=[{'op':'add_measure',"
             "'block':'wheel','name':'bore_d','relation':{'source':"
             "'hub.od_d','offset':2e-4,'tol':5e-5},'strength':'hard'}])"
         )
-    lines = [f"# {len(tree.measures)} measure(s)  (units: metres)"]
+    lines = [f"# {len(tree.measures)} measure(s)  (units: metres unless noted)"]
     lines.append(
         render_agent_table(
             [_measure_row(m) for m in tree.measures],
-            schema=["measure", "value", "relation", "strength", "reason"],
+            schema=[
+                "measure",
+                "value",
+                "band",
+                "relation",
+                "strength",
+                "origin",
+                "reason",
+            ],
         )
     )
     results = se_stackup(tree.measures)
@@ -956,6 +1035,142 @@ def _render_measures(tree: SeTree) -> str:
         )
     else:
         lines.append("## stack-up\n(no relations declared — nothing to evaluate)")
+    return "\n".join(lines)
+
+
+def _anchor_resolves(tree: SeTree, anchor: str) -> bool:
+    """An ``about`` anchor resolves as a block name, or as a
+    ``'block.measure'`` pair (split on the last dot, the relation-source
+    rule)."""
+    if anchor in tree.blocks:
+        return True
+    blk, sep, msr = anchor.rpartition(".")
+    if not sep:
+        return False
+    return any(m.block == blk and m.name == msr for m in tree.measures)
+
+
+def _note_line(tree: SeTree, n: Any) -> str:
+    when = n.created_at.strftime("%Y-%m-%d") if n.created_at else "(unsaved)"
+    parts = [f"- **{n.name}** ({n.kind}, {n.origin}, {when}): {n.body}"]
+    if n.re is not None:
+        target = any(x.name == n.re for x in tree.notes)
+        parts.append(
+            f"  re: {n.re}" + ("" if target else " (orphaned — that note was removed)")
+        )
+    if n.about:
+        rendered = [
+            a if _anchor_resolves(tree, a) else f"{a} (dangling)" for a in n.about
+        ]
+        parts.append(f"  about: {', '.join(rendered)}")
+    return "\n".join(parts)
+
+
+def _render_interview(tree: SeTree) -> str:
+    """``view='interview'`` — the interrogation ledger
+    (:mod:`precis_se.notes`): open questions first (what a propose job —
+    or a human — should answer next), then the full timeline in created
+    order. A question is *open* until a live answer/decision names it in
+    ``re`` (derived, never stored)."""
+    if not tree.notes:
+        return (
+            "# se interview\n\n(no notes yet — the ledger is empty)\n\n"
+            "Next: edit(kind='se', id=..., ops=[{'op':'add_note',"
+            "'name':'q-bore','kind':'question','text':'what bearing "
+            "bore?','about':['wheel.bore_d']}]) — answers/decisions link "
+            "back via 're'"
+        )
+    open_qs = se_notes.open_questions(tree.notes)
+    lines = [
+        f"# se interview — {len(tree.notes)} note(s), {len(open_qs)} open question(s)"
+    ]
+    if open_qs:
+        lines.append("\n## open questions (unanswered — answer or decide)")
+        for n in open_qs:
+            lines.append(_note_line(tree, n))
+    lines.append("\n## timeline")
+    for n in tree.notes:
+        lines.append(_note_line(tree, n))
+    return "\n".join(lines)
+
+
+def _render_freedom(tree: SeTree) -> str:
+    """``view='freedom'`` — :mod:`precis_se.freedom`: what is still
+    undecided, and by whom. DRC's honest counterpart — this view lists
+    liberties, not defects."""
+    report = se_freedom.freedom(tree)
+    lines = ["# se freedom — what is still undecided, and by whom"]
+    empty = not (
+        report.motions
+        or report.unconnected
+        or report.undecided
+        or report.unenveloped
+        or report.soft_measures
+        or report.loads_recorded
+        or report.proposed_facets
+    )
+    if empty:
+        lines.append(
+            f"\n(nothing undecided that this view can see — "
+            f"{len(tree.blocks)} block(s), {len(tree.measures)} "
+            "measure(s). An EMPTY design also reads as fully decided "
+            "here: pair with view='validate' for filled-fraction honesty)"
+        )
+        return "\n".join(lines)
+    if report.motions:
+        lines.append("\n## kinematic freedom (declared moving joints)")
+        for mo in report.motions:
+            axis = _fmt3(mo.axis) if mo.axis else "no axis"
+            lines.append(f"- {mo.subject}: {mo.klass} ({axis})")
+    if report.unconnected:
+        lines.append("\n## unconnected blocks (free in all 6 DOF)")
+        lines.append("- " + ", ".join(report.unconnected))
+    if report.undecided:
+        lines.append("\n## undecided measures")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "measure": u.measure,
+                        "state": u.state,
+                        "band": (
+                            f"[{_fmt_in_unit(u.band[0], u.unit)}, "
+                            f"{_fmt_in_unit(u.band[1], u.unit)}]"
+                            if u.band
+                            else "—"
+                        ),
+                        "unit": u.unit,
+                        "origin": u.origin,
+                    }
+                    for u in report.undecided
+                ],
+                schema=["measure", "state", "band", "unit", "origin"],
+            )
+        )
+    if report.unenveloped:
+        lines.append("\n## blocks without an envelope (space unclaimed)")
+        lines.append("- " + ", ".join(report.unenveloped))
+    if report.soft_measures or report.loads_recorded:
+        lines.append("\n## declared but unevaluated (no engaged consumer yet)")
+        if report.soft_measures:
+            lines.append(
+                f"- soft measure(s): {', '.join(report.soft_measures)} — "
+                "objectives, evaluated by nothing until compliance "
+                "advisories ship (ship-order step 6)"
+            )
+        if report.loads_recorded:
+            lines.append(
+                f"- {report.loads_recorded} block(s)/connect(s) carry "
+                "loads — recorded intent; the deformation/compression "
+                "evaluators are ship-order step 6"
+            )
+    by_whom = ", ".join(f"{k}: {v}" for k, v in sorted(report.measure_origins.items()))
+    if by_whom:
+        lines.append(f"\nmeasure origins — {by_whom}")
+    if report.proposed_facets:
+        lines.append(
+            "proposed (revisable) facets: " + ", ".join(report.proposed_facets)
+        )
     return "\n".join(lines)
 
 

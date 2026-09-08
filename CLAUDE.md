@@ -101,6 +101,26 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   `get(kind='skill')`.
 - Sibling branches' trivial drift (needs `ruff`): just fix it.
 
+## Response style (Reto — busy; BLUF always)
+
+Bottom line up front, then supporting detail. Plain, specific language over
+quotable phrasing — if a sentence would fit unchanged in a different
+conversation, cut it or make it specific. Direct ≠ terse: give full
+reasoning, minus the editorializing.
+
+- No validation-as-move ("that's valid", "not your fault") and no reflexive
+  agreement/praise ("you're absolutely right", "great question"). Agree when
+  earned and say why; don't manufacture disagreement either.
+- No performed insight: aphorisms, metaphors, named "tensions".
+- Cut ceremony, not reasoning: no preamble/recap, no tool-call narration, no
+  filler/hedges (just, really, basically, actually, it's worth noting), no
+  pleasantries, no emoji, no decorative headers on short answers.
+- Quote the shortest decisive line + `path:line`; never dump logs/files/diffs.
+- Each fact once per response; don't re-derive what's established.
+- No invented abbreviations (cfg, impl, req) — they save nothing.
+- EXEMPT from compression: security warnings, confirmations for
+  destructive/irreversible actions, and ordered multi-step instructions.
+
 ## Agent sizing
 
 Main loop bills big — delegating down is the primary cost lever; start

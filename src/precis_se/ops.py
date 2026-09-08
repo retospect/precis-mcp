@@ -145,8 +145,15 @@ from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
 from precis_se import joints as se_joints
 from precis_se.bom import BomError, BomLine, vet_bom_fields
-from precis_se.measures import MeasureError, MeasureSpec, validate_relation
+from precis_se.measures import (
+    ORIGINS,
+    UNITS,
+    MeasureError,
+    MeasureSpec,
+    validate_relation,
+)
 from precis_se.modes import ModeError, parse_mode
+from precis_se.notes import NOTE_KINDS, NoteError, NoteSpec, validate_about
 
 #: What an L3 realization binding may point at — the two *designed*
 #: realizations (a cad node set, an nm design) and the two *bought* ones
@@ -211,6 +218,12 @@ class SeBlock(BlockNode):
     #: follows, so ``save_tree`` must never write it back. A block that
     #: authors its own envelope always wins over this.
     derived: Any = None
+    #: ``user | proposed`` stamps for authored facets, keyed by facet name
+    #: (``'envelope'``, ``'pose'``) — slice 4's freedom vocabulary. An
+    #: absent key means ``user`` (the default is never stored); a propose
+    #: job stamps ``proposed`` on its own choices and treats user facets
+    #: as contract.
+    origins: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -228,6 +241,9 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: bought items (:mod:`precis_se.bom`), unordered — identity is
     #: (target, item_kind, item).
     bom: list[BomLine] = field(default_factory=list)
+    #: the interrogation ledger (:mod:`precis_se.notes`), created order —
+    #: identity is the note ``name``.
+    notes: list[NoteSpec] = field(default_factory=list)
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
@@ -236,7 +252,7 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
 def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
     """Apply a list of typed ops to ``tree`` in order, mutating it —
     dispatches through :data:`_OPS` (the core's 8 shared ops plus se's own
-    11), via the core's generic :func:`~precis.blocktree.ops.apply_ops`."""
+    13), via the core's generic :func:`~precis.blocktree.ops.apply_ops`."""
     return blocktree.apply_ops(tree, ops, _OPS)
 
 
@@ -428,6 +444,38 @@ def _op_set_envelope(tree: SeTree, op: dict[str, Any]) -> None:
         envelope = str(envelope).strip()
         _validate_envelope(envelope)
     node.envelope = envelope
+    _stamp_origin(node, op, facet="envelope", opname="set_envelope")
+
+
+def _stamp_origin(
+    node: SeBlock, op: dict[str, Any], *, facet: str, opname: str
+) -> None:
+    """Record the op's optional ``origin`` (user | proposed) for a block
+    facet — slice 4's freedom vocabulary. ``user`` (the default) is never
+    stored; a re-authored facet with no ``origin`` keeps its prior stamp
+    (the author who says nothing is not thereby claiming the user's
+    contract tier — a propose job must be able to omit it safely only by
+    stating it, so the honest default is "unchanged")."""
+    raw = op.get("origin")
+    if raw is None:
+        return
+    origin = str(raw).strip().lower()
+    if origin not in ORIGINS:
+        raise OpError(
+            f"{opname} 'origin' must be one of {' | '.join(ORIGINS)}, got {raw!r}"
+        )
+    if origin == "user":
+        node.origins.pop(facet, None)
+    else:
+        node.origins[facet] = origin
+
+
+def _op_set_pose(tree: SeTree, op: dict[str, Any]) -> None:
+    """The core ``set_pose`` plus the facet-origin stamp (an instance's
+    pose is its own, so the stamp lands on the posed node itself)."""
+    blocktree.op_set_pose(tree, op)
+    node = tree.blocks[str(op["block"]).strip()]
+    _stamp_origin(node, op, facet="pose", opname="set_pose")
 
 
 def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
@@ -642,19 +690,59 @@ def _measure_shared(
     return block, name
 
 
-def _vet_measure_fields(
-    op: dict[str, Any], *, opname: str
-) -> tuple[float | None, dict[str, Any] | None, str | None, str | None]:
-    """The optional measure fields, vetted: ``(value, relation, strength,
-    reason)`` — each ``None`` when absent from the op."""
-    value: float | None = None
-    if op.get("value") is not None:
-        try:
-            value = float(op["value"])
-        except (TypeError, ValueError) as exc:
-            raise OpError(
-                f"{opname} 'value' must be a number (m), got {op['value']!r}"
-            ) from exc
+def _vet_number(op: dict[str, Any], key: str, *, opname: str) -> float | None:
+    if op.get(key) is None:
+        return None
+    try:
+        return float(op[key])
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"{opname} {key!r} must be a number (the measure's unit), got {op[key]!r}"
+        ) from exc
+
+
+def _vet_vocab(
+    op: dict[str, Any], key: str, vocab: tuple[str, ...], *, opname: str
+) -> str | None:
+    if op.get(key) is None:
+        return None
+    word = str(op[key]).strip().lower()
+    if word not in vocab:
+        raise OpError(
+            f"{opname} {key!r} must be one of {' | '.join(vocab)}, got {op[key]!r}"
+        )
+    return word
+
+
+def _vet_measure_fields(op: dict[str, Any], *, opname: str) -> dict[str, Any]:
+    """The optional measure fields, vetted, keyed by :class:`MeasureSpec`
+    field name — a key is absent from the result when absent from the op
+    (presence-based, so ``set_measure`` can tell "unchanged" from a
+    value). ``min``/``max`` (op keys) land as ``min_value``/``max_value``;
+    band ordering and a declared point outside its own band are rejected
+    here (write-time loud — a hand-edited stored row is stack-up's
+    ``mismatch`` problem instead)."""
+    out: dict[str, Any] = {}
+    value = _vet_number(op, "value", opname=opname)
+    if value is not None:
+        out["value"] = value
+    min_value = _vet_number(op, "min", opname=opname)
+    if min_value is not None:
+        out["min_value"] = min_value
+    max_value = _vet_number(op, "max", opname=opname)
+    if max_value is not None:
+        out["max_value"] = max_value
+    if min_value is not None and max_value is not None and min_value > max_value:
+        raise OpError(
+            f"{opname}: 'min' ({min_value:g}) exceeds 'max' ({max_value:g}) "
+            "— an empty band declares nothing satisfiable"
+        )
+    origin = _vet_vocab(op, "origin", ORIGINS, opname=opname)
+    if origin is not None:
+        out["origin"] = origin
+    unit = _vet_vocab(op, "unit", UNITS, opname=opname)
+    if unit is not None:
+        out["unit"] = unit
     relation: dict[str, Any] | None = None
     if op.get("relation") is not None:
         if not isinstance(op["relation"], dict):
@@ -665,15 +753,41 @@ def _vet_measure_fields(
             relation = validate_relation(op["relation"])
         except MeasureError as exc:
             raise OpError(f"{opname}: {exc}") from exc
-    strength: str | None = None
-    if op.get("strength") is not None:
-        strength = str(op["strength"]).strip().lower()
-        if strength not in _STRENGTHS:
-            raise OpError(
-                f"{opname} 'strength' must be one of {' | '.join(_STRENGTHS)}, "
-                f"got {op['strength']!r}"
-            )
-    return value, relation, strength, _opt_str(op.get("reason"))
+    if relation is not None:
+        out["relation"] = relation
+    strength = _vet_vocab(op, "strength", _STRENGTHS, opname=opname)
+    if strength is not None:
+        out["strength"] = strength
+    reason = _opt_str(op.get("reason"))
+    if reason is not None:
+        out["reason"] = reason
+    return out
+
+
+def _check_band(
+    value: float | None,
+    min_value: float | None,
+    max_value: float | None,
+    *,
+    opname: str,
+) -> None:
+    """A declared point must sit inside its own declared band (an open
+    end is unbounded) — rejecting the contradiction at write time; a
+    hand-edited stored row surfaces as stack-up's ``mismatch`` instead."""
+    if value is None:
+        return
+    if min_value is not None and value < min_value:
+        raise OpError(
+            f"{opname}: 'value' ({value:g}) lies below the measure's own "
+            f"'min' ({min_value:g}) — a chosen point must sit inside its "
+            "declared band"
+        )
+    if max_value is not None and value > max_value:
+        raise OpError(
+            f"{opname}: 'value' ({value:g}) lies above the measure's own "
+            f"'max' ({max_value:g}) — a chosen point must sit inside its "
+            "declared band"
+        )
 
 
 def _find_measure(tree: SeTree, block: str, name: str) -> MeasureSpec | None:
@@ -684,10 +798,12 @@ def _find_measure(tree: SeTree, block: str, name: str) -> MeasureSpec | None:
 
 
 def _op_add_measure(tree: SeTree, op: dict[str, Any]) -> None:
-    """Mint a named measure on a block — ``value`` (m) and/or ``relation``
-    (``{'source': 'block.measure', 'offset': <m>, 'tol': <m>}``), both
-    optional (a measure may exist as a named handle first — suggestive by
-    contract). A relation source that doesn't exist YET is accepted (a
+    """Mint a named measure on a block — ``value`` and/or a ``min``/``max``
+    band and/or ``relation`` (``{'source': 'block.measure', 'scale': <×>,
+    'offset', 'tol'}``), all optional (a measure may exist as a named
+    handle first — suggestive by contract); plus ``unit`` (m | count |
+    ratio | deg, default m) and ``origin`` (user | proposed, default
+    user). A relation source that doesn't exist YET is accepted (a
     forward reference inside one ops batch is normal); an unresolvable
     relation is DRC's read-time finding."""
     block, name = _measure_shared(tree, op, opname="add_measure")
@@ -696,17 +812,14 @@ def _op_add_measure(tree: SeTree, op: dict[str, Any]) -> None:
             f"duplicate measure on block {block!r}: {name!r} (measure "
             "names are unique per block; set_measure to change it)"
         )
-    value, relation, strength, reason = _vet_measure_fields(op, opname="add_measure")
-    tree.measures.append(
-        MeasureSpec(
-            block=block,
-            name=name,
-            value=value,
-            relation=relation,
-            strength=strength or "gauge",
-            reason=reason,
-        )
+    fields = _vet_measure_fields(op, opname="add_measure")
+    _check_band(
+        fields.get("value"),
+        fields.get("min_value"),
+        fields.get("max_value"),
+        opname="add_measure",
     )
+    tree.measures.append(MeasureSpec(block=block, name=name, **fields))
 
 
 def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
@@ -725,10 +838,20 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
             f"no such measure on block {block!r}: {name!r}. "
             f"Measures on {block!r}: {roster}"
         )
-    field_keys = ("value", "relation", "strength", "reason")
+    field_keys = (
+        "value",
+        "relation",
+        "strength",
+        "reason",
+        "min",
+        "max",
+        "origin",
+        "unit",
+    )
     if not any(k in op for k in field_keys):
         raise OpError(
-            "set_measure needs at least one of value/relation/strength/reason"
+            "set_measure needs at least one of value/relation/strength/"
+            "reason/min/max/origin/unit"
         )
     # An explicit null must push back, not silently no-op (reviewer
     # finding): presence-based updates can't express "clear this field".
@@ -738,15 +861,18 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
             f"set_measure cannot clear {', '.join(nulled)} with null — "
             "remove_measure + add_measure to drop a field"
         )
-    value, relation, strength, reason = _vet_measure_fields(op, opname="set_measure")
-    if value is not None:
-        m.value = value
-    if relation is not None:
-        m.relation = relation
-    if strength is not None:
-        m.strength = strength
-    if reason is not None:
-        m.reason = reason
+    fields = _vet_measure_fields(op, opname="set_measure")
+    merged_value: float | None = fields.get("value", m.value)
+    merged_min: float | None = fields.get("min_value", m.min_value)
+    merged_max: float | None = fields.get("max_value", m.max_value)
+    _check_band(merged_value, merged_min, merged_max, opname="set_measure")
+    if merged_min is not None and merged_max is not None and merged_min > merged_max:
+        raise OpError(
+            "set_measure: the merged 'min' exceeds the merged 'max' — "
+            "an empty band declares nothing satisfiable"
+        )
+    for key, val in fields.items():
+        setattr(m, key, val)
 
 
 def _op_remove_measure(tree: SeTree, op: dict[str, Any]) -> None:
@@ -949,8 +1075,92 @@ def _op_remove_bom(tree: SeTree, op: dict[str, Any]) -> None:
     )
 
 
+def _find_note(tree: SeTree, name: str) -> NoteSpec | None:
+    for n in tree.notes:
+        if n.name == name:
+            return n
+    return None
+
+
+def _op_add_note(tree: SeTree, op: dict[str, Any]) -> None:
+    """Append to the interrogation ledger (:mod:`precis_se.notes`) —
+    ``name`` (unique), ``kind`` (question | answer | decision), ``text``
+    (the body), optional ``re`` (the note this answers/decides — must
+    already exist; earlier ops in the same batch count), ``about``
+    (anchor names, 'block' or 'block.measure' — dangling is legal, the
+    interview view annotates it), ``origin`` (user | proposed)."""
+    name = _require_name(op, "name", "add_note")
+    if _find_note(tree, name) is not None:
+        raise OpError(
+            f"duplicate note {name!r} (note names are unique per design; "
+            "the ledger is append-shaped — add a NEW note to amend, or "
+            "remove_note to retract)"
+        )
+    kind = str(op.get("kind") or "").strip().lower()
+    if kind not in NOTE_KINDS:
+        raise OpError(
+            f"add_note 'kind' must be one of {' | '.join(NOTE_KINDS)}, "
+            f"got {op.get('kind')!r}"
+        )
+    body = _opt_str(op.get("text"))
+    if not body:
+        raise OpError("add_note needs 'text' (the note body)")
+    re_name = _opt_str(op.get("re"))
+    if re_name is not None:
+        if kind == "question":
+            raise OpError(
+                "add_note: a question takes no 're' — only answers/"
+                "decisions respond to another note"
+            )
+        target = _find_note(tree, re_name)
+        if target is None:
+            roster = ", ".join(sorted(n.name for n in tree.notes)) or "(none)"
+            raise OpError(
+                f"add_note 're' names no live note: {re_name!r}. Notes: {roster}"
+            )
+        if target.kind != "question":
+            raise OpError(
+                f"add_note 're' must name a question, but {re_name!r} is "
+                f"a {target.kind} — chain answers to the question itself, "
+                "not to each other"
+            )
+    origin = str(op.get("origin") or "user").strip().lower()
+    if origin not in ORIGINS:
+        raise OpError(
+            f"add_note 'origin' must be one of {' | '.join(ORIGINS)}, "
+            f"got {op.get('origin')!r}"
+        )
+    try:
+        about = validate_about(op.get("about"))
+    except NoteError as exc:
+        raise OpError(f"add_note: {exc}") from exc
+    tree.notes.append(
+        NoteSpec(
+            name=name,
+            kind=kind,
+            body=body,
+            re=re_name,
+            about=about,
+            origin=origin,
+        )
+    )
+
+
+def _op_remove_note(tree: SeTree, op: dict[str, Any]) -> None:
+    """Retract a note. An answer/decision whose ``re`` named it now
+    dangles — kept, and the interview view reports the orphan (read-time
+    honesty, the remove_measure posture)."""
+    name = _require_name(op, "name", "remove_note")
+    n = _find_note(tree, name)
+    if n is None:
+        roster = ", ".join(sorted(x.name for x in tree.notes)) or "(none)"
+        raise OpError(f"no such note: {name!r}. Notes: {roster}")
+    tree.notes.remove(n)
+
+
 _OPS = {
     **blocktree.CORE_OPS,
+    "set_pose": _op_set_pose,
     "instance_block": _op_instance_block,
     "array_block": _op_array_block,
     "set_envelope": _op_set_envelope,
@@ -966,4 +1176,6 @@ _OPS = {
     "set_binding": _op_set_binding,
     "add_bom": _op_add_bom,
     "remove_bom": _op_remove_bom,
+    "add_note": _op_add_note,
+    "remove_note": _op_remove_note,
 }

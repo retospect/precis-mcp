@@ -495,12 +495,23 @@ live in the tables, never chunks (nm/ADR-0041 storage rule).
 4. **Propose/interrogate** — `se_notes` ledger + `view='interview'`
    first (it's pure store work and useful for hand design alone), then
    the `se_propose` job + dry-run gate wired to read/answer notes.
+   **Round 1 (store half) SHIPPED 2026-09-08** on migration **0005** —
+   0004 went to `template_ref` while this slice waited (0003 to se_bom):
+   `notes.py` (add_note/remove_note, question|answer|decision, `re`
+   chains answers to questions only, open/settled DERIVED never stored,
+   `created_at` carried across the retire/reinsert save), all four
+   freedom pieces below (measures grew `min_value`/`max_value`/`origin`/
+   `unit`; relation `scale` rides the jsonb, default unstored;
+   `se_blocks.origins` stamps envelope/pose facets — omitted origin on a
+   re-author means *unchanged*, not user), `freedom.py` +
+   `view='freedom'`, the `minimum_constraint` DRC advisory, and a
+   unit-aware `implausible_magnitude` (skips count/ratio/deg). REMAINING
+   (round 2): the `se_propose` job + dry-run gate.
    **Design-freedom vocabulary rides this slice** (research: set-based
    concurrent engineering + generative-design practice,
    `perplexity-reasoning:310975`; the split is: human declares
    invariants and acceptable *sets*, solver owns detail, system reports
-   remaining freedom honestly). Four pieces, all on the slice's own
-   migration (0004 — 0003 went to se_bom) with se_notes:
+   remaining freedom honestly). Four pieces, with se_notes:
    - **Interval measures** — optional `min`/`max` as the alternative to
      a point `value` ("bore ≥ 4 mm" is declarative; a forced point
      value is overspecification). Stack-up treats an interval anchor

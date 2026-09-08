@@ -345,6 +345,10 @@ def drc(tree: SeTree) -> DrcReport:
     extent = _design_extent(tree)
     if extent > 0.0:
         for m in tree.measures:
+            if m.unit != "m":
+                # counts/ratios/degrees have no business being compared
+                # to a spatial extent (slice 4's unit registry).
+                continue
             if m.value is not None and abs(m.value) > _MAGNITUDE_FACTOR * extent:
                 findings.append(
                     ValidationIssue(
@@ -359,10 +363,64 @@ def drc(tree: SeTree) -> DrcReport:
                         severity="warn",
                     )
                 )
+    # 5c. minimum-constraint advisory (se-kind.md slice 4, set-based
+    # design: don't lock what nothing needs locked): a ``hard`` measure
+    # gates realization — but if no relation sources it and its own
+    # relation satisfies no mechanism demand, nothing consumes the
+    # hardness, and the design is overconstrained by exactly one word.
+    # The mechanism-pair exemption is DELIBERATELY coarse (reviewer nod):
+    # relating across a demanded block pair counts as consumption without
+    # checking that the relation satisfies what the mechanism demands —
+    # this is a warn-tier nudge toward fewer 'hard's, and judging demand
+    # *satisfaction* (axis/ratio/fit) is the step-6 evaluators' job, not
+    # a set-membership test's.
+    sourced: set[str] = set()
+    for m in tree.measures:
+        if m.relation is not None:
+            src = str(m.relation.get("source", ""))
+            if src:
+                sourced.add(src)
+    demanded_pairs: set[frozenset[str]] = set()
+    for c in tree.connects:
+        if not c.joint:
+            continue
+        mech = c.joint.get("mechanism")
+        spec = se_joints.MECHANISMS.get(mech) if isinstance(mech, str) else None
+        if spec is not None and spec.get("demands_relation") is not None:
+            demanded_pairs.add(
+                frozenset(
+                    {_resolved_block(tree, c.a_block), _resolved_block(tree, c.b_block)}
+                )
+            )
+    for m in tree.measures:
+        if m.strength != "hard":
+            continue
+        if f"{m.block}.{m.name}" in sourced:
+            continue
+        if m.relation is not None:
+            src_block = str(m.relation.get("source", "")).rpartition(".")[0]
+            if src_block and frozenset({m.block, src_block}) in demanded_pairs:
+                continue
+        findings.append(
+            ValidationIssue(
+                rule="minimum_constraint",
+                subject=f"{m.block}.{m.name}",
+                detail=(
+                    "'hard' gates realization, but nothing consumes the "
+                    "hardness — no relation sources this measure and no "
+                    "mechanism demands it. Consider 'gauge' (or 'soft' if "
+                    "it is an objective): declare invariants, not "
+                    "preferences (set_measure)"
+                ),
+                severity="warn",
+            )
+        )
+
     stack = stackup(tree.measures)
     _STACK_RULES = {
         "mismatch": ("tolerance_mismatch", "warn"),
         "malformed": ("malformed_relation", "error"),
+        "unit_mismatch": ("unit_mismatch", "error"),
     }
     for res in stack:
         if res.problem is None:
