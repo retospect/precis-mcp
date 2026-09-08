@@ -467,10 +467,8 @@ class DispatchMixin(RuntimeShape):
             except PrecisError as e:
                 return self.render_error(e), True
             except Exception as e:
-                log.exception(
-                    "recipe-cursor replay failed for get(%r)", decoded.args
-                )
-                err = Internal(
+                log.exception("recipe-cursor replay failed for get(%r)", decoded.args)
+                err: PrecisError = Internal(
                     f"internal error re-deriving cursor content: "
                     f"{type(e).__name__} (see server log)"
                 )

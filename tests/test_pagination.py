@@ -575,9 +575,7 @@ class TestKindFallback:
         """A short-lived (``precis eval``) caller can't page at all —
         the search fallback is arguably *more* useful there, and
         doesn't depend on any cursor existing."""
-        monkeypatch.setenv(
-            "PRECIS_MAX_BODY_BYTES", _KIND_SHORT_LIVED_WIDE_SECTION_CAP
-        )
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _KIND_SHORT_LIVED_WIDE_SECTION_CAP)
         cache = PaginationCache()
         body = (
             "## one\n" + ("a" * 400) + "\n"

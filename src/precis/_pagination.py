@@ -381,9 +381,9 @@ def encode_recipe_cursor(recipe: RecipeSeed) -> str:
         "h": recipe.body_hash,
     }
     raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
-    return _RECIPE_CURSOR_PREFIX + base64.urlsafe_b64encode(
-        raw.encode("utf-8")
-    ).decode("ascii")
+    return _RECIPE_CURSOR_PREFIX + base64.urlsafe_b64encode(raw.encode("utf-8")).decode(
+        "ascii"
+    )
 
 
 def decode_recipe_cursor(cursor: str) -> RecipeSeed | None:
@@ -563,8 +563,7 @@ class PaginationCache:
                 )
             except Exception:
                 log.debug(
-                    "recipe cursor encoding failed; minting an opaque "
-                    "cursor instead",
+                    "recipe cursor encoding failed; minting an opaque cursor instead",
                     exc_info=True,
                 )
         cursor_len = (
@@ -687,9 +686,10 @@ class PaginationCache:
             # for. Reproduces exactly what the original chain would
             # have reserved at this same step, so the boundary lands
             # in the same place.
-            step_recipe = RecipeSeed(verb=verb, args=args, body_hash=body_hash, page=i + 2)
+            seed = RecipeSeed(verb=verb, args=args, body_hash=body_hash, page=i + 2)
+            step_recipe: RecipeSeed | None = seed
             try:
-                step_cursor = encode_recipe_cursor(step_recipe)
+                step_cursor = encode_recipe_cursor(seed)
             except Exception:
                 log.debug(
                     "recipe cursor encoding failed during page rebuild; "
@@ -705,7 +705,9 @@ class PaginationCache:
                 kind=kind,
                 cursor_capable=True,
                 cursor_len=(
-                    len(step_cursor.encode("utf-8")) if step_cursor is not None else None
+                    len(step_cursor.encode("utf-8"))
+                    if step_cursor is not None
+                    else None
                 ),
             )
             next_recipe, next_cursor = step_recipe, step_cursor
@@ -779,9 +781,9 @@ _ALT_HINT_RESERVE_BYTES = len(
 #: top of :data:`_FOOTER_RESERVE_BYTES` — same idea as
 #: :data:`_ALT_HINT_RESERVE_BYTES`, bounded by :func:`_clamp_kind`.
 _KIND_FALLBACK_RESERVE_BYTES = len(
-    _KIND_FALLBACK_SENTENCE_TEMPLATE.format(
-        kind="x" * _KIND_FALLBACK_MAX_BYTES
-    ).encode("utf-8")
+    _KIND_FALLBACK_SENTENCE_TEMPLATE.format(kind="x" * _KIND_FALLBACK_MAX_BYTES).encode(
+        "utf-8"
+    )
 )
 
 #: Reserve for :data:`_SHORT_LIVED_FOOTER_TEMPLATE`, the cursor-incapable

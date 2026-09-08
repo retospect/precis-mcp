@@ -25,6 +25,31 @@ filtered digest, not the raw stream.** If a detail you need is missing:
 - Or read the teed full log (rtk keeps the unfiltered output alongside the
   digest).
 
+### The absence trap — a digest is not evidence of a negative
+
+The dangerous case is specific: **a digested `grep` looks like a complete
+match set.** Nothing on the output says "truncated to the interesting lines",
+so a partial result reads as an exhaustive one.
+
+Presence of hits is safe to trust — the digest never invents matches. Only
+the *negative* is unsafe. So whenever the ABSENCE of hits is the load-bearing
+conclusion — "this kwarg doesn't exist", "nothing references this", "no
+writer for this column" — re-run through `rtk proxy` (or read the file with
+Read/Grep) **before** acting on it.
+
+Two real misses on 2026-09-07, same root cause:
+
+- `grep -E '^name = ' uv.lock` reported **28** packages for a lockfile
+  holding **287** — nearly shipping "this dep adds 30 packages" when the true
+  marginal cost was **6**.
+- `grep -n "method" src/precis/handlers/material.py` surfaced only
+  `@staticmethod` lines, which led to a **false gripe filed against prod**
+  claiming `method=` was unreachable. It is wired end to end; the gripe had
+  to be retracted.
+
+Same caution applies to redirecting rtk output to a file and counting lines:
+the file receives the digest, not the raw stream.
+
 ## Don't hand-suppress stderr (`2>/dev/null`)
 
 Under rtk, a blanket `2>/dev/null` is net-negative. rtk's model is *drop

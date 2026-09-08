@@ -346,6 +346,58 @@ def test_cross_design_instance_cycle_rejected(handler: SeHandler) -> None:
     assert "se_lib_a" in msg and "se_lib_b" in msg
 
 
+@pytest.mark.parametrize("ref", ["#A", "se_lib_a#", "#"])
+def test_half_empty_cross_design_template_ref_rejected(
+    handler: SeHandler, ref: str
+) -> None:
+    # parse_template_ref splits on the FIRST '#'; each half must be
+    # non-empty INDEPENDENTLY. Both halves are checked separately here
+    # because a single both-empty case cannot distinguish the two guards.
+    handler.put(
+        id="se_lib_a", text=json.dumps({"ops": [{"op": "add_block", "name": "A"}]})
+    )
+    with pytest.raises(BadInput, match="design-slug"):
+        handler.edit(
+            id="se_lib_a",
+            ops=[{"op": "instance_block", "name": "inst", "template": ref}],
+        )
+
+
+@pytest.mark.parametrize("name", [None, "   "])
+def test_absent_or_blank_block_name_rejected(
+    handler: SeHandler, name: str | None
+) -> None:
+    # _require_name rejects missing AND whitespace-only separately: a
+    # blank string is not None, and None does not strip to empty.
+    op: dict[str, object] = {"op": "add_block"}
+    if name is not None:
+        op["name"] = name
+    with pytest.raises(BadInput, match="add_block needs 'name'"):
+        handler.put(id="se_blank1", text=json.dumps({"ops": [op]}))
+
+
+def test_binding_line_renders_a_bound_realization(handler: SeHandler) -> None:
+    handler.put(
+        id="se_bound1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "hub"},
+                    {
+                        "op": "set_binding",
+                        "block": "hub",
+                        "kind": "cad",
+                        "design": "hub-v3",
+                    },
+                ]
+            }
+        ),
+    )
+    body = handler.get(id="se_bound1", view="block", args={"name": "hub"}).body
+    assert "realization: cad:hub-v3" in body
+    assert "envelope only" not in body
+
+
 def test_cross_design_instance_resolves_envelope_and_ports_by_reference(
     handler: SeHandler,
 ) -> None:

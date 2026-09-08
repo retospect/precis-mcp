@@ -1457,7 +1457,7 @@ coverage vs 64–68 % free — **20–25 points of recall**.
 - ⚠️ **Psi4 is not on PyPI** (404). Conda-forge only.
 - ⚠️ Use **`tblite`**, not `xtb-python` — the latter has had no release since
   2022 and is linux-x86_64 only.
-- ✅ **PySCF is the QC pick**: `pip install pyscf`, **Apache-2.0**, wheels for
+- 👍 **PySCF is the QC pick**: `pip install pyscf`, **Apache-2.0**, wheels for
   macOS arm64 **and linux aarch64**, deps only numpy/scipy/h5py. That covers the
   aarch64 cluster nodes where `tblite` cannot go.
 - **CREST is too slow for routine use** — a 747-molecule benchmark reports

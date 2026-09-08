@@ -626,7 +626,10 @@ def test_fetch_more_rejects_tampered_non_get_recipe_cursor(
     from precis._pagination import RecipeSeed, encode_recipe_cursor, hash_body
 
     seed = RecipeSeed(
-        verb="delete", args={"kind": "calc", "id": "2+3"}, body_hash=hash_body("x"), page=2
+        verb="delete",
+        args={"kind": "calc", "id": "2+3"},
+        body_hash=hash_body("x"),
+        page=2,
     )
     cursor = encode_recipe_cursor(seed)
     body, is_error = runtime.fetch_more(cursor)
