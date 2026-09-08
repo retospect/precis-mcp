@@ -23,7 +23,7 @@ from precis.handlers.structure import StructureHandler
 from precis.store import Store
 from precis_nm import persist
 from precis_nm.handler import NmHandler, _render_clearance, _render_tree
-from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec, ThreadingSpec
+from precis_nm.ops import BlockTree, ConnectSpec, NmBlock, PortSpec, ThreadingSpec
 
 _MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
 
@@ -275,15 +275,225 @@ def test_render_tree_terminates_and_warns_on_injected_cycle() -> None:
     # validation entirely) and confirm the renderer still terminates and
     # marks the cycle instead of a RecursionError.
     tree = BlockTree()
-    tree.blocks["A"] = BlockNode(name="A", parent=None, template=None)
-    tree.blocks["B"] = BlockNode(name="B", parent=None, template=None)
-    tree.blocks["A_in_B"] = BlockNode(name="A_in_B", parent="B", template="A")
-    tree.blocks["B_in_A"] = BlockNode(name="B_in_A", parent="A", template="B")
+    tree.blocks["A"] = NmBlock(name="A", parent=None, template=None)
+    tree.blocks["B"] = NmBlock(name="B", parent=None, template=None)
+    tree.blocks["A_in_B"] = NmBlock(name="A_in_B", parent="B", template="A")
+    tree.blocks["B_in_A"] = NmBlock(name="B_in_A", parent="A", template="B")
 
     body = _render_tree(tree, "cyclic", "")
 
     assert "⚠" in body
     assert "instance cycle" in body
+
+
+# ── cross-design instancing (docs/backlog/blocktree-library-build-plan.md
+# slice 1: a library part is an ordinary design, placed BY REFERENCE from
+# another design) ─────────────────────────────────────────────────────────
+
+
+def test_cross_design_instance_cycle_rejected(handler: NmHandler) -> None:
+    # THE adversarial test that matters most for this slice, written before
+    # the feature worked: design A instances a block from design B, design B
+    # instances one from design A. Neither design's OWN write ever sees a
+    # cycle in isolation — only the moment the second half closes the loop
+    # does resolving either design's template chain recurse forever. Must be
+    # refused with a message naming BOTH designs, not hang.
+    handler.put(
+        id="lib_a", text=json.dumps({"ops": [{"op": "add_block", "name": "A"}]})
+    )
+    handler.put(
+        id="lib_b",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "B"},
+                    {
+                        "op": "instance_block",
+                        "name": "A_in_B",
+                        "template": "lib_a#A",
+                        "parent": "B",
+                    },
+                ]
+            }
+        ),
+    )
+    with pytest.raises(BadInput, match="instance cycle") as excinfo:
+        handler.edit(
+            id="lib_a",
+            ops=[
+                {
+                    "op": "instance_block",
+                    "name": "B_in_A",
+                    "template": "lib_b#B",
+                    "parent": "A",
+                }
+            ],
+        )
+    msg = str(excinfo.value)
+    assert "lib_a" in msg and "lib_b" in msg
+
+
+def test_cross_design_instance_resolves_envelope_and_ports_by_reference(
+    handler: NmHandler,
+) -> None:
+    handler.put(
+        id="library1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "part",
+                        "envelope": "sphere:r2",
+                        "desc": "a catalogued click-chem handle",
+                    },
+                    {
+                        "op": "add_port",
+                        "block": "part",
+                        "name": "handle",
+                        "roles": ["covalent"],
+                    },
+                ]
+            }
+        ),
+    )
+    handler.put(
+        id="consumer1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "instance_block",
+                        "name": "borrowed",
+                        "template": "library1#part",
+                    }
+                ]
+            }
+        ),
+    )
+    block = handler.get(id="consumer1", view="block", args={"name": "borrowed"})
+    assert "instance of: library1#part" in block.body
+    assert "envelope: sphere:r2" in block.body
+    assert "handle" in block.body  # the port resolved through the reference
+
+    # Editing the LIBRARY design updates the consumer at read time — by
+    # reference, never copied (the whole point of a library): a fresh
+    # envelope AND a fresh port both show up on the next read of the
+    # consumer's instance, with no edit to "consumer1" at all.
+    handler.edit(
+        id="library1",
+        ops=[
+            {
+                "op": "add_port",
+                "block": "part",
+                "name": "handle2",
+                "roles": ["covalent"],
+            }
+        ],
+    )
+    block2 = handler.get(id="consumer1", view="block", args={"name": "borrowed"})
+    assert "handle2" in block2.body
+
+
+def test_cross_design_missing_design_named_in_error(handler: NmHandler) -> None:
+    with pytest.raises(BadInput, match="ghost_design") as excinfo:
+        handler.put(
+            id="consumer2",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "instance_block",
+                            "name": "x",
+                            "template": "ghost_design#part",
+                        }
+                    ]
+                }
+            ),
+        )
+    assert "may not exist" in str(excinfo.value) or "retired" in str(excinfo.value)
+
+
+def test_cross_design_missing_block_named_in_error(handler: NmHandler) -> None:
+    handler.put(
+        id="library2", text=json.dumps({"ops": [{"op": "add_block", "name": "part"}]})
+    )
+    with pytest.raises(BadInput, match="library2") as excinfo:
+        handler.put(
+            id="consumer3",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "instance_block",
+                            "name": "x",
+                            "template": "library2#nope",
+                        }
+                    ]
+                }
+            ),
+        )
+    assert "nope" in str(excinfo.value)
+    assert "part" in str(excinfo.value)  # names what IS in library2
+
+
+def test_cross_design_retired_source_rejected(handler: NmHandler) -> None:
+    handler.put(
+        id="library3", text=json.dumps({"ops": [{"op": "add_block", "name": "part"}]})
+    )
+    handler.delete(id="library3")
+    with pytest.raises(BadInput, match="library3"):
+        handler.put(
+            id="consumer4",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "instance_block",
+                            "name": "x",
+                            "template": "library3#part",
+                        }
+                    ]
+                }
+            ),
+        )
+
+
+def test_cross_design_instance_of_foreign_instance_rejected(handler: NmHandler) -> None:
+    handler.put(
+        id="library4",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "part"},
+                    {"op": "instance_block", "name": "part2", "template": "part"},
+                ]
+            }
+        ),
+    )
+    with pytest.raises(BadInput, match="itself an instance"):
+        handler.put(
+            id="consumer5",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "instance_block",
+                            "name": "x",
+                            "template": "library4#part2",
+                        }
+                    ]
+                }
+            ),
+        )
+
+
+def test_block_name_with_hash_rejected(handler: NmHandler) -> None:
+    with pytest.raises(BadInput, match="#"):
+        handler.put(
+            id="badname1",
+            text=json.dumps({"ops": [{"op": "add_block", "name": "bad#name"}]}),
+        )
 
 
 # ── set_pose / edit / re-put / delete ───────────────────────────────────
@@ -648,7 +858,7 @@ def test_validate_dangling_connect_from_hand_corrupted_tree() -> None:
     # connect whose block was hand-removed after the fact (or corrupted
     # data / a future bug elsewhere) must still be caught here, loudly.
     tree = BlockTree()
-    tree.blocks["a"] = BlockNode(
+    tree.blocks["a"] = NmBlock(
         name="a", ports={"p1": PortSpec(name="p1", roles=["covalent"])}
     )
     tree.connects.append(
@@ -668,8 +878,8 @@ def test_validate_port_capability_defense_in_depth() -> None:
     # it) — the same "op-time gate + read-time re-check" pattern as the
     # instance-cycle render guard.
     tree = BlockTree()
-    tree.blocks["a"] = BlockNode(name="a", ports={"p1": PortSpec(name="p1", roles=[])})
-    tree.blocks["b"] = BlockNode(name="b", ports={"p1": PortSpec(name="p1", roles=[])})
+    tree.blocks["a"] = NmBlock(name="a", ports={"p1": PortSpec(name="p1", roles=[])})
+    tree.blocks["b"] = NmBlock(name="b", ports={"p1": PortSpec(name="p1", roles=[])})
     tree.connects.append(
         ConnectSpec(a_block="a", a_port="p1", b_block="b", b_port="p1", kind="bond")
     )
@@ -826,8 +1036,8 @@ def test_clearance_hand_corrupted_envelope_raises_badinput() -> None:
     # bug elsewhere) must surface as a legible BadInput, not a raw
     # traceback from the cad kernel's DslError.
     tree = BlockTree()
-    tree.blocks["a"] = BlockNode(name="a", envelope="cyl:r2h5")
-    tree.blocks["b"] = BlockNode(name="b", envelope="not-a-real-shape")
+    tree.blocks["a"] = NmBlock(name="a", envelope="cyl:r2h5")
+    tree.blocks["b"] = NmBlock(name="b", envelope="not-a-real-shape")
     with pytest.raises(BadInput, match="invalid envelope"):
         _render_clearance(tree, {"a": "a", "b": "b"})
 
@@ -1384,7 +1594,7 @@ def test_validate_threaded_without_envelope_clean_via_instance_envelope(
 
 def test_validate_dangling_threading_from_hand_corrupted_tree() -> None:
     tree = BlockTree()
-    tree.blocks["a"] = BlockNode(name="a")
+    tree.blocks["a"] = NmBlock(name="a")
     tree.threading.append(ThreadingSpec(a="a", b="ghost"))
     findings = nm_validate.validate(tree)
     rules = {f.rule for f in findings}
@@ -1396,7 +1606,7 @@ def test_validate_dangling_threading_from_hand_corrupted_tree() -> None:
 
 def test_validate_binding_element_mismatch_defense_in_depth() -> None:
     tree = BlockTree()
-    tree.blocks["hub"] = BlockNode(
+    tree.blocks["hub"] = NmBlock(
         name="hub",
         bound_design="frag",
         ports={
@@ -1417,7 +1627,7 @@ def test_validate_binding_element_mismatch_defense_in_depth() -> None:
 
 def test_validate_dangling_binding_when_scene_slug_unresolved() -> None:
     tree = BlockTree()
-    tree.blocks["hub"] = BlockNode(name="hub", bound_design="ghost_design")
+    tree.blocks["hub"] = NmBlock(name="hub", bound_design="ghost_design")
     findings = nm_validate.validate(tree, bound_scenes={"ghost_design": None})
     rules = {f.rule for f in findings}
     assert "dangling_binding" in rules

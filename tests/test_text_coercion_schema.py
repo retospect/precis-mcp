@@ -116,10 +116,10 @@ def test_put_arg_model_accepts_both_str_and_dict_for_text() -> None:
     coerced = arg_model.model_validate(
         {"kind": "structure", "text": {"cell": {"a": 1}}}
     )
-    assert coerced.text == {"cell": {"a": 1}}
+    assert coerced.model_dump()["text"] == {"cell": {"a": 1}}
 
     uncoerced = arg_model.model_validate({"kind": "structure", "text": "{}"})
-    assert uncoerced.text == "{}"
+    assert uncoerced.model_dump()["text"] == "{}"
 
 
 def test_edit_arg_model_accepts_both_str_and_dict_for_text() -> None:
@@ -130,9 +130,7 @@ def test_edit_arg_model_accepts_both_str_and_dict_for_text() -> None:
     coerced = arg_model.model_validate(
         {"kind": "structure", "id": "x", "text": {"ops": []}}
     )
-    assert coerced.text == {"ops": []}
+    assert coerced.model_dump()["text"] == {"ops": []}
 
-    uncoerced = arg_model.model_validate(
-        {"kind": "structure", "id": "x", "text": "{}"}
-    )
-    assert uncoerced.text == "{}"
+    uncoerced = arg_model.model_validate({"kind": "structure", "id": "x", "text": "{}"})
+    assert uncoerced.model_dump()["text"] == "{}"

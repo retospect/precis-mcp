@@ -78,8 +78,8 @@ from precis_nm import persist
 from precis_nm import validate as nm_validate
 from precis_nm.generators.sp2 import VDW_MARGIN_A
 from precis_nm.ops import (
-    BlockNode,
     BlockTree,
+    NmBlock,
     effective_dof,
     effective_envelope,
     effective_ports,
@@ -164,7 +164,7 @@ def _tree_summary(tree: BlockTree) -> str:
     return "\n".join(lines)
 
 
-def _ports_summary(tree: BlockTree, node: BlockNode) -> str:
+def _ports_summary(tree: BlockTree, node: NmBlock) -> str:
     ports = effective_ports(tree, node)
     if not ports:
         return "  (no ports declared)"
@@ -214,7 +214,7 @@ def build_prompt(
     slug: str,
     tree: BlockTree,
     block_name: str,
-    node: BlockNode,
+    node: NmBlock,
     findings: list[Any],
     steer: str | None,
 ) -> str:
@@ -305,7 +305,7 @@ def parse_proposal(text: str) -> dict[str, Any]:
 
 
 def _envelope_fit_warnings(
-    tree: BlockTree, node: BlockNode, scene: StructScene
+    tree: BlockTree, node: NmBlock, scene: StructScene
 ) -> str | None:
     """Best-effort envelope-vs-fragment size check via the ``cad`` SDF —
     warn-tier only, never a dry-run failure.

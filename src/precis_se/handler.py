@@ -49,6 +49,7 @@ describing target state misdirects agents).
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 from psycopg.types.json import Jsonb
@@ -81,6 +82,7 @@ from precis_se.ops import (
     apply_ops,
     effective_envelope,
     effective_ports,
+    resolve_template,
 )
 
 #: Registered at import time, before ``SeHandler.spec`` is consumed by the
@@ -186,6 +188,31 @@ class SeHandler(Handler):
         except OpError as exc:
             raise BadInput(str(exc)) from exc
 
+    def _foreign_resolver(self) -> Callable[[str], SeTree | None]:
+        """Builds the cross-design ``template`` resolver
+        (:attr:`~precis.blocktree.types.Tree.foreign`, docs/backlog/
+        blocktree-library-build-plan.md slice 1) — store-aware, so it lives
+        here rather than in ``ops.py``/``precis.blocktree`` (both stay
+        store-free by design; ``precis_nm.handler``'s
+        ``_foreign_resolver`` is the same shape, one per plugin since each
+        resolves its OWN kind's designs). Memoized in a plain dict scoped
+        to ONE put/edit/get call: resolving the same foreign design's
+        template from many ports/blocks/cycle-check hops within that one
+        call costs one ``get_ref``+``load_tree``, never one per hop. A slug
+        that doesn't resolve to a live ``se`` design (never existed, or
+        soft-retired) caches as ``None`` too — never re-queried either."""
+        cache: dict[str, SeTree | None] = {}
+
+        def resolve(slug: str) -> SeTree | None:
+            if slug not in cache:
+                ref = self.store.get_ref(kind="se", id=slug)
+                cache[slug] = (
+                    persist.load_tree(self.store, ref.id) if ref is not None else None
+                )
+            return cache[slug]
+
+        return resolve
+
     # ── put ──────────────────────────────────────────────────────────
     def put(
         self,
@@ -210,6 +237,11 @@ class SeHandler(Handler):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
         description = str(payload.get("description") or "").strip()
         tree = SeTree()
+        # own_slug is known from id= before the ref row even exists — needed
+        # for a foreign design's template to recognise a hop back into THIS
+        # design (cross-design cycle detection, ops._find_instance_cycle).
+        tree.own_slug = slug
+        tree.foreign = self._foreign_resolver()
         self._apply(tree, ops)
         ttl = (title or slug).strip() or slug
         existing = self.store.get_ref(kind="se", id=slug)
@@ -269,6 +301,8 @@ class SeHandler(Handler):
                 "ops=[{'op':'add_block','name':'hub','parent':'fork'}])",
             )
         tree = persist.load_tree(self.store, ref.id)
+        tree.own_slug = str(ref.slug)
+        tree.foreign = self._foreign_resolver()
         self._apply(tree, op_list)
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
@@ -299,6 +333,8 @@ class SeHandler(Handler):
         if ref is None:
             raise NotFound(f"se design {id!r} not found")
         tree = persist.load_tree(self.store, ref.id)
+        tree.own_slug = str(ref.slug)
+        tree.foreign = self._foreign_resolver()
         v = (view or "").strip().lower()
         if v in ("", "tree"):
             description = str((ref.meta or {}).get("description") or "").strip()
@@ -798,9 +834,10 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
 def _mode_line(tree: SeTree, node: SeBlock) -> str:
     """The block's manufacturing mode, with the honesty marker: a family
     whose implementer hasn't shipped reads as *intent*, never as a checked
-    plan (:mod:`precis_se.modes`). An instance shows its template's."""
-    owner = tree.blocks.get(node.template) if node.template else node
-    mode = owner.mode if owner is not None else None
+    plan (:mod:`precis_se.modes`). An instance shows its template's — LOCAL
+    or cross-design (:func:`~precis_se.ops.resolve_template`)."""
+    owner = resolve_template(tree, node.template) if node.template else node
+    mode = getattr(owner, "mode", None)
     if not mode:
         return "mode: — (unassigned)"
     via = f" (from {node.template})" if node.template else ""
@@ -815,12 +852,15 @@ def _mode_line(tree: SeTree, node: SeBlock) -> str:
 def _binding_line(tree: SeTree, node: SeBlock) -> str:
     """The block's L3 realization binding — what its solid actually *is*
     (a cad/nm design, or a bought component/part). An instance shows its
-    template's."""
-    owner = tree.blocks.get(node.template) if node.template else node
-    if owner is None or not owner.bound_kind or not owner.bound:
+    template's — LOCAL or cross-design
+    (:func:`~precis_se.ops.resolve_template`)."""
+    owner = resolve_template(tree, node.template) if node.template else node
+    bound_kind = getattr(owner, "bound_kind", None)
+    bound = getattr(owner, "bound", None)
+    if owner is None or not bound_kind or not bound:
         return "realization: — (envelope only)"
     via = f" (from {node.template})" if node.template else ""
-    return f"realization: {owner.bound_kind}:{owner.bound}{via}"
+    return f"realization: {bound_kind}:{bound}{via}"
 
 
 def _render_ports(tree: SeTree) -> str:

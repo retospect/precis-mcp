@@ -878,3 +878,49 @@ def test_mcp_search_tool_carries_reaction_class_to_handler(
     out = core.search(kind="rxn", property="yield", reaction_class="RXNO:0000024")
     assert isinstance(out, str)
     assert "RXNO:0000024" in out
+
+
+class TestPropertyRowMapping:
+    """The registry row->dict mapping in ``_rxn_ops._row_to_property`` is a
+    hand-maintained positional index list. Mutation testing showed the
+    odd-numbered fields (name, dimension, allowed_values) were unasserted: a
+    one-column drift in the SELECT list would silently mis-assign them and no
+    test would notice. Mint one property with a DISTINCT value per field and
+    check every field individually."""
+
+    def test_every_property_field_round_trips_to_its_own_column(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        # Mint a proposed categorical: exercises name/dimension/allowed_values
+        # together, which are the three that survived mutation.
+        h.put(
+            id="fischer-etoac",
+            property="workup_method",
+            value="aqueous",
+            value_type="categorical",
+            allowed_values=["aqueous", "chromatography"],
+        )
+        p = store.rxn_property_get("workup_method")
+        assert p is not None
+        assert p["prop_id"] == "workup_method"
+        assert p["name"] == "Workup Method"
+        assert p["canonical_unit"] is None
+        assert p["dimension"] == "categorical"
+        assert p["value_type"] == "categorical"
+        assert sorted(p["allowed_values"]) == ["aqueous", "chromatography"]
+        assert p["status"] == "proposed"
+
+    def test_seeded_quantity_property_fields_are_distinct(self, store: Any) -> None:
+        """A core quantity property — different shape from the categorical
+        above, so a mapping that happened to work for one is still caught."""
+        p = store.rxn_property_get("temperature")
+        assert p is not None
+        assert p["prop_id"] == "temperature"
+        assert p["name"] == "Temperature"
+        assert p["canonical_unit"] == "K"
+        assert p["dimension"] == "temperature"
+        assert p["value_type"] == "quantity"
+        assert p["allowed_values"] is None
+        assert p["status"] == "core"

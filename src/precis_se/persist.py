@@ -20,6 +20,14 @@ the one exception is ``se_ports.block_id``, written **in lockstep** with
 the freshly minted block ids, inside the same transaction (nm's port
 pattern — a port row is always written against the block id that save
 just minted, never a stale one).
+
+**``template_ref`` is name-keyed TEXT, not a row-id FK** (migration
+``0004_se_template_ref.sql``, docs/backlog/blocktree-library-build-plan.md
+slice 1 — the ``precis_nm.persist`` counterpart transferred verbatim): a
+bare local block name, or ``<design-slug>#<block-name>`` naming a block in
+ANOTHER live ``se`` design. ``node.template`` round-trips through this
+column completely unchanged — resolution happens only at READ time, in
+:mod:`precis.blocktree.ops`, never here.
 """
 
 from __future__ import annotations
@@ -49,7 +57,7 @@ log = logging.getLogger(__name__)
 _SE_MANAGED = "se_binding"
 
 _BLOCK_COLS = (
-    "id, parent_block_id, template_block_id, name, pose_xyz, pose_rot, "
+    "id, parent_block_id, template_ref, name, pose_xyz, pose_rot, "
     "envelope, array_spec, descr, use_, objectives, mode, bound_kind, "
     "bound_design"
 )
@@ -106,11 +114,11 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
     tree = SeTree()
     for r in rows:
         parent_row = by_id.get(r["parent_block_id"])
-        template_row = by_id.get(r["template_block_id"])
         tree.blocks[r["name"]] = SeBlock(
             name=r["name"],
             parent=parent_row["name"] if parent_row else None,
-            template=template_row["name"] if template_row else None,
+            # name-keyed text, round-tripped as-is — module docstring.
+            template=r["template_ref"],
             pose=list(r["pose_xyz"] or [0.0, 0.0, 0.0]),
             rot=list(r["pose_rot"] or [0.0, 0.0, 0.0]),
             envelope=r["envelope"],
@@ -312,17 +320,22 @@ def _derive_one(store: Any, slug: str) -> Derived:
 
 
 def _topo_order(tree: SeTree) -> list[str]:
-    """A block-name order where every ``parent`` and every ``template``
-    precedes its dependents — the FK-safe INSERT sequence. Acyclic by
-    construction (``ops.py`` only lets a block reference an
-    already-existing block), so a plain fixed-point pass suffices."""
+    """A block-name order where every ``parent`` precedes its dependents —
+    the FK-safe INSERT sequence for ``parent_block_id``, the one remaining
+    row-id self-FK on ``se_blocks`` (``template`` used to constrain this
+    order too, back when it was itself a row-id FK — migration
+    ``0004_se_template_ref.sql`` made it name-keyed TEXT, which needs no
+    INSERT ordering at all — :mod:`precis_nm.persist`'s ``_topo_order``,
+    transferred verbatim). Acyclic by construction (``ops.py`` only lets a
+    block reference an already-existing block as its parent), so a plain
+    fixed-point pass suffices."""
     placed: set[str] = set()
     order: list[str] = []
     remaining = dict(tree.blocks)
     while remaining:
         progressed = False
         for name, node in list(remaining.items()):
-            deps = [d for d in (node.parent, node.template) if d is not None]
+            deps = [node.parent] if node.parent is not None else []
             if all(d in placed for d in deps):
                 order.append(name)
                 placed.add(name)
@@ -330,8 +343,7 @@ def _topo_order(tree: SeTree) -> list[str]:
                 progressed = True
         if not progressed:  # pragma: no cover — defensive only, see docstring
             raise RuntimeError(
-                f"se block tree has an unresolvable parent/template chain: "
-                f"{sorted(remaining)}"
+                f"se block tree has an unresolvable parent chain: {sorted(remaining)}"
             )
     return order
 
@@ -383,10 +395,9 @@ def save_tree(
         for name in _topo_order(tree):
             node = tree.blocks[name]
             parent_id = name_to_id.get(node.parent) if node.parent else None
-            template_id = name_to_id.get(node.template) if node.template else None
             row = c.execute(
                 "INSERT INTO se_blocks "
-                "(ref_id, parent_block_id, template_block_id, name, "
+                "(ref_id, parent_block_id, template_ref, name, "
                 " pose_xyz, pose_rot, envelope, array_spec, descr, use_, "
                 " objectives, mode, bound_kind, bound_design) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
@@ -394,7 +405,8 @@ def save_tree(
                 (
                     ref_id,
                     parent_id,
-                    template_id,
+                    # name-keyed text, written as-is — module docstring.
+                    node.template,
                     name,
                     node.pose,
                     node.rot,

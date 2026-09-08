@@ -27,7 +27,7 @@ from precis.structure.cell import Cell
 from precis.structure.scene import Atom, Scene
 from precis_nm.generators.sp2 import VDW_MARGIN_A
 from precis_nm.handler import NmHandler
-from precis_nm.ops import BlockNode, BlockTree
+from precis_nm.ops import BlockTree, NmBlock
 
 _MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
 
@@ -377,7 +377,7 @@ def test_fill_fraction_helper_all_unbound() -> None:
     from precis_nm.handler import _fill_fraction_line
 
     tree = BlockTree()
-    tree.blocks["a"] = BlockNode(name="a")
+    tree.blocks["a"] = NmBlock(name="a")
     line = _fill_fraction_line(tree)
     assert line.startswith("0/1 block(s) filled")
     assert "UNFILLED" in line

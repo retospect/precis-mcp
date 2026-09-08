@@ -50,6 +50,19 @@ problem entirely by not having a ``block_id`` at all — its endpoints are
 retires and reinserts every live connect on each save, in the same
 transaction as the blocks/ports, purely to keep its bookkeeping in step
 with the rest of the design.
+
+**``template_ref`` is name-keyed TEXT, not a row-id FK** (migration
+``0005_nm_template_ref.sql``, docs/backlog/blocktree-library-build-plan.md
+slice 1) — exactly the ``nm_connects`` reasoning above, extended to the
+block tree's own reuse-by-reference edge: a bare local block name, or
+``<design-slug>#<block-name>`` naming a block in ANOTHER live ``nm``
+design. An id-keyed template would strand even for the LOCAL case if this
+module didn't rewrite it in the same ``name_to_id`` pass as everything
+else — a cross-design reference has no such pass to join, since the two
+designs save independently. So ``node.template`` round-trips through this
+column completely unchanged (never resolved to/from an id here) —
+resolution happens only at READ time, in :mod:`precis.blocktree.ops`
+(``resolve_template``/``effective_*``), never in this module.
 """
 
 from __future__ import annotations
@@ -60,10 +73,10 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from precis_nm.ops import BlockNode, BlockTree, ConnectSpec, PortSpec, ThreadingSpec
+from precis_nm.ops import BlockTree, ConnectSpec, NmBlock, PortSpec, ThreadingSpec
 
 _BLOCK_COLS = (
-    "id, parent_block_id, template_block_id, name, pose_xyz, pose_rot, "
+    "id, parent_block_id, template_ref, name, pose_xyz, pose_rot, "
     "envelope, descr, use_, dof, bound_design"
 )
 _PORT_COLS = (
@@ -115,11 +128,11 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
     tree = BlockTree()
     for r in rows:
         parent_row = by_id.get(r["parent_block_id"])
-        template_row = by_id.get(r["template_block_id"])
-        tree.blocks[r["name"]] = BlockNode(
+        tree.blocks[r["name"]] = NmBlock(
             name=r["name"],
             parent=parent_row["name"] if parent_row else None,
-            template=template_row["name"] if template_row else None,
+            # name-keyed text, round-tripped as-is — module docstring.
+            template=r["template_ref"],
             pose=list(r["pose_xyz"] or [0.0, 0.0, 0.0]),
             rot=list(r["pose_rot"] or [0.0, 0.0, 0.0]),
             envelope=r["envelope"],
@@ -159,14 +172,20 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
 
 
 def _topo_order(tree: BlockTree) -> list[str]:
-    """A block-name order where every ``parent`` and every ``template``
-    precedes its dependents — the FK-safe INSERT sequence.
+    """A block-name order where every ``parent`` precedes its dependents —
+    the FK-safe INSERT sequence for ``parent_block_id``, the one remaining
+    row-id self-FK on ``nm_blocks``. ``template`` used to constrain this
+    order too (back when it was itself a row-id FK,
+    ``template_block_id``) — it no longer does: migration
+    ``0005_nm_template_ref.sql`` made it name-keyed TEXT (module
+    docstring), which needs no INSERT ordering at all, local or
+    cross-design, since there is no FK left to satisfy.
 
     ``ops.py`` only ever lets a block reference an *already-existing* block
-    as its parent or template (``add_block``/``instance_block`` both
-    require the reference to pre-exist in the tree), so the combined
-    parent+template graph is acyclic by construction; this is a plain
-    fixed-point pass, not a general topo-sort, because nm trees are small.
+    as its parent (``add_block``/``instance_block`` both require the
+    reference to pre-exist in the tree), so the parent graph is acyclic by
+    construction; this is a plain fixed-point pass, not a general
+    topo-sort, because nm trees are small.
     """
     placed: set[str] = set()
     order: list[str] = []
@@ -174,7 +193,7 @@ def _topo_order(tree: BlockTree) -> list[str]:
     while remaining:
         progressed = False
         for name, node in list(remaining.items()):
-            deps = [d for d in (node.parent, node.template) if d is not None]
+            deps = [node.parent] if node.parent is not None else []
             if all(d in placed for d in deps):
                 order.append(name)
                 placed.add(name)
@@ -182,8 +201,7 @@ def _topo_order(tree: BlockTree) -> list[str]:
                 progressed = True
         if not progressed:  # pragma: no cover — defensive only, see docstring
             raise RuntimeError(
-                f"nm block tree has an unresolvable parent/template chain: "
-                f"{sorted(remaining)}"
+                f"nm block tree has an unresolvable parent chain: {sorted(remaining)}"
             )
     return order
 
@@ -230,17 +248,17 @@ def save_tree(
         for name in _topo_order(tree):
             node = tree.blocks[name]
             parent_id = name_to_id.get(node.parent) if node.parent else None
-            template_id = name_to_id.get(node.template) if node.template else None
             row = c.execute(
                 "INSERT INTO nm_blocks "
-                "(ref_id, parent_block_id, template_block_id, name, "
+                "(ref_id, parent_block_id, template_ref, name, "
                 " pose_xyz, pose_rot, envelope, descr, use_, dof, "
                 " bound_design) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     ref_id,
                     parent_id,
-                    template_id,
+                    # name-keyed text, written as-is — module docstring.
+                    node.template,
                     name,
                     node.pose,
                     node.rot,

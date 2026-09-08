@@ -947,3 +947,18 @@ def test_route_render_escapes_conditions_and_template() -> None:
     outside_code = re.sub(r"`[^`]*`", "", body)
     assert not re.search(r"\[[^\]]*\]\([^)]*\)", outside_code), body
     assert "Pd[P(t-Bu)3](OAc)2" in body
+
+
+def test_route_render_step_with_no_reactants_shows_dash() -> None:
+    """The ``or "—"`` fallback on an empty precursor list — a step the engine
+    returned with no reactants must not render a bare ``⇐``."""
+    from precis_chem.ir import RouteGraph, RouteStep
+
+    g = RouteGraph(
+        target="CCO",
+        engine="stub",
+        engine_version="0",
+        steps=[RouteStep(id=1, product="CCO", reactants=[])],
+    )
+    body = g.render()
+    assert "⇐ —" in body, body

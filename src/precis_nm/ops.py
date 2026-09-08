@@ -1,9 +1,18 @@
 """Pure ops over an in-memory nm block tree — no store access.
 
-Mirrors :mod:`precis.structure.ops`'s discipline: the LLM edits the *graph*
-(intent) via typed ops; :func:`apply_ops` mutates a :class:`BlockTree` in
-place and returns it; an unknown op or a bad reference raises
-:class:`OpError` (the handler maps that onto ``BadInput``).
+Built on the shared block-tree spine (:mod:`precis.blocktree`, extracted
+from an earlier copy of this module — docs/backlog/
+nm-se-shared-blocktree-core.md, phase 1): the core owns the recursive tree
+(``parent``/``template``), instancing with cycle guards, ports, connects,
+and envelope validation over the ``precis.cad`` SDF kernel; this module adds
+nm's own invariants on top — units are **Ångström** (float64, nm-kind.md
+"Decisions"), chemistry-flavoured port expectations
+(``expected_element``/``expected_hybridization``, kept as their own typed
+fields rather than folded into the core's open ``annotations`` dict — see
+that backlog doc's "What this is NOT" — this is a deliberately deferred
+generalisation, not an oversight), a per-connect ``kind``
+(``'bond'``/``'interaction'``) with a capability gate, and the L2 mechanical
+vocabulary (declared threading, declared DOF) the core knows nothing about.
 
 **Identity is the block ``name``, not a row id** — same rule as
 ``structure``'s atom labels. ``precis_nm.persist`` loads a design's live
@@ -13,58 +22,70 @@ reinserts the whole tree (row ids are rebuilt every save; names carry
 across). So a block never needs to be looked up by id here — only by name.
 
 Op catalog (slice 3 round 1 blocks; round 2 adds ports + connects; topology
-lands round 3):
+lands round 3). The first 8 (``add_block``/``instance_block``/
+``set_pose``/``remove_block``/``add_port``/``remove_port``/``connect``/
+``disconnect``) are the shared core ops (:mod:`precis.blocktree.ops`), used
+here as-is (``set_pose``/``disconnect``) or extended with nm's own fields:
 
 - ``add_block``      — mint a new block, optionally nested under an
   existing ``parent``, with an optional envelope (validated through the
-  real ``precis.cad.dsl`` parser, never re-implemented here).
+  real ``precis.cad.dsl`` parser, never re-implemented here) and an
+  optional initial ``dof`` — the core op mints the block; this module then
+  vets/assigns ``dof`` on it (rolling the block back out if ``dof`` isn't a
+  JSON object, so a bad ``dof`` never leaves a partial block behind).
 - ``instance_block``  — mint a new block that **reuses** an existing
   block's subtree by reference (``template``), resolved at *read* time —
   the ``cad`` ``Design.instance`` pattern. Only ``template``/``name``/
   ``parent``/``pose``/``rot`` are accepted — an instance resolves
   ``envelope``/``desc``/``use``/``dof`` from its template, so those keys are
-  rejected rather than silently dropped. An instance cannot itself be
-  instanced (``template`` must be an ordinary block) and cannot be nested
-  under the template's own subtree (the direct/simple cases, checked
-  first for a clearer message). Neither local check is sufficient on its
-  own against an *indirect* cycle — e.g. A hosts an instance of B, B hosts
-  an instance of A — so every ``instance_block`` also runs a real cycle
-  search (:func:`_find_instance_cycle`) over the "expands-to" relation
-  (template T expands to template U when T's subtree contains an instance
-  of U) after tentatively applying the op, rolling back and rejecting if
-  a cycle appears. This is the exact relation the read-time tree walk
-  (``precis_nm.handler._render_tree``) follows when it expands an
-  instance's subtree, so a cycle here is precisely an infinite-recursion
-  predictor for that walk — the walk *also* carries its own
-  expansion-stack guard as defense in depth, in case a row bypasses this
-  validation (e.g. hand-corrupted data, or a future bug elsewhere).
+  rejected rather than silently dropped; the core's
+  :func:`~precis.blocktree.ops._instance_shared` already rejects
+  ``envelope``/``desc``/``use`` (and does the template/name/parent
+  validation, including the instance-of-instance and nest-under-own-
+  template checks), so this module's own wrapper adds only the ``dof``
+  rejection before delegating to :func:`~precis.blocktree.ops.
+  _commit_instance` — which also runs the real indirect-cycle search
+  (:func:`~precis.blocktree.ops._find_instance_cycle`) over the
+  "expands-to" relation, exactly the infinite-recursion predictor the
+  read-time tree walk (``precis_nm.handler._render_tree``) needs guarded
+  against; that walk also carries its own expansion-stack guard as defense
+  in depth, in case a row bypasses this validation (e.g. hand-corrupted
+  data, or a future bug elsewhere).
 - ``set_pose``        — rewrite an existing block's pose and/or rotation.
-- ``remove_block``    — soft-remove a block and its whole subtree; refused
+  Unmodified core op.
+- ``remove_block``    — remove a block and its whole subtree; refused
   while any live block elsewhere in the tree instances it (or one of its
-  descendants) — the template-in-use guard (checked first). Once past that
-  guard, any live ``connect`` touching the removed subtree (either endpoint's
+  descendants) — the core's template-in-use guard. Once past that guard,
+  any live ``connect`` touching the removed subtree (either endpoint's
   block in it — including an *instance* of a removed block, since the
-  instance's name, not the template's, is what a connect actually stores) is
-  retired in the same op — the ``structure`` vacancy precedent: removing an
-  atom drops its bonds too. Silent, like vacancy — ops don't return
-  messages, and ``validate``'s ``dangling_connect`` exists precisely to
-  catch cases where this *doesn't* run (hand-corrupted data).
+  instance's name, not the template's, is what a connect actually stores)
+  is dropped in the same op — the ``structure`` vacancy precedent; the
+  core's cascade. Threading is name-keyed the same way (module docstring
+  above), so this module adds the same vacancy rule for
+  ``tree.threading`` on top — ``validate``'s ``dangling_threading``/
+  ``dangling_connect`` exist precisely to catch cases where this *doesn't*
+  run (hand-corrupted data).
 - ``add_port``        — mint a named attachment point on a block. Only an
   ordinary (non-instance) block owns ports — an instance resolves its
   ports from its template at read time (:func:`effective_ports`), the same
   rule ``instance_block`` already applies to envelope/desc/use/dof, so
   ``add_port`` on an instance is rejected with that explanation rather than
   silently attaching to the wrong row. ``direction``, when given, is
-  normalized to unit length; a zero vector is a retryable :class:`OpError`
-  (there is no such thing as a direction-less bond vector). The port
-  ``name`` may not contain ``'.'`` — the ``connect``/``disconnect``
-  ``'block.port'`` syntax reserves it (see ``_split_endpoint``'s last-dot
-  rule), so a dotted port name would make an endpoint string ambiguous.
+  normalized to unit length; a zero vector is a retryable :class:`OpError`.
+  The port ``name`` may not contain ``'.'`` — the ``connect``/
+  ``disconnect`` ``'block.port'`` syntax reserves it (see
+  ``_split_endpoint``'s last-dot rule). A full override of the core op —
+  nm's :class:`PortSpec` carries ``expected_element``/
+  ``expected_hybridization`` where the core's open ``annotations`` dict
+  would go, so the final construction can't be shared.
 - ``remove_port``     — drop a port; refused while any live ``connect``
   still references it, *including* one stored against an instance of this
   block (the instance's connect names the instance's block, not the
   template's, but the port it resolves to is this one — see
   :func:`effective_ports`) — the connect is named in the error either way.
+  This module also refuses removing a port named in the block's own
+  declared ``dof`` (``axis_ports``) — a check the core has no concept of —
+  so it is a full override rather than an extension of the core op.
 - ``connect``         — a port↔port intent edge (``a``/``b`` as
   ``'block.port'``, split on the *last* dot so a block name may itself
   contain one — port names may not, see ``add_port`` above). Each
@@ -83,10 +104,14 @@ lands round 3):
   ``roles`` are whatever the caller asserted via ``add_port`` and are never
   independently checked against real chemistry, so the gate catches an
   *inconsistent* declaration (a connect the caller's own labels don't
-  support), not an *implausible* one.
+  support), not an *implausible* one. nm's per-connect ``kind`` slot is its
+  own extension over the core's :class:`~precis.blocktree.types.Connect`
+  (``se``'s equivalent slot is named ``joint`` — a different, unrelated
+  concept, not unified with this one), so this op is a full override, not
+  an extension, of the core's ``connect``.
 - ``disconnect``      — remove a live connect by its unordered endpoint
   pair; a missing pair is a retryable :class:`OpError` listing what *is*
-  live.
+  live. Unmodified core op.
 - ``declare_threading`` — record an L2 topology invariant: ``a`` is
   threaded through ``b`` (the rotaxane macrocycle-on-axle relation),
   **stored explicitly, never re-derived from geometry** (nm-kind.md's L2
@@ -114,31 +139,33 @@ lands round 3):
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
-from precis.cad import dsl as cad_dsl
+from precis.blocktree import ops as blocktree
+from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
 
-
-class OpError(ValueError):
-    """A rejected nm op (bad reference, unknown op, malformed payload)."""
+#: What an ``axis_ports``-bearing DOF's ``kind`` may be — nm-kind.md's L2
+#: vocabulary.
+_DOF_KINDS = ("rotational", "translational")
 
 
 @dataclass
-class PortSpec:
+class PortSpec(Port):
     """A named attachment point on a block — the capability-set half of the
     "one fact, two projections" port (pcb-component-model.md): the
     scaffold-side stub lives here (``roles``/``direction``/expected
-    element·hybridization); the atom-side attachment (once filled) is a
-    later round. ``roles`` is a capability *set*, never an equivalence
-    relation — legal attachments are derived at ``connect`` time from these
-    roles, never stored as a second relation (see ``ops.py``'s module
-    docstring, "Capability gate")."""
+    element·hybridization, this module's own extension over the shared
+    :class:`~precis.blocktree.types.Port`); the atom-side attachment (once
+    filled) is ``bound_design``/``bound_atom``. ``roles`` is a capability
+    *set*, never an equivalence relation — legal attachments are derived at
+    ``connect`` time from these roles, never stored as a second relation
+    (see this module's docstring, "Capability gate"). ``expected_element``/
+    ``expected_hybridization`` deliberately stay their own typed fields
+    rather than moving into the inherited ``annotations`` open dict — see
+    docs/backlog/nm-se-shared-blocktree-core.md, "What this is NOT"; this
+    module never populates ``annotations``."""
 
-    name: str
-    roles: list[str] = field(default_factory=list)
-    direction: list[float] | None = None
     expected_element: str | None = None
     expected_hybridization: str | None = None
     #: The atom-side projection of this one port fact (structure design
@@ -150,19 +177,17 @@ class PortSpec:
 
 
 @dataclass
-class ConnectSpec:
+class ConnectSpec(Connect):
     """A port↔port intent edge — bond or non-bonded interaction — between
     two ``'block.port'`` endpoints, name-keyed like everything else in this
-    module (see the module docstring's ``connect`` entry). ``objectives``
-    is the free objective-vector slot (e.g. target bond length/angle, or
-    the ``{'role': ...}`` override the capability gate reads)."""
+    module (see the module docstring's ``connect`` entry). ``kind`` is
+    nm's own extension over the shared :class:`~precis.blocktree.types.
+    Connect` (``se``'s ``joint`` is an unrelated slot on the same base
+    class — not unified with this one); ``objectives`` is the shared free
+    objective-vector slot (e.g. target bond length/angle, or the
+    ``{'role': ...}`` override the capability gate reads)."""
 
-    a_block: str
-    a_port: str
-    b_block: str
-    b_port: str
     kind: str = "bond"
-    objectives: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -170,30 +195,42 @@ class ThreadingSpec:
     """One L2 threading invariant: ``a`` is threaded through ``b`` (e.g. a
     macrocycle ``a`` on an axle ``b``) — directional, name-keyed (see the
     module docstring's ``declare_threading`` entry). Stored explicitly,
-    never re-derived from geometry."""
+    never re-derived from geometry. Has no shared-core analogue — threading
+    is entirely nm's own L2 vocabulary."""
 
     a: str
     b: str
 
 
 @dataclass
-class BlockNode:
+class NmBlock(BlockNode):
     """One block, addressed by ``name`` (the stable identity — see the
     module docstring). ``parent``/``template`` are block *names*, resolved
-    to fresh row ids only at persist time. ``ports`` is keyed by port name;
-    only an ordinary (non-instance) block ever has entries here — an
-    instance's ports resolve from its template (:func:`effective_ports`)."""
+    to fresh row ids only at persist time. ``ports`` (shared with
+    :class:`~precis.blocktree.types.BlockNode`) is keyed by port name; only
+    an ordinary (non-instance) block ever has entries here — an instance's
+    ports resolve from its template (:func:`effective_ports`). The fields
+    below this line are nm's own extension over the shared ``BlockNode``.
 
-    name: str
-    parent: str | None = None
-    template: str | None = None
-    pose: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    rot: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    envelope: str | None = None
-    descr: str | None = None
-    use: str | None = None
+    Named ``NmBlock``, not the bare ``BlockNode`` this class used to be —
+    the core spine now owns that name (see
+    :class:`~precis.blocktree.types.BlockNode`'s own docstring for why it
+    isn't just ``Block``); ``NmBlock`` disambiguates the two the same way
+    ``precis_se.ops.SeBlock`` does for its own subclass."""
+
+    #: Re-declared (not new) — narrows the inherited ``dict[str, Port]``
+    #: to nm's own :class:`PortSpec`; every port this module's ``add_port``
+    #: ever stores is one. Same slot, same default, just a precise type.
+    # mypy flags this as an unsafe narrowing (dict is invariant — a caller
+    # holding this as a plain BlockNode could in principle assign a bare
+    # Port in). ``BlockNode`` isn't generic over its port type the way
+    # ``Tree`` is over block/connect (docs/backlog/
+    # nm-se-shared-blocktree-core.md's phase 2 note: a real gap, not
+    # papered over — worth a ``BlockNode[TPort: Port]`` if a third domain
+    # ever needs its own port fields too), so this is the narrowest fix
+    # available without widening that core class for a single caller.
+    ports: dict[str, PortSpec] = field(default_factory=dict)  # type: ignore[assignment]
     dof: dict[str, Any] | None = None
-    ports: dict[str, PortSpec] = field(default_factory=dict)
     #: The L5 block-level binding (structure design slug), set by the
     #: handler-level ``bind_structure`` op. Always ``None`` on an instance —
     #: ``bind_structure`` rejects an instance block the same way
@@ -202,210 +239,80 @@ class BlockNode:
 
 
 @dataclass
-class BlockTree:
+class BlockTree(Tree[NmBlock, ConnectSpec]):
     """A design's live blocks, keyed by name, plus its live ``connects``
     and ``threading`` invariants. Insertion order is not significant —
     renderers/persisters compute their own (tree / topological) order from
     ``parent``/``template``; ``connects``/``threading`` are unordered lists
-    (pair identity, not position)."""
+    (pair identity, not position). The fields below this line are nm's own
+    extension over the shared :class:`~precis.blocktree.types.Tree`."""
 
-    blocks: dict[str, BlockNode] = field(default_factory=dict)
-    connects: list[ConnectSpec] = field(default_factory=list)
+    #: L2 threading invariants (:class:`ThreadingSpec`), unordered —
+    #: identity is the ``(a, b)`` pair.
     threading: list[ThreadingSpec] = field(default_factory=list)
+
+    def make_block(self, **kwargs: Any) -> NmBlock:
+        return NmBlock(**kwargs)
 
 
 def apply_ops(tree: BlockTree, ops: list[dict[str, Any]]) -> BlockTree:
-    """Apply a list of typed ops to ``tree`` in order, mutating it."""
-    for op in ops:
-        if "op" not in op:
-            raise OpError(f"op missing 'op' key: {op!r}")
-        name = op["op"]
-        handler = _OPS.get(name)
-        if handler is None:
-            known = ", ".join(sorted(_OPS))
-            raise OpError(f"unknown op: {name!r}; known: {known}")
-        handler(tree, op)
-    return tree
+    """Apply a list of typed ops to ``tree`` in order, mutating it —
+    dispatches through :data:`_OPS` (the core's 8 shared ops plus nm's own
+    6), via the core's generic :func:`~precis.blocktree.ops.apply_ops`."""
+    return blocktree.apply_ops(tree, ops, _OPS)
 
 
-# ── helpers ──────────────────────────────────────────────────────────────
+# ── helpers (imported from the core; nm calls these directly for its own
+# op implementations below) ─────────────────────────────────────────────
+
+_require_name = blocktree._require_name
+_opt_str = blocktree._opt_str
+_as_vec3 = blocktree._as_vec3
+_unit_vec = blocktree._unit_vec
+_no_block_msg = blocktree._no_block_msg
+_descendants = blocktree._descendants
+_split_endpoint = blocktree._split_endpoint
+_connects_endpoint_pair = blocktree._connects_endpoint_pair
 
 
-def _require_name(op: dict[str, Any], key: str, opname: str) -> str:
-    raw = op.get(key)
-    if raw is None or not str(raw).strip():
-        raise OpError(f"{opname} needs {key!r}")
-    return str(raw).strip()
-
-
-def _opt_str(v: Any) -> str | None:
-    if v is None:
-        return None
-    s = str(v).strip()
-    return s or None
-
-
-def _as_vec3(value: Any, what: str) -> list[float]:
-    """``None``/absent → ``[0.0, 0.0, 0.0]``; else must coerce to exactly 3
-    floats, or a retryable :class:`OpError`."""
-    if value is None:
-        return [0.0, 0.0, 0.0]
-    try:
-        vec = [float(x) for x in value]
-    except (TypeError, ValueError) as exc:
-        raise OpError(f"{what} must be a 3-vector [x, y, z], got {value!r}") from exc
-    if len(vec) != 3:
-        raise OpError(f"{what} must be a 3-vector [x, y, z], got {value!r}")
-    return vec
-
-
-def _no_block_msg(tree: BlockTree, name: str, *, what: str) -> str:
-    base = f"no such block ({what}): {name!r}"
-    if not tree.blocks:
-        return f"{base} — the design has no blocks yet"
-    roster = ", ".join(sorted(tree.blocks)[:8])
-    more = "" if len(tree.blocks) <= 8 else f", … ({len(tree.blocks)} blocks total)"
-    return f"{base}. Available blocks: {roster}{more}"
-
-
-def _validate_envelope(config: str) -> None:
-    """Parse-only validation, reusing the real cad mini-DSL parser (never
-    re-implemented here) — ``DslError`` already names the valid shapes."""
-    try:
-        cad_dsl.parse(config)
-    except cad_dsl.DslError as exc:
-        raise OpError(f"bad envelope: {exc}") from exc
-
-
-def _descendants(tree: BlockTree, name: str) -> set[str]:
-    """Names of every block whose parent chain passes through ``name``
-    (not including ``name`` itself). Fixed-point pass over the (small) tree
-    — mirrors ``component_would_cycle``'s ancestor-walk shape, in the
-    descendant direction."""
-    out: set[str] = set()
-    frontier = {name}
-    while frontier:
-        nxt = {n for n, b in tree.blocks.items() if b.parent in frontier} - out
-        out |= nxt
-        frontier = nxt
-    return out
-
-
-def _expands_to(tree: BlockTree, template: str) -> set[str]:
-    """Direct "expands-to" edges for ``template``: every *other* template
-    referenced by an instance anywhere in ``template``'s subtree.
-
-    This is exactly the extra edge the read-time tree walk introduces
-    beyond the plain parent-forest: when the walk resolves an instance of
-    ``template``, it recurses into ``template``'s structural children —
-    and if one of those (at any depth) is itself an instance of ``U``, the
-    walk goes on to expand ``U``'s subtree too. A cycle in this relation is
-    therefore precisely an infinite-recursion predictor for that walk (see
-    :func:`_find_instance_cycle`).
-    """
-    out: set[str] = set()
-    for d in _descendants(tree, template):
-        t = tree.blocks[d].template
-        if t is not None:
-            out.add(t)
-    return out
-
-
-def _find_instance_cycle(tree: BlockTree) -> list[str] | None:
-    """DFS cycle search over the "expands-to" relation (:func:`_expands_to`).
-
-    The two structural checks in ``_op_instance_block`` (instance-of-an-
-    instance, nesting under one's own template) only catch a *direct*
-    cycle; an indirect one — A's subtree hosts an instance of B, B's
-    subtree hosts an instance of A — needs a real graph search, since
-    neither local check ever sees the other template. Returns the cycle as
-    a name path (e.g. ``['A', 'B', 'A']``), or ``None`` if the relation is
-    acyclic.
-    """
-    graph = {name: _expands_to(tree, name) for name in tree.blocks}
-    on_stack: set[str] = set()
-    visited: set[str] = set()
-    stack: list[str] = []
-
-    def visit(n: str) -> list[str] | None:
-        visited.add(n)
-        on_stack.add(n)
-        stack.append(n)
-        for m in sorted(graph.get(n, ())):
-            if m in on_stack:
-                i = stack.index(m)
-                return [*stack[i:], m]
-            if m not in visited:
-                found = visit(m)
-                if found is not None:
-                    return found
-        stack.pop()
-        on_stack.discard(n)
-        return None
-
-    for n in sorted(graph):
-        if n not in visited:
-            found = visit(n)
-            if found is not None:
-                return found
-    return None
-
-
-def effective_ports(tree: BlockTree, node: BlockNode) -> dict[str, PortSpec]:
-    """The ports "seen" at ``node`` for connect/render purposes: its own
-    ports, or — when ``node`` is an instance — its template's (an instance
-    never owns ports itself, see :func:`_op_add_port`'s rejection). A
-    dangling ``template`` (shouldn't happen; ``ops.py`` never lets one form)
-    resolves to no ports rather than raising, so callers built for defense
-    in depth (validate, render) stay total functions."""
-    if node.template is not None:
-        template_node = tree.blocks.get(node.template)
-        return template_node.ports if template_node is not None else {}
-    return node.ports
-
-
-def effective_envelope(tree: BlockTree, node: BlockNode) -> str | None:
+def effective_envelope(tree: BlockTree, node: NmBlock) -> str | None:
     """The envelope "seen" at ``node`` for render purposes — its own, or —
     when ``node`` is an instance — its template's (an instance's own
-    ``envelope`` field is always ``None``, see ``_op_instance_block``'s
-    rejection of that key). Mirrors :func:`effective_ports`'s
-    instance→template resolution and the same dangling-template tolerance."""
-    if node.template is not None:
-        template_node = tree.blocks.get(node.template)
-        return template_node.envelope if template_node is not None else None
-    return node.envelope
+    ``envelope`` field is always ``None``, see the core's
+    :func:`~precis.blocktree.ops._instance_shared`'s rejection of that
+    key). nm has no third envelope source (unlike ``se``'s catalog
+    fallback), so this is the shared core's
+    :func:`~precis.blocktree.ops.effective_envelope` directly."""
+    return blocktree.effective_envelope(tree, node)
 
 
-def effective_dof(tree: BlockTree, node: BlockNode) -> dict[str, Any] | None:
+def effective_ports(tree: BlockTree, node: NmBlock) -> dict[str, PortSpec]:
+    """The ports "seen" at ``node`` for connect/render purposes: its own
+    ports, or — when ``node`` is an instance — its template's (an instance
+    never owns ports itself, see :func:`_op_add_port`'s rejection) — the
+    shared core's :func:`~precis.blocktree.ops.effective_ports`. Retyped
+    (not just re-exported) for nm's own :class:`PortSpec`: every port this
+    module's ``add_port`` ever stores is one, so the dict the core returns
+    always is too — mypy's dict-is-invariant check just can't see that."""
+    return cast("dict[str, PortSpec]", blocktree.effective_ports(tree, node))
+
+
+def effective_dof(tree: BlockTree, node: NmBlock) -> dict[str, Any] | None:
     """The dof "seen" at ``node`` for render purposes — its own, or — when
-    ``node`` is an instance — its template's (an instance's own ``dof``
-    field is always ``None``, see ``_op_instance_block``'s rejection of
-    that key; ``declare_dof`` also only ever writes to an ordinary block).
-    A physically real degree of freedom on a template block genuinely
-    applies to every instance of it, so this mirrors
-    :func:`effective_envelope`'s instance→template resolution."""
+    ``node`` is an instance — its template's, LOCAL or cross-design
+    (:func:`~precis.blocktree.ops.resolve_template` — an instance's own
+    ``dof`` field is always ``None``; see :func:`_op_instance_block`'s
+    rejection of that key; ``declare_dof`` also only ever writes to an
+    ordinary block). A physically real degree of freedom on a template
+    block genuinely applies to every instance of it, so this mirrors
+    :func:`effective_envelope`'s instance→template resolution. Has no
+    shared-core analogue — the core knows nothing about dof, so this stays
+    nm's own function, just built on the core's cross-design-aware
+    resolver rather than a bare local ``tree.blocks.get``."""
     if node.template is not None:
-        template_node = tree.blocks.get(node.template)
-        return template_node.dof if template_node is not None else None
+        template_node = blocktree.resolve_template(tree, node.template)
+        return getattr(template_node, "dof", None)
     return node.dof
-
-
-def _unit_vec(vec: list[float], *, what: str) -> list[float]:
-    norm = math.sqrt(sum(x * x for x in vec))
-    if norm == 0.0:
-        raise OpError(f"{what} must be a nonzero vector, got {vec!r}")
-    return [x / norm for x in vec]
-
-
-def _split_endpoint(raw: Any, what: str) -> tuple[str, str]:
-    """``'block.port'`` → ``(block, port)``, splitting on the *last* dot so
-    a block name may itself contain one."""
-    s = str(raw or "").strip()
-    block, sep, port = s.rpartition(".")
-    block, port = block.strip(), port.strip()
-    if not sep or not block or not port:
-        raise OpError(f"{what} must be 'block.port', got {raw!r}")
-    return block, port
 
 
 def _resolve_connect_port(
@@ -413,8 +320,11 @@ def _resolve_connect_port(
 ) -> PortSpec:
     """Resolve one ``connect``/``disconnect``-style endpoint to its
     :class:`PortSpec`, raising a legible :class:`OpError` naming what *is*
-    available when the block or port doesn't resolve — used at op time
-    (``_op_connect``) and, over freshly-loaded/persisted data, by
+    available when the block or port doesn't resolve. Mirrors the core's
+    :func:`~precis.blocktree.ops._resolve_connect_port`, kept as its own
+    small function here (rather than plugged in via that function's
+    ``ports_fn`` hook) purely for nm's ``PortSpec`` return type — used at op
+    time (``_op_connect``) and, over freshly-loaded/persisted data, by
     ``precis_nm.validate``'s ``dangling_connect``/``port_capability``
     checks (the render-cycle-guard shape: op-time validation plus a
     defense-in-depth re-check that never trusts stored data)."""
@@ -465,141 +375,49 @@ def _check_bond_capability(
             )
 
 
-def _connects_endpoint_pair(
-    a_block: str, a_port: str, b_block: str, b_port: str
-) -> frozenset[tuple[str, str]]:
-    return frozenset({(a_block, a_port), (b_block, b_port)})
-
-
 # ── op implementations ───────────────────────────────────────────────────
 
 
 def _op_add_block(tree: BlockTree, op: dict[str, Any]) -> None:
-    name = _require_name(op, "name", "add_block")
-    if name in tree.blocks:
-        raise OpError(f"duplicate block name: {name!r} (names are unique per design)")
-    parent = op.get("parent")
-    if parent is not None:
-        parent = str(parent).strip()
-        if parent not in tree.blocks:
-            raise OpError(_no_block_msg(tree, parent, what="parent"))
-    envelope = op.get("envelope")
-    if envelope is not None:
-        envelope = str(envelope).strip()
-        _validate_envelope(envelope)
+    blocktree.op_add_block(tree, op)
+    name = str(op["name"]).strip()
     dof = op.get("dof")
-    if dof is not None and not isinstance(dof, dict):
-        raise OpError(f"add_block 'dof' must be a JSON object, got {dof!r}")
-    tree.blocks[name] = BlockNode(
-        name=name,
-        parent=parent,
-        template=None,
-        pose=_as_vec3(op.get("pose"), "pose"),
-        rot=_as_vec3(op.get("rot"), "rot"),
-        envelope=envelope,
-        descr=_opt_str(op.get("desc")),
-        use=_opt_str(op.get("use")),
-        dof=dof,
-    )
+    if dof is not None:
+        if not isinstance(dof, dict):
+            del tree.blocks[name]
+            raise OpError(f"add_block 'dof' must be a JSON object, got {dof!r}")
+        tree.blocks[name].dof = dof
 
 
 def _op_instance_block(tree: BlockTree, op: dict[str, Any]) -> None:
-    template = _require_name(op, "template", "instance_block")
-    if template not in tree.blocks:
-        raise OpError(_no_block_msg(tree, template, what="template"))
-    if tree.blocks[template].template is not None:
-        raise OpError(
-            f"block {template!r} is itself an instance — instance the "
-            "original template block, not another instance"
-        )
-    name = _require_name(op, "name", "instance_block")
-    if name in tree.blocks:
-        raise OpError(f"duplicate block name: {name!r} (names are unique per design)")
-    for key in ("envelope", "desc", "use", "dof"):
-        if op.get(key) is not None:
-            raise OpError(
-                f"instance_block does not take {key!r} — an instance "
-                f"resolves {key} from its template ({template!r}) at read "
-                f"time; set it on the template block instead"
-            )
-    parent = op.get("parent")
-    if parent is not None:
-        parent = str(parent).strip()
-        if parent not in tree.blocks:
-            raise OpError(_no_block_msg(tree, parent, what="parent"))
-        if parent == template or parent in _descendants(tree, template):
-            raise OpError(
-                f"instance_block: parent {parent!r} is {template!r} or one "
-                "of its descendants — that would nest the template inside "
-                "its own instance (infinite recursion at read time)"
-            )
-    tree.blocks[name] = BlockNode(
-        name=name,
-        parent=parent,
-        template=template,
-        pose=_as_vec3(op.get("pose"), "pose"),
-        rot=_as_vec3(op.get("rot"), "rot"),
-        envelope=None,
-        descr=None,
-        use=None,
-        dof=None,
+    template, name, parent = blocktree._instance_shared(
+        tree, op, opname="instance_block"
     )
-    # Local checks above only catch a direct cycle — an indirect one (A
-    # hosts an instance of B, B hosts an instance of A) needs the real
-    # graph search. Tentatively committed above so the search sees the new
-    # edge; roll back on rejection so a failed op never mutates the tree.
-    cycle = _find_instance_cycle(tree)
-    if cycle is not None:
-        del tree.blocks[name]
-        raise OpError(f"instance cycle: {' → '.join(cycle)}")
-
-
-def _op_set_pose(tree: BlockTree, op: dict[str, Any]) -> None:
-    name = _require_name(op, "block", "set_pose")
-    node = tree.blocks.get(name)
-    if node is None:
-        raise OpError(_no_block_msg(tree, name, what="block"))
-    if "pose" not in op and "rot" not in op:
-        raise OpError("set_pose needs 'pose' and/or 'rot'")
-    if "pose" in op:
-        node.pose = _as_vec3(op.get("pose"), "pose")
-    if "rot" in op:
-        node.rot = _as_vec3(op.get("rot"), "rot")
+    if op.get("dof") is not None:
+        raise OpError(
+            "instance_block does not take 'dof' — an instance resolves "
+            f"dof from its template ({template!r}) at read time; set it "
+            "on the template block instead"
+        )
+    blocktree._commit_instance(tree, op, name=name, template=template, parent=parent)
 
 
 def _op_remove_block(tree: BlockTree, op: dict[str, Any]) -> None:
     name = _require_name(op, "block", "remove_block")
-    if name not in tree.blocks:
-        raise OpError(_no_block_msg(tree, name, what="block"))
-    subtree = _descendants(tree, name) | {name}
-    users = sorted(
-        n for n, b in tree.blocks.items() if b.template in subtree and n not in subtree
-    )
-    if users:
-        raise OpError(
-            f"block {name!r} (or a descendant) is used as a template by "
-            f"instance(s) {', '.join(users)} — remove the instance(s) first"
-        )
-    # Vacancy precedent (structure): removing an atom drops its bonds too.
-    # A connect stores the literal block name at each endpoint — which is
-    # the *instance's* name, not the template's, when the endpoint sits on
-    # an instance — so "touching the removed subtree" means either
-    # endpoint's block name is in ``subtree`` exactly as stored, no
-    # template resolution needed here. Threading is name-keyed the same
-    # way (module docstring), so the same rule drops any threading pair
-    # touching the removed subtree too — ``validate``'s ``dangling_threading``
-    # exists precisely to catch cases where this *doesn't* run (hand-
-    # corrupted data), exactly like ``dangling_connect`` above.
-    tree.connects = [
-        c
-        for c in tree.connects
-        if c.a_block not in subtree and c.b_block not in subtree
-    ]
+    # Computed before delegating to the core op (which raises if ``name``
+    # doesn't exist or is used as a template — atomically, before any
+    # mutation) so the threading cascade below acts on exactly the subtree
+    # the core just removed.
+    subtree = (_descendants(tree, name) | {name}) if name in tree.blocks else set()
+    blocktree.op_remove_block(tree, op)
+    # Threading is name-keyed the same way connects are (module docstring),
+    # so the same vacancy rule (structure precedent: removing an atom drops
+    # its bonds too) drops any threading pair touching the removed subtree
+    # — ``validate``'s ``dangling_threading`` exists precisely to catch
+    # cases where this *doesn't* run (hand-corrupted data).
     tree.threading = [
         t for t in tree.threading if t.a not in subtree and t.b not in subtree
     ]
-    for n in subtree:
-        del tree.blocks[n]
 
 
 def _op_add_port(tree: BlockTree, op: dict[str, Any]) -> None:
@@ -686,7 +504,8 @@ def _op_remove_port(tree: BlockTree, op: dict[str, Any]) -> None:
     # reference no validator currently checks for, since dof — unlike
     # connects — has no dedicated defense-in-depth re-check yet) — refuse
     # up front instead, the same "block first" discipline as the connect
-    # guard above.
+    # guard above. The core has no concept of dof, so this check has no
+    # shared-core analogue.
     if node.dof and name in (node.dof.get("axis_ports") or ()):
         raise OpError(
             f"port {block}.{name} is used by declared dof (axis_ports) — "
@@ -740,28 +559,6 @@ def _op_connect(tree: BlockTree, op: dict[str, Any]) -> None:
     )
 
 
-def _op_disconnect(tree: BlockTree, op: dict[str, Any]) -> None:
-    a_raw, b_raw = op.get("a"), op.get("b")
-    if not a_raw or not b_raw:
-        raise OpError("disconnect needs 'a' and 'b' (each 'block.port')")
-    a_block, a_port = _split_endpoint(a_raw, "disconnect 'a'")
-    b_block, b_port = _split_endpoint(b_raw, "disconnect 'b'")
-    pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
-    for i, c in enumerate(tree.connects):
-        if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:
-            del tree.connects[i]
-            return
-    live = (
-        ", ".join(
-            f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}" for c in tree.connects
-        )
-        or "(none)"
-    )
-    raise OpError(
-        f"no such connect between {a_raw!r} and {b_raw!r}. Live connects: {live}"
-    )
-
-
 def _op_declare_threading(tree: BlockTree, op: dict[str, Any]) -> None:
     a = _require_name(op, "a", "declare_threading")
     b = _require_name(op, "b", "declare_threading")
@@ -799,9 +596,6 @@ def _op_remove_threading(tree: BlockTree, op: dict[str, Any]) -> None:
             return
     live = ", ".join(f"{t.a}→{t.b}" for t in tree.threading) or "(none)"
     raise OpError(f"no such threading {a!r} through {b!r}. Live threading: {live}")
-
-
-_DOF_KINDS = ("rotational", "translational")
 
 
 def _op_declare_dof(tree: BlockTree, op: dict[str, Any]) -> None:
@@ -854,14 +648,13 @@ def _op_clear_dof(tree: BlockTree, op: dict[str, Any]) -> None:
 
 
 _OPS = {
+    **blocktree.CORE_OPS,
     "add_block": _op_add_block,
     "instance_block": _op_instance_block,
-    "set_pose": _op_set_pose,
     "remove_block": _op_remove_block,
     "add_port": _op_add_port,
     "remove_port": _op_remove_port,
     "connect": _op_connect,
-    "disconnect": _op_disconnect,
     "declare_threading": _op_declare_threading,
     "remove_threading": _op_remove_threading,
     "declare_dof": _op_declare_dof,

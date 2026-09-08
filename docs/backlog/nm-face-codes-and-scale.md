@@ -153,3 +153,42 @@ compatibility, so an unqualified `fidelity='ml'` is still the under-bound
 number. Still open in gr285774: preflight gates *elements*, not chemistry —
 a charged organic cage passes `MACE_MP_ELEMENTS` silently, and the
 organic-domain-model question (MACE-OFF class vs `mace_mp`) is untouched.
+
+## Measured: the cavity is set by the vertex pieces, not the walls (2026-09-07)
+
+First cad realisation of the cage, built and probed rather than reasoned
+about — `cad:boxel-cage-5nm` and `cad:boxel-cage-3nm` (scale 1 mm = 1 nm,
+wall `t` = 0.3, vertex cube `v` = 1.0, both held fixed so only edge varies).
+Both report **one connected solid**; every pairwise interference is exactly
+−0.3, i.e. the intended welded-corner overlap.
+
+Ray probes through the cavity:
+
+| edge | on-axis clear (`y=z=0`) | clear through the vertex band |
+|---|---|---|
+| 5 nm | **4.4** | 3.0 (by construction) |
+| 3 nm | **2.4** | **1.0** |
+
+Two rules fall out, and the second is the one that bites:
+
+- **on-axis clear = `edge − 2t`** — walls only.
+- **vertex-band clear = `edge − 2v`** — and whenever `v > t`, *the vertex
+  pieces set the usable cavity, not the wall panels.* At `v` = 1.0 a 3 nm
+  cage has 2.4 nm between its walls but only **1.0 nm** between opposing
+  corner pieces. The cage is mostly corner.
+
+**Hard floor for this parameterisation: `edge > 2v`.** At `edge = 2v` the
+eight vertex cubes meet, there is no face left, and the cage degenerates to
+a solid block — independent of how thin the walls get. So the floor is a
+function of the vertex piece, and "how small can a boxel be" is really
+"how small can a vertex piece be".
+
+**Consequence for the cassette coupling** the doc already flags: a 5 nm
+cage does *not* hold a 5 nm cassette. On-axis clear is 4.4 nm — the walls
+eat 0.6. A 5 nm cassette needs `edge ≥ 5 + 2t` (≈5.6 here, ≈6 at a more
+plausible 0.5 nm wall), and more still if it is bulky enough to reach into
+the corners.
+
+Caveat: this is the *envelope* only. It says nothing about whether such a
+cage is chemically realisable — that is the structure/rxn question, and the
+envelope result is what makes it worth asking.

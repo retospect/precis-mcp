@@ -52,6 +52,7 @@ surface.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -81,8 +82,8 @@ from precis_nm import persist
 from precis_nm import validate as nm_validate
 from precis_nm.generators import GENERATORS, GeneratorError
 from precis_nm.ops import (
-    BlockNode,
     BlockTree,
+    NmBlock,
     OpError,
     apply_ops,
     effective_dof,
@@ -192,6 +193,31 @@ class NmHandler(Handler):
         self.hub = hub
         self.store = hub.store
         self.embedder = hub.embedder
+
+    def _foreign_resolver(self) -> Callable[[str], BlockTree | None]:
+        """Builds the cross-design ``template`` resolver
+        (:attr:`~precis.blocktree.types.Tree.foreign`, docs/backlog/
+        blocktree-library-build-plan.md slice 1) — store-aware, so it lives
+        here rather than in ``ops.py``/``precis.blocktree`` (both stay
+        store-free by design). Memoized in a plain dict scoped to ONE
+        put/edit/get call: resolving the same foreign design's template
+        from many ports/blocks/cycle-check hops within that one call costs
+        one ``get_ref``+``load_tree``, never one per hop (the "cache per
+        request" rule the build plan asks for). A slug that doesn't resolve
+        to a live ``nm`` design (never existed, or soft-retired —
+        ``get_ref``'s default ``include_deleted=False``) caches as
+        ``None``, same as a real miss — never re-queried either."""
+        cache: dict[str, BlockTree | None] = {}
+
+        def resolve(slug: str) -> BlockTree | None:
+            if slug not in cache:
+                ref = self.store.get_ref(kind="nm", id=slug)
+                cache[slug] = (
+                    persist.load_tree(self.store, ref.id) if ref is not None else None
+                )
+            return cache[slug]
+
+        return resolve
 
     # ── bindings (store-aware ops, intercepted before apply_ops) ───────
     def _apply_ops_with_bindings(
@@ -991,6 +1017,11 @@ class NmHandler(Handler):
             raise BadInput("put(kind='nm') 'ops' must be a list of typed ops")
         description = str(payload.get("description") or "").strip()
         tree = BlockTree()
+        # own_slug is known from id= before the ref row even exists — needed
+        # for a foreign design's template to recognise a hop back into THIS
+        # design (cross-design cycle detection, ops._find_instance_cycle).
+        tree.own_slug = slug
+        tree.foreign = self._foreign_resolver()
         echo = self._apply_ops_with_bindings(tree, ops, design_slug=slug)
         ttl = (title or slug).strip() or slug
         existing = self.store.get_ref(kind="nm", id=slug)
@@ -1048,6 +1079,8 @@ class NmHandler(Handler):
                 "ops=[{'op':'add_block','name':'fork','parent':'axle'}])",
             )
         tree = persist.load_tree(self.store, ref.id)
+        tree.own_slug = str(ref.slug)
+        tree.foreign = self._foreign_resolver()
         echo = self._apply_ops_with_bindings(tree, op_list, design_slug=str(ref.slug))
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
@@ -1079,6 +1112,8 @@ class NmHandler(Handler):
         if ref is None:
             raise NotFound(f"nm design {id!r} not found")
         tree = persist.load_tree(self.store, ref.id)
+        tree.own_slug = str(ref.slug)
+        tree.foreign = self._foreign_resolver()
         v = (view or "").strip().lower()
         if v in ("", "tree"):
             description = str((ref.meta or {}).get("description") or "").strip()
@@ -1318,7 +1353,7 @@ def _dof_marker(dof: dict[str, Any] | None) -> str:
     return f"[{_DOF_ABBR.get(kind, kind)}]"
 
 
-def _block_line(tree: BlockTree, node: BlockNode) -> str:
+def _block_line(tree: BlockTree, node: NmBlock) -> str:
     parts = [node.name]
     if node.template:
         parts.append(f"(instance of {node.template})")
@@ -1408,7 +1443,7 @@ def _fmt_bound(port: Any) -> str:
     return "—"
 
 
-def _render_block(tree: BlockTree, node: BlockNode) -> str:
+def _render_block(tree: BlockTree, node: NmBlock) -> str:
     lines = [f"# block '{node.name}'"]
     if node.template:
         lines.append(f"instance of: {node.template}")

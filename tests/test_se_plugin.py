@@ -305,6 +305,90 @@ def test_indirect_two_way_instance_cycle_rejected(handler: SeHandler) -> None:
         )
 
 
+def test_cross_design_instance_cycle_rejected(handler: SeHandler) -> None:
+    # The shared-core counterpart of test_nm_plugin.py's own cross-design
+    # cycle test — same core (precis.blocktree.ops), reached through se's
+    # own thin delegation. Design A instances a block from design B, design
+    # B instances one from design A: must be refused with a message naming
+    # both designs, not hang.
+    handler.put(
+        id="se_lib_a", text=json.dumps({"ops": [{"op": "add_block", "name": "A"}]})
+    )
+    handler.put(
+        id="se_lib_b",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "B"},
+                    {
+                        "op": "instance_block",
+                        "name": "A_in_B",
+                        "template": "se_lib_a#A",
+                        "parent": "B",
+                    },
+                ]
+            }
+        ),
+    )
+    with pytest.raises(BadInput, match="instance cycle") as excinfo:
+        handler.edit(
+            id="se_lib_a",
+            ops=[
+                {
+                    "op": "instance_block",
+                    "name": "B_in_A",
+                    "template": "se_lib_b#B",
+                    "parent": "A",
+                }
+            ],
+        )
+    msg = str(excinfo.value)
+    assert "se_lib_a" in msg and "se_lib_b" in msg
+
+
+def test_cross_design_instance_resolves_envelope_and_ports_by_reference(
+    handler: SeHandler,
+) -> None:
+    handler.put(
+        id="se_library1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "part",
+                        "envelope": "box:w0.01d0.01h0.01",
+                    },
+                    {
+                        "op": "add_port",
+                        "block": "part",
+                        "name": "mount",
+                        "roles": ["bolt"],
+                    },
+                ]
+            }
+        ),
+    )
+    handler.put(
+        id="se_consumer1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "instance_block",
+                        "name": "borrowed",
+                        "template": "se_library1#part",
+                    }
+                ]
+            }
+        ),
+    )
+    block = handler.get(id="se_consumer1", view="block", args={"name": "borrowed"})
+    assert "instance of: se_library1#part" in block.body
+    assert "envelope: box:w0.01d0.01h0.01" in block.body
+    assert "mount" in block.body
+
+
 def test_remove_block_refuses_when_template_in_use(handler: SeHandler) -> None:
     handler.put(id="caster1", text=_CASTER)
     handler.edit(
