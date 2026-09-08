@@ -28,6 +28,27 @@ Until fixed, the sandbox lane's image is missing on that node, and every deploy
 will keep failing there. `PRECIS_DEPLOY_SKIP_CATPATH_WHEEL` has no bearing on
 this; it is a separate preflight.
 
+## 1b. The macOS sandbox host has no podman at all (2026-09-08 deploy)
+
+Distinct from item 1's OOM: on the macOS member of `agent_sandbox_hosts`,
+playbook 34's base-image pull fails `rc=2` with **empty stdout/stderr** — the
+signature of ansible failing to exec the binary, and a probe confirmed podman
+is simply not installed there (no binary, no podman machine, no colima; the
+`deploy` user's PATH is fine). Playbook 34 only auto-installs podman on Linux
+(`apt`); macOS hosts are assumed pre-provisioned.
+
+Decision needed (Reto): either provision the host (`brew install podman` +
+`podman machine init/start` sized for the build, as the `deploy` user) or drop
+it from `agent_sandbox_hosts` until the sandbox lane matures — it is dark
+anyway (smoke test td329234 blocked on the gr329258 token re-mint). Until one
+of those happens every full deploy reports `failed=1` on this play and aborts
+the trailing verify/cleanup plays.
+
+The controller-side half of this play's failure mode (mode-700
+`/tmp/.ansible` owned by another local user making localhost-delegated tasks
+UNREACHABLE) was fixed in `c6fff0fa` — playbook 34 now carries the same
+`ansible_remote_tmp` override as playbook 33.
+
 ## 2. One GPU node has load pinned at exactly 3.00
 
 `uptime` reports 3.00 across the 1/5/15-minute averages with a single logged-in
