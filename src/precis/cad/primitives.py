@@ -392,6 +392,18 @@ class PolyFrustum(Primitive):
             )
         # Stash the face polygons for exact distance.
         self._face_polys = face_polys
+        if not planes:
+            # Every face was culled as degenerate: the whole solid sits
+            # below LINEAR_EPS in the caller's numbers. Left alone,
+            # contains_local() is vacuously True everywhere and
+            # distance_local() crashes on min() over nothing — fail loud
+            # at construction instead, naming the cure.
+            raise ValueError(
+                "frustum/box is degenerate below the kernel tolerance "
+                f"(LINEAR_EPS={LINEAR_EPS:g}): every face was culled. The "
+                "kernel is unit-agnostic but its tolerances are absolute — "
+                "scale inputs so feature sizes are O(0.001-1000)."
+            )
         return planes, faces, verts
 
     # -- contract --------------------------------------------------------

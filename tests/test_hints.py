@@ -95,14 +95,17 @@ class _StubRuntime:
 
 
 def _breadcrumb(kind: str | None, verb: str = "link") -> str | list[str] | None:
+    from typing import cast
+
     from precis.errors import PrecisError
     from precis.runtime.hints import HintsMixin
 
     err = PrecisError("boom")
     args = {"kind": kind} if kind is not None else {}
-    HintsMixin._maybe_add_skill_hint(
-        _StubRuntime([kind] if kind else []), err, verb, args
-    )
+    # A bare duck-typed carrier (only .hub is read) stands in for the full
+    # runtime — cast for the unbound-method call.
+    stub = cast(HintsMixin, _StubRuntime([kind] if kind else []))
+    HintsMixin._maybe_add_skill_hint(stub, err, verb, args)
     return err.next
 
 

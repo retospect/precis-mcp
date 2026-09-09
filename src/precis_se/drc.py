@@ -38,8 +38,15 @@ from precis_se import fasten as se_fasten
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se.measures import StackupResult, stackup
-from precis_se.ops import SeTree, effective_envelope
-from precis_se.validate import ValidationIssue, _posed_component
+from precis_se.ops import SeBlock, SeTree, effective_envelope
+from precis_se.validate import (
+    _KERNEL_BAND,
+    _KERNEL_TARGET,
+    ValidationIssue,
+    _characteristic_length,
+    _posed_component,
+    kernel_scale,
+)
 
 #: kinematic classes the axis-travel probe covers, with the expectation.
 _PROBE_BOUNDED = frozenset({"revolute"})
@@ -116,11 +123,25 @@ def _design_extent(tree: SeTree) -> float:
     design = CadDesign()
     lo: list[float] | None = None
     hi: list[float] | None = None
+    # AABBs are exact (no SDF optimizer), so a design-wide normalization
+    # needs no cross-scale cap here — key off the smallest block so a
+    # nano design's primitives survive construction, divide back below.
+    sizes = [
+        s
+        for node in tree.blocks.values()
+        if (e := effective_envelope(tree, node))
+        and (s := _characteristic_length(e)) > 0.0
+    ]
+    smallest = min(sizes) if sizes else 0.0
+    if smallest <= 0.0 or _KERNEL_BAND[0] <= smallest <= _KERNEL_BAND[1]:
+        extent_scale = 1.0
+    else:
+        extent_scale = _KERNEL_TARGET / smallest
     for name, node in sorted(tree.blocks.items()):
         env = effective_envelope(tree, node)
         if not env:
             continue
-        expr = _posed_component(design, name, env, node)
+        expr = _posed_component(design, name, env, node, extent_scale)
         if expr is None:
             continue
         try:
@@ -136,7 +157,10 @@ def _design_extent(tree: SeTree) -> float:
         hi = ehi if hi is None else [max(a, b) for a, b in zip(hi, ehi, strict=True)]
     if lo is None or hi is None:
         return 0.0
-    return float(sum((h - x) ** 2 for h, x in zip(hi, lo, strict=True)) ** 0.5)
+    return (
+        float(sum((h - x) ** 2 for h, x in zip(hi, lo, strict=True)) ** 0.5)
+        / extent_scale
+    )
 
 
 def drc(tree: SeTree) -> DrcReport:
@@ -471,15 +495,34 @@ def drc(tree: SeTree) -> DrcReport:
             )
             continue
         design = CadDesign()
-        posed = []
+        enveloped: list[tuple[str, str, SeBlock]] = []
         for name in (c.a_block, c.b_block):
             node = tree.blocks.get(name)
             env = effective_envelope(tree, node) if node is not None else None
-            posed.append(
-                _posed_component(design, name, env, node)
-                if node is not None and env
-                else None
+            if node is not None and env:
+                enveloped.append((name, env, node))
+        if len(enveloped) < 2:
+            probes.append(
+                DofProbe(subject, klass, "skipped — both blocks need envelopes")
             )
+            continue
+        # Kernel-unit normalization (validate.kernel_scale) — travel comes
+        # back in kernel units and divides to metres below.
+        scale = kernel_scale(*((env, node) for _, env, node in enveloped))
+        if scale is None:
+            probes.append(
+                DofProbe(
+                    subject,
+                    klass,
+                    "skipped — blocks differ too much in size for one "
+                    "SDF query (cross-scale, unverifiable in v1)",
+                )
+            )
+            continue
+        posed = [
+            _posed_component(design, name, env, node, scale)
+            for name, env, node in enveloped
+        ]
         if posed[0] is None or posed[1] is None:
             probes.append(
                 DofProbe(subject, klass, "skipped — both blocks need envelopes")
@@ -494,8 +537,8 @@ def drc(tree: SeTree) -> DrcReport:
             # each cost a full contact scan (the 104 s leadscrew tree).
             dirs=(direction, _flip(direction)),
         )
-        fwd = result.travel.get(direction, 0.0)
-        back = result.travel.get(_flip(direction), 0.0)
+        fwd = result.travel.get(direction, 0.0) / scale
+        back = result.travel.get(_flip(direction), 0.0) / scale
         travel_txt = f"travel {direction}={fwd:g} {_flip(direction)}={back:g} m"
         if klass in _PROBE_BOUNDED and (fwd == float("inf") or back == float("inf")):
             probes.append(DofProbe(subject, klass, f"FINDING — {travel_txt}"))

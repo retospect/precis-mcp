@@ -63,8 +63,6 @@ from psycopg.types.json import Jsonb
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
-from precis.cad.vec import as_vec3 as cad_as_vec3
-from precis.cad.vec import pose as cad_pose
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -1422,25 +1420,50 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
         envelopes[name] = env
 
     design = CadDesign()
+    # Out-of-band designs (nanoscale, planetary) are normalized into kernel
+    # units at this seam — the kernel's tolerances are absolute in the
+    # numbers it is handed (see validate.kernel_scale); results divide back
+    # to metres below.
+    scale = se_validate.kernel_scale(
+        (envelopes[a_name], a_node), (envelopes[b_name], b_node)
+    )
+    if scale is None:
+        raise BadInput(
+            f"blocks {a_name!r} and {b_name!r} differ too much in size to "
+            "share one clearance query (the SDF grid cannot resolve both "
+            "bodies at once) — cross-scale seating is a v1 limit; check "
+            "each block against a similar-sized neighbour instead"
+        )
     for name, node in ((a_name, a_node), (b_name, b_node)):
-        try:
-            prim = cad_dsl.build_config(envelopes[name])
-        except (cad_dsl.DslError, ValueError) as exc:
+        if (
+            se_validate._posed_component(design, name, envelopes[name], node, scale)
+            is None
+        ):
             # A stored-but-now-invalid envelope (hand-corrupted data) must
             # surface as a legible BadInput, not a raw traceback — the
             # write path validates via the same parser, but this is a
-            # read-time re-check over whatever is actually stored.
+            # read-time re-check over whatever is actually stored. Re-run
+            # the parse/build here purely to name the cause (the seam's
+            # shared helper swallowed it into its None).
+            try:
+                cad_dsl.build_config(envelopes[name])
+                cause = "parsed, but its solid is degenerate at this scale"
+            except (cad_dsl.DslError, ValueError) as exc:
+                cause = str(exc)
             raise BadInput(
-                f"block {name!r} has an invalid envelope {envelopes[name]!r}: {exc}"
-            ) from exc
-        xform = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
-        design.add_component(name, design.prim(name, prim, xform))
+                f"block {name!r} has an invalid envelope {envelopes[name]!r}: {cause}"
+            )
     result = cad_relate.clearance(design, a_name, b_name)
+    # Verdict thresholds are kernel-space constants — judge the RAW gap;
+    # dividing first would re-break nanoscale (a scaled-back nano gap can
+    # never cross a fixed metre threshold). Display converts below.
     verdict = _clearance_verdict(result.gap)
 
     lines = [f"# clearance: {a_name!r} vs {b_name!r}"]
-    lines.append(f"gap: {result.gap:g} m  ({verdict})")
-    lines.append(f"witness point: [{_fmt3([float(x) for x in result.point])}] m")
+    lines.append(f"gap: {result.gap / scale:g} m  ({verdict})")
+    lines.append(
+        f"witness point: [{_fmt3([float(x) / scale for x in result.point])}] m"
+    )
     for name in (a_name, b_name):
         kids_with_env = [
             c.name

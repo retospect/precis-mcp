@@ -64,27 +64,120 @@ def _is_ancestor(tree: SeTree, a: str, b: str) -> bool:
     return False
 
 
-def _posed_component(design: CadDesign, name: str, envelope: str, node: SeBlock):
-    """Add ``envelope`` as a one-primitive component posed at the block's
-    own pose/rot (world-frame v1). Returns the component expression, or
-    ``None`` when the stored envelope no longer parses (a malformed stored
-    envelope is not this check's finding to raise on — op-time validation
-    gates it; render paths re-check legibly)."""
+#: Dimension keys that are not lengths — counts and angles pass through
+#: kernel-unit normalization unscaled (everything else the DSL stores is a
+#: length in the design's own metres).
+_UNSCALED_KEYS = frozenset({"n", "angle"})
+
+#: Characteristic lengths inside this band feed the kernel as-is
+#: (``scale == 1.0``) — the kernel's absolute tolerances (``LINEAR_EPS``,
+#: ``CONTACT_TOL_MM``) were tuned for O(0.001–1000) numbers and every
+#: pre-normalization se design lived here, so in-band behaviour is
+#: bit-identical to the unscaled path.
+_KERNEL_BAND = (1e-3, 1e6)
+
+#: Out-of-band designs are normalized so the query's SMALLEST block lands
+#: here — squarely inside the kernel's comfort zone. Keyed off the
+#: smallest (not largest) so a nano part paired with a big one can never
+#: be left sub-epsilon by its partner (reviewer finding, 2026-09-09).
+_KERNEL_TARGET = 100.0
+
+#: Blocks whose characteristic lengths differ by more than this cannot
+#: share one SDF query: the clearance minimizer seeds on a 14³ grid over
+#: the pair's joint region, and detecting an overlap needs a grid point
+#: *inside* the smaller body — beyond ~this ratio the answer degrades to
+#: a silently-wrong "clear". Cross-scale pairs are refused/reported
+#: honestly instead (``kernel_scale`` → ``None``); lifting the cap needs
+#: a hierarchical seed in the kernel, not a bigger number here.
+_CROSS_SCALE_RATIO = 6.0
+
+
+def _characteristic_length(envelope: str) -> float:
+    """A block's own culling-risk proxy: its largest envelope length
+    param. Pose is deliberately excluded — where a shape sits in the
+    world doesn't change whether its faces survive ``LINEAR_EPS``.
+    0.0 when the envelope doesn't parse (the caller's downstream
+    handling owns that case)."""
     try:
-        prim = cad_dsl.build_config(envelope)
+        spec = cad_dsl.parse(envelope)
+    except (cad_dsl.DslError, ValueError):
+        return 0.0
+    lengths = [abs(float(v)) for k, v in spec.params.items() if k not in _UNSCALED_KEYS]
+    return max(lengths, default=0.0)
+
+
+def kernel_scale(*posed: tuple[str, SeBlock]) -> float | None:
+    """Metres → kernel-unit factor for one geometry query, or ``None``
+    when the blocks are too far apart in scale to share a query.
+
+    The cad kernel is unit-agnostic but its tolerances are **absolute in
+    whatever numbers it is handed** (``LINEAR_EPS = 1e-6`` culls
+    "degenerate" faces, so a nanometre-scale box arrives with *zero* faces
+    and vacuously contains everything — the boxel-3nm ValueError,
+    2026-09-09). nm avoids this by feeding Å; se's metres span
+    atoms-to-buildings, so the seam normalizes: an out-of-band query is
+    scaled so its smallest block lands at ``_KERNEL_TARGET``, and every
+    returned length divides back by the factor. In-band queries return
+    exactly ``1.0`` (bit-identical to the historical path). A pair whose
+    sizes differ by more than ``_CROSS_SCALE_RATIO`` returns ``None`` —
+    the caller must skip/refuse legibly, never compute a garbage gap."""
+    lengths = [_characteristic_length(env) for env, _node in posed]
+    positive = [x for x in lengths if x > 0.0]
+    if not positive:
+        return 1.0
+    smallest, largest = min(positive), max(positive)
+    if _KERNEL_BAND[0] <= smallest <= _KERNEL_BAND[1]:
+        # In-band pairs always pass through unscaled — including
+        # high-ratio ones, whose optimizer limits predate normalization
+        # and stay the historical, tolerated behaviour.
+        return 1.0
+    if largest / smallest > _CROSS_SCALE_RATIO:
+        return None
+    return _KERNEL_TARGET / smallest
+
+
+def _posed_component(
+    design: CadDesign, name: str, envelope: str, node: SeBlock, scale: float = 1.0
+):
+    """Add ``envelope`` as a one-primitive component posed at the block's
+    own pose/rot (world-frame v1), with lengths multiplied by ``scale``
+    (:func:`kernel_scale` — kernel units; 1.0 = metres as-is). Returns the
+    component expression, or ``None`` when the stored envelope no longer
+    parses (a malformed stored envelope is not this check's finding to
+    raise on — op-time validation gates it; render paths re-check legibly)."""
+    try:
+        spec = cad_dsl.parse(envelope)
+        if scale != 1.0:
+            spec = cad_dsl.ShapeSpec(
+                spec.alias,
+                {
+                    k: (v if k in _UNSCALED_KEYS else v * scale)
+                    for k, v in spec.params.items()
+                },
+            )
+        prim = cad_dsl.build(spec)
     except (cad_dsl.DslError, ValueError):
         return None
-    xform = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
+    pose_scaled = [float(c) * scale for c in node.pose]
+    xform = cad_pose(cad_as_vec3(pose_scaled), cad_as_vec3(node.rot))
     design.add_component(name, design.prim(name, prim, xform))
     return design.components[name]
 
 
-def envelope_overlaps(tree: SeTree) -> list[tuple[str, str, float]]:
-    """Every unordered pair of blocks whose posed effective envelopes
-    interpenetrate (signed gap < −contact tolerance), with the gap in
-    metres — excluding ancestor/descendant pairs (a child inside its
-    parent module's envelope is containment, not interference). Pure
-    geometry; the caller decides which overlaps a connect sanctions."""
+def envelope_overlaps(
+    tree: SeTree,
+) -> tuple[list[tuple[str, str, float]], list[tuple[str, str]]]:
+    """``(overlaps, cross_scale)`` over every unordered pair of blocks —
+    excluding ancestor/descendant pairs (a child inside its parent
+    module's envelope is containment, not interference). Pure geometry;
+    the caller decides which overlaps a connect sanctions.
+
+    ``overlaps`` holds pairs whose posed effective envelopes interpenetrate
+    (signed gap < −contact tolerance), gap in metres. ``cross_scale``
+    holds pairs the check could NOT run on — sizes too far apart for one
+    SDF query (:func:`kernel_scale` → ``None``) — reported rather than
+    silently dropped, so a nano bolt inside a macro housing reads as
+    *unverifiable*, never as *fine*."""
     posed: list[tuple[str, SeBlock, str]] = []
     for name in sorted(tree.blocks):
         node = tree.blocks[name]
@@ -92,19 +185,28 @@ def envelope_overlaps(tree: SeTree) -> list[tuple[str, str, float]]:
         if env:
             posed.append((name, node, env))
     out: list[tuple[str, str, float]] = []
+    cross: list[tuple[str, str]] = []
     for i, (a_name, a_node, a_env) in enumerate(posed):
         for b_name, b_node, b_env in posed[i + 1 :]:
             if _is_ancestor(tree, a_name, b_name) or _is_ancestor(tree, b_name, a_name):
                 continue
+            scale = kernel_scale((a_env, a_node), (b_env, b_node))
+            if scale is None:
+                cross.append((a_name, b_name))
+                continue
             design = CadDesign()
-            a_expr = _posed_component(design, a_name, a_env, a_node)
-            b_expr = _posed_component(design, b_name, b_env, b_node)
+            a_expr = _posed_component(design, a_name, a_env, a_node, scale)
+            b_expr = _posed_component(design, b_name, b_env, b_node, scale)
             if a_expr is None or b_expr is None:
                 continue
             result = cad_relate.clearance(design, a_name, b_name)
+            # Compared in kernel units: in-band (scale 1.0) this is the
+            # historical metre comparison unchanged; out-of-band it makes
+            # the contact tolerance scale-relative instead of a fixed
+            # 10⁻² m that nanoscale overlap could never reach.
             if result.gap < -cad_relate.CONTACT_TOL_MM:
-                out.append((a_name, b_name, float(result.gap)))
-    return out
+                out.append((a_name, b_name, float(result.gap) / scale))
+    return out, cross
 
 
 def validate(tree: SeTree) -> list[ValidationIssue]:
@@ -183,7 +285,8 @@ def validate(tree: SeTree) -> list[ValidationIssue]:
     # connect sanctions (module docstring). A connect between the two
     # blocks — any ports, stored names — declares the contact intended.
     connected_pairs = {frozenset({c.a_block, c.b_block}) for c in tree.connects}
-    for a_name, b_name, gap in envelope_overlaps(tree):
+    overlaps, cross_scale = envelope_overlaps(tree)
+    for a_name, b_name, gap in overlaps:
         if frozenset({a_name, b_name}) in connected_pairs:
             continue
         findings.append(
@@ -195,6 +298,25 @@ def validate(tree: SeTree) -> list[ValidationIssue]:
                     "connect between the two blocks — declare the "
                     "relation (connect their ports) if intended, or "
                     "re-pose"
+                ),
+                severity="warn",
+            )
+        )
+    if cross_scale:
+        # One aggregate finding, not one per pair — a design that mixes
+        # scales pairs every small block with every big one, and N×M
+        # identical warns would drown the rest of the report.
+        shown = ", ".join(f"{a}—{b}" for a, b in cross_scale[:5])
+        more = f" (+{len(cross_scale) - 5} more)" if len(cross_scale) > 5 else ""
+        findings.append(
+            ValidationIssue(
+                rule="cross_scale_unverifiable",
+                subject=f"{len(cross_scale)} pair(s)",
+                detail=(
+                    f"{shown}{more}: block sizes differ too much to share "
+                    "one interpenetration check (SDF grid can't resolve "
+                    "both) — these pairs are UNCHECKED, not clear; verify "
+                    "cross-scale seating at L3/binding level"
                 ),
                 severity="warn",
             )

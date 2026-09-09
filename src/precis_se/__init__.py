@@ -10,8 +10,14 @@ intent-over-atoms renting the cad kernel as Å; se is intent-over-solids
 renting the same kernel as **metres** (float64 everywhere — see
 se-kind.md "Decisions": within ±10⁶ m of origin float64 metres resolves
 below 10⁻⁴ Å, atoms-to-buildings in one unit; the single declared
-conversion anywhere is the Å↔m multiply where an atomic-mode block binds
-an nm design). A design is a deliberately *suggestive* space plan
+*unit* conversion anywhere is the Å↔m multiply where an atomic-mode
+block binds an nm design). One caveat the metres decision earns: the
+kernel's tolerances are absolute in whatever numbers it is handed
+(``LINEAR_EPS = 1e-6`` — fine for Å and mm callers, fatal for a
+nanometre-scale box whose every face it culls), so geometry queries pass
+through :func:`precis_se.validate.kernel_scale`, which normalizes
+out-of-band designs into O(100) kernel units and converts results back
+to metres — in-band designs go through unscaled, bit-identical. A design is a deliberately *suggestive* space plan
 ("a fork about this size, connected to a hub that goes through a wheel so
 the wheel can rotate") that hardens monotonically as answers arrive —
 every field beyond a block's name is optional; validation reports absence
@@ -107,10 +113,12 @@ Ships **dark** behind the ``se.enabled`` setting (the ``se`` kind's
 kind is hidden from the catalogue/dispatcher until the flag is set. See
 ``docs/backlog/se-kind.md`` for the full design (annotations superset
 registry, manufacturing modes, the propose/interrogate loop); the
-agent-facing skill lands last (ship order step 8). Unshipped past this
-round: the rotational DOF probe (translational_dof's missing twin),
-notes ledger + design-freedom vocabulary (interval measures,
-``origin``, ``view='freedom'`` — slice 4), ``se_propose``, couplings
+agent-facing skill lands last (ship order step 8). Slice 4 round 1
+(:mod:`precis_se.notes` interrogation ledger + :mod:`precis_se.freedom`
+design-freedom vocabulary — interval measures, ``origin``,
+``view='freedom'``; migration ``0005``) shipped 2026-09-08. Unshipped
+past this round: the rotational DOF probe (translational_dof's missing
+twin), ``se_propose``, couplings
 (gear/rack/belt ratios — ship-order step 6), process DRC + the
 capability rows behind it, compliance advisories (ship-order step 6),
 the profile tier, and the rest of mechanism→geometry: tool access
