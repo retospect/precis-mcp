@@ -1,5 +1,5 @@
 ---
-snooze-until: 2026-09-09
+snooze-until: 2026-09-23
 ---
 
 # Dependabot pillow #56–67 blocked on marker-pdf's Pillow<11 cap
@@ -20,4 +20,7 @@ because marker-pdf 2.0.0 (still latest on PyPI) requires `pillow<11,>=10.1.0`.
 No newer marker-pdf release exists. Lock reverted; still blocked.
 
 2026-08-26: rechecked PyPI — marker-pdf latest is still 2.0.0 with
+`pillow<11,>=10.1.0`. Still blocked; snoozed +2 weeks.
+
+2026-09-09: rechecked PyPI — marker-pdf latest is still 2.0.0 with
 `pillow<11,>=10.1.0`. Still blocked; snoozed +2 weeks.
