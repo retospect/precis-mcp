@@ -22,6 +22,7 @@ from __future__ import annotations
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers.paper import PaperHandler
+from precis.ingest.cards import combined_card_text
 from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
 
@@ -119,6 +120,63 @@ def test_retracted_title_match_keeps_its_notice(store: Store) -> None:
     callout = [ln for ln in resp.body.splitlines() if "Room-temperature" in ln]
     assert callout, resp.body
     assert "RETRACTED" in callout[0]
+
+
+def test_title_match_row_renders_card_over_boilerplate(store: Store) -> None:
+    """gr244679: the promoted row itself, not just the callout, must be
+    legible. ``pos=0`` is publisher boilerplate; the paper's
+    ``card_combined`` card (title + authors + abstract, ord=-1) is the
+    representative block a promoted row renders, so its keywords name
+    the paper's actual content instead of the copyright notice."""
+    e = MockEmbedder(dim=1024)
+    rid = _seed(
+        store,
+        slug="vaswani17c",
+        title=_TITLE,
+        text=(
+            "Google hereby grants permission to reproduce the tables "
+            "and figures for personal use only"
+        ),
+        embedder=e,
+    )
+    card_text = combined_card_text(
+        _TITLE,
+        ["Ashish Vaswani"],
+        "We propose the Transformer, a novel network architecture "
+        "based solely on attention mechanisms, dispensing with "
+        "recurrence and convolutions entirely.",
+        [],
+    )
+    store.chunks.upsert_card_combined(rid, card_text)
+
+    resp = _handler(store, e).search(q="attention is all you need", page_size=5)
+    assert "Title match" in resp.body
+    assert handle_registry.format_handle("paper", rid) in resp.body
+    # The row's chunk_keywords cell reflects the card, not pos=0.
+    assert "convolutions" in resp.body.lower()
+    assert "grants permission" not in resp.body.lower()
+
+
+def test_title_match_row_falls_back_to_pos0_without_card(store: Store) -> None:
+    """No regression: a paper with no card variant still renders its
+    ``pos=0`` block as the representative row (pre-existing behavior)."""
+    e = MockEmbedder(dim=1024)
+    rid = _seed(
+        store,
+        slug="vaswani17d",
+        title=_TITLE,
+        text=(
+            "We present a new simple network architecture, the "
+            "Transformer, based solely on attention mechanisms, "
+            "dispensing with recurrence and convolutions entirely."
+        ),
+        embedder=e,
+    )
+
+    resp = _handler(store, e).search(q="attention is all you need", page_size=5)
+    assert "Title match" in resp.body
+    assert handle_registry.format_handle("paper", rid) in resp.body
+    assert "convolutions entirely" in resp.body.lower()
 
 
 def test_title_match_survives_unrelated_body(store: Store) -> None:

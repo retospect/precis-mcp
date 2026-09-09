@@ -170,7 +170,7 @@ def _render_title_callout(
 
 
 def _representative_block_for_ref(store: Store, rid: int) -> Any | None:
-    """First body chunk for ``rid``, falling back to its combined card.
+    """The paper's title/abstract card, falling back to its first body chunk.
 
     Shared by the title-similarity introducer
     (:meth:`FusedBlockSearch._inject_title_matches`) and the bare-DOI
@@ -178,8 +178,24 @@ def _representative_block_for_ref(store: Store, rid: int) -> Any | None:
     already know the id of" to render a promoted hit row alongside
     the record callout. ``None`` when the ref has no chunks at all
     (a bare stub, or a card-only ref whose card lookup also misses).
+
+    Prefers ``card_combined`` (``ord=-1``) over the first body chunk
+    (gr244679): a publisher PDF's ``pos=0`` chunk is frequently
+    boilerplate ("Google hereby grants permission to reproduce the
+    tables and figures…" for the Transformer paper), so a title-match
+    promotion rendered an unrecognizable table row even though the
+    callout above it already names the paper. The card is built from
+    title + authors + abstract, so it's always legible. Falls back to
+    the previous ``pos=0``-or-``pos=-1``-then-first-body-chunk
+    behavior when the ref has no card (most non-``paper`` kinds don't
+    mint one) — the ``pos=-1`` re-check there is now redundant with
+    the card lookup above but kept as a harmless belt-and-braces for a
+    ref whose ``ord=-1`` row isn't a card for some reason.
     """
-    block = store.chunks.get_chunk(rid, pos=0) or store.chunks.get_chunk(rid, pos=-1)
+    card = store.chunks.get_chunk(rid, pos=-1)
+    if card is not None:
+        return card
+    block = store.chunks.get_chunk(rid, pos=0)
     if block is None:
         body = store.chunks.list_chunks_for_ref(rid)
         block = body[0] if body else None
@@ -558,21 +574,24 @@ class FusedBlockSearch:
 
         See the call site: FTS stop-word stripping buries an exact-title
         query's paper. We trigram-match the raw title (store method),
-        fetch a representative block per match (first body chunk, else
-        the title/abstract card), and prepend — deduping by ref_id so a
-        paper already in ``hits`` is reordered rather than duplicated.
-        Best-effort: any lookup hiccup returns ``hits`` unchanged.
+        fetch a representative block per match (the title/abstract
+        card, else the first body chunk — see
+        :func:`_representative_block_for_ref`), and prepend — deduping
+        by ref_id so a paper already in ``hits`` is reordered rather
+        than duplicated. Best-effort: any lookup hiccup returns
+        ``hits`` unchanged.
 
         Returns ``(hits, callout_lines)``. Promotion alone isn't legible:
         the promoted row still renders as a *chunk* handle plus that
-        chunk's keywords, and the representative block is often the
-        paper's boilerplate first chunk ("google hereby grants
-        permission…" for the Transformer paper) — so a caller who typed
-        an exact title sees a table of unrelated-looking keywords and
-        concludes the paper isn't held. The callout lines name the paper
-        *record* (``pa`` handle + one-line citation) above the table so
-        the answer to a title query is readable without decoding the
-        block rows.
+        chunk's keywords, and — before gr244679 preferred the card —
+        the representative block was often the paper's boilerplate
+        first chunk ("google hereby grants permission…" for the
+        Transformer paper), so a caller who typed an exact title saw a
+        table of unrelated-looking keywords and concluded the paper
+        wasn't held. The callout lines name the paper *record* (``pa``
+        handle + one-line citation) above the table regardless, so the
+        answer to a title query is readable without decoding the block
+        rows even on the rare ref with no card.
         """
         import logging
 
