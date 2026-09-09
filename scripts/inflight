@@ -77,6 +77,29 @@ session_field() { # session_field <locked-reason>
   else printf '—'; fi
 }
 
+squash_absorbed() { # squash_absorbed <head> — true (0) when every change
+  # <head> ever made is already present in $BASE's tree, even though `git
+  # cherry`'s per-commit patch-id matching can't see it. That per-commit
+  # matching is blind to a worktree with MULTIPLE local commits whose
+  # cumulative diff was squash-merged as a single commit on $BASE: none of
+  # the individual commits' patch-ids ever match the one squash commit, so
+  # `git cherry` reports them unmerged forever (gr331378).
+  #
+  # `git merge-tree --write-tree $BASE <head>` performs that merge without
+  # touching the index/worktree and prints the resulting tree oid as its
+  # first line; if that tree is bit-for-bit identical to $BASE's own tree,
+  # <head> contributes nothing beyond what $BASE already has — content
+  # equality, not per-commit history. Requires git >= 2.38 (the
+  # --write-tree mode); an older git errors on the flag, and any conflict
+  # (exit 1) or hard error (exit 2) both fall through the same way — verdict
+  # stays exactly what `git cherry` already decided, unchanged from before.
+  local head=$1 merged_tree base_tree
+  merged_tree=$(git merge-tree --write-tree "$BASE" "$head" 2>/dev/null) || return 1
+  merged_tree=${merged_tree%%$'\n'*}   # a conflicted merge appends more sections after a blank line
+  base_tree=$(git rev-parse "$BASE^{tree}" 2>/dev/null) || return 1
+  [ -n "$merged_tree" ] && [ "$merged_tree" = "$base_tree" ]
+}
+
 verdict_field() { # verdict_field <head> <branch>
   local head=$1 branch=$2
   [ "$branch" = "$BASE" ] && { printf '—'; return; }
@@ -84,6 +107,9 @@ verdict_field() { # verdict_field <head> <branch>
   local behind unmerged
   behind=$(git rev-list --count "$head".."$BASE" 2>/dev/null || echo '?')
   unmerged=$(git cherry "$BASE" "$branch" 2>/dev/null | grep -c '^+')
+  # git cherry says unmerged commits remain — before believing it, check
+  # whether the branch is squash-absorbed by content (see squash_absorbed).
+  if [ "$unmerged" != 0 ] && squash_absorbed "$head"; then unmerged=0; fi
   if [ "$unmerged" = 0 ]; then printf 'in-main↓%s' "$behind"; else printf '↑%s↓%s' "$unmerged" "$behind"; fi
 }
 

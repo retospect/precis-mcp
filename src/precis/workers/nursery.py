@@ -1467,6 +1467,14 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
     member, so it must not page critical for up to
     :data:`HOST_DARK_LOOKBACK_DAYS`. A named-host row is never marked
     ephemeral and is unaffected.
+
+    Belt on top of that stamp (gr331348): the identity *shape* is also
+    excluded directly — a 12-hex host is a Docker container ID no matter
+    what wrote it, and an out-of-fleet precis install running pre-stamp
+    code (the gr331348 writer was a stale local compose stack) would
+    otherwise re-open this alert class for as long as it runs. The regex
+    mirrors ``heartbeat._CONTAINER_ID_RE`` (not imported — the detector
+    must not depend on the module it watches).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -1475,6 +1483,7 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
               FROM host_heartbeat hh
              WHERE hh.ts < now() - (%(silence)s || ' minutes')::interval
                AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
+               AND hh.host !~ '^[0-9a-f]{12}$'
                AND EXISTS (
                    SELECT 1 FROM worker_logs wl
                     WHERE wl.host = hh.host

@@ -800,11 +800,94 @@ def test_chunks_classified_idle_when_gate_disabled(store) -> None:
 
 
 def test_chunks_classified_stale_when_gate_enabled_no_recent_tags(store) -> None:
-    """Gate ON (a live `service_config` wildcard row) + zero role3 tags ever
-    -> stale, exactly the pre-existing freshness semantics."""
+    """Gate ON (a live `service_config` wildcard row) + zero role3 tags ever,
+    with a chunk still eligible for the classify claim (non-empty pool) ->
+    stale, exactly the pre-existing freshness semantics."""
     set_service_prio(store, "*", "classify", 5)
+    paper = _seed_paper(store, hours_ago=20)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, created_at) "
+            "VALUES (%s, 0, 'paragraph', %s, now() - interval '20 hours')",
+            (paper, "x" * 200),  # >120 chars, so it's claim-eligible
+        )
+        conn.commit()
     result = _chunks_classified(_layer1_checks(store))
     assert result.status == "stale"
+
+
+def test_chunks_classified_idle_when_gate_enabled_pool_drained(store) -> None:
+    """gr331492: gate ON + zero role3 tags ever, but nothing left eligible
+    for the classify claim (the corpus backfill completed, fresh-eligible=0
+    / reclaimable=0 in prod) -> non-finding, not a permanently-recycled
+    pipeline-stuck gripe against a pass that finished its work."""
+    set_service_prio(store, "*", "classify", 5)
+    result = _chunks_classified(_layer1_checks(store))
+    assert result.status != "stale"
+    assert not result.is_finding
+    assert "drained" in result.detail
+
+
+def test_classify_pool_empty_true_with_no_chunks(store) -> None:
+    with store.pool.connection() as conn:
+        assert health_digest._classify_pool_empty(conn) is True
+
+
+def test_classify_pool_empty_false_with_untagged_eligible_chunk(store) -> None:
+    paper = _seed_paper(store, hours_ago=20)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, created_at) "
+            "VALUES (%s, 0, 'paragraph', %s, now() - interval '20 hours')",
+            (paper, "x" * 200),
+        )
+        conn.commit()
+        assert health_digest._classify_pool_empty(conn) is False
+
+
+def test_classify_pool_empty_true_when_only_chunk_under_fresh_claim(store) -> None:
+    """A chunk currently claimed within the reclaim cooldown is mid-flight,
+    not part of the idle-vs-stuck backlog signal — mirrors classify.py's own
+    fresh-claim ("already spoken for") predicate."""
+    from precis.workers import classify as c
+
+    paper = _seed_paper(store, hours_ago=20)
+    with store.pool.connection() as conn:
+        cid = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, created_at) "
+            "VALUES (%s, 0, 'paragraph', %s, now() - interval '20 hours') "
+            "RETURNING chunk_id",
+            (paper, "x" * 200),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact) VALUES (%s, %s)",
+            (cid, c.ARTIFACT),
+        )
+        conn.commit()
+        assert health_digest._classify_pool_empty(conn) is True
+
+
+def test_classify_pool_empty_false_when_claim_is_stale(store) -> None:
+    """Past the reclaim cooldown, the same chunk is reclaimable again — a
+    recycling poison chunk (gr331492) must not permanently disappear from
+    the pending pool just because it carries some old claim row."""
+    from precis.workers import classify as c
+
+    paper = _seed_paper(store, hours_ago=20)
+    with store.pool.connection() as conn:
+        cid = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, created_at) "
+            "VALUES (%s, 0, 'paragraph', %s, now() - interval '20 hours') "
+            "RETURNING chunk_id",
+            (paper, "x" * 200),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact, claimed_at) "
+            "VALUES (%s, %s, now() - interval '30 minutes')",
+            (cid, c.ARTIFACT),
+        )
+        conn.commit()
+        assert health_digest._classify_pool_empty(conn) is False
 
 
 def test_chunks_classified_ok_when_gate_enabled_fresh_tag(store) -> None:

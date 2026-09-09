@@ -70,6 +70,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,8 @@ pytestmark = pytest.mark.skipif(
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INFLIGHT_SRC = REPO_ROOT / "scripts" / "inflight"
 REAP_SRC = REPO_ROOT / "scripts" / "reap-worktrees"
+REAP_DB_SRC = REPO_ROOT / "scripts" / "reap-test-dbs"
+COMPOSE_PROJECT_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "compose-project.sh"
 LOCK_HOOK_SRC = REPO_ROOT / "scripts" / "hooks" / "session-start-lock.sh"
 SESSION_END_HOOK_SRC = REPO_ROOT / "scripts" / "hooks" / "session-end-reap.sh"
 SESSION_LOCK_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "session-lock.sh"
@@ -1115,3 +1118,451 @@ def test_ship_wires_the_lock_re_assertion_at_both_windows() -> None:
         "expected exactly two _relock call sites in scripts/ship "
         "(pre-gate repair + post-reset window)"
     )
+
+
+# --- gr331378: scripts/inflight's squash-absorbed content-equality fallback ---
+#
+# `git cherry`'s per-commit patch-id matching only ever recognises a commit as
+# merged if SOME commit reachable from $BASE carries an equivalent patch. A
+# worktree with several local commits whose CUMULATIVE diff was squash-merged
+# into main as one commit never satisfies that per-commit test -- none of the
+# individual commits' patch-ids match the one squash commit -- so it stays
+# `has_unmerged_work` forever, and nothing ever reaps it (this is the leak
+# gr331378 traces the leaked precis-test-* networks back to). The three tests
+# below build the exact multi-commit-then-squash-merge shape directly (no
+# `repo_trio` -- that fixture's B is a SINGLE commit, already handled by the
+# pre-existing `git cherry` path, and it also resets B onto main afterwards,
+# which would mask the very gap being tested).
+
+
+def test_inflight_buckets_squash_absorbed_multi_commit_branch_safe_remove(
+    tmp_path: Path,
+) -> None:
+    """The positive case live-verified before this fix shipped: B carries TWO
+    real commits, both squash-merged into main as a single commit, and B's
+    own branch is never reset (the trigger state -- see module docstring
+    above). `git cherry` alone reports both commits unmerged; the
+    `merge-tree --write-tree` content-equality fallback must recognise the
+    branch is fully absorbed anyway and flip the verdict/bucket to
+    `in-main` / `safe_remove`.
+    """
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+
+    scripts_dir = primary / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    (scripts_dir / "inflight").chmod(0o755)
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "initial")
+
+    b = primary / ".claude" / "worktrees" / "b"
+    _git(primary, "worktree", "add", "-q", "-b", "worktree-b", str(b), "main")
+
+    (b / "feature.txt").write_text("line1\n", encoding="utf-8")
+    _git(b, "add", "-A")
+    _git(b, "commit", "-q", "-m", "commit 1")
+    (b / "feature.txt").write_text("line1\nline2\n", encoding="utf-8")
+    _git(b, "add", "-A")
+    _git(b, "commit", "-q", "-m", "commit 2")
+
+    # /land's squash-merge into main -- deliberately NOT followed by
+    # resetting B's branch (unlike repo_trio): B still carries its own two
+    # real commits, exactly the state gr331378's stuck branches were found in.
+    _git(primary, "merge", "-q", "--squash", "worktree-b")
+    _git(primary, "commit", "-q", "-m", "feature work (squashed)")
+
+    cherry = _git(primary, "cherry", "main", "worktree-b").stdout
+    assert cherry.count("+") == 2, (
+        "fixture must reproduce git cherry reporting BOTH commits unmerged "
+        "for this test to mean anything"
+    )
+
+    json_out = _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout
+    bucket = _bucket_for(json_out, b)
+    assert bucket["verdict"].startswith("in-main"), bucket
+    assert bucket["bucket"] == "safe_remove", bucket
+
+
+def test_inflight_keeps_true_unmerged_commit_as_has_unmerged_work(
+    tmp_path: Path,
+) -> None:
+    """The negative guard against over-correcting the fallback: B's first
+    commit is squash-merged into main, but B then goes on to add a SECOND
+    commit whose diff was never merged anywhere. `merge-tree --write-tree`
+    against main must NOT come out equal to main's own tree (the second
+    commit's change is real, unabsorbed work), so the branch must stay
+    `has_unmerged_work` -- the fallback must never mistake "some of this is
+    absorbed" for "all of this is absorbed".
+    """
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+
+    scripts_dir = primary / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    (scripts_dir / "inflight").chmod(0o755)
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "initial")
+
+    b = primary / ".claude" / "worktrees" / "b"
+    _git(primary, "worktree", "add", "-q", "-b", "worktree-b", str(b), "main")
+
+    (b / "feature.txt").write_text("line1\n", encoding="utf-8")
+    _git(b, "add", "-A")
+    _git(b, "commit", "-q", "-m", "commit 1")
+
+    _git(primary, "merge", "-q", "--squash", "worktree-b")
+    _git(primary, "commit", "-q", "-m", "feature work (squashed)")
+
+    # B carries on with real, still-unmerged work.
+    (b / "feature.txt").write_text("line1\nline2\n", encoding="utf-8")
+    _git(b, "add", "-A")
+    _git(b, "commit", "-q", "-m", "commit 2 (never merged)")
+
+    json_out = _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout
+    bucket = _bucket_for(json_out, b)
+    assert bucket["bucket"] == "has_unmerged_work", bucket
+    assert bucket["verdict"].startswith("↑"), bucket
+
+
+def test_inflight_squash_absorbed_falls_back_gracefully_on_old_git(
+    tmp_path: Path,
+) -> None:
+    """The explicit git-version guard: on a git that errors on `merge-tree
+    --write-tree` (older than 2.38, or any other reason it fails), the
+    fallback must swallow the failure rather than crash `set -uo pipefail`
+    inflight, and the verdict must fall all the way back through to
+    whatever `git cherry` already decided -- unabsorbed stays
+    `has_unmerged_work`, never silently upgraded to safe_remove on a check
+    that never actually ran.
+    """
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    real_git = shutil.which("git")
+    assert real_git, "need a real git on PATH to build the fixture through the shim"
+
+    scripts_dir = primary / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    (scripts_dir / "inflight").chmod(0o755)
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    git_shim = fakebin / "git"
+    git_shim.write_text(
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "merge-tree" ] && [ "${{2:-}}" = "--write-tree" ]; then
+    echo "error: unknown option '"'"'--write-tree'"'"'" >&2
+    exit 129
+fi
+exec "{real_git}" "$@"
+""",
+        encoding="utf-8",
+    )
+    git_shim.chmod(0o755)
+
+    env = _test_env()
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
+
+    def _shimgit(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            ["git", *args], cwd=str(cwd), env=env, capture_output=True, text=True
+        )
+        assert result.returncode == 0, (args, result.stdout, result.stderr)
+        return result
+
+    _shimgit(primary, "init", "-q", "-b", "main")
+    _shimgit(primary, "config", "user.email", "test@example.com")
+    _shimgit(primary, "config", "user.name", "Test")
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _shimgit(primary, "add", "-A")
+    _shimgit(primary, "commit", "-q", "-m", "initial")
+
+    b = primary / ".claude" / "worktrees" / "b"
+    _shimgit(primary, "worktree", "add", "-q", "-b", "worktree-b", str(b), "main")
+
+    (b / "feature.txt").write_text("line1\n", encoding="utf-8")
+    _shimgit(b, "add", "-A")
+    _shimgit(b, "commit", "-q", "-m", "commit 1")
+    (b / "feature.txt").write_text("line1\nline2\n", encoding="utf-8")
+    _shimgit(b, "add", "-A")
+    _shimgit(b, "commit", "-q", "-m", "commit 2")
+
+    _shimgit(primary, "merge", "-q", "--squash", "worktree-b")
+    _shimgit(primary, "commit", "-q", "-m", "feature work (squashed)")
+
+    # Confirm the shim actually intercepts before trusting the result below.
+    probe = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "main", "worktree-b"],
+        cwd=str(primary),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode != 0, "shim must fail merge-tree --write-tree"
+
+    result = subprocess.run(
+        [str(primary / "scripts" / "inflight"), "--json"],
+        cwd=str(primary),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    bucket = _bucket_for(result.stdout, b)
+    assert bucket["bucket"] == "has_unmerged_work", bucket
+    assert bucket["verdict"].startswith("↑"), bucket
+
+
+# --- gr331378: scripts/reap-test-dbs's abandoned-but-present carve-out ---
+#
+# The carve-out is only reachable through the script's very first line
+# (`docker ps -a ... || exit 0`), so it cannot be exercised at all without
+# something answering to `docker` on PATH -- and this repo's real Docker
+# daemon runs actual sibling worktrees' compose projects that must never be
+# touched by a test. The tests below build a fully synthetic `docker`
+# (`_FAKE_DOCKER_SCRIPT`) driven entirely by fixture files, so the real
+# daemon is never contacted. What genuinely can't be covered this way: the
+# `docker inspect` / `docker ps --filter` OUTPUT SHAPES themselves (this
+# fixture defines them, so a real-daemon format drift wouldn't be caught
+# here) -- that half is only live-testable, e.g. by hand-verifying
+# `scripts/reap-test-dbs --dry-run` against a real multi-day-old orphaned
+# project.
+
+_FAKE_DOCKER_SCRIPT = r"""#!/usr/bin/env bash
+# Synthetic docker for scripts/reap-test-dbs tests -- NEVER touches the real
+# daemon. Driven by three files named by env vars:
+#   FAKE_DOCKER_CONTAINERS  rows: project|cid|service|config_files
+#   FAKE_DOCKER_CREATED     rows: cid|RFC3339-created-timestamp
+#   FAKE_DOCKER_LOG         appended to on every `compose ... down` call
+set -u
+CONTAINERS="${FAKE_DOCKER_CONTAINERS:?}"
+CREATED="${FAKE_DOCKER_CREATED:?}"
+LOG="${FAKE_DOCKER_LOG:?}"
+args=("$@")
+joined="$*"
+
+case "${args[0]:-}" in
+  ps)
+    if [[ "$joined" == *"config_files"* ]]; then
+        awk -F'|' '{print $1"|"$4}' "$CONTAINERS"
+    elif [[ "$joined" == *"--filter"* ]]; then
+        proj=""
+        for a in "${args[@]}"; do
+            case "$a" in
+                label=com.docker.compose.project=*)
+                    proj="${a#label=com.docker.compose.project=}"
+                    ;;
+            esac
+        done
+        awk -F'|' -v p="$proj" '$1==p {print $2"|"$3}' "$CONTAINERS"
+    fi
+    exit 0
+    ;;
+  inspect)
+    cid="${args[$((${#args[@]}-1))]}"
+    awk -F'|' -v c="$cid" '$1==c {print $2}' "$CREATED"
+    exit 0
+    ;;
+  network)
+    exit 0
+    ;;
+  compose)
+    proj=""
+    for i in "${!args[@]}"; do
+        if [ "${args[$i]}" = "-p" ]; then
+            proj="${args[$((i+1))]}"
+        fi
+    done
+    echo "down|$proj" >> "$LOG"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+"""
+
+
+@pytest.fixture
+def reap_db_repo(tmp_path: Path) -> dict[str, Path]:
+    """A throwaway repo staging exactly what the carve-out needs:
+    scripts/inflight (criterion 1 reads its `session` field verbatim),
+    scripts/lib/compose-project.sh (project-name derivation), and
+    scripts/reap-test-dbs itself -- plus one PRESENT worktree, `b`, whose
+    `precis-test-b` project a synthetic `docker` (see `_FAKE_DOCKER_SCRIPT`)
+    stands in for.
+    """
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+
+    scripts_dir = primary / "scripts"
+    lib_dir = scripts_dir / "lib"
+    lib_dir.mkdir(parents=True)
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    shutil.copy2(REAP_DB_SRC, scripts_dir / "reap-test-dbs")
+    shutil.copy2(COMPOSE_PROJECT_LIB_SRC, lib_dir / "compose-project.sh")
+    (scripts_dir / "inflight").chmod(0o755)
+    (scripts_dir / "reap-test-dbs").chmod(0o755)
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "initial")
+
+    b = primary / ".claude" / "worktrees" / "b"
+    _git(primary, "worktree", "add", "-q", "-b", "worktree-b", str(b), "main")
+
+    return {"primary": primary, "b": b}
+
+
+def _iso_created(days_ago: float) -> str:
+    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+
+
+def _run_reap_test_dbs(
+    primary: Path,
+    tmp_path: Path,
+    containers: list[str],
+    created: list[str],
+    dry_run: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(exist_ok=True)
+    docker_bin = fakebin / "docker"
+    docker_bin.write_text(_FAKE_DOCKER_SCRIPT, encoding="utf-8")
+    docker_bin.chmod(0o755)
+
+    data_dir = tmp_path / "fake-docker-data"
+    data_dir.mkdir(exist_ok=True)
+    containers_file = data_dir / "containers"
+    created_file = data_dir / "created"
+    log_file = data_dir / "log"
+    containers_file.write_text(
+        "".join(f"{row}\n" for row in containers), encoding="utf-8"
+    )
+    created_file.write_text("".join(f"{row}\n" for row in created), encoding="utf-8")
+    log_file.write_text("", encoding="utf-8")
+
+    env = _test_env()
+    env["PATH"] = f"{fakebin}:{env.get('PATH', '')}"
+    env["FAKE_DOCKER_CONTAINERS"] = str(containers_file)
+    env["FAKE_DOCKER_CREATED"] = str(created_file)
+    env["FAKE_DOCKER_LOG"] = str(log_file)
+
+    cmd = [str(primary / "scripts" / "reap-test-dbs")]
+    if dry_run:
+        cmd.append("--dry-run")
+    result = subprocess.run(
+        cmd, cwd=str(primary), env=env, capture_output=True, text=True
+    )
+    return result, log_file.read_text(encoding="utf-8")
+
+
+def test_reap_test_dbs_carve_out_reaps_stale_present_project(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """The positive path: `b` exists, is sessionless, has no
+    `.claude/purpose`, its project has nothing running but the test-db
+    container, and that container has been up for 3 days (>= the 48h
+    default) -- all four guards pass, so the carve-out downs it."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"]
+    created = [f"dbcid1|{_iso_created(3)}"]
+
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" in log, (result.stdout, result.stderr, log)
+    assert "precis-test-b" in result.stdout
+    assert "reaped" in result.stdout.lower()
+
+
+def test_reap_test_dbs_carve_out_holds_when_session_is_live(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Guard 1: a live session lock on `b` (naming this test process's own,
+    definitely-alive pid) must block the carve-out even though the other
+    three guards would otherwise pass."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {os.getpid()}")
+    try:
+        containers = [
+            f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"
+        ]
+        created = [f"dbcid1|{_iso_created(3)}"]
+        result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+        assert result.returncode == 0, result.stderr
+        assert "down|precis-test-b" not in log, log
+    finally:
+        _git(primary, "worktree", "unlock", str(b))
+
+
+def test_reap_test_dbs_carve_out_holds_when_purpose_is_fresh(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Guard 2: a fresh `.claude/purpose` (mirroring reap-worktrees' own
+    tripwire) blocks the carve-out even though nothing else about `b`
+    changed."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    purpose_dir = b / ".claude"
+    purpose_dir.mkdir(parents=True, exist_ok=True)
+    (purpose_dir / "purpose").write_text("mid-task work\n", encoding="utf-8")
+
+    containers = [f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_carve_out_holds_when_another_container_is_running(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Guard 3: a second, non-test-db container in the same project (a
+    `precis-gate` or `run --rm` container) means a gate is actually in
+    flight right now -- must never be downed out from under it."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [
+        f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml",
+        f"precis-test-b|gatecid1|precis-gate|{b}/docker/dev/compose.yaml",
+    ]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_carve_out_holds_when_db_container_is_too_young(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Guard 4: a test-db container that's only been up an hour is almost
+    certainly mid-use -- must not be downed just because the other three
+    guards happen to pass."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"]
+    created = [f"dbcid1|{_iso_created(1 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_carve_out_dry_run_lists_without_downing(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """`--dry-run` reports the same candidate the live path would reap, but
+    never actually calls `docker compose ... down`."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(
+        primary, tmp_path, containers, created, dry_run=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert log == "", "dry-run must never actually down anything"
+    assert "precis-test-b" in result.stdout
+    assert "would reap" in result.stdout.lower()

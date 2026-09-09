@@ -52,6 +52,37 @@
 # lives on the container overlay), so `down -v` is belt-and-braces — there is
 # no dangling-volume population for this to miss.
 #
+# Abandoned-but-present carve-out (gr331378): both sweeps above are still
+# COUPLED TO A REMOVAL PATH — the worktree DIRECTORY has to be gone. But
+# `scripts/inflight`'s VS-MAIN bucketing has its own gap (a worktree with
+# several local commits whose cumulative diff was squash-merged as ONE
+# commit on main gets stuck `has_unmerged_work` forever — per-commit
+# patch-id matching never sees it), so a genuinely-abandoned subagent
+# worktree can sit there, directory intact, never reaped, its
+# `precis-test-<name>` project's db container running for days. This third
+# pass reaps a project whose worktree is STILL PRESENT, but only when ALL
+# of the following hold, each independently conservative:
+#   1. no live session lock on the worktree — read off the exact `session`
+#      field `scripts/inflight --json` already computes (never
+#      reimplemented), so this can never disagree with what a human running
+#      `scripts/inflight` sees.
+#   2. `.claude/purpose` is absent or older than
+#      PRECIS_REAP_DB_PURPOSE_FRESH_SECONDS (default 6h) — same tripwire
+#      `scripts/reap-worktrees` uses for the analogous worktree-removal case.
+#   3. the project has no RUNNING container other than the test-db service
+#      (a `precis-gate` or `run --rm` container means a gate is actually
+#      in flight right now — never touch that).
+#   4. the test-db container itself has been running for at least
+#      PRECIS_REAP_DB_MIN_AGE_SECONDS (default 48h) — a fresh test-db is
+#      almost certainly mid-use; a multi-day-old one with nothing else
+#      running and no recent purpose is not.
+# All four together are meant to be far more conservative than "would
+# scripts/inflight call this safe_remove" — this sweep never removes the
+# worktree itself, only its docker footprint, so a false negative (leaving a
+# leaked project alone) is free while a false positive (downing an
+# in-progress session's db) is not. Skips outright if `scripts/inflight` is
+# missing/non-executable: no session-liveness signal, no reap.
+#
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (shared with reap-worktrees).
 # Usage: scripts/reap-test-dbs [--dry-run]
 #
@@ -160,6 +191,130 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
             REAPED+=("$net")
         fi
     done < <(docker network ls --format '{{.Name}}|{{.Label "com.docker.compose.project"}}' 2>/dev/null)
+
+    # Abandoned-but-present sweep (gr331378) — see the header comment for the
+    # four-way guard this implements. Only reachable when the block above's
+    # own preconditions held (ROOT resolved, compose-project.sh sourced, a
+    # readable git repo) — folded into the same `if`, and additionally gated
+    # on `scripts/inflight` existing, since criterion 1 reads its `session`
+    # field verbatim and there is no safe way to guess sessionlessness
+    # without it.
+    if [ -x "$ROOT/scripts/inflight" ]; then
+        DB_MIN_AGE_SECONDS="${PRECIS_REAP_DB_MIN_AGE_SECONDS:-172800}"        # 48h
+        DB_PURPOSE_FRESH_SECONDS="${PRECIS_REAP_DB_PURPOSE_FRESH_SECONDS:-21600}"  # 6h
+        PRIMARY_WT="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+        INFLIGHT_JSON="$("$ROOT/scripts/inflight" --json 2>/dev/null || true)"
+
+        # session_for <path> — the exact `session` field scripts/inflight
+        # --json computed for <path> (live#<pid> / dead-lock#<pid> / locked /
+        # —), empty if the worktree isn't in the blob at all.
+        session_for() {
+            [ -z "$INFLIGHT_JSON" ] && return 0
+            printf '%s' "$INFLIGHT_JSON" | TARGET="$1" python3 -c '
+import json, os, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+target = os.path.realpath(os.environ["TARGET"])
+for wt in data.get("worktrees", []):
+    if os.path.realpath(wt.get("path", "")) == target:
+        print(wt.get("session", ""))
+        break
+'
+        }
+
+        # stale_or_absent_purpose <path> — true (0) when <path>/.claude/purpose
+        # is missing or its mtime is at least DB_PURPOSE_FRESH_SECONDS old.
+        stale_or_absent_purpose() {
+            python3 - "$1/.claude/purpose" "$DB_PURPOSE_FRESH_SECONDS" <<'PY'
+import os
+import sys
+import time
+
+pf, threshold = sys.argv[1], float(sys.argv[2])
+try:
+    age = time.time() - os.path.getmtime(pf)
+except OSError:
+    sys.exit(0)  # no purpose file at all -> counts as stale
+sys.exit(0 if age >= threshold else 1)
+PY
+        }
+
+        # container_old_enough <container-id> — true (0) when the
+        # container's `Created` timestamp is at least DB_MIN_AGE_SECONDS old.
+        container_old_enough() {
+            local cid=$1 created
+            created="$(docker inspect -f '{{.Created}}' "$cid" 2>/dev/null)" || return 1
+            [ -z "$created" ] && return 1
+            python3 - "$created" "$DB_MIN_AGE_SECONDS" <<'PY'
+import datetime
+import sys
+
+ts, threshold = sys.argv[1], float(sys.argv[2])
+ts = ts.strip()
+if ts.endswith("Z"):
+    ts = ts[:-1]
+ts = ts.split(".")[0]  # drop fractional seconds; keeps this parseable pre-3.11 too
+try:
+    created = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S").replace(
+        tzinfo=datetime.timezone.utc
+    )
+except ValueError:
+    sys.exit(1)
+age = (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds()
+sys.exit(0 if age >= threshold else 1)
+PY
+        }
+
+        while IFS= read -r wt_path; do
+            [ -z "$wt_path" ] && continue
+            [ "$wt_path" = "$PRIMARY_WT" ] && continue
+            [ -d "$wt_path" ] || continue   # gone already -- the label sweep above owns that case
+
+            proj="$(compose_project_for "$wt_path" 2>/dev/null || true)"
+            case "$proj" in precis-test-*) ;; *) continue ;; esac
+            # Only a project that already has a container (SEEN, from the
+            # label sweep above) has a db container to judge an age against.
+            case " $SEEN " in *" $proj "*) ;; *) continue ;; esac
+
+            # (1) no live session lock on the worktree.
+            sess="$(session_for "$wt_path")"
+            case "$sess" in live#*) continue ;; esac
+
+            # (2) .claude/purpose absent or stale.
+            stale_or_absent_purpose "$wt_path" || continue
+
+            # (3) no running container in this project other than the
+            # test-db service — a gate or `run --rm` container in flight
+            # means real work is happening right now.
+            other_running=0
+            db_cid=""
+            while IFS='|' read -r cid svc; do
+                [ -z "$cid" ] && continue
+                if [ "$svc" = "precis-test-db" ]; then
+                    db_cid="$cid"
+                else
+                    other_running=1
+                fi
+            done < <(docker ps --filter "label=com.docker.compose.project=$proj" \
+                --format '{{.ID}}|{{.Label "com.docker.compose.service"}}' 2>/dev/null)
+            [ "$other_running" = 1 ] && continue
+            [ -z "$db_cid" ] && continue   # no running db either -- nothing to reap here
+
+            # (4) the db container has been up at least DB_MIN_AGE_SECONDS.
+            container_old_enough "$db_cid" || continue
+
+            if [ "$DRY_RUN" = 1 ]; then
+                REAPED+=("$proj")
+                continue
+            fi
+            if env UID="$(id -u)" GID="$(id -g)" \
+                docker compose -p "$proj" down -v >/dev/null 2>&1; then
+                REAPED+=("$proj")
+            fi
+        done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+    fi
 fi
 
 if [ "${#REAPED[@]}" -eq 0 ]; then

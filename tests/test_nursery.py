@@ -1364,6 +1364,23 @@ def test_host_dark_ignores_ephemeral_container_identity(store: Store) -> None:
     assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
 
 
+def test_host_dark_ignores_container_id_shape_without_ephemeral_stamp(
+    store: Store,
+) -> None:
+    """gr331348: an out-of-fleet precis install running pre-gr306275 code
+    writes container-ID heartbeats with no ``meta.ephemeral`` stamp at all.
+    The identity *shape* (12-hex) alone must exclude it — the stamp is
+    cooperative, the shape check is not."""
+    host = uuid4().hex[:12]
+    _seed_worker_log(
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)
+
+    findings = _detect_host_dark(store)
+    assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
 def test_host_dark_still_fires_for_named_host_not_marked_ephemeral(
     store: Store,
 ) -> None:

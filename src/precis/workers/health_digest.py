@@ -20,7 +20,11 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
      the ``service_config`` gate instead: :func:`_classify_gate_enabled`
      (via :func:`_resolve_enabled_somewhere`, shared with Layer-2) reads
      "disabled by config" rather than stale-forever when the default-OFF
-     ``classify`` pass is off.
+     ``classify`` pass is off. Gated-on but past budget, it's ALSO
+     idle-aware on the eligible pool (gr331492): :func:`_classify_pool_empty`
+     mirrors ``classify.py``'s own claim predicate inline and reads
+     "backlog drained" once the corpus backfill completes, rather than
+     re-filing a pipeline-stuck gripe against a pass that finished its work.
    * **Cadence staleness** (:func:`_cadence_staleness_checks`, derived) —
      every ``scheduler_leases`` row overdue past its *live*-resolved
      interval + margin; zero per-cadence config, so a new
@@ -1116,6 +1120,80 @@ def _idle_classify_check() -> CheckResult:
     )
 
 
+#: Mirrors ``classify.py``'s ``ARTIFACT`` (``f"classify:cascade-v{CLASSIFY_VERSION}"``,
+#: ``CLASSIFY_VERSION="1"``) and ``_CLAIM_COOLDOWN_MIN`` — kept as literals
+#: here rather than imported, per this module's don't-depend-on-what-it-
+#: watches convention (see the ``chunks_classified`` tuple's comment
+#: above). A ``classify.py`` version bump must update
+#: :data:`_CLASSIFY_ARTIFACT` too, or this probe under-counts the pending
+#: pool after the bump (a stale artifact string never matches the new
+#: claims, so every chunk looks perpetually unclaimed — still correct for
+#: "is anything pending", just imprecise about the cooldown).
+_CLASSIFY_ARTIFACT = "classify:cascade-v1"
+_CLASSIFY_RECLAIM_COOLDOWN_MIN = 20
+
+
+def _classify_pool_empty(conn: Any) -> bool:
+    """True when no chunk is currently eligible for the classify cascade's
+    claim — mirrors ``classify.py``'s ``_claim_slice``/``_reclaim_slice``
+    predicate INLINE (this module deliberately does not import from what
+    it watches, see the ``chunks_classified`` tuple's comment above).
+
+    A chunk is pending iff it's an unretired paper's body ``paragraph``
+    chunk over 120 chars with no ``ROLE3`` tag yet, AND either never
+    claimed under :data:`_CLASSIFY_ARTIFACT` or claimed more than
+    :data:`_CLASSIFY_RECLAIM_COOLDOWN_MIN` minutes ago — a poison chunk
+    (gr331492) cycling under a fresh claim still counts as pending, so a
+    hijacked chunk mid-retry never makes the pool read empty. ``EXISTS ...
+    LIMIT 1`` shape, cheap even against the 1.3M-row corpus — only called
+    when the ``chunks_classified`` marker is already over budget (see
+    :func:`_layer1_checks`), never on the healthy path.
+    """
+    row = conn.execute(
+        """
+        SELECT NOT EXISTS (
+            SELECT 1
+              FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
+             WHERE r.kind = 'paper' AND r.retired_at IS NULL
+               AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
+               AND NOT EXISTS (
+                     SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
+                      WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'ROLE3'
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM chunk_claims cl
+                      WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(art)s
+                        AND cl.claimed_at >= now() - (%(cooldown)s * interval '1 minute')
+                   )
+             LIMIT 1
+        )
+        """,
+        {"art": _CLASSIFY_ARTIFACT, "cooldown": _CLASSIFY_RECLAIM_COOLDOWN_MIN},
+    ).fetchone()
+    # A missing row should never happen for `SELECT NOT EXISTS(...)`; fail
+    # conservatively toward "not empty" so a probe hiccup can never silence
+    # a genuinely stuck backlog.
+    return bool(row[0]) if row else False
+
+
+def _idle_classify_pool_empty_check() -> CheckResult:
+    """The ``chunks_classified`` reading when the classify gate IS enabled
+    but :func:`_classify_pool_empty` finds nothing left to claim —
+    ``status="ok"`` (non-finding), same idle-by-design shape as
+    :func:`_idle_classify_check`. gr331492: the classify backfill reached
+    fresh-eligible=0 / reclaimable=0 in prod, so the ``ROLE3`` marker
+    legitimately goes stale once the backlog drains — without this, the
+    router re-files the same pipeline-stuck gripe forever against a pass
+    that has simply finished its work."""
+    return CheckResult(
+        "discovery",
+        "chunks_classified",
+        "ok",
+        "a chunk classified (role3): backlog drained — idle by design, not stale",
+        _WARN,
+    )
+
+
 def _layer1_checks(store: Store) -> list[CheckResult]:
     """All curated Layer-1 outcome checks, one connection, best-effort."""
     with store.pool.connection() as conn:
@@ -1132,6 +1210,18 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out = [
             _idle_classify_check() if c.name == "chunks_classified" else c for c in out
         ]
+    elif any(c.name == "chunks_classified" and c.status != "ok" for c in out):
+        # Only pay for the (heavier) eligible-pool probe once the marker is
+        # already over budget — the healthy path never runs this query.
+        with store.pool.connection() as conn:
+            pool_empty = _classify_pool_empty(conn)
+        if pool_empty:
+            out = [
+                _idle_classify_pool_empty_check()
+                if c.name == "chunks_classified"
+                else c
+                for c in out
+            ]
     return out
 
 
