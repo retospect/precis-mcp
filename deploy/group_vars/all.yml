@@ -19,6 +19,14 @@ precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('valu
 # Zero-LLM compute mints are ceiling-exempt in code (workers/dispatch.py).
 precis_daily_cost_ceiling: 100.0
 
+# Planner spend caps (PRECIS_MAX_TODO_USD / PRECIS_MAX_TREE_USD). Templates
+# fall back to 5.0 / 10.0 when unset; raised 2026-09-09 after the organoid
+# survey (td301714/td311100) hit both while still producing usable Related
+# Work. The per-todo cap is per *todo*, so a wide fan-out multiplies it — the
+# tree cap is the real backstop and must stay well above it.
+precis_max_todo_usd: 10.0
+precis_max_tree_usd: 30.0
+
 # Operator hold: job_types the claim path skips (PRECIS_SUSPENDED_JOB_TYPES;
 # queued jobs wait in place, quest ticks stop minting new autocatpath trees).
 # Held 2026-08-17 → 2026-08-21 (autocatpath compute). Release check, then and
