@@ -41,7 +41,10 @@ The `text` is a small line language, **one node per line**:
 - `@x,y,z` places the node (default origin); `rot:rx,ry,rz` rotates it
   (degrees). `polar:`/`linear:` replicate it into one pattern node.
 - `component <name>` opens a part; nodes belong to it until the next
-  `component` line. Default part name is `part`.
+  `component` line. Default part name is `part`. Node names are unique
+  across the **whole design**, not per component — reusing `plate` in two
+  components raises `duplicate node name`; prefix them (`lid_plate`,
+  `base_plate`).
 - `#` starts a comment.
 
 **All angles in `cad` are degrees** — `rot:rx,ry,rz`, the `polar:` even
@@ -418,7 +421,9 @@ immediately, and the result echoes the node tree plus any
 | chamfer bevel tool | `chamfer:<size>x<angle°>` | `chamfer:1x45` |
 
 All are placed base-at-`z=0`, centred on the local axis; `@x,y,z` and
-`rot:` set the world pose.
+`rot:` set the world pose. The convention is **mixed** — centred in x/y,
+based in z: `box:w5d5h0.3 @0,0,0` occupies x and y in [−2.5, 2.5] but z
+in [0, 0.3]. To centre in z too, offset by −h/2 (`@0,0,-0.15`).
 
 `chamfer` is an unbounded half-space *tool*, not a solid: `cut` /
 `intersect` only, never a component's first node. Its cutting plane sits
@@ -532,6 +537,12 @@ After any edit that moves or resizes a body, re-check connectivity: a spoke
 nudged 0.1 mm too short silently disconnects the rim. Connectivity is at
 the **component** level — a stray *instance* inside one component isn't
 caught; keep distinct bodies as distinct components.
+
+One cost caveat: every `put` runs a pairwise clearance/interference sweep
+over all components — O(N²) in **component count**, and a ~14-component
+assembly can push a `put` past 120 s. For larger assemblies either merge
+bodies you don't need connectivity verdicts on, or expect to background
+the `put` and poll.
 
 > **Tip — need a number, exactly?** Don't eyeball arithmetic. The
 > `calc` kind is a local sympy engine: `get(kind='calc', q='2+3*4')`
