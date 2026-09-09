@@ -291,7 +291,9 @@ def test_deploy_writes_marker_and_clears_stamp_when_rollout_converges_despite_re
     )
     recorded_sha = marker.read_text(encoding="utf-8").split()[0]
     assert recorded_sha == _git(repo, "rev-parse", "main").stdout.strip()
-    assert not stamp.exists(), "the attempt stamp must be cleared on a converged rollout"
+    assert not stamp.exists(), (
+        "the attempt stamp must be cleared on a converged rollout"
+    )
     assert "recording the deploy-state marker" in result.stdout
 
 
@@ -411,13 +413,13 @@ def test_deploy_lag_footer_reports_uncertain_when_a_stamp_has_no_newer_marker(
     repo = ship_repo
     attempt = _attempt_path(repo)
     sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    attempt.write_text(f"{sha} {1}\n", encoding="utf-8")  # epoch=1: ancient, still pending
+    attempt.write_text(
+        f"{sha} {1}\n", encoding="utf-8"
+    )  # epoch=1: ancient, still pending
 
     result = _run_ship_probe(repo, _footer_block())
     assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
-    assert (
-        "deploy state uncertain — deploy of" in result.stdout
-    ), result.stdout
+    assert "deploy state uncertain — deploy of" in result.stdout, result.stdout
     assert (
         "no success recorded (died red or still running); scripts/deploy to retry."
         in result.stdout
