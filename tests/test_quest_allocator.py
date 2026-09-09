@@ -220,3 +220,25 @@ class TestAllocatorPass:
         assert out["picked"] is None and out["status"] == "paused"
         meta = store.get_ref(kind="quest", id=q).meta
         assert "picks" not in meta and "ewma_score" not in meta
+
+    def test_compute_lane_off_quest_ticks_reason_only_even_with_compute_default(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # A quest with meta.compute_lane == "off" must not dispatch compute
+        # just because the caller left ``compute`` at its True default (the
+        # same switch _dispatch already honors per-tick — see
+        # precis.workers.job_types.quest_tick._quest_compute_enabled).
+        from precis.quest import tick as tick_mod
+
+        seen: list[bool | None] = []
+
+        def _fake_tick(_store: Any, qid: int, *, compute: bool = True) -> Any:
+            seen.append(compute)
+            return SimpleNamespace(status="succeeded", quest_id=qid)
+
+        monkeypatch.setattr(tick_mod, "run_quest_tick", _fake_tick)
+        q = _mk_quest(store, "A striving", prio="PRIO:urgent")
+        alloc._merge_meta(store, q, {"compute_lane": "off"})
+        out = alloc.run_allocator_pass(store, enabled=True, compute=True)
+        assert out["picked"] == q
+        assert seen == [False]

@@ -337,7 +337,10 @@ def run_allocator_pass(
 
     Gated on ``PRECIS_QUEST_LOOP_ENABLED`` unless ``enabled`` overrides. Returns
     a summary dict. ``run_quest_tick`` is looked up on the module so tests can
-    monkeypatch it (no live model).
+    monkeypatch it (no live model). ``compute`` is ANDed with the picked
+    quest's own ``meta.compute_lane`` switch (see ``_quest_compute_enabled``)
+    so a hand-run pass on a ``compute_lane=off`` quest can't dispatch compute
+    just because the caller left the default on.
     """
     from precis.quest.tick import quest_loop_enabled
 
@@ -351,8 +354,10 @@ def run_allocator_pass(
         return {"enabled": True, "cooled": len(cooled), "picked": None}
 
     from precis.quest import tick as tick_mod
+    from precis.workers.job_types.quest_tick import _quest_compute_enabled
 
-    outcome = tick_mod.run_quest_tick(store, pick.quest_id, compute=compute)
+    effective_compute = compute and _quest_compute_enabled(store, pick.quest_id)
+    outcome = tick_mod.run_quest_tick(store, pick.quest_id, compute=effective_compute)
     if outcome.status == "paused":
         # Window-scoped breaker pause, not a real tick. Don't burn the pick
         # (no EWMA/pick bump → no premature cooling) and report a skip so the
