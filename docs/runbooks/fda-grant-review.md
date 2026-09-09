@@ -158,3 +158,12 @@ Then append a dated line to the `## Log` below.
   Added the launchd NAS-probe procedure above (force-register + verify) after
   learning the FDA file picker steers operators to the framework dylib, which
   TCC never matches.
+- **2026-09-09** — Audit pass (39d since last): melchior + balthazar heartbeats
+  `nas_ok=true`; all python.org interpreters TCC-granted (auth_value=2) and
+  Developer-ID signed; no open nas-denied alerts. Drift: three venvs still
+  resolve to Homebrew python (ad-hoc signed, cdhash-invalidation risk on
+  upgrade) — melchior `/opt/hermes/venv` (hermes role), balthazar
+  `/opt/mcps/extract/venv` (extract_watch role), caspar
+  `/opt/precis/embedder-venv` (precis_embedder role). Currently granted, so no
+  outage; rebuild them onto the python.org framework before the next cycle
+  (due 2026-10-09).

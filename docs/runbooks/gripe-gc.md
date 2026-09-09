@@ -53,6 +53,45 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
 
 ## Log
 
+- **2026-09-09** — full sweep over all 73 open gripes (`search(kind='gripe',
+  tags=['STATUS:open'], page_size=100)` enumeration, cross-checked with
+  targeted `q='shipped'/'fixed in'/'resolved'/'closing'` passes to surface
+  every shipped-claiming comment). **Closed 0.** Every gripe whose comment
+  thread claims a shipped fix explicitly says, in its own latest comment,
+  that it must stay open — verified each against current code/`git log`
+  rather than trusting the claim: gr310809 (fix in e4b5d98f, not deployed +
+  user-gated docker-rm per this runbook's own standing note), gr311857
+  (217e215c, pending user-gated pool widening), gr180306 (a08ba404 fixed the
+  mint-time recall gap prospectively, but the specific fi176861/fi178714
+  pair is still unmerged — a user-gated prod mutation — and the corpus-wide
+  dedup sweep is unbuilt), gr279770 (522f8b20 hardened the router's own
+  dedup logic, but the underlying feature gap — no re-gate/retire path for
+  stale `candidate` nanopub rows — is untouched, still 7/136 failing gates
+  as of today's comment 8), gr269811 (two of three via-placement fixes
+  landed 2026-08-29, but a third cross-segment via-via case is explicitly
+  unfixed with its own reproducer), gr267456 (comment 3 flips to
+  `in_review` pending verification, not closed — the courtyard-overlap term
+  shipped but the admissibility-consequence follow-up isn't confirmed
+  covered), gr263257 (2c3f44f5 fixed the provisional-frontier sort half;
+  the empty-trusted-frontier root cause needs a still-HELD prod
+  `meta.rubric_objectives` write), gr254322 (46f624f4 stops new alert
+  debris but explicitly leaves the requeue-stranded primitive + human sweep
+  + provisioning question open), gr264184 (item 1 of 3 repaired 08-27,
+  items 2-3 — corpus-wide sweep + mint-time gate — still open), gr204874
+  (ec03854c fixed 2 of 3 mint-gate defect classes for new extractions; the
+  proxy-grounded check and the already-minted junk-hub cleanup are
+  deferred), gr244679 (confirmed live against current
+  `_paper_search.py::_representative_block_for_ref`, which still picks
+  `pos=0`/`pos=-1` with no boilerplate check — the cited 43e3579d shipped a
+  callout mitigation only, not the underlying fix; an auto-diagnosis
+  comment on this gripe wrongly claimed 43e3579d doesn't exist — it does,
+  confirmed via `git log`, so that comment's conclusion is unreliable and
+  was not relied on), gr250455 (a98826b6 fixed the immediate CI/gate ruff
+  skew, but the gripe's own text says "the class remains" — no
+  exact-pin/same-resolution fix shipped), gr266043 (latent bug, not yet
+  manifesting, no fix shipped). No gripe was closed on an unverified
+  "shipped" claim alone — each was checked against the diff/commit or
+  current code before being left open. 73 remain open.
 - **2026-08-22** — targeted sweep over the 27 open gripes carrying stale
   `STATUS:done` (gr207238's drift report — should have been soft-deleted, not
   status-tagged). **Closed 25**, each verified against an actual commit on
