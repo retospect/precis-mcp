@@ -92,19 +92,24 @@ an L2 stored invariant), and ``b1: 1`` — nm-kind.md's L2 growth-path
 Betti-number set (macrocycle = one tunnel/channel through the bonded
 structure), the first Betti-number-valued topology fact in this codebase.
 
-**Envelope: torus** — ``precis.cad.dsl`` already has one (``torus:R<major>
-r<minor>``, :class:`precis.cad.primitives.Torus`, axis ``+z``) — checked
-first per the task instruction, so this generator never falls back to the
-cylinder-annulus approximation. Coordinates are aligned so the macrocycle's
-own mean ring-plane (fit through the bridging oxygens, not assumed) sits at
-``z=0`` with its normal along ``+z`` (:func:`_align_to_axis`) — the SAME
-alignment step runs on both paths (a no-op on the fallback path, which is
-already built axis-aligned by construction; not a no-op on the rdkit path,
-whose raw ETKDG conformer has an arbitrary orientation) — then the torus
-``R``/``r`` are sized to the exact worst-case bounding rectangle in
-(radial, height) space plus :data:`~precis_nm.generators.sp2.VDW_MARGIN_A`
-(:func:`_torus_envelope`; the same margin constant the sp² family already
-uses, reused rather than a second magic number).
+**Envelope: torus, bore-preserving** — ``precis.cad.dsl`` already has one
+(``torus:R<major>r<minor>``, :class:`precis.cad.primitives.Torus`, axis
+``+z``) — checked first per the task instruction, so this generator never
+falls back to the cylinder-annulus approximation. Coordinates are aligned
+so the macrocycle's own mean ring-plane (fit through the bridging oxygens,
+not assumed) sits at ``z=0`` with its normal along ``+z``
+(:func:`_align_to_axis`) — the SAME alignment step runs on both paths (a
+no-op on the fallback path, which is already built axis-aligned by
+construction; not a no-op on the rdkit path, whose raw ETKDG conformer has
+an arbitrary orientation). The torus then pins its **hole** at the derived
+vdW cavity radius and its outer edge at the radially-farthest atom plus
+:data:`~precis_nm.generators.sp2.VDW_MARGIN_A` (:func:`_torus_envelope`).
+Full atom containment is deliberately NOT the contract (gr332019): a real
+conformer folds rim substituents toward the axis, and a torus containing
+all of them has no bore at all — which makes every threaded-axle clearance
+read interference and lies about the one fact a macrocycle exists to
+declare. Atoms outside the annulus surface as the warn-tier
+``envelope_fit`` finding instead.
 """
 
 from __future__ import annotations
@@ -352,22 +357,28 @@ def _align_to_axis(coords: np.ndarray, ring_indices: list[int]) -> np.ndarray:
     return out
 
 
-def _torus_envelope(coords: np.ndarray) -> str:
-    """``torus:R<major>r<minor>`` sized to the exact worst-case bounding
-    rectangle in (radial-from-z-axis, height) space, plus
-    :data:`~precis_nm.generators.sp2.VDW_MARGIN_A` — the same "any point in
-    a bounding rectangle is within the corner distance of the rectangle's
-    center" argument :mod:`precis_nm.generators.sp2`'s cone envelope uses,
-    applied to a torus's cross-section circle instead of a cylinder's flat
-    radius (module docstring's "Envelope: torus" section)."""
+def _torus_envelope(coords: np.ndarray, bore_radius: float) -> str:
+    """``torus:R<major>r<minor>`` for a macrocycle — **bore-preserving**
+    (gr332019). A macrocycle's envelope must keep its hole open: threading
+    is the kind's stored topological fact, and the clearance kernel reads
+    the bore straight off the torus SDF (an axle through a bore-less torus
+    always reads interference). The first derivation sized ``minor`` to
+    contain every atom (bounding-rectangle corner distance) — but a real
+    conformer folds rim substituents toward the axis, so a torus that
+    contains *all* atoms has ``minor ≥ major`` (a self-intersecting
+    spindle, hole radius ≤ 0) and lies about the topology.
+
+    So containment yields to topology: the hole is pinned at
+    ``bore_radius`` (the measured/derived cavity — never smaller), the
+    outer edge covers the radially-farthest atom plus the vdW margin, and
+    atoms that fold into or over the annulus surface read as the
+    warn-tier ``envelope_fit`` finding instead of silently closing the
+    bore — exactly what that finding exists for."""
     rho = np.linalg.norm(coords[:, :2], axis=1)
-    z = coords[:, 2]
-    r_lo, r_hi = float(rho.min()), float(rho.max())
-    z_lo, z_hi = float(z.min()), float(z.max())
-    major = (r_lo + r_hi) / 2.0
-    half_r_span = (r_hi - r_lo) / 2.0
-    half_z_span = (z_hi - z_lo) / 2.0
-    minor = math.sqrt(half_r_span**2 + half_z_span**2) + VDW_MARGIN_A
+    outer = float(rho.max()) + VDW_MARGIN_A
+    inner = max(0.1, float(bore_radius))
+    major = (outer + inner) / 2.0
+    minor = (outer - inner) / 2.0
     return f"torus:R{_fmt(major)}r{_fmt(minor)}"
 
 
@@ -440,8 +451,8 @@ def _build_via_rdkit(
         for bond in mol.GetBonds()
     ]
     ports = _build_ports(elements, coords, primary_ok, secondary_ok)
-    envelope = _torus_envelope(coords)
     vdw_cavity = _derive_vdw_cavity_diameter(o4_diam)
+    envelope = _torus_envelope(coords, bore_radius=vdw_cavity / 2.0)
     provenance = (
         f"{variant}-cyclodextrin ({n} alpha-D-glucopyranose units, alpha-1,4 "
         f"glycosidic links) — rdkit ETKDGv3 (seed={seed}) conformer + "
@@ -1102,8 +1113,8 @@ def _build_fallback(variant: str, n: int, o4_target: float) -> GeneratedBlock:
     coords_arr = _align_to_axis(coords_arr, link_idx)
     bonds4 = [(i, j, 1.0, "pairwise") for i, j in bonds]
     ports = _build_ports(elements, coords_arr, primary_ports, secondary_ports)
-    envelope = _torus_envelope(coords_arr)
     vdw_cavity = _derive_vdw_cavity_diameter(o4_diam)
+    envelope = _torus_envelope(coords_arr, bore_radius=vdw_cavity / 2.0)
     lo, hi = o4_target * (1 - _CAVITY_TOLERANCE), o4_target * (1 + _CAVITY_TOLERANCE)
     provenance = (
         f"{variant}-cyclodextrin ({n} alpha-D-glucopyranose units, alpha-1,4 "

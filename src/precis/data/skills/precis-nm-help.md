@@ -53,6 +53,8 @@ Payload is JSON: `description?` + `ops` (a list of typed ops, same shape for
 card). Re-`put`ting a slug **replaces** the whole tree (old blocks/ports/
 connects/threading soft-retired) — the `structure`/`cad` re-put shape.
 `edit(id=<slug>, ops=[...])` applies more ops to the live tree.
+`set_pose` moves an existing block: `{"op": "set_pose", "block": <name>,
+"pose": [x, y, z], "rot"?: [rx, ry, rz]}` — note `block=`, not `name=`.
 
 ## Reuse a block — `instance_block`
 
@@ -223,7 +225,12 @@ validation is theorem-loud (impossible chirality/size is rejected at op
 time), an unknown generator lists the registered ones, and a `structure`
 design already living at the target slug is a loud rejection — generate
 never overwrites. Prefer a generator over hand ops or LLM fill whenever
-the family has one.
+the family has one. `generate` takes no `pose=` — the block lands at the
+origin; follow with a `set_pose` op (same batch is fine). The
+`cyclodextrin` torus envelope is **bore-preserving**, not fully
+containing: the hole is pinned at the derived cavity radius so a threaded
+axle reads clear; rim atoms folded toward the axis surface as the
+warn-tier `envelope_fit` finding instead of closing the bore.
 
 ## Remove ops — the guard behaviors
 

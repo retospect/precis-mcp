@@ -480,21 +480,36 @@ def _scene_from_block(block: GeneratedBlock) -> StructScene:
         build_cnt({"n": 6, "m": 0, "length_A": 15.0}),
         build_fullerene({"atoms": 60}),
         build_cone({"pentagons": 2, "length_A": 15.0}),
-        build_cyclodextrin({"variant": "beta"}),
     ],
-    ids=["cnt", "fullerene", "cone", "cyclodextrin"],
+    ids=["cnt", "fullerene", "cone"],
 )
 def test_generator_envelope_fit_reports_nothing(block: GeneratedBlock) -> None:
-    """gripe 286160 regression: every generator's declared envelope must
-    actually contain its own realized atoms (the L1<->L5 agreement
-    ``envelope_fit`` checks) — ``build_cone`` shipped a ``cone:`` envelope
-    with its apex/base swapped relative to where the atoms actually sit,
-    a ~7.6 A worst-atom protrusion that this test would have caught
-    immediately. Run over every closed-form generator so the next one to
-    get this wrong is caught here too, not by a live design's
-    ``view='validate'`` warn-tier finding."""
+    """gripe 286160 regression: every convex-family generator's declared
+    envelope must actually contain its own realized atoms (the L1<->L5
+    agreement ``envelope_fit`` checks) — ``build_cone`` shipped a ``cone:``
+    envelope with its apex/base swapped relative to where the atoms
+    actually sit, a ~7.6 A worst-atom protrusion that this test would have
+    caught immediately. Run over every closed-form sp² generator so the
+    next one to get this wrong is caught here too, not by a live design's
+    ``view='validate'`` warn-tier finding. (The cyclodextrin macrocycle is
+    deliberately NOT in this list since gr332019 — its torus is
+    bore-preserving, not fully containing; see the case below.)"""
     scene = _scene_from_block(block)
     assert nm_validate.envelope_fit(block.envelope, scene) is None
+
+
+def test_cyclodextrin_envelope_fit_protrusion_is_bounded() -> None:
+    """gr332019: the macrocycle's torus pins its BORE open (threading is
+    the fact the envelope must not lie about), so rim atoms folded toward
+    the axis may protrude and surface as ``envelope_fit``'s warn-tier
+    finding — that is the design, not a defect. What must hold: the
+    protrusion is a rim fold (small), never a cone-style gross mismatch."""
+    block = build_cyclodextrin({"variant": "beta"})
+    scene = _scene_from_block(block)
+    fit = nm_validate.envelope_fit(block.envelope, scene)
+    if fit is not None:
+        _worst_atom, depth = fit
+        assert depth < 2.0, f"gross envelope mismatch, not a rim fold: {fit}"
 
 
 # ── cone param rejection ─────────────────────────────────────────────────

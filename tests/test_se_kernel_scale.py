@@ -255,7 +255,11 @@ def test_design_extent_at_nano_returns_metres() -> None:
         ],
     )
     extent = _design_extent(tree)
-    assert 1e-09 < extent < 1e-07
+    # Exact AABB-union diagonal (kills the arith-mutant class in the
+    # extent formula, not just its magnitude): x/y span 3 nm (the panel),
+    # z spans 0 → 5 nm (panel base to vtx top: pose 4 nm + 1 nm height).
+    expected = (3e-09**2 + 3e-09**2 + 5e-09**2) ** 0.5
+    assert extent == pytest.approx(expected, rel=0.01)
 
 
 def _jointed_pair_ops(

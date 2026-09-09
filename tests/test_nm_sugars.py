@@ -281,13 +281,57 @@ def test_cyclodextrin_port_counts_equal_unit_count_per_rim(variant: str) -> None
 
 
 @pytest.mark.parametrize("variant", sorted(_VARIANTS))
-def test_cyclodextrin_atoms_inside_torus_envelope(variant: str) -> None:
+def test_cyclodextrin_torus_envelope_is_bore_preserving(variant: str) -> None:
+    """The envelope's contract is TOPOLOGY first (gr332019): the hole must
+    stay open at the derived cavity radius (an axle threaded through the
+    ring must read clear through the bore — a full-containment torus around
+    a real conformer has minor ≥ major, i.e. no bore, and every threading
+    clearance reads interference). Rim atoms folded toward the axis are
+    allowed to protrude — that is the warn-tier ``envelope_fit`` finding's
+    job — but never by more than the ring's own physical half-thickness,
+    and every atom must stay radially inside the outer edge."""
     block = build_cyclodextrin({"variant": variant})
     spec = cad_dsl.parse(block.envelope)
     assert spec.alias == "torus"
-    torus = Torus(R=spec.params["R"], r=spec.params["r"])
+    major, minor = spec.params["R"], spec.params["r"]
+    hole_radius = major - minor
+    cavity_radius = float(block.topology["cavity_diameter_A"]) / 2.0
+    # the bore is open and matches the derived cavity
+    assert minor < major
+    assert hole_radius == pytest.approx(cavity_radius, abs=0.05)
+    # outer edge still covers the radially-farthest atom
+    rho = np.linalg.norm(np.asarray(block.coords)[:, :2], axis=1)
+    assert float(rho.max()) <= major + minor
+    # protrusion is bounded: no atom sits farther from the annulus surface
+    # than the ring's own z half-span (a rim fold, not an escapee)
+    torus = Torus(R=major, r=minor)
+    z_half_span = float(np.abs(np.asarray(block.coords)[:, 2]).max())
     for cart in block.coords:
-        assert torus.contains_local(cart), f"{cart} outside {block.envelope}"
+        assert torus.distance_local(cart) <= z_half_span, (
+            f"{cart} implausibly far outside {block.envelope}"
+        )
+
+
+def test_cyclodextrin_bore_clears_a_threaded_axle() -> None:
+    """The exact prod repro (photonic-arm-3c, gr332019): an axle threaded
+    through the generated macrocycle must read a positive clearance gap
+    through the bore — the old full-containment envelope was a spindle
+    torus (minor > major) and read −1.84 Å interference instead."""
+    from precis.cad import relate as cad_relate
+    from precis.cad.graph import Design as CadDesign
+    from precis.cad.vec import as_vec3, pose
+
+    zero = as_vec3([0, 0, 0])
+    block = build_cyclodextrin({"variant": "alpha"})
+    ring_prim = cad_dsl.build_config(block.envelope)
+    design = CadDesign()
+    design.add_component("ring", design.prim("ring", ring_prim, pose(zero, zero)))
+    axle_prim = cad_dsl.build_config("cyl:r1.5h40")
+    design.add_component(
+        "axle", design.prim("axle", axle_prim, pose(as_vec3([0, 0, -20]), zero))
+    )
+    result = cad_relate.clearance(design, "ring", "axle")
+    assert result.gap > 0.0, f"axle-through-bore reads {result.gap} (interference)"
 
 
 # ── validate-rule cross-check (overlap / over-valence / bond length),
