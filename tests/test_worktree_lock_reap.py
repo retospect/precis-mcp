@@ -70,7 +70,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1421,7 +1421,7 @@ def reap_db_repo(tmp_path: Path) -> dict[str, Path]:
 
 
 def _iso_created(days_ago: float) -> str:
-    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    dt = datetime.now(UTC) - timedelta(days=days_ago)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
 
 

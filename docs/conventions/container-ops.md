@@ -49,16 +49,20 @@ or `/go`), never an automatic side effect of a ship. But main can silently
 accumulate shipped-but-undeployed commits, so `scripts/ship` **surfaces**
 that gap (never blocks on it):
 
-- On a **successful deploy**, `scripts/deploy` writes a gitignored
-  `.deploy-state` marker (`<sha> <epoch>`) at the repo root recording what's
-  actually running on the cluster.
+- On a **successful deploy**, `scripts/deploy` writes a shared marker
+  (`<sha> <epoch>` in the git common dir, `.git/precis-deploy-state` — visible
+  to every worktree) recording what's actually running on the cluster. At
+  deploy start it writes an *attempt* stamp (`precis-deploy-attempt`), removed
+  on success — a surviving stamp means the last deploy never went green.
 - At the **start** of a ship, if the oldest undeployed commit is older than
   `PRECIS_DEPLOY_STALE_HOURS` (default `1`), `scripts/ship` prints a loud
   `⚠ deploy lag` warning — the "begin of next ship burst" moment is the
   cheapest place to notice drift.
-- At the **end** of a successful ship, it prints a one-line `📦 N commit(s)
-  … not yet deployed (oldest Xh ago)` summary (skipped silently if
-  `.deploy-state` is absent, e.g. never deployed from this worktree).
+- At the **end** of a successful ship, it prints one honest line (gr332009):
+  the `📦 N commit(s) … not yet deployed` count when a success marker exists;
+  `deploy state uncertain` when the last attempt never recorded success; or
+  `no successful deploy on record` when no marker exists. It never counts
+  from a stale per-worktree file (the legacy fallback fabricated lag).
 
 All of this is best-effort git plumbing guarded with `|| true` — it can
 never fail or block a ship. A future `PRECIS_AUTODEPLOY_STALE=1` could opt

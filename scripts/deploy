@@ -277,6 +277,17 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
 fi
 
 # ── 2. deploy ───────────────────────────────────────────────────────────
+# Attempt stamp (gr332009): past this point hosts get touched. Record the
+# attempt now; the success marker at step 3 replaces it and removes this. If
+# any play dies red, the stamp survives with no newer marker and scripts/ship
+# reports "deploy state uncertain" instead of counting lag from a stale sha.
+# Best-effort — never blocks a deploy.
+{
+    . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+    printf '%s %s\n' "$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || printf '%s' "$REF")" "$(date +%s)" \
+        > "$(deploy_attempt_path "$REPO_ROOT")"
+} 2>/dev/null || true
+
 CANARY="${PRECIS_DEPLOY_CANARY:-}"
 if [[ -z "$CANARY" ]]; then
     # unchanged single-pass path (PRECIS_DEPLOY_CANARY unset)
@@ -356,6 +367,7 @@ fi
 # the cluster, so a later `scripts/ship` can tell how many commits + how much
 # time have accumulated since. Best-effort — never fails a successful deploy.
 {
+    . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
     DEPLOYED_SHA="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
     if [[ -n "$DEPLOYED_SHA" ]]; then
         # Shared across worktrees (git common dir): the fleet's sha is a global
@@ -365,4 +377,7 @@ fi
         printf '%s %s\n' "$DEPLOYED_SHA" "$(date +%s)" \
             > "$(deploy_state_path "$REPO_ROOT")"
     fi
+    # Success: clear the attempt stamp so ship stops reporting "uncertain"
+    # (gr332009). Unconditional — a deploy that got here ran green.
+    rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
 } || true

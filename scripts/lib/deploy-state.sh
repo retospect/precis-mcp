@@ -16,11 +16,26 @@
 # outside the working tree, so it needs no .gitignore entry and cannot be
 # swept by a `git clean`.
 #
+# gr332009 (2026-09-09): two more honesty rules.
+#   • No legacy fallback. The read path used to fall back to the old
+#     per-worktree `.deploy-state` when the shared marker was absent — which
+#     resurrected week-old shas and fabricated a 118-commit lag the day after
+#     a real deploy. An absent marker now means "no successful deploy on
+#     record", and ship says exactly that instead of counting.
+#   • Attempt stamp. scripts/deploy writes `<target-sha> <epoch>` to the
+#     attempt path the moment it starts touching hosts; a green deploy
+#     replaces it with the success marker and removes the stamp. A stamp with
+#     no newer marker = the last deploy never recorded success (died red on a
+#     task, or is still running) — the fleet's sha is UNKNOWN, and ship
+#     reports that. (Trigger case: the balthazar sandbox podman-pull residual
+#     kept every deploy red at its tail, so the success marker was never
+#     written and lag reports counted from ancient per-worktree markers.)
+#
 # Usage:  . "$(dirname "$0")/lib/deploy-state.sh"
 #         path="$(deploy_state_path "$REPO_ROOT")"
 
-# Echo the shared marker path. Falls back to the legacy per-worktree location
-# when git is unavailable (e.g. a tarball checkout) so callers always get one.
+# Echo the shared success-marker path. Falls back to a repo-root path when git
+# is unavailable (e.g. a tarball checkout) so callers always get one.
 deploy_state_path() {
     local root="${1:-$PWD}" common
     common="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null || true)"
@@ -32,16 +47,25 @@ deploy_state_path() {
     printf '%s\n' "${common}/precis-deploy-state"
 }
 
-# Echo the marker path that actually EXISTS, preferring the shared one.
-# Lets a ship still read a pre-migration marker written by an older deploy,
-# so the lag report does not go silent for one cycle after this lands.
+# Echo the shared attempt-stamp path (same location rules as the marker).
+deploy_attempt_path() {
+    local root="${1:-$PWD}" common
+    common="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -z "$common" ]]; then
+        printf '%s\n' "${root}/.deploy-attempt"
+        return 0
+    fi
+    case "$common" in /*) ;; *) common="${root}/${common}" ;; esac
+    printf '%s\n' "${common}/precis-deploy-attempt"
+}
+
+# Echo the success-marker path iff it exists. No legacy fallback (gr332009):
+# a missing shared marker means "no successful deploy on record", not "go
+# find an older file to count from".
 deploy_state_read_path() {
-    local root="${1:-$PWD}" shared legacy
+    local root="${1:-$PWD}" shared
     shared="$(deploy_state_path "$root")"
-    legacy="${root}/.deploy-state"
     if [[ -f "$shared" ]]; then
         printf '%s\n' "$shared"
-    elif [[ -f "$legacy" ]]; then
-        printf '%s\n' "$legacy"
     fi
 }

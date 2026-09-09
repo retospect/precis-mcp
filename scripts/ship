@@ -126,10 +126,10 @@ die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 #     invoking scripts/deploy past this threshold — not implemented here.
 _deploy_lag_stats() {
     # prints "<undeployed-commit-count> <oldest-undeployed-epoch>", or nothing
-    # if .deploy-state is missing/unreadable/stale-referencing a gone sha.
+    # if the shared marker is missing/unreadable/stale-referencing a gone sha.
     local state_file deployed_sha count oldest
-    # Shared marker (git common dir) so a sibling worktree's deploy counts;
-    # falls back to the legacy per-worktree file. See lib/deploy-state.sh.
+    # Shared marker (git common dir) so a sibling worktree's deploy counts.
+    # No legacy per-worktree fallback (gr332009). See lib/deploy-state.sh.
     [[ -f "${WORKTREE}/scripts/lib/deploy-state.sh" ]] || return 0
     . "${WORKTREE}/scripts/lib/deploy-state.sh"
     state_file="$(deploy_state_read_path "${WORKTREE}")"
@@ -142,6 +142,38 @@ _deploy_lag_stats() {
     oldest="$(git log "${deployed_sha}..main" --format=%ct 2>/dev/null | tail -1 || true)"
     [[ -n "$oldest" ]] || return 0
     printf '%s %s\n' "$count" "$oldest"
+}
+
+_deploy_attempt_pending() {
+    # prints "<sha> <epoch>" when the last deploy attempt never recorded
+    # success (no marker, or the marker predates the attempt) — the fleet's
+    # sha is unknown and lag can't honestly be counted. gr332009; see
+    # lib/deploy-state.sh.
+    local attempt marker a_sha a_ep m_ep
+    [[ -f "${WORKTREE}/scripts/lib/deploy-state.sh" ]] || return 0
+    . "${WORKTREE}/scripts/lib/deploy-state.sh"
+    command -v deploy_attempt_path >/dev/null 2>&1 || return 0
+    attempt="$(deploy_attempt_path "${WORKTREE}")"
+    [[ -n "$attempt" && -f "$attempt" ]] || return 0
+    a_sha="$(awk '{print $1}' "$attempt" 2>/dev/null || true)"
+    a_ep="$(awk '{print $2}' "$attempt" 2>/dev/null || true)"
+    [[ -n "$a_sha" && -n "$a_ep" ]] || return 0
+    marker="$(deploy_state_read_path "${WORKTREE}")"
+    if [[ -n "$marker" && -f "$marker" ]]; then
+        m_ep="$(awk '{print $2}' "$marker" 2>/dev/null || true)"
+        [[ -n "$m_ep" ]] && (( m_ep >= a_ep )) && return 0
+    fi
+    printf '%s %s\n' "$a_sha" "$a_ep"
+}
+
+_deploy_marker_missing() {
+    # true when the lib is present but NO success marker exists — "no
+    # successful deploy on record", distinct from a zero lag (gr332009).
+    local marker
+    [[ -f "${WORKTREE}/scripts/lib/deploy-state.sh" ]] || return 1
+    . "${WORKTREE}/scripts/lib/deploy-state.sh"
+    marker="$(deploy_state_read_path "${WORKTREE}")"
+    [[ -z "$marker" ]]
 }
 
 # ── session-lock re-assertion ────────────────────────────────────────────
@@ -181,7 +213,11 @@ _relock
 
 # ── 1a. deploy-lag warning (loud, WARN-only — the "begin of next ship burst"
 # moment; never blocks) ───────────────────────────────────────────────────
-if stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
+if pending="$(_deploy_attempt_pending)" 2>/dev/null && [[ -n "$pending" ]]; then
+    read -r _att_sha _att_ep <<< "$pending"
+    _att_age_h=$(( ( $(date +%s) - _att_ep ) / 3600 ))
+    printf '\n\033[33m⚠ deploy state uncertain: a deploy of %.8s started %sh ago and never recorded success (died red or still running) — scripts/deploy to retry.\033[0m\n' "$_att_sha" "$_att_age_h"
+elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
     read -r _lag_n _lag_oldest <<< "$stats"
     _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))
     _stale_h="${PRECIS_DEPLOY_STALE_HOURS:-1}"
@@ -707,10 +743,17 @@ if [[ "$QUICK" == 1 ]]; then
     printf '\n\033[33m⚡ UNGATED ship — no ruff/mypy/pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
 fi
 
-# ── 8. deploy-lag summary (best-effort; skips silently if .deploy-state is
-# absent — e.g. never deployed from this worktree) ───────────────────────
-if stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
+# ── 8. deploy-lag summary (best-effort). Three honest states (gr332009):
+# a pending attempt with no recorded success → "uncertain"; a marker →
+# commit count; no marker at all → "no successful deploy on record". ─────
+if pending="$(_deploy_attempt_pending)" 2>/dev/null && [[ -n "$pending" ]]; then
+    read -r _att_sha _att_ep <<< "$pending"
+    _att_age_h=$(( ( $(date +%s) - _att_ep ) / 3600 ))
+    printf '📦 deploy state uncertain — deploy of %.8s started %sh ago, no success recorded (died red or still running); scripts/deploy to retry.\n' "$_att_sha" "$_att_age_h"
+elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
     read -r _lag_n _lag_oldest <<< "$stats"
     _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))
     printf '📦 %s commit(s) on main not yet deployed (oldest %sh ago) — scripts/deploy to flush.\n' "$_lag_n" "$_lag_age_h"
+elif _deploy_marker_missing; then
+    printf '📦 no successful deploy on record (marker absent) — lag unknown; the next green scripts/deploy sets it.\n'
 fi
