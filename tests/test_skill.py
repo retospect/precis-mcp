@@ -680,6 +680,64 @@ def test_single_word_query_pins_named_skill(skill: SkillHandler) -> None:
     assert any("gripe" in s for s in top3), top3
 
 
+# ── DF-aware rare-identity-token bypass (gr259665) ────────────────────
+#
+# The 70%-coverage bar starves a long, multi-topic query even when one of
+# its words names a skill unambiguously (catalogue document frequency ==
+# 1) — a rare identity token bypasses the bar; a common one (DF > 1)
+# still needs it. Real-corpus note: the gripe's original repro query
+# ("taproot help merge repoint demote claim") was diagnosed against
+# ``precis-taproot-help`` as the expected top hit, but post the taproot
+# skill split (a08ba404) "merge"/"repoint" are ``precis-taproot-mint-
+# help``'s territory (DF(identity)['merge'] == 1, naming that skill, not
+# ``precis-taproot-help`` — none of ``precis-taproot-help``'s own matched
+# identity tokens {taproot, claim, help} have DF == 1: taproot names 3
+# sibling skills, help names 100+). The correct top hit for that exact
+# wording is the mint-help skill; ``precis-taproot-help`` gets its own
+# pin test below via a token that genuinely is DF == 1 for it.
+
+
+def test_title_boost_df1_token_bypasses_coverage_bar_for_taproot_family(
+    skill: SkillHandler,
+) -> None:
+    """gr259665's repro query must surface a taproot-family skill in the
+    top rows instead of sinking below the page_size cut. "merge" has
+    catalogue identity-DF == 1 (only ``precis-taproot-mint-help``'s
+    title carries it) — that's the token that should fire the bypass, so
+    that skill is the one that gets pinned to the top."""
+    ranked = _ranked_slugs(
+        skill.search(q="taproot help merge repoint demote claim").body
+    )
+    assert ranked, "expected at least one ranked hit"
+    assert ranked[0] == "precis-taproot-mint-help", ranked[:5]
+
+
+def test_title_boost_df1_token_pins_taproot_help_on_its_own_identity(
+    skill: SkillHandler,
+) -> None:
+    """A query whose ONLY on-topic word is a genuinely DF==1 identity
+    token for ``precis-taproot-help`` itself ("many", from its H1 "one
+    claim, many papers, one citable hub" — unique to this skill) still
+    pins it, even padded with enough unrelated words to push coverage
+    to 33% — well under the 70% bar."""
+    ranked = _ranked_slugs(
+        skill.search(q="many detailed technical notes about taproot workflows").body
+    )
+    assert ranked, "expected at least one ranked hit"
+    assert ranked[0] == "precis-taproot-help", ranked[:5]
+
+
+def test_title_boost_ubiquitous_token_alone_does_not_bypass_coverage_bar(
+    skill: SkillHandler,
+) -> None:
+    """A multi-word query whose only identity overlap is a ubiquitous
+    word ("help" — a title/slug token on 100+ skills) must NOT get
+    title-boosted just because the word is present; it's exactly the
+    "documented limitation guard" the 70% bar exists to keep."""
+    out = skill.search(q="help documentation reference guide extra words here")
+    assert "title match" not in out.body, out.body
+
+
 # ── search hides unwired skills + surfaces escalation hint ───────────
 
 
@@ -805,7 +863,18 @@ def test_semantic_row_question_only_uses_skill_title_anchor() -> None:
 
 def test_semantic_row_heading_only_uses_its_own_heading_anchor() -> None:
     """A ``heading_only`` hit already carries the right heading text —
-    it *is* the heading — so it needs no special-casing."""
+    it *is* the heading — so display doesn't need special-casing.
+
+    gr259666: the hit's *own* ``chunk_idx`` (its position among the
+    embedded twins, appended after every structural chunk — see
+    :mod:`precis.skill_index.chunker`) is NOT a valid ``slug~N``
+    address; ``_semantic_row`` resolves the twin back to its sibling
+    structural chunk's real index by heading match, so the rendered
+    section is prefixed with that resolved ``~N`` (here ``~2``, "Verb
+    cheat-sheet"'s actual structural position in
+    ``precis-overview.md``) rather than the twin's own out-of-range
+    position (``3``).
+    """
     from precis.handlers.skill import _semantic_row
     from precis.skill_index import SearchHit
 
@@ -818,7 +887,78 @@ def test_semantic_row_heading_only_uses_its_own_heading_anchor() -> None:
         variant="heading_only",
     )
     row = _semantic_row(hit)
-    assert row.section == "Verb cheat-sheet"
+    assert row.section == "~2 — Verb cheat-sheet"
+
+
+def test_semantic_row_structural_hit_prefixes_own_chunk_idx() -> None:
+    """A ``structural`` hit's ``chunk_idx`` already IS the section's
+    real position in ``chunk_by_h2(text)`` — no resolution needed, just
+    rendering (gr259666)."""
+    from precis.handlers.skill import _semantic_row
+    from precis.skill_index import SearchHit
+
+    hit = SearchHit(
+        slug="precis-overview",
+        chunk_idx=2,
+        heading="Verb cheat-sheet",
+        score=0.9,
+        snippet="Verb cheat-sheet",
+        variant="structural",
+    )
+    row = _semantic_row(hit)
+    assert row.section == "~2 — Verb cheat-sheet"
+
+
+def test_semantic_row_question_only_has_no_chunk_address() -> None:
+    """A ``question_only`` hit matches no single section (front-matter
+    question, not an H2), so it gets no ``~N`` prefix — only the
+    skill-title anchor (gr259666; no address is honest here, a wrong
+    one would round-trip to the wrong chunk)."""
+    from precis.handlers.skill import _semantic_row
+    from precis.skill_index import SearchHit
+
+    hit = SearchHit(
+        slug="precis-overview",
+        chunk_idx=9,
+        heading="",
+        score=0.9,
+        snippet="top-level orientation",
+        variant="question_only",
+    )
+    row = _semantic_row(hit)
+    assert not row.section.startswith("~")
+
+
+def test_search_table_chunk_id_round_trips_through_get(tmp_path) -> None:
+    """gr259666: the search table's section column must render a
+    copy-pasteable ``~N`` chunk id, and that id must actually resolve
+    via ``get(kind='skill', id='<slug>~<N>')`` — the failure mode was
+    an agent pasting the heading text into ``id='slug~Heading'`` and
+    getting a ``BadInput`` (``_SKILL_ID_RE`` requires ``~\\d+``).
+    """
+    import os
+    import re
+
+    from precis.dispatch import Hub
+    from precis.embedder import MockEmbedder
+
+    os.environ["PRECIS_CACHE_DIR"] = str(tmp_path)
+    try:
+        hub = Hub(embedder=MockEmbedder(dim=64))
+        handler = SkillHandler(hub=hub)
+        handler.hub = hub
+        out = handler.search(q="precis-overview")
+        m = re.search(r"~(\d+) — ", out.body)
+        assert m is not None, f"expected a ~N chunk id in the table; got:\n{out.body}"
+        n = int(m.group(1))
+        # The row line containing the match must start with a real slug.
+        line = next(ln for ln in out.body.splitlines() if f"~{n} — " in ln)
+        slug = line.split("\t", 1)[0].strip()
+        # Round-trip: the address get() accepts and returns real content.
+        chunk = handler.get(id=f"{slug}~{n}")
+        assert chunk.body.strip()
+    finally:
+        del os.environ["PRECIS_CACHE_DIR"]
 
 
 def test_semantic_search_distinct_section_count_skips_twin_variants(

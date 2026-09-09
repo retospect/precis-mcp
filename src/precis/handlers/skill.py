@@ -53,7 +53,7 @@ from precis.format import render_agent_table
 from precis.handlers._skill_common import SkillFrontmatter, parse_frontmatter
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
-from precis.skill_index import FileCorpusIndex, SearchHit
+from precis.skill_index import FileCorpusIndex, SearchHit, chunk_by_h2
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -336,6 +336,43 @@ class _SkillSearchRow:
         self.snippet = snippet
 
 
+def _addressable_chunk_idx(hit: SearchHit) -> int | None:
+    """Resolve ``hit`` to a valid ``slug~N`` chunk index, or ``None``.
+
+    ``hit.chunk_idx`` is the hit's position in the *embedded* chunk
+    list, which — when the index was built ``with_body_aliases=True``
+    (see :mod:`precis.skill_index.chunker`) — holds every structural
+    section first, then non-structural twins (``body_only``,
+    ``heading_only``, ``question_only``) appended after. That position
+    is directly usable as ``~N`` only for a ``variant="structural"``
+    hit: ``get(kind='skill', id='slug~N')`` addresses
+    ``chunk_by_h2(text)`` (structural chunks only, no aliases — see
+    :meth:`SkillHandler._render_skill_chunks`), so a twin's raw
+    ``chunk_idx`` overruns that range and would 400.
+
+    Twins share their heading text with a real structural chunk (see
+    the chunker's alias-group docstring), so resolve them by heading
+    match against the structural-only chunking instead. A
+    ``question_only`` twin has no heading (``""``) — those match no
+    single section, so they resolve to ``None`` (no address shown).
+    gr259666: the caller previously discarded ``chunk_idx`` entirely,
+    leaving the search table's section column with no copy-pasteable
+    id — an agent that pasted the heading text into ``id='slug~Heading'``
+    got a ``BadInput`` (``_SKILL_ID_RE`` requires ``~\\d+``).
+    """
+    if hit.variant == "structural":
+        return hit.chunk_idx
+    if not hit.heading:
+        return None
+    text = _load_skill(hit.slug)
+    if text is None:
+        return None
+    for i, chunk in enumerate(chunk_by_h2(text)):
+        if chunk.heading == hit.heading:
+            return i
+    return None
+
+
 def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
     """Build a row from a semantic hit, normalising heading + snippet.
 
@@ -346,10 +383,18 @@ def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
     matched a front-matter question, not any one section — so its
     anchor is the skill's title instead of a blank cell, and the
     result reads as "this skill" rather than a weird empty section.
+
+    When the hit resolves to a real structural chunk (see
+    :func:`_addressable_chunk_idx`), the anchor is prefixed with
+    ``~N`` so the column doubles as a copy-pasteable
+    ``get(kind='skill', id='slug~N')`` address (gr259666).
     """
     section = hit.heading or ""
     if hit.variant == "question_only":
         section = _skill_title(hit.slug) or hit.slug
+    idx = _addressable_chunk_idx(hit)
+    if idx is not None:
+        section = f"~{idx} — {section}" if section else f"~{idx}"
     return _SkillSearchRow(
         slug=hit.slug,
         score=hit.score,
@@ -681,8 +726,21 @@ class SkillHandler(Handler):
         qtokens = set(_content_tokens(q))
         if qtokens:
             single = len(qtokens) == 1
-            for slug in _list_skills():
-                ident, sections = _skill_title_tokens(slug)
+            all_slugs = _list_skills()
+            # Per-skill identity/section token pools, computed once so
+            # this same pass also builds the catalogue-wide identity
+            # document-frequency map the rare-token bypass below needs
+            # (gr259665) — one pass over ~150 skills, not one per query
+            # token.
+            title_tokens: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+                slug: _skill_title_tokens(slug) for slug in all_slugs
+            }
+            ident_df: Counter[str] = Counter()
+            for ident, _sections in title_tokens.values():
+                ident_df.update(ident)
+
+            for slug in all_slugs:
+                ident, sections = title_tokens[slug]
                 matched = qtokens & (ident | sections)
                 ident_matched = qtokens & ident
                 coverage = len(matched) / len(qtokens)
@@ -695,9 +753,30 @@ class SkillHandler(Handler):
                 # Score by identity coverage so the named skill leads; the
                 # tiny full-coverage term only breaks ties among equal
                 # identity.
+                #
+                # gr259665: the 70% bar defeats a query where a matched
+                # identity token names this skill and ONLY this skill
+                # (catalogue document frequency == 1) but the rest of a
+                # longer query dilutes coverage below the bar — e.g.
+                # "taproot help merge repoint demote claim" matches
+                # precis-taproot-mint-help's title on "merge" (DF==1
+                # catalogue-wide) at only 50% coverage. A DF==1 identity
+                # token is unambiguous regardless of how many other
+                # (possibly off-topic) words the query carries, so it
+                # bypasses the coverage bar. A DF>1 identity word — even
+                # a moderately common one like "taproot" (shared by three
+                # sibling skills) — still needs the bar; this is
+                # deliberately narrow so a merely-uncommon word can't
+                # promote a skill the query isn't really about, and a
+                # ubiquitous word ("help", DF>100) never can.
                 if not ident_matched:
                     continue
-                if not single and (len(matched) < 2 or coverage < 0.7):
+                rare_identity_hit = any(ident_df[t] == 1 for t in ident_matched)
+                if (
+                    not single
+                    and not rare_identity_hit
+                    and (len(matched) < 2 or coverage < 0.7)
+                ):
                     continue
                 boost = (
                     _TITLE_MATCH_SCORE
