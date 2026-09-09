@@ -2256,6 +2256,15 @@ def _load_skills_map() -> dict[str, str]:
     return out
 
 
+def skill_exists(slug: str) -> bool:
+    """Whether ``slug`` names a shipped (or plugin-contributed) skill.
+
+    Cheap: one dict-membership probe against the process-wide skills map
+    (gr332020 item 2 — the auto-generated ``precis-<kind>-help`` error
+    breadcrumb must not point at a skill that doesn't exist)."""
+    return slug in _load_skills_map()
+
+
 def _list_skills() -> list[str]:
     """Return all available skill slugs (without the ``.md`` suffix).
 

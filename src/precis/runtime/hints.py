@@ -118,6 +118,7 @@ class HintsMixin(RuntimeShape):
             kind = None
 
         live_kinds = set(self.hub.kinds) if self.hub is not None else set()
+        hint: str | None = None
         if isinstance(kind, str) and kind in live_kinds:
             # ``kind='skill'`` has no ``precis-skill-help`` — skills ARE
             # the help system, so the auto-generated breadcrumb points at
@@ -134,10 +135,27 @@ class HintsMixin(RuntimeShape):
                 # name). Mapped here so the auto-hint stays runnable.
                 hint = f"get(kind='skill', id='{_KIND_SKILL_ALIASES[kind]}')"
             else:
-                hint = f"get(kind='skill', id='precis-{kind}-help')"
-        elif verb in {"get", "search", "put", "edit", "delete", "tag", "link"}:
+                # gr332020 item 2: only point at ``precis-{kind}-help``
+                # if that skill actually ships — a kind whose skill is
+                # still unwritten (se, nm early on) otherwise gets a
+                # dead-end breadcrumb. Lazy import: handlers must stay
+                # importable without the runtime and vice versa.
+                from precis.handlers.skill import skill_exists
+
+                candidate = f"precis-{kind}-help"
+                if skill_exists(candidate):
+                    hint = f"get(kind='skill', id='{candidate}')"
+        if hint is None and verb in {
+            "get",
+            "search",
+            "put",
+            "edit",
+            "delete",
+            "tag",
+            "link",
+        }:
             hint = f"get(kind='skill', id='precis-{verb}-help')"
-        else:
+        elif hint is None:
             hint = "get(kind='skill', id='precis-overview')"
 
         existing = err.next

@@ -1537,6 +1537,8 @@ def render_attention(store: Store) -> Response:
             if len(first) > 76:
                 first = first[:76].rstrip() + "…"
             lines.append(f"{_h(h['id']):<6} {first}")
+            if h.get("budget_usd") is not None:
+                lines.append(f"      budget: ${h['budget_usd']:.2f} (granted)")
     body = "\n".join(lines)
     # Pick a concrete id from whichever signal actually surfaced above —
     # ``total > 0`` guarantees at least one of the three lists is non-empty.
@@ -1611,11 +1613,17 @@ def _attention_halted(store: Store) -> list[dict[str, Any]]:
     (``halt:cost-cap``, ``halt:tick-cap``, ``halt:planner-stuck``).
     Both surface here; the reason (if present) is rendered alongside
     the title so the operator sees *why* without a follow-up lookup.
+
+    Also carries ``meta.budget_usd`` (gr332026) when set — the
+    per-todo cost-cap grant the owner used to lift a ``cost-cap``
+    halt without touching the fleet-wide default, so the grant is
+    visible right where the halt shows up rather than requiring a
+    separate ``get()`` to discover.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.ref_id, r.title, r.created_at,
+            SELECT r.ref_id, r.title, r.created_at, r.meta->>'budget_usd',
                    array_agg(t.value ORDER BY t.value) AS halt_tags
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -1628,24 +1636,33 @@ def _attention_halted(store: Store) -> list[dict[str, Any]]:
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) NOT IN ('done', 'won''t-do')
-             GROUP BY r.ref_id, r.title, r.created_at
+             GROUP BY r.ref_id, r.title, r.created_at, r.meta
              ORDER BY r.created_at DESC
              LIMIT 50
             """,
         ).fetchall()
     out: list[dict[str, Any]] = []
-    for ref_id, title, created_at, halt_tags in rows:
+    for ref_id, title, created_at, budget_usd_raw, halt_tags in rows:
         reasons: list[str] = []
         for t in halt_tags or []:
             t_str = str(t)
             if t_str.startswith("halt:"):
                 reasons.append(t_str.removeprefix("halt:"))
+        budget_usd: float | None
+        try:
+            budget_usd = float(budget_usd_raw) if budget_usd_raw is not None else None
+        except (TypeError, ValueError):
+            # Same defensive stance as the guardrail reader: a malformed
+            # stored value is display-only here, so just hide it rather
+            # than raising out of a search() call.
+            budget_usd = None
         out.append(
             {
                 "id": int(ref_id),
                 "title": title,
                 "created_at": created_at,
                 "reasons": reasons,
+                "budget_usd": budget_usd,
             }
         )
     return out

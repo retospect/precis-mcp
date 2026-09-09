@@ -145,6 +145,36 @@ def _check_namespaced_tag(
             )
 
 
+#: ``meta.budget_usd`` — per-todo cost-cap override consumed by
+#: :func:`precis.workers.planner_guardrails.check_parent`. Unlike
+#: ``llm_tier``'s closed vocab, this is an open non-negative number:
+#: the grant, not a category. Validated here (write-time reject on a
+#: malformed value) rather than in the guardrail module, which instead
+#: treats a bad *stored* value defensively (ignore + warn) since a
+#: value can predate this check or be written by a path that bypasses
+#: it.
+def check_budget_usd_meta(meta: dict[str, Any] | None) -> None:
+    """Reject ``meta.budget_usd`` when it isn't a non-negative number.
+
+    A valid grant may be larger OR smaller than the fleet's
+    ``PRECIS_MAX_TODO_USD`` default — a smaller value is a legitimate
+    tightening of one todo's per-todo cost cap, not just a raise.
+    """
+    if not meta or "budget_usd" not in meta:
+        return
+    value = meta.get("budget_usd")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BadInput(
+            f"meta.budget_usd must be a number, got {value!r}",
+            next="meta={'budget_usd': 8.0}",
+        )
+    if value < 0:
+        raise BadInput(
+            f"meta.budget_usd={value!r} must be >= 0",
+            next="meta={'budget_usd': 8.0}",
+        )
+
+
 def check_llm_tier_meta(meta: dict[str, Any] | None) -> None:
     """Reject ``meta.llm_tier`` when it isn't a registered model tier."""
     if not meta or "llm_tier" not in meta:
@@ -718,6 +748,7 @@ TAG_META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "schedule",
         "llm_tier",
         "llm_select",
+        "budget_usd",
     }
 )
 
@@ -1107,6 +1138,7 @@ __all__ = [
     "PROPOSED_TACTICAL",
     "TAG_META_ALLOWED_KEYS",
     "TIER_TO_FACETS",
+    "check_budget_usd_meta",
     "check_claim_takeover",
     "check_deliver_in_meta",
     "check_depth_under",

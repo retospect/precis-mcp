@@ -61,6 +61,77 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# ── gr332009 rollout-convergence graft (on top of the attempt-stamp/no-legacy
+# design above) — write the SUCCESS marker (and clear the attempt stamp) as
+# soon as the code ROLLOUT itself converges, even if a LATER, unrelated play
+# in the same `ansible-playbook` invocation dies ───────────────────────────
+# redeploy-precis.yml runs its residual, non-rollout plays (agent-sandbox
+# image rebuilds etc.) in the SAME invocation as the core rollout (venv
+# installs, daemon bounce, convergence assert) — so a persistent failure on a
+# host those residual plays alone touch (the known balthazar sandbox
+# podman-pull residual, commit 5fa7ff29) makes the whole command exit non-zero even
+# though every host that matters to "what is the fleet actually running"
+# landed cleanly. Without this graft, step 3 below never runs on that red
+# exit, the attempt stamp never clears, and every ship footer says "deploy
+# state uncertain" forever — alarm fatigue in the other direction. A genuine
+# rollout-host failure must still leave the stamp in place (fail-safe).
+#
+# _write_deploy_state_marker duplicates step 3's success write (marker +
+# clear-stamp) on purpose rather than factoring it out — step 3 itself stays
+# byte-identical to the no-graft design so the ordinary all-green path is
+# untouched. _rollout_converged reads the ALREADY-CAPTURED ansible-playbook
+# output for the PLAY RECAP and requires every rollout host (ROLLOUT_HOSTS,
+# set below from the reachability ping's own output) to show
+# `failed=0 unreachable=0` — a host missing from the recap entirely, or
+# showing any failure, means NOT converged. Scoped to the single-pass path
+# only (PRECIS_DEPLOY_CANARY unset, the default) — the canary path's marker
+# already means "the WHOLE fleet is on this sha", and writing it after only
+# the canary phase converges would be actively wrong, so that path's existing
+# all-or-nothing `|| die` behavior is left untouched.
+_write_deploy_state_marker() {
+    local sha
+    sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
+    [[ -n "$sha" ]] || return 0
+    . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+    printf '%s %s\n' "$sha" "$(date +%s)" > "$(deploy_state_path "$REPO_ROOT")"
+    rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
+}
+
+_rollout_converged() {
+    local play_out="$1" host line failed unreachable recap
+    [[ -n "${ROLLOUT_HOSTS:-}" ]] || return 1
+    recap="$(awk '/^PLAY RECAP/{f=1; next} f' "$play_out")"
+    [[ -n "$recap" ]] || return 1
+    for host in $ROLLOUT_HOSTS; do
+        line="$(awk -v h="$host" '$1==h' <<< "$recap")"
+        [[ -n "$line" ]] || return 1
+        failed="$(grep -oE 'failed=[0-9]+' <<< "$line" | cut -d= -f2)"
+        unreachable="$(grep -oE 'unreachable=[0-9]+' <<< "$line" | cut -d= -f2)"
+        [[ "${failed:-1}" == 0 && "${unreachable:-1}" == 0 ]] || return 1
+    done
+    return 0
+}
+
+# Run one redeploy-precis.yml invocation. Its combined output is ALSO tee'd
+# to $play_out (a scratch capture, separate from the whole-script tee already
+# flowing to console + the deploy log) purely so _rollout_converged can parse
+# the PLAY RECAP — nothing about what reaches the console/log changes. The
+# `if !` form (not `|| die`) is deliberate: it lets this function inspect the
+# recap and possibly write the marker BEFORE the caller's own `|| die` fires.
+_run_rollout_playbook() {
+    local play_out rc=0
+    play_out="$(mktemp)"
+    if ! ansible-playbook "$@" 2>&1 | tee "$play_out"; then
+        rc=1
+    fi
+    if [[ "$rc" -ne 0 ]] && _rollout_converged "$play_out"; then
+        say "redeploy-precis.yml exited non-zero, but every rollout host (${ROLLOUT_HOSTS}) converged clean in its own PLAY RECAP line — recording the deploy-state marker before reporting the failure (gr332009)"
+        _write_deploy_state_marker
+    fi
+    rm -f "$play_out"
+    return "$rc"
+}
+
 # ── mutual exclusion: one deploy at a time, machine-wide (gr203786) ──────
 # Two concurrent deploys (e.g. sibling /go sessions in different worktrees)
 # interleave their installs: each run pins its own sha, so the later run's
@@ -160,12 +231,17 @@ cd "$CLUSTER_DIR"
 # provision. Keep this in sync with the plays' `hosts:` in redeploy-precis.yml.
 PING_TARGETS="gateway:scheduler:data:inference:serving"
 say "checking cluster reachability (ansible ping — ${PING_TARGETS})"
-ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >/tmp/precis-deploy-ping.$$ 2>&1 || {
-    cat /tmp/precis-deploy-ping.$$ >&2
-    rm -f /tmp/precis-deploy-ping.$$
+_PING_OUT="/tmp/precis-deploy-ping.$$"
+ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >"$_PING_OUT" 2>&1 || {
+    cat "$_PING_OUT" >&2
+    rm -f "$_PING_OUT"
     die "a host is unreachable — aborting (a partial redeploy mixes code versions)."
 }
-rm -f /tmp/precis-deploy-ping.$$
+# gr332009: the rollout-host set _run_rollout_playbook checks convergence
+# against below — every host that just answered the ping, read straight back
+# out of ansible's own SUCCESS lines rather than re-querying the inventory.
+ROLLOUT_HOSTS="$(grep -oE '^[^[:space:]]+ \| SUCCESS' "$_PING_OUT" | awk '{print $1}')"
+rm -f "$_PING_OUT"
 
 # ── 1a. autocatpath wheel (gr263082) ────────────────────────────────────
 # Same reason the ping above aborts: a partial redeploy mixes code versions.
@@ -290,15 +366,19 @@ fi
 
 CANARY="${PRECIS_DEPLOY_CANARY:-}"
 if [[ -z "$CANARY" ]]; then
-    # unchanged single-pass path (PRECIS_DEPLOY_CANARY unset)
+    # unchanged single-pass path (PRECIS_DEPLOY_CANARY unset). Routed through
+    # _run_rollout_playbook (gr332009 graft) so a rollout that genuinely
+    # converged still gets its success marker written (and attempt stamp
+    # cleared) even if a later, unrelated play in this same invocation dies —
+    # see that function's header comment.
     if [[ "$REF" == "main" ]]; then
         say "deploying main to the cluster"
-        ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+        _run_rollout_playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
     else
         say "deploying ref '${REF}' to the cluster"
-        ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+        _run_rollout_playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
             -e precis_worker_git_ref="$REF" -e precis_web_git_ref="$REF" \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."

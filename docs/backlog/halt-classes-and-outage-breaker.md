@@ -94,7 +94,9 @@ wrongly-terminal infra halt is this incident). Runner maps per class:
   severity-`info` alert. (SHIELDA's Plan Repair, bounded to one
   round.)
 - `cost-cap` — terminal until a human raises the budget:
-  `halt:cost-cap` (already exists), no parole.
+  `halt:cost-cap` (already exists), no parole. The raise can be a
+  per-todo `meta.budget_usd` grant (gr332026) instead of the fleet-wide
+  `PRECIS_MAX_TODO_USD` default.
 
 Terminal halts must capture context, not just the tag: the runner
 already stores the conclusion summary on the job's `job_summary`

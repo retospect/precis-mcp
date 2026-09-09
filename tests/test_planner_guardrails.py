@@ -12,19 +12,37 @@ matching the ledger.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from precis.store import Store
 from precis.workers.planner_guardrails import RoundContext, check_parent
 
 
-def _todo(store: Store, title: str, *, parent_id: int | None = None) -> int:
-    """Insert a dispatchable (``meta.llm_tier``-set) todo, return its id."""
+def _todo(
+    store: Store,
+    title: str,
+    *,
+    parent_id: int | None = None,
+    budget_usd: object = None,
+) -> int:
+    """Insert a dispatchable (``meta.llm_tier``-set) todo, return its id.
+
+    ``budget_usd`` (when passed) lands on ``meta.budget_usd`` unvalidated —
+    tests exercise both a well-formed grant and the malformed values the
+    write-time guard (``_todo_guards.check_budget_usd_meta``) would
+    normally reject, so the guardrail's own defensive read gets covered
+    too.
+    """
+    meta: dict[str, object] = {"llm_tier": "opus", "job_type": "plan_tick"}
+    if budget_usd is not None:
+        meta["budget_usd"] = budget_usd
     ref = store.insert_ref(
         kind="todo",
         slug=None,
         title=title,
-        meta={"llm_tier": "opus", "job_type": "plan_tick"},
+        meta=meta,
         parent_id=parent_id,
     )
     return int(ref.id)
@@ -94,6 +112,84 @@ def test_per_todo_cost_cap_ignores_other_todos_spend(store: Store) -> None:
     _log_spend(store, theirs, 5.00)
 
     assert check_parent(store, parent_ref_id=mine).allow is True
+
+
+# ── per-todo budget override (meta.budget_usd, gr332026) ──────────
+
+
+def test_per_todo_budget_override_raises_the_cap(store: Store) -> None:
+    """A grant above the env default is honoured for THIS todo's cap.
+
+    Live case: td311100 halted at $5.15 against a $5 env default while
+    producing wanted output — a $8 grant should let it keep going.
+    """
+    rid = _todo(store, "granted", budget_usd=8.0)
+    _log_spend(store, rid, 5.15)  # over the $2 env default...
+
+    assert check_parent(store, parent_ref_id=rid).allow is True  # ...under the $8 grant
+
+    _log_spend(store, rid, 3.00)  # now $8.15, over the $8 grant
+    verdict = check_parent(store, parent_ref_id=rid)
+
+    assert verdict.allow is False
+    assert verdict.halt_tag == "halt:cost-cap"
+    assert "8.15" in (verdict.reason or "")
+    assert "8.00" in (verdict.reason or "")
+
+
+def test_per_todo_budget_override_can_tighten_the_cap(store: Store) -> None:
+    """A grant below the env default is a legitimate tightening, not a floor."""
+    rid = _todo(store, "tightened", budget_usd=1.0)
+    _log_spend(store, rid, 1.50)  # under the $2 default, over the $1 grant
+
+    verdict = check_parent(store, parent_ref_id=rid)
+
+    assert verdict.allow is False
+    assert verdict.halt_tag == "halt:cost-cap"
+    assert "1.00" in (verdict.reason or "")
+
+
+def test_per_todo_budget_override_does_not_raise_the_tree_cap(store: Store) -> None:
+    """The override is scoped to the per-todo cap only — the tree cap still binds."""
+    root = _todo(store, "root")
+    kid = _todo(store, "kid", parent_id=root, budget_usd=50.0)
+    _log_spend(store, kid, 10.50)  # under the $50 per-todo grant...
+
+    verdict = check_parent(store, parent_ref_id=kid)
+
+    # ...but over the $10 PRECIS_MAX_TREE_USD cap, untouched by the grant.
+    assert verdict.allow is False
+    assert verdict.halt_tag == "halt:tree-cost-cap"
+
+
+def test_per_todo_budget_override_ignores_non_numeric_value(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A non-numeric grant is ignored with one warning; env default applies."""
+    rid = _todo(store, "bad grant", budget_usd="lots")
+    _log_spend(store, rid, 2.50)  # over the $2 env default
+
+    with caplog.at_level(logging.WARNING):
+        verdict = check_parent(store, parent_ref_id=rid)
+
+    assert verdict.allow is False
+    assert verdict.halt_tag == "halt:cost-cap"
+    assert any("budget_usd" in r.message for r in caplog.records)
+
+
+def test_per_todo_budget_override_ignores_negative_value(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A negative grant is ignored with one warning; env default applies."""
+    rid = _todo(store, "negative grant", budget_usd=-5.0)
+    _log_spend(store, rid, 2.50)  # over the $2 env default
+
+    with caplog.at_level(logging.WARNING):
+        verdict = check_parent(store, parent_ref_id=rid)
+
+    assert verdict.allow is False
+    assert verdict.halt_tag == "halt:cost-cap"
+    assert any("budget_usd" in r.message for r in caplog.records)
 
 
 # ── per-tree cost cap ────────────────────────────────────────────

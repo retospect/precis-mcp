@@ -13,7 +13,12 @@ three caps the dispatcher consults before minting a planner job:
    in ``llm_call_log`` (``ref_id`` = the parent todo, stamped by
    ``plan_tick``'s ``LlmRequest``). If it exceeds ``MAX_TODO_USD``
    (default $2), auto-tag ``halt:cost-cap``. Bounds how much one
-   task can cost regardless of depth.
+   task can cost regardless of depth. A todo may override this
+   default for itself via ``meta.budget_usd`` (settable through the
+   ``llm_tier``-style ``tag(meta=...)`` allowlist) — a per-todo grant
+   that can raise *or* tighten just that one cap without touching the
+   fleet-wide env default. It never raises the per-tree cap or the
+   daily ceiling below.
 
 3. **Per-tree cost cap** (``PRECIS_MAX_TREE_USD``, default $10).
    The per-todo cap is per-*todo*, so a wide fan-out multiplies it:
@@ -87,6 +92,13 @@ Tunables (env vars):
 * ``PRECIS_MAX_TODO_USD`` (float, default 2.0)
 * ``PRECIS_MAX_TREE_USD`` (float, default 10.0)
 * ``PRECIS_DAILY_COST_CEILING`` (float, default 20.0)
+
+Per-todo override (ref meta, not an env var):
+
+* ``meta.budget_usd`` (float, USD) — overrides ``PRECIS_MAX_TODO_USD``
+  for one todo's own per-todo cap (check 2 only). Non-numeric or
+  negative values are ignored (one WARNING logged, falls back to the
+  env default).
 """
 
 from __future__ import annotations
@@ -177,10 +189,22 @@ def check_parent(
     daily aggregate are the broadest safety nets but the most
     expensive to compute, so they run last and benefit from the prior
     cheap rejections.
+
+    The per-todo cost cap (check 2) reads ``meta.budget_usd`` off the
+    candidate first: a valid grant replaces ``PRECIS_MAX_TODO_USD`` for
+    *this todo only* — larger to buy more headroom, or smaller to
+    tighten it deliberately. An invalid grant (non-numeric or negative)
+    is ignored with a logged warning and the env default applies
+    unchanged. The override is scoped to this one cap; it cannot raise
+    the per-tree cap or the daily ceiling, which still bind as-is.
     """
     max_ticks = env_int("PRECIS_MAX_TICKS", 10)
     max_todo_usd = env_float("PRECIS_MAX_TODO_USD", 2.0)
     max_tree_usd = env_float("PRECIS_MAX_TREE_USD", 10.0)
+
+    budget_override = _read_budget_override(store, parent_ref_id)
+    if budget_override is not None:
+        max_todo_usd = budget_override
 
     tick_count = _read_tick_count(store, parent_ref_id)
     if tick_count >= max_ticks:
@@ -240,6 +264,45 @@ def _read_tick_count(store: Store, ref_id: int) -> int:
     if row is None or row[0] is None:
         return 0
     return int(row[0])
+
+
+def _read_budget_override(store: Store, ref_id: int) -> float | None:
+    """Read ``meta.budget_usd`` — the per-todo cap grant — validated.
+
+    Returns ``None`` (caller falls back to ``PRECIS_MAX_TODO_USD``)
+    when the key is absent, non-numeric, or negative. A valid value
+    may sit on either side of the env default: larger is more
+    headroom, smaller is a deliberate tightening of that one todo's
+    cap — both are legitimate grants, so there is no floor/ceiling
+    check beyond "not negative."
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'budget_usd' FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    raw = row[0]
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        log.warning(
+            "planner_guardrails: ignoring non-numeric meta.budget_usd=%r on "
+            "parent #%d; falling back to PRECIS_MAX_TODO_USD",
+            raw,
+            ref_id,
+        )
+        return None
+    if value < 0:
+        log.warning(
+            "planner_guardrails: ignoring negative meta.budget_usd=%s on "
+            "parent #%d; falling back to PRECIS_MAX_TODO_USD",
+            value,
+            ref_id,
+        )
+        return None
+    return value
 
 
 def _read_cost_usd(store: Store, ref_id: int) -> float:

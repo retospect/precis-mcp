@@ -442,6 +442,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_facets_on_create(meta)
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
+        guards.check_budget_usd_meta(meta)
         guards.check_executor_tag(tags)
         # Workspace inheritance: if the parent carries meta.workspace
         # and this child doesn't specify its own, copy the parent's
@@ -828,8 +829,10 @@ class TodoHandler(NumericRefHandler):
             prio = prio_from_tag
         # ``meta=`` is the facet-promotion surface (§M facet
         # normalization): ``rotation_root`` / ``worker_mintable`` /
-        # ``schedule`` (owner-only gradient) and ``llm_tier`` (the
-        # dispatcher's model picker — e.g. a retry swapping tiers).
+        # ``schedule`` (owner-only gradient), ``llm_tier`` (the
+        # dispatcher's model picker — e.g. a retry swapping tiers), and
+        # ``budget_usd`` (a per-todo override of the planner
+        # guardrails' cost cap, gr332026).
         # ``tag()`` already carries non-tag state via ``prio=``, so this
         # follows the same precedent rather than adding a new verb. It
         # is a closed allowlist (``check_meta_keys_promotable``), not a
@@ -844,6 +847,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_facets_on_tag(meta)
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
+        guards.check_budget_usd_meta(meta)
         guards.check_halt_remove(remove=remove)
         # Claim CAS: a worker claiming a leaf whose live lease another
         # handle holds gets a BadInput naming the holder, instead of the

@@ -490,6 +490,44 @@ def test_attention_view_lists_halted_leaves(handler: TodoHandler, store: Store) 
     assert "Need a thought" in out.body
 
 
+def test_attention_view_shows_granted_budget_on_a_halted_todo(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``meta.budget_usd`` grant is visible next to a cost-cap halt.
+
+    Otherwise the grant is invisible: the owner would have to ``get()``
+    the todo separately to confirm it landed.
+    """
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="expensive but wanted", meta={"budget_usd": 8.0})
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("halt:cost-cap"), set_by="system")
+
+    out = handler.search(view="attention")
+
+    assert "Halted (1)" in out.body
+    assert "budget: $8.00 (granted)" in out.body
+
+
+def test_attention_view_omits_budget_line_when_no_grant(
+    handler: TodoHandler, store: Store
+) -> None:
+    """No ``meta.budget_usd`` ⇒ no budget line (the pre-existing halt shape)."""
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="halted, no grant")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("halt:cost-cap"), set_by="system")
+
+    out = handler.search(view="attention")
+
+    assert "Halted (1)" in out.body
+    assert "budget:" not in out.body
+
+
 def test_halt_remove_is_owner_only(
     handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

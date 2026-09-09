@@ -31,6 +31,20 @@
 #     kept every deploy red at its tail, so the success marker was never
 #     written and lag reports counted from ancient per-worktree markers.)
 #
+# gr332009 rollout-convergence graft (scripts/deploy only, no new functions
+# here): the attempt-stamp/success-marker mechanism above is necessary but
+# not sufficient on its own — the balthazar sandbox podman-pull residual
+# above is exactly a play that runs AFTER the real rollout in the SAME
+# ansible-playbook invocation, so without more, every deploy dies red at that
+# tail, the success marker in step 3 never runs, and ship reports "deploy
+# state uncertain" forever even though the fleet genuinely converged. Fix:
+# scripts/deploy also writes the SAME success marker (and clears the SAME
+# attempt stamp) mid-script, the moment every rollout host's own PLAY RECAP
+# line shows `failed=0 unreachable=0`, independent of the invocation's final
+# exit code — see scripts/deploy's `_run_rollout_playbook`/
+# `_rollout_converged`. A genuine rollout-host failure still leaves the stamp
+# in place, same as before this graft.
+#
 # Usage:  . "$(dirname "$0")/lib/deploy-state.sh"
 #         path="$(deploy_state_path "$REPO_ROOT")"
 

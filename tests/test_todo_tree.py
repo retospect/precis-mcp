@@ -280,7 +280,7 @@ def test_tag_meta_rejects_arbitrary_junk_key(handler: TodoHandler) -> None:
 
 
 def test_tag_meta_allowlist_keys_still_promote(handler: TodoHandler) -> None:
-    """The five allowlisted keys still write through under existing gates."""
+    """The six allowlisted keys still write through under existing gates."""
     r = handler.put(text="a leaf")
     rid = _id_of(r.body)
     handler.tag(id=rid, meta={"rotation_root": True})
@@ -288,6 +288,7 @@ def test_tag_meta_allowlist_keys_still_promote(handler: TodoHandler) -> None:
     handler.tag(id=rid, meta={"llm_tier": "sonnet"})
     handler.tag(id=rid, meta={"schedule": {"cron": "0 * * * *"}})
     handler.tag(id=rid, meta={"llm_select": {"placement": "local"}})
+    handler.tag(id=rid, meta={"budget_usd": 8.0})
     ref = handler.store.get_ref(kind="todo", id=rid)
     assert ref is not None
     assert ref.meta.get("rotation_root") is True
@@ -295,6 +296,21 @@ def test_tag_meta_allowlist_keys_still_promote(handler: TodoHandler) -> None:
     assert ref.meta.get("llm_tier") == "sonnet"
     assert ref.meta.get("schedule", {}).get("cron") == "0 * * * *"
     assert ref.meta.get("llm_select") == {"placement": "local"}
+    assert ref.meta.get("budget_usd") == 8.0
+
+
+def test_tag_meta_budget_usd_rejects_non_numeric(handler: TodoHandler) -> None:
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="must be a number"):
+        handler.tag(id=rid, meta={"budget_usd": "lots"})
+
+
+def test_tag_meta_budget_usd_rejects_negative(handler: TodoHandler) -> None:
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="must be >= 0"):
+        handler.tag(id=rid, meta={"budget_usd": -1.0})
 
 
 # ── meta.tier enum (todo-surface-naming, approved 2026-09-06) ──────

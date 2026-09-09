@@ -77,3 +77,47 @@ def test_request_id_increments() -> None:
     with bus.request() as r2:
         pass
     assert r2 == r1 + 1
+
+
+# ── skill breadcrumb (_maybe_add_skill_hint) ─────────────────────────────
+
+
+class _StubHub:
+    def __init__(self, kinds: list[str]) -> None:
+        self.kinds = kinds
+
+
+class _StubRuntime:
+    """Bare carrier for HintsMixin's unbound method — only ``hub`` is read."""
+
+    def __init__(self, kinds: list[str]) -> None:
+        self.hub = _StubHub(kinds)
+
+
+def _breadcrumb(kind: str | None, verb: str = "link") -> str | list[str] | None:
+    from precis.errors import PrecisError
+    from precis.runtime.hints import HintsMixin
+
+    err = PrecisError("boom")
+    args = {"kind": kind} if kind is not None else {}
+    HintsMixin._maybe_add_skill_hint(
+        _StubRuntime([kind] if kind else []), err, verb, args
+    )
+    return err.next
+
+
+def test_skill_breadcrumb_points_at_existing_kind_skill() -> None:
+    """A kind whose precis-<kind>-help ships still gets the kind hint."""
+    assert _breadcrumb("draft") == "get(kind='skill', id='precis-draft-help')"
+
+
+def test_skill_breadcrumb_skips_nonexistent_kind_skill() -> None:
+    """gr332020 item 2: a live kind with no shipped help skill must fall
+    back to the per-verb hint, not fabricate a dead-end slug."""
+    hint = _breadcrumb("no-such-kind-xyz")
+    assert hint == "get(kind='skill', id='precis-link-help')"
+
+
+def test_skill_breadcrumb_overview_fallback_for_odd_verb() -> None:
+    hint = _breadcrumb("no-such-kind-xyz", verb="frobnicate")
+    assert hint == "get(kind='skill', id='precis-overview')"
