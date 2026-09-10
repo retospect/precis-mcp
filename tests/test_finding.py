@@ -411,6 +411,30 @@ class TestRoundTrip:
         assert "fischer13  (primary)" in body
         assert "STATUS:established" in body
 
+    def test_get_renders_dead_chain_reason(self, store) -> None:
+        """dead_chain is eight causally different terminal states behind one
+        tag — the view must surface meta.dead_reason (chase._set_status
+        records it on every transition), or "acquisition failed" and
+        "well-cited chunk forced an unresolvable hop" read identically
+        (gr271239)."""
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="claim body", cited_in="miller23a")
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        store.update_ref(ref_id, meta_patch={"dead_reason": "no_resolvable_cite"})
+        from precis.store.types import Tag
+
+        store.add_tag(
+            ref_id,
+            Tag.closed("STATUS", "dead_chain"),
+            set_by="chase",
+            replace_prefix=True,
+        )
+
+        body = h.get(id=ref_id).body
+        assert "status: STATUS:dead_chain (reason=no_resolvable_cite)" in body
+
     def test_get_renders_misattribution_links(self, store) -> None:
         """When a user has flagged a chain hop as a misattribution
         (``link(kind='finding', id=N, link='paper:badcite~7',

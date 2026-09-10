@@ -1485,7 +1485,15 @@ class FindingHandler(NumericRefHandler):
 
         status = _extract_status_tag(tags)
         lines.append("")
-        lines.append(f"status: STATUS:{status or _STATUS_TRACING}")
+        status_line = f"status: STATUS:{status or _STATUS_TRACING}"
+        # dead_chain is eight causally different terminal states behind one
+        # lossy tag — the reason chase._set_status recorded (meta.dead_reason)
+        # must be legible here, or "acquisition failed" and "well-cited chunk
+        # forced an unresolvable hop" are indistinguishable (gr271239).
+        dead_reason = meta.get("dead_reason")
+        if dead_reason and status == "dead_chain":
+            status_line += f" (reason={dead_reason})"
+        lines.append(status_line)
 
         non_status_tags = [
             t
