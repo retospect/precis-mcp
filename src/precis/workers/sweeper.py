@@ -43,10 +43,11 @@ cascade so the parent surfaces via nursery's child-failed detector.
 in the same transition, but the three lease-owning executors are already
 excluded from it — dead code today except for a future non-lease-owning
 per-job-container executor; see its docstring for the one still-live
-path. ``_reap_stale_dft_containers`` is a separate, unconditional
-per-pass watchdog that force-removes any aged ``precis-job-*`` container
-regardless of DB-row state — the actual recovery for a stuck
-``struct_relax`` DFT container.
+path. ``_reap_stale_dft_containers`` is a separate watchdog that
+force-removes any aged ``precis-job-*`` container regardless of DB-row
+state — the actual recovery for a stuck ``struct_relax`` DFT container.
+Per-pass when this host is the DFT node, ssh + throttled from everywhere
+else (the DFT node may be heartbeat-only, gr310809).
 
 **``unpark`` phase** (parked-leaf-recovery). Every live todo with an open
 ``child-failed:*`` tag is a candidate: ``meta.unpark_attempts`` /
@@ -77,6 +78,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -1295,23 +1297,53 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
         log.warning("sweeper: container kill for job #%d raised", ref_id, exc_info=True)
 
 
+#: Minimum seconds between *remote* stale-DFT-container reaps from this
+#: process (``PRECIS_DFT_REMOTE_REAP_INTERVAL_S``). The DFT node may run a
+#: heartbeat-only worker (pollux does), so no sweeper pass ever executes
+#: there — sweeper hosts must reap it over ssh (gr310809), but the
+#: per-minute pass must not fan an ssh + ``docker ps`` at the node from
+#: every host every pass, so the remote leg is throttled per process.
+_REMOTE_DFT_REAP_INTERVAL_S_DEFAULT = 1800.0
+
+_last_remote_dft_reap: float = float("-inf")
+
+
+def _remote_dft_reap_interval_s() -> float:
+    raw = os.environ.get("PRECIS_DFT_REMOTE_REAP_INTERVAL_S")
+    try:
+        return max(60.0, float(raw)) if raw else _REMOTE_DFT_REAP_INTERVAL_S_DEFAULT
+    except ValueError:
+        return _REMOTE_DFT_REAP_INTERVAL_S_DEFAULT
+
+
 def _reap_stale_dft_containers() -> int:
-    """Belt-and-suspenders for gripe 50905: on the DFT compute node itself,
-    force-remove any ``precis-job-*`` container past the stale-age
+    """Belt-and-suspenders for gripe 50905: force-remove any
+    ``precis-job-*`` container on the DFT node past the stale-age
     threshold, independent of its owning job's DB row (covers a container
     whose row was already swept/deleted, or any other way a container
     outlives its row — e.g. the ``ssh_node`` executor is excluded from the
     generic timeout sweep above, so ``_kill_job_container`` never fires for
-    it). Gated to the DFT node so the scan doesn't ssh-fan-out from every
-    cluster node on every per-minute sweep. Best-effort, never raises —
-    including the import itself, so a broken/missing job_type module can
-    never abort the rest of the sweeper pass (timeout sweep, embed
-    re-open, log GC, …)."""
+    it). Runs locally every pass when this host *is* the DFT node;
+    otherwise reaps over ssh, throttled by
+    :func:`_remote_dft_reap_interval_s` — the DFT node may run a
+    heartbeat-only worker with no sweeper of its own (gr310809: two wedged
+    containers survived 6 days because the local-only gate made this
+    watchdog dead code fleet-wide). Best-effort, never raises — including
+    the import itself, so a broken/missing job_type module can never abort
+    the rest of the sweeper pass (timeout sweep, embed re-open, log GC, …)."""
     try:
         from precis.workers.job_types import struct_relax
 
-        if os.environ.get("PRECIS_NODE") != struct_relax._NODE:
+        if struct_relax._NODE is None:
             return 0
+        if os.environ.get("PRECIS_NODE") != struct_relax._NODE:
+            global _last_remote_dft_reap
+            now = time.monotonic()
+            if now - _last_remote_dft_reap < _remote_dft_reap_interval_s():
+                return 0
+            # Stamp before the attempt so a failing ssh path is retried at
+            # the throttle cadence, not hammered every pass.
+            _last_remote_dft_reap = now
         return struct_relax.reap_stale_containers()
     except Exception:  # pragma: no cover - defensive
         log.warning("sweeper: reap_stale_containers raised", exc_info=True)

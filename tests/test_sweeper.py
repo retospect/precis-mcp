@@ -19,6 +19,8 @@ pattern.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from precis.dispatch import Hub
@@ -669,30 +671,67 @@ def test_kill_job_container_never_raises(
     assert "STATUS:failed" in job_tags
 
 
-def test_stale_dft_container_watchdog_runs_only_on_dft_node(
+def test_stale_dft_container_watchdog_local_node_every_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The stale-container watchdog is gated to the DFT node itself — it
-    must not ssh-fan-out from every cluster node on every sweep."""
-    from precis.workers.sweeper import _reap_stale_dft_containers
+    """On the DFT node itself the watchdog reaps every pass, unthrottled;
+    with no DFT node configured it is a no-op."""
+    from precis.workers import sweeper
+    from precis.workers.job_types import struct_relax
 
     calls: list[int] = []
-    from precis.workers.job_types import struct_relax
 
     def _fake_reap(**kw: object) -> int:
         calls.append(1)
         return 3
 
     monkeypatch.setattr(struct_relax, "reap_stale_containers", _fake_reap)
-    monkeypatch.setattr(struct_relax, "_NODE", "spark")
 
-    monkeypatch.delenv("PRECIS_NODE", raising=False)
-    assert _reap_stale_dft_containers() == 0
+    monkeypatch.setattr(struct_relax, "_NODE", None)
+    assert sweeper._reap_stale_dft_containers() == 0
     assert calls == []
 
+    monkeypatch.setattr(struct_relax, "_NODE", "spark")
     monkeypatch.setenv("PRECIS_NODE", "spark")
-    assert _reap_stale_dft_containers() == 3
+    assert sweeper._reap_stale_dft_containers() == 3
+    assert sweeper._reap_stale_dft_containers() == 3
+    assert calls == [1, 1]
+
+
+def test_stale_dft_container_watchdog_remote_throttled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweeper host that is NOT the DFT node still reaps (the DFT node
+    may run a heartbeat-only worker with no sweeper of its own, gr310809)
+    but throttled — one ssh scan per interval, not one per per-minute
+    pass."""
+    from precis.workers import sweeper
+    from precis.workers.job_types import struct_relax
+
+    calls: list[int] = []
+
+    def _fake_reap(**kw: object) -> int:
+        calls.append(1)
+        return 2
+
+    monkeypatch.setattr(struct_relax, "reap_stale_containers", _fake_reap)
+    monkeypatch.setattr(struct_relax, "_NODE", "pollux")
+    monkeypatch.setenv("PRECIS_NODE", "melchior")
+    monkeypatch.setattr(sweeper, "_last_remote_dft_reap", float("-inf"))
+
+    assert sweeper._reap_stale_dft_containers() == 2
     assert calls == [1]
+    # Immediately again: inside the throttle window — no second ssh scan.
+    assert sweeper._reap_stale_dft_containers() == 0
+    assert calls == [1]
+    # Window elapsed: reaps again.
+    monkeypatch.setattr(
+        sweeper,
+        "_last_remote_dft_reap",
+        time.monotonic() - sweeper._remote_dft_reap_interval_s() - 1.0,
+    )
+    assert sweeper._reap_stale_dft_containers() == 2
+    assert calls == [1, 1]
 
 
 def test_already_failed_job_is_skipped(handler: TodoHandler, store: Store) -> None:
