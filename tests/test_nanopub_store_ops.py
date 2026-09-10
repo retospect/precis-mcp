@@ -178,3 +178,67 @@ def test_publish_states_bulk_prefers_live_row_over_terminal(store: Any) -> None:
     assert states[hub_b][0] == "rejected"
     assert hub_c not in states
     assert store.nanopub_publish_states_bulk([]) == {}
+
+
+# ── gr279770 sweep half: candidate discard + regate read ──────────────
+
+
+def test_discard_candidate_deletes_the_row_and_frees_the_slot(store: Any) -> None:
+    """A discard is a CAS delete, not a state flip — no state in
+    ``nanopub.state.STATES`` fits "staged, no longer qualifies" that isn't
+    ``candidate`` itself or a human's terminal ``rejected``. Deleting frees
+    the partial-unique-index slot exactly like a terminal transition does,
+    so the hub restages through the ordinary path with no unblock step."""
+    hub = seed_ref(store, title="Discard me.", kind="finding")
+    row = store.nanopub_create_publish_row(hub)
+
+    assert store.nanopub_discard_candidate(row.id)
+
+    assert store.nanopub_publish_row(hub) is None
+    row2 = store.nanopub_create_publish_row(hub)
+    assert row2.id != row.id
+
+
+def test_discard_candidate_is_cas_scoped_to_candidate(store: Any) -> None:
+    """A row that already left ``candidate`` (e.g. a reviewer approved it
+    between the sweep's read and this write) is left alone — the caller
+    loses the race harmlessly."""
+    hub = seed_ref(store, title="Already reviewed.", kind="finding")
+    row = store.nanopub_create_publish_row(hub)
+    store.nanopub_transition(row.id, to_state="reviewed", expect=("candidate",))
+
+    assert not store.nanopub_discard_candidate(row.id)
+    assert store.nanopub_publish_row(hub).state == "reviewed"
+
+
+def test_discard_candidate_unknown_row_is_false(store: Any) -> None:
+    assert not store.nanopub_discard_candidate(-1)
+
+
+def test_candidate_regate_rows_reads_disputed_and_canonical(store: Any) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    clean = mint_hub(store, CanonicalClaim(sentence="A clean claim.", scope={}))
+    clean_row = store.nanopub_create_publish_row(clean, artifact_type="claim")
+    disputed = mint_hub(store, CanonicalClaim(sentence="A disputed claim.", scope={}))
+    disputed_row = store.nanopub_create_publish_row(disputed, artifact_type="claim")
+    other = seed_ref(store, title="opposing paper", kind="paper")
+    store.add_link(
+        src_ref_id=other, dst_ref_id=disputed, relation="contradicts", set_by="agent"
+    )
+    # Not staged: a reviewed row must not show up in the candidate regate set.
+    reviewed = mint_hub(store, CanonicalClaim(sentence="A reviewed claim.", scope={}))
+    reviewed_row = store.nanopub_create_publish_row(reviewed, artifact_type="claim")
+    store.nanopub_transition(
+        reviewed_row.id, to_state="reviewed", expect=("candidate",)
+    )
+
+    rows = {r.publish_id: r for r in store.nanopub_candidate_regate_rows()}
+
+    assert clean_row.id in rows
+    assert rows[clean_row.id].ref_id == clean
+    assert rows[clean_row.id].disputed is False
+    assert rows[clean_row.id].canonical is True
+    assert rows[disputed_row.id].disputed is True
+    assert reviewed_row.id not in rows

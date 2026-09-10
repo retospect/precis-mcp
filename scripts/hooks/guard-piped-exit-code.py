@@ -76,7 +76,7 @@ def evaluate(command: str) -> str | None:
         "looks successful when it failed.\n"
         "Use one of:\n"
         f"  set -o pipefail; scripts/{name} … | tail -30\n"
-        f"  scripts/{name} … > /tmp/{name}.log 2>&1; echo \"EXIT=$?\"; "
+        f'  scripts/{name} … > /tmp/{name}.log 2>&1; echo "EXIT=$?"; '
         f"tail -30 /tmp/{name}.log\n"
         "Or set ALLOW_PIPED_EXIT=1 if you genuinely do not need the status."
     )

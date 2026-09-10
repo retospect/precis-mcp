@@ -211,9 +211,7 @@ def select_covering_tests(
     stem = Path(rel_path).stem
     same_commit = [t for t in deduped if t.split("::", 1)[0] in changed_test_files]
     stem_matched = [
-        t
-        for t in deduped
-        if t not in same_commit and stem in t.split("::", 1)[0]
+        t for t in deduped if t not in same_commit and stem in t.split("::", 1)[0]
     ]
     rest = [t for t in deduped if t not in same_commit and t not in stem_matched]
     return (same_commit + stem_matched + rest)[:max_tests]
@@ -705,7 +703,9 @@ def _covering_tests_for_mutant(covering: dict[int, list[str]], m: Mutant) -> lis
 def _plan(
     args: argparse.Namespace,
 ) -> (
-    tuple[dict[str, list[Mutant]], dict[tuple[str, int], list[str]], int, frozenset[str]]
+    tuple[
+        dict[str, list[Mutant]], dict[tuple[str, int], list[str]], int, frozenset[str]
+    ]
     | int
 ):
     """Build ``(mutants-by-file, line -> covering tests, unspannable-count,

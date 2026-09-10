@@ -75,6 +75,23 @@ class ArtifactRow:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateRegateRow:
+    """One live ``state='candidate'`` publish row plus every field
+    :func:`precis.nanopub.stale.candidate_stale_reason` needs to re-check
+    it against the CURRENT mint rules (gr279770's scheduled sweep half —
+    ``health_digest``'s liveness check runs the identical query inline,
+    since it must stay import-light/SQL-only; this method is the sweep's
+    own copy, not a shared call, for that reason)."""
+
+    publish_id: int
+    ref_id: int
+    title: str
+    artifact_type: str
+    disputed: bool
+    canonical: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AllowlistEntry:
     """One ``nanopub_trust_allowlist`` row (migration 0129): an explicit
     (identity, key-fingerprint) pair trusted at publication time. Keys
@@ -303,6 +320,82 @@ class NanopubMixin:
                 (row_id,),
             )
             return cur.rowcount == 1
+
+    def nanopub_discard_candidate(self, row_id: int) -> bool:
+        """gr279770 sweep half: drop a ``candidate`` row that no longer
+        passes the current mint gates (a lint code landed since it was
+        staged, a live dispute arrived, or the hub is no longer a strict
+        claim hub). CAS on state, like every other flip here — a row that
+        moved off ``candidate`` between the sweep's read and this write
+        (e.g. a reviewer just approved it) is simply left alone.
+
+        Deletes rather than flips to a state, because a bare ``candidate``
+        row carries no frozen content to preserve (``approved_title`` /
+        ``claim_sha`` / grounding are all still NULL) and there is no
+        state in ``nanopub.state.STATES`` for "was staged, no longer
+        qualifies" that isn't either ``candidate`` itself or a human's
+        terminal ``rejected`` verdict — this is neither. Deleting returns
+        the hub to "unminted" (no live row), the exact precondition
+        :func:`precis.nanopub.mint.approve` already treats as "insert a
+        fresh row" — so the hub re-enters candidacy through the ordinary
+        staging path the moment it re-clears the gates, never tombstoned.
+        The caller is responsible for the audit trail (this is a bare
+        CRUD op, like :meth:`nanopub_reopen`)."""
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM nanopub_publish WHERE id = %s AND state = 'candidate'",
+                (row_id,),
+            )
+            return cur.rowcount == 1
+
+    def nanopub_candidate_regate_rows(self) -> list[CandidateRegateRow]:
+        """Every live ``state='candidate'`` row with the fields
+        :func:`precis.nanopub.stale.candidate_stale_reason` needs —
+        the sweep's read half. Same shape as ``health_digest``'s inline
+        query (:func:`precis.workers.health_digest._check_nanopub_candidates_fresh`),
+        duplicated rather than shared because that check must stay
+        SQL-only/import-light (no ``Store``) — see
+        :class:`CandidateRegateRow`."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT p.id, r.ref_id, r.title, p.artifact_type,
+                       EXISTS (
+                           SELECT 1 FROM links l
+                            JOIN refs pr ON pr.ref_id = l.src_ref_id
+                                        AND pr.retired_at IS NULL
+                           WHERE l.dst_ref_id = r.ref_id
+                             AND l.relation = 'contradicts'
+                       ) AS disputed,
+                       (EXISTS (
+                            SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                             WHERE rt.ref_id = r.ref_id
+                               AND (rt.expires_at IS NULL OR rt.expires_at > now())
+                               AND t.namespace = 'TAPROOT' AND t.value = 'claim'
+                        )
+                        AND EXISTS (
+                            SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                             WHERE rt.ref_id = r.ref_id
+                               AND (rt.expires_at IS NULL OR rt.expires_at > now())
+                               AND t.namespace = 'STATUS' AND t.value = 'canonical'
+                        )) AS canonical
+                  FROM nanopub_publish p
+                  JOIN refs r ON r.ref_id = p.claim_ref_id AND r.retired_at IS NULL
+                 WHERE p.state = 'candidate'
+                 ORDER BY p.id
+                """
+            ).fetchall()
+        return [
+            CandidateRegateRow(
+                publish_id=int(r[0]),
+                ref_id=int(r[1]),
+                title=str(r[2] or ""),
+                artifact_type=str(r[3]),
+                disputed=bool(r[4]),
+                canonical=bool(r[5]),
+            )
+            for r in rows
+        ]
 
     def nanopub_reopen_stuck_batch(self, batch_id: int) -> int:
         """Stuck-pending remedy: flip every ``anchored`` row bound to

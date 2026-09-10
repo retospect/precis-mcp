@@ -322,6 +322,24 @@ def _run_nanopub_mirror(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_nanopub_stale_sweep(store: Store, batch_size: int) -> None:
+    """One nanopub candidate re-gate sweep (gr279770's sweep half), fired
+    from the daily host-agnostic ``nanopub_stale_sweep`` cadence.
+    ``batch_size`` is unused — the pass re-gates every live ``candidate``
+    row each fire (the same bounded set ``health_digest``'s
+    ``staged_candidates_fresh`` check already reads whole). See
+    workers/nanopub_stale_sweep.py; no network, no LLM, purely local SQL."""
+    from precis.workers.nanopub_stale_sweep import run_nanopub_stale_sweep_pass
+
+    result = run_nanopub_stale_sweep_pass(store)
+    log.info(
+        "scheduler: nanopub_stale_sweep inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_structural(
     # test_scheduler_pass.py's wrapper-only unit test calls this directly
     # with a bare sentinel object() (the downstream pass is monkeypatched
@@ -609,6 +627,21 @@ CADENCES: tuple[Cadence, ...] = (
         name="parts_refresh",
         interval_s=24 * 3600 + 37 * 60,
         run=_run_parts_refresh,
+    ),
+    # gr279770's sweep half: re-gate every live `candidate` row against the
+    # current mint rules and discard the ones that no longer pass (a lint
+    # code landed since staging, or a live dispute arrived) — the filter
+    # half (54d47e8c) only badges them on the /nanopub queue, it never
+    # took a row out of candidacy, so health_digest's
+    # `staged_candidates_fresh` watchdog kept re-firing. Host-agnostic,
+    # daily, off the exact day boundary like the other three nanopub/
+    # catalog sweeps above so their fires don't land together. No
+    # `eligible` check: pure local SQL, nothing to gate on. spends=False:
+    # no LLM anywhere in the re-gate.
+    Cadence(
+        name="nanopub_stale_sweep",
+        interval_s=24 * 3600 + 41 * 60,
+        run=_run_nanopub_stale_sweep,
     ),
 )
 

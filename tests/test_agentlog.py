@@ -85,7 +85,13 @@ def test_get_omits_excerpt_for_non_string_result(hub: Hub) -> None:
 
     log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
     agentlog.finalize_log(
-        hub.live_store, log_id=log_id, status="failed", result={"not": "a string"}
+        hub.live_store,
+        log_id=log_id,
+        status="failed",
+        # Deliberately off-contract (finalize_log types result: str | None):
+        # the render guard must defend against non-str meta.result rows
+        # regardless of what today's writers accept.
+        result={"not": "a string"},  # type: ignore[arg-type]
     )
     body = AgentLogHandler(hub=hub).get(id=log_id).body
     assert "result:" not in body
@@ -107,7 +113,9 @@ def test_get_excerpt_is_truncated_to_exactly_400_chars(hub: Hub) -> None:
     from precis.handlers.agentlog import AgentLogHandler
 
     log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
-    agentlog.finalize_log(hub.live_store, log_id=log_id, status="failed", result="y" * 401)
+    agentlog.finalize_log(
+        hub.live_store, log_id=log_id, status="failed", result="y" * 401
+    )
     body = AgentLogHandler(hub=hub).get(id=log_id).body
     line = next(ln for ln in body.splitlines() if ln.startswith("result: "))
     excerpt = line[len("result: ") :].split(" … ", 1)[0]
