@@ -184,6 +184,10 @@ def test_a_swapped_fragments_own_scripts_still_run(
     shell = client.get("/nanopub")
     assert "const runScripts" in shell.text
     assert "runScripts(node)" in shell.text
+    # gr266043: script[src] executes once per src workbench-wide — re-running
+    # it every swap would re-fetch + re-register; skipping it outright would
+    # silently never run a fresh fragment's script.
+    assert "ranScriptSrcs" in shell.text
 
 
 def test_hub_page_shows_state_and_action(

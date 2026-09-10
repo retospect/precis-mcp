@@ -310,8 +310,18 @@
   // wiring (the evidence DAG's boxes stopped opening their detail card).
   // Re-create each script element so it runs; fragment scripts are
   // IIFE-wrapped, so re-running one on the next swap redeclares nothing.
+  // script[src] is different (gr266043): re-creating it would re-fetch and
+  // re-execute the file on EVERY swap (double registration), while skipping
+  // it outright would silently never run a fresh fragment's script — so an
+  // external script executes once per resolved src, workbench-wide, and
+  // later swaps drop the tag.
+  const ranScriptSrcs = new Set();
   const runScripts = node => {
     node.querySelectorAll("script").forEach(old => {
+      if (old.src) {
+        if (ranScriptSrcs.has(old.src)) { old.remove(); return; }
+        ranScriptSrcs.add(old.src);
+      }
       const s = document.createElement("script");
       for (const a of old.attributes) s.setAttribute(a.name, a.value);
       s.textContent = old.textContent;
