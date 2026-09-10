@@ -30,6 +30,7 @@ from precis.pcb.cost import (
     _via_count,
     aggregate_margin,
     alignment_pair_term,
+    board_area_term,
     crossings_term_for_layer,
     evaluate_cost,
     hardened_penalty,
@@ -223,6 +224,26 @@ def _two_instance_graph(xa: float, ya: float, xb: float, yb: float) -> dict:
             }
         ],
     }
+
+
+def test_board_area_fine_path_clamp_is_labelled_a_bound():
+    """gr267456 follow-up: when overlap makes the placed bounding box
+    smaller than the per-instance floor, the fine path substitutes the
+    admissible floor — and must say so (``TermValue.is_bound``: "never
+    hide this from the digest"), not assert a measurement."""
+    config = CostConfig()
+    floor = 2 * config.default_instance_area_mm2
+
+    ir = from_graph(_two_instance_graph(0.0, 0.0, 0.1, 0.1))
+    t = board_area_term(ir, Level.L3, config)
+    assert t.is_bound
+    assert t.raw == pytest.approx(floor * config.board_area_usd_per_mm2)
+
+    d = 2.0 * floor**0.5  # bbox area 4x the floor — a genuine measurement
+    ir_spread = from_graph(_two_instance_graph(0.0, 0.0, d, d))
+    t_spread = board_area_term(ir_spread, Level.L3, config)
+    assert not t_spread.is_bound
+    assert t_spread.raw > t.raw
 
 
 def test_courtyard_overlap_scores_worse_when_instances_coincide():

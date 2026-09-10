@@ -434,12 +434,28 @@ def board_area_term(ir: PcbIR, level: Level, config: CostConfig) -> TermValue:
         )
     xs = [ir.inst_x[i] for i in range(n) if not math.isnan(ir.inst_x[i])]
     ys = [ir.inst_y[i] for i in range(n) if not math.isnan(ir.inst_y[i])]
+    floor = n * config.default_instance_area_mm2
     if len(xs) < 1:
-        area = n * config.default_instance_area_mm2
+        area = floor
     else:
         w = max(xs) - min(xs)
         h = max(ys) - min(ys)
-        area = max(w * h, n * config.default_instance_area_mm2)
+        area = max(w * h, floor)
+    if area == floor:
+        # The per-instance floor is the operative value (no placed
+        # positions, or an overlapping placement whose bounding box fell
+        # below it) — that is the admissible bound substituted for a
+        # measurement, and TermValue.is_bound must say so (gr267456).
+        return TermValue(
+            "board_area",
+            Family.MONEY,
+            "board",
+            area * config.board_area_usd_per_mm2,
+            "fab price scales with panel area; the placed bounding box fell at or "
+            "below the per-instance floor (unplaced or overlapping instances), so "
+            "the admissible floor is reported, not a measurement",
+            is_bound=True,
+        )
     return TermValue(
         "board_area",
         Family.MONEY,
