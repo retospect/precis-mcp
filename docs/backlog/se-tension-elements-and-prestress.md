@@ -11,6 +11,16 @@ Design session 2026-09-05 (Reto + agent), precious-juggling-map worktree,
 from Reto's question: *"Do we understand springs and ropes
 (tensegrity)?"*
 
+**Status 2026-09-09: rungs 1, 2 and 4 SHIPPED** (`structural-solution-space.md`
+slice 1): kinematic class `axial` with the asymmetric capacity pair,
+`precis_se/stability.py` (equilibrium matrix + SVD → `m`/`s`, self-stress
+sign-feasibility, Pellegrino–Calladine second-order test, `view='stability'`),
+the tripwire satisfied by construction (`stability.TRIPWIRE_LINE`), the
+`cable` mechanism and the `fixed` support objective. Open: rung 3 (spring
+category), rung 5 (preload/prestress facet + bolted-joint load sharing),
+rung 6 (active-set load path). The §4 form-finding deferral is REOPENED —
+in-tree, outside se — by `structural-solution-space.md` (Reto, 2026-09-09).
+
 **Today: no.** Every kinematic class in the vocabulary is bilateral, and
 a rope is not; there is no spring rate anything reads; and there is no
 whole-structure mobility or stability analysis at all.

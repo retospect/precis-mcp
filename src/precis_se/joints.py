@@ -57,6 +57,14 @@ KINEMATIC_CLASSES: dict[str, str] = {
     "ball": "rotation about all axes through the joint point",
     "compliant": "motion with stiffness rather than freedom (flexure)",
     "captive": "interlocked, no mechanism (checked by clearance/connectivity)",
+    # ONE axial member, not tie/strut primitives (docs/backlog/
+    # se-tension-elements-and-prestress.md): the capacity pair decides —
+    # tension-only (rope/cable), compression-only (prop/contact), or a
+    # slender rod that is both, weakly. Pin-ended two-force member; its
+    # line of action is the block-to-block segment, DERIVED from the
+    # endpoint poses, so it takes no declared 'axis'. Consumed by
+    # :mod:`precis_se.stability` (view='stability'), not the DOF probe.
+    "axial": "pin-ended axial member — capacity pair decides tie/strut/rod",
 }
 
 #: Classes whose meaning includes an axis — for these, a declared ``axis``
@@ -95,6 +103,10 @@ MECHANISMS: dict[str, dict[str, Any]] = {
     },
     "bond": {"demands_relation": None},  # atomic scale: one covalent bond
     "integral": {"demands_relation": None},  # print-in-place, same body
+    # the article realizing an axial tie — a cable joint with nothing to
+    # buy is a drawing, not rigging (two-axis rule: the mechanism names
+    # the physical article, the class names what it does).
+    "cable": {"demands_relation": None, "demands_bom": "the cable / wire rope"},
 }
 
 _JOINT_KEYS = frozenset({"class", "axis", "mechanism", "params"})
@@ -160,6 +172,17 @@ def validate_joint(raw: dict[str, Any]) -> dict[str, Any]:
             )
         if params_raw:
             out["params"] = _vet_params(dict(params_raw))
+    if klass == "axial":
+        params = out.get("params", {})
+        tension = params.get("tension_capacity")
+        compression = params.get("compression_capacity")
+        if tension == 0.0 and compression == 0.0:
+            raise JointError(
+                "an axial member with tension_capacity 0 AND "
+                "compression_capacity 0 carries nothing — a tie has "
+                "compression_capacity 0, a strut tension_capacity 0, a "
+                "slender rod both > 0"
+            )
     return out
 
 
@@ -196,6 +219,47 @@ def _vet_params(params: dict[str, Any]) -> dict[str, Any]:
                 "0.001, i.e. 1 mm of travel per turn"
             )
         params["lead"] = lead_m
+    # axial-member params (class 'axial'; contract-classed — consumed by
+    # precis_se.stability). Sign convention: member force tension-positive,
+    # so 'preload' may be negative (a strut is pre-compressed); both
+    # capacities are magnitudes ≥ 0.
+    for key, unit, allow_zero in (
+        ("free_length", "metres", False),
+        ("rate", "N/m", False),
+        ("tension_capacity", "newtons", True),
+        ("compression_capacity", "newtons", True),
+    ):
+        val = params.get(key)
+        if val is None:
+            continue
+        try:
+            num = float(val)
+        except (TypeError, ValueError) as exc:
+            raise JointError(
+                f"joint param {key!r} must be a number ({unit}), got {val!r}"
+            ) from exc
+        floor_ok = num >= 0.0 if allow_zero else num > 0.0
+        if not math.isfinite(num) or not floor_ok:
+            bound = "≥ 0" if allow_zero else "> 0"
+            raise JointError(
+                f"joint param {key!r} must be a number {bound} ({unit}), got {val!r}"
+            )
+        params[key] = num
+    preload = params.get("preload")
+    if preload is not None:
+        try:
+            preload_n = float(preload)
+        except (TypeError, ValueError) as exc:
+            raise JointError(
+                f"joint param 'preload' must be a number (newtons, "
+                f"tension-positive), got {preload!r}"
+            ) from exc
+        if not math.isfinite(preload_n):
+            raise JointError(
+                f"joint param 'preload' must be a finite number (newtons, "
+                f"tension-positive), got {preload!r}"
+            )
+        params["preload"] = preload_n
     return params
 
 
@@ -207,6 +271,8 @@ OBJECTIVE_KEYS: dict[str, str] = {
     "torque": "torque vector [x, y, z], newton-metres",
     "duty": "prose duty description ('pushed around a workshop daily')",
     "cycles": "expected load cycles (number ≥ 0)",
+    "fixed": "support: grounded translations — true (all three) or a "
+    "subset list from 'x'|'y'|'z' (blocks only; read by view='stability')",
 }
 
 
@@ -250,4 +316,22 @@ def validate_objectives(raw: dict[str, Any]) -> dict[str, Any]:
                 f"objective 'cycles' must be a number ≥ 0, got {raw['cycles']!r}"
             )
         out["cycles"] = cycles
+    if raw.get("fixed") is not None:
+        out["fixed"] = _vet_fixed(raw["fixed"])
     return out
+
+
+def _vet_fixed(raw: Any) -> list[str]:
+    """Normalize the ``fixed`` support declaration to a sorted axis list.
+    ``True`` means all three translations; a list names a subset. ``False``
+    /empty is rejected — an unsupported block just omits the key."""
+    if raw is True:
+        return ["x", "y", "z"]
+    if isinstance(raw, (list, tuple)):
+        axes = sorted({str(a).strip().lower() for a in raw})
+        if axes and all(a in ("x", "y", "z") for a in axes):
+            return axes
+    raise JointError(
+        f"objective 'fixed' must be true or a non-empty subset of "
+        f"['x','y','z'], got {raw!r} — omit the key for an unsupported block"
+    )

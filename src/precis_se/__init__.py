@@ -100,6 +100,24 @@ coarse plus the house ``d + 0.2`` rule), the same file-not-a-table
 posture as :mod:`precis.component_series` (whose ISO fastener tables the
 cad catalog also reads since 2026-09-06 — one transcription, not three).
 
+**Tension rungs 1+4** (docs/backlog/se-tension-elements-and-prestress.md,
+docs/backlog/structural-solution-space.md slice 1) add the unilateral
+member and the whole-structure verdict: kinematic class ``axial`` — ONE
+pin-ended member whose params capacity pair
+(``tension_capacity``/``compression_capacity``, + ``free_length``/
+``rate``/``preload``) decides tie/strut/rod, no declared axis (its line
+of action is derived from the endpoint poses) — the ``cable`` mechanism
+(demands a BOM line), the ``fixed`` support objective on blocks, and
+:mod:`precis_se.stability` (``view='stability'``): Maxwell/Calladine
+``m − s`` counting off one SVD of the equilibrium matrix, self-stress
+sign-feasibility against the capacity pairs, and the Pellegrino–Calladine
+second-order test → rigid / mechanism / **prestress-stabilized**, over
+the axial subgraph only (pin nodes at block poses — the honesty header
+says so). The DOF probe reports ``axial`` as an honest skip; capacity
+findings fold into ``view='drc'``. This satisfies the two-party mobility
+tripwire contract by construction (the fallback line is
+``stability.TRIPWIRE_LINE``, verbatim).
+
 A `component` binding additionally **projects onto a ``realized-by``
 link** on every save (``persist.sync_realized_by``, migration 0156's
 realization edge, the same one cad writes for its ``part`` lines). The

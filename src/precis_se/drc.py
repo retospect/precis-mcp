@@ -37,6 +37,7 @@ from precis.cad.graph import Design as CadDesign
 from precis_se import fasten as se_fasten
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
+from precis_se import stability as se_stability
 from precis_se.measures import StackupResult, stackup
 from precis_se.ops import SeBlock, SeTree, effective_envelope
 from precis_se.validate import (
@@ -348,6 +349,19 @@ def drc(tree: SeTree) -> DrcReport:
                 )
             )
 
+    # 4b. axial-member capacity checks (the unilateral rung-1 members —
+    # graph-tier only; the whole-structure rigid/mechanism/prestress
+    # verdict is view='stability').
+    for subject, detail in se_stability.capacity_findings(tree):
+        findings.append(
+            ValidationIssue(
+                rule="axial_capacity",
+                subject=subject,
+                detail=detail,
+                severity="warn",
+            )
+        )
+
     # 5. measures graph: a measure on a block that doesn't exist, and the
     # stack-up problems (dangling/cyclic relation = error; declared-vs-
     # derived mismatch = warn — the numbers disagree, the graph is intact).
@@ -472,6 +486,17 @@ def drc(tree: SeTree) -> DrcReport:
         except se_joints.JointError:
             continue  # already a malformed_joint finding above
         klass = joint["class"]
+        if klass == "axial":
+            # unilateral — active/inactive depends on the load, so an
+            # axis-travel expectation is undefined for it (declared
+            # honesty, not a gap): the whole-structure answer lives in
+            # view='stability'.
+            probes.append(
+                DofProbe(
+                    subject, klass, "skipped — unilateral member; see view='stability'"
+                )
+            )
+            continue
         if klass not in (_PROBE_BOUNDED | _PROBE_FREE):
             continue
         axis = joint.get("axis")

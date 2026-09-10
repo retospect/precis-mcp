@@ -513,7 +513,7 @@ def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
     if (a_block, a_port) == (b_block, b_port):
         raise OpError(f"connect: cannot connect {a_raw!r} to itself")
     joint = _vet_joint(op.get("joint"), opname="connect")
-    objectives = _vet_objectives(op.get("objectives"), opname="connect")
+    objectives = _vet_objectives(op.get("objectives"), opname="connect", edge=True)
     _resolve_connect_port(tree, a_block, a_port, what="connect")
     _resolve_connect_port(tree, b_block, b_port, what="connect")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
@@ -564,11 +564,21 @@ def _vet_joint(raw: Any, *, opname: str) -> dict[str, Any] | None:
         raise OpError(f"{opname}: {exc}") from exc
 
 
-def _vet_objectives(raw: Any, *, opname: str) -> dict[str, Any] | None:
+def _vet_objectives(
+    raw: Any, *, opname: str, edge: bool = False
+) -> dict[str, Any] | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise OpError(f"{opname} 'objectives' must be a JSON object, got {raw!r}")
+    if edge and raw.get("fixed") is not None:
+        # reject on EVERY edge write path, not just set_load — a stored
+        # 'fixed' on a connect is read by nothing (the swallowed-facet
+        # lesson, reviewer finding 2026-09-09).
+        raise OpError(
+            f"{opname}: 'fixed' grounds a BLOCK's translations (stability "
+            "supports) — it has no meaning on a connect"
+        )
     try:
         return se_joints.validate_objectives(raw)
     except se_joints.JointError as exc:
@@ -646,7 +656,7 @@ def _op_set_load(tree: SeTree, op: dict[str, Any]) -> None:
                 f"set_load needs at least one of {known} (or clear=true "
                 "to remove loads)"
             )
-        vetted = _vet_objectives(given, opname="set_load")
+        vetted = _vet_objectives(given, opname="set_load", edge=not has_block)
         objectives = vetted or {}
     if has_block:
         name = _require_name(op, "block", "set_load")

@@ -78,6 +78,7 @@ from precis_se import freedom as se_freedom
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
 from precis_se import persist
+from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
@@ -107,16 +108,24 @@ class SeHandler(Handler):
             "remove_note); "
             "get lists designs or renders one (view='tree'|'block'|"
             "'ports'|'measures'|'validate'|'clearance'|'drc'|'bom'|"
-            "'interview'|'freedom'; block takes "
+            "'interview'|'freedom'|'stability'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes); delete soft-retires; search finds "
             "by intent. connect wires two 'block.port' endpoints; a "
             "joint= is {'class': rigid|revolute|prismatic|cylindrical|"
-            "planar|ball|compliant|captive, 'axis'?, 'mechanism'?: snap|"
-            "screw|press|key|magnet|bearing|bond|integral, 'params'?}. "
+            "planar|ball|compliant|captive|axial, 'axis'?, 'mechanism'?: "
+            "snap|screw|press|key|magnet|bearing|bond|integral|cable, "
+            "'params'?}. 'axial' is a pin-ended member whose params "
+            "capacity pair decides tie/strut/rod (tension_capacity/"
+            "compression_capacity N, free_length m, rate N/m, preload N "
+            "tension-positive); view='stability' runs Maxwell/Calladine "
+            "over the axial members (rigid / mechanism / "
+            "prestress-stabilized, self-stress state reported). "
             "Loads (set_load): force/torque 3-vectors (N, N·m), duty, "
-            "cycles, on blocks or connects. Measures (add_measure; "
+            "cycles, on blocks or connects; fixed=true|['x','y','z'...] "
+            "on a block grounds its translations (stability supports). "
+            "Measures (add_measure; "
             "unit m default | count | ratio | deg) carry tolerance "
             "RELATIONS between named measures ({'source':"
             "'block.measure','scale':<×, default 1>,'offset','tol'} + "
@@ -376,6 +385,8 @@ class SeHandler(Handler):
             return Response(body=_render_interview(tree))
         if v == "freedom":
             return Response(body=_render_freedom(tree))
+        if v == "stability":
+            return Response(body=_render_stability(tree))
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
@@ -386,7 +397,9 @@ class SeHandler(Handler):
             "arrays, with cost/mass) | view='fasten' (screw joints: grip "
             "stack-up, clearance holes, thread lead) | view='interview' "
             "(the question/answer/decision ledger, open questions first) "
-            "| view='freedom' (what is still undecided, and by whom)",
+            "| view='freedom' (what is still undecided, and by whom) "
+            "| view='stability' (Maxwell/Calladine rigid / mechanism / "
+            "prestress-stabilized over the axial members)",
         )
 
     def _render_bom(self, tree: SeTree) -> str:
@@ -1223,6 +1236,56 @@ def _render_drc(tree: SeTree) -> str:
                 schema=["measure", "declared", "derived", "chain", "status"],
             )
         )
+    return "\n".join(lines)
+
+
+def _render_stability(tree: SeTree) -> str:
+    """``view='stability'`` — the Maxwell/Calladine report
+    (:mod:`precis_se.stability`): counts, verdict, and the per-member
+    self-stress state, under the model-assumption header (pin nodes at
+    block poses, axial subgraph only — the honesty the tripwire contract
+    demands)."""
+    report = se_stability.classify(tree)
+    lines = [
+        "# stability — axial subgraph (Maxwell/Calladine)",
+        "model: one pin node per block at its pose; pin-ended axial "
+        "members only — non-axial connects and envelope contact are NOT "
+        "modelled",
+        "",
+        f"j={report.j} node(s)  b={report.b} member(s)  c={report.c} "
+        f"grounded translation(s)  rank={report.rank}",
+        f"m={report.m} mechanism(s) (rb={report.rb_dim} rigid-body, "
+        f"internal={report.m_internal})  s={report.s} self-stress state(s)",
+        "",
+        f"verdict: {report.verdict}",
+    ]
+    for note in report.notes:
+        lines.append(f"note: {note}")
+    if report.members:
+        lines.append("")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "member": row.subject,
+                        "role": row.role,
+                        "length": "—" if row.length is None else f"{row.length:g} m",
+                        "self_stress": "—"
+                        if row.self_stress is None
+                        else f"{row.self_stress:+.3f}",
+                        "note": row.skipped or "",
+                    }
+                    for row in report.members
+                ],
+                schema=["member", "role", "length", "self_stress", "note"],
+            )
+        )
+        if any(row.self_stress is not None for row in report.members):
+            lines.append(
+                "self_stress: tension-positive coefficients of the "
+                "reported state, normalized to the largest magnitude — "
+                "a ray, so only ratios and signs mean anything"
+            )
     return "\n".join(lines)
 
 
