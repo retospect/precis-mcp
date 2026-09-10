@@ -27,6 +27,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from precis.alerts import OPS_ALERT_TARGET_ENV, list_open_alerts, raise_alert
 from precis.store.types import Tag
@@ -39,6 +40,7 @@ from precis.workers.health_digest import (
     _cadence_staleness_checks,
     _check_chunks_extracted,
     _check_claim_hub_dedup_index,
+    _check_hosts_alive,
     _diagnose_embed_pipeline,
     _idle_aware_backlog_checks,
     _layer1_checks,
@@ -1027,6 +1029,70 @@ def test_hosts_alive_limit_matches_nursery_host_dark_limit() -> None:
     nursery_src = inspect.getsource(nursery._detect_host_dark)
     assert "LIMIT 50" in hd_src
     assert "LIMIT 50" in nursery_src
+
+
+# ── (gr333066) hosts_alive excludes ephemeral job-container identities ──
+
+
+def _seed_hosts_alive_worker_log(store, host: str, *, hours_ago: float) -> None:
+    """A ``worker_logs`` row for ``host`` inside the check's lookback window
+    — required for the ``EXISTS`` clause in ``_check_hosts_alive``'s SQL."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, level, logger, message) "
+            "VALUES (now() - (%s || ' hours')::interval, %s, 'precis-worker', "
+            "'INFO', 'precis.workers.embed', 'worker: embed claimed=0 ok=0 failed=0')",
+            (hours_ago, host),
+        )
+        conn.commit()
+
+
+def _seed_hosts_alive_heartbeat(
+    store, host: str, *, minutes_ago: float, meta: dict | None = None
+) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval, %s::jsonb) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts, meta = EXCLUDED.meta",
+            (host, minutes_ago, json.dumps(meta or {})),
+        )
+        conn.commit()
+
+
+def test_hosts_alive_ignores_container_id_shape_without_ephemeral_stamp(
+    store,
+) -> None:
+    """gr333066: mirrors
+    ``test_nursery.py::test_host_dark_ignores_container_id_shape_without_ephemeral_stamp``.
+    A stale-heartbeat host shaped like a 12-hex Docker container ID (no
+    ``meta.ephemeral`` stamp at all) must not surface as a hosts_alive
+    finding — the identity shape alone excludes it."""
+    host = uuid4().hex[:12]
+    _seed_hosts_alive_worker_log(store, host, hours_ago=1)
+    _seed_hosts_alive_heartbeat(
+        store, host, minutes_ago=health_digest._HOSTS_ALIVE_SILENCE_MIN + 5
+    )
+
+    with store.pool.connection() as conn:
+        result = _check_hosts_alive(conn)
+    assert result.status == "ok"
+    assert host not in result.detail
+
+
+def test_hosts_alive_still_fires_for_named_host_not_marked_ephemeral(store) -> None:
+    """The complement: an identical stale row for a real, named host still
+    fires — the exclusion is scoped to ephemeral/container identities."""
+    host = f"th-{uuid4().hex[:8]}"
+    _seed_hosts_alive_worker_log(store, host, hours_ago=1)
+    _seed_hosts_alive_heartbeat(
+        store, host, minutes_ago=health_digest._HOSTS_ALIVE_SILENCE_MIN + 5
+    )
+
+    with store.pool.connection() as conn:
+        result = _check_hosts_alive(conn)
+    assert result.status == "stale"
+    assert host in result.detail
 
 
 # ── end-to-end smoke ──────────────────────────────────────────────────────

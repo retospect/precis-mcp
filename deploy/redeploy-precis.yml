@@ -501,6 +501,19 @@
 - name: "Refresh serving-host heartbeat    (heartbeat-only worker, no queue claims)"
   ansible.builtin.import_playbook: playbooks/20c-precis-heartbeat-serving.yml
 
+# gr333210: the inbox watcher's unit definition (com.precis.watch plist /
+# precis-watch.service) used to only be re-rendered by a standalone,
+# by-hand `ansible-playbook playbooks/28-precis-watch.yml` run — never by
+# this redeploy. c6c386a3 (v8.33.0) renamed the watcher CLI `precis watch`
+# -> `precis ingest --watch` and fixed the role's templates, but every
+# redeploy kept upgrading /opt/precis/venv while the on-disk unit still
+# invoked the old subcommand, crash-looping the watcher for 10 days before
+# anyone ran 28 by hand. Must follow 20b (see this playbook's own header:
+# "precis_worker (20) must run first — it provisions /opt/precis/venv which
+# precis_watch reuses" — 20b is that provisioning play's successor).
+- name: "Refresh inbox watcher unit        (precis_watch — reuses /opt/precis/venv; gr333210)"
+  ansible.builtin.import_playbook: playbooks/28-precis-watch.yml
+
 # Dedicated GPU/compute worker lane on the GPU node — a second tiny
 # `--only job_ssh_node` worker so node-pinned detached GPU jobs (autocatpath
 # seeds, dft gpaw_relax) drain at compute-completion speed instead of once

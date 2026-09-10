@@ -701,10 +701,13 @@ def _launch_build(
             "env — the container can't authenticate Claude",
         )
         return
-    # podman passes the token by KEY only (value inherited from this process's
-    # env, never argv). Populate env from the vault when it's not already there
-    # so the key-only inheritance works post-cutover (secrets vault).
-    os.environ.setdefault("CLAUDE_CODE_OAUTH_TOKEN", _oauth)
+    # podman passes the token by KEY only (value inherited from the
+    # SUBPROCESS's env — see the ``subprocess.run(..., env=...)`` call
+    # below). Deliberately NEVER pinned into this (long-lived daemon)
+    # process's ``os.environ``: ``get_secret`` resolves the env leg BEFORE
+    # the vault leg (gr333244), so a ``setdefault`` here would make the
+    # first-resolved value shadow every later vault rotation until the
+    # daemon restarts. Re-resolved fresh on every launch instead.
 
     wall_seconds = int(_sandbox_run.resolve_wall_seconds(params) or 0)
     image = params.get("image") or _sandbox_run.default_image()
@@ -771,7 +774,19 @@ def _launch_build(
         pids_limit=pids_limit,
         network=network,
     )
-    res = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    # The token is passed ONLY here — the subprocess's env, never this
+    # process's ``os.environ`` (see the comment above): the key-only
+    # ``--env CLAUDE_CODE_OAUTH_TOKEN`` in ``argv`` inherits from whatever
+    # env dict this call passes, so a freshly-resolved value reaches the
+    # container even if the vault rotated since the last launch.
+    res = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env={**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": _oauth},
+    )
     if res.returncode != 0:
         if read_mcp_pid is not None:
             _sandbox_read_mcp.reap_read_mcp(read_mcp_pid)

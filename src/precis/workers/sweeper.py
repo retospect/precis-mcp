@@ -90,7 +90,11 @@ from precis.workers.executors._common import (
     release_job_reservation,
     set_meta,
 )
-from precis.workers.nursery import DEAD_WORKER_SILENCE_MIN, WORKER_CONTINUOUS_PROCESSES
+from precis.workers.nursery import (
+    DEAD_WORKER_SILENCE_MIN,
+    HOST_DARK_SILENCE_MIN,
+    WORKER_CONTINUOUS_PROCESSES,
+)
 from precis.workers.runner import BatchResult
 
 if TYPE_CHECKING:
@@ -550,12 +554,27 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     Also resolves any open ``scheduler`` alert whose fingerprint isn't in
     this pass's live set — the job left ``STATUS:queued`` or the capability
     got advertised — so alerts don't accumulate forever (gr254322).
+
+    gr333205: a ``resource_slots`` row is only retracted by the retract-
+    on-absent discipline inside a *running* heartbeat pass — a daemon that's
+    retired outright (host decommissioned, or just stops heartbeating)
+    leaves its last advertisement frozen forever, since nothing ever runs
+    the retraction for it again. That fossil can silently suppress this
+    exact alert (the capability still reads as "advertised somewhere"), so
+    the ``advertised`` set here is filtered to hosts with a fresh
+    ``host_heartbeat`` row — same :data:`HOST_DARK_SILENCE_MIN` cutoff
+    ``nursery._detect_host_dark`` uses to call a host dark (mirrored on the
+    ``/factory`` UI's ``_STALE_AFTER_S`` = 600s "alive" cutoff), so a host
+    merely quiet between heartbeats (default 60s pacing) never trips this.
     """
     with store.pool.connection() as conn:
         advertised = {
             str(r[0])
             for r in conn.execute(
-                "SELECT DISTINCT resource FROM resource_slots"
+                "SELECT DISTINCT rs.resource FROM resource_slots rs "
+                "JOIN host_heartbeat hh ON hh.host = rs.host "
+                "WHERE hh.ts > now() - %(silence)s::interval",
+                {"silence": f"{HOST_DARK_SILENCE_MIN} minutes"},
             ).fetchall()
         }
         rows = conn.execute(

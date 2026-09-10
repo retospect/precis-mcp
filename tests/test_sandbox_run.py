@@ -678,6 +678,102 @@ def test_launch_records_container_and_deadline(store: Store, sandbox_env: Path) 
     assert (work / "PROMPT.md").exists()
 
 
+# ── secret hygiene: fresh-per-launch token, never pinned into the
+# daemon env (gr333244) ──────────────────────────────────────────────
+#
+# ``secrets.get_secret`` resolves the env leg BEFORE the vault leg — a
+# ``setdefault`` into ``os.environ`` at launch time would make the first-
+# resolved value shadow every later vault rotation until the daemon
+# restarts. The fix: resolve fresh every launch, and hand the token to
+# the podman subprocess ONLY via its ``env=`` kwarg, never the process's
+# own environ.
+
+
+def _capture_launch_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, str] | None]:
+    """Spy on the ``podman run`` (launch) subprocess call and record the
+    ``env=`` kwarg it was given, while still delegating to the real
+    ``subprocess.run`` so the stub-podman flow behaves normally. Other
+    subprocess calls (``inspect`` / ``kill`` / ``rm`` / ``logs``) pass
+    straight through untouched."""
+    import subprocess as _subprocess
+
+    captured: list[dict[str, str] | None] = []
+    real_run = _subprocess.run
+
+    def fake_run(argv: list[str], **kwargs: Any) -> Any:
+        if len(argv) > 1 and argv[1] == "run":
+            captured.append(kwargs.get("env"))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(claude_docker.subprocess, "run", fake_run)
+    return captured
+
+
+def _fake_vault_token(monkeypatch: pytest.MonkeyPatch, box: dict[str, str]) -> None:
+    """Route ``CLAUDE_CODE_OAUTH_TOKEN`` resolution to ``box["token"]``
+    (mutable — tests rotate it between launches), everything else through
+    the real :func:`precis.secrets.get_secret`."""
+    from precis import secrets as secrets_mod
+
+    real_get_secret = secrets_mod.get_secret
+
+    def fake(name: str, *, store: Any = None, default: str | None = None) -> str | None:
+        if name == "CLAUDE_CODE_OAUTH_TOKEN":
+            return box["token"]
+        return real_get_secret(name, store=store, default=default)
+
+    monkeypatch.setattr(secrets_mod, "get_secret", fake)
+
+
+def test_launch_does_not_mutate_daemon_environ(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A launch must never pin the resolved token into ``os.environ`` —
+    that's exactly the gr333244 bug (a ``setdefault`` there shadows every
+    later vault rotation for the rest of the daemon's life)."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _fake_vault_token(monkeypatch, {"token": "vault-token-1"})
+    captured = _capture_launch_env(monkeypatch)
+
+    jid = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)
+
+    assert _status(store, jid) == "running"
+    assert len(captured) == 1
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in os.environ
+
+
+def test_launch_passes_freshly_resolved_token_per_subprocess_env(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two launches, with the vault-backed token rotated in between: each
+    subprocess env must carry the value that was current at ITS launch —
+    never a value pinned by the first."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    box = {"token": "vault-token-1"}
+    _fake_vault_token(monkeypatch, box)
+    captured = _capture_launch_env(monkeypatch)
+
+    j1 = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    assert _status(store, j1) == "running"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in os.environ
+
+    box["token"] = "vault-token-2"  # simulate a rotation (gr329258)
+
+    j2 = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    assert _status(store, j2) == "running"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in os.environ
+
+    assert len(captured) == 2
+    env1, env2 = captured
+    assert env1 is not None and env1["CLAUDE_CODE_OAUTH_TOKEN"] == "vault-token-1"
+    assert env2 is not None and env2["CLAUDE_CODE_OAUTH_TOKEN"] == "vault-token-2"
+
+
 # ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
 #
 # claude_docker._launch spawns a raw `claude` CLI in the container whose

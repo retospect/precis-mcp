@@ -738,6 +738,69 @@ def test_title_boost_ubiquitous_token_alone_does_not_bypass_coverage_bar(
     assert "title match" not in out.body, out.body
 
 
+# ── boundary pins for the DF-aware bypass cluster (gr333204) ───────────
+#
+# The three tests below each isolate one edge of
+# ``if not single and not rare_identity_hit and (len(matched) < 2 or
+# coverage < 0.7): continue`` that the tests above exercise only in
+# combination with other true/false legs, so a mutant on one leg can
+# still pass because a different leg already forces the same outcome.
+
+
+def test_title_boost_df_exactly_one_bypasses_but_df_two_does_not(
+    skill: SkillHandler,
+) -> None:
+    """``rare_identity_hit`` must fire on catalogue identity-DF ==
+    *exactly* 1, not "not 1" or "exactly 2" — a mutant on either the
+    ``==`` or the ``1`` would make a DF==2 word bypass identically to a
+    genuine DF==1 word. "pagination" is DF==1 (only
+    ``precis-search-help``'s title carries it); "gripe" is DF==2
+    (``precis-gripe-help`` and ``precis-fix-gripe-help`` both do). Both
+    queries pad the same way to well under the 70% coverage bar and
+    below the 2-word-match floor, so only the DF==1 bypass can explain
+    a difference in outcome.
+    """
+    out = skill.search(q="pagination banana orange grape mango kiwi")
+    assert "title match" in out.body, out.body
+
+    out = skill.search(q="gripe banana orange grape mango kiwi")
+    assert "title match" not in out.body, out.body
+
+
+def test_title_boost_single_word_query_bypasses_bar_for_a_common_identity_word(
+    skill: SkillHandler,
+) -> None:
+    """The single-word exemption (``not single`` short-circuits the
+    whole bar) must hold even when the query word is *not* a rare
+    (DF==1) identity token — "gripe" is DF==2, so this can't pass by
+    accident via the rare-identity bypass; only the single-word
+    exemption explains the boost. Distinct from
+    ``test_single_word_query_pins_named_skill``, which only checks the
+    slug ranks somewhere and would still pass off a bare lexical hit if
+    the boost never fired.
+    """
+    out = skill.search(q="gripe")
+    assert "title match" in out.body, out.body
+
+
+def test_title_boost_two_word_match_at_full_coverage_beats_one_word_match(
+    skill: SkillHandler,
+) -> None:
+    """``len(matched) < 2`` is the exact floor: two matched words at
+    full coverage clears the OR (both legs false) and boosts; one
+    matched word at reduced coverage trips ``matched < 2`` and is
+    blocked. Both queries share the same identity tokens ("gripe",
+    "resolve" — both DF > 1, so the rare-identity bypass can't explain
+    a difference) and the same padding shape, isolating the matched-
+    count boundary from the coverage leg.
+    """
+    out = skill.search(q="gripe resolve")
+    assert "title match" in out.body, out.body
+
+    out = skill.search(q="gripe extra words")
+    assert "title match" not in out.body, out.body
+
+
 # ── search hides unwired skills + surfaces escalation hint ───────────
 
 

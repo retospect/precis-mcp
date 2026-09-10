@@ -999,10 +999,19 @@ _HOSTS_ALIVE_LOOKBACK_DAYS = 30
 
 
 def _check_hosts_alive(conn: Any) -> CheckResult:
+    # Excludes ephemeral job-container identities (gr333066), mirroring
+    # nursery._detect_host_dark's two-layer guard (gr306275 + gr331348): the
+    # cooperative `meta.ephemeral` stamp, plus a non-cooperative belt on the
+    # identity *shape* itself (a 12-hex host is a Docker container ID
+    # regardless of who wrote it). The regex is inlined rather than shared
+    # from `heartbeat._CONTAINER_ID_RE` — this check must not depend on the
+    # module it watches, same rationale as nursery's copy.
     sql = """
         SELECT hh.host, hh.ts
           FROM host_heartbeat hh
          WHERE hh.ts < now() - (%(silence)s || ' minutes')::interval
+           AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
+           AND hh.host !~ '^[0-9a-f]{12}$'
            AND EXISTS (
                SELECT 1 FROM worker_logs wl
                 WHERE wl.host = hh.host
@@ -1038,7 +1047,7 @@ def _check_hosts_alive(conn: Any) -> CheckResult:
         "hosts_alive",
         "stale",
         f"hosts alive: {names} dark >{_HOSTS_ALIVE_SILENCE_MIN}min "
-        "(nursery host-dark already paging; see its alert for detail)",
+        "per heartbeat (see nursery's host-dark alert if one is open)",
         _WARN,
     )
 
