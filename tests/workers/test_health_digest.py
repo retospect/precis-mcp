@@ -701,15 +701,17 @@ def test_claim_hub_dedup_index_reports_no_hubs_yet_for_a_bare_chase_finding(
 
 
 def test_mint_blocking_codes_copy_is_pinned() -> None:
-    """health_digest cannot import ``nanopub.gates`` (llm-tainted via
-    ``nanopub.evidence`` → ``taproot.seniority`` → ``taproot.canon``), so it
-    carries a literal copy of the blocking lint set — and this test is what
-    keeps the copy honest when the gate set drifts (which is exactly the
-    drift the check exists to catch)."""
-    from precis.nanopub import gates
+    """Neither ``health_digest`` nor the ``/nanopub`` web route can import
+    ``nanopub.gates`` (llm-tainted via ``nanopub.evidence`` →
+    ``taproot.seniority`` → ``taproot.canon``), so ``precis.nanopub.stale``
+    — the one shared copy both read — carries a literal copy of the
+    blocking lint set. This test is what keeps that copy honest when the
+    gate set drifts (which is exactly the drift the check exists to
+    catch)."""
+    from precis.nanopub import gates, stale
 
-    assert health_digest._MINT_BLOCKING_LINT_CODES == gates._BLOCKING_LINT_CODES
-    assert health_digest._MINT_LINT_EXEMPTIONS == gates._ARTIFACT_LINT_EXEMPTIONS
+    assert stale.BLOCKING_LINT_CODES == gates._BLOCKING_LINT_CODES
+    assert stale.LINT_EXEMPTIONS == gates._ARTIFACT_LINT_EXEMPTIONS
 
 
 def test_nanopub_candidates_fresh_ok_when_clean(store) -> None:

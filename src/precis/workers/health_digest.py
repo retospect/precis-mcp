@@ -91,15 +91,13 @@ from precis.alerts import (
     raise_alert,
     resolve_stale_alerts,
 )
-from precis.store import Store
 
-# Pure-Python lints only — both modules import nothing but ``re``/``typing``
-# (no ``llm``, direct or transitive; the module-level invariant above). The
-# blocking-code SET they are filtered with is the pinned literal copy
-# ``_MINT_BLOCKING_LINT_CODES`` below — ``nanopub.gates`` itself is
-# llm-tainted and must not be imported here.
-from precis.taproot.notation import lint_notation
-from precis.taproot.sentence_lint import lint_claim_sentence
+# precis.nanopub.stale is the shared llm-free staleness predicate for a
+# staged nanopub candidate (:func:`_check_nanopub_candidates_fresh` below);
+# see that module's docstring for why ``nanopub.gates`` itself can't be
+# imported here.
+from precis.nanopub.stale import candidate_stale_reason
+from precis.store import Store
 from precis.workers.registry import SERVICES, ServiceKind, ServiceSpec
 from precis.workers.runner import BatchResult
 from precis.workers.scheduler import CADENCES
@@ -140,49 +138,6 @@ _WARN = "warn"
 #: own ``_SPIN_LOOP_EVENTS_24H`` mirror: this pass must not grow a
 #: dependency on the subsystems it watches just to read one threshold/tuple).
 _TAPROOT_HUB_ROLES = ("establishes", "corroborates", "contradicts")
-
-#: Literal copy of ``precis.nanopub.gates._BLOCKING_LINT_CODES`` (and the
-#: exemption map below it) for :func:`_check_nanopub_candidates_fresh`.
-#: ``nanopub.gates`` is unimportable here — it reaches ``taproot.canon`` →
-#: ``llm.router`` via ``nanopub.evidence`` → ``taproot.seniority``, and this
-#: module asserts no ``llm`` import, direct or transitive. The pure lint
-#: modules (``sentence_lint``/``notation``) are llm-free and imported
-#: directly; only the code SET is duplicated. Pinning the copy equal to the
-#: original is what keeps the check honest — it exists precisely because the
-#: set drifts under staged rows, so
-#: ``tests/workers/test_health_digest.py::test_mint_blocking_codes_copy_is_pinned``
-#: asserts equality (a test may import gates; this module may not).
-_MINT_BLOCKING_LINT_CODES: frozenset[str] = frozenset(
-    {
-        "not-falsifiable",
-        "dangling-reference",
-        "multi-assertion",
-        "no-evidence-verb",
-        "no-epistemic-mode",
-        "over-long",
-        "author-name",
-        "no-terminal-period",
-        "em-dash",
-        "past-passive",
-        "ascii-plusminus",
-        "ascii-micro",
-        "ascii-degrees",
-        "ascii-ohm",
-        "ascii-angstrom",
-        "ascii-micrometre",
-        "e-notation",
-        "digit-grouping",
-        "ascii-multiplication",
-        "ascii-x-multiplier",
-        "hyphen-numeric-range",
-        "caret-exponent",
-        "ascii-minus-exponent",
-        "tex-residue",
-    }
-)
-_MINT_LINT_EXEMPTIONS: dict[str, frozenset[str]] = {
-    "hypothesis": frozenset({"no-epistemic-mode", "no-evidence-verb"}),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -896,21 +851,14 @@ def _check_nanopub_candidates_fresh(conn: Any) -> CheckResult:
         )
     stale: list[str] = []
     for ref_id, title, artifact_type, disputed, canonical in rows:
-        if not canonical:
-            stale.append(f"fi{int(ref_id)}(noncanonical)")
-            continue
-        if disputed:
-            stale.append(f"fi{int(ref_id)}(disputed)")
-            continue
-        blocking = _MINT_BLOCKING_LINT_CODES - _MINT_LINT_EXEMPTIONS.get(
-            str(artifact_type), frozenset()
+        reason = candidate_stale_reason(
+            canonical=bool(canonical),
+            disputed=bool(disputed),
+            title=str(title or ""),
+            artifact_type=str(artifact_type),
         )
-        warnings = lint_notation(str(title or "")) + lint_claim_sentence(
-            str(title or "")
-        )
-        hit = sorted({w.split(":", 1)[0].strip() for w in warnings} & set(blocking))
-        if hit:
-            stale.append(f"fi{int(ref_id)}({','.join(hit)})")
+        if reason is not None:
+            stale.append(f"fi{int(ref_id)}({reason.label})")
     if not stale:
         return CheckResult(
             "nanopub",

@@ -498,6 +498,18 @@
 - name: "Refresh /opt/precis/venv          (collapsed worker, --profile all)"
   ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
+# Dedicated agent worker lane on the gateway — a second tiny
+# `--only job_claude_inproc --only job_inproc` worker so the planner
+# (job_claude_inproc's plan_tick, the cluster's sole planner, gateway-only,
+# a SPOF) and the generic in-proc lane aren't starved behind the collapsed
+# worker's serial rotation (gr247125, nursery:dispatch-stall flapping). Must
+# follow 20b (reuses its /opt/precis/venv + ~/.claude/mcp.json). The macOS
+# bounce play below (the `com.precis.*.plist` glob) already sweeps this
+# lane's plist up with every other precis daemon, so no extra bounce task is
+# needed here (unlike the Linux-only compute lane below).
+- name: "Agent worker lane              (gateway, job_claude_inproc + job_inproc)"
+  ansible.builtin.import_playbook: playbooks/20e-precis-worker-agentlane.yml
+
 - name: "Refresh serving-host heartbeat    (heartbeat-only worker, no queue claims)"
   ansible.builtin.import_playbook: playbooks/20c-precis-heartbeat-serving.yml
 

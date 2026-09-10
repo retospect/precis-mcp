@@ -57,7 +57,7 @@ class TestParser:
         monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
         parser = _build_parser()
         args = parser.parse_args(["worker", "--only", "watch_poll", "--once"])
-        assert args.only == "watch_poll"
+        assert args.only == ["watch_poll"]
         assert args.once is True
 
     def test_only_accepts_job_ssh_node(self, monkeypatch):
@@ -71,7 +71,7 @@ class TestParser:
         monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
         parser = _build_parser()
         args = parser.parse_args(["worker", "--only", "job_ssh_node", "--once"])
-        assert args.only == "job_ssh_node"
+        assert args.only == ["job_ssh_node"]
         assert args.once is True
 
     def test_only_accepts_job_inproc(self, monkeypatch):
@@ -86,7 +86,7 @@ class TestParser:
         monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
         parser = _build_parser()
         args = parser.parse_args(["worker", "--only", "job_inproc", "--once"])
-        assert args.only == "job_inproc"
+        assert args.only == ["job_inproc"]
         assert args.once is True
 
     def test_only_accepts_job_claude_docker(self, monkeypatch):
@@ -101,7 +101,7 @@ class TestParser:
         monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
         parser = _build_parser()
         args = parser.parse_args(["worker", "--only", "job_claude_docker", "--once"])
-        assert args.only == "job_claude_docker"
+        assert args.only == ["job_claude_docker"]
         assert args.once is True
 
     def test_worker_embedder_reads_env(self, monkeypatch):
@@ -118,9 +118,32 @@ class TestParser:
     def test_worker_only_choices(self):
         parser = _build_parser()
         args = parser.parse_args(["worker", "--only", "embed"])
-        assert args.only == "embed"
+        assert args.only == ["embed"]
         args2 = parser.parse_args(["worker", "--only", "summarize"])
-        assert args2.only == "summarize"
+        assert args2.only == ["summarize"]
+
+    def test_worker_only_repeatable(self):
+        # gr247125's dedicated agent-lane unit needs exactly two passes
+        # (job_claude_inproc + job_inproc) from a single invocation —
+        # repeated --only accumulates rather than last-value-wins.
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "worker",
+                "--only",
+                "job_claude_inproc",
+                "--only",
+                "job_inproc",
+            ]
+        )
+        assert args.only == ["job_claude_inproc", "job_inproc"]
+
+    def test_worker_only_repeated_choice_still_validated(self):
+        # Each repeated value is still checked against `choices` —
+        # a typo in the second flag must fail loudly, not silently.
+        parser = _build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["worker", "--only", "embed", "--only", "bogus_pass"])
 
     def test_worker_profile_defaults_to_system(self):
         parser = _build_parser()
@@ -256,18 +279,26 @@ class TestBuildHandlers:
         assert names == ["summarize:rake-lemma"]
 
     def test_only_embed_excludes_summarizer(self):
-        handlers = _build_handlers(self._ns(only="embed"))
+        handlers = _build_handlers(self._ns(only=["embed"]))
         names = [h.name for h in handlers]
         assert names == ["embed:mock"]
 
     def test_only_summarize_excludes_embedder(self):
-        handlers = _build_handlers(self._ns(only="summarize"))
+        handlers = _build_handlers(self._ns(only=["summarize"]))
         names = [h.name for h in handlers]
         assert names == ["summarize:rake-lemma"]
 
+    def test_only_repeated_selects_both_named_handlers(self):
+        # Repeatable --only: both embed and summarize build, and only
+        # those two — the same override-profile semantics as a single
+        # --only, generalized to a list.
+        handlers = _build_handlers(self._ns(only=["embed", "summarize"]))
+        names = {h.name for h in handlers}
+        assert names == {"embed:mock", "summarize:rake-lemma"}
+
     def test_summarizer_model_propagates(self):
         handlers = _build_handlers(
-            self._ns(only="summarize", summarizer_model="rake-v2")
+            self._ns(only=["summarize"], summarizer_model="rake-v2")
         )
         assert handlers[0].name == "summarize:rake-v2"
 
@@ -508,11 +539,22 @@ class TestShouldRegister:
             assert _should_register(None, name) is True
 
     def test_only_restricts_to_the_named_pass(self):
-        assert _should_register("classify", "classify") is True
-        assert _should_register("classify", "classify_topics") is False
-        assert _should_register("classify", "axis:domain") is False
-        assert _should_register("axis:domain", "axis:domain") is True
-        assert _should_register("axis:domain", "axis:material") is False
+        assert _should_register(["classify"], "classify") is True
+        assert _should_register(["classify"], "classify_topics") is False
+        assert _should_register(["classify"], "axis:domain") is False
+        assert _should_register(["axis:domain"], "axis:domain") is True
+        assert _should_register(["axis:domain"], "axis:material") is False
+
+    def test_only_repeated_registers_exactly_the_named_passes(self):
+        # gr247125 dedicated agent-lane unit: `--only job_claude_inproc
+        # --only job_inproc` must register both and nothing else.
+        both = ["job_claude_inproc", "job_inproc"]
+        assert _should_register(both, "job_claude_inproc") is True
+        assert _should_register(both, "job_inproc") is True
+        assert _should_register(both, "job_ssh_node") is False
+        assert _should_register(
+            both, "minter", profile_passes=frozenset({"minter"})
+        ) is (False)
 
     def test_profile_pass_registers_only_in_its_profile(self):
         # A pass with NO `enable_env` (minter: system-profile only) is not
@@ -540,9 +582,11 @@ class TestShouldRegister:
     def test_only_forces_exactly_one_pass_overriding_profile(self):
         # --only wins even over profile membership — (e) in the §L
         # acceptance list.
-        assert _should_register("hub_refine", "hub_refine", profile_passes=frozenset())
+        assert _should_register(
+            ["hub_refine"], "hub_refine", profile_passes=frozenset()
+        )
         assert not _should_register(
-            "hub_refine", "minter", profile_passes=frozenset({"minter"})
+            ["hub_refine"], "minter", profile_passes=frozenset({"minter"})
         )
 
 
@@ -746,7 +790,22 @@ class TestClassifyTopicsEnabledSlugs:
         assert (
             _classify_topics_enabled_slugs(
                 resolver,
-                only="classify_topics",
+                only=["classify_topics"],
+                global_on=False,
+                topics_env=frozenset(),
+                slugs=["safety", "batteries"],
+            )
+            is None
+        )
+
+    def test_only_repeated_including_classify_topics_means_full_taxonomy(self):
+        # `--only foo --only classify_topics` still hits the full-backfill
+        # hatch — membership, not equality.
+        resolver = _FakeResolver()
+        assert (
+            _classify_topics_enabled_slugs(
+                resolver,
+                only=["chunk_keywords", "classify_topics"],
                 global_on=False,
                 topics_env=frozenset(),
                 slugs=["safety", "batteries"],

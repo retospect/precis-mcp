@@ -18,6 +18,16 @@ status: active
 across `markdown`, `plaintext`, `tex`, and `python`; only the
 post-edit validation differs.
 
+**`mode=` varies by kind — this page's four-mode grammar
+(`find-replace`/`insert`/`append`/`replace`) is the file-kind shape
+only.** `todo`, `memory`, and `quest` support `edit` but accept only
+`mode='replace'` (pass it explicitly — the top-level default
+`mode='find-replace'` is rejected there); see `precis-todo-tree-help`
+/ `precis-memory-help` / `precis-quest-help`. Most other kinds either
+ignore `mode=` (metadata-patch edits like `paper`/`draft`/`structure`)
+or don't support `edit` at all. A wrong `mode=` raises `BadInput`
+naming that kind's actual accepted set.
+
 Address the chunk by the **handle** get/search hands you — `mc<id>` for a
 markdown chunk, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
 `id=`. Append a `~<selector>` to scope within it (`~L42`, `~L42-58`, a content

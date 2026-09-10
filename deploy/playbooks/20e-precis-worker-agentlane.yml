@@ -1,0 +1,322 @@
+---
+# 20e-precis-worker-agentlane.yml — the dedicated agent worker lane (gr247125,
+# nursery:dispatch-stall flapping).
+#
+# WHY THIS EXISTS. The one collapsed `precis worker --profile all` unit per
+# host (20b) runs a SINGLE-THREADED serial round-robin over its handlers
+# (workers/runner.py `run_loop`: `for handler in handlers: ...`). On the
+# gateway that rotation carries `job_claude_inproc` — the executor that runs
+# `plan_tick` (fix_gripe / quest_tick / casts), the cluster's SOLE planner,
+# gateway-only, a single point of failure — alongside `job_inproc` (the
+# generic bounded in-proc lane) and every slow background pass (fetch,
+# classify, LLM reviewers, …). A slow pass anywhere ahead of them in the
+# rotation starves the planner's claim slot for hours (gr247125's flapping
+# nursery:dispatch-stall finding, diagnosed 16 days before this fix landed).
+#
+# WHAT THIS IS. A second, tiny worker on the `gateway` group running ONLY
+# `--only job_claude_inproc --only job_inproc`, polling every few seconds —
+# the exact same "second scheduling lane" pattern 43-precis-worker-compute.yml
+# proved for `job_ssh_node` on the GPU node (and 20d-precis-worker-drain.yml
+# for `job_inproc` alone). It shares NOTHING with the collapsed worker except
+# the postgres queue: `FOR UPDATE SKIP LOCKED` arbitrates claims (zero
+# double-claim), so a second claimant is safe — running this lane is pure
+# additional throughput for the planner + the generic in-proc lane, not a new
+# crash risk.
+#
+# WHY A SEPARATE UNIT, NOT A KNOB. Same as 43/20d: the serial rotation has no
+# per-pass priority; the only way to stop a slow pass starving the planner is
+# a second scheduling lane. `gateway` only — it is the sole agent/OAuth host
+# (the `~/.claude/mcp.json` + OAuth state `job_claude_inproc` needs to call
+# back into precis via MCP lives there alone; see 20b's `_l_b_review_env`).
+#
+# WHY REPEATABLE --only, NOT TWO SEPARATE LANES. `job_claude_inproc` alone
+# would starve `job_inproc` (and vice versa) exactly the same way the
+# collapsed worker starves both today, just on a smaller rotation — the
+# planner and the generic in-proc lane both need to be near-immediately
+# responsive, so they share ONE fast lane rather than each getting their own
+# (which would also double the OAuth/MCP-config-carrying surface for no
+# benefit — both passes already only ever claim jobs, one row at a time).
+# `--only` became repeatable for exactly this (src/precis/cli/worker.py,
+# same change that shipped with this playbook) — `precis worker --only
+# job_claude_inproc --only job_inproc` registers exactly those two passes,
+# overriding --profile, same generalized semantics a single `--only` already
+# had.
+#
+# ENV — MINIMAL SUBSET, NOT 20b's FULL UNION. Deliberately NOT a copy of
+# 20b's `_l_b_env` (which also carries container/dream/anki/gateway-extras/
+# tts blocks this lane's two passes never touch). Traced from what the two
+# executors actually read:
+#   * `job_claude_inproc`'s ServiceSpec.introspect.env_keys (registry.py) is
+#     the registry's own authoritative list: PRECIS_MCP_CONFIG,
+#     PRECIS_DATABASE_URL, PRECIS_DAILY_COST_CEILING, PRECIS_FIX_REPO_DIR,
+#     PRECIS_FIX_WORK_DIR (the last two only matter when the dark-factory fix
+#     lane is armed — `precis_fix_lane_enabled`, mirrors 20b's `_l_b_fix_env`
+#     gate exactly). Its `capability_env=(PRECIS_MCP_CONFIG,)` gates the
+#     PROFILE-membership default only (`_capability_ok`/`_profile_default_on`
+#     in cli/worker.py) — under an explicit `--only` invocation like this
+#     lane's, registration is pure membership and the per-cycle live gate is
+#     bypassed entirely (`_pass_gate` is `None` whenever `--only` is set), so
+#     PRECIS_MCP_CONFIG isn't a registration gate here so much as a hard
+#     runtime dependency: absent it, the pass still claims + attempts jobs
+#     and they fail per-job rather than the pass quietly not registering.
+#     Get it right, deliberately (see the deviation note in the shipping
+#     report).
+#   * `job_claude_inproc` is what actually EXECUTES `plan_tick`
+#     (workers/job_types/plan_tick.py), which reads the four
+#     `workers/planner_guardrails.py` cost caps (PRECIS_MAX_TICKS /
+#     PRECIS_MAX_TODO_USD / PRECIS_MAX_TREE_USD / PRECIS_DAILY_COST_CEILING)
+#     straight from env, each with a code default absent one — and this lane
+#     is a SECOND claimant of the same `job_claude_inproc` rows the collapsed
+#     worker also claims (FOR UPDATE SKIP LOCKED arbitrates which of the two
+#     gets a given row), so an omitted cap here would make a todo's spend
+#     ceiling depend on WHICH worker happened to win the claim race — the
+#     exact "cap absent = invisible/uncapped" shape
+#     tests/test_deploy_planner_caps.py exists to catch. All four rendered
+#     here, mirroring 20b's `_l_b_base_env` values exactly (same
+#     `precis_max_ticks`/`_todo_usd`/`_tree_usd`/`_daily_cost_ceiling`
+#     operator overrides, same code-default fallbacks) so a todo's guardrail
+#     is claim-order-independent.
+#   * both `job_claude_inproc` and `job_inproc` share the generic claim path
+#     (workers/executors/_common.py) that honours the operator hold switch
+#     PRECIS_SUSPENDED_JOB_TYPES — omitting it here would let this lane keep
+#     claiming a job_type an operator just suspended on the main worker
+#     (the operator's mental model is "suspended fleet-wide", and a second,
+#     unguarded claimant breaks that silently). Rendered here too, mirroring
+#     20b.
+#   * `job_inproc` (executors/job_inproc.py) has no ServiceSpec.introspect of
+#     its own beyond that shared claim path — its own module reads only
+#     PRECIS_INPROC_CONCURRENCY / PRECIS_JOB_INPROC_LEASE_S / PRECIS_NODE,
+#     all optional with code defaults.
+# So the base env is: the DB DSN mechanism + PGPASSFILE + PATH (to find
+# `precis`/`claude`) + PRECIS_MCP_CONFIG + the four planner-guardrail cost
+# caps + PRECIS_SUSPENDED_JOB_TYPES + precis_shared_env/precis_identity_env
+# (API-key parity with every other precis-* unit, mirrors 43/20d) + the
+# fix-lane pair when armed. Deliberately NOT carried: PRECIS_JOB_CPU_SHARES /
+# PRECIS_JOB_CPUSET (container-executor `docker run` CPU limits,
+# utils/container_limits.py — neither pass on this lane runs the container
+# executor). Local constants, not `roles/precis_worker(_agent)/defaults/
+# main.yml` values — this playbook deliberately does NOT import either role
+# (see SCOPE / DEPENDENCIES below), so those role defaults are not in scope;
+# kept in sync by hand, the same workaround 43/20d already use for their own
+# `_compute_venv`/`_compute_dsn`/`_drain_venv`/`_drain_dsn`.
+#
+# SCOPE / DEPENDENCIES. `gateway` group only (the sole agent/OAuth host).
+# This playbook does NOT provision — it deliberately rides 20b's prior
+# provisioning and MUST run after it: the worker venv (/opt/precis/venv) and
+# the `deploy` user/HOME/pgpass are created + kept current by 20b, and
+# `~deploy/.claude/mcp.json` is provisioned by the `precis_worker_agent` role
+# (imported from 20b with `tasks_from: provision`) — the SAME file 20b's own
+# collapsed unit points PRECIS_MCP_CONFIG at, so this lane's copy is
+# identical by construction, not duplicated. Not importing roles/precis_worker
+# (or precis_worker_agent) here is deliberate, mirroring 43/20d's own
+# rationale: doing so would re-run their full provisioning a second time on
+# the gateway every deploy (20b already did it back-to-back) and fire their
+# install handlers, which are hardwired to bounce `com.precis.worker`, not
+# this lane's unit.
+#
+# Run order: imported by BOTH site.yml and redeploy-precis.yml right after
+# 20b. On redeploy, the existing macOS bounce play (the `com.precis.*.plist`
+# glob, excluding only the embedder) already sweeps up this lane's
+# `com.precis.worker-agentlane.plist` and bootout+bootstraps it with every
+# other precis daemon — no changes needed there, unlike 43's Linux path
+# (which has no such glob and needs its own explicit systemd restart task).
+# site.yml has no blanket bounce at all (that play lives only in
+# redeploy-precis.yml) and service_unit's own launchd reload only fires when
+# the RENDERED PLIST changes (env/exec diff, same caveat 20d documents for
+# its drain lanes) — so a pure code-only refresh via site.yml (no var
+# change here) would otherwise leave this lane on stale code between
+# deploys. The final task below covers that path with an unconditional
+# `launchctl kickstart -k`, skipped when `precis_deploy_changed` is defined
+# (i.e. running under redeploy-precis.yml, where the blanket bounce already
+# handles it) — same pattern 43 uses for its Linux-only equivalent task.
+#
+# READINESS GATE (gr199339 analogue, WORSE here). 43's gr199339 gate covers a
+# venv that predates a whole PASS NAME — argparse rejects it outright, a
+# crash-loop, loud and obvious. This lane's failure mode is quieter: an OLD
+# installed build's `precis worker --only` argparse accepts EVERY value in
+# `choices=` already (job_claude_inproc and job_inproc both predate this
+# change) but is a plain `store` action — repeated `--only` flags don't
+# error, they just silently keep only the LAST one (argparse's own
+# last-value-wins for `store`). A deploy that (re)starts this unit against a
+# venv 20b hasn't refreshed yet would come up healthy-looking but running
+# ONLY `job_inproc` (or only `job_claude_inproc`, depending on flag order) —
+# a wrong-but-running unit, not a crash-loop, so it would NOT self-report the
+# way 43's gate failure does. Gated the same way 43 gates the argparse-
+# choices race, just checking a different property of the installed
+# argparse action: `type(a).__name__ == '_AppendAction'` (Python's own class
+# name for an `action='append'` argument) rather than `'job_ssh_node' in
+# a.choices`.
+#
+# On Linux this would render as an `ExecStartPre=` (service_unit_exec_start_pre,
+# mirrors 43 exactly). The gateway is darwin, and launchd has no
+# ExecStartPre equivalent — `roles/service_unit/tasks/main.yml` asserts
+# `service_unit_exec_start_pre` is empty on darwin and says so explicitly:
+# "a launchd start-gate belongs in the wrapped ExecStart command itself,
+# e.g. a `while` loop inside the `bash -c` launchd already wraps ExecStart
+# in". So the gate is folded into the unit's own ExecStart: a rendered
+# wrapper script (same "a file sidesteps systemd's/bash's quoting trap"
+# rationale 43 gives for its own script, equally true for a `python -c`
+# check nested inside launchd's `/bin/bash -c 'exec <service_unit_exec>'`
+# wrapping) that polls the installed venv's argparse action type, THEN
+# `exec`s the real `precis worker …` invocation once it clears — so
+# `service_unit_exec` itself stays a single command (the script path +
+# an idle-seconds arg), keeping the "exec {{ service_unit_exec }}" plist
+# wrapping valid (it prefixes exactly one `exec `, so `service_unit_exec`
+# can't itself be a compound shell statement).
+
+- name: Deploy the dedicated agent worker lane (job_claude_inproc + job_inproc)
+  hosts: gateway
+  become: true
+  vars:
+    # Local constants — role defaults aren't in scope (see SCOPE /
+    # DEPENDENCIES above). Cluster-stable, same values
+    # roles/precis_worker/defaults/main.yml sets and 20b/43/20d already
+    # duplicate the same way.
+    _agentlane_venv: /opt/precis/venv
+    _agentlane_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    # Mirrors roles/precis_worker_agent/defaults/main.yml's
+    # precis_worker_agent_mcp_config default — the file 20b's own collapsed
+    # unit's PRECIS_MCP_CONFIG already points at on the gateway (provisioned
+    # by that role, imported from 20b). Not read from the role default
+    # itself since this playbook doesn't import that role — see header.
+    _agentlane_mcp_config: /Users/deploy/.claude/mcp.json
+    _agentlane_gate_script: /opt/precis/bin/wait-for-only-append-agentlane.sh
+    # gr199339-analogue gate window: 40 attempts * 15s = 10 minutes, same
+    # bound 43 uses for its own argparse race.
+    _agentlane_gate_max_attempts: 40
+    _agentlane_gate_interval_sec: 15
+  tasks:
+    - name: "gr247125: ensure the gate script's directory exists"
+      # /opt/precis itself is created by roles/precis_worker/tasks/provision.yml
+      # (20b, this playbook's dependency — see SCOPE / DEPENDENCIES above);
+      # this is just the one subdirectory under it, harmless if 20b hasn't
+      # run yet since the copy task right after this one is what actually
+      # needs it.
+      ansible.builtin.file:
+        path: "{{ _agentlane_gate_script | dirname }}"
+        state: directory
+        owner: root
+        group: wheel
+        mode: "0755"
+
+    - name: "gr247125: render the readiness-gate + exec wrapper script"
+      # One script does both jobs (poll THEN exec) rather than a separate
+      # ExecStartPre — darwin has no such hook (see header's READINESS GATE
+      # section); this keeps `service_unit_exec` a single command so the
+      # plist's `exec {{ service_unit_exec }}` wrapping stays valid.
+      ansible.builtin.copy:
+        dest: "{{ _agentlane_gate_script }}"
+        mode: "0755"
+        owner: root
+        group: wheel
+        content: |
+          #!/bin/sh
+          # Managed by ansible (deploy/playbooks/20e-precis-worker-agentlane.yml)
+          # — `ansible_managed` is template-module-only; copy:content leaves
+          # it undefined, which hard-fails the task.
+          # wait-for-only-append-agentlane.sh — ExecStart-embedded readiness
+          # gate for com.precis.worker-agentlane (gr247125, gr199339-analogue):
+          # blocks the real `precis worker` invocation until the installed
+          # venv's `precis worker --only` argparse action is `append` (not
+          # the old `store`), so a deploy that (re)starts this unit against a
+          # stale pre-repeatable-only build waits for 20b's venv refresh
+          # instead of silently running only the LAST `--only` value.
+          set -eu
+
+          venv="{{ _agentlane_venv }}"
+          max_attempts={{ _agentlane_gate_max_attempts }}
+          interval={{ _agentlane_gate_interval_sec }}
+          attempt=0
+
+          # One-liner (semicolon-joined simple statements), deliberately —
+          # a multi-line `python -c "..."` body inside this heredoc-ish block
+          # comes out through YAML with this task's own indentation baked in
+          # as leading whitespace on every line, which Python then rejects as
+          # an IndentationError. A single logical line sidesteps it (mirrors
+          # 43-precis-worker-compute.yml's own gate script).
+          check="import argparse, sys; from precis.cli import worker as w; p = argparse.ArgumentParser(); s = p.add_subparsers(); w.add_parser(s); a = next(x for x in s.choices['worker']._actions if x.dest == 'only'); sys.exit(0 if type(a).__name__ == '_AppendAction' else 1)"
+
+          while true; do
+            if "$venv/bin/python" -c "$check"; then
+              break
+            fi
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "wait-for-only-append-agentlane: $venv still lacks repeatable --only after $((max_attempts * interval))s, giving up" >&2
+              exit 1
+            fi
+            sleep "$interval"
+          done
+
+          exec "$venv/bin/precis" worker --only job_claude_inproc --only job_inproc \
+            --batch-size 1 \
+            --idle-seconds "$1"
+
+    - name: render + load the agent worker lane unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker-agentlane
+        service_unit_run_as: deploy
+        # /tmp avoids the getcwd() EPERM trap on an NFS-mounted cwd — same
+        # reasoning as 20b/20d/precis-worker.plist.j2.
+        service_unit_working_dir: /tmp
+        # Jetsam protection — the gateway also co-hosts local llama.cpp
+        # inference and is the RAM-pressured host (mirrors 20b/20d).
+        service_unit_process_type: Interactive
+        service_unit_schedule:
+          mode: keepalive
+        # 60s drain before SIGKILL, same as 20b/43/20d — SIGTERM aborts a
+        # streamed LLM call (plan_tick's `claude -p`) between SSE chunks,
+        # finalizes the partial, releases holds.
+        service_unit_timeout_stop_sec: 60
+        # The gate script does both the readiness wait AND the final `exec`
+        # of the real `precis worker` invocation (see header's READINESS
+        # GATE section) — `service_unit_exec` stays the one command the
+        # plist's `exec {{ service_unit_exec }}` wrapping needs, with the
+        # idle-seconds knob passed through as $1.
+        service_unit_exec: >-
+          {{ _agentlane_gate_script }}
+          {{ precis_worker_agentlane_idle_seconds | default(5) }}
+        service_unit_env: >-
+          {{ precis_shared_env
+             | combine(precis_identity_env | default({}))
+             | combine({
+                 'HOME': '/Users/deploy',
+                 'PATH': _agentlane_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin',
+                 'PGPASSFILE': '/Users/deploy/.pgpass',
+                 'PRECIS_DATABASE_URL': _agentlane_dsn,
+                 'PRECIS_PROCESS': 'precis-worker-agentlane',
+                 'PRECIS_SOURCE': 'precis-worker-agentlane',
+                 'PRECIS_MCP_CONFIG': _agentlane_mcp_config,
+                 'PRECIS_MAX_TICKS': (precis_max_ticks | default(25)) | string,
+                 'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
+                 'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
+                 'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+                 'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+               })
+             | combine(
+                 {
+                   'PRECIS_FIX_WORK_DIR': precis_fix_work_dir | default('/Users/deploy/precis-fix-work'),
+                   'PRECIS_FIX_REPO_DIR': precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'),
+                 } if (precis_fix_lane_enabled | default(false)) else {}
+               ) }}
+
+    # Code-refresh bounce for the site.yml path ONLY (mirrors 43's own
+    # Linux-only equivalent task; see header's Run order section for why the
+    # redeploy-precis.yml path needs nothing extra here). `precis_deploy_changed`
+    # is set_fact'd in an early redeploy-precis.yml play, so when it's defined
+    # this SKIPS (the blanket `com.precis.*.plist` bounce play already
+    # restarted this unit); site.yml never sets that fact, so `is not
+    # defined` is true there and this kickstarts the lane to pick up a venv
+    # code refresh 20b installed (service_unit's own reload-on-change task
+    # only fires on a plist FILE diff, blind to a code-only refresh).
+    - name: Bounce the agent-lane unit on a code refresh (site.yml path)
+      ansible.builtin.command: launchctl kickstart -k system/com.precis.worker-agentlane
+      become: true
+      when: precis_deploy_changed is not defined
+      changed_when: true
+      failed_when: false
+  # `precis` family tag so `--tags precis` fans this out with the other
+  # precis-* plays; `precis-worker-agentlane` for a targeted refresh.
+  tags: [precis-worker-agentlane, precis]

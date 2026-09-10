@@ -37,7 +37,9 @@ def test_verdict_done_with_zero_children_warns(
     parent_id, job_id = _mk_parent_and_job(store)
     conclusion = TickConclusion(verdict="done", summary="closed with no work", files=[])
 
-    with caplog.at_level(logging.WARNING, logger="precis.workers.executors.claude_inproc"):
+    with caplog.at_level(
+        logging.WARNING, logger="precis.workers.executors.claude_inproc"
+    ):
         _build_job_result_text(
             store=store,
             job_ref_id=job_id,
@@ -60,9 +62,13 @@ def test_verdict_done_with_children_minted_does_not_warn(
     store.insert_ref(
         kind="todo", slug=None, title="a minted subtask", meta={}, parent_id=parent_id
     )
-    conclusion = TickConclusion(verdict="done", summary="closed after children", files=[])
+    conclusion = TickConclusion(
+        verdict="done", summary="closed after children", files=[]
+    )
 
-    with caplog.at_level(logging.WARNING, logger="precis.workers.executors.claude_inproc"):
+    with caplog.at_level(
+        logging.WARNING, logger="precis.workers.executors.claude_inproc"
+    ):
         _build_job_result_text(
             store=store,
             job_ref_id=job_id,
@@ -86,7 +92,9 @@ def test_verdict_continue_with_zero_children_does_not_warn(
     parent_id, job_id = _mk_parent_and_job(store)
     conclusion = TickConclusion(verdict="continue", summary="still going", files=[])
 
-    with caplog.at_level(logging.WARNING, logger="precis.workers.executors.claude_inproc"):
+    with caplog.at_level(
+        logging.WARNING, logger="precis.workers.executors.claude_inproc"
+    ):
         _build_job_result_text(
             store=store,
             job_ref_id=job_id,
@@ -108,7 +116,9 @@ def test_no_conclusion_block_does_not_warn(
     trip the check — there's no ``verdict`` to compare against."""
     parent_id, job_id = _mk_parent_and_job(store)
 
-    with caplog.at_level(logging.WARNING, logger="precis.workers.executors.claude_inproc"):
+    with caplog.at_level(
+        logging.WARNING, logger="precis.workers.executors.claude_inproc"
+    ):
         _build_job_result_text(
             store=store,
             job_ref_id=job_id,

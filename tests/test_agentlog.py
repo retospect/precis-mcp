@@ -54,6 +54,29 @@ def test_finalize_stamps_status_and_ended(hub: Hub) -> None:
     assert ref.meta.get("ended_at")
 
 
+def test_get_surfaces_triage_meta_inline(hub: Hub) -> None:
+    """A failed run's get() must show status/error/model + a result excerpt —
+    hiding them behind view='raw' is the wall the doctor hit for weeks on
+    gr244061 while the salvaged output sat on the row."""
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(
+        hub.live_store, source="quest_tick", title="quest_tick #7 (big)", model="big"
+    )
+    agentlog.finalize_log(
+        hub.live_store,
+        log_id=log_id,
+        status="failed",
+        result="x" * 500,
+        meta_extra={"error": "unparseable model output"},
+    )
+    body = AgentLogHandler(hub=hub).get(id=log_id).body
+    assert "status: failed" in body
+    assert "error: unparseable model output" in body
+    assert "model: big" in body
+    assert "500 chars total" in body
+
+
 def test_list_recent_counts_touched(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)

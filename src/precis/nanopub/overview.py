@@ -87,6 +87,12 @@ class HubOverviewRow:
     #: above, which count the adjudicated, blocking `contradicts` shape.
     #: Appended last for the same reason as `tagline` — see its note.
     open_disputes_count: int = 0
+    #: The staged publish row's artifact type (``claim``/``compound``/
+    #: ``hypothesis``, ``nanopub_publish.artifact_type``), or ``None`` for
+    #: an unminted hub. Scopes which blocking lint codes apply — see
+    #: ``precis.nanopub.stale.candidate_stale_reason``. Appended last for
+    #: the same reason as `tagline` — see its note.
+    artifact_type: str | None = None
 
     @property
     def drifted(self) -> bool:
@@ -331,7 +337,8 @@ def hub_rows(
                    COALESCE(w.v, 0) AS verified_count,
                    COALESCE(w.s, 0) AS supported_count,
                    r.meta->>'tagline' AS tagline,
-                   COALESCE(od.n, 0) AS open_disputes_count
+                   COALESCE(od.n, 0) AS open_disputes_count,
+                   p.artifact_type
               FROM refs r
               LEFT JOIN nanopub_publish p
                      ON p.claim_ref_id = r.ref_id AND p.state != ALL(%(terminal)s)
@@ -411,6 +418,7 @@ def hub_rows(
             supported_count=int(r[12]),
             tagline=r[13],
             open_disputes_count=int(r[14]),
+            artifact_type=r[15],
         )
         for r in rows
     ]

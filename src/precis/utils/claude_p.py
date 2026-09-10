@@ -276,6 +276,16 @@ def call_claude_p(
         # Bypass interactive permission prompts; the worker has no TTY.
         "--permission-mode",
         "bypassPermissions",
+        # This lane is one-shot text completion — no tool may ever run. The
+        # bare "*" deny removes every tool definition from the system prompt
+        # (not just execution), so the model cannot even attempt one. Without
+        # it, newer CLI/model combos answered by *calling harness tools*
+        # (ReportFindings, observed verbatim in salvaged output) instead of
+        # emitting the requested text, which surfaced as the 88-100%
+        # "unparseable model output" failure rate on every claude_p consumer
+        # (quest_tick gr244061; finding_chase's taproot verdicts gr277659).
+        "--disallowedTools",
+        "*",
         # Strips keychain reads (plus hooks/LSP/plugin sync/CLAUDE.md
         # auto-discovery), so auth falls to ANTHROPIC_API_KEY — see the
         # ``bare`` arg and _bare_auth_env below.

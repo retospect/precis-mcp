@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 
 
 def _should_register(
-    only: str | None, name: str, *, profile_passes: frozenset[str] = frozenset()
+    only: list[str] | None, name: str, *, profile_passes: frozenset[str] = frozenset()
 ) -> bool:
     """Whether ``name`` registers into ``ref_passes`` on this invocation.
 
@@ -68,17 +68,18 @@ def _should_register(
     per-cycle ``pass_gate`` (TTL-cached, consulted every cycle) is now
     the ONE decision point for whether a registered pass actually *runs*.
 
-    ``only`` (``--only X``) forces exactly one pass regardless of
-    profile membership. Otherwise always-register cases: a pass in this
-    worker's profile rotation (``name in profile_passes`` — tied to
-    ``--profile``, restart-time); a formerly-``PRECIS_*_ENABLED``-gated
-    pass (registry's ``enable_env``); an ``axis:<id>`` pseudo-service; a
-    name with NO ``ServiceSpec`` at all (a plugin factory's own pass —
-    it already gated its own eligibility). A pass with neither profile
-    membership nor ``enable_env`` does not register.
+    ``only`` (``--only X``, repeatable) forces exactly the named
+    pass(es) regardless of profile membership. Otherwise always-register
+    cases: a pass in this worker's profile rotation (``name in
+    profile_passes`` — tied to ``--profile``, restart-time); a
+    formerly-``PRECIS_*_ENABLED``-gated pass (registry's ``enable_env``);
+    an ``axis:<id>`` pseudo-service; a name with NO ``ServiceSpec`` at
+    all (a plugin factory's own pass — it already gated its own
+    eligibility). A pass with neither profile membership nor
+    ``enable_env`` does not register.
     """
     if only is not None:
-        return only == name
+        return name in only
     if name in profile_passes or name.startswith("axis:"):
         return True
     spec = SERVICES_BY_NAME.get(name)
@@ -148,7 +149,7 @@ class _ResolverLike(Protocol):
 def _classify_topics_enabled_slugs(
     resolver: _ResolverLike,
     *,
-    only: str | None,
+    only: list[str] | None,
     global_on: bool,
     topics_env: frozenset[str],
     slugs: list[str],
@@ -156,15 +157,15 @@ def _classify_topics_enabled_slugs(
     """Enabled topic slugs for the ``classify_topics`` pass, or ``None`` for
     the full taxonomy.
 
-    ``--only classify_topics`` and ``PRECIS_CLASSIFY_TOPICS_ENABLED=1`` are
-    the admin full-backfill hatches (preserved the pre-0068
-    meaning): the former always sweeps every topic (a single-pass,
-    node-targeted invocation shouldn't be silently narrowed by per-topic
-    gates); the latter is the legacy "all topics default-on" env seed, still
-    refinable per-topic by a ``service_config`` row or
-    ``PRECIS_TOPICS_ENABLED``.
+    ``--only classify_topics`` (repeatable ``--only``, so this checks
+    membership) and ``PRECIS_CLASSIFY_TOPICS_ENABLED=1`` are the admin
+    full-backfill hatches (preserved the pre-0068 meaning): the former
+    always sweeps every topic (a single-pass, node-targeted invocation
+    shouldn't be silently narrowed by per-topic gates); the latter is the
+    legacy "all topics default-on" env seed, still refinable per-topic by
+    a ``service_config`` row or ``PRECIS_TOPICS_ENABLED``.
     """
-    if only == "classify_topics":
+    if only is not None and "classify_topics" in only:
         return None
     return [
         s
@@ -386,10 +387,14 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "backlog_groom",
             "briefing_audio",
         ),
+        action="append",
         default=None,
-        help="Restrict to one handler kind. Overrides --profile when "
-        "set. Useful for ad-hoc backfills (`--only embed --once`) and "
-        "debugging.",
+        help="Restrict to one or more handler kinds (repeatable: "
+        "`--only job_claude_inproc --only job_inproc` runs exactly "
+        "those two passes). Overrides --profile when set. Useful for "
+        "ad-hoc backfills (`--only embed --once`), debugging, and a "
+        "dedicated agent-lane unit that must run more than one pass "
+        "without picking up the rest of a profile's rotation.",
     )
     p.add_argument(
         "--with-llm",
@@ -2527,7 +2532,7 @@ def _build_handlers(
 
     def _want(name: str) -> bool:
         if args.only is not None:
-            return args.only == name
+            return name in args.only
         if name == "embed":
             return False
         return is_system

@@ -70,5 +70,32 @@ class AgentLogHandler(NumericRefHandler):
     def _supported_list_views(self) -> tuple[str, ...]:
         return ("recent",)
 
+    def _render_one(self, ref, tags):
+        """Default render + the triage fields a run's meta carries.
+
+        A run's outcome lives in ``meta`` (``status``/``error`` from
+        ``finalize_log``, ``model``, the salvaged ``result`` text), and the
+        base render hid all of it — a failed quest_tick's agentlog read as
+        just a title, which is exactly the "no queryable surface" wall the
+        doctor hit for weeks on gr244061 while the offending-output excerpt
+        sat on the row. Surface the small fields inline and point at
+        ``view='raw'`` for the rest.
+        """
+        body = super()._render_one(ref, tags)
+        meta = ref.meta or {}
+        lines: list[str] = []
+        for key in ("status", "model", "error"):
+            val = meta.get(key)
+            if val:
+                lines.append(f"{key}: {val}")
+        result = meta.get("result")
+        if isinstance(result, str) and result:
+            excerpt = result[:400]
+            more = f" … ({len(result)} chars total, view='raw' for all)"
+            lines.append(f"result: {excerpt}{'' if len(result) <= 400 else more}")
+        if lines:
+            body += "\n\n" + "\n".join(lines)
+        return body
+
 
 __all__ = ["AgentLogHandler"]

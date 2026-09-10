@@ -851,6 +851,52 @@ def test_resolvers_thread_nothing_and_answer_htmx_with_a_fragment(
     assert "<header" in client.get(f"/r/paper/{paper}").text
 
 
+def test_stale_candidate_renders_demoted_badge_and_is_counted(
+    client: TestClient, runtime_with_store
+) -> None:
+    """gr279770 "queue filter now": a staged ``candidate`` row that trips a
+    blocking lint code (``precis.nanopub.stale``, the exact predicate
+    ``health_digest``'s liveness digest uses) must not sit in the queue
+    looking like live work — it renders demoted + badged with the reason,
+    and the header strip's "N stale" chip counts it. Not hidden: a rot-
+    invisibly failure mode is exactly what this queue must not repeat."""
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    # No terminal period — trips lint_claim_sentence's `no-terminal-period`,
+    # a blocking code (health_digest's own fixture sentence for this).
+    hub = _seed_hub(
+        store, "Graphene is the strongest material ever measured", paper, chunk
+    )
+    store.nanopub_create_publish_row(hub, artifact_type="claim")
+
+    resp = client.get("/nanopub")
+    assert resp.status_code == 200
+    assert "1 stale" in resp.text
+    assert "stale: " in resp.text
+    assert "no-terminal-period" in resp.text
+    assert "opacity-60" in resp.text
+
+
+def test_clean_candidate_has_no_stale_badge(
+    client: TestClient, runtime_with_store
+) -> None:
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT calculations show that graphene is stiff.", paper, chunk
+    )
+    store.nanopub_create_publish_row(hub, artifact_type="claim")
+
+    resp = client.get("/nanopub")
+    assert resp.status_code == 200
+    assert f"fi{hub}" in resp.text
+    # Not a bare `"stale" not in resp.text`: the page legitimately contains
+    # the word in unrelated code comments. Check the two render forms — the
+    # row badge ("stale: <label>") and the header tally ("N stale</span>").
+    assert "stale:" not in resp.text
+    assert "stale</span>" not in resp.text
+
+
 def test_draft_filter_unknown_id_is_a_friendly_notice_not_a_500(
     client: TestClient, runtime_with_store
 ) -> None:

@@ -188,24 +188,34 @@ def _classify_one(client: Any, axis: dict, row: dict) -> str | None:
             exc,
         )
         return None
-    parsed = extract_json_object(out.text)
-    if not parsed or "value" not in parsed:
-        # A successful dispatch that fails to parse (or omits "value") is
-        # most often hijacked chunk content (gr331492: a chunk quoting an
-        # LLM prompt/schema pulls the model into replying with THAT schema
-        # instead of ours) — silent here turns poison content into an
-        # unforensic `failed` count that recycles the same chunks forever.
-        # Not a WARNING when a value IS present (even out-of-set): the
-        # caller counts that as failed via `_ROLE3_VALS` membership, and
-        # that's an expected model-quality miss, not a hijack signal.
+    value = (extract_json_object(out.text) or {}).get("value")
+    if isinstance(value, str):
+        # Normalize label drift (case / stray whitespace): the axis vocabularies
+        # are closed lowercase sets, so `"Own"` is the same verdict as `"own"`,
+        # not a failure.
+        value = value.strip().lower()
+    if not isinstance(value, str) or not value:
+        # A completed call whose reply doesn't yield a usable value was
+        # previously indistinguishable from a vocab miss — a bare `failed`
+        # count with no forensic trail. Most often it's hijacked chunk content
+        # (gr331492: a chunk quoting an LLM prompt/schema pulls the model into
+        # replying with THAT schema instead of ours); the 2026-09-07 role3
+        # outage ran undiagnosed for 34h because llm_call_log records the call
+        # as fine and captures no text for this high-volume cascade. Log a
+        # bounded excerpt so the next drift names itself. NOT a warning when a
+        # usable value IS present but out-of-set: the caller counts that as
+        # failed via `_ROLE3_VALS` membership — an expected model-quality
+        # miss, not a hijack signal.
         log.warning(
-            "classify axis=%s chunk=%s unparseable response: %r",
+            "classify axis=%s chunk=%s unusable reply (unparseable/empty value, "
+            "%d chars): %r",
             axis.get("id") or "?",
             row.get("chunk_id"),
-            out.text[:80],
+            len(out.text or ""),
+            (out.text or "")[:300],
         )
         return None
-    return parsed.get("value")
+    return value
 
 
 def _classify_row(

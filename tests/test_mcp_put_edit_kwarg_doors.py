@@ -576,7 +576,9 @@ def test_put_todo_executor_dispatch_meta_skips_the_default_llm_tier_stamp(
 
     assert not _is_error(out), _body(out)
     assert "llm_tier" not in _body(out)
-    children = [r for r in store.list_refs(kind="todo", limit=5) if r.parent_id == parent_id]
+    children = [
+        r for r in store.list_refs(kind="todo", limit=5) if r.parent_id == parent_id
+    ]
     assert len(children) == 1, children
     live = store.get_ref(kind="todo", id=children[0].id)
     assert live is not None

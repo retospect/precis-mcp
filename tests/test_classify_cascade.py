@@ -568,3 +568,53 @@ def test_stale_claim_on_an_already_tagged_chunk_is_never_reclaimed(store: Any) -
         conn.commit()
 
     assert rows == []
+
+
+def test_label_case_and_whitespace_drift_normalizes_to_the_vocab(store: Any) -> None:
+    """An upstream model answering ``"  Own "`` instead of ``"own"`` is the
+    same verdict, not a silent per-row failure (the 2026-09-07 role3 outage
+    class, gr331492)."""
+    seed_chunks(store, [_PROSE])
+
+    class _DriftClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls += 1
+            val = "not_junk" if self.calls == 1 else "  Own "
+            return SimpleNamespace(text=f'{{"value": "{val}"}}', total_tokens=5)
+
+    result = run_classify_pass(
+        store, client=_DriftClient("unused"), batch_size=10, escalate_client=None
+    )
+    assert result["ok"] == 1
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id "
+            "WHERE t.namespace = 'ROLE3'"
+        ).fetchone()
+    assert row is not None and row[0] == "own"
+
+
+def test_unusable_reply_logs_a_bounded_excerpt(
+    store: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A completed call whose reply yields no usable value must leave a
+    forensic trail (a truncated excerpt at WARNING), not just a bare
+    ``failed`` count — llm_call_log captures no text for this cascade."""
+    seed_chunks(store, [_PROSE])
+
+    class _ProseClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls += 1
+            return SimpleNamespace(
+                text="I think this chunk is probably background material.",
+                total_tokens=5,
+            )
+
+    with caplog.at_level("WARNING", logger="precis.workers.classify"):
+        result = run_classify_pass(
+            store, client=_ProseClient("unused"), batch_size=10, escalate_client=None
+        )
+    assert result["failed"] == 1
+    hits = [r for r in caplog.records if "unusable reply" in r.getMessage()]
+    assert hits, "expected a WARNING carrying the reply excerpt"
+    assert "probably background" in hits[0].getMessage()

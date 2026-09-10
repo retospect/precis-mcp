@@ -11,7 +11,13 @@ functions with ``interactive=True`` (a person clicked).
   section lives on the claim page now, see below) and a paper pane, with
   draggable dividers. The **disputed** strip sits on top sorted by
   dispute age (disputes must not rot invisibly); OTS batches + the
-  stuck-pending alert live under the tree. ``/nanopub/tree`` redirects
+  stuck-pending alert live under the tree. A staged ``candidate`` row
+  that no longer clears the *current* mint gates (a lint code landed
+  since, or a live dispute arrived — :mod:`precis.nanopub.stale`, the
+  same predicate ``health_digest``'s liveness check uses) renders
+  demoted + badged "stale: <reason>" rather than as live work
+  (gr279770); the header strip's state tally gets a matching "N stale"
+  chip. ``/nanopub/tree`` redirects
   here. ``?draft=dr<id>`` (or bare/``fi``-less numeric) scopes the forest
   + tally to the hubs that draft's chunks cite outbound
   (:func:`precis.nanopub.overview.draft_cited_hub_ids`) — "did I review
@@ -88,6 +94,7 @@ def _index_context(request: Request) -> dict[str, Any]:
 
     from precis.nanopub import overview
     from precis.nanopub.ots import STUCK_PENDING_DAYS
+    from precis.nanopub.stale import candidate_stale_reason
 
     store = get_store(request)
 
@@ -121,6 +128,29 @@ def _index_context(request: Request) -> dict[str, Any]:
     if draft_filter is not None:
         draft_filter["n"] = len(rows)
     disputed = [r for r in rows if r.disputed]
+    # gr279770 "queue filter now": a staged `candidate` row is re-gated
+    # against the CURRENT mint rules right here — the exact predicate
+    # health_digest's liveness digest uses (one shared, llm-free
+    # definition, see precis.nanopub.stale) — so a row that no longer
+    # passes never sits in the queue looking like live work with nothing
+    # saying otherwise. `hub_rows` already restricts to strict claim hubs
+    # (TAPROOT:claim + STATUS:canonical), so `canonical` is always True
+    # here; `disputed`/`title`/`artifact_type` ride the same query this
+    # loop already has in hand — no second query per row.
+    stale_reasons = {
+        r.ref_id: reason
+        for r in rows
+        if r.state == "candidate"
+        and (
+            reason := candidate_stale_reason(
+                canonical=True,
+                disputed=r.disputed,
+                title=r.title,
+                artifact_type=r.artifact_type or "claim",
+            )
+        )
+        is not None
+    }
     # Pipeline-ordered per-state tally for the header strip (zeros
     # dropped) — the at-a-glance "what moved" readout, scoped to the draft
     # filter when one's active (the "am I done signing?" readout).
@@ -148,6 +178,8 @@ def _index_context(request: Request) -> dict[str, Any]:
         "n_nodes": len(rows),
         "state_counts": state_counts,
         "disputed": disputed,
+        "stale_reasons": stale_reasons,
+        "n_stale": len(stale_reasons),
         "batches": batches,
         "stuck": stuck,
         "draft_filter": draft_filter,

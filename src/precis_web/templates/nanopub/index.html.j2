@@ -35,6 +35,8 @@
         {%- elif s == 'published' %} text-emerald-700
         {%- elif s == 'unminted' %} text-slate-400{% endif %}"
         title="{{ state_tip(s) }}">{{ c }} {{ s }}</span>{{ ' · ' if not loop.last }}{% endfor %}
+      {% if n_stale %}· <span class="whitespace-nowrap text-amber-600 cursor-help"
+        title="Staged candidates that no longer pass the CURRENT mint gates — a blocking lint code landed since, or a live dispute arrived. Dead work; approve will refuse it. See the row badge for why.">{{ n_stale }} stale</span>{% endif %}
       — click a claim to review it in the middle pane, a paper to read it
       on the right. Unpublished is a good terminal state, not a backlog to
       burn down.
@@ -81,8 +83,9 @@
   </div>
   {% endif %}
 
-  {% macro state_badge(r) %}
+  {% macro state_badge(r, stale_reasons) %}
   {% set key = 'blocked' if r.disputed else (r.state or 'unminted') %}
+  {% set stale = stale_reasons.get(r.ref_id) %}
   <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0 cursor-help
     {% if r.disputed %}bg-rose-100 text-rose-700
     {% elif r.state == 'published' %}bg-emerald-100 text-emerald-700
@@ -92,6 +95,16 @@
     title="{{ state_tip(key) }}{% if r.updated_at %} In this state since {{ r.updated_at.strftime('%Y-%m-%d %H:%M') }}Z.{% endif %}">
     {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
   </span>
+  {# Staged candidate that no longer clears the CURRENT mint gates
+     (precis.nanopub.stale, gr279770) — demoted + labeled, never hidden:
+     approving it would just be refused, so a reviewer needs to see it's
+     dead work rather than find out by clicking approve. #}
+  {% if stale %}
+  <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0 cursor-help bg-amber-100 text-amber-700"
+        title="Re-gated against the current mint gates and no longer passes — {{ stale.label }}. Approve will refuse it; fix the cause or route it back off the queue.">
+    stale: {{ stale.label }}
+  </span>
+  {% endif %}
   {# Minted rows also get a five-dot pipeline strip — the transition
      readout: filled dots = ladder rungs climbed, hover for the ladder
      and the last-transition time. #}
@@ -107,17 +120,18 @@
   {% endif %}
   {% endmacro %}
 
-  {% macro node(n) %}
+  {% macro node(n, stale_reasons) %}
   <li class="mt-1">
     <details {% if n.children %}open{% endif %} class="group">
-      <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-100"
+      <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-100
+               {%- if stale_reasons.get(n.row.ref_id) %} opacity-60{% endif %}"
                data-pane="np-review" data-src="/claim/fi{{ n.row.ref_id }}">
         {% if n.children or n.evidence %}
         <span class="tree-caret text-slate-400 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
         {% else %}
         <span class="w-3"></span>
         {% endif %}
-        {{ state_badge(n.row) }}
+        {{ state_badge(n.row, stale_reasons) }}
         {% if n.relation %}
         <span class="text-xs text-slate-400 shrink-0 cursor-help"
               title="{% if n.relation == 'conjunct-of' %}Conjunct atom of the compound claim above — atoms mint and publish first; the compound cites their artifacts, not papers.{% else %}Refines the claim above — a narrower, sharper restatement.{% endif %}">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
@@ -168,7 +182,7 @@
           <span class="text-slate-400 shrink-0">{{ e.kind }}</span>
         </li>
         {% endfor %}
-        {% for c in n.children %}{{ node(c) }}{% endfor %}
+        {% for c in n.children %}{{ node(c, stale_reasons) }}{% endfor %}
       </ul>
       {% endif %}
     </details>
@@ -179,7 +193,7 @@
     <div id="pane-tree" class="overflow-y-auto min-w-0 pr-1" style="width: 34%" data-tour="np-tree">
       {% if roots %}
       <ul>
-        {% for n in roots %}{{ node(n) }}{% endfor %}
+        {% for n in roots %}{{ node(n, stale_reasons) }}{% endfor %}
       </ul>
       {% else %}
       <p class="text-sm text-slate-500">No claim hubs yet.</p>
