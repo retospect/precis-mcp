@@ -60,6 +60,22 @@ def test_parse_decimal() -> None:
     assert spec.params["r"] == pytest.approx(2.5)
 
 
+def test_parse_scientific_notation() -> None:
+    """nm-scale dims are legal without ten zeros (gr332020): numbers take
+    an optional exponent — unambiguous, no DSL key is ``e``."""
+    spec = parse("box:w3e-9d1.5E-9h3e-10")
+    assert spec.params["w"] == pytest.approx(3e-9)
+    assert spec.params["d"] == pytest.approx(1.5e-9)
+    assert spec.params["h"] == pytest.approx(3e-10)
+    assert parse("cyl:r2e3h1e+2").params == {"r": 2000.0, "h": 100.0}
+    assert parse("chamfer:1e-6x45").params["size"] == pytest.approx(1e-6)
+
+
+def test_parse_bare_exponent_is_garbage() -> None:
+    with pytest.raises(DslError, match="unexpected text"):
+        parse("cyl:r3eh12")
+
+
 def test_parse_missing_key() -> None:
     with pytest.raises(DslError, match="missing"):
         parse("cyl:r3")
@@ -167,6 +183,7 @@ def test_build_chamfer_zero_angle_is_horizontal_plane_at_minus_size() -> None:
         "pyramid:n4r5h8",
         "chamfer:1x45",
         "cyl:r2.5h12",
+        "box:w3e-09d3e-09h3e-10",
     ],
 )
 def test_round_trip(config: str) -> None:
@@ -175,3 +192,9 @@ def test_round_trip(config: str) -> None:
 
 def test_format_spec_compacts_floats() -> None:
     assert format_spec(ShapeSpec("cyl", {"r": 3.0, "h": 12.0})) == "cyl:r3h12"
+
+
+def test_format_spec_nm_scale_not_zero() -> None:
+    """Sub-µm dims render in scientific notation — the 6-decimal rounding
+    used for ordinary magnitudes would collapse them to '0' (gr332020)."""
+    assert format_spec(ShapeSpec("sphere", {"r": 3e-9})) == "sphere:r3e-09"

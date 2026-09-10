@@ -420,6 +420,9 @@ immediately, and the result echoes the node tree plus any
 | torus | `torus:R<major>r<minor>` | `torus:R10r2` |
 | chamfer bevel tool | `chamfer:<size>x<angle°>` | `chamfer:1x45` |
 
+Numbers accept scientific notation: `box:w3e-9d3e-9h3e-10` (nm-scale
+without ten zeros).
+
 All are placed base-at-`z=0`, centred on the local axis; `@x,y,z` and
 `rot:` set the world pose. The convention is **mixed** — centred in x/y,
 based in z: `box:w5d5h0.3 @0,0,0` occupies x and y in [−2.5, 2.5] but z

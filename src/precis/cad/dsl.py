@@ -58,8 +58,11 @@ class ShapeSpec:
 
 
 #: ``<key><number>`` — keys longest-first so ``rb``/``rt`` beat ``r``.
-_TOKEN_RE = re.compile(r"(rb|rt|R|r|w|d|h|n)(-?\d+(?:\.\d+)?)")
-_CHAMFER_RE = re.compile(r"^(-?\d+(?:\.\d+)?)x(-?\d+(?:\.\d+)?)$")
+#: Numbers take an optional exponent (``3e-9``) — unambiguous since no
+#: DSL key is ``e``; nm-scale dims are unreadable otherwise (gr332020).
+_NUM = r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+_TOKEN_RE = re.compile(rf"(rb|rt|R|r|w|d|h|n)({_NUM})")
+_CHAMFER_RE = re.compile(rf"^({_NUM})x({_NUM})$")
 
 #: Required keys per alias, in canonical output order (drives ``format_spec``).
 _ALIAS_KEYS: dict[str, tuple[str, ...]] = {
@@ -183,9 +186,14 @@ def build_config(config: str) -> Primitive:
 
 
 def _fmt_num(x: float) -> str:
-    """Render a float compactly: 4.0 → '4', 4.5 → '4.5'."""
+    """Render a float compactly: 4.0 → '4', 4.5 → '4.5', 3e-09 → '3e-09'.
+
+    Sub-1e-4 magnitudes render in scientific notation (parse accepts it) —
+    the fixed 6-decimal rounding below would collapse nm-scale dims to '0'."""
     if x == int(x):
         return str(int(x))
+    if x != 0 and abs(x) < 1e-4:
+        return f"{x:.6g}"
     return repr(round(x, 6)).rstrip("0").rstrip(".")
 
 
