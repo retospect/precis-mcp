@@ -90,6 +90,25 @@ def _free(store: Store, host: str, resource: str) -> int | None:
     return None
 
 
+def _advertise(
+    store: Store, host: str, slots: dict[str, int], *, age_minutes: float = 0.5
+) -> None:
+    """Seed ``resource_slots`` AND a fresh ``host_heartbeat`` row (gr333274:
+    ``_advertised_by_host`` now joins to ``host_heartbeat`` and requires
+    freshness — the real heartbeat probe always writes both together, so
+    every test advertisement needs the matching row too, mirroring
+    ``tests/test_unschedulable_alert.py``'s ``_upsert_host_heartbeat``)."""
+    store.sync_host_resource_slots(host, slots)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) "
+            "VALUES (%s, now() - %s::interval) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host, f"{age_minutes} minutes"),
+        )
+        conn.commit()
+
+
 def _age_job(store: Store, ref_id: int, minutes: float) -> None:
     """Backdate a job's ``refs.created_at`` so it reads as queued
     ``minutes`` ago — used to exercise the ``llm:`` affinity grace window
@@ -154,7 +173,7 @@ def test_release_caps_at_capacity(store: Store) -> None:
 
 
 def test_claim_reserves_and_stamps(store: Store) -> None:
-    store.sync_host_resource_slots("rh_f", {"gpu": 1})
+    _advertise(store, "rh_f", {"gpu": 1})
     jid = _queue_job(store, executor="ex_res_f", requires={"gpu": 1})
     rows = _claim(store, "ex_res_f", "rh_f")
     assert [r[0] for r in rows] == [jid]
@@ -163,7 +182,7 @@ def test_claim_reserves_and_stamps(store: Store) -> None:
 
 
 def test_claim_skips_when_no_free_slot(store: Store) -> None:
-    store.sync_host_resource_slots("rh_g", {"gpu": 1})
+    _advertise(store, "rh_g", {"gpu": 1})
     with store.pool.connection() as conn:
         reserve_resource_slots(conn, "rh_g", {"gpu": 1})  # pre-exhaust
         conn.commit()
@@ -199,9 +218,9 @@ def test_scarcity_ranks_rare_capability_first(store: Store) -> None:
     Uses test-unique resource tokens so the shared test DB's other rows can't
     pollute the per-resource host count that drives the scarcity score.
     """
-    store.sync_host_resource_slots("sc_solo", {"scarce_x": 1})  # 1 host — rare
+    _advertise(store, "sc_solo", {"scarce_x": 1})  # 1 host — rare
     for h in ("sc_1", "sc_2", "sc_3"):
-        store.sync_host_resource_slots(h, {"common_y": 2})  # 3 hosts — common
+        _advertise(store, h, {"common_y": 2})  # 3 hosts — common
     _common = _queue_job(store, executor="ex_sc", requires={"common_y": 1}, prio=1)
     rare = _queue_job(store, executor="ex_sc", requires={"scarce_x": 1}, prio=9)
     rows = _claim(store, "ex_sc", "sc_1", limit=1)  # only the top-ranked
@@ -230,7 +249,7 @@ def test_mem_pressure_vetoes_heavy_job(store: Store) -> None:
 
 
 def test_mem_ok_allows_heavy_job(store: Store) -> None:
-    store.sync_host_resource_slots("hq", {"gpu": 1})
+    _advertise(store, "hq", {"gpu": 1})
     store.sync_soft_signal("hq", "mem", 2, 2)  # plenty
     jid = _queue_job(store, executor="ex_v2", requires={"gpu": 1})
     rows = _claim(store, "ex_v2", "hq", limit=10)
@@ -248,7 +267,7 @@ def test_mem_pressure_does_not_veto_commodity(store: Store) -> None:
 
 
 def test_release_job_reservation_refunds_and_is_idempotent(store: Store) -> None:
-    store.sync_host_resource_slots("rh_i", {"gpu": 1})
+    _advertise(store, "rh_i", {"gpu": 1})
     jid = _queue_job(store, executor="ex_res_i", requires={"gpu": 1})
     _claim(store, "ex_res_i", "rh_i")
     assert _free(store, "rh_i", "gpu") == 0
@@ -264,7 +283,7 @@ def test_release_job_reservation_refunds_and_is_idempotent(store: Store) -> None
 
 
 def test_set_status_terminal_refunds(store: Store) -> None:
-    store.sync_host_resource_slots("rh_j", {"gpu": 1})
+    _advertise(store, "rh_j", {"gpu": 1})
     jid = _queue_job(store, executor="ex_res_j", requires={"gpu": 1})
     _claim(store, "ex_res_j", "rh_j")
     assert _free(store, "rh_j", "gpu") == 0
@@ -275,7 +294,7 @@ def test_set_status_terminal_refunds(store: Store) -> None:
 
 
 def test_set_status_nonterminal_does_not_refund(store: Store) -> None:
-    store.sync_host_resource_slots("rh_k", {"gpu": 1})
+    _advertise(store, "rh_k", {"gpu": 1})
     jid = _queue_job(store, executor="ex_res_k", requires={"gpu": 1})
     _claim(store, "ex_res_k", "rh_k")
     with store.pool.connection() as conn:
@@ -360,7 +379,7 @@ def test_free_zero_two_claim_race_exactly_one_wins(store: Store) -> None:
     row-lock on the shared ``resource_slots`` row is actually contended."""
     from concurrent.futures import ThreadPoolExecutor
 
-    store.sync_host_resource_slots("race_host", {"embedder": 1})
+    _advertise(store, "race_host", {"embedder": 1})
     j1 = _queue_job(store, executor="ex_race", requires={"embedder": 1})
     j2 = _queue_job(store, executor="ex_race", requires={"embedder": 1})
 
@@ -431,7 +450,7 @@ def _queue_typed_job(
 
 def test_derived_requires_reserved_on_target_node(store: Store) -> None:
     """A struct_relax job reserves gpu on its target_node, not the claimer."""
-    store.sync_host_resource_slots("spark_d", {"gpu": 1})
+    _advertise(store, "spark_d", {"gpu": 1})
     jid = _queue_typed_job(
         store, executor="ex_d1", job_type="struct_relax", target_node="spark_d"
     )
@@ -443,6 +462,39 @@ def test_derived_requires_reserved_on_target_node(store: Store) -> None:
     assert rows[0][2]["reserved"] == {"host": "spark_d", "slots": {"gpu": 1}}
     assert _free(store, "spark_d", "gpu") == 0
     assert _free(store, "melchior_d", "gpu") is None  # reserve_host_id untouched
+
+
+def test_stale_heartbeat_pin_does_not_count_as_advertised(store: Store) -> None:
+    """gr333274: a target_node pin to a host with a weeks-old heartbeat must
+    NOT count as advertised — a retired daemon's frozen ``resource_slots``
+    row (the retract-on-absent discipline only runs inside a live heartbeat
+    pass) must not silently pass the reservation gate. Falls back to the
+    node-gate/pin path exactly like an unadvertised capability: claimed,
+    just unreserved."""
+    _advertise(store, "spark_fossil", {"gpu": 1}, age_minutes=60 * 24 * 21)  # 3wk
+    jid = _queue_typed_job(
+        store,
+        executor="ex_d_fossil",
+        job_type="struct_relax",
+        target_node="spark_fossil",
+    )
+    rows = _claim(store, "ex_d_fossil", "melchior_fossil", node="spark_fossil")
+    assert [r[0] for r in rows] == [jid]  # claimed via the pin — no stall
+    assert "reserved" not in rows[0][2]  # fossil advertisement not trusted
+    assert _free(store, "spark_fossil", "gpu") == 1  # untouched, not reserved
+
+
+def test_fresh_heartbeat_pin_still_advertises(store: Store) -> None:
+    """Companion positive case: the same pin shape, but a fresh heartbeat —
+    the reservation gate still fires normally."""
+    _advertise(store, "spark_fresh", {"gpu": 1}, age_minutes=1.0)
+    jid = _queue_typed_job(
+        store, executor="ex_d_fresh", job_type="struct_relax", target_node="spark_fresh"
+    )
+    rows = _claim(store, "ex_d_fresh", "melchior_fresh", node="spark_fresh")
+    assert [r[0] for r in rows] == [jid]
+    assert rows[0][2]["reserved"] == {"host": "spark_fresh", "slots": {"gpu": 1}}
+    assert _free(store, "spark_fresh", "gpu") == 0
 
 
 def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> None:
@@ -473,7 +525,7 @@ def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> No
 
 
 def test_llm_requirement_claimed_on_host_that_advertises_it(store: Store) -> None:
-    store.sync_host_resource_slots("host_llm_a", {"llm:qwen-x": 1})
+    _advertise(store, "host_llm_a", {"llm:qwen-x": 1})
     jid = _queue_job(store, executor="ex_llm_a", requires={"llm:qwen-x": 1})
     rows = _claim(store, "ex_llm_a", "host_llm_a")
     assert [r[0] for r in rows] == [jid]
@@ -499,7 +551,7 @@ def test_llm_requirement_not_claimed_on_host_that_does_not_advertise_it(
     assert "reserved" not in meta_row[0]
     # confirm it's genuinely still queued (claimable), not silently dropped —
     # a second claim pass after advertising the resource picks it up.
-    store.sync_host_resource_slots("host_llm_b_no_advert", {"llm:qwen-x": 1})
+    _advertise(store, "host_llm_b_no_advert", {"llm:qwen-x": 1})
     rows2 = _claim(store, "ex_llm_b", "host_llm_b_no_advert")
     assert [r[0] for r in rows2] == [jid]
 
@@ -557,7 +609,7 @@ def test_llm_requirement_claimed_with_reservation_regardless_of_age(
     only reached when the slot is unadvertised."""
     from precis.workers.executors._common import LLM_AFFINITY_GRACE_MIN
 
-    store.sync_host_resource_slots("host_llm_g", {"llm:qwen-x": 1})
+    _advertise(store, "host_llm_g", {"llm:qwen-x": 1})
     jid = _queue_job(store, executor="ex_llm_g", requires={"llm:qwen-x": 1})
     _age_job(store, jid, LLM_AFFINITY_GRACE_MIN + 30)
     rows = _claim(store, "ex_llm_g", "host_llm_g")
@@ -571,7 +623,7 @@ def test_llm_requirement_target_node_claimable_when_node_advertises(
 ) -> None:
     """target_node=H + requires llm:X, H advertises llm:X → claimable on H
     (reservation lands on the target_node, not the claiming host identity)."""
-    store.sync_host_resource_slots("spark_llm", {"llm:qwen-x": 1})
+    _advertise(store, "spark_llm", {"llm:qwen-x": 1})
     jid = _queue_typed_job(
         store,
         executor="ex_llm_c",
@@ -622,7 +674,7 @@ def test_autocatpath_seed_serializes_on_single_gpu_slot(
     from precis.handlers.job import JobHandler
     from precis.handlers.todo import TodoHandler
 
-    store.sync_host_resource_slots("spark", {"gpu": 1})
+    _advertise(store, "spark", {"gpu": 1})
     todo_out = TodoHandler(hub=hub).put(text="autocatpath aggregate")
     todo_id = todo_out.ref_id
     assert todo_id is not None
@@ -709,7 +761,7 @@ def test_autocatpath_seed_on_gpu_less_host_claims_unthrottled(
 
 
 def test_explicit_requires_overrides_job_type_derivation(store: Store) -> None:
-    store.sync_host_resource_slots("host_d3", {"podman": 1})
+    _advertise(store, "host_d3", {"podman": 1})
     jid = _queue_typed_job(
         store,
         executor="ex_d3",

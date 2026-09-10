@@ -37,6 +37,7 @@ from precis.store._resource_slots_ops import (
 )
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import suspended_job_types
+from precis.workers.nursery import HOST_DARK_SILENCE_MIN
 from precis.workers.registry import SERVICES_BY_NAME
 from precis.workers.service_config import reserve_active
 
@@ -200,8 +201,36 @@ def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     not *this* host — advertises is not reserved (it falls back to the
     ``target_node`` pin), so activating ``requires`` can't strand a job in
     the window before the heartbeat self-probe has populated the table.
+
+    gr333274 (follow-up to gr333205's sweeper fix, ``_alert_unschedulable_
+    jobs``): joined to ``host_heartbeat`` and filtered to
+    :data:`~precis.workers.nursery.HOST_DARK_SILENCE_MIN` freshness — the
+    SAME staleness cutoff, same shape. A ``resource_slots`` row is only
+    retracted by the retract-on-absent discipline inside a *live* heartbeat
+    pass; a host that's retired outright (decommissioned, or just stopped
+    heartbeating) leaves its last advertisement frozen forever. Without
+    this filter, a job pinned via ``target_node`` to that fossil host would
+    read the dead capability as live and pass the reservation gate, even
+    though nothing will ever run it there.
+
+    Filtering is UNIFORM (every host, not just ``target_node`` pins): the
+    real heartbeat probe (``heartbeat.py``'s ``_collect_and_upsert``) always
+    writes ``host_heartbeat`` before it calls ``_report_resource_slots`` to
+    sync ``resource_slots`` — in the SAME pass — so any host with a
+    ``resource_slots`` row necessarily has a heartbeat row at least that
+    fresh. The claiming host's own advertisement (the ``default_host``
+    fallback when there's no pin) is never legitimately "advertised but
+    heartbeat-less" in production; there is no first-boot gap to special-
+    case here (unlike the *derivation* self-gate above, which handles the
+    window before the probe has populated ``resource_slots`` at all — a
+    missing row, not a stale one).
     """
-    rows = conn.execute("SELECT host, resource FROM resource_slots").fetchall()
+    rows = conn.execute(
+        "SELECT rs.host, rs.resource FROM resource_slots rs "
+        "JOIN host_heartbeat hh ON hh.host = rs.host "
+        "WHERE hh.ts > now() - %(silence)s::interval",
+        {"silence": f"{HOST_DARK_SILENCE_MIN} minutes"},
+    ).fetchall()
     out: dict[str, set[str]] = {}
     for host, resource in rows:
         out.setdefault(str(host), set()).add(str(resource))
