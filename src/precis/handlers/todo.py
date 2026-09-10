@@ -377,6 +377,24 @@ class TodoHandler(NumericRefHandler):
         prio: int | None = None,
         meta: dict[str, Any] | None = None,
         body: str | None = None,
+        # Executor-dispatch config (see precis-job-help / workers/dispatch.py):
+        # declared at the top-level put() verb schema (tools/core.py) for the
+        # 'job' kind's submit path, but a strict-schema MCP client sends every
+        # declared kwarg regardless of kind= — so a todo create call that
+        # passes these arrives here too. Before gr333433 they fell into
+        # ``**_kw`` and were silently dropped: a todo minted with
+        # ``executor=``/``job_type=``/``params=`` looked identical to a plain
+        # planner todo, with no error and no signal anything was lost. The
+        # dispatch worker (``workers/dispatch.py``) reads its dispatch config
+        # from ``meta.executor``/``meta.job_type``/``meta.params`` on the
+        # todo row, so land these kwargs there — the exact shape a
+        # correctly-minted executor-dispatched todo already carries. An
+        # explicit kwarg wins over the same key already present in
+        # ``meta=`` (same "declared kwarg beats the bag" precedent as
+        # ``prio=`` above).
+        executor: str | None = None,
+        job_type: str | None = None,
+        params: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         prio = _validate_prio(prio)
@@ -387,6 +405,14 @@ class TodoHandler(NumericRefHandler):
         tags, prio_from_tag = split_prio(tags)
         if prio is None:
             prio = prio_from_tag
+        if executor is not None or job_type is not None or params is not None:
+            meta = dict(meta or {})
+            if executor is not None:
+                meta["executor"] = executor
+            if job_type is not None:
+                meta["job_type"] = job_type
+            if params is not None:
+                meta["params"] = params
         # ``meta.schedule`` may carry the ``every:`` shorthand; validate
         # and rewrite to canonical cron so the runtime only ever sees
         # one shape. The recurring spawner trusts the stored form.

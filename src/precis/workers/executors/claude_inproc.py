@@ -806,6 +806,24 @@ def _build_job_result_text(
             (parent_ref_id, ts_started),
         ).fetchone()
         child_count = int(child_row[0]) if child_row else 0
+    # gr333433: a tick that declares `verdict: done` while minting zero
+    # child todos/jobs this tick is the exact shape of the prod incident
+    # that motivated the no-shell/no-container contract line above (a
+    # tick claimed to have "verified the runtime" and "wrote
+    # /data/hello.txt", then self-tagged STATUS:done with no children
+    # spawned). This is a WARN, not a hard refusal — a planner
+    # legitimately closes a leaf that needed no execution (the
+    # `check_status_done_artifact` guardrail already covers the
+    # worker-source case where the STATUS:done tag itself lacks
+    # evidence) — but it's cheap, already-computed signal worth a log
+    # line for anyone auditing a suspicious "done".
+    if conclusion is not None and conclusion.verdict == "done" and child_count == 0:
+        log.warning(
+            "plan_tick: parent #%d ticked verdict=done with zero child "
+            "todos/jobs minted this tick — verify the STATUS:done claim "
+            "against real evidence, not just the LLM's summary",
+            parent_ref_id,
+        )
     # Build the text — terse, structured. When the LLM emitted a
     # tick-conclusion block, its synth lives at the top so the parent
     # re-tick reads it before the counts.

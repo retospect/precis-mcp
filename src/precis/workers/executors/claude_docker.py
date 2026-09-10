@@ -129,6 +129,14 @@ _LEASE_MARGIN_S = 600
 #: Process-lifetime flag: run the orphan reconcile once per worker boot.
 _reconciled = False
 
+#: gr329258/gr333438 residual: an exit-0 container with an EMPTY ``out/``
+#: that also ran for under this many seconds is more likely a silently
+#: failed agent (e.g. auth rejected before it wrote anything) than a
+#: genuinely fast, successful task — flagged in the job summary + logged,
+#: never used to reclassify success/failure (that's a status-semantics
+#: call this fix doesn't make).
+_EMPTY_HARVEST_SHORT_RUN_S = 60
+
 
 # ── Config ─────────────────────────────────────────────────────────
 
@@ -1058,6 +1066,10 @@ def _terminate(
     ``running`` with no container). Every other terminal path (non-zero
     exit, timeout, vanished container) discards ``out/`` unchanged, as
     slice 1 did.
+
+    gr329258/gr333438: an empty ``out/`` on a short exit-0 run gets an
+    explicit ``⚠`` warning appended to the summary (and WARN-logged) —
+    a flag, not a status change (:data:`_EMPTY_HARVEST_SHORT_RUN_S`).
     """
     stderr_tail = _logs_tail(name)
     # Kill (best-effort) then force-remove — covers a still-running
@@ -1096,6 +1108,11 @@ def _terminate(
     img = (meta or {}).get("image")
     image_note = f" image={img}." if img else ""
 
+    # Computed once, up front, so both the empty-harvest short-run flag
+    # below and the trailing "(Ns)" forensic suffix use the same number
+    # instead of two separate DB round trips racing each other.
+    duration = _duration_seconds(store, ref_id)
+
     harvest_note = ""
     if status == _SUCCEEDED and exit_code == 0:
         params = dict((meta or {}).get("params") or {})
@@ -1114,6 +1131,24 @@ def _terminate(
                 ),
             )
             harvest_note = " " + _sandbox_harvest.summarize(result)
+            if (
+                result.empty
+                and duration is not None
+                and duration < _EMPTY_HARVEST_SHORT_RUN_S
+            ):
+                # gr329258 residual: flag only — never reclassify
+                # success/failure (a status-semantics call not being
+                # made here).
+                harvest_note += (
+                    " ⚠ empty out/ on a short exit-0 run — likely "
+                    "silent agent failure (auth?)."
+                )
+                log.warning(
+                    "claude_docker: job %d exited 0 with empty out/ after "
+                    "%.0fs — likely silent agent failure",
+                    ref_id,
+                    duration,
+                )
         except Exception:  # pragma: no cover - defensive
             log.warning(
                 "claude_docker: harvest of job %d raised", ref_id, exc_info=True
@@ -1121,7 +1156,6 @@ def _terminate(
             harvest_note = " harvest failed (see worker log)."
 
     with store.pool.connection() as conn:
-        duration = _duration_seconds(store, ref_id)
         _append_chunk(
             store,
             ref_id,

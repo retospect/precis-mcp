@@ -489,6 +489,52 @@ class TestHarvestOut:
         assert result.artifact is not None
         assert any("PRECIS_ROOT not set" in m for m in result.messages)
 
+        # gr333438: the artifact tarball is the REAL harvest and is
+        # non-empty here — n_artifact_files and the skip reason must both
+        # be on the result, and summarize() must surface both rather than
+        # reading as "harvested folder:N (0 file(s))".
+        assert result.n_artifact_files == 1
+        assert result.projection_skipped_reason is not None
+        summary = harvest.summarize(result)
+        assert "harvested folder:" in summary
+        assert "artifact 1 file(s)" in summary
+        assert "0 projected" in summary
+        assert "PRECIS_ROOT unset" in summary
+
+    def test_precis_root_set_summary_reports_both_counts(
+        self, store: Store, tmp_path: Path
+    ) -> None:
+        precis_root = tmp_path / "PRECIS_ROOT"
+        precis_root.mkdir()
+        art_root = tmp_path / "artifacts"
+
+        jid = _mk_job(store)
+        work_dir = tmp_path / "work"
+        out_dir = work_dir / "out"
+        out_dir.mkdir(parents=True)
+        (out_dir / "a.txt").write_text("a\n", encoding="utf-8")
+        (out_dir / "b.txt").write_text("b\n", encoding="utf-8")
+        (out_dir / "c.txt").write_text("c\n", encoding="utf-8")
+
+        result = harvest.harvest_out(
+            store,
+            job_ref_id=jid,
+            container_name="sandbox-y",
+            work_dir=work_dir,
+            image="code-task:latest",
+            model="claude-opus",
+            root=precis_root,
+            artifact_store_root=art_root,
+        )
+        assert result.n_artifact_files == 3
+        assert result.n_projected == 3
+        assert result.projection_skipped_reason is None
+
+        summary = harvest.summarize(result)
+        assert "artifact 3 file(s)" in summary
+        assert "3 projected" in summary
+        assert "PRECIS_ROOT unset" not in summary
+
     def test_extra_derived_from_links_run_folder_to_build_folder(
         self, store: Store, tmp_path: Path
     ) -> None:

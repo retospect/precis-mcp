@@ -905,9 +905,30 @@ def test_custom_image_lands_in_argv_meta_summary_and_harvest_folder(
     assert _status(store, jid) == "succeeded"
     summaries = _job_summary_texts(store, jid)
     assert any(f"image={custom_image}" in s for s in summaries)
+    # Non-empty out/ — no gr329258 "silent failure" flag.
+    assert not any("empty out/" in s for s in summaries)
 
     folder_id = _meta(store, jid)["harvest_folder_id"]
     assert _meta(store, folder_id)["image"] == custom_image
+
+
+def test_poll_exit_zero_empty_out_flags_short_run_warning(
+    store: Store, sandbox_env: Path
+) -> None:
+    """gr329258/gr333438: exit-0 + empty out/ + short runtime gets an
+    explicit warning appended to the job summary — a flag, never a
+    status change (the job still succeeds)."""
+    jid = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch (out/ empty)
+    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0", encoding="utf-8")
+    claude_docker.run_claude_docker_pass(store, limit=4)  # poll → harvest → reap
+
+    assert _status(store, jid) == "succeeded"
+    summaries = _job_summary_texts(store, jid)
+    assert any(
+        "empty out/ on a short exit-0 run" in s and "silent agent failure" in s
+        for s in summaries
+    )
 
 
 def test_poll_exit_one_fails_and_bubbles(store: Store, sandbox_env: Path) -> None:

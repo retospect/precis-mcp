@@ -104,13 +104,23 @@ class HarvestResult:
 
     ``folder_ref_id is None`` means ``out/`` had no files (the "empty
     out/" taxonomy class) — nothing else on this result is meaningful.
+
+    ``n_artifact_files`` counts entries in the (always-built) content-
+    addressed tarball — the REAL harvest, present even when
+    ``n_projected`` is ``0`` because ``PRECIS_ROOT`` is unset
+    (:attr:`projection_skipped_reason` then explains why). gr333438: a
+    summary that reported only ``n_projected`` read as "harvested 0
+    files" on hosts without ``PRECIS_ROOT``, even though the tarball had
+    real content — this pair keeps both counts visible.
     """
 
     folder_ref_id: int | None = None
     n_projected: int = 0
     n_skipped: int = 0
+    n_artifact_files: int = 0
     artifact: dict[str, Any] | None = None
     run_recipe: dict[str, Any] | None = None
+    projection_skipped_reason: str | None = None
     messages: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -651,6 +661,7 @@ def harvest_out(
     ref_ids: list[int] = []
     n_skipped = 0
     messages: list[str] = []
+    projection_skipped_reason: str | None = None
     if effective_root is not None:
         from precis.dispatch import Hub
 
@@ -664,9 +675,10 @@ def harvest_out(
         for rid in ref_ids:
             store.set_parent(rid, folder.id)
     else:
-        messages.append(
+        projection_skipped_reason = (
             "PRECIS_ROOT not set — tarball harvested, no plaintext projection"
         )
+        messages.append(projection_skipped_reason)
         log.warning(
             "sandbox_run harvest: PRECIS_ROOT unset — skipping plaintext "
             "projection for job %d (tarball still harvested)",
@@ -685,20 +697,38 @@ def harvest_out(
         folder_ref_id=folder.id,
         n_projected=len(ref_ids),
         n_skipped=n_skipped,
+        n_artifact_files=len(_out_files),
         artifact=artifact,
         run_recipe=run_recipe,
+        projection_skipped_reason=projection_skipped_reason,
         messages=tuple(messages),
     )
 
 
 def summarize(result: HarvestResult) -> str:
-    """One-line, taxonomy-labeled summary for the ``job_summary`` chunk."""
+    """One-line, taxonomy-labeled summary for the ``job_summary`` chunk.
+
+    gr333438: the count that leads ("N file(s)") used to be
+    ``n_projected`` alone — the ``PRECIS_ROOT``-gated DB projection.
+    That's skipped by design on any host without ``PRECIS_ROOT`` set
+    (e.g. castor), so the summary read "harvested folder:N (0
+    file(s))" on every green run there even though the artifact
+    tarball — the REAL harvest — was non-empty. Two green-looking
+    smokes read as failures for ~2.5h on 2026-09-10 because of exactly
+    this. Now the artifact-tarball count leads always, the projection
+    count is always shown alongside it, and the skip reason (when
+    projection was skipped) is spelled out rather than silently
+    implied by a bare zero.
+    """
     if result.folder_ref_id is None:
         return "out/ empty — nothing harvested."
-    bits = [f"harvested folder:{result.folder_ref_id} ({result.n_projected} file(s)"]
+    projected_bit = f"{result.n_projected} projected"
+    if result.projection_skipped_reason is not None:
+        projected_bit += " (PRECIS_ROOT unset)"
+    counts = f"artifact {result.n_artifact_files} file(s); {projected_bit}"
     if result.n_skipped:
-        bits[-1] += f", {result.n_skipped} skipped"
-    bits[-1] += ")."
+        counts += f", {result.n_skipped} skipped"
+    bits = [f"harvested folder:{result.folder_ref_id} ({counts})."]
     if result.artifact:
         bits.append(
             f"artifact sha256={str(result.artifact['sha256'])[:12]}… "

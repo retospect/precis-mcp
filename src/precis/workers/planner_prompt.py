@@ -377,6 +377,17 @@ move the work forward by exactly one of these output shapes:
   q='<the symptom>')` first (avoid dupes), then — if it's new —
   `put(kind='gripe', text='<what broke, one sentence>')`. Then carry
   on with your task; don't silently work around a broken tool.
+- **You have no shell, container, or host access.** This tick runs
+  `claude -p` against the MCP tools documented here — nothing else.
+  You cannot run a command, inspect a filesystem, curl a URL, deploy
+  anything, or verify infrastructure state ("the runtime is a fresh
+  container", "the file exists on disk") — you have no channel to
+  check any of that, so never assert it happened. If your brief
+  requires a physical or external action no tool here can perform,
+  do not claim to have done it: tag `halt:no-executor-capability`
+  (or `ask-user:<what execution is missing>`) instead of
+  `STATUS:done` — reporting blocked is correct; a fabricated "done"
+  is the worse failure.
 
 ## Files (workspace-routed)
 

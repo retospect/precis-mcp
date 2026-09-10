@@ -495,6 +495,95 @@ def test_edit_memory_text_as_ordinary_string_is_unchanged(
     assert ref is not None
 
 
+# ---------------------------------------------------------------------------
+# gr333433: ``put(kind='todo', executor=…, job_type=…, params=…)`` silently
+# dropped those kwargs — the verb schema advertises them (declared for the
+# 'job' kind's submit path), but ``TodoHandler.put`` had no matching kwarg,
+# so they fell into its ``**_kw`` catch-all and vanished. A todo minted this
+# way looked identical to a plain planner todo (no error, no meta written),
+# so the dispatch worker (which reads its config from ``meta.executor``/
+# ``meta.job_type``/``meta.params`` on the todo row) never picked it up.
+# ---------------------------------------------------------------------------
+
+
+def test_put_todo_executor_job_type_params_land_in_meta_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``put(kind='todo', executor=…, job_type=…, params=…)`` through the
+    real MCP callable lands exactly the shape the dispatch worker reads
+    (``workers/dispatch.py`` selects ``r.meta->>'executor'``,
+    ``r.meta->>'job_type'``, ``r.meta->'params'``) — not a silent no-op."""
+    out = tools_core.put(
+        kind="todo",
+        text="run the sandbox smoke check",
+        executor="claude_inproc",
+        job_type="plan_tick",
+        params={"model": "sonnet"},
+    )
+
+    assert not _is_error(out), _body(out)
+    ref = store.list_refs(kind="todo", limit=1)[0]
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.meta.get("executor") == "claude_inproc"
+    assert live.meta.get("job_type") == "plan_tick"
+    assert live.meta.get("params") == {"model": "sonnet"}
+
+
+def test_put_todo_executor_kwarg_wins_over_same_key_in_meta(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """An explicit ``executor=`` kwarg overrides the same key already
+    present in ``meta=`` — same "declared kwarg beats the bag" precedent
+    ``prio=`` already follows against a ``PRIO:`` tag."""
+    out = tools_core.put(
+        kind="todo",
+        text="explicit kwarg beats meta bag",
+        meta={"executor": "stale_runner"},
+        executor="claude_inproc",
+    )
+
+    assert not _is_error(out), _body(out)
+    ref = store.list_refs(kind="todo", limit=1)[0]
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert live.meta.get("executor") == "claude_inproc"
+
+
+def test_put_todo_executor_dispatch_meta_skips_the_default_llm_tier_stamp(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """A parented todo minted with ``executor=`` must NOT also get the
+    parented-write default ``meta.llm_tier='opus'`` stamp (the todo already
+    declared its own auto-run signal) — pins that the kwarg lands in
+    ``meta`` early enough for the existing "already chose an executor"
+    skip-condition to see it."""
+    parent_out = tools_core.put(kind="todo", text="strategic root")
+    assert not _is_error(parent_out), _body(parent_out)
+    parent_id = store.list_refs(kind="todo", limit=1)[0].id
+
+    out = tools_core.put(
+        kind="todo",
+        text="dispatched leaf",
+        parent_id=parent_id,
+        executor="claude_inproc",
+        job_type="plan_tick",
+        params={"model": "sonnet"},
+    )
+
+    assert not _is_error(out), _body(out)
+    assert "llm_tier" not in _body(out)
+    children = [r for r in store.list_refs(kind="todo", limit=5) if r.parent_id == parent_id]
+    assert len(children) == 1, children
+    live = store.get_ref(kind="todo", id=children[0].id)
+    assert live is not None
+    assert "llm_tier" not in live.meta
+    assert live.meta.get("executor") == "claude_inproc"
+
+
 def test_command_profile_put_structure_text_as_coerced_dict_funnels_through(
     mounted_runtime: PrecisRuntime,
     store: Store,

@@ -141,6 +141,20 @@ def test_system_prompt_contains_pinned_skill_and_index() -> None:
     assert "Planner contract" in out
 
 
+def test_system_prompt_states_no_shell_container_host_access() -> None:
+    """gr333433: the cached system prompt must tell the tick, explicitly,
+    that it has no shell/container/host access and must never claim to
+    have performed a physical or external action — the contract line a
+    prod incident showed was missing (a tick claimed to have "verified
+    the runtime is a fresh docker container" and "wrote /data/hello.txt"
+    on a todo it had no capability to execute, then self-tagged
+    STATUS:done with zero child jobs spawned)."""
+    out = _build_system_prompt(store=None)
+    assert "no shell, container, or host access" in out
+    assert "never assert it happened" in out
+    assert "halt:no-executor-capability" in out
+
+
 def test_skill_index_lists_active_skill_slugs() -> None:
     """The boot index lists active skill **slugs**, not their summaries.
 
