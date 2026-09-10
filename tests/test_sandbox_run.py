@@ -774,6 +774,47 @@ def test_launch_passes_freshly_resolved_token_per_subprocess_env(
     assert env2 is not None and env2["CLAUDE_CODE_OAUTH_TOKEN"] == "vault-token-2"
 
 
+def test_launch_podman_nonzero_exit_fails_job_with_stderr_tail(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-zero ``podman run`` exit must take the handled ``_fail`` path
+    — no exception — and the failure summary must carry the captured
+    stderr tail (pins ``check=False`` and ``capture_output=True`` on the
+    launch call; 2026-09-10 mutation survivors)."""
+    import subprocess as _subprocess
+
+    real_run = _subprocess.run
+
+    def fake_run(argv: list[str], **kwargs: Any) -> Any:
+        if len(argv) > 1 and argv[1] == "run":
+            # Honor the kwargs the way real subprocess.run does, so the
+            # test pins the launch call's actual flags: without
+            # capture_output the streams are None (no tail to report),
+            # and check=True would raise instead of returning.
+            captured_streams = kwargs.get("capture_output", False)
+            out = "" if captured_streams else None
+            err = "crun: RunRoot not writable\n" if captured_streams else None
+            if kwargs.get("check", False):
+                raise _subprocess.CalledProcessError(125, argv, out, err)
+            return _subprocess.CompletedProcess(argv, 125, stdout=out, stderr=err)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(claude_docker.subprocess, "run", fake_run)
+
+    jid = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)  # must not raise
+
+    assert _status(store, jid) == "failed"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+            (jid, claude_docker._JOB_EVENT_KIND),
+        ).fetchall()
+    events = [r[0] for r in rows]
+    assert any("podman run failed" in t for t in events)
+    assert any("RunRoot not writable" in t for t in events)
+
+
 # ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
 #
 # claude_docker._launch spawns a raw `claude` CLI in the container whose
