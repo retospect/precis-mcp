@@ -141,8 +141,15 @@ positions in the classifier (v1 pins nodes at block poses).
    `m`, `s`, sign-feasibility, Pellegrino–Calladine second-order test);
    `view='stability'`; DRC capacity findings. Satisfies the two-party
    tripwire contract by construction.
-2. Force-density form-finder in `precis/structsolve/` + the se mint path
-   (synchronous op — the solve is sub-second; no job type).
+2. **SHIPPED 2026-09-09:** force-density form-finder
+   (`precis/structsolve/formfind.py`, pure/unit-agnostic, per-coordinate
+   anchoring, loud singular refusal) + the se `formfind` op
+   (`precis_se/formfind.py`): anchors from `objectives.fixed`, role-default
+   force densities (tie +1 / strut −1 / rod +1; undeclared demands an
+   explicit `q`), per-member `q=[{'a','b','q'}]` overrides, solved poses
+   stamped `origin: 'proposed'` — by default only already-`proposed` poses
+   move; `move=[...]`/`'all'` authorizes more; collapse refused, nothing
+   written.
 3. Prestress facet + null-space DRC (prestress doc rung 5: declared preloads
    must lie in the self-stress space, within tolerance).
 4. SIMP engine + cad-domain voxelization + run-summary storage.

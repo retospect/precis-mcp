@@ -134,6 +134,20 @@ the ops for things you *don't* make:
   quantity is the statement, and two lines saying different numbers is
   the ambiguity this avoids. Lines whose target is removed go with it
   (the vacancy rule ``remove_block``/``disconnect`` already follow).
+
+Slice 2 of docs/backlog/structural-solution-space.md adds the one
+solver-backed op:
+
+- ``formfind``       — force-density form-finding over the axial
+  subgraph (:mod:`precis_se.formfind` bridging
+  :func:`precis.structsolve.form_find`): anchors from
+  ``objectives.fixed`` and unmoved nodes, tension-positive force
+  densities from member roles (``q_tie``/``q_strut``/``q_rod`` defaults
+  +1/−1/+1, per-member ``q=[{'a','b','q'}]`` overrides), solved poses
+  written back stamped ``origin: 'proposed'``. Which nodes may move is
+  explicit: by default only poses already stamped ``proposed``;
+  ``move=[...]``/``move='all'`` authorizes more — a user-origin pose is
+  contract and never moves silently.
 """
 
 from __future__ import annotations
@@ -1085,6 +1099,18 @@ def _op_remove_bom(tree: SeTree, op: dict[str, Any]) -> None:
     )
 
 
+def _op_formfind(tree: SeTree, op: dict[str, Any]) -> None:
+    """Force-density form-finding over the axial subgraph — solve for
+    the equilibrium geometry and write the solved poses back stamped
+    ``origin: 'proposed'`` (:mod:`precis_se.formfind`, renting
+    :func:`precis.structsolve.form_find`)."""
+    # Function-level import: the op registry lives here, and the bridge
+    # imports stability, which imports this module.
+    from precis_se import formfind as se_formfind
+
+    se_formfind.op_formfind(tree, op)
+
+
 def _find_note(tree: SeTree, name: str) -> NoteSpec | None:
     for n in tree.notes:
         if n.name == name:
@@ -1188,4 +1214,5 @@ _OPS = {
     "remove_bom": _op_remove_bom,
     "add_note": _op_add_note,
     "remove_note": _op_remove_note,
+    "formfind": _op_formfind,
 }

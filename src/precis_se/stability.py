@@ -92,11 +92,14 @@ def _member_role(params: dict[str, float]) -> str:
     return "rod"
 
 
-def _axial_members(tree: SeTree) -> list[MemberRow]:
-    """Every stored axial connect as a :class:`MemberRow` — malformed
-    joints are silently absent here (they are already ``malformed_joint``
-    DRC errors); degenerate geometry is kept, marked ``skipped``."""
-    rows: list[MemberRow] = []
+def axial_connects(tree: SeTree) -> list[tuple[ConnectSpec, dict[str, float], str]]:
+    """Every stored connect with a valid ``axial`` joint, as
+    ``(connect, numeric params, role)`` — no geometry judgment (each
+    consumer applies its own: this module skips-and-reports degenerate
+    members, :mod:`precis_se.formfind` refuses them). Malformed joints
+    are silently absent here — they are already ``malformed_joint`` DRC
+    errors."""
+    out: list[tuple[ConnectSpec, dict[str, float], str]] = []
     for conn in tree.connects:
         if not conn.joint:
             continue
@@ -106,18 +109,27 @@ def _axial_members(tree: SeTree) -> list[MemberRow]:
             continue
         if joint["class"] != "axial":
             continue
-        subject = f"{conn.a_block}.{conn.a_port}—{conn.b_block}.{conn.b_port}"
         params = {
             k: float(v)
             for k, v in (joint.get("params") or {}).items()
             if isinstance(v, (int, float))
         }
+        out.append((conn, params, _member_role(params)))
+    return out
+
+
+def _axial_members(tree: SeTree) -> list[MemberRow]:
+    """Every stored axial connect as a :class:`MemberRow` — degenerate
+    geometry is kept, marked ``skipped``."""
+    rows: list[MemberRow] = []
+    for conn, params, role in axial_connects(tree):
+        subject = f"{conn.a_block}.{conn.a_port}—{conn.b_block}.{conn.b_port}"
         row = MemberRow(
             subject=subject,
             a_block=conn.a_block,
             b_block=conn.b_block,
             length=None,
-            role=_member_role(params),
+            role=role,
             params=params,
         )
         if conn.a_block == conn.b_block:

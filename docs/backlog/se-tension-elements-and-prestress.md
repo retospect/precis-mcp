@@ -19,7 +19,10 @@ the tripwire satisfied by construction (`stability.TRIPWIRE_LINE`), the
 `cable` mechanism and the `fixed` support objective. Open: rung 3 (spring
 category), rung 5 (preload/prestress facet + bolted-joint load sharing),
 rung 6 (active-set load path). The §4 form-finding deferral is REOPENED —
-in-tree, outside se — by `structural-solution-space.md` (Reto, 2026-09-09).
+in-tree, outside se — by `structural-solution-space.md` (Reto, 2026-09-09),
+and its slice 2 SHIPPED: `precis/structsolve/formfind.py` (force-density
+method) + the se `formfind` op (`precis_se/formfind.py`), solved poses
+written back `origin: 'proposed'`.
 
 **Today: no.** Every kinematic class in the vocabulary is bilateral, and
 a rope is not; there is no spring rate anything reads; and there is no

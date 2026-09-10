@@ -105,7 +105,7 @@ class SeHandler(Handler):
             "remove_block/add_port/remove_port/connect/disconnect/"
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
-            "remove_note); "
+            "remove_note/formfind); "
             "get lists designs or renders one (view='tree'|'block'|"
             "'ports'|'measures'|'validate'|'clearance'|'drc'|'bom'|"
             "'interview'|'freedom'|'stability'; block takes "
@@ -121,7 +121,13 @@ class SeHandler(Handler):
             "compression_capacity N, free_length m, rate N/m, preload N "
             "tension-positive); view='stability' runs Maxwell/Calladine "
             "over the axial members (rigid / mechanism / "
-            "prestress-stabilized, self-stress state reported). "
+            "prestress-stabilized, self-stress state reported). The "
+            "formfind op solves force-density form-finding over those "
+            "members (anchors = objectives.fixed; q_tie/q_strut/q_rod "
+            "role defaults +1/-1/+1, per-member q=[{'a','b','q'}] "
+            "overrides) and writes the equilibrium poses back stamped "
+            "origin='proposed' — by default only already-proposed poses "
+            "move; move=[...]|'all' authorizes more. "
             "Loads (set_load): force/torque 3-vectors (N, N·m), duty, "
             "cycles, on blocks or connects; fixed=true|['x','y','z'...] "
             "on a block grounds its translations (stability supports). "
@@ -187,6 +193,7 @@ class SeHandler(Handler):
             "fasten",
             "interview",
             "freedom",
+            "stability",
         ),
     )
 

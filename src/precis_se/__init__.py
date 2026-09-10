@@ -116,7 +116,15 @@ the axial subgraph only (pin nodes at block poses — the honesty header
 says so). The DOF probe reports ``axial`` as an honest skip; capacity
 findings fold into ``view='drc'``. This satisfies the two-party mobility
 tripwire contract by construction (the fallback line is
-``stability.TRIPWIRE_LINE``, verbatim).
+``stability.TRIPWIRE_LINE``, verbatim). Structural-solution-space
+slice 2 adds the generator to that checker: the ``formfind`` op
+(:mod:`precis_se.formfind` bridging the pure
+:func:`precis.structsolve.form_find` force-density solver) solves the
+axial subgraph's equilibrium geometry — anchors from
+``objectives.fixed``, role-derived tension-positive force densities —
+and writes solved poses back stamped ``origin: 'proposed'``; a
+user-origin pose is contract and moves only under an explicit
+``move=`` authorization.
 
 A `component` binding additionally **projects onto a ``realized-by``
 link** on every save (``persist.sync_realized_by``, migration 0156's
