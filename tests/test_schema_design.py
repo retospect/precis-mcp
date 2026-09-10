@@ -100,6 +100,16 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "claude_quota_snapshot.data",
         "cluster_cells.words",
         "cluster_runs.params",
+        # 0158: the se_notes shape verbatim (that table is plugin-exempt via
+        # PLUGIN_TABLE_PREFIXES; checklist_notes is core so it needs its own
+        # entry) — about anchors an open set of sub-objects of the target
+        # (pcb refdes/net names, another item name, ...), resolved at read
+        # time rather than a fixed column set.
+        "checklist_notes.about",
+        # 0158: caller-supplied evidence bag on a verdict — genuinely
+        # open-ended per kind (a DRC finding id, a screenshot handle, free
+        # text), never queried by key in slice 1.
+        "checklist_verdicts.evidence",
         "component_spec_values.conditions",
         "component_specs.allowed_values",
         "dream_log.seed_clusters",

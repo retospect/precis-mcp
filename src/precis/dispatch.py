@@ -787,6 +787,7 @@ def boot(
         from precis.handlers.alert import AlertHandler
         from precis.handlers.anki import AnkiHandler
         from precis.handlers.cad import CadHandler
+        from precis.handlers.checklist import ChecklistHandler
         from precis.handlers.citation import CitationHandler
         from precis.handlers.component import ComponentHandler
         from precis.handlers.concept import ConceptHandler
@@ -865,6 +866,37 @@ def boot(
         # transformation as the entity; many rows per (reaction, property) is the
         # point, since the spread of reported yields IS the finding.
         _gated(RxnHandler)
+        # checklist — Checklist-Manifesto-style argued check ledgers
+        # (docs/backlog/checklist-kind.md). Named, versioned items;
+        # per-target verdicts accumulate in an append-only ledger instead
+        # of restarting. Core (not a plugin) because pcb — the first
+        # consumer — is core.
+        _gated(ChecklistHandler)
+        # Shipped checklist definitions live in the wheel (src/precis/
+        # data/checklists/*.yaml); reconcile them into the DB on every
+        # boot so a wheel upgrade or local edit propagates without an
+        # explicit sync run — same rationale and shape as the oracle
+        # sync just below (jobs/checklist_sync.py mirrors
+        # jobs/oracle_sync.py: sha256 content-state, advisory lock,
+        # idempotent). Best-effort: any failure here is logged and
+        # ignored so a sync hiccup never breaks startup.
+        if "checklist" in hub.kinds:
+            from precis.jobs.checklist_sync import is_disabled_by_env, sync_all
+
+            if not is_disabled_by_env() and not mcp_read_only:
+                import threading
+
+                def _bg_checklist_sync() -> None:
+                    try:
+                        sync_all(store=hub.store)
+                    except Exception:  # pragma: no cover
+                        log.exception("checklist_sync: background sync failed")
+
+                threading.Thread(
+                    target=_bg_checklist_sync,
+                    name="precis-checklist-sync",
+                    daemon=True,
+                ).start()
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or

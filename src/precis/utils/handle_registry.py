@@ -128,6 +128,9 @@ KIND_CODES: dict[str, str] = {
     # core, chunk-tree sibling of the figure, never exported. Record ``mm`` /
     # chunk ``mn`` below.
     "mermaid": "mm",
+    # named, versioned check ledger (checklist-kind slice 1) — an
+    # artifact-placement slug entity, never exported.
+    "checklist": "ck",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------

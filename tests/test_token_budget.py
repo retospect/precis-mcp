@@ -175,11 +175,23 @@ def test_tools_list_under_byte_budget() -> None:
     by a strict-schema client and dropped by the dispatcher, which would
     make the whole mint path unreachable over MCP. Schema-side growth
     only, same shape as the prior bumps.
+
+    2026-09-10: cap raised from 25 KB → 27 KB to absorb the ``checklist``
+    kind (checklist-kind spec, slice 1): ``items=`` on ``put`` (checklist
+    mint with its item set) and the edit-op grammar on ``edit`` (``op=``/
+    ``item=``/``target=``/``phase=``/``severity=``/``decidability=``/
+    ``prevents=``/``applies=``/``evidence=``/``fingerprint=``/
+    ``checked_by=``/``name=``/``note_kind=``/``re=``/``about=``) —
+    ~1.9 KB of input-schema for 16 optional params, declared at the verb
+    level for the usual strict-schema-client reachability reason. Verb
+    descriptions unchanged (the grammar rides in ``precis-checklist-help``
+    and param comments) — schema-side growth only, same shape as the
+    prior bumps; a 2 KB bump because one slice added a whole op grammar.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 25 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 25 KB). "
+    assert size < 27 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 27 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

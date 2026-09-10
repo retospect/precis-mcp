@@ -55,6 +55,17 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...]] = {
     ("todo", "edit"): ("replace",),
     ("memory", "edit"): ("replace",),
     ("quest", "edit"): ("replace",),
+    # -- edit: checklist's op= vocabulary (item/note/verdict/assignment
+    #    mutations on an existing checklist) ----------------------------
+    ("checklist", "edit"): (
+        "add_item",
+        "retire_item",
+        "verdict",
+        "add_note",
+        "remove_note",
+        "assign",
+        "unassign",
+    ),
 }
 
 

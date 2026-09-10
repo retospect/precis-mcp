@@ -393,6 +393,7 @@ def presenter_for(kind: str) -> ItemPresenter:
 #: hub happens to be reachable.
 _ARTIFACT_KIND_FALLBACK: tuple[str, ...] = (
     "cad",
+    "checklist",
     "draft",
     "figure",
     "make",

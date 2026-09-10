@@ -53,6 +53,7 @@ from precis.hints import Hint, HintBus
 from precis.store._argument_ops import ArgumentGraphMixin
 from precis.store._cache_ops import CacheMixin
 from precis.store._cad_ops import CadMixin
+from precis.store._checklist_ops import ChecklistMixin
 from precis.store._chunks_ops import ChunkStore
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._component_ops import ComponentMixin
@@ -107,6 +108,7 @@ class Store(
     PcbMixin,
     MaterialMixin,
     RxnMixin,
+    ChecklistMixin,
     NanopubMixin,
     NanopubMirrorMixin,
     ComponentMixin,

@@ -1015,6 +1015,13 @@ def put(
     # path unreachable over MCP while handler tests kept passing.
     series: str | None = None,
     size: str | None = None,
+    # checklist (see precis-checklist-help): put(kind='checklist',
+    # id=<name>, items=[{'name':…, 'prevents':…, 'severity':
+    # 'blocking'|'advisory', 'decidability':'tool'|'judgment', 'phase':…,
+    # 'applies':…, 'body':…}]) creates a local checklist and its item set.
+    # Declared at the verb level so strict-schema MCP clients don't strip
+    # it — the whole checklist put path was otherwise unreachable over MCP.
+    items: list[dict[str, Any]] | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -1138,6 +1145,7 @@ def put(
             "ref_designator": ref_designator,
             "series": series,
             "size": size,
+            "items": items,
         },
     )
 
@@ -1280,6 +1288,32 @@ def edit(
     # via tag()'s allowlisted promotion instead) gets a loud BadInput
     # naming 'meta' rather than a silent **_kw swallow (gr301897).
     meta: dict[str, Any] | None = None,
+    # checklist (see precis-checklist-help): edit(kind='checklist',
+    # id=<name>, op=…, ...) covers add_item/retire_item/verdict/add_note/
+    # remove_note/assign/unassign. target= is the checklist:target ref this
+    # op concerns (verdict/note/assign/unassign); item= names the checklist
+    # item (add_item/retire_item/verdict). phase=/severity=/decidability=/
+    # prevents=/applies= are add_item's item-definition fields (body= is
+    # shared with the file-kind region-rewrite grammar above). verdict=
+    # (shared with the review-verdict field above) + evidence=/
+    # fingerprint=/checked_by= record an item's check result. name=/
+    # note_kind=/re=/about= (origin= shared above) mint an add_note; name=
+    # alone selects remove_note.
+    op: str | None = None,
+    item: str | None = None,
+    target: str | int | None = None,
+    phase: str | None = None,
+    severity: str | None = None,
+    decidability: str | None = None,
+    prevents: str | None = None,
+    applies: str | None = None,
+    evidence: dict[str, Any] | None = None,
+    fingerprint: str | None = None,
+    checked_by: str | None = None,
+    name: str | None = None,
+    note_kind: str | None = None,
+    re: str | None = None,
+    about: Any = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -1349,6 +1383,21 @@ def edit(
         "apply": apply,
         "ops": ops,
         "args": args,
+        "op": op,
+        "item": item,
+        "target": target,
+        "phase": phase,
+        "severity": severity,
+        "decidability": decidability,
+        "prevents": prevents,
+        "applies": applies,
+        "evidence": evidence,
+        "fingerprint": fingerprint,
+        "checked_by": checked_by,
+        "name": name,
+        "note_kind": note_kind,
+        "re": re,
+        "about": about,
     }
     if meta is not None:
         # Ride the ``__extras__`` channel (the same accepted-kwargs gate

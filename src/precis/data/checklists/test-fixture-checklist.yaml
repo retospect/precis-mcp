@@ -1,0 +1,21 @@
+# test-fixture-checklist.yaml
+#
+# A minimal fixture checklist proving the checklist_sync mechanism
+# (docs/backlog/checklist-kind.md slice 1). NOT a real, curated checklist
+# — pcb-tapeout content ships in slice 2. Exercised by
+# tests/test_checklist_sync.py.
+
+name: test-fixture-checklist
+items:
+  - name: fixture-item-one
+    phase: setup
+    severity: blocking
+    decidability: judgment
+    prevents: "a fixture regression ships without sync coverage"
+    body: "This is a fixture item — verify checklist_sync inserts it."
+  - name: fixture-item-two
+    phase: setup
+    severity: advisory
+    decidability: judgment
+    prevents: "the second fixture item is silently dropped by sync"
+    applies: "when more than one item is shipped in a file"

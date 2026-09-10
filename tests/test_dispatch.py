@@ -458,6 +458,32 @@ def test_boot_skips_oracle_sync_thread_when_read_only(
     assert started == []
 
 
+def test_boot_skips_checklist_sync_thread_when_read_only(
+    monkeypatch: pytest.MonkeyPatch, store: Store
+) -> None:
+    """Same guard as oracle_sync's — checklist_sync also holds an
+    advisory lock and does INSERT/UPDATE on every reconcile, so it must
+    not even spawn its background thread on a read-only DSN."""
+    from precis import dispatch as _d
+
+    monkeypatch.setattr(_d, "_probe_read_only", lambda _store: True)
+    monkeypatch.setenv("PRECIS_CHECKLIST_AUTO_SYNC", "1")
+
+    started: list[str] = []
+    real_thread_start = __import__("threading").Thread.start
+
+    def _spy_start(self: Any, *a: object, **kw: object) -> None:
+        if self.name == "precis-checklist-sync":
+            started.append(self.name)
+        real_thread_start(self, *a, **kw)
+
+    monkeypatch.setattr("threading.Thread.start", _spy_start)
+
+    _d.boot(store=store)
+
+    assert started == []
+
+
 def test_boot_env_override_skips_writes_without_probing(
     monkeypatch: pytest.MonkeyPatch, store: Store
 ) -> None:

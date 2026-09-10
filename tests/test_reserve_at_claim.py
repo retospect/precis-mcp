@@ -91,7 +91,7 @@ def _free(store: Store, host: str, resource: str) -> int | None:
 
 
 def _advertise(
-    store: Store, host: str, slots: dict[str, int], *, age_minutes: float = 0.5
+    store: Store, host: str, slots: dict[str, int | None], *, age_minutes: float = 0.5
 ) -> None:
     """Seed ``resource_slots`` AND a fresh ``host_heartbeat`` row (gr333274:
     ``_advertised_by_host`` now joins to ``host_heartbeat`` and requires

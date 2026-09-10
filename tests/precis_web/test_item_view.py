@@ -286,6 +286,7 @@ def test_item_row_carries_hover_thumbnail_actions() -> None:
 def test_artifact_kinds_falls_back_when_hub_is_none() -> None:
     assert artifact_kinds(None) == [
         "cad",
+        "checklist",
         "draft",
         "figure",
         "make",
@@ -316,6 +317,7 @@ def test_artifact_kinds_falls_back_on_hub_error() -> None:
     )
     assert artifact_kinds(hub) == [
         "cad",
+        "checklist",
         "draft",
         "figure",
         "make",
