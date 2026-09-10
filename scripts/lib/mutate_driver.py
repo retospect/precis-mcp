@@ -68,6 +68,29 @@ def parse_patch(text: str) -> dict[str, set[int]]:
     return changed
 
 
+def changed_test_files_from_patch(text: str) -> frozenset[str]:
+    """New-side ``tests/**/*.py`` paths touched by the same patch.
+
+    ``parse_patch`` keeps only ``src/**/*.py`` targets (what to mutate) and
+    drops everything else; this scans the same ``+++ b/<path>`` headers for
+    test files so ``select_covering_tests`` can guarantee a same-commit test
+    survives its cap even when the test file's name doesn't share the
+    mutated module's stem (gr332785 shape B)."""
+    files: set[str] = set()
+    for line in text.splitlines():
+        m = _FILE_RE.match(line)
+        if not m:
+            continue
+        path = m.group(1)
+        if path == "/dev/null":
+            continue
+        if path.startswith("b/"):
+            path = path[2:]
+        if path.startswith("tests/") and path.endswith(".py"):
+            files.add(path)
+    return frozenset(files)
+
+
 # ── covering-test lookup ───────────────────────────────────────────────────
 
 
@@ -141,19 +164,59 @@ def covering_tests_for_file(
     return result
 
 
-def select_covering_tests(tests: list[str], rel_path: str, max_tests: int) -> list[str]:
-    """Order-preserving covering-test selection capped at ``max_tests``,
-    preferring tests whose OWN file names the mutated module (``stem`` in
-    ``test_<stem>.py`` or a path containing the stem) — a plain ``[:
+def _dedupe_parametrized(tests: list[str]) -> list[str]:
+    """Collapse ``path::test_x[a]`` / ``[b]`` / ``[c]`` siblings to one
+    representative per test function (the first variant seen — pytest can't
+    run a bare function id for an only-parametrized test, so a concrete
+    variant id is kept, not the stripped key).
+
+    Without this, a high-fan-in line whose covering list is one function's
+    parametrizations burns the whole ``max_tests`` cap on redundant variants
+    of the same function and drops unrelated killer tests entirely
+    (gr332785 shape A)."""
+    seen_keys: set[str] = set()
+    result: list[str] = []
+    for t in tests:
+        key = t.split("[", 1)[0]
+        if key not in seen_keys:
+            seen_keys.add(key)
+            result.append(t)
+    return result
+
+
+def select_covering_tests(
+    tests: list[str],
+    rel_path: str,
+    max_tests: int,
+    changed_test_files: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Order-preserving covering-test selection capped at ``max_tests``.
+
+    Before capping, parametrized siblings of the same test function are
+    collapsed to one representative (``_dedupe_parametrized``) so the cap
+    counts unique functions, not parametrizations.
+
+    Priority, highest first: (1) tests whose own file was touched by the
+    same diff/commit as the mutated module (``changed_test_files``) — a
+    test added or edited alongside the change under test must never be
+    excluded just because it doesn't share the module's name (gr332785
+    shape B); (2) tests whose OWN file names the mutated module (``stem``
+    in ``test_<stem>.py`` or a path containing the stem) — a plain ``[:
     max_tests]`` slice can fill the cap with unrelated tests and drop the
     one test file that says the module's name and kills the mutant
-    (gr302974)."""
-    if len(tests) <= max_tests:
-        return tests
+    (gr302974); (3) everything else, in original order."""
+    deduped = _dedupe_parametrized(tests)
+    if len(deduped) <= max_tests:
+        return deduped
     stem = Path(rel_path).stem
-    matched = [t for t in tests if stem in t.split("::", 1)[0]]
-    rest = [t for t in tests if t not in matched]
-    return (matched + rest)[:max_tests]
+    same_commit = [t for t in deduped if t.split("::", 1)[0] in changed_test_files]
+    stem_matched = [
+        t
+        for t in deduped
+        if t not in same_commit and stem in t.split("::", 1)[0]
+    ]
+    rest = [t for t in deduped if t not in same_commit and t not in stem_matched]
+    return (same_commit + stem_matched + rest)[:max_tests]
 
 
 # ── mutant model ────────────────────────────────────────────────────────────
@@ -641,10 +704,13 @@ def _covering_tests_for_mutant(covering: dict[int, list[str]], m: Mutant) -> lis
 
 def _plan(
     args: argparse.Namespace,
-) -> tuple[dict[str, list[Mutant]], dict[tuple[str, int], list[str]], int] | int:
-    """Build ``(mutants-by-file, line -> covering tests, unspannable-count)``,
-    or an int exit code on an internal error (bad patch file / unreadable
-    coverage db).
+) -> (
+    tuple[dict[str, list[Mutant]], dict[tuple[str, int], list[str]], int, frozenset[str]]
+    | int
+):
+    """Build ``(mutants-by-file, line -> covering tests, unspannable-count,
+    same-commit-changed-test-files)``, or an int exit code on an internal
+    error (bad patch file / unreadable coverage db).
     """
     try:
         patch_text = args.patch.read_text(encoding="utf-8")
@@ -652,9 +718,11 @@ def _plan(
         print(f"mutate_driver: cannot read patch {args.patch}: {exc}", file=sys.stderr)
         return 2
 
+    changed_test_files = changed_test_files_from_patch(patch_text)
+
     changed = parse_patch(patch_text)
     if not changed:
-        return {}, {}, 0
+        return {}, {}, 0, changed_test_files
 
     if not args.coverage.exists():
         print(
@@ -677,7 +745,7 @@ def _plan(
             "note: .coverage has no per-test contexts (needs scripts/ship --mutate) "
             "— nothing to mutate against, skipping."
         )
-        return {}, {}, 0
+        return {}, {}, 0, changed_test_files
 
     by_file: dict[str, list[Mutant]] = {}
     line_tests: dict[tuple[str, int], list[str]] = {}
@@ -705,7 +773,7 @@ def _plan(
             if tests:
                 line_tests[(rel_path, m.lineno)] = tests
 
-    return by_file, line_tests, stats["unspannable"]
+    return by_file, line_tests, stats["unspannable"], changed_test_files
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -714,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
     planned = _plan(args)
     if isinstance(planned, int):
         return planned
-    by_file, line_tests, unspannable = planned
+    by_file, line_tests, unspannable, changed_test_files = planned
 
     total_generated = sum(len(v) for v in by_file.values())
     selected = select_mutants(by_file, args.max_mutants)
@@ -722,7 +790,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         for m in selected:
             tests = select_covering_tests(
-                line_tests.get((m.path, m.lineno), []), m.path, args.max_tests
+                line_tests.get((m.path, m.lineno), []),
+                m.path,
+                args.max_tests,
+                changed_test_files,
             )
             print(f"PLANNED {m.path}:{m.lineno}  {m.description}  tests={tests}")
         print(
@@ -742,7 +813,10 @@ def main(argv: list[str] | None = None) -> int:
             break
 
         tests = select_covering_tests(
-            line_tests.get((m.path, m.lineno), []), m.path, args.max_tests
+            line_tests.get((m.path, m.lineno), []),
+            m.path,
+            args.max_tests,
+            changed_test_files,
         )
         if not tests:
             skipped += 1

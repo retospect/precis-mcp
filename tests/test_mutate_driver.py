@@ -247,6 +247,116 @@ def test_select_covering_tests_under_cap_is_unchanged() -> None:
     assert md.select_covering_tests(tests, "src/precis/pcb/pcb_route.py", 5) == tests
 
 
+def test_select_covering_tests_dedupes_parametrized_siblings_past_the_cap() -> None:
+    """gr332785 shape A: a high fan-in line's covering list is dominated by
+    one parametrized test function's own variants, all same-stem — a plain
+    ``[:5]`` slice burns the whole cap on redundant siblings of that one
+    function and never reaches the real killer, itself a parametrized
+    sibling family in the same file. Deduping to one representative per
+    function before capping must let the killer's function through."""
+    tests = [
+        "tests/test_x.py::test_dominant[a]",
+        "tests/test_x.py::test_dominant[b]",
+        "tests/test_x.py::test_dominant[c]",
+        "tests/test_x.py::test_dominant[d]",
+        "tests/test_x.py::test_dominant[e]",
+        "tests/test_x.py::test_dominant[f]",
+        "tests/test_x.py::test_killer[alpha]",
+        "tests/test_x.py::test_killer[beta]",
+        "tests/test_x.py::test_killer[gamma]",
+    ]
+    # Raw list is 9 ids, all same-stem: a naive ``[:5]`` slice never reaches
+    # position 7 where the killer family starts. Deduping to one
+    # representative per function first collapses this to 2 unique
+    # functions — both survive since 2 <= max_tests.
+    assert len(tests) > 5
+    selected = md.select_covering_tests(tests, "src/precis/x.py", 5)
+    assert any(t.startswith("tests/test_x.py::test_killer[") for t in selected)
+    assert len(selected) == 2
+
+
+def test_select_covering_tests_same_commit_test_file_beats_the_cap() -> None:
+    """gr332785 shape B: the killer lives in a test file that does NOT name
+    the mutated module, so stem-matching alone excludes it once enough
+    stem-matched tests fill the cap — but its file was touched by the same
+    diff under mutation, so it must be guaranteed a slot ahead of the cap."""
+    tests = [
+        "tests/test_pcb_route.py::test_a",
+        "tests/test_pcb_route.py::test_b",
+        "tests/test_pcb_route.py::test_c",
+        "tests/test_pcb_route.py::test_d",
+        "tests/test_pcb_route.py::test_e",
+        "tests/workers/test_other_thing.py::test_killer",
+    ]
+    selected = md.select_covering_tests(
+        tests,
+        "src/precis/pcb/pcb_route.py",
+        5,
+        frozenset({"tests/workers/test_other_thing.py"}),
+    )
+    assert "tests/workers/test_other_thing.py::test_killer" in selected
+    assert len(selected) == 5
+
+
+def test_select_covering_tests_same_commit_ranks_above_stem_match() -> None:
+    """Same-commit priority is ranked ABOVE stem-match priority, not merely
+    alongside it — the design agreed for gr332785."""
+    tests = [
+        "tests/test_a.py::test_a",
+        "tests/test_a.py::test_b",
+        "tests/test_a.py::test_c",
+        "tests/test_a.py::test_d",
+        "tests/workers/test_pcb_route.py::test_stem_matched",
+        "tests/other/test_unrelated.py::test_same_commit",
+    ]
+    selected = md.select_covering_tests(
+        tests,
+        "src/precis/pcb/pcb_route.py",
+        1,
+        frozenset({"tests/other/test_unrelated.py"}),
+    )
+    assert selected == ["tests/other/test_unrelated.py::test_same_commit"]
+
+
+def test_changed_test_files_from_patch_extracts_test_targets() -> None:
+    patch = textwrap.dedent(
+        """\
+        diff --git a/src/precis/x.py b/src/precis/x.py
+        --- a/src/precis/x.py
+        +++ b/src/precis/x.py
+        @@ -1,1 +1,1 @@
+        -old
+        +new
+        diff --git a/tests/test_x.py b/tests/test_x.py
+        --- a/tests/test_x.py
+        +++ b/tests/test_x.py
+        @@ -1,1 +1,1 @@
+        -old
+        +new
+        diff --git a/docs/notes.md b/docs/notes.md
+        --- a/docs/notes.md
+        +++ b/docs/notes.md
+        @@ -1,1 +1,1 @@
+        -old
+        +new
+        """
+    )
+    assert md.changed_test_files_from_patch(patch) == frozenset({"tests/test_x.py"})
+
+
+def test_changed_test_files_from_patch_ignores_dev_null() -> None:
+    patch = textwrap.dedent(
+        """\
+        diff --git a/tests/test_gone.py b/tests/test_gone.py
+        --- a/tests/test_gone.py
+        +++ /dev/null
+        @@ -1,1 +0,0 @@
+        -old
+        """
+    )
+    assert md.changed_test_files_from_patch(patch) == frozenset()
+
+
 def test_has_any_test_context_true_when_a_real_context_exists() -> None:
     data = _FakeCoverageData({"src/precis/x.py": {1: ["tests/test_x.py::test_a|run"]}})
     assert md.has_any_test_context(data) is True

@@ -28,6 +28,16 @@
     _sb_venv: /opt/precis/venv
     _sb_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   tasks:
+    # Rootless podman needs /run/user/<uid> (XDG_RUNTIME_DIR), which
+    # systemd only provisions for lingering users when nobody is logged
+    # in. Without linger, a reboot leaves the lane broken until the next
+    # interactive ssh login recreates it ("RunRoot not writable", seen
+    # castor 2026-09-10, gr333244 thread).
+    - name: enable linger for the sandbox lane user (rootless podman RunRoot)
+      ansible.builtin.command: loginctl enable-linger deploy
+      args:
+        creates: /var/lib/systemd/linger/deploy
+
     - name: render + load the sandbox worker lane unit
       ansible.builtin.import_role:
         name: service_unit
