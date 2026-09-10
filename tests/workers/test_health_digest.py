@@ -714,6 +714,27 @@ def test_mint_blocking_codes_copy_is_pinned() -> None:
     assert stale.LINT_EXEMPTIONS == gates._ARTIFACT_LINT_EXEMPTIONS
 
 
+def test_blocking_lint_hit_codes_takes_only_the_code_before_the_first_colon(
+    monkeypatch,
+) -> None:
+    """A lint warning's message half can itself carry colons (free text) --
+    only the code fragment before the FIRST colon is the lint code; the
+    rest of the message (the tail, colons and all) must never leak into the
+    matched-code set."""
+    from precis.nanopub import stale
+
+    monkeypatch.setattr(
+        stale,
+        "lint_notation",
+        lambda title: ["over-long: message part one: message part two"],
+    )
+    monkeypatch.setattr(stale, "lint_claim_sentence", lambda title: [])
+
+    hit = stale.blocking_lint_hit_codes("irrelevant title", "claim")
+
+    assert hit == ["over-long"]
+
+
 def test_nanopub_candidates_fresh_ok_when_clean(store) -> None:
     hub = mint_hub(
         store,

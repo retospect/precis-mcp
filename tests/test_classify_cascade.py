@@ -147,6 +147,37 @@ def test_classify_one_no_warning_when_value_present_even_out_of_set(
     assert not any("unparseable" in r.message for r in caplog.records)
 
 
+def test_classify_one_returns_none_for_empty_string_value() -> None:
+    """A reply like ``{"value": ""}`` is a usable-shape parse with no actual
+    label — must take the invalid/failed branch (``None``), never fall
+    through to returning the empty string as a "verdict"."""
+    from precis.workers.classify import _classify_one
+
+    class _EmptyValueClient:
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            return SimpleNamespace(text='{"value": ""}', total_tokens=5)
+
+    axis = {"id": "role3", "context": [], "prompt": "p"}
+    row = {"chunk_id": 1, "text": "prose"}
+    assert _classify_one(_EmptyValueClient(), axis, row) is None
+
+
+def test_classify_one_returns_none_for_non_string_value() -> None:
+    """A reply like ``{"value": 3}`` (a non-string JSON scalar) must also
+    take the invalid/failed branch — never returned verbatim as the
+    resolved verdict (which would poison a tag write with a non-string
+    value)."""
+    from precis.workers.classify import _classify_one
+
+    class _IntValueClient:
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            return SimpleNamespace(text='{"value": 3}', total_tokens=5)
+
+    axis = {"id": "role3", "context": [], "prompt": "p"}
+    row = {"chunk_id": 1, "text": "prose"}
+    assert _classify_one(_IntValueClient(), axis, row) is None
+
+
 def test_no_escalate_client_leaves_the_base_verdict(store: Any) -> None:
     seed_chunks(store, [_PROSE])
 

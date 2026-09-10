@@ -77,6 +77,44 @@ def test_get_surfaces_triage_meta_inline(hub: Hub) -> None:
     assert "500 chars total" in body
 
 
+def test_get_omits_excerpt_for_non_string_result(hub: Hub) -> None:
+    """A non-string ``meta.result`` (e.g. a dict/list salvaged verbatim)
+    must never be sliced/rendered as an excerpt — only a truthy ``str``
+    result qualifies."""
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    agentlog.finalize_log(
+        hub.live_store, log_id=log_id, status="failed", result={"not": "a string"}
+    )
+    body = AgentLogHandler(hub=hub).get(id=log_id).body
+    assert "result:" not in body
+
+
+def test_get_omits_excerpt_for_empty_string_result(hub: Hub) -> None:
+    """An empty-string result is falsy — no excerpt line at all, not
+    ``result: ``."""
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    agentlog.finalize_log(hub.live_store, log_id=log_id, status="failed", result="")
+    body = AgentLogHandler(hub=hub).get(id=log_id).body
+    assert "result:" not in body
+
+
+def test_get_excerpt_is_truncated_to_exactly_400_chars(hub: Hub) -> None:
+    """The excerpt is the first 400 chars of a longer result, no more."""
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    agentlog.finalize_log(hub.live_store, log_id=log_id, status="failed", result="y" * 401)
+    body = AgentLogHandler(hub=hub).get(id=log_id).body
+    line = next(ln for ln in body.splitlines() if ln.startswith("result: "))
+    excerpt = line[len("result: ") :].split(" … ", 1)[0]
+    assert excerpt == "y" * 400
+    assert len(excerpt) == 400
+
+
 def test_list_recent_counts_touched(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
