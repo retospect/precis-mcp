@@ -45,7 +45,7 @@ from precis.handlers._edgar_parse import (
 )
 from precis.handlers._edgar_query import build_fts_params
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.protocol import Handler, KindSpec
+from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.utils import handle_registry
@@ -282,7 +282,12 @@ class EdgarHandler(Handler):
 
         return response
 
+    @tolerates_extra_kwargs
     def put(self, **_kw: Any) -> Response:
+        # Unconditional reject regardless of what's in ``_kw`` (gr334695:
+        # opted out of the dispatch strictness gate on purpose, so the
+        # domain-specific "read-only" message below always wins over a
+        # generic "unrecognized kwarg" one).
         raise Unsupported(
             "edgar kind is read-only (public record)",
             next=(

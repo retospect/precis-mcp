@@ -23,6 +23,42 @@ if TYPE_CHECKING:
 
 Verb = Literal["get", "search", "put", "edit", "delete", "tag", "link"]
 
+#: Attribute name :func:`tolerates_extra_kwargs` stamps on a verb method.
+#: Read by :mod:`precis.runtime.dispatch`'s caller-kwarg strictness gate
+#: (gr334695) via plain ``getattr`` — a bound method delegates unknown
+#: attribute lookups to its ``__func__``, so this is readable straight off
+#: ``getattr(handler, verb)`` with no extra unwrapping.
+TOLERATES_EXTRA_KWARGS_ATTR = "__precis_tolerates_extra_kwargs__"
+
+
+def tolerates_extra_kwargs(func: Any) -> Any:
+    """Mark a handler verb method's bare ``**kwargs`` catch-all as a
+    **deliberate** "accept and ignore" policy, opting it out of the
+    dispatch-boundary strictness gate (:mod:`precis.runtime.dispatch`,
+    gr334695).
+
+    By default that gate treats a caller kwarg that isn't one of a
+    method's explicit parameters — and isn't forwarded anywhere via the
+    method's own ``**kwargs`` (walking the cooperative-inheritance
+    ``super().<verb>(..., **kw)`` chain) — as a bug: silently dropping a
+    kwarg the caller explicitly supplied is exactly the gr333433 /
+    gr334153 incident shape (a handler-specific param the schema knew
+    about but the handler's own signature never declared, so it vanished
+    into a dead catch-all with no error and no effect).
+
+    A handful of verb methods are genuinely meant to ignore extras
+    instead — a read-only-kind stub that rejects the call regardless of
+    what's in it (``PatentHandler.put`` / ``EdgarHandler.put``), or a
+    kind that must stay lenient because agents habitually pass unrelated
+    defaults through every call (``RandomHandler.get``). Decorate those
+    explicitly with ``@tolerates_extra_kwargs`` rather than leaving the
+    ambiguity implicit — the decorator IS the code review signal that
+    the leniency was a choice, not an oversight. Default (undecorated)
+    stays strict.
+    """
+    setattr(func, TOLERATES_EXTRA_KWARGS_ATTR, True)
+    return func
+
 
 @dataclass(frozen=True, slots=True)
 class KindSpec:

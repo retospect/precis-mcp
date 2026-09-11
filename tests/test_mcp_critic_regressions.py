@@ -125,7 +125,10 @@ def test_cost_trailer_not_double_prefixed(runtime_stateless: PrecisRuntime) -> N
     fake = _FakePaid()
     fake._register_with(runtime_stateless.registry)
     try:
-        out = runtime_stateless.dispatch("get", {"kind": "fakepaid", "id": "x"})
+        # No id= — this stub's get() takes no explicit kwargs at all
+        # (gr334695: the dispatch strictness gate would otherwise reject
+        # an id= this handler was never going to look at anyway).
+        out = runtime_stateless.dispatch("get", {"kind": "fakepaid"})
     finally:
         reg = runtime_stateless.registry
         reg.abilities.pop(("fakepaid", "get", None), None)

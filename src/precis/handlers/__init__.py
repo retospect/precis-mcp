@@ -6,6 +6,21 @@ register with the :class:`precis.dispatch.Hub` at boot (contract + failure
 modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
 
+**Bare ``**_kw`` catch-alls are strict by default (gr334695).** A verb
+method's own ``**kwargs`` is the cooperative-inheritance idiom this
+package leans on heavily — a subclass declares its kind-specific params
+and forwards the rest via ``return super().<verb>(..., **_kw)`` to a
+shared base (``NumericRefHandler``/``CacheBackedHandler``). The dispatch
+boundary (:func:`precis.runtime.dispatch._handler_accepted_kwargs`)
+statically walks that forwarding chain to compute the real accepted-kwarg
+set and rejects anything outside it with a ``BadInput`` — a handler-
+specific kwarg the schema declared but the handler's own signature never
+wired in used to vanish into a dead catch-all with no error (gr333433,
+gr334153). A verb method that must legitimately ignore extras (a
+read-only-kind stub, or a kind that stays lenient by design) opts out
+explicitly with ``@precis.protocol.tolerates_extra_kwargs`` — don't rely
+on an undecorated ``**_kw`` to mean "tolerant"; the default is strict.
+
 **Container-aware ``exclude=`` (cite closure).** ``search(kind='paper')``
 and ``get(kind='semanticscholar')`` accept ``exclude=`` entries that are
 paper slugs, a draft ref (``dr…``), or a draft chunk (``dc…``, hierarchical

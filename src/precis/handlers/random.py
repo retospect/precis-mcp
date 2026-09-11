@@ -41,7 +41,7 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
-from precis.protocol import Handler, KindSpec
+from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store import Store
 from precis.utils import handle_registry
@@ -88,6 +88,7 @@ class RandomHandler(Handler):
         self.hub = hub
         self.store: Store = hub.store
 
+    @tolerates_extra_kwargs
     def get(
         self,
         *,
@@ -97,7 +98,8 @@ class RandomHandler(Handler):
     ) -> Response:
         # ``id=`` / ``q=`` are deliberately ignored — accepting
         # ``**_kw`` keeps us lenient for agents that pass defaults
-        # through every call.
+        # through every call. (gr334695: explicitly opted out of the
+        # dispatch strictness gate rather than left ambiguous.)
         if view == "slug":
             return self._mint_slug(args or {})
         if view not in (None, "", "block"):

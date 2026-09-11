@@ -44,7 +44,7 @@ from precis.handlers._patent_ops import (
 from precis.handlers._patent_slug import looks_like_docdb, parse_docdb_id
 from precis.handlers._patent_xml import OpsHit, parse_search_response
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.protocol import Handler, KindSpec
+from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
@@ -376,7 +376,12 @@ class PatentHandler(Handler):
 
         return response
 
+    @tolerates_extra_kwargs
     def put(self, **_kw: Any) -> Response:
+        # Unconditional reject regardless of what's in ``_kw`` (gr334695:
+        # opted out of the dispatch strictness gate on purpose, so the
+        # domain-specific "read-only" message below always wins over a
+        # generic "unrecognized kwarg" one).
         raise Unsupported(
             "patent kind is read-only",
             next=(

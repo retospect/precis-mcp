@@ -23,15 +23,23 @@ best-effort tool-call ledger write lives
 
 from __future__ import annotations
 
+import ast
+import functools
 import inspect
 import logging
 import os
 import re
+import textwrap
 import time
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, Internal, NotFound, PrecisError, Unsupported
-from precis.protocol import _ALL_VERBS, Handler, Verb
+from precis.protocol import (
+    _ALL_VERBS,
+    TOLERATES_EXTRA_KWARGS_ATTR,
+    Handler,
+    Verb,
+)
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
 from precis.runtime._shared import (
@@ -47,6 +55,25 @@ log = logging.getLogger(__name__)
 
 
 _VERBS: tuple[Verb, ...] = _ALL_VERBS
+
+#: Top-level ``tools/core.py`` verb kwargs whose declared default is
+#: **not** ``None`` (``edit(mode='find-replace', verdict='approved')``,
+#: ``link(mode='add')``, ``search(page_size=10, page=1)``). Every other
+#: top-level kwarg defaults to ``None`` and is stripped by
+#: :meth:`DispatchMixin._invoke_handler`'s ``clean`` filter unless the
+#: caller actually supplied it — so its presence in ``clean`` reliably
+#: means "the caller asked for this". These four can't make that promise:
+#: they land in ``clean`` on *every* call to that verb regardless of
+#: caller intent, including calls to kinds the kwarg has no meaning for
+#: (e.g. every non-draft ``edit()`` call carries ``mode='find-replace'``
+#: whether or not the caller ever mentioned ``mode=``). The caller-kwarg
+#: strictness gate (gr334695, :func:`_handler_accepted_kwargs`) would
+#: otherwise reject the (overwhelmingly common) case of a handler that
+#: legitimately doesn't use one of these — so they're exempted from that
+#: gate entirely rather than requiring every handler to declare them just
+#: to stay silent. A handler that *does* care about one of these already
+#: declares it explicitly and is unaffected either way.
+_ALWAYS_TOLERATED_TOP_LEVEL_KWARGS = frozenset({"mode", "verdict", "page", "page_size"})
 
 #: Sentinel key used by `precis.server` to forward the MCP tool's
 #: ``args={...}`` payload through to the dispatcher without colliding
@@ -92,6 +119,116 @@ _VERB_REDIRECTS: dict[tuple[str, str], str] = {
         "instead, or use a glossary term / inline markup inside the prose."
     ),
 }
+
+
+def _explicit_param_names(func: Any) -> frozenset[str]:
+    """Keyword-accessible, non-catch-all parameter names of ``func``.
+
+    Excludes ``self`` and any ``**kwargs`` catch-all. Shared by
+    :func:`_forwards_catchall` and :func:`_handler_accepted_kwargs`.
+    """
+    sig = inspect.signature(func)
+    return frozenset(
+        name
+        for name, p in sig.parameters.items()
+        if p.kind
+        in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        and name != "self"
+    )
+
+
+def _catchall_param_name(func: Any) -> str | None:
+    """The ``**name`` catch-all parameter of ``func``, or ``None``."""
+    sig = inspect.signature(func)
+    for name, p in sig.parameters.items():
+        if p.kind is inspect.Parameter.VAR_KEYWORD:
+            return name
+    return None
+
+
+def _forwards_catchall(func: Any, catchall_name: str) -> bool:
+    """True if ``func``'s own body forwards its ``**catchall_name``
+    catch-all on to another call (the cooperative-inheritance
+    ``return super().<verb>(..., **_kw)`` idiom used throughout
+    :mod:`precis.handlers`).
+
+    Static (AST) check on ``func``'s source — run once per function and
+    memoized by :func:`_handler_accepted_kwargs`, never per call. This is
+    the signal that tells a pass-through override (declare a few
+    kind-specific kwargs, forward the rest to a shared base
+    implementation — genuine case (b) in the gr334695 sweep) apart from a
+    terminal implementation whose ``**catchall_name`` is a dead end (case
+    (a): exactly where an unrecognized caller kwarg would previously be
+    silently dropped instead of erroring). Any failure to introspect the
+    source (dynamically built function, C extension, etc.) is treated as
+    "does not forward" — the conservative direction, since it only
+    stops the accepted-kwargs union early rather than accepting a kwarg
+    nothing can prove is actually consumed.
+    """
+    try:
+        src = inspect.getsource(func)
+    except (OSError, TypeError):
+        return False
+    try:
+        tree = ast.parse(textwrap.dedent(src))
+    except SyntaxError:  # pragma: no cover — defensive
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if (
+                    kw.arg is None
+                    and isinstance(kw.value, ast.Name)
+                    and kw.value.id == catchall_name
+                ):
+                    return True
+    return False
+
+
+@functools.lru_cache(maxsize=None)
+def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
+    """Every kwarg ``cls().<verb>(...)`` can actually consume (gr334695).
+
+    Walks ``cls.__mro__`` starting at the most-derived class that defines
+    ``verb`` in its own ``__dict__``, unioning in its explicit parameter
+    names. If that override's ``**kwargs`` catch-all statically forwards
+    (:func:`_forwards_catchall`), the walk continues to the next class up
+    the MRO that also defines ``verb``, unioning its params in too —
+    repeating until an override doesn't forward (a genuine dead end) or
+    the MRO is exhausted. A class whose ``verb`` has no catch-all at all
+    is inherently a dead end: Python itself rejects any extra kwarg
+    there, so there is nothing further to union in.
+
+    This is the MRO-aware generalization of the naive "just read the
+    resolved method's own signature" check — necessary because
+    :mod:`precis.handlers` is built on cooperative multiple inheritance
+    (a subclass declares its own kwargs and forwards the rest to a
+    shared base like ``NumericRefHandler``/``CacheBackedHandler`` for
+    some verbs, while fully owning — and never forwarding — others). A
+    plain per-method check would either reject legitimate forwarded
+    kwargs (false positive, breaking real calls) or blindly union every
+    ancestor regardless of whether the resolved override actually calls
+    it (false negative, reintroducing the exact silent-swallow bug this
+    exists to catch).
+
+    Cached per ``(cls, verb)`` — class shape is fixed for the process
+    lifetime, and this walks source/AST, too expensive to repeat on the
+    hot dispatch path per call.
+    """
+    accepted: set[str] = set()
+    for klass in cls.__mro__:
+        raw = klass.__dict__.get(verb)
+        if raw is None:
+            continue
+        func = inspect.unwrap(raw)
+        accepted |= _explicit_param_names(func)
+        catchall = _catchall_param_name(func)
+        if catchall is None or not _forwards_catchall(func, catchall):
+            break
+    return frozenset(accepted)
 
 
 def _tick_disabled_hint(kind: str) -> str | None:
@@ -1023,10 +1160,15 @@ class DispatchMixin(RuntimeShape):
 
         ``args=`` extras forwarded by the MCP boundary are validated
         against the handler's signature *before* the call so
-        ``**_kw`` doesn't swallow typos silently. Errors raised by
-        the handler are annotated with ``(searched kind=…)`` when the
-        caller omitted ``kind=`` and we defaulted, so failures stay
-        traceable to the specific kind that was tried.
+        ``**_kw`` doesn't swallow typos silently. The top-level kwargs in
+        ``args`` get the same treatment via :func:`_handler_accepted_kwargs`
+        (gr334695) — any kwarg that isn't an explicit parameter anywhere
+        along the handler's cooperative-inheritance forwarding chain, and
+        isn't opted out via ``@tolerates_extra_kwargs``, raises rather than
+        landing in a dead ``**_kw``. Errors raised by the handler are
+        annotated with ``(searched kind=…)`` when the caller omitted
+        ``kind=`` and we defaulted, so failures stay traceable to the
+        specific kind that was tried.
         """
         method = getattr(handler, verb)
 
@@ -1064,6 +1206,37 @@ class DispatchMixin(RuntimeShape):
 
         # Strip None args so handlers see absence as missing.
         clean = {k: v for k, v in args.items() if v is not None}
+
+        # gr334695: a caller kwarg that isn't one of this handler's own
+        # explicit params, nor forwarded anywhere via its own **kwargs
+        # catch-all (walking the cooperative-inheritance chain — see
+        # :func:`_handler_accepted_kwargs`), would otherwise vanish into
+        # a dead ``**_kw`` with no error and no effect — the exact shape
+        # of gr333433 (todo put silently swallowed executor=/job_type=/
+        # params=) and gr334153 (draft edit silently swallowed mode=/
+        # where=, a data-loss bug). A verb method that deliberately wants
+        # to ignore extras (a read-only stub that rejects the call
+        # regardless of kwargs, or a kind that must stay lenient by
+        # design) opts out with ``@tolerates_extra_kwargs``.
+        if not getattr(method, TOLERATES_EXTRA_KWARGS_ATTR, False):
+            accepted_top = _handler_accepted_kwargs(type(handler), verb)
+            unknown_top = sorted(
+                k
+                for k in clean
+                if k not in accepted_top and k not in _ALWAYS_TOLERATED_TOP_LEVEL_KWARGS
+            )
+            if unknown_top:
+                accepted_list = sorted(accepted_top)
+                raise BadInput(
+                    f"{verb}(kind={kind!r}) does not accept {unknown_top!r} — "
+                    "these kwargs have no effect on this handler and would "
+                    "be silently dropped",
+                    options=accepted_list,
+                    next=(
+                        f"drop the unrecognized keys; {kind}.{verb} accepted "
+                        f"kwargs: {accepted_list or '(none)'}"
+                    ),
+                )
 
         # F7: catch handler-signature-required kwargs that the caller
         # forgot, before ``method(**clean)`` raises a raw TypeError and
