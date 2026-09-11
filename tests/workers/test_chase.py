@@ -574,6 +574,35 @@ def test_cycle_protection_flags_status(store) -> None:
 # ── dead_chain variants ─────────────────────────────────────────────
 
 
+def test_dead_chain_releases_waiting_todo(store) -> None:
+    """gr267319: a finding flipping to dead_chain can never satisfy a
+    ``waiting-for:finding-<id>`` wait — the same tx swaps the waiting
+    todo's park tag for ``waited-dead:finding-<id>`` so dispatch
+    re-admits the leaf and nursery's long-wait detector stops firing
+    on the dead pairing forever."""
+    _seed_paper(
+        store,
+        cite_key="frontier",
+        blocks=["Some claim [42]."],
+        identifiers=[("doi", "10.1/frontier")],
+    )
+    fid = _seed_finding(store, cite_key="frontier")
+    todo_id = store.insert_ref(kind="todo", slug=None, title="waits").id
+    store.add_tag(todo_id, Tag.open(f"waiting-for:finding-{fid}"), set_by="system")
+    bystander = store.insert_ref(kind="todo", slug=None, title="other wait").id
+    store.add_tag(bystander, Tag.open("waiting-for:finding-999999"), set_by="system")
+
+    with patch("precis.workers.chase._load_s2_references", return_value=None):
+        run_finding_chase_pass(store, limit=10)
+
+    assert _status_tag(store, fid) == "dead_chain"
+    tags = {str(t) for t in store.tags_for(todo_id)}
+    assert f"waited-dead:finding-{fid}" in tags
+    assert f"waiting-for:finding-{fid}" not in tags
+    # An unrelated wait is untouched.
+    assert "waiting-for:finding-999999" in {str(t) for t in store.tags_for(bystander)}
+
+
 def test_dead_chain_when_no_resolvable_cite(store) -> None:
     """Inline cites present but no S2 references → can't resolve →
     dead_chain reason=no_resolvable_cite."""

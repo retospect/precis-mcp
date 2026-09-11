@@ -1915,10 +1915,66 @@ def _set_status(
             "UPDATE refs SET meta = meta || %s, updated_at = now() WHERE ref_id = %s",
             (Jsonb({"dead_reason": reason}), finding_ref_id),
         )
+    if value == _DEAD_CHAIN:
+        _release_dead_waiters(conn, finding_ref_id)
     # Tag is imported above for type-checker visibility; the SQL
     # path above doesn't use it directly but keeps the symbol
     # available for future refactors that route via store.add_tag.
     _ = Tag
+
+
+def _release_dead_waiters(conn: Connection, finding_ref_id: int) -> None:
+    """A ``dead_chain`` finding can never satisfy a wait — swap each
+    waiting todo's ``waiting-for:finding-<id>`` park tag for a
+    ``waited-dead:finding-<id>`` marker in the same transaction as the
+    status flip. ``waiting-for`` is a dispatch park tag, so the swap
+    re-admits the leaf to dispatch with the reason legible instead of
+    leaving nursery's long-wait detector firing on the dead pairing
+    forever (gr267319). Other park tags (ask-user / halt /
+    child-failed) have their own release semantics and are not touched."""
+    wait_value = f"waiting-for:finding-{finding_ref_id}"
+    rows = conn.execute(
+        """
+        SELECT rt.ref_id FROM ref_tags rt
+          JOIN tags t ON t.tag_id = rt.tag_id
+          JOIN refs r ON r.ref_id = rt.ref_id
+         WHERE t.namespace = 'OPEN' AND t.value = %s AND r.kind = 'todo'
+        """,
+        (wait_value,),
+    ).fetchall()
+    if not rows:
+        return
+    dead_row = conn.execute(
+        "INSERT INTO tags (namespace, value) VALUES ('OPEN', %s) "
+        "ON CONFLICT (namespace, value) DO UPDATE SET namespace = EXCLUDED.namespace "
+        "RETURNING tag_id",
+        (f"waited-dead:finding-{finding_ref_id}",),
+    ).fetchone()
+    assert dead_row is not None
+    for (todo_id,) in rows:
+        conn.execute(
+            """
+            DELETE FROM ref_tags USING tags
+             WHERE ref_tags.tag_id = tags.tag_id AND ref_tags.ref_id = %s
+               AND tags.namespace = 'OPEN' AND tags.value = %s
+            """,
+            (todo_id, wait_value),
+        )
+        conn.execute(
+            "INSERT INTO ref_tags (ref_id, tag_id, set_by) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (todo_id, int(dead_row[0]), "chase"),
+        )
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, %s, %s, %s)",
+            (
+                todo_id,
+                "chase",
+                "wait-released-dead",
+                Jsonb({"finding_ref_id": finding_ref_id}),
+            ),
+        )
 
 
 # LLM hooks (``_verify_support_with_caveats``,
