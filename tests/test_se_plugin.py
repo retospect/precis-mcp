@@ -138,6 +138,67 @@ def test_unknown_view_names_the_valid_ones(handler: SeHandler) -> None:
         handler.get(id="caster1", view="mechanics")
 
 
+# ── put: unrecognised payload rejected, never silently discarded ─────────
+# (gripe 334778 — a bogus top-level shape must not read as "replaced" with
+# an empty tree, which would wipe a real design on a full-replace put)
+
+
+def test_put_bogus_top_level_shape_rejected(handler: SeHandler) -> None:
+    with pytest.raises(BadInput, match="unrecognised key"):
+        handler.put(
+            id="wrongshape1",
+            text=json.dumps(
+                {
+                    "blocks": [{"name": "a"}],
+                    "connects": [{"class": "bogus", "a": "a", "b": "a"}],
+                }
+            ),
+        )
+
+
+def test_put_bogus_top_level_shape_leaves_existing_design_unchanged(
+    handler: SeHandler,
+) -> None:
+    handler.put(id="caster1", text=_CASTER)
+    before = handler.get(id="caster1").body
+    with pytest.raises(BadInput, match="unrecognised key"):
+        handler.put(
+            id="caster1",
+            text=json.dumps({"blocks": [{"name": "a"}]}),
+        )
+    after = handler.get(id="caster1").body
+    assert after == before
+    assert "fork" in after and "hub" in after and "cap" in after
+
+
+def test_put_bogus_kinematic_class_rejected(handler: SeHandler) -> None:
+    with pytest.raises(BadInput, match="must be one of"):
+        handler.put(
+            id="badclass1",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {"op": "add_block", "name": "a"},
+                        {"op": "add_port", "block": "a", "name": "p1"},
+                        {"op": "add_port", "block": "a", "name": "p2"},
+                        {
+                            "op": "connect",
+                            "a": "a.p1",
+                            "b": "a.p2",
+                            "joint": {"class": "bogus"},
+                        },
+                    ]
+                }
+            ),
+        )
+
+
+def test_put_valid_payload_still_works(handler: SeHandler) -> None:
+    resp = handler.put(id="ok1", text=_CASTER)
+    assert "created" in resp.body
+    assert "fork" in resp.body
+
+
 # ── op validation ────────────────────────────────────────────────────────
 
 

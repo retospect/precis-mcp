@@ -345,6 +345,31 @@ def test_dof_probe_skips_axial_with_a_pointer() -> None:
     assert "view='stability'" in probe.outcome
 
 
+def test_dof_probe_labels_rod_bilateral_not_unilateral() -> None:
+    # gripe 334789 (part 1): a rod (both capacities > 0) is bilateral —
+    # the skip label must not call it a unilateral member.
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},
+        [("a", "b", dict(_ROD))],
+    )
+    report = se_drc.drc(tree)
+    (probe,) = [p for p in report.dof_probes if p.klass == "axial"]
+    assert "axial member (rod)" in probe.outcome
+    assert "unilateral" not in probe.outcome
+
+
+def test_dof_probe_labels_tie_and_strut_unilateral() -> None:
+    for params in (_TIE, _STRUT):
+        tree = _pin_structure(
+            {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},
+            [("a", "b", dict(params))],
+        )
+        report = se_drc.drc(tree)
+        (probe,) = [p for p in report.dof_probes if p.klass == "axial"]
+        assert "unilateral member" in probe.outcome
+        assert "(rod)" not in probe.outcome
+
+
 def test_cable_mechanism_demands_a_bom_line() -> None:
     tree = _pin_structure(
         {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},
@@ -520,15 +545,17 @@ def test_no_declared_preloads_is_not_a_finding() -> None:
     assert se_stability.prestress_report(_prism(fixed=_PRISM_FIXED)) is None
 
 
-def test_all_zero_preloads_pass_the_zero_tolerance_exactly() -> None:
-    # scale 0 → tolerance 0: the zero state must come out with residual
-    # exactly 0.0, not lstsq noise (pins the b=0-in, 0-out solve
-    # invariant a future solver swap could silently break).
+def test_all_zero_preloads_report_nothing_to_verify() -> None:
+    # scale 0 → tolerance 0: residual 0 ≤ tolerance 0 would otherwise
+    # "pass" vacuously (gripe 334781) — a zero declared vector must read
+    # as unchecked, never as a verified self-stress state.
     report = se_stability.prestress_report(_prism_with_preloads({("b0", "t0"): 0.0}))
     assert report is not None
-    assert report.tolerance == 0.0
-    assert report.residual == 0.0
-    assert report.compatible is True
+    assert report.nothing_to_verify is True
+    assert report.compatible is None
+    assert report.residual is None
+    assert report.tolerance is None
+    assert any("nothing" in n for n in report.notes)
 
 
 def test_preload_on_a_skipped_member_is_reported_unchecked() -> None:
@@ -621,6 +648,33 @@ def test_stability_view_renders_the_prestress_section(handler: SeHandler) -> Non
     assert "## prestress — declared preloads vs the self-stress space" in body
     assert "ARE a self-stress state" in body
     assert "50 N" in body  # the declared column carries the number
+
+
+def test_stability_view_zero_preload_reports_nothing_to_verify(
+    handler: SeHandler,
+) -> None:
+    # gripe 334781: an all-zero preload must never render as "ARE a
+    # self-stress state" — the tolerance scales with the declared
+    # magnitude, so zero-vs-zero is vacuous, not verified.
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "a", "pose": [0.0, 0.0, 0.0]},
+        {"op": "add_port", "block": "a", "name": "pin"},
+        {"op": "add_block", "name": "b", "pose": [0.0, 0.0, 0.05]},
+        {"op": "add_port", "block": "b", "name": "pin"},
+        {
+            "op": "connect",
+            "a": "a.pin",
+            "b": "b.pin",
+            "joint": {"class": "axial", "params": {**_ROD, "preload": 0.0}},
+        },
+        {"op": "set_load", "block": "a", "fixed": True},
+        {"op": "set_load", "block": "b", "fixed": True},
+    ]
+    handler.put(id="unpreloaded", text=json.dumps({"ops": ops}))
+    body = handler.get(id="unpreloaded", view="stability").body
+    assert "## prestress — declared preloads vs the self-stress space" in body
+    assert "no preload declared — nothing to verify" in body
+    assert "ARE a self-stress state" not in body
 
 
 def test_stability_view_in_unknown_view_roster(handler: SeHandler) -> None:

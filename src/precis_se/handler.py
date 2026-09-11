@@ -257,6 +257,7 @@ class SeHandler(Handler):
             )
         slug = str(id).strip()
         payload = _payload(text, args)
+        _vet_put_payload(payload)
         ops = payload.get("ops") or []
         if not isinstance(ops, list):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
@@ -662,6 +663,28 @@ def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
             raise BadInput("se payload must be a JSON object {description?, ops}")
         return obj
     return {}
+
+
+#: The only top-level keys ``put`` consumes.
+_PUT_PAYLOAD_KEYS = frozenset({"description", "ops"})
+
+
+def _vet_put_payload(payload: dict[str, Any]) -> None:
+    """Reject an unrecognised top-level ``put`` payload shape loudly,
+    before any op is applied or anything is written — ``put`` is a full
+    replace, so a payload that isn't the ``{description?, ops}`` shape
+    (e.g. a caller's own ``{blocks, connects}`` sketch, mistaken for se's
+    op-list vocabulary) must never be quietly discarded as a no-op replace
+    that empties a real design (gripe 334778)."""
+    strays = sorted(set(payload) - _PUT_PAYLOAD_KEYS)
+    if strays:
+        known = " | ".join(sorted(_PUT_PAYLOAD_KEYS))
+        raise BadInput(
+            f"put(kind='se') payload has unrecognised key(s) "
+            f"{', '.join(strays)} — valid top-level keys: {known}. put is "
+            "a full replace, so an unrecognised shape is rejected rather "
+            "than silently emptying the design"
+        )
 
 
 def _card_text(title: str, description: str, tree: SeTree) -> str:
@@ -1300,7 +1323,9 @@ def _render_stability(tree: SeTree) -> str:
     if prestress is not None:
         lines.append("")
         lines.append("## prestress — declared preloads vs the self-stress space")
-        if prestress.compatible is None:
+        if prestress.nothing_to_verify:
+            lines.append("no preload declared — nothing to verify")
+        elif prestress.compatible is None:
             lines.append("not checkable: no analysable axial system")
         elif prestress.compatible:
             lines.append(

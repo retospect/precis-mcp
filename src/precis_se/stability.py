@@ -520,6 +520,14 @@ class PrestressReport:
     rows: list[PrestressRow] = field(default_factory=list)
     findings: list[tuple[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: True when every declared preload on a live (analysable) member is
+    #: exactly 0 N — the null-space tolerance scales with the declared
+    #: magnitude (``_PRESTRESS_RTOL × scale``), so an all-zero declaration
+    #: would otherwise pass at tolerance 0 N against residual 0 N: true,
+    #: but vacuously — nothing was actually checked (gripe 334781). The
+    #: renderer reports "nothing to verify" instead of a pass when this is
+    #: set; ``compatible`` is ``None`` alongside it (no verdict to give).
+    nothing_to_verify: bool = False
 
 
 def prestress_report(tree: SeTree) -> PrestressReport | None:
@@ -586,6 +594,30 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
     t = np.zeros(b)
     for k in declared_idx:
         t[k] = float(live[k].params["preload"])
+    # A zero-norm declared vector (every live member's preload is
+    # literally 0 N, or no LIVE member declares one at all — only a
+    # skipped one did, already flagged above) makes the tolerance scale
+    # to 0 N too: residual 0 ≤ tolerance 0 always "passes", telling the
+    # agent nothing. Report it as unchecked rather than a self-stress
+    # state (gripe 334781) — no magic epsilon, a literal zero vector is
+    # the case this guards.
+    if float(np.linalg.norm(t[declared_idx])) == 0.0:
+        notes.append(
+            "every declared preload is 0 N — there is nothing for the "
+            "null-space check to verify"
+        )
+        return PrestressReport(
+            declared_count=declared_count,
+            residual=None,
+            tolerance=None,
+            compatible=None,
+            worst_node=None,
+            unique=True,
+            rows=rows,
+            findings=findings,
+            notes=notes,
+            nothing_to_verify=True,
+        )
     unique = True
     if unknown_idx:
         a_unknown = a_free[:, unknown_idx]

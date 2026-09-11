@@ -502,14 +502,17 @@ def drc(tree: SeTree) -> DrcReport:
             continue  # already a malformed_joint finding above
         klass = joint["class"]
         if klass == "axial":
-            # unilateral — active/inactive depends on the load, so an
-            # axis-travel expectation is undefined for it (declared
-            # honesty, not a gap): the whole-structure answer lives in
-            # view='stability'.
+            # A tie/strut is unilateral — active/inactive depends on the
+            # load, so an axis-travel expectation is undefined for it
+            # (declared honesty, not a gap). A rod (both capacities > 0)
+            # IS bilateral, same reason the axis-travel probe is skipped:
+            # the whole-structure answer lives in view='stability' either
+            # way, but the label must not claim unilateral for a member
+            # that isn't (gripe 334789).
+            role = se_stability._member_role(joint.get("params", {}))
+            reason = "axial member (rod)" if role == "rod" else "unilateral member"
             probes.append(
-                DofProbe(
-                    subject, klass, "skipped — unilateral member; see view='stability'"
-                )
+                DofProbe(subject, klass, f"skipped — {reason}; see view='stability'")
             )
             continue
         if klass not in (_PROBE_BOUNDED | _PROBE_FREE):
