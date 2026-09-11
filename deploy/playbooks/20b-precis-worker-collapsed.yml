@@ -140,13 +140,31 @@
     # either): CONFIG, not a gate — kept unconditional so a `service prio`
     # flip on `llm_summarize` doesn't also need a redeploy to pick up tuning.
     #
-    # PRECIS_TAPROOT_CHASE_ENABLED / PRECIS_CHASE_LLM (darwin +
-    # precis_worker_taproot_chase, mirrors precis-worker.plist.j2:114-119) and
+    # PRECIS_TAPROOT_CHASE_ENABLED / PRECIS_CHASE_LLM (unconditional on
+    # darwin, gr333965): `chase` (finding_chase) is `default_profiles=_SYS`
+    # with no `capability_env` gate — it runs on EVERY host this play
+    # reaches (gateway + scheduler + inference), no service_config row
+    # needed. The pair used to be additionally gated on the
+    # `precis_worker_taproot_chase` host_var, opt-in per host — but that
+    # left the scheduler-group host (darwin, hosting the majority of chase
+    # terminals) without the LLM-verifier hook even though its collapsed
+    # unit runs the exact same `chase` pass the gateway's does, so the
+    # taproot forward-bridge never fired there. Every darwin host in this
+    # play runs finding_chase,
+    # so every darwin host now gets the pair — no host_var needed.
+    # `precis_worker_taproot_chase` (role default) still gates the dormant
+    # split-unit rollback plist (precis-worker.plist.j2, 20-precis-worker.yml)
+    # and is mirrored (inertly — that lane is `--only job_inproc`, which
+    # never runs `chase`) into 20d's drain-lane env for parity with "the
+    # gateway's own worker unit env" — untouched here.
     # PRECIS_FETCH_MARKUP (darwin + precis_worker_fetch_markup, mirrors
-    # precis-worker.plist.j2:125-128): sub-features INSIDE the always-
-    # registered `chase`/`fetch` passes, not their own service_config
-    # service, so they stay plain env gates set via host_vars on whichever
-    # darwin host needs them (the gateway, in practice) — same as today.
+    # precis-worker.plist.j2:125-128): sub-feature INSIDE the always-
+    # registered `fetch` pass, not its own service_config service, so it
+    # stays a plain env gate set via host_vars on whichever darwin host
+    # needs it (the gateway, in practice, since it's the OA-fetch host) —
+    # same as today; deliberately NOT folded into the chase fix above (only
+    # one host runs `PRECIS_OA_FETCH`, so per-host opt-in is still correct
+    # there).
     #
     # PRECIS_MIRROR_ENABLED / PRECIS_OTS_ENABLED (both OS families, default
     # ON, mirrors the same block in precis-worker.plist.j2 /
@@ -208,7 +226,7 @@
            } if os_family == 'darwin' else {})
          | combine(
              {'PRECIS_TAPROOT_CHASE_ENABLED': '1', 'PRECIS_CHASE_LLM': '1'}
-             if (os_family == 'darwin' and (precis_worker_taproot_chase | default(false))) else {}
+             if os_family == 'darwin' else {}
            )
          | combine(
              {'PRECIS_FETCH_MARKUP': '1'}

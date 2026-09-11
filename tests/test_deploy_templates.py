@@ -212,6 +212,74 @@ def _render_collapsed_worker_fix_env(*, gateway: bool, enabled: bool) -> dict[st
     return rendered
 
 
+def test_collapsed_worker_chase_env_renders_on_every_darwin_host() -> None:
+    """gr333965: the taproot-chase forward-bridge pair
+    (``PRECIS_TAPROOT_CHASE_ENABLED`` / ``PRECIS_CHASE_LLM``) must render for
+    EVERY darwin host this play reaches, not just whichever host_var-flagged
+    host happens to opt in — ``chase``/finding_chase is a default-profile
+    system pass (``default_profiles=_SYS``, no ``capability_env`` gate), so
+    it runs on every one of them regardless. The old per-host
+    ``precis_worker_taproot_chase`` opt-in (mirrored here by simply never
+    passing it) left balthazar, also darwin, without the LLM-verifier hook
+    even though its collapsed unit runs the identical pass melchior's does —
+    the taproot forward-bridge never fired there. Deliberately omits
+    ``precis_worker_taproot_chase`` from the render vars so a regression
+    back to host_var-gating (undefined → ``default(false)`` → absent) would
+    fail this assertion instead of silently passing."""
+    darwin = _render_collapsed_worker_base_env("darwin")
+    assert darwin.get("PRECIS_TAPROOT_CHASE_ENABLED") == "1"
+    assert darwin.get("PRECIS_CHASE_LLM") == "1"
+    # Linux never carried the pair (precis-worker.service.j2 has no
+    # equivalent block) — pin the OS split stays intact.
+    linux = _render_collapsed_worker_base_env("linux")
+    assert "PRECIS_TAPROOT_CHASE_ENABLED" not in linux
+    assert "PRECIS_CHASE_LLM" not in linux
+
+
+def _render_sandbox_worker_env() -> dict[str, str]:
+    """Render 35-precis-worker-sandbox.yml's ``service_unit_env`` expression
+    — same stub idiom as :func:`_render_collapsed_worker_base_env`."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "35-precis-worker-sandbox.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    render_task = next(
+        t for t in plays[0]["tasks"] if "service_unit_env" in t.get("vars", {})
+    )
+    expr = render_task["vars"]["service_unit_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+
+    def _combine(base: dict, extra: dict) -> dict:
+        return {**base, **extra}
+
+    env.filters["combine"] = _combine
+    rendered = env.from_string(expr).render(
+        precis_shared_env={},
+        precis_identity_env={},
+        _sb_venv="/opt/precis/venv",
+        _sb_dsn="postgresql://agent_rw@203.0.113.10:6432/precis_prod",
+        inventory_hostname="castor",
+        groups={"agent_sandbox_hosts": ["castor"]},
+        nas_root="/mnt/archive/nas0",
+    )
+    assert isinstance(rendered, dict), f"service_unit_env rendered to {type(rendered)}"
+    return rendered
+
+
+def test_sandbox_worker_env_sets_precis_root() -> None:
+    """gr333438 (ops half): castor's sandbox_run lane must export
+    PRECIS_ROOT (utils/workspace.py) so a sandboxed job can resolve its
+    workspace files — the value must track the same fleet-wide
+    ``nas_root``-derived path every other node uses (roles/asa_bot's
+    ``precis_root`` default), not a hand-picked literal."""
+    env = _render_sandbox_worker_env()
+    assert env.get("PRECIS_ROOT") == "/mnt/archive/nas0/precis_root"
+
+
 def test_collapsed_worker_fix_lane_env_is_gated() -> None:
     """The fix-lane env (PRECIS_FIX_WORK_DIR / PRECIS_FIX_REPO_DIR) renders
     ONLY on a gateway host with ``precis_fix_lane_enabled`` set — everywhere

@@ -67,6 +67,20 @@
           {{ _sb_venv }}/bin/precis worker --only job_claude_docker
           --batch-size 1
           --idle-seconds {{ precis_worker_sandbox_idle_seconds | default(5) }}
+        # PRECIS_ROOT (gr333438, ops half): same mount-namespace path every
+        # node resolves via the fleet-wide `nas_root` (group_vars/all,
+        # autofs-mounted on `hosts: all` — 05-autofs.yml, so this host
+        # already carries it), mirrors roles/asa_bot's
+        # `precis_root: "{{ nas_root }}/precis_root"` default without
+        # depending on that role (not imported by this play — role defaults
+        # only load when the role itself runs, same caveat 20d's own header
+        # documents for its local-constant workaround). Sandbox jobs on this
+        # lane read/write workspace files under PRECIS_ROOT
+        # (utils/workspace.py); unset left them dark. NOTE: this comment
+        # must stay OUTSIDE the `service_unit_env` folded scalar below — a
+        # `#` inside a YAML block scalar lands IN the Jinja string, not as a
+        # YAML comment (see 20b's own `_l_b_base_env` header for the same
+        # trap).
         service_unit_env: >-
           {{ precis_shared_env | combine(precis_identity_env | default({})) | combine({
                'HOME': '/home/deploy',
@@ -77,4 +91,5 @@
                'PRECIS_SOURCE': 'precis-worker-sandbox',
                'PRECIS_NODE': inventory_hostname,
                'PRECIS_SANDBOX_HOSTS': (groups['agent_sandbox_hosts'] | default([])) | join(','),
+               'PRECIS_ROOT': nas_root ~ '/precis_root',
              }) }}
