@@ -242,6 +242,45 @@ def _assemble(tree: SeTree) -> _System:
     )
 
 
+def _scope_honesty_notes(tree: SeTree, node_names: list[str]) -> list[str]:
+    """Two scope-honesty checks over ``objectives.fixed``/``force``
+    (gripe 334783), so the stability header never reads as "fine" when it
+    silently skipped something: (a) a block carrying a declared load or
+    support that is not a node of the analysed axial subgraph — its
+    ``fixed`` grounds nothing here (``c`` only counts subgraph nodes) and
+    its ``force`` is never modelled by this analysis either way; (b) a
+    block that is both fully grounded (``fixed`` on all three axes) and
+    carries a nonzero external ``force`` — the force does nothing to a
+    node this model holds motionless."""
+    in_scope = set(node_names)
+    out_of_scope: list[str] = []
+    fixed_and_forced: list[str] = []
+    for name, block in sorted(tree.blocks.items()):
+        obj = block.objectives
+        if not obj:
+            continue
+        fixed = obj.get("fixed")
+        fixed_axes = set(fixed) if isinstance(fixed, list) else set()
+        force = obj.get("force")
+        forced = isinstance(force, list) and any(float(x) != 0.0 for x in force)
+        if (fixed_axes or forced) and name not in in_scope:
+            out_of_scope.append(name)
+        if fixed_axes == {"x", "y", "z"} and forced:
+            fixed_and_forced.append(name)
+    notes: list[str] = []
+    if out_of_scope:
+        notes.append(
+            f"loads on {len(out_of_scope)} block(s) outside the analysed "
+            f"axial subgraph — not checked: {', '.join(out_of_scope)}"
+        )
+    for name in fixed_and_forced:
+        notes.append(
+            f"{name}: external force on a fully grounded node has no "
+            "effect in this model"
+        )
+    return notes
+
+
 def classify(tree: SeTree) -> StabilityReport:
     """Run the counting + the second-order test over ``tree``'s axial
     subgraph. Pure over the tree; no store access. See the module
@@ -249,6 +288,7 @@ def classify(tree: SeTree) -> StabilityReport:
     system = _assemble(tree)
     members, live, notes = system.members, system.live, list(system.notes)
     node_names = system.node_names
+    notes.extend(_scope_honesty_notes(tree, node_names))
     j, b = len(node_names), len(live)
     if b == 0:
         return StabilityReport(
@@ -727,6 +767,74 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
         findings=findings,
         notes=notes,
     )
+
+
+# ── preload tensioning consistency (rented by precis_se.drc) ─────────────
+# (gripe 334782: free_length/rate/preload must cross-check against the
+# installed geometry)
+
+#: Relative tolerance for the free_length/rate/preload cross-check — same
+#: rationale as _PRESTRESS_RTOL: declared numbers are hand-entered
+#: engineering values rounded to a couple of significant digits, so 1 % is
+#: rounding noise and a real ratio mismatch is typically tens of percent
+#: out.
+_PRELOAD_TRIPLE_RTOL = 1e-2
+
+
+def preload_findings(tree: SeTree) -> list[tuple[str, str]]:
+    """Warn-tier ``(subject, detail)`` pairs about an axial member's
+    tensioning declaration (gripe 334782). Physically,
+    ``preload = rate × (L_installed − L_free)``: a nonzero ``preload``
+    with no ``free_length`` and/or no ``rate`` has no tensioning
+    instruction behind it — nothing says how the member gets from its
+    free length to the installed one. When all three are declared, they
+    are cross-checked against the installed length — the endpoint
+    block-pose distance stability already computes (node = block pose,
+    ports discarded, the same approximation the whole-structure model
+    uses)."""
+    findings: list[tuple[str, str]] = []
+    for row in _axial_members(tree):
+        if row.skipped is not None:
+            continue
+        preload = row.params.get("preload")
+        if preload is None or preload == 0.0:
+            continue
+        free_length = row.params.get("free_length")
+        rate = row.params.get("rate")
+        if free_length is None or rate is None:
+            missing = [
+                name
+                for name, val in (("free_length", free_length), ("rate", rate))
+                if val is None
+            ]
+            findings.append(
+                (
+                    row.subject,
+                    f"preload {preload:g} N declared but no "
+                    f"{' and '.join(missing)} — preload = rate × "
+                    "(installed length − free length), so nothing says how "
+                    "this member gets tensioned to that number (set_joint "
+                    "params)",
+                )
+            )
+            continue
+        installed = row.length
+        if installed is None:
+            continue
+        implied = rate * (installed - free_length)
+        tol = _PRELOAD_TRIPLE_RTOL * abs(preload)
+        if abs(implied - preload) > tol:
+            findings.append(
+                (
+                    row.subject,
+                    f"declared preload {preload:g} N disagrees with rate × "
+                    f"(installed − free length) = {rate:g} × "
+                    f"({installed:g} − {free_length:g}) = {implied:g} N "
+                    "(node = block pose, ports discarded — approximate) — "
+                    "reconcile the free_length/rate/preload triple",
+                )
+            )
+    return findings
 
 
 # ── capacity findings (rented by precis_se.drc) ──────────────────────────

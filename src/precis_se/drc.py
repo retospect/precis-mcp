@@ -377,6 +377,19 @@ def drc(tree: SeTree) -> DrcReport:
                 )
             )
 
+    # 4d. preload tensioning consistency (gripe 334782): free_length/rate/
+    # preload must cross-check against the installed geometry — warn tier,
+    # like every other structural advisory here.
+    for subject, detail in se_stability.preload_findings(tree):
+        findings.append(
+            ValidationIssue(
+                rule="preload_consistency",
+                subject=subject,
+                detail=detail,
+                severity="warn",
+            )
+        )
+
     # 5. measures graph: a measure on a block that doesn't exist, and the
     # stack-up problems (dangling/cyclic relation = error; declared-vs-
     # derived mismatch = warn — the numbers disagree, the graph is intact).

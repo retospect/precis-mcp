@@ -370,6 +370,129 @@ def test_dof_probe_labels_tie_and_strut_unilateral() -> None:
         assert "(rod)" not in probe.outcome
 
 
+# ── preload tensioning consistency (gripe 334782) ────────────────────────
+
+
+def test_preload_without_free_length_warns() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [("a", "b", {**_ROD, "preload": 50.0})],
+    )
+    (detail,) = _rules(tree)["preload_consistency"]
+    assert "no free_length and rate" in detail
+    assert "preload = rate ×" in detail
+
+
+def test_preload_without_rate_only_warns() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [("a", "b", {**_ROD, "preload": 50.0, "free_length": 0.04})],
+    )
+    (detail,) = _rules(tree)["preload_consistency"]
+    assert "no rate" in detail
+    assert "no free_length and rate" not in detail
+
+
+def test_consistent_free_length_rate_preload_triple_is_quiet() -> None:
+    # installed length 0.05 m; free 0.04 m; rate 5000 N/m → 50 N exactly.
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [
+            (
+                "a",
+                "b",
+                {**_ROD, "preload": 50.0, "free_length": 0.04, "rate": 5000.0},
+            )
+        ],
+    )
+    assert "preload_consistency" not in _rules(tree)
+
+
+def test_inconsistent_free_length_rate_preload_triple_warns_with_both_numbers() -> None:
+    # rate × (installed − free) = 5000 × (0.05 − 0.04) = 50 N, but the
+    # declared preload is 200 N — well outside the 1% tolerance.
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [
+            (
+                "a",
+                "b",
+                {**_ROD, "preload": 200.0, "free_length": 0.04, "rate": 5000.0},
+            )
+        ],
+    )
+    (detail,) = _rules(tree)["preload_consistency"]
+    assert "200 N" in detail
+    assert "50 N" in detail
+    assert "disagrees" in detail
+
+
+def test_no_preload_member_stays_quiet_about_tensioning() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [("a", "b", dict(_ROD))],
+    )
+    assert "preload_consistency" not in _rules(tree)
+
+
+# ── stability scope honesty (gripe 334783) ───────────────────────────────
+
+
+def test_loaded_block_outside_subgraph_appears_in_the_header() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},
+        [("a", "b", dict(_ROD))],
+        fixed={"a": True, "b": ["y", "z"]},
+    )
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "saddle", "pose": [2.0, 0.0, 0.0]},
+            {"op": "set_load", "block": "saddle", "force": [10.0, 0.0, 0.0]},
+        ],
+    )
+    report = se_stability.classify(tree)
+    (note,) = [n for n in report.notes if "outside the analysed" in n]
+    assert "saddle" in note
+    assert "not checked" in note
+
+
+def test_fixed_and_forced_block_warns_force_has_no_effect() -> None:
+    # set_load has replace semantics on a block, so 'fixed' and 'force'
+    # must be declared together in one op — a separate call would wipe
+    # the earlier 'fixed' out.
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},
+        [("a", "b", dict(_ROD))],
+        fixed={"b": ["y", "z"]},
+    )
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_load",
+                "block": "a",
+                "fixed": True,
+                "force": [10.0, 0.0, 0.0],
+            }
+        ],
+    )
+    report = se_stability.classify(tree)
+    (note,) = [n for n in report.notes if "no effect in this model" in n]
+    assert "a:" in note
+
+
+def test_clean_fully_analysed_design_reports_neither_scope_note() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0], "c": [0.5, _S32, 0.0]},
+        [("a", "b", dict(_ROD)), ("b", "c", dict(_ROD)), ("c", "a", dict(_ROD))],
+        fixed={"a": True, "b": ["y", "z"], "c": ["z"]},
+    )
+    report = se_stability.classify(tree)
+    assert not any("outside the analysed" in n for n in report.notes)
+    assert not any("no effect in this model" in n for n in report.notes)
+
+
 def test_cable_mechanism_demands_a_bom_line() -> None:
     tree = _pin_structure(
         {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},

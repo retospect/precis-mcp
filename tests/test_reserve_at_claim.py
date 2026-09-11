@@ -798,9 +798,8 @@ def test_coordinator_capability_gate_skips_claude_less_host(store: Store) -> Non
     assert rows == []
     # Still queued, not touched — a capable host/worker gets a clean shot.
     with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
-        ).fetchone()
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (jid,)).fetchone()
+    assert row is not None
     assert "reserved" not in (row[0] or {})
 
 
