@@ -38,8 +38,10 @@ optical), and eventually mechanism/dynamics.
 This is the **fourth keystone kind** (glossary: "owns a legible IR and rents
 the heavy kernel only at export; the LLM traverses a graph, never pixels"),
 sibling to cad (ADR 0041) / pcb (0042) / structure (0043). Ship as a
-**plugin** (Route B: entry points, own migration namespace, dark behind a
-`requires_setting` flag) so core dispatch stays untouched.
+**plugin** (Route B: entry points, own migration namespace; shipped dark
+behind a `requires_setting` flag, since removed — the kind is always on
+wherever the plugin is installed, `PRECIS_KINDS_DISABLED` is the one
+off-switch) so core dispatch stays untouched.
 
 ## Corrected premise
 
@@ -246,7 +248,8 @@ reality.
    618d516d (2026-08-31): plugin skeleton, 0001 migration (all three
    tables), block tree + instancing (read-time template resolution,
    expansion-cycle guard at op AND render time), cad-DSL envelope
-   validation, tree/block views, search card, dark behind `nm.enabled`.
+   validation, tree/block views, search card, dark behind `nm.enabled`
+   (flag since removed — always on).
    Side-fix that ship forced: `tools/core.py::edit` now declares +
    forwards `ops=`/`args=` (ratchet entries ("structure","edit","ops"/
    "args") retired; doors round-trip test added; tools/list cap 23→24 KB
@@ -379,7 +382,8 @@ reality.
 **Package**: `src/precis_nm/` (Route B plugin) — `precis_nm.handler:NmHandler`
 (kind `nm`), entry points in pyproject (`precis.handlers`,
 `precis.migrations` → `precis_nm.migrations`, own 0001), dark behind
-`requires_setting=("nm.enabled",)` — the `precis_chem` skeleton verbatim.
+`requires_setting=("nm.enabled",)` — the `precis_chem` skeleton verbatim
+(the flag was since removed; the kind is always on).
 
 **Storage** (0041 rule: ONE `card_combined` chunk per design for intent
 search; geometry/graph in dedicated tables, never chunks):
