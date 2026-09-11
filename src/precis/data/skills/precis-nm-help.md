@@ -89,6 +89,12 @@ real chemistry — see the connect gate below. `direction` (optional)
 normalizes to unit length; a zero vector is rejected. Port names may not
 contain `.` (the `connect` endpoint syntax reserves it). `remove_port`
 refuses while a live connect or a declared dof still references the port.
+`annotations` (optional JSON object) is an open, merely-descriptive dict —
+`{"external": true}` marks a port as **intentionally** left unconnected (an
+antenna, a future attachment point), which `view='validate'`'s
+`unconnected_port` check honours: an external port gets an `info` line
+("external by design") instead of a `warn`, rather than an author faking a
+`connect` just to silence the warning.
 
 ## Connect two ports — the capability gate
 
@@ -282,11 +288,20 @@ that themselves declare an envelope (a later increment, not modeled today).
 | `port_capability` | error | a stored connect violates its own endpoints' declared roles |
 | `dangling_threading` | error | threading names a block that no longer exists |
 | `dangling_binding` | error | `bound_design` no longer resolves, or a `bound_atom` no longer exists in it |
-| `unconnected_port` | warn | a declared port with no live connect — normal mid-design |
+| `envelope_overlap` | error | two blocks with no declared connect or tree nesting between them have materially interpenetrating envelopes |
+| `unconnected_port` | warn / info | a declared port with no live connect — normal mid-design; `info` instead when the port carries `annotations={"external": true}` |
 | `blocks_without_envelope` | warn | a block with ports but no envelope — geometry needed before L1 |
 | `threaded_without_envelope` | warn | a threading pair where either side has no envelope — the interlock can't be verified geometrically yet |
 | `binding_element_mismatch` | warn | a bound atom's element doesn't match the port's `expected_element` |
 | `envelope_fit` | warn | a bound block's realized atoms protrude beyond its declared envelope + vdW margin — the L1↔L5 agreement has drifted |
+| `connect_cycle` | warn | the connect graph closes a loop across the block tree (a macrocycle IS real chemistry — this names the path, never says "forbidden") |
+| `bond_length_sanity` | warn | a `kind='bond'` connect's block-pose gap (an approximation — ports have no stored position, see Scope below) is wildly beyond a plausible bond |
+| `bond_vector_alignment` | warn | a `kind='bond'` connect's two ports' `direction` vectors are far from anti-parallel (>60° off 180°) |
+
+`envelope_overlap`/`bond_length_sanity`/`bond_vector_alignment`'s
+thresholds are all fractions of the smaller involved block's own envelope
+size (never an absolute Å figure — an nm design spans sub-nm to tens-of-nm
+blocks, so a fixed epsilon is scale-wrong at one end or the other).
 
 Zero findings is trivially achievable by declaring nothing — `validate`
 checks what you *did* declare, not completeness. That's exactly why the
@@ -350,6 +365,11 @@ the one general off-switch; see `precis-kinds-disabled-help`.
 - Port `roles` are declared-intent labels, never chemistry-checked (see the
   connect capability gate above) — a role-consistent connect is not a claim
   the bond is real chemistry.
+- **Ports have no stored position of their own** — only their owning
+  block's pose. `bond_length_sanity` approximates a bond's real length from
+  the two blocks' pose-to-pose gap (distance minus each block's own
+  envelope extent along that line), so it can read long for a legitimate
+  off-axis port even on an otherwise-correct design; it warns, never gates.
 
 ## See also
 

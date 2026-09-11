@@ -80,7 +80,7 @@ _BLOCK_COLS = (
     "envelope, descr, use_, dof, bound_design"
 )
 _PORT_COLS = (
-    "block_id, name, roles, direction, expected_element, "
+    "block_id, name, roles, direction, annotations, expected_element, "
     "expected_hybridization, bound_design, bound_atom"
 )
 _CONNECT_COLS = "a_block, a_port, b_block, b_port, kind, objectives"
@@ -150,6 +150,7 @@ def load_tree(store: Any, ref_id: int) -> BlockTree:
             name=p["name"],
             roles=list(p["roles"] or []),
             direction=list(p["direction"]) if p["direction"] is not None else None,
+            annotations=dict(p["annotations"] or {}),
             expected_element=p["expected_element"],
             expected_hybridization=p["expected_hybridization"],
             bound_design=p["bound_design"],
@@ -277,14 +278,16 @@ def save_tree(
             for port in node.ports.values():
                 c.execute(
                     "INSERT INTO nm_ports "
-                    "(block_id, name, roles, direction, expected_element, "
-                    " expected_hybridization, bound_design, bound_atom) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "(block_id, name, roles, direction, annotations, "
+                    " expected_element, expected_hybridization, bound_design, "
+                    " bound_atom) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         name_to_id[name],
                         port.name,
                         port.roles,
                         port.direction,
+                        Jsonb(port.annotations) if port.annotations else None,
                         port.expected_element,
                         port.expected_hybridization,
                         port.bound_design,

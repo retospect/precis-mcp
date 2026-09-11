@@ -737,6 +737,7 @@ class NmHandler(Handler):
             return f"✓ no validator findings\n{fill_line}"
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
+        n_info = sum(1 for f in findings if f.severity == "info")
         rows = [
             {
                 "severity": f.severity,
@@ -746,8 +747,9 @@ class NmHandler(Handler):
             }
             for f in findings
         ]
+        info_suffix = f", {n_info} info" if n_info else ""
         return (
-            f"# {n_error} error(s), {n_warn} warning(s)\n{fill_line}\n\n"
+            f"# {n_error} error(s), {n_warn} warning(s){info_suffix}\n{fill_line}\n\n"
             + render_agent_table(rows, schema=["severity", "rule", "subject", "detail"])
         )
 

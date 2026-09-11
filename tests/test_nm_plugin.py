@@ -11,6 +11,7 @@ own migration directly — same fixture shape as ``test_route_plugin.py``'s
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -907,6 +908,332 @@ def test_validate_blocks_without_envelope_warns(handler: NmHandler) -> None:
     handler.put(id="noenv1", text=json.dumps({"ops": ops}))
     resp = handler.get(id="noenv1", view="validate")
     assert "blocks_without_envelope" in resp.body
+
+
+def test_validate_correct_chain_design_stays_clean(handler: NmHandler) -> None:
+    # The gripe 334768 dogfood's *correct* design shape: a straight, open
+    # 5-block chain, sane inter-block gaps, ports pointing at their bond
+    # partner — must validate clean under all four new checks at once, not
+    # just the pre-existing six.
+    names = ["c1", "c2", "c3", "c4", "c5"]
+    positions = [[0, 0, 0], [8, 0, 0], [16, 0, 0], [24, 0, 0], [32, 0, 0]]
+    ops: list[dict[str, object]] = [
+        {"op": "add_block", "name": n, "envelope": "sphere:r3", "pose": p}
+        for n, p in zip(names, positions, strict=True)
+    ]
+    for i, n in enumerate(names):
+        if i > 0:
+            ops.append(
+                {
+                    "op": "add_port",
+                    "block": n,
+                    "name": "prev",
+                    "roles": ["covalent"],
+                    "direction": [-1, 0, 0],
+                }
+            )
+        if i < len(names) - 1:
+            ops.append(
+                {
+                    "op": "add_port",
+                    "block": n,
+                    "name": "next",
+                    "roles": ["covalent"],
+                    "direction": [1, 0, 0],
+                }
+            )
+    for i in range(len(names) - 1):
+        ops.append(
+            {"op": "connect", "a": f"{names[i]}.next", "b": f"{names[i + 1]}.prev"}
+        )
+    handler.put(id="chainclean1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="chainclean1", view="validate")
+    assert "no validator findings" in resp.body
+
+
+def test_validate_envelope_overlap_beyond_declared_contact(handler: NmHandler) -> None:
+    # Two blocks that share no connect and no tree relationship, but whose
+    # envelopes deeply interpenetrate — the dogfood's "impossible design
+    # validated cleaner than the correct one" repro.
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r5", "pose": [1, 0, 0]},
+    ]
+    handler.put(id="overlap1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="overlap1", view="validate")
+    assert "envelope_overlap" in resp.body
+    assert "'a'" in resp.body and "'b'" in resp.body
+    assert "1 error" in resp.body.splitlines()[0]
+
+
+def test_validate_envelope_overlap_skips_connected_and_nested_pairs(
+    handler: NmHandler,
+) -> None:
+    # A connected pair fully coincident (the existing _BOND_TREE_OPS shape)
+    # and a parent/child pair at the shared default pose both interpenetrate
+    # just as deeply as the flagged pair above — declared contact (connect)
+    # and declared structure (nesting) both suppress the finding.
+    ops = [
+        *_BOND_TREE_OPS,  # 'a'/'b' fully coincident spheres, connected
+        # Placed far from 'a'/'b' so the two unrelated groups can't
+        # accidentally collide with EACH OTHER and confound the assertion.
+        {
+            "op": "add_block",
+            "name": "parent",
+            "envelope": "sphere:r4",
+            "pose": [100, 0, 0],
+        },
+        {
+            "op": "add_block",
+            "name": "child",
+            "parent": "parent",
+            "envelope": "sphere:r4",
+            "pose": [100, 0, 0],
+        },
+    ]
+    handler.put(id="overlap2", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="overlap2", view="validate")
+    assert "envelope_overlap" not in resp.body
+
+
+def test_validate_connect_cycle_warns_with_path(handler: NmHandler) -> None:
+    # A 5-block ring closed head-to-tail — the dogfood's other repro: a
+    # chain that's a cycle in the connect graph even though the block tree
+    # itself has no parent/child nesting at all.
+    names = ["r1", "r2", "r3", "r4", "r5"]
+    radius, sphere_r = 10.0, 4.0
+    ops: list[dict[str, object]] = []
+    for i, n in enumerate(names):
+        angle = math.radians(72 * i)
+        pos = [radius * math.cos(angle), radius * math.sin(angle), 0.0]
+        ops.append(
+            {
+                "op": "add_block",
+                "name": n,
+                "envelope": f"sphere:r{sphere_r:g}",
+                "pose": pos,
+            }
+        )
+        ops.append({"op": "add_port", "block": n, "name": "p1", "roles": ["covalent"]})
+        ops.append({"op": "add_port", "block": n, "name": "p2", "roles": ["covalent"]})
+    for i in range(len(names)):
+        a, b = names[i], names[(i + 1) % len(names)]
+        ops.append({"op": "connect", "a": f"{a}.p2", "b": f"{b}.p1"})
+    handler.put(id="cycle1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="cycle1", view="validate")
+    assert "connect_cycle" in resp.body
+    assert (
+        "verify this is an intended macrocycle, not an accidental closure" in resp.body
+    )
+    for n in names:
+        assert n in resp.body
+
+
+def test_validate_bond_length_sanity_warns_wildly_long_bond(handler: NmHandler) -> None:
+    # The dogfood's actual repro number: a 48.5 Å "covalent bond".
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r5", "pose": [48.5, 0, 0]},
+        {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
+        {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
+        {"op": "connect", "a": "a.p1", "b": "b.p1"},
+    ]
+    handler.put(id="longbond1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="longbond1", view="validate")
+    assert "bond_length_sanity" in resp.body
+    assert "48.5" in resp.body
+
+
+def test_validate_bond_vector_alignment_warns_when_not_antiparallel(
+    handler: NmHandler,
+) -> None:
+    # Both ports' declared direction points the SAME way — the dogfood's
+    # proof that these vectors were pure decoration (nothing read them).
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r2", "pose": [4, 0, 0]},
+        {
+            "op": "add_port",
+            "block": "a",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [1, 0, 0],
+        },
+        {
+            "op": "add_port",
+            "block": "b",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [1, 0, 0],
+        },
+        {"op": "connect", "a": "a.p1", "b": "b.p1"},
+    ]
+    handler.put(id="badvec1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="badvec1", view="validate")
+    assert "bond_vector_alignment" in resp.body
+
+
+def test_validate_bond_vector_alignment_clean_when_antiparallel(
+    handler: NmHandler,
+) -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r2", "pose": [4, 0, 0]},
+        {
+            "op": "add_port",
+            "block": "a",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [1, 0, 0],
+        },
+        {
+            "op": "add_port",
+            "block": "b",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [-1, 0, 0],
+        },
+        {"op": "connect", "a": "a.p1", "b": "b.p1"},
+    ]
+    handler.put(id="goodvec1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="goodvec1", view="validate")
+    assert "bond_vector_alignment" not in resp.body
+
+
+def test_validate_bond_vector_alignment_clean_when_antiparallel_after_rotation(
+    handler: NmHandler,
+) -> None:
+    # 'direction' is declared in the block's own LOCAL frame (same
+    # convention as 'envelope') — a rot=[0,0,90] block's local [1,0,0]
+    # port points world [0,1,0]. Comparing RAW stored vectors here (bug)
+    # would see local [1,0,0] vs local [0,-1,0] -> 90 deg apart -> a
+    # spurious warn; comparing world-frame vectors correctly sees
+    # [0,1,0] vs [0,-1,0] -> antiparallel -> quiet.
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2", "rot": [0, 0, 90]},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r2", "pose": [0, 4, 0]},
+        {
+            "op": "add_port",
+            "block": "a",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [1, 0, 0],
+        },
+        {
+            "op": "add_port",
+            "block": "b",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [0, -1, 0],
+        },
+        {"op": "connect", "a": "a.p1", "b": "b.p1"},
+    ]
+    handler.put(id="rotvec1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="rotvec1", view="validate")
+    assert "bond_vector_alignment" not in resp.body
+
+
+def test_validate_bond_vector_alignment_warns_when_misaligned_after_rotation(
+    handler: NmHandler,
+) -> None:
+    # The inverse failure mode: LOCAL vectors [1,0,0]/[-1,0,0] look
+    # antiparallel raw (the bug would silently pass this), but 'b' is
+    # rotated 90 deg about z so its world direction is actually [0,-1,0]
+    # -> 90 deg off [1,0,0], genuinely misaligned -> must warn.
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": "sphere:r2",
+            "pose": [4, 0, 0],
+            "rot": [0, 0, 90],
+        },
+        {
+            "op": "add_port",
+            "block": "a",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [1, 0, 0],
+        },
+        {
+            "op": "add_port",
+            "block": "b",
+            "name": "p1",
+            "roles": ["covalent"],
+            "direction": [-1, 0, 0],
+        },
+        {"op": "connect", "a": "a.p1", "b": "b.p1"},
+    ]
+    handler.put(id="rotvec2", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="rotvec2", view="validate")
+    assert "bond_vector_alignment" in resp.body
+
+
+def test_validate_external_port_skips_warn_with_info_line(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {
+            "op": "add_port",
+            "block": "a",
+            "name": "ext1",
+            "roles": ["covalent"],
+            "annotations": {"external": True},
+        },
+        {"op": "add_port", "block": "a", "name": "plain1", "roles": ["covalent"]},
+    ]
+    handler.put(id="ext1", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="ext1", view="validate")
+    assert "external by design" in resp.body
+    assert "a.plain1" in resp.body
+    plain_rows = [ln for ln in resp.body.splitlines() if "a.plain1" in ln]
+    assert plain_rows and all("warn" in ln for ln in plain_rows)
+    ext_rows = [ln for ln in resp.body.splitlines() if "a.ext1" in ln]
+    assert ext_rows and all("warn" not in ln for ln in ext_rows)
+
+    # Round-trips through save/reload — annotations must not be dropped.
+    resp2 = handler.get(id="ext1")
+    assert resp2.body
+
+
+def test_validate_unconnected_port_findings_severity_tiers() -> None:
+    # Direct-function precision check on the severity split itself (the
+    # handler test above only asserts against the rendered table's text).
+    tree = BlockTree()
+    tree.blocks["a"] = NmBlock(
+        name="a",
+        envelope="sphere:r2",
+        ports={
+            "ext1": PortSpec(
+                name="ext1", roles=["covalent"], annotations={"external": True}
+            ),
+            "plain1": PortSpec(name="plain1", roles=["covalent"]),
+        },
+    )
+    findings = nm_validate.validate(tree)
+    by_subject = {f.subject: f for f in findings if f.rule == "unconnected_port"}
+    assert by_subject["a.ext1"].severity == "info"
+    assert "external by design" in by_subject["a.ext1"].detail
+    assert by_subject["a.plain1"].severity == "warn"
+
+
+def test_validate_external_annotation_requires_literal_true() -> None:
+    # gripe-review fix: an LLM-authored {"external": "false"} (a JSON
+    # STRING, not a boolean) is truthy in Python — must NOT silently read
+    # as external. Only the literal JSON boolean `true` gets the info tier.
+    tree = BlockTree()
+    tree.blocks["a"] = NmBlock(
+        name="a",
+        envelope="sphere:r2",
+        ports={
+            "p1": PortSpec(
+                name="p1", roles=["covalent"], annotations={"external": "false"}
+            ),
+        },
+    )
+    findings = nm_validate.validate(tree)
+    finding = next(f for f in findings if f.rule == "unconnected_port")
+    assert finding.severity == "warn"
 
 
 def test_validate_dangling_connect_from_hand_corrupted_tree() -> None:

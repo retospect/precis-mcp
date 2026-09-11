@@ -191,8 +191,13 @@ class PortSpec(Port):
     ``expected_hybridization`` deliberately stay their own typed fields
     rather than moving into the inherited ``annotations`` open dict — see
     docs/backlog/blocktree-library-build-plan.md §Settled ("What this is
-    NOT — a kind merge"); this
-    module never populates ``annotations``."""
+    NOT — a kind merge"). ``annotations`` itself IS populated by this
+    module's ``add_port`` (``annotations={...}``, same shape as the shared
+    core's own ``op_add_port``) — it stays the open, merely-descriptive
+    dict for anything that isn't a checked chemistry capability (``roles``)
+    or a typed field of its own; ``validate.py``'s ``unconnected_port``
+    check gives exactly one key, ``{"external": true}``, a checked meaning
+    (gripe 334769) without promoting it to its own column."""
 
     expected_element: str | None = None
     expected_hybridization: str | None = None
@@ -561,10 +566,16 @@ def _op_add_port(tree: BlockTree, op: dict[str, Any]) -> None:
     if op.get("direction") is not None:
         raw_vec = _as_vec3(op.get("direction"), "add_port direction")
         direction = _unit_vec(raw_vec, what=f"add_port direction for {block}.{name}")
+    annotations_raw = op.get("annotations")
+    if annotations_raw is not None and not isinstance(annotations_raw, dict):
+        raise OpError(
+            f"add_port 'annotations' must be a JSON object, got {annotations_raw!r}"
+        )
     node.ports[name] = PortSpec(
         name=name,
         roles=roles,
         direction=direction,
+        annotations=dict(annotations_raw) if annotations_raw else {},
         expected_element=_opt_str(op.get("expected_element")),
         expected_hybridization=_opt_str(op.get("expected_hybridization")),
     )
