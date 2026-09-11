@@ -140,7 +140,7 @@ inverse "who calls for this component" — across both tracks instead of
 requiring a consumer to know two spellings.
 
 **Always on wherever the plugin is installed** — the original
-``se.enabled`` dark flag was removed (Reto, 2026-09-11; pinned by
+``se.enabled`` ``requires_setting`` gate was removed (Reto, 2026-09-11; pinned by
 ``tests/test_se_plugin.py::test_kind_is_available_without_any_flag``);
 ``PRECIS_KINDS_DISABLED`` is the one general off-switch. See
 ``docs/backlog/se-kind.md`` for the full design (annotations superset

@@ -66,7 +66,8 @@ is split from finish (the only store write, run after the whole op list
 has validated, so a later failing op cannot orphan a minted design).
 
 **Always on wherever the plugin is installed** — the original
-``nm.enabled`` dark flag was removed together with se's (2026-09-11);
+``nm.enabled`` ``requires_setting`` gate was removed together with se's
+(2026-09-11);
 ``PRECIS_KINDS_DISABLED`` is the one general off-switch. See
 ``docs/backlog/nm-kind.md`` for the full design and the agent-facing skill
 ``src/precis/data/skills/precis-nm-help.md`` for the call surface. Unshipped
