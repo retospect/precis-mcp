@@ -25,8 +25,10 @@ two sides" posture — different invariants (kinematic joints, tolerances,
 process rules instead of threading, chirality, chemistry).
 
 Ship as a **plugin** (Route B: `src/precis_se/`, entry points, own
-migration namespace from 0001, dark behind `requires_setting`
-`se.enabled`), exactly the nm scaffold.
+migration namespace from 0001), exactly the nm scaffold. (Originally
+dark behind `se.enabled`; the flag was removed 2026-09-11 — the kind is
+on wherever the plugin is installed, `PRECIS_KINDS_DISABLED` is the one
+general off-switch.)
 
 ## Relation to nm — no merge; se's core is the shared layer
 

@@ -1,8 +1,8 @@
 """precis-nm — the ``nm`` (nanomachine) kind.
 
 A first-party **plugin** on the precis substrate (Route B: entry points,
-own migration namespace, dark behind a ``requires_setting`` flag — the
-``precis_chem`` skeleton verbatim), so core dispatch stays untouched.
+own migration namespace — the ``precis_chem`` skeleton verbatim), so core
+dispatch stays untouched.
 
 ``nm`` is the **fourth keystone kind** (glossary: "owns a legible IR and
 rents the heavy kernel only at export; the LLM traverses a graph, never
@@ -65,9 +65,9 @@ atoms, and binds it — prepare (pure, validates everything in-memory)
 is split from finish (the only store write, run after the whole op list
 has validated, so a later failing op cannot orphan a minted design).
 
-Ships **dark** behind the ``nm.enabled`` setting (the ``nm`` kind's
-``requires_setting``; DB row → ``PRECIS_NM_ENABLED`` env fallback) — the
-kind is hidden from the catalogue/dispatcher until the flag is set. See
+**Always on wherever the plugin is installed** — the original
+``nm.enabled`` dark flag was removed together with se's (2026-09-11);
+``PRECIS_KINDS_DISABLED`` is the one general off-switch. See
 ``docs/backlog/nm-kind.md`` for the full design and the agent-facing skill
 ``src/precis/data/skills/precis-nm-help.md`` for the call surface. Unshipped
 past this slice: the fill loop (lit-search-and-attach automation),

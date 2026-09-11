@@ -1,8 +1,8 @@
 """precis-se — the ``se`` (structural envelope) kind.
 
 A first-party **plugin** on the precis substrate (Route B: entry points,
-own migration namespace, dark behind a ``requires_setting`` flag — the
-``precis_nm`` scaffold verbatim), so core dispatch stays untouched.
+own migration namespace — the ``precis_nm`` scaffold verbatim), so core
+dispatch stays untouched.
 
 ``se`` is the scale-agnostic sibling of ``nm`` — the symmetry that locates
 it: **se : cad :: nm : structure** (docs/backlog/se-kind.md). nm is
@@ -139,9 +139,10 @@ one `links` query answers "what does this artifact resolve to" — and its
 inverse "who calls for this component" — across both tracks instead of
 requiring a consumer to know two spellings.
 
-Ships **dark** behind the ``se.enabled`` setting (the ``se`` kind's
-``requires_setting``; DB row → ``PRECIS_SE_ENABLED`` env fallback) — the
-kind is hidden from the catalogue/dispatcher until the flag is set. See
+**Always on wherever the plugin is installed** — the original
+``se.enabled`` dark flag was removed (Reto, 2026-09-11; pinned by
+``tests/test_se_plugin.py::test_kind_is_available_without_any_flag``);
+``PRECIS_KINDS_DISABLED`` is the one general off-switch. See
 ``docs/backlog/se-kind.md`` for the full design (annotations superset
 registry, manufacturing modes, the propose/interrogate loop); the
 agent-facing skill lands last (ship order step 8). Slice 4 round 1
