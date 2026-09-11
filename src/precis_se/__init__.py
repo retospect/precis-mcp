@@ -124,7 +124,12 @@ axial subgraph's equilibrium geometry — anchors from
 ``objectives.fixed``, role-derived tension-positive force densities —
 and writes solved poses back stamped ``origin: 'proposed'``; a
 user-origin pose is contract and moves only under an explicit
-``move=`` authorization.
+``move=`` authorization. Slice 3 (rung 5's null-space DRC,
+:func:`precis_se.stability.prestress_report`) checks declared member
+``preload``s against the self-stress space — undeclared members are
+completed by least squares, implied forces vetted against role sign and
+capacity pair — as a prestress section in ``view='stability'`` and the
+warn-tier ``prestress_state`` DRC rule.
 
 A `component` binding additionally **projects onto a ``realized-by``
 link** on every save (``persist.sync_realized_by``, migration 0156's

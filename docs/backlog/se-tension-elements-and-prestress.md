@@ -16,9 +16,13 @@ slice 1): kinematic class `axial` with the asymmetric capacity pair,
 `precis_se/stability.py` (equilibrium matrix + SVD → `m`/`s`, self-stress
 sign-feasibility, Pellegrino–Calladine second-order test, `view='stability'`),
 the tripwire satisfied by construction (`stability.TRIPWIRE_LINE`), the
-`cable` mechanism and the `fixed` support objective. Open: rung 3 (spring
-category), rung 5 (preload/prestress facet + bolted-joint load sharing),
-rung 6 (active-set load path). The §4 form-finding deferral is REOPENED —
+`cable` mechanism and the `fixed` support objective. **Rung 5 half-shipped
+2026-09-10** (structural-solution-space slice 3): the null-space DRC —
+declared `preload`s must be a self-stress state, undeclared members
+completed by least squares and vetted (`stability.prestress_report`,
+`view='stability'` prestress section, `prestress_state` DRC rule). Open:
+rung 3 (spring category), rung 5's bolted-joint load-sharing/separation
+check, rung 6 (active-set load path). The §4 form-finding deferral is REOPENED —
 in-tree, outside se — by `structural-solution-space.md` (Reto, 2026-09-09),
 and its slice 2 SHIPPED: `precis/structsolve/formfind.py` (force-density
 method) + the se `formfind` op (`precis_se/formfind.py`), solved poses

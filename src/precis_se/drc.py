@@ -362,6 +362,21 @@ def drc(tree: SeTree) -> DrcReport:
             )
         )
 
+    # 4c. prestress: declared preloads must be a self-stress state of the
+    # geometry (rung 5's null-space check) — warn tier, like every other
+    # structural advisory here; view='stability' has the full state.
+    prestress = se_stability.prestress_report(tree)
+    if prestress is not None:
+        for subject, detail in prestress.findings:
+            findings.append(
+                ValidationIssue(
+                    rule="prestress_state",
+                    subject=subject,
+                    detail=detail,
+                    severity="warn",
+                )
+            )
+
     # 5. measures graph: a measure on a block that doesn't exist, and the
     # stack-up problems (dangling/cyclic relation = error; declared-vs-
     # derived mismatch = warn — the numbers disagree, the graph is intact).

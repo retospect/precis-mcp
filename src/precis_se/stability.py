@@ -21,6 +21,13 @@ geometric-stiffness) test of Pellegrino & Calladine, run on the internal
 mechanism subspace with the stress matrix of a sign-feasible self-stress
 state.
 
+The same assembled system backs the rung-5 prestress check
+(:func:`prestress_report`, structural-solution-space slice 3): declared
+member ``preload``s must be a self-stress state of the geometry — forces
+that balance at every free node with no external load — within a
+tolerance; undeclared members are completed by least squares and the
+implied forces vetted against role sign and capacity pair.
+
 TRIPWIRE CONTRACT (two-party, recorded in
 docs/backlog/se-tension-elements-and-prestress.md rung 2 and
 docs/backlog/cad-machine-spec.md §NOT-in-scope): any constraint-vs-DOF
@@ -165,10 +172,25 @@ def _rank(matrix: np.ndarray) -> int:
     return int(np.sum(svals > _RANK_RTOL * svals[0]))
 
 
-def classify(tree: SeTree) -> StabilityReport:
-    """Run the counting + the second-order test over ``tree``'s axial
-    subgraph. Pure over the tree; no store access. See the module
-    docstring for the model, the counting and the tripwire contract."""
+@dataclass
+class _System:
+    """The assembled axial system every whole-structure analysis shares —
+    one assembly, so :func:`classify`'s equilibrium matrix and
+    :func:`prestress_report`'s can never disagree about the structure.
+    Empty (``live == []``) when there is nothing analysable."""
+
+    members: list[MemberRow]  # every stored axial connect, skipped included
+    live: list[MemberRow]
+    node_names: list[str]
+    index: dict[str, int]
+    coords: np.ndarray  # (j, 3)
+    fixed_mask: np.ndarray  # (3j,) bool — objectives.fixed translations
+    equilibrium: np.ndarray  # (3j, b) — tension-positive unit columns
+    lengths: np.ndarray  # (b,)
+    notes: list[str]
+
+
+def _assemble(tree: SeTree) -> _System:
     members = _axial_members(tree)
     live = [row for row in members if row.skipped is None]
     notes: list[str] = []
@@ -177,10 +199,58 @@ def classify(tree: SeTree) -> StabilityReport:
             f"{sum(1 for r in members if r.skipped)} member(s) skipped — "
             "see the member table"
         )
-
     node_names = sorted({row.a_block for row in live} | {row.b_block for row in live})
     j, b = len(node_names), len(live)
-    if b == 0 or j < 2:
+    if any(tree.blocks[name].array for name in node_names):
+        notes.append(
+            "an endpoint block is an array — analysed at the array node's "
+            "own pose; array expansion is not modelled"
+        )
+
+    index = {name: i for i, name in enumerate(node_names)}
+    coords = np.array(
+        [tree.blocks[name].pose for name in node_names], dtype=float
+    ).reshape(j, 3)
+
+    axis_index = {"x": 0, "y": 1, "z": 2}
+    fixed_mask = np.zeros(3 * j, dtype=bool)
+    for name in node_names:
+        for axis in _fixed_axes(tree, name):
+            fixed_mask[3 * index[name] + axis_index[axis]] = True
+
+    # Equilibrium matrix: column k is member k's unit direction, +u at
+    # its a-node and −u at its b-node (tension-positive).
+    equilibrium = np.zeros((3 * j, b))
+    lengths = np.empty(b)
+    for k, row in enumerate(live):
+        ia, ib = index[row.a_block], index[row.b_block]
+        u = coords[ib] - coords[ia]
+        lengths[k] = float(np.linalg.norm(u))
+        u = u / lengths[k]
+        equilibrium[3 * ia : 3 * ia + 3, k] = u
+        equilibrium[3 * ib : 3 * ib + 3, k] = -u
+    return _System(
+        members=members,
+        live=live,
+        node_names=node_names,
+        index=index,
+        coords=coords,
+        fixed_mask=fixed_mask,
+        equilibrium=equilibrium,
+        lengths=lengths,
+        notes=notes,
+    )
+
+
+def classify(tree: SeTree) -> StabilityReport:
+    """Run the counting + the second-order test over ``tree``'s axial
+    subgraph. Pure over the tree; no store access. See the module
+    docstring for the model, the counting and the tripwire contract."""
+    system = _assemble(tree)
+    members, live, notes = system.members, system.live, list(system.notes)
+    node_names = system.node_names
+    j, b = len(node_names), len(live)
+    if b == 0:
         return StabilityReport(
             j=j,
             b=b,
@@ -194,36 +264,13 @@ def classify(tree: SeTree) -> StabilityReport:
             members=members,
             notes=notes,
         )
-    if any(tree.blocks[name].array for name in node_names):
-        notes.append(
-            "an endpoint block is an array — analysed at the array node's "
-            "own pose; array expansion is not modelled"
-        )
 
-    index = {name: i for i, name in enumerate(node_names)}
-    coords = np.array([tree.blocks[name].pose for name in node_names], dtype=float)
-
-    axis_index = {"x": 0, "y": 1, "z": 2}
-    fixed_mask = np.zeros(3 * j, dtype=bool)
-    for name in node_names:
-        for axis in _fixed_axes(tree, name):
-            fixed_mask[3 * index[name] + axis_index[axis]] = True
+    index, coords, lengths = system.index, system.coords, system.lengths
+    fixed_mask = system.fixed_mask
     c = int(fixed_mask.sum())
     free = ~fixed_mask
     n_free = int(free.sum())
-
-    # Equilibrium matrix over free DOFs: column k is member k's unit
-    # direction, +u at its a-node and −u at its b-node (tension-positive).
-    equilibrium = np.zeros((3 * j, b))
-    lengths = np.empty(b)
-    for k, row in enumerate(live):
-        ia, ib = index[row.a_block], index[row.b_block]
-        u = coords[ib] - coords[ia]
-        lengths[k] = float(np.linalg.norm(u))
-        u = u / lengths[k]
-        equilibrium[3 * ia : 3 * ia + 3, k] = u
-        equilibrium[3 * ib : 3 * ib + 3, k] = -u
-    a_free = equilibrium[free, :]
+    a_free = system.equilibrium[free, :]
 
     u_svd, svals, vt = np.linalg.svd(a_free)
     smax = float(svals[0]) if svals.size else 0.0
@@ -435,6 +482,219 @@ def _stress_matrix(
         omega[ia, ib] -= q
         omega[ib, ia] -= q
     return np.kron(omega, np.eye(3))
+
+
+# ── prestress: declared preloads vs the self-stress space ────────────────
+# (docs/backlog/se-tension-elements-and-prestress.md rung 5's null-space
+# DRC, shipped as docs/backlog/structural-solution-space.md slice 3)
+
+#: Acceptance for the null-space residual: max nodal out-of-balance ≤
+#: rtol × max|declared preload|. Declared preloads are hand-entered
+#: engineering numbers rounded to a couple of significant digits, so a
+#: state within 1 % of balance is rounding, not a wrong state; a wrong
+#: ratio is typically tens of percent out. The residual is always
+#: reported in the view — the tolerance decides the finding, never what
+#: is shown.
+_PRESTRESS_RTOL = 1e-2
+
+
+@dataclass
+class PrestressRow:
+    """One axial member's place in the declared prestress state."""
+
+    subject: str
+    role: str
+    declared: float | None  # joint param 'preload', N, tension-positive
+    implied: float | None = None  # completed self-stress force, N
+    skipped: str | None = None
+
+
+@dataclass
+class PrestressReport:
+    declared_count: int
+    residual: float | None  # N — max nodal out-of-balance over free DOFs
+    tolerance: float | None  # N — the acceptance threshold used
+    compatible: bool | None  # None = no analysable system to check against
+    worst_node: str | None
+    unique: bool  # completion pinned uniquely by the declared preloads
+    rows: list[PrestressRow] = field(default_factory=list)
+    findings: list[tuple[str, str]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+def prestress_report(tree: SeTree) -> PrestressReport | None:
+    """Check the declared member ``preload``s against the self-stress
+    space: a prestress state is member forces that balance at every free
+    node with no external load (``A_free · t ≈ 0``), so declared preloads
+    that leave a net force at a free node cannot exist in the geometry as
+    built. Undeclared members are unknowns, completed by least squares
+    (minimum-magnitude when not pinned uniquely); when the state is
+    compatible, the implied forces are vetted against each member's role
+    sign and capacity pair. Returns ``None`` when no member declares a
+    preload — absent prestress is not a finding. Pure over the tree."""
+    system = _assemble(tree)
+    rows: list[PrestressRow] = []
+    findings: list[tuple[str, str]] = []
+    notes: list[str] = []
+    for row in system.members:
+        preload = row.params.get("preload")
+        if row.skipped is not None and preload is not None:
+            findings.append(
+                (
+                    row.subject,
+                    f"preload {preload:g} N on a member that cannot be "
+                    f"analysed ({row.skipped}) — the prestress check does "
+                    "not cover it",
+                )
+            )
+        rows.append(
+            PrestressRow(
+                subject=row.subject,
+                role=row.role,
+                declared=preload,
+                skipped=row.skipped,
+            )
+        )
+    declared_count = sum(1 for pr in rows if pr.declared is not None)
+    if declared_count == 0:
+        return None
+
+    live = system.live
+    if not live:
+        notes.append("no analysable axial system — the null-space check cannot run")
+        return PrestressReport(
+            declared_count=declared_count,
+            residual=None,
+            tolerance=None,
+            compatible=None,
+            worst_node=None,
+            unique=True,
+            rows=rows,
+            findings=findings,
+            notes=notes,
+        )
+
+    live_rows = [pr for pr in rows if pr.skipped is None]
+    b = len(live)
+    free = ~system.fixed_mask
+    a_free = system.equilibrium[free, :]
+
+    declared_idx = [
+        k for k, row in enumerate(live) if row.params.get("preload") is not None
+    ]
+    unknown_idx = [k for k in range(b) if k not in set(declared_idx)]
+    t = np.zeros(b)
+    for k in declared_idx:
+        t[k] = float(live[k].params["preload"])
+    unique = True
+    if unknown_idx:
+        a_unknown = a_free[:, unknown_idx]
+        if a_unknown.shape[0] == 0:
+            t[unknown_idx] = 0.0
+        else:
+            rhs = -a_free[:, declared_idx] @ t[declared_idx]
+            solution, *_ = np.linalg.lstsq(a_unknown, rhs, rcond=None)
+            t[unknown_idx] = solution
+        unique = _rank(a_unknown) == len(unknown_idx)
+        if not unique:
+            notes.append(
+                "implied forces are the minimum-magnitude completion — "
+                "the declared preloads do not pin them uniquely"
+            )
+    for k, pr in enumerate(live_rows):
+        pr.implied = float(t[k])
+
+    scale = max((abs(float(t[k])) for k in declared_idx), default=0.0)
+    tolerance = _PRESTRESS_RTOL * scale
+    residual_field = system.equilibrium @ t
+    residual_field[system.fixed_mask] = 0.0  # reactions carry fixed DOFs
+    per_node = np.linalg.norm(residual_field.reshape(-1, 3), axis=1)
+    worst = int(np.argmax(per_node))
+    residual = float(per_node[worst])
+    worst_node = system.node_names[worst]
+    compatible = bool(residual <= tolerance)
+
+    if not compatible:
+        cause = (
+            " — the geometry admits no self-stress at all (s = 0): every "
+            "member force must be zero without external load"
+            if b - _rank(a_free) == 0
+            else ""
+        )
+        findings.append(
+            (
+                worst_node,
+                "declared preload(s) are not a self-stress state: "
+                f"out-of-balance force {residual:g} N at node "
+                f"'{worst_node}' exceeds the {tolerance:g} N tolerance"
+                f"{cause}; the members cannot hold these preloads without "
+                "an external load — fix the preload ratios or the "
+                "geometry (view='stability' reports the feasible state)",
+            )
+        )
+    else:
+        # Vet the implied forces on the undeclared members. Declared
+        # preloads vs their own member's capacities are already
+        # capacity_findings' job; an incompatible state's implied numbers
+        # are least-squares artifacts, so they are not vetted.
+        for k in unknown_idx:
+            row = live[k]
+            force = float(t[k])
+            sign_violated = False
+            if row.role == "tie" and force < -tolerance:
+                sign_violated = True
+                findings.append(
+                    (
+                        row.subject,
+                        f"the declared preloads imply {-force:g} N "
+                        "compression in this tension-only member (tie) — "
+                        "the state cannot be realised",
+                    )
+                )
+            elif row.role == "strut" and force > tolerance:
+                sign_violated = True
+                findings.append(
+                    (
+                        row.subject,
+                        f"the declared preloads imply {force:g} N tension "
+                        "in this compression-only member (strut) — the "
+                        "state cannot be realised",
+                    )
+                )
+            if sign_violated:
+                continue
+            tension = row.params.get("tension_capacity")
+            compression = row.params.get("compression_capacity")
+            if tension is not None and force > tension:
+                findings.append(
+                    (
+                        row.subject,
+                        f"the declared preloads imply {force:g} N tension "
+                        f"against this member's {tension:g} N tension "
+                        "capacity",
+                    )
+                )
+            if compression is not None and -force > compression:
+                findings.append(
+                    (
+                        row.subject,
+                        f"the declared preloads imply {-force:g} N "
+                        f"compression against this member's {compression:g} "
+                        "N buckling/crush ceiling",
+                    )
+                )
+
+    return PrestressReport(
+        declared_count=declared_count,
+        residual=residual,
+        tolerance=tolerance,
+        compatible=compatible,
+        worst_node=worst_node,
+        unique=unique,
+        rows=rows,
+        findings=findings,
+        notes=notes,
+    )
 
 
 # ── capacity findings (rented by precis_se.drc) ──────────────────────────

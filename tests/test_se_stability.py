@@ -4,7 +4,8 @@ structural-solution-space.md slice 1): the canonical structures a
 structural engineer would grade the implementation on — a determinate
 triangle, an unstabilizable four-bar, and the classic 3-strut/9-cable
 tensegrity prism at its equilibrium twist (30°) — plus the joint/objective
-vetting and the DRC seams."""
+vetting, the DRC seams, and the rung-5 prestress check (declared preloads
+vs the self-stress space, slice 3)."""
 
 from __future__ import annotations
 
@@ -355,6 +356,204 @@ def test_cable_mechanism_demands_a_bom_line() -> None:
     assert any("cable / wire rope" in d for d in details)
 
 
+# ── prestress: declared preloads vs the self-stress space ────────────────
+# (rung 5's null-space DRC — structural-solution-space.md slice 3)
+
+
+def _prism_with_preloads(
+    preloads: dict[tuple[str, str], float],
+    strut_params: dict[str, float] | None = None,
+) -> SeTree:
+    members = []
+    for a, b in _PRISM_CABLES:
+        params = dict(_TIE)
+        if (a, b) in preloads:
+            params["preload"] = preloads[(a, b)]
+        members.append((a, b, params))
+    for a, b in _PRISM_STRUTS:
+        params = dict(strut_params or _STRUT)
+        if (a, b) in preloads:
+            params["preload"] = preloads[(a, b)]
+        members.append((a, b, params))
+    return _pin_structure(_PRISM_NODES, members, fixed=_PRISM_FIXED)
+
+
+def _prism_state() -> dict[str, float]:
+    """The classifier's normalized self-stress coefficients by subject —
+    the ground truth the null-space check must agree with (one assembly)."""
+    report = se_stability.classify(_prism(fixed=_PRISM_FIXED))
+    return {
+        row.subject: coeff
+        for row in report.members
+        if (coeff := row.self_stress) is not None
+    }
+
+
+def test_bolted_joint_preload_between_grounded_blocks_is_a_self_stress() -> None:
+    # the rung-5 archetype: a preloaded member between fully fixed blocks
+    # equilibrates through the support reactions — always compatible.
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [("a", "b", {**_ROD, "preload": 50.0})],
+        fixed={"a": True, "b": True},
+    )
+    report = se_stability.prestress_report(tree)
+    assert report is not None
+    assert report.compatible is True
+    assert report.residual == 0.0
+    assert report.findings == []
+
+
+def test_preload_with_a_free_unbalanced_node_is_refused() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [("a", "b", {**_ROD, "preload": 50.0})],
+        fixed={"a": True},
+    )
+    report = se_stability.prestress_report(tree)
+    assert report is not None
+    assert report.compatible is False
+    assert report.worst_node == "b"
+    (finding,) = report.findings
+    assert "not a self-stress state" in finding[1]
+    assert "out-of-balance force 50 N at node 'b'" in finding[1]
+    assert "no self-stress at all (s = 0)" in finding[1]
+
+
+def test_prism_preloads_in_the_state_ratio_are_compatible() -> None:
+    # declare every preload as 100 N × the classifier's coefficient,
+    # rounded to 3 significant digits — rounding must stay inside the
+    # tolerance, and the residual is still reported.
+    state = _prism_state()
+    preloads = {
+        (a, b): float(f"{100.0 * state[f'{a}.pin—{b}.pin']:.3g}")
+        for a, b in _PRISM_CABLES + _PRISM_STRUTS
+    }
+    report = se_stability.prestress_report(_prism_with_preloads(preloads))
+    assert report is not None
+    assert report.compatible is True
+    assert report.findings == []
+    assert report.residual is not None and 0.0 < report.residual <= 1.0
+
+
+def test_prism_single_preload_pins_the_state_and_implies_the_rest() -> None:
+    state = _prism_state()
+    declared = float(f"{100.0 * state['b0.pin—t0.pin']:.6g}")
+    report = se_stability.prestress_report(
+        _prism_with_preloads({("b0", "t0"): declared})
+    )
+    assert report is not None
+    assert report.compatible is True
+    assert report.unique is True
+    implied = {row.subject: row.implied for row in report.rows}
+    for a, b in _PRISM_STRUTS:
+        force = implied[f"{a}.pin—{b}.pin"]
+        assert force is not None and force < 0.0
+    # the completion reproduces the classifier's ratios
+    assert implied["b1.pin—b2.pin"] == pytest.approx(
+        100.0 * state["b1.pin—b2.pin"], rel=1e-3
+    )
+
+
+def test_prism_preloads_off_the_state_ratio_are_refused() -> None:
+    report = se_stability.prestress_report(
+        _prism_with_preloads({("b0", "t0"): 100.0, ("b0", "b1"): 100.0})
+    )
+    assert report is not None
+    assert report.compatible is False
+    assert any("not a self-stress state" in d for _s, d in report.findings)
+    # the s=1 geometry does admit self-stress — the diagnostic must not
+    # claim otherwise
+    assert not any("s = 0" in d for _s, d in report.findings)
+
+
+def test_implied_compression_in_a_tie_is_flagged() -> None:
+    # struts declared as ties: the state needs them in compression, which
+    # a tension-only member cannot supply — three sign findings.
+    state = _prism_state()
+    declared = float(f"{100.0 * state['b0.pin—t0.pin']:.6g}")
+    report = se_stability.prestress_report(
+        _prism_with_preloads({("b0", "t0"): declared}, strut_params=dict(_TIE))
+    )
+    assert report is not None
+    assert report.compatible is True
+    sign_findings = [
+        d for _s, d in report.findings if "compression in this tension-only" in d
+    ]
+    assert len(sign_findings) == 3
+
+
+def test_determinate_structure_admits_no_prestress() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0], "c": [0.5, _S32, 0.0]},
+        [
+            ("a", "b", {**_ROD, "preload": 10.0}),
+            ("b", "c", dict(_ROD)),
+            ("c", "a", dict(_ROD)),
+        ],
+        fixed={"a": True, "b": ["y", "z"], "c": ["z"]},
+    )
+    report = se_stability.prestress_report(tree)
+    assert report is not None
+    assert report.compatible is False
+    assert any("no self-stress at all (s = 0)" in d for _s, d in report.findings)
+
+
+def test_implied_forces_beyond_capacity_are_flagged() -> None:
+    # 5× the 100 N-capacity scale: the implied tensions blow through the
+    # cables' capacity and the implied compressions through the struts'.
+    state = _prism_state()
+    declared = float(f"{500.0 * state['b0.pin—t0.pin']:.6g}")
+    report = se_stability.prestress_report(
+        _prism_with_preloads({("b0", "t0"): declared})
+    )
+    assert report is not None
+    assert report.compatible is True
+    details = [d for _s, d in report.findings]
+    assert any(
+        "N tension against this member's 100 N tension capacity" in d for d in details
+    )
+    assert any("buckling/crush ceiling" in d for d in details)
+
+
+def test_no_declared_preloads_is_not_a_finding() -> None:
+    assert se_stability.prestress_report(_prism(fixed=_PRISM_FIXED)) is None
+
+
+def test_all_zero_preloads_pass_the_zero_tolerance_exactly() -> None:
+    # scale 0 → tolerance 0: the zero state must come out with residual
+    # exactly 0.0, not lstsq noise (pins the b=0-in, 0-out solve
+    # invariant a future solver swap could silently break).
+    report = se_stability.prestress_report(_prism_with_preloads({("b0", "t0"): 0.0}))
+    assert report is not None
+    assert report.tolerance == 0.0
+    assert report.residual == 0.0
+    assert report.compatible is True
+
+
+def test_preload_on_a_skipped_member_is_reported_unchecked() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.0]},
+        [("a", "b", {**_ROD, "preload": 25.0})],
+    )
+    report = se_stability.prestress_report(tree)
+    assert report is not None
+    assert report.compatible is None  # no analysable system to check against
+    (finding,) = report.findings
+    assert "cannot be analysed" in finding[1]
+    assert "does not cover it" in finding[1]
+
+
+def test_drc_carries_prestress_state_findings() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [0.0, 0.0, 0.05]},
+        [("a", "b", {**_ROD, "preload": 50.0})],
+        fixed={"a": True},
+    )
+    details = _rules(tree)["prestress_state"]
+    assert any("not a self-stress state" in d for d in details)
+
+
 # ── the view, through the handler (persist round-trip included) ─────────
 
 
@@ -398,6 +597,30 @@ def test_stability_view_round_trips_through_the_store(handler: SeHandler) -> Non
     # the state column carries signs, not bare scores — normalized to the
     # largest magnitude, which is a strut (compression, negative)
     assert "self_stress" in body and "-1.000" in body and "+0." in body
+    # no member declares a preload — the prestress section must not appear
+    assert "## prestress" not in body
+
+
+def test_stability_view_renders_the_prestress_section(handler: SeHandler) -> None:
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "a", "pose": [0.0, 0.0, 0.0]},
+        {"op": "add_port", "block": "a", "name": "pin"},
+        {"op": "add_block", "name": "b", "pose": [0.0, 0.0, 0.05]},
+        {"op": "add_port", "block": "b", "name": "pin"},
+        {
+            "op": "connect",
+            "a": "a.pin",
+            "b": "b.pin",
+            "joint": {"class": "axial", "params": {**_ROD, "preload": 50.0}},
+        },
+        {"op": "set_load", "block": "a", "fixed": True},
+        {"op": "set_load", "block": "b", "fixed": True},
+    ]
+    handler.put(id="bolted", text=json.dumps({"ops": ops}))
+    body = handler.get(id="bolted", view="stability").body
+    assert "## prestress — declared preloads vs the self-stress space" in body
+    assert "ARE a self-stress state" in body
+    assert "50 N" in body  # the declared column carries the number
 
 
 def test_stability_view_in_unknown_view_roster(handler: SeHandler) -> None:

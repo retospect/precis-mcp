@@ -150,8 +150,14 @@ positions in the classifier (v1 pins nodes at block poses).
    stamped `origin: 'proposed'` — by default only already-`proposed` poses
    move; `move=[...]`/`'all'` authorizes more; collapse refused, nothing
    written.
-3. Prestress facet + null-space DRC (prestress doc rung 5: declared preloads
-   must lie in the self-stress space, within tolerance).
+3. **SHIPPED 2026-09-10:** null-space prestress DRC
+   (`stability.prestress_report`): declared `preload`s must be a
+   self-stress state (balance at every free node, within 1 % of the
+   largest declared value); undeclared members completed by least
+   squares, implied forces vetted against role sign + capacity pair;
+   prestress section in `view='stability'`, warn-tier `prestress_state`
+   DRC rule. Rung 5's other half — bolted-joint load-sharing/separation —
+   remains open in the prestress doc.
 4. SIMP engine + cad-domain voxelization + run-summary storage.
 5. nm state-dependent stability (blocked on blocktree plan slice 2 states).
 6. `spring` component category (prestress doc rung 3, DIN 2098/2095).

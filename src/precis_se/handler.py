@@ -121,7 +121,10 @@ class SeHandler(Handler):
             "compression_capacity N, free_length m, rate N/m, preload N "
             "tension-positive); view='stability' runs Maxwell/Calladine "
             "over the axial members (rigid / mechanism / "
-            "prestress-stabilized, self-stress state reported). The "
+            "prestress-stabilized, self-stress state reported) and, when "
+            "any member declares a preload, checks the declared preloads "
+            "against the self-stress space (implied forces on the rest "
+            "completed and vetted). The "
             "formfind op solves force-density form-finding over those "
             "members (anchors = objectives.fixed; q_tie/q_strut/q_rod "
             "role defaults +1/-1/+1, per-member q=[{'a','b','q'}] "
@@ -1293,6 +1296,49 @@ def _render_stability(tree: SeTree) -> str:
                 "reported state, normalized to the largest magnitude — "
                 "a ray, so only ratios and signs mean anything"
             )
+    prestress = se_stability.prestress_report(tree)
+    if prestress is not None:
+        lines.append("")
+        lines.append("## prestress — declared preloads vs the self-stress space")
+        if prestress.compatible is None:
+            lines.append("not checkable: no analysable axial system")
+        elif prestress.compatible:
+            lines.append(
+                "declared preload(s) ARE a self-stress state — "
+                f"out-of-balance {prestress.residual:g} N ≤ tolerance "
+                f"{prestress.tolerance:g} N"
+            )
+        else:
+            lines.append(
+                "declared preload(s) are NOT a self-stress state — "
+                f"out-of-balance {prestress.residual:g} N at node "
+                f"'{prestress.worst_node}' (tolerance "
+                f"{prestress.tolerance:g} N)"
+            )
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "member": row.subject,
+                        "role": row.role,
+                        "declared": "—"
+                        if row.declared is None
+                        else f"{row.declared:g} N",
+                        "implied": "—" if row.implied is None else f"{row.implied:g} N",
+                        "note": row.skipped or "",
+                    }
+                    for row in prestress.rows
+                ],
+                schema=["member", "role", "declared", "implied", "note"],
+            )
+        )
+        lines.append(
+            "implied: the completed self-stress member force (tension-positive N)"
+        )
+        for note in prestress.notes:
+            lines.append(f"note: {note}")
+        for subject, detail in prestress.findings:
+            lines.append(f"finding: {subject} — {detail}")
     return "\n".join(lines)
 
 
