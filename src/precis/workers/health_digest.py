@@ -1151,6 +1151,92 @@ def _idle_classify_pool_empty_check() -> CheckResult:
     )
 
 
+def _check_doctor_report_fresh(conn: Any) -> CheckResult:
+    """The doctor is still filing reports.
+
+    Every other consumer of the report treats its absence as a reason to
+    fall back QUIETLY — this module's own push-body selector drops to the
+    template (:func:`_select_push_body`) and ``briefing_cast`` drops its
+    health line — so a doctor that stops reporting is invisible by
+    construction. That is how the 2026-09-10 melchior OAuth expiry ran two
+    days with no report and no signal. This is the one check that reads the
+    absence as a fault rather than a fallback.
+
+    Freshness follows the newest body CHUNK, not the ref's ``created_at``:
+    a same-day re-tick appends a paragraph without touching the ref (same
+    reason :func:`precis.workers.doctor_report.latest_report` uses
+    ``_last_tick_evidence``). Budget is the report's own
+    ``FRESH_WINDOW`` (12h) doubled — one whole missed 8h cadence window is
+    a blip, two consecutive ones is a fault.
+    """
+    sql = """
+        SELECT GREATEST(
+                 r.created_at,
+                 COALESCE(MAX(c.created_at), r.created_at)
+               )
+          FROM refs r
+          LEFT JOIN chunks c
+            ON c.ref_id = r.ref_id AND c.retired_at IS NULL AND c.ord >= 0
+         WHERE r.kind = 'draft' AND r.retired_at IS NULL
+           AND r.meta->>'author' = 'doctor'
+         GROUP BY r.ref_id, r.created_at
+         ORDER BY r.created_at DESC
+         LIMIT 1
+    """
+    # Lazy import, matching _lookup_fresh_doctor_report below: doctor_report
+    # is read at call time so the budget has ONE home (its FRESH_WINDOW)
+    # rather than a second copy of the number here.
+    from precis.workers.doctor_report import FRESH_WINDOW
+
+    budget_hours = 2 * FRESH_WINDOW.total_seconds() / 3600.0
+    try:
+        row = conn.execute(sql).fetchone()
+    except Exception:
+        log.exception("health_digest: doctor_report_fresh probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_digest: rollback after doctor_report probe failed")
+        return CheckResult(
+            "autonomy",
+            "doctor_report_fresh",
+            "unknown",
+            "doctor report: probe failed",
+            _WARN,
+        )
+    if row is None or row[0] is None:
+        return CheckResult(
+            "autonomy",
+            "doctor_report_fresh",
+            "stale",
+            "doctor report: none has ever been filed",
+            _WARN,
+        )
+    latest = row[0]
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=UTC)
+    age_h = (datetime.now(UTC) - latest).total_seconds() / 3600.0
+    if age_h > budget_hours:
+        return CheckResult(
+            "autonomy",
+            "doctor_report_fresh",
+            "stale",
+            f"doctor report: last tick wrote {age_h:.1f}h ago "
+            f"(budget {budget_hours:.0f}h) — the doctor is not reporting; "
+            f"check doctor_tick job failures",
+            _WARN,
+            age_hours=age_h,
+        )
+    return CheckResult(
+        "autonomy",
+        "doctor_report_fresh",
+        "ok",
+        f"doctor report: last tick wrote {age_h:.1f}h ago",
+        _WARN,
+        age_hours=age_h,
+    )
+
+
 def _layer1_checks(store: Store) -> list[CheckResult]:
     """All curated Layer-1 outcome checks, one connection, best-effort."""
     with store.pool.connection() as conn:
@@ -1161,6 +1247,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out.append(_check_claim_hub_dedup_index(conn))
         out.append(_check_nanopub_candidates_fresh(conn))
         out.append(_check_agent_jobs_completing(conn))
+        out.append(_check_doctor_report_fresh(conn))
         out.append(_check_hosts_alive(conn))
         out.append(_check_alert_backlog_rot(conn))
     if not _classify_gate_enabled(store):

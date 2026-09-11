@@ -40,6 +40,7 @@ from precis.workers.health_digest import (
     _cadence_staleness_checks,
     _check_chunks_extracted,
     _check_claim_hub_dedup_index,
+    _check_doctor_report_fresh,
     _check_hosts_alive,
     _diagnose_embed_pipeline,
     _idle_aware_backlog_checks,
@@ -654,6 +655,67 @@ def _embed_finding_body(store, ref_id: int, text: str, embedder) -> None:
             (row[0], "bge-m3", embedder.embed_one(text)),
         )
         conn.commit()
+
+
+def _seed_doctor_report(store, *, ref_age_h: float, chunk_age_h: float | None) -> int:
+    """A doctor-authored report draft aged ``ref_age_h``, optionally with one
+    body chunk aged ``chunk_age_h`` (the same-day re-tick append)."""
+    ref_id = seed_ref(store, title="Doctor report", kind="draft")
+    now = datetime.now(UTC)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = %s, created_at = %s WHERE ref_id = %s",
+            (
+                json.dumps({"author": "doctor"}),
+                now - timedelta(hours=ref_age_h),
+                ref_id,
+            ),
+        )
+        if chunk_age_h is not None:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, created_at) "
+                "VALUES (%s, 0, 'paragraph', 'a tick', %s)",
+                (ref_id, now - timedelta(hours=chunk_age_h)),
+            )
+        conn.commit()
+    return ref_id
+
+
+def test_doctor_report_fresh_ok_when_a_tick_wrote_recently(store) -> None:
+    _seed_doctor_report(store, ref_age_h=6.0, chunk_age_h=1.0)
+    with store.pool.connection() as conn:
+        res = _check_doctor_report_fresh(conn)
+    assert res.status == "ok"
+    assert res.name == "doctor_report_fresh"
+
+
+def test_doctor_report_fresh_stale_when_the_doctor_stops_reporting(store) -> None:
+    """The 2026-09-10 shape: doctor_tick fails every window, so no report ref
+    and no append happens for days. Every other consumer falls back quietly —
+    this check is the one that must call it a fault."""
+    _seed_doctor_report(store, ref_age_h=50.0, chunk_age_h=49.0)
+    with store.pool.connection() as conn:
+        res = _check_doctor_report_fresh(conn)
+    assert res.status == "stale"
+    assert res.is_finding
+    assert "doctor_tick" in res.detail
+
+
+def test_doctor_report_fresh_follows_the_append_not_the_ref(store) -> None:
+    """Freshness must track the newest body CHUNK: a same-day re-tick appends
+    a paragraph without touching the ref, so an old ref with a recent append
+    is healthy, not stale."""
+    _seed_doctor_report(store, ref_age_h=20.0, chunk_age_h=0.5)
+    with store.pool.connection() as conn:
+        res = _check_doctor_report_fresh(conn)
+    assert res.status == "ok"
+
+
+def test_doctor_report_fresh_stale_when_none_has_ever_been_filed(store) -> None:
+    with store.pool.connection() as conn:
+        res = _check_doctor_report_fresh(conn)
+    assert res.status == "stale"
+    assert "never" in res.detail or "none" in res.detail
 
 
 def test_claim_hub_dedup_index_excludes_taproot_claim_without_status_canonical(

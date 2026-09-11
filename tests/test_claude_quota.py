@@ -301,3 +301,47 @@ def test_refresh_snapshot_outcomes(monkeypatch) -> None:
     monkeypatch.setattr(cq.subprocess, "run", _missing)
     _snap, outcome = refresh_snapshot(object())
     assert outcome is RefreshOutcome.UNAVAILABLE
+
+
+def test_refresh_snapshot_pages_on_logged_out_clean_exit(monkeypatch) -> None:
+    """A stale OAuth token makes ``claude -p`` exit 0 with "Not logged in" on
+    stdout — the shape that ran two days dark in 2026-09, because a clean exit
+    was read as proof of auth and the pass then RESOLVED its own auth alert."""
+    from precis.utils import claude_quota as cq
+    from precis.utils.claude_quota import RefreshOutcome, refresh_snapshot
+
+    monkeypatch.setattr(
+        cq.subprocess,
+        "run",
+        lambda *a, **k: _FakeRes(0, "Not logged in · Please run /login"),
+    )
+    snap, outcome = refresh_snapshot(object())
+    assert snap is None and outcome is RefreshOutcome.AUTH_FAILED
+
+
+def test_refresh_snapshot_clean_payload_containing_401_is_not_auth_failure(
+    monkeypatch,
+) -> None:
+    """The exit-0 probe uses the NARROW logged-out markers, not the loose
+    auth-failure set: the latter matches the bare substring "401", which
+    occurs inside ordinary numbers in a healthy quota payload."""
+    from precis.utils import claude_quota as cq
+    from precis.utils.claude_quota import RefreshOutcome, refresh_snapshot
+
+    payload = json.dumps({"rate_limits": {"five_hour": {"utilization": 1401}}})
+    monkeypatch.setattr(cq.subprocess, "run", lambda *a, **k: _FakeRes(0, payload))
+    _snap, outcome = refresh_snapshot(object())
+    assert outcome is not RefreshOutcome.AUTH_FAILED
+
+
+def test_looks_like_logged_out_is_narrower_than_auth_failure() -> None:
+    from precis.utils.claude_quota import (
+        _looks_like_auth_failure,
+        _looks_like_logged_out,
+    )
+
+    assert _looks_like_logged_out("Not logged in · Please run /login")
+    # The loose set fires on a bare "401"; the narrow one must not.
+    assert _looks_like_auth_failure("used 1401 tokens")
+    assert not _looks_like_logged_out("used 1401 tokens")
+    assert not _looks_like_logged_out("")

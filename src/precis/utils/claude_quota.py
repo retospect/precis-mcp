@@ -84,9 +84,29 @@ _AUTH_FAILURE_MARKERS: tuple[str, ...] = (
 
 
 def _looks_like_auth_failure(*texts: str) -> bool:
-    """True if any text carries a ``claude -p`` authentication-failure mark."""
+    """True if any text carries a ``claude -p`` authentication-failure mark.
+
+    For the **non-zero-exit** path only: ``claude -p`` already failed, so a
+    loose marker set (``"401"`` included) is the right sensitivity.
+    """
     haystack = " ".join(t for t in texts if t).lower()
     return any(marker in haystack for marker in _AUTH_FAILURE_MARKERS)
+
+
+#: The logged-out markers the CLI prints on a **clean (exit 0)** run —
+#: deliberately the narrow subset of :data:`_AUTH_FAILURE_MARKERS`, and the
+#: same pair ``claude_agent._build_agent_result`` guards on. The loose set
+#: must NOT be reused here: it matches the bare substring ``"401"``, which
+#: occurs inside ordinary numbers in a successful quota payload (a
+#: ``1401``-token count, an epoch timestamp) and would page on a healthy
+#: refresh.
+_LOGGED_OUT_MARKERS: tuple[str, ...] = ("not logged in", "please run /login")
+
+
+def _looks_like_logged_out(stdout: str) -> bool:
+    """True if a clean-exit ``claude -p`` stdout says it is not logged in."""
+    haystack = stdout.lower()
+    return any(marker in haystack for marker in _LOGGED_OUT_MARKERS)
 
 
 #: Scope key used by the singleton row. Future multi-OAuth deployments
@@ -341,8 +361,24 @@ def refresh_snapshot(
             RefreshOutcome.AUTH_FAILED if auth else RefreshOutcome.UNAVAILABLE
         )
 
-    # returncode 0 → claude -p authenticated; auth is healthy from here on
-    # regardless of whether rate_limits parse or the DB persist succeeds.
+    # A clean exit does NOT prove auth: ``claude -p`` exits 0 and prints
+    # "Not logged in · Please run /login" on stdout when the OAuth state is
+    # stale, which reads as a quiet cost=$0 success. ``claude_agent``'s
+    # ``_build_agent_result`` has guarded that silent-failure shape since it
+    # was found; this path did not, so the one watchdog built to page on a
+    # stale token both missed the signature AND resolved its own alert on
+    # the way past (``workers.quota_check`` clears on a non-AUTH_FAILED
+    # outcome). That is how the 2026-09-10 melchior token expiry ran two
+    # days dark, taking every doctor_tick with it.
+    if _looks_like_logged_out(res.stdout or ""):
+        log.warning(
+            "claude_quota: claude -p exited 0 but stdout carries an auth-failure "
+            "marker — treating as AUTH_FAILED, not a clean refresh"
+        )
+        return None, RefreshOutcome.AUTH_FAILED
+
+    # Authenticated from here on, regardless of whether rate_limits parse or
+    # the DB persist succeeds.
     snapshot = parse_rate_limits(res.stdout)
     if snapshot is None:
         log.info("claude_quota: response had no rate_limits payload")

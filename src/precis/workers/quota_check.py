@@ -43,10 +43,13 @@ def _raise_auth_alert(store: Store, host: str) -> None:
     fingerprint = f"{host}:claude-oauth"
     title = f"[claude-auth] claude -p can't authenticate on {host} (401)"
     detail = (
-        "The Claude OAuth token is stale/revoked — plan_tick, reviewers, "
-        "dream, and the /figure editor all 401. Re-drop the token into "
-        "~hermes/.claude_oauth_token (+ ~deploy for precis-web) and restart "
-        "the agent worker (launchctl kickstart -k system/com.precis.worker)."
+        "The Claude OAuth token is stale/revoked — plan_tick, quest_tick, "
+        "doctor_tick, the reviewers, dream, and the /figure editor all fail. "
+        "Rotate CLAUDE_CODE_OAUTH_TOKEN in the secrets VAULT (the per-user "
+        "~/.claude_oauth_token file is retired — see utils/claude_oauth — so "
+        "re-dropping a file fixes nothing and silently shadows a rotation), "
+        "then restart the agent worker: launchctl bootout + bootstrap, NOT "
+        "kickstart -k, which keeps the old env."
     )
     _ref, is_new = raise_alert(
         store,
