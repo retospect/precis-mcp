@@ -18,6 +18,11 @@ force-density form-finder) for the solve.
 
 ## Position in the pipeline
 
+In the multiscale map (`multiscale-design-architecture.md`) this doc
+owns the molecular instance of §Molecular notes' non-bonded interaction
+menu (π-stack first; H-bond/charge are its named next terms) and is the
+form-finder's second consumer (§The solve, stage 1).
+
 Sits between the logical nm design and the module fitter's splice
 (`docs/backlog/nm-module-fitter.md`, in flight in the
 `snug-mapping-giraffe` tree). Fitter v1 deliberately places by seam
@@ -69,7 +74,7 @@ screening-tier shaping term, provenance-tagged like `mechanics.py`
 interactions in particular are cool")
 
 Block states are already specced
-(`functional-block-library-and-assembly-states.md`,
+(`blocktree-library-build-plan.md` §Why + slice 2,
 `photoswitch-states-and-spectral-dof.md`, and the fitter's per-state
 bound structures) — features ride that mechanism, one feature set per
 state, no new state machinery here. The states differ in exactly the
@@ -102,8 +107,9 @@ slice later computes properly.
    topology-only starting arrangement. The nm bridge copies
    `precis_se/formfind.py`'s contract verbatim (proposed-origin
    write-back, `move=` authorization, anchors never move, loud
-   singularity) — one more datum for
-   `nm-se-shared-blocktree-core.md`.
+   singularity) — one more second-user datum for
+   `blocktree-library-build-plan.md` §Settled's
+   generalise-on-the-second-user doctrine.
 2. **Rigid-body pose relax.** Orientation terms do NOT go through FDM
    (members are axial, `q` fixed; a ring normal is not linear in node
    coordinates — a rigid-cluster + iterated-q shoehorn buys nothing over

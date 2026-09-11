@@ -1,7 +1,7 @@
 """Pure ops over an in-memory block tree — no store access, no unit.
 
 Extracted whole from ``precis_se.ops`` (docs/backlog/
-nm-se-shared-blocktree-core.md, phase 1): the LLM edits the *graph* via
+blocktree-library-build-plan.md §Settled): the LLM edits the *graph* via
 typed ops; :func:`apply_ops` mutates a :class:`~precis.blocktree.types.Tree`
 in place; an unknown op or a bad reference raises :class:`~precis.
 blocktree.types.OpError`. A domain plugin (``precis_se``) registers its

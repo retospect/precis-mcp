@@ -100,8 +100,8 @@ coarse plus the house ``d + 0.2`` rule), the same file-not-a-table
 posture as :mod:`precis.component_series` (whose ISO fastener tables the
 cad catalog also reads since 2026-09-06 — one transcription, not three).
 
-**Tension rungs 1+4** (docs/backlog/se-tension-elements-and-prestress.md,
-docs/backlog/structural-solution-space.md slice 1) add the unilateral
+**Tension rungs 1+4** (docs/backlog/structural-solution-space.md, its
+build-order slice 1) add the unilateral
 member and the whole-structure verdict: kinematic class ``axial`` — ONE
 pin-ended member whose params capacity pair
 (``tension_capacity``/``compression_capacity``, + ``free_length``/

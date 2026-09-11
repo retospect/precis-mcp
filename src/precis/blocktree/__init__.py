@@ -1,9 +1,9 @@
 """Shared block-tree IR spine for kind plugins that model a recursive,
 instanced, port-connected spatial tree over the cad DSL.
 
-Extracted from ``precis_se.ops`` (docs/backlog/nm-se-shared-blocktree-core.md,
-phase 1) — ``precis_nm`` is a second, still-unmigrated fork of the same
-abstraction (phase 2, not touched here). This package owns exactly the part
+Extracted from ``precis_se.ops`` (phase 1;
+docs/backlog/blocktree-library-build-plan.md §Settled) — ``precis_nm``
+migrated onto the same spine in phase 2. This package owns exactly the part
 that agreed between the two: the recursive tree (``parent``/``template``),
 instancing with cycle guards, ports with ``roles``/``direction``/an open
 ``annotations`` dict, port-to-port connects, and envelope validation over

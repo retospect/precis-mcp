@@ -1,8 +1,8 @@
 """Whole-structure mobility/stability over the axial subgraph — the
 Maxwell/Calladine analysis backing ``view='stability'``
-(docs/backlog/se-tension-elements-and-prestress.md rung 4, built together
-with rung 1's ``axial`` class so the counting and the unilateral member
-land as one piece; docs/backlog/structural-solution-space.md slice 1).
+(docs/backlog/structural-solution-space.md rung 4, built together with
+rung 1's ``axial`` class so the counting and the unilateral member land
+as one piece; slice 1 of the same doc's build order).
 
 Model, stated once (the view header repeats it): one pin node per block
 that terminates at least one ``axial`` connect, at the block's own pose;
@@ -29,7 +29,7 @@ tolerance; undeclared members are completed by least squares and the
 implied forces vetted against role sign and capacity pair.
 
 TRIPWIRE CONTRACT (two-party, recorded in
-docs/backlog/se-tension-elements-and-prestress.md rung 2 and
+docs/backlog/structural-solution-space.md §Tripwire contract and
 docs/backlog/cad-machine-spec.md §NOT-in-scope): any constraint-vs-DOF
 counting that cannot run the ``m − s`` + second-order machinery must
 report ``"first-order mobile; may be prestress-stabilized — not checked"``
@@ -485,8 +485,8 @@ def _stress_matrix(
 
 
 # ── prestress: declared preloads vs the self-stress space ────────────────
-# (docs/backlog/se-tension-elements-and-prestress.md rung 5's null-space
-# DRC, shipped as docs/backlog/structural-solution-space.md slice 3)
+# (docs/backlog/structural-solution-space.md rung 5's null-space DRC,
+# shipped as the same doc's slice 3)
 
 #: Acceptance for the null-space residual: max nodal out-of-balance ≤
 #: rtol × max|declared preload|. Declared preloads are hand-entered

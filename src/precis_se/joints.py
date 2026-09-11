@@ -58,7 +58,7 @@ KINEMATIC_CLASSES: dict[str, str] = {
     "compliant": "motion with stiffness rather than freedom (flexure)",
     "captive": "interlocked, no mechanism (checked by clearance/connectivity)",
     # ONE axial member, not tie/strut primitives (docs/backlog/
-    # se-tension-elements-and-prestress.md): the capacity pair decides —
+    # structural-solution-space.md): the capacity pair decides —
     # tension-only (rope/cable), compression-only (prop/contact), or a
     # slender rod that is both, weakly. Pin-ended two-force member; its
     # line of action is the block-to-block segment, DERIVED from the

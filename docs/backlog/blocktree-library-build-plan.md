@@ -7,14 +7,75 @@ model: opus
 
 # Build plan
 
-Companion to `functional-block-library-and-assembly-states.md` (the what and
-why) and `photoswitch-states-and-spectral-dof.md` (the physics). This is the
-how: slices, order, and what each one has to prove.
+The block-library leg of the multiscale programme
+(`multiscale-design-architecture.md` is the map). **Merged 2026-09-11:**
+this doc absorbed `functional-block-library-and-assembly-states.md` (the
+what and why, now §Why below) and the residuals of
+`nm-se-shared-blocktree-core.md` (the spine extraction, done — §Settled
+below). Physics stays in `photoswitch-states-and-spectral-dof.md`.
 
 **Preconditions that make this cheap.** Every `nm`/`se`/`pcb` table is empty
 in prod (measured 2026-09-07), Reto has lifted backward compatibility, and the
 shared spine `precis.blocktree` already exists (commits `28877919`,
 `96690d37`) so each change below lands **once** and serves both kinds.
+
+## Why — the three-level chain and the library query
+
+Reto, 2026-09-07: a searchable library ("*opto deform bistable 1nm lengthen
+with copper click chemistry*"), box-type abstractions to check interfaces
+and DRC **before atoms**, and "loaded for click chem" / "virtual bond is
+now here" states. Three views of one thing, each with an existing home:
+
+| level | what it is | kind | why that one |
+|---|---|---|---|
+| **box** | envelope + typed ports + states — what you assemble and DRC | `nm` block | intent-over-atoms; envelopes/ports are its point |
+| **molecule** | the purchasable reagent (supplier, price, purity) | `component` | it is **bought**; `component` is the procurement store |
+| **atoms** | the realised structure, relaxed | `structure` | L5 fill; `nm` mints and binds these |
+
+Edges exist for both hops (`realized-by`; nm's `bound_design`), so "expand
+to atoms" is a traversal. This also resolves the bought-vs-made tension: a
+click-chemistry building block is *both* — the block is the abstraction,
+the component is the bottle on the shelf.
+
+The query decomposes: opto deform = actuation stimulus `light`; bistable =
+P-type (both states thermally stable); 1 nm lengthen = Δ(end-to-end) ≈
+10 Å; copper click = ports' joining chemistry CuAAC. The first three are
+**sourced facts** (star schema — Δdistance in solution and in a rigid
+scaffold are different numbers, both true); the fourth is a port role
+(slice 3). The response shape that slice 4 must deliver — ranked partial
+match, never a strict filter:
+
+    query: opto-deform · bistable · Δ 1.0 nm · CuAAC
+
+    azo-CuAAC-01     opto ✓  bistable ✗ (T-type, τ½ 2 d)  Δ 0.34 nm  CuAAC ✓   3/4
+    dae-alkyne-04    opto ✓  bistable ✓                   Δ 0.42 nm  CuAAC ✓   3/4
+    dae-long-11      opto ✓  bistable ✓                   Δ 0.9 nm   NHS ✗     3/4
+
+None is a hit; all three are decisions ("half the throw — use two in
+series"; "right throw, wrong handle — re-functionalise"). A strict AND
+returns an empty set and teaches nothing.
+
+**DRC before atoms**, once slices 1–5 exist: interface check (complementary
+halves of a declared joining chemistry), precedent check (yield spread
+quoted), fit check in the `bonded` state (clash + purchasable-leaf
+termination), and envelope arithmetic — does the switch have room to move
+(a 1 nm switch in a cage with 1.0 nm vertex-band clearance is the measured
+boxel failure mode, and the check is arithmetic on numbers we already
+produce).
+
+**What NOT to alter** (each is tempting): no deformable envelopes (bistable
+= two rigid states + a transition; deformation would cost cad's analytic
+exactness); no "part library" kind (parts are single-block designs;
+procurement is `component`; properties are the star schema); no `nm`/`se`
+kind merge (settled — see §Settled); the capability gate stays declared
+intent, and `rxn` precedent stays evidence — neither ever claims a
+reaction will work.
+
+**Named consumers riding this critical path:** `nm-stick-placement.md`
+(per-state interaction features on ports need slice 2's states; its
+library seeding/joining dogfood needs slices 1 and 4) and the structural
+leg's slice 5, state-dependent stability
+(`structural-solution-space.md`, blocked on slice 2).
 
 ## Critical path
 
@@ -203,3 +264,47 @@ Slices 1+2 share a migration; land them together but as separate commits.
 refactor or schema change that also alters behaviour cannot be verified by
 "the tests still pass", which is the whole reason the earlier blocktree work
 stayed behaviour-neutral.
+
+## Settled: the shared spine (absorbed from nm-se-shared-blocktree-core.md)
+
+Both phases done 2026-09-07 (`28877919` se, `96690d37` nm): `nm` and `se`
+ops now delegate to one `precis.blocktree` spine (tree, instancing + cycle
+guards, ports, connects, envelope validation over the cad SDF kernel).
+Line count went *up* ~150 and that is the honest result — the win is that
+the spine exists once, not fewer lines. What survives as durable law:
+
+- **What this is NOT — a kind merge.** `nm` and `se` stay two kinds, two
+  tables, two dark-gate settings: same *IR*, different *domains*
+  (bought-vs-made and Å-vs-m distinctions `nm-kind.md` refused to give
+  up). The superset was of the implementation, never the vocabulary. nm's
+  `expected_element`/`expected_hybridization`/`bound_design`/`bound_atom`
+  deliberately stayed typed fields rather than folding into the core's
+  `annotations` dict — a refactor that changes semantics cannot be
+  verified by "the tests still pass".
+- **Doctrine:** deduplication is justified by duplication you can measure;
+  parameterisation is justified by users you can name. The
+  unit-and-binding-parameterised superset stays unbuilt until a second
+  *real* user exists; the parameterisation points (unit · binding
+  provider · L2 vocabulary) are identified for that day. First named
+  second-user datum: `nm-stick-placement.md` — its nm formfind bridge
+  copies `precis_se/formfind.py`'s contract verbatim, and its
+  features-as-fat-ports lean extends the spine's port vocabulary.
+  Evidence toward the superset, not yet a decision for it.
+- **`pcb` stays out** (Reto 2026-09-07) — it carries a circuit vocabulary
+  (nets, copper, footprints, 11+ tables) and imports nothing from
+  `precis.cad`; an instancing rhyme is too thin a thread. Do not
+  re-litigate.
+- **Naming:** the core type is `BlockNode`, not `Block` —
+  `tests/test_vocab_lint.py` reserves the bare name.
+- **Known wart, left deliberately:** `BlockNode.ports` is plain
+  `dict[str, Port]`, not generic over its port type; nm's narrowing
+  carries a scoped `# type: ignore[assignment]`. Widen to
+  `BlockNode[TPort: Port]` only if a third domain needs its own port
+  fields (`precis_nm/ops.py` cites this as "the phase 2 note").
+- **Open gap, unowned:** containment is expressed two incompatible ways
+  across the family — `cad`/`component` use `links` rows
+  (`contains`/`part-of`), `nm`/`se`/`pcb` use an intra-ref FK
+  (`parent_block_id`), so there is no single "what contains what" query
+  and block trees are invisible to the links graph. Possibly the right
+  trade (a links row per block is heavy), but it is undocumented —
+  `docs/codebase.md` says nothing about this kind family.

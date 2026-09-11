@@ -2,7 +2,7 @@
 
 Built on the shared block-tree spine (:mod:`precis.blocktree`, extracted
 from an earlier copy of this module — docs/backlog/
-nm-se-shared-blocktree-core.md, phase 1): the core owns the recursive tree
+blocktree-library-build-plan.md §Settled): the core owns the recursive tree
 (``parent``/``template``), instancing with cycle guards, ports, connects,
 and envelope validation over the ``precis.cad`` SDF kernel; this module
 adds se's own invariants on top — units are **metres** (float64,

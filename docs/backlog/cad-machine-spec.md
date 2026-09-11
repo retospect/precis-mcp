@@ -384,7 +384,8 @@ you state intent and the kernel keeps it true.
   class here (and in se) is bilateral; ropes/prestress are
   unrepresentable, so plain counting is confidently wrong about
   tensegrity-class structures. Docstring contract for whoever builds it.
-  (se's mirror: `se-tension-elements-and-prestress.md`.)
+  (se's mirror: `structural-solution-space.md` §Tripwire contract — built
+  there as `stability.TRIPWIRE_LINE`.)
 - Any change that makes `precis.cad` import from the DB or the store.
 
 ## Target + blast radius

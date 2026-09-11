@@ -2,7 +2,7 @@
 
 Built on the shared block-tree spine (:mod:`precis.blocktree`, extracted
 from an earlier copy of this module — docs/backlog/
-nm-se-shared-blocktree-core.md, phase 1): the core owns the recursive tree
+blocktree-library-build-plan.md §Settled): the core owns the recursive tree
 (``parent``/``template``), instancing with cycle guards, ports, connects,
 and envelope validation over the ``precis.cad`` SDF kernel; this module adds
 nm's own invariants on top — units are **Ångström** (float64, nm-kind.md
@@ -163,7 +163,8 @@ class PortSpec(Port):
     (see this module's docstring, "Capability gate"). ``expected_element``/
     ``expected_hybridization`` deliberately stay their own typed fields
     rather than moving into the inherited ``annotations`` open dict — see
-    docs/backlog/nm-se-shared-blocktree-core.md, "What this is NOT"; this
+    docs/backlog/blocktree-library-build-plan.md §Settled ("What this is
+    NOT — a kind merge"); this
     module never populates ``annotations``."""
 
     expected_element: str | None = None
@@ -225,7 +226,7 @@ class NmBlock(BlockNode):
     # holding this as a plain BlockNode could in principle assign a bare
     # Port in). ``BlockNode`` isn't generic over its port type the way
     # ``Tree`` is over block/connect (docs/backlog/
-    # nm-se-shared-blocktree-core.md's phase 2 note: a real gap, not
+    # blocktree-library-build-plan.md §Settled known wart: a real gap, not
     # papered over — worth a ``BlockNode[TPort: Port]`` if a third domain
     # ever needs its own port fields too), so this is the narrowest fix
     # available without widening that core class for a single caller.

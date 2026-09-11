@@ -99,8 +99,9 @@ again, invisible to every probe, and it makes every returned number
 This is *why* `nm`/`se` exist as separate kinds, and that is the right
 long-run answer. But for quick envelope sketching, a declared unit on the
 design would remove the fiction and make probe output self-describing.
-Related: `nm-se-shared-blocktree-core.md` proposes a unit-agnostic core, which
-is the same observation one layer down.
+Related: the extracted `precis.blocktree` spine is unit-agnostic
+(`blocktree-library-build-plan.md` §Settled) — the same observation one
+layer down.
 
 ## Suggested split, and sequencing vs the blocktree refactor
 
@@ -108,7 +109,8 @@ Items 2, 3 and 5 are one small docs pass on `precis-cad-help`. Item 4 is a
 real affordance change. Item 1 is already tracked (gripe 330034).
 
 **Do NOT fold any of this into the `nm`/`se` blocktree refactor
-(`nm-se-shared-blocktree-core.md`).** Decided 2026-09-07. Reasons, in order:
+(`blocktree-library-build-plan.md` §Settled).** Decided 2026-09-07.
+Reasons, in order:
 
 1. **A refactor must change no behaviour.** That property is the only thing
    that makes "tests still pass" mean "nothing broke". Mixing a cad
