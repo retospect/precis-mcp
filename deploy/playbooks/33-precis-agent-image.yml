@@ -113,6 +113,29 @@
 # the VM-resolver mode (colima restart helps) from the upstream-rotation mode
 # (it doesn't — wait + spaced re-runs).
 #
+# UNBOUNDED-HANG BOUND + DIAGNOSTICS (gr335099, 2026-09-11): the pre-pull
+# preflight above was a plain `ansible.builtin.shell` with `retries`/`until`
+# but NO async/timeout — `until` only re-evaluates once an attempt actually
+# RETURNS, so a `docker pull` wedged inside a dead buildkitd (0% CPU, no
+# registry connections — a hung daemon-side resolve/connect, not a slow
+# transfer) never returns and the retry ladder never gets a turn. This hit
+# TWICE, each holding the deploy lock ~4h until a human SIGTERM'd the wedged
+# process by hand — at which point ansible's own next retry succeeded
+# unaided, proving the ladder was fine all along; it just never got invoked.
+# Fix: wrap the pre-pull in ansible's own `async`/`poll` (portable — no
+# reliance on a `timeout(1)` binary, which stock macOS doesn't ship, unlike
+# the Linux inference hosts) with a 600s ceiling — the two preflight pulls
+# are a syntax-frontend manifest and one python-slim layer, normally done in
+# well under a minute even cold, so 600s is ~10x headroom while still
+# converting an hours-long wedge into a bounded few-minute failure that the
+# EXISTING retries/delay ladder can then act on automatically (the same
+# "kill the frozen attempt, next attempt succeeds" shape the manual SIGTERM
+# produced). The agent-image BUILD task below already had this shape
+# (`async: 3600` — a legit cold build measured 43 min); this closes the same
+# gap for the pre-pull step, and both now capture buildx diagnostics on a
+# terminal failure so the next gr335099-class incident has logs to read
+# without a live operator re-creating the wedge to look at it.
+#
 # Standalone runs:
 #   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_target_sha=<sha>
 #   ansible-playbook playbooks/33-precis-agent-image.yml -e precis_force_agent_image_build=true
@@ -155,6 +178,11 @@
          | combine({'DOCKER_HOST': 'unix:///Users/' + _agent_build_user
                     + '/.colima/docker.sock'}
                    if os_family == 'darwin' else {}) }}
+    # Bound-hang ceilings (gr335099) — see the header note above for why
+    # these values, and why `async`/`poll` (portable) over shell `timeout`
+    # (not on stock macOS).
+    _agent_pull_timeout_sec: "{{ precis_agent_pull_timeout_sec | default(600) }}"
+    _agent_build_timeout_sec: "{{ precis_agent_build_timeout_sec | default(3600) }}"
   tasks:
     - name: Probe the container runtime (docker/colima) — absence is a clean no-op
       ansible.builtin.command: "{{ _agent_container_bin }} version --format '{{ '{{' }}.Server.Version{{ '}}' }}'"
@@ -295,22 +323,70 @@
       changed_when: >-
         'Downloaded newer image' in (agent_pull_probe.stdout | default(''))
         or 'Pulled' in (agent_pull_probe.stdout | default(''))
+      # async/poll (gr335099 — see header note): bounds a wedged daemon-side
+      # pull to _agent_pull_timeout_sec instead of hanging forever, so the
+      # retries/until ladder below actually gets invoked. A timed-out async
+      # result has no rc/stdout at all, hence default() on every read —
+      # same pitfall the build task's own comment already documents.
+      async: "{{ _agent_pull_timeout_sec }}"
+      poll: 10
       retries: 3
       delay: 30
-      until: agent_pull_probe.rc == 0
+      until: (agent_pull_probe.rc | default(1)) == 0
       failed_when: false
+
+    # ── diagnostics (gr335099) — captured on a terminal pre-pull failure,
+    # BEFORE the fatal assert below, so the next incident has buildx state
+    # to read without a live operator re-creating the wedge.
+    - name: "Diagnostics: docker buildx inspect (gr335099 — pre-pull failure)"
+      when: agent_runtime.rc == 0 and (agent_pull_probe.rc | default(1)) != 0
+      ansible.builtin.command: "{{ _agent_container_bin }} buildx inspect"
+      environment: "{{ _agent_docker_env }}"
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      register: agent_pull_diag_inspect
+      changed_when: false
+      failed_when: false
+
+    - name: "Diagnostics: buildx/buildkitd builder logs, if any (gr335099 — pre-pull failure)"
+      when: agent_runtime.rc == 0 and (agent_pull_probe.rc | default(1)) != 0
+      ansible.builtin.shell: |
+        set -uo pipefail
+        builder_container="$({{ _agent_container_bin }} ps -aq --filter 'name=buildx_buildkit' | head -n1)"
+        if [ -n "$builder_container" ]; then
+          {{ _agent_container_bin }} logs --tail 200 "$builder_container" 2>&1
+        else
+          echo "no buildx_buildkit container — the default docker-driver builder runs inside dockerd itself, nothing separate to log here."
+        fi
+      args:
+        executable: /bin/bash
+      environment: "{{ _agent_docker_env }}"
+      become: true
+      become_user: "{{ _agent_build_user }}"
+      register: agent_pull_diag_logs
+      changed_when: false
+      failed_when: false
+
+    - name: "Report pre-pull failure diagnostics (gr335099)"
+      when: agent_runtime.rc == 0 and (agent_pull_probe.rc | default(1)) != 0
+      ansible.builtin.debug:
+        msg:
+          - "buildx inspect (rc={{ agent_pull_diag_inspect.rc | default('n/a') }}): {{ agent_pull_diag_inspect.stdout | default('') }} {{ agent_pull_diag_inspect.stderr | default('') }}"
+          - "builder logs: {{ agent_pull_diag_logs.stdout | default('') }}"
 
     - name: "Fail this host if BOTH the canonical registry and the mirror are unreachable through the daemon (gr307314)"
       when: agent_runtime.rc == 0
       ansible.builtin.assert:
-        that: agent_pull_probe.rc == 0
+        that: (agent_pull_probe.rc | default(1)) == 0
         quiet: true
         fail_msg: >-
           {{ inventory_hostname }}: `{{ _agent_container_bin }} pull` failed after 3
-          attempts (rc={{ agent_pull_probe.rc }}) for {{ _agent_pull_refs | join(', ') }}
-          AND their mirror.gcr.io fallbacks — gr307314. Two known Hub failure modes
-          would each have been rescued by the mirror, so a red here means broader
-          registry unreachability. Discriminate from the HOST shell with
+          attempts (rc={{ agent_pull_probe.rc | default('timed out') }}) for
+          {{ _agent_pull_refs | join(', ') }} AND their mirror.gcr.io fallbacks —
+          gr307314/gr335099. Two known Hub failure modes would each have been
+          rescued by the mirror, so a red here means broader registry
+          unreachability, or a daemon-side wedge each attempt timed out on
+          (diagnostics captured above). Discriminate from the HOST shell with
           `curl -m 8 https://registry-1.docker.io/v2/` (healthy = HTTP 401):
           (a) host curl healthy but daemon pulls dead = VM-side resolver trouble —
           a stale /etc/hosts pin inside the colima VM or a poisoned lima forwarder
@@ -428,11 +504,12 @@
           environment: "{{ _agent_docker_env }}"
           # async watchdog (2026-09-05 wedge): a build that hangs on a dead
           # socket never exits, so retries/until never fire — kill it and let
-          # the retry ladder take over. 3600s, not 1800: a legit cold build
-          # measured 43 min on a cluster node (2026-09-05), and a killed-but-alive
-          # buildx keeps building behind ansible's back, so a too-tight
-          # watchdog reports failure on a build that then succeeds.
-          async: 3600
+          # the retry ladder take over. 3600s default, not 1800: a legit cold
+          # build measured 43 min on a cluster node (2026-09-05), and a
+          # killed-but-alive buildx keeps building behind ansible's back, so
+          # a too-tight watchdog reports failure on a build that then
+          # succeeds. Overridable via -e precis_agent_build_timeout_sec=.
+          async: "{{ _agent_build_timeout_sec }}"
           poll: 15
           register: agent_build
           # retries=3/delay=30 (was 2/10, gr307314): back-to-back retries hit
@@ -448,7 +525,48 @@
           changed_when: >-
             'Successfully' in ((agent_build.stdout | default('')) + (agent_build.stderr | default('')))
             or 'naming to' in ((agent_build.stdout | default('')) + (agent_build.stderr | default('')))
-          failed_when: (agent_build.rc | default(1)) != 0
+          # failed_when deferred to false (gr335099): the fatal assert moves
+          # to the end of this block so the diagnostics tasks right below —
+          # and the cleanup tasks after them — still run on a build that
+          # never converged, instead of the host halting mid-block with no
+          # capture and a stale build dir/tarball left behind.
+          failed_when: false
+
+        # ── diagnostics (gr335099) — same shape as the pre-pull preflight's:
+        # captured on a terminal build failure, before the fatal assert at
+        # the end of this block, so the next incident has buildx state to
+        # read without a live operator re-creating the wedge.
+        - name: "Diagnostics: docker buildx inspect (gr335099 — build failure)"
+          when: (agent_build.rc | default(1)) != 0
+          ansible.builtin.command: "{{ _agent_container_bin }} buildx inspect"
+          environment: "{{ _agent_docker_env }}"
+          register: agent_build_diag_inspect
+          changed_when: false
+          failed_when: false
+
+        - name: "Diagnostics: buildx/buildkitd builder logs, if any (gr335099 — build failure)"
+          when: (agent_build.rc | default(1)) != 0
+          ansible.builtin.shell: |
+            set -uo pipefail
+            builder_container="$({{ _agent_container_bin }} ps -aq --filter 'name=buildx_buildkit' | head -n1)"
+            if [ -n "$builder_container" ]; then
+              {{ _agent_container_bin }} logs --tail 200 "$builder_container" 2>&1
+            else
+              echo "no buildx_buildkit container — the default docker-driver builder runs inside dockerd itself, nothing separate to log here."
+            fi
+          args:
+            executable: /bin/bash
+          environment: "{{ _agent_docker_env }}"
+          register: agent_build_diag_logs
+          changed_when: false
+          failed_when: false
+
+        - name: "Report build failure diagnostics (gr335099)"
+          when: (agent_build.rc | default(1)) != 0
+          ansible.builtin.debug:
+            msg:
+              - "buildx inspect (rc={{ agent_build_diag_inspect.rc | default('n/a') }}): {{ agent_build_diag_inspect.stdout | default('') }} {{ agent_build_diag_inspect.stderr | default('') }}"
+              - "builder logs: {{ agent_build_diag_logs.stdout | default('') }}"
 
         - name: Clean up old precis-agent build dirs (gr302869 pt.2 — keep only the current sha)
           ansible.builtin.shell: |
@@ -468,6 +586,19 @@
           ansible.builtin.file:
             path: "{{ _agent_archive_tar }}"
             state: absent
+
+        - name: "Fail this host if the agent-image build did not converge after retries (gr335099 — diagnostics captured above)"
+          ansible.builtin.assert:
+            that: (agent_build.rc | default(1)) == 0
+            quiet: true
+            fail_msg: >-
+              {{ inventory_hostname }}: `{{ _agent_container_bin }} build --target agent`
+              failed after {{ _agent_build_timeout_sec }}s async ceiling x3 retries
+              (rc={{ agent_build.rc | default('timed out') }}) — gr335099. Diagnostics
+              (buildx inspect + builder logs, if any) were captured above before this
+              assert. Fix per the mirror-fallback assert's guidance a few tasks up if
+              this is a registry-reachability mode; otherwise inspect the build
+              context / Dockerfile for the actual build error.
 
     - name: Assert the precis-agent image is present
       when: agent_runtime.rc == 0

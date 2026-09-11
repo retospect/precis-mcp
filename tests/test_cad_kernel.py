@@ -20,6 +20,7 @@ from precis.cad.primitives import (
     Placed,
     Sphere,
     Torus,
+    _dist_point_to_convex_polygon_3d,
     box,
     pyramid,
     regular_prism,
@@ -196,6 +197,74 @@ def test_cone_has_no_top_face() -> None:
 
 
 # ---------------------------------------------------------------------------
+# gr335192: distance_local vs contains_local dimensional sign-flip
+#
+# signed_dist_frustum_meridian and _dist_point_to_convex_polygon_3d compared
+# an unnormalized edge-normal dot product (units length²) against LINEAR_EPS
+# (a length) — a point just outside a face read as if it were well inside.
+# ---------------------------------------------------------------------------
+
+
+def test_frustum_distance_matches_contains_just_outside_cap() -> None:
+    # Standalone repro from the gripe: 0.1 mm below the bottom cap of a
+    # 3.5 mm-radius, 16.5 mm-tall cylinder must read as OUTSIDE on both
+    # queries — pre-fix, distance_local returned -1e-4 (inside).
+    f = CircularFrustum(rb=3.5e-3, rt=3.5e-3, h=16.5e-3)
+    p = vec3(0, 0, -1e-4)
+    assert not f.contains_local(p)
+    assert math.isclose(f.distance_local(p), 1e-4, rel_tol=1e-6)
+
+
+#: The gripe's repro redrawn at four scale buckets, keeping every length
+#: (radius, height, cap-crossing offset) in the same ratio — ``mult=1``
+#: reproduces the mm-scale repro exactly.
+_SCALE_BUCKETS = pytest.mark.parametrize(
+    "mult", [1e-7, 1e-6, 1.0, 1000.0], ids=["angstrom", "nm", "mm", "m"]
+)
+
+
+@_SCALE_BUCKETS
+def test_frustum_contains_distance_sign_parity_across_scales(mult: float) -> None:
+    # Below the kernel's absolute LINEAR_EPS resolution (nm/Å buckets here)
+    # the fixed comparison's own guard (edge length <= LINEAR_EPS) declines
+    # to judge that edge at all, same as it did before the fix — a
+    # separate, already-documented absolute-epsilon hazard that
+    # precis_se.validate.kernel_scale normalizes around, not this gripe's
+    # concern. The fix's contract is only that the two queries never
+    # DISAGREE, at any scale.
+    rb = rt = 3.5e-3 * mult
+    h = 16.5e-3 * mult
+    outside = vec3(0, 0, -1e-4 * mult)
+    inside = vec3(0, 0, h / 2)
+    f = CircularFrustum(rb=rb, rt=rt, h=h)
+    for p in (outside, inside):
+        assert f.contains_local(p) == (f.distance_local(p) <= 0), (mult, p)
+
+
+@pytest.mark.parametrize("mult", [1.0, 1000.0], ids=["mm", "m"])
+def test_dist_point_to_convex_polygon_3d_matches_perpendicular_distance(
+    mult: float,
+) -> None:
+    # The polytope-face sibling of the same bug: a point just past a
+    # face's edge (in-plane), at an offset the buggy comparison could not
+    # tell from zero, must return the true in-plane distance — not the
+    # out-of-plane-only distance a false "still inside the polygon"
+    # verdict would give.
+    length = 3.5e-3 * mult
+    offset = 1e-4 * mult
+    verts = [
+        vec3(0, 0, 0),
+        vec3(length, 0, 0),
+        vec3(length, length, 0),
+        vec3(0, length, 0),
+    ]
+    normal = vec3(0, 0, 1)
+    p = vec3(-offset, length / 2, 0)  # just past the left edge, mid-span
+    dist = _dist_point_to_convex_polygon_3d(p, verts, normal)
+    assert math.isclose(dist, offset, rel_tol=1e-6)
+
+
+# ---------------------------------------------------------------------------
 # PolyFrustum: box / prism / pyramid
 # ---------------------------------------------------------------------------
 
@@ -230,6 +299,47 @@ def test_box_aabb() -> None:
     lo, hi = b.aabb_local()
     assert np.allclose(lo, [-20, -10, 0])
     assert np.allclose(hi, [20, 10, 10])
+
+
+@pytest.mark.parametrize("mult", [1.0, 1000.0], ids=["mm", "m"])
+def test_box_contains_distance_sign_parity_across_scales(mult: float) -> None:
+    # PolyFrustum.distance_local's not-contained branch is unsigned by
+    # construction (min over an always-nonnegative helper), so it cannot
+    # itself flip sign — this is a cheap regression net confirming that
+    # stays true post-fix, alongside the direct magnitude check above.
+    b = box(0.04 * mult, 0.02 * mult, 0.01 * mult)
+    outside = vec3(0.02 * mult + 1e-4 * mult, 0, 0.005 * mult)
+    inside = vec3(0, 0, 0.005 * mult)
+    for p in (outside, inside):
+        assert b.contains_local(p) == (b.distance_local(p) <= 0), (mult, p)
+
+
+@pytest.mark.parametrize("mult", [1e-7, 1e-6], ids=["angstrom", "nm"])
+def test_box_below_kernel_band_raises_at_construction(mult: float) -> None:
+    # Separate, already-documented hazard (not this gripe): a box whose
+    # face-normal cross product falls below LINEAR_EPS gets every face
+    # culled at construction — precis_se.validate.kernel_scale is the
+    # seam that normalizes designs into the kernel's comfort band before
+    # ever reaching here, so this never fires for a well-formed se query.
+    with pytest.raises(ValueError, match="degenerate below the kernel tolerance"):
+        box(0.04 * mult, 0.02 * mult, 0.01 * mult)
+
+
+def test_frustum_ray_hits_agrees_with_contains_and_distance() -> None:
+    # Ties ray_hits, contains and distance together at the repro's own
+    # scale: the axial ray's hit interval must bracket exactly [0, h],
+    # and points just inside/outside those bounds must agree with
+    # contains_local/distance_local's sign.
+    f = CircularFrustum(rb=3.5e-3, rt=3.5e-3, h=16.5e-3)
+    spans = f.ray_hits_local(vec3(0, 0, -1.0), vec3(0, 0, 1))
+    assert len(spans) == 1
+    lo, hi = spans[0]
+    assert math.isclose(lo, 1.0, abs_tol=1e-9)  # z=0
+    assert math.isclose(hi, 1.0 + 16.5e-3, abs_tol=1e-9)  # z=h
+    just_inside = vec3(0, 0, 1e-4)
+    just_outside = vec3(0, 0, -1e-4)
+    assert f.contains_local(just_inside) and f.distance_local(just_inside) <= 0
+    assert not f.contains_local(just_outside) and f.distance_local(just_outside) > 0
 
 
 def test_prism_and_pyramid_construct() -> None:

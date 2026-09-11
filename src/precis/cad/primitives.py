@@ -132,9 +132,14 @@ def signed_dist_convex_poly_2d(
         a = np.array(poly[i], dtype=np.float64)
         b = np.array(poly[(i + 1) % n], dtype=np.float64)
         edge = b - a
-        # Outward normal for a CCW polygon is (edge.y, -edge.x).
+        # Outward normal for a CCW polygon is (edge.y, -edge.x) — same
+        # magnitude as ``edge``, i.e. NOT unit. ``outward @ (p - a)`` is
+        # therefore |edge| · (true perpendicular signed distance), units
+        # length², so it must be compared against ``LINEAR_EPS`` scaled by
+        # |edge| rather than against the bare (length) epsilon (gr335192).
         outward = np.array([edge[1], -edge[0]], dtype=np.float64)
-        if float(outward @ (p - a)) > LINEAR_EPS:
+        elen = float(np.linalg.norm(outward))
+        if elen > LINEAR_EPS and float(outward @ (p - a)) > LINEAR_EPS * elen:
             inside = False
         min_edge = min(min_edge, _seg_dist_2d(p, a, b))
     return -min_edge if inside else min_edge
@@ -159,8 +164,12 @@ def signed_dist_frustum_meridian(
         a = np.array(poly[i], dtype=np.float64)
         b = np.array(poly[(i + 1) % len(poly)], dtype=np.float64)
         edge = b - a
+        # Same dimensional hazard as signed_dist_convex_poly_2d above:
+        # ``outward`` is edge-magnitude, not unit — normalize the
+        # comparison, not just the epsilon's units (gr335192).
         outward = np.array([edge[1], -edge[0]], dtype=np.float64)
-        if float(outward @ (p - a)) > LINEAR_EPS:
+        elen = float(np.linalg.norm(outward))
+        if elen > LINEAR_EPS and float(outward @ (p - a)) > LINEAR_EPS * elen:
             inside = False
     real_edges = ((poly[0], poly[1]), (poly[1], poly[2]), (poly[2], poly[3]))
     min_edge = min(
@@ -187,8 +196,13 @@ def _dist_point_to_convex_polygon_3d(p: Vec3, verts: list[Vec3], normal: Vec3) -
         a = verts[i]
         b = verts[(i + 1) % n]
         edge = b - a
+        # ``inward_test`` = normal × edge has magnitude |edge| (normal is
+        # unit), so the dot below is units length², not length — normalize
+        # against the edge's own magnitude before comparing to the linear
+        # epsilon (gr335192; same family as signed_dist_frustum_meridian).
         inward_test = np.cross(normal, edge)
-        if float(inward_test @ (proj - a)) < -LINEAR_EPS:
+        elen = float(np.linalg.norm(inward_test))
+        if elen > LINEAR_EPS and float(inward_test @ (proj - a)) < -LINEAR_EPS * elen:
             inside = False
             break
     if inside:
@@ -372,6 +386,18 @@ class PolyFrustum(Primitive):
                 return
             normal = np.cross(ring[1] - ring[0], ring[2] - ring[0])
             nlen = float(np.linalg.norm(normal))
+            # NOTE (gr335192 audit): nlen is |e1|·|e2|·sin(theta), units
+            # length², compared here against the linear LINEAR_EPS — the
+            # same dimensional mismatch as the sign-flip sites above, but
+            # a different failure mode (face admission at build time, not
+            # a contains/distance sign disagreement) with its own known,
+            # already-documented compensator: out-of-band designs are
+            # rescaled into the kernel's comfort band before ever reaching
+            # here (precis_se.validate.kernel_scale; the boxel-3nm
+            # ValueError this culling produces is that seam's reason to
+            # exist). Left unnormalized — fixing it changes which designs
+            # raise the "degenerate below tolerance" error, a separate
+            # decision from this gripe's sign-parity fix.
             if nlen <= LINEAR_EPS:
                 return
             normal = normal / nlen
