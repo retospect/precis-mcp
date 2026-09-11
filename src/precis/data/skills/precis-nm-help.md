@@ -1,7 +1,7 @@
 ---
 id: precis-nm-help
 title: precis — the nm kind (nanomachine block trees over atoms)
-summary: hierarchical building-block design for molecular machines — nested blocks with envelopes/poses/ports/connects/L2 threading/DOF and an L5 binding into a real structure design for the filled chemistry; typed ops via put/edit, views tree/block/ports/validate/clearance/topology/mechanics/literature; dark behind nm.enabled
+summary: hierarchical building-block design for molecular machines — nested blocks with envelopes/poses/ports/connects/L2 threading/DOF and an L5 binding into a real structure design for the filled chemistry; typed ops via put/edit, views tree/block/ports/validate/clearance/topology/mechanics/literature; always on
 answers:
   - how do I design a molecular machine as nested blocks before filling in real chemistry?
   - how do I declare a port and connect two blocks with a capability gate?
@@ -11,7 +11,7 @@ answers:
   - how do I find literature for a block before filling it with real chemistry?
   - how do I check whether a bound block's atoms actually fit its declared envelope?
   - how do I tell whether a design is validate-clean because it's done, or because it's unfilled?
-  - why is kind='nm' unavailable or disabled in this build?
+  - what are the pose/envelope geometry conventions (units, centring, rotation order)?
 applies-to: get/search/put/edit/delete (kind='nm')
 status: active
 ---
@@ -225,8 +225,9 @@ validation is theorem-loud (impossible chirality/size is rejected at op
 time), an unknown generator lists the registered ones, and a `structure`
 design already living at the target slug is a loud rejection — generate
 never overwrites. Prefer a generator over hand ops or LLM fill whenever
-the family has one. `generate` takes no `pose=` — the block lands at the
-origin; follow with a `set_pose` op (same batch is fine). The
+the family has one. `generate` accepts `parent`/`pose`/`rot` passthrough
+(omitted → the block lands at the origin; a later `set_pose` in the same
+batch also works). The
 `cyclodextrin` torus envelope is **bore-preserving**, not fully
 containing: the hole is pinned at the derived cavity radius so a threaded
 axle reads clear; rim atoms folded toward the axis surface as the
@@ -315,12 +316,21 @@ findable by that. Joins the cross-kind fan-out `search(kind='*', q='...')`.
 delete(kind="nm", id="rotax1")  # soft-retire the ref + every live block/port/connect/threading row
 ```
 
-## Dark by default — `nm.enabled`
+## Always on
 
-`nm` ships gated behind the `nm.enabled` setting (`PRECIS_NM_ENABLED` env
-fallback; see `precis-settings-help`) — unset means the kind doesn't
-register at all. A call against it before the operator turns it on raises
-`Unsupported` naming the missing setting; see `precis-kinds-disabled-help`.
+The original `nm.enabled` gate was removed (2026-09-11): the kind is
+available wherever the plugin is installed. `PRECIS_KINDS_DISABLED` is
+the one general off-switch; see `precis-kinds-disabled-help`.
+
+## Geometry conventions (learned the hard way)
+
+- **Everything is ångströms** (poses, envelope dims) — the shared cad
+  DSL grammar means the *same string* is metres in `se`; the kind you
+  call decides the unit.
+- `cyl` has its **base at the pose** (not centred — an 8 Å error on a
+  16.5 Å rod if you assume centring); `sphere` is centred.
+- Envelope `box` `w`/`d`/`h` are **half-extents**.
+- `rot` is Euler degrees composed `Rz@Ry@Rx`.
 
 ## Scope limits — stated plainly
 
