@@ -885,6 +885,14 @@ class LlmResult:
       identical prompt to an exhausted rung exhausts it again,
       deterministically. Read by :func:`~precis.quest.tick.run_quest_tick`
       to stamp :attr:`~precis.quest.tick.QuestTickOutcome.pause_kind`.
+    * ``cli_unavailable`` — ``True`` when the failure is the claude CLI
+      itself missing on this host (:attr:`~precis.utils._claude_subprocess.
+      ClaudeProcessError.binary_missing` — a host-config defect: no
+      ``claude`` on PATH, or a bad ``PRECIS_CLAUDE_BIN``), NOT ``paused``
+      (retrying the identical call on the SAME host can't self-heal it —
+      unlike a timeout/breaker/rate-limit). Read by
+      :func:`~precis.quest.tick.run_quest_tick` to stamp
+      :attr:`~precis.quest.tick.QuestTickOutcome.failure_kind` (gr335087).
     """
 
     text: str
@@ -898,6 +906,7 @@ class LlmResult:
     paused: bool = False
     interrupted: bool = False
     timed_out: bool = False
+    cli_unavailable: bool = False
     #: OpenAI ``usage.total_tokens`` for the local/openai-compat transports
     #: (``None`` for claude, which reports cost not tokens). Kept so a
     #: direct-``LlmClient`` pass folded through :class:`DispatchClient` still
@@ -3010,6 +3019,9 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         # Kept unmerged with `paused` so a bounded-budget caller sees *why*
         # it paused.
         timed_out=getattr(exc, "timed_out", False),
+        # gr335087: structural (never string-sniffed) signal that this
+        # host's claude CLI itself is missing — see LlmResult.cli_unavailable.
+        cli_unavailable=getattr(exc, "binary_missing", False),
     )
 
 

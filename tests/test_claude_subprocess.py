@@ -185,6 +185,52 @@ def test_exit_detail_prefers_stderr_then_falls_back_to_stdout_tail() -> None:
     assert len(exit_detail(long_out, "")) == 400
 
 
+def test_run_claude_missing_binary_sets_binary_missing_flag(tmp_path: Path) -> None:
+    """gr335087: a missing ``claude`` binary carries a structural
+    ``binary_missing`` flag (never sniffed from the message text downstream —
+    :attr:`~precis.utils.llm.router.LlmResult.cli_unavailable`) distinct from
+    every other failure mode (timeout, non-zero exit) — a HOST-configuration
+    defect that retrying the identical call on the SAME host can never
+    self-heal."""
+    missing = tmp_path / "no-such-claude-binary"
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            [str(missing)],
+            binary=str(missing),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+    assert exc.value.binary_missing is True
+    assert exc.value.timed_out is False
+    assert "claude binary not found" in str(exc.value)
+
+
+def test_run_claude_async_missing_binary_sets_binary_missing_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same structural flag on the async runner — its docstring promises the
+    sync runner's failure shape, so the two must not drift."""
+    _vault(monkeypatch, None)
+    missing = tmp_path / "no-such-claude-binary"
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        asyncio.run(
+            run_claude_async(
+                [str(missing)],
+                binary=str(missing),
+                label="claude -p (test)",
+                timeout_s=10.0,
+                error_cls=ClaudeProcessError,
+                env={"PATH": os.environ.get("PATH", "")},
+            )
+        )
+    assert exc.value.binary_missing is True
+    assert exc.value.timed_out is False
+
+
 def test_run_claude_surfaces_stdout_when_stderr_is_empty(tmp_path: Path) -> None:
     """A dead ``ANTHROPIC_API_KEY`` makes ``claude -p`` print
     "API key is invalid" on stdout and exit non-zero with an EMPTY stderr.

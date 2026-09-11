@@ -329,6 +329,22 @@ class QuestTickOutcome:
     #: ceiling. Carried structurally rather than sniffed out of :attr:`note`, so
     #: the worker never string-matches an LLM error message.
     pause_kind: str | None = None
+    #: Why a ``failed`` tick failed — ``None`` on every non-``failed`` outcome
+    #: (and on any construction site that predates this field). Same shape
+    #: and rationale as :attr:`pause_kind` — carried structurally, never
+    #: sniffed out of :attr:`note`.
+    #:
+    #: * ``"cli_unavailable"`` — this host's claude CLI itself is missing
+    #:   (:attr:`~precis.utils.llm.router.LlmResult.cli_unavailable`) — a
+    #:   host-configuration defect, not a transient/semantic one: retrying
+    #:   the identical call on the SAME host can never self-heal it.
+    #:
+    #: The coordinator (:mod:`precis.workers.job_types.quest_tick`) fails the
+    #: loop immediately on this (rather than grinding through the
+    #: consecutive-failure budget sized for transient faults) — gr335087: a
+    #: claude-less host was found sitting non-terminal for many retried ticks
+    #: before reaching a terminal state.
+    failure_kind: str | None = None
 
 
 # ── context assembly ──────────────────────────────────────────────────
@@ -2295,7 +2311,17 @@ class _TickRun:
                 )
             return self._finalize(
                 QuestTickOutcome(
-                    quest_id, "failed", 0, False, cost, f"llm error: {res.error}"
+                    quest_id,
+                    "failed",
+                    0,
+                    False,
+                    cost,
+                    f"llm error: {res.error}",
+                    failure_kind=(
+                        "cli_unavailable"
+                        if getattr(res, "cli_unavailable", False)
+                        else None
+                    ),
                 ),
                 res=res,
                 partial=salvage,

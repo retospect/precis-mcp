@@ -70,6 +70,7 @@ def _claim(
     *,
     node: str | None = None,
     limit: int = 10,
+    check_job_type_requires: bool = False,
 ):
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
@@ -78,6 +79,7 @@ def _claim(
             limit=limit,
             node=node,
             reserve_host_id=host,
+            check_job_type_requires=check_job_type_requires,
         )
         conn.commit()
     return rows
@@ -772,3 +774,76 @@ def test_explicit_requires_overrides_job_type_derivation(store: Store) -> None:
     assert [r[0] for r in rows] == [jid]
     assert rows[0][2]["reserved"]["slots"] == {"podman": 1}  # explicit wins
     assert _free(store, "host_d3", "podman") == 0
+
+
+# ── coordinator job-type capability gate (gr335087) ───────────────────────
+#
+# ``quest_tick``'s LLM slice shells straight to the claude CLI, but its
+# executor is ``coordinator`` — which, unlike ``claude_inproc``, runs on
+# every ``system`` worker unconditionally, so a claude-less host's
+# coordinator worker was claiming it and failing every tick at the LLM
+# stage. This is a CHECK-ONLY gate (``check_job_type_requires=True``, only
+# ``coordinator`` opts in) over the job_type's own declared
+# ``JobTypeSpec.requires`` (``job_type_requires`` — DISTINCT from
+# ``effective_requires``'s ``ServiceSpec.requires``/resource_slots
+# RESERVATION, which is unsafe for a Yield-heavy coordinator job — see
+# ``_coordinator_capability_ok``'s docstring): unlike the reservation tests
+# above, a gated claim never touches ``free``/``meta.reserved`` at all.
+
+
+def test_coordinator_capability_gate_skips_claude_less_host(store: Store) -> None:
+    """No host anywhere advertises ``claude_bin`` → the row stays queued."""
+    jid = _queue_typed_job(store, executor="coordinator", job_type="quest_tick")
+    rows = _claim(store, "coordinator", "balthazar", check_job_type_requires=True)
+    assert rows == []
+    # Still queued, not touched — a capable host/worker gets a clean shot.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
+        ).fetchone()
+    assert "reserved" not in (row[0] or {})
+
+
+def test_coordinator_capability_gate_claims_when_host_advertises_it(
+    store: Store,
+) -> None:
+    """A claude-equipped claiming host (e.g. melchior) still claims — the
+    gate must not orphan quest_tick fleet-wide."""
+    _advertise(store, "melchior", {"claude_bin": 1})
+    jid = _queue_typed_job(store, executor="coordinator", job_type="quest_tick")
+    rows = _claim(store, "coordinator", "melchior", check_job_type_requires=True)
+    assert [r[0] for r in rows] == [jid]
+    # Check-only: no resource_slots reservation taken (unlike gpu/podman/
+    # tts/embedder) — a Yield-heavy coordinator job can't safely refund one
+    # between slices, so this gate never decrements ``free``.
+    assert "reserved" not in rows[0][2]
+    assert _free(store, "melchior", "claude_bin") == 1
+
+
+def test_coordinator_capability_gate_off_by_default(store: Store) -> None:
+    """Every OTHER caller is unaffected: without opting in, a claude-less
+    host claims exactly as it did before this gate existed (the pre-
+    gr335087, buggy-but-unchanged-by-this-fix default for anyone who
+    doesn't pass ``check_job_type_requires``)."""
+    jid = _queue_typed_job(store, executor="coordinator", job_type="quest_tick")
+    rows = _claim(store, "coordinator", "balthazar")  # check_job_type_requires=False
+    assert [r[0] for r in rows] == [jid]
+
+
+def test_coordinator_capability_gate_respects_target_node_pin(store: Store) -> None:
+    """A pinned job's gate checks the PINNED node's advertisement, not the
+    claiming worker's — mirroring the reservation path's ``res_host``."""
+    _advertise(store, "spark_pin", {"claude_bin": 1})
+    jid = _queue_typed_job(
+        store, executor="coordinator", job_type="quest_tick", target_node="spark_pin"
+    )
+    # claiming host itself (melchior_claimer) advertises nothing — only the
+    # pin target does — and still claims.
+    rows = _claim(
+        store,
+        "coordinator",
+        "melchior_claimer",
+        node="spark_pin",
+        check_job_type_requires=True,
+    )
+    assert [r[0] for r in rows] == [jid]

@@ -242,6 +242,15 @@ def _claim_jobs(
     ``system`` worker). This lets a coordinator that needs a node-local resource
     (e.g. ``quest_tick`` reaching the box-local OSS model) run where that
     resource lives.
+
+    ``check_job_type_requires=True`` (gr335087): ``coordinator`` runs on
+    every ``system`` worker unconditionally (unlike ``claude_inproc``, which
+    is only registered where ``PRECIS_MCP_CONFIG`` marks a claude-capable
+    host), yet some coordinator job_types dispatch straight to the claude CLI
+    in-line (``quest_tick``'s LLM review/propose slice) rather than only via
+    spawned children. Without this, a claude-less host's coordinator worker
+    would claim ``quest_tick`` and fail every tick at the LLM stage. See
+    ``_coordinator_capability_ok``/``job_type_requires`` in ``_common.py``.
     """
     return claim_executor_jobs(
         conn,
@@ -249,6 +258,7 @@ def _claim_jobs(
         limit=limit,
         exclude_paused=True,
         node=os.environ.get("PRECIS_NODE"),
+        check_job_type_requires=True,
     )
 
 

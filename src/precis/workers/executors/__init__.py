@@ -17,7 +17,12 @@ The lanes
   ``PRECIS_MCP_CONFIG``) while minting is cluster-wide — the SPOF the
   nursery's ``dispatch-stall`` detector watches (gripe 55748).
 * ``coordinator`` — the yield/resume executor for long-running
-  coordinator job_types; dispatches child jobs, never computes.
+  coordinator job_types; usually dispatches child jobs rather than
+  computing itself. Runs on every ``system`` worker unconditionally, so a
+  job_type that DOES need a host capability in-line (``quest_tick``'s
+  claude CLI call) is gated dynamically per host at claim time
+  (``claim_executor_jobs(check_job_type_requires=True)`` in
+  ``_common.py``), not by static pass registration like ``claude_inproc``.
 * ``ssh_node`` — runs a job's plugin on a (possibly remote) compute
   node. A job_type exposing ``spec.submit``/``spec.poll`` runs DETACHED:
   ``submit`` launches (nohup / ``docker run -d`` / sbatch) and returns a
@@ -106,11 +111,23 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     ),
     # ``coordinator`` is the yield/resume executor for long-running
     # coordinator job_types (precis-dft's ``dft_campaign`` is the
-    # first consumer). It dispatches; it doesn't compute. The empty
-    # PROVIDES set is intentional — a job_type compatible with
-    # ``coordinator`` declares ``REQUIRES=frozenset()`` because the
-    # actual work happens in the child jobs the coordinator spawns.
-    "coordinator": frozenset(),
+    # first consumer). It USUALLY dispatches without computing — a
+    # job_type compatible with ``coordinator`` declares
+    # ``REQUIRES=frozenset()`` because the actual work happens in the
+    # child jobs the coordinator spawns. ``quest_tick`` is the one
+    # exception (gr335087): its LLM review/propose slice calls the
+    # claude CLI directly, in-line, rather than via a spawned child —
+    # so this static submit-time PROVIDES declaration includes
+    # ``claude_bin`` for it. This is NOT a per-host promise (unlike
+    # ``claude_inproc``'s PROVIDES, true everywhere that pass actually
+    # registers — see ``registry.py``'s ``job_claude_inproc``
+    # ``capability_env`` gate): ``job_coordinator`` runs on every
+    # ``system`` worker regardless of whether that host has claude. The
+    # per-host truth is enforced dynamically at CLAIM time instead — see
+    # ``claim_executor_jobs(check_job_type_requires=True)`` /
+    # ``_coordinator_capability_ok`` in ``_common.py``, which the
+    # ``coordinator`` executor opts into.
+    "coordinator": frozenset({"claude_bin"}),
     # ``ssh_node`` runs a job's plugin ``dispatch`` on a remote node
     # (precis-dft's ``gpaw_relax`` shells out to ``ssh spark docker
     # run …``). Phase 1: static capability set = the spark node.

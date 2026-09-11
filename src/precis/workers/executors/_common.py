@@ -194,6 +194,66 @@ def effective_requires(meta: dict[str, Any]) -> dict[str, int]:
     return {}
 
 
+def job_type_requires(meta: dict[str, Any]) -> frozenset[str]:
+    """The job_type's own declared ``JobTypeSpec.requires`` (the submit-time
+    executor-capability vocabulary — ``workers/job_types/__init__.py`` —
+    checked at ``put()`` against the claiming executor's ``EXECUTOR_
+    PROVIDES``), deliberately DISTINCT from :func:`effective_requires`'s
+    ``ServiceSpec.requires`` (the ``resource_slots`` RESERVATION vocabulary,
+    registry.py).
+
+    A counted reservation is only refunded at a job's TERMINAL transition
+    (:func:`release_job_reservation`) — safe for a bounded job (``struct_
+    relax`` runs once, to completion, per claim) but WRONG for a Yield-heavy
+    ``coordinator`` job_type (``quest_tick``): each slice re-claims a *fresh*
+    ``STATUS:queued`` row after a park (``coordinator`` never sets
+    ``reclaim_stale_running``), so reserving on every claim with no
+    intervening refund would exhaust a capacity-1 slot after the job's very
+    first ``Yield`` — permanently stranding it (gr335087 postmortem). This
+    reads the SAME capability vocabulary (``claude_bin`` et al.) but only
+    ever feeds a CHECK (:func:`_coordinator_capability_ok`), never a
+    reservation.
+
+    Lazy import: some ``job_type`` modules (``diagnose_gripe``) import THIS
+    module, so importing ``precis.workers.job_types`` at module level here
+    would cycle.
+    """
+    job_type = meta.get("job_type")
+    if not job_type:
+        return frozenset()
+    from precis.workers.job_types import get_job_type
+
+    spec = get_job_type(str(job_type))
+    return spec.requires if spec is not None else frozenset()
+
+
+def _coordinator_capability_ok(
+    meta: dict[str, Any], advertised: dict[str, set[str]], default_host: str
+) -> bool:
+    """Check-only (never reserves) per-host capability gate for a
+    ``coordinator`` job_type's declared :func:`job_type_requires`.
+
+    ``True`` when the job_type declares nothing, or every token it declares
+    is advertised on the host that would actually run it (its ``target_node``
+    pin, else this claiming host — mirroring the ``res_host`` derivation
+    :func:`claim_executor_jobs`'s reservation path uses) — ``False`` drops
+    the row from THIS claim (the lock frees at commit; it stays queued for a
+    capable host/worker to pick up next cycle). Opt-in via
+    ``claim_executor_jobs(check_job_type_requires=True)`` — only
+    ``coordinator`` passes that today (gr335087: a claude-less host's
+    coordinator worker was claiming ``quest_tick`` and failing every tick at
+    the LLM stage). If literally no host in the fleet ever advertises a
+    declared token, the sweeper's ``_alert_unschedulable_jobs`` pages instead
+    of the job silently starving forever.
+    """
+    requires = job_type_requires(meta)
+    if not requires:
+        return True
+    params = meta.get("params") or {}
+    host = str(params.get("target_node") or default_host)
+    return requires <= advertised.get(host, set())
+
+
 def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     """``host -> {resources it currently advertises}`` from ``resource_slots``.
 
@@ -356,6 +416,7 @@ def claim_executor_jobs(
     reserve_host_id: str | None = None,
     reclaim_stale_running: bool = False,
     respect_reserve: bool = False,
+    check_job_type_requires: bool = False,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
@@ -496,6 +557,15 @@ def claim_executor_jobs(
     if nothing changed — that is the "in-flight finishes cleanly" contract.
     Checked fresh every pass (no cache), so a reserve set OR an expiry
     reached takes effect within one claim cycle.
+
+    **Job-type capability gate (gr335087).** When ``check_job_type_requires``
+    is True (``coordinator`` only), a row whose job_type declares a
+    :func:`job_type_requires` token not advertised on the host that would run
+    it (its ``target_node`` pin, else this claiming host) is dropped from
+    THIS claim via :func:`_coordinator_capability_ok` — check-only, no
+    reservation (see that function's docstring for why the reservation path
+    above is unsafe for a Yield-heavy coordinator job_type like
+    ``quest_tick``). Off by default: every other caller is unaffected.
 
     **Node gate (the structure atomistic IR #3).** A job may pin itself to a node via
     ``meta.params.target_node`` (``struct_relax`` sets it so the GPU
@@ -669,6 +739,14 @@ def claim_executor_jobs(
         reclaimed row and a freshly-queued row go through identical
         bookkeeping.
         """
+        if check_job_type_requires and not _coordinator_capability_ok(
+            meta, advertised, default_host
+        ):
+            # Check-only job-type capability gate (gr335087) — see
+            # claim_executor_jobs's docstring. Runs before anything else so a
+            # capability-less host never reaches (and never reserves against)
+            # the resource_slots path below for this row.
+            return None
         if reclaim_stale_running and meta.get("reserved"):
             # A stolen (crash-recovered) job still carries the dead worker's
             # reservation — refund it before this claim re-reserves, so slots
@@ -1288,6 +1366,7 @@ __all__ = [
     "current_status",
     "effective_requires",
     "is_cancel_requested",
+    "job_type_requires",
     "max_job_attempts",
     "maybe_reset_gpu_after_kill",
     "poison_guard",

@@ -1516,6 +1516,32 @@ def test_error_result_claude_timeout_is_paused() -> None:
     assert res2.paused is False
 
 
+def test_error_result_missing_binary_is_cli_unavailable_not_paused() -> None:
+    """gr335087: a missing claude binary is a HOST-configuration defect, not
+    a transient one — ``cli_unavailable`` (not ``paused``), carried
+    structurally off ``ClaudeProcessError.binary_missing`` so
+    :mod:`precis.quest.tick` can fail its loop fast instead of retrying a
+    call that can never self-heal on the same host."""
+    from precis.utils._claude_subprocess import ClaudeProcessError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudeProcessError(
+        "claude binary not found ('claude'); set PRECIS_CLAUDE_BIN or "
+        "install Claude Code",
+        binary_missing=True,
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    assert res.cli_unavailable is True
+    assert res.paused is False
+    assert res.timed_out is False
+
+    # A plain non-zero exit (model/API error, not a missing binary) is NOT
+    # flagged — the structural signal is narrow, never inferred otherwise.
+    exited = ClaudeProcessError("claude -p exited 1", returncode=1)
+    res2 = _error_result(exited, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    assert res2.cli_unavailable is False
+
+
 def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
     """A request timeout on the LOCAL transport is unavailability —
     skip-and-retry, not a hard failure that can park the todo."""

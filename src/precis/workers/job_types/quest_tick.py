@@ -223,7 +223,20 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "additionalProperties": True,
 }
 COMPATIBLE_EXECUTORS = frozenset({"coordinator"})
-REQUIRES: frozenset[str] = frozenset()
+#: The LLM review/propose slice below dispatches straight to the claude CLI
+#: (the router's default ``ANTHROPIC``-backend, tools-needed transport is
+#: ``claude_agent``/``claude_p`` — both subprocess ``claude``), in-line, not
+#: via a spawned child job — unlike most coordinator job_types. Declaring
+#: this here (matched by ``EXECUTOR_PROVIDES["coordinator"]``) is a static
+#: submit-time declaration only; the actual per-host enforcement — a
+#: claude-less host's coordinator worker must not claim this job_type at all
+#: (gr335087: it was, and failed every tick at the LLM stage) — is dynamic,
+#: via ``claim_executor_jobs(check_job_type_requires=True)`` /
+#: ``_coordinator_capability_ok`` in ``workers/executors/_common.py``: a
+#: check-only gate, never a resource_slots RESERVATION (which would leak —
+#: see that function's docstring for why a Yield-heavy coordinator job can't
+#: safely reserve a counted slot).
+REQUIRES: frozenset[str] = frozenset({"claude_bin"})
 DESCRIPTION = (
     "Perpetual catalyst-quest loop: harvest → review+propose (local LLM) → "
     "dispatch barrier sims → wait for them → repeat (async coordinator)."
@@ -895,6 +908,42 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     # rides in structurally on ``QuestTickOutcome.pause_kind`` — never sniffed
     # out of the note text, which is an LLM/transport error string.
     #
+    # gr335087: a "failed" tick whose cause is THIS HOST's claude CLI itself
+    # being unavailable (``QuestTickOutcome.failure_kind == "cli_unavailable"``
+    # — carried structurally, never sniffed from ``note``) is a host-
+    # configuration defect, not a transient one: retrying the identical call
+    # on the SAME host can never self-heal it, unlike the transient causes
+    # the ``_max_tick_failures()`` budget below exists for. Rest the loop
+    # IMMEDIATELY (a terminal Done, on the first such tick) instead of
+    # grinding through that budget — a claude-less host's coordinator worker
+    # was observed sitting non-terminal for many retried ticks (each re-
+    # failing identically) before this. The capability gate
+    # (``workers/executors/_common.py``'s ``_coordinator_capability_ok``)
+    # should stop a claude-less host from ever claiming this job_type in the
+    # first place; this is the deterministic backstop for the case it
+    # doesn't (a mis-set ``PRECIS_CLAUDE_BIN`` on an otherwise-advertising
+    # host, a race in the window before the probe populates ``resource_
+    # slots``, …) — a fresh quest_tick coordinator job (minted on the next
+    # reconcile pass) gets a clean shot at a capable host.
+    cli_unavailable = getattr(outcome, "failure_kind", None) == "cli_unavailable"
+    if status == "failed" and cli_unavailable:
+        _reset_dry_rest_counter(ctx.store, quest_id)
+        return Done(
+            summary=(
+                f"quest {quest_id} loop resting — this host's claude CLI is "
+                f"unavailable ({note}). Re-armed by a fresh quest_tick "
+                "coordinator job, which should land on a claude-equipped "
+                "host."
+            ),
+            success=False,
+            summary_meta={
+                "slices": slice_count,
+                "last_status": status,
+                "failure_class": "infra",
+                "failure_kind": "cli_unavailable",
+            },
+        )
+
     # Return early so a failed/paused tick doesn't also fire the acquisition
     # fallback below.
     if status in ("failed", "paused"):

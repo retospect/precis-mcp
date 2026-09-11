@@ -149,3 +149,54 @@ def test_alert_resolves_once_job_leaves_queued(store: Store) -> None:
     )
     _alert_unschedulable_jobs(store)
     assert _alert_open(store, f"unschedulable:{jid}") is False
+
+
+# ── coordinator job-type capability (gr335087) ────────────────────────────
+#
+# ``quest_tick``'s ``claude_bin`` requirement is enforced at CLAIM time via
+# the job_type's own declared ``JobTypeSpec.requires``
+# (``workers/executors/_common.py``'s ``job_type_requires`` /
+# ``_coordinator_capability_ok``), NOT ``effective_requires``'s
+# ``ServiceSpec.requires``/resource_slots reservation (unsafe for a
+# Yield-heavy coordinator job — see that function's docstring) — so this
+# alert must fold ``job_type_requires`` in for a ``coordinator``-executed row
+# too, or a fleet where literally no host ever advertises ``claude_bin``
+# would starve ``quest_tick`` silently instead of paging.
+
+
+def test_coordinator_job_type_requires_flagged_when_unadvertised(store: Store) -> None:
+    jid = _queue(
+        store,
+        {"job_type": "quest_tick", "executor": "coordinator", "params": {}},
+    )
+    _alert_unschedulable_jobs(store)
+    assert _alert_open(store, f"unschedulable:{jid}") is True
+
+
+def test_coordinator_job_type_requires_not_flagged_when_advertised(
+    store: Store,
+) -> None:
+    store.sync_host_resource_slots("melchior", {"claude_bin": 1})
+    _upsert_host_heartbeat(store, "melchior", age_minutes=0.5)
+    jid = _queue(
+        store,
+        {"job_type": "quest_tick", "executor": "coordinator", "params": {}},
+    )
+    _alert_unschedulable_jobs(store)
+    assert _alert_open(store, f"unschedulable:{jid}") is False
+
+
+def test_non_coordinator_executor_does_not_pick_up_job_type_requires(
+    store: Store,
+) -> None:
+    """The fold-in is scoped to ``executor == 'coordinator'`` — a job_type
+    that happens to declare capability tokens but runs under a DIFFERENT
+    executor (already protected by its own mechanism — e.g. ``claude_inproc``
+    is gated by static pass registration, not this alert) must not gain a
+    NEW alert surface it never had before this change."""
+    jid = _queue(
+        store,
+        {"job_type": "quest_tick", "executor": "claude_inproc", "params": {}},
+    )
+    _alert_unschedulable_jobs(store)
+    assert _alert_open(store, f"unschedulable:{jid}") is False

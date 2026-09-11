@@ -44,11 +44,14 @@ class _Outcome:
         proposals: int = 0,
         ledger_added: int = 0,
         pause_kind: str | None = None,
+        failure_kind: str | None = None,
     ) -> None:
         self.status = status
         self.note = note
         #: ``QuestTickOutcome.pause_kind`` — "timeout" | "window" | None.
         self.pause_kind = pause_kind
+        #: ``QuestTickOutcome.failure_kind`` — "cli_unavailable" | None.
+        self.failure_kind = failure_kind
         self.candidates_created = 0
         self.sims_dispatched = 0
         self.results_harvested = 0
@@ -497,6 +500,39 @@ class TestPhaseAwaitDryTicks:
         assert out.success is False
         assert out.summary_meta.get("tick_failures") == qt._max_tick_failures()
         assert out.summary_meta.get("last_status") == "failed"
+
+    def test_cli_unavailable_failure_rests_immediately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr335087: a claude-less host's coordinator worker was found sitting
+        # non-terminal for many retried ticks (each re-failing identically)
+        # before reaching a terminal state — because "claude binary not
+        # found" was just an ordinary transient "failed", grinding through
+        # the full `_max_tick_failures()` budget. This cause can never
+        # self-heal by retrying on the SAME host, so it must rest the loop
+        # (a terminal Done) on the FIRST such tick, not the Nth.
+        _stub_tick(
+            monkeypatch,
+            _Outcome(
+                status="failed",
+                note="llm error: claude binary not found ('claude'); "
+                "set PRECIS_CLAUDE_BIN or install Claude Code",
+                failure_kind="cli_unavailable",
+            ),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        # Fresh state — no prior failures at all (unlike the max-failures
+        # test above, which pre-seeds tick_failures at the budget's edge).
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is False
+        assert out.summary_meta.get("last_status") == "failed"
+        assert out.summary_meta.get("failure_kind") == "cli_unavailable"
+        assert out.summary_meta.get("failure_class") == "infra"
+        # Never even reached the ordinary consecutive-failure counter — the
+        # fast path returns before that bookkeeping runs.
+        assert "tick_failures" not in out.summary_meta
 
     def test_starvation_gate_defers_without_ticking(
         self, monkeypatch: pytest.MonkeyPatch

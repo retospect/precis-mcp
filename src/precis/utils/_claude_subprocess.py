@@ -45,6 +45,7 @@ class ClaudeProcessError(RuntimeError):
         stderr: str = "",
         returncode: int | None = None,
         timed_out: bool = False,
+        binary_missing: bool = False,
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
@@ -54,6 +55,17 @@ class ClaudeProcessError(RuntimeError):
         #: missing binary) — a transient *unavailability* the router classifies
         #: as ``paused`` (retry), not a semantic error.
         self.timed_out = timed_out
+        #: True when ``subprocess``/``asyncio`` couldn't find the binary at
+        #: all (``FileNotFoundError`` — see :func:`run_claude`/
+        #: :func:`run_claude_async`) — a HOST-CONFIGURATION defect (no
+        #: ``claude`` on PATH, or a bad ``PRECIS_CLAUDE_BIN``), not a
+        #: transient/semantic one: retrying the identical call on the SAME
+        #: host can never self-heal. Threaded structurally through
+        #: :class:`~precis.utils.llm.router.LlmResult` (``cli_unavailable``)
+        #: to :class:`~precis.quest.tick.QuestTickOutcome` (``failure_kind``)
+        #: so a caller can fail fast instead of grinding through a retry
+        #: budget sized for transient faults (gr335087).
+        self.binary_missing = binary_missing
 
 
 def to_str(raw: bytes | str | None) -> str:
@@ -194,7 +206,8 @@ def run_claude(
     except FileNotFoundError as exc:
         raise error_cls(
             f"claude binary not found ({binary!r}); "
-            f"set PRECIS_CLAUDE_BIN or install Claude Code"
+            f"set PRECIS_CLAUDE_BIN or install Claude Code",
+            binary_missing=True,
         ) from exc
 
     if res.returncode != 0:
@@ -263,7 +276,8 @@ async def run_claude_async(
     except FileNotFoundError as exc:
         raise error_cls(
             f"claude binary not found ({binary!r}); "
-            f"set PRECIS_CLAUDE_BIN or install Claude Code"
+            f"set PRECIS_CLAUDE_BIN or install Claude Code",
+            binary_missing=True,
         ) from exc
 
     stdout_lines: list[str] = []

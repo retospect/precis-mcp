@@ -89,6 +89,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import (
     effective_requires,
+    job_type_requires,
     release_job_reservation,
     set_meta,
 )
@@ -600,6 +601,14 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         ref_id = int(raw_id)
         meta = dict(raw_meta or {})
         requires = effective_requires(meta)
+        if meta.get("executor") == "coordinator":
+            # gr335087: a ``coordinator`` job_type's declared capability
+            # (``quest_tick``'s ``claude_bin``) is checked at CLAIM time
+            # (``claim_executor_jobs(check_job_type_requires=True)``), not
+            # reserved via ``effective_requires``/``resource_slots`` (see
+            # ``_coordinator_capability_ok``'s docstring for why) — so it
+            # would never trip this alert without folding it in here too.
+            requires = {**requires, **{tok: 1 for tok in job_type_requires(meta)}}
         if not requires:
             continue
         params = meta.get("params") or {}
