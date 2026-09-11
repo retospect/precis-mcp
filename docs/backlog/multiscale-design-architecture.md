@@ -54,11 +54,60 @@ already handled by `precis_se.validate.kernel_scale`.
 | molecular fragment library, states, joining chemistry | `blocktree-library-build-plan.md` + star-schema facts | open (plan `ready`) |
 | interaction-aware module placement (graded π-stack, kT thresholds, pose solve, fisheye read) | `nm-stick-placement.md` | spec ready 2026-09-11 |
 | photoswitch physics, channel budget, photo-charge | `photoswitch-states-and-spectral-dof.md` | evidence gathered |
+| toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11) |
 | scenarios + three-verdict rule table | **here, §Scenarios** | new |
 | complementarity solver | **here, §Complementarity** | new |
 | optimisation stack (surrogates, BO, annealing) | **here, §Optimisation** | new |
 | requirement→joint matching | **here, §Joint matching** | new |
 | view-dependent form | **here, §View-dependent form** | new |
+
+## Toolpath ownership — how far into the slicer we go (new)
+
+Reto, 2026-09-11: do we integrate the filament slicer into the design
+process — generate the design layer by layer with full control over fill
+patterns — or make the shape orientation-aware and hand off an STL? The
+strength argument is real: FDM parts are anisotropic (along-filament ≫
+across-layer), the SIMP engine *computes* the principal stress field, and
+a third-party slicer never sees it — the STL handoff flattens the density
+field and every load-direction fact to a surface, then the slicer
+re-derives uniform infill from nothing.
+
+The pcb precedent (own `gerber.py`, never hand off to an external router)
+says owning a vendor format is house-viable when the intent would
+otherwise be lost at the boundary. But a production slicer is a decade of
+commodity empiricism (retraction, seams, cooling, flow math, first-layer
+adhesion, per-material schedules) that carries no design intent. So: a
+ladder, owning the *intent-bearing* layers and renting the commodity
+ones —
+
+1. **Shape + orientation handoff (now).** The AM filter bakes the build
+   direction into the geometry; export via the existing cad routes. The
+   slicer owns everything else. Cheapest, ships with slice 4's bridge.
+2. **3MF with density-derived modifier volumes (the underexploited middle
+   rung).** 3MF carries per-region print settings; PrusaSlicer/Orca
+   honour modifier volumes. Quantize the SIMP density field into
+   region-wise infill (dense → solid, sparse → light) and, where the
+   lattice fill was chosen, emit the lattice as explicit geometry. The
+   generative result *survives into the print* while the slicer still
+   owns all commodity mechanics. Most of the strength value for a small
+   fraction of the work.
+3. **Stress-aligned toolpaths for the structural interior (the monster
+   rung, on demand).** Filament laid along principal-stress trajectories
+   from the FEA field — the thing no external slicer can do, because it
+   needs the load case. Note the analytic kernel makes this cheaper than
+   it looks: G-code needs only planar contours, and slicing an SDF is
+   exact 2D evaluation per z-plane (no mesh, no marching cubes — the
+   deferral stands); `pcb/gerber.py` is the in-tree prior art for arc
+   path emission with quantization. Scope: interior infill paths first
+   (inject into a slicer-generated skeleton as custom regions), full
+   G-code ownership only if a real design demands end-to-end
+   verifiability (owning every move is also what makes "printed without
+   support" checkable rather than trusted).
+
+Rung 3 lands at se's L5 (fabrication plan: mode + build frame + process
+DRC already own that tier); the per-material flow/temperature empiricism
+stays capability-row data, never code. Do not start rung 3 before a
+design measurably needs stress-aligned strength — rung 2 is the default.
 
 ## Scenarios and the three-verdict rule table (new)
 
