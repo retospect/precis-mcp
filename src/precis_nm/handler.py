@@ -84,10 +84,22 @@ from precis_nm.ops import (
     NmBlock,
     OpError,
     apply_ops,
+    check_dof_axis_ports,
     effective_dof,
     effective_envelope,
     effective_ports,
+    known_ops,
 )
+
+#: The 3 store-aware ops intercepted directly in
+#: :meth:`NmHandler._apply_ops_with_bindings` — never reach
+#: :func:`~precis_nm.ops.apply_ops`, so :func:`~precis_nm.ops.known_ops`
+#: (the pure ops table) can't see them on its own. Named here, once, as the
+#: single source (with ``known_ops()``) both the real dispatch below and
+#: the unknown-op error's roster read from (gripe 334767: the roster used
+#: to come from ``known_ops()`` alone, silently omitting these 3 from what
+#: was actually accepted).
+_HANDLER_LEVEL_OPS = ("bind_structure", "unbind_structure", "generate")
 
 
 @dataclass
@@ -242,14 +254,43 @@ class NmHandler(Handler):
         the orphan window for every case except a genuine crash in that
         narrow final gap (documented on :meth:`_finish_generate`).
 
+        **Unknown-op roster** (gripe 334767): every op name is checked up
+        front against ``all_ops`` — ``known_ops()`` (the pure ops table)
+        unioned with :data:`_HANDLER_LEVEL_OPS`, the same union the loop
+        below actually dispatches through — so an op name matching neither
+        group is rejected here, by name, with the FULL roster (all 15),
+        rather than falling through to ``apply_ops``'s own ``OpError``
+        whose roster only ever sees the pure 12.
+
+        **Add_block's ``dof`` axis_ports check is deferred** (gripe
+        334765): :func:`~precis_nm.ops._op_add_block` already vets a
+        ``dof``'s SHAPE eagerly (unknown keys/kind/axis_ports-shape,
+        :func:`~precis_nm.ops.vet_dof_shape`) and rolls the block back out
+        on a shape failure, but a just-minted block never has any ports of
+        its own yet — any ``add_port`` for it necessarily comes *later* in
+        this same list — so the PORT-existence half
+        (:func:`~precis_nm.ops.check_dof_axis_ports`) can only run once
+        the whole list has been walked. ``pending_dof_checks`` collects
+        every ``add_block`` op that carried a ``dof``; the check after the
+        main loop skips a block a *later* op already removed or
+        ``clear_dof``'d (the same "never re-validate something a later op
+        already undid" rule :meth:`_finish_generate` follows for its own
+        deferred half).
+
         Returns a compact echo of every binding/generate op (for the
         caller's response), or ``None`` when there were none."""
+        all_ops = known_ops() | set(_HANDLER_LEVEL_OPS)
         echoes: list[str] = []
         pending_generates: list[_PendingGenerate] = []
+        pending_dof_checks: list[str] = []
         for op in ops:
             if not isinstance(op, dict) or "op" not in op:
                 raise BadInput(f"op missing 'op' key: {op!r}")
             name = op["op"]
+            if name not in all_ops:
+                raise BadInput(
+                    f"unknown op: {name!r}; known: {', '.join(sorted(all_ops))}"
+                )
             if name == "bind_structure":
                 echoes.append(self._bind_structure(tree, op))
                 continue
@@ -265,8 +306,20 @@ class NmHandler(Handler):
                 apply_ops(tree, [op])
             except OpError as exc:
                 raise BadInput(str(exc)) from exc
+            if name == "add_block" and op.get("dof") is not None:
+                block_name = str(op.get("name") or "").strip()
+                if block_name:
+                    pending_dof_checks.append(block_name)
         for pending in pending_generates:
             self._finish_generate(tree, pending)
+        for block_name in pending_dof_checks:
+            node = tree.blocks.get(block_name)
+            if node is None or node.dof is None:
+                continue  # a later op removed the block or cleared its dof
+            try:
+                check_dof_axis_ports(node, node.dof, block_name, what="add_block")
+            except OpError as exc:
+                raise BadInput(str(exc)) from exc
         return "\n".join(echoes) if echoes else None
 
     def _bind_structure(self, tree: BlockTree, op: dict[str, Any]) -> str:
@@ -1098,6 +1151,7 @@ class NmHandler(Handler):
         tree.own_slug = str(ref.slug)
         tree.foreign = self._foreign_resolver()
         v = (view or "").strip().lower()
+        _vet_view_args(v, args)
         if v in ("", "tree"):
             description = str((ref.meta or {}).get("description") or "").strip()
             return Response(
@@ -1248,6 +1302,55 @@ class NmHandler(Handler):
 
 
 # ── payload / rendering (module-level, no store access) ────────────────
+
+
+#: Every ``get(kind='nm')`` view's accepted ``args=`` keys — the single
+#: source :func:`_vet_view_args` checks a caller's ``args`` dict against.
+#: Only a view listed here gets checked at all (an unrecognized ``view=``
+#: falls through to the plain "unknown nm view" error unchanged, from
+#: :meth:`NmHandler.get`).
+_VIEW_ARGS: dict[str, frozenset[str]] = {
+    "": frozenset(),
+    "tree": frozenset(),
+    "block": frozenset({"name"}),
+    "ports": frozenset(),
+    "validate": frozenset(),
+    "clearance": frozenset({"a", "b"}),
+    "topology": frozenset(),
+    "mechanics": frozenset(),
+    "literature": frozenset({"block"}),
+}
+
+
+def _vet_view_args(view: str, args: dict[str, Any] | None) -> None:
+    """Reject any ``args=`` key a view doesn't accept — loudly, rather
+    than silently ignoring it (gripe 334766: ``args={'state': ...}`` used
+    to be accepted and dropped on every view, returning a confident answer
+    over the wrong (or just the default) geometry with no error at all;
+    nm has no block-state concept yet — blocktree slice 2 — so 'state' in
+    particular gets its own pointed message rather than a generic "unknown
+    key"). Checked against :data:`_VIEW_ARGS` — the same table both this
+    function and every ``view=`` branch below implicitly agree on, so an
+    accepted key can never silently drift out of sync with what a view
+    actually reads."""
+    if not args:
+        return
+    allowed = _VIEW_ARGS.get(view)
+    if allowed is None:
+        return  # unrecognized view — the dispatch below raises its own error
+    unknown = sorted(set(args) - allowed)
+    if not unknown:
+        return
+    accepted = ", ".join(sorted(allowed)) if allowed else "(none)"
+    if "state" in unknown:
+        raise BadInput(
+            "state is not supported on nm yet (block states are unshipped)",
+            next=f"accepted args for view={view or 'tree'!r}: {accepted}",
+        )
+    raise BadInput(
+        f"unknown args key(s) {unknown} for view={view or 'tree'!r}; "
+        f"accepted: {accepted}"
+    )
 
 
 def _fill_fraction_line(tree: BlockTree) -> str:

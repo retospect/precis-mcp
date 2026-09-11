@@ -123,6 +123,60 @@ def test_get_block_view_unknown_name_raises(handler: NmHandler) -> None:
         handler.get(id="rotax1", view="block", args={"name": "ghost"})
 
 
+# ── gripe 334766: unknown args= keys are a loud reject, per view ───────
+
+
+def test_view_args_state_key_rejected_with_pointed_message(
+    handler: NmHandler,
+) -> None:
+    handler.put(id="rotax1", text=_TREE)
+    with pytest.raises(BadInput, match="state is not supported on nm yet"):
+        handler.get(id="rotax1", args={"state": "open"})
+
+
+def test_view_args_state_key_rejected_on_block_view_too(handler: NmHandler) -> None:
+    handler.put(id="rotax1", text=_TREE)
+    with pytest.raises(BadInput, match="state is not supported on nm yet"):
+        handler.get(id="rotax1", view="block", args={"name": "hub", "state": "open"})
+
+
+def test_view_args_arbitrary_junk_key_rejected(handler: NmHandler) -> None:
+    handler.put(id="rotax1", text=_TREE)
+    with pytest.raises(BadInput, match="unknown args key"):
+        handler.get(id="rotax1", args={"bogus": "1"})
+    with pytest.raises(BadInput, match="unknown args key"):
+        handler.get(id="rotax1", view="topology", args={"bogus": "1"})
+
+
+def test_view_args_legitimate_keys_still_work(handler: NmHandler) -> None:
+    handler.put(id="rotax1", text=_TREE)
+    assert "hub" in handler.get(id="rotax1", view="block", args={"name": "hub"}).body
+    assert handler.get(id="rotax1", view="ports").body
+    assert handler.get(id="rotax1", view="validate").body
+    assert handler.get(id="rotax1", view="topology").body
+    assert handler.get(id="rotax1", view="mechanics").body
+    assert handler.get(id="rotax1").body
+
+
+# ── gripe 334767: unknown-op error roster names every registered op ────
+
+
+def test_unknown_op_roster_includes_every_registered_op(handler: NmHandler) -> None:
+    from precis_nm.handler import _HANDLER_LEVEL_OPS
+    from precis_nm.ops import known_ops
+
+    expected = known_ops() | set(_HANDLER_LEVEL_OPS)
+    assert {"bind_structure", "unbind_structure", "generate"} <= expected
+    handler.put(
+        id="roster1", text=json.dumps({"ops": [{"op": "add_block", "name": "a"}]})
+    )
+    with pytest.raises(BadInput, match="unknown op") as exc_info:
+        handler.edit(id="roster1", ops=[{"op": "levitate"}])
+    msg = str(exc_info.value)
+    for name in expected:
+        assert name in msg, f"{name!r} missing from unknown-op roster: {msg}"
+
+
 # ── validation ───────────────────────────────────────────────────────────
 
 
@@ -1547,6 +1601,108 @@ def test_remove_port_used_by_dof_refused(handler: NmHandler) -> None:
         handler.edit(
             id="dof7", ops=[{"op": "remove_port", "block": "axle", "name": "p1"}]
         )
+
+
+# ── gripe 334765: shared dof vetting (declare_dof + add_block's dof=) ──
+
+
+def test_declare_dof_unknown_key_rejected(handler: NmHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "axle"},
+        {"op": "add_port", "block": "axle", "name": "p1"},
+        {"op": "add_port", "block": "axle", "name": "p2"},
+    ]
+    handler.put(id="dof8", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="unknown key"):
+        handler.edit(
+            id="dof8",
+            ops=[
+                {
+                    "op": "declare_dof",
+                    "block": "axle",
+                    "kind": "rotational",
+                    "axis_ports": ["p1", "p2"],
+                    "states": ["open", "closed"],
+                    "driver": "photoswitch",
+                }
+            ],
+        )
+    # the block's dof must be untouched — a rejected declare_dof never
+    # partially lands
+    block = handler.get(id="dof8", view="block", args={"name": "axle"})
+    assert "dof: —" in block.body
+
+
+def test_add_block_dof_unknown_key_rejected(handler: NmHandler) -> None:
+    ops = [
+        {
+            "op": "add_block",
+            "name": "axle",
+            "dof": {
+                "kind": "rotational",
+                "axis_ports": ["p1", "p2"],
+                "states": ["open", "closed"],
+            },
+        },
+    ]
+    with pytest.raises(BadInput, match="unknown key"):
+        handler.put(id="dof9", text=json.dumps({"ops": ops}))
+    # a rejected dof must roll the whole block back out too, not just skip
+    # setting dof on a block that then lingers
+    with pytest.raises(NotFound):
+        handler.get(id="dof9", view="block", args={"name": "axle"})
+
+
+def test_add_block_dof_nonexistent_ports_rejected(handler: NmHandler) -> None:
+    """The reviewer's exact repro (gripe 334765): a portless block accepted
+    dof with axis_ports naming ports that exist nowhere — add_block's own
+    'dof' param used to bypass declare_dof's validation entirely."""
+    ops = [
+        {
+            "op": "add_block",
+            "name": "axle",
+            "dof": {"kind": "rotational", "axis_ports": ["x", "y"]},
+        },
+    ]
+    with pytest.raises(BadInput, match="no such port"):
+        handler.put(id="dof10", text=json.dumps({"ops": ops}))
+    # topology must never render a dof that was rejected
+    with pytest.raises(NotFound):
+        handler.get(id="dof10")
+
+
+def test_add_block_dof_valid_when_ports_added_later_in_same_call(
+    handler: NmHandler,
+) -> None:
+    """add_block's dof= axis_ports check is deferred to the end of the
+    whole ops list — a block minted with a dof naming ports added by LATER
+    ops in the same call is valid; ordering within one put/edit is fine."""
+    ops = [
+        {
+            "op": "add_block",
+            "name": "axle",
+            "dof": {"kind": "rotational", "axis_ports": ["p1", "p2"]},
+        },
+        {"op": "add_port", "block": "axle", "name": "p1"},
+        {"op": "add_port", "block": "axle", "name": "p2"},
+    ]
+    handler.put(id="dof11", text=json.dumps({"ops": ops}))
+    block = handler.get(id="dof11", view="block", args={"name": "axle"})
+    assert "rotational" in block.body
+    topo = handler.get(id="dof11", view="topology")
+    assert "axle" in topo.body and "rotational" in topo.body
+
+
+def test_add_block_dof_bad_kind_rejected(handler: NmHandler) -> None:
+    ops = [
+        {
+            "op": "add_block",
+            "name": "axle",
+            "dof": {"kind": "wobbly", "axis_ports": ["p1", "p2"]},
+        },
+    ]
+    with pytest.raises(BadInput, match="rotational"):
+        handler.put(id="dof12", text=json.dumps({"ops": ops}))
 
 
 def test_remove_block_drops_touching_threading(handler: NmHandler) -> None:

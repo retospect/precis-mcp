@@ -31,8 +31,21 @@ here as-is (``set_pose``/``disconnect``) or extended with nm's own fields:
   existing ``parent``, with an optional envelope (validated through the
   real ``precis.cad.dsl`` parser, never re-implemented here) and an
   optional initial ``dof`` — the core op mints the block; this module then
-  vets/assigns ``dof`` on it (rolling the block back out if ``dof`` isn't a
-  JSON object, so a bad ``dof`` never leaves a partial block behind).
+  runs the SHAPE half of the shared dof vetting on it (:func:`vet_dof_shape`
+  — allowlisted keys, valid ``kind``, ``axis_ports`` shape; the exact same
+  check ``declare_dof`` runs, gripe 334765: this used to skip validation
+  entirely and store the caller's dict verbatim — an unknown key like
+  ``states``/``driver`` silently vanished instead of erroring), rolling the
+  block back out on any failure so a bad ``dof`` never leaves a partial
+  block behind. The PORT-existence half (:func:`check_dof_axis_ports`) is
+  deferred to the end of the whole ops list
+  (:meth:`~precis_nm.handler.NmHandler._apply_ops_with_bindings`) rather
+  than checked here, because a just-minted block never has any ports of
+  its own yet — any ``add_port`` for it necessarily comes later in the
+  same call. A ``dof`` naming ports that never materialize by the end of
+  the call (the reviewer's exact repro: a portless block with
+  ``axis_ports`` naming ports that don't exist anywhere) is rejected
+  there, loudly, rather than left to persist as a dangling reference.
 - ``instance_block``  — mint a new block that **reuses** an existing
   block's subtree by reference (``template``), resolved at *read* time —
   the ``cad`` ``Design.instance`` pattern. Only ``template``/``name``/
@@ -132,7 +145,14 @@ here as-is (``set_pose``/``disconnect``) or extended with nm's own fields:
   that explanation rather than silently landing on the wrong row — and
   both ``axis_ports`` must resolve on the block's *own* ports (not through
   a template: an instance never reaches this op at all). Persists on the
-  existing ``nm_blocks.dof`` jsonb column (no new storage).
+  existing ``nm_blocks.dof`` jsonb column (no new storage). Shape-vetted
+  through the same :func:`vet_dof_shape`/:func:`check_dof_axis_ports` pair
+  ``add_block``'s own ``dof`` param uses (gripe 334765: this op used to
+  read ``kind``/``axis_ports`` straight off the op dict with no check for
+  *extra* keys, so a caller-supplied ``states``/``driver`` alongside them
+  silently vanished rather than erroring — one shared vetting function now
+  makes both write paths equally strict, and equally loud about what they
+  rejected).
 - ``clear_dof``         — clear a block's declared dof (same instance
   rejection as ``declare_dof``).
 """
@@ -148,6 +168,13 @@ from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
 #: What an ``axis_ports``-bearing DOF's ``kind`` may be — nm-kind.md's L2
 #: vocabulary.
 _DOF_KINDS = ("rotational", "translational")
+
+#: The only keys a dof payload may carry — declare_dof's own top-level
+#: ``kind=``/``axis_ports=`` op fields, or add_block's nested ``dof={...}``
+#: dict; either way, exactly these two. Anything else (gripe 334765's
+#: reported ``states``/``driver``) is a loud reject via
+#: :func:`vet_dof_shape`, never a silent drop.
+_DOF_ALLOWED_KEYS = frozenset({"kind", "axis_ports"})
 
 
 @dataclass
@@ -376,17 +403,92 @@ def _check_bond_capability(
             )
 
 
+def vet_dof_shape(dof: Any, *, what: str) -> dict[str, Any]:
+    """Vet a dof payload's SHAPE — dict-ness, allowlisted keys
+    (:data:`_DOF_ALLOWED_KEYS`), a valid ``kind`` (:data:`_DOF_KINDS`), and
+    ``axis_ports`` as a list of exactly 2 non-empty strings — the half of
+    dof vetting that needs nothing but the payload itself, shared by
+    :func:`_op_declare_dof` (``kind=``/``axis_ports=`` as direct op
+    fields, collected into a dict before this call) and :func:`_op_add_block`
+    (``dof={...}``, already a dict). Returns the canonical
+    ``{"kind": ..., "axis_ports": [...]}`` to store — never the raw
+    input, so a stray extra key can never ride along even if a caller
+    forgets to use the return value. Does NOT check ``axis_ports`` resolve
+    to real ports on any particular block — see
+    :func:`check_dof_axis_ports`, the other half."""
+    if not isinstance(dof, dict):
+        raise OpError(f"{what} must be a JSON object, got {dof!r}")
+    unknown = sorted(set(dof) - _DOF_ALLOWED_KEYS)
+    if unknown:
+        raise OpError(
+            f"{what} has unknown key(s) {unknown}; allowed keys: "
+            f"{sorted(_DOF_ALLOWED_KEYS)}"
+        )
+    kind = dof.get("kind")
+    if kind not in _DOF_KINDS:
+        raise OpError(f"{what} 'kind' must be one of {_DOF_KINDS}, got {kind!r}")
+    axis_raw = dof.get("axis_ports")
+    if (
+        not isinstance(axis_raw, list)
+        or len(axis_raw) != 2
+        or not all(isinstance(p, str) and p.strip() for p in axis_raw)
+    ):
+        raise OpError(
+            f"{what} needs 'axis_ports' as a list of exactly 2 port names, "
+            f"got {axis_raw!r}"
+        )
+    return {"kind": kind, "axis_ports": [p.strip() for p in axis_raw]}
+
+
+def check_dof_axis_ports(
+    node: NmBlock, dof: dict[str, Any], block_name: str, *, what: str
+) -> None:
+    """The other half of dof vetting — every ``axis_ports`` name must
+    resolve on ``node``'s *own* ports (gripe 334765's exact repro: a
+    portless block accepted ``axis_ports`` naming ports that existed
+    nowhere). ``declare_dof`` runs this immediately (the block's ports
+    already exist by the time it's called — ordinary usage); ``add_block``
+    defers this same call to the end of the whole ops list
+    (:meth:`~precis_nm.handler.NmHandler._apply_ops_with_bindings`), since
+    a block minted by ``add_block`` never has any ports of its own yet at
+    that exact moment — any ``add_port`` for it necessarily comes later in
+    the same call."""
+    for p in dof["axis_ports"]:
+        if p not in node.ports:
+            roster = ", ".join(sorted(node.ports)) if node.ports else "(none)"
+            raise OpError(
+                f"{what}: no such port on block {block_name!r}: {p!r}. "
+                f"Available ports: {roster}"
+            )
+
+
+def known_ops() -> frozenset[str]:
+    """Every op name :func:`apply_ops` recognizes on its own — the core's
+    8 shared ops plus nm's own 6 (:data:`_OPS`'s keys). Does NOT include
+    ``bind_structure``/``unbind_structure``/``generate`` — those are
+    store-aware and intercepted at the handler layer before ``apply_ops``
+    ever sees them (module docstring above). :mod:`precis_nm.handler`
+    unions this with those 3 for its unknown-op error's roster (gripe
+    334767: the roster used to only ever see this set, silently omitting
+    the 3 handler-level ops from what was actually accepted) — a single
+    source for both the real dispatch and the error message, so the two
+    can never drift apart again."""
+    return frozenset(_OPS)
+
+
 # ── op implementations ───────────────────────────────────────────────────
 
 
 def _op_add_block(tree: BlockTree, op: dict[str, Any]) -> None:
     blocktree.op_add_block(tree, op)
     name = str(op["name"]).strip()
-    dof = op.get("dof")
-    if dof is not None:
-        if not isinstance(dof, dict):
+    dof_raw = op.get("dof")
+    if dof_raw is not None:
+        try:
+            dof = vet_dof_shape(dof_raw, what="add_block 'dof'")
+        except OpError:
             del tree.blocks[name]
-            raise OpError(f"add_block 'dof' must be a JSON object, got {dof!r}")
+            raise
         tree.blocks[name].dof = dof
 
 
@@ -611,28 +713,15 @@ def _op_declare_dof(tree: BlockTree, op: dict[str, Any]) -> None:
             f"rule as envelope/desc/use/ports); declare_dof on "
             f"{node.template!r} instead"
         )
-    kind = _require_name(op, "kind", "declare_dof")
-    if kind not in _DOF_KINDS:
-        raise OpError(f"declare_dof 'kind' must be one of {_DOF_KINDS}, got {kind!r}")
-    axis_raw = op.get("axis_ports")
-    if (
-        not isinstance(axis_raw, list)
-        or len(axis_raw) != 2
-        or not all(isinstance(p, str) and p.strip() for p in axis_raw)
-    ):
-        raise OpError(
-            "declare_dof needs 'axis_ports' as a list of exactly 2 port "
-            f"names, got {axis_raw!r}"
-        )
-    axis_ports = [p.strip() for p in axis_raw]
-    for p in axis_ports:
-        if p not in node.ports:
-            roster = ", ".join(sorted(node.ports)) if node.ports else "(none)"
-            raise OpError(
-                f"declare_dof: no such port on block {block!r}: {p!r}. "
-                f"Available ports: {roster}"
-            )
-    node.dof = {"kind": kind, "axis_ports": axis_ports}
+    # Every op-dict key besides 'op'/'block' is dof payload — declare_dof's
+    # own kind=/axis_ports= live as direct op fields (unlike add_block's
+    # nested dof={...}), so this is the equivalent dict to hand
+    # vet_dof_shape. Anything beyond kind/axis_ports here (gripe 334765's
+    # reported states=/driver=) is now a loud reject, not a silent drop.
+    payload = {k: v for k, v in op.items() if k not in ("op", "block")}
+    dof = vet_dof_shape(payload, what="declare_dof")
+    check_dof_axis_ports(node, dof, block, what="declare_dof")
+    node.dof = dof
 
 
 def _op_clear_dof(tree: BlockTree, op: dict[str, Any]) -> None:
