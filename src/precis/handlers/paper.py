@@ -1832,7 +1832,20 @@ class PaperHandler(Handler):
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
-        blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
+        if lo == hi and lo < 0:
+            # Synthetic card-variant chunk (title/authors/abstract/combined,
+            # ord<0) — ``list_chunks_for_ref`` excludes ``ord<0`` by design
+            # (a body range/TOC scan shouldn't pick up derived search
+            # chunks), so route a single exact-ord card fetch through
+            # ``get_chunk`` instead, which carries no such restriction.
+            # ``(ref_id, ord)`` is a genuine unique key
+            # (``chunks_ref_id_ord_key``), so this isn't a lossy
+            # ord round-trip: the ord in a search-emitted ``pc<id>``
+            # handle always resolves back to the same row. gr334152.
+            card = self.store.chunks.get_chunk(ref.id, pos=lo)
+            blocks = [card] if card is not None else []
+        else:
+            blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
             raise NotFound(
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
@@ -2261,7 +2274,13 @@ class PaperHandler(Handler):
 # segments.
 _SLUG_RE = re.compile(r"^([a-z0-9][a-z0-9\-]*)(.*)$")
 _RANGE_RE = re.compile(r"^(\d+)(?:\.\.|-)(\d+)$")
-_CHUNK_RE = re.compile(r"^(\d+)$")
+# Single chunk selector. A negative ord (``-1``) addresses a synthetic
+# card-variant chunk (title/authors/abstract/combined — gr244679's
+# title-match promotion and search's chunk-handle rendering both emit
+# these), so the leading sign is accepted here even though card ords
+# have no "range" grammar (``_RANGE_RE`` stays positive-only — cards
+# aren't a sequence you page through). gr334152.
+_CHUNK_RE = re.compile(r"^(-?\d+)$")
 
 # A DOI-form paper id. DOIs start with ``10.<registrant>/<suffix>`` per
 # the IDF spec; the suffix can legally contain slashes and dots (e.g.

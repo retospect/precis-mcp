@@ -316,6 +316,24 @@ def test_surface_get_chunk_handle_routes_to_selector(
     assert via_handle == via_selector
 
 
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_card_chunk_handle_routes_to_selector(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr334152: a search-emitted ``pc<id>`` handle for a synthetic
+    card-variant chunk (``ord<0``) must resolve, not raise "unparseable
+    chunk selector after ~: -1" — the same round trip as the ord>=0 case
+    in ``test_surface_get_chunk_handle_routes_to_selector`` above."""
+    ref = store.insert_ref(kind="paper", slug="uh334152-card-surface", title="p")
+    chunk_id = store.chunks.upsert_card_combined(ref.id, "Title\n\nAbstract.")
+    h = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    via_handle = runtime_with_store.dispatch("get", {"id": h})
+    via_selector = runtime_with_store.dispatch(
+        "get", {"id": "uh334152-card-surface~-1"}
+    )
+    assert via_handle == via_selector
+
+
 # --- gr311336: a CacheBackedHandler chunk handle (news) must render the
 # chunk, not misroute into a URL-validation error. Regression coverage for
 # the capability-gating change: the paper case above (a hand-rolled

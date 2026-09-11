@@ -73,6 +73,15 @@ class TestParsePaperId:
         with pytest.raises(BadInput):
             _parse_paper_id("wang2020state~xyz")
 
+    def test_negative_chunk_single(self) -> None:
+        """gr334152: a card-variant chunk's ord (``-1``) must parse — a
+        search-emitted ``pc<id>`` handle for one round-trips through
+        ``slug~-1`` (see ``dispatch._maybe_infer_kind_from_handle``)."""
+        slug, rng, view = _parse_paper_id("wang2020state~-1")
+        assert slug == "wang2020state"
+        assert rng == (-1, -1)
+        assert view is None
+
     def test_inverted_range_rejected(self) -> None:
         with pytest.raises(BadInput, match="empty chunk range"):
             _parse_paper_id("wang2020state~5..3")
@@ -612,6 +621,25 @@ class TestChunks:
         for o in (5, 6, 7):
             assert f"# {chunk_handle(store, 'wang2020state', ord=o)}" in body
         assert f"# {chunk_handle(store, 'wang2020state', ord=8)}" not in body
+
+    def test_card_variant_chunk_fetch(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr334152: ``get(id='pc<id>')`` for a synthetic card-variant
+        chunk (``ord<0``) must return the card, not "unparseable chunk
+        selector after ~: -1". ``list_chunks_for_ref`` deliberately
+        excludes ``ord<0`` (a body range shouldn't pick up derived
+        search chunks) — a single exact-ord card fetch must route
+        around that exclusion instead of failing."""
+        ref_id = _seed_paper(store, blocks=["intro", "methods"])
+        card_id = store.chunks.upsert_card_combined(ref_id, "Title\n\nAbstract text.")
+        h = handle_registry.format_handle("paper", card_id, chunk=True)
+        resp = handler.get(id="wang2020state~-1")
+        assert h in resp.body
+        assert "Abstract text." in resp.body
+        # ord>=0 body chunks are unaffected by the ord<0 branch.
+        resp0 = handler.get(id="wang2020state~0")
+        assert "intro" in resp0.body
 
     def test_chunk_out_of_range_404s(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["a"])

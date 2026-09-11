@@ -1375,6 +1375,8 @@ class DraftHandler(Handler):
         text: str | None = None,
         title: str | None = None,
         find: str | None = None,
+        mode: str | None = None,
+        where: str | None = None,
         move: dict[str, Any] | None = None,
         style: str | None = None,
         list_kind: str | None = None,
@@ -1709,6 +1711,30 @@ class DraftHandler(Handler):
                         "find='old text', text='new text')"
                     ),
                 )
+            # ``mode='insert'`` keeps the matched ``find=`` span verbatim and
+            # splices ``text=`` immediately before/after it (gr334153: this
+            # used to fall through to the plain find-replace path below,
+            # which does ``old_text.replace(find, text)`` — silently
+            # DELETING the anchor since the composed replacement was
+            # ``text`` alone, not ``find`` + ``text``. A citation-bearing
+            # anchor (``...unresolved [pc1][pc2].``) vanished with its
+            # citations, leaving a double space.
+            insert_mode = (mode or "").strip() == "insert"
+            if insert_mode:
+                if where not in ("before", "after"):
+                    raise BadInput(
+                        "mode='insert' requires where='before' or where='after'",
+                        options=["before", "after"],
+                        next=(
+                            f"edit(kind='draft', id={_base.dc!r}, mode='insert', "
+                            f"find={find!r}, text='…', where='after')"
+                        ),
+                    )
+            elif where is not None:
+                raise BadInput(
+                    f"where= is only valid for mode='insert' (got mode={mode!r})",
+                    next="drop where=, or add mode='insert'",
+                )
             if text is None:
                 raise BadInput(
                     "find-replace requires text=. Pass text='' to DELETE the "
@@ -1727,10 +1753,19 @@ class DraftHandler(Handler):
                     next=f"get(kind='draft', id={_base.dc!r})",
                 )
             occurrences = old_text.count(find)
-            new_text = old_text.replace(find, str(text))
+            if insert_mode:
+                # Plain string splicing (not regex) — the anchor is spliced
+                # back in verbatim, so bracket-citation content
+                # (``[pc123][pc456]``) or any regex-metacharacter text in
+                # ``find=`` is never reinterpreted.
+                spliced = f"{find}{text}" if where == "after" else f"{text}{find}"
+                new_text = old_text.replace(find, spliced)
+            else:
+                new_text = old_text.replace(find, str(text))
             if dry_mode is not None:
                 note = (
-                    f" ({occurrences} occurrences of find= would be replaced)"
+                    f" ({occurrences} occurrences of find= would be "
+                    f"{'inserted at' if insert_mode else 'replaced'})"
                     if occurrences > 1
                     else ""
                 )
@@ -1740,10 +1775,20 @@ class DraftHandler(Handler):
             c = self.store.drafts.edit_text(
                 handle, new_text, base_sha=base_sha, source=source
             )
-            body = f"edited {c.dc}" if c else "edited"
+            if c is None:
+                body = "edited"
+            elif insert_mode:
+                body = f"inserted {where} find= in {c.dc}"
+            else:
+                body = f"edited {c.dc}"
             if c is not None:
                 if occurrences > 1:
-                    body += f" ({occurrences} occurrences of find= replaced)"
+                    suffix = (
+                        "matched, text inserted at each"
+                        if insert_mode
+                        else "replaced"
+                    )
+                    body += f" ({occurrences} occurrences of find= {suffix})"
                 self.sync_draft_links(c.ref_id)
                 self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
