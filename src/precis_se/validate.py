@@ -83,12 +83,15 @@ _KERNEL_BAND = (1e-3, 1e6)
 _KERNEL_TARGET = 100.0
 
 #: Blocks whose characteristic lengths differ by more than this cannot
-#: share one SDF query: the clearance minimizer seeds on a 14³ grid over
-#: the pair's joint region, and detecting an overlap needs a grid point
-#: *inside* the smaller body — beyond ~this ratio the answer degrades to
-#: a silently-wrong "clear". Cross-scale pairs are refused/reported
-#: honestly instead (``kernel_scale`` → ``None``); lifting the cap needs
-#: a hierarchical seed in the kernel, not a bigger number here.
+#: share one SDF query. The clearance minimizer no longer depends on a
+#: grid point landing inside the smaller body — its closest-point seeds
+#: are spaced by the bodies themselves (gr334763) — but a huge ratio still
+#: degrades the answer: the joint query region, the descent's trust step
+#: and the reported resolution are all sized off one governing length,
+#: which cannot be both bodies' at once. Cross-scale pairs are
+#: refused/reported honestly instead (``kernel_scale`` → ``None``);
+#: lifting the cap needs a per-body scale in the kernel, not a bigger
+#: number here.
 _CROSS_SCALE_RATIO = 6.0
 
 
@@ -200,11 +203,12 @@ def envelope_overlaps(
             if a_expr is None or b_expr is None:
                 continue
             result = cad_relate.clearance(design, a_name, b_name)
-            # Compared in kernel units: in-band (scale 1.0) this is the
-            # historical metre comparison unchanged; out-of-band it makes
-            # the contact tolerance scale-relative instead of a fixed
-            # 10⁻² m that nanoscale overlap could never reach.
-            if result.gap < -cad_relate.CONTACT_TOL_MM:
+            # Compared in kernel units against the query's OWN resolution
+            # (a fraction of the smaller block's size, gr334763) rather
+            # than a fixed 10⁻² that means one thing for a 10 mm part and
+            # another for a 10 m one — and that nanoscale overlap, even
+            # after normalization, could never reach.
+            if result.gap < -result.resolution:
                 out.append((a_name, b_name, float(result.gap) / scale))
     return out, cross
 

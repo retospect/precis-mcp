@@ -1515,11 +1515,19 @@ def _render_validate(tree: SeTree) -> str:
     )
 
 
-def _clearance_verdict(gap: float) -> str:
-    if gap < -cad_relate.CONTACT_TOL_MM:
+def _clearance_verdict(gap: float, resolution: float) -> str:
+    """Verdict for a signed gap, honest about the query's own resolution.
+
+    ``resolution`` is :attr:`~precis.cad.relate.ClearanceResult.resolution`
+    — a fraction of the smaller block's size, so the band means the same
+    thing whatever the design is drawn in. A gap inside it is *not* clear
+    and *not* interference: the query cannot tell (gr334763 — printing an
+    unqualified "clear" for a sub-resolution gap is how a real
+    interpenetration read as clearance)."""
+    if gap < -resolution:
         return "interference"
-    if abs(gap) <= cad_relate.CONTACT_TOL_MM:
-        return "touching (≈0)"
+    if abs(gap) <= resolution:
+        return "≈ touching (within resolution)"
     return "clear"
 
 
@@ -1595,13 +1603,14 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
                 f"block {name!r} has an invalid envelope {envelopes[name]!r}: {cause}"
             )
     result = cad_relate.clearance(design, a_name, b_name)
-    # Verdict thresholds are kernel-space constants — judge the RAW gap;
-    # dividing first would re-break nanoscale (a scaled-back nano gap can
-    # never cross a fixed metre threshold). Display converts below.
-    verdict = _clearance_verdict(result.gap)
+    # Verdict thresholds live in kernel space — judge the RAW gap against
+    # the RAW resolution; dividing first would re-break nanoscale. Display
+    # converts both back to metres below.
+    verdict = _clearance_verdict(result.gap, result.resolution)
 
     lines = [f"# clearance: {a_name!r} vs {b_name!r}"]
     lines.append(f"gap: {result.gap / scale:g} m  ({verdict})")
+    lines.append(f"resolution: ±{result.resolution / scale:g} m (scale-relative)")
     lines.append(
         f"witness point: [{_fmt3([float(x) / scale for x in result.point])}] m"
     )

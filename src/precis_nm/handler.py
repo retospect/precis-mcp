@@ -1674,11 +1674,19 @@ def _render_topology(tree: BlockTree) -> str:
     return "\n".join(lines)
 
 
-def _clearance_verdict(gap: float) -> str:
-    if gap < -cad_relate.CONTACT_TOL_MM:
+def _clearance_verdict(gap: float, resolution: float) -> str:
+    """Verdict for a signed gap, honest about the query's own resolution.
+
+    ``resolution`` is :attr:`~precis.cad.relate.ClearanceResult.resolution`
+    — a fraction of the smaller block's size, so the band means the same
+    thing whatever the design is drawn in. A gap inside it is *not* clear
+    and *not* interference: the query cannot tell (gr334763 — printing an
+    unqualified "clear" for a sub-resolution gap is how a real
+    interpenetration read as clearance)."""
+    if gap < -resolution:
         return "interference"
-    if abs(gap) <= cad_relate.CONTACT_TOL_MM:
-        return "touching (≈0)"
+    if abs(gap) <= resolution:
+        return "≈ touching (within resolution)"
     return "clear"
 
 
@@ -1740,10 +1748,11 @@ def _render_clearance(tree: BlockTree, args: dict[str, Any] | None) -> str:
         xform = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
         design.add_component(name, design.prim(name, prim, xform))
     result = cad_relate.clearance(design, a_name, b_name)
-    verdict = _clearance_verdict(result.gap)
+    verdict = _clearance_verdict(result.gap, result.resolution)
 
     lines = [f"# clearance: {a_name!r} vs {b_name!r}"]
     lines.append(f"gap: {result.gap:g} Å  ({verdict})")
+    lines.append(f"resolution: ±{result.resolution:g} Å (scale-relative)")
     lines.append(f"witness point: [{_fmt3([float(x) for x in result.point])}] Å")
     for name in (a_name, b_name):
         kids_with_env = [

@@ -14,8 +14,14 @@ import pytest
 from precis.cad.dsl import build_config
 from precis.cad.graph import Design
 from precis.cad.primitives import CircularFrustum
-from precis.cad.relate import clearance, component_sdf, translational_dof
-from precis.cad.vec import translation, vec3
+from precis.cad.relate import (
+    SEED_GRID,
+    _region,
+    clearance,
+    component_sdf,
+    translational_dof,
+)
+from precis.cad.vec import pose, translation, vec3
 
 # ---------------------------------------------------------------------------
 # component SDF sign correctness (foundation)
@@ -94,6 +100,123 @@ def test_clearance_press_fit_interferes() -> None:
     res = clearance(d, "shaft", "hub")
     assert res.interfering
     assert res.gap < 0
+
+
+# ---------------------------------------------------------------------------
+# clearance — shallow interpenetration (gr334763)
+#
+# Measured in prod (nm dogfood 2026-09-11, design azo-stick-5nm): a sphere
+# anchor poking 0.23 Å into a rod's end cap read as +0.022 Å "(clear)". The
+# overlap lens was ~⅛ of the coarse grid's seed spacing, so no seed landed
+# inside it and the descent stalled outside both bodies, on the wrong side
+# of zero. These pin the whole measured curve, not just the one point.
+# ---------------------------------------------------------------------------
+
+
+def _anchor_and_rod(gap: float) -> Design:
+    """The prod pair: sphere r2 at the origin, cylinder r3.5 h16.5 laid
+    along +x with its end cap ``gap`` from the sphere's pole (negative =
+    interpenetration). The cap is far wider than the sphere, so the contact
+    is sphere-pole-into-flat-face and the true signed gap is exactly
+    ``gap``."""
+    d = Design()
+    d.add_component("anchor", d.prim("anchor", build_config("sphere:r2")))
+    d.add_component(
+        "rod",
+        d.prim(
+            "rod",
+            build_config("cyl:r3.5h16.5"),
+            pose(vec3(2.0 + gap, 0, 0), vec3(0, 90, 0)),
+        ),
+    )
+    return d
+
+
+def _seed_spacing(d: Design) -> float:
+    """The coarse grid's widest seed spacing for this pair — the length the
+    overlaps below are expressed as fractions of."""
+    lo, hi = _region(d, [d.components["anchor"], d.components["rod"]])
+    return float(max((hi - lo) / (SEED_GRID - 1)))
+
+
+def test_clearance_shallow_overlap_reads_negative() -> None:
+    # The exact prod observation: −0.23 Å must not print as +0.022 Å.
+    res = clearance(_anchor_and_rod(-0.23), "anchor", "rod")
+    assert res.interfering
+    assert math.isclose(res.gap, -0.23, abs_tol=1e-3)
+
+
+@pytest.mark.parametrize("fraction", [0.1, 0.3, 0.8, 2.0])
+def test_clearance_overlap_negative_at_every_seed_fraction(fraction: float) -> None:
+    # Overlaps at 0.1× … 2× the seed spacing: the sub-spacing ones are the
+    # ones a grid-only seeding cannot see.
+    spacing = _seed_spacing(_anchor_and_rod(0.0))
+    overlap = fraction * spacing
+    res = clearance(_anchor_and_rod(-overlap), "anchor", "rod")
+    assert res.gap < 0, f"overlap of {overlap} Å reported as {res.gap}"
+    assert res.interfering
+    # Past full engulfment the half-gap saturates at the sphere's radius —
+    # once the anchor is wholly inside the rod, pushing further cannot make
+    # ``max(d_anchor, d_rod)`` any more negative than −r.
+    assert math.isclose(res.gap, -min(overlap, 2 * 2.0), rel_tol=0.02)
+
+
+def test_clearance_is_monotone_through_zero() -> None:
+    # The defect's signature was a JUMP from negative to positive as the
+    # overlap got shallower. Reported gap must rise monotonically with the
+    # true gap across the sign change, with no excursion to the wrong side.
+    trues = [-1.48, -0.8, -0.58, -0.3, -0.23, -0.1, -0.05, 0.05, 0.23, 0.5, 1.0]
+    reported = [clearance(_anchor_and_rod(t), "anchor", "rod").gap for t in trues]
+    assert reported == sorted(reported), reported
+    for t, r in zip(trues, reported, strict=True):
+        assert (t < 0) == (r < 0), f"sign flip at true gap {t}: reported {r}"
+
+
+def test_clearance_separated_gaps_stay_exact() -> None:
+    # The fix must not cost the separated cases any accuracy.
+    for t in (0.05, 0.23, 0.5, 1.0, 3.0):
+        res = clearance(_anchor_and_rod(t), "anchor", "rod")
+        assert not res.interfering
+        assert math.isclose(res.gap, t, abs_tol=1e-4)
+
+
+@pytest.mark.parametrize("factor", [1e3, 1.0, 1e-2])
+def test_clearance_is_scale_equivariant(factor: float) -> None:
+    # The same geometry redrawn at another size must report the same gap,
+    # scaled — the minimiser's tolerances are fractions of a governing
+    # length, never absolute (docs/backlog/multiscale-design-architecture.md
+    # §Units policy). The reported resolution scales with it.
+    #
+    # The floor on ``factor`` is NOT this module's: the *primitives'*
+    # inside test compares an unnormalized edge-normal dot product (units
+    # of length²) against ``LINEAR_EPS`` (a length), so below ~1e-3 a
+    # frustum reports points just outside its cap as inside. That is the
+    # known absolute-epsilon hazard ``precis_se.validate.kernel_scale``
+    # exists to normalize around; it is not what gr334763 was about.
+    d = Design()
+    d.add_component("anchor", d.prim("anchor", build_config(f"sphere:r{2 * factor}")))
+    d.add_component(
+        "rod",
+        d.prim(
+            "rod",
+            build_config(f"cyl:r{3.5 * factor}h{16.5 * factor}"),
+            pose(vec3((2.0 - 0.23) * factor, 0, 0), vec3(0, 90, 0)),
+        ),
+    )
+    res = clearance(d, "anchor", "rod")
+    assert res.interfering
+    assert math.isclose(res.gap, -0.23 * factor, rel_tol=1e-3)
+    # the honesty band scales with the design too, and stays below the
+    # interference it has to be able to distinguish
+    assert 0.0 < res.resolution < abs(res.gap)
+
+
+def test_clearance_resolution_flags_a_true_touch() -> None:
+    # A gap inside the query's own resolution is neither clear nor
+    # interference — the caller must be able to see that.
+    res = clearance(_anchor_and_rod(0.0), "anchor", "rod")
+    assert res.resolution > 0.0
+    assert abs(res.gap) <= res.resolution
 
 
 # ---------------------------------------------------------------------------

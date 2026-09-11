@@ -16,13 +16,39 @@ through the booleans —
 — whose **sign is exact everywhere** and whose magnitude is exact on the
 governing surface (so the bore wall reads true). Clearance is then
 ``2·min_p max(d_A(p), d_B(p))``: the half-gap is realised at the midpoint
-between the closest surfaces. We seed that minimisation on a coarse grid
-over the shared region and refine by gradient descent to analytic
-precision — deterministic, not Monte-Carlo.
+between the closest surfaces. That minimisation is seeded on a coarse grid
+over the shared region *plus* closest-point seeds derived from the bodies
+themselves, and refined by a nonsmooth descent to analytic precision —
+deterministic, not Monte-Carlo.
+
+**Why the extra seeds** (gr334763): a coarse grid alone cannot see a
+shallow interpenetration. A 0.23 Å overlap lens inside a 24 Å query region
+is ~⅛ of the seed spacing, so no grid point lands inside it, the descent
+starts outside both bodies and stalls on the ``d_A == d_B`` ridge — and a
+real −0.23 Å interference reported as +0.022 Å "clear". The cure is two
+parts, both here in :func:`_min_max_sdf`:
+
+1. **Closest-point seeds.** Alternating projection between the two bodies
+   (each exact SDF gives the projection in one Newton step) walks straight
+   to the contact, whatever the grid spacing; the segment joining that
+   pair is then sampled, so a lens arbitrarily thinner than the grid still
+   gets seeds inside it.
+2. **Ridge-following descent.** ``max(d_A, d_B)`` is nonsmooth where the
+   two are equal, and its minimum lies *on* that ridge. Steepest descent
+   stalls there; each step therefore also tries the min-norm element of
+   ``conv{∇d_A, ∇d_B}`` (the Clarke steepest-descent direction — the one
+   direction that decreases *both*), and takes whichever candidate is
+   lower.
+
+Every tolerance here is relative to a governing length (the query region's
+diagonal, or the smaller body's, per the units policy in
+``docs/backlog/multiscale-design-architecture.md``): the same code has to
+hold at Å and at km, and an absolute epsilon holds at neither.
 """
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 
@@ -32,7 +58,42 @@ from precis.cad.fold import Diff, Expr, Inter, Leaf, Union
 from precis.cad.graph import Design
 from precis.cad.vec import Vec3, as_vec3, normalize, vec3
 
-_GRAD_EPS = 1e-6
+#: Central-difference step for numeric SDF gradients, as a fraction of the
+#: governing length. Relative, so the finite difference straddles the same
+#: *shape* of feature whether the design is drawn in Å or in km.
+_GRAD_REL_EPS = 1e-7
+
+#: Initial descent step, as a fraction of the governing length.
+_STEP_REL = 0.05
+
+#: Descent gives up once the trust step falls below this fraction of the
+#: governing length (≈ float64's useful resolution for a length).
+_STEP_FLOOR_REL = 1e-9
+
+#: A candidate must beat the incumbent by this fraction of the governing
+#: length to count as progress (guards a descent that only churns noise).
+_IMPROVE_REL = 1e-13
+
+#: Samples taken along each structural seed segment. Density is set by the
+#: segment's own length, so it is scale-relative for free.
+_SEGMENT_SEEDS = 17
+
+#: Alternating closest-point projections used to find the contact seed pair.
+_PROJECT_ROUNDS = 3
+
+#: Points per axis in the coarse region grid. It is a *coverage* net, not a
+#: resolving one — the closest-point seeds and the descent do the resolving.
+#: It stays at the historical 14 all the same: the closest-point seeds are
+#: derived from the two AABB centroids, and a carved body (the wheel rim,
+#: whose centroid sits in its own bore) gives them nothing to work from, so
+#: the blind net is still what covers that case.
+SEED_GRID = 14
+
+#: How many of the best seeds get a full descent. The minimum of
+#: ``max(d_A, d_B)`` has few basins; a handful of starts covers them without
+#: multiplying the per-pair cost (this runs per block pair in clearance and
+#: validate views).
+_STARTS = 4
 
 
 def component_sdf(design: Design, expr: Expr, p: Vec3) -> float:
@@ -52,38 +113,89 @@ def component_sdf(design: Design, expr: Expr, p: Vec3) -> float:
     raise TypeError(f"unknown expr node: {expr!r}")
 
 
-def _grad(f, p: Vec3) -> Vec3:
+def _grad(f, p: Vec3, eps: float) -> Vec3:
     g = np.zeros(3)
     for i in range(3):
         e = np.zeros(3)
-        e[i] = _GRAD_EPS
-        g[i] = (f(p + e) - f(p - e)) / (2 * _GRAD_EPS)
+        e[i] = eps
+        g[i] = (f(p + e) - f(p - e)) / (2 * eps)
     return g
+
+
+def _min_norm_on_segment(ga: Vec3, gb: Vec3) -> Vec3:
+    """The shortest vector in ``conv{ga, gb}``.
+
+    For ``g = max(f_a, f_b)`` this is the Clarke steepest-descent direction
+    where the two are equally active: ``-v`` decreases *both* branches, so
+    the descent can slide **along** the ``f_a == f_b`` ridge instead of
+    zig-zagging across it. ``v ≈ 0`` means the ridge point is stationary —
+    a genuine local minimum, not a stall.
+    """
+    diff = ga - gb
+    den = float(diff @ diff)
+    if den <= 0.0:
+        return ga
+    t = float(np.clip((ga @ diff) / den, 0.0, 1.0))
+    return (1.0 - t) * ga + t * gb
+
+
+def _bounds(design: Design, expr: Expr) -> tuple[Vec3, Vec3] | None:
+    """Union AABB of one expr's leaf primitives (``None`` = unbounded/empty)."""
+    los: list[Vec3] = []
+    his: list[Vec3] = []
+
+    def walk(e: Expr) -> None:
+        if isinstance(e, Leaf):
+            lo, hi = design.instances[e.iid].placed.aabb()
+            if np.all(np.isfinite(lo)):
+                los.append(lo)
+                his.append(hi)
+        for child in getattr(e, "parts", ()):
+            walk(child)
+        base = getattr(e, "base", None)
+        if base is not None:
+            walk(base)
+        for c in getattr(e, "cutters", ()):
+            walk(c)
+
+    walk(expr)
+    if not los:
+        return None
+    return np.min(np.array(los), axis=0), np.max(np.array(his), axis=0)
+
+
+def _diagonal(box: tuple[Vec3, Vec3] | None) -> float:
+    if box is None:
+        return 0.0
+    return float(np.linalg.norm(box[1] - box[0]))
+
+
+def _governing_length(design: Design, exprs: list[Expr]) -> float:
+    """The length every tolerance in this module is expressed against.
+
+    Per the units policy (feature size, else bbox diagonal) it is the
+    **smaller** body's diagonal — the smallest thing the query has to
+    resolve — falling back to the joint region when a body is unbounded.
+    """
+    diags = [_diagonal(_bounds(design, e)) for e in exprs]
+    positive = [d for d in diags if d > 0.0]
+    if positive:
+        return min(positive)
+    lo, hi = _region(design, exprs)
+    return float(np.linalg.norm(hi - lo)) or 1.0
 
 
 def _region(design: Design, exprs: list[Expr]) -> tuple[Vec3, Vec3]:
     """Shared bounding region (intersection-biased union AABB) of the exprs."""
-    los, his = [], []
-    for expr in exprs:
-
-        def walk(e: Expr) -> None:
-            if isinstance(e, Leaf):
-                lo, hi = design.instances[e.iid].placed.aabb()
-                if np.all(np.isfinite(lo)):
-                    los.append(lo)
-                    his.append(hi)
-            for child in getattr(e, "parts", ()):
-                walk(child)
-            base = getattr(e, "base", None)
-            if base is not None:
-                walk(base)
-            for c in getattr(e, "cutters", ()):
-                walk(c)
-
-        walk(expr)
-    lo = np.min(np.array(los), axis=0)
-    hi = np.max(np.array(his), axis=0)
-    pad = 0.1 * (hi - lo + 1.0)
+    boxes = [b for b in (_bounds(design, e) for e in exprs) if b is not None]
+    lo = np.min(np.array([b[0] for b in boxes]), axis=0)
+    hi = np.max(np.array([b[1] for b in boxes]), axis=0)
+    span = hi - lo
+    # 10 % of each axis' span, floored at 10 % of the overall diagonal so a
+    # flat (zero-thickness) axis still gets a working margin. The floor is
+    # relative: a fixed ``+1.0`` pad is a whole extra body at Å scale and
+    # invisible at km scale.
+    pad = 0.1 * np.maximum(span, 0.1 * float(np.linalg.norm(span)))
     return lo - pad, hi + pad
 
 
@@ -93,11 +205,141 @@ class ClearanceResult:
 
     ``gap`` > 0 → clear (mm of space); ``gap`` < 0 → interference
     (penetration depth, mm). ``point`` is the witness midpoint.
+
+    ``resolution`` is the scale-relative band inside which this query
+    cannot tell "clear" from "touching" from "just interfering" — a
+    fraction (:data:`CONTACT_TOL_REL`) of the governing length, so it means
+    the same thing at Å and at km. A ``|gap| <= resolution`` result is
+    *touching within resolution*, and renderers must say so rather than
+    print an unqualified "clear" (gr334763).
     """
 
     gap: float
     interfering: bool
     point: Vec3
+    resolution: float = 0.0
+
+
+def _round_relative(value: float, scale: float) -> float:
+    """Round to ~6 significant figures **of the governing length**.
+
+    An absolute ``round(v, 5)`` is a different promise at every scale: it
+    is 6 significant figures on a 24 mm query and it silently zeroes every
+    gap in a design drawn in metres at nanometre sizes.
+    """
+    if not math.isfinite(scale) or scale <= 0.0:
+        return float(value)
+    digits = int(np.clip(6 - math.floor(math.log10(scale)), 0, 15))
+    return round(float(value), digits)
+
+
+def _project_onto(f, p: Vec3, eps: float) -> Vec3:
+    """One Newton step of ``p`` onto ``f``'s zero level set (its surface).
+
+    Exact in one step for a planar face and quadratically convergent
+    otherwise, because ``f`` is a true Euclidean signed distance
+    (``|∇f| = 1``).
+    """
+    grad = _grad(f, p, eps)
+    nrm = float(np.linalg.norm(grad))
+    if nrm < 1e-9:
+        return as_vec3(p)
+    return as_vec3(p - f(p) * grad / (nrm * nrm))
+
+
+def _contact_seeds(
+    da,
+    db,
+    box_a: tuple[Vec3, Vec3] | None,
+    box_b: tuple[Vec3, Vec3] | None,
+    eps: float,
+) -> list[Vec3]:
+    """Seeds drawn from the bodies themselves, not from the query region.
+
+    Alternating closest-point projection (``q_a`` onto A, ``q_b`` onto B,
+    repeatedly) converges on the closest surface pair, so the segment
+    ``q_a … q_b`` runs straight through the contact — and sampling it
+    puts seeds *inside* an overlap lens however thin it is relative to the
+    grid. The AABB-centroid segment is sampled too, as the fallback for
+    the cases where projection degenerates (concentric bodies, a body whose
+    centroid sits in its own carved-out void).
+    """
+    if box_a is None or box_b is None:
+        return []
+    ca = as_vec3(0.5 * (box_a[0] + box_a[1]))
+    cb = as_vec3(0.5 * (box_b[0] + box_b[1]))
+
+    qa, qb = ca, cb
+    for _ in range(_PROJECT_ROUNDS):
+        qa = _project_onto(da, qb, eps)
+        qb = _project_onto(db, qa, eps)
+
+    seeds: list[Vec3] = [ca, cb, qa, qb]
+    for u, v in ((qa, qb), (ca, cb)):
+        span = float(np.linalg.norm(np.asarray(v) - np.asarray(u)))
+        if span <= 0.0:
+            continue
+        # Overshoot both ends: with a deep overlap the true minimum sits
+        # *past* the projected surface points, not between them.
+        for t in np.linspace(-0.25, 1.25, _SEGMENT_SEEDS):
+            seeds.append(as_vec3(np.asarray(u) + t * (np.asarray(v) - np.asarray(u))))
+    return seeds
+
+
+def _descend(
+    da,
+    db,
+    lo: Vec3,
+    hi: Vec3,
+    start: Vec3,
+    *,
+    iters: int,
+    step: float,
+    scale: float,
+    stop_at_contact: bool,
+) -> tuple[float, Vec3]:
+    """Minimise ``max(da, db)`` locally from ``start``, ridge-aware.
+
+    Each iteration proposes two candidates — down the active branch's own
+    gradient, and down the min-norm subgradient
+    (:func:`_min_norm_on_segment`) — and takes the lower. The second is
+    what rescues the ``da == db`` ridge, where the first cannot move
+    without going uphill and the trust step collapses at a point that is
+    not a minimum (and, for a shallow overlap, has the wrong sign).
+    """
+    eps = _GRAD_REL_EPS * scale
+    improve = _IMPROVE_REL * scale
+    floor = _STEP_FLOOR_REL * scale
+    p = as_vec3(start)
+    va, vb = da(p), db(p)
+    cur = max(va, vb)
+    s = step
+    for _ in range(iters):
+        ga = _grad(da, p, eps)
+        gb = _grad(db, p, eps)
+        primary = ga if va >= vb else gb
+        directions = [primary, _min_norm_on_segment(ga, gb)]
+        best_cand: Vec3 | None = None
+        best_v = cur
+        best_pair = (va, vb)
+        for d in directions:
+            nrm = float(np.linalg.norm(d))
+            if nrm < 1e-9:
+                continue
+            cand = as_vec3(np.clip(p - s * d / nrm, lo, hi))
+            ca, cb = da(cand), db(cand)
+            cv = max(ca, cb)
+            if cv < best_v - improve:
+                best_cand, best_v, best_pair = cand, cv, (ca, cb)
+        if best_cand is None:
+            s *= 0.5
+            if s < floor:
+                break
+            continue
+        p, cur, (va, vb) = best_cand, best_v, best_pair
+        if stop_at_contact and cur <= 0.0:
+            break
+    return cur, as_vec3(p)
 
 
 def _min_max_sdf(
@@ -107,59 +349,104 @@ def _min_max_sdf(
     offset: Vec3,
     region: tuple[Vec3, Vec3],
     *,
-    grid: int = 14,
-    iters: int = 120,
-    step: float = 1.0,
+    grid: int = SEED_GRID,
+    iters: int = 80,
+    step: float | None = None,
     stop_at_contact: bool = False,
+    starts: int = _STARTS,
 ) -> tuple[float, Vec3]:
     """Minimise ``max(d_A(p − offset), d_B(p))`` over the region.
 
     The minimum value is the half-gap between ``A`` (shifted by ``offset``)
-    and ``B`` — positive when separate, negative when overlapping. Seeded
-    on a coarse grid, refined by gradient descent to analytic precision.
+    and ``B`` — positive when separate, negative when overlapping.
 
-    ``stop_at_contact`` returns the first value ≤ 0 found (grid or
-    descent) without finishing the minimisation — for callers that only
-    need the overlap *boolean* (the DOF probe's contact scan), not the
-    true minimum; the returned value is then merely "some overlap depth".
+    Seeded from **both** a coarse grid over the region and the bodies' own
+    closest-point pair (:func:`_contact_seeds`), then refined from the best
+    few seeds by the ridge-aware descent (:func:`_descend`). The grid alone
+    is blind to an overlap lens thinner than its spacing; the closest-point
+    seeds are spaced by the *bodies*, not the region, so they see it
+    (gr334763 — a −0.23 Å interference reported as +0.022 Å "clear").
+
+    ``stop_at_contact`` returns the first value ≤ 0 found (seed or descent)
+    without finishing the minimisation — for callers that only need the
+    overlap *boolean* (the DOF probe's contact scan), not the true minimum;
+    the returned value is then merely "some overlap depth". That path takes
+    a single descent, since a boolean needs no polishing.
     """
     lo, hi = region
     offset = as_vec3(offset)
 
-    def g(p: Vec3) -> float:
-        return max(component_sdf(design, ea, p - offset), component_sdf(design, eb, p))
+    def da(p: Vec3) -> float:
+        return component_sdf(design, ea, p - offset)
 
+    def db(p: Vec3) -> float:
+        return component_sdf(design, eb, p)
+
+    def g(p: Vec3) -> float:
+        return max(da(p), db(p))
+
+    scale = _governing_length(design, [ea, eb])
+    if scale <= 0.0:
+        scale = float(np.linalg.norm(hi - lo)) or 1.0
+    step = _STEP_REL * float(np.linalg.norm(hi - lo)) if step is None else step
+    eps = _GRAD_REL_EPS * scale
+
+    box_a = _bounds(design, ea)
+    if box_a is not None:
+        box_a = (box_a[0] + offset, box_a[1] + offset)
+    seeds = [vec3(*(0.5 * (lo + hi)))]
+    # Structural seeds first: they are the ones that land inside a thin
+    # lens, so a ``stop_at_contact`` probe usually answers before it ever
+    # walks the grid.
+    seeds.extend(_contact_seeds(da, db, box_a, _bounds(design, eb), eps))
     axes = [np.linspace(lo[i], hi[i], grid) for i in range(3)]
-    best_p = vec3(*(0.5 * (lo + hi)))
-    best_v = g(best_p)
-    if stop_at_contact and best_v <= 0.0:
-        return best_v, best_p
-    for x in axes[0]:
-        for y in axes[1]:
-            for z in axes[2]:
-                p = vec3(x, y, z)
-                v = g(p)
-                if v < best_v:
-                    best_v, best_p = v, p
-                    if stop_at_contact and best_v <= 0.0:
-                        return best_v, best_p
-    p, cur, s = best_p, best_v, step
-    for _ in range(iters):
-        grad = _grad(g, p)
-        nrm = float(np.linalg.norm(grad))
-        if nrm < 1e-9:
+    seeds.extend(vec3(x, y, z) for x in axes[0] for y in axes[1] for z in axes[2])
+
+    scored: list[tuple[float, Vec3]] = []
+    for seed in seeds:
+        p = as_vec3(np.clip(seed, lo, hi))
+        v = g(p)
+        if stop_at_contact and v <= 0.0:
+            return v, p
+        scored.append((v, p))
+
+    scored.sort(key=lambda sv: sv[0])
+    n_starts = 1 if stop_at_contact else max(1, starts)
+    # Spread the starts: near-duplicate seeds share a basin, so descending
+    # from all of them buys nothing. "Near" is a fraction of the governing
+    # length, not a fixed distance.
+    apart = 0.05 * scale
+
+    def far_from_picked(p: Vec3, picked: list[Vec3]) -> bool:
+        return all(float(np.linalg.norm(p - q)) > apart for q in picked)
+
+    picked: list[Vec3] = []
+    for _v, p in scored:
+        if far_from_picked(p, picked):
+            picked.append(p)
+            if len(picked) >= n_starts:
+                break
+    if not picked:
+        picked = [scored[0][1]]
+
+    best_v, best_p = scored[0]
+    for start in picked:
+        v, p = _descend(
+            da,
+            db,
+            lo,
+            hi,
+            start,
+            iters=iters,
+            step=step,
+            scale=scale,
+            stop_at_contact=stop_at_contact,
+        )
+        if v < best_v:
+            best_v, best_p = v, p
+        if stop_at_contact and best_v <= 0.0:
             break
-        cand = np.clip(p - s * grad / nrm, lo, hi)
-        cv = g(cand)
-        if cv < cur - 1e-12:
-            p, cur = cand, cv
-            if stop_at_contact and cur <= 0.0:
-                break
-        else:
-            s *= 0.5
-            if s < 1e-8:
-                break
-    return cur, as_vec3(p)
+    return best_v, as_vec3(best_p)
 
 
 def clearance(design: Design, a: str, b: str) -> ClearanceResult:
@@ -167,14 +454,32 @@ def clearance(design: Design, a: str, b: str) -> ClearanceResult:
     ea, eb = design.components[a], design.components[b]
     region = _region(design, [ea, eb])
     half, p = _min_max_sdf(design, ea, eb, vec3(0, 0, 0), region)
-    return ClearanceResult(gap=round(2.0 * half, 5), interfering=half < 0, point=p)
+    scale = _governing_length(design, [ea, eb])
+    return ClearanceResult(
+        gap=_round_relative(2.0 * half, scale),
+        interfering=half < 0,
+        point=p,
+        resolution=CONTACT_TOL_REL * scale,
+    )
 
 
 # ── connectivity — the assembly contact graph ─────────────────────────────
 #: Two components count as *connected* when their signed gap is ≤ this many mm
 #: (touching or interfering). It absorbs the small residual of the coarse-grid
 #: + gradient-descent minimiser so a true face-to-face contact reads as 0.
+#:
+#: Absolute, and therefore only meaningful for a design whose numbers are
+#: O(1)–O(1000) — see :data:`CONTACT_TOL_REL` for the scale-relative band
+#: that renderers and interference checks use instead.
 CONTACT_TOL_MM = 1e-2
+
+#: The "can't tell clear from touching" band, as a fraction of the governing
+#: length (:func:`_governing_length` — the smaller body's diagonal). This is
+#: the scale-relative form of :data:`CONTACT_TOL_MM`: it lands in the same
+#: place for the O(10 mm) parts that constant was tuned on, and it keeps
+#: meaning something for a design drawn in Å or in km. Surfaced per query as
+#: :attr:`ClearanceResult.resolution`.
+CONTACT_TOL_REL = 1e-3
 
 
 @dataclass(frozen=True)

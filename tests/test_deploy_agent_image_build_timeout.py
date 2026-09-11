@@ -52,7 +52,9 @@ def test_pre_pull_preflight_is_bounded_by_async() -> None:
     ceiling — the gr335099 gap: a plain shell task with only retries/until
     never gets retried at all when a single attempt hangs forever."""
     tasks = _load_tasks()
-    pre_pull = _find(tasks, "Preflight: pre-pull build images through the docker daemon")
+    pre_pull = _find(
+        tasks, "Preflight: pre-pull build images through the docker daemon"
+    )
     assert "async" in pre_pull, (
         "pre-pull preflight has no async ceiling — a daemon-side wedge "
         "(gr335099) can hang this task forever; retries/until never fire "
@@ -95,12 +97,12 @@ def test_build_task_defers_failure_past_diagnostics_and_cleanup() -> None:
     assert build_task["async"] == "{{ _agent_build_timeout_sec }}"
 
     build_idx = names.index(build_task["name"])
-    assert any("Diagnostics" in n and "build failure" in n for n in names[build_idx:]), (
-        "no diagnostics task follows the build task"
-    )
-    assert any("Clean up old precis-agent build dirs" in n for n in names[build_idx:]), (
-        "cleanup must still run after a failed build, not be skipped"
-    )
+    assert any(
+        "Diagnostics" in n and "build failure" in n for n in names[build_idx:]
+    ), "no diagnostics task follows the build task"
+    assert any(
+        "Clean up old precis-agent build dirs" in n for n in names[build_idx:]
+    ), "cleanup must still run after a failed build, not be skipped"
 
     final_assert = _find(
         block_tasks, "Fail this host if the agent-image build did not converge"
@@ -125,22 +127,30 @@ def test_diagnostics_tasks_capture_buildx_inspect_and_builder_logs() -> None:
         inspect_tasks = [
             t
             for t in pool
-            if "Diagnostics" in t.get("name", "") and "buildx inspect" in t.get("name", "")
+            if "Diagnostics" in t.get("name", "")
+            and "buildx inspect" in t.get("name", "")
         ]
         log_tasks = [
             t
             for t in pool
-            if "Diagnostics" in t.get("name", "") and "builder logs" in t.get("name", "")
+            if "Diagnostics" in t.get("name", "")
+            and "builder logs" in t.get("name", "")
         ]
-        assert len(inspect_tasks) == 1, f"{site}: expected one buildx-inspect diagnostics task"
-        assert len(log_tasks) == 1, f"{site}: expected one builder-logs diagnostics task"
+        assert len(inspect_tasks) == 1, (
+            f"{site}: expected one buildx-inspect diagnostics task"
+        )
+        assert len(log_tasks) == 1, (
+            f"{site}: expected one builder-logs diagnostics task"
+        )
 
         inspect_cmd = inspect_tasks[0]["ansible.builtin.command"]
         assert "buildx inspect" in inspect_cmd
 
         log_cmd = log_tasks[0]["ansible.builtin.shell"]
         assert "buildx_buildkit" in log_cmd
-        assert "docker logs".split()[0] in log_cmd or "{{ _agent_container_bin }} logs" in log_cmd
+        assert ["docker", "logs"][
+            0
+        ] in log_cmd or "{{ _agent_container_bin }} logs" in log_cmd
 
         # Diagnostics must never redden the host themselves — they're
         # best-effort capture, not an assertion.
