@@ -188,7 +188,7 @@ def _forwards_catchall(func: Any, catchall_name: str) -> bool:
     return False
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
     """Every kwarg ``cls().<verb>(...)`` can actually consume (gr334695).
 

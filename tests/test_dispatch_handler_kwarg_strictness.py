@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 from precis.runtime import PrecisRuntime
 
 
@@ -184,8 +182,8 @@ def test_patent_and_edgar_put_stubs_are_marked_tolerant() -> None:
     aren't configured in the test environment — that gate fires in
     ``_resolve_handler``, before ``_invoke_handler`` ever runs, so it
     can't exercise this decision anyway."""
-    from precis.handlers.patent import PatentHandler
     from precis.handlers.edgar import EdgarHandler
+    from precis.handlers.patent import PatentHandler
     from precis.protocol import TOLERATES_EXTRA_KWARGS_ATTR
 
     assert getattr(PatentHandler.put, TOLERATES_EXTRA_KWARGS_ATTR, False) is True

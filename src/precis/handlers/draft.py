@@ -1784,9 +1784,7 @@ class DraftHandler(Handler):
             if c is not None:
                 if occurrences > 1:
                     suffix = (
-                        "matched, text inserted at each"
-                        if insert_mode
-                        else "replaced"
+                        "matched, text inserted at each" if insert_mode else "replaced"
                     )
                     body += f" ({occurrences} occurrences of find= {suffix})"
                 self.sync_draft_links(c.ref_id)

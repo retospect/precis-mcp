@@ -99,8 +99,7 @@ def test_insert_before_preserves_anchor(store: Store) -> None:
     assert anchor in new_text
     assert "[pc1000]" in new_text
     assert new_text == (
-        "Baseline established [pc1000]. First, a caveat applies. "
-        "Results follow below."
+        "Baseline established [pc1000]. First, a caveat applies. Results follow below."
     )
 
 
