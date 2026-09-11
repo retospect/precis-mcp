@@ -239,14 +239,38 @@ render ISO units with scale-appropriate prefixes.**
   must audit every absolute tolerance and make it relative to a
   design-scale length (e.g. bbox diagonal). `structsolve` is already
   unit-agnostic; unaffected.
-- **Display**: views and error messages always print the value in the
-  ISO-prefixed unit natural to its magnitude (nm, mm, kN), never raw
-  exponents, and always name the unit in headers ("pose [x,y,z]",
-  rendered per-scale).
+- **Display (revised, Reto 2026-09-11): the underlying canonical,
+  e-notation, unit named in headers** — `2.3e-9 m`, `1.2e3 N`. One format
+  at every scale, cross-scale comparisons need no prefix arithmetic, no
+  prefix table in renderers, and the MCP does exactly ONE conversion
+  (inbound). The zero-counting hazard was an *input* problem; ingest-any
+  solves that side, and `3e-9` on output is unambiguous. ISO-prefix
+  prettification (2.3 nm) is a web-UI concern only, if ever.
+- **Tolerances/ranges are order-of-magnitude-specific — relative by
+  default** (Reto 2026-09-11). Every *system-supplied or unstated*
+  threshold (clearance "touching" bands, SDF comparison epsilons,
+  convergence criteria) is interpreted relative to a governing length
+  (feature size, else bbox diagonal), and the view reports which default
+  it applied. *Author-stated* tolerances are accepted as `%` (relative)
+  or absolute-with-unit and never silently relativized — a press fit is
+  microns regardless of diameter. *Process-capability rows stay
+  absolute* and trump the relative default once `set_mode` is known
+  (defaulting ladder: stated → capability row → scale-relative
+  fallback); capability absolutes are what make "asked 10 µm, fdm holds
+  200 µm" DRC computable (even ISO IT grades scale ~D^⅓, not linearly).
+- **Boundary: atom interactions are separate** (Reto 2026-09-11). This
+  policy covers the geometry currency (lengths, forces, tolerances)
+  only. Interaction physics — kT thresholds, π-stack energies, nm
+  mechanics capacities — keeps its own native quantities in its own
+  modules (`nm-stick-placement.md`, `precis_nm/mechanics.py`) and is
+  never routed through the unit-defaulting ladder: cost terms *over* the
+  geometry, not lengths *in* it.
 
 Owner: se/nm handlers + cad DSL docstring; lands with the dogfood-fix
 cycle. Cross-kind seams (`bind_structure`, `realized-by`, formfind feeds)
-become trivial once internal rep is shared.
+become trivial once internal rep is shared. The clearance sign-flip
+(gr334763) and the box half-extent ambiguity (gr334785 — decision
+pending) are the same family and should land in that cycle.
 
 ## Physics layers — deferred, with the notes that shouldn't be re-derived
 

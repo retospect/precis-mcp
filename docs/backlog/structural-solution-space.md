@@ -151,8 +151,10 @@ state-dependent stability lands and actually calls it).
 
 Solver outputs are minted as ordinary se/nm designs — candidates, linked
 `serves` → a quest — and `quest/frontier.py` Pareto-ranks them against
-human-set `rubric_objectives` (mass via `view='bom'`/`view='mass'`,
-compliance, member count, cost). Ranked library search is blocktree slice
+human-set `rubric_objectives` (mass, compliance, member count, cost —
+mass via `view='bom'`; a dedicated mass view does not exist and this doc
+must not imply one: the se dogfood 2026-09-11 tripped on exactly that
+phantom ref). Ranked library search is blocktree slice
 4, unchanged. House discipline carries: **weights are human-set; a solver
 may not tune its own objective** (this is also the multiscale doc's guard
 on any future Bayesian outer loop).
