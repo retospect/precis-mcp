@@ -188,8 +188,14 @@ a jig / a tensioning sequence" as a **cost**, never an infeasibility.
   `multiscale-design-architecture.md` §Complementarity: when a consumer
   actually wants the load path, build it as the complementarity solve from
   the start, not a graph walk. Still last, and only on demand.
-- **Slice 4 — SIMP engine** + cad-domain voxelization + run-summary
-  storage (above).
+- **Slice 4 — SIMP engine**: ENGINE SHIPPED 2026-09-11
+  (`src/precis/structsolve/simp.py` — pure numpy, matrix-free Jacobi-PCG,
+  Langelaar AM filter `build_dir='z+'`, `overhang_violations()`,
+  gyroid `lattice_fill()`; FD-gradient-pinned). Still open: the se bridge
+  (cad-domain voxelization, op + view, run-summary storage above), a
+  damped-move/MMA fix for the AM-filtered OC oscillation the engine
+  reports honestly, and volume enforcement on the *printed* (not design)
+  field — MMA-shaped, noted in the engine docstring.
 - **Slice 5 — nm state-dependent stability** (blocked on blocktree slice 2
   states): classify per declared state, plus — added 2026-09-11 from the
   multiscale intake — **sweep the switching pathway**: pose intermediate

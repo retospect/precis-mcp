@@ -219,6 +219,35 @@ preserved. Caveats: silhouette targets fight structural and printability
 terms directly (weight them, never hard-constrain); at finite viewing
 distance the projection is a cone, not a cylinder.
 
+## Units policy (decided, Reto 2026-09-11)
+
+**Ingest any stated unit; one canonical internal representation; always
+render ISO units with scale-appropriate prefixes.**
+
+- **Input**: ops accept an explicit unit declaration ("state your units" —
+  nm, Å, mm, m, km; N, kN); the MCP converts at the boundary. No implicit
+  per-kind convention an agent must guess — the current state (cad DSL
+  docstring says mm, se stores m, nm stores Å, one shared grammar) is the
+  anti-pattern this replaces. Explicit units kill the two observed LLM
+  failure modes: zero-counting (`box:w0.000000003…`) and silent 10×
+  exponent slips that validate cannot distinguish from intent.
+- **Internal**: one representation, SI base (m, N), float64. Relative
+  precision is scale-free, so 1.4 Å = 1.4e-10 m loses nothing down to
+  sub-fm. The *actual* resolution hazard is *absolute epsilons* in
+  kernels and solvers (SDF/clearance tolerances, convergence thresholds
+  tuned for metre-ish magnitudes are garbage at 1e-10) — the migration
+  must audit every absolute tolerance and make it relative to a
+  design-scale length (e.g. bbox diagonal). `structsolve` is already
+  unit-agnostic; unaffected.
+- **Display**: views and error messages always print the value in the
+  ISO-prefixed unit natural to its magnitude (nm, mm, kN), never raw
+  exponents, and always name the unit in headers ("pose [x,y,z]",
+  rendered per-scale).
+
+Owner: se/nm handlers + cad DSL docstring; lands with the dogfood-fix
+cycle. Cross-kind seams (`bind_structure`, `realized-by`, formfind feeds)
+become trivial once internal rep is shared.
+
 ## Physics layers — deferred, with the notes that shouldn't be re-derived
 
 The structural leg's deferral list stands (FEA, dynamics, fluids, thermal;

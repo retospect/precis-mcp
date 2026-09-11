@@ -18,12 +18,42 @@ Modules:
   (slice 2): given topology, per-member force densities and anchored
   coordinates, one linear solve per axis returns node geometry in
   equilibrium.
-- ``simp`` — 3D density-field SIMP (the nTop leg), build order slice 4;
-  not built yet.
+- :mod:`precis.structsolve.simp` — 3D density-field SIMP (the nTop leg,
+  slice 4): a voxel domain plus nodal loads and supports goes in, a
+  density field with a compliance history comes out, optionally through
+  an additive-manufacturing overhang filter. Same lattice also carries
+  the naive gyroid fill.
+
+Where :mod:`~precis.structsolve.formfind` returns an exact equilibrium,
+``simp`` returns an **estimate**: it discretises a continuum into voxels
+and reports compliance from that mesh, so its numbers are a screening
+tier — good for ranking candidate layouts against each other, never good
+enough to certify one, and never a hard DRC. That is why every
+:class:`~precis.structsolve.simp.SimpResult` carries a ``notes`` tuple
+saying what the run checked and what it did not; callers propagate the
+notes rather than quoting the number alone. The voxelisation itself (cad
+keep-in/keep-out sampling) and the se ops that drive it are a later
+slice — nothing here touches the store.
 """
 
 from __future__ import annotations
 
 from precis.structsolve.formfind import FormFindError, FormFindResult, form_find
+from precis.structsolve.simp import (
+    LatticeResult,
+    SimpResult,
+    lattice_fill,
+    overhang_violations,
+    simp_optimize,
+)
 
-__all__ = ["FormFindError", "FormFindResult", "form_find"]
+__all__ = [
+    "FormFindError",
+    "FormFindResult",
+    "LatticeResult",
+    "SimpResult",
+    "form_find",
+    "lattice_fill",
+    "overhang_violations",
+    "simp_optimize",
+]
