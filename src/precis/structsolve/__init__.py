@@ -34,6 +34,17 @@ Modules:
   density field with a compliance history comes out, optionally through
   an additive-manufacturing overhang filter. Same lattice also carries
   the naive gyroid fill.
+- :mod:`precis.structsolve.continuation` — geometrically nonlinear
+  snap-through / continuation (structural-solution-space.md slice 5's
+  CORE): traces the equilibrium branch as a member's free length (or a
+  prescribed coordinate, or a load) sweeps 0 -> 1, with member
+  directions re-evaluated at the CURRENT displaced geometry every
+  Newton step — the nonlinearity :mod:`~precis.structsolve.complementarity`'s
+  linear barrier estimate cannot represent (that estimate is provably
+  always ``|E_a - E_b|``; see this module's docstring for why). Detects
+  limit points (force-controlled Newton failure, or a displacement-
+  controlled reaction extremum) and reports a real energy barrier when
+  the branch folds, honestly reporting none for a monostable sweep.
 
 Where :mod:`~precis.structsolve.formfind` returns an exact equilibrium,
 ``simp`` returns an **estimate**: it discretises a continuum into voxels
@@ -59,6 +70,14 @@ from precis.structsolve.complementarity import (
     probe_bistability,
     solve_complementarity,
 )
+from precis.structsolve.continuation import (
+    ContinuationError,
+    ContinuationResult,
+    ContinuationStep,
+    LimitPoint,
+    barrier_over_kT,
+    trace_equilibrium_branch,
+)
 from precis.structsolve.formfind import FormFindError, FormFindResult, form_find
 from precis.structsolve.simp import (
     LatticeResult,
@@ -74,15 +93,21 @@ __all__ = [
     "ComplementarityError",
     "ComplementarityInputError",
     "ComplementarityResult",
+    "ContinuationError",
+    "ContinuationResult",
+    "ContinuationStep",
     "EquilibriumStabilityResult",
     "FormFindError",
     "FormFindResult",
     "LatticeResult",
+    "LimitPoint",
     "SimpResult",
+    "barrier_over_kT",
     "form_find",
     "lattice_fill",
     "overhang_violations",
     "probe_bistability",
     "simp_optimize",
     "solve_complementarity",
+    "trace_equilibrium_branch",
 ]
