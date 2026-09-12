@@ -168,6 +168,98 @@ def test_plan_visibility_stops_on_a_stored_parent_cycle() -> None:
     assert plan.shown == {"a": "shape", "b": "shape"}
 
 
+# ── per-subtree level override (round 2a) ────────────────────────────────
+
+
+def test_plan_visibility_override_reveals_one_subtree_at_a_different_level() -> None:
+    tree = _fork_tree()
+    from precis_web.blocktree_svg import children_map
+
+    # ambient level collapses everything at the root -- but 'fork' itself
+    # is overridden to 'refined', so ITS subtree still shows every leaf.
+    plan = plan_visibility(
+        tree,
+        children_map(tree),
+        level="envelope",
+        isolate=None,
+        level_overrides={"fork": "refined"},
+    )
+    assert plan.shown["hub"] == "shape"  # unaffected, still a genuine leaf
+    assert plan.shown["fork"] == "shape"
+    assert plan.shown["fork_arm"] == "shape"
+    assert plan.shown["fork_tip"] == "shape"
+
+
+def test_plan_visibility_override_can_collapse_deeper_than_ambient() -> None:
+    tree = _fork_tree()
+    from precis_web.blocktree_svg import children_map
+
+    plan = plan_visibility(
+        tree,
+        children_map(tree),
+        level="refined",
+        isolate=None,
+        level_overrides={"fork": "envelope"},
+    )
+    assert plan.shown["hub"] == "shape"
+    assert plan.shown["fork"] == "box"
+    assert "fork_arm" not in plan.shown
+    assert "fork_tip" not in plan.shown
+
+
+def test_plan_visibility_override_force_opens_ancestors_to_reach_a_nested_target() -> (
+    None
+):
+    tree = _fork_tree()
+    from precis_web.blocktree_svg import children_map
+
+    # ambient level 'envelope' would normally collapse 'fork' immediately
+    # (depth 0) and never even reach 'fork_arm' -- overriding fork_arm's
+    # OWN level must force 'fork' open as a pass-through so the override
+    # target is actually reachable.
+    plan = plan_visibility(
+        tree,
+        children_map(tree),
+        level="envelope",
+        isolate=None,
+        level_overrides={"fork_arm": "refined"},
+    )
+    assert plan.shown["fork"] == "shape"  # forced open, not collapsed
+    assert plan.shown["fork_arm"] == "shape"
+    assert plan.shown["fork_tip"] == "shape"
+
+
+def test_plan_visibility_override_of_unreachable_name_is_silently_dropped() -> None:
+    tree = _fork_tree()
+    from precis_web.blocktree_svg import children_map
+
+    # isolate narrows to 'fork' -- an override naming 'hub' (outside that
+    # subtree) must not raise or otherwise disturb the render.
+    plan = plan_visibility(
+        tree,
+        children_map(tree),
+        level="envelope",
+        isolate="fork",
+        level_overrides={"hub": "refined"},
+    )
+    assert "hub" not in plan.shown
+    assert plan.shown["fork"] == "box"
+
+
+def test_plan_visibility_override_rejects_unknown_level_name() -> None:
+    tree = _fork_tree()
+    from precis_web.blocktree_svg import children_map
+
+    with pytest.raises(ValueError, match="unknown abstraction level"):
+        plan_visibility(
+            tree,
+            children_map(tree),
+            level="refined",
+            isolate=None,
+            level_overrides={"fork": "nope"},
+        )
+
+
 def test_descendants_stops_on_a_stored_cycle() -> None:
     from precis_web.blocktree_svg import _descendants
 

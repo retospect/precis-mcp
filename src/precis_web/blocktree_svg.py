@@ -34,10 +34,22 @@ envelope shape regardless of level — there is nothing to hide.
 
 **Part isolation** (item 2) narrows the render roots to one named
 subtree and recentres the view on it; the level cutoff then applies
-*within* that subtree. Combining isolation with an independent level per
-OTHER subtree (comment 4's "hub shown implemented while the rest stays at
-envelope level") is not built this round — one level applies uniformly
-to whatever is rendered.
+*within* that subtree.
+
+**Per-subtree level override** (round 2a, comment 4's "hub shown
+implemented while the rest stays at envelope level"): ``plan_visibility``
+takes an optional ``level_overrides`` map of block name → level. An
+override re-roots the ladder at that name — depth resets to 0 there, so
+the override's own cutoff (not the ambient one) governs its subtree.
+Because an override can name a block nested *below* what the ambient
+level would otherwise collapse to a box, every ancestor on the path from
+an override's target up to the nearest render root is force-opened
+("shape", never "box") regardless of the ambient cutoff — a box can't be
+grown a peephole, so the whole chain down to the override must render as
+real geometry. An override naming a block outside the current render
+roots (e.g. a different isolate subtree) is silently inert — dropped,
+never an error, matching ``isolate``'s own "unknown name → ignored"
+convention for this additive, non-navigational param.
 
 **Force overlay.** ``axial`` members (se's tension-rung 1 mechanism
 class) are drawn as coloured lines between their two endpoint blocks'
@@ -206,19 +218,70 @@ class VisiblePlan:
     render_roots: list[str] = field(default_factory=list)
 
 
+def _resolve_level_overrides(
+    tree: Tree[BlockNode, Connect],
+    roots: list[str],
+    level_overrides: dict[str, str] | None,
+) -> tuple[dict[str, int | None], set[str]]:
+    """``(cutoffs, force_open)`` for the reachable overrides: ``cutoffs``
+    maps an override's block name to its OWN collapse depth (validating
+    the level name in the process — an unknown level still raises, same
+    as an ambient ``level``); ``force_open`` is every STRICT ancestor
+    (render root exclusive... inclusive of the root, see below) on the
+    path from an override target up to its render root — these must
+    never collapse, or the override target behind them would be
+    unreachable (module docstring). An override whose name isn't in
+    ``tree.blocks``, or whose ancestor chain runs off the top without
+    ever reaching one of ``roots`` (outside the current isolate subtree,
+    or a stored cycle), is dropped rather than raised — see the module
+    docstring's "silently inert" convention."""
+    if not level_overrides:
+        return {}, set()
+    roots_set = set(roots)
+    cutoffs: dict[str, int | None] = {}
+    force_open: set[str] = set()
+    for name, lvl in level_overrides.items():
+        if name not in tree.blocks:
+            continue
+        chain: list[str] = []
+        seen: set[str] = set()
+        cur = name
+        reached = False
+        while cur not in seen:
+            seen.add(cur)
+            chain.append(cur)
+            if cur in roots_set:
+                reached = True
+                break
+            parent = tree.blocks[cur].parent
+            if parent is None or parent not in tree.blocks:
+                break
+            cur = parent
+        if not reached:
+            continue
+        cutoffs[name] = collapse_depth(lvl)  # raises on an unknown level
+        force_open.update(chain[1:])  # strict ancestors only
+    return cutoffs, force_open
+
+
 def plan_visibility(
     tree: Tree[BlockNode, Connect],
     kids: dict[str, list[str]],
     *,
     level: str,
     isolate: str | None,
+    level_overrides: dict[str, str] | None = None,
 ) -> VisiblePlan:
     """Decide, for every reachable block, whether it draws its own shape
-    or stands in as a collapsed box (module docstring's level ladder)."""
+    or stands in as a collapsed box (module docstring's level ladder,
+    plus its per-subtree override)."""
     if isolate is not None and isolate not in tree.blocks:
         raise KeyError(isolate)
-    cutoff = collapse_depth(level)
+    default_cutoff = collapse_depth(level)
     roots = [isolate] if isolate is not None else root_names(tree)
+    override_cutoffs, force_open = _resolve_level_overrides(
+        tree, roots, level_overrides
+    )
     shown: dict[str, Literal["shape", "box"]] = {}
     #: The render path runs BEFORE ``adapter.validate`` (which is where a
     #: stored parent-cycle would normally surface as a finding), so a
@@ -228,23 +291,26 @@ def plan_visibility(
     #: :func:`group_of`'s own ``seen`` guard).
     visited: set[str] = set()
 
-    def walk(name: str, depth: int) -> None:
+    def walk(name: str, depth: int, cutoff: int | None) -> None:
         if name in visited:
             return
         visited.add(name)
+        if name in override_cutoffs:
+            cutoff = override_cutoffs[name]
+            depth = 0  # the override re-roots the ladder here
         node_kids = sorted(kids.get(name, []))
         if not node_kids:
             shown[name] = "shape"
             return
-        if cutoff is not None and depth >= cutoff:
+        if cutoff is not None and depth >= cutoff and name not in force_open:
             shown[name] = "box"
             return
         shown[name] = "shape"
         for k in node_kids:
-            walk(k, depth + 1)
+            walk(k, depth + 1, cutoff)
 
     for r in roots:
-        walk(r, 0)
+        walk(r, 0, default_cutoff)
     return VisiblePlan(shown=shown, render_roots=roots)
 
 

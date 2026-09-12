@@ -5,6 +5,7 @@
 <div class="flex items-center gap-3 mb-4">
   <h1 class="text-lg font-semibold">{{ title }}</h1>
   <span class="text-xs text-slate-500">{{ kind_label }} · {{ slug }}</span>
+  <a href="{{ view3d_url }}" class="text-xs text-blue-600 hover:underline ml-auto">3D view →</a>
 </div>
 
 <form method="get" class="flex flex-wrap items-end gap-3 mb-4 text-sm">
@@ -40,6 +41,11 @@
         <option value="{{ b }}" {{ 'selected' if b == isolate else '' }}>{{ b }}</option>
       {% endfor %}
     </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-1" title="per-subtree level override: name:level, name2:level2">level overrides</label>
+    <input type="text" name="overrides" value="{{ overrides }}" placeholder="hub:realized, rest:envelope"
+           class="border border-slate-300 rounded px-2 py-1 w-56" />
   </div>
   <button type="submit" class="px-3 py-1 rounded bg-slate-800 text-white">apply</button>
 </form>

@@ -416,3 +416,166 @@ def test_nm_detail_and_view_svg(blocktree_client, runtime_with_store) -> None:
     # nm has no whole-structure stability verdict — only validate + fill.
     assert "stability:" not in r2.text
     assert "validate:" in r2.text
+
+
+# ── round 2a: per-subtree level override (SVG route) ─────────────────────
+
+
+def test_se_view_svg_overrides_reveals_one_subtree_at_a_different_level(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get(
+        "/se/unicycle_web/view.svg?level=envelope&overrides=fork:refined"
+    )
+    assert r.status_code == 200
+    assert "<title>fork</title>" in r.text
+    assert "<title>fork_arm</title>" in r.text
+    assert "<title>fork_tip</title>" in r.text
+    # hub isn't a subtree with children -> unaffected either way.
+    assert "<title>hub</title>" in r.text
+
+
+def test_se_view_svg_overrides_unknown_level_is_400(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get(
+        "/se/unicycle_web/view.svg?level=refined&overrides=fork:nope"
+    )
+    assert r.status_code == 400
+
+
+def test_se_detail_page_shows_view3d_link_and_overrides_field(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web?overrides=fork%3Arefined")
+    assert r.status_code == 200
+    assert "/se/unicycle_web/view3d" in r.text
+    assert 'value="fork:refined"' in r.text
+
+
+# ── round 2a: three-cad-viewer 3D route ───────────────────────────────────
+
+
+def test_se_view3d_404(client) -> None:
+    r = client.get("/se/nope/view3d")
+    assert r.status_code == 404
+
+
+def test_se_scene3d_404(client) -> None:
+    r = client.get("/se/nope/scene3d.json")
+    assert r.status_code == 404
+
+
+def test_se_view3d_page_renders(blocktree_client, runtime_with_store) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/view3d")
+    assert r.status_code == 200
+    assert "/se/unicycle_web/scene3d.json" in r.text
+    assert "three-cad-viewer" in r.text
+
+
+def test_se_scene3d_json_shapes_tree_and_connections(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json")
+    assert r.status_code == 200
+    body = r.json()
+    import re
+
+    assert re.fullmatch(r"/se-\d+", body["shapes"]["id"])
+    # every SOLID leaf path ends in a plain integer (the DB-minted block
+    # id) — no lookup table needed on the client to interpret a pick.
+    # The sibling ``_connections`` group's own ``edges``-type leaves are
+    # NOT block leaves (their id is a synthetic ``c<i>`` per drawn link)
+    # and are excluded from this check on purpose.
+    leaf_ids: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if "parts" in node:
+            for p in node["parts"]:
+                _walk(p)
+        elif node.get("type") == "shapes":
+            leaf_ids.append(node["id"].rsplit("/", 1)[-1])
+
+    _walk(body["shapes"])
+    assert leaf_ids  # at least one leaf rendered
+    assert all(seg.isdigit() for seg in leaf_ids)
+    # the hub—rim axial tie is drawn as a connection, labelled by its
+    # kinematic class/mechanism (round 2a spec §5.8 comment 5(c)).
+    assert len(body["connections"]) == 1
+    conn = body["connections"][0]
+    assert {conn["a_name"], conn["b_name"]} == {"hub", "rim"}
+    assert "B" in body["mermaid"] and "graph LR" in body["mermaid"]
+    assert isinstance(body["explode"], dict) and body["explode"]
+
+
+def test_se_scene3d_json_unknown_isolate_is_400(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json?isolate=nope")
+    assert r.status_code == 400
+
+
+def test_se_scene3d_json_bad_level_is_400(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json?level=nope")
+    assert r.status_code == 400
+
+
+def test_se_scene3d_json_bad_override_level_is_400_clean(
+    blocktree_client, runtime_with_store
+) -> None:
+    """A ``overrides=`` entry naming a real block but an unrecognised
+    LEVEL still 400s cleanly through ``_resolve_level_overrides`` — a
+    RecursionError/500 here would mean the cycle guard or the plan/error
+    plumbing broke, not just this one param."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json?overrides=hub:nope")
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+
+def test_se_view3d_hostile_overrides_excluded_from_scene_url(
+    blocktree_client, runtime_with_store
+) -> None:
+    """Reflected-XSS regression: an ``overrides`` pair whose LEVEL half
+    is attacker text must never survive into the page's embedded
+    ``scene_url`` — if it did, the 3D page's own JS would fetch it,
+    ``scene3d.json`` would echo the unrecognised level back verbatim in
+    its 400 body, and (pre-fix) the client rendered that text via
+    ``innerHTML``. ``_valid_overrides_qs`` drops the whole pair (the
+    LEVEL half fails the known-values check) before ``scene_url`` is
+    ever built, so neither the raw nor the encoded payload should appear
+    anywhere the browser would execute it."""
+    from urllib.parse import quote
+
+    _seed_se(runtime_with_store)
+    hostile = "<script>alert(1)</script>"
+    r = blocktree_client.get(
+        f"/se/unicycle_web/view3d?overrides={quote('hub:' + hostile)}"
+    )
+    assert r.status_code == 200
+    scene_url_line = next(
+        line for line in r.text.splitlines() if "sceneUrl" in line
+    )
+    assert hostile not in scene_url_line
+    assert "alert" not in scene_url_line
+    assert "overrides=" not in scene_url_line  # the whole invalid pair was dropped
+    assert "scene3d.json" in scene_url_line  # sanity: the right line
+
+
+def test_nm_view3d_and_scene3d(blocktree_client, runtime_with_store) -> None:
+    _seed_nm(runtime_with_store)
+    r = blocktree_client.get("/nm/rotaxane_web/view3d")
+    assert r.status_code == 200
+    r2 = blocktree_client.get("/nm/rotaxane_web/scene3d.json")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["shapes"]["parts"]  # axle + ring rendered
