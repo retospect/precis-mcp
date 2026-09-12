@@ -51,11 +51,16 @@ or `id=` and hand back text.
 - **Files under `PRECIS_ROOT` / code** — `markdown`, `plaintext`,
   `tex`, and `python` (symbol- and callgraph-aware repo navigator).
 - **Authored artifacts** — `draft` (chunk-native document that
-  exports to LaTeX/PDF/Word), `cad` (parametric
-  solid-model design probed analytically, not meshed),
-  `structure` (atomistic cell + bond graph for DFT/molecular work),
-  `pcb` (netlist + placement graph → BOM/CPL/DSN + Freerouting), and
-  `folder` (organizational container for the above).
+  exports to LaTeX/PDF/Word), `cad` (analytic-SDF solid modeling —
+  designs are probed, not meshed; unit-required DSL), `se`
+  (structural-envelope designs: blocks/ports/joints with DRC,
+  stability + prestress analysis, a fastener engine, STL/3MF/STEP
+  export), `nm` (molecular-machine designs on the same block
+  surface — envelopes bound to atomistic structures, mechanics
+  ceilings), `structure` (atomistic cell + bond graph for
+  DFT/molecular work), `pcb` (netlist + placement graph →
+  BOM/CPL/DSN + Freerouting), and `folder` (organizational container
+  for the above).
 - **Personal state & knowledge** — `todo` (hierarchical todo tree),
   `memory`, `gripe`, `anki` (spaced-repetition cloze cards → AnkiWeb),
   `citation` (verified claim → source quote), `finding`
@@ -230,6 +235,42 @@ and an assessment of whether that state is right — see
 [`docs/reference/config-variables.md`](docs/reference/config-variables.md).
 The policy for *adding* a var (the three-tier scheme) is
 [`docs/conventions/env-vars.md`](docs/conventions/env-vars.md).
+
+## Design system
+
+The `cad` / `se` / `nm` kinds form one design surface, macro to
+molecular, built for LLM authoring:
+
+- **Explicit units everywhere.** Every dimensioned input states its
+  unit (`3mm`, `1.4Å`, `12 N`, `90deg` — pint-backed, hogsheads
+  included); internals are SI (metres, radians, float64); display is
+  a neat SI-prefix formatter (`2.3 nm`, `1.2 kN`). A bare number
+  where a unit is required is *rejected with a hint* echoing the
+  plausible readings — the zero-counting / exponent-slip failure
+  modes of LLM-authored geometry die at the parser. Two declared
+  enclaves keep ecosystem conventions honest (`pcb` is mm like its
+  gerber/IPC world; `structure` is Å/eV like its ASE/CIF world),
+  self-named and converted at every API boundary.
+- **Structural analysis** (`precis.structsolve`): force-density
+  form-finding, Pellegrino–Calladine rigidity + prestress
+  stability, and an active-set complementarity solver for unilateral
+  members (tension-only cables, compression-only struts,
+  must-contact stops — "which members carry, and does every member
+  stay on its legal sign"), with a two-state bistability probe. A
+  SIMP topology-optimisation engine (matrix-free, AM overhang
+  filter, gyroid lattice fill) ships alongside.
+- **Design viewer** (web): per-design SVG projection reader —
+  force-coloured members, part isolation, stepped semantic
+  abstraction levels (envelope → interfaces → refined → realized) —
+  plus a three-cad-viewer 3D route with drawn connectivity,
+  exploded view, and a linked topology graph.
+- Scale-relative kernel tolerances (an AST-gated no-absolute-epsilon
+  rule) make the same machinery exact from metres to Ångströms.
+
+Where this is heading — one geometry currency from tolerance boxes
+to atoms, situations/verdict tables, pattern groups, cost-aware
+optimisation — is mapped in
+[`docs/backlog/multiscale-design-architecture.md`](docs/backlog/multiscale-design-architecture.md).
 
 ## Design highlights
 
@@ -414,6 +455,11 @@ high-traffic ones:
 
 ## Roadmap
 
+- The multiscale design programme (shared design core, block
+  libraries with states, situation rule tables, pattern groups,
+  cost-aware optimisation) —
+  [`docs/backlog/multiscale-design-architecture.md`](docs/backlog/multiscale-design-architecture.md)
+  is the living map.
 - `book`, `rmk` file handlers. (`tex` and `docx` shipped.)
 - `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`docs/backlog/`](docs/backlog/README.md)).
 - `voice` kind — STT/TTS bound to transcript refs (spec: [`docs/backlog/voice-kind-spec.md`](docs/backlog/voice-kind-spec.md)).
