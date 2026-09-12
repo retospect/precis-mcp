@@ -69,6 +69,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | optimisation stack (surrogates, BO, annealing) | **here, §Optimisation** | new |
 | requirement→joint matching | **here, §Joint matching** | new |
 | view-dependent form | **here, §View-dependent form** | new |
+| pattern groups (one prototype × transform group; orbit-deduped checks, port arrays, n× BOM) | `pattern-groups.md` (Reto 2026-09-12; composes with blocktree slice-1 instancing) | spec'd 2026-09-12 |
 | scenario presets + service environment (lifetime master switch, standard load-case library) | `multiscale-design-system-spec.md` §1.3 | spec'd |
 | per-number provenance; envelope revisions, CoW design state, pin→branch comparison | spec §1.4–1.5, §5.6 | spec'd |
 | phase loop (topology→sizing→realisation, envelope tightening) | spec §1.6 | spec'd |
