@@ -18,6 +18,12 @@ Modules:
   (slice 2): given topology, per-member force densities and anchored
   coordinates, one linear solve per axis returns node geometry in
   equilibrium.
+- :mod:`precis.structsolve.complementarity` — active-set unilateral
+  analysis (docs/backlog/complementarity-solver.md slice 1): given
+  topology, per-member axial rate/free-length/sign-idiom and supports,
+  finds the small-displacement equilibrium in which every tension-only,
+  compression-only and must-contact member obeys its one-sidedness —
+  never both a gap and a force.
 - :mod:`precis.structsolve.simp` — 3D density-field SIMP (the nTop leg,
   slice 4): a voxel domain plus nodal loads and supports goes in, a
   density field with a compliance history comes out, optionally through
@@ -38,6 +44,12 @@ slice — nothing here touches the store.
 
 from __future__ import annotations
 
+from precis.structsolve.complementarity import (
+    IDIOMS,
+    ComplementarityError,
+    ComplementarityResult,
+    solve_complementarity,
+)
 from precis.structsolve.formfind import FormFindError, FormFindResult, form_find
 from precis.structsolve.simp import (
     LatticeResult,
@@ -48,6 +60,9 @@ from precis.structsolve.simp import (
 )
 
 __all__ = [
+    "IDIOMS",
+    "ComplementarityError",
+    "ComplementarityResult",
     "FormFindError",
     "FormFindResult",
     "LatticeResult",
@@ -56,4 +71,5 @@ __all__ = [
     "lattice_fill",
     "overhang_violations",
     "simp_optimize",
+    "solve_complementarity",
 ]
