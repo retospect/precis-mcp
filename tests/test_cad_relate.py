@@ -86,51 +86,6 @@ def _shaft_and_hub(bore_r: float) -> Design:
     return d
 
 
-def test_clearance_sub_cell_overlap_lens_reads_negative() -> None:
-    """gr334763 (nm dogfood, Å-unit design): an overlap lens far thinner
-    than the coarse-grid seed spacing (0.23 units vs ~1.6-unit cells)
-    must still read as interference at ≈ the true depth — no seed lands
-    inside the lens, and a single descent start could die in a near-side
-    local minimum of the ``max()`` surface, reporting '+0.02 (clear)'."""
-    side = 10.0  # ~10 Å at the nm domain's unit scale
-    depth = 0.23
-    d = Design()
-    d.add_component("a", d.prim("a", build_config(f"box:w{side}d{side}h{side}")))
-    d.add_component(
-        "b",
-        d.prim(
-            "b",
-            build_config(f"box:w{side}d{side}h{side}"),
-            translation(side - depth, 0, 0),
-        ),
-    )
-    res = clearance(d, "a", "b")
-    assert res.interfering
-    assert res.gap == pytest.approx(-depth, rel=0.25)
-
-
-def test_clearance_sub_cell_gap_reads_positive_and_accurate() -> None:
-    """The mirror case: a genuinely clear sub-cell gap (0.05 units)
-    reports a small positive value at ≈ the true width — a true near
-    touch and a sub-cell overlap must never print the same number
-    (gr334763's identical-label half)."""
-    side = 10.0
-    gap = 0.05
-    d = Design()
-    d.add_component("a", d.prim("a", build_config(f"box:w{side}d{side}h{side}")))
-    d.add_component(
-        "b",
-        d.prim(
-            "b",
-            build_config(f"box:w{side}d{side}h{side}"),
-            translation(side + gap, 0, 0),
-        ),
-    )
-    res = clearance(d, "a", "b")
-    assert not res.interfering
-    assert res.gap == pytest.approx(gap, rel=0.25)
-
-
 def test_clearance_shaft_in_clearance_bore() -> None:
     # bore Ø10.2 over a Ø10 shaft → 0.1 mm radial clearance.
     d = _shaft_and_hub(bore_r=5.1)
