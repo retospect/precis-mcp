@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 
@@ -95,6 +96,22 @@ def test_parse_unexpected_key() -> None:
 def test_parse_no_colon() -> None:
     with pytest.raises(DslError):
         parse("cylr3h12")
+
+
+def test_no_colon_error_examples_parse_under_boundary_grammar() -> None:
+    """The malformed-config error's own quoted ``e.g.`` examples must parse
+    cleanly under boundary mode (``require_units=True``) — this exact
+    message is what an agent sees on a bad node line, so a stale unitless
+    example here would be self-defeating (units-cutover prompt-surface
+    audit, item 5/2.2 — same class as the retired ``'cyl:r3h12'`` bug)."""
+    with pytest.raises(DslError) as exc:
+        parse("cylr3h12")
+    msg = str(exc.value)
+    eg = msg.split("e.g.", 1)[1]
+    examples = re.findall(r"'([^']+)'", eg)
+    assert examples, f"no quoted examples found in: {msg!r}"
+    for example in examples:
+        parse(example, require_units=True)  # must not raise
 
 
 def test_parse_ngon_requires_int_ge_3() -> None:

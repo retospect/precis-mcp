@@ -8,9 +8,11 @@ Uses the same ``store`` fixture every DB-backed handler test uses.
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 
+from precis.cad.scene import parse_source
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.cad import CadHandler
@@ -58,6 +60,44 @@ def test_put_replace_updates(cad):
 def test_put_bad_source_rejected(cad):
     with pytest.raises(BadInput):
         cad.put(id="bad", text="plate frobnicate cyl:r1h1")
+
+
+def _extract_put_text(hint: str) -> str:
+    """Pull the ``text=`` payload out of a suggested ``put(kind='cad', ...)``
+    call string (as shown in a retry/onboarding hint). A triple-quoted
+    payload's ``\\n`` are literal escape *characters* in the hint text —
+    exactly as they'd read if the agent pasted the call verbatim into
+    Python, where they become real newlines when the literal is evaluated —
+    so mirror that here before feeding the result to the real parser."""
+    m = re.search(r"text='''(.*?)'''", hint, re.DOTALL)
+    if m:
+        return m.group(1).replace("\\n", "\n")
+    m = re.search(r"text='([^']*)'", hint)
+    assert m, f"no text= found in hint: {hint!r}"
+    return m.group(1)
+
+
+def test_retry_and_onboarding_hints_parse_under_boundary_grammar(cad):
+    """Every cad retry/onboarding hint is copy-paste-valid under the current
+    strict (unit-required) grammar. These are served at exactly the moment
+    the agent is already failing — a stale example here compounds the
+    failure instead of resolving it (units cutover regression guard)."""
+    # empty-store onboarding hint (handlers/cad.py `_render_list`)
+    body = cad.get().body
+    assert "Next: put(" in body
+    parse_source(_extract_put_text(body))
+
+    # missing id= retry hint
+    with pytest.raises(BadInput) as exc:
+        cad.put(text="anything")
+    assert exc.value.next is not None
+    parse_source(_extract_put_text(str(exc.value.next)))
+
+    # missing text= retry hint (triple-quoted, multi-line)
+    with pytest.raises(BadInput) as exc:
+        cad.put(id="flange")
+    assert exc.value.next is not None
+    parse_source(_extract_put_text(str(exc.value.next)))
 
 
 def test_get_node_json(cad):

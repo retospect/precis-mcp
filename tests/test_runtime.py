@@ -65,6 +65,30 @@ def test_calc_bad_input_renders(runtime: PrecisRuntime) -> None:
     assert "next:" in out
 
 
+def test_cad_dsl_error_renders_grammar_teaching_not_internal_error(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A bad cad ``config`` string (``cad.dsl.DslError``) must render its
+    grammar-teaching cause text through the normal error path — never
+    flatten to an opaque ``internal error in put: DslError (see server
+    log)``. ``DslError`` wasn't a ``PrecisError`` before this fix, so the
+    dispatcher's generic ``except Exception`` swallowed the cause text
+    (units-cutover prompt-surface audit, mechanism finding #3)."""
+    out = runtime_with_store.dispatch(
+        "put", {"kind": "cad", "id": "bad1", "text": "plate add blob:r25mm"}
+    )
+    assert "[error:DslError]" in out
+    assert "internal error" not in out
+    assert "unknown shape" in out and "blob" in out
+
+    out = runtime_with_store.dispatch(
+        "put", {"kind": "cad", "id": "bad2", "text": "plate add cyl:r25mm"}
+    )
+    assert "[error:DslError]" in out
+    assert "internal error" not in out
+    assert "cyl" in out and "missing" in out
+
+
 def test_hints_appended_to_response(runtime: PrecisRuntime) -> None:
     """Verify hints emitted during a verb call land in the rendered output."""
 

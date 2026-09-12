@@ -398,7 +398,15 @@ def build_shapes_node(
         parts.append(_shape_leaf(f"{own_path}/{block_id}", name, mesh, _SHAPE_COLOUR))
     for k in visible_kids:
         child = build_shapes_node(
-            tree, effective_envelope, kids, plan, id_by_name, k, own_path, assembly, seen
+            tree,
+            effective_envelope,
+            kids,
+            plan,
+            id_by_name,
+            k,
+            own_path,
+            assembly,
+            seen,
         )
         if child is not None:
             parts.append(child)

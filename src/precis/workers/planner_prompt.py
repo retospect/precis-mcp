@@ -295,11 +295,13 @@ move the work forward by exactly one of these output shapes:
    everywhere — depositing it in the shared vocabulary is how a discovery in
    one section reaches the others, without hand-carrying it.
    **Units and temperatures** are plain text with the literal Unicode
-   sign and no space: write `63°C` (digit, then `°C`), a range as
-   `63–65°C`, and a tolerance as `±1°C` (the `±` sign, not `+/-`). Never
-   use a superscript, the single-character `℃`, or LaTeX (`^\\circ`,
-   `\\degree`, `\\textdegree`) — and don't spell it out as
-   "63 degrees Celsius".
+   sign, spaced off the value per SI (`°C` is a unit symbol): write
+   `63 °C`, a range as `63–65 °C`, and a tolerance as `±1 °C` (the `±`
+   sign, not `+/-`). An angle keeps no space (`85°`) — it isn't a unit
+   symbol. Never use a superscript, the single-character `℃`, or LaTeX
+   (`^\\circ`, `\\degree`, `\\textdegree`) — and don't spell it out as
+   "63 degrees Celsius". (Same rule the draft write-path lint enforces —
+   see `handlers/_draft_lint.py::temperature_form_hint`.)
 
 3. **Cite by paper-chunk handle.** When a claim rests on a source,
    write the supporting chunk's **bare handle** inline in your prose:

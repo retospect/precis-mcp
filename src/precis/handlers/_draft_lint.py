@@ -35,10 +35,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 #: Malformed temperature / unit notation the draft prose should not carry.
-#: The canonical form is the literal sign with no space — ``63°C`` (degree
-#: sign U+00B0 + ``C``), a range ``63–65°C``, a tolerance ``±1°C`` (U+00B1).
-#: Each pattern matches one *wrong* spelling so the canonical ``63°C`` (no
-#: space, real ° / ± signs) trips none of them. See ``temperature_form_hint``.
+#: The canonical form is the literal sign spaced off the value per SI —
+#: ``63 °C`` (degree sign U+00B0 + ``C``, ``°C`` being a unit symbol), a
+#: range ``63–65 °C``, a tolerance ``±1 °C`` (U+00B1). An angle isn't a
+#: unit symbol and stays tight (``85°``). Each pattern matches one *wrong*
+#: spelling — including the unspaced ``63°C`` — so only the canonical
+#: spaced form trips none of them. See ``temperature_form_hint``.
 _BAD_TEMP_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"[℃℉]"),  # single-char degree-Celsius/Fahrenheit (U+2103/2109)
     re.compile(r"\\(?:circ|degree|textdegree|celsius|textcelsius)\b"),  # LaTeX

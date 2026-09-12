@@ -61,7 +61,7 @@ name/path.
 | `make` | `mt3` | A make-tree: assembly/synthesis ORDER for a design — first-class steps (`mk<id>`) with conditions in meta; blocks align via `made-by` links from the design side. See `precis-cad-help`. | store |
 | `figure` | `fg7` | Interactive SVG canvas you draw *with* the model — a chunk-tree, never exported, rendered in the browser (`/figure`). See `precis-figure-help`. | store |
 | `mermaid` | `mm7` | A mermaid diagram you draw *with* the model (flowchart / sequence / state / class …), never exported. Web editor `/mermaid`; each diagram type has a `precis-mermaid-<type>` skill. See `precis-mermaid-help`. | store |
-| `cad` | `cd7` | Parametric solid-model design — a boolean DAG of placed analytic primitives authored as a text node-list (`cyl:r3h12`, `box:w40d20h10`); no meshing in the design loop. See `precis-cad-help`. | store |
+| `cad` | `cd7` | Parametric solid-model design — a boolean DAG of placed analytic primitives authored as a text node-list (`cyl:r3mmh12mm`, `box:w40mmd20mmh10mm`); no meshing in the design loop. See `precis-cad-help`. | store |
 | `structure` | `st7` | Atomistic cell + bond-graph design for DFT / molecular modelling — typed ops (`add_atom`, `add_bond`, `constrain`, `relax`), relaxed on a fidelity ladder, exported POSCAR/extXYZ/CIF. See `precis-structure-help`. | store |
 | `nm` | `nm12` or `rotax1` | Nanomachine — hierarchical building blocks with envelopes/ports/connects/threading/DOF over `structure` atoms (rotaxanes, molecular motors). Always on. See `precis-nm-help`. | store |
 | `pcb` | `pb7` | Electronics/PCB design — netlist + placement graph, read as a traversable graph, never pixels. Parts via `kind='part'`, datasheets via `kind='datasheet'`. See `precis-pcb-help`. | store |

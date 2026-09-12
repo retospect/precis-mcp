@@ -56,7 +56,7 @@ _OP_VOCAB = (
     "add_atom{element,frac:[x,y,z]} · set_element{atom,element} · vacancy{atom} · "
     "displace{atom,vector:[dx,dy,dz],cartesian?} · add_bond{i,j,order?,image?} · "
     "remove_bond{i,j} · constrain{atoms:[…],kind:fixed-x|y|z|all} · "
-    "set_cell{a,b,c,pbc?} · cursor{name,atoms:[…],reach?,for?} · "
+    "set_cell{a,b,c,pbc?} · eye{name,atoms:[…],reach?,for?} · "
     "measure{kind:distance|angle|coordination|bond_length,atoms:[…],"
     "direction?,goal?,strength?,for?} · unmark{name} · remove_measure{kind,atoms:[…]}"
 )

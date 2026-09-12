@@ -63,7 +63,13 @@ Two parse modes, selected by ``require_units=`` (see :func:`parse`):
 This module raises :class:`DslError` for syntax errors (or
 :class:`~precis.utils.units.UnitRequiredError`, itself a structured
 ``BadInput``, for a missing-unit boundary violation) — either propagates
-to the dispatcher boundary as-is.
+to the dispatcher boundary as-is. ``DslError`` is *itself* a ``BadInput``
+(see the class docstring) — a bare ``ValueError`` here would fall through
+the dispatcher's ``except PrecisError`` branch and flatten to an opaque
+``internal error in put: DslError (see server log)``, stripping the
+grammar-teaching cause text at exactly the moment an agent is failing and
+needs it (units-cutover prompt-surface audit, `docs/backlog/llm-prompt-
+surface-audit.md`).
 """
 
 from __future__ import annotations
@@ -84,6 +90,7 @@ from precis.cad.primitives import (
     regular_prism,
 )
 from precis.cad.vec import vec3
+from precis.errors import BadInput
 from precis.utils.units import (
     ANGLE_UNIT_TOKEN,
     LENGTH_UNIT_TOKEN,
@@ -93,8 +100,16 @@ from precis.utils.units import (
 )
 
 
-class DslError(ValueError):
-    """A malformed ``config`` string."""
+class DslError(BadInput, ValueError):
+    """A malformed ``config`` string.
+
+    Dual base: ``BadInput`` so the dispatcher renders the cause text (and
+    any ``next=``) instead of flattening it to an opaque internal error —
+    the same wiring :class:`~precis.utils.units.UnitRequiredError` already
+    uses; ``ValueError`` so every existing ``except (DslError, ValueError)``
+    / ``except ValueError`` call site (se/nm ingest, ``scene.part_spec``)
+    keeps catching it unchanged.
+    """
 
 
 @dataclass(frozen=True)
@@ -165,7 +180,7 @@ def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
     if not isinstance(config, str) or ":" not in config:
         raise DslError(
             f"config must be '<shape>:<dims>', got {config!r} "
-            "(e.g. 'cyl:r3h12', 'box:w40d20h10')"
+            "(e.g. 'cyl:r3mmh12mm', 'box:w40mmd20mmh10mm')"
         )
     alias, _, rest = config.strip().partition(":")
     alias = alias.lower()

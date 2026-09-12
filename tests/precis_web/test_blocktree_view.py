@@ -127,14 +127,21 @@ def _seed_se(runtime_with_store, slug: str = "unicycle_web") -> None:
 
 
 def _seed_nm(runtime_with_store, slug: str = "rotaxane_web") -> None:
+    # nm's add_block envelope is unit-required boundary text (unlike se's
+    # bare-metre envelope above) — precis_nm/ops.py::_ingest_envelope.
     ops = [
-        {"op": "add_block", "name": "axle", "pose": [0, 0, 0], "envelope": "cyl:r2h20"},
+        {
+            "op": "add_block",
+            "name": "axle",
+            "pose": [0, 0, 0],
+            "envelope": "cyl:r2nmh20nm",
+        },
         {
             "op": "add_block",
             "name": "ring",
             "parent": "axle",
             "pose": [0, 0, 5],
-            "envelope": "torus:R5r1",
+            "envelope": "torus:R5nmr1nm",
         },
     ]
     NmHandler(hub=runtime_with_store.hub).put(id=slug, text=json.dumps({"ops": ops}))
@@ -521,9 +528,7 @@ def test_se_scene3d_json_unknown_isolate_is_400(
     assert r.status_code == 400
 
 
-def test_se_scene3d_json_bad_level_is_400(
-    blocktree_client, runtime_with_store
-) -> None:
+def test_se_scene3d_json_bad_level_is_400(blocktree_client, runtime_with_store) -> None:
     _seed_se(runtime_with_store)
     r = blocktree_client.get("/se/unicycle_web/scene3d.json?level=nope")
     assert r.status_code == 400
@@ -562,9 +567,7 @@ def test_se_view3d_hostile_overrides_excluded_from_scene_url(
         f"/se/unicycle_web/view3d?overrides={quote('hub:' + hostile)}"
     )
     assert r.status_code == 200
-    scene_url_line = next(
-        line for line in r.text.splitlines() if "sceneUrl" in line
-    )
+    scene_url_line = next(line for line in r.text.splitlines() if "sceneUrl" in line)
     assert hostile not in scene_url_line
     assert "alert" not in scene_url_line
     assert "overrides=" not in scene_url_line  # the whole invalid pair was dropped

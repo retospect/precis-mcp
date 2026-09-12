@@ -282,7 +282,7 @@ def test_cylindrical_takes_two_dof():
         "c.bar",
     )
     assert bar.loc == pytest.approx((0.0, 0.015, 0.007))
-    with pytest.raises(SceneError, match="angle_rad, slide_m"):
+    with pytest.raises(SceneError, match="cylindrical takes"):
         expand_instances(parse_source(src), _resolve, state={"c": math.radians(90.0)})
 
 

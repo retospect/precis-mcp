@@ -127,6 +127,11 @@ def test_build_prompt_carries_block_ports_objectives_and_steer(
     assert "prefer an aromatic cap" in prompt
     assert '"port_atom_map"' in prompt  # the output contract
     assert "'relax'" in prompt  # the relax prohibition is stated
+    # units-cutover: the envelope is bare canonical metres, but every op
+    # coordinate/distance is Å — neither convention was ever stated
+    # (gr — prompt-surface audit item 7); both must be spelled out now.
+    assert "bare canonical metres" in prompt
+    assert "is Å, never metres" in prompt
 
 
 def test_build_prompt_default_steer_when_absent(nm_handler: NmHandler) -> None:

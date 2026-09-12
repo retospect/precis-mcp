@@ -7,6 +7,7 @@ prompt-build → parse → dry-run → job_result write-back runs offline.
 from __future__ import annotations
 
 import json
+import re
 
 import numpy as np
 import pytest
@@ -52,6 +53,60 @@ def test_registered_with_dispatch():
     assert spec is not None and spec.dispatch is not None
     assert spec.compatible_executors == frozenset({"claude_inproc"})
     assert "structure_propose" in known_job_types()
+
+
+#: One concrete, valid example op per `_OP_VOCAB` entry, in an order that
+#: keeps referential integrity (atoms/bonds/measures/eyes exist before they're
+#: read) on a fresh two-atom scene. Keyed by op name so the vocab-order test
+#: below can detect drift either way: a vocab name with no example here, or
+#: an example here for a name the vocab no longer teaches.
+_VOCAB_EXAMPLE_SCRIPT: list[dict] = [
+    {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+    {"op": "add_atom", "element": "Pd", "frac": [0.3, 0.0, 0.0]},
+    {"op": "add_bond", "i": "aPd1", "j": "aPd2", "order": 1, "image": [0, 0, 0]},
+    {"op": "displace", "atom": "aPd2", "vector": [0.05, 0, 0], "cartesian": True},
+    {"op": "constrain", "atoms": ["aPd1"], "kind": "fixed-x"},
+    {
+        "op": "eye",
+        "name": "site1",
+        "atoms": ["aPd1", "aPd2"],
+        "reach": 2.0,
+        "for": "test",
+    },
+    {
+        "op": "measure",
+        "kind": "distance",
+        "atoms": ["aPd1", "aPd2"],
+        "direction": "min",
+        "goal": 2.5,
+        "strength": "gauge",
+        "for": "test",
+    },
+    {"op": "unmark", "name": "site1"},
+    {"op": "remove_measure", "kind": "distance", "atoms": ["aPd1", "aPd2"]},
+    {"op": "remove_bond", "i": "aPd1", "j": "aPd2"},
+    {"op": "set_element", "atom": "aPd1", "element": "Ag"},
+    {"op": "vacancy", "atom": "aPd2"},
+    {"op": "set_cell", "a": 12.0, "b": 12.0, "c": 12.0, "pbc": [True, True, False]},
+]
+
+
+def test_op_vocab_examples_dry_run_against_real_registry():
+    """Guard against the `_DSL_CRIB`-class bug: `_OP_VOCAB` names must be real
+    ops, taking the params it advertises. Every name the crib teaches gets a
+    concrete example applied for real via `apply_ops` — a dead op name (like
+    the retired `cursor{...}` that should have been `eye{...}`) or a renamed
+    param fails this loudly instead of only failing an agent's dry-run."""
+    vocab_names = re.findall(r"(\w+)\{", sp._OP_VOCAB)
+    assert vocab_names, "could not parse any op names out of _OP_VOCAB"
+    scripted_names = [o["op"] for o in _VOCAB_EXAMPLE_SCRIPT]
+    assert set(vocab_names) == set(scripted_names), (
+        "_OP_VOCAB and _VOCAB_EXAMPLE_SCRIPT have drifted — every vocab op "
+        "needs a working example here (and vice versa)"
+    )
+
+    scene = Scene(cell=Cell(np.eye(3) * 10.0, (True, True, False)))
+    apply_ops(scene, _VOCAB_EXAMPLE_SCRIPT)  # raises OpError on any failure
 
 
 # ── pure: prompt / parse / dry-run ───────────────────────────────────────

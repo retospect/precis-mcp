@@ -11,8 +11,13 @@ Usage:
         next="add kind=<one of: calc, paper, todo>",
     )
 
-`ErrorModel.enrich()` (in `precis.runtime`) auto-fills `next` and
-`options` at the dispatcher boundary when the raise site doesn't.
+There is no general auto-fill: every `next=`/`options=` is hand-written
+at the raise site. A couple of narrow dispatcher-boundary hooks
+(`runtime.dispatch.DispatchMixin._maybe_add_skill_hint` /
+`_maybe_add_schema_drift_hint`) append a specific extra `next:` line for
+their one recognized signal (missing skill / schema drift) — they are
+not a general backstop, so a raise site with no `next=` still ships a
+hint-less error in the common case.
 
 Non-Precis exceptions caught at the dispatcher boundary are wrapped
 into `Internal(...)` or `Upstream(...)` with `__cause__` chained.
@@ -28,10 +33,11 @@ class PrecisError(Exception):
 
     Args:
         cause: Human-readable reason. Always required.
-        next: One copy-pasteable next action (the breaking hint).
-              Auto-filled by `ErrorModel.enrich()` if None.
-        options: Allowed values for parameter errors. Auto-filled
-                 for closed vocabularies.
+        next: One copy-pasteable next action (the breaking hint). Not
+              auto-filled — leave it unset only when there's genuinely
+              no recovery action to suggest.
+        options: Allowed values for parameter errors. Not auto-filled;
+                 set it explicitly for closed vocabularies.
     """
 
     def __init__(

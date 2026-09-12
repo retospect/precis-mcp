@@ -1056,7 +1056,7 @@ def parse_source(text: str) -> SceneSpec:
                     f"line {lineno}: payload {plname!r} config cannot "
                     "reference dims yet — a payload splices into another "
                     "design, whose dim namespace is not this one; use "
-                    "literal numbers"
+                    "unit-suffixed literal numbers, e.g. 'cyl:r3mmh12mm'"
                 )
             pl_spec = parse(plconfig, require_units=True)
             build(pl_spec)
@@ -1463,14 +1463,17 @@ def _validate_interfaces(
 
 
 def _fmt_interval(iv: list[float | None]) -> str:
+    """Render a dim's bound(s) with an explicit unit (:func:`_fmt_len` — every
+    dim is a length) so an author who wrote ``dim a = 200mm`` doesn't get a
+    bare ``0.2`` echoed back that reads as their own mm figure."""
     lo, hi = iv
     if lo is not None and hi is not None and lo == hi:
-        return f"= {_fmt_num(lo)}"
+        return f"= {_fmt_len(lo)}"
     parts = []
     if lo is not None:
-        parts.append(f">= {_fmt_num(lo)}")
+        parts.append(f">= {_fmt_len(lo)}")
     if hi is not None:
-        parts.append(f"<= {_fmt_num(hi)}")
+        parts.append(f"<= {_fmt_len(hi)}")
     return " and ".join(parts) if parts else "unbounded"
 
 
@@ -1561,7 +1564,8 @@ def _subst_dims(
             raise SceneError(
                 f"{where}: dim {nm!r} is not pinned to an exact value "
                 f"({_fmt_interval(iv)}) — a config needs a number; add "
-                f"'dim {nm} = <mm>' (or pin it via a constrained dim)"
+                f"'dim {nm} = 20mm' (any unit-suffixed value; or pin it via "
+                "a constrained dim)"
             )
         return _fmt_num(lo)
 
@@ -1916,21 +1920,32 @@ def _coerce_state(
     acceptance rule: an explicit illegal pose is rejected, never clamped)."""
     if kind == "cylindrical":
         if not isinstance(value, (list, tuple)) or len(value) != 2:
-            raise SceneError(f"state[{name!r}]: cylindrical takes [angle_rad, slide_m]")
+            raise SceneError(
+                f"state[{name!r}]: cylindrical takes [angle, slide] as SI "
+                "[radians, metres] here — the args.state boundary "
+                "(handlers.cad) converts a unit-suffixed ['45deg', '5mm'] "
+                "to this before it reaches the parser"
+            )
         ang, dist = float(value[0]), float(value[1])
         if limits is not None and not (limits[0] <= ang <= limits[1]):
             raise SceneError(
-                f"state[{name!r}]: angle {ang:g} outside limits "
-                f"{limits[0]:g}..{limits[1]:g}"
+                f"state[{name!r}]: angle {_fmt_ang(ang)} outside limits "
+                f"{_fmt_ang(limits[0])}..{_fmt_ang(limits[1])}"
             )
         return (ang, dist)
     try:
         q = float(value)
     except (TypeError, ValueError):
-        raise SceneError(f"state[{name!r}] must be a number") from None
-    if limits is not None and not (limits[0] <= q <= limits[1]):
         raise SceneError(
-            f"state[{name!r}]={q:g} outside limits {limits[0]:g}..{limits[1]:g}"
+            f"state[{name!r}] must be a number (SI, already unit-converted "
+            "here — the args.state boundary takes a unit-suffixed value "
+            "like '45deg'/'5mm', not this parser's input)"
+        ) from None
+    if limits is not None and not (limits[0] <= q <= limits[1]):
+        fmt = _fmt_len if kind == "prismatic" else _fmt_ang
+        raise SceneError(
+            f"state[{name!r}]={fmt(q)} outside limits "
+            f"{fmt(limits[0])}..{fmt(limits[1])}"
         )
     return q
 

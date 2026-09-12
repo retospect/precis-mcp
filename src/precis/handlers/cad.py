@@ -643,7 +643,7 @@ class CadHandler(Handler):
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='cad') requires id= (the design slug)",
-                next="put(kind='cad', id='flange', text='plate add cyl:r25h8')",
+                next="put(kind='cad', id='flange', text='plate add cyl:r25mmh8mm')",
             )
         slug = str(id).strip()
         if text is None or not str(text).strip():
@@ -651,8 +651,8 @@ class CadHandler(Handler):
                 "put(kind='cad') requires text= (the design source)",
                 next=(
                     "put(kind='cad', id='flange', text='''\\n"
-                    "plate    add cyl:r25h8\\n"
-                    "hub_bore cut cyl:r8h10 @0,0,-1\\n''')"
+                    "plate    add cyl:r25mmh8mm\\n"
+                    "hub_bore cut cyl:r8mmh10mm @0mm,0mm,-1mm\\n''')"
                 ),
             )
         try:
@@ -1076,7 +1076,7 @@ class CadHandler(Handler):
                 "this design declares no joints — nothing to sweep",
                 next=(
                     "declare 'joint <inst>.<port> to <anchor> revolute "
-                    "limits:lo..hi' (or the component form) first"
+                    "limits:-30deg..30deg' (or the component form) first"
                 ),
             )
         only = args.get("joint")
@@ -1104,7 +1104,7 @@ class CadHandler(Handler):
                     raise BadInput(
                         f"joint {name!r} is prismatic with no limits: — an "
                         "unbounded slide has no sweepable range",
-                        next="add limits:lo..hi to the joint line",
+                        next="add limits:0mm..50mm to the joint line",
                     )
                 limits = (-math.pi, math.pi)  # a full turn, either way
             lo, hi = limits
@@ -1343,7 +1343,7 @@ class CadHandler(Handler):
         if not designs:
             return Response(
                 body="no cad designs yet\n\nNext: put(kind='cad', id='flange', "
-                "text='plate add cyl:r25h8')"
+                "text='plate add cyl:r25mmh8mm')"
             )
         rows = [{"design": r.slug, "title": r.title} for r in designs]
         return Response(

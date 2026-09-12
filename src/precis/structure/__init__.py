@@ -38,7 +38,8 @@ Compute-adjacent seams, each with its own module docstring:
   quest candidates opt in via ``StructureHandler.put(normalize=True)`` so
   translation twins ("corner" vs "central") collapse to one candidate.
 
-**Unit enclave** (`docs/glossary.md`, `units-policy-cutover.md`): this
+**Unit enclave** (`docs/glossary.md`, `src/precis/utils/units.py` module
+docstring): this
 package is Å (length) / eV (energy) native throughout, by design — it is
 woven through ASE (`Atoms`, EMT, FIRE/BFGS, `neighbor_list`, cell filters),
 whose own convention is Å/eV, so forcing SI internals would add a

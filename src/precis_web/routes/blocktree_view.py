@@ -490,7 +490,9 @@ def _build_svg(
     else:
         header_lines = [f"validate: {vline}", fill_line]
         tier = vtier
-    svg = render_svg(draws, members, channel=colour, header_lines=header_lines, tier=tier)
+    svg = render_svg(
+        draws, members, channel=colour, header_lines=header_lines, tier=tier
+    )
     return svg, None
 
 

@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from precis.cad.dsl import _ALIAS_KEYS
+from precis.cad.dsl import parse as cad_dsl_parse
 from precis.store.types import _KIND_ALLOWED_AXES
 
 _SKILLS_DIR = (
@@ -314,3 +316,36 @@ def test_specific_critic_findings_are_fixed(skill_name: str) -> None:
         assert "precis-mcp::" not in text, (
             "precis-overview python example still uses alias 'precis-mcp'"
         )
+
+
+#: Backtick-quoted ``<shape>:<dims>`` inline code spans — the cad mini-DSL
+#: alias set, longest-first so e.g. ``ngon`` doesn't shadow ``n``.
+_CAD_CONFIG_RE = re.compile(
+    rf"`((?:{'|'.join(sorted(_ALIAS_KEYS, key=len, reverse=True))}):[^`\s]+)`"
+)
+
+
+def test_toolpath_help_does_not_claim_nm_is_gated() -> None:
+    """The `nm.enabled` `requires_setting` gate was removed (2026-09-11,
+    ``precis_nm/__init__.py``) — nm is always on. An agent reading the
+    toolpath skill must not be told to hunt a nonexistent setting or skip
+    nm as unavailable (units-cutover prompt-surface audit, item 12)."""
+    path = _SKILLS_DIR / "precis-toolpath-help.md"
+    text = path.read_text(encoding="utf-8")
+    assert "nm.enabled" not in text
+    assert "dark, needs" not in text
+
+
+def test_precis_overview_cad_examples_parse_under_boundary_grammar() -> None:
+    """``precis-overview`` is the top-level orientation skill — the only cad
+    grammar many agents ever see. Every backtick cad ``config`` example on
+    its `cad` kind row must parse under boundary mode (unit-required) —
+    the unitless `cyl:r3h12`/`box:w40d20h10` pair this replaced both raised
+    ``UnitRequiredError`` when fed back (units-cutover prompt-surface audit,
+    item 5)."""
+    path = _SKILLS_DIR / "precis-overview.md"
+    text = path.read_text(encoding="utf-8")
+    examples = [m.group(1) for m in _CAD_CONFIG_RE.finditer(text)]
+    assert examples, "expected at least one cad config example in precis-overview.md"
+    for example in examples:
+        cad_dsl_parse(example, require_units=True)  # must not raise

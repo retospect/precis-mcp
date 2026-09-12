@@ -728,7 +728,7 @@ async def index(
 _NEW_STARTERS = {
     "cad": lambda slug: (
         "cad",
-        {"id": slug, "text": "part add box:w40d40h10"},
+        {"id": slug, "text": "plate add box:w40mmd40mmh10mm"},
         f"/cad/{slug}",
     ),
     "structure": lambda slug: (
