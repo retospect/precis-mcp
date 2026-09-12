@@ -445,6 +445,26 @@ def test_shape_mismatches_reject(mutate: object, match: str) -> None:
         solve_complementarity(*args)
 
 
+def test_empty_problem_rejects() -> None:
+    # Each degenerate axis alone must trip the guard (kills `or -> and`
+    # on the b == 0 / j < 2 check): plenty of nodes but zero members,
+    # and a member list against a single node.
+    coords, _, fixed = _contact_and_brace()
+    no_members = np.empty((0, 2), dtype=int)
+    empty = np.empty((0,))
+    no_idiom = np.empty((0,), dtype=object)
+    with pytest.raises(ComplementarityError, match="nothing to solve"):
+        solve_complementarity(coords, no_members, empty, empty, no_idiom, fixed)
+    one_node = np.array([[0.0, 0.0, 0.0]])
+    one_fixed = np.array([[True, True, True]])
+    members = np.array([[0, 0]])
+    rate = np.array([10.0])
+    length0 = np.array([1.0])
+    idiom = np.array(["bidirectional"], dtype=object)
+    with pytest.raises(ComplementarityError, match="nothing to solve"):
+        solve_complementarity(one_node, members, rate, length0, idiom, one_fixed)
+
+
 def test_non_positive_rate_rejects() -> None:
     coords, members, fixed = _contact_and_brace()
     idiom = np.array(["compression_only", "bidirectional"], dtype=object)
