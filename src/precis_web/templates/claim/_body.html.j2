@@ -318,7 +318,10 @@
 {% endif %}
 
 {% if coverage_note %}
-<p class="mt-6 text-xs text-slate-500 italic">{{ coverage_note }}</p>
+{# sole_derivative (gr307372) escalates the note from a muted aside to a
+   visible warning — the one-supporter-and-it-may-be-derivative case must
+   not render as healthy. #}
+<p class="mt-6 text-xs {{ 'text-amber-700 font-medium' if sole_derivative else 'text-slate-500 italic' }}">{{ coverage_note }}</p>
 {% endif %}
 
 {% endif %}

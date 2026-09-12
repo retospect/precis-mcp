@@ -767,6 +767,7 @@ def _render_one(
         "contradictors": contradictors,
         "chunks": _grounding_chunks(store, grounding_rows, chunk_cache=chunk_cache),
         "coverage_note": evidence.coverage_note,
+        "sole_derivative": evidence.sole_derivative,
         "citation_misses": _citation_miss_rows(hub_ref),
         "inflight": not cite_keys,
         # Nanopub publish ladder (candidate → reviewed → signed → anchored

@@ -69,6 +69,18 @@ _EVIDENCE_SRC_KINDS: tuple[str, ...] = tuple(sorted(EVIDENCE_SRC_KINDS))
 
 _UNDETERMINED_NOTE = "seniority undetermined: no intra-set citation edges held"
 
+#: The sole-supporter special case of the note above (gr307372): with one
+#: attached source the intra-set cites walk can never produce an
+#: originator, so the hub reads as "grounded" whether that source is the
+#: originating work or a downstream paper restating the claim as
+#: background — the case that made tbx2hd look healthy on a 2025 circuit
+#: paper while Son/Cohen/Louie 2006 sat un-attached in the same corpus.
+_SOLE_DERIVATIVE_NOTE = (
+    "⚠ sole supporter, possibly derivative: the only attached source earned "
+    "no originator status — the originating work may sit un-attached in the "
+    "corpus"
+)
+
 
 @dataclass(frozen=True)
 class EvidenceEdge:
@@ -136,6 +148,11 @@ class HubEvidence:
     #: for display in ``claim_render._render_one``, so the derive order here
     #: only needs to be a stable set, not display order.
     grounding: list[GroundingRef] = field(default_factory=list)
+    #: True when support is exactly one supporter and it earned no
+    #: originator status (gr307372) — renderers escalate the coverage
+    #: note from a muted aside to a visible warning on this flag rather
+    #: than parsing the note text.
+    sole_derivative: bool = False
 
 
 def _is_claim_hub(store: PoolStore, ref_id: int) -> bool:
@@ -597,7 +614,13 @@ def derive_evidence(
 
     supporter_ids = list(support_edges)
     originator_ids = _find_originators(store, supporter_ids) if supporter_ids else set()
-    coverage_note = _UNDETERMINED_NOTE if supporter_ids and not originator_ids else None
+    sole_derivative = len(supporter_ids) == 1 and not originator_ids
+    if sole_derivative:
+        coverage_note: str | None = _SOLE_DERIVATIVE_NOTE
+    elif supporter_ids and not originator_ids:
+        coverage_note = _UNDETERMINED_NOTE
+    else:
+        coverage_note = None
 
     facts = _fetch_paper_facts(store, set(support_edges) | set(contradict_edges))
 
@@ -628,6 +651,7 @@ def derive_evidence(
         contradictors=_sort_group(contradictors),
         coverage_note=coverage_note,
         grounding=grounding,
+        sole_derivative=sole_derivative,
     )
 
 
@@ -755,9 +779,13 @@ def derive_evidence_bulk(
         support_edges = support_by_hub[hub_id]
         contradict_edges = contradict_by_hub[hub_id]
         originator_ids = originators_by_hub.get(hub_id, set())
-        coverage_note = (
-            _UNDETERMINED_NOTE if support_edges and not originator_ids else None
-        )
+        sole_derivative = len(support_edges) == 1 and not originator_ids
+        if sole_derivative:
+            coverage_note: str | None = _SOLE_DERIVATIVE_NOTE
+        elif support_edges and not originator_ids:
+            coverage_note = _UNDETERMINED_NOTE
+        else:
+            coverage_note = None
 
         originators: list[EvidenceEdge] = []
         corroborators: list[EvidenceEdge] = []
@@ -786,6 +814,7 @@ def derive_evidence_bulk(
             contradictors=_sort_group(contradictors),
             coverage_note=coverage_note,
             grounding=grounding_by_hub[hub_id],
+            sole_derivative=sole_derivative,
         )
     return out
 

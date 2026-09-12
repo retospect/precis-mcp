@@ -28,6 +28,7 @@ from precis.taproot.seniority import (
     conjunct_atoms_bulk,
     derive_conjuncts,
     derive_evidence,
+    derive_evidence_bulk,
     derive_refines,
 )
 from precis.utils import handle_registry
@@ -349,9 +350,66 @@ def test_derive_evidence_self_cite_is_not_an_originator(store: Any) -> None:
 
     assert evidence.originators == []
     assert [e.paper_ref_id for e in evidence.corroborators] == [p]
+    # One supporter and no originator — the sole-derivative escalation
+    # (gr307372) replaces the generic undetermined note here.
+    assert evidence.sole_derivative
+    assert evidence.coverage_note is not None
+    assert "sole supporter" in evidence.coverage_note
+
+
+def test_derive_evidence_sole_corroborator_flags_sole_derivative(store: Any) -> None:
+    """gr307372: a hub whose ONLY attached source earned no originator
+    status must carry the distinct sole-derivative warning — it looked
+    exactly as healthy as a grounded hub before (tbx2hd's sole source was
+    a 2025 circuit paper restating the claim as background while the
+    originating 2006 work sat un-attached in the corpus)."""
+    hub = mint_hub(store, _CLAIM)
+    p = _paper(store, title="Downstream restater", year=2025)
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=p, role="corroborates")
+
+    evidence = derive_evidence(store, hub)
+
+    assert evidence.sole_derivative
+    assert evidence.coverage_note is not None
+    assert "sole supporter" in evidence.coverage_note
+    # Bulk path derives the same flag.
+    bulk = derive_evidence_bulk(store, [hub])[hub]
+    assert bulk.sole_derivative
+    assert bulk.coverage_note == evidence.coverage_note
+
+
+def test_derive_evidence_two_supporters_keep_generic_note(store: Any) -> None:
+    """Two supporters with no intra-set cites stay on the generic
+    undetermined note — sole-derivative is strictly the one-supporter
+    case (gr307372)."""
+    hub = mint_hub(store, _CLAIM)
+    for title, year in (("A", 2001), ("B", 2002)):
+        p = _paper(store, title=title, year=year)
+        attach_evidence(store, hub_ref_id=hub, paper_ref_id=p, role="corroborates")
+
+    evidence = derive_evidence(store, hub)
+
+    assert not evidence.sole_derivative
     assert evidence.coverage_note == (
         "seniority undetermined: no intra-set citation edges held"
     )
+
+
+def test_derive_evidence_sole_originator_is_not_flagged(store: Any) -> None:
+    """A single supporter that IS derived as the originator is a
+    grounded hub, not a sole-derivative one — no warning."""
+    hub = mint_hub(store, _CLAIM)
+    orig = _paper(store, title="Originator", year=2001)
+    citer = _paper(store, title="Citer", year=2005)
+    for p in (orig, citer):
+        attach_evidence(store, hub_ref_id=hub, paper_ref_id=p, role="corroborates")
+    store.add_link(src_ref_id=citer, dst_ref_id=orig, relation="cites")
+
+    evidence = derive_evidence(store, hub)
+
+    assert [e.paper_ref_id for e in evidence.originators] == [orig]
+    assert not evidence.sole_derivative
+    assert evidence.coverage_note is None
 
 
 def test_derive_evidence_cites_outside_supporter_set_do_not_count(store: Any) -> None:
