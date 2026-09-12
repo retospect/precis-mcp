@@ -24,6 +24,9 @@ catalyst quest explores; the clean-slab (``star``) and gas-phase reference
 energy is the reaction's ``reaction_energy`` (the adsorption energy — the
 quantity the quest grounds against); the per-system DFT total energy rides along
 as the adapter's fallback.
+
+Unit enclave (`precis.structure` package docstring): eV/Å-native, matching
+the ASE ``systems`` it reads; energies are never converted to SI here.
 """
 
 from __future__ import annotations

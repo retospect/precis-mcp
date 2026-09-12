@@ -9,6 +9,11 @@ ASE-gated behind the optional ``[dft]`` extra — a missing ASE surfaces as
 
 Bonds are dropped by all three (DFT consumes positions + cell, §8.1); the bond
 graph round-trips only via formats that carry it (MOL/SDF/LAMMPS — later).
+
+Unit enclave (package docstring): this module is one of the enclave's two
+named SI-conversion seams (the other is `precis_nm`'s design↔atomistic
+boundary) — POSCAR/XYZ/CIF are Å-native file formats, so today that seam is
+an identity conversion; a future SI-native export format would convert here.
 """
 
 from __future__ import annotations

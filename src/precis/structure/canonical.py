@@ -35,6 +35,9 @@ claims (the builder emits TTT).
 
 Cost: ≤12 ops × (atoms of the rarest element) anchors × an O(N log N) sort of
 N ≤ a-few-dozen rows — noise next to a single relax step.
+
+Unit enclave (package docstring): Å-native; fractional coordinates and any
+Å-magnitude rounding stay in that convention, never SI.
 """
 
 from __future__ import annotations

@@ -10,6 +10,9 @@ the rule, the offending value, and a ``suggested_fix`` in the op vocabulary
 hard-reject step ahead of a cloud relax dispatch (gripe 51393) — a design with
 any finding here never reaches the GPU node. The advisory (never-gating) warn
 tier — hybridization/VSEPR/ring strain — is :mod:`vsepr`, not this module.
+
+Unit enclave (package docstring): Å-native; overlap/bond-length thresholds
+here are Å (derived from :mod:`elements`'s covalent radii), never SI.
 """
 
 from __future__ import annotations

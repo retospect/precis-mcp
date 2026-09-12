@@ -26,6 +26,16 @@ render, **probe it as a graph + numbers**: "what's bonded to this atom?",
 is a small in-memory object, so every probe is exact and instant. Lengths
 are **ångström**, positions are **fractional** (cell coordinates).
 
+**Unit enclave.** `structure` is Å/eV-native by design, not by omission — it
+sits on ASE (`Atoms`, EMT, FIRE), whose own convention is Å/eV, and every
+other kind that talks to it (`precis_nm`'s design↔atomistic boundary,
+`precis_bio`'s fold-to-Scene projection) converts at *its own* seam, never
+inside `structure`. Every length here — op args, `frac`/Cartesian
+coordinates, `radius`/`reach`/`thickness`, `add_atom_site`'s `height` — is Å
+unless a view's payload says otherwise (`unit: "°"` for an angle,
+`unit: ""` for a coordination count); forces are eV/Å, energies eV. Never
+pass a metre-scale or SI-derived number here expecting silent conversion.
+
 Seven verbs, no new ones: `put` (create/replace), `edit` (apply ops / relax),
 `get` (list / TOC / probe / nav / runs / export), `search` (by **intent**),
 `delete` (soft-retire), plus `tag`/`link`.

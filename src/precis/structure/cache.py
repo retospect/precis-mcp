@@ -24,6 +24,9 @@ Why this is correct to cache:
   a new geometry hashes to a new key, so a stale hit is impossible by
   construction.
 
+Unit enclave (package docstring): Å/eV-native; cached geometries/energies/
+forces are never converted to SI here.
+
 The rung-0 ``clean`` geometry repair is **not** cached: it is instant, pure, and
 has no energy to memoise — caching it would only bloat the cube.
 """

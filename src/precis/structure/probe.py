@@ -4,6 +4,10 @@ These are *reads* (the Read category of §6): idempotent queries that return
 numbers for the LLM, computed against the hydrated Scene with no DB round-trip.
 v1 floor: toc · atom config · neighborhood · coordination · distance/angle ·
 find · auto bond detection. Field/ensemble probes are vision (§6.7/§18).
+
+Unit enclave (package docstring): Å-native; ``distance``/``neighborhood``/
+``radius``/``reach`` arguments and returns are all Å, angles are degrees —
+never SI.
 """
 
 from __future__ import annotations

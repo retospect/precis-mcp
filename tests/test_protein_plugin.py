@@ -33,7 +33,7 @@ from precis_bio.alphafold import (
     build_fold_argv,
     parse_af3_output,
 )
-from precis_bio.converge import BOX_PADDING, cif_to_scene, parse_atom_site
+from precis_bio.converge import BOX_PADDING_A, cif_to_scene, parse_atom_site
 from precis_bio.engine import (
     FOLD_IMAGE_ENV,
     AlphaFold3Engine,
@@ -603,7 +603,7 @@ def test_cif_to_scene_non_periodic() -> None:
     for atom in scene.atoms.values():
         assert all(0.0 < f < 1.0 for f in atom.frac)
     # Box spans the bbox + 2*padding on each axis (x: 0..3.6 → 3.6 + 30).
-    assert scene.cell.lattice[0][0] == pytest.approx(3.6 + 2 * BOX_PADDING)
+    assert scene.cell.lattice[0][0] == pytest.approx(3.6 + 2 * BOX_PADDING_A)
     # No bonds by default (detector gated off).
     assert scene.bonds == []
 

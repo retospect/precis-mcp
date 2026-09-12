@@ -37,6 +37,21 @@ Compute-adjacent seams, each with its own module docstring:
   under in-plane lattice translation/rotation/mirror) + ``normalize_scene``;
   quest candidates opt in via ``StructureHandler.put(normalize=True)`` so
   translation twins ("corner" vs "central") collapse to one candidate.
+
+**Unit enclave** (`docs/glossary.md`, `units-policy-cutover.md`): this
+package is Å (length) / eV (energy) native throughout, by design — it is
+woven through ASE (`Atoms`, EMT, FIRE/BFGS, `neighbor_list`, cell filters),
+whose own convention is Å/eV, so forcing SI internals would add a
+conversion at every ASE call rather than removing one. Every public
+Å-valued function/constant that a sibling package imports carries an
+`_A`-suffixed alias (e.g. `elements.covalent_radius_A`) so the unit is
+self-naming at the import site; bare (un-suffixed) names stay for backward
+compatibility. Dataclass fields (`Atom.frac`, `Cell.lattice`, `Measure.reach`,
+...) are NOT renamed — their docstrings/inline comments declare the unit.
+Conversion to SI happens only at design-side seams (`precis_nm`'s
+design↔atomistic boundary, owned by the units-policy-cutover chain) and
+file serializers (`export.py`'s POSCAR/XYZ/CIF) — never inside this
+package.
 """
 
 from __future__ import annotations

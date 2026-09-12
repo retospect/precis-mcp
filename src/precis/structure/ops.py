@@ -28,6 +28,9 @@ never at module level). All three are pure (no store access). ``import_fragment`
 store to hydrate a source design, so it is **not** in this module — it's a
 handler-level expansion into ``add_atom``/``add_bond`` ops
 (``handlers/structure.py``).
+
+Unit enclave (package docstring): Å-native; every length-valued op argument
+(bond lengths, ring radii, displacement vectors, ...) is Å, never SI.
 """
 
 from __future__ import annotations

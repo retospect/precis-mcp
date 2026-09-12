@@ -10,6 +10,10 @@ structure ref is a derived, on-demand projection.
 **Dependency-free.** Parses the mmCIF ``_atom_site`` loop directly (no ASE,
 which is ``[dft]``-gated and absent on the always-on request path), reusing the
 same scan shape as :func:`precis_bio.ir.mean_plddt_from_cif`.
+
+This module hands atom coordinates straight into ``precis.structure``'s
+Å/eV unit enclave (`docs/glossary.md`) — coordinates and padding here stay
+Å-native by convention, never converted through SI.
 """
 
 from __future__ import annotations
@@ -22,7 +26,10 @@ from precis.structure.scene import Atom, Scene
 #: Padding (Å) around the molecule bounding box so a non-periodic cell never
 #: self-images (molecule mode wants ≥15 Å between periodic copies;
 #: with PBC off it just keeps every atom strictly inside (0,1) fractional).
-BOX_PADDING = 15.0
+#: This module builds a ``structure`` :class:`~precis.structure.scene.Scene`
+#: (the Å/eV unit enclave, `docs/glossary.md`), so the padding stays Å-native
+#: rather than converting through SI.
+BOX_PADDING_A = 15.0
 
 
 def parse_atom_site(cif: str) -> list[tuple[str, float, float, float]]:
@@ -83,7 +90,7 @@ def parse_atom_site(cif: str) -> list[tuple[str, float, float, float]]:
 def cif_to_scene(cif: str, *, detect_bonds_max: int = 0) -> Scene:
     """Build a non-periodic ``structure`` :class:`Scene` from an mmCIF model.
 
-    A big axis-aligned box (molecule bbox + :data:`BOX_PADDING`), PBC off; each
+    A big axis-aligned box (molecule bbox + :data:`BOX_PADDING_A`), PBC off; each
     atom placed in fractional coords and uniquely labelled ``<El><n>`` per
     element (so ``label_hi`` is the per-element count). Bonds are inferred only
     when the atom count ≤ ``detect_bonds_max`` — the covalent detector is O(N²)
@@ -98,7 +105,7 @@ def cif_to_scene(cif: str, *, detect_bonds_max: int = 0) -> Scene:
     coords = np.array([(x, y, z) for _, x, y, z in atoms_xyz], dtype=float)
     lo = coords.min(axis=0)
     hi = coords.max(axis=0)
-    box = np.maximum((hi - lo) + 2 * BOX_PADDING, 1.0)  # never a zero-length axis
+    box = np.maximum((hi - lo) + 2 * BOX_PADDING_A, 1.0)  # never a zero-length axis
     cell = Cell(lattice=np.diag(box), pbc=(False, False, False))
     scene = Scene(cell=cell)
 
@@ -106,7 +113,7 @@ def cif_to_scene(cif: str, *, detect_bonds_max: int = 0) -> Scene:
     for el, x, y, z in atoms_xyz:
         counts[el] = counts.get(el, 0) + 1
         label = f"{el}{counts[el]}"
-        frac = (np.array([x, y, z]) - lo + BOX_PADDING) / box
+        frac = (np.array([x, y, z]) - lo + BOX_PADDING_A) / box
         scene.atoms[label] = Atom(label=label, element=el, frac=frac)
     scene.label_hi = dict(counts)
 

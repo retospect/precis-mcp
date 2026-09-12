@@ -7,6 +7,11 @@ look at it", not "impossible": a pre-relax geometry has bad angles by design,
 and an intentionally strained ring (epoxide, cyclopropane) is legal
 chemistry. Pure reads over the Scene, same findings shape as validate.py
 (:class:`validate.ValidationIssue`, ``severity="warn"``).
+
+Unit enclave (package docstring): Å/degree-native; angle checks are degrees,
+any length checks are Å — never SI. ``precis_nm`` imports this module's
+angle/hybridization helpers directly (atomistic-internal use, per
+`units-policy-cutover.md`'s explicit-scope note) — those call sites stay Å.
 """
 
 from __future__ import annotations

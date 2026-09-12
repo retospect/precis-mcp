@@ -12,6 +12,11 @@ per-atom DERIVED values (force/partial charge from a compute run) are
 run-scoped and live elsewhere (§12) — a different thing from the declared
 ``Atom.charge`` here. Bonds are the editable graph (order + provenance +
 periodic image), not a DFT input (§8.1).
+
+Unit enclave (package docstring): Å-native. ``Atom.frac`` is fractional
+(unitless); ``Measure.reach``/``goal`` values and any Cartesian length this
+module touches are Å — dataclass fields are not ``_A``-suffixed, per the
+enclave rule (class docstrings/inline comments declare the unit instead).
 """
 
 from __future__ import annotations

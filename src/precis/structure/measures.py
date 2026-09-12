@@ -9,6 +9,10 @@ save and the read surfaces (handler view + web viewer) recompute it on load.
 
 Eyes carry no goal — they are navigation handles, so their "value" is just the
 support set + what it currently touches (the §6.6 embodiment readout).
+
+Unit enclave (package docstring): Å/degree-native; every derived ``value``
+here already carries its own ``unit`` string ("Å"/"°"/"") rather than an
+``_A``-suffixed name, since the unit travels with the payload at runtime.
 """
 
 from __future__ import annotations

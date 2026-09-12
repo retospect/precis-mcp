@@ -9,6 +9,9 @@ The MIC search is *exact for any cell shape* (including triclinic): it reduces
 the fractional delta per periodic axis and then checks the 3×3×3 block of
 surrounding images, returning both the nearest distance and the integer image
 offset on ``j`` (the ``to_jimage`` of the structure atomistic IR).
+
+Unit enclave (package docstring): Å-native; ``Cell.lattice`` is never
+converted to SI inside this module.
 """
 
 from __future__ import annotations

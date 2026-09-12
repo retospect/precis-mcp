@@ -15,6 +15,10 @@ surfaced as ``Unsupported`` at the handler, never a crash.
 Rung 0 honours the ``fixed`` constraint (a fixed axis never moves) and returns a
 structured convergence envelope (converged + steps + max displacement + the
 per-step curve), the §9/§22-D contract. It mutates the Scene in place.
+
+Unit enclave (package docstring): Å/eV-native throughout, following ASE
+(``Atoms``, EMT, FIRE/BFGS) — energies in eV, forces in eV/Å, displacements
+in Å; never converted to SI here.
 """
 
 from __future__ import annotations

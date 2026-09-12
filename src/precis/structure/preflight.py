@@ -21,6 +21,9 @@ structure handler's ``put``/``edit`` (a hard reject + undo — nothing persists
 on a failing verdict) and ``quest.compute.dispatch_autocatpath`` (a hard
 dispatch gate — no job minted on a failing substrate, plus a dead-end
 logbook stamp so the proposer stops re-treading it).
+
+Unit enclave (package docstring): Å/eV-native; ``SETTLE_FMAX`` (eV/Å) and
+every length threshold here stay in that convention, never SI.
 """
 
 from __future__ import annotations

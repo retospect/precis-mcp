@@ -47,7 +47,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.structure import paper_provenance_rows
 from precis.structure import evaluate_measure
 from precis.structure.cache import apply_geometry
-from precis.structure.elements import covalent_radius
+from precis.structure.elements import covalent_radius_A as covalent_radius
 from precis.structure.probe import coordination, detect_bonds
 from precis.structure.scene import FIX_X, FIX_Y, FIX_Z
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
@@ -218,6 +218,12 @@ def rung_info(fidelity: str | None) -> dict[str, str]:
     return RUNG_INFO.get(family, _RUNG_UNKNOWN)
 
 
+#: Typical (default) force-convergence threshold quoted in ``METRIC_HELP`` —
+#: mirrors :data:`precis.structure.preflight.SETTLE_FMAX` / the ``fmax``
+#: floor in :mod:`precis.structure.relax`; a given run may set its own ``tol``,
+#: so this is explanatory text, not the live per-run value.
+_TYPICAL_FORCE_THRESHOLD_eV_per_A = 0.05
+
 #: Mouseover text for the numbers a run reports. The run-cube is the one place
 #: on the site where a reader meets eV and eV/Å, so every column says what it
 #: means and — the part that actually bites — what it may *not* be compared to.
@@ -230,7 +236,8 @@ METRIC_HELP: dict[str, str] = {
     "max_force": (
         "The largest force still pulling on any single atom, in eV/Å — the "
         "'is it settled?' number. A relax stops once it drops under its "
-        "threshold (~0.05 eV/Å); a big value means the geometry is still moving."
+        f"threshold (~{_TYPICAL_FORCE_THRESHOLD_eV_per_A} eV/Å); a big value "
+        "means the geometry is still moving."
     ),
     "steps": "How many optimiser steps the relax took before it stopped.",
     "converged": (
@@ -519,7 +526,7 @@ def _curve_svg(curve: list[float]) -> str:
 #: Pauling bond-order decay constant (Å) — ``s = exp((R0-d)/0.37)`` reads
 #: s≈1 at the sum-of-covalent-radii ideal single-bond distance, decaying
 #: smoothly as the pair stretches past it.
-_BOND_ORDER_DECAY = 0.37
+_BOND_ORDER_DECAY_A = 0.37
 
 #: Drop a neighbour pair once its bond order decays below this — anything
 #: weaker isn't a meaningful interaction to list.
@@ -556,7 +563,7 @@ def _atom_neighbors(scene: Any, atoms: list[dict[str, Any]]) -> None:
             ej = by_label[lj]["element"]
             d, _img = scene.cell.mic(scene.atoms[li].frac, scene.atoms[lj].frac)
             r0 = covalent_radius(ei) + covalent_radius(ej)
-            s = math.exp((r0 - d) / _BOND_ORDER_DECAY)
+            s = math.exp((r0 - d) / _BOND_ORDER_DECAY_A)
             if s < _NEIGHBOR_MIN_S:
                 continue
             by_label[li]["neighbors"].append(

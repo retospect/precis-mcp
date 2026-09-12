@@ -27,6 +27,9 @@ the public schema docs — **not** exercised against a live query in this
 slice (T5 is offline-only, no network in the test gate). Verify against a
 live ``https://api.catalysis-hub.org/graphql`` introspection before the
 batch-import CLI depends on it.
+
+Unit enclave (`precis.structure` package docstring): eV/Å-native, matching
+Catalysis-Hub's own DFT convention; energies are never converted to SI here.
 """
 
 from __future__ import annotations

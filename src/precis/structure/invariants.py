@@ -21,6 +21,9 @@ identically, so it has no false-*negatives* from relabeling. Exact structural
 identity (pymatgen ``StructureMatcher`` / InChI) is the eventual upgrade for
 false-*positive* tightness; :class:`Fingerprint` is the seam — swap the
 comparator, keep the loop.
+
+Unit enclave (package docstring): Å-native; layer/coordination/min-distance
+values below are Å, never SI.
 """
 
 from __future__ import annotations

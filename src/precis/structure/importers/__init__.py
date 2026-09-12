@@ -13,6 +13,10 @@ source clients (ASE/``datasets``/``h5py``/``lmdb``) are the only things that
 fetch a ``raw_record`` in the first place. This module stays dependency-free
 so it can be imported from anywhere (handler, worker, tests) with zero
 optional deps installed.
+
+Unit enclave (`precis.structure` package docstring): Å/eV-native, matching
+the source DFT DBs' own convention (ASE-native); ``ExternalRun.energy``/
+``max_force`` are eV / eV/Å, never converted to SI.
 """
 
 from __future__ import annotations

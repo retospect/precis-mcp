@@ -10,6 +10,11 @@ IR holds *any* element; only the relaxer is palette-restricted in v1.
 Covalent radii are the single-bond values of Cordero et al. (2008), in
 ångström. ``max_valence`` is ``None`` for metals, where coordination is not
 valence-bounded.
+
+Unit enclave (package docstring): Å-native. ``covalent_radius``/
+``DEFAULT_RADIUS``/``bond_cutoff`` are cross-package Å surfaces — imported
+bare by ``precis_nm`` and ``precis_web``; ``covalent_radius_A`` is the
+self-naming alias for new/non-frozen imports.
 """
 
 from __future__ import annotations
@@ -64,6 +69,13 @@ _MAX_VALENCE: dict[str, int | None] = {
 def covalent_radius(element: str) -> float:
     """Single-bond covalent radius in Å (``DEFAULT_RADIUS`` if unknown)."""
     return _COVALENT_RADIUS.get(element, DEFAULT_RADIUS)
+
+
+#: Self-naming alias (units-policy-cutover unit-enclave rule) — same function,
+#: Å-suffixed name for cross-package call sites. The bare ``covalent_radius``
+#: stays importable (``precis_nm`` is frozen under the units window); new
+#: non-frozen imports should prefer this name.
+covalent_radius_A = covalent_radius
 
 
 def max_valence(element: str) -> int | None:
