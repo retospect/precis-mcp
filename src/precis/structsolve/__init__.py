@@ -19,11 +19,16 @@ Modules:
   coordinates, one linear solve per axis returns node geometry in
   equilibrium.
 - :mod:`precis.structsolve.complementarity` — active-set unilateral
-  analysis (docs/backlog/complementarity-solver.md slice 1): given
-  topology, per-member axial rate/free-length/sign-idiom and supports,
-  finds the small-displacement equilibrium in which every tension-only,
-  compression-only and must-contact member obeys its one-sidedness —
-  never both a gap and a force.
+  analysis (docs/backlog/complementarity-solver.md slices 1 and 3):
+  given topology, per-member axial rate/free-length/sign-idiom and
+  supports, finds the small-displacement equilibrium in which every
+  tension-only, compression-only and must-contact member obeys its
+  one-sidedness — never both a gap and a force. Slice 3's
+  :func:`~precis.structsolve.complementarity.probe_bistability` takes
+  two candidate free-length assignments over the same topology (e.g. a
+  photoswitch's ``{trans, cis}`` states) and reports whether each is a
+  stable equilibrium plus, when both are, an advisory-tier
+  energy-barrier estimate between them.
 - :mod:`precis.structsolve.simp` — 3D density-field SIMP (the nTop leg,
   slice 4): a voxel domain plus nodal loads and supports goes in, a
   density field with a compliance history comes out, optionally through
@@ -46,8 +51,12 @@ from __future__ import annotations
 
 from precis.structsolve.complementarity import (
     IDIOMS,
+    BistabilityResult,
     ComplementarityError,
+    ComplementarityInputError,
     ComplementarityResult,
+    EquilibriumStabilityResult,
+    probe_bistability,
     solve_complementarity,
 )
 from precis.structsolve.formfind import FormFindError, FormFindResult, form_find
@@ -61,8 +70,11 @@ from precis.structsolve.simp import (
 
 __all__ = [
     "IDIOMS",
+    "BistabilityResult",
     "ComplementarityError",
+    "ComplementarityInputError",
     "ComplementarityResult",
+    "EquilibriumStabilityResult",
     "FormFindError",
     "FormFindResult",
     "LatticeResult",
@@ -70,6 +82,7 @@ __all__ = [
     "form_find",
     "lattice_fill",
     "overhang_violations",
+    "probe_bistability",
     "simp_optimize",
     "solve_complementarity",
 ]

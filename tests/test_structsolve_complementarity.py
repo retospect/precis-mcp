@@ -1,17 +1,28 @@
 """precis.structsolve.complementarity — the pure active-set unilateral
-solver (docs/backlog/complementarity-solver.md slice 1, CORE only).
-Unit-agnostic, store-free: arrays in, arrays out. The four acceptance
-fixtures from the spec: (a) a two-cable/one-strut tripod where one
-cable goes slack under a lateral load; (b) a compression-only contact
-that separates under uplift; (c) a must-contact stop reported
-`unseated` when the applied pull exceeds what its preload can absorb;
-(d) the classic 3-strut/9-cable tensegrity prism (same geometry as
-``tests/test_se_stability.py``'s fixture) staying fully taut/bearing
-under a small service load. Plus one fixture isolating the geometric-
-stiffness term against a hand-derived force number (fixtures (a)-(c)
-are all zero-prestress, so that term is otherwise only exercised
-indirectly via (d)'s singularity), a units-agnosticism check (m/N vs
-Å/nN reach the same status rows), and the refusal paths."""
+solver (docs/backlog/complementarity-solver.md slices 1 and 3, CORE
+only). Unit-agnostic, store-free: arrays in, arrays out. The four
+acceptance fixtures from the spec: (a) a two-cable/one-strut tripod
+where one cable goes slack under a lateral load; (b) a
+compression-only contact that separates under uplift; (c) a
+must-contact stop reported `unseated` when the applied pull exceeds
+what its preload can absorb; (d) the classic 3-strut/9-cable
+tensegrity prism (same geometry as ``tests/test_se_stability.py``'s
+fixture) staying fully taut/bearing under a small service load. Plus
+one fixture isolating the geometric-stiffness term against a
+hand-derived force number (fixtures (a)-(c) are all zero-prestress, so
+that term is otherwise only exercised indirectly via (d)'s
+singularity), a units-agnosticism check (m/N vs Å/nN reach the same
+status rows), and the refusal paths.
+
+Slice 3 (``probe_bistability``): two prism prestress states report
+``bistable=True`` plus a barrier estimate whose endpoints match the
+converged states' own elastic energy; a prism paired against its
+zero-prestress (singular) state reports monostable, honestly; a
+purpose-built "collinear buckling" fixture — two compression-only
+members driving a transverse rod's reduced stiffness negative — proves
+the second-order check has teeth: it *converges* (a legal, invertible
+small-displacement solve) yet is correctly reported not stable, which
+plain convergence alone would miss."""
 
 from __future__ import annotations
 
@@ -23,6 +34,8 @@ import pytest
 from precis.structsolve.complementarity import (
     IDIOMS,
     ComplementarityError,
+    ComplementarityInputError,
+    probe_bistability,
     solve_complementarity,
 )
 
@@ -529,6 +542,236 @@ def test_zero_length_member_rejects() -> None:
             np.array(["bidirectional"], dtype=object),
             fixed,
         )
+
+
+# ── slice 3: two-equilibria / bistability probe ──────────────────────────
+
+
+def _collinear_buckling_problem(
+    t0_cable: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    # Two collinear compression-only "struts" A-D, B-D along x, plus a
+    # bidirectional transverse rod E-D along y (D free in y only) — the
+    # compression idiom's own geometric-stiffness fixture (the module's
+    # own units test) with the sign flipped to compression: q = t0/L < 0,
+    # so k_yy = rate_rod + 2q can be driven NEGATIVE by a strong enough
+    # compression while the free-load equilibrium (zero external load,
+    # d = 0 trivially satisfies it) still solves — a legal, invertible,
+    # 1x1 "solve" that is nonetheless not second-order stable. This is
+    # the discrete P-delta/buckling effect the module docstring names.
+    coords = np.array(
+        [
+            [-1.0, 0.0, 0.0],  # A
+            [1.0, 0.0, 0.0],  # B
+            [0.0, -1.0, 0.0],  # E
+            [0.0, 0.0, 0.0],  # D, free in y only
+        ]
+    )
+    members = np.array([[0, 3], [1, 3], [2, 3]])
+    rate_cable, rate_rod = 10.0, 10.0
+    rate = np.array([rate_cable, rate_cable, rate_rod])
+    free_length = np.array(
+        [1.0 - t0_cable / rate_cable, 1.0 - t0_cable / rate_cable, 1.0]
+    )
+    idiom = np.array(
+        ["compression_only", "compression_only", "bidirectional"], dtype=object
+    )
+    fixed = np.zeros((4, 3), dtype=bool)
+    fixed[:3] = True
+    fixed[3] = [True, False, True]
+    return coords, members, rate, free_length, idiom, fixed
+
+
+def test_bistable_prism_reports_two_stable_equilibria_and_a_barrier() -> None:
+    coords, members, rate, free_length_a, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    _, _, _, free_length_b, _, _ = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=20.0
+    )
+
+    res = probe_bistability(
+        coords, members, rate, free_length_a, free_length_b, idiom, fixed
+    )
+
+    assert res.bistable
+    state_a, state_b = res.states
+    assert state_a.solved and state_a.stable
+    assert state_b.solved and state_b.stable
+    assert res.barrier is not None
+    assert res.barrier >= 0.0
+    assert res.barrier_samples is not None
+    assert len(res.barrier_samples) == 21  # the default barrier_samples
+
+    # Endpoint energies must match each converged state's own elastic
+    # energy exactly: for an active member force == rate*stretch, so
+    # 0.5*rate*stretch**2 == 0.5*force**2/rate; inactive members carry
+    # force 0 and contribute 0 either way.
+    assert state_a.result is not None and state_b.result is not None
+    energy_a = float(0.5 * np.sum(state_a.result.forces**2 / rate))
+    energy_b = float(0.5 * np.sum(state_b.result.forces**2 / rate))
+    assert res.barrier_samples[0] == pytest.approx(energy_a)
+    assert res.barrier_samples[-1] == pytest.approx(energy_b)
+    assert res.barrier == pytest.approx(
+        max(res.barrier_samples) - min(energy_a, energy_b)
+    )
+
+    assert any(n.startswith("barrier method:") for n in res.notes)
+    assert any("not a certified saddle-point energy" in n for n in res.notes)
+
+
+def test_barrier_samples_argument_controls_sample_count() -> None:
+    coords, members, rate, free_length_a, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    _, _, _, free_length_b, _, _ = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=20.0
+    )
+    res = probe_bistability(
+        coords,
+        members,
+        rate,
+        free_length_a,
+        free_length_b,
+        idiom,
+        fixed,
+        barrier_samples=5,
+    )
+    assert res.barrier_samples is not None
+    assert len(res.barrier_samples) == 5
+
+
+def test_barrier_samples_below_two_rejects() -> None:
+    coords, members, rate, free_length_a, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    _, _, _, free_length_b, _, _ = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=20.0
+    )
+    with pytest.raises(ComplementarityError, match="barrier_samples"):
+        probe_bistability(
+            coords,
+            members,
+            rate,
+            free_length_a,
+            free_length_b,
+            idiom,
+            fixed,
+            barrier_samples=1,
+        )
+
+
+def test_monostable_assignment_reports_one_equilibrium_honestly() -> None:
+    # State A: the prism at its usual, correctly-signed prestress —
+    # stable. State B: the prism's own zero-prestress geometry, already
+    # shown (test_prism_needs_its_prestress_first_order_mechanism_otherwise)
+    # to have a singular reduced stiffness — no equilibrium at all.
+    coords, members, rate, free_length_a, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    _, _, lengths0, _, _, _ = _prism_arrays(1.0)
+
+    res = probe_bistability(
+        coords, members, rate, free_length_a, lengths0, idiom, fixed
+    )
+
+    assert not res.bistable
+    state_a, state_b = res.states
+    assert state_a.solved and state_a.stable
+    assert not state_b.solved
+    assert state_b.error is not None and "singular" in state_b.error
+    assert state_b.result is None
+    assert res.barrier is None
+    assert res.barrier_samples is None
+    assert any("not bistable" in n for n in res.notes)
+    assert any("state B" in n for n in res.notes)
+
+
+def test_malformed_members_shape_raises_through_probe_bistability() -> None:
+    # A caller bug (bad shape) must PROPAGATE loudly, not be absorbed
+    # into a normal-looking BistabilityResult(bistable=False, ...) —
+    # ComplementarityInputError is a distinct cause from "no
+    # complementary equilibrium for this otherwise well-formed problem"
+    # (main-loop ruling, review 2026-09-12).
+    coords, members, rate, free_length_a, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    _, _, _, free_length_b, _, _ = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=20.0
+    )
+    bad_members = members[:, :1]  # (b, 1) instead of (b, 2)
+    with pytest.raises(ComplementarityInputError, match="members must be"):
+        probe_bistability(
+            coords, bad_members, rate, free_length_a, free_length_b, idiom, fixed
+        )
+
+
+def test_converged_but_second_order_unstable_state_is_not_reported_stable() -> None:
+    # t0_cable = -6: k_yy = rate_rod + 2*(t0_cable/length) = 10 + 2*(-6)
+    # = -2 < 0 — the reduced (1x1) tangent stiffness is invertible (so
+    # solve_complementarity's own magnitude-only singularity check lets
+    # it through, converging in one iteration at d=0) but not positive
+    # definite: not a stable equilibrium. t0_cable = -1 gives k_yy = 8 >
+    # 0 — the same topology, genuinely stable.
+    coords, members, rate, free_length_a, idiom, fixed = _collinear_buckling_problem(
+        -6.0
+    )
+    _, _, _, free_length_b, _, _ = _collinear_buckling_problem(-1.0)
+
+    unstable = solve_complementarity(coords, members, rate, free_length_a, idiom, fixed)
+    assert unstable.status[0] == "bearing"  # converges: a legal, if unstable, solve
+    assert unstable.iterations == 1
+
+    res = probe_bistability(
+        coords, members, rate, free_length_a, free_length_b, idiom, fixed
+    )
+
+    state_a, state_b = res.states
+    assert state_a.solved
+    assert not state_a.stable
+    assert any("not positive definite" in n for n in state_a.notes)
+    assert state_b.solved and state_b.stable
+    assert not res.bistable
+    assert res.barrier is None
+    assert any("not second-order stable" in n for n in res.notes)
+
+
+def test_units_agnosticism_bistability_probe() -> None:
+    coords, members, rate, free_length_a, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    _, _, _, free_length_b, _, _ = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=20.0
+    )
+    res_si = probe_bistability(
+        coords, members, rate, free_length_a, free_length_b, idiom, fixed
+    )
+
+    len_scale, force_scale = 1e10, 1e9
+    rate_scale = force_scale / len_scale
+    res_alt = probe_bistability(
+        coords * len_scale,
+        members,
+        rate * rate_scale,
+        free_length_a * len_scale,
+        free_length_b * len_scale,
+        idiom,
+        fixed,
+    )
+
+    assert res_si.bistable == res_alt.bistable
+    state_a_si, state_b_si = res_si.states
+    state_a_alt, state_b_alt = res_alt.states
+    assert state_a_si.solved == state_a_alt.solved
+    assert state_a_si.stable == state_a_alt.stable
+    assert state_b_si.solved == state_b_alt.solved
+    assert state_b_si.stable == state_b_alt.stable
+
+    assert res_si.barrier is not None and res_alt.barrier is not None
+    energy_scale = force_scale * len_scale  # force x length = energy
+    np.testing.assert_allclose(
+        res_alt.barrier, res_si.barrier * energy_scale, rtol=1e-6
+    )
 
 
 def test_all_idioms_are_documented_and_valid_inputs() -> None:
