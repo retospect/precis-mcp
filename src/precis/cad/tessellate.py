@@ -256,8 +256,13 @@ def mesh_config(config: str) -> Mesh:
     return mesh_shape(parse(config))
 
 
-def _apply(xf: Transform, verts: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Map local vertices to world coords (rigid, so winding is preserved)."""
+def apply_rigid(xf: Transform, verts: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Map local vertices to world coords (rigid, so winding is preserved).
+
+    Public so a caller outside this module can place an already-tessellated
+    mesh at a block's pose without re-deriving the ``(N, 3) @ R.T + t``
+    batch form itself (:mod:`precis_web.blocktree_svg`'s envelope
+    projection is the first of these)."""
     return (xf.R @ verts.T).T + xf.t
 
 
@@ -372,7 +377,7 @@ def clamped_halfspace_mesh(node: NodeSpec, aabb: tuple[Vec3, Vec3]) -> list[Mesh
     out: list[Mesh] = []
     for w, d, h, xf in halfspace_clamp_params(node, aabb):
         verts, tris = _box_mesh(w, d, h)
-        out.append((_apply(xf, verts), tris))
+        out.append((apply_rigid(xf, verts), tris))
     return out
 
 
@@ -395,5 +400,5 @@ def node_meshes(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None = None) -> list[M
         return clamped_halfspace_mesh(node, aabb)
     v, t = mesh_shape(spec)
     if node.pattern is not None:
-        return [(_apply(xf, v), t) for xf in _pattern_transforms(node)]
-    return [(_apply(_node_xform(node.loc, node.rot), v), t)]
+        return [(apply_rigid(xf, v), t) for xf in _pattern_transforms(node)]
+    return [(apply_rigid(_node_xform(node.loc, node.rot), v), t)]

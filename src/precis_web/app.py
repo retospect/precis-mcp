@@ -114,6 +114,7 @@ def create_app(
         agentlogs,
         alerts,
         asks,
+        blocktree_view,
         budget,
         cad,
         categorizers,
@@ -172,6 +173,7 @@ def create_app(
     app.include_router(clusters.router)
     app.include_router(structure.router)
     app.include_router(cad.router)
+    app.include_router(blocktree_view.router)
     app.include_router(categorizers.router)
     app.include_router(figure.router)
     app.include_router(mermaid.router)

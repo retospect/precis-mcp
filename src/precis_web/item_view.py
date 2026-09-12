@@ -78,6 +78,8 @@ _OPEN_URL_OVERRIDES: dict[str, str] = {
     "draft": "/smartdraft/{id}",
     "datasheet": "/datasheets/{id}",
     "cad": "/cad/{slug}",
+    "se": "/se/{slug}",
+    "nm": "/nm/{slug}",
     "structure": "/structure/{slug}",
     "figure": "/figure/{slug}",
     "mermaid": "/mermaid/{slug}",

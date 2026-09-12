@@ -1,0 +1,50 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+
+<div class="flex items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">{{ title }}</h1>
+  <span class="text-xs text-slate-500">{{ kind_label }} · {{ slug }}</span>
+</div>
+
+<form method="get" class="flex flex-wrap items-end gap-3 mb-4 text-sm">
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">view axis</label>
+    <select name="axis" class="border border-slate-300 rounded px-2 py-1">
+      {% for a in axes %}
+        <option value="{{ a }}" {{ 'selected' if a == axis else '' }}>{{ a }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">abstraction level</label>
+    <select name="level" class="border border-slate-300 rounded px-2 py-1">
+      {% for lv in levels %}
+        <option value="{{ lv }}" {{ 'selected' if lv == level else '' }}>{{ lv }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">colour</label>
+    <select name="colour" class="border border-slate-300 rounded px-2 py-1">
+      {% for c in colour_channels %}
+        <option value="{{ c }}" {{ 'selected' if c == colour else '' }}>{{ c }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">isolate subtree</label>
+    <select name="isolate" class="border border-slate-300 rounded px-2 py-1">
+      <option value="">(whole design)</option>
+      {% for b in block_names %}
+        <option value="{{ b }}" {{ 'selected' if b == isolate else '' }}>{{ b }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit" class="px-3 py-1 rounded bg-slate-800 text-white">apply</button>
+</form>
+
+<div class="rounded-lg border border-slate-200 bg-white p-2">
+  <img src="{{ svg_url }}" alt="{{ title }} — {{ axis }} view" class="w-full h-auto" />
+</div>
+{% endblock %}
