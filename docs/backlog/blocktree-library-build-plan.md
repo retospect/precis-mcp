@@ -3,7 +3,6 @@ status: ready
 title: build plan — cross-design instancing, block states, complementary ports, ranked library search
 prio: high
 model: opus
-blocked-by: units-policy-cutover
 ---
 
 # Build plan

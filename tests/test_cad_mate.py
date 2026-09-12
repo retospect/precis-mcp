@@ -6,6 +6,8 @@ touches the store (``precis.cad`` imports no DB by contract).
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -24,16 +26,16 @@ from precis.cad.scene import (
 #: A motor whose output shaft face is a port 60 mm up its own z axis.
 _MOTOR = """
 component body
-shell add box:w40d40h60
-port shaft @0,0,60
+shell add box:w40mmd40mmh60mm
+port shaft @0mm,0mm,60mm
 """
 
 #: A gearbox with an input face at its origin and an output face 30 mm up.
 _GEARBOX = """
 component case
-shell add box:w50d50h30
-port drive @0,0,0
-port out   @0,0,30
+shell add box:w50mmd50mmh30mm
+port drive @0mm,0mm,0mm
+port out   @0mm,0mm,30mm
 """
 
 _LIBRARY = {"motor": parse_source(_MOTOR), "gearbox": parse_source(_GEARBOX)}
@@ -58,39 +60,41 @@ def test_port_parses_into_meta_not_nodes():
     assert [n.name for n in spec.nodes] == ["shell"]
     assert [(p.name, p.loc) for p in ports_of(spec)] == [
         ("drive", (0.0, 0.0, 0.0)),
-        ("out", (0.0, 0.0, 30.0)),
+        ("out", (0.0, 0.0, 0.03)),
     ]
 
 
 def test_port_accepts_a_rotated_frame():
-    spec = parse_source("body add box:w10d10h10\nport face @5,0,0 rot:0,90,0")
+    spec = parse_source(
+        "body add box:w10mmd10mmh10mm\nport face @5mm,0mm,0mm rot:0deg,90deg,0deg"
+    )
     (port,) = ports_of(spec)
-    assert port.loc == (5.0, 0.0, 0.0) and port.rot == (0.0, 90.0, 0.0)
+    assert port.loc == (0.005, 0.0, 0.0) and port.rot == (0.0, math.radians(90.0), 0.0)
 
 
 def test_mate_parses_both_anchor_forms():
     spec = parse_source(
-        "port base @0,0,0\n"
+        "port base @0mm,0mm,0mm\n"
         "use motor as m\n"
         "use gearbox as g\n"
         "mate g.drive to base\n"
-        "mate m.shaft to g.out flip spin:45\n"
+        "mate m.shaft to g.out flip spin:45deg\n"
     )
     own, chained = mates_of(spec)
     assert (own.instance, own.port) == ("g", "drive")
     assert own.anchor_instance is None and own.anchor_port == "base"
     assert not own.flip and own.spin == 0.0
     assert (chained.anchor_instance, chained.anchor_port) == ("g", "out")
-    assert chained.flip and chained.spin == 45.0
+    assert chained.flip and chained.spin == math.radians(45.0)
 
 
 @pytest.mark.parametrize(
     "line, msg",
     [
         ("port", "expected 'port <name>"),
-        ("port a.b @0,0,0", "bad port name"),
-        ("port p @0,0,0\nport p @1,0,0", "duplicate port"),
-        ("port p @0,0,0 polar:n4r10", "cannot carry a pattern"),
+        ("port a.b @0mm,0mm,0mm", "bad port name"),
+        ("port p @0mm,0mm,0mm\nport p @1mm,0mm,0mm", "duplicate port"),
+        ("port p @0mm,0mm,0mm polar:n4r10mm", "cannot carry a pattern"),
         ("mate a.b", "expected 'mate"),
         ("mate a.b at c", "expected 'mate"),
         ("mate ab to c", "mate subject must be"),
@@ -107,24 +111,24 @@ def test_bad_port_or_mate_lines_are_scene_errors(line, msg):
 def test_source_round_trips_ports_and_mates():
     src = (
         "desc: a drivetrain\n"
-        "port base @0,0,0\n"
-        "port side @10,0,0 rot:0,90,0\n"
+        "port base @0mm,0mm,0mm\n"
+        "port side @10mm,0mm,0mm rot:0deg,90deg,0deg\n"
         "use gearbox as g\n"
         "use motor as m\n"
         "mate g.drive to base\n"
-        "mate m.shaft to g.out flip spin:90\n"
+        "mate m.shaft to g.out flip spin:90deg\n"
     )
     spec = parse_source(src)
     assert parse_source(spec_to_source(spec)) == spec
     rendered = spec_to_source(spec)
     # mates render after the `use` lines they address
     assert rendered.index("use gearbox") < rendered.index("mate g.drive")
-    assert "mate m.shaft to g.out flip spin:90" in rendered
+    assert f"mate m.shaft to g.out flip spin:{math.radians(90.0)!r}rad" in rendered
 
 
 def test_a_design_without_ports_or_mates_keeps_bare_meta():
     # existing designs must be byte-identical through the new code
-    spec = parse_source("body add cyl:r5h5")
+    spec = parse_source("body add cyl:r5mmh5mm")
     assert spec.meta == {"units": "mm"}
 
 
@@ -134,16 +138,18 @@ def test_a_design_without_ports_or_mates_keeps_bare_meta():
 def test_mate_to_own_port_places_the_instance():
     # the motor's shaft (z=60 in its own frame) must land on the design's
     # `base` port at z=100 — so the motor body sits 60 below it.
-    spec = parse_source("port base @0,0,100\nuse motor as m\nmate m.shaft to base\n")
+    spec = parse_source(
+        "port base @0mm,0mm,100mm\nuse motor as m\nmate m.shaft to base\n"
+    )
     out = expand_instances(spec, _resolve)
     node = _node(out, "m.shell")
-    assert node.loc == pytest.approx((0.0, 0.0, 40.0))
+    assert node.loc == pytest.approx((0.0, 0.0, 0.04))
     assert node.rot == pytest.approx((0.0, 0.0, 0.0))
 
 
 def test_mate_chains_through_another_instance():
     spec = parse_source(
-        "port base @0,0,0\n"
+        "port base @0mm,0mm,0mm\n"
         "use gearbox as g\n"
         "use motor as m\n"
         "mate g.drive to base\n"
@@ -151,73 +157,81 @@ def test_mate_chains_through_another_instance():
     )
     out = expand_instances(spec, _resolve)
     assert _node(out, "g.shell").loc == pytest.approx((0.0, 0.0, 0.0))
-    # gearbox `out` is at z=30; the motor shaft is 60 up its own body
-    assert _node(out, "m.shell").loc == pytest.approx((0.0, 0.0, -30.0))
+    # gearbox `out` is at z=30mm; the motor shaft is 60mm up its own body
+    assert _node(out, "m.shell").loc == pytest.approx((0.0, 0.0, -0.03))
 
 
 def test_mate_equals_the_hand_placed_design():
     """The acceptance criterion: zero world coordinates, same geometry."""
-    mated = parse_source("port base @0,0,100\nuse motor as m\nmate m.shaft to base\n")
-    placed = parse_source("use motor as m @0,0,40\n")
+    mated = parse_source(
+        "port base @0mm,0mm,100mm\nuse motor as m\nmate m.shaft to base\n"
+    )
+    placed = parse_source("use motor as m @0mm,0mm,40mm\n")
     a = expand_instances(mated, _resolve)
     b = expand_instances(placed, _resolve)
-    assert [(n.name, n.loc) for n in a.nodes] == [(n.name, n.loc) for n in b.nodes]
+    assert [n.name for n in a.nodes] == [n.name for n in b.nodes]
+    for na, nb in zip(a.nodes, b.nodes):
+        assert na.loc == pytest.approx(nb.loc)
 
 
 def test_flip_opposes_the_mating_frames():
     # default is coincidence; `flip` is the explicit 180° about x
     plain = expand_instances(
-        parse_source("port base @0,0,0\nuse motor as m\nmate m.shaft to base\n"),
+        parse_source("port base @0mm,0mm,0mm\nuse motor as m\nmate m.shaft to base\n"),
         _resolve,
     )
     flipped = expand_instances(
-        parse_source("port base @0,0,0\nuse motor as m\nmate m.shaft to base flip\n"),
+        parse_source(
+            "port base @0mm,0mm,0mm\nuse motor as m\nmate m.shaft to base flip\n"
+        ),
         _resolve,
     )
     assert _node(plain, "m.shell").rot == pytest.approx((0.0, 0.0, 0.0))
-    assert _node(plain, "m.shell").loc == pytest.approx((0.0, 0.0, -60.0))
-    assert _node(flipped, "m.shell").rot[0] == pytest.approx(180.0)
+    assert _node(plain, "m.shell").loc == pytest.approx((0.0, 0.0, -0.06))
+    assert _node(flipped, "m.shell").rot[0] == pytest.approx(math.pi)
     # flipped, the body extends the other way out of the port
-    assert _node(flipped, "m.shell").loc == pytest.approx((0.0, 0.0, 60.0), abs=1e-9)
+    assert _node(flipped, "m.shell").loc == pytest.approx((0.0, 0.0, 0.06), abs=1e-9)
 
 
 def test_spin_rotates_about_the_port_axis():
     out = expand_instances(
         parse_source(
-            "port base @0,0,0 rot:0,0,0\nuse motor as m\nmate m.shaft to base spin:90\n"
+            "port base @0mm,0mm,0mm rot:0deg,0deg,0deg\n"
+            "use motor as m\nmate m.shaft to base spin:90deg\n"
         ),
         _resolve,
     )
-    assert _node(out, "m.shell").rot == pytest.approx((0.0, 0.0, 90.0))
+    assert _node(out, "m.shell").rot == pytest.approx((0.0, 0.0, math.radians(90.0)))
 
 
 def test_mate_against_a_rotated_own_port():
     # a port lying on its side: the mated body must come out along +x
     spec = parse_source(
-        "port side @100,0,0 rot:0,90,0\nuse motor as m\nmate m.shaft to side\n"
+        "port side @100mm,0mm,0mm rot:0deg,90deg,0deg\n"
+        "use motor as m\nmate m.shaft to side\n"
     )
     out = expand_instances(spec, _resolve)
     node = _node(out, "m.shell")
-    # the shaft was +60 along the motor's own z, now pointing along world +x
-    assert node.loc == pytest.approx((40.0, 0.0, 0.0), abs=1e-9)
-    assert node.rot == pytest.approx((0.0, 90.0, 0.0))
+    # the shaft was +60mm along the motor's own z, now pointing along world +x
+    assert node.loc == pytest.approx((0.04, 0.0, 0.0), abs=1e-9)
+    assert node.rot == pytest.approx((0.0, math.radians(90.0), 0.0))
 
 
 def test_unmated_instance_still_sits_where_it_was_placed():
     # a base/frame instance at the origin stays legal alongside mates
     spec = parse_source(
-        "port base @0,0,0\n"
+        "port base @0mm,0mm,0mm\n"
         "use gearbox as g\n"
-        "use motor as m @5,5,5\n"
+        "use motor as m @5mm,5mm,5mm\n"
         "mate g.drive to base\n"
     )
     out = expand_instances(spec, _resolve)
-    assert _node(out, "m.shell").loc == pytest.approx((5.0, 5.0, 5.0))
+    assert _node(out, "m.shell").loc == pytest.approx((0.005, 0.005, 0.005))
 
 
 def test_mated_design_builds_and_probes():
     spec = parse_source(
-        "port base @0,0,0\n"
+        "port base @0mm,0mm,0mm\n"
         "use gearbox as g\n"
         "use motor as m\n"
         "mate g.drive to base\n"
@@ -233,13 +247,13 @@ def test_mated_design_builds_and_probes():
 def test_mate_subject_must_be_an_instance():
     with pytest.raises(SceneError, match="is not an instance in this design"):
         expand_instances(
-            parse_source("port base @0,0,0\nmate m.shaft to base\n"), _resolve
+            parse_source("port base @0mm,0mm,0mm\nmate m.shaft to base\n"), _resolve
         )
 
 
 def test_instance_mated_twice_is_over_constrained():
     src = (
-        "port a @0,0,0\nport b @0,0,50\nuse motor as m\n"
+        "port a @0mm,0mm,0mm\nport b @0mm,0mm,50mm\nuse motor as m\n"
         "mate m.shaft to a\nmate m.shaft to b\n"
     )
     with pytest.raises(SceneError, match="mated twice"):
@@ -247,25 +261,25 @@ def test_instance_mated_twice_is_over_constrained():
 
 
 def test_mated_and_explicitly_placed_is_over_constrained():
-    src = "port base @0,0,0\nuse motor as m @1,2,3\nmate m.shaft to base\n"
+    src = "port base @0mm,0mm,0mm\nuse motor as m @1mm,2mm,3mm\nmate m.shaft to base\n"
     with pytest.raises(SceneError, match="both mated and explicitly placed"):
         expand_instances(parse_source(src), _resolve)
 
 
 def test_patterned_instance_cannot_be_mated():
-    src = "port base @0,0,0\nuse motor as m polar:n4r20\nmate m.shaft to base\n"
+    src = "port base @0mm,0mm,0mm\nuse motor as m polar:n4r20mm\nmate m.shaft to base\n"
     with pytest.raises(SceneError, match="patterned instance"):
         expand_instances(parse_source(src), _resolve)
 
 
 def test_unknown_port_on_the_subject_lists_what_exists():
-    src = "port base @0,0,0\nuse motor as m\nmate m.nope to base\n"
+    src = "port base @0mm,0mm,0mm\nuse motor as m\nmate m.nope to base\n"
     with pytest.raises(SceneError, match="has no port 'nope'.*declared ports: shaft"):
         expand_instances(parse_source(src), _resolve)
 
 
 def test_unknown_own_anchor_port_lists_what_exists():
-    src = "port base @0,0,0\nuse motor as m\nmate m.shaft to missing\n"
+    src = "port base @0mm,0mm,0mm\nuse motor as m\nmate m.shaft to missing\n"
     with pytest.raises(SceneError, match="not a port of this design"):
         expand_instances(parse_source(src), _resolve)
 
@@ -292,26 +306,26 @@ def test_self_mate_is_a_cycle():
 
 
 def test_mates_without_a_resolver_are_refused_not_crashed():
-    src = "port base @0,0,0\nuse motor as m\nmate m.shaft to base\n"
+    src = "port base @0mm,0mm,0mm\nuse motor as m\nmate m.shaft to base\n"
     with pytest.raises(SceneError, match="no resolver"):
         expand_instances(parse_source(src), None)
 
 
 def test_unresolvable_mated_design_is_a_scene_error():
-    src = "port base @0,0,0\nuse absent as m\nmate m.shaft to base\n"
+    src = "port base @0mm,0mm,0mm\nuse absent as m\nmate m.shaft to base\n"
     with pytest.raises(SceneError, match="cannot resolve design 'absent'"):
         expand_instances(parse_source(src), _resolve)
 
 
 def test_malformed_stored_port_is_refused():
-    spec = parse_source("body add cyl:r5h5")
+    spec = parse_source("body add cyl:r5mmh5mm")
     spec.meta["ports"] = [{"loc": [0, 0, 0]}]
     with pytest.raises(SceneError, match="malformed stored port"):
         ports_of(spec)
 
 
 def test_malformed_stored_mate_is_refused():
-    spec = parse_source("body add cyl:r5h5")
+    spec = parse_source("body add cyl:r5mmh5mm")
     spec.meta["mates"] = ["not a dict"]
     with pytest.raises(SceneError, match="malformed stored mate"):
         mates_of(spec)
@@ -321,21 +335,23 @@ def test_malformed_stored_mate_is_refused():
 
 
 def test_spec_without_mates_is_returned_identically():
-    spec = parse_source("body add cyl:r5h5")
+    spec = parse_source("body add cyl:r5mmh5mm")
     assert expand_instances(spec, None) is spec
 
 
 def test_instances_without_mates_still_expand():
-    spec = parse_source("use motor as m @0,0,10\n")
+    spec = parse_source("use motor as m @0mm,0mm,10mm\n")
     out = expand_instances(spec, _resolve)
-    assert _node(out, "m.shell").loc == pytest.approx((0.0, 0.0, 10.0))
+    assert _node(out, "m.shell").loc == pytest.approx((0.0, 0.0, 0.01))
 
 
 # ── the dataclasses themselves ───────────────────────────────────────────
 
 
 def test_port_frame_is_the_pose_transform():
-    frame = PortSpec(name="p", loc=(1.0, 2.0, 3.0), rot=(0.0, 0.0, 90.0)).frame()
+    frame = PortSpec(
+        name="p", loc=(1.0, 2.0, 3.0), rot=(0.0, 0.0, math.radians(90.0))
+    ).frame()
     assert np.allclose(frame.apply(np.zeros(3)), [1.0, 2.0, 3.0])
     assert np.allclose(frame.apply_dir(np.array([1.0, 0.0, 0.0])), [0.0, 1.0, 0.0])
 
@@ -356,7 +372,9 @@ def test_mate_meta_round_trips():
 def test_expansion_is_idempotent():
     """``build_design`` re-expands whatever it is handed, so an already-expanded
     spec must not try to re-solve mates whose instances it just consumed."""
-    spec = parse_source("port base @0,0,100\nuse motor as m\nmate m.shaft to base\n")
+    spec = parse_source(
+        "port base @0mm,0mm,100mm\nuse motor as m\nmate m.shaft to base\n"
+    )
     once = expand_instances(spec, _resolve)
     twice = expand_instances(once, _resolve)
     assert [(n.name, n.loc) for n in twice.nodes] == [
@@ -370,6 +388,6 @@ def test_expansion_is_idempotent():
 def test_patterned_anchor_instance_is_refused():
     # a `polar:` anchor is N frames, not one — mating against it would
     # silently pick the base copy
-    src = "use gearbox as g polar:n4r30\nuse motor as m\nmate m.shaft to g.out\n"
+    src = "use gearbox as g polar:n4r30mm\nuse motor as m\nmate m.shaft to g.out\n"
     with pytest.raises(SceneError, match="is patterned, so its port is many frames"):
         expand_instances(parse_source(src), _resolve)

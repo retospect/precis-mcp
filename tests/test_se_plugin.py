@@ -1086,7 +1086,8 @@ def test_validate_dangling_connect_over_corrupted_tree() -> None:
 def test_clearance_reports_gap_in_metres(handler: SeHandler) -> None:
     _wheel_on_hub(handler)  # wheel at x=0.2, hub at origin — clear
     resp = handler.get(id="cart1", view="clearance", args={"a": "hub", "b": "wheel"})
-    assert "gap:" in resp.body and " m " in resp.body
+    # gap ~ 0.2 - 0.008 - 0.04 = 0.152 m, through the shared neat formatter.
+    assert "gap: 152 mm" in resp.body
     assert "clear" in resp.body
 
 
@@ -1927,7 +1928,7 @@ def test_measures_view_renders_table_and_stackup(handler: SeHandler) -> None:
     assert "hub.od_d" in resp.body
     assert "= hub.od_d + 0.0002 ± 5e-05" in resp.body
     assert "stack-up" in resp.body
-    assert "0.0162" in resp.body  # derived value
+    assert "16.2 mm" in resp.body  # derived value, via the neat formatter
     assert "hard" in resp.body
 
 
@@ -2249,8 +2250,8 @@ def test_unit_slip_advisory_skips_array_designs() -> None:
 
 
 def test_measures_view_glosses_millimetres() -> None:
-    # sub-metre values render with the mm gloss so a unit slip is visible
-    # on the very next read.
+    # sub-metre values render through the shared neat formatter, so a
+    # unit slip is visible on the very next read.
     tree = _l2_tree()
     apply_ops(
         tree,
@@ -2258,4 +2259,4 @@ def test_measures_view_glosses_millimetres() -> None:
     )
     from precis_se.handler import _render_measures
 
-    assert "0.016 (16 mm)" in _render_measures(tree)
+    assert "16 mm" in _render_measures(tree)

@@ -33,26 +33,26 @@ _SCRIPT = _REPO / "scripts" / "cad_tessellate_parity.mjs"
 _CORPUS: dict[str, str] = {
     "primitives": (
         "component a\n"
-        "bx  add box:w40d20h10\n"
-        "cy  add cyl:r6h12       @30,0,0\n"
-        "co  add cone:r5h9       @-30,0,0\n"
-        "tc  add tcone:rb6rt3h8  @0,30,0\n"
-        "sp  add sphere:r7       @0,-30,0\n"
-        "to  add torus:R12r3     @0,0,20\n"
+        "bx  add box:w40mmd20mmh10mm\n"
+        "cy  add cyl:r6mmh12mm       @30mm,0mm,0mm\n"
+        "co  add cone:r5mmh9mm       @-30mm,0mm,0mm\n"
+        "tc  add tcone:rb6mmrt3mmh8mm  @0mm,30mm,0mm\n"
+        "sp  add sphere:r7mm       @0mm,-30mm,0mm\n"
+        "to  add torus:R12mmr3mm     @0mm,0mm,20mm\n"
     ),
     "polygons": (
         "component p\n"
-        "hx  add hex:r8h6\n"
-        "ng  add ngon:n5r7h6      @25,0,0\n"
-        "fr  add frustum:n6rb8rt4h10 @-25,0,0\n"
-        "py  add pyramid:n4r6h9   @0,25,0\n"
+        "hx  add hex:r8mmh6mm\n"
+        "ng  add ngon:n5r7mmh6mm      @25mm,0mm,0mm\n"
+        "fr  add frustum:n6rb8mmrt4mmh10mm @-25mm,0mm,0mm\n"
+        "py  add pyramid:n4r6mmh9mm   @0mm,25mm,0mm\n"
     ),
     "patterns_and_pose": (
         "component q\n"
-        "plate add cyl:r25h6\n"
-        "bolts add cyl:r2h8       @18,0,-1 polar:n6r18\n"
-        "slots cut box:w4d4h8     @0,0,0   linear:n3dx6dy0dz0\n"
-        "tilt  add box:w6d6h6     @0,0,10  rot:0,0,30\n"
+        "plate add cyl:r25mmh6mm\n"
+        "bolts add cyl:r2mmh8mm       @18mm,0mm,-1mm polar:n6r18mm\n"
+        "slots cut box:w4mmd4mmh8mm     @0mm,0mm,0mm   linear:n3dx6mmdy0mmdz0mm\n"
+        "tilt  add box:w6mmd6mmh6mm     @0mm,0mm,10mm  rot:0deg,0deg,30deg\n"
     ),
 }
 

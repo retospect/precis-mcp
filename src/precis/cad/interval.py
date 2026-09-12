@@ -7,15 +7,18 @@ then combines these per-node interval sets with union / subtract /
 intersect to produce the material-vs-void spans the LLM reads.
 
 Intervals may carry ``±inf`` bounds (an unbounded half-space chamfer).
-``merge_intervals`` coalesces touching / overlapping spans within the
-linear epsilon so a fused pair reads as one solid run.
+``merge_intervals`` coalesces touching / overlapping spans within a
+tolerance that — with no caller-supplied ``eps`` — is derived from the
+spans' own magnitude (:data:`~precis.cad.vec.LINEAR_REL_EPS`), so a fused
+pair reads as one solid run at any scale, not just the one an absolute
+constant happened to be tuned for.
 """
 
 from __future__ import annotations
 
 import math
 
-from precis.cad.vec import LINEAR_EPS
+from precis.cad.vec import LINEAR_REL_EPS
 
 #: ``(t_in, t_out)`` with ``t_in <= t_out``.
 Interval = tuple[float, float]
@@ -25,15 +28,22 @@ NEG_INF = -math.inf
 POS_INF = math.inf
 
 
-def merge_intervals(spans: Intervals, *, eps: float = LINEAR_EPS) -> Intervals:
-    """Sort and coalesce overlapping / touching intervals."""
+def merge_intervals(spans: Intervals, *, eps: float | None = None) -> Intervals:
+    """Sort and coalesce overlapping / touching intervals.
+
+    ``eps`` defaults to a fraction (:data:`~precis.cad.vec.LINEAR_REL_EPS`)
+    of the pair's own bound magnitudes — self-relative, since a caller
+    that only has raw ``t`` values (no external governing length) still
+    needs a scale-appropriate touch tolerance.
+    """
     if not spans:
         return []
     ordered = sorted(spans, key=lambda s: s[0])
     out: Intervals = [ordered[0]]
     for lo, hi in ordered[1:]:
         plo, phi = out[-1]
-        if lo <= phi + eps:
+        tol = eps if eps is not None else LINEAR_REL_EPS * max(abs(lo), abs(phi))
+        if lo <= phi + tol:
             out[-1] = (plo, max(phi, hi))
         else:
             out.append((lo, hi))
@@ -88,18 +98,24 @@ def subtract(a: Intervals, b: Intervals) -> Intervals:
     return intersect(a, complement(b))
 
 
-def quadratic_le(a: float, b: float, c: float, *, eps: float = LINEAR_EPS) -> Intervals:
+def quadratic_le(
+    a: float, b: float, c: float, *, eps: float | None = None
+) -> Intervals:
     """Intervals of ``t`` satisfying ``a·t² + b·t + c <= 0``.
 
     Handles the degenerate linear (``a≈0``) and constant cases. When
     ``a > 0`` the solution is the closed interval between the roots (or
     empty); when ``a < 0`` it is the two unbounded tails outside the
     roots; with no real roots the answer is all-of-line or empty per the
-    sign of the leading behaviour.
+    sign of the leading behaviour. ``eps`` (default: a fraction of the
+    coefficients' own magnitude) is purely a numerical-degeneracy guard —
+    the coefficients already carry whatever scale the caller's geometry
+    is in, so self-relative needs no external governing length.
     """
-    if abs(a) <= eps:
-        if abs(b) <= eps:
-            return [(NEG_INF, POS_INF)] if c <= eps else []
+    tol = eps if eps is not None else LINEAR_REL_EPS * max(abs(a), abs(b), abs(c))
+    if abs(a) <= tol:
+        if abs(b) <= tol:
+            return [(NEG_INF, POS_INF)] if c <= tol else []
         root = -c / b
         # b·t + c <= 0  →  t <= root (b>0) or t >= root (b<0)
         return [(NEG_INF, root)] if b > 0 else [(root, POS_INF)]

@@ -33,7 +33,8 @@ from precis.structure.scene import Scene as StructScene
 from precis_nm.generators import GENERATORS, GeneratedBlock, GeneratorError
 from precis_nm.generators.sp2 import build_cnt, build_cone, build_fullerene
 from precis_nm.generators.sugars import build_cyclodextrin
-from precis_nm.handler import NmHandler, _generated_cell
+from precis_nm.handler import NmHandler, _envelope_A_to_m, _generated_cell
+from precis_nm.ops import _ingest_envelope
 
 _MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
 
@@ -495,7 +496,12 @@ def test_generator_envelope_fit_reports_nothing(block: GeneratedBlock) -> None:
     deliberately NOT in this list since gr332019 — its torus is
     bore-preserving, not fully containing; see the case below.)"""
     scene = _scene_from_block(block)
-    assert nm_validate.envelope_fit(block.envelope, scene) is None
+    # envelope_fit's `envelope` arg is STORED (design-space canonical)
+    # text — bare metres — while a generator's own `block.envelope` is
+    # Å-valued raw output; round-trip through the same seam `generate`
+    # uses in production (units-policy-cutover.md).
+    stored_env = _ingest_envelope(_envelope_A_to_m(block.envelope))
+    assert nm_validate.envelope_fit(stored_env, scene) is None
 
 
 def test_cyclodextrin_envelope_fit_protrusion_is_bounded() -> None:
@@ -506,7 +512,8 @@ def test_cyclodextrin_envelope_fit_protrusion_is_bounded() -> None:
     protrusion is a rim fold (small), never a cone-style gross mismatch."""
     block = build_cyclodextrin({"variant": "beta"})
     scene = _scene_from_block(block)
-    fit = nm_validate.envelope_fit(block.envelope, scene)
+    stored_env = _ingest_envelope(_envelope_A_to_m(block.envelope))
+    fit = nm_validate.envelope_fit(stored_env, scene)
     if fit is not None:
         _worst_atom, depth = fit
         assert depth < 2.0, f"gross envelope mismatch, not a rim fold: {fit}"
@@ -674,7 +681,7 @@ def test_generate_cone_end_to_end(
 
 def test_generate_duplicate_block_name_rejected(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "axle", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "axle", "envelope": "sphere:r2Å"},
         {
             "op": "generate",
             "generator": "fullerene",

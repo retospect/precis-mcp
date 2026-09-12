@@ -23,9 +23,11 @@ import pytest
 
 import precis_se
 from precis.cad.primitives import PolyFrustum
+from precis.cad.vec import vec3
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
+from precis.utils.units import parse_quantity
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
 from precis_se.validate import envelope_overlaps, kernel_scale
@@ -182,9 +184,11 @@ def test_clearance_at_nm_scale_reports_metres(handler: SeHandler) -> None:
     panel and hub genuinely interpenetrate by ~0.3 nm — the gap must come
     back negative, in metres, at nanometre magnitude (not kernel units)."""
     resp = handler.get(id="boxel1", view="clearance", args={"a": "panel", "b": "vtx"})
-    m = re.search(r"gap: (-?[\d.e-]+) m", resp.body)
+    # gap reads through the shared neat formatter (e.g. "gap: -300 pm") —
+    # parse it back rather than assume a bare metre float.
+    m = re.search(r"gap: (\S+ \S+)", resp.body)
     assert m, resp.body
-    gap = float(m.group(1))
+    gap = parse_quantity(m.group(1), "length")
     assert gap == pytest.approx(-3e-10, rel=0.2)
     assert "interference" in resp.body
 
@@ -317,10 +321,14 @@ def test_dof_probe_skips_cross_scale_pair() -> None:
 
 
 def test_clearance_view_names_the_degenerate_cause() -> None:
-    """handler BadInput must carry the WHY: an envelope that parses fine
-    in metres but whose scaled solid degenerates (a planetary-aspect box
-    whose thin dimension lands sub-epsilon after normalizing down) names
-    the degenerate-at-this-scale cause, not a bare 'invalid'."""
+    """handler BadInput must carry the WHY: a planetary-aspect box (1e9:1)
+    whose kernel-scaled solid degenerates names a 'degenerate' cause, not
+    a bare 'invalid' — regardless of which retry path names it (post
+    units-policy-cutover's relative-tolerance audit, LINEAR_REL_EPS is a
+    fraction of the shape's OWN largest dimension, so an extreme aspect
+    ratio can still make the thin axis sub-epsilon relative to the long
+    one, at any absolute scale — this is genuine geometric degeneracy,
+    not the old absolute-epsilon artifact)."""
     from precis_se.handler import _render_clearance
 
     tree = SeTree()
@@ -340,21 +348,40 @@ def test_clearance_view_names_the_degenerate_cause() -> None:
             },
         ],
     )
-    with pytest.raises(BadInput, match="degenerate at this scale"):
+    with pytest.raises(BadInput, match="degenerate"):
         _render_clearance(tree, {"a": "sliver", "b": "cube"})
 
 
 # ── kernel defense-in-depth ─────────────────────────────────────────────
 
 
-def test_degenerate_frustum_fails_loud_at_construction() -> None:
-    """A sub-epsilon polytope must raise a legible ValueError when built —
-    never a vacuous contains_local plus a min()-over-nothing crash at
-    read time."""
+def test_nm_scale_box_constructs_cleanly_post_epsilon_audit() -> None:
+    """units-policy-cutover's relative-tolerance audit (gr335192/gr334785)
+    fixed the root cause this module's ``kernel_scale`` seam exists to
+    route around: a genuinely-sized 1 nm box is no longer degenerate at
+    construction — ``LINEAR_REL_EPS`` is a fraction of the box's own
+    size, not an absolute mm-tuned constant. This used to be exactly the
+    ValueError :func:`test_degenerate_frustum_fails_loud_at_construction`'s
+    predecessor asserted; it is now the opposite: proof the box just
+    works."""
     nm = 1e-09
-    with pytest.raises(ValueError, match="degenerate below the kernel tolerance"):
+    b = PolyFrustum(
+        bottom=[(0.0, 0.0), (nm, 0.0), (nm, nm), (0.0, nm)],
+        top=[(0.0, 0.0), (nm, 0.0), (nm, nm), (0.0, nm)],
+        h=nm,
+    )
+    assert b.contains_local(vec3(nm / 2, nm / 2, nm / 2))
+    assert not b.contains_local(vec3(2 * nm, 2 * nm, 2 * nm))
+
+
+def test_degenerate_frustum_fails_loud_at_construction() -> None:
+    """A genuinely zero-volume polytope (every ring point identical, zero
+    height — degenerate at *any* scale, not a construction-tolerance
+    artifact) must still raise a legible ValueError when built — never a
+    vacuous contains_local plus a min()-over-nothing crash at read time."""
+    with pytest.raises(ValueError, match="degenerate"):
         PolyFrustum(
-            bottom=[(0.0, 0.0), (nm, 0.0), (nm, nm), (0.0, nm)],
-            top=[(0.0, 0.0), (nm, 0.0), (nm, nm), (0.0, nm)],
-            h=nm,
+            bottom=[(0.0, 0.0)] * 4,
+            top=[(0.0, 0.0)] * 4,
+            h=0.0,
         )

@@ -47,14 +47,13 @@ from precis.cad.scene import (
     _pattern_transforms,
     build_design,
 )
-from precis.cad.vec import Transform, Vec3, as_vec3, vec3
+from precis.cad.vec import LINEAR_REL_EPS, Transform, Vec3, as_vec3, vec3
 
 #: Segment count for curved primitives (cyl/cone/sphere/torus). Matches the
 #: OpenSCAD ``$fn`` used by the text export so the two routes agree.
 _FN = 64
 #: Latitude bands for the sphere (longitude uses the full ``_FN``).
 _FN_LAT = 32
-_EPS = 1e-9
 
 Mesh = tuple[NDArray[np.float64], NDArray[np.int64]]
 
@@ -143,9 +142,15 @@ def _cone(bottom_xy: list[tuple[float, float]], h: float) -> Mesh:
 
 
 def _circular(rb: float, rt: float, h: float, *, seg: int = _FN) -> Mesh:
-    if rt <= _EPS:
+    # "Is this radius essentially zero" — a fraction of the frustum's own
+    # governing length (mirrors precis.cad.primitives.CircularFrustum's
+    # top-face test), not a fixed absolute: an absolute constant tuned for
+    # mm-scale parts would treat a whole nanometre-scale cone's nonzero
+    # top radius as zero.
+    eps = LINEAR_REL_EPS * max(abs(rb), abs(rt), abs(h))
+    if rt <= eps:
         return _cone(_ngon_xy(seg, rb), h)
-    if rb <= _EPS:  # inverted cone — apex at the base
+    if rb <= eps:  # inverted cone — apex at the base
         verts_top = _ngon_xy(seg, rt)
         v, t = _cone(verts_top, -h)
         v = v.copy()
@@ -318,10 +323,10 @@ def halfspace_clamp_params(
     ``box(w, d, h)`` — centred in x/y, base at local ``z=0``) so that base
     face lies exactly on the chamfer's world-space cutting plane and the
     box extends ``h`` further along the tool's material normal, wide/deep
-    enough (``w``/``d``) to cover ``aabb`` — padded by 10% of its diagonal
-    plus 1 mm, so a corner of real geometry sitting right at the AABB
-    boundary is never clipped by plane/box coincidence — in every
-    direction. Any export/view backend that can place a rigid box under a
+    enough (``w``/``d``) to cover ``aabb`` — padded by 10% of its diagonal,
+    so a corner of real geometry sitting right at the AABB boundary is
+    never clipped by plane/box coincidence — in every direction. Any
+    export/view backend that can place a rigid box under a
     :class:`Transform` (mesh, OpenSCAD ``multmatrix``, OCCT ``gp_Trsf``, or
     an Euler-decomposed ``loc``/``rot`` pose) gets an exact substitute for
     the unbounded half-space.
@@ -334,7 +339,12 @@ def halfspace_clamp_params(
     normal_local = normal_local / np.linalg.norm(normal_local)
 
     lo, hi = as_vec3(aabb[0]), as_vec3(aabb[1])
-    margin = 0.1 * float(np.linalg.norm(hi - lo)) + 1.0
+    # Purely relative (10% of the AABB's own diagonal) — the historical
+    # "plus 1 mm" absolute term swamped the coordinates' own float64
+    # precision at nanometre scale (units-policy-cutover) for no benefit:
+    # the relative term alone already covers the "coincidence at the
+    # boundary" case this margin exists for.
+    margin = 0.1 * float(np.linalg.norm(hi - lo))
     lo, hi = lo - margin, hi + margin
     corners = np.array(
         [

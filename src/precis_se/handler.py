@@ -71,6 +71,7 @@ from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis.utils.units import format_quantity
 from precis_se import bom as se_bom
 from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
@@ -711,6 +712,13 @@ def _fmt3(v: list[float]) -> str:
     return ", ".join(f"{x:g}" for x in v)
 
 
+def _fmt_rot3(v: list[float]) -> str:
+    """A 3-vector of SI-radian angles, rendered in degrees — the angle
+    sibling of :func:`_fmt3` (never a bare-radian tuple, which would
+    misread as degrees, the units-policy-cutover angle ruling)."""
+    return ", ".join(format_quantity(float(x), "angle") for x in v)
+
+
 def _array_label(spec: dict[str, Any]) -> str:
     """The compact array marker on a tree/block line — e.g.
     ``×6 polar r=0.04 axis=[0, 0, 1]`` / ``×10 linear pitch=0.005
@@ -736,7 +744,7 @@ def _block_line(tree: SeTree, node: SeBlock) -> str:
         parts.append(f"env={env}{marker}")
     parts.append(f"pose=[{_fmt3(node.pose)}]")
     if any(node.rot):
-        parts.append(f"rot=[{_fmt3(node.rot)}]")
+        parts.append(f"rot=[{_fmt_rot3(node.rot)}]")
     n_ports = len(effective_ports(tree, node))
     if n_ports:
         parts.append(f"[{n_ports} port{'s' if n_ports != 1 else ''}]")
@@ -791,7 +799,7 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
         lines.append(f"instance of: {node.template}")
     lines.append(f"parent: {node.parent or '(root)'}")
     lines.append(f"pose: [{_fmt3(node.pose)}] m")
-    lines.append(f"rot: [{_fmt3(node.rot)}] deg")
+    lines.append(f"rot: [{_fmt_rot3(node.rot)}]")
     if node.template:
         # desc/use stay raw (an instance genuinely has none — those keys
         # are rejected at mint time); envelope resolves via the template,
@@ -957,18 +965,16 @@ def _fmt_num(v: Any) -> str:
 
 
 def _fmt_len(v: float) -> str:
-    """A metre value with a millimetre gloss for the sub-metre range —
-    ``0.015 (15 mm)`` — so an agent thinking in millimetres sees its unit
-    slip in the very next read (values ≥ 1 m are the drc
-    ``implausible_magnitude`` advisory's territory instead)."""
-    if 0.0 < abs(v) < 1.0:
-        return f"{v:g} ({v * 1000:g} mm)"
-    return f"{v:g}"
+    """A metre value through the shared neat formatter — ``15 mm``, ``2.3
+    nm`` — instead of a bare metre float, so an agent thinking in any
+    non-metre unit sees its magnitude in a scale-appropriate unit rather
+    than counting zeros."""
+    return format_quantity(v, "length")
 
 
 def _fmt_in_unit(v: float | None, unit: str) -> str:
-    """``_fmt_len``'s mm gloss for metre measures; a bare ``:g`` + unit
-    word for the rest of the closed registry."""
+    """``_fmt_len``'s neat-formatter gloss for metre measures; a bare
+    ``:g`` + unit word for the rest of the closed registry."""
     if v is None:
         return "—"
     if unit == "m":
@@ -1368,11 +1374,12 @@ def _render_stability(tree: SeTree) -> str:
 
 
 def _mm(value: float | None) -> str:
-    """One length in millimetres for a human reader. se stores metres;
-    every number in this view is converted once, here, and the column
-    headers say ``mm`` — a view that mixed the two would be the unit bug
-    this subsystem keeps having, printed."""
-    return "—" if value is None else f"{value * 1000:.2f}"
+    """One length for a human reader, through the shared neat formatter
+    (``15 mm``, ``2.3 m``) — se stores metres; every number in this view
+    is converted once, here, and the string carries its own unit, so a
+    view that mixed units would be the bug this subsystem keeps having,
+    printed."""
+    return "—" if value is None else format_quantity(value, "length")
 
 
 def _render_fasten(tree: SeTree) -> str:
@@ -1407,9 +1414,9 @@ def _render_fasten(tree: SeTree) -> str:
                     [
                         {
                             "member": m.block,
-                            "from_mm": _mm(m.t_in),
-                            "to_mm": _mm(m.t_out),
-                            "thickness_mm": _mm(m.thickness_m),
+                            "from": _mm(m.t_in),
+                            "to": _mm(m.t_out),
+                            "thickness": _mm(m.thickness_m),
                             "note": (
                                 f"bought {m.form}"
                                 if m.bought and m.form
@@ -1420,28 +1427,28 @@ def _render_fasten(tree: SeTree) -> str:
                         }
                         for m in res.members
                     ],
-                    schema=["member", "from_mm", "to_mm", "thickness_mm", "note"],
+                    schema=["member", "from", "to", "thickness", "note"],
                 )
             )
             lines.append(
-                f"grip {_mm(res.grip_m)} mm · stack {_mm(res.stack_m)} mm · "
+                f"grip {_mm(res.grip_m)} · stack {_mm(res.stack_m)} · "
                 f"terminated by a {res.termination} · screw is "
-                f"{_mm(res.length_m)} mm under the head, needs "
-                f"{_mm(res.required_length_m)} mm"
+                f"{_mm(res.length_m)} under the head, needs "
+                f"{_mm(res.required_length_m)}"
             )
         if res.thread is not None:
             t = res.thread
             txt = (
-                f"thread: {_mm(t.lead_m)} mm of travel per turn "
-                f"(pitch {_mm(t.pitch_m)} mm × {t.starts} start)"
+                f"thread: {_mm(t.lead_m)} of travel per turn "
+                f"(pitch {_mm(t.pitch_m)} × {t.starts} start)"
             )
             if t.engagement_m is not None and t.turns is not None:
                 txt += (
-                    f" — {_mm(t.engagement_m)} mm engaged, "
+                    f" — {_mm(t.engagement_m)} engaged, "
                     f"{t.turns:.1f} turns from first thread to seated"
                 )
             if res.declared_lead_m is not None:
-                txt += f" · joint declares {_mm(res.declared_lead_m)} mm/turn"
+                txt += f" · joint declares {_mm(res.declared_lead_m)}/turn"
             lines.append(txt)
         if res.holes:
             lines.append(
@@ -1457,12 +1464,12 @@ def _render_fasten(tree: SeTree) -> str:
                             "feature": h.name,
                             "member": h.block,
                             "kind": h.kind,
-                            "diameter_mm": _mm(h.diameter_m),
-                            "depth_mm": _mm(h.depth_m),
+                            "diameter": _mm(h.diameter_m),
+                            "depth": _mm(h.depth_m),
                         }
                         for h in res.holes
                     ],
-                    schema=["feature", "member", "kind", "diameter_mm", "depth_mm"],
+                    schema=["feature", "member", "kind", "diameter", "depth"],
                 )
             )
         for f in res.findings:
@@ -1609,8 +1616,11 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
     verdict = _clearance_verdict(result.gap, result.resolution)
 
     lines = [f"# clearance: {a_name!r} vs {b_name!r}"]
-    lines.append(f"gap: {result.gap / scale:g} m  ({verdict})")
-    lines.append(f"resolution: ±{result.resolution / scale:g} m (scale-relative)")
+    lines.append(f"gap: {format_quantity(result.gap / scale, 'length')}  ({verdict})")
+    lines.append(
+        f"resolution: ±{format_quantity(result.resolution / scale, 'length')} "
+        "(scale-relative)"
+    )
     lines.append(
         f"witness point: [{_fmt3([float(x) / scale for x in result.point])}] m"
     )

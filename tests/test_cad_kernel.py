@@ -26,7 +26,7 @@ from precis.cad.primitives import (
     regular_prism,
 )
 from precis.cad.vec import (
-    euler_deg_from_matrix,
+    euler_rad_from_matrix,
     identity,
     pose,
     rotation,
@@ -50,27 +50,30 @@ def test_translation_apply_and_inverse() -> None:
 
 
 def test_rotation_z_90deg() -> None:
-    r = rotation(0.0, 0.0, 90.0)
+    r = rotation(0.0, 0.0, math.pi / 2)
     # +x → +y under a +90° z-rotation.
     assert np.allclose(r.apply(vec3(1.0, 0.0, 0.0)), [0, 1, 0], atol=1e-12)
 
 
 def test_rotation_is_orthonormal() -> None:
-    r = rotation(15.0, 40.0, -75.0)
+    r = rotation(math.radians(15.0), math.radians(40.0), math.radians(-75.0))
     assert np.allclose(r.R @ r.R.T, np.eye(3), atol=1e-12)
     assert math.isclose(float(np.linalg.det(r.R)), 1.0, abs_tol=1e-12)
 
 
 def test_compose_matches_sequential_apply() -> None:
     a = translation(1.0, 0.0, 0.0)
-    b = rotation(0.0, 0.0, 90.0)
+    b = rotation(0.0, 0.0, math.pi / 2)
     composed = a.compose(b)
     p = vec3(1.0, 0.0, 0.0)
     assert np.allclose(composed.apply(p), a.apply(b.apply(p)), atol=1e-12)
 
 
 def test_to_local_round_trip() -> None:
-    t = pose(vec3(5.0, -3.0, 2.0), vec3(10.0, 20.0, 30.0))
+    t = pose(
+        vec3(5.0, -3.0, 2.0),
+        vec3(math.radians(10.0), math.radians(20.0), math.radians(30.0)),
+    )
     p = vec3(1.0, 2.0, 3.0)
     assert np.allclose(t.to_local_point(t.to_world_point(p)), p, atol=1e-12)
 
@@ -314,15 +317,26 @@ def test_box_contains_distance_sign_parity_across_scales(mult: float) -> None:
         assert b.contains_local(p) == (b.distance_local(p) <= 0), (mult, p)
 
 
-@pytest.mark.parametrize("mult", [1e-7, 1e-6], ids=["angstrom", "nm"])
-def test_box_below_kernel_band_raises_at_construction(mult: float) -> None:
-    # Separate, already-documented hazard (not this gripe): a box whose
-    # face-normal cross product falls below LINEAR_EPS gets every face
-    # culled at construction — precis_se.validate.kernel_scale is the
-    # seam that normalizes designs into the kernel's comfort band before
-    # ever reaching here, so this never fires for a well-formed se query.
-    with pytest.raises(ValueError, match="degenerate below the kernel tolerance"):
-        box(0.04 * mult, 0.02 * mult, 0.01 * mult)
+@pytest.mark.parametrize(
+    "mult",
+    [1e-10, 1e-9, 1e-7, 1e-6, 1.0, 1000.0],
+    ids=["A", "nm", "e-7", "e-6", "mm", "m"],
+)
+def test_box_constructs_and_behaves_at_any_scale(mult: float) -> None:
+    # units-policy-cutover (gr335192/gr334785): a box this small used to
+    # raise "degenerate below the kernel tolerance" because the old
+    # LINEAR_EPS was an ABSOLUTE 1e-6 — every face's normal-cross-product
+    # (units length²) at nanometre scale (~1e-18) was always below it, so
+    # a real nm ``box:`` envelope could never construct. LINEAR_REL_EPS is
+    # now a fraction of the box's own governing length, so the exact same
+    # geometry (redrawn at any scale) constructs and answers identically.
+    b = box(0.04 * mult, 0.02 * mult, 0.01 * mult)
+    inside = vec3(0, 0, 0.005 * mult)
+    outside = vec3(0.02 * mult + 1e-3 * mult, 0, 0.005 * mult)
+    assert b.contains_local(inside)
+    assert not b.contains_local(outside)
+    assert b.contains_local(inside) == (b.distance_local(inside) <= 0)
+    assert b.contains_local(outside) == (b.distance_local(outside) <= 0)
 
 
 def test_frustum_ray_hits_agrees_with_contains_and_distance() -> None:
@@ -436,7 +450,10 @@ def test_placed_ray_parameter_preserved() -> None:
 def test_placed_distance_invariant_under_rotation() -> None:
     far = vec3(100.0, 0.0, 0.0)
     d_identity = Placed(prim=Sphere(r=2.0), xform=identity()).distance(far)
-    rotated = Placed(prim=Sphere(r=2.0), xform=rotation(30.0, 45.0, 60.0))
+    rotated = Placed(
+        prim=Sphere(r=2.0),
+        xform=rotation(math.radians(30.0), math.radians(45.0), math.radians(60.0)),
+    )
     # Distance to a sphere is rotation-invariant about its own centre.
     assert math.isclose(rotated.distance(far), d_identity, abs_tol=1e-9)
 
@@ -444,7 +461,7 @@ def test_placed_distance_invariant_under_rotation() -> None:
 def test_placed_faces_rotate_normals() -> None:
     # A box's +z top face becomes +x after a -90° y-rotation... check the
     # normal set is rotated consistently and stays unit-length.
-    p = Placed(prim=box(2.0, 2.0, 2.0), xform=rotation(0.0, 0.0, 90.0))
+    p = Placed(prim=box(2.0, 2.0, 2.0), xform=rotation(0.0, 0.0, math.pi / 2))
     for f in p.faces():
         assert math.isclose(float(np.linalg.norm(f.normal)), 1.0, abs_tol=1e-12)
 
@@ -465,21 +482,24 @@ def test_transform_dataclass_immutable() -> None:
 @pytest.mark.parametrize(
     "rx,ry,rz",
     [
-        (0.0, 0.0, 0.0),
-        (15.0, 40.0, -75.0),
-        (-30.0, 10.0, 200.0),
-        (0.0, 90.0, 0.0),  # gimbal lock (ry = +90°)
-        (0.0, -90.0, 0.0),  # gimbal lock (ry = -90°)
-        (25.0, 90.0, -40.0),  # gimbal lock with nonzero rx/rz
-        (90.0, 0.0, 0.0),  # R[2,2] = 0 with R[2,1] ≠ 0 — not gimbal
-        (90.0, 30.0, 10.0),  # same, with all three angles live
+        (math.radians(d0), math.radians(d1), math.radians(d2))
+        for d0, d1, d2 in [
+            (0.0, 0.0, 0.0),
+            (15.0, 40.0, -75.0),
+            (-30.0, 10.0, 200.0),
+            (0.0, 90.0, 0.0),  # gimbal lock (ry = +90°)
+            (0.0, -90.0, 0.0),  # gimbal lock (ry = -90°)
+            (25.0, 90.0, -40.0),  # gimbal lock with nonzero rx/rz
+            (90.0, 0.0, 0.0),  # R[2,2] = 0 with R[2,1] ≠ 0 — not gimbal
+            (90.0, 30.0, 10.0),  # same, with all three angles live
+        ]
     ],
 )
-def test_euler_deg_from_matrix_round_trips(rx: float, ry: float, rz: float) -> None:
-    # euler_deg_from_matrix need not recover the *same* angles at a gimbal
+def test_euler_rad_from_matrix_round_trips(rx: float, ry: float, rz: float) -> None:
+    # euler_rad_from_matrix need not recover the *same* angles at a gimbal
     # lock (rx/rz aren't independently observable there) — it must recover
     # the *same rotation matrix*, always.
     R = rotation(rx, ry, rz).R
-    got = euler_deg_from_matrix(R)
+    got = euler_rad_from_matrix(R)
     R2 = rotation(*got).R
     assert np.allclose(R, R2, atol=1e-9)

@@ -15,9 +15,9 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.cad import CadHandler
 
-_V1 = "component bracket\nslab add box:w60d40h10\n"
-_V2 = "component bracket\nslab add box:w60d40h12\n"  # changed geometry
-_V1_RESTYLED = "component bracket\nslab  add   box:w60d40h10\n"  # same content
+_V1 = "component bracket\nslab add box:w60mmd40mmh10mm\n"
+_V2 = "component bracket\nslab add box:w60mmd40mmh12mm\n"  # changed geometry
+_V1_RESTYLED = "component bracket\nslab  add   box:w60mmd40mmh10mm\n"  # same content
 
 
 @pytest.fixture

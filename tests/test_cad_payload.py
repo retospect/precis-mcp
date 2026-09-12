@@ -8,6 +8,8 @@ into the bracket it mates to, attributed loudly, never silently.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from precis.cad.scene import (
@@ -24,17 +26,17 @@ from precis.cad.vec import vec3
 #: A hinge leaf whose port machines a recess + pin bore into its host.
 _HINGE = """
 component body
-barrel add cyl:r4h20
-port leaf_a @-10,0,0 of:body type:hinge-leaf
-payload recess   cut box:w8d3h20 at:leaf_a @0,0,-10
-payload pin_bore cut cyl:r2h24   at:leaf_a @0,0,-2
+barrel add cyl:r4mmh20mm
+port leaf_a @-10mm,0mm,0mm of:body type:hinge-leaf
+payload recess   cut box:w8mmd3mmh20mm at:leaf_a @0mm,0mm,-10mm
+payload pin_bore cut cyl:r2mmh24mm   at:leaf_a @0mm,0mm,-2mm
 """
 
 #: A slab host with a scoped port for the hinge (slab spans z 5..15).
 _BRACKET_RIG = """
 component bracket
-slab add box:w60d40h10 @0,0,5
-port hp @20,0,10 of:bracket
+slab add box:w60mmd40mmh10mm @0mm,0mm,5mm
+port hp @20mm,0mm,10mm of:bracket
 
 use hinge as h
 mate h.leaf_a to hp
@@ -61,21 +63,22 @@ def test_payload_round_trips_through_source_and_meta():
     assert parse_source(spec_to_source(spec)) == spec
     assert PortSpec.from_meta(port.to_meta()) == port
     src = spec_to_source(spec)
-    assert "payload recess cut box:w8d3h20 at:leaf_a @0,0,-10" in src
+    assert "payload recess cut box:w0.008md0.003mh0.02m at:leaf_a" in src
+    assert "@0m,0m,-0.01m" in src
 
 
 def test_payload_free_port_meta_is_byte_stable():
     # Slice-2/3 stored ports must not grow a key they never had.
-    (port,) = ports_of(parse_source("plate add cyl:r5h5\nport top @0,0,5"))
+    (port,) = ports_of(parse_source("plate add cyl:r5mmh5mm\nport top @0mm,0mm,5mm"))
     assert "payloads" not in port.to_meta()
 
 
 def test_payload_line_precedes_its_port_declaration():
     spec = parse_source(
         """
-plate add box:w20d20h5
-payload notch cut box:w2d2h5 at:top
-port top @0,0,5 of:part
+plate add box:w20mmd20mmh5mm
+payload notch cut box:w2mmd2mmh5mm at:top
+port top @0mm,0mm,5mm of:part
 """
     )
     (port,) = ports_of(spec)
@@ -85,18 +88,18 @@ port top @0,0,5 of:part
 @pytest.mark.parametrize(
     ("line", "hint"),
     [
-        ("payload x intersect box:w2d2h2 at:top", "intersect"),
-        ("payload x add chamfer:2x45 at:top", "chamfer"),
-        ("payload x cut box:w2d2h2", "at:<port>"),
-        ("payload x cut box:w2d2h2 at:nope", "not a declared port"),
-        ("payload x cut box:w2d2h2 at:top polar:n4r5", "pattern"),
-        ("payload plate cut box:w2d2h2 at:top", "duplicate"),
+        ("payload x intersect box:w2mmd2mmh2mm at:top", "intersect"),
+        ("payload x add chamfer:2mmx45deg at:top", "chamfer"),
+        ("payload x cut box:w2mmd2mmh2mm", "at:<port>"),
+        ("payload x cut box:w2mmd2mmh2mm at:nope", "not a declared port"),
+        ("payload x cut box:w2mmd2mmh2mm at:top polar:n4r5mm", "pattern"),
+        ("payload plate cut box:w2mmd2mmh2mm at:top", "duplicate"),
         ("payload x cut", "expected"),
     ],
 )
 def test_bad_payload_lines_refused(line, hint):
     with pytest.raises(SceneError, match=hint):
-        parse_source(f"plate add cyl:r5h5\nport top @0,0,5 of:part\n{line}")
+        parse_source(f"plate add cyl:r5mmh5mm\nport top @0mm,0mm,5mm of:part\n{line}")
 
 
 # ── splice mechanics ─────────────────────────────────────────────────
@@ -107,36 +110,37 @@ def test_payload_cuts_into_the_mated_host():
     recess = _node(ex, "h~recess")
     assert recess.component == "bracket"
     assert recess.op == "cut"
-    assert recess.loc == (20.0, 0.0, 0.0)  # hp @20,0,10 + payload @0,0,-10
+    assert recess.loc == (0.02, 0.0, 0.0)  # hp @20,0,10 + payload @0,0,-10 (mm)
     d = build_design(ex)
     # inside the recess: cut away; beside it: still solid
-    assert not d.classify_point(vec3(20, 0, 7), component="bracket").inside
-    assert d.classify_point(vec3(20, 15, 7), component="bracket").inside
+    assert not d.classify_point(vec3(0.02, 0, 0.007), component="bracket").inside
+    assert d.classify_point(vec3(0.02, 0.015, 0.007), component="bracket").inside
 
 
 def test_add_payload_contributes_material_to_the_host():
     lib = {
         "boss": parse_source(
-            "core add cyl:r3h5\nport face of:part\n"
-            "payload pad add cyl:r6h2 at:face @0,0,-2"
+            "core add cyl:r3mmh5mm\nport face of:part\n"
+            "payload pad add cyl:r6mmh2mm at:face @0mm,0mm,-2mm"
         )
     }
     ex = expand_instances(
         parse_source(
-            "component wall\nslab add box:w40d40h4\nport wp @10,0,4 of:wall\n"
+            "component wall\nslab add box:w40mmd40mmh4mm @0mm,0mm,0mm\n"
+            "port wp @10mm,0mm,4mm of:wall\n"
             "use boss as b\nmate b.face to wp"
         ),
         resolve=lambda s: lib[s],
     )
     d = build_design(ex)
-    # the pad (r6 about x=10, z 2..4) is part of *wall*, outside the slab's
-    # own footprint contribution at that point? No — inside the slab; probe
-    # the pad region below the port instead: z 2..4 is inside slab anyway,
-    # so probe a point only the pad could claim is impossible here; assert
-    # the node landed in the wall and folds as add.
+    # the pad (r6mm about x=10mm, z 2..4mm) is part of *wall*, outside the
+    # slab's own footprint contribution at that point? No — inside the slab;
+    # probe the pad region below the port instead: z 2..4mm is inside slab
+    # anyway, so probe a point only the pad could claim is impossible here;
+    # assert the node landed in the wall and folds as add.
     pad = _node(ex, "b~pad")
     assert (pad.component, pad.op) == ("wall", "add")
-    assert d.classify_point(vec3(10, 0, 3), component="wall").inside
+    assert d.classify_point(vec3(0.01, 0, 0.003), component="wall").inside
 
 
 def test_anchor_payload_splices_into_the_subject():
@@ -145,9 +149,9 @@ def test_anchor_payload_splices_into_the_subject():
     rig = parse_source(
         """
 component bracket
-slab add box:w60d40h10 @0,0,5
-port hp @20,0,10 of:bracket
-payload weep cut cyl:r1h30 at:hp @0,0,-15
+slab add box:w60mmd40mmh10mm @0mm,0mm,5mm
+port hp @20mm,0mm,10mm of:bracket
+payload weep cut cyl:r1mmh30mm at:hp @0mm,0mm,-15mm
 
 use hinge as h
 mate h.leaf_a to hp
@@ -156,8 +160,8 @@ mate h.leaf_a to hp
     ex = expand_instances(rig, resolve=lambda s: lib[s])
     weep = _node(ex, "h~weep")
     assert weep.component == "h.body"
-    # rides the subject's frame: hp world (20,0,10) + @0,0,-15
-    assert weep.loc == (20.0, 0.0, -5.0)
+    # rides the subject's frame: hp world (20,0,10) + @0,0,-15 (mm)
+    assert weep.loc == pytest.approx((0.02, 0.0, -0.005))
 
 
 def test_payload_refuses_a_host_component_with_no_geometry():
@@ -167,9 +171,9 @@ def test_payload_refuses_a_host_component_with_no_geometry():
     rig = parse_source(
         """
 component bracket
-slab add box:w60d40h10 @0,0,5
+slab add box:w60mmd40mmh10mm @0mm,0mm,5mm
 component void
-port hp @20,0,10 of:void
+port hp @20mm,0mm,10mm of:void
 
 use hinge as h
 mate h.leaf_a to hp
@@ -181,7 +185,7 @@ mate h.leaf_a to hp
 
 def test_payload_needs_a_scoped_host_port():
     rig = parse_source(
-        "component bracket\nslab add box:w60d40h10\nport hp @20,0,10\n"
+        "component bracket\nslab add box:w60mmd40mmh10mm\nport hp @20mm,0mm,10mm\n"
         "use hinge as h\nmate h.leaf_a to hp"
     )
     with pytest.raises(SceneError, match="not scoped of: a component"):
@@ -189,10 +193,10 @@ def test_payload_needs_a_scoped_host_port():
 
 
 def test_anchor_payload_needs_a_scoped_subject_port():
-    lib = {"puck": parse_source("disc add cyl:r5h2\nport face @0,0,2")}
+    lib = {"puck": parse_source("disc add cyl:r5mmh2mm\nport face @0mm,0mm,2mm")}
     rig = parse_source(
-        "component base\nslab add box:w40d40h5\nport bp @0,0,5 of:base\n"
-        "payload dimple cut sphere:r1 at:bp\n"
+        "component base\nslab add box:w40mmd40mmh5mm\nport bp @0mm,0mm,5mm of:base\n"
+        "payload dimple cut sphere:r1mm at:bp\n"
         "use puck as p\nmate p.face to bp"
     )
     with pytest.raises(SceneError, match="not scoped of: a component"):
@@ -205,7 +209,7 @@ def test_payload_into_another_instances_component():
     lib = {
         "hinge": parse_source(_HINGE),
         "plate": parse_source(
-            "body add box:w60d40h10 @0,0,5\nport hp @20,0,10 of:part"
+            "body add box:w60mmd40mmh10mm @0mm,0mm,5mm\nport hp @20mm,0mm,10mm of:part"
         ),
     }
     ex = expand_instances(
@@ -217,7 +221,9 @@ def test_payload_into_another_instances_component():
 
 def test_unmated_payload_port_splices_nothing():
     ex = expand_instances(
-        parse_source("component base\nslab add box:w40d40h5\nuse hinge as h @30,0,0"),
+        parse_source(
+            "component base\nslab add box:w40mmd40mmh5mm\nuse hinge as h @30mm,0mm,0mm"
+        ),
         resolve=_resolve,
     )
     assert not [n for n in ex.nodes if "~" in n.name]
@@ -229,9 +235,9 @@ def test_two_instances_of_one_module_splice_distinct_nodes():
         parse_source(
             """
 component bracket
-slab add box:w100d40h10 @0,0,5
-port hp1 @20,0,10 of:bracket
-port hp2 @-20,0,10 of:bracket
+slab add box:w100mmd40mmh10mm @0mm,0mm,5mm
+port hp1 @20mm,0mm,10mm of:bracket
+port hp2 @-20mm,0mm,10mm of:bracket
 use hinge as h1
 use hinge as h2
 mate h1.leaf_a to hp1
@@ -254,7 +260,7 @@ def test_payload_is_rigid_in_the_host_across_an_articulated_joint():
         _BRACKET_RIG.replace("mate h.leaf_a to hp", "joint h.leaf_a to hp revolute")
     )
     at0 = expand_instances(rig, resolve=_resolve, state={"h": 0})
-    at90 = expand_instances(rig, resolve=_resolve, state={"h": 90})
+    at90 = expand_instances(rig, resolve=_resolve, state={"h": math.radians(90)})
     assert _node(at0, "h~recess") == _node(at90, "h~recess")
     # while the module itself did move
     assert _node(at0, "h.barrel") != _node(at90, "h.barrel")
@@ -266,12 +272,12 @@ def test_payload_rides_a_jointed_host_component_exactly_once():
     rig = parse_source(
         """
 component base
-slab add box:w40d40h5
+slab add box:w40mmd40mmh5mm
 
 component arm
-bar add box:w60d10h10 @30,0,5
-port pivot @0,0,10 of:arm
-port tip @55,0,10 of:arm
+bar add box:w60mmd10mmh10mm @30mm,0mm,5mm
+port pivot @0mm,0mm,10mm of:arm
+port tip @55mm,0mm,10mm of:arm
 joint arm revolute at:pivot
 
 use hinge as h
@@ -280,12 +286,13 @@ mate h.leaf_a to tip
     )
     at0 = expand_instances(rig, resolve=_resolve, state={"arm": 0})
     r0 = _node(at0, "h~recess")
-    assert (r0.component, r0.loc) == ("arm", (55.0, 0.0, 0.0))
-    at90 = expand_instances(rig, resolve=_resolve, state={"arm": 90})
+    assert r0.component == "arm"
+    assert r0.loc == pytest.approx((0.055, 0.0, 0.0))
+    at90 = expand_instances(rig, resolve=_resolve, state={"arm": math.radians(90)})
     r90 = _node(at90, "h~recess")
-    # pivot at origin-x: (55,0,·) swings to (0,55,·) under Rz(90)
+    # pivot at origin-x: (55,0,·) mm swings to (0,55,·) under Rz(90)
     assert r90.loc[0] == pytest.approx(0.0, abs=1e-9)
-    assert r90.loc[1] == pytest.approx(55.0)
+    assert r90.loc[1] == pytest.approx(0.055)
     assert r90.loc[2] == pytest.approx(0.0)
 
 

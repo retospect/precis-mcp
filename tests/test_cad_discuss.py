@@ -21,10 +21,10 @@ from precis.workers.job_types import get_job_type, known_job_types
 # A hub + rim that do NOT touch (no spoke) → the facts block should say so.
 _SPLIT = """
 component hub
-h add cyl:r5h4
+h add cyl:r5mmh4mm
 component rim
-rdisc add cyl:r20h4
-rhole cut cyl:r15h6 @0,0,-1
+rdisc add cyl:r20mmh4mm
+rhole cut cyl:r15mmh6mm @0mm,0mm,-1mm
 """
 
 
@@ -114,9 +114,12 @@ def test_dispatch_writes_prose_answer_grounded_in_facts(seeded, monkeypatch):
     # doesn't guess where a part's zero is (the reported-bug fix).
     assert "Per-feature world bounds" in sink["prompt"]
     assert "Coordinates:" in sink["prompt"]
-    # the rim disc is r20 h4 at origin → z spans 0..4 (base-at-0, not centred)
+    # the rim disc is r20mm h4mm at origin → z spans 0..4mm (base-at-0, not
+    # centred); bounds now route through the shared neat formatter
+    # (format_quantity), so the label matches the printed magnitude
+    # (gr336065 — the stale "(mm)"-labelled-but-metres-valued bug).
     assert "rdisc [rim]" in sink["prompt"]
-    assert "z[0..4]" in sink["prompt"]
+    assert "z[0 m..4 mm]" in sink["prompt"]
 
 
 def test_dispatch_fails_on_empty_answer(seeded, monkeypatch):

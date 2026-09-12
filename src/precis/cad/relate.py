@@ -203,8 +203,9 @@ def _region(design: Design, exprs: list[Expr]) -> tuple[Vec3, Vec3]:
 class ClearanceResult:
     """Signed minimum gap between two components.
 
-    ``gap`` > 0 → clear (mm of space); ``gap`` < 0 → interference
-    (penetration depth, mm). ``point`` is the witness midpoint.
+    ``gap`` > 0 → clear (space, in the design's own length unit); ``gap``
+    < 0 → interference (penetration depth). ``point`` is the witness
+    midpoint.
 
     ``resolution`` is the scale-relative band inside which this query
     cannot tell "clear" from "touching" from "just interfering" — a
@@ -561,15 +562,22 @@ class ConnectivityResult:
         return None
 
 
-def connectivity(design: Design, *, tol: float = CONTACT_TOL_MM) -> ConnectivityResult:
+def connectivity(design: Design, *, tol: float | None = None) -> ConnectivityResult:
     """Contact graph over a design's components: which bodies touch, the
     connected groups they form, and whether the assembly is one solid.
 
     Two components are *connected* when their realised (post-cut) material
-    touches or overlaps — signed gap ≤ ``tol`` mm via :func:`clearance` (the
+    touches or overlaps — signed gap ≤ ``tol`` via :func:`clearance` (the
     exact-sign CSG SDF, so the overlapping-discs-before-cuts trap never
     arises). This is the graph behind "what's connected to X", "is there a
     path from A to B", and the "a real part is one connected solid" truism.
+
+    ``tol=None`` (the default) uses each pair's own :attr:`ClearanceResult.
+    resolution` — :data:`CONTACT_TOL_REL` of the pair's governing length —
+    rather than the absolute :data:`CONTACT_TOL_MM`: a fixed mm-scale
+    constant silently stops meaning "touching" once a design's numbers are
+    SI metres (units-policy-cutover) or Å. Pass an explicit ``tol`` to force
+    one absolute band across every pair (e.g. a caller-stated tolerance).
     """
     comps = tuple(design.components.keys())
     parent = {c: c for c in comps}
@@ -584,7 +592,8 @@ def connectivity(design: Design, *, tol: float = CONTACT_TOL_MM) -> Connectivity
     for i in range(len(comps)):
         for j in range(i + 1, len(comps)):
             cl = clearance(design, comps[i], comps[j])
-            if cl.gap <= tol:
+            pair_tol = tol if tol is not None else cl.resolution
+            if cl.gap <= pair_tol:
                 contacts.append(
                     Contact(
                         a=comps[i], b=comps[j], gap=cl.gap, interfering=cl.interfering
@@ -599,7 +608,10 @@ def connectivity(design: Design, *, tol: float = CONTACT_TOL_MM) -> Connectivity
         tuple(g) for g in sorted(grouped.values(), key=lambda g: comps.index(g[0]))
     )
     return ConnectivityResult(
-        components=comps, contacts=tuple(contacts), groups=groups, tol=tol
+        components=comps,
+        contacts=tuple(contacts),
+        groups=groups,
+        tol=tol if tol is not None else CONTACT_TOL_REL,
     )
 
 
@@ -607,9 +619,9 @@ def connectivity(design: Design, *, tol: float = CONTACT_TOL_MM) -> Connectivity
 class DofResult:
     """Translational freedom of a component along the principal axes.
 
-    Each entry is the mm of travel along ±axis before the moving
-    component's material first contacts the fixed component (``inf`` =
-    unbounded within the search range).
+    Each entry is the travel (in the design's own length unit) along
+    ±axis before the moving component's material first contacts the
+    fixed component (``inf`` = unbounded within the search range).
     """
 
     moving: str
@@ -623,24 +635,28 @@ def translational_dof(
     fixed: str,
     *,
     reach: float | None = None,
-    tol: float = 1e-3,
+    tol: float | None = None,
     dirs: tuple[str, ...] | None = None,
 ) -> DofResult:
     """How far ``moving`` can translate along ±x/±y/±z before hitting
     ``fixed``. ``dirs`` restricts the probe to a subset of ``('+x', '-x',
     '+y', '-y', '+z', '-z')`` — each direction costs a full contact scan,
     so callers that read only one axis (the se DOF probe) should name it;
-    ``None`` probes all six."""
+    ``None`` probes all six. ``tol`` (the bisection's stopping precision)
+    defaults to :data:`CONTACT_TOL_REL` of the query's own span — an
+    absolute default would mean nothing for a design drawn in Å or km."""
     em, ef = design.components[moving], design.components[fixed]
     mlo, mhi = _region(design, [em])
     flo, fhi = _region(design, [ef])
     span = float(np.max(np.maximum(mhi, fhi) - np.minimum(mlo, flo)))
     reach = reach if reach is not None else 2.0 * span
+    tol = tol if tol is not None else CONTACT_TOL_REL * span
+    aabb_margin = _GRAD_REL_EPS * span
 
     def contact_at(offset: Vec3) -> bool:
         # fast reject: shifted AABBs must overlap before materials can.
         slo, shi = mlo + offset, mhi + offset
-        if np.any(shi < flo - 1e-9) or np.any(slo > fhi + 1e-9):
+        if np.any(shi < flo - aabb_margin) or np.any(slo > fhi + aabb_margin):
             return False
         lo = np.minimum(slo, flo)
         hi = np.maximum(shi, fhi)
@@ -690,11 +706,19 @@ def translational_dof(
             travel[name] = float("inf")
             continue
         t_lo, t_hi = prev, first
-        while t_hi - t_lo > tol:
+        # Iteration-capped, not just tolerance-capped: bisection halves the
+        # bracket every step regardless of scale, so ~60 iterations already
+        # exceeds float64's usable precision — the cap is what guarantees
+        # termination if a degenerate (zero-span) query ever made ``tol``
+        # exactly 0, where a tolerance-only ``while`` would spin forever
+        # once the bracket hits its ULP floor and stops shrinking.
+        for _ in range(64):
+            if t_hi - t_lo <= tol:
+                break
             mid = 0.5 * (t_lo + t_hi)
             if contact_at(mid * d):
                 t_hi = mid
             else:
                 t_lo = mid
-        travel[name] = round(t_lo, 4)
+        travel[name] = _round_relative(t_lo, span)
     return DofResult(moving=moving, fixed=fixed, travel=travel)

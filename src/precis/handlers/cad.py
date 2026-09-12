@@ -21,6 +21,7 @@ See ``precis-cad-help``.
 from __future__ import annotations
 
 import logging
+import math
 import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
@@ -42,9 +43,9 @@ from precis.cad.probe import (
     probe_ray,
     probe_section_z,
 )
+from precis.cad.relate import CONTACT_TOL_REL, translational_dof
 from precis.cad.relate import clearance as cad_clearance
 from precis.cad.relate import connectivity as cad_connectivity
-from precis.cad.relate import translational_dof
 from precis.cad.scene import (
     PAYLOAD_SEP,
     SceneError,
@@ -73,20 +74,21 @@ from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis.utils.units import Dimension, format_quantity, parse_quantity
 
 log = logging.getLogger(__name__)
 
 
 def _fmt_interval_line(iv: Any) -> str:
-    """A dim's bounds as source-ish text ("= 200" / ">= 100 <= 500")."""
+    """A dim's bounds as source-ish text ("= 2.3 mm" / ">= 1 mm <= 5 mm")."""
     lo, hi = iv
     if lo is not None and hi is not None and lo == hi:
-        return f"= {lo:g}"
+        return f"= {format_quantity(lo, 'length')}"
     parts = []
     if lo is not None:
-        parts.append(f">= {lo:g}")
+        parts.append(f">= {format_quantity(lo, 'length')}")
     if hi is not None:
-        parts.append(f"<= {hi:g}")
+        parts.append(f"<= {format_quantity(hi, 'length')}")
     return " ".join(parts) or "unbounded"
 
 
@@ -109,17 +111,100 @@ _VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_OTHER_VIEWS)
 _SWEEP_N_DEFAULT, _SWEEP_N_MIN, _SWEEP_N_MAX = 9, 3, 25
 
 
-def _vec(args: dict[str, Any], key: str) -> Vec3:
+_AXES = ("x", "y", "z")
+
+
+def _vec(args: dict[str, Any], key: str, *, lengths: bool = True) -> Vec3:
+    """A 3-element ``args.<key>`` — ``[x,y,z]``. ``lengths=True`` (the
+    default: a position — probe ``p``/``o``/``c``) requires each
+    component to carry an explicit unit (:func:`~precis.utils.units.
+    parse_quantity`); ``lengths=False`` (a direction — ray ``d``, arc
+    ``axis``) takes bare numbers, same as ``rot:`` — a direction has no
+    length scale of its own."""
     raw = args.get(key)
     if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+        example = ["0mm", "0mm", "0mm"] if lengths else [0, 0, 1]
         raise BadInput(
-            f"args.{key} must be a 3-number list [x,y,z]",
-            next=f"get(kind='cad', id='<slug>', view='ray', args={{'{key}': [0,0,0]}})",
+            f"args.{key} must be a 3-element [x,y,z]"
+            + (" with an explicit unit on each length" if lengths else ""),
+            next=f"get(kind='cad', id='<slug>', view='ray', args={{'{key}': {example}}})",
         )
+    if not lengths:
+        try:
+            return vec3(float(raw[0]), float(raw[1]), float(raw[2]))
+        except (TypeError, ValueError):
+            raise BadInput(f"args.{key} must be three numbers") from None
+    return vec3(
+        *(
+            parse_quantity(raw[i], "length", arg_name=f"args.{key}.{_AXES[i]}")
+            for i in range(3)
+        )
+    )
+
+
+def _fmt_vec3(v: Any) -> str:
+    """A 3-vector of SI-metre lengths, neatly formatted per axis
+    (``(2.3 mm, 0 m, -1 cm)``) — never a bare-number tuple, which would
+    silently imply mm again."""
+    return "(" + ", ".join(format_quantity(float(x), "length") for x in v) + ")"
+
+
+def _fmt_rot3(v: Any) -> str:
+    """A 3-vector of SI-radian angles, rendered in degrees per axis
+    (``(0°, 0°, 45°)``) — never a bare-number tuple, which would silently
+    imply degrees on what is now an internally-radian value."""
+    return "(" + ", ".join(format_quantity(float(x), "angle") for x in v) + ")"
+
+
+def _design_scale(design: Any) -> float:
+    """The whole design's bbox diagonal — the governing length for a
+    scale-relative default (the shipped ``CONTACT_TOL_REL`` pattern from
+    :mod:`precis.cad.relate`), so a tolerance tuned for O(10 mm) parts
+    still means something for a design drawn in Å or km. Falls back to
+    1.0 m for an empty/AABB-less design (never zero, which would make
+    every relative tolerance zero too)."""
     try:
-        return vec3(float(raw[0]), float(raw[1]), float(raw[2]))
-    except (TypeError, ValueError):
-        raise BadInput(f"args.{key} must be three numbers") from None
+        lo, hi = expr_aabb(design, design.whole())
+    except Exception:  # pragma: no cover - defensive, mirrors _card_text
+        return 1.0
+    diag = math.sqrt(sum((float(hi[i]) - float(lo[i])) ** 2 for i in range(3)))
+    return diag if diag > 0 else 1.0
+
+
+def _joint_kind_map(spec: SceneSpec) -> dict[str, str]:
+    """Every articulated joint's kind, keyed by its state name (subject
+    instance for a mate/joint-to-anchor, component for a component
+    joint) — the lookup :meth:`CadHandler._state_arg` needs to know
+    whether a state value is a length or an angle (both need an explicit
+    unit)."""
+    kinds: dict[str, str] = {}
+    for m in mates_of(spec):
+        if m.kind != "fixed":
+            kinds[m.instance] = m.kind
+    for j in joints_of(spec):
+        kinds[j.component] = j.kind
+    return kinds
+
+
+def _convert_state_value(name: str, kind: str, value: Any) -> Any:
+    """One ``args.state`` entry → the plain-number/tuple
+    :func:`~precis.cad.scene.expand_instances` expects (SI: radians for an
+    angle, metres for a length), converting through the unit boundary.
+    ``cylindrical``'s state is ``[angle, slide]`` — angle needs an angle
+    unit, slide a length unit."""
+    if kind == "cylindrical":
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise BadInput(
+                f"state[{name!r}]: cylindrical takes [angle, slide]",
+                next=f"args={{'state': {{{name!r}: ['45deg', '5mm']}}}}",
+            )
+        ang = parse_quantity(value[0], "angle", arg_name=f"state[{name!r}].angle")
+        slide = parse_quantity(value[1], "length", arg_name=f"state[{name!r}].slide")
+        return (ang, slide)
+    if kind == "prismatic":
+        return parse_quantity(value, "length", arg_name=f"state[{name!r}]")
+    # revolute / screw — an angle, same as `rot:`/`limits:` for these kinds
+    return parse_quantity(value, "angle", arg_name=f"state[{name!r}]")
 
 
 class CadHandler(Handler):
@@ -130,7 +215,8 @@ class CadHandler(Handler):
             "Parametric solid-model design. put creates/replaces a "
             "design from a text source (one node per line: '<name> <add|cut|"
             "intersect> <config> [@x,y,z] [rot:..] [polar:nNrR|linear:..]', "
-            "config e.g. cyl:r3h12 box:w40d20h10; 'use <slug> as <name>' "
+            "every length needs an explicit unit — config e.g. cyl:r3mmh12mm "
+            "box:w40mmd20mmh10mm, @40mm,0mm,-1mm; 'use <slug> as <name>' "
             "instances another design as a sub-assembly; 'part <name> "
             "<family>:<code>' places a built-in catalog atom (bearing:6202, "
             "bolt:m6x20, extrusion:2020x400, rail:mgn12x200, nema:17, "
@@ -141,7 +227,10 @@ class CadHandler(Handler):
             "geometry into the mated host (straddling modules); 'joint … "
             "revolute|prismatic|"
             "cylindrical|screw' articulates, posed via args={'state': "
-            "{'<joint>': deg_or_mm}}); get lists designs, shows a "
+            "{'<joint>': '45deg'_or_'5mm'}} (an explicit-unit angle for "
+            "revolute/screw, an explicit-unit length for prismatic/"
+            "cylindrical-slide)); get "
+            "lists designs, shows a "
             "design's node tree (id=slug), one node (id='ca<id>'), or probes "
             "analytically (view='ray|point|arc|section|clearance|connectivity|"
             "dof|volume|mass', args={...}; mass: cited per-component density × sampled volume, CoM; connectivity: what touches what, path "
@@ -200,7 +289,12 @@ class CadHandler(Handler):
             raise BadInput(f"cad design error: {exc}") from exc
 
     @staticmethod
-    def _state_arg(args: dict[str, Any]) -> dict[str, Any] | None:
+    def _state_arg(args: dict[str, Any], spec: SceneSpec) -> dict[str, Any] | None:
+        """``args.state`` → ``expand_instances``-ready values, joint-kind
+        aware: a ``prismatic`` (or cylindrical's slide component) state is a
+        length and requires an explicit unit; ``revolute``/``screw`` (and
+        cylindrical's angle component) are an angle and likewise require an
+        explicit unit (``deg``/``rad``)."""
         raw = args.get("state")
         if raw is None:
             return None
@@ -210,10 +304,21 @@ class CadHandler(Handler):
                 "joint's subject instance / component name",
                 next=(
                     "get(kind='cad', id='<slug>', view='point', "
-                    "args={'state': {'arm': 45}, 'p': [0, 0, 0]})"
+                    "args={'state': {'arm': '45deg'}, 'p': ['0mm', '0mm', '0mm']})"
                 ),
             )
-        return raw
+        kinds = _joint_kind_map(spec)
+        out: dict[str, Any] = {}
+        for name, value in raw.items():
+            kind = kinds.get(name)
+            if kind is None:
+                # unknown joint name — pass through unconverted; scene.py's
+                # own state resolution raises the structured "unknown
+                # joint" error with the design's real joint list.
+                out[name] = value
+                continue
+            out[name] = _convert_state_value(name, kind, value)
+        return out
 
     # ── link: placement only ─────────────────────────────
 
@@ -844,13 +949,13 @@ class CadHandler(Handler):
         if view == "scad":
             return Response(
                 body=to_openscad(
-                    self._expand(spec, state=self._state_arg(args or {})),
+                    self._expand(spec, state=self._state_arg(args or {}, spec)),
                     name=str(ref.slug or s),
                 )
             )
         if view in ("stl", "3mf", "step"):
             resp = self._render_export(
-                self._expand(spec, state=self._state_arg(args or {})),
+                self._expand(spec, state=self._state_arg(args or {}, spec)),
                 str(ref.slug or s),
                 view,
                 args or {},
@@ -878,7 +983,7 @@ class CadHandler(Handler):
                 f"unknown cad view {view!r}",
                 next=f"view= one of {list(_VIEWS)}, or omit for the node tree",
             )
-        built = self._expand(spec, state=self._state_arg(args or {}))
+        built = self._expand(spec, state=self._state_arg(args or {}, spec))
         design = build_design(built)
         return self._render_probe(view, design, built, args or {})
 
@@ -1001,9 +1106,14 @@ class CadHandler(Handler):
                         "unbounded slide has no sweepable range",
                         next="add limits:lo..hi to the joint line",
                     )
-                limits = (-180.0, 180.0)  # a full turn, either way
+                limits = (-math.pi, math.pi)  # a full turn, either way
             lo, hi = limits
-            swept.append(f"{name} {kind} {lo:g}..{hi:g}")
+            rng = (
+                f"{format_quantity(lo, 'length')}..{format_quantity(hi, 'length')}"
+                if kind == "prismatic"
+                else f"{format_quantity(lo, 'angle')}..{format_quantity(hi, 'angle')}"
+            )
+            swept.append(f"{name} {kind} {rng}")
             # Sweeping this joint also moves everything gear/belt-coupled
             # downstream of it — each such joint's subtree is its own rigid
             # group (two coupled arms move *differently*, so they can hit
@@ -1064,24 +1174,30 @@ class CadHandler(Handler):
         if skipped:
             lines.append("coupled (swept via their drive): " + "; ".join(skipped))
 
-        def _runs(samples: list[tuple[int, float]]) -> str:
-            """Contiguous collision windows ('-170..-130, 90..130'), not one
-            min..max band — an arm that clips near 90° and again near 270°
-            is clear in between, and the table must say so."""
+        kind_by_name = {name: kind for name, kind, _ in joints}
+
+        def _runs(samples: list[tuple[int, float]], dimension: Dimension) -> str:
+            """Contiguous collision windows ('-170°..-130°, 90°..130°'), not
+            one min..max band — an arm that clips near 90° and again near
+            270° is clear in between, and the table must say so."""
+
+            def fmt(q: float) -> str:
+                return format_quantity(q, dimension)
+
             out: list[str] = []
             start = prev_i = samples[0][0]
             start_q = prev_q = samples[0][1]
             for i, q in samples[1:]:
                 if i != prev_i + 1:
                     out.append(
-                        f"{start_q:g}"
+                        fmt(start_q)
                         if start == prev_i
-                        else f"{start_q:g}..{prev_q:g}"
+                        else f"{fmt(start_q)}..{fmt(prev_q)}"
                     )
                     start, start_q = i, q
                 prev_i, prev_q = i, q
             out.append(
-                f"{start_q:g}" if start == prev_i else f"{start_q:g}..{prev_q:g}"
+                fmt(start_q) if start == prev_i else f"{fmt(start_q)}..{fmt(prev_q)}"
             )
             return ", ".join(out)
 
@@ -1089,7 +1205,9 @@ class CadHandler(Handler):
             {
                 "joint": jn,
                 "pair": f"{a} ↔ {b}",
-                "collides_at": _runs(qs),
+                "collides_at": _runs(
+                    qs, "length" if kind_by_name.get(jn) == "prismatic" else "angle"
+                ),
                 "states": f"{len(qs)}/{n}",
             }
             for (jn, a, b), qs in sorted(hit_states.items())
@@ -1102,14 +1220,17 @@ class CadHandler(Handler):
         env_rows = [
             {
                 "moving_part": comp,
-                "x": f"{v[0]:g}..{v[3]:g}",
-                "y": f"{v[1]:g}..{v[4]:g}",
-                "z": f"{v[2]:g}..{v[5]:g}",
+                "x": f"{format_quantity(v[0], 'length')}.."
+                f"{format_quantity(v[3], 'length')}",
+                "y": f"{format_quantity(v[1], 'length')}.."
+                f"{format_quantity(v[4], 'length')}",
+                "z": f"{format_quantity(v[2], 'length')}.."
+                f"{format_quantity(v[5], 'length')}",
             }
             for comp, v in sorted(envelope.items())
         ]
         if env_rows:
-            body += "\nswept envelope (mm):\n" + render_agent_table(
+            body += "\nswept envelope:\n" + render_agent_table(
                 env_rows, schema=["moving_part", "x", "y", "z"]
             )
         return Response(body=body)
@@ -1234,12 +1355,11 @@ class CadHandler(Handler):
         if node.pattern is not None:
             p = node.pattern
             if p["kind"] == "polar":
-                return f"polar n{int(p['n'])} r{p['r']:g} z"
-            return f"linear n{int(p['n'])} d({p['dx']:g},{p['dy']:g},{p['dz']:g})"
-        x, y, z = node.loc
-        pose = f"@{x:g},{y:g},{z:g}"
+                return f"polar n{int(p['n'])} r{format_quantity(p['r'], 'length')} z"
+            return f"linear n{int(p['n'])} d{_fmt_vec3((p['dx'], p['dy'], p['dz']))}"
+        pose = f"@{_fmt_vec3(node.loc)}"
         if node.rot != (0.0, 0.0, 0.0):
-            pose += f" rot{node.rot}"
+            pose += f" rot{_fmt_rot3(node.rot)}"
         return pose
 
     def _one_hop_footer(self, ref: Any) -> str:
@@ -1338,7 +1458,10 @@ class CadHandler(Handler):
         try:
             lo, hi = expr_aabb(design, design.whole())
             dims = (
-                f" Bbox {hi[0] - lo[0]:.3g}x{hi[1] - lo[1]:.3g}x{hi[2] - lo[2]:.3g} mm."
+                " Bbox "
+                f"{format_quantity(hi[0] - lo[0], 'length')}x"
+                f"{format_quantity(hi[1] - lo[1], 'length')}x"
+                f"{format_quantity(hi[2] - lo[2], 'length')}."
             )
         except Exception:  # pragma: no cover - bbox is best-effort
             pass
@@ -1406,7 +1529,8 @@ class CadHandler(Handler):
                     continue
                 if res.interfering:
                     warns.append(
-                        f"⚠ {comps[i]} ↔ {comps[j]} interfere ({res.gap:g} mm)"
+                        f"⚠ {comps[i]} ↔ {comps[j]} interfere "
+                        f"({format_quantity(res.gap, 'length')})"
                     )
         return ("  " + "; ".join(warns)) if warns else ""
 
@@ -1471,23 +1595,29 @@ class CadHandler(Handler):
                 {
                     "name": h.label,
                     "state": h.relation,
-                    "measure": "" if h.measure is None else f"{h.measure:g}",
+                    "measure": (
+                        ""
+                        if h.measure is None
+                        else format_quantity(h.measure, "length")
+                    ),
                 }
                 for h in pt.hits
             ]
-            head = f"probe point {tuple(pt.point)} — {pt.state}"
+            head = f"probe point {_fmt_vec3(pt.point)} — {pt.state}"
             return Response(
                 body=head
                 + "\n"
                 + render_agent_table(rows, schema=["name", "state", "measure"])
             )
         if view == "ray":
-            ray = probe_ray(design, _vec(args, "o"), _vec(args, "d"), component=comp)
+            ray = probe_ray(
+                design, _vec(args, "o"), _vec(args, "d", lengths=False), component=comp
+            )
             rows = [
                 {
-                    "t_in": f"{s.t_in:g}",
-                    "t_out": f"{s.t_out:g}",
-                    "len": f"{s.length:g}",
+                    "t_in": format_quantity(s.t_in, "length"),
+                    "t_out": format_quantity(s.t_out, "length"),
+                    "len": format_quantity(s.length, "length"),
                     "state": s.state,
                     "feature": s.feature or "",
                 }
@@ -1501,31 +1631,40 @@ class CadHandler(Handler):
             )
         if view == "arc":
             axis = (
-                _vec(args, "axis")
+                _vec(args, "axis", lengths=False)
                 if isinstance(args.get("axis"), (list, tuple))
                 else vec3(0, 0, 1)
             )
-            arc = probe_arc(
-                design, _vec(args, "c"), axis, float(args.get("r", 0.0)), component=comp
+            r_raw = args.get("r")
+            r = (
+                0.0
+                if r_raw is None
+                else parse_quantity(r_raw, "length", arg_name="args.r")
             )
+            arc = probe_arc(design, _vec(args, "c"), axis, r, component=comp)
             rows = [
                 {
-                    "theta_in": f"{s.theta_in:g}",
-                    "theta_out": f"{s.theta_out:g}",
-                    "span": f"{s.span:g}",
+                    "theta_in": format_quantity(s.theta_in, "angle"),
+                    "theta_out": format_quantity(s.theta_out, "angle"),
+                    "span": format_quantity(s.span, "angle"),
                     "state": s.state,
                     "feature": s.feature or "",
                 }
                 for s in arc.segments
             ]
             return Response(
-                body=f"probe arc r={arc.radius:g}\n"
+                body=f"probe arc r={format_quantity(arc.radius, 'length')}\n"
                 + render_agent_table(
                     rows, schema=["theta_in", "theta_out", "span", "state", "feature"]
                 )
             )
         if view == "section":
-            z = float(args.get("z", 0.0))
+            z_raw = args.get("z")
+            z = (
+                0.0
+                if z_raw is None
+                else parse_quantity(z_raw, "length", arg_name="args.z")
+            )
             sec = probe_section_z(design, z, component=comp)
             rows = [
                 {
@@ -1537,14 +1676,16 @@ class CadHandler(Handler):
                 for lp in sec.loops
             ]
             return Response(
-                body=f"section z={z:g}\n"
+                body=f"section z={format_quantity(z, 'length')}\n"
                 + render_agent_table(rows, schema=["loop", "name", "shape", "geom"])
             )
         if view == "clearance":
             a, b = self._two_components(args, spec)
             cl = cad_clearance(design, a, b)
             tag = "interfere" if cl.interfering else "clear"
-            return Response(body=f"clearance {a} ↔ {b}: {cl.gap:g} mm ({tag})")
+            return Response(
+                body=f"clearance {a} ↔ {b}: {format_quantity(cl.gap, 'length')} ({tag})"
+            )
         if view == "connectivity":
             return self._render_connectivity(design, spec, args)
         if view == "dof":
@@ -1557,12 +1698,17 @@ class CadHandler(Handler):
                 )
             dof = translational_dof(design, mv, fx)
             rows = [
-                {"axis": k, "travel_mm": ("inf" if v == float("inf") else f"{v:g}")}
+                {
+                    "axis": k,
+                    "travel": (
+                        "inf" if v == float("inf") else format_quantity(v, "length")
+                    ),
+                }
                 for k, v in dof.travel.items()
             ]
             return Response(
                 body=f"translational DOF {mv} vs {fx}\n"
-                + render_agent_table(rows, schema=["axis", "travel_mm"])
+                + render_agent_table(rows, schema=["axis", "travel"])
             )
         if view == "mass":
             return self._render_mass(design, spec)
@@ -1570,9 +1716,10 @@ class CadHandler(Handler):
         vol = cad_volume(design, component=comp)
         return Response(
             body=(
-                f"volume{f' [{comp}]' if comp else ''}: {vol.volume:g} mm³ "
+                f"volume{f' [{comp}]' if comp else ''}: "
+                f"{format_quantity(vol.volume, 'volume')} "
                 f"(sampled, ±{vol.rel_err * 100:.1f}%); "
-                f"centroid {tuple(round(float(x), 3) for x in vol.centroid)}"
+                f"centroid {_fmt_vec3(vol.centroid)}"
                 f"{self._payload_contribution(spec, comp, vol.volume)}"
             )
         )
@@ -1623,7 +1770,10 @@ class CadHandler(Handler):
                 )
             rho = float(dens["value_num"])  # canonical kg/m3
             vol = cad_volume(design, component=comp)
-            mass_g = vol.volume * rho * 1e-6
+            # vol.volume is SI m³ (the internal unit, since the units-policy
+            # cutover); kg = m³ × kg/m³ directly, then ×1000 for the display
+            # unit (grams) — no mm³→m³ conversion factor anymore.
+            mass_g = vol.volume * rho * 1000.0
             total_g += mass_g
             err_g += mass_g * vol.rel_err
             for i in range(3):
@@ -1638,27 +1788,32 @@ class CadHandler(Handler):
                 {
                     "component": comp,
                     "material": slug,
-                    "volume_mm3": f"{vol.volume:g} ±{vol.rel_err * 100:.1f}%",
+                    "volume": f"{format_quantity(vol.volume, 'volume')} "
+                    f"±{vol.rel_err * 100:.1f}%",
                     "density_kg_m3": f"{rho:g}",
                     "mass_g": f"{mass_g:g}",
                     "source": src,
                 }
             )
-        com = tuple(round(m / total_g, 3) for m in moment) if total_g else (0, 0, 0)
+        com = (
+            _fmt_vec3([m / total_g for m in moment])
+            if total_g
+            else _fmt_vec3([0.0, 0.0, 0.0])
+        )
         body = (
             render_agent_table(
                 rows,
                 schema=[
                     "component",
                     "material",
-                    "volume_mm3",
+                    "volume",
                     "density_kg_m3",
                     "mass_g",
                     "source",
                 ],
             )
             + f"\ntotal: {total_g:g} g ±{err_g:g} (sampled volume error); "
-            + f"CoM {com} mm"
+            + f"CoM {com}"
         )
         unassigned = [c for c in spec.components if c not in mats]
         if unassigned:
@@ -1691,8 +1846,10 @@ class CadHandler(Handler):
             base = cad_volume(build_design(kept), component=comp)
         except Exception:  # pragma: no cover - attribution is best-effort
             return ""
+        delta = total - base.volume
+        sign = "+" if delta >= 0 else ""
         return (
-            f"; payload contribution {total - base.volume:+g} mm³ "
+            f"; payload contribution {sign}{format_quantity(delta, 'volume')} "
             f"({', '.join(sorted(names))})"
         )
 
@@ -1704,8 +1861,17 @@ class CadHandler(Handler):
 
         ``args``: ``{'of': part}`` → that part's neighbours; ``{'a': p, 'b':
         q}`` → the contact chain p…q (or "different bodies"); nothing → the
-        full report (bodies + contacts). ``tol`` overrides the contact mm."""
-        tol = float(args.get("tol", 1e-2))
+        full report (bodies + contacts). ``tol`` overrides the contact
+        distance (explicit unit required); with no override the default is
+        scale-relative (:data:`~precis.cad.relate.CONTACT_TOL_REL` × the
+        whole design's bbox diagonal), not a fixed absolute — an absolute
+        mm-tuned default means nothing for a design drawn in Å or km."""
+        tol_raw = args.get("tol")
+        tol = (
+            CONTACT_TOL_REL * _design_scale(design)
+            if tol_raw is None
+            else parse_quantity(tol_raw, "length", arg_name="args.tol")
+        )
         conn = cad_connectivity(design, tol=tol)
 
         a, b = args.get("a"), args.get("b")
@@ -1756,13 +1922,13 @@ class CadHandler(Handler):
             {
                 "a": c.a,
                 "b": c.b,
-                "gap_mm": f"{c.gap:g}",
+                "gap": format_quantity(c.gap, "length"),
                 "state": "interfere" if c.interfering else "touch",
             }
             for c in conn.contacts
         ]
         table = (
-            render_agent_table(rows, schema=["a", "b", "gap_mm", "state"])
+            render_agent_table(rows, schema=["a", "b", "gap", "state"])
             if rows
             else "(no contacts)"
         )

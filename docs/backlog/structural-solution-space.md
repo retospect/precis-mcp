@@ -186,10 +186,11 @@ a jig / a tensioning sequence" as a **cost**, never an infeasibility.
   closed-form for the two-member joint, but don't grow it into a private
   active-set solver (next bullet).
 - **Rung 6 — load path** ("which ties are taut under this load case").
-  Superseded in shape by the **complementarity solver** in
-  `multiscale-design-architecture.md` §Complementarity: when a consumer
-  actually wants the load path, build it as the complementarity solve from
-  the start, not a graph walk. Still last, and only on demand.
+  CLOSED 2026-09-12 — built as the complementarity solve, as this rung's
+  deferral note demanded: `src/precis/structsolve/complementarity.py`
+  (active-set core + taut/slack/seated status rows, landed e49fb80a;
+  bistability probe follows). se wiring is `complementarity-solver.md`
+  slices 1-bridge/2, blocked on the units window.
 - **Slice 4 — SIMP engine**: ENGINE SHIPPED 2026-09-11
   (`src/precis/structsolve/simp.py` — pure numpy, matrix-free Jacobi-PCG,
   Langelaar AM filter `build_dir='z+'`, `overhang_violations()`,

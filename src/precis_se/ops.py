@@ -209,7 +209,11 @@ class SeBlock(BlockNode):
     ``None``. ``ports`` (shared with :class:`~precis.blocktree.types.
     Block`) is keyed by port name; only an ordinary (non-instance) block
     ever has entries here — an instance's/array's ports resolve from its
-    template (:func:`effective_ports`). Pose is metres; rot degrees. The
+    template (:func:`effective_ports`). Pose is metres; rot radians (the
+    units-policy-cutover angle ruling — degrees only at ingest/display,
+    :mod:`precis.utils.units`; a pre-cutover stored design's degree-valued
+    ``pose_rot`` was converted in place by
+    ``precis_se/migrations/0006_units_se_pose_rot_rad.sql``). The
     fields below this line are se's own extension over the shared
     ``Block``."""
 

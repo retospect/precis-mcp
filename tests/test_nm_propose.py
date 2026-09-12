@@ -58,14 +58,14 @@ _ROTAXANE_OPS = [
     {
         "op": "add_block",
         "name": "hub",
-        "envelope": "sphere:r3",
+        "envelope": "sphere:r3Å",
         "desc": "stopper hub, threads the axle",
         "use": "stopper",
     },
     {
         "op": "add_block",
         "name": "axle",
-        "envelope": "cyl:r2h20",
+        "envelope": "cyl:r2Åh20Å",
         "desc": "threading rod",
     },
     {
@@ -120,7 +120,7 @@ def test_build_prompt_carries_block_ports_objectives_and_steer(
         "rotaxane1", tree, "hub", tree.blocks["hub"], findings, "prefer an aromatic cap"
     )
     assert "'hub'" in prompt
-    assert "sphere:r3" in prompt  # target envelope
+    assert "sphere:r3e-10" in prompt  # target envelope, canonicalised to metres
     assert "cap" in prompt and "expected=C" in prompt  # port roster
     assert "hub.cap" in prompt and "axle.tip" in prompt  # objective vectors
     assert '"distance": 1.5' in prompt
@@ -231,7 +231,7 @@ def test_dry_run_rejects_instance_target(nm_handler: NmHandler) -> None:
         text=json.dumps(
             {
                 "ops": [
-                    {"op": "add_block", "name": "core", "envelope": "sphere:r3"},
+                    {"op": "add_block", "name": "core", "envelope": "sphere:r3Å"},
                     {"op": "instance_block", "template": "core", "name": "core2"},
                 ]
             }

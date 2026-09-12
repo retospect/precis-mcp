@@ -56,8 +56,8 @@ def test_every_catalog_family_resolves_and_parses():
 def test_part_round_trips_and_expands_without_resolver():
     src = (
         "component block\n"
-        "base add box:w60d40h20\n"
-        "port seat @0,0,20 of:block\n"
+        "base add box:w60mmd40mmh20mm\n"
+        "port seat @0mm,0mm,20mm of:block\n"
         "part b1 bearing:6202\n"
         "mate b1.face to seat\n"
     )
@@ -67,13 +67,13 @@ def test_part_round_trips_and_expands_without_resolver():
     assert parse_source(rt).nodes == spec.nodes
     ex = expand_instances(spec)  # no resolver: parts-only must not need one
     ring = next(n for n in ex.nodes if n.name == "b1.ring")
-    assert ring.config == "cyl:r17.5h11"
-    # face port (z=B=11) mated to the seat at z=20 → ring base at 9
-    assert ring.loc[2] == pytest.approx(9.0)
+    assert ring.config == "cyl:r0.0175h0.011"
+    # face port (z=B=11mm) mated to the seat at z=20mm → ring base at 9mm
+    assert ring.loc[2] == pytest.approx(0.009)
 
 
 def test_part_pattern_multiplies_copies():
-    spec = parse_source("part bolts bolt:m6x20 @20,0,0 polar:n4r24\n")
+    spec = parse_source("part bolts bolt:m6x20 @20mm,0mm,0mm polar:n4r24mm\n")
     ex = expand_instances(spec)
     assert sum(1 for n in ex.nodes if n.name.endswith(".shank")) == 4
 
@@ -89,11 +89,14 @@ def test_unknown_code_and_family_refuse_at_parse_with_line_number():
 
 def test_part_name_collisions_refused():
     with pytest.raises(SceneError, match="duplicate name"):
-        parse_source("component b1\nbase add box:w9d9h9\npart b1 nut:m6\n")
+        parse_source("component b1\nbase add box:w9mmd9mmh9mm\npart b1 nut:m6\n")
 
 
 def test_mate_onto_missing_part_port_names_the_code():
-    src = "component c\nbase add box:w9d9h9\nport p @0,0,9 of:c\npart b1 bearing:608\nmate b1.nope to p\n"
+    src = (
+        "component c\nbase add box:w9mmd9mmh9mm\nport p @0mm,0mm,9mm of:c\n"
+        "part b1 bearing:608\nmate b1.nope to p\n"
+    )
     with pytest.raises(SceneError, match="'bearing:608'.*no port 'nope'"):
         expand_instances(parse_source(src))
 
@@ -108,9 +111,9 @@ def cad(store):
 
 _ASSY = (
     "component plate\n"
-    "base add box:w120d80h10\n"
-    "part b1 bearing:6202 @0,0,10\n"
-    "part bolts bolt:m6x20 @40,0,10 polar:n4r30\n"
+    "base add box:w120mmd80mmh10mm\n"
+    "part b1 bearing:6202 @0mm,0mm,10mm\n"
+    "part bolts bolt:m6x20 @40mm,0mm,10mm polar:n4r30mm\n"
 )
 
 
@@ -124,7 +127,11 @@ def test_bom_rolls_up_patterns_nesting_and_component_refs(cad, store):
     cad.put(id="cat_sub", text=_ASSY)
     cad.put(
         id="cat_top",
-        text="use cat_sub as left @0,0,0\nuse cat_sub as right @0,200,0\npart m1 nema:17 @200,0,0\n",
+        text=(
+            "use cat_sub as left @0mm,0mm,0mm\n"
+            "use cat_sub as right @0mm,200mm,0mm\n"
+            "part m1 nema:17 @200mm,0mm,0mm\n"
+        ),
     )
     body = cad.get(id="cat_top", view="bom").body
     # 2× the sub-assembly: 2 bearings, 8 bolts, plus the motor
@@ -137,7 +144,7 @@ def test_bom_rolls_up_patterns_nesting_and_component_refs(cad, store):
 
 
 def test_bom_empty_says_so(cad):
-    cad.put(id="cat_plain", text="component a\nbase add box:w9d9h9\n")
+    cad.put(id="cat_plain", text="component a\nbase add box:w9mmd9mmh9mm\n")
     assert "no catalog parts" in cad.get(id="cat_plain", view="bom").body
 
 
@@ -160,7 +167,7 @@ def test_realized_by_sync_adds_and_prunes_only_catalog_links(cad, store):
     assert _realized_dst_ids(store, ref.id) == {comp.id}
     # a hand-authored candidate realization (no meta.catalog) must survive
     store.add_link(src_ref_id=ref.id, dst_ref_id=other.id, relation="realized-by")
-    cad.put(id="cat_links", text="component plate\nbase add box:w120d80h10\n")
+    cad.put(id="cat_links", text="component plate\nbase add box:w120mmd80mmh10mm\n")
     assert _realized_dst_ids(store, ref.id) == {other.id}
 
 
@@ -197,8 +204,8 @@ def test_manual_realized_by_link_verb(cad, store):
     cad.put(
         id="cat_verb",
         text=(
-            "component plate\nbase add box:w120d80h10\n"
-            "port seat @0,0,10 of:plate\n"
+            "component plate\nbase add box:w120mmd80mmh10mm\n"
+            "port seat @0mm,0mm,10mm of:plate\n"
             "part b1 bearing:6202\nmate b1.face to seat\n"
         ),
     )

@@ -74,9 +74,10 @@ def test_rel_err_reported() -> None:
 # chamfer — AABB-through-transform regression + volume behaviour
 # ---------------------------------------------------------------------------
 
-_UNCHAMFERED_BOX = "component part\nbody add box:w40d20h10\n"
+_UNCHAMFERED_BOX = "component part\nbody add box:w40mmd20mmh10mm\n"
 _CHAMFERED_BOX = (
-    "component part\nbody  add box:w40d20h10\nbevel cut chamfer:2x45 @20,0,10\n"
+    "component part\nbody  add box:w40mmd20mmh10mm\n"
+    "bevel cut chamfer:2mmx45deg @20mm,0mm,10mm\n"
 )
 
 

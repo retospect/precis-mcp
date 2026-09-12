@@ -33,9 +33,9 @@ from precis.cad.vec import vec3
 
 _FLANGE = """
 component flange
-plate     add  cyl:r25h8
-hub_bore  cut  cyl:r8h10    @0,0,-1
-bolts     cut  cyl:r2.5h10  @18,0,-1  polar:n6r18
+plate     add  cyl:r25mmh8mm
+hub_bore  cut  cyl:r8mmh10mm    @0mm,0mm,-1mm
+bolts     cut  cyl:r2.5mmh10mm  @18mm,0mm,-1mm  polar:n6r18mm
 """
 
 _HAS_MANIFOLD = manifold_available()
@@ -53,15 +53,39 @@ def test_to_openscad_structure() -> None:
     assert scad.count("cylinder(") >= 1 + 1 + 6  # plate + bore + 6 bolts
 
 
+def test_to_openscad_scales_si_storage_to_mm() -> None:
+    # Internal storage is canonical bare SI metres (the units-cutover);
+    # export is the one boundary that scales back to the millimetre
+    # convention every downstream format declares.
+    spec = parse_source("component p\nbody add box:w40mmd20mmh10mm\n")
+    assert spec.nodes[0].config == "box:w0.04d0.02h0.01"  # stored as SI metres
+    scad = to_openscad(spec, name="box")
+    assert "units = mm" in scad
+    assert "cube([40,20,10])" in scad
+
+
+@pytest.mark.skipif(not _HAS_MANIFOLD, reason="manifold3d not installed")
+def test_export_stl_scales_si_storage_to_mm(tmp_path) -> None:
+    spec = parse_source("component p\nbody add box:w40mmd20mmh10mm\n")
+    out = export_mesh(spec, tmp_path / "box.stl")
+    ntri, lo, hi = _read_binary_stl_bbox(out.read_bytes())
+    assert ntri > 0
+    assert hi[0] - lo[0] == pytest.approx(40, abs=1e-3)
+    assert hi[1] - lo[1] == pytest.approx(20, abs=1e-3)
+    assert hi[2] - lo[2] == pytest.approx(10, abs=1e-3)
+
+
 def test_to_openscad_box_and_torus() -> None:
-    scad = to_openscad(parse_source("b add box:w10d20h5\nt add torus:R8r2"))
+    scad = to_openscad(parse_source("b add box:w10mmd20mmh5mm\nt add torus:R8mmr2mm"))
     assert "cube([10,20,5])" in scad
     assert "rotate_extrude(" in scad and "circle(r=2" in scad
 
 
 def test_to_openscad_assembly_unions_components() -> None:
     scad = to_openscad(
-        parse_source("component a\np add cyl:r3h3\ncomponent b\nq add box:w2d2h2")
+        parse_source(
+            "component a\np add cyl:r3mmh3mm\ncomponent b\nq add box:w2mmd2mmh2mm"
+        )
     )
     assert scad.count("// component") == 2
     assert scad.strip().startswith("//")
@@ -165,19 +189,21 @@ def test_export_mesh_cut_reduces_volume(tmp_path) -> None:
     man = m3d.Manifold(
         m3d.Mesh(vert_properties=v.astype("float32"), tri_verts=t.astype("int32"))
     )
-    plate = math.pi * 25**2 * 8
+    # _solid_mesh bypasses the export boundary's mm rescale, so this volume
+    # is in the internal SI-metres unit — plate radius/height in metres.
+    plate = math.pi * 0.025**2 * 0.008
     assert 0 < man.volume() < plate  # the bore + 6 bolt holes removed material
 
 
 def test_export_mesh_unknown_format_raises(tmp_path) -> None:
     with pytest.raises(ExportError):
-        export_mesh(parse_source("p add cyl:r3h3"), tmp_path / "x.obj")
+        export_mesh(parse_source("p add cyl:r3mmh3mm"), tmp_path / "x.obj")
 
 
 @pytest.mark.skipif(_HAS_MANIFOLD, reason="manifold3d IS installed")
 def test_export_mesh_without_backend_raises(tmp_path) -> None:
     with pytest.raises(ExportError):
-        export_mesh(parse_source("p add cyl:r3h3"), tmp_path / "x.stl")
+        export_mesh(parse_source("p add cyl:r3mmh3mm"), tmp_path / "x.stl")
 
 
 # ── exact STEP (OpenCASCADE) ──────────────────────────────────────────
@@ -194,16 +220,16 @@ def test_export_step_real(tmp_path) -> None:
 @pytest.mark.skipif(_HAS_STEP, reason="OpenCASCADE IS installed")
 def test_export_step_without_backend_raises(tmp_path) -> None:
     with pytest.raises(ExportError):
-        export_step(parse_source("p add cyl:r3h3"), tmp_path / "x.step")
+        export_step(parse_source("p add cyl:r3mmh3mm"), tmp_path / "x.step")
 
 
 # ── assembly: parts kept separate where the format allows ─────────────
 
 _ASM = """
 component alpha
-ba add box:w10d10h10
+ba add box:w10mmd10mmh10mm
 component beta
-bb add box:w6d6h6 @20,0,0
+bb add box:w6mmd6mmh6mm @20mm,0mm,0mm
 """
 
 
@@ -240,19 +266,22 @@ def test_step_assembly_named_solids(tmp_path) -> None:
 #    one face exactly on the cutting plane ────────────────────────────────
 
 _CHAMFERED_BOX = (
-    "component part\nbody  add box:w40d20h10\nbevel cut chamfer:2x45 @20,0,10\n"
+    "component part\nbody  add box:w40mmd20mmh10mm\n"
+    "bevel cut chamfer:2mmx45deg @20mm,0mm,10mm\n"
 )
 # bevel cut chamfer:2x45 @20,0,10 on box:w40d20h10 removes an exact 45°
 # wedge of the +x/+z top edge: legs 2·size·cos45° = 2·sqrt(2) mm along both
 # x and z, extruded the full 20 mm depth (see tests/test_cad_bulk.py's
 # analytic derivation for the AABB/volume checks on the same design) —
-# wedge volume = 0.5·(2√2)²·20 = 80 mm³.
-_CHAMFERED_BOX_VOLUME = 40 * 20 * 10 - 80.0
+# wedge volume = 0.5·(2√2)²·20 = 80 mm³. `_solid_mesh` (used below) bypasses
+# the export boundary's mm rescale, so the comparison volume is in the
+# internal SI-metres unit: mm³ ÷ 1e9.
+_CHAMFERED_BOX_VOLUME = (40 * 20 * 10 - 80.0) / 1e9
 
 _PATTERNED_CHAMFER = (
     "component part\n"
-    "body  add box:w60d60h10\n"
-    "bevel cut chamfer:3x45 @0,0,10 polar:n4r0\n"
+    "body  add box:w60mmd60mmh10mm\n"
+    "bevel cut chamfer:3mmx45deg @0mm,0mm,10mm polar:n4r0mm\n"
 )
 
 
@@ -266,7 +295,7 @@ def test_to_openscad_chamfer_emits_transformed_cube_under_difference() -> None:
 
 def test_to_openscad_cube_base_centred_in_xy() -> None:
     # exact coordinates: cube centred in x/y, base at z=0.
-    scad = to_openscad(parse_source("component p\nbody add box:w40d20h10\n"))
+    scad = to_openscad(parse_source("component p\nbody add box:w40mmd20mmh10mm\n"))
     assert "translate([-20,-10,0]) cube([40,20,10]);" in scad
 
 
@@ -274,7 +303,7 @@ def test_halfspace_clamp_flat_top_chamfer_is_finite() -> None:
     # chamfer:2x0 — the cutting-plane normal is exactly +z, so the clamp
     # basis builder must not pick a parallel reference axis (NaN cross).
     spec = parse_source(
-        "component part\nbody add box:w40d20h10\ntrim cut chamfer:2x0 @0,0,10\n"
+        "component part\nbody add box:w40mmd20mmh10mm\ntrim cut chamfer:2mmx0deg @0mm,0mm,10mm\n"
     )
     node = next(n for n in spec.nodes if n.name == "trim")
     boxes = halfspace_clamp_params(node, design_aabb(spec))
@@ -334,9 +363,11 @@ def test_halfspace_clamp_box_does_not_reach_geometry_the_plane_never_touches() -
             and -eps <= lz <= h + eps
         )
 
-    assert not in_box((-20.0, -10.0, 0.0))  # opposite corner — untouched
-    assert not in_box((-20.0, 10.0, 10.0))  # untouched top edge, far side
-    assert in_box((19.9, 0.0, 9.9))  # just inside the actual bevel
+    # halfspace_clamp_params works on the internal SI-metres node, so these
+    # probe points are the mm-authored geometry ÷ 1000.
+    assert not in_box((-0.020, -0.010, 0.0))  # opposite corner — untouched
+    assert not in_box((-0.020, 0.010, 0.010))  # untouched top edge, far side
+    assert in_box((0.0199, 0.0, 0.0099))  # just inside the actual bevel
 
 
 @pytest.mark.skipif(not _HAS_MANIFOLD, reason="manifold3d not installed")
@@ -350,8 +381,9 @@ def test_export_mesh_chamfer_volume_matches_analytic_wedge() -> None:
         m3d.Mesh(vert_properties=v.astype("float32"), tri_verts=t.astype("uint32"))
     )
     assert str(man.status()) == "Error.NoError"
-    # planar cut on a planar box — tessellation is exact, so this is tight.
-    assert man.volume() == pytest.approx(_CHAMFERED_BOX_VOLUME, abs=0.1)
+    # planar cut on a planar box — tessellation is exact, so this is tight
+    # (volume is in the internal SI-metres unit; tolerance scales with it).
+    assert man.volume() == pytest.approx(_CHAMFERED_BOX_VOLUME, abs=0.1 / 1e9)
 
 
 @pytest.mark.skipif(not _HAS_MANIFOLD, reason="manifold3d not installed")

@@ -67,6 +67,7 @@ from precis.cad import probe as cad_probe
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis.utils.units import format_quantity
 from precis_se import catalog as se_catalog
 from precis_se import joints as se_joints
 from precis_se.ops import SeTree, effective_envelope
@@ -81,12 +82,25 @@ _SOLID = "solid"
 #: Material shorter than this along the axis is a graze, not a member —
 #: two envelopes that merely touch at a face would otherwise each
 #: contribute a zero-thickness "member" to the stack (metres).
+#:
+#: Deliberately kept absolute (units-policy-cutover.md item 4: "author-
+#: stated tolerances accepted as ... absolute-with-unit, never silently
+#: relativized"): a fastener stack is real catalog hardware — bolts,
+#: washers, tapped holes — whose manufacturing tolerances are a physical
+#: micron-scale fact independent of the *design's* drawing scale, not a
+#: kernel numerical-degeneracy artifact like ``LINEAR_EPS`` was. Relative
+#: to a nanometre-scale envelope this would demand implausible sub-Å
+#: member thickness; that mismatch is real information (a screw joint at
+#: that scale is not, physically, a machine screw), not a bug to paper
+#: over by relativizing the threshold.
 _MIN_MEMBER_M = 1e-6
 
-#: Declared-vs-derived axis tolerance, degrees. Same ~2.5° the DOF probe
-#: uses for principal-axis alignment, for the same reason: a designer
-#: types round numbers, and a joint axis is a statement of intent.
-_AXIS_TOL_DEG = 2.5
+#: Declared-vs-derived axis tolerance, radians (~2.5°, the same order the
+#: DOF probe uses for principal-axis alignment, for the same reason: a
+#: designer types round numbers, and a joint axis is a statement of
+#: intent). Radians internal per the units-policy-cutover angle ruling —
+#: this compares directly against :func:`_angle_rad`'s radian output.
+_AXIS_TOL_RAD = math.radians(2.5)
 
 #: Minimum thread engagement into a tapped member, in nominal diameters.
 #: 1×D is the steel-into-steel rule of thumb; softer materials want more,
@@ -232,9 +246,9 @@ def _drive_axis(node: Any) -> tuple[list[float], list[float]]:
     return [float(v) for v in node.pose], [float(v) for v in direction]
 
 
-def _angle_deg(a: list[float], b: list[float]) -> float:
+def _angle_rad(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
-    return math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+    return math.acos(max(-1.0, min(1.0, dot)))
 
 
 def _walk_axis(
@@ -368,18 +382,18 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
     origin, axis = _drive_axis(node)
     declared_axis = joint.get("axis")
     if declared_axis is not None:
-        off = _angle_deg([float(v) for v in declared_axis], axis)
+        off = _angle_rad([float(v) for v in declared_axis], axis)
         # 180° apart is the same line, and a joint axis is a line: only
         # flag a genuine misalignment, not a sign convention.
-        off = min(off, 180.0 - off)
-        if off > _AXIS_TOL_DEG:
+        off = min(off, math.pi - off)
+        if off > _AXIS_TOL_RAD:
             res.findings.append(
                 ValidationIssue(
                     rule="fastener_axis",
                     subject=subject,
                     detail=(
-                        f"the joint declares an axis {off:.1f}° away from "
-                        f"{fastener!r}'s own head→thread direction — the "
+                        f"the joint declares an axis {format_quantity(off, 'angle')} "
+                        f"away from {fastener!r}'s own head→thread direction — the "
                         "stack-up follows the screw's pose; set_joint's axis "
                         "or the block's rot is wrong"
                     ),

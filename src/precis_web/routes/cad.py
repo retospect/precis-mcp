@@ -63,7 +63,7 @@ from precis.cad.scene import (
     has_instances,
 )
 from precis.cad.tessellate import design_aabb, halfspace_clamp_params
-from precis.cad.vec import Vec3, euler_deg_from_matrix
+from precis.cad.vec import Vec3, euler_rad_from_matrix
 from precis.cad_resolve import design_resolver
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
@@ -225,10 +225,17 @@ def _analysis(store: Store, ref_id: int, version: str) -> dict[str, Any]:
     try:
         design = build_design(spec)
         lo, hi = expr_aabb(design, design.whole())
-        analysis["bbox"] = [round(float(hi[i] - lo[i]), 3) for i in range(3)]
+        # 6 decimals (µm precision at the SI-metre scale) — 3 was a
+        # pre-cutover mm-scale display trim that now floors every bbox
+        # dimension under 1mm to 0.
+        analysis["bbox"] = [round(float(hi[i] - lo[i]), 6) for i in range(3)]
         try:
             vol = cad_volume(design)
-            analysis["volume"] = round(float(vol.volume), 3)
+            # NOT rounded to a fixed decimal count: that was an absolute
+            # mm³-scale noise trim, silently zeroing any SI-metre volume
+            # below 1e-3 m³ = 1 litre post units-policy-cutover (see the
+            # matching fix in precis.cad.bulk.volume).
+            analysis["volume"] = float(vol.volume)
             analysis["volume_err"] = round(float(vol.rel_err) * 100, 1)
         except Exception:  # pragma: no cover - volume is best-effort
             log.debug("cad analysis: volume failed", exc_info=True)
@@ -530,7 +537,7 @@ async def cad_scene(request: Request, slug: str) -> JSONResponse:
             if aabb is None:
                 aabb = design_aabb(spec)
             for w, d, h, xf in halfspace_clamp_params(n, aabb):
-                rx, ry, rz = euler_deg_from_matrix(xf.R)
+                rx, ry, rz = euler_rad_from_matrix(xf.R)
                 nodes.append(
                     {
                         "name": n.name,

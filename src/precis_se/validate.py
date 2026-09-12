@@ -70,10 +70,12 @@ def _is_ancestor(tree: SeTree, a: str, b: str) -> bool:
 _UNSCALED_KEYS = frozenset({"n", "angle"})
 
 #: Characteristic lengths inside this band feed the kernel as-is
-#: (``scale == 1.0``) — the kernel's absolute tolerances (``LINEAR_EPS``,
-#: ``CONTACT_TOL_MM``) were tuned for O(0.001–1000) numbers and every
-#: pre-normalization se design lived here, so in-band behaviour is
-#: bit-identical to the unscaled path.
+#: (``scale == 1.0``) — the kernel's tolerances (``LINEAR_REL_EPS``,
+#: ``CONTACT_TOL_REL``) are scale-relative now (units-policy-cutover), but
+#: this band still matters: ``_CROSS_SCALE_RATIO`` below refuses to
+#: combine wildly different-scale blocks in one SDF query regardless, and
+#: every pre-normalization se design lived here, so in-band behaviour
+#: stays bit-identical to the historical unscaled path.
 _KERNEL_BAND = (1e-3, 1e6)
 
 #: Out-of-band designs are normalized so the query's SMALLEST block lands
@@ -113,17 +115,23 @@ def kernel_scale(*posed: tuple[str, SeBlock]) -> float | None:
     """Metres → kernel-unit factor for one geometry query, or ``None``
     when the blocks are too far apart in scale to share a query.
 
-    The cad kernel is unit-agnostic but its tolerances are **absolute in
-    whatever numbers it is handed** (``LINEAR_EPS = 1e-6`` culls
-    "degenerate" faces, so a nanometre-scale box arrives with *zero* faces
-    and vacuously contains everything — the boxel-3nm ValueError,
-    2026-09-09). nm avoids this by feeding Å; se's metres span
-    atoms-to-buildings, so the seam normalizes: an out-of-band query is
-    scaled so its smallest block lands at ``_KERNEL_TARGET``, and every
-    returned length divides back by the factor. In-band queries return
-    exactly ``1.0`` (bit-identical to the historical path). A pair whose
-    sizes differ by more than ``_CROSS_SCALE_RATIO`` returns ``None`` —
-    the caller must skip/refuse legibly, never compute a garbage gap."""
+    Historically the cad kernel's tolerances were **absolute in whatever
+    numbers it was handed** (``LINEAR_EPS = 1e-6`` culled "degenerate"
+    faces, so a nanometre-scale box arrived with *zero* faces and
+    vacuously contained everything — the boxel-3nm ValueError,
+    2026-09-09); the units-policy-cutover relative-tolerance audit fixed
+    that at the source (``LINEAR_REL_EPS``, per-primitive). This seam
+    stays for a narrower, still-real reason: combining a housing-scale and
+    a bolt-scale primitive in **one** SDF query degrades the numerics
+    (the descent's grid spacing and trust step are sized off one governing
+    length, which cannot be both bodies' at once) however precise each
+    primitive's own tolerance is — so an out-of-band query is still
+    normalized so its smallest block lands at ``_KERNEL_TARGET``, and
+    every returned length divides back by the factor. In-band queries
+    return exactly ``1.0`` (bit-identical to the historical path). A pair
+    whose sizes differ by more than ``_CROSS_SCALE_RATIO`` returns
+    ``None`` — the caller must skip/refuse legibly, never compute a
+    garbage gap."""
     lengths = [_characteristic_length(env) for env, _node in posed]
     positive = [x for x in lengths if x > 0.0]
     if not positive:

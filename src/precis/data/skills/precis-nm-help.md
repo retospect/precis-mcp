@@ -23,7 +23,21 @@ spatial envelopes, poses, ports, and topology — the scaffold you design
 *before* filling each envelope with real chemistry. Fourth keystone kind
 (glossary: owns a legible IR and rents the heavy kernel only at export; the
 LLM traverses a graph, never pixels), sibling to `cad` (solids) / `pcb`
-(copper+silicon) / `structure` (atoms). Units are **ångström**, everywhere.
+(copper+silicon) / `structure` (atoms). **Internally, everything is SI
+metres/radians** (units-policy-cutover — nm's storage used to be Å, fully
+converted). Two different conventions meet at the block tree, though:
+
+- `envelope` (the `cad` mini-DSL string) is **unit-required at the ingest
+  boundary** — write `cyl:r5Åh2Å`, `cyl:r0.5nmh0.2nm`, `cyl:r5e-10mh2e-9m`,
+  whatever unit is legible for the scale; it canonicalises to metres on
+  write, and a bare number is refused with a retry hint.
+- `pose`/`rot` are **bare-number vectors, no unit token** — `pose` in
+  metres, `rot` in radians (Euler, composed `Rz@Ry@Rx`) — the same
+  established convention `se` uses for its own pose/rot (a deliberately
+  different rule from `envelope`; see `units-policy-cutover.md`'s
+  decisions log). A 2 Å offset along x is `"pose": [2e-10, 0, 0]`, not
+  `"pose": [2, 0, 0]`.
+
 A block is *designed*, not bought (unlike `component`) — the library grows
 by composition, a sugar defined once and instanced seven times, the way a
 software module tree does.
@@ -37,9 +51,9 @@ put(
     text='''{
   "description": "a rotaxane axle with a threaded crown macrocycle",
   "ops": [
-    {"op": "add_block", "name": "axle", "envelope": "cyl:r2h20", "desc": "the threading rod"},
-    {"op": "add_block", "name": "hub", "parent": "axle", "envelope": "sphere:r3", "use": "stopper"},
-    {"op": "add_block", "name": "rim", "parent": "hub", "pose": [0, 0, 5]}
+    {"op": "add_block", "name": "axle", "envelope": "cyl:r2Åh20Å", "desc": "the threading rod"},
+    {"op": "add_block", "name": "hub", "parent": "axle", "envelope": "sphere:r3Å", "use": "stopper"},
+    {"op": "add_block", "name": "rim", "parent": "hub", "pose": [0, 0, 5e-10]}
   ]
 }''',
 )
@@ -47,22 +61,25 @@ put(
 
 Payload is JSON: `description?` + `ops` (a list of typed ops, same shape for
 `put`/`edit`). `add_block` mints a block: optional `parent` (nests it),
-`envelope` (the `cad` mini-DSL string at Å — `cyl:r2h20`, `sphere:r3`,
-`box:w2d2h2`, `torus:R5r1`, see `precis-cad-help`), `pose`/`rot` (3-vectors,
-Å/deg, default origin), `desc`/`use` (free text, folded into the search
-card). Re-`put`ting a slug **replaces** the whole tree (old blocks/ports/
-connects/threading soft-retired) — the `structure`/`cad` re-put shape.
-`edit(id=<slug>, ops=[...])` applies more ops to the live tree.
-`set_pose` moves an existing block: `{"op": "set_pose", "block": <name>,
-"pose": [x, y, z], "rot"?: [rx, ry, rz]}` — note `block=`, not `name=`.
+`envelope` (the `cad` mini-DSL string, unit-required — `cyl:r2Åh20Å`,
+`sphere:r3Å`, `box:w2Åd2Åh2Å`, `torus:R5År1Å`, or any other length unit
+(`nm`, `m`, …), see `precis-cad-help`; canonicalises to metres),
+`pose`/`rot` (3-vectors, **bare numbers** — metres / radians, default
+origin; a different, older convention from `envelope`'s — see "Units"
+above), `desc`/`use` (free text, folded into the search card). Re-`put`ting
+a slug **replaces** the whole tree (old blocks/ports/connects/threading
+soft-retired) — the `structure`/`cad` re-put shape. `edit(id=<slug>,
+ops=[...])` applies more ops to the live tree. `set_pose` moves an
+existing block: `{"op": "set_pose", "block": <name>, "pose": [x, y, z],
+"rot"?: [rx, ry, rz]}` (metres / radians) — note `block=`, not `name=`.
 
 ## Reuse a block — `instance_block`
 
 ```python
 edit(kind="nm", id="crown1", ops=[
-    {"op": "add_block", "name": "sugar", "envelope": "sphere:r2", "desc": "one sugar unit"},
+    {"op": "add_block", "name": "sugar", "envelope": "sphere:r2Å", "desc": "one sugar unit"},
     {"op": "add_block", "name": "ring_atom", "parent": "sugar"},
-    {"op": "instance_block", "name": "sugar2", "template": "sugar", "pose": [5, 0, 0]},
+    {"op": "instance_block", "name": "sugar2", "template": "sugar", "pose": [5e-10, 0, 0]},
 ])
 ```
 
@@ -152,7 +169,7 @@ barrier estimate; see Scope below).
 
 ```python
 put(kind="nm", id="bind1", text='''{"ops": [
-    {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+    {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
     {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
     {"op": "bind_structure", "block": "hub", "design": "frag1", "ports": {"p1": "aC1"}}
 ]}''')
@@ -339,13 +356,16 @@ the one general off-switch; see `precis-kinds-disabled-help`.
 
 ## Geometry conventions (learned the hard way)
 
-- **Everything is ångströms** (poses, envelope dims) — the shared cad
-  DSL grammar means the *same string* is metres in `se`; the kind you
-  call decides the unit.
+- **Envelope dims are unit-required, ingest-any** (`cyl:r2Åh20Å`,
+  `cyl:r0.2nmh2nm`, …) — the shared cad DSL grammar in boundary mode;
+  canonicalises to metres. **Pose/rot are bare numbers meaning metres /
+  radians** — a different, older convention on the same block tree (see
+  "Units" above); don't confuse the two.
 - `cyl` has its **base at the pose** (not centred — an 8 Å error on a
   16.5 Å rod if you assume centring); `sphere` is centred.
 - Envelope `box` `w`/`d`/`h` are **half-extents**.
-- `rot` is Euler degrees composed `Rz@Ry@Rx`.
+- `rot` is a bare **radians** vector, Euler composed `Rz@Ry@Rx` — `90°`
+  about z is `[0, 0, 1.5707963267948966]`, not `[0, 0, 90]`.
 
 ## Scope limits — stated plainly
 

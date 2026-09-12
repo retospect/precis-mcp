@@ -8,10 +8,12 @@ Vectors are ``numpy`` arrays of shape ``(3,)``, dtype ``float64``.
 A :class:`Transform` is a rotation matrix ``R`` (3×3) plus a translation
 ``t`` (3,), mapping ``world = R @ local + t``.
 
-Euler convention: ``rot=(rx, ry, rz)`` in **degrees**, applied as
-``R = Rz @ Ry @ Rx`` (rotate about local x, then y, then z). Documented
-here because it is the one place the convention is fixed; the DSL and the
-handler both lower poses through :func:`rotation`.
+Euler convention: ``rot=(rx, ry, rz)`` in **radians** (units-policy-
+cutover's angle ruling — degrees live only at the ingest/display
+boundary, e.g. `precis.utils.units`/the DSL's unit-suffixed tokens),
+applied as ``R = Rz @ Ry @ Rx`` (rotate about local x, then y, then z).
+Documented here because it is the one place the convention is fixed;
+the DSL and the handler both lower poses through :func:`rotation`.
 """
 
 from __future__ import annotations
@@ -25,12 +27,29 @@ from numpy.typing import NDArray
 
 Vec3 = NDArray[np.float64]
 
-#: Global linear epsilon (mm). Governs touch / coincidence / zero-clearance
-#: tests. The load-bearing tunable — *not* the unit.
-LINEAR_EPS: float = 1e-6
+#: Relative linear tolerance for touch / coincidence / zero-clearance
+#: tests: every primitive derives its own working epsilon as
+#: ``LINEAR_REL_EPS * <its own governing length>`` (feature size — see
+#: e.g. :class:`~precis.cad.primitives.Sphere`'s ``r``,
+#: :class:`~precis.cad.primitives.CircularFrustum`'s
+#: ``max(rb, rt, h)``), never an absolute length. Replaces the historical
+#: flat ``LINEAR_EPS = 1e-6`` (units-policy-cutover, gr335192/gr334785):
+#: a fixed mm-ish constant culls every face of a nanometre box (the
+#: boxel-3nm crash and the nm sub-µm ``box:`` envelope block it caused).
+LINEAR_REL_EPS: float = 1e-9
 
 #: Global angular epsilon (radians) for parallel / coincident-plane tests.
+#: Dimensionless/angular — exempt from the LENGTH-epsilon audit (see the
+#: AST gate's allowlist, ``tests/test_units_epsilon_gate.py``).
 ANGULAR_EPS: float = 1e-9
+
+#: Zero-vector guard for :func:`normalize`. Every caller in this kernel
+#: hands it an already order-1 vector (a unit axis, the cross product of
+#: two unit vectors, a draft-pull direction) — never a raw design-scale
+#: length — so a flat threshold on the vector's own norm is dimensionless
+#: by construction and needs no governing length. Exempt from the
+#: LENGTH-epsilon audit for that reason.
+_UNIT_VEC_EPS: float = 1e-9
 
 
 def vec3(x: float, y: float, z: float) -> Vec3:
@@ -131,29 +150,29 @@ def translation(x: float, y: float, z: float) -> Transform:
     return Transform(R=np.eye(3, dtype=np.float64), t=vec3(x, y, z))
 
 
-def rotation(rx_deg: float, ry_deg: float, rz_deg: float) -> Transform:
-    """A pure rotation from Euler angles in degrees (``Rz @ Ry @ Rx``)."""
-    R = _rot_z(deg2rad(rz_deg)) @ _rot_y(deg2rad(ry_deg)) @ _rot_x(deg2rad(rx_deg))
+def rotation(rx: float, ry: float, rz: float) -> Transform:
+    """A pure rotation from Euler angles in **radians** (``Rz @ Ry @ Rx``)."""
+    R = _rot_z(float(rz)) @ _rot_y(float(ry)) @ _rot_x(float(rx))
     return Transform(R=R, t=vec3(0.0, 0.0, 0.0))
 
 
-def pose(location: Vec3, rot_deg: Vec3) -> Transform:
-    """A placement: rotate (Euler deg) then translate to ``location``."""
+def pose(location: Vec3, rot: Vec3) -> Transform:
+    """A placement: rotate (Euler radians) then translate to ``location``."""
     loc = as_vec3(location)
-    r = as_vec3(rot_deg)
-    rot = rotation(float(r[0]), float(r[1]), float(r[2]))
-    return Transform(R=rot.R, t=loc)
+    r = as_vec3(rot)
+    rot_xf = rotation(float(r[0]), float(r[1]), float(r[2]))
+    return Transform(R=rot_xf.R, t=loc)
 
 
-def euler_deg_from_matrix(R: NDArray[np.float64]) -> tuple[float, float, float]:
-    """Inverse of :func:`rotation`: recover ``(rx, ry, rz)`` degrees from a
+def euler_rad_from_matrix(R: NDArray[np.float64]) -> tuple[float, float, float]:
+    """Inverse of :func:`rotation`: recover ``(rx, ry, rz)`` radians from a
     proper rotation matrix (``R = Rz @ Ry @ Rx``).
 
     Needed wherever a rigid orientation is *built* directly from a
     world-space basis (e.g. a CAD export substitution constructed from an
     arbitrary plane normal) and must be handed back through the DSL's
     ``rot:rx,ry,rz`` pose fields rather than a raw matrix. Degenerate at
-    ``|R[2,0]| ≈ 1`` (gimbal lock, ``ry = ±90°``, where ``rx``/``rz`` are
+    ``|R[2,0]| ≈ 1`` (gimbal lock, ``ry = ±π/2``, where ``rx``/``rz`` are
     not independently observable) — that branch fixes ``rz = 0`` and folds
     the coupling into ``rx``, which still reproduces ``R`` exactly, just
     not uniquely.
@@ -167,17 +186,13 @@ def euler_deg_from_matrix(R: NDArray[np.float64]) -> tuple[float, float, float]:
         rz = 0.0
         rx = float(np.arctan2(-R[1, 2], R[1, 1]))
     ry = float(np.arcsin(-r20))
-    return (
-        float(np.degrees(rx)),
-        float(np.degrees(ry)),
-        float(np.degrees(rz)),
-    )
+    return (rx, ry, rz)
 
 
 def normalize(v: Vec3) -> Vec3:
     """Unit vector; raises on a zero-length input."""
     arr = as_vec3(v)
     n = float(np.linalg.norm(arr))
-    if n <= LINEAR_EPS:
+    if n <= _UNIT_VEC_EPS:
         raise ValueError("cannot normalize a zero-length vector")
     return arr / n

@@ -16,10 +16,16 @@ status: active
 A `cad` design is a **boolean DAG of placed analytic primitives** (ADR
 0041). You author it as text, and instead of staring at a render you
 **probe it analytically** — "what's along this ray?", "what's the gap
-between shaft and bore?", "what's the section at z=4?". Postgres is
-canonical; SCAD/STL/3MF/STEP export is a regenerable downstream view. Units
-are **millimetres**, transforms are **rigid** (translate + rotate, no
-scale), so every probe is **exact** (only volume/centroid are sampled).
+between shaft and bore?", "what's the section at z=4mm?". Postgres is
+canonical; SCAD/STL/3MF/STEP export is a regenerable downstream view.
+**Every dimensioned number in the source needs an explicit unit** — a
+length (`mm`, `cm`, `in`, `Å`, pint's long tail — internally SI metres) or
+an angle (`deg`/`rad` — internally SI radians); a bare number is refused
+with a retry hint (the zero-counting / silent-exponent-slip guard). Reads
+(probe/view output) render back through the shared neat formatter
+(`2.3 mm`, `1.2 kN`) — never a bare, unit-implied number. Transforms are
+**rigid** (translate + rotate, no scale), so every probe is **exact** (only
+volume/centroid are sampled).
 
 Four verbs, no new ones: `put` (create/replace a design), `get` (list /
 node tree / one node / a probe), `search` (by **intent** — see below),
@@ -38,8 +44,10 @@ The `text` is a small line language, **one node per line**:
   **first** node in a part is its base; later `add` merges, `cut`
   subtracts, `intersect` intersects.
 - `<config>` is the **mini-DSL** (see below).
-- `@x,y,z` places the node (default origin); `rot:rx,ry,rz` rotates it
-  (degrees). `polar:`/`linear:` replicate it into one pattern node.
+- `@x,y,z` places the node (default origin, one length unit per
+  component — `@0mm,0mm,-1mm`); `rot:rx,ry,rz` rotates it (one angle unit
+  per component — `deg` or `rad`, e.g. `rot:0deg,0deg,45deg`). `polar:`/
+  `linear:` replicate it into one pattern node.
 - `component <name>` opens a part; nodes belong to it until the next
   `component` line. Default part name is `part`. Node names are unique
   across the **whole design**, not per component — reusing `plate` in two
@@ -47,10 +55,13 @@ The `text` is a small line language, **one node per line**:
   `base_plate`).
 - `#` starts a comment.
 
-**All angles in `cad` are degrees** — `rot:rx,ry,rz`, the `polar:` even
-spacing (360°/N), and the `arc` probe's θ output. Lengths/coordinates are
-millimetres. (The `calc` kind defaults to degrees too — see the tip
-below.)
+**All angles in `cad` are degrees on display** — `rot:rx,ry,rz`, the
+`polar:` even spacing (360°/N), and the `arc` probe's θ output all read
+back in degrees; at the text boundary every angle still needs its own
+explicit unit (`deg` or `rad`), stored internally as radians. Lengths need
+an explicit unit too (any of `mm`/`cm`/`m`/`in`/`Å`/…, stored internally as
+metres) and read back through the neat formatter (`2.3 mm`, not a bare
+float). (The `calc` kind defaults to degrees too — see the tip below.)
 
 ```python
 put(
@@ -58,9 +69,9 @@ put(
     id="flange",
     text="""
 component flange
-plate     add  cyl:r25h8
-hub_bore  cut  cyl:r8h10    @0,0,-1
-bolts     cut  cyl:r2.5h10  @18,0,-1  polar:n6r18
+plate     add  cyl:r25mmh8mm
+hub_bore  cut  cyl:r8mmh10mm    @0mm,0mm,-1mm
+bolts     cut  cyl:r2.5mmh10mm  @18mm,0mm,-1mm  polar:n6r18mm
 """,
 )
 ```
@@ -76,18 +87,18 @@ put(
     id="deck",
     text="""
 component base
-slab  add  box:w60d60h4
-use standoff as sw  @-20,-20,4
-use standoff as se  @20,-20,4
-use standoff as nw  @-20,20,4  rot:0,0,90
+slab  add  box:w60mmd60mmh4mm
+use standoff as sw  @-20mm,-20mm,4mm
+use standoff as se  @20mm,-20mm,4mm
+use standoff as nw  @-20mm,20mm,4mm  rot:0deg,0deg,90deg
 """,
 )
 ```
 
 `use` is a **top-level directive** like `component` — it doesn't join or
 close the component block above it. `@x,y,z` / `rot:` pose the whole
-sub-assembly, and `polar:` / `linear:` replicate it (`use bolt as b @18,0,0
-polar:n6r18` is six bolts).
+sub-assembly, and `polar:` / `linear:` replicate it (`use bolt as b
+@18mm,0mm,0mm polar:n6r18mm` is six bolts).
 
 The sub-design's parts arrive **namespaced** under the instance name, and
 that is what every probe answers in: `standoff`'s `post` component becomes
@@ -113,12 +124,12 @@ models) drift. Declare a **port** — a named frame on a design — and let a
 ```python
 put(kind="cad", id="nema17", text="""
 component body
-case   add  box:w42d42h40
-port   shaft  @0,0,40          # the output face, 40 mm up its own z
+case   add  box:w42mmd42mmh40mm
+port   shaft  @0mm,0mm,40mm     # the output face, 40 mm up its own z
 """)
 
 put(kind="cad", id="drivetrain", text="""
-port deck @0,0,12                # a frame on THIS design
+port deck @0mm,0mm,12mm          # a frame on THIS design
 
 use gearbox as g
 use nema17  as m
@@ -131,14 +142,15 @@ mate m.shaft to g.output flip    # anchor = another instance's port
 - `port <name> [@x,y,z] [rot:rx,ry,rz]` is a **top-level directive** like
   `component` / `use` — it names a frame, not geometry, so it never becomes
   a node, never appears in a probe, and never exports.
-- `mate <instance>.<port> to <anchor> [flip] [spin:<deg>]` places
+- `mate <instance>.<port> to <anchor> [flip] [spin:<angle>]` places
   `<instance>`. The anchor is either `<port>` (this design's own, fixed) or
   `<instance>.<port>` (another instance, posed first).
 - **The default is coincidence** — the two frames land exactly on top of
   each other, same origin, same axes. That is "put your connection point
   right here". `flip` adds an explicit 180° about x (the two faces then
-  oppose, which is what you want for a shaft entering a bore); `spin:<deg>`
-  rotates about the port's z, for clocking a bolt pattern.
+  oppose, which is what you want for a shaft entering a bore); `spin:<angle>`
+  (`deg`/`rad`, e.g. `spin:30deg`) rotates about the port's z, for clocking
+  a bolt pattern.
 - Addressing is **one level**: `m.shaft`, not `m.inner.shaft`.
 - An instance with no mate sits where you placed it (the origin by default)
   — a frame or base part needs no mate.
@@ -165,10 +177,10 @@ whatever it mates against (a hinge's knuckle recess, its pin bore):
 
 ```
 component body
-barrel  add cyl:r4h20
-port leaf_a @-10,0,0 of:body type:hinge-leaf
-payload recess   cut box:w8d3h20 at:leaf_a @0,0,-10
-payload pin_bore cut cyl:r2h24   at:leaf_a @0,0,-2
+barrel  add cyl:r4mmh20mm
+port leaf_a @-10mm,0mm,0mm of:body type:hinge-leaf
+payload recess   cut box:w8mmd3mmh20mm at:leaf_a @0mm,0mm,-10mm
+payload pin_bore cut cyl:r2mmh24mm     at:leaf_a @0mm,0mm,-2mm
 ```
 
 `payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]` — placement is
@@ -192,29 +204,33 @@ freedom at the interface, about/along the **anchor frame's z axis**:
 ```python
 put(kind="cad", id="crane", text="""
 component tower
-mast add box:w20d20h200
+mast add box:w20mmd20mmh200mm
 
 component jib
-beam add box:w150d10h10 @75,0,205
-port slew @0,0,205 of:jib
+beam add box:w150mmd10mmh10mm @75mm,0mm,205mm
+port slew @0mm,0mm,205mm of:jib
 
-joint jib revolute at:slew limits:-170..170     # component form
+joint jib revolute at:slew limits:-170deg..170deg     # component form
 
 use hook_block as h
-joint h.eye to jib.tip prismatic limits:0..180  # instance form
+joint h.eye to jib.tip prismatic limits:0mm..180mm    # instance form
 """)
 
-# pose it — a joint's name is its subject instance / component:
+# pose it — a joint's name is its subject instance / component; every
+# probe arg that's a length or angle carries its own explicit unit too,
+# same rule as the source text:
 get(kind="cad", id="crane", view="point",
-    args={"state": {"jib": 45, "h": 120}, "p": [0, 90, 205]})
+    args={"state": {"jib": "45deg", "h": "120mm"}, "p": ["0mm", "90mm", "205mm"]})
 
 # the payoff question — does anything hit anything, anywhere in the travel?
 get(kind="cad", id="crane", view="sweep")
 ```
 
 - Kinds: `revolute` (deg) · `prismatic` (mm) · `cylindrical`
-  (`[deg, mm]`, two DOF) · `screw` (deg, advances `pitch:<mm>` per rev) ·
-  `fixed` (= `mate`).
+  (`[deg, mm]`, two DOF) · `screw` (deg, advances `pitch:<length>` per
+  rev) · `fixed` (= `mate`). `limits:`/`pitch:` at the text boundary always
+  carry an explicit unit; internally revolute/screw/cylindrical-angle state
+  is radians, prismatic/cylindrical-slide state is metres.
 - **Two forms**: `joint <inst>.<port> to <anchor> <kind> [opts]` poses an
   instance (a generalised mate — `flip`/`spin:` still apply);
   `joint <component> <kind> at:<port>` articulates a whole component of
@@ -243,7 +259,7 @@ process clearance), the `joint … revolute|prismatic` line, and a port
 `type:printed-hinge` (the `printed-` prefix marks the interface as
 captive-printed — "pip" in 3D-printing parlance, spelled out here to
 avoid the Python-pip collision). Put the clearance floor in a dim
-(`dim clearance >= 0.3` for FDM) so an undersized joint refuses at
+(`dim clearance >= 0.3mm` for FDM) so an undersized joint refuses at
 parse. The honesty rule rides make-tree alignment: a `printed-` mate
 whose two hosts are `made-by` **different print steps** is flagged on
 the design's `view='links'` — a captive joint needs both sides in the
@@ -283,10 +299,14 @@ and procurement identity):
 
 ```
 part b1 bearing:6202            # d15 D35 B11; ports: bore (midplane), face
-part bolts bolt:m6x20 @40,0,10 polar:n4r30   # patterns multiply BOM qty
+part bolts bolt:m6x20 @40mm,0mm,10mm polar:n4r30mm   # patterns multiply BOM qty
 part m1 nema:17                 # ports: face (mount plane), shaft
 mate b1.face to seat            # parts mate like instances — no coordinates
 ```
+
+(`bolt:m6x20`'s `m6x20` is the part's designation — mm by fastener-standard
+convention, a procurement code rather than a free quantity, so it does
+NOT take a unit token; only the placement tokens `@`/`polar:` do.)
 
 Families: `bearing:6202` (deep-groove, 60x/62xx/63xx), `bolt:m6x20` /
 `nut:m6` / `washer:m6` (ISO 4017/4032/7089, M3–M12), `extrusion:2020x400`
@@ -338,21 +358,26 @@ Name your driving dimensions and let the kernel catch contradictions
 **before any geometry exists**:
 
 ```
-dim a = 200            # mm, exact
-dim c >= 100           # one-sided bounds are first-class ("longer than
-dim c <= 500           # 10cm" is a valid open-ended requirement)
+dim a = 200mm          # exact
+dim c >= 100mm         # one-sided bounds are first-class ("longer than
+dim c <= 500mm         # 10cm" is a valid open-ended requirement)
 constrain a = c        # equality between dims
 ```
 
 Bounds on one name intersect; `constrain` merges dims into an equality
-class; a class whose combined range is empty — `a = 200`, `b = 150`,
+class; a class whose combined range is empty — `a = 200mm`, `b = 150mm`,
 `constrain a = b` — is **refused at put** with the members and their
 bounds named. They're the carrier for process rules like print
-clearances (`clearance >= 0.3` for FDM) and for estimates that narrow
+clearances (`clearance >= 0.3mm` for FDM) and for estimates that narrow
 over time.
 
-**Configs can reference dims**: `slab add box:w{a}d{b}h10` — the stored
-source stays parametric (edit the `dim` line, geometry follows). A
+**Configs can reference dims**: `slab add box:w{a}d{b}h0.01` — the stored
+source stays parametric (edit the `dim` line, geometry follows). Once a
+config references `{name}` at all, every literal number in *that same
+config token* parses bare/canonical (SI metres) — so the un-substituted
+`h0.01` above is 0.01 metres, not millimetres, exactly like the dim values
+`{a}`/`{b}` it sits next to (a `dim` declaration is unit-required and
+converts to SI once, at the `dim` line, so the two agree in scale). A
 referenced dim must be **pinned** to an exact value (directly or through
 its equality class); a still-open bound is refused, never silently
 averaged. Sub-designs resolve `{…}` against their own dims; payload
@@ -366,7 +391,7 @@ per-component volume:
 
 ```
 component frame
-slab add box:w100d100h10
+slab add box:w100mmd100mmh10mm
 material frame 6061-t6
 ```
 
@@ -390,8 +415,8 @@ put(
 desc: L-shaped mounting bracket for a temperature sensor
 use:  bolts the sensor housing to the reactor backplate
 component bracket
-base  add  box:w40d40h5
-hole  cut  cyl:r3h6  @10,10,-1
+base  add  box:w40mmd40mmh5mm
+hole  cut  cyl:r3mmh6mm  @10mm,10mm,-1mm
 """,
 )
 ```
@@ -406,31 +431,35 @@ immediately, and the result echoes the node tree plus any
 
 ### The `config` mini-DSL
 
+Every key but `n` (a dimensionless count) needs an explicit length unit;
+`chamfer`'s `angle` needs an explicit angle unit (`deg`/`rad`):
+
 | shape | grammar | example |
 |-------|---------|---------|
-| box | `box:w<W>d<D>h<H>` | `box:w40d20h10` |
-| cylinder | `cyl:r<R>h<H>` | `cyl:r3h12` |
-| cone | `cone:r<R>h<H>` | `cone:r5h8` |
-| truncated cone | `tcone:rb<RB>rt<RT>h<H>` | `tcone:rb6rt2h5` |
-| hex prism | `hex:r<R>h<H>` | `hex:r5h10` |
-| n-gon prism | `ngon:n<N>r<R>h<H>` | `ngon:n6r5h10` |
-| n-gon frustum | `frustum:n<N>rb<RB>rt<RT>h<H>` | `frustum:n6rb4rt2h5` |
-| pyramid | `pyramid:n<N>r<R>h<H>` | `pyramid:n4r5h8` |
-| sphere | `sphere:r<R>` | `sphere:r6` |
-| torus | `torus:R<major>r<minor>` | `torus:R10r2` |
-| chamfer bevel tool | `chamfer:<size>x<angle°>` | `chamfer:1x45` |
+| box | `box:w<W>d<D>h<H>` | `box:w40mmd20mmh10mm` |
+| cylinder | `cyl:r<R>h<H>` | `cyl:r3mmh12mm` |
+| cone | `cone:r<R>h<H>` | `cone:r5mmh8mm` |
+| truncated cone | `tcone:rb<RB>rt<RT>h<H>` | `tcone:rb6mmrt2mmh5mm` |
+| hex prism | `hex:r<R>h<H>` | `hex:r5mmh10mm` |
+| n-gon prism | `ngon:n<N>r<R>h<H>` | `ngon:n6r5mmh10mm` |
+| n-gon frustum | `frustum:n<N>rb<RB>rt<RT>h<H>` | `frustum:n6rb4mmrt2mmh5mm` |
+| pyramid | `pyramid:n<N>r<R>h<H>` | `pyramid:n4r5mmh8mm` |
+| sphere | `sphere:r<R>` | `sphere:r6mm` |
+| torus | `torus:R<major>r<minor>` | `torus:R10mmr2mm` |
+| chamfer bevel tool | `chamfer:<size><unit>x<angle><unit>` | `chamfer:1mmx45deg` |
 
-Numbers accept scientific notation: `box:w3e-9d3e-9h3e-10` (nm-scale
-without ten zeros).
+Numbers accept scientific notation: `box:w3e-9md3e-9mh3e-10m` (nm-scale
+without ten zeros — or just say `nm`/`Å` directly: `box:w3nmd3nmh1Å`).
 
 All are placed base-at-`z=0`, centred on the local axis; `@x,y,z` and
 `rot:` set the world pose. The convention is **mixed** — centred in x/y,
-based in z: `box:w5d5h0.3 @0,0,0` occupies x and y in [−2.5, 2.5] but z
-in [0, 0.3]. To centre in z too, offset by −h/2 (`@0,0,-0.15`).
+based in z: `box:w5mmd5mmh0.3mm @0mm,0mm,0mm` occupies x and y in
+[−2.5, 2.5] mm but z in [0, 0.3] mm. To centre in z too, offset by −h/2
+(`@0mm,0mm,-0.15mm`).
 
 `chamfer` is an unbounded half-space *tool*, not a solid: `cut` /
 `intersect` only, never a component's first node. Its cutting plane sits
-`size` along −normal from the node origin, tilted `angle`° from local
+`size` along −normal from the node origin, tilted `angle` from local
 +z — pose it with `@`/`rot:` onto the edge to bevel (patterns apply).
 Exports and the viewer substitute a finite clamped box automatically.
 
@@ -452,25 +481,28 @@ plus a `⚠ STALE analyses` warning when a pinned analysis has drifted —
 
 All probes are full-DOF (any origin / direction / orientation). Pass the
 geometry in `args=`. `args.component` scopes to one part (default: the
-whole design).
+whole design). **Positions carry an explicit unit per component** (`p`,
+`o`, `c`, `z`, the scalar `r`); **directions don't** (`d`, `axis` — bare
+numbers, no length scale of their own, normalized internally).
 
 ```python
 # 0D — classify a point: containing node(s), or (if carved) the blocker + nearest
-get(kind="cad", id="flange", view="point", args={"p": [0, 0, 4]})
+get(kind="cad", id="flange", view="point", args={"p": ["0mm", "0mm", "4mm"]})
 
 # 1D — ray: material/void intervals, each void attributed to the node that removed it
-get(kind="cad", id="flange", view="ray", args={"o": [-30, 0, 4], "d": [1, 0, 0]})
+get(kind="cad", id="flange", view="ray",
+    args={"o": ["-30mm", "0mm", "4mm"], "d": [1, 0, 0]})
 
 # 1D — arc: angular intervals around an axis (bolt circles, radial features)
 get(
     kind="cad",
     id="flange",
     view="arc",
-    args={"c": [0, 0, 4], "axis": [0, 0, 1], "r": 18},
+    args={"c": ["0mm", "0mm", "4mm"], "axis": [0, 0, 1], "r": "18mm"},
 )
 
 # 2D — section at z=const: feature-attributed loops (outer / hole)
-get(kind="cad", id="flange", view="section", args={"z": 4})
+get(kind="cad", id="flange", view="section", args={"z": "4mm"})
 
 # bulk — geometric volume + centroid (SAMPLED, labelled with ±error)
 get(kind="cad", id="flange", view="volume")
@@ -514,8 +546,9 @@ get(kind="cad", id="wheel", view="connectivity", args={"of": "hub"})
 # is there a contact path between two parts? (e.g. hub → rim through spokes)
 get(kind="cad", id="wheel", view="connectivity", args={"a": "hub", "b": "rim"})
 
-# loosen/tighten what counts as "touching" (mm)
-get(kind="cad", id="wheel", view="connectivity", args={"tol": 0.05})
+# loosen/tighten what counts as "touching" (explicit unit; default is
+# scale-relative to the design's own bbox diagonal, not a fixed mm figure)
+get(kind="cad", id="wheel", view="connectivity", args={"tol": "0.05mm"})
 ```
 
 Because contact is tested on the **folded CSG** (cuts already applied),

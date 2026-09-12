@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from precis.cad import bulk as cad_bulk
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
+from precis.utils.units import format_quantity
 from precis_se import fasten as se_fasten
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
@@ -109,6 +110,14 @@ def _principal_axis(axis: list[float]) -> str | None:
 
 def _flip(direction: str) -> str:
     return ("-" if direction[0] == "+" else "+") + direction[1]
+
+
+def _fmt_travel(v: float) -> str:
+    """A translational-DOF travel distance through the shared neat
+    formatter — ``format_quantity`` rejects non-finite input, but an
+    unbounded slide (``float('inf')``) is exactly this probe's own
+    FINDING case, so it needs its own legible spelling."""
+    return "unbounded" if v == float("inf") else format_quantity(v, "length")
 
 
 def _design_extent(tree: SeTree) -> float:
@@ -595,7 +604,10 @@ def drc(tree: SeTree) -> DrcReport:
         )
         fwd = result.travel.get(direction, 0.0) / scale
         back = result.travel.get(_flip(direction), 0.0) / scale
-        travel_txt = f"travel {direction}={fwd:g} {_flip(direction)}={back:g} m"
+        travel_txt = (
+            f"travel {direction}={_fmt_travel(fwd)} "
+            f"{_flip(direction)}={_fmt_travel(back)}"
+        )
         if klass in _PROBE_BOUNDED and (fwd == float("inf") or back == float("inf")):
             probes.append(DofProbe(subject, klass, f"FINDING — {travel_txt}"))
             findings.append(

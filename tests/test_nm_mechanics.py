@@ -23,7 +23,8 @@ from precis.structure.cell import Cell
 from precis.structure.scene import Atom, Bond, Scene
 from precis_nm import mechanics
 from precis_nm.generators.sp2 import build_cnt
-from precis_nm.handler import NmHandler
+from precis_nm.handler import NmHandler, _envelope_A_to_m
+from precis_nm.ops import _ingest_envelope
 
 _MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
 
@@ -57,7 +58,7 @@ def test_min_cut_linear_chain_is_one() -> None:
     scene.bonds = [Bond(i="a", j="b"), Bond(i="b", j="c"), Bond(i="c", j="d")]
     cut, ceiling = mechanics.min_cut(scene, "a", "d")
     assert cut == 1
-    assert ceiling == pytest.approx(mechanics.RUPTURE_FORCE_NN)
+    assert ceiling == pytest.approx(mechanics.RUPTURE_FORCE_N)
 
 
 def test_min_cut_two_parallel_paths_is_two() -> None:
@@ -72,7 +73,7 @@ def test_min_cut_two_parallel_paths_is_two() -> None:
     ]
     cut, ceiling = mechanics.min_cut(scene, "a", "d")
     assert cut == 2
-    assert ceiling == pytest.approx(2 * mechanics.RUPTURE_FORCE_NN)
+    assert ceiling == pytest.approx(2 * mechanics.RUPTURE_FORCE_N)
 
 
 def test_min_cut_disconnected_components_is_zero() -> None:
@@ -98,15 +99,14 @@ def test_min_cut_missing_atom_is_zero_not_an_error() -> None:
 
 def test_euler_buckling_matches_hand_computed_closed_form() -> None:
     r_A, length_A = 6.0, 40.0
-    expected_nN = (
+    expected_N = (
         (np.pi**2)
         * mechanics.E_MODULUS_PA
         * (np.pi * (r_A * 1e-10) ** 3 * (mechanics.TUBE_WALL_THICKNESS_A * 1e-10))
         / (length_A * 1e-10) ** 2
-        * 1e9
     )
-    assert mechanics.euler_buckling_ceiling_nN(r_A, length_A) == pytest.approx(
-        expected_nN, rel=1e-9
+    assert mechanics.euler_buckling_ceiling_N(r_A, length_A) == pytest.approx(
+        expected_N, rel=1e-9
     )
 
 
@@ -119,7 +119,14 @@ def test_euler_buckling_of_a_generated_cnt_matches_hand_calc_via_envelope() -> N
     4-decimal formatting is the only source of drift, so a loose
     (0.1%) relative tolerance is still a real "matches" check."""
     block = build_cnt({"n": 8, "m": 8, "length_A": 30.0})
-    geom = mechanics.tube_geometry_from_envelope(block.envelope)
+    # tube_geometry_from_envelope reads a STORED (design-space, metres)
+    # envelope — the generator's own `block.envelope` is Å-valued raw
+    # output (the enclave's atomistic math, untouched); round-trip it
+    # through the SAME seam `generate` uses in production
+    # (`_envelope_A_to_m` + the add_block ingest boundary) rather than
+    # feeding raw Å text to a metres-expecting function.
+    stored_env = _ingest_envelope(_envelope_A_to_m(block.envelope))
+    geom = mechanics.tube_geometry_from_envelope(stored_env)
     assert geom is not None
     radius_A, length_A = geom
     hand_expected = (
@@ -131,16 +138,17 @@ def test_euler_buckling_of_a_generated_cnt_matches_hand_calc_via_envelope() -> N
             * (mechanics.TUBE_WALL_THICKNESS_A * 1e-10)
         )
         / (length_A * 1e-10) ** 2
-        * 1e9
     )
-    assert mechanics.euler_buckling_ceiling_nN(radius_A, length_A) == pytest.approx(
+    assert mechanics.euler_buckling_ceiling_N(radius_A, length_A) == pytest.approx(
         hand_expected, rel=1e-3
     )
 
 
 def test_tube_geometry_from_envelope_rejects_cone() -> None:
     """A cone's tapered wall isn't a constant-radius buckling candidate
-    (module docstring, point 2) — never treated as a tube."""
+    (module docstring, point 2) — never treated as a tube. ``envelope`` is
+    STORED (design-space, canonical/storage-mode) text — bare metres, no
+    unit suffix, the shape this function actually reads in production."""
     assert mechanics.tube_geometry_from_envelope("cone:r5h10") is None
 
 
@@ -170,22 +178,22 @@ def _cnt_scene(block: object, coords: np.ndarray) -> Scene:
 def test_strain_energy_of_pristine_generated_cnt_is_near_zero() -> None:
     block = build_cnt({"n": 8, "m": 8, "length_A": 25.0})
     scene = _cnt_scene(block, block.coords)
-    energy_eV, n_triples = mechanics.harmonic_strain_energy_eV(scene)
+    energy_J, n_triples = mechanics.harmonic_strain_energy_J(scene)
     assert n_triples > 0
     # near zero relative to the deliberately-bent case below, not exactly
     # zero -- a rolled sheet has a little genuine curvature-induced angle
-    # deviation from the flat-sheet 120 deg ideal.
-    assert energy_eV < 1.0
+    # deviation from the flat-sheet 120 deg ideal. Bound restated in SI
+    # (1 eV, the pre-cutover bound, converted once via mechanics'
+    # own eV->J factor) rather than re-tuned in J from scratch.
+    assert energy_J < 1.0 * mechanics._EV_TO_J
 
 
 def test_strain_energy_of_a_deliberately_bent_cnt_is_positive_and_larger() -> None:
     block = build_cnt({"n": 8, "m": 8, "length_A": 25.0})
-    pristine_e, _n = mechanics.harmonic_strain_energy_eV(
-        _cnt_scene(block, block.coords)
-    )
+    pristine_e, _n = mechanics.harmonic_strain_energy_J(_cnt_scene(block, block.coords))
     bent_coords = block.coords.copy()
     bent_coords[0] += np.array([2.5, 2.5, 2.5])  # a genuinely large local kink
-    bent_e, _n2 = mechanics.harmonic_strain_energy_eV(_cnt_scene(block, bent_coords))
+    bent_e, _n2 = mechanics.harmonic_strain_energy_J(_cnt_scene(block, bent_coords))
     assert bent_e > 0.0
     assert bent_e > pristine_e
 
@@ -193,8 +201,8 @@ def test_strain_energy_of_a_deliberately_bent_cnt_is_positive_and_larger() -> No
 def test_strain_energy_no_covalent_neighbors_contributes_nothing() -> None:
     scene = Scene(cell=_cell())
     scene.atoms["a"] = Atom(label="a", element="C", frac=np.zeros(3))
-    energy_eV, n_triples = mechanics.harmonic_strain_energy_eV(scene)
-    assert energy_eV == 0.0
+    energy_J, n_triples = mechanics.harmonic_strain_energy_J(scene)
+    assert energy_J == 0.0
     assert n_triples == 0
 
 
@@ -205,7 +213,7 @@ def test_mechanics_view_renders_unfilled_for_unbound_design(handler: NmHandler) 
     handler.put(
         id="mech-empty",
         text=json.dumps(
-            {"ops": [{"op": "add_block", "name": "scaffold", "envelope": "sphere:r3"}]}
+            {"ops": [{"op": "add_block", "name": "scaffold", "envelope": "sphere:r3Å"}]}
         ),
     )
     body = handler.get(id="mech-empty", view="mechanics").body
@@ -280,7 +288,7 @@ def test_mechanics_view_min_cut_zero_for_dumbbell_with_no_shaft(
         ),
     )
     ops = [
-        {"op": "add_block", "name": "headA", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "headA", "envelope": "sphere:r2Å"},
         {
             "op": "add_port",
             "block": "headA",
@@ -288,7 +296,7 @@ def test_mechanics_view_min_cut_zero_for_dumbbell_with_no_shaft(
             "roles": ["covalent"],
             "expected_element": "C",
         },
-        {"op": "add_block", "name": "headB", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "headB", "envelope": "sphere:r2Å"},
         {
             "op": "add_port",
             "block": "headB",
@@ -359,7 +367,7 @@ def test_mechanics_view_min_cut_positive_for_dumbbell_with_shaft(
         ),
     )
     ops = [
-        {"op": "add_block", "name": "headA", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "headA", "envelope": "sphere:r2Å"},
         {
             "op": "add_port",
             "block": "headA",
@@ -367,7 +375,7 @@ def test_mechanics_view_min_cut_positive_for_dumbbell_with_shaft(
             "roles": ["covalent"],
             "expected_element": "C",
         },
-        {"op": "add_block", "name": "headB", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "headB", "envelope": "sphere:r2Å"},
         {
             "op": "add_port",
             "block": "headB",
@@ -392,7 +400,7 @@ def test_mechanics_view_min_cut_positive_for_dumbbell_with_shaft(
     handler.put(id="mech-dumbbell2", text=json.dumps({"ops": ops}))
     body = handler.get(id="mech-dumbbell2", view="mechanics").body
     assert "disconnected" not in body
-    assert str(mechanics.RUPTURE_FORCE_NN) in body or "5" in body
+    assert f"{mechanics.RUPTURE_FORCE_N:.4g}" in body or "5" in body
 
 
 def test_mechanics_view_cross_design_connect_renders_not_fused_not_zero(
@@ -427,7 +435,7 @@ def test_mechanics_view_cross_design_connect_renders_not_fused_not_zero(
             ),
         )
     ops = [
-        {"op": "add_block", "name": "headA", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "headA", "envelope": "sphere:r2Å"},
         {
             "op": "add_port",
             "block": "headA",
@@ -435,7 +443,7 @@ def test_mechanics_view_cross_design_connect_renders_not_fused_not_zero(
             "roles": ["covalent"],
             "expected_element": "C",
         },
-        {"op": "add_block", "name": "headB", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "headB", "envelope": "sphere:r2Å"},
         {
             "op": "add_port",
             "block": "headB",

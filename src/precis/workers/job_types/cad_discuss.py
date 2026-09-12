@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 from precis.cad.scene import build_design, spec_to_source
 from precis.cad_resolve import design_resolver
 from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.utils.units import format_quantity
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -64,9 +65,13 @@ DESCRIPTION = (
 #: where each part actually sits instead of guessing its local zero (the
 #: cyl-base-at-0 vs centred-on-loc trap that produced a wrong z-extent).
 _CONVENTION = (
-    "Coordinates: +Z up, mm. cyl/cone/frustum have their BASE at z=0 and "
-    "extend +z; box/ngon/hex are centred in x/y with base at z=0; `loc` "
-    "translates the primitive and `rot` is degrees. So a part's z-extent is "
+    "Coordinates: +Z up (the measured facts below show each length with a "
+    "neat unit, e.g. '3 mm', '12 cm'; the design SOURCE above is unit-"
+    "suffixed too, but always canonical metres/radians, e.g. '0.003m', "
+    "'0.785rad' — never a bare unitless number). cyl/cone/frustum have "
+    "their BASE at z=0 and extend +z; box/ngon/hex are centred in x/y "
+    "with base at z=0; `loc` translates the primitive and `rot` is "
+    "radians in the source, not degrees. So a part's z-extent is "
     "loc.z .. loc.z+h — it is NOT centred on loc.z. Use the per-feature world "
     "bounds below rather than inferring positions from the source."
 )
@@ -107,13 +112,14 @@ def _design_facts(store: Store, cad_ref_id: int) -> tuple[str, str]:
         design = build_design(scene_spec, resolve=design_resolver(store))
         lines.append(_CONVENTION)
         lo, hi = expr_aabb(design, design.whole())
-        lines.append(
-            f"Bounding box (mm): {hi[0] - lo[0]:.3g} × {hi[1] - lo[1]:.3g} × "
-            f"{hi[2] - lo[2]:.3g}"
-        )
+        dims = " × ".join(format_quantity(hi[i] - lo[i], "length") for i in range(3))
+        lines.append(f"Bounding box: {dims}")
         try:
             vol = cad_volume(design)
-            lines.append(f"Volume (mm³): {vol.volume:.4g} (±{vol.rel_err * 100:.1f}%)")
+            lines.append(
+                f"Volume: {format_quantity(vol.volume, 'volume')} "
+                f"(±{vol.rel_err * 100:.1f}%)"
+            )
         except Exception:  # pragma: no cover - volume is best-effort
             pass
         if len(dict.fromkeys(scene_spec.components)) >= 2:
@@ -129,7 +135,8 @@ def _design_facts(store: Store, cad_ref_id: int) -> tuple[str, str]:
                 if iso:
                     lines.append(f"Floating (touch nothing): {', '.join(iso)}")
             contacts = [
-                f"{c.a}↔{c.b} ({'interfere' if c.interfering else 'touch'}, {c.gap:g} mm)"
+                f"{c.a}↔{c.b} ({'interfere' if c.interfering else 'touch'}, "
+                f"{format_quantity(c.gap, 'length')})"
                 for c in conn.contacts
             ]
             lines.append("Contacts: " + (", ".join(contacts) if contacts else "none"))
@@ -139,18 +146,18 @@ def _design_facts(store: Store, cad_ref_id: int) -> tuple[str, str]:
         # part's zero is (e.g. a cyl at loc.z=-8 h16 spans z −8..+8, not −16..0).
         bounds = _feature_bounds(design)
         if bounds:
-            lines.append("Per-feature world bounds (mm):")
+            lines.append("Per-feature world bounds:")
             for node in scene_spec.nodes:
                 b = bounds.get(node.name)
                 if b is None:
                     continue
                 blo, bhi = b
-                lines.append(
-                    f"  {node.name} [{node.component}] {node.op}: "
-                    f"x[{blo[0]:.3g}..{bhi[0]:.3g}] "
-                    f"y[{blo[1]:.3g}..{bhi[1]:.3g}] "
-                    f"z[{blo[2]:.3g}..{bhi[2]:.3g}]"
+                axes = " ".join(
+                    f"{axis}[{format_quantity(blo[i], 'length')}.."
+                    f"{format_quantity(bhi[i], 'length')}]"
+                    for i, axis in enumerate("xyz")
                 )
+                lines.append(f"  {node.name} [{node.component}] {node.op}: {axes}")
     except Exception as exc:  # pragma: no cover - a bad build shouldn't blank facts
         lines.append(f"(geometry facts unavailable: {exc})")
     return source, "\n".join(lines)

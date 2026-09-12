@@ -59,6 +59,7 @@ from precis.cad.relate import component_sdf
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.structure import Scene as StructScene
+from precis.utils.units import format_quantity
 from precis_nm.generators.sp2 import VDW_MARGIN_A
 from precis_nm.ops import BlockTree, connect_role, effective_envelope, effective_ports
 
@@ -81,15 +82,30 @@ class ValidationIssue:
     severity: str = "error"
 
 
+#: The design↔atomistic seam conversion factor (units-policy-cutover.md,
+#: structure-unit-enclave.md): a block's ``envelope`` is design-space
+#: cad-DSL text — canonical/storage mode, bare numbers in METRES (the
+#: block tree's own internal unit since the units cutover) — while a bound
+#: ``structure`` scene's atom coordinates stay Å (the enclave). Both sides
+#: of :func:`envelope_fit`'s comparison are converted into the SAME frame
+#: (metres, chosen here since ``envelope`` is already parsed as metres by
+#: ``cad_dsl.build_config``) rather than mixing units inside one SDF call.
+_A_TO_M = 1e-10
+_M_TO_A = 1e10
+
+
 def envelope_fit(
     envelope: str, scene: StructScene, *, margin_A: float = VDW_MARGIN_A
 ) -> tuple[str, float] | None:
     """The L1↔L5 agreement check itself (module docstring): does every atom
-    of ``scene`` sit inside ``envelope`` (a ``cad`` mini-DSL config string,
-    Å) plus ``margin_A`` of headroom? Returns ``(worst atom label,
-    protrusion_A)`` for the single worst-offending atom — the largest
-    signed distance beyond the margin (``component_sdf`` is negative
-    inside, so ``sdf - margin_A > 0`` is a genuine protrusion) — or
+    of ``scene`` sit inside ``envelope`` (a ``cad`` mini-DSL config string —
+    design-space canonical text, metres, see :data:`_A_TO_M`) plus
+    ``margin_A`` (Å, an atomistic-scale constant — the enclave rule keeps
+    this parameter self-naming its own unit) of headroom? Returns ``(worst
+    atom label, protrusion_A)`` for the single worst-offending atom — the
+    largest signed distance beyond the margin (``component_sdf`` is
+    negative inside, so ``sdf - margin_m > 0`` is a genuine protrusion),
+    reported back in Å (the atomistic scale this finding is about) — or
     ``None`` when every atom sits inside the margin, or when ``envelope``
     fails to parse (a malformed envelope is a different finding —
     ``ops.py``'s ``_validate_envelope`` gate, or a stored-but-now-invalid
@@ -108,25 +124,27 @@ def envelope_fit(
     against an envelope translated/rotated into a different frame
     entirely, comparing two things that were never meant to line up."""
     try:
-        prim = cad_dsl.build_config(envelope)
+        prim = cad_dsl.build_config(envelope)  # design-space canonical: metres
     except cad_dsl.DslError:
         return None
     design = CadDesign()
     identity = cad_pose(cad_as_vec3([0.0, 0.0, 0.0]), cad_as_vec3([0.0, 0.0, 0.0]))
     design.add_component("_envelope_fit", design.prim("_envelope_fit", prim, identity))
     expr = design.components["_envelope_fit"]
+    margin_m = margin_A * _A_TO_M
     worst_label: str | None = None
-    worst_protrusion = 0.0
+    worst_protrusion_m = 0.0
     for label, atom in scene.atoms.items():
-        cart = scene.cell.frac_to_cart(atom.frac)
-        sdf = component_sdf(design, expr, cad_as_vec3(cart))
-        protrusion = sdf - margin_A
-        if protrusion > worst_protrusion:
-            worst_protrusion = protrusion
+        cart_A = scene.cell.frac_to_cart(atom.frac)  # atomistic enclave: Å
+        cart_m = cad_as_vec3([c * _A_TO_M for c in cart_A])
+        sdf = component_sdf(design, expr, cart_m)
+        protrusion_m = sdf - margin_m
+        if protrusion_m > worst_protrusion_m:
+            worst_protrusion_m = protrusion_m
             worst_label = label
     if worst_label is None:
         return None
-    return worst_label, worst_protrusion
+    return worst_label, worst_protrusion_m * _M_TO_A
 
 
 # ── gripe 334768 — the azo-stick-5nm dogfood (2026-09-11): a design with a
@@ -163,13 +181,14 @@ OVERLAP_DEPTH_FRACTION = 0.10
 #: residual gap is many multiples of either block's own size.
 BOND_GAP_FRACTION = 0.5
 
-#: :func:`_bond_vector_findings`'s alignment threshold, in degrees off
-#: perfectly anti-parallel (180°). Two bonded ports both declare a
+#: :func:`_bond_vector_findings`'s alignment threshold, radians off
+#: perfectly anti-parallel (π). Two bonded ports both declare a
 #: ``direction`` pointing outward from their own block along the bond, so a
-#: real bond's two vectors are anti-parallel; 60° absorbs a genuinely bent
-#: approach geometry while still catching the dogfood's actual failure
-#: (vectors pointing away from each other — nowhere near anti-parallel).
-BOND_VECTOR_MAX_DEVIATION_DEG = 60.0
+#: real bond's two vectors are anti-parallel; 60° (radians internal per the
+#: units-policy-cutover angle ruling) absorbs a genuinely bent approach
+#: geometry while still catching the dogfood's actual failure (vectors
+#: pointing away from each other — nowhere near anti-parallel).
+BOND_VECTOR_MAX_DEVIATION_RAD = math.radians(60.0)
 
 
 def _envelope_diag(prim: Primitive) -> float | None:
@@ -304,7 +323,7 @@ def _envelope_overlap_findings(tree: BlockTree) -> list[ValidationIssue]:
                     subject=f"{a_name}—{b_name}",
                     detail=(
                         f"envelopes of {a_name!r} and {b_name!r} interpenetrate "
-                        f"by {depth:.3g} Å (> {threshold:.3g} Å, "
+                        f"by {depth:.3g} m (> {threshold:.3g} m, "
                         f"{OVERLAP_DEPTH_FRACTION:.0%} of the smaller block's "
                         "own envelope size) with no declared connect or "
                         "nesting between them — connect them if this is a "
@@ -450,7 +469,14 @@ def _bond_length_findings(tree: BlockTree) -> list[ValidationIssue]:
         b_pos = np.asarray(b_node.pose, dtype=float)
         delta = b_pos - a_pos
         distance = float(np.linalg.norm(delta))
-        if distance <= 1e-9:
+        # Scale-relative, not a fixed 1e-9 (units-policy-cutover.md's
+        # relative-tolerance audit): this used to be 1e-9 Å — negligible at
+        # the pre-cutover Å scale, but a whole nanometre now that poses are
+        # metres (1e-9 m = 1 nm), silently swallowing real coincidences at
+        # nm-design scale. A fraction of the smaller block's own envelope
+        # size (the module's governing-length convention, e.g.
+        # OVERLAP_DEPTH_FRACTION above) reads the same at every scale.
+        if distance <= 1e-9 * min(a_diag, b_diag):
             continue  # coincident poses — nothing to project an axis onto
         unit = delta / distance
         a_lo, a_hi = Placed(
@@ -471,11 +497,11 @@ def _bond_length_findings(tree: BlockTree) -> list[ValidationIssue]:
                 rule="bond_length_sanity",
                 subject=subject,
                 detail=(
-                    f"block-pose gap ≈{gap:.3g} Å (pose distance {distance:.3g} "
-                    f"Å minus each block's own envelope extent along the "
+                    f"block-pose gap ≈{gap:.3g} m (pose distance {distance:.3g} "
+                    f"m minus each block's own envelope extent along the "
                     f"line — an approximation: ports have no stored position "
                     f"of their own, only their block's pose) exceeds the "
-                    f"{threshold:.3g} Å scale-relative threshold for a "
+                    f"{threshold:.3g} m scale-relative threshold for a "
                     "plausible bond — not a chemically real covalent bond "
                     "at this distance"
                 ),
@@ -489,7 +515,7 @@ def _bond_vector_findings(tree: BlockTree) -> list[ValidationIssue]:
     """``bond_vector_alignment`` (warn) — a ``kind='bond'`` connect whose
     two ports both declare a ``direction`` (skipped when either doesn't —
     ``direction`` is optional), but those vectors are far from anti
-    -parallel (:data:`BOND_VECTOR_MAX_DEVIATION_DEG` off 180°). A bonded
+    -parallel (:data:`BOND_VECTOR_MAX_DEVIATION_RAD` off 180°). A bonded
     port's ``direction`` is meant to point outward along the bond axis, so
     two real bond partners point at each other, not away — the dogfood's
     actual failure mode, which proved these vectors are pure decoration
@@ -530,9 +556,9 @@ def _bond_vector_findings(tree: BlockTree) -> list[ValidationIssue]:
             b_xform.apply_dir(cad_as_vec3(b_spec.direction)), dtype=float
         )
         cos = float(np.clip(np.dot(a_dir, b_dir), -1.0, 1.0))
-        angle_deg = math.degrees(math.acos(cos))
-        deviation = 180.0 - angle_deg
-        if deviation <= BOND_VECTOR_MAX_DEVIATION_DEG:
+        angle_rad = math.acos(cos)
+        deviation = math.pi - angle_rad
+        if deviation <= BOND_VECTOR_MAX_DEVIATION_RAD:
             continue
         subject = f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}"
         findings.append(
@@ -540,10 +566,10 @@ def _bond_vector_findings(tree: BlockTree) -> list[ValidationIssue]:
                 rule="bond_vector_alignment",
                 subject=subject,
                 detail=(
-                    f"port direction vectors are {angle_deg:.1f}° apart "
-                    f"(expect ≈180°, anti-parallel, within "
-                    f"{BOND_VECTOR_MAX_DEVIATION_DEG:g}° — a bonded port's "
-                    "direction points outward along the bond) — "
+                    f"port direction vectors are {format_quantity(angle_rad, 'angle')} "
+                    "apart (expect ≈180°, anti-parallel, within "
+                    f"{format_quantity(BOND_VECTOR_MAX_DEVIATION_RAD, 'angle')} — a "
+                    "bonded port's direction points outward along the bond) — "
                     f"{c.a_block}.{c.a_port} and {c.b_block}.{c.b_port} "
                     "don't point at each other"
                 ),

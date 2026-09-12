@@ -19,8 +19,8 @@ from precis.workers.job_types import get_job_type, known_job_types
 
 _FLANGE = """
 component flange
-plate     add  cyl:r25h8
-hub_bore  cut  cyl:r8h10    @0,0,-1
+plate     add  cyl:r25mmh8mm
+hub_bore  cut  cyl:r8mmh10mm    @0mm,0mm,-1mm
 """
 
 
@@ -39,7 +39,7 @@ def test_registered_with_dispatch():
 
 def test_build_prompt_carries_design_and_instruction():
     prompt = cp.build_prompt("flange", _FLANGE, "widen the plate to r30")
-    assert "flange" in prompt and "cyl:r25h8" in prompt
+    assert "flange" in prompt and "cyl:r25mmh8mm" in prompt
     assert "widen the plate" in prompt
     assert '"source"' in prompt  # the output contract
 
@@ -47,9 +47,9 @@ def test_build_prompt_carries_design_and_instruction():
 @pytest.mark.parametrize(
     "text",
     [
-        '{"source": "plate add cyl:r30h8", "rationale": "wider"}',
-        '```json\n{"source": "plate add cyl:r30h8", "rationale": "x"}\n```',
-        'Sure!\n{"source": "plate add cyl:r30h8", "rationale": "y"}',
+        '{"source": "plate add cyl:r30mmh8mm", "rationale": "wider"}',
+        '```json\n{"source": "plate add cyl:r30mmh8mm", "rationale": "x"}\n```',
+        'Sure!\n{"source": "plate add cyl:r30mmh8mm", "rationale": "y"}',
     ],
 )
 def test_parse_proposal_tolerant(text):
@@ -66,9 +66,9 @@ def test_parse_proposal_rejects_empty():
 
 
 def test_dry_run_valid_and_invalid():
-    err, warnings = cp.dry_run("plate add cyl:r30h8")
+    err, warnings = cp.dry_run("plate add cyl:r30mmh8mm")
     assert err is None and warnings == []
-    frobnicate_err, _ = cp.dry_run("plate frobnicate cyl:r1h1")
+    frobnicate_err, _ = cp.dry_run("plate frobnicate cyl:r1mmh1mm")
     assert frobnicate_err is not None
     assert "source error" in frobnicate_err
     comment_err, _ = cp.dry_run("# just a comment\n")
@@ -82,24 +82,24 @@ def test_dry_run_valid_and_invalid():
 #: separate bodies land as three separate contact groups.
 _BROKEN_WHEEL = """
 component hub
-body    add  cyl:r12h10
+body    add  cyl:r12mmh10mm
 component rim
-outer   add  cyl:r40h10
-inner   cut  cyl:r34h12    @0,0,-1
+outer   add  cyl:r40mmh10mm
+inner   cut  cyl:r34mmh12mm    @0mm,0mm,-1mm
 component spokes
-bar     add  box:w8d8h10   @26,0,0
+bar     add  box:w8mmd8mmh10mm   @26mm,0mm,0mm
 """
 
 #: Same wheel, spokes widened to actually bridge hub (r12) to rim's inner
 #: wall (r34) — the corrected design should read as one connected solid.
 _FIXED_WHEEL = """
 component hub
-body    add  cyl:r12h10
+body    add  cyl:r12mmh10mm
 component rim
-outer   add  cyl:r40h10
-inner   cut  cyl:r34h12    @0,0,-1
+outer   add  cyl:r40mmh10mm
+inner   cut  cyl:r34mmh12mm    @0mm,0mm,-1mm
 component spokes
-bar     add  box:w26d8h10  @23,0,0
+bar     add  box:w26mmd8mmh10mm  @23mm,0mm,0mm
 """
 
 
@@ -119,7 +119,10 @@ def test_dry_run_corrected_spokes_are_valid():
 
 def test_dry_run_flags_empty_component():
     # the cut cylinder (r20h20) fully engulfs the r10h10 base — nothing left.
-    source = "component plate\nbody   add cyl:r10h10\ncutter cut cyl:r20h20 @0,0,-5"
+    source = (
+        "component plate\nbody   add cyl:r10mmh10mm\n"
+        "cutter cut cyl:r20mmh20mm @0mm,0mm,-5mm"
+    )
     err, _warnings = cp.dry_run(source)
     assert err is not None
     assert "plate" in err
@@ -130,8 +133,8 @@ def test_dry_run_interference_is_a_warning_not_invalid():
     # sleeve sits fully inside shaft — deep interference, but that can be an
     # intentional press fit, so it must not invalidate the proposal.
     source = (
-        "component shaft\nshaft_body add cyl:r10h20\n"
-        "component sleeve\nsleeve_body add cyl:r9h20"
+        "component shaft\nshaft_body add cyl:r10mmh20mm\n"
+        "component sleeve\nsleeve_body add cyl:r9mmh20mm"
     )
     err, warnings = cp.dry_run(source)
     assert err is None
@@ -141,7 +144,7 @@ def test_dry_run_interference_is_a_warning_not_invalid():
 
 def test_dry_run_single_component_skips_disconnection_check():
     # one part only — nothing to be disconnected FROM, but volume still lints.
-    err, warnings = cp.dry_run("solo add cyl:r10h10")
+    err, warnings = cp.dry_run("solo add cyl:r10mmh10mm")
     assert err is None and warnings == []
 
 
@@ -149,9 +152,9 @@ def test_dry_run_lone_floater_reads_as_does_not_touch():
     # exactly two contact groups with one lone part — the message reads
     # "X does not touch {the rest}", not the generic N-bodies split.
     source = (
-        "component base\nslab add box:w40d40h5\n"
-        "component post\npin  add cyl:r3h10 @10,10,4\n"  # overlaps the slab
-        "component floater\ncube add box:w5d5h5 @100,100,0\n"
+        "component base\nslab add box:w40mmd40mmh5mm\n"
+        "component post\npin  add cyl:r3mmh10mm @10mm,10mm,4mm\n"  # overlaps the slab
+        "component floater\ncube add box:w5mmd5mmh5mm @100mm,100mm,0mm\n"
     )
     err, _warnings = cp.dry_run(source)
     assert err is not None
@@ -167,7 +170,7 @@ def test_dry_run_skips_component_whose_volume_cannot_be_computed(monkeypatch):
         raise ValueError("unbounded expression")
 
     monkeypatch.setattr(cp, "cad_volume", _boom)
-    err, warnings = cp.dry_run("solo add cyl:r10h10")
+    err, warnings = cp.dry_run("solo add cyl:r10mmh10mm")
     assert err is None and warnings == []
 
 
@@ -176,7 +179,7 @@ def test_dry_run_reports_kernel_build_error(monkeypatch):
         raise RuntimeError("kernel exploded")
 
     monkeypatch.setattr(cp, "build_design", _boom)
-    err, _warnings = cp.dry_run("solo add cyl:r10h10")
+    err, _warnings = cp.dry_run("solo add cyl:r10mmh10mm")
     assert err is not None
     assert "build error" in err and "kernel exploded" in err
 
@@ -234,7 +237,10 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
     store, ref = seeded
     reply = json.dumps(
         {
-            "source": "component flange\nplate add cyl:r30h8\nhub_bore cut cyl:r8h10 @0,0,-1",
+            "source": (
+                "component flange\nplate add cyl:r30mmh8mm\n"
+                "hub_bore cut cyl:r8mmh10mm @0mm,0mm,-1mm"
+            ),
             "rationale": "widen the plate to r30",
         }
     )
@@ -251,13 +257,13 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
     assert result is not None
     assert result["valid"] is True
     assert result["warnings"] == []
-    assert "cyl:r30h8" in result["source"]
+    assert "cyl:r30mmh8mm" in result["source"]
     assert ctx.meta_set["proposal_valid"] is True
 
 
 def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
     store, ref = seeded
-    reply = json.dumps({"source": "plate frobnicate cyl:r1h1", "rationale": "oops"})
+    reply = json.dumps({"source": "plate frobnicate cyl:r1mmh1mm", "rationale": "oops"})
     monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _agent(reply))
     ctx = _FakeCtx(store, ref.id, {"cad_ref_id": ref.id, "instruction": "break it"})
     cp._dispatch(ctx, cp.SPEC)

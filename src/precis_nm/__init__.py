@@ -11,14 +11,23 @@ pixels"), sibling to ``cad`` (ADR 0041) / ``pcb`` (0042) / ``structure``
 **hierarchical building blocks with spatial envelopes** — an LLM-guided
 design surface for molecular machines (rotaxanes, molecular motors,
 length-changing structures): describe the machine as nested blocks first
-("disc, 2 Å high, 10 Å diameter; fork; axle joins them"), *then* fill each
+("disc, 2 nm high, 1 nm diameter; fork; axle joins them"), *then* fill each
 envelope with real chemistry (lit-searched fragments attached at named
 ports, ``structure`` designs), then validate, then read property/mechanism
-views. Units are Ångström, float64, everywhere — no fixed-point (see
-``docs/backlog/nm-kind.md`` "Decisions": rotations produce irrational
-coordinates regardless, and the one thing fixed point buys — stable
-equality for caching — is solved at the hash boundary only, never in the
-representation).
+views. Block-tree state (poses, envelope DSL — L0/L1) is SI metres,
+float64, no fixed-point (units-policy-cutover.md; a fresh envelope must
+carry an explicit unit at the ``add_block`` boundary,
+:func:`precis_nm.ops._ingest_envelope` — see that function's docstring —
+and converts once, inline); ``structure``'s atomistic layer (L5) stays
+Å-native (the unit enclave, ``docs/backlog/structure-unit-enclave.md``),
+and this package's own :mod:`precis_nm.mechanics`/generators convert m↔Å
+explicitly at the design↔atomistic seams (``envelope_fit``, the bind
+preflight, ``generate``'s envelope conversion, ``tube_geometry_from_
+envelope``) — never inside the DSL parser itself, which stays unit-
+agnostic float64 (see ``docs/backlog/nm-kind.md`` "Decisions": rotations
+produce irrational coordinates regardless, and the one thing fixed point
+buys — stable equality for caching — is solved at the hash boundary only,
+never in the representation).
 
 **The IR — six levels, molecular content** (same invariant as ``pcb``:
 dropping everything above level *k* leaves a valid level-*k* object; a move
@@ -27,7 +36,8 @@ at level *k* dirties only levels above):
 - **L0 — block hypergraph.** Blocks + ports + intent connections. No
   geometry.
 - **L1 — envelopes.** Per-block analytic envelope (the ``cad`` mini-DSL,
-  Å) + rough pose; clearance/enclosure via ``cad/relate.py::component_sdf``.
+  metres) + rough pose; clearance/enclosure via
+  ``cad/relate.py::component_sdf``.
 - **L2 — topology & stereochemistry, stored explicitly.** Mechanical
   interlocking (a macrocycle threaded on an axle), declared DOF, chirality
   — never re-derived from L3 coordinates.
@@ -54,7 +64,8 @@ module's docstring), and three migrations (``0001_nm_kind.sql`` — blocks/
 ports/topology tables; ``0002_nm_connects.sql``; ``0003_nm_bindings.sql``
 — ``bound_design``/``bound_atom`` columns). Envelope clearance
 (``get(view='clearance')``) reuses the ``cad`` kernel's exact-sign SDF
-(``cad/relate.py::component_sdf``/``clearance``) directly, at Å.
+(``cad/relate.py::component_sdf``/``clearance``) directly, at the block
+tree's own metres scale.
 
 Slice 4a adds :mod:`precis_nm.generators` — parametric block factories
 (the IC-design PCell: ``params → block``, the *deterministic* fill path;

@@ -102,10 +102,11 @@ def test_arc_finds_six_bolt_voids() -> None:
 def test_arc_bolt_void_angular_span() -> None:
     res = probe_arc(_flange(), vec3(0, 0, 4), vec3(0, 0, 1), radius=18.0)
     voids = [s for s in res.segments if s.state == "void"]
-    # Ø5 hole at r=18 → angular span ≈ 2*asin(2.5/18) ≈ 15.95°
-    expected = math.degrees(2 * math.asin(2.5 / 18))
+    # Ø5 hole at r=18 → angular span ≈ 2*asin(2.5/18) ≈ 15.95° (radians
+    # internal per the angle ruling — ArcSegment.span is now radians).
+    expected = 2 * math.asin(2.5 / 18)
     for v in voids:
-        assert math.isclose(v.span, expected, abs_tol=1.0)
+        assert math.isclose(v.span, expected, abs_tol=math.radians(1.0))
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,17 @@
 """L4 mechanics ceilings — slice 4a build order (iii)
+(docs/backlog/units-policy-cutover.md all-SI ruling: this module's PUBLIC
+API returns SI (newtons, joules) — the `_nN`/`_eV` return-value suffixes
+are dropped from the function names below (``euler_buckling_ceiling_N``,
+``harmonic_strain_energy_J``, ``min_cut``'s second tuple element). Å-named
+INPUT params (``radius_A``/``length_A``) keep their self-naming — the
+enclave rule (``docs/backlog/structure-unit-enclave.md``): this module
+stays atomistic-scale (Å/N/J) throughout, matching ``structure``'s own
+convention; a caller passing in a *design-space* metres envelope string
+converts at the seam (``tube_geometry_from_envelope``, below), never here.
+Literature constants (``RUPTURE_FORCE_N``, ``K_THETA_J_PER_RAD2``) convert
+once, at their own definition, from the unit the literature actually
+states them in (nN / eV) to SI — the value never round-trips through a
+unit string.)
 (docs/backlog/nm-kind.md "Generators — parametric block factories",
 "Mechanics ceilings" section): closed-form, defect-free continuum estimates
 over a design's bound ``structure`` scenes. **Every number here is
@@ -33,7 +46,7 @@ section:
    is computed with a plain pure-Python Edmonds-Karp BFS-augmenting-path
    solver — no new dependency, and cyclodextrin/CNT-scale molecule graphs
    (a few hundred atoms) are trivially small for it.
-2. **Euler buckling** (:func:`euler_buckling_ceiling_nN`) — a generated
+2. **Euler buckling** (:func:`euler_buckling_ceiling_N`) — a generated
    tube treated as a thin-walled hollow beam: ``P_cr = π²EI/L²``,
    ``E`` = :data:`E_MODULUS_PA` (1 TPa, the standard sp² in-plane modulus
    order of magnitude), ``I = π·r³·t`` (a thin cylindrical shell's second
@@ -55,9 +68,9 @@ section:
    envelope is NOT treated as a tube (a cone's wall isn't a constant-radius
    cylinder — buckling of a tapered shell is a different, harder formula,
    out of scope this round).
-3. **Harmonic strain energy** (:func:`harmonic_strain_energy_eV`) — a
+3. **Harmonic strain energy** (:func:`harmonic_strain_energy_J`) — a
    generic, single, order-of-magnitude force constant
-   (:data:`K_THETA_EV_PER_RAD2`, documented as such — real force constants
+   (:data:`K_THETA_J_PER_RAD2`, documented as such — real force constants
    vary by hybridization/element and would need a DFT/force-field rung,
    the later "charge/optical panel" phase's territory) applied over every
    declared-bond angle triple in a bound scene, using the SAME
@@ -82,9 +95,9 @@ from precis_nm.generators.sp2 import VDW_MARGIN_A
 
 #: Single-bond C-C rupture force under axial pulling, AFM single-molecule
 #: force-spectroscopy range ~4-6 nN (nm-kind.md's "Mechanics ceilings"
-#: section cites this range) — the midpoint is used as the per-bond
-#: capacity in :func:`min_cut`'s tensile-ceiling conversion.
-RUPTURE_FORCE_NN = 5.0
+#: section cites this range) — the midpoint (5 nN) converted to SI (N) at
+#: definition, once, per the all-SI ruling.
+RUPTURE_FORCE_N = 5.0e-9
 
 #: In-plane sp² Young's modulus order of magnitude (Pa) — the standard
 #: ~1 TPa figure for graphene/CNT walls (nm-kind.md's "Mechanics ceilings").
@@ -96,11 +109,17 @@ E_MODULUS_PA = 1.0e12
 #: at all — ``I`` would vanish).
 TUBE_WALL_THICKNESS_A = 3.4
 
-#: A single, generic, order-of-magnitude harmonic angle force constant
-#: (eV/rad²) — module docstring's point 3. NOT element/hybridization-
-#: specific; a later rung (DFT/force-field) would replace this with real
-#: per-element k_θ values.
-K_THETA_EV_PER_RAD2 = 0.5
+#: Elementary charge (C), CODATA 2019 exact SI-redefinition value — the
+#: eV→J conversion factor (1 eV = e × 1 V), used once below to convert the
+#: literature's eV-stated force constant to SI (J) at definition.
+_EV_TO_J = 1.602176634e-19
+
+#: A single, generic, order-of-magnitude harmonic angle force constant —
+#: module docstring's point 3, stated in the literature as 0.5 eV/rad²,
+#: converted to SI (J/rad²) once, here. NOT element/hybridization-specific;
+#: a later rung (DFT/force-field) would replace this with real per-element
+#: k_θ values.
+K_THETA_J_PER_RAD2 = 0.5 * _EV_TO_J
 
 #: Rendered once per ``view='mechanics'`` response
 #: (:meth:`precis_nm.handler.NmHandler._render_mechanics`) — the module
@@ -122,8 +141,8 @@ def min_cut(scene: Scene, source: str, sink: str) -> tuple[int, float]:
     between atoms ``source`` and ``sink`` over EVERY bond in ``scene``
     (declared + auto-detected alike — a real physical bond either way, for
     the purposes of "how many must break to separate these two points").
-    Returns ``(min_cut_bond_count, tensile_ceiling_nN)`` —
-    ``min_cut_bond_count * RUPTURE_FORCE_NN``. ``0`` (not an error) when
+    Returns ``(min_cut_bond_count, tensile_ceiling_N)`` —
+    ``min_cut_bond_count * RUPTURE_FORCE_N``. ``0`` (not an error) when
     ``source``/``sink`` sit in different connected components (or either
     is missing from ``scene``) — a genuinely disconnected structure has
     zero tensile ceiling between those two points, the honest answer, not
@@ -170,21 +189,23 @@ def min_cut(scene: Scene, source: str, sink: str) -> tuple[int, float]:
             capacity[edge] -= bottleneck
             capacity[rev] = capacity.get(rev, 0) + bottleneck
         max_flow += bottleneck
-    return max_flow, max_flow * RUPTURE_FORCE_NN
+    return max_flow, max_flow * RUPTURE_FORCE_N
 
 
 # ── 2. Euler buckling ────────────────────────────────────────────────────
 
 
-def euler_buckling_ceiling_nN(radius_A: float, length_A: float) -> float:
+def euler_buckling_ceiling_N(radius_A: float, length_A: float) -> float:
     """``P_cr = π²EI/L²`` for a thin-walled cylindrical tube of ``radius_A``
-    Å and ``length_A`` Å (module docstring's point 2), reported in nN."""
+    Å and ``length_A`` Å (module docstring's point 2), reported in N (the
+    all-SI ruling — this used to be ``euler_buckling_ceiling_nN``,
+    returning nN; the ``_nN`` suffix is gone, the ``_A`` input suffixes
+    stay, per the module docstring)."""
     r_m = radius_A * 1e-10
     length_m = length_A * 1e-10
     t_m = TUBE_WALL_THICKNESS_A * 1e-10
     moment_of_inertia = math.pi * r_m**3 * t_m
-    p_cr_n = (math.pi**2) * E_MODULUS_PA * moment_of_inertia / (length_m**2)
-    return p_cr_n * 1e9  # N -> nN
+    return (math.pi**2) * E_MODULUS_PA * moment_of_inertia / (length_m**2)
 
 
 def tube_geometry_from_envelope(envelope: str | None) -> tuple[float, float] | None:
@@ -195,7 +216,17 @@ def tube_geometry_from_envelope(envelope: str | None) -> tuple[float, float] | N
     candidate this round, and any other shape is simply not a tube), or
     when subtracting the generators' own VDW margin would leave a
     non-positive radius (a hand-authored ``cyl`` envelope smaller than the
-    margin — not a generated tube, don't guess)."""
+    margin — not a generated tube, don't guess).
+
+    **The design↔atomistic seam** (units-policy-cutover.md, structure-
+    unit-enclave.md): ``envelope`` is a block's *design-space* cad-DSL
+    string — canonical/storage-mode, i.e. bare numbers in metres (the
+    block tree's own internal unit since the units cutover) — while this
+    module's own signatures are Å (the enclave rule: mechanics stays
+    atomistic-scale throughout). ``cad_dsl.parse`` is unit-agnostic float64
+    either way, so the ×1e10 conversion has to happen explicitly, once,
+    right here, before the Å-valued ``VDW_MARGIN_A`` subtraction below —
+    never inside the DSL parser itself."""
     if not envelope:
         return None
     try:
@@ -204,8 +235,8 @@ def tube_geometry_from_envelope(envelope: str | None) -> tuple[float, float] | N
         return None
     if spec.alias != "cyl":
         return None
-    radius_A = spec.params["r"] - VDW_MARGIN_A
-    length_A = spec.params["h"]
+    radius_A = spec.params["r"] * 1e10 - VDW_MARGIN_A
+    length_A = spec.params["h"] * 1e10
     if radius_A <= 0 or length_A <= 0:
         return None
     return radius_A, length_A
@@ -214,7 +245,7 @@ def tube_geometry_from_envelope(envelope: str | None) -> tuple[float, float] | N
 # ── 3. harmonic strain energy ────────────────────────────────────────────
 
 
-def harmonic_strain_energy_eV(scene: Scene) -> tuple[float, int]:
+def harmonic_strain_energy_J(scene: Scene) -> tuple[float, int]:
     """Sum of ``½·k_θ·(θ−θ₀)²`` (module docstring's point 3) over every
     declared-bond angle triple in ``scene`` — ``θ₀`` from
     :func:`precis.structure.vsepr.ideal_angle` at each vertex's inferred
@@ -222,10 +253,13 @@ def harmonic_strain_energy_eV(scene: Scene) -> tuple[float, int]:
     ``θ`` measured via :func:`precis.structure.probe.angle`. Vertices with
     no VSEPR-applicable element (metals, or an element outside
     ``vsepr``'s hybridization table) or fewer than 2 declared covalent
-    neighbours contribute nothing. Returns ``(total_energy_eV,
-    triple_count)`` so a caller can render "N angles, X eV" rather than a
-    bare number that reads as zero-because-empty (the maze.py filled-
-    fraction lesson, applied at this metric's own scale)."""
+    neighbours contribute nothing. Returns ``(total_energy_J,
+    triple_count)`` (the all-SI ruling — this used to be
+    ``harmonic_strain_energy_eV``, returning eV; ``K_THETA_J_PER_RAD2`` is
+    already SI, so no per-call conversion is needed here) so a caller can
+    render "N angles, X J" rather than a bare number that reads as
+    zero-because-empty (the maze.py filled-fraction lesson, applied at
+    this metric's own scale)."""
     adj: dict[str, set[str]] = {label: set() for label in scene.atoms}
     for bond in scene.bonds:
         if bond.provenance != "declared":
@@ -234,7 +268,7 @@ def harmonic_strain_energy_eV(scene: Scene) -> tuple[float, int]:
             adj[bond.i].add(bond.j)
             adj[bond.j].add(bond.i)
 
-    total_eV = 0.0
+    total_J = 0.0
     n_triples = 0
     for label, atom in scene.atoms.items():
         hyb = struct_vsepr.infer_hybridization(scene, label)
@@ -250,6 +284,6 @@ def harmonic_strain_energy_eV(scene: Scene) -> tuple[float, int]:
             for j in range(i + 1, len(neighbors)):
                 measured = probe.angle(scene, neighbors[i], label, neighbors[j])
                 dev_rad = math.radians(measured - ideal)
-                total_eV += 0.5 * K_THETA_EV_PER_RAD2 * dev_rad**2
+                total_J += 0.5 * K_THETA_J_PER_RAD2 * dev_rad**2
                 n_triples += 1
-    return total_eV, n_triples
+    return total_J, n_triples

@@ -21,6 +21,7 @@ from precis.cad.primitives import (
     Torus,
 )
 from precis.cad.vec import vec3
+from precis.utils.units import UnitRequiredError
 
 
 @pytest.mark.parametrize(
@@ -144,9 +145,10 @@ def test_build_pyramid_narrows() -> None:
 
 
 def test_build_chamfer_is_local_frame_halfspace() -> None:
-    # size=2, angle=45: n̂ = (sin45, 0, cos45); point = -size·n̂;
-    # constructed HalfSpace negates the normal (material on the +n̂ side).
-    c = build_config("chamfer:2x45")
+    # size=2, angle=45° (canonical-mode params are radians per the angle
+    # ruling): n̂ = (sin45°, 0, cos45°); point = -size·n̂; constructed
+    # HalfSpace negates the normal (material on the +n̂ side).
+    c = build_config(f"chamfer:2x{math.radians(45)}")
     assert isinstance(c, HalfSpace)
     s2 = math.sqrt(2.0) / 2.0
     assert c.point == pytest.approx(vec3(-2 * s2, 0.0, -2 * s2))
@@ -198,3 +200,80 @@ def test_format_spec_nm_scale_not_zero() -> None:
     """Sub-µm dims render in scientific notation — the 6-decimal rounding
     used for ordinary magnitudes would collapse them to '0' (gr332020)."""
     assert format_spec(ShapeSpec("sphere", {"r": 3e-9})) == "sphere:r3e-09"
+
+
+# ---------------------------------------------------------------------------
+# boundary mode (require_units=True) — units-policy-cutover two-mode contract
+# ---------------------------------------------------------------------------
+
+
+def test_boundary_mode_converts_units_to_si_metres() -> None:
+    spec = parse("box:w40mmd20mmh10mm", require_units=True)
+    assert spec.params == pytest.approx({"w": 0.04, "d": 0.02, "h": 0.01})
+
+
+def test_boundary_mode_accepts_the_acceptance_criteria_unit_set() -> None:
+    assert parse("sphere:r1000mm", require_units=True).params["r"] == pytest.approx(1.0)
+    assert parse("sphere:r1cm", require_units=True).params["r"] == pytest.approx(0.01)
+    assert parse("sphere:r1m", require_units=True).params["r"] == pytest.approx(1.0)
+    assert parse("sphere:r1km", require_units=True).params["r"] == pytest.approx(1000.0)
+    assert parse("sphere:r1nm", require_units=True).params["r"] == pytest.approx(1e-9)
+    assert parse("sphere:r1Å", require_units=True).params["r"] == pytest.approx(1e-10)
+    assert parse("sphere:r1in", require_units=True).params["r"] == pytest.approx(0.0254)
+    assert parse("sphere:r1ft", require_units=True).params["r"] == pytest.approx(0.3048)
+
+
+def test_boundary_mode_rejects_bare_number_with_hint() -> None:
+    with pytest.raises(UnitRequiredError) as exc_info:
+        parse("box:w40d20h10", require_units=True)
+    err = exc_info.value
+    assert err.value == 40.0
+    assert "state units" in err.hint
+
+
+def test_boundary_mode_count_key_forbids_a_unit() -> None:
+    with pytest.raises(DslError, match="dimensionless count"):
+        parse("ngon:n6mmr5mmh10mm", require_units=True)
+
+
+def test_boundary_mode_count_key_stays_bare() -> None:
+    spec = parse("ngon:n6r5mmh10mm", require_units=True)
+    assert spec.params["n"] == 6
+
+
+def test_boundary_mode_chamfer_requires_units_on_both_size_and_angle() -> None:
+    spec = parse("chamfer:1mmx45deg", require_units=True)
+    assert spec.params == pytest.approx({"size": 1e-3, "angle": math.radians(45.0)})
+
+
+def test_boundary_mode_chamfer_accepts_radians_on_angle() -> None:
+    spec = parse(f"chamfer:1mmx{math.pi / 4}rad", require_units=True)
+    assert spec.params == pytest.approx({"size": 1e-3, "angle": math.pi / 4})
+
+
+def test_boundary_mode_chamfer_bare_size_rejected_with_hint() -> None:
+    with pytest.raises(UnitRequiredError) as exc_info:
+        parse("chamfer:1x45", require_units=True)
+    assert exc_info.value.value == 1.0
+
+
+def test_boundary_mode_chamfer_bare_angle_rejected_with_hint() -> None:
+    # Size carries a unit, angle doesn't — angle is checked second, so this
+    # is the angle-specific rejection (not the size one above).
+    with pytest.raises(UnitRequiredError) as exc_info:
+        parse("chamfer:1mmx45", require_units=True)
+    assert exc_info.value.value == 45.0
+    assert exc_info.value.dimension == "angle"
+
+
+def test_boundary_mode_build_config_threads_the_flag() -> None:
+    c = build_config("cyl:r3mmh12mm", require_units=True)
+    assert isinstance(c, CircularFrustum)
+    assert (c.rb, c.rt, c.h) == pytest.approx((0.003, 0.003, 0.012))
+
+
+def test_canonical_mode_is_the_default_and_unaffected() -> None:
+    """Storage reload (se/nm envelope columns, cad's own already-stored
+    text) never requires units — this is the permissive-forever mode."""
+    assert parse("box:w40d20h10").params == {"w": 40, "d": 20, "h": 10}
+    assert build_config("cyl:r3h12").__class__ is CircularFrustum

@@ -171,7 +171,7 @@ def _anchor_and_rod(gap: float) -> Design:
         d.prim(
             "rod",
             build_config("cyl:r3.5h16.5"),
-            pose(vec3(2.0 + gap, 0, 0), vec3(0, 90, 0)),
+            pose(vec3(2.0 + gap, 0, 0), vec3(0, math.radians(90), 0)),
         ),
     )
     return d
@@ -225,19 +225,21 @@ def test_clearance_separated_gaps_stay_exact() -> None:
         assert math.isclose(res.gap, t, abs_tol=1e-4)
 
 
-@pytest.mark.parametrize("factor", [1e3, 1.0, 1e-2])
+@pytest.mark.parametrize("factor", [1e3, 1.0, 1e-2, 1e-9])
 def test_clearance_is_scale_equivariant(factor: float) -> None:
     # The same geometry redrawn at another size must report the same gap,
     # scaled — the minimiser's tolerances are fractions of a governing
     # length, never absolute (docs/backlog/multiscale-design-architecture.md
     # §Units policy). The reported resolution scales with it.
     #
-    # The floor on ``factor`` is NOT this module's: the *primitives'*
-    # inside test compares an unnormalized edge-normal dot product (units
-    # of length²) against ``LINEAR_EPS`` (a length), so below ~1e-3 a
-    # frustum reports points just outside its cap as inside. That is the
-    # known absolute-epsilon hazard ``precis_se.validate.kernel_scale``
-    # exists to normalize around; it is not what gr334763 was about.
+    # ``factor=1e-9`` (nanometre-scale) used to be out of reach here: the
+    # *primitives'* inside test compared an unnormalized edge-normal dot
+    # product (units of length²) against the old absolute ``LINEAR_EPS``
+    # (a length), so below ~1e-3 a frustum reported points just outside
+    # its cap as inside. units-policy-cutover's relative-tolerance audit
+    # (gr335192/gr334785) made that comparison scale-relative
+    # (``LINEAR_REL_EPS``), so the same equivariance now holds all the way
+    # down to nm.
     d = Design()
     d.add_component("anchor", d.prim("anchor", build_config(f"sphere:r{2 * factor}")))
     d.add_component(
@@ -245,7 +247,7 @@ def test_clearance_is_scale_equivariant(factor: float) -> None:
         d.prim(
             "rod",
             build_config(f"cyl:r{3.5 * factor}h{16.5 * factor}"),
-            pose(vec3((2.0 - 0.23) * factor, 0, 0), vec3(0, 90, 0)),
+            pose(vec3((2.0 - 0.23) * factor, 0, 0), vec3(0, math.radians(90), 0)),
         ),
     )
     res = clearance(d, "anchor", "rod")

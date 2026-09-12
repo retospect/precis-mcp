@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from precis.cad.interval import Intervals, merge_intervals
 from precis.cad.primitives import Placed
-from precis.cad.vec import LINEAR_EPS, Vec3, as_vec3
+from precis.cad.vec import LINEAR_REL_EPS, Vec3, as_vec3
 
 
 @dataclass(frozen=True)
@@ -173,13 +173,17 @@ def ray_spans(
     d: Vec3,
     instances: dict[str, Instance],
     *,
-    eps: float = LINEAR_EPS,
+    eps: float | None = None,
 ) -> list[Span]:
     """Classify a ray into material / carved-void spans, best-effort labelled.
 
     Plain air (additive-false) outside the solid is **not** emitted — only
     material runs and the voids carved out of material, each attributed to
-    the providing / removing instance.
+    the providing / removing instance. ``eps`` (a ray-parameter tolerance
+    for "is this run thin enough to be numerical noise") defaults to a
+    fraction (:data:`~precis.cad.vec.LINEAR_REL_EPS`) of each pair's own
+    ``t`` magnitude, self-relative since the ray parameter's scale is
+    whatever the caller's geometry put it in.
     """
     bounds = sorted(set(_instance_endpoints(expr, o, d, instances)))
     if len(bounds) < 2:
@@ -187,7 +191,8 @@ def ray_spans(
     raw: list[Span] = []
     for i in range(len(bounds) - 1):
         ta, tb = bounds[i], bounds[i + 1]
-        if tb - ta <= eps:
+        tol = eps if eps is not None else LINEAR_REL_EPS * max(abs(ta), abs(tb))
+        if tb - ta <= tol:
             continue
         tm = 0.5 * (ta + tb)
         c = classify(expr, as_vec3(o) + tm * as_vec3(d), instances)
@@ -217,7 +222,8 @@ def _coalesce(spans: list[Span]) -> list[Span]:
         if (
             out
             and out[-1].state == s.state
-            and abs(out[-1].t_out - s.t_in) <= LINEAR_EPS
+            and abs(out[-1].t_out - s.t_in)
+            <= LINEAR_REL_EPS * max(abs(out[-1].t_out), abs(s.t_in))
             and (s.state == "solid" or out[-1].feature == s.feature)
         ):
             prev = out[-1]

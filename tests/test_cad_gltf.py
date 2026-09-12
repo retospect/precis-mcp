@@ -12,10 +12,10 @@ from precis.cad.scene import parse_source
 
 _ASM = """
 component shaft
-rod   add  cyl:r5h40   @0,0,-20
+rod   add  cyl:r5mmh40mm   @0mm,0mm,-20mm
 component hub
-plate add  cyl:r20h10
-bore  cut  cyl:r5.1h12 @0,0,-1
+plate add  cyl:r20mmh10mm
+bore  cut  cyl:r5.1mmh12mm @0mm,0mm,-1mm
 """
 
 
@@ -65,7 +65,8 @@ def test_features_glb_draws_chamfer_as_clamped_box() -> None:
     # `_features_glb` used to skip it silently. It must now render as the
     # box the export/mesh backends substitute (see tessellate.node_meshes).
     spec = parse_source(
-        "component part\nbody  add box:w40d20h10\nbevel cut chamfer:2x45 @20,0,10\n"
+        "component part\nbody  add box:w40mmd20mmh10mm\n"
+        "bevel cut chamfer:2mmx45deg @20mm,0mm,10mm\n"
     )
     gltf = _parse_glb(to_glb(spec, mode="features"))
     names = [n["name"] for n in gltf["nodes"]]

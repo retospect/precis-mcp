@@ -28,8 +28,9 @@ docs/backlog/nm-kind.md "Slice 3 design"):
   (``view='block'``, ``args={'name': ...}``), every block's ports
   (``view='ports'``), L0-L2 feasibility findings (``view='validate'``),
   the signed envelope gap between two blocks (``view='clearance'``,
-  ``args={'a': ..., 'b': ...}``, the cad kernel at Å — see
-  ``docs/backlog/nm-kind.md`` "Slice 3 design"), or every threading pair +
+  ``args={'a': ..., 'b': ...}``, the cad kernel at the block tree's own
+  metres scale — see ``docs/backlog/nm-kind.md`` "Slice 3 design"), or
+  every threading pair +
   declared dof in one table (``view='topology'``).
 - ``delete`` — soft-retire a whole design (the ref + every live block/port/
   connect/threading row).
@@ -75,6 +76,7 @@ from precis.structure import Scene as StructScene
 from precis.structure.cell import Cell as StructCell
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis.utils.units import format_quantity
 from precis_nm import mechanics as nm_mechanics
 from precis_nm import persist
 from precis_nm import validate as nm_validate
@@ -138,8 +140,9 @@ class NmHandler(Handler):
             "args={'a':...,'b':...}, literature takes optional "
             "args={'block':...} (whole-design query if omitted); delete "
             "soft-retires; search finds by "
-            "intent. Envelopes reuse the cad mini-DSL (e.g. 'cyl:r5h2') at "
-            "Angstrom scale — view='clearance' runs the cad kernel's "
+            "intent. Envelopes reuse the cad mini-DSL, unit-required (e.g. "
+            "'cyl:r5Åh2Å' or 'cyl:r0.5nmh0.2nm'), canonicalised to metres "
+            "internally — view='clearance' runs the cad kernel's "
             "signed-distance gap between two blocks' envelopes. A bond "
             "connect needs both ports to share a role (default "
             "'covalent'). bind_structure maps ports to atoms in a real "
@@ -562,7 +565,12 @@ class NmHandler(Handler):
         add_op: dict[str, Any] = {
             "op": "add_block",
             "name": block_name,
-            "envelope": block.envelope,
+            # generators emit Å-valued envelopes (atomistic-scale math, the
+            # enclave's own convention, untouched) — the design↔atomistic
+            # seam converts to the block tree's canonical unit (metres)
+            # exactly once, right here (units-policy-cutover.md,
+            # structure-unit-enclave.md; see _envelope_A_to_m below).
+            "envelope": _envelope_A_to_m(block.envelope),
             "desc": block.provenance,
         }
         for passthrough in ("parent", "pose", "rot"):
@@ -791,8 +799,8 @@ class NmHandler(Handler):
                 block_rows.append(
                     {
                         "block": name,
-                        "buckling_ceiling_nN": "unfilled",
-                        "strain_energy_eV": "unfilled",
+                        "buckling_ceiling_N": "unfilled",
+                        "strain_energy_J": "unfilled",
                         "note": "no bound structure"
                         if not bd
                         else "bound design missing",
@@ -802,23 +810,23 @@ class NmHandler(Handler):
             env = effective_envelope(tree, node)
             geom = nm_mechanics.tube_geometry_from_envelope(env)
             buckling = (
-                f"{nm_mechanics.euler_buckling_ceiling_nN(*geom):.4g}"
+                f"{nm_mechanics.euler_buckling_ceiling_N(*geom):.4g}"
                 if geom
                 else "n/a (not a tube envelope)"
             )
-            strain_eV, n_tri = nm_mechanics.harmonic_strain_energy_eV(block_scene)
+            strain_J, n_tri = nm_mechanics.harmonic_strain_energy_J(block_scene)
             block_rows.append(
                 {
                     "block": name,
-                    "buckling_ceiling_nN": buckling,
-                    "strain_energy_eV": f"{strain_eV:.4g} ({n_tri} angle(s))",
+                    "buckling_ceiling_N": buckling,
+                    "strain_energy_J": f"{strain_J:.4g} ({n_tri} angle(s))",
                     "note": "",
                 }
             )
         lines.append(
             render_agent_table(
                 block_rows,
-                schema=["block", "buckling_ceiling_nN", "strain_energy_eV", "note"],
+                schema=["block", "buckling_ceiling_N", "strain_energy_J", "note"],
             )
         )
 
@@ -845,7 +853,7 @@ class NmHandler(Handler):
                     {
                         **row_base,
                         "min_cut_bonds": "unfilled",
-                        "tensile_ceiling_nN": "unfilled",
+                        "tensile_ceiling_N": "unfilled",
                         "note": "one or both ports unbound",
                     }
                 )
@@ -863,7 +871,7 @@ class NmHandler(Handler):
                     {
                         **row_base,
                         "min_cut_bonds": "not fused",
-                        "tensile_ceiling_nN": "not fused",
+                        "tensile_ceiling_N": "not fused",
                         "note": (
                             "ports bound to different structure designs — "
                             "never fused into one bond graph, not measured "
@@ -878,7 +886,7 @@ class NmHandler(Handler):
                     {
                         **row_base,
                         "min_cut_bonds": "unfilled",
-                        "tensile_ceiling_nN": "unfilled",
+                        "tensile_ceiling_N": "unfilled",
                         "note": f"bound design {a_port.bound_design!r} no longer resolves",
                     }
                 )
@@ -891,7 +899,7 @@ class NmHandler(Handler):
                 {
                     **row_base,
                     "min_cut_bonds": cut,
-                    "tensile_ceiling_nN": f"{ceiling:.4g}",
+                    "tensile_ceiling_N": f"{ceiling:.4g}",
                     "note": note,
                 }
             )
@@ -899,7 +907,7 @@ class NmHandler(Handler):
             lines.append(
                 render_agent_table(
                     connect_rows,
-                    schema=["a", "b", "min_cut_bonds", "tensile_ceiling_nN", "note"],
+                    schema=["a", "b", "min_cut_bonds", "tensile_ceiling_N", "note"],
                 )
             )
         else:
@@ -1046,7 +1054,7 @@ class NmHandler(Handler):
                 "put(kind='nm') requires id= (the design slug)",
                 next="put(kind='nm', id='rotaxane1', "
                 'text=\'{"ops":[{"op":"add_block","name":"axle",'
-                '"envelope":"cyl:r2h20"}]}\')',
+                '"envelope":"cyl:r2Åh20Å"}]}\')',
             )
         slug = str(id).strip()
         payload = _payload(text, args)
@@ -1379,6 +1387,30 @@ def _fill_fraction_line(tree: BlockTree) -> str:
     return line
 
 
+#: Dimensionless/angular cad-DSL keys that never carry a length unit —
+#: the count `n` and chamfer's degree-valued `angle` — shared with
+#: :func:`~precis.cad.dsl.format_spec`'s own alias-aware handling of the
+#: same two keys.
+_ANGLE_OR_COUNT_KEYS = frozenset({"n", "angle"})
+
+
+def _envelope_A_to_m(config: str) -> str:
+    """Convert a generator-emitted envelope string — Å-valued (the
+    generators' own atomistic-scale math, :mod:`precis_nm.generators`'s
+    module docstrings; the enclave rule leaves that math untouched) — to
+    a unit-suffixed metres string that re-enters ``add_block`` through the
+    SAME ingest boundary a hand-authored envelope does
+    (:func:`precis_nm.ops._ingest_envelope`) — one boundary, never two.
+    Every length key scales by ``1e-10``; the dimensionless ``n`` and
+    chamfer's degree-valued ``angle`` never do."""
+    spec = cad_dsl.parse(config)
+    converted = {
+        key: (value if key in _ANGLE_OR_COUNT_KEYS else value * 1e-10)
+        for key, value in spec.params.items()
+    }
+    return cad_dsl.format_spec(cad_dsl.ShapeSpec(spec.alias, converted), units=True)
+
+
 def _generated_cell(coords: np.ndarray) -> StructCell:
     """A non-periodic (``pbc=(F,F,F)``) cube cell sized to comfortably
     contain a generator's realized atoms — ``structure``'s molecule mode
@@ -1429,6 +1461,13 @@ def _fmt3(v: list[float]) -> str:
     return ", ".join(f"{x:g}" for x in v)
 
 
+def _fmt_rot3(v: list[float]) -> str:
+    """A 3-vector of SI-radian angles, rendered in degrees per axis — the
+    angle sibling of :func:`_fmt3` (never a bare-radian tuple, which would
+    misread as degrees, the units-policy-cutover angle ruling)."""
+    return ", ".join(format_quantity(float(x), "angle") for x in v)
+
+
 #: The ``[rot]``/``[trans]`` tree/block-line dof marker per declared kind —
 #: any other (future) kind falls back to itself, so a marker never disappears.
 _DOF_ABBR = {"rotational": "rot", "translational": "trans"}
@@ -1455,7 +1494,7 @@ def _block_line(tree: BlockTree, node: NmBlock) -> str:
         parts.append(f"env={env}{marker}")
     parts.append(f"pose=[{_fmt3(node.pose)}]")
     if any(node.rot):
-        parts.append(f"rot=[{_fmt3(node.rot)}]")
+        parts.append(f"rot=[{_fmt_rot3(node.rot)}]")
     dof = effective_dof(tree, node)
     if dof:
         marker = f" (from {node.template})" if node.template else ""
@@ -1536,8 +1575,8 @@ def _render_block(tree: BlockTree, node: NmBlock) -> str:
     if node.template:
         lines.append(f"instance of: {node.template}")
     lines.append(f"parent: {node.parent or '(root)'}")
-    lines.append(f"pose: [{_fmt3(node.pose)}] Å")
-    lines.append(f"rot: [{_fmt3(node.rot)}] deg")
+    lines.append(f"pose: [{_fmt3(node.pose)}] m")
+    lines.append(f"rot: [{_fmt_rot3(node.rot)}]")
     if node.template:
         # desc/use stay raw (an instance genuinely has none — those keys
         # are rejected at instance_block time); envelope/dof resolve via
@@ -1695,7 +1734,8 @@ def _clearance_verdict(gap: float, resolution: float) -> str:
 def _render_clearance(tree: BlockTree, args: dict[str, Any] | None) -> str:
     """``view='clearance'`` — the signed minimum envelope gap between two
     blocks (:func:`precis.cad.relate.clearance`, the exact-sign CSG SDF at
-    Å — see ``docs/backlog/nm-kind.md`` "Slice 3 design" and
+    the block tree's own metres scale — see ``docs/backlog/nm-kind.md``
+    "Slice 3 design" and
     ``precis.cad.relate``'s module docstring on the shaft-in-bored-hub
     false-collision trap this construction avoids). Builds a fresh
     ``cad`` :class:`~precis.cad.graph.Design` in memory with each block's
@@ -1753,9 +1793,11 @@ def _render_clearance(tree: BlockTree, args: dict[str, Any] | None) -> str:
     verdict = _clearance_verdict(result.gap, result.resolution)
 
     lines = [f"# clearance: {a_name!r} vs {b_name!r}"]
-    lines.append(f"gap: {result.gap:g} Å  ({verdict})")
-    lines.append(f"resolution: ±{result.resolution:g} Å (scale-relative)")
-    lines.append(f"witness point: [{_fmt3([float(x) for x in result.point])}] Å")
+    lines.append(f"gap: {format_quantity(result.gap, 'length')}  ({verdict})")
+    lines.append(
+        f"resolution: ±{format_quantity(result.resolution, 'length')} (scale-relative)"
+    )
+    lines.append(f"witness point: [{_fmt3([float(x) for x in result.point])}] m")
     for name in (a_name, b_name):
         kids_with_env = [
             c.name

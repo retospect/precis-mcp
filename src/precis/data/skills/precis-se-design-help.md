@@ -15,8 +15,9 @@ status: active
 
 The contract of the ladder: **interfaces are preserved, interiors are
 replaced.** A coarse check stays valid after refinement, so check early
-and re-check cheap at every rung. Op grammar, units (metres!), and the
-half-extent envelope warning: `precis-se-help`.
+and re-check cheap at every rung. Op grammar, units (metres, radians —
+`rot` is bare radians, not degrees!), and the half-extent envelope
+warning: `precis-se-help`.
 
 ## 0 — set box, set forces
 

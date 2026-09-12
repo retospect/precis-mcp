@@ -7,6 +7,8 @@ Uses the same ``store`` fixture every DB-backed handler test uses.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from precis.dispatch import Hub
@@ -15,17 +17,17 @@ from precis.handlers.cad import CadHandler
 
 _FLANGE = """
 component flange
-plate     add  cyl:r25h8
-hub_bore  cut  cyl:r8h10    @0,0,-1
-bolts     cut  cyl:r2.5h10  @18,0,-1  polar:n6r18
+plate     add  cyl:r25mmh8mm
+hub_bore  cut  cyl:r8mmh10mm    @0mm,0mm,-1mm
+bolts     cut  cyl:r2.5mmh10mm  @18mm,0mm,-1mm  polar:n6r18mm
 """
 
 _ASSEMBLY = """
 component shaft
-rod   add  cyl:r5h40   @0,0,-20
+rod   add  cyl:r5mmh40mm   @0mm,0mm,-20mm
 component hub
-plate add  cyl:r20h10
-bore  cut  cyl:r5.1h12 @0,0,-1
+plate add  cyl:r20mmh10mm
+bore  cut  cyl:r5.1mmh12mm @0mm,0mm,-1mm
 """
 
 
@@ -45,7 +47,7 @@ def test_put_creates_and_lists(cad):
 
 def test_put_replace_updates(cad):
     cad.put(id="flange", text=_FLANGE)
-    resp = cad.put(id="flange", text="plate add cyl:r10h5")
+    resp = cad.put(id="flange", text="plate add cyl:r10mmh5mm")
     assert "updated" in resp.body
     tree = cad.get(id="flange")
     # the old bore/bolts are gone after replace
@@ -71,21 +73,23 @@ def test_get_node_json(cad):
 
 def test_probe_ray(cad):
     cad.put(id="flange", text=_FLANGE)
-    resp = cad.get(id="flange", view="ray", args={"o": [-30, 0, 4], "d": [1, 0, 0]})
+    resp = cad.get(
+        id="flange", view="ray", args={"o": ["-30mm", "0mm", "4mm"], "d": [1, 0, 0]}
+    )
     assert "void" in resp.body  # the bore (and bolt holes) read as void
     assert "hub_bore" in resp.body
 
 
 def test_probe_point_in_bore(cad):
     cad.put(id="flange", text=_FLANGE)
-    resp = cad.get(id="flange", view="point", args={"p": [0, 0, 4]})
+    resp = cad.get(id="flange", view="point", args={"p": ["0mm", "0mm", "4mm"]})
     assert "empty" in resp.body
     assert "hub_bore" in resp.body
 
 
 def test_section(cad):
     cad.put(id="flange", text=_FLANGE)
-    resp = cad.get(id="flange", view="section", args={"z": 4})
+    resp = cad.get(id="flange", view="section", args={"z": "4mm"})
     assert "plate" in resp.body
 
 
@@ -97,21 +101,23 @@ def test_clearance_assembly(cad):
 
 
 def test_volume(cad):
-    cad.put(id="flange", text="plate add cyl:r10h10")
+    cad.put(id="flange", text="plate add cyl:r10mmh10mm")
     resp = cad.get(id="flange", view="volume")
-    assert "mm³" in resp.body and "sampled" in resp.body
+    # ~3.14 ml (π·10²·10 mm³) — the shared formatter's volume unit, not the
+    # pre-cutover hard-coded "mm³".
+    assert "ml" in resp.body and "sampled" in resp.body
 
 
 # A hub (disc r5) + a rim (annulus r15..20) bridged by a spoke — hub and rim
 # don't touch directly, only through the spoke.
 _WHEEL = """
 component hub
-hdisc add cyl:r5h4
+hdisc add cyl:r5mmh4mm
 component rim
-rdisc add cyl:r20h4
-rhole cut cyl:r15h6 @0,0,-1
+rdisc add cyl:r20mmh4mm
+rhole cut cyl:r15mmh6mm @0mm,0mm,-1mm
 component spoke
-sbar  add box:w20d2h4 @10,0,0
+sbar  add box:w20mmd2mmh4mm @10mm,0mm,0mm
 """
 
 
@@ -128,7 +134,10 @@ def test_connectivity_view_reports_one_solid_and_path(cad):
 
 
 def test_connectivity_flags_disconnected_bodies(cad):
-    text = "component hub\nh add cyl:r5h4\ncomponent rim\nr add cyl:r5h4 @100,0,0\n"
+    text = (
+        "component hub\nh add cyl:r5mmh4mm\n"
+        "component rim\nr add cyl:r5mmh4mm @100mm,0mm,0mm\n"
+    )
     resp = cad.put(id="split", text=text)
     assert "floating" in resp.body or "disconnected" in resp.body
     rep = cad.get(id="split", view="connectivity")
@@ -162,7 +171,7 @@ def test_search_card_written(cad, store):
 
 def test_replace_keeps_one_card_and_no_stale_nodes(cad, store):
     cad.put(id="flange", text=_FLANGE)
-    cad.put(id="flange", text="plate add cyl:r10h5")
+    cad.put(id="flange", text="plate add cyl:r10mmh5mm")
     ref = store.get_ref(kind="cad", id="flange")
     with store.pool.connection() as conn:
         ncards = conn.execute(
@@ -188,8 +197,8 @@ _BRACKET = """
 desc: L-shaped mounting bracket for a temperature sensor
 use: bolts the sensor housing to the reactor backplate
 component bracket
-base  add  box:w40d40h5
-hole  cut  cyl:r3h6  @10,10,-1
+base  add  box:w40mmd40mmh5mm
+hole  cut  cyl:r3mmh6mm  @10mm,10mm,-1mm
 """
 
 
@@ -257,7 +266,7 @@ def test_get_step_view(cad, tmp_path):
 
 def test_derive_creates_new_design_with_lineage(cad, store):
     cad.put(id="flange", text=_FLANGE)
-    resp = cad.derive(id="flange", to="flange-v2", text="plate add cyl:r30h10")
+    resp = cad.derive(id="flange", to="flange-v2", text="plate add cyl:r30mmh10mm")
     assert "derived from flange" in resp.body
     # the derived design exists and is independent
     tree = cad.get(id="flange-v2")
@@ -273,15 +282,15 @@ def test_derive_creates_new_design_with_lineage(cad, store):
 
 def test_derive_refuses_existing_slug(cad):
     cad.put(id="flange", text=_FLANGE)
-    cad.put(id="taken", text="p add box:w4d4h4")
+    cad.put(id="taken", text="p add box:w4mmd4mmh4mm")
     with pytest.raises(BadInput):
-        cad.derive(id="flange", to="taken", text="p add cyl:r1h1")
+        cad.derive(id="flange", to="taken", text="p add cyl:r1mmh1mm")
 
 
 # ── sub-assembly instancing (`use <slug> as <name>`) ─────────────────────
 _STANDOFF = """
 component post
-pillar add cyl:r3h20
+pillar add cyl:r3mmh20mm
 """
 
 
@@ -291,9 +300,9 @@ def test_use_instances_a_stored_design(cad):
         id="deck",
         text=(
             "component base\n"
-            "slab add box:w60d60h4\n"
-            "use standoff as sw @-20,-20,4\n"
-            "use standoff as se @20,-20,4\n"
+            "slab add box:w60mmd60mmh4mm\n"
+            "use standoff as sw @-20mm,-20mm,4mm\n"
+            "use standoff as se @20mm,-20mm,4mm\n"
         ),
     )
     # the head counts the *expanded* bodies, not the compact instance nodes
@@ -303,7 +312,7 @@ def test_use_instances_a_stored_design(cad):
     assert "use:standoff" in tree.body
 
     # probes see the inlined, namespaced bodies
-    pt = cad.get(id="deck", view="point", args={"p": [-20, -20, 14]})
+    pt = cad.get(id="deck", view="point", args={"p": ["-20mm", "-20mm", "14mm"]})
     assert "sw.pillar" in pt.body
     conn = cad.get(id="deck", view="connectivity")
     assert "sw.post" in conn.body and "se.post" in conn.body
@@ -313,7 +322,10 @@ def test_instanced_design_exports(cad):
     cad.put(id="standoff", text=_STANDOFF)
     cad.put(
         id="deck",
-        text="component base\nslab add box:w60d60h4\nuse standoff as p @0,0,4\n",
+        text=(
+            "component base\nslab add box:w60mmd60mmh4mm\n"
+            "use standoff as p @0mm,0mm,4mm\n"
+        ),
     )
     scad = cad.get(id="deck", view="scad")
     # the export is meshable source, never the unresolved `use:` node
@@ -329,10 +341,11 @@ def test_use_of_missing_design_is_bad_input(cad):
 def test_self_instancing_refused(cad):
     # otherwise the resolver hands back this slug's *previous* save and the
     # design quietly contains a frozen copy of itself
-    cad.put(id="deck", text="component base\nslab add box:w60d60h4\n")
+    cad.put(id="deck", text="component base\nslab add box:w60mmd60mmh4mm\n")
     with pytest.raises(BadInput, match="itself"):
         cad.put(
-            id="deck", text="component base\nslab add box:w60d60h4\nuse deck as d\n"
+            id="deck",
+            text="component base\nslab add box:w60mmd60mmh4mm\nuse deck as d\n",
         )
 
 
@@ -347,8 +360,8 @@ def test_use_of_retired_design_is_bad_input(cad):
 # ── ports + mates (assembly by interface) ────────────────────────────────
 _MOTOR = """
 component body
-case  add  box:w42d42h40
-port shaft @0,0,40
+case  add  box:w42mmd42mmh40mm
+port shaft @0mm,0mm,40mm
 """
 
 
@@ -356,21 +369,26 @@ def test_ports_and_mates_round_trip_through_the_store(cad):
     cad.put(id="motor", text=_MOTOR)
     cad.put(
         id="rig",
-        text="port deck @0,0,100\nuse motor as m\nmate m.shaft to deck\n",
+        text="port deck @0mm,0mm,100mm\nuse motor as m\nmate m.shaft to deck\n",
     )
     # ports/mates live on refs.meta, so they must survive the save→load trip
     body = cad.get(id="rig").body
-    assert "port deck @0,0,100" in body
+    # re-serialised with the explicit `m` unit the strict boundary requires
+    # (100mm authored → 0.1 stored SI metres).
+    assert "port deck @0m,0m,0.1m" in body
     assert "mate m.shaft to deck" in body
     # ...and the mate must actually have placed the motor: its case runs from
-    # z=60 up to the deck at z=100, so a point inside that span is material.
-    hit = cad.get(id="rig", view="point", args={"p": [0, 0, 90]})
+    # z=60 up to the deck at z=100 (mm), so a point inside that span is material.
+    hit = cad.get(id="rig", view="point", args={"p": ["0mm", "0mm", "90mm"]})
     assert "m.case" in hit.body
 
 
 def test_mated_design_exports_without_ports(cad):
     cad.put(id="motor", text=_MOTOR)
-    cad.put(id="rig", text="port deck @0,0,100\nuse motor as m\nmate m.shaft to deck\n")
+    cad.put(
+        id="rig",
+        text="port deck @0mm,0mm,100mm\nuse motor as m\nmate m.shaft to deck\n",
+    )
     scad = cad.get(id="rig", view="scad").body
     # a port is a frame, never geometry — nothing named `port` reaches export
     assert "port" not in scad
@@ -394,7 +412,10 @@ def test_over_constrained_mate_is_bad_input(cad):
     with pytest.raises(BadInput, match="both mated and explicitly placed"):
         cad.put(
             id="rig",
-            text="port deck @0,0,0\nuse motor as m @1,2,3\nmate m.shaft to deck\n",
+            text=(
+                "port deck @0mm,0mm,0mm\nuse motor as m @1mm,2mm,3mm\n"
+                "mate m.shaft to deck\n"
+            ),
         )
 
 
@@ -403,44 +424,48 @@ def test_mate_to_an_undeclared_port_is_bad_input(cad):
     with pytest.raises(BadInput, match="has no port 'flange'"):
         cad.put(
             id="rig",
-            text="port deck @0,0,0\nuse motor as m\nmate m.flange to deck\n",
+            text="port deck @0mm,0mm,0mm\nuse motor as m\nmate m.flange to deck\n",
         )
 
 
 # ── joints + state + sweep + contains links (slice 3/4 + decision 4) ─────
 _MOTOR_J = """
 component body
-case  add  box:w42d42h40
-port shaft @0,0,40
+case  add  box:w42mmd42mmh40mm
+port shaft @0mm,0mm,40mm
 """
 
 #: Crank on a motor shaft; the crank tip passes a post at some angles only.
 _CRANK_RIG = """
 component post
-pillar add box:w6d6h20 @0,28,0
+pillar add box:w6mmd6mmh20mm @0mm,28mm,0mm
 use motor_j as m
-port base @0,0,-40
+port base @0mm,0mm,-40mm
 mate m.shaft to base
 component arm
-bar add box:w30d6h6 @15,0,3
+bar add box:w30mmd6mmh6mm @15mm,0mm,3mm
 port hub of:arm
-joint arm revolute at:hub limits:-180..180
+joint arm revolute at:hub limits:-180deg..180deg
 """
 
 
 def test_state_poses_a_probe(cad):
     cad.put(id="motor_j", text=_MOTOR_J)
     cad.put(id="crank_rig", text=_CRANK_RIG)
-    # at neutral the bar reaches +x: material at (25, 0, 3)
-    hit = cad.get(id="crank_rig", view="point", args={"p": [25, 0, 3]})
+    # at neutral the bar reaches +x: material at (25, 0, 3) mm
+    hit = cad.get(id="crank_rig", view="point", args={"p": ["25mm", "0mm", "3mm"]})
     assert "contains" in hit.body and "bar" in hit.body
     # posed at 90° that point is empty; the bar reaches +y instead
     posed = cad.get(
-        id="crank_rig", view="point", args={"p": [25, 0, 3], "state": {"arm": 90}}
+        id="crank_rig",
+        view="point",
+        args={"p": ["25mm", "0mm", "3mm"], "state": {"arm": "90deg"}},
     )
     assert "empty" in posed.body.splitlines()[0]
     posed_y = cad.get(
-        id="crank_rig", view="point", args={"p": [0, 25, 3], "state": {"arm": 90}}
+        id="crank_rig",
+        view="point",
+        args={"p": ["0mm", "25mm", "3mm"], "state": {"arm": "90deg"}},
     )
     assert "contains" in posed_y.body and "bar" in posed_y.body
 
@@ -450,10 +475,14 @@ def test_out_of_limits_state_is_bad_input(cad):
     cad.put(id="crank_rig", text=_CRANK_RIG)
     with pytest.raises(BadInput, match="outside limits"):
         cad.get(
-            id="crank_rig", view="point", args={"p": [0, 0, 0], "state": {"arm": 900}}
+            id="crank_rig",
+            view="point",
+            args={"p": ["0mm", "0mm", "0mm"], "state": {"arm": "900deg"}},
         )
     with pytest.raises(BadInput, match="must be a dict"):
-        cad.get(id="crank_rig", view="point", args={"p": [0, 0, 0], "state": 5})
+        cad.get(
+            id="crank_rig", view="point", args={"p": ["0mm", "0mm", "0mm"], "state": 5}
+        )
 
 
 def test_sweep_reports_collision_and_envelope(cad):
@@ -470,7 +499,7 @@ def test_sweep_reports_collision_and_envelope(cad):
 
 
 def test_sweep_without_joints_is_bad_input(cad):
-    cad.put(id="plain", text="solo add cyl:r5h5")
+    cad.put(id="plain", text="solo add cyl:r5mmh5mm")
     with pytest.raises(BadInput, match="declares no joints"):
         cad.get(id="plain", view="sweep")
 
@@ -484,13 +513,13 @@ def test_sweep_unknown_joint_arg(cad):
 
 def test_contains_links_track_use_lines(cad, store):
     cad.put(id="motor_j", text=_MOTOR_J)
-    cad.put(id="rig_c", text="use motor_j as m @0,0,0\nsolo add cyl:r5h5")
+    cad.put(id="rig_c", text="use motor_j as m @0mm,0mm,0mm\nsolo add cyl:r5mmh5mm")
     rig = store.get_ref(kind="cad", id="rig_c")
     sub = store.get_ref(kind="cad", id="motor_j")
     out = store.links_for(rig.id, direction="out", relation="contains")
     assert {lk.dst_ref_id for lk in out} == {sub.id}
     # dropping the use line prunes the link on the next save
-    cad.put(id="rig_c", text="solo add cyl:r5h5")
+    cad.put(id="rig_c", text="solo add cyl:r5mmh5mm")
     assert store.links_for(rig.id, direction="out", relation="contains") == []
 
 
@@ -510,21 +539,23 @@ def test_jointed_tree_shows_interface_lines(cad):
     cad.put(id="motor_j", text=_MOTOR_J)
     cad.put(id="crank_rig", text=_CRANK_RIG)
     body = cad.get(id="crank_rig").body
-    assert "joint arm revolute at:hub limits:-180..180" in body
+    # limits:-180deg..180deg canonicalises to radians on read-back — the
+    # tree view re-derives source text from the stored (radian) value.
+    assert f"joint arm revolute at:hub limits:{-math.pi!r}rad..{math.pi!r}rad" in body
     assert "port hub of:arm" in body
 
 
 _GEARED_RIG = """
 component post
-pillar add box:w6d6h20 @0,28,0
+pillar add box:w6mmd6mmh20mm @0mm,28mm,0mm
 component a1
-bar1 add box:w20d6h6 @10,0,3
+bar1 add box:w20mmd6mmh6mm @10mm,0mm,3mm
 port h1 of:a1
 component a2
-bar2 add box:w30d6h6 @15,0,13
+bar2 add box:w30mmd6mmh6mm @15mm,0mm,13mm
 port h2 of:a2
-joint a1 revolute at:h1 limits:-180..180
-joint a2 revolute at:h2 limits:-180..180
+joint a1 revolute at:h1 limits:-180deg..180deg
+joint a2 revolute at:h2 limits:-180deg..180deg
 gear a1 to a2 ratio:1
 """
 
@@ -544,15 +575,15 @@ def test_sweep_sees_gear_driven_collisions(cad):
 
 _HINGE_P = """
 component body
-barrel add cyl:r4h20
-port leaf_a @-10,0,0 of:body
-payload recess cut box:w8d3h20 at:leaf_a @0,0,-10
+barrel add cyl:r4mmh20mm
+port leaf_a @-10mm,0mm,0mm of:body
+payload recess cut box:w8mmd3mmh20mm at:leaf_a @0mm,0mm,-10mm
 """
 
 _HINGED_BRACKET = """
 component bracket
-slab add box:w60d40h10 @0,0,5
-port hp @20,0,10 of:bracket
+slab add box:w60mmd40mmh10mm @0mm,0mm,5mm
+port hp @20mm,0mm,10mm of:bracket
 
 use hinge_p as h
 mate h.leaf_a to hp
@@ -563,7 +594,10 @@ def test_unmated_payload_port_warns_on_put(cad):
     cad.put(id="hinge_p", text=_HINGE_P)
     resp = cad.put(
         id="loose",
-        text="component base\nslab add box:w40d40h5\nuse hinge_p as h @30,0,0",
+        text=(
+            "component base\nslab add box:w40mmd40mmh5mm\n"
+            "use hinge_p as h @30mm,0mm,0mm"
+        ),
     )
     assert "payload port(s) never mated" in resp.body
     assert "h.leaf_a (hinge_p)" in resp.body
@@ -573,9 +607,11 @@ def test_mated_payload_is_quiet_and_tree_shows_payload_line(cad):
     cad.put(id="hinge_p", text=_HINGE_P)
     resp = cad.put(id="hinged", text=_HINGED_BRACKET)
     assert "payload port(s) never mated" not in resp.body
-    # the payload line renders on the module's own tree (its interface block)
+    # the payload line renders on the module's own tree (its interface
+    # block), re-serialised with the explicit `m` unit the strict boundary
+    # requires (stored value is SI metres already).
     tree = cad.get(id="hinge_p").body
-    assert "payload recess cut box:w8d3h20 at:leaf_a @0,0,-10" in tree
+    assert "payload recess cut box:w0.008md0.003mh0.02m at:leaf_a @0m,0m,-0.01m" in tree
 
 
 def test_volume_attributes_payload_contribution(cad):
@@ -584,9 +620,14 @@ def test_volume_attributes_payload_contribution(cad):
     resp = cad.get(id="hinged", view="volume", args={"component": "bracket"})
     assert "payload contribution" in resp.body
     assert "h~recess" in resp.body
-    # the recess removes material, so the delta is negative
-    delta = resp.body.split("payload contribution ", 1)[1].split(" mm")[0]
-    assert float(delta) < 0
+    # the recess removes material, so the delta is negative (the shared
+    # formatter picks a scale-appropriate volume unit — µl/ml/l — not the
+    # pre-cutover hard-coded mm³, so parse only the leading number).
+    import re
+
+    m = re.search(r"payload contribution (-?[\d.]+)", resp.body)
+    assert m is not None
+    assert float(m.group(1)) < 0
 
 
 def test_payload_card_marks_the_port(cad, store):

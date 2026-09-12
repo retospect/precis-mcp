@@ -5,8 +5,11 @@ from an earlier copy of this module — docs/backlog/
 blocktree-library-build-plan.md §Settled): the core owns the recursive tree
 (``parent``/``template``), instancing with cycle guards, ports, connects,
 and envelope validation over the ``precis.cad`` SDF kernel; this module adds
-nm's own invariants on top — units are **Ångström** (float64, nm-kind.md
-"Decisions"), chemistry-flavoured port expectations
+nm's own invariants on top — units are SI **metres** (float64,
+units-policy-cutover.md; a fresh envelope must carry an explicit unit at
+the ``add_block`` boundary, :func:`_ingest_envelope`, and canonicalises to
+metres inline — see nm-kind.md "Decisions" for the float64-not-fixed-point
+rationale), chemistry-flavoured port expectations
 (``expected_element``/``expected_hybridization``, kept as their own typed
 fields rather than folded into the core's open ``annotations`` dict — see
 that backlog doc's "What this is NOT" — this is a deliberately deferred
@@ -164,6 +167,7 @@ from typing import Any, cast
 
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
+from precis.cad import dsl as cad_dsl
 
 #: What an ``axis_ports``-bearing DOF's ``kind`` may be — nm-kind.md's L2
 #: vocabulary.
@@ -484,7 +488,39 @@ def known_ops() -> frozenset[str]:
 # ── op implementations ───────────────────────────────────────────────────
 
 
+def _ingest_envelope(config: str) -> str:
+    """The m-boundary for a block's envelope (units-policy-cutover.md's
+    ingest boundary, mirroring cad's own shipped posture —
+    ``precis.cad.dsl``'s ``require_units=True``/``format_spec`` pair,
+    never re-implemented here): every dimensioned token in a fresh,
+    hand-authored envelope string must carry an explicit unit
+    (:data:`~precis.utils.units.LENGTH_UNIT_TOKEN`) — a bare number raises
+    :class:`~precis.utils.units.UnitRequiredError` with its hint (the
+    zero-counting/exponent-slip guard). Converts to SI metres inline and
+    re-canonicalises (bare numbers, no units) for storage — the same
+    shape every other stored ``nm_blocks.envelope`` value has, whether it
+    came from an agent's literal string or from ``generate``'s own
+    Å→m-converted seam (:func:`precis_nm.handler._envelope_A_to_m`, which
+    emits unit-suffixed text for exactly this reason: one ingest boundary,
+    never two). A malformed config (unknown shape, missing key — anything
+    that isn't a missing unit) is wrapped as :class:`OpError`, the same
+    "bad envelope: ..." shape :func:`~precis.blocktree.ops._validate_envelope`
+    already gives every OTHER envelope-touching call site; a missing unit
+    (:class:`~precis.utils.units.UnitRequiredError`) is itself already a
+    structured, retryable error and propagates as-is, uncaught — the same
+    "either propagates to the dispatcher boundary as-is" rule
+    :mod:`precis.cad.dsl`'s own module docstring states."""
+    try:
+        spec = cad_dsl.parse(config, require_units=True)
+    except cad_dsl.DslError as exc:
+        raise OpError(f"bad envelope: {exc}") from exc
+    return cad_dsl.format_spec(spec)
+
+
 def _op_add_block(tree: BlockTree, op: dict[str, Any]) -> None:
+    envelope_raw = op.get("envelope")
+    if envelope_raw is not None:
+        op = {**op, "envelope": _ingest_envelope(str(envelope_raw).strip())}
     blocktree.op_add_block(tree, op)
     name = str(op["name"]).strip()
     dof_raw = op.get("dof")

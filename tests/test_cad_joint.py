@@ -27,16 +27,16 @@ from precis.cad.scene import (
 #: A motor whose shaft face is a typed port 40 mm up its own z axis.
 _MOTOR = """
 component body
-case add box:w42d42h40
-port shaft @0,0,40 type:shaft-d5
+case add box:w42mmd42mmh40mm
+port shaft @0mm,0mm,40mm type:shaft-d5
 """
 
 #: A crank arm reaching +x from its hub, with a typed hub bore.
 _CRANK = """
 component arm
-bar add box:w30d6h6 @15,0,0
+bar add box:w30mmd6mmh6mm @15mm,0mm,0mm
 port hub type:shaft-d5
-port tip @30,0,0
+port tip @30mm,0mm,0mm
 """
 
 _LIBRARY = {"motor": parse_source(_MOTOR), "crank": parse_source(_CRANK)}
@@ -58,17 +58,17 @@ port base
 use motor as m
 mate m.shaft to base
 use crank as c
-joint c.hub to m.shaft revolute limits:-180..180
+joint c.hub to m.shaft revolute limits:-180deg..180deg
 """
 
 #: A one-design arm articulated about a component-scoped port.
 _ARM = """
 component base
-slab add box:w60d60h5
+slab add box:w60mmd60mmh5mm
 component arm
-beam add box:w40d8h8 @20,0,9
-port shoulder @0,0,9 of:arm
-joint arm revolute at:shoulder limits:-90..90
+beam add box:w40mmd8mmh8mm @20mm,0mm,9mm
+port shoulder @0mm,0mm,9mm of:arm
+joint arm revolute at:shoulder limits:-90deg..90deg
 """
 
 
@@ -78,15 +78,23 @@ joint arm revolute at:shoulder limits:-90..90
 def test_joint_lines_round_trip_through_source():
     spec = parse_source(_RIG)
     src = spec_to_source(spec)
-    assert "joint c.hub to m.shaft revolute limits:-180..180" in src
+    assert (
+        f"joint c.hub to m.shaft revolute limits:{-math.pi!r}rad..{math.pi!r}rad" in src
+    )
     assert parse_source(src) == spec
 
 
 def test_component_joint_round_trips():
     spec = parse_source(_ARM)
     src = spec_to_source(spec)
-    assert "port shoulder @0,0,9 of:arm" in src
-    assert "joint arm revolute at:shoulder limits:-90..90" in src
+    # re-serialised with the explicit `m` unit the strict boundary requires
+    # (9mm authored → 0.009 stored SI metres; float repr isn't clean for
+    # this value, so match the stable prefix rather than the full decimal).
+    assert "port shoulder @0m,0m,0.009" in src and " of:arm" in src
+    half_pi = math.pi / 2
+    assert (
+        f"joint arm revolute at:shoulder limits:{-half_pi!r}rad..{half_pi!r}rad" in src
+    )
     assert parse_source(src) == spec
 
 
@@ -94,12 +102,12 @@ def test_typed_port_round_trips_and_reads():
     spec = parse_source(_MOTOR)
     (port,) = ports_of(spec)
     assert port.type == "shaft-d5"
-    assert "port shaft @0,0,40 type:shaft-d5" in spec_to_source(spec)
+    assert "port shaft @0m,0m,0.04m type:shaft-d5" in spec_to_source(spec)
 
 
 def test_couple_round_trips():
     src = (
-        "port a\nport b @0,0,60\nuse crank as c1\nuse crank as c2\n"
+        "port a\nport b @0mm,0mm,60mm\nuse crank as c1\nuse crank as c2\n"
         "joint c1.hub to a revolute\njoint c2.hub to b revolute\n"
         "gear c1 to c2 ratio:-2\n"
     )
@@ -120,14 +128,14 @@ def test_a_mate_is_a_fixed_joint():
     ("line", "msg"),
     [
         ("joint c.hub to base frobnicate", "not one of"),
-        ("joint c.hub to base fixed limits:0..9", "no state"),
+        ("joint c.hub to base fixed limits:0deg..9deg", "no state"),
         ("joint c.hub to base screw", "requires pitch"),
-        ("joint c.hub to base revolute pitch:2", "only applies to 'screw'"),
-        ("joint c.hub to base revolute limits:90..-90", "lo must be < hi"),
+        ("joint c.hub to base revolute pitch:2mm", "only applies to 'screw'"),
+        ("joint c.hub to base revolute limits:90deg..-90deg", "lo must be < hi"),
         ("joint arm fixed at:shoulder", "no-op"),
         ("gear c to c ratio:2", "coupled to itself"),
         ("gear c to x ratio:0", "non-zero"),
-        ("port p polar:n3r5", "cannot carry a pattern"),
+        ("port p polar:n3r5mm", "cannot carry a pattern"),
     ],
 )
 def test_bad_joint_lines_are_refused(line, msg):
@@ -141,18 +149,18 @@ def test_component_joint_refusals():
         parse_source("port p\nuse crank as x\njoint x revolute at:p\n")
     # unknown component
     with pytest.raises(SceneError, match="no such component"):
-        parse_source("port p\nsolo add cyl:r5h5\njoint ghost revolute at:p\n")
+        parse_source("port p\nsolo add cyl:r5mmh5mm\njoint ghost revolute at:p\n")
     # pivot port not scoped to the jointed component
     with pytest.raises(SceneError, match="must be scoped 'of:arm'"):
         parse_source(
-            "component arm\nbeam add box:w40d8h8\nport shoulder\n"
+            "component arm\nbeam add box:w40mmd8mmh8mm\nport shoulder\n"
             "joint arm revolute at:shoulder\n"
         )
     # jointed twice
     with pytest.raises(SceneError, match="jointed twice"):
         parse_source(
-            "component arm\nbeam add box:w40d8h8\nport s of:arm\nport t of:arm\n"
-            "joint arm revolute at:s\njoint arm prismatic at:t limits:0..9\n"
+            "component arm\nbeam add box:w40mmd8mmh8mm\nport s of:arm\nport t of:arm\n"
+            "joint arm revolute at:s\njoint arm prismatic at:t limits:0mm..9mm\n"
         )
     # port of: an instance
     with pytest.raises(SceneError, match="must name a component"):
@@ -161,7 +169,7 @@ def test_component_joint_refusals():
 
 def test_couple_refusals():
     base = (
-        "port a\nport b @0,0,60\nuse crank as c1\nuse crank as c2\n"
+        "port a\nport b @0mm,0mm,60mm\nuse crank as c1\nuse crank as c2\n"
         "joint c1.hub to a revolute\njoint c2.hub to b revolute\n"
     )
     with pytest.raises(SceneError, match="not an articulated joint"):
@@ -185,11 +193,11 @@ def test_couple_refusals():
 def test_revolute_state_swings_the_crank():
     spec = parse_source(_RIG)
     at0 = expand_instances(spec, _resolve)
-    at90 = expand_instances(spec, _resolve, state={"c": 90.0})
+    at90 = expand_instances(spec, _resolve, state={"c": math.radians(90.0)})
     # m.shaft is mated TO base (the origin), so the crank hub rides at z=0
     bar0, bar90 = _node(at0, "c.bar"), _node(at90, "c.bar")
-    assert bar0.loc == pytest.approx((15.0, 0.0, 0.0))
-    assert bar90.loc == pytest.approx((0.0, 15.0, 0.0))
+    assert bar0.loc == pytest.approx((0.015, 0.0, 0.0))
+    assert bar90.loc == pytest.approx((0.0, 0.015, 0.0))
 
 
 def test_default_state_is_neutral_and_design_builds_as_before():
@@ -199,7 +207,7 @@ def test_default_state_is_neutral_and_design_builds_as_before():
     mated = expand_instances(
         parse_source(
             _RIG.replace(
-                "joint c.hub to m.shaft revolute limits:-180..180",
+                f"joint c.hub to m.shaft revolute limits:{-math.pi!r}rad..{math.pi!r}rad",
                 "mate c.hub to m.shaft",
             )
         ),
@@ -212,73 +220,96 @@ def test_default_state_is_neutral_and_design_builds_as_before():
 
 def test_component_joint_rotates_about_the_port_frame():
     spec = parse_source(_ARM)
-    beam = _node(expand_instances(spec, None, state={"arm": 90.0}), "beam")
+    beam = _node(
+        expand_instances(spec, None, state={"arm": math.radians(90.0)}), "beam"
+    )
     # the shoulder port sits at the origin in x/y, so +x swings to +y;
     # z is preserved (rotation about the port's z axis at z=9)
-    assert beam.loc == pytest.approx((0.0, 20.0, 9.0))
-    base = _node(expand_instances(spec, None, state={"arm": 90.0}), "slab")
+    assert beam.loc == pytest.approx((0.0, 0.02, 0.009))
+    base = _node(
+        expand_instances(spec, None, state={"arm": math.radians(90.0)}), "slab"
+    )
     assert base.loc == pytest.approx((0.0, 0.0, 0.0))  # unjointed part stays
 
 
 def test_component_joint_off_axis_pivot():
     # pivot away from the origin: conjugation, not a rotation about z=0,0
     src = (
-        "component arm\nbeam add box:w10d4h4 @30,0,0\n"
-        "port pivot @20,0,0 of:arm\n"
-        "joint arm revolute at:pivot limits:-180..180\n"
+        "component arm\nbeam add box:w10mmd4mmh4mm @30mm,0mm,0mm\n"
+        "port pivot @20mm,0mm,0mm of:arm\n"
+        "joint arm revolute at:pivot limits:-180deg..180deg\n"
     )
     beam = _node(
-        expand_instances(parse_source(src), None, state={"arm": 180.0}), "beam"
+        expand_instances(parse_source(src), None, state={"arm": math.radians(180.0)}),
+        "beam",
     )
     # beam centre was 10 mm +x of the pivot; at 180° it is 10 mm -x of it
-    assert beam.loc == pytest.approx((10.0, 0.0, 0.0))
+    assert beam.loc == pytest.approx((0.01, 0.0, 0.0))
 
 
 def test_prismatic_slides_along_z():
-    src = "port a\nuse crank as c\njoint c.hub to a prismatic limits:0..50\n"
+    # prismatic limits are a length — the only joint kind whose `limits:`
+    # takes a length unit; state is likewise a length, in SI metres.
+    src = "port a\nuse crank as c\njoint c.hub to a prismatic limits:0mm..50mm\n"
     bar = _node(
-        expand_instances(parse_source(src), _resolve, state={"c": 12.5}), "c.bar"
+        expand_instances(parse_source(src), _resolve, state={"c": 0.0125}), "c.bar"
     )
-    assert bar.loc == pytest.approx((15.0, 0.0, 12.5))
+    assert bar.loc == pytest.approx((0.015, 0.0, 0.0125))
 
 
 def test_screw_advances_pitch_per_turn():
-    src = "port a\nuse crank as c\njoint c.hub to a screw pitch:2 limits:0..720\n"
-    bar = _node(
-        expand_instances(parse_source(src), _resolve, state={"c": 360.0}), "c.bar"
+    # pitch is always a length (mm/rev lead); screw's own `limits:` are an
+    # angle like every other rotary kind (radians internal per the angle
+    # ruling, an explicit deg/rad unit at the text boundary).
+    src = (
+        "port a\nuse crank as c\njoint c.hub to a screw pitch:2mm limits:0deg..720deg\n"
     )
-    assert bar.loc[2] == pytest.approx(2.0)
+    bar = _node(
+        expand_instances(parse_source(src), _resolve, state={"c": 2 * math.pi}),
+        "c.bar",
+    )
+    assert bar.loc[2] == pytest.approx(0.002)
     # ...and it rotated a full turn back to +x
-    assert bar.loc[0] == pytest.approx(15.0)
+    assert bar.loc[0] == pytest.approx(0.015)
 
 
 def test_cylindrical_takes_two_dof():
     src = "port a\nuse crank as c\njoint c.hub to a cylindrical\n"
     bar = _node(
-        expand_instances(parse_source(src), _resolve, state={"c": [90.0, 7.0]}),
+        expand_instances(
+            parse_source(src), _resolve, state={"c": [math.radians(90.0), 0.007]}
+        ),
         "c.bar",
     )
-    assert bar.loc == pytest.approx((0.0, 15.0, 7.0))
-    with pytest.raises(SceneError, match="angle_deg, slide_mm"):
-        expand_instances(parse_source(src), _resolve, state={"c": 90.0})
+    assert bar.loc == pytest.approx((0.0, 0.015, 0.007))
+    with pytest.raises(SceneError, match="angle_rad, slide_m"):
+        expand_instances(parse_source(src), _resolve, state={"c": math.radians(90.0)})
 
 
 def test_gear_coupling_derives_the_driven_state():
     src = (
-        "port a\nport b @0,0,60\nuse crank as c1\nuse crank as c2\n"
+        "port a\nport b @0mm,0mm,60mm\nuse crank as c1\nuse crank as c2\n"
         "joint c1.hub to a revolute\njoint c2.hub to b revolute\n"
         "gear c1 to c2 ratio:-2\n"
     )
-    flat = expand_instances(parse_source(src), _resolve, state={"c1": 30.0})
+    flat = expand_instances(
+        parse_source(src), _resolve, state={"c1": math.radians(30.0)}
+    )
     b1, b2 = _node(flat, "c1.bar"), _node(flat, "c2.bar")
     assert math.degrees(math.atan2(b1.loc[1], b1.loc[0])) == pytest.approx(30.0)
     assert math.degrees(math.atan2(b2.loc[1], b2.loc[0])) == pytest.approx(-60.0)
     # explicitly setting the driven joint to something inconsistent is caught
     with pytest.raises(SceneError, match="conflicts"):
-        expand_instances(parse_source(src), _resolve, state={"c1": 30.0, "c2": 10.0})
+        expand_instances(
+            parse_source(src),
+            _resolve,
+            state={"c1": math.radians(30.0), "c2": math.radians(10.0)},
+        )
     # ...but a consistent explicit value is fine
     flat2 = expand_instances(
-        parse_source(src), _resolve, state={"c1": 30.0, "c2": -60.0}
+        parse_source(src),
+        _resolve,
+        state={"c1": math.radians(30.0), "c2": math.radians(-60.0)},
     )
     assert _node(flat2, "c2.bar").loc == pytest.approx(b2.loc)
 
@@ -292,30 +323,30 @@ def test_state_validation():
     with pytest.raises(SceneError, match="must be a number"):
         expand_instances(spec, _resolve, state={"c": "fast"})
     with pytest.raises(SceneError, match="declares no joints"):
-        expand_instances(parse_source("solo add cyl:r5h5\n"), None, state={"x": 1})
+        expand_instances(parse_source("solo add cyl:r5mmh5mm\n"), None, state={"x": 1})
 
 
 def test_default_state_clamps_into_limits():
     # a 10..80 mm actuator defaults to 10, not an illegal 0
-    src = "port a\nuse crank as c\njoint c.hub to a prismatic limits:10..80\n"
+    src = "port a\nuse crank as c\njoint c.hub to a prismatic limits:10mm..80mm\n"
     bar = _node(expand_instances(parse_source(src), _resolve), "c.bar")
-    assert bar.loc[2] == pytest.approx(10.0)
+    assert bar.loc[2] == pytest.approx(0.01)
 
 
 def test_coupling_limit_violation_is_caught():
     src = (
-        "port a\nport b @0,0,60\nuse crank as c1\nuse crank as c2\n"
+        "port a\nport b @0mm,0mm,60mm\nuse crank as c1\nuse crank as c2\n"
         "joint c1.hub to a revolute\n"
-        "joint c2.hub to b revolute limits:-30..30\n"
+        "joint c2.hub to b revolute limits:-30deg..30deg\n"
         "gear c1 to c2 ratio:-2\n"
     )
     with pytest.raises(SceneError, match="outside limits"):
-        expand_instances(parse_source(src), _resolve, state={"c1": 90.0})
+        expand_instances(parse_source(src), _resolve, state={"c1": math.radians(90.0)})
 
 
 def test_typed_ports_refuse_a_mismatched_mate():
     lib = dict(_LIBRARY)
-    lib["plug"] = parse_source("component b\nc add cyl:r5h5\nport out type:xt60\n")
+    lib["plug"] = parse_source("component b\nc add cyl:r5mmh5mm\nport out type:xt60\n")
     src = "port inlet type:xt30\nuse plug as p\nmate p.out to inlet\n"
     with pytest.raises(SceneError, match="type mismatch"):
         expand_instances(parse_source(src), lib.__getitem__)
@@ -329,17 +360,19 @@ def test_typed_ports_refuse_a_mismatched_mate():
 def test_mate_anchored_on_a_jointed_component_follows_it():
     # a motor mated onto an articulated arm swings with the arm
     src = (
-        "component arm\nbeam add box:w40d8h8 @20,0,0\n"
+        "component arm\nbeam add box:w40mmd8mmh8mm @20mm,0mm,0mm\n"
         "port shoulder of:arm\n"
-        "port wrist @40,0,4 of:arm\n"
-        "joint arm revolute at:shoulder limits:-180..180\n"
+        "port wrist @40mm,0mm,4mm of:arm\n"
+        "joint arm revolute at:shoulder limits:-180deg..180deg\n"
         "use motor as m\nmate m.shaft to wrist\n"
     )
-    flat = expand_instances(parse_source(src), _resolve, state={"arm": 90.0})
+    flat = expand_instances(
+        parse_source(src), _resolve, state={"arm": math.radians(90.0)}
+    )
     case = _node(flat, "m.case")
-    # the wrist swings from (40,0,4) to (0,40,4); the motor hangs below it
+    # the wrist swings from (40,0,4) to (0,40,4) mm; the motor hangs below it
     assert case.loc[0] == pytest.approx(0.0)
-    assert case.loc[1] == pytest.approx(40.0)
+    assert case.loc[1] == pytest.approx(0.04)
 
 
 def test_instancing_a_design_that_itself_mates():
@@ -347,21 +380,25 @@ def test_instancing_a_design_that_itself_mates():
     # a rig instanced elsewhere must not arrive with its motor at the origin
     lib = dict(_LIBRARY)
     lib["rig"] = parse_source(
-        "port deck @0,0,100\nuse motor as m\nmate m.shaft to deck\n"
+        "port deck @0mm,0mm,100mm\nuse motor as m\nmate m.shaft to deck\n"
     )
-    flat = expand_instances(parse_source("use rig as r @5,0,0\n"), lib.__getitem__)
+    flat = expand_instances(
+        parse_source("use rig as r @5mm,0mm,0mm\n"), lib.__getitem__
+    )
     case = _node(flat, "r.m.case")
-    assert case.loc == pytest.approx((5.0, 0.0, 60.0))  # 100 - 40, offset +5
+    assert case.loc == pytest.approx((0.005, 0.0, 0.06))  # 100 - 40, offset +5
 
 
 def test_patterned_node_in_jointed_component_flattens():
     src = (
-        "component wheel\nhub add cyl:r10h6\n"
-        "spokes add box:w18d4h6 @14,0,0 polar:n4r14\n"
+        "component wheel\nhub add cyl:r10mmh6mm\n"
+        "spokes add box:w18mmd4mmh6mm @14mm,0mm,0mm polar:n4r14mm\n"
         "port axle of:wheel\n"
         "joint wheel revolute at:axle\n"
     )
-    posed = expand_instances(parse_source(src), None, state={"wheel": 45.0})
+    posed = expand_instances(
+        parse_source(src), None, state={"wheel": math.radians(45.0)}
+    )
     names = {n.name for n in posed.nodes}
     assert {"spokes#1", "spokes#2", "spokes#3", "spokes#4"} <= names
     # at neutral the pattern survives untouched (identity fast behaviour)
@@ -371,7 +408,7 @@ def test_patterned_node_in_jointed_component_flattens():
 
 def test_expansion_is_idempotent_with_joints():
     spec = parse_source(_RIG)
-    once = expand_instances(spec, _resolve, state={"c": 45.0})
+    once = expand_instances(spec, _resolve, state={"c": math.radians(45.0)})
     again = expand_instances(once, _resolve)
     assert once == again
     assert "mates" not in once.meta and "joints" not in once.meta
@@ -381,9 +418,9 @@ def test_expansion_is_idempotent_with_joints():
 def test_build_design_poses_via_state():
     from precis.cad.vec import vec3
 
-    d = build_design(parse_source(_ARM), state={"arm": 90.0})
-    assert d.classify_point(vec3(0.0, 20.0, 9.0), component="arm").inside
-    assert not d.classify_point(vec3(20.0, 0.0, 9.0), component="arm").inside
+    d = build_design(parse_source(_ARM), state={"arm": math.radians(90.0)})
+    assert d.classify_point(vec3(0.0, 0.02, 0.009), component="arm").inside
+    assert not d.classify_point(vec3(0.02, 0.0, 0.009), component="arm").inside
 
 
 def test_joints_of_and_meta_round_trip():
@@ -393,7 +430,7 @@ def test_joints_of_and_meta_round_trip():
         "arm",
         "revolute",
         "shoulder",
-        (-90.0, 90.0),
+        (-math.pi / 2, math.pi / 2),
     )
     # meta round-trips through dict payloads (what refs.meta stores)
     import json
@@ -409,15 +446,15 @@ def test_mating_onto_a_sub_designs_jointed_port_uses_its_default_pose():
     # geometry _inline bakes.
     lib = dict(_LIBRARY)
     lib["lift"] = parse_source(
-        "component carriage\ncart add box:w20d20h20\n"
+        "component carriage\ncart add box:w20mmd20mmh20mm\n"
         "port rail of:carriage\n"
-        "port top @0,0,20 of:carriage\n"
-        "joint carriage prismatic at:rail limits:10..80\n"
+        "port top @0mm,0mm,20mm of:carriage\n"
+        "joint carriage prismatic at:rail limits:10mm..80mm\n"
     )
     src = "use lift as L\nuse motor as m\nmate m.shaft to L.top\n"
     flat = expand_instances(parse_source(src), lib.__getitem__)
     cart = _node(flat, "L.cart")
     case = _node(flat, "m.case")
-    assert cart.loc[2] == pytest.approx(10.0)  # geometry at the default
-    # top frame deflects to z=30; the 40-tall motor mates its shaft there
-    assert case.loc[2] == pytest.approx(-10.0)
+    assert cart.loc[2] == pytest.approx(0.01)  # geometry at the default
+    # top frame deflects to z=30mm; the 40mm-tall motor mates its shaft there
+    assert case.loc[2] == pytest.approx(-0.01)

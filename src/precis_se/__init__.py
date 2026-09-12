@@ -11,13 +11,20 @@ renting the same kernel as **metres** (float64 everywhere — see
 se-kind.md "Decisions": within ±10⁶ m of origin float64 metres resolves
 below 10⁻⁴ Å, atoms-to-buildings in one unit; the single declared
 *unit* conversion anywhere is the Å↔m multiply where an atomic-mode
-block binds an nm design). One caveat the metres decision earns: the
-kernel's tolerances are absolute in whatever numbers it is handed
-(``LINEAR_EPS = 1e-6`` — fine for Å and mm callers, fatal for a
-nanometre-scale box whose every face it culls), so geometry queries pass
-through :func:`precis_se.validate.kernel_scale`, which normalizes
-out-of-band designs into O(100) kernel units and converts results back
-to metres — in-band designs go through unscaled, bit-identical. A design is a deliberately *suggestive* space plan
+block binds an nm design). One caveat the metres decision earned before
+the units-policy-cutover relative-tolerance audit: the cad kernel's
+tolerances used to be absolute in whatever numbers it was handed
+(``LINEAR_EPS = 1e-6``, fine for Å and mm callers, fatal for a
+nanometre-scale box whose every face it culled). Its tolerances are now
+scale-relative (``precis.cad.vec.LINEAR_REL_EPS``, each primitive's own
+governing length), so this no longer bites directly — but geometry
+queries still pass through :func:`precis_se.validate.kernel_scale`,
+which normalizes out-of-band designs into O(100) kernel units and
+converts results back to metres, both as belt-and-suspenders and because
+``_CROSS_SCALE_RATIO`` still refuses to combine wildly different-scale
+blocks in one SDF query — a numerical-conditioning problem the kernel fix
+doesn't solve. In-band designs go through unscaled, bit-identical. A
+design is a deliberately *suggestive* space plan
 ("a fork about this size, connected to a hub that goes through a wheel so
 the wheel can rotate") that hardens monotonically as answers arrive —
 every field beyond a block's name is optional; validation reports absence

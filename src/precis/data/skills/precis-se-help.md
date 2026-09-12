@@ -22,16 +22,23 @@ refine, tradeoffs) see `precis-se-design-help`.
 
 ## Units and geometry conventions — read first
 
-- **Everything is metres, newtons, degrees.** `cyl:r0.02h0.01` is a
-  2 cm × 1 cm cylinder. (The cad DSL docstring says millimetres — for
-  `se` it is metres; the kernel is unit-agnostic and se stores what you
-  write.)
+- **Everything is metres, newtons, radians.** `envelope`/`pose`/`rot` are
+  bare numbers, **not** run through the units-policy-cutover's
+  unit-required ingest boundary (that boundary is for `cad`'s own
+  hand-authored text; `se` parses/stores its envelope DSL and pose/rot
+  vectors in the pre-existing bare-SI convention — see
+  `units-policy-cutover.md`'s decisions log). `cyl:r0.02h0.01` is a
+  2 cm × 1 cm cylinder — the cad kernel is unit-agnostic; `se` stores
+  metres.
 - **⚠ Envelope `box` `w`/`d`/`h` are HALF-extents**: `box:w0.028d0.240
   h0.020` is a 56 × 480 × 40 mm block. Measured, not documented
   elsewhere; mis-authoring by 2× is the most common corpus error.
 - `cyl` has its **base at the pose** (not centred); `sphere` is centred.
-- `rot` is Euler degrees composed `Rz@Ry@Rx`.
-- `pose` is the block origin in the parent frame.
+- `rot` is a bare **radians** vector (Euler, composed `Rz@Ry@Rx`) — reads
+  render it back in degrees (the shared neat formatter), but the op-level
+  value you author is radians, not degrees. `90°` about z is
+  `rot: [0, 0, 1.5707963267948966]` (`math.pi / 2`), not `[0, 0, 90]`.
+- `pose` is the block origin in the parent frame, bare **metres**.
 
 ## put vs edit — put is a full REPLACE
 
@@ -43,8 +50,9 @@ batches are **atomic**: one bad op rolls the whole batch back.
 
 ## Ops (exact parameter lists)
 
-- `add_block` — `name` (req) · `parent` · `pose` [x,y,z] m · `rot`
-  [x,y,z] deg · `envelope` (DSL string) · `desc` · `use`
+- `add_block` — `name` (req) · `parent` · `pose` [x,y,z] m (bare) · `rot`
+  [x,y,z] rad (bare, Euler `Rz@Ry@Rx` — see "Units" above) · `envelope`
+  (DSL string) · `desc` · `use`
 - `instance_block` — `name`, `template` (req) · `parent`/`pose`/`rot`.
   Rejects envelope/desc/use (they live on the template).
 - `array_block` — `name`, `template` (req) + exactly one of

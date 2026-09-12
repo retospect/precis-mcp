@@ -3,7 +3,6 @@ status: ready
 title: box full-dims at the DSL/MCP surface — half-extent stays kernel-internal (gr334785)
 prio: high
 model: sonnet
-blocked-by: units-policy-cutover
 ---
 
 # Box full-dims cutover (gr334785)

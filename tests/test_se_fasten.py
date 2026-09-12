@@ -116,7 +116,7 @@ class TestAxisWalk:
         """The axis is read off the fastener's own pose, so flipping the
         block flips the stack — nothing is declared."""
         tree = _stack(nut=False)
-        tree.blocks["bolt"].rot = [180.0, 0.0, 0.0]
+        tree.blocks["bolt"].rot = [math.pi, 0.0, 0.0]
         tree.blocks["plate_a"].pose = [0, 0, -0.012]
         tree.blocks["plate_b"].pose = [0, 0, -0.018]
         res = _only(tree)
@@ -446,10 +446,10 @@ class TestRender:
 
     def test_the_report_carries_the_numbers_a_designer_acts_on(self) -> None:
         body = _render_fasten(_stack(nut=True))
-        assert "grip 12.00 mm" in body
-        assert "1.00 mm of travel per turn" in body
+        assert "grip 12 mm" in body
+        assert "1 mm of travel per turn" in body
         assert "5.2 turns" in body
-        assert "6.20" in body  # the M6 house clearance hole
+        assert "6.2 mm" in body  # the M6 house clearance hole
         assert "plate_a" in body and "nut" in body
 
     def test_a_gap_is_rendered_not_hidden(self) -> None:

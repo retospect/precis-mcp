@@ -14,7 +14,6 @@ const FN_LAT = 32;
 const EPS = 1e-9;
 
 // ── low-level linear algebra (3-vectors, 3×3 matrices) ──────────────────────
-const DEG2RAD = Math.PI / 180.0;
 
 function matVec(m, v) {
   return [
@@ -39,9 +38,10 @@ function rotZ(r) { const c = Math.cos(r), s = Math.sin(r); return [[c, -s, 0], [
 function xform(R, t) { return { R, t }; }
 const T_IDENT = xform(IDENT, [0, 0, 0]);
 function translation(x, y, z) { return xform(IDENT, [x, y, z]); }
-function rotation(rxDeg, ryDeg, rzDeg) {
-  // Rz @ Ry @ Rx, matching precis.cad.vec.rotation.
-  const R = matMul(matMul(rotZ(rzDeg * DEG2RAD), rotY(ryDeg * DEG2RAD)), rotX(rxDeg * DEG2RAD));
+function rotation(rx, ry, rz) {
+  // Rz @ Ry @ Rx (radians — units-policy-cutover's angle ruling), matching
+  // precis.cad.vec.rotation.
+  const R = matMul(matMul(rotZ(rz), rotY(ry)), rotX(rx));
   return xform(R, [0, 0, 0]);
 }
 // self ∘ other — apply `other` first (precis.cad.vec.Transform.compose).
@@ -224,7 +224,7 @@ function patternTransforms(node) {
   if (pat.kind === 'polar') {
     const n = Math.round(pat.n), r = pat.r, z = loc[2];
     for (let i = 0; i < n; i++) {
-      const theta = (360.0 * i) / n;
+      const theta = (2.0 * Math.PI * i) / n;
       const xf = compose(rotation(0.0, 0.0, theta), translation(r, 0.0, z));
       out.push(compose(xf, baseRot));
     }

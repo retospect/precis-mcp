@@ -101,7 +101,11 @@ def _cell() -> Cell:
 def test_envelope_fit_atom_inside_margin_is_none() -> None:
     scene = Scene(cell=_cell())
     scene.atoms["a"] = Atom(label="a", element="C", frac=np.zeros(3))
-    assert nm_validate.envelope_fit("sphere:r2", scene) is None
+    # envelope_fit's `envelope` arg is STORED (design-space canonical) text
+    # — bare metres, never unit-suffixed (that boundary lives at add_block,
+    # ops.py's `_ingest_envelope`) — so a 2 A sphere is authored here
+    # pre-converted: 2 A = 2e-10 m.
+    assert nm_validate.envelope_fit("sphere:r2e-10", scene) is None
 
 
 def test_envelope_fit_atom_outside_margin_names_worst_offender() -> None:
@@ -109,11 +113,13 @@ def test_envelope_fit_atom_outside_margin_names_worst_offender() -> None:
     scene.atoms["a"] = Atom(label="a", element="C", frac=np.zeros(3))
     far_frac = scene.cell.cart_to_frac(np.array([10.0, 0.0, 0.0]))
     scene.atoms["b"] = Atom(label="b", element="C", frac=scene.cell.wrap(far_frac))
-    result = nm_validate.envelope_fit("sphere:r2", scene)
+    result = nm_validate.envelope_fit("sphere:r2e-10", scene)
     assert result is not None
     label, protrusion = result
     assert label == "b"
-    # sdf at [10,0,0] against sphere:r2 is 10-2=8; protrusion = 8 - VDW_MARGIN_A
+    # sdf at [10,0,0] Å against a 2 A sphere is 10-2=8 Å; protrusion =
+    # 8 - VDW_MARGIN_A (Å; envelope_fit reports its result back in Å, the
+    # atomistic scale this finding is about — see its own docstring).
     assert protrusion == pytest.approx(8.0 - VDW_MARGIN_A, abs=1e-6)
 
 
@@ -123,7 +129,7 @@ def test_envelope_fit_posed_at_identity_not_block_world_pose() -> None:
     pose/rot must never leak into this check (module docstring)."""
     scene = Scene(cell=_cell())
     scene.atoms["a"] = Atom(label="a", element="C", frac=np.zeros(3))
-    assert nm_validate.envelope_fit("cyl:r3h10", scene) is None
+    assert nm_validate.envelope_fit("cyl:r3e-10h1e-9", scene) is None
 
 
 def test_envelope_fit_malformed_envelope_returns_none_not_raise() -> None:
@@ -136,10 +142,11 @@ def test_envelope_fit_custom_margin() -> None:
     scene = Scene(cell=_cell())
     far_frac = scene.cell.cart_to_frac(np.array([5.0, 0.0, 0.0]))
     scene.atoms["a"] = Atom(label="a", element="C", frac=scene.cell.wrap(far_frac))
-    # sphere:r2 -> sdf=3 at [5,0,0]; comfortably inside a generous 10 A margin...
-    assert nm_validate.envelope_fit("sphere:r2", scene, margin_A=10.0) is None
+    # sphere:r2e-10 (2 A) -> sdf=3 A at [5,0,0]; comfortably inside a
+    # generous 10 A margin...
+    assert nm_validate.envelope_fit("sphere:r2e-10", scene, margin_A=10.0) is None
     # ...but a tight zero margin reports it.
-    result = nm_validate.envelope_fit("sphere:r2", scene, margin_A=0.0)
+    result = nm_validate.envelope_fit("sphere:r2e-10", scene, margin_A=0.0)
     assert result == ("a", pytest.approx(3.0))
 
 
@@ -151,7 +158,7 @@ def test_bind_structure_preflight_warns_on_gross_protrusion(
 ) -> None:
     c_label = _make_structure(structure, "frag_far", carts=[[20.0, 0.0, 0.0]])[0]
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
         {
             "op": "bind_structure",
@@ -171,7 +178,7 @@ def test_bind_structure_preflight_silent_when_within_margin(
 ) -> None:
     c_label = _make_structure(structure, "frag_near", carts=[[0.0, 0.0, 0.0]])[0]
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5Å"},
         {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
         {
             "op": "bind_structure",
@@ -191,7 +198,7 @@ def test_bind_structure_preflight_never_blocks_the_bind(
     rough first guess") — the block is bound regardless of the warning."""
     c_label = _make_structure(structure, "frag_far2", carts=[[50.0, 0.0, 0.0]])[0]
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
         {
             "op": "bind_structure",
@@ -213,7 +220,7 @@ def test_validate_envelope_fit_warns_on_a_protruding_bound_scene(
 ) -> None:
     c_label = _make_structure(structure, "frag_drift", carts=[[30.0, 0.0, 0.0]])[0]
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
             "op": "bind_structure",
@@ -234,7 +241,7 @@ def test_validate_envelope_fit_clean_when_atoms_fit(
 ) -> None:
     c_label = _make_structure(structure, "frag_fits", carts=[[0.0, 0.0, 0.0]])[0]
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
             "op": "bind_structure",
@@ -279,8 +286,8 @@ def test_validate_header_reads_unfilled_on_an_empty_bindingless_design(
     handler: NmHandler,
 ) -> None:
     ops = [
-        {"op": "add_block", "name": "axle", "envelope": "cyl:r2h20"},
-        {"op": "add_block", "name": "hub", "parent": "axle", "envelope": "sphere:r3"},
+        {"op": "add_block", "name": "axle", "envelope": "cyl:r2Åh20Å"},
+        {"op": "add_block", "name": "hub", "parent": "axle", "envelope": "sphere:r3Å"},
     ]
     handler.put(id="unfilled1", text=json.dumps({"ops": ops}))
     resp = handler.get(id="unfilled1", view="validate")
@@ -296,8 +303,8 @@ def test_validate_header_counts_partial_fill(
 ) -> None:
     c_label = _make_structure(structure, "frag_partial")[0]
     ops = [
-        {"op": "add_block", "name": "axle", "envelope": "sphere:r5"},
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "axle", "envelope": "sphere:r5Å"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5Å"},
         {"op": "add_port", "block": "axle", "name": "p1"},
         {
             "op": "bind_structure",
@@ -318,8 +325,8 @@ def test_validate_header_counts_full_fill(
     c_a = _make_structure(structure, "frag_full_a")[0]
     c_b = _make_structure(structure, "frag_full_b")[0]
     ops = [
-        {"op": "add_block", "name": "axle", "envelope": "sphere:r5"},
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "axle", "envelope": "sphere:r5Å"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5Å"},
         {"op": "add_port", "block": "axle", "name": "p1"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
@@ -350,7 +357,7 @@ def test_validate_header_excludes_instances_from_the_count(
     silently missing the instances as always-unfilled."""
     c_label = _make_structure(structure, "frag_tmpl")[0]
     ops = [
-        {"op": "add_block", "name": "sugar", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "sugar", "envelope": "sphere:r5Å"},
         {"op": "add_port", "block": "sugar", "name": "p1"},
         {"op": "instance_block", "name": "sugar2", "template": "sugar"},
         {
@@ -393,7 +400,7 @@ def test_literature_view_whole_design_query_from_description_and_blocks(
         {
             "op": "add_block",
             "name": "axle",
-            "envelope": "cyl:r2h20",
+            "envelope": "cyl:r2Åh20Å",
             "desc": "a rigid threading rod",
             "use": "photoswitchable axle",
         },
@@ -453,8 +460,8 @@ def test_literature_query_includes_objective_vocabulary_on_connects(
     lit_handler: NmHandler,
 ) -> None:
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
-        {"op": "add_block", "name": "b", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2Å"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "a", "name": "p1"},
         {"op": "add_port", "block": "b", "name": "p1"},
         {
@@ -478,7 +485,7 @@ def test_literature_query_includes_bound_composition_fair_game(
 ) -> None:
     c_label = _make_structure(structure, "frag_lit")[0]
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r5"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
             "op": "bind_structure",

@@ -23,7 +23,7 @@ import numpy as np
 
 from precis.cad.fold import Span, classify
 from precis.cad.graph import Design
-from precis.cad.vec import LINEAR_EPS, Vec3, as_vec3, normalize, vec3
+from precis.cad.vec import Vec3, as_vec3, normalize, vec3
 
 # ---------------------------------------------------------------------------
 # Point
@@ -127,9 +127,9 @@ def probe_ray(
 
 @dataclass(frozen=True)
 class ArcSegment:
-    theta_in: float  # degrees
+    theta_in: float  # radians
     theta_out: float
-    span: float  # degrees
+    span: float  # radians
     state: str
     feature: str | None
 
@@ -203,11 +203,11 @@ def probe_arc(
         if (cur[1], cur[2]) != (prev[1], prev[2]):
             st, feat = prev[1], prev[2]
             if st != "air":
-                th0 = math.degrees(raw[start_idx][0])
-                th1 = math.degrees(cur[0]) if i < n else 360.0
+                th0 = raw[start_idx][0]
+                th1 = cur[0] if i < n else 2 * math.pi
                 segments.append(
                     ArcSegment(
-                        round(th0, 3), round(th1, 3), round(th1 - th0, 3), st, feat
+                        round(th0, 9), round(th1, 9), round(th1 - th0, 9), st, feat
                     )
                 )
             start_idx = i % n
@@ -290,7 +290,7 @@ def _instance_section_z(label, placed, z: float, role: str) -> SectionLoop | Non
     prim = placed.prim
     cx, cy = float(t[0]), float(t[1])
     if isinstance(prim, CircularFrustum):
-        if zl < -LINEAR_EPS or zl > prim.h + LINEAR_EPS:
+        if zl < -prim._eps or zl > prim.h + prim._eps:
             return None
         r = prim.rb + (prim.rt - prim.rb) * (zl / prim.h)
         return SectionLoop(
@@ -305,7 +305,7 @@ def _instance_section_z(label, placed, z: float, role: str) -> SectionLoop | Non
         )
     if isinstance(prim, PolyFrustum):
         lo, hi = prim.aabb_local()
-        if zl < lo[2] - LINEAR_EPS or zl > hi[2] + LINEAR_EPS:
+        if zl < lo[2] - prim._eps or zl > hi[2] + prim._eps:
             return None
         return SectionLoop(
             label,

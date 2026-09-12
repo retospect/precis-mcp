@@ -3,7 +3,6 @@ status: ready
 title: design core — shared scenarios, provenance, design history, and discrete-states machinery for se + nm
 prio: high
 model: opus
-blocked-by: units-policy-cutover
 ---
 
 # Design core — shared scenarios, provenance, design history, discrete states
@@ -86,6 +85,13 @@ enters via the pseudo-rigid-body route on the existing member machinery.
    This item's part is only: verify the macro rental fits (a compliant
    bistable expressible with zero schema change) and that the tables
    live under the core package, not nm-locally.
+   **Hysteresis caching rule** (`multiscale-design-addendum-a.md` A9): a
+   state-carrying block is the ONE place history is load-bearing —
+   state is NOT a function of the parameter vector. Any cache or solver
+   keyed on configuration alone will get hysteretic blocks wrong: cache
+   keys for anything evaluated over a state-carrying block MUST include
+   the block's current discrete state. Ratchets are asymmetric per-edge
+   barriers on this same transition graph — no extra machinery.
 7. **se/nm adoption — SEPARATELY SHIPPABLE sub-slices** (vet advisory
    accepted): (7a) se adoption — scenario_id, six-component contract
    storage with absent = unknown never zero (Rejection names the

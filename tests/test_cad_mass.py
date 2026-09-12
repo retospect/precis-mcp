@@ -35,23 +35,26 @@ def alu(store):
 
 def test_material_lines_round_trip_and_validate():
     spec = parse_source(
-        "component frame\nslab add box:w60d40h10\nmaterial frame 6061-t6"
+        "component frame\nslab add box:w60mmd40mmh10mm\nmaterial frame 6061-t6"
     )
     assert spec.meta["materials"] == {"frame": "6061-t6"}
     assert parse_source(spec_to_source(spec)) == spec
     with pytest.raises(SceneError, match="must name a component"):
-        parse_source("component frame\nslab add box:w10d10h2\nmaterial nope alu")
+        parse_source("component frame\nslab add box:w10mmd10mmh2mm\nmaterial nope alu")
     with pytest.raises(SceneError, match="already has material"):
         parse_source(
-            "component frame\nslab add box:w10d10h2\nmaterial frame a\nmaterial frame b"
+            "component frame\nslab add box:w10mmd10mmh2mm\n"
+            "material frame a\nmaterial frame b"
         )
 
 
 def test_sub_design_materials_merge_namespaced():
-    sub = parse_source("component core\nrod add cyl:r5h50\nmaterial core steel-4140")
+    sub = parse_source(
+        "component core\nrod add cyl:r5mmh50mm\nmaterial core steel-4140"
+    )
     top = parse_source(
-        "component frame\nslab add box:w60d40h10\nmaterial frame 6061-t6\n"
-        "use shaft as sh @0,0,10"
+        "component frame\nslab add box:w60mmd40mmh10mm\nmaterial frame 6061-t6\n"
+        "use shaft as sh @0mm,0mm,10mm"
     )
     ex = expand_instances(top, resolve=lambda s: {"shaft": sub}[s])
     assert ex.meta["materials"] == {"frame": "6061-t6", "sh.core": "steel-4140"}
@@ -61,10 +64,10 @@ def test_sub_design_materials_merge_namespaced():
 
 _PLATE = """
 component frame
-slab add box:w100d100h10
+slab add box:w100mmd100mmh10mm
 material frame 6061-t6-m
 component lug
-tab add box:w20d10h5 @60,0,0
+tab add box:w20mmd10mmh5mm @60mm,0mm,0mm
 """
 
 
@@ -84,7 +87,7 @@ def test_mass_view_is_cited_and_loud_about_unassigned(cad, alu):
 
 
 def test_mass_view_refuses_without_materials(cad):
-    cad.put(id="mass_none", text="plate add box:w10d10h2")
+    cad.put(id="mass_none", text="plate add box:w10mmd10mmh2mm")
     with pytest.raises(BadInput, match="material assignments"):
         cad.get(id="mass_none", view="mass")
 
@@ -92,14 +95,14 @@ def test_mass_view_refuses_without_materials(cad):
 def test_mass_view_refuses_unknown_material_and_missing_density(cad, store):
     cad.put(
         id="mass_bad",
-        text="component p\nplate add box:w10d10h2\nmaterial p no-such-mat",
+        text="component p\nplate add box:w10mmd10mmh2mm\nmaterial p no-such-mat",
     )
     with pytest.raises(BadInput, match="not found"):
         cad.get(id="mass_bad", view="mass")
     MaterialHandler(hub=Hub(store=store)).put(id="bare-mat", title="no density yet")
     cad.put(
         id="mass_bad2",
-        text="component p\nplate add box:w10d10h2\nmaterial p bare-mat",
+        text="component p\nplate add box:w10mmd10mmh2mm\nmaterial p bare-mat",
     )
     with pytest.raises(BadInput, match="no density"):
         cad.get(id="mass_bad2", view="mass")

@@ -74,7 +74,7 @@ def test_step_handle_survives_edit_and_move(make):
 
 
 def test_made_by_aligns_blocks_to_tree_and_steps(make, cad, store):
-    cad.put(id="gantry", text="component frame\nrail add box:w200d20h20")
+    cad.put(id="gantry", text="component frame\nrail add box:w200mmd20mmh20mm")
     make.put(id="gantry-build", title="gantry build order")
     (mk1,) = _step_handles(make.put(id="gantry-build", text="mount rails").body)
 
@@ -99,8 +99,8 @@ def test_made_by_aligns_blocks_to_tree_and_steps(make, cad, store):
 
 
 def test_made_by_target_must_be_a_make_tree(cad):
-    cad.put(id="widget", text="plate add box:w10d10h2")
-    cad.put(id="widget2", text="plate add box:w10d10h2")
+    cad.put(id="widget", text="plate add box:w10mmd10mmh2mm")
+    cad.put(id="widget2", text="plate add box:w10mmd10mmh2mm")
     with pytest.raises(BadInput, match="make tree or step"):
         cad.link(id="widget", target="cad:widget2", rel="made-by")
 
@@ -112,10 +112,13 @@ def test_make_link_refuses_non_parent(make):
 
 
 def test_make_coverage_lint_flags_unaligned_sub_designs(make, cad):
-    cad.put(id="axis_sub", text="component slide\nblock add box:w30d30h10")
+    cad.put(id="axis_sub", text="component slide\nblock add box:w30mmd30mmh10mm")
     cad.put(
         id="machine",
-        text="component base\nbed add box:w300d100h20\nuse axis_sub as ax @0,0,20",
+        text=(
+            "component base\nbed add box:w300mmd100mmh20mm\n"
+            "use axis_sub as ax @0mm,0mm,20mm"
+        ),
     )
     make.put(id="machine-build", title="machine build")
     make.put(id="machine-build", text="install the axis")
@@ -141,16 +144,16 @@ def test_delete_step_and_tree(make):
 
 _PRINTED_LEAF = """
 component knuckle
-lug add box:w8d6h12 @4,0,0
-port leaf @0,0,6 rot:0,90,0 type:printed-hinge of:knuckle
+lug add box:w8mmd6mmh12mm @4mm,0mm,0mm
+port leaf @0mm,0mm,6mm rot:0deg,90deg,0deg type:printed-hinge of:knuckle
 """
 
 _PRINTED_TRAY = """
 component tray
-wall add box:w60d40h4
-port hp @30,0,2 rot:0,90,0 type:printed-hinge of:tray
+wall add box:w60mmd40mmh4mm
+port hp @30mm,0mm,2mm rot:0deg,90deg,0deg type:printed-hinge of:tray
 use printed_leaf as h
-joint h.leaf to hp revolute limits:0..170
+joint h.leaf to hp revolute limits:0deg..170deg
 """
 
 

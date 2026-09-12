@@ -11,10 +11,27 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
 
     # a flange
     component flange
-    plate     add  cyl:r25h8
-    hub_bore  cut  cyl:r8h10    @0,0,-1
-    bolts     cut  cyl:r2.5h10  @18,0,-1  polar:n6r18
-    rim       add  box:w4d4h4   @20,0,0   rot:0,0,45
+    plate     add  cyl:r25mmh8mm
+    hub_bore  cut  cyl:r8mmh10mm    @0mm,0mm,-1mm
+    bolts     cut  cyl:r2.5mmh10mm  @18mm,0mm,-1mm  polar:n6r18mm
+    rim       add  box:w4mmd4mmh4mm @20mm,0mm,0mm   rot:0,0,45
+
+Every dimensioned token (``@x,y,z`` — one unit per component, ``polar:``'s
+``r``, ``linear:``'s ``dx``/``dy``/``dz``, ``pitch:``, ``dim``'s value, and
+the ``config`` mini-DSL's own length keys) requires an explicit unit from
+:data:`~precis.utils.units.LENGTH_UNIT_TOKEN` — a bare number raises
+:class:`~precis.utils.units.UnitRequiredError` with a retry hint (the
+zero-counting / exponent-slip guard). ``rot:``/``spin:``/angle-kind
+``limits:`` require an explicit unit too, from
+:data:`~precis.utils.units.ANGLE_UNIT_TOKEN` (``deg``/``rad``) — the same
+guard, angle-flavoured (the decisions log's angle ruling: radians
+internal, explicit unit at ingest). ``ratio:`` (dimensionless) never takes
+a unit. The one exemption: a ``{name}``-parametrized ``config`` (below)
+parses its own literal numbers bare (canonical/SI: metres, radians), same
+as the stored form every design reloads from — only the ``dim``
+declaration that pins the referenced value still requires a unit. Stored
+``config``/pose text is always canonical (bare, SI metres/radians); units
+exist only at this text boundary, converted exactly once.
 
 - ``desc: <text>`` / ``use: <text>`` (optional, anywhere) record what the
   design *is* and what it's *for*; folded into the searchable card.
@@ -36,7 +53,7 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   is a free compatibility tag (two typed ports may only mate when the types
   match); ``of:`` scopes the port to a component (required for the pivot of
   a component ``joint``).
-- ``dim <name> =|>=|<= <mm>`` / ``constrain <a> = <b>`` — named
+- ``dim <name> =|>=|<= <value+unit>`` / ``constrain <a> = <b>`` — named
   dimension bounds (one-sided allowed; bounds intersect) and equality
   constraints between dims. An impossible combination — ``a = 200``,
   ``b = 150``, ``constrain a = b`` — is **refused at parse**
@@ -57,17 +74,20 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
   ``<instance>~<name>``. Placement is relative to the port frame; ``op`` ∈
   {``add``, ``cut``}; the far side's port must be scoped ``of:`` a
   component (the host body). See :class:`PayloadSpec`.
-- ``mate <inst>.<port> to <anchor> [flip] [spin:<deg>]`` places instance
+- ``mate <inst>.<port> to <anchor> [flip] [spin:<angle>]`` places instance
   ``<inst>`` by making its port coincide with ``<anchor>`` (this design's own
   ``<port>``, or another instance's ``<inst>.<port>``) — see
   :func:`_solve_interfaces`. Also top-level. A mate is sugar for a ``fixed``
   joint.
-- ``joint <inst>.<port> to <anchor> <kind> [limits:lo..hi] [pitch:<mm>]
-  [flip] [spin:<deg>]`` — an articulated mate: ``kind`` ∈ {``fixed``,
+- ``joint <inst>.<port> to <anchor> <kind> [limits:lo..hi] [pitch:<length>]
+  [flip] [spin:<angle>]`` — an articulated mate: ``kind`` ∈ {``fixed``,
   ``revolute``, ``prismatic``, ``cylindrical``, ``screw``}. Motion is about /
-  along the **anchor frame's z axis**; state is degrees (revolute, screw,
-  cylindrical angle) or mm (prismatic, cylindrical slide).
-- ``joint <component> <kind> at:<port> [limits:lo..hi] [pitch:<mm>]`` —
+  along the **anchor frame's z axis**; state is radians (revolute, screw,
+  cylindrical angle) or metres (prismatic, cylindrical slide) internally;
+  ``limits:``/``spin:`` at the text boundary always carry an explicit unit
+  (a length unit for ``prismatic``, ``deg``/``rad`` for every other kind's
+  angle limits). ``pitch:`` (screw only) is always a length.
+- ``joint <component> <kind> at:<port> [limits:lo..hi] [pitch:<length>]`` —
   articulates a whole component of *this* design about a port scoped
   ``of:`` that component (the port names which body the frame rides on).
 - ``gear <a> to <b> ratio:<r>`` / ``belt …`` — couples joint ``b``'s state
@@ -88,22 +108,29 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypedDict
 
 from precis.cad import catalog
-from precis.cad.dsl import build, build_config, parse
+from precis.cad.dsl import build, build_config, format_spec, parse
 from precis.cad.fold import Expr
 from precis.cad.graph import Design
 from precis.cad.vec import (
     Transform,
     as_float3,
-    euler_deg_from_matrix,
+    euler_rad_from_matrix,
     identity,
     rotation,
     translation,
+)
+from precis.utils.units import (
+    ANGLE_UNIT_TOKEN,
+    LENGTH_UNIT_TOKEN,
+    UnitRequiredError,
+    parse_quantity,
 )
 
 log = logging.getLogger(__name__)
@@ -140,38 +167,54 @@ MAX_INSTANCE_DEPTH = 8
 #: instances is 46656 nodes, which would wedge a worker rather than fail.
 MAX_EXPANDED_NODES = 20_000
 
+#: Every dimensioned scene token requires an explicit unit — a length
+#: unit from :data:`~precis.utils.units.LENGTH_UNIT_TOKEN`, or (``rot:``/
+#: ``spin:``/angle-kind ``limits:``) an angle unit from
+#: :data:`~precis.utils.units.ANGLE_UNIT_TOKEN`. The unit is optional
+#: *in the regex* only so a bare number still matches (letting the caller
+#: raise the structured :class:`~precis.utils.units.UnitRequiredError`
+#: instead of a generic syntax error), exactly the ``cad.dsl`` convention.
+#: ``ratio:`` (dimensionless) never takes a unit — ratios are outside the
+#: unit ladder.
+_NUM = r"-?\d+(?:\.\d+)?"
+_LEN = rf"({_NUM})({LENGTH_UNIT_TOKEN})?"
+_ANGLE = rf"({_NUM})({ANGLE_UNIT_TOKEN})?"
+#: ``limits:`` serves both a length-valued joint (``prismatic``) and an
+#: angle-valued one (every other kind) through the *same* regex — the
+#: kind-aware unit check happens in :func:`_parse_limits`, not here.
+_LIMIT_UNIT = rf"{LENGTH_UNIT_TOKEN}|{ANGLE_UNIT_TOKEN}"
+_LIMIT = rf"({_NUM})({_LIMIT_UNIT})?"
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-_LOC_RE = re.compile(r"^@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
-_ROT_RE = re.compile(r"^rot:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
-_POLAR_RE = re.compile(r"^polar:n(\d+)r(-?\d+(?:\.\d+)?)$")
-_SPIN_RE = re.compile(r"^spin:(-?\d+(?:\.\d+)?)$")
+_LOC_RE = re.compile(rf"^@{_LEN},{_LEN},{_LEN}$")
+_ROT_RE = re.compile(rf"^rot:{_ANGLE},{_ANGLE},{_ANGLE}$")
+_POLAR_RE = re.compile(rf"^polar:n(\d+)r{_LEN}$")
+_SPIN_RE = re.compile(rf"^spin:{_ANGLE}$")
 _TYPE_RE = re.compile(r"^type:([A-Za-z_][A-Za-z0-9_-]*)$")
 _OF_RE = re.compile(r"^of:([A-Za-z_][A-Za-z0-9_-]*)$")
 _AT_RE = re.compile(r"^at:([A-Za-z_][A-Za-z0-9_-]*)$")
-_LIMITS_RE = re.compile(r"^limits:(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)$")
-_PITCH_RE = re.compile(r"^pitch:(\d+(?:\.\d+)?)$")
-_RATIO_RE = re.compile(r"^ratio:(-?\d+(?:\.\d+)?)$")
-_DIM_RE = re.compile(
-    r"^dim\s+([A-Za-z_][A-Za-z0-9_-]*)\s*(=|>=|<=)\s*(-?\d+(?:\.\d+)?)$"
-)
+_LIMITS_RE = re.compile(rf"^limits:{_LIMIT}\.\.{_LIMIT}$")
+_PITCH_RE = re.compile(rf"^pitch:{_LEN}$")
+_RATIO_RE = re.compile(rf"^ratio:({_NUM})$")
+_DIM_RE = re.compile(rf"^dim\s+([A-Za-z_][A-Za-z0-9_-]*)\s*(=|>=|<=)\s*{_LEN}$")
 _CONSTRAIN_RE = re.compile(
     r"^constrain\s+([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*([A-Za-z_][A-Za-z0-9_-]*)$"
 )
 
 #: Joint kinds and their one state parameter (about/along the joint frame's
-#: local z): revolute = degrees, prismatic = mm, screw = degrees (z advance
-#: coupled via ``pitch`` mm/rev), cylindrical = ``[degrees, mm]`` (two DOF),
-#: fixed = no state (what a plain ``mate`` is).
+#: local z): revolute = radians, prismatic = metres, screw = radians (z
+#: advance coupled via ``pitch`` metres/rev), cylindrical =
+#: ``[radians, metres]`` (two DOF), fixed = no state (what a plain ``mate``
+#: is).
 JOINT_KINDS = ("fixed", "revolute", "prismatic", "cylindrical", "screw")
 
-#: A joint's state: one number, or ``[angle_deg, slide_mm]`` for cylindrical.
+#: A joint's state: one number, or ``[angle_rad, slide_m]`` for cylindrical.
 JointState = float | tuple[float, float]
 _LINEAR_RE = re.compile(
     r"^linear:n(\d+)"
-    r"(?:dx(-?\d+(?:\.\d+)?))?"
-    r"(?:dy(-?\d+(?:\.\d+)?))?"
-    r"(?:dz(-?\d+(?:\.\d+)?))?$"
+    rf"(?:dx{_LEN})?"
+    rf"(?:dy{_LEN})?"
+    rf"(?:dz{_LEN})?$"
 )
 
 
@@ -388,11 +431,16 @@ class PayloadSpec:
         )
 
     def to_source(self, port: str) -> str:
-        parts = ["payload", self.name, self.op, self.config, f"at:{port}"]
+        config = (
+            self.config
+            if "{" in self.config
+            else format_spec(parse(self.config), units=True)
+        )
+        parts = ["payload", self.name, self.op, config, f"at:{port}"]
         if self.loc != (0.0, 0.0, 0.0):
-            parts.append("@" + ",".join(_fmt_num(v) for v in self.loc))
+            parts.append(_fmt_loc(self.loc))
         if self.rot != (0.0, 0.0, 0.0):
-            parts.append("rot:" + ",".join(_fmt_num(v) for v in self.rot))
+            parts.append(_fmt_rot(self.rot))
         return " ".join(parts)
 
 
@@ -450,9 +498,9 @@ class PortSpec:
         """The ``port …`` source line (also what the node tree shows)."""
         parts = ["port", self.name]
         if self.loc != (0.0, 0.0, 0.0):
-            parts.append("@" + ",".join(_fmt_num(v) for v in self.loc))
+            parts.append(_fmt_loc(self.loc))
         if self.rot != (0.0, 0.0, 0.0):
-            parts.append("rot:" + ",".join(_fmt_num(v) for v in self.rot))
+            parts.append(_fmt_rot(self.rot))
         if self.type:
             parts.append(f"type:{self.type}")
         if self.component:
@@ -507,15 +555,13 @@ class MateSpec:
         else:
             parts = ["joint", self.subject, "to", self.anchor, self.kind]
             if self.limits is not None:
-                parts.append(
-                    f"limits:{_fmt_num(self.limits[0])}..{_fmt_num(self.limits[1])}"
-                )
+                parts.append(_fmt_limits(self.limits, self.kind))
             if self.pitch:
-                parts.append(f"pitch:{_fmt_num(self.pitch)}")
+                parts.append(_fmt_pitch(self.pitch))
         if self.flip:
             parts.append("flip")
         if self.spin:
-            parts.append(f"spin:{_fmt_num(self.spin)}")
+            parts.append(f"spin:{_fmt_ang(self.spin)}")
         return " ".join(parts)
 
     def to_meta(self) -> dict[str, Any]:
@@ -587,6 +633,46 @@ class MateSpec:
         )
 
 
+def _parse_limits(m: re.Match[str], kind: str, where: str) -> tuple[float, float]:
+    """A matched ``_LIMITS_RE`` → ``(lo, hi)`` SI (metres or radians),
+    joint-kind-aware: ``prismatic`` limits are a length (its state is a
+    translation) and require an explicit length unit; every other kind's
+    limits are the joint's angle (revolute/screw directly, cylindrical's
+    angle component) and require an explicit angle unit (``deg``/``rad``)."""
+    lo_num, lo_unit, hi_num, hi_unit = m[1], m[2], m[3], m[4]
+    if kind == "prismatic":
+        return (
+            _length(lo_num, lo_unit, f"{where}: limits lo"),
+            _length(hi_num, hi_unit, f"{where}: limits hi"),
+        )
+    return (
+        _angle(lo_num, lo_unit, f"{where}: limits lo"),
+        _angle(hi_num, hi_unit, f"{where}: limits hi"),
+    )
+
+
+def _parse_pitch(m: re.Match[str], where: str) -> float:
+    """A matched ``_PITCH_RE`` → SI metres. ``pitch:`` is always a length
+    (a screw's mm-per-revolution lead) — unlike ``limits:``, its unit
+    requirement never depends on the joint kind (only ``screw`` ever
+    carries one)."""
+    return _length(m[1], m[2], f"{where}: pitch")
+
+
+def _fmt_limits(limits: tuple[float, float], kind: str) -> str:
+    """The ``limits:lo..hi`` source token, kind-aware inverse of
+    :func:`_parse_limits`: each kind's own internal SI unit, ``m`` for
+    ``prismatic``, ``rad`` for every angle-valued kind."""
+    lo, hi = limits
+    unit = "m" if kind == "prismatic" else "rad"
+    return f"limits:{_fmt_num(lo)}{unit}..{_fmt_num(hi)}{unit}"
+
+
+def _fmt_pitch(pitch: float) -> str:
+    """The ``pitch:<length>`` source token, inverse of :func:`_parse_pitch`."""
+    return f"pitch:{_fmt_num(pitch)}m"
+
+
 def _coerce_limits(raw: Any, *, where: str) -> tuple[float, float] | None:
     if raw is None:
         return None
@@ -633,11 +719,9 @@ class ComponentJointSpec:
     def to_source(self) -> str:
         parts = ["joint", self.component, self.kind, f"at:{self.port}"]
         if self.limits is not None:
-            parts.append(
-                f"limits:{_fmt_num(self.limits[0])}..{_fmt_num(self.limits[1])}"
-            )
+            parts.append(_fmt_limits(self.limits, self.kind))
         if self.pitch:
-            parts.append(f"pitch:{_fmt_num(self.pitch)}")
+            parts.append(_fmt_pitch(self.pitch))
         return " ".join(parts)
 
     def to_meta(self) -> dict[str, Any]:
@@ -725,28 +809,63 @@ def couples_of(spec: SceneSpec) -> list[CoupleSpec]:
     return [CoupleSpec.from_meta(r) for r in spec.meta.get("couples") or ()]
 
 
+def _length(num: str, unit: str | None, arg_name: str) -> float:
+    """One boundary-mode length token → SI metres. ``unit`` is the regex's
+    optional unit-suffix group — ``None`` raises the structured
+    :class:`~precis.utils.units.UnitRequiredError` (the zero-counting /
+    exponent-slip guard), never a generic parse error."""
+    if not unit:
+        raise UnitRequiredError(float(num), "length", arg_name=arg_name)
+    return parse_quantity(f"{num}{unit}", "length", arg_name=arg_name)
+
+
+def _angle(num: str, unit: str | None, arg_name: str) -> float:
+    """One boundary-mode angle token (``rot:``/``spin:``/angle-kind
+    ``limits:``) → SI radians. Same contract as :func:`_length`, angle-
+    flavoured (the decisions log's angle ruling)."""
+    if not unit:
+        raise UnitRequiredError(float(num), "angle", arg_name=arg_name)
+    return parse_quantity(f"{num}{unit}", "angle", arg_name=arg_name)
+
+
 def _parse_placement(
     toks: list[str], lineno: int
 ) -> tuple[tuple[float, float, float], tuple[float, float, float], NodePattern | None]:
     """Parse the trailing ``@x,y,z`` / ``rot:`` / ``polar:`` / ``linear:``
-    tokens shared by shape nodes and ``use`` instance directives."""
+    tokens shared by shape nodes and ``use`` instance directives.
+
+    Every length (``@x,y,z`` per component, ``polar:``'s ``r``,
+    ``linear:``'s ``dx``/``dy``/``dz``) requires an explicit length unit;
+    ``rot:`` requires an explicit angle unit (``deg``/``rad``)."""
     loc = (0.0, 0.0, 0.0)
     rot = (0.0, 0.0, 0.0)
     pattern: NodePattern | None = None
     for tok in toks:
         if m := _LOC_RE.match(tok):
-            loc = (float(m[1]), float(m[2]), float(m[3]))
+            loc = (
+                _length(m[1], m[2], f"line {lineno}: @x"),
+                _length(m[3], m[4], f"line {lineno}: @y"),
+                _length(m[5], m[6], f"line {lineno}: @z"),
+            )
         elif m := _ROT_RE.match(tok):
-            rot = (float(m[1]), float(m[2]), float(m[3]))
+            rot = (
+                _angle(m[1], m[2], f"line {lineno}: rot x"),
+                _angle(m[3], m[4], f"line {lineno}: rot y"),
+                _angle(m[5], m[6], f"line {lineno}: rot z"),
+            )
         elif m := _POLAR_RE.match(tok):
-            pattern = PolarPattern(kind="polar", n=float(m[1]), r=float(m[2]))
+            pattern = PolarPattern(
+                kind="polar",
+                n=float(m[1]),
+                r=_length(m[2], m[3], f"line {lineno}: polar:r"),
+            )
         elif m := _LINEAR_RE.match(tok):
             pattern = LinearPattern(
                 kind="linear",
                 n=float(m[1]),
-                dx=float(m[2] or 0.0),
-                dy=float(m[3] or 0.0),
-                dz=float(m[4] or 0.0),
+                dx=_length(m[2], m[3], f"line {lineno}: linear:dx") if m[2] else 0.0,
+                dy=_length(m[4], m[5], f"line {lineno}: linear:dy") if m[4] else 0.0,
+                dz=_length(m[6], m[7], f"line {lineno}: linear:dz") if m[6] else 0.0,
             )
         else:
             raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
@@ -939,8 +1058,9 @@ def parse_source(text: str) -> SceneSpec:
                     "design, whose dim namespace is not this one; use "
                     "literal numbers"
                 )
-            pl_spec = parse(plconfig)
+            pl_spec = parse(plconfig, require_units=True)
             build(pl_spec)
+            plconfig = format_spec(pl_spec)  # canonicalise for storage
             if pl_spec.alias == "chamfer" and plop == "add":
                 raise SceneError(
                     f"line {lineno}: chamfer payload {plname!r} cannot use op "
@@ -980,8 +1100,11 @@ def parse_source(text: str) -> SceneSpec:
             # refused immediately (an impossible declaration must not parse).
             m = _DIM_RE.match(line)
             if m is None:
-                raise SceneError(f"line {lineno}: expected 'dim <name> =|>=|<= <mm>'")
-            dname, dop, dval = m[1], m[2], float(m[3])
+                raise SceneError(
+                    f"line {lineno}: expected 'dim <name> =|>=|<= <value+unit>'"
+                )
+            dname, dop = m[1], m[2]
+            dval = _length(m[3], m[4], f"line {lineno}: dim {dname}")
             lo, hi = dims.get(dname, [None, None])
             if dop in ("=", ">="):
                 lo = dval if lo is None else max(lo, dval)
@@ -1053,11 +1176,11 @@ def parse_source(text: str) -> SceneSpec:
                 if tok == "flip":
                     flip = True
                 elif m := _SPIN_RE.match(tok):
-                    spin = float(m[1])
+                    spin = _angle(m[1], m[2], f"line {lineno}: spin")
                 elif is_joint and (m := _LIMITS_RE.match(tok)):
-                    limits = (float(m[1]), float(m[2]))
+                    limits = _parse_limits(m, kind, f"line {lineno}")
                 elif is_joint and (m := _PITCH_RE.match(tok)):
-                    pitch = float(m[1])
+                    pitch = _parse_pitch(m, f"line {lineno}")
                 else:
                     raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
             mates.append(
@@ -1092,9 +1215,9 @@ def parse_source(text: str) -> SceneSpec:
                 if m := _AT_RE.match(tok):
                     jport = m[1]
                 elif m := _LIMITS_RE.match(tok):
-                    limits = (float(m[1]), float(m[2]))
+                    limits = _parse_limits(m, jkind, f"line {lineno}")
                 elif m := _PITCH_RE.match(tok):
-                    pitch = float(m[1])
+                    pitch = _parse_pitch(m, f"line {lineno}")
                 else:
                     raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
             if not jport:
@@ -1158,10 +1281,15 @@ def parse_source(text: str) -> SceneSpec:
             pending_dim_configs.append((lineno, name, config))
             alias = config.split(":", 1)[0].strip()
         else:
-            # validate the shape config eagerly (raises on bad DSL)
-            node_spec = parse(config)
+            # boundary-mode parse (raises on bad DSL / missing units), then
+            # re-canonicalise to bare SI metres for storage — the stored
+            # `config` is always canonical/storage-mode text, never the
+            # author's unit-suffixed source (which the canonical/storage
+            # parse mode used on every reload could not re-parse).
+            node_spec = parse(config, require_units=True)
             build(node_spec)
             alias = node_spec.alias
+            config = format_spec(node_spec)
         if alias == "chamfer":
             if op == "add":
                 raise SceneError(
@@ -1476,33 +1604,66 @@ def _fmt_num(x: float) -> str:
     return str(int(x)) if x == int(x) else repr(x)
 
 
+def _fmt_len(x: float) -> str:
+    """Round-trip-safe *length* formatting — a number plus its SI unit
+    (``m``), so re-serialised source carries the explicit unit the strict
+    boundary parse now requires. The stored value is already SI metres;
+    this only attaches the suffix, never scales."""
+    return f"{_fmt_num(x)}m"
+
+
+def _fmt_ang(x: float) -> str:
+    """Round-trip-safe *angle* formatting — a number plus its SI unit
+    (``rad``), the angle sibling of :func:`_fmt_len`. The stored value is
+    already SI radians; this only attaches the suffix, never scales."""
+    return f"{_fmt_num(x)}rad"
+
+
+def _fmt_loc(loc: tuple[float, float, float]) -> str:
+    return "@" + ",".join(_fmt_len(v) for v in loc)
+
+
+def _fmt_rot(rot: tuple[float, float, float]) -> str:
+    return "rot:" + ",".join(_fmt_ang(v) for v in rot)
+
+
 def _pattern_token(pat: NodePattern) -> str:
     """The ``polar:``/``linear:`` source token for a node pattern."""
     if pat["kind"] == "polar":
-        return f"polar:n{int(pat['n'])}r{_fmt_num(pat['r'])}"
+        return f"polar:n{int(pat['n'])}r{_fmt_len(pat['r'])}"
     if pat["kind"] == "linear":
         tok = f"linear:n{int(pat['n'])}"
         for axis, v in (("dx", pat["dx"]), ("dy", pat["dy"]), ("dz", pat["dz"])):
             if v != 0.0:
-                tok += f"{axis}{_fmt_num(v)}"
+                tok += f"{axis}{_fmt_len(v)}"
         return tok
     raise SceneError(f"unknown pattern kind {pat['kind']!r}")  # pragma: no cover
 
 
 def _node_line(node: NodeSpec) -> str:
-    """Serialise one node back to a source line (inverse of the parser)."""
+    """Serialise one node back to a source line (inverse of the parser).
+
+    A shape node's ``config`` is stored canonical/bare (SI metres, no
+    units) — re-attach the ``m`` suffix on every length key
+    (:func:`~precis.cad.dsl.format_spec`'s ``units=True`` mode) so the
+    emitted line re-parses under the strict boundary too. A
+    ``{name}``-parametrized config is the one exemption (its literal
+    numbers are already canonical/bare per the grammar's own carve-out) —
+    emitted verbatim."""
     sub = instance_slug(node.config)
     code = part_code(node.config)
     if sub is not None:
         parts = ["use", sub, "as", node.name]
     elif code is not None:
         parts = ["part", node.name, code]
-    else:
+    elif "{" in node.config:
         parts = [node.name, node.op, node.config]
+    else:
+        parts = [node.name, node.op, format_spec(parse(node.config), units=True)]
     if node.loc != (0.0, 0.0, 0.0):
-        parts.append("@" + ",".join(_fmt_num(v) for v in node.loc))
+        parts.append(_fmt_loc(node.loc))
     if node.rot != (0.0, 0.0, 0.0):
-        parts.append("rot:" + ",".join(_fmt_num(v) for v in node.rot))
+        parts.append(_fmt_rot(node.rot))
     if node.pattern is not None:
         parts.append(_pattern_token(node.pattern))
     return " ".join(parts)
@@ -1529,12 +1690,12 @@ def spec_to_source(spec: SceneSpec) -> str:
     for dname, iv in (spec.meta.get("dims") or {}).items():
         lo, hi = iv
         if lo is not None and hi is not None and lo == hi:
-            lines.append(f"dim {dname} = {_fmt_num(lo)}")
+            lines.append(f"dim {dname} = {_fmt_len(lo)}")
         else:
             if lo is not None:
-                lines.append(f"dim {dname} >= {_fmt_num(lo)}")
+                lines.append(f"dim {dname} >= {_fmt_len(lo)}")
             if hi is not None:
-                lines.append(f"dim {dname} <= {_fmt_num(hi)}")
+                lines.append(f"dim {dname} <= {_fmt_len(hi)}")
     for pair in spec.meta.get("constraints") or []:
         lines.append(f"constrain {pair[0]} = {pair[1]}")
     if lines:
@@ -1590,7 +1751,7 @@ def _pattern_transforms(node: NodeSpec) -> list[Transform]:
         r = pat["r"]
         z = node.loc[2]
         for i in range(n):
-            theta = 360.0 * i / n
+            theta = 2.0 * math.pi * i / n
             xf = rotation(0.0, 0.0, theta).compose(translation(r, 0.0, z))
             out.append(xf.compose(base_rot))
     elif pat["kind"] == "linear":
@@ -1628,10 +1789,10 @@ def _decompose(
 
     Exact inverse of :func:`_node_xform`, which builds ``translate(loc) ∘
     rotate(rot)`` — so ``t`` *is* the location and ``R`` *is* the rotation;
-    only the Euler extraction (:func:`~precis.cad.vec.euler_deg_from_matrix`)
+    only the Euler extraction (:func:`~precis.cad.vec.euler_rad_from_matrix`)
     does any work.
     """
-    rx, ry, rz = euler_deg_from_matrix(xf.R)
+    rx, ry, rz = euler_rad_from_matrix(xf.R)
     return (float(xf.t[0]), float(xf.t[1]), float(xf.t[2])), (rx, ry, rz)
 
 
@@ -1755,9 +1916,7 @@ def _coerce_state(
     acceptance rule: an explicit illegal pose is rejected, never clamped)."""
     if kind == "cylindrical":
         if not isinstance(value, (list, tuple)) or len(value) != 2:
-            raise SceneError(
-                f"state[{name!r}]: cylindrical takes [angle_deg, slide_mm]"
-            )
+            raise SceneError(f"state[{name!r}]: cylindrical takes [angle_rad, slide_m]")
         ang, dist = float(value[0]), float(value[1])
         if limits is not None and not (limits[0] <= ang <= limits[1]):
             raise SceneError(
@@ -1825,7 +1984,11 @@ def _resolve_states(
         resolved.add(name)
         want = c.ratio * chain_q(c.drive)
         if name in raw:
-            if abs(cur - want) > 1e-9:
+            # Self-relative: ``cur``/``want`` are joint state values, which
+            # per-joint-kind are lengths or radians — a fixed absolute
+            # threshold means nothing for a length-typed joint whose scale
+            # is nanometres.
+            if abs(cur - want) > 1e-9 * max(abs(cur), abs(want)):
                 raise SceneError(
                     f"state[{name!r}]={cur:g} conflicts with its {c.via} "
                     f"coupling (= {c.ratio:g} × {c.drive} = {want:g}) — "
@@ -1860,7 +2023,9 @@ def _joint_xform(kind: str, q: JointState, pitch: float) -> Transform:
     if kind == "prismatic":
         return translation(0.0, 0.0, q)
     if kind == "screw":
-        return translation(0.0, 0.0, q * pitch / 360.0).compose(rotation(0.0, 0.0, q))
+        return translation(0.0, 0.0, q * pitch / (2.0 * math.pi)).compose(
+            rotation(0.0, 0.0, q)
+        )
     raise SceneError(f"unknown joint kind {kind!r}")  # pragma: no cover
 
 
@@ -2119,8 +2284,8 @@ def _solve_mates(
             xf = xf.compose(rotation(0.0, 0.0, mate.spin))
             host_iface = host_iface.compose(rotation(0.0, 0.0, mate.spin))
         if mate.flip:
-            xf = xf.compose(rotation(180.0, 0.0, 0.0))
-            host_iface = host_iface.compose(rotation(180.0, 0.0, 0.0))
+            xf = xf.compose(rotation(math.pi, 0.0, 0.0))
+            host_iface = host_iface.compose(rotation(math.pi, 0.0, 0.0))
         if mate.kind != "fixed":
             xf = xf.compose(_joint_xform(mate.kind, states[inst], mate.pitch))
         xf = xf.compose(subject_port.frame().inverse())

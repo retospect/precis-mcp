@@ -65,7 +65,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | photoswitch physics, channel budget, photo-charge | `photoswitch-states-and-spectral-dof.md` | evidence gathered |
 | toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11) |
 | scenarios + three-verdict rule table | **here, §Scenarios** | new |
-| complementarity solver | **here, §Complementarity** | new |
+| complementarity solver | **here, §Complementarity** | core BUILT 2026-09-12 (`structsolve/complementarity.py`: active-set solve e49fb80a + bistability probe; se bridge/validate wiring waits on the units window — `complementarity-solver.md`) |
 | optimisation stack (surrogates, BO, annealing) | **here, §Optimisation** | new |
 | requirement→joint matching | **here, §Joint matching** | new |
 | view-dependent form | **here, §View-dependent form** | new |
@@ -80,6 +80,16 @@ already handled by `precis_se.validate.kernel_scale`.
 | radiometric transport + irradiance contract | spec §4.8 | spec'd — kept: smooth, cheap, propagating constraints (Reto 2026-09-12) |
 | molecular `density_at` fidelity ladder, conformer enumeration, degradation/cleavage records | spec §4.9 | spec'd |
 | inspection toolkit (cast_ray, max_stress/under_utilised, digest, bookmarks); job searching→improving status | spec §5.4–5.7 | spec'd |
+| reference targets (struts-and-strings bracket; azobenzene/tensegrity flagship as architectural test) | `multiscale-design-addendum-a.md` A1 | spec'd 2026-09-12 |
+| limited component DOF + meshing-controlled generated geometry (principles) | addendum A2 | spec'd 2026-09-12 |
+| lifecycle situations: n-not-three, operational 4D motion, hard-stop contact row, compare-by-volume | addendum A3 (built out in `situation-rule-tables.md`; mechanics stay §Scenarios here) | spec'd 2026-09-12 |
+| tolerance budgeting: variance-up/budget-down one traversal + error-source correlation tags | addendum A4 (allocation rides `margin-budget-tree.md`; chains f&c rung 4) | spec'd 2026-09-12 |
+| standing simplifications (static loads, one-way FSI, handbook convection) | addendum A5 (consistent with §Physics layers here) | spec'd 2026-09-12 |
+| BO as adaptive surrogate: inner-solve stand-in, contested decisions, Pareto-front extension, per-objective fitting before Chebyshev | addendum A7 (`complementarity-solver.md`; house guard stays §Optimisation here) | spec'd 2026-09-12 |
+| load-sign idioms + sign-aware completeness check | addendum A6 (`complementarity-solver.md`; mechanics stay §Complementarity here) | spec'd 2026-09-12 |
+| laser/die/turning processes; 2.5D sheet kernel serving three processes | addendum A8 → `se-off-the-shelf-fabrication.md` rungs 4–5 (turning new) | spec'd 2026-09-12 |
+| non-bonded menu (charge/H-bond/vdW), ratchets, hysteresis caching rule, DFT spacer library, synthesis-route choice | addendum A9 → stick-placement / photoswitch / design-core states / blocktree | spec'd 2026-09-12 |
+| process projection composability; reaction yield (open questions) | addendum A10 → spec §6.2 | spec'd 2026-09-12 |
 
 ## Toolpath ownership — how far into the slicer we go (new)
 
@@ -179,6 +189,13 @@ equilibria and a barrier it is also the bistable-actuation analysis
 bilateral, strongly asymmetric, with a failure point (Morse, not Hooke);
 the cross-scale mapping table lives in `structural-solution-space.md`.
 
+**Load-sign idioms + the sign-aware completeness check** are Addendum A6
+(`multiscale-design-addendum-a.md`): spring is a bidirectional member
+with a declared rate, not a sixth idiom (already the shipped slice-1
+axial-rate member); a tension-only member driven into compression by any
+declared load case makes the topology **incomplete**, not merely
+stressed. Build detail: `complementarity-solver.md`.
+
 ## Optimisation stack (new)
 
 - **Soft costs, not hard gates.** The validator rules out only the
@@ -212,6 +229,13 @@ the cross-scale mapping table lives in `structural-solution-space.md`.
   objective weights stay human-set (`quest` frontier discipline — a solver
   may not tune its own objective). BO is a search scheduler, never a
   weight-tuner.
+- **BO's three loci** (Addendum A7, `multiscale-design-addendum-a.md`):
+  the inner-solve stand-in above; contested decisions (runner-up within
+  ~5%, spec §3.8) queued for a refinement evaluation; adaptive Pareto-
+  front extension (spec §3.4) when a query lands outside a front's
+  sampled envelope. Fit the surrogate **per objective, then Chebyshev-
+  scalarise** — scalarising first feeds the surrogate a non-smooth
+  target.
 
 ## Requirement→joint matching (new)
 
@@ -246,9 +270,9 @@ render ISO units with scale-appropriate prefixes.**
 
 - **Input**: ops accept an explicit unit declaration ("state your units" —
   nm, Å, mm, m, km; N, kN); the MCP converts at the boundary. No implicit
-  per-kind convention an agent must guess — the current state (cad DSL
-  docstring says mm, se stores m, nm stores Å, one shared grammar) is the
-  anti-pattern this replaces. Explicit units kill the two observed LLM
+  per-kind convention an agent must guess — the pre-cutover state (cad DSL
+  docstring said mm, se stored m, nm stored Å, one shared grammar) was the
+  anti-pattern this replaced. Explicit units kill the two observed LLM
   failure modes: zero-counting (`box:w0.000000003…`) and silent 10×
   exponent slips that validate cannot distinguish from intent.
 - **Internal**: one representation, SI base (m, N), float64. Relative
@@ -279,19 +303,46 @@ render ISO units with scale-appropriate prefixes.**
   (defaulting ladder: stated → capability row → scale-relative
   fallback); capability absolutes are what make "asked 10 µm, fdm holds
   200 µm" DRC computable (even ISO IT grades scale ~D^⅓, not linearly).
+- **Angles are a fifth dimension of the same ladder** (Reto 2026-09-12,
+  `units-policy-cutover.md`'s decisions log): radians internal, an
+  explicit unit at ingest (`deg`/`rad` — a bare angle number is refused
+  the same as a bare length), degrees on display (the shared formatter
+  never SI-prefixes an angle — nobody reads femto-degrees). `se`/`nm`'s
+  own `pose`/`rot` block-tree vectors are the one carve-out: both stay
+  **bare-number** (metres / radians respectively, no unit token,
+  not unit-string-parsed) — a deliberately different, older convention
+  from `cad`'s own `rot:`/`spin:`/`limits:` text tokens, which *are*
+  unit-required.
+- **Two named unit enclaves stay outside this ladder, by declared rule**
+  (glossary: *unit enclave*) — a package may keep a non-SI internal
+  convention only if every identifier self-names its unit (a `_mm`/`_A`
+  suffix) AND every cross-package API converts to SI at the boundary:
+  `structure` (Å/eV-native — ASE's `Atoms`/calculators/optimizers are
+  woven through it, so forcing SI would add a conversion per ASE call;
+  `precis_nm/mechanics.py`'s Å/nN/eV atomistic-scale signatures are the
+  same enclave, reached through explicit m↔Å seams at the nm↔structure
+  boundary) and `pcb` (mm-native — gerber/Excellon/IPC/JLC's own file
+  formats are mm-native at both ends of its pipe). Neither enclave is
+  reachable through the ingest-any/format_quantity ladder described
+  above; each has its own compliance doc
+  (`structure-unit-enclave.md`).
 - **Boundary: atom interactions are separate** (Reto 2026-09-11). This
-  policy covers the geometry currency (lengths, forces, tolerances)
-  only. Interaction physics — kT thresholds, π-stack energies, nm
-  mechanics capacities — keeps its own native quantities in its own
-  modules (`nm-stick-placement.md`, `precis_nm/mechanics.py`) and is
-  never routed through the unit-defaulting ladder: cost terms *over* the
-  geometry, not lengths *in* it.
+  policy covers the geometry currency (lengths, forces, angles,
+  tolerances) only. Interaction physics — kT thresholds, π-stack
+  energies, nm mechanics capacities — keeps its own native quantities in
+  its own modules (`nm-stick-placement.md`, `precis_nm/mechanics.py`) and
+  is never routed through the unit-defaulting ladder: cost terms *over*
+  the geometry, not lengths *in* it.
 
-Owner: se/nm handlers + cad DSL docstring; lands with the dogfood-fix
-cycle. Cross-kind seams (`bind_structure`, `realized-by`, formfind feeds)
-become trivial once internal rep is shared. The clearance sign-flip
-(gr334763) and the box half-extent ambiguity (gr334785 — decision
-pending) are the same family and should land in that cycle.
+Shipped (`units-policy-cutover.md`, 2026-09-12 window): `precis/utils/
+units.py` is the one shared parser/formatter; `cad`'s DSL/scene grammar,
+`se`/`nm`'s handlers and ops, and their display sites all route through
+it; `se`'s `pose_rot` and `nm`'s pose/envelope columns carry a
+forward-only migration/wipe to the units this section describes. Cross-
+kind seams (`bind_structure`, `realized-by`, formfind feeds) are trivial
+now the internal rep is shared. The clearance sign-flip (gr334763) and
+the box half-extent ambiguity (gr334785, `box-full-dims-cutover.md`) are
+the same family and land in the same window.
 
 ## Physics layers — deferred, with the notes that shouldn't be re-derived
 

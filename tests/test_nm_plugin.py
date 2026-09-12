@@ -22,6 +22,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
+from precis.utils.units import parse_quantity
 from precis_nm import persist
 from precis_nm.handler import NmHandler, _render_clearance, _render_tree
 from precis_nm.ops import BlockTree, ConnectSpec, NmBlock, PortSpec, ThreadingSpec
@@ -35,14 +36,14 @@ _TREE = json.dumps(
             {
                 "op": "add_block",
                 "name": "axle",
-                "envelope": "cyl:r2h20",
+                "envelope": "cyl:r2Åh20Å",
                 "desc": "the threading rod",
             },
             {
                 "op": "add_block",
                 "name": "hub",
                 "parent": "axle",
-                "envelope": "sphere:r3",
+                "envelope": "sphere:r3Å",
                 "use": "stopper",
             },
             {"op": "add_block", "name": "rim", "parent": "hub", "pose": [0, 0, 5]},
@@ -114,7 +115,7 @@ def test_get_block_view(handler: NmHandler) -> None:
     handler.put(id="rotax1", text=_TREE)
     block = handler.get(id="rotax1", view="block", args={"name": "hub"})
     assert "parent: axle" in block.body
-    assert "envelope: sphere:r3" in block.body
+    assert "envelope: sphere:r3e-10" in block.body  # 3 Å, canonicalised to metres
     assert "use: stopper" in block.body
 
 
@@ -202,10 +203,10 @@ def test_unknown_parent_rejected(handler: NmHandler) -> None:
 
 def test_envelope_good_config_accepted(handler: NmHandler) -> None:
     ops = json.dumps(
-        {"ops": [{"op": "add_block", "name": "a", "envelope": "cyl:r5h2"}]}
+        {"ops": [{"op": "add_block", "name": "a", "envelope": "cyl:r5Åh2Å"}]}
     )
     resp = handler.put(id="env1", text=ops)
-    assert "env=cyl:r5h2" in resp.body
+    assert "env=cyl:r5e-10h2e-10" in resp.body  # 5 Å / 2 Å, canonicalised to metres
 
 
 def test_envelope_bad_config_names_valid_shapes(handler: NmHandler) -> None:
@@ -223,7 +224,7 @@ _TEMPLATE_OPS = [
     {
         "op": "add_block",
         "name": "sugar",
-        "envelope": "sphere:r2",
+        "envelope": "sphere:r2Å",
         "desc": "one sugar unit",
     },
     {"op": "add_block", "name": "ring_atom", "parent": "sugar"},
@@ -286,13 +287,13 @@ def test_instance_cannot_nest_under_its_own_template(handler: NmHandler) -> None
 
 def test_instance_block_rejects_template_metadata(handler: NmHandler) -> None:
     for key, value in (
-        ("envelope", "cyl:r1h1"),
+        ("envelope", "cyl:r1Åh1Å"),
         ("desc", "a copy"),
         ("use", "spacer"),
         ("dof", {"kind": "rotational"}),
     ):
         ops = [
-            {"op": "add_block", "name": "a", "envelope": "sphere:r1"},
+            {"op": "add_block", "name": "a", "envelope": "sphere:r1Å"},
             {"op": "instance_block", "name": "b", "template": "a", key: value},
         ]
         with pytest.raises(BadInput, match=key):
@@ -402,7 +403,7 @@ def test_cross_design_instance_resolves_envelope_and_ports_by_reference(
                     {
                         "op": "add_block",
                         "name": "part",
-                        "envelope": "sphere:r2",
+                        "envelope": "sphere:r2Å",
                         "desc": "a catalogued click-chem handle",
                     },
                     {
@@ -561,11 +562,20 @@ def test_set_pose_round_trips(handler: NmHandler) -> None:
     handler.put(id="rotax1", text=_TREE)
     handler.edit(
         id="rotax1",
-        ops=[{"op": "set_pose", "block": "hub", "pose": [1, 2, 3], "rot": [0, 90, 0]}],
+        ops=[
+            {
+                "op": "set_pose",
+                "block": "hub",
+                "pose": [1, 2, 3],
+                "rot": [0, math.radians(90), 0],
+            }
+        ],
     )
     block = handler.get(id="rotax1", view="block", args={"name": "hub"})
     assert "pose: [1, 2, 3]" in block.body
-    assert "rot: [0, 90, 0]" in block.body
+    # rot is stored radians internally, rendered degrees on display (the
+    # units-policy-cutover angle ruling).
+    assert "rot: [0°, 90°, 0°]" in block.body
 
 
 def test_reput_replaces_old_blocks(handler: NmHandler, store: Store) -> None:
@@ -642,8 +652,8 @@ def test_migration_0002_creates_connects_table(
 
 
 _BOND_TREE_OPS: list[dict[str, object]] = [
-    {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
-    {"op": "add_block", "name": "b", "envelope": "sphere:r2"},
+    {"op": "add_block", "name": "a", "envelope": "sphere:r2Å"},
+    {"op": "add_block", "name": "b", "envelope": "sphere:r2Å"},
     {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
     {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
     {"op": "connect", "a": "a.p1", "b": "b.p1"},
@@ -652,7 +662,7 @@ _BOND_TREE_OPS: list[dict[str, object]] = [
 
 def test_add_port_on_instance_rejected(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2Å"},
         {"op": "instance_block", "name": "inst", "template": "tmpl"},
         {"op": "add_port", "block": "inst", "name": "p1", "roles": ["covalent"]},
     ]
@@ -710,10 +720,10 @@ def test_connect_onto_instance_endpoint_resolves_template_port(
     handler: NmHandler,
 ) -> None:
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
         {"op": "instance_block", "name": "inst", "template": "tmpl"},
-        {"op": "add_block", "name": "other", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "other", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "other", "name": "p1", "roles": ["covalent"]},
         {"op": "connect", "a": "inst.p1", "b": "other.p1"},
     ]
@@ -794,10 +804,10 @@ def test_remove_port_blocked_by_instance_mediated_connect(handler: NmHandler) ->
     # block name resolves to the TEMPLATE's port at connect time
     # (effective_ports) — remove_port on the template must still see it.
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
         {"op": "instance_block", "name": "inst", "template": "tmpl"},
-        {"op": "add_block", "name": "other", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "other", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "other", "name": "p1", "roles": ["covalent"]},
         {"op": "connect", "a": "inst.p1", "b": "other.p1"},
     ]
@@ -834,10 +844,10 @@ def test_remove_block_on_instance_endpoint_drops_touching_connects(
     handler: NmHandler,
 ) -> None:
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
         {"op": "instance_block", "name": "inst", "template": "tmpl"},
-        {"op": "add_block", "name": "other", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "other", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "other", "name": "p1", "roles": ["covalent"]},
         {"op": "connect", "a": "inst.p1", "b": "other.p1"},
     ]
@@ -855,17 +865,17 @@ def test_remove_block_on_instance_endpoint_drops_touching_connects(
 
 def test_instance_tree_line_shows_inherited_envelope(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "cyl:r5h2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "cyl:r5Åh2Å"},
         {"op": "instance_block", "name": "inst", "template": "tmpl"},
     ]
     handler.put(id="envinherit1", text=json.dumps({"ops": ops}))
     toc = handler.get(id="envinherit1")
     inst_line = next(ln for ln in toc.body.splitlines() if "inst" in ln and "- " in ln)
-    assert "cyl:r5h2" in inst_line
+    assert "cyl:r5e-10h2e-10" in inst_line  # 5 Å / 2 Å, canonicalised to metres
     assert "from tmpl" in inst_line
 
     block = handler.get(id="envinherit1", view="block", args={"name": "inst"})
-    assert "cyl:r5h2" in block.body
+    assert "cyl:r5e-10h2e-10" in block.body
     assert "from tmpl" in block.body
 
 
@@ -880,7 +890,7 @@ def test_validate_view_clean_design(handler: NmHandler) -> None:
 
 def test_validate_unconnected_port_warns_then_clears(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
     ]
     handler.put(id="loose1", text=json.dumps({"ops": ops}))
@@ -891,7 +901,7 @@ def test_validate_unconnected_port_warns_then_clears(handler: NmHandler) -> None
     handler.edit(
         id="loose1",
         ops=[
-            {"op": "add_block", "name": "b", "envelope": "sphere:r2"},
+            {"op": "add_block", "name": "b", "envelope": "sphere:r2Å"},
             {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
             {"op": "connect", "a": "a.p1", "b": "b.p1"},
         ],
@@ -916,9 +926,20 @@ def test_validate_correct_chain_design_stays_clean(handler: NmHandler) -> None:
     # partner — must validate clean under all four new checks at once, not
     # just the pre-existing six.
     names = ["c1", "c2", "c3", "c4", "c5"]
-    positions = [[0, 0, 0], [8, 0, 0], [16, 0, 0], [24, 0, 0], [32, 0, 0]]
+    # pose is bare metres (unconverted — the units chain's decisions log),
+    # while envelope is Å-annotated and canonicalises to metres at the
+    # ingest boundary — so these positions are pre-converted (8/16/24/32 Å
+    # -> ×1e-10 m) to stay physically consistent with the r3Å spheres,
+    # not 8-32 METRES apart from them.
+    positions = [
+        [0, 0, 0],
+        [8e-10, 0, 0],
+        [1.6e-9, 0, 0],
+        [2.4e-9, 0, 0],
+        [3.2e-9, 0, 0],
+    ]
     ops: list[dict[str, object]] = [
-        {"op": "add_block", "name": n, "envelope": "sphere:r3", "pose": p}
+        {"op": "add_block", "name": n, "envelope": "sphere:r3Å", "pose": p}
         for n, p in zip(names, positions, strict=True)
     ]
     for i, n in enumerate(names):
@@ -956,8 +977,16 @@ def test_validate_envelope_overlap_beyond_declared_contact(handler: NmHandler) -
     # envelopes deeply interpenetrate — the dogfood's "impossible design
     # validated cleaner than the correct one" repro.
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r5"},
-        {"op": "add_block", "name": "b", "envelope": "sphere:r5", "pose": [1, 0, 0]},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r5Å"},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": "sphere:r5Å",
+            # pose is bare metres (unconverted); 1 Å -> 1e-10 m, so the two
+            # r5Å spheres stay deeply interpenetrating like the pre-cutover
+            # dogfood repro, not 1 METRE apart (no overlap at all).
+            "pose": [1e-10, 0, 0],
+        },
     ]
     handler.put(id="overlap1", text=json.dumps({"ops": ops}))
     resp = handler.get(id="overlap1", view="validate")
@@ -980,14 +1009,14 @@ def test_validate_envelope_overlap_skips_connected_and_nested_pairs(
         {
             "op": "add_block",
             "name": "parent",
-            "envelope": "sphere:r4",
+            "envelope": "sphere:r4Å",
             "pose": [100, 0, 0],
         },
         {
             "op": "add_block",
             "name": "child",
             "parent": "parent",
-            "envelope": "sphere:r4",
+            "envelope": "sphere:r4Å",
             "pose": [100, 0, 0],
         },
     ]
@@ -1006,19 +1035,19 @@ def test_validate_envelope_overlap_skips_grandparent_nested_pair(
     # one. A one-hop-only walk would treat 'gp'/'leaf' as unrelated and
     # wrongly flag them.
     ops = [
-        {"op": "add_block", "name": "gp", "envelope": "sphere:r4", "pose": [50, 0, 0]},
+        {"op": "add_block", "name": "gp", "envelope": "sphere:r4Å", "pose": [50, 0, 0]},
         {
             "op": "add_block",
             "name": "mid",
             "parent": "gp",
-            "envelope": "sphere:r4",
+            "envelope": "sphere:r4Å",
             "pose": [50, 0, 0],
         },
         {
             "op": "add_block",
             "name": "leaf",
             "parent": "mid",
-            "envelope": "sphere:r4",
+            "envelope": "sphere:r4Å",
             "pose": [50, 0, 0],
         },
     ]
@@ -1041,7 +1070,7 @@ def test_validate_connect_cycle_warns_with_path(handler: NmHandler) -> None:
             {
                 "op": "add_block",
                 "name": n,
-                "envelope": f"sphere:r{sphere_r:g}",
+                "envelope": f"sphere:r{sphere_r:g}Å",
                 "pose": pos,
             }
         )
@@ -1061,10 +1090,19 @@ def test_validate_connect_cycle_warns_with_path(handler: NmHandler) -> None:
 
 
 def test_validate_bond_length_sanity_warns_wildly_long_bond(handler: NmHandler) -> None:
-    # The dogfood's actual repro number: a 48.5 Å "covalent bond".
+    # The dogfood's actual repro number: a 48.5 (design-space, metres since
+    # the units cutover) "covalent bond" — the literal 48.5 is unchanged
+    # from the pre-cutover Å-scale dogfood; only the pose's unit meaning
+    # changed, and this test only cares about threshold-crossing, not
+    # physical realism.
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r5"},
-        {"op": "add_block", "name": "b", "envelope": "sphere:r5", "pose": [48.5, 0, 0]},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r5Å"},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": "sphere:r5Å",
+            "pose": [48.5, 0, 0],
+        },
         {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
         {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
         {"op": "connect", "a": "a.p1", "b": "b.p1"},
@@ -1081,8 +1119,8 @@ def test_validate_bond_vector_alignment_warns_when_not_antiparallel(
     # Both ports' declared direction points the SAME way — the dogfood's
     # proof that these vectors were pure decoration (nothing read them).
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
-        {"op": "add_block", "name": "b", "envelope": "sphere:r2", "pose": [4, 0, 0]},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2Å"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r2Å", "pose": [4, 0, 0]},
         {
             "op": "add_port",
             "block": "a",
@@ -1108,8 +1146,8 @@ def test_validate_bond_vector_alignment_clean_when_antiparallel(
     handler: NmHandler,
 ) -> None:
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
-        {"op": "add_block", "name": "b", "envelope": "sphere:r2", "pose": [4, 0, 0]},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2Å"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r2Å", "pose": [4, 0, 0]},
         {
             "op": "add_port",
             "block": "a",
@@ -1141,8 +1179,13 @@ def test_validate_bond_vector_alignment_clean_when_antiparallel_after_rotation(
     # spurious warn; comparing world-frame vectors correctly sees
     # [0,1,0] vs [0,-1,0] -> antiparallel -> quiet.
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r2", "rot": [0, 0, 90]},
-        {"op": "add_block", "name": "b", "envelope": "sphere:r2", "pose": [0, 4, 0]},
+        {
+            "op": "add_block",
+            "name": "a",
+            "envelope": "sphere:r2Å",
+            "rot": [0, 0, math.radians(90)],
+        },
+        {"op": "add_block", "name": "b", "envelope": "sphere:r2Å", "pose": [0, 4, 0]},
         {
             "op": "add_port",
             "block": "a",
@@ -1172,13 +1215,13 @@ def test_validate_bond_vector_alignment_warns_when_misaligned_after_rotation(
     # rotated 90 deg about z so its world direction is actually [0,-1,0]
     # -> 90 deg off [1,0,0], genuinely misaligned -> must warn.
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2Å"},
         {
             "op": "add_block",
             "name": "b",
-            "envelope": "sphere:r2",
+            "envelope": "sphere:r2Å",
             "pose": [4, 0, 0],
-            "rot": [0, 0, 90],
+            "rot": [0, 0, math.radians(90)],
         },
         {
             "op": "add_port",
@@ -1203,7 +1246,7 @@ def test_validate_bond_vector_alignment_warns_when_misaligned_after_rotation(
 
 def test_validate_external_port_skips_warn_with_info_line(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "a", "envelope": "sphere:r2Å"},
         {
             "op": "add_port",
             "block": "a",
@@ -1248,7 +1291,7 @@ def test_validate_unconnected_port_findings_severity_tiers() -> None:
     tree = BlockTree()
     tree.blocks["a"] = NmBlock(
         name="a",
-        envelope="sphere:r2",
+        envelope="sphere:r2Å",
         ports={
             "ext1": PortSpec(
                 name="ext1", roles=["covalent"], annotations={"external": True}
@@ -1270,7 +1313,7 @@ def test_validate_external_annotation_requires_literal_true() -> None:
     tree = BlockTree()
     tree.blocks["a"] = NmBlock(
         name="a",
-        envelope="sphere:r2",
+        envelope="sphere:r2Å",
         ports={
             "p1": PortSpec(
                 name="p1", roles=["covalent"], annotations={"external": "false"}
@@ -1331,7 +1374,7 @@ def test_ports_view_renders(handler: NmHandler) -> None:
 
 def test_ports_view_marks_instance_rows(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "tmpl", "name": "p1", "roles": ["covalent"]},
         {"op": "instance_block", "name": "inst", "template": "tmpl"},
     ]
@@ -1361,46 +1404,62 @@ def test_tree_view_shows_port_count_suffix(handler: NmHandler) -> None:
 # precis.cad.relate.clearance (the exact-sign CSG SDF, Å).
 
 
+def _gap_value(body: str) -> float:
+    """The ``gap:`` line's value in SI metres — the line reads through the
+    shared neat formatter (``gap: 8 pm  (clear)``), so parse it back
+    instead of assuming a bare float token."""
+    gap_line = next(ln for ln in body.splitlines() if ln.startswith("gap:"))
+    formatted = gap_line.split(":", 1)[1].split("(")[0].strip()
+    return parse_quantity(formatted, "length")
+
+
 def test_clearance_separated_boxes_positive_gap(handler: NmHandler) -> None:
+    # A genuinely nm-scale ``box:`` envelope (Å-sized) — pre-fix this
+    # crashed/degenerated at construction because the cad kernel's
+    # LINEAR_EPS was an ABSOLUTE 1e-6, culling every face of a box this
+    # small (gr335192/gr334785); units-policy-cutover's relative-
+    # tolerance audit made it a fraction of the box's own size instead, so
+    # the same clearance arithmetic that used to need metre-scale boxes
+    # now runs directly at the scale nm designs actually live at. Pose is
+    # bare metres (unconverted — the units chain's own decisions log).
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "box:w2d2h2"},
+        {"op": "add_block", "name": "a", "envelope": "box:w2Åd2Åh2Å"},
         {
             "op": "add_block",
             "name": "b",
-            "envelope": "box:w2d2h2",
-            "pose": [10, 0, 0],
+            "envelope": "box:w2Åd2Åh2Å",
+            "pose": [1e-9, 0, 0],  # 10 Å apart, centre to centre
         },
     ]
     handler.put(id="clr1", text=json.dumps({"ops": ops}))
     resp = handler.get(id="clr1", view="clearance", args={"a": "a", "b": "b"})
-    # boxes are 2 wide (±1 from center); centers 10 apart → gap = 10-1-1 = 8
-    gap_line = next(ln for ln in resp.body.splitlines() if ln.startswith("gap:"))
-    gap_val = float(gap_line.split()[1])
-    assert gap_val == pytest.approx(8.0, abs=1e-2)
+    # boxes are 2 Å wide (±1 Å = ±1e-10 m from centre); centres 1e-9 m
+    # apart → gap = 1e-9 - 1e-10 - 1e-10 = 8e-10 m (8 Å)
+    assert _gap_value(resp.body) == pytest.approx(8e-10, rel=1e-2)
     assert "(clear)" in resp.body
 
 
 def test_clearance_overlapping_boxes_negative_gap(handler: NmHandler) -> None:
+    # See test_clearance_separated_boxes_positive_gap's comment on the
+    # nm-scale choice.
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "box:w4d4h4"},
+        {"op": "add_block", "name": "a", "envelope": "box:w4Åd4Åh4Å"},
         {
             "op": "add_block",
             "name": "b",
-            "envelope": "box:w4d4h4",
-            "pose": [1, 0, 0],
+            "envelope": "box:w4Åd4Åh4Å",
+            "pose": [1e-10, 0, 0],  # 1 Å apart — well inside the 4 Å overlap
         },
     ]
     handler.put(id="clr2", text=json.dumps({"ops": ops}))
     resp = handler.get(id="clr2", view="clearance", args={"a": "a", "b": "b"})
     assert "interference" in resp.body
-    gap_line = next(ln for ln in resp.body.splitlines() if ln.startswith("gap:"))
-    gap_val = float(gap_line.split()[1])
-    assert gap_val < 0
+    assert _gap_value(resp.body) < 0
 
 
 def test_clearance_missing_envelope_raises_badinput(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "box:w2d2h2"},
+        {"op": "add_block", "name": "a", "envelope": "box:w2md2mh2m"},
         {"op": "add_block", "name": "b"},  # no envelope
     ]
     handler.put(id="clr3", text=json.dumps({"ops": ops}))
@@ -1410,30 +1469,28 @@ def test_clearance_missing_envelope_raises_badinput(handler: NmHandler) -> None:
 
 def test_clearance_instance_uses_template_envelope(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "box:w2d2h2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "box:w2md2mh2m"},
         {
             "op": "instance_block",
             "name": "inst",
             "template": "tmpl",
             "pose": [10, 0, 0],
         },
-        {"op": "add_block", "name": "other", "envelope": "box:w2d2h2"},
+        {"op": "add_block", "name": "other", "envelope": "box:w2md2mh2m"},
     ]
     handler.put(id="clr4", text=json.dumps({"ops": ops}))
     resp = handler.get(id="clr4", view="clearance", args={"a": "inst", "b": "other"})
-    gap_line = next(ln for ln in resp.body.splitlines() if ln.startswith("gap:"))
-    gap_val = float(gap_line.split()[1])
-    assert gap_val == pytest.approx(8.0, abs=1e-2)
+    assert _gap_value(resp.body) == pytest.approx(8.0, abs=1e-2)
 
 
 def test_clearance_children_note_appears(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "a", "envelope": "box:w2d2h2"},
-        {"op": "add_block", "name": "child", "parent": "a", "envelope": "sphere:r1"},
+        {"op": "add_block", "name": "a", "envelope": "box:w2md2mh2m"},
+        {"op": "add_block", "name": "child", "parent": "a", "envelope": "sphere:r1m"},
         {
             "op": "add_block",
             "name": "b",
-            "envelope": "box:w2d2h2",
+            "envelope": "box:w2md2mh2m",
             "pose": [10, 0, 0],
         },
     ]
@@ -1453,7 +1510,7 @@ def test_clearance_same_block_rejected(handler: NmHandler) -> None:
     handler.put(
         id="clr7",
         text=json.dumps(
-            {"ops": [{"op": "add_block", "name": "a", "envelope": "sphere:r1"}]}
+            {"ops": [{"op": "add_block", "name": "a", "envelope": "sphere:r1Å"}]}
         ),
     )
     with pytest.raises(BadInput, match="must differ"):
@@ -1466,6 +1523,10 @@ def test_clearance_hand_corrupted_envelope_raises_badinput() -> None:
     # bug elsewhere) must surface as a legible BadInput, not a raw
     # traceback from the cad kernel's DslError.
     tree = BlockTree()
+    # "a"'s envelope is already-canonical stored text (bare metres, the
+    # post-migration shape — this bypasses ops.py's add_block ingest
+    # boundary entirely, so it is never unit-annotated) — only "b"'s is
+    # the hand-corrupted one this test targets.
     tree.blocks["a"] = NmBlock(name="a", envelope="cyl:r2h5")
     tree.blocks["b"] = NmBlock(name="b", envelope="not-a-real-shape")
     with pytest.raises(BadInput, match="invalid envelope"):
@@ -1506,7 +1567,7 @@ def test_bind_structure_happy_path(
 ) -> None:
     c_label, n_label = _make_structure(structure, "frag1")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
         {
             "op": "bind_structure",
@@ -1535,7 +1596,7 @@ def test_bind_structure_port_atom_map_persists_across_second_save(
     # survive a second save keyed by name/design/atom, not by row id.
     c_label, _n = _make_structure(structure, "frag2")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
             "op": "bind_structure",
@@ -1566,7 +1627,7 @@ def test_bind_structure_rebind_different_design_clears_stale_ports(
     assert c_a == c_b  # the label-collision precondition this test needs
 
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {"op": "add_port", "block": "hub", "name": "p2"},
         {
@@ -1611,7 +1672,7 @@ def test_bind_structure_same_design_rebind_is_incremental(
 ) -> None:
     c_label, n_label = _make_structure(structure, "fragC")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {"op": "add_port", "block": "hub", "name": "p2"},
         {
@@ -1650,7 +1711,7 @@ def test_bind_structure_expected_element_mismatch_rejected(
 ) -> None:
     c_label, _n = _make_structure(structure, "frag3")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "O"},
         {
             "op": "bind_structure",
@@ -1665,7 +1726,7 @@ def test_bind_structure_expected_element_mismatch_rejected(
 
 def test_bind_structure_unknown_design_raises(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "bind_structure", "block": "hub", "design": "no-such-design"},
     ]
     with pytest.raises(NotFound, match="no structure design"):
@@ -1677,7 +1738,7 @@ def test_bind_structure_unknown_port_raises(
 ) -> None:
     c_label, _n = _make_structure(structure, "frag5")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {
             "op": "bind_structure",
             "block": "hub",
@@ -1694,7 +1755,7 @@ def test_bind_structure_unknown_atom_raises(
 ) -> None:
     _c, _n = _make_structure(structure, "frag6")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
             "op": "bind_structure",
@@ -1712,7 +1773,7 @@ def test_bind_structure_on_instance_rejected(
 ) -> None:
     _make_structure(structure, "frag7")
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "tmpl", "envelope": "sphere:r2Å"},
         {"op": "instance_block", "name": "inst", "template": "tmpl"},
         {"op": "bind_structure", "block": "inst", "design": "frag7"},
     ]
@@ -1725,7 +1786,7 @@ def test_unbind_structure_clears(
 ) -> None:
     c_label, _n = _make_structure(structure, "frag8")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
             "op": "bind_structure",
@@ -1746,8 +1807,8 @@ def test_unbind_structure_clears(
 
 def test_declare_and_remove_threading(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "axle", "envelope": "cyl:r2h20"},
-        {"op": "add_block", "name": "ring", "envelope": "torus:R5r1"},
+        {"op": "add_block", "name": "axle", "envelope": "cyl:r2Åh20Å"},
+        {"op": "add_block", "name": "ring", "envelope": "torus:R5År1Å"},
         {"op": "declare_threading", "a": "ring", "b": "axle"},
     ]
     handler.put(id="topo1", text=json.dumps({"ops": ops}))
@@ -1833,7 +1894,7 @@ def test_threading_persists_across_second_save(handler: NmHandler) -> None:
 
 def test_declare_dof_and_view(handler: NmHandler) -> None:
     ops = [
-        {"op": "add_block", "name": "axle", "envelope": "cyl:r2h20"},
+        {"op": "add_block", "name": "axle", "envelope": "cyl:r2Åh20Å"},
         {"op": "add_port", "block": "axle", "name": "p1"},
         {"op": "add_port", "block": "axle", "name": "p2"},
         {
@@ -2114,9 +2175,9 @@ def test_validate_threaded_without_envelope_clean_via_instance_envelope(
     # same rule the tree/block views already apply, not just check the
     # instance's own (always-empty) envelope field.
     ops = [
-        {"op": "add_block", "name": "tmpl", "envelope": "cyl:r2h20"},
+        {"op": "add_block", "name": "tmpl", "envelope": "cyl:r2Åh20Å"},
         {"op": "instance_block", "name": "axle", "template": "tmpl"},
-        {"op": "add_block", "name": "ring", "envelope": "torus:R5r1"},
+        {"op": "add_block", "name": "ring", "envelope": "torus:R5År1Å"},
         {"op": "declare_threading", "a": "ring", "b": "axle"},
     ]
     handler.put(id="topo8", text=json.dumps({"ops": ops}))
@@ -2172,7 +2233,7 @@ def test_validate_dangling_binding_when_structure_deleted(
 ) -> None:
     c_label, _n = _make_structure(structure, "frag9")
     ops = [
-        {"op": "add_block", "name": "hub", "envelope": "sphere:r2"},
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2Å"},
         {"op": "add_port", "block": "hub", "name": "p1"},
         {
             "op": "bind_structure",

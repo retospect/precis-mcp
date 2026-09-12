@@ -44,6 +44,7 @@ from precis.cad.scene import (
 )
 from precis.cad_resolve import design_resolver
 from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.utils.units import format_quantity
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -72,6 +73,11 @@ DESCRIPTION = (
 _DSL_CRIB = (
     "One node per line: '<name> <op> <config> [@x,y,z] [rot:rx,ry,rz] "
     "[polar:nNrR | linear:nNdx..dy..dz..]'. op ∈ add|cut|intersect. "
+    "EVERY dimensioned number needs an explicit unit — a length unit "
+    "(mm, cm, m, in, nm, Å, ...) on every length/@/polar/linear/pitch/dim "
+    "value, an angle unit (deg or rad) on every rot/spin/angle-limits "
+    "value; a bare number is refused. Prefer mm for lengths and deg for "
+    "angles unless the instruction states otherwise. "
     "'component <name>' opens a part. 'desc:'/'use:' lines record intent. "
     "'use <design-slug> as <name> [@x,y,z] [rot:..] [pattern]' instances "
     "ANOTHER stored design as a sub-assembly — keep such lines verbatim "
@@ -79,7 +85,7 @@ _DSL_CRIB = (
     "'<name>.<part>'. Never invent a slug that doesn't exist. "
     "'port <name> [@x,y,z] [rot:..]' declares a named frame on THIS design "
     "(an interface, not geometry). 'mate <instance>.<port> to <anchor> "
-    "[flip] [spin:<deg>]' places an instance by making its port coincide "
+    "[flip] [spin:<angle>]' places an instance by making its port coincide "
     "with <anchor> — either this design's own '<port>' or another "
     "'<instance>.<port>'. Coincidence is the default; 'flip' adds 180 "
     "degrees about x. A mated instance must NOT also carry @/rot:. Keep "
@@ -88,17 +94,23 @@ _DSL_CRIB = (
     "'of:<component>' (scopes the frame to a component). "
     "'joint <inst>.<port> to <anchor> "
     "<revolute|prismatic|cylindrical|screw|fixed> [limits:lo..hi] "
-    "[pitch:<mm>]' is an articulated mate (motion about/along the anchor "
-    "frame's z); 'joint <component> <kind> at:<port>' articulates a whole "
+    "[pitch:<length>]' is an articulated mate (motion about/along the anchor "
+    "frame's z; limits/pitch need an explicit unit — a length for "
+    "prismatic/pitch, deg/rad for every other kind's angle limits); "
+    "'joint <component> <kind> at:<port>' articulates a whole "
     "component about a port scoped of: that component. 'gear <a> to <b> "
-    "ratio:<r>' couples two joint states. Keep joint/gear lines verbatim "
+    "ratio:<r>' couples two joint states (ratio is dimensionless, no unit). "
+    "Keep joint/gear lines verbatim "
     "unless the instruction is about them. "
-    "'dim <name> =|>=|<= <mm>' declares a named dimension bound "
+    "'dim <name> =|>=|<= <length>' declares a named dimension bound "
     "(one-sided allowed; bounds intersect); 'constrain <a> = <b>' equates "
     "two dims — an impossible combination is refused, so never propose "
     "contradictory bounds. A config may reference a pinned dim as {name} "
-    "(e.g. box:w{a}d{b}h10) — to resize such a design, edit the dim line, "
-    "not the config. Keep dim/constrain lines verbatim unless the "
+    "(e.g. box:w{a}d{b}h0.01) — a config with ANY {name} reference parses "
+    "ALL its own literal numbers bare/unitless (SI metres), unlike an "
+    "ordinary unit-required config, so don't mix unit suffixes into a "
+    "{name}-referencing config; to resize such a design, edit the dim "
+    "line, not the config. Keep dim/constrain lines verbatim unless the "
     "instruction is about them. "
     "'material <component> <slug>' assigns a material kind slug (drives "
     "view='mass'); keep material lines verbatim unless the instruction is "
@@ -107,24 +119,30 @@ _DSL_CRIB = (
     "built-in catalog atom with ports (bearing:6202, bolt:m6x20, nut:m6, "
     "washer:m6, extrusion:2020x400, rail:mgn12x200, nema:17, gear:m1z20) — "
     "prefer a part over hand-modelling a standard component; unknown codes "
-    "are refused. Keep part lines verbatim unless the instruction is about "
+    "are refused. The family:code designation numbers (e.g. bolt:m6x20's "
+    "'20') are catalogue mm by standard convention and never take a unit "
+    "suffix themselves — only the placement tokens (@/rot:/pattern) do. "
+    "Keep part lines verbatim unless the instruction is about "
     "them. "
     "'payload <name> <add|cut> <config> at:<port> [@x,y,z] [rot:..]' is "
     "geometry the port splices into whatever it mates against (placement "
     "relative to the port frame; the far side's port must be of:-scoped). "
     "Keep payload lines verbatim unless the instruction is about them. "
-    "config shapes: box:wWdDhH, cyl:rRhH, cone:rRhH, tcone:rBrThH, sphere:rR, "
-    "torus:RRrr, hex:rRhH, ngon:nNrRhH, frustum:nNrBrThH, pyramid:nNrRhH, "
-    "chamfer:SxA. "
-    "Units mm; +Z up; box centred in x/y with base at z=0; cyl/cone axis +z, "
+    "config shapes (every key but n takes a length unit; chamfer's angle "
+    "takes an angle unit): box:wWdDhH, cyl:rRhH, cone:rRhH, tcone:rBrThH, "
+    "sphere:rR, torus:RRrr, hex:rRhH, ngon:nNrRhH, frustum:nNrBrThH, "
+    "pyramid:nNrRhH, chamfer:<size><unit>x<angle><unit> "
+    "(e.g. box:w40mmd20mmh10mm, chamfer:1mmx45deg). "
+    "+Z up; box centred in x/y with base at z=0; cyl/cone axis +z, "
     "base at z=0. First node in a part is its base; later add merges, cut "
     "subtracts, intersect intersects. "
-    "chamfer:SxA is an unbounded half-space bevel tool placed by the node's "
-    "own @x,y,z/rot: like any other node (no anchor face); in its local "
-    "frame the cutting plane is tilted A degrees off +z toward +x and set "
-    "back S mm, with material on the +normal side — so it must be 'cut' or "
-    "'intersect' (never 'add', which would be an infinite solid) and can "
-    "never be a component's first (base) node."
+    "chamfer:<size><unit>x<angle><unit> is an unbounded half-space bevel "
+    "tool placed by the node's own @x,y,z/rot: like any other node (no "
+    "anchor face); in its local frame the cutting plane is tilted 'angle' "
+    "off +z toward +x and set back 'size' along -normal, with material on "
+    "the +normal side — so it must be 'cut' or 'intersect' (never 'add', "
+    "which would be an infinite solid) and can never be a component's "
+    "first (base) node."
 )
 
 
@@ -175,8 +193,11 @@ _LINT_VOLUME_GRID = 24
 #: Below this, a component's quadrature volume reads as empty. The ray-grid
 #: quadrature (:mod:`precis.cad.bulk`) is exact-per-ray, so a fully consumed
 #: component integrates to exactly 0.0 — this just leaves headroom for a
-#: sliver that's real but degenerate.
-_EMPTY_VOLUME_MM3 = 1e-6
+#: sliver that's real but degenerate. Kernel storage is SI metres
+#: (units-policy-cutover); this is the pre-cutover 1e-6 mm³ noise floor
+#: carried over unchanged in physical size, expressed in the new unit
+#: (mm³ → m³ is ×1e-9).
+_EMPTY_VOLUME_M3 = 1e-6 * 1e-9
 
 
 def _describe_disconnection(result: ConnectivityResult) -> str:
@@ -204,7 +225,7 @@ def _empty_component_findings(design: Design) -> list[str]:
             vol = cad_volume(design, component=name, grid=_LINT_VOLUME_GRID)
         except Exception:  # unbounded / degenerate expr — not this check's job
             continue
-        if vol.volume <= _EMPTY_VOLUME_MM3:
+        if vol.volume <= _EMPTY_VOLUME_M3:
             findings.append(
                 f"component {name!r} has (near-)zero volume — cuts consumed "
                 "it or shapes are degenerate"
@@ -216,7 +237,8 @@ def _interference_warnings(result: ConnectivityResult) -> list[str]:
     """Overlapping-contact findings — not fatal (e.g. an intentional press
     fit), so they're surfaced as warnings rather than invalidating the design."""
     return [
-        f"components {c.a!r} and {c.b!r} interpenetrate ({-c.gap:g} mm)"
+        f"components {c.a!r} and {c.b!r} interpenetrate "
+        f"({format_quantity(-c.gap, 'length')})"
         for c in result.contacts
         if c.interfering
     ]

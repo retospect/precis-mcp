@@ -15,12 +15,26 @@ the length-free identity a `component` ref is expected under (`bearing-6202`,
 `extrusion-2020`), which the handler resolves into ``realized-by`` links and
 the design's ``view='bom'``.
 
-Codes are case-insensitive; dimensions are mm. The three **ISO fastener**
-families take their dimensions from `precis/data/component_series.json`
-(see :data:`_FASTENER_SERIES`) rather than a second transcription of the
-same standard; the rest are tabulated here, having no series counterpart.
-That keeps the no-DB property — the series loader is stdlib-only over
-packaged data — while there is exactly one place to fix a number.
+Codes are case-insensitive; **designation** dimensions (the numbers inside
+a code string — ``bolt:m3x12``'s ``12``, ``extrusion:2020x400``'s ``400``)
+stay mm by catalogue convention, same as the real-world standard's own
+part numbers — they are a designation string, not a free quantity, so the
+units-policy-cutover ingest boundary does not apply to them. The three
+**ISO fastener** families take their dimensions from
+`precis/data/component_series.json` (see :data:`_FASTENER_SERIES`) rather
+than a second transcription of the same standard; the rest are tabulated
+here, having no series counterpart. That keeps the no-DB property — the
+series loader is stdlib-only over packaged data — while there is exactly
+one place to fix a number.
+
+The *emitted geometry* (the ``cyl:r..h..`` envelope + port source text
+below) is generated cad-DSL source, expanded in-memory exactly once per
+lookup (never persisted — the stored reference is just
+``part:<family>:<code>``). Every dimension it emits carries an explicit
+``mm`` unit (:func:`_g`), so it flows through the same strict boundary as
+hand-authored geometry (``scene.py``'s ``@x,y,z``/``config:`` tokens) and
+lands in the same SI-metres internal representation — a design mixing
+catalog parts and hand-authored nodes stays in scale.
 
 Families:
 
@@ -68,8 +82,16 @@ class PartInfo:
 
 
 def _g(v: float) -> str:
-    """mm value → shortest exact token (``17.5``, not ``17.500000``)."""
-    return f"{v:g}"
+    """mm value → shortest exact token with an explicit unit
+    (``17.5mm``, not ``17.500000``).
+
+    Catalog dimensions are tabulated in mm (real-world part-standard
+    convention); emitting the unit explicitly means the generated source
+    text flows through the same strict boundary
+    (``scene.parse_source`` / ``cad.dsl.parse(require_units=True)``) as
+    hand-authored geometry — the unit converts the value to SI metres
+    exactly once, at expansion."""
+    return f"{v:g}mm"
 
 
 # --- family tables (mm) ----------------------------------------------------
@@ -224,9 +246,9 @@ def _bearing(code: str) -> PartInfo:
         f"desc: {desig} (envelope)\n"
         "component body\n"
         f"ring add cyl:r{_g(od / 2)}h{_g(b)}\n"
-        f"bore cut cyl:r{_g(d / 2)}h{_g(b + 2)} @0,0,-1\n"
-        f"port bore @0,0,{_g(b / 2)} of:body\n"
-        f"port face @0,0,{_g(b)} of:body\n"
+        f"bore cut cyl:r{_g(d / 2)}h{_g(b + 2)} @0mm,0mm,-1mm\n"
+        f"port bore @0mm,0mm,{_g(b / 2)} of:body\n"
+        f"port face @0mm,0mm,{_g(b)} of:body\n"
     )
     return PartInfo(
         "bearing", f"bearing:{code}", f"bearing-{code}", desig, "ISO 15", src
@@ -251,13 +273,22 @@ def _bolt(code: str) -> PartInfo:
     src = (
         f"desc: {desig} (ISO 4017 envelope) — origin at the under-head plane\n"
         "component body\n"
-        f"head add cyl:r{_g(e / 2)}h{_g(k)} @0,0,-{_g(k)}\n"
+        f"head add cyl:r{_g(e / 2)}h{_g(k)} @0mm,0mm,-{_g(k)}\n"
         f"shank add cyl:r{_g(d / 2)}h{_g(length)}\n"
-        "port head @0,0,0 of:body\n"
-        f"port tip @0,0,{_g(length)} of:body\n"
+        "port head @0mm,0mm,0mm of:body\n"
+        f"port tip @0mm,0mm,{_g(length)} of:body\n"
     )
     return PartInfo(
-        "bolt", f"bolt:{code}", f"bolt-m{d}x{_g(length)}", desig, "ISO 4017", src
+        # part_slug is a bare identifier (matches the pre-cutover convention
+        # every other family's slug uses — nut-m6, washer-m6, nema-17 — none
+        # of which run their code's numbers through `_g`'s unit-suffixed DSL
+        # formatter); only the DSL `src` text needs the unit.
+        "bolt",
+        f"bolt:{code}",
+        f"bolt-m{d}x{length:g}",
+        desig,
+        "ISO 4017",
+        src,
     )
 
 
@@ -275,8 +306,8 @@ def _nut(code: str) -> PartInfo:
         f"desc: {desig} (ISO 4032 envelope)\n"
         "component body\n"
         f"hex add cyl:r{_g(e / 2)}h{_g(m_h)}\n"
-        f"bore cut cyl:r{_g(d / 2)}h{_g(m_h + 2)} @0,0,-1\n"
-        "port face @0,0,0 of:body\n"
+        f"bore cut cyl:r{_g(d / 2)}h{_g(m_h + 2)} @0mm,0mm,-1mm\n"
+        "port face @0mm,0mm,0mm of:body\n"
     )
     return PartInfo("nut", f"nut:{code}", f"nut-m{d}", desig, "ISO 4032", src)
 
@@ -292,8 +323,8 @@ def _washer(code: str) -> PartInfo:
         f"desc: {desig} (ISO 7089 envelope)\n"
         "component body\n"
         f"disc add cyl:r{_g(d2 / 2)}h{_g(h)}\n"
-        f"bore cut cyl:r{_g(d1 / 2)}h{_g(h + 2)} @0,0,-1\n"
-        "port face @0,0,0 of:body\n"
+        f"bore cut cyl:r{_g(d1 / 2)}h{_g(h + 2)} @0mm,0mm,-1mm\n"
+        "port face @0mm,0mm,0mm of:body\n"
     )
     return PartInfo("washer", f"washer:{code}", f"washer-m{d}", desig, "ISO 7089", src)
 
@@ -301,13 +332,13 @@ def _washer(code: str) -> PartInfo:
 def _extrusion(code: str) -> PartInfo:
     profile, length = _cut("extrusion", code, _EXTRUSIONS)
     w, d = _EXTRUSIONS[profile]
-    desig = f"{profile} T-slot aluminium extrusion, {_g(length)} mm"
+    desig = f"{profile} T-slot aluminium extrusion, {_g(length)}"
     src = (
         f"desc: {desig} (envelope, length along z)\n"
         "component body\n"
         f"profile add box:w{_g(w)}d{_g(d)}h{_g(length)}\n"
-        "port end_a @0,0,0 of:body\n"
-        f"port end_b @0,0,{_g(length)} of:body\n"
+        "port end_a @0mm,0mm,0mm of:body\n"
+        f"port end_b @0mm,0mm,{_g(length)} of:body\n"
     )
     return PartInfo(
         "extrusion", f"extrusion:{code}", f"extrusion-{profile}", desig, "T-slot", src
@@ -317,13 +348,13 @@ def _extrusion(code: str) -> PartInfo:
 def _rail(code: str) -> PartInfo:
     series, length = _cut("rail", code, _RAILS)
     w, h = _RAILS[series]
-    desig = f"{series.upper()} miniature linear rail, {_g(length)} mm"
+    desig = f"{series.upper()} miniature linear rail, {_g(length)}"
     src = (
         f"desc: {desig} (envelope, length along z)\n"
         "component body\n"
         f"rail add box:w{_g(w)}d{_g(h)}h{_g(length)}\n"
-        "port end_a @0,0,0 of:body\n"
-        f"port end_b @0,0,{_g(length)} of:body\n"
+        "port end_a @0mm,0mm,0mm of:body\n"
+        f"port end_b @0mm,0mm,{_g(length)} of:body\n"
     )
     return PartInfo("rail", f"rail:{code}", f"rail-{series}", desig, "MGN", src)
 
@@ -336,11 +367,11 @@ def _nema(code: str) -> PartInfo:
     src = (
         f"desc: {desig} (envelope) — face plate at z=0, shaft along +z\n"
         "component body\n"
-        f"frame add box:w{_g(f)}d{_g(f)}h{_g(body_l)} @0,0,-{_g(body_l)}\n"
+        f"frame add box:w{_g(f)}d{_g(f)}h{_g(body_l)} @0mm,0mm,-{_g(body_l)}\n"
         f"boss add cyl:r{_g(bd / 2)}h{_g(bh)}\n"
         f"shaft add cyl:r{_g(sd / 2)}h{_g(sl)}\n"
-        "port face @0,0,0 of:body\n"
-        f"port shaft @0,0,{_g(sl)} of:body\n"
+        "port face @0mm,0mm,0mm of:body\n"
+        f"port shaft @0mm,0mm,{_g(sl)} of:body\n"
     )
     return PartInfo("nema", f"nema:{code}", f"nema-{code}", desig, "NEMA ICS 16", src)
 
@@ -364,7 +395,7 @@ def _gear(code: str) -> PartInfo:
         f"desc: {desig} (blank envelope, OD = m·(z+2))\n"
         "component body\n"
         f"blank add cyl:r{_g(od / 2)}h{_g(width)}\n"
-        f"port axis @0,0,{_g(width / 2)} of:body\n"
+        f"port axis @0mm,0mm,{_g(width / 2)} of:body\n"
     )
     return PartInfo("gear", f"gear:{code}", f"gear-{code}", desig, "", src)
 

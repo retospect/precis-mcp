@@ -73,6 +73,7 @@ from precis.structure.scene import Scene as StructScene
 from precis.structure.validate import validate as structure_validate
 from precis.structure.vsepr import advisories as structure_advisories
 from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.utils.units import format_quantity
 from precis.workers.job_types import JobTypeSpec
 from precis_nm import persist
 from precis_nm import validate as nm_validate
@@ -149,6 +150,12 @@ def _block_not_found(tree: BlockTree, name: str) -> str:
 
 def _fmt_vec(v: list[float]) -> str:
     return ", ".join(f"{x:g}" for x in v)
+
+
+def _fmt_rot(v: list[float]) -> str:
+    """A 3-vector of SI-radian angles, rendered in degrees — the angle
+    sibling of :func:`_fmt_vec` (never a bare-radian tuple)."""
+    return ", ".join(format_quantity(float(x), "angle") for x in v)
 
 
 def _tree_summary(tree: BlockTree) -> str:
@@ -233,7 +240,7 @@ def build_prompt(
         f"# Design {slug!r} — block tree\n{_tree_summary(tree)}\n\n"
         f"# Target block {block_name!r}\n"
         f"envelope: {effective_envelope(tree, node) or '(none)'}\n"
-        f"pose: [{_fmt_vec(node.pose)}] Å   rot: [{_fmt_vec(node.rot)}] deg\n"
+        f"pose: [{_fmt_vec(node.pose)}] m   rot: [{_fmt_rot(node.rot)}]\n"
         f"desc: {node.descr or '—'}\n"
         f"use: {node.use or '—'}\n"
         f"dof: {json.dumps(dof) if dof else '—'}\n\n"
@@ -332,7 +339,7 @@ def _envelope_fit_warnings(
     if not env or not scene.atoms:
         return None
     try:
-        prim = cad_dsl.build_config(env)
+        prim = cad_dsl.build_config(env)  # design-space canonical: metres
     except (cad_dsl.DslError, ValueError):
         # Already validated at add_block/generate time — a bad envelope
         # reaching here would be hand-corrupted data; skip rather than
@@ -345,31 +352,39 @@ def _envelope_fit_warnings(
         # posture as the bad-config branch above. (Before chamfer became
         # buildable this case arrived as a DslError; now it builds.)
         return None
+    # The same design↔atomistic seam validate.envelope_fit converts at
+    # (units-policy-cutover.md, structure-unit-enclave.md): `prim` is
+    # metres (design-space canonical), `scene`'s atoms are Å (the
+    # atomistic enclave) — both sides compared in metres here, reusing
+    # nm_validate's own conversion constants rather than restating them.
     env_center = (np.asarray(lo, dtype=float) + np.asarray(hi, dtype=float)) / 2.0
-    carts = [scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()]
-    centroid = np.mean(np.asarray(carts), axis=0)
-    delta = centroid - env_center
+    carts_A = [scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()]
+    carts_m = [np.asarray(c, dtype=float) * nm_validate._A_TO_M for c in carts_A]
+    centroid_m = np.mean(np.asarray(carts_m), axis=0)
+    delta_m = centroid_m - env_center
 
     design = CadDesign()
-    leaf = design.prim("envelope", prim, cad_translation(*delta.tolist()))
+    leaf = design.prim("envelope", prim, cad_translation(*delta_m.tolist()))
     design.add_component("envelope", leaf)
     component = design.components["envelope"]
 
+    margin_m = _ENVELOPE_FIT_MARGIN_A * nm_validate._A_TO_M
     outside = [
         (label, d)
-        for label, cart in zip(scene.atoms, carts, strict=True)
-        if (d := cad_relate.component_sdf(design, component, cart))
-        > _ENVELOPE_FIT_MARGIN_A
+        for label, cart_m in zip(scene.atoms, carts_m, strict=True)
+        if (d := cad_relate.component_sdf(design, component, cart_m)) > margin_m
     ]
     if not outside:
         return None
     # Report the PROTRUSION (distance past the allowance), not the raw SDF —
     # the same quantity validate.envelope_fit reports, so the propose-time
     # warning and the later bind-time finding for the same fragment agree
-    # instead of differing by exactly one margin.
-    worst = max(d for _label, d in outside) - _ENVELOPE_FIT_MARGIN_A
+    # instead of differing by exactly one margin. Reported back in Å (the
+    # atomistic scale this finding is about), the same round-trip
+    # validate.envelope_fit does.
+    worst_A = (max(d for _label, d in outside) - margin_m) * nm_validate._M_TO_A
     return (
-        f"envelope_fit: {len(outside)} atom(s) up to {worst:.2f} Å outside "
+        f"envelope_fit: {len(outside)} atom(s) up to {worst_A:.2f} Å outside "
         f"envelope {env!r} (best-effort centroid-recentred check — no real "
         "bind pose exists yet at propose time, see this module's "
         "_envelope_fit_warnings docstring)"

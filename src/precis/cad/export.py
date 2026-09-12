@@ -21,18 +21,79 @@ from __future__ import annotations
 
 import struct
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from precis.cad.dsl import parse
-from precis.cad.scene import NodeSpec, SceneSpec, _node_xform, _pattern_transforms
+from precis.cad.dsl import ShapeSpec, format_spec, parse
+from precis.cad.scene import (
+    LinearPattern,
+    NodeSpec,
+    PolarPattern,
+    SceneSpec,
+    _node_xform,
+    _pattern_transforms,
+)
 from precis.cad.tessellate import design_aabb, halfspace_clamp_params, node_meshes
 from precis.cad.vec import Transform, Vec3
 
 #: Facet resolution for curved primitives in the exported mesh.
 _FN = 64
+
+#: Internal storage/geometry is SI metres (the cad kernel is unit-agnostic
+#: float64 — see ``dsl``/``scene`` module docstrings); every export format
+#: below (OpenSCAD, STL, 3MF, STEP) declares millimetres by convention —
+#: downstream slicers/CAM tooling assume it. This is the *one* place that
+#: conversion happens, right at the outbound boundary.
+_MM_PER_M = 1000.0
+
+#: Shape-DSL param keys that are never a length — never rescaled.
+_NON_LENGTH_KEYS = frozenset({"n", "angle"})
+
+
+def _scaled_for_export(spec: SceneSpec) -> SceneSpec:
+    """A copy of ``spec`` with every length rescaled metres → millimetres.
+
+    ``spec`` here is always a fully expanded design (``use:``/``part:``
+    nodes already resolved to plain shape nodes by the handler's
+    ``_expand``), so every node's ``config`` is a canonical/storage-mode
+    mini-DSL string — bare SI-metre numbers. Counts (``n``) and angles
+    (``rot``, chamfer's ``angle``) are dimensionless/angular and pass
+    through unchanged; only lengths scale.
+    """
+    scaled_nodes = []
+    for node in spec.nodes:
+        node_spec = parse(node.config)
+        mm_params = {
+            key: (value * _MM_PER_M if key not in _NON_LENGTH_KEYS else value)
+            for key, value in node_spec.params.items()
+        }
+        mm_config = format_spec(ShapeSpec(node_spec.alias, mm_params))
+        loc = (
+            node.loc[0] * _MM_PER_M,
+            node.loc[1] * _MM_PER_M,
+            node.loc[2] * _MM_PER_M,
+        )
+        pattern = node.pattern
+        if pattern is not None:
+            if pattern["kind"] == "polar":
+                pattern = PolarPattern(
+                    kind="polar", n=pattern["n"], r=pattern["r"] * _MM_PER_M
+                )
+            else:
+                pattern = LinearPattern(
+                    kind="linear",
+                    n=pattern["n"],
+                    dx=pattern["dx"] * _MM_PER_M,
+                    dy=pattern["dy"] * _MM_PER_M,
+                    dz=pattern["dz"] * _MM_PER_M,
+                )
+        scaled_nodes.append(replace(node, config=mm_config, loc=loc, pattern=pattern))
+    return SceneSpec(
+        nodes=scaled_nodes, components=list(spec.components), meta=dict(spec.meta)
+    )
 
 
 class ExportError(RuntimeError):
@@ -151,6 +212,7 @@ def _by_component(spec: SceneSpec) -> dict[str, list[NodeSpec]]:
 def to_openscad(spec: SceneSpec, *, name: str = "design") -> str:
     """Render a :class:`SceneSpec` to OpenSCAD source (assembly = union of
     each component's folded solid)."""
+    spec = _scaled_for_export(spec)
     # A chamfer node needs the design's AABB to clamp its unbounded
     # half-space to a finite cube (see tessellate.halfspace_clamp_params);
     # only pay for building the kernel Design when one is actually present.
@@ -347,6 +409,7 @@ def export_mesh(
     carries each component as its own object, so the assembly stays
     separable in the slicer. Raises :class:`ExportError` if ``manifold3d``
     is missing or the format is unknown."""
+    spec = _scaled_for_export(spec)
     out = Path(out_path)
     f = (fmt or out.suffix.lstrip(".")).lower()
     if f == "stl":
@@ -386,7 +449,7 @@ def export_step(spec: SceneSpec, out_path: str | Path) -> Path:
             "OpenCASCADE not installed — exact STEP export needs it. "
             "Install the extra:  pip install 'precis-mcp[cad-step]'"
         )
-    return _occt.export_step(spec, Path(out_path))
+    return _occt.export_step(_scaled_for_export(spec), Path(out_path))
 
 
 #: Format → which backend extra is required (for handler error messages).

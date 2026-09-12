@@ -61,6 +61,15 @@ Owned elsewhere (read the owner first):
   drawn connectivity, linked mermaid panel, stick-figure checkpoint) are
   merged there by comment.
 
+Second intake (2026-09-12): the summary-derived material once integrated
+here as *(added 2026-09-12)* sections is superseded verbatim by
+`multiscale-design-addendum-a.md` (A1–A10) — reconciled 2026-09-12; its
+preamble carries the routing. Removed from this file: §0.1.1
+(→ A1), principles 11–12 (→ A2), the §1.3 lifecycle-situation paragraph
+(→ A3), §2.6–2.7 (→ A4, A5), the §3.1 BO paragraph (→ A7), §4.2.1 (→ A6),
+the §4.4 process additions (→ A8), the §4.9 non-bonded/ratchet/hysteresis
+block (→ A9), two §6.2 items (→ A10).
+
 Owned HERE (new subsystems; the map's table points at these): scenario
 presets + service environment incl. the lifetime master switch and the
 standard load-case library (§1.3) · per-number provenance (§1.4) ·
@@ -106,6 +115,9 @@ These recur throughout and should be treated as invariants.
 8. **Soft gates, not hard ones.** Feasibility is a signed, graded violation field — steepest outside spec, flattening inside — with a boolean illegality flag used only as a cheap early-out to skip expensive physics.
 9. **Reject with a structured reason.** Never a bare `invalid`. The reason names the missing or violated item so the caller can resubmit or the search can retarget.
 10. **No test programme.** Generous engineering margins substitute, justified by well-characterised processes and by buying (not fabricating) precision-critical parts. Every margin is tagged with its origin so a margin audit is a query.
+
+Principles 11–12 (limited component DOF; meshing-controlled generated
+geometry) are Addendum A2 (`multiscale-design-addendum-a.md`).
 
 ### 0.3 Vocabulary
 
@@ -201,6 +213,13 @@ ServiceEnvironment
 `expected_lifetime` is the master switch: a week-long prototype drops corrosion, creep and fatigue entirely; fifty years subsea makes them dominant. `prototype` and `subsea_50yr` are presets that reconfigure which physics runs at all.
 
 A **standard load-case library** (shock, vibration, off-axis loading) is applied by default and must be explicitly exempted, so designs that only work statically are caught.
+
+Lifecycle situations (n-not-three, operational 4D motion, deliberate
+hard-stop contact, compare-by-volume) are Addendum A3
+(`multiscale-design-addendum-a.md`), built out in
+`situation-rule-tables.md` — §1.3's `Scenario` object above is the
+production context, a different thing from a *situation* in the ruled
+vocabulary.
 
 ### 1.4 Provenance
 
@@ -310,6 +329,12 @@ Screening runs inside every evaluate call with a **fidelity argument** — cheap
 - Additional margins only at termination nodes where the model itself is soft.
 - Each margin tagged with its origin (`margin_origin` in provenance) so a margin audit is a query.
 - Margins are **not** a substitute for the solved-param bounds, which encode intent (ergonomics) rather than uncertainty.
+
+Tolerance budgeting (variance-up/budget-down one traversal,
+error-source correlation tags) is Addendum A4; standing simplifications
+(static loads, one-way FSI, handbook convection) are Addendum A5 — both
+in `multiscale-design-addendum-a.md`.
+
 ---
 
 ## 3. Optimiser
@@ -333,6 +358,14 @@ inner:  continuous sizing
 **Move design matters more than the cooling schedule.** Mix move scales: small parameter perturbations alongside structural moves. Multiple seeded restarts beat one slow cool.
 
 The move generator **proposes from preferred series by default** rather than generating uniformly and penalising afterwards (see §4.6 on lattices).
+
+Bayesian optimisation as the named adaptive-surrogate layer (three
+places it earns its keep: inner-solve stand-in, contested decisions,
+Pareto-front extension; per-objective surrogate fitting before Chebyshev
+scalarisation) is Addendum A7 (`multiscale-design-addendum-a.md`),
+correcting the two-point version briefly integrated here. The house
+guard stands regardless: BO schedules evaluations; objective weights
+stay human-set.
 
 ### 3.2 Annealing refinements
 
@@ -426,6 +459,11 @@ Blocks start trivial and are promoted only when mass-critical or near their enve
 
 View-dependent silhouette targets are supported for macro/organic structures: the shape reads as one thing from one direction and something else from another.
 
+Load-sign idioms (tension-only/compression-only/bidirectional/spring/
+tensegrity) and the sign-aware completeness check are Addendum A6
+(`multiscale-design-addendum-a.md`), owned mechanically by map
+§Complementarity.
+
 ### 4.3 Termination nodes
 
 A termination node carries **three** things:
@@ -475,6 +513,11 @@ Designing to the printed-plus-production intersection is a **per-part toggle, no
 **The mould is another milled part.** Negate the component, embed in a block, split at the parting line. The part's external corners therefore inherit a minimum radius from the cavity's cutter, and mould milling time enters the cost model as setup amortised over quantity.
 
 Toolpath depth: go deep enough for cost and feasibility only. Chip load, feed and speed are a table lookup that terminates. G-code is left to mature CAM.
+
+The process catalogue extension (laser cutting, die cutting, turning;
+the shared 2.5D sheet kernel; pair-by-pair composability validation) is
+Addendum A8 (`multiscale-design-addendum-a.md`); laser/stock-cut modes
+live in `se-off-the-shelf-fabrication.md` rungs 4–5, turning new there.
 
 ### 4.5 Joins and fasteners
 
@@ -575,7 +618,15 @@ Every result carries its fidelity as provenance; promotion is lazy. Results laye
 
 **Library ingestion.** From existing chemistry sources rather than from scratch: compound databases (PubChem/Enamine-style) plus a fragmentation step. Only the **characterisation layer** is novel. A planned integration point connects the building-block library to a papers/literature database for library search.
 
-**Synthesisability** is carried both as click chemistry and as an atomic assembly arm; both routes are wanted.
+**Synthesisability** is carried both as click chemistry and as an atomic assembly arm; both routes are wanted — and *(added 2026-09-12)* the route is an explicit **discrete optimiser choice** per design, not a global setting, since each route constrains linker chemistry differently.
+
+The non-bonded interaction menu (charge patterns, hydrogen bonding, vdW
+alongside π-stacking), the ratchet/bistable-snap barrier-graph reading,
+the hysteresis cache-keying rule, and the DFT-computed spacer library
+are Addendum A9 (`multiscale-design-addendum-a.md`); instances route to
+`nm-stick-placement.md`, `photoswitch-states-and-spectral-dof.md`,
+`design-state-core.md` and `blocktree-library-build-plan.md`
+respectively.
 
 **Not modelled: solvent.** Everything is currently in vacuum. This matters a great deal for π-stacking. See §6.
 ---
@@ -764,6 +815,9 @@ Carried forward deliberately. The architecture holds them; the physics is not wr
 - **System-level failure-consequence ranking** beyond per-block safety factors. The relative reliability risk rank (§2.2) ranks *likelihood*, not *consequence*.
 - **Full integration of the geometry model with the PCB schematic/layout/trace side** when the whole system comes together.
 - **Assay/chemistry compatibility** as a first-class constraint set rather than a microfluidics special case.
+
+Process projection composability and reaction yield are Addendum A10
+(`multiscale-design-addendum-a.md`), appended to this list.
 
 ### 6.3 Explicitly out of scope
 

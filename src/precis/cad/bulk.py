@@ -93,7 +93,17 @@ def _integrate(
     cell_area = dx * dy
     xs = lo[0] + (np.arange(grid) + 0.5) * dx
     ys = lo[1] + (np.arange(grid) + 0.5) * dy
-    o_z = float(lo[2]) - 1.0  # start every ray just below the solid
+    # Start every ray just below the solid — by one z-span, not a fixed
+    # ``1.0``: an absolute offset swamps the coordinates' own float64
+    # precision once the solid is nanometre-scale (``1.0 + 1e-9`` keeps
+    # only ~7 significant digits), and silently degrades the quadrature.
+    # Self-relative to the AABB's own extent instead, so the offset stays
+    # the same *order of magnitude* as the coordinates whatever the scale.
+    z_span = float(hi[2] - lo[2])
+    margin = (
+        z_span if z_span > 0.0 else max(float(hi[0] - lo[0]), float(hi[1] - lo[1]), 1.0)
+    )
+    o_z = float(lo[2]) - margin
     d = vec3(0.0, 0.0, 1.0)
 
     length_sum = 0.0
@@ -146,7 +156,12 @@ def volume(
     rel_err = abs(vol - vol_coarse) / vol if vol > 0 else 1.0
 
     return BulkResult(
-        volume=round(vol, 4),
+        # NOT rounded to a fixed decimal count: that was an absolute
+        # mm³-scale noise trim (round(vol, 4) silently zeroed any SI-metre
+        # volume below 1e-4 m³ = 100,000 mm³ post units-policy-cutover,
+        # i.e. every physically-normal small part). `rel_err` stays rounded
+        # — it's dimensionless, so a fixed decimal count is scale-safe.
+        volume=vol,
         centroid=centroid,
         samples=n * n,
         rel_err=round(rel_err, 5),

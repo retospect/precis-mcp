@@ -22,10 +22,10 @@ from precis_web.config import WebConfig
 
 _FLANGE = """
 component flange
-plate     add  cyl:r25h8
-hub_bore  cut  cyl:r8h10    @0,0,-1
+plate     add  cyl:r25mmh8mm
+hub_bore  cut  cyl:r8mmh10mm    @0mm,0mm,-1mm
 component ring
-rim       add  cyl:r30h4    @0,0,8
+rim       add  cyl:r30mmh4mm    @0mm,0mm,8mm
 """
 
 
@@ -129,7 +129,7 @@ def test_cad_scene_json_serves_recipe(cad_client, runtime_with_store) -> None:
     assert body["components"] == ["flange", "ring"]
     names = {n["name"]: n for n in body["nodes"]}
     assert names["plate"]["shape"]["alias"] == "cyl"
-    assert names["plate"]["shape"]["params"]["r"] == 25
+    assert names["plate"]["shape"]["params"]["r"] == pytest.approx(0.025)
     assert names["hub_bore"]["op"] == "cut"
     # every node carries a colour + pose so the browser can build + place it
     assert all("color" in n and "loc" in n and "rot" in n for n in body["nodes"])
@@ -140,10 +140,13 @@ def test_cad_scene_json_expands_instances(cad_client, runtime_with_store) -> Non
     # would parse as an unknown config and silently draw nothing, so the
     # route must serve the inlined sub-assembly.
     cad = CadHandler(hub=runtime_with_store.hub)
-    cad.put(id="web_post", text="component post\npillar add cyl:r3h20\n")
+    cad.put(id="web_post", text="component post\npillar add cyl:r3mmh20mm\n")
     cad.put(
         id="web_deck",
-        text="component base\nslab add box:w60d60h4\nuse web_post as p @0,0,4\n",
+        text=(
+            "component base\nslab add box:w60mmd60mmh4mm\n"
+            "use web_post as p @0mm,0mm,4mm\n"
+        ),
     )
     r = cad_client.get("/cad/web_deck/scene.json")
     assert r.status_code == 200
@@ -151,7 +154,7 @@ def test_cad_scene_json_expands_instances(cad_client, runtime_with_store) -> Non
     assert body["components"] == ["base", "p.post"]
     names = {n["name"]: n for n in body["nodes"]}
     assert names["p.pillar"]["shape"]["alias"] == "cyl"
-    assert names["p.pillar"]["loc"] == [0, 0, 4]
+    assert names["p.pillar"]["loc"] == pytest.approx([0, 0, 0.004])
 
 
 def test_cad_scene_json_substitutes_chamfer_with_clamped_box(
@@ -165,8 +168,8 @@ def test_cad_scene_json_substitutes_chamfer_with_clamped_box(
         id="web_chamfer",
         text=(
             "component part\n"
-            "body   add box:w40d20h10\n"
-            "bevel  cut chamfer:2x45 @20,0,10\n"
+            "body   add box:w40mmd20mmh10mm\n"
+            "bevel  cut chamfer:2mmx45deg @20mm,0mm,10mm\n"
         ),
     )
     r = cad_client.get("/cad/web_chamfer/scene.json")
@@ -224,7 +227,7 @@ def test_cad_apply_derives_new_design(
             "status": "succeeded",
             "created": "now",
             "proposal": {
-                "source": "component flange\nplate add cyl:r40h8",
+                "source": "component flange\nplate add cyl:r40mmh8mm",
                 "valid": True,
                 "rationale": "widen",
             },
@@ -258,7 +261,11 @@ def test_cad_apply_soft_deletes_parent_when_checked(
             "job_id": 1,
             "status": "succeeded",
             "created": "now",
-            "proposal": {"source": "p add cyl:r5h5", "valid": True, "rationale": "x"},
+            "proposal": {
+                "source": "p add cyl:r5mmh5mm",
+                "valid": True,
+                "rationale": "x",
+            },
         },
     )
     r = cad_client.post(
@@ -292,7 +299,7 @@ def test_cad_apply_in_place_mutates_same_slug(
             "status": "succeeded",
             "created": "now",
             "proposal": {
-                "source": "component flange\nplate add cyl:r99h9",
+                "source": "component flange\nplate add cyl:r99mmh9mm",
                 "valid": True,
             },
         },
@@ -309,9 +316,10 @@ def test_cad_apply_in_place_mutates_same_slug(
     assert after.id == before.id
     # no derived child got created
     assert store.get_ref(kind="cad", id="web_live-v2") is None
-    # the new geometry is live (the r99 cylinder from the proposal)
+    # the new geometry is live (the r99mm cylinder from the proposal,
+    # re-serialised as canonical SI metres with the explicit `m` unit)
     handler = runtime_with_store.hub.handler_for("cad")
-    assert "r99" in handler.get(id="web_live").body
+    assert "r0.099" in handler.get(id="web_live").body
 
 
 def _seed_discuss_job(
@@ -402,7 +410,7 @@ def _seed_propose_job(
             conn.execute(
                 "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
                 "VALUES (%s,'agent',0,'job_result',%s,'{}')",
-                (job.id, json.dumps({"source": "p add cyl:r5h5", "valid": True})),
+                (job.id, json.dumps({"source": "p add cyl:r5mmh5mm", "valid": True})),
             )
     store.add_tag(
         job.id,

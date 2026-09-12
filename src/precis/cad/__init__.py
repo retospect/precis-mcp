@@ -8,8 +8,10 @@ computing the merged solid.
 
 This package deliberately imports **nothing** from the rest of precis
 (no DB, no handler, no store) so it stays unit-testable in isolation and
-swappable behind the same node-list. Units are
-millimetres, ``float64`` throughout.
+swappable behind the same node-list. The kernel is unit-agnostic
+``float64`` throughout — callers pick the length unit; every internal
+tolerance is scale-relative (:data:`~precis.cad.vec.LINEAR_REL_EPS`), not
+tuned for one magnitude.
 
 That boundary is why sub-assembly instancing (``use <slug> as <name>``)
 takes an *injected* ``resolve`` callable rather than reaching for the
@@ -24,7 +26,7 @@ from __future__ import annotations
 
 from precis.cad.vec import (
     ANGULAR_EPS,
-    LINEAR_EPS,
+    LINEAR_REL_EPS,
     Transform,
     deg2rad,
     identity,
@@ -34,7 +36,7 @@ from precis.cad.vec import (
 
 __all__ = [
     "ANGULAR_EPS",
-    "LINEAR_EPS",
+    "LINEAR_REL_EPS",
     "Transform",
     "deg2rad",
     "identity",
