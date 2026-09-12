@@ -97,6 +97,8 @@
 - **brick / linker** — molecular-tier vocabulary: a brick is a substantive moiety, a linker a small connector, joined at typed **attachment points** (position + direction, angles from hybridisation); deliberately NOT "block"/"interface contract", which stay mechanical. → `docs/backlog/multiscale-design-system-spec.md` §0.3, §4.9
 - **termination node** — where a block's refinement stops, *per physics domain*: effective properties + validity range + statistical character of what lies below (Gaussian vs extreme-value). → `docs/backlog/multiscale-design-system-spec.md` §4.3
 - **envelope revision** — counter minted each time a late failure permanently tightens an early-phase envelope; every scored candidate records the revision it was scored under, so stale results are detectable rather than silently trusted. → `docs/backlog/multiscale-design-system-spec.md` §1.5
+- **scenario vs situation** (ruled 2026-09-12) — a **scenario** is the top-level production context (prototype / small_batch / mass_production: quantity, objective weights, service environment); a **situation** is a named swept-volume bundle with the three-verdict rule table (assembly, maintenance, shipping…; must-clear / may-touch / must-contact). The spec's §2 "swept-volume scenarios" are situations. → map §Scenarios, spec §1.3
+- **state vs design history** (ruled 2026-09-12) — **state** is reserved for a block's physical discrete states (bistable compliant latch, photoswitch E/Z, conformer), shared macro+nano machinery in the design core; the versioning axis (envelope revisions, checkpoints, pin→branch) is **design history**, never "design state". → `docs/backlog/design-state-core.md`
 
 ## Overloaded — which one?
 

@@ -76,7 +76,8 @@ already handled by `precis_se.validate.kernel_scale`.
 | optimiser refinements (Chebyshev, tempering/niching, hierarchical Pareto fronts, solve provenance) | spec §3 (invariants stay §Optimisation here) | spec'd |
 | termination nodes + representation escalation ladder | spec §4.2–4.3 | spec'd |
 | process repair/projection + composition + deferred commitment; lattice preference; catalogue ingestion | spec §4.4–4.7 | spec'd |
-| microfluidic cards; radiometric transport + irradiance contract | spec §4.8 | spec'd |
+| microfluidic cards | spec §4.8 | PARKED (Reto 2026-09-12) — out of this campaign |
+| radiometric transport + irradiance contract | spec §4.8 | spec'd — kept: smooth, cheap, propagating constraints (Reto 2026-09-12) |
 | molecular `density_at` fidelity ladder, conformer enumeration, degradation/cleavage records | spec §4.9 | spec'd |
 | inspection toolkit (cast_ray, max_stress/under_utilised, digest, bookmarks); job searching→improving status | spec §5.4–5.7 | spec'd |
 
@@ -258,13 +259,14 @@ render ISO units with scale-appropriate prefixes.**
   must audit every absolute tolerance and make it relative to a
   design-scale length (e.g. bbox diagonal). `structsolve` is already
   unit-agnostic; unaffected.
-- **Display (revised, Reto 2026-09-11): the underlying canonical,
-  e-notation, unit named in headers** — `2.3e-9 m`, `1.2e3 N`. One format
-  at every scale, cross-scale comparisons need no prefix arithmetic, no
-  prefix table in renderers, and the MCP does exactly ONE conversion
-  (inbound). The zero-counting hazard was an *input* problem; ingest-any
-  solves that side, and `3e-9` on output is unambiguous. ISO-prefix
-  prettification (2.3 nm) is a web-UI concern only, if ever.
+- **Display (re-revised, Reto 2026-09-12): one shared neat formatter,
+  scale-appropriate SI units** — `2.3 nm`, `1.2 kN`, `350 ml`. Supersedes
+  the 09-11 e-notation-only decision: ingest is maximally flexible (any
+  declared unit, however whimsical), internal stays SI float64, and the
+  *output* formatter picks the readable SI prefix/unit. One formatter
+  utility shared by MCP text views and web UI, so there is still exactly
+  one prefix table. E-notation remains the fallback for out-of-prefix
+  magnitudes and for raw/debug views.
 - **Tolerances/ranges are order-of-magnitude-specific — relative by
   default** (Reto 2026-09-11). Every *system-supplied or unstated*
   threshold (clearance "touching" bands, SDF comparison epsilons,
@@ -335,6 +337,60 @@ rate; TS searches are expensive, so screen early by penalising strained
 geometries and crowded sites, evaluate barriers only on finalists. The
 switching-pathway sweep requirement landed in `structural-solution-space.md`
 slice 5.
+
+## Build order (decided with Reto, 2026-09-12)
+
+The whole programme runs as carved slices (spec → `ready` vet → sonnet
+coder → qland bursts + periodic /go), many worktrees in parallel but
+**package-disjoint** (precis_se / blocktree-nm / precis_web / structsolve
+/ cad) so plugin migration numbering never collides and no two agents
+share a persist.py. Main loop holds seams and the owner-wins precedence
+(extend the feasibility registry, one annotations vocabulary, shipped se
+op surface is the surface of record). Each phase boundary is a human
+checkpoint with a dogfood artifact.
+
+Standing compute decision: long solves run on the existing worker lanes;
+GPU only for genuinely-GPU work, written as Python tensors (torch) — a C
+CUDA path only if a real workload ever forces it.
+
+1. **Units cutover — exclusive window** (`units-policy-cutover.md`).
+   Cross-cuts se+nm+cad, so nothing else lands on those packages while
+   it's in flight.
+2. **Foundations, 4 parallel tracks**: shared design-state core
+   (`design-state-core.md` — scenarios, provenance, revisions, branches
+   naive-copy-first, checkpoints, **and the discrete-states + stimulus
+   machinery**; se deltas ride along) · blocktree slices 1–3 (slice 2
+   becomes the nm *adoption* of the shared states schema, co-designed
+   with the core track) · viewer round 1 (gr335242 items 1–3) ·
+   inspection toolkit v1
+   (cast_ray/describe/neighbours/max_stress/under_utilised/digest).
+
+   Shared-states rationale (Reto 2026-09-12): bistability is true at
+   both scales — nm photoswitches/conformers AND macro compliant
+   mechanisms (Howell-style flexures, snap-through latches, hard stops).
+   One states+transitions schema in the core, rented by both kinds, so
+   structural slice 5's state-dependent stability serves both. Macro
+   compliant/flexure blocks enter via the pseudo-rigid-body route
+   (rigid links + torsion springs — maps onto the existing axial/spring
+   member machinery), not large-deflection FEA.
+3. **Cost spine + placement**: feasibility-and-cost rungs 1–4 ·
+   off-the-shelf 2b/3b + three-verdict scenario rule table ·
+   nm-stick-placement · complementarity solver · termination nodes +
+   representation escalation · viewer round 2 (argue-with-points, notes,
+   3D route).
+4. **Optimiser + processes**: processes as first-class objects +
+   deferred commitment + se slice 5 FDM + toolpath rung 2 · the
+   optimiser as a long-running job (annealing outer, CMA-ES inner,
+   Chebyshev, surrogate ladder, BO scheduler under the house guard,
+   niching, searching→improving, incumbents in DB) · hierarchical Pareto
+   fronts + solve provenance (naive-first) · photoswitch + structural
+   slice 5 · molecular density_at rungs 1–2, conformers, cleavage
+   records.
+5. **Coupling + adjacents**: cross-domain coupling screen · catalogue
+   ingestion layers + availability preference · radiometric transport +
+   irradiance contract (microfluidics PARKED) · bookmarks + digest
+   sensitivity + requirements-level scenario comparison · se_propose /
+   nm 4b verdicts+apply.
 
 ## Open questions
 

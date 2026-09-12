@@ -3,6 +3,7 @@ status: ready
 title: build plan — cross-design instancing, block states, complementary ports, ranked library search
 prio: high
 model: opus
+blocked-by: units-policy-cutover
 ---
 
 # Build plan
@@ -139,6 +140,19 @@ and assembly (`--[rxn]-->`). Everything downstream assumes it.
 points at the thing that drives it — a `rxn` slug for a reaction, a wavelength
 + params for light. A block with no declared states has exactly one implicit
 state, so **nothing existing changes shape**.
+
+*Shared-states ruling (Reto 2026-09-12, → `design-state-core.md`):*
+bistability is true macro AND nano (Howell-style compliant latches, hard
+stops · photoswitches, conformers), so this slice's state/transition
+tables land in the SHARED design-core home (`src/precis/design/`), not
+nm-locally — this track builds them there as first consumer, schema
+exactly as above plus `mechanical` added to `driver_kind` by migration
+for the macro adopters. Per-block current state, no design-level
+pointer. `design-state-core.md` verifies the macro rental fits; do not
+add nm-specific columns. Slice-level ordering: slice 1 (instancing) is
+free to go once units lands; THIS slice waits for design-core's package
+scaffold (`src/precis/design/` + its core-migration chain) so the
+states tables have their home — don't create the package from here.
 
 **Copy cad's posing surface, do not invent one.** `cad` already has
 `get(..., args={"state": {...}})` and `view='sweep'` ("does anything collide
