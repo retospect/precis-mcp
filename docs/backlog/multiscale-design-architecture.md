@@ -16,6 +16,15 @@ owning doc/module, and the new subsystems held here until each grows a build
 slice. Leg detail lives in the leg docs; nothing here re-opens their named
 deferrals.
 
+2026-09-11: Reto's detailed build spec landed as its own leg doc,
+`multiscale-design-system-spec.md` (was briefly at the repo root) — data
+model, constraint catalogue, optimiser, MCP inspection surface, molecular
+tier. Its intake preamble routes every section: existing owners win
+(se-kind ladder, feasibility-and-cost registry, blocktree plan, shipped se
+op surface, decided §Units policy); the genuinely new subsystems are owned
+there and listed in the table below. Slices are carved from it on
+promotion, not pre-sharded.
+
 ## The core idea (and where it already lives)
 
 One geometry currency, many layers on top. The model never switches data
@@ -60,6 +69,16 @@ already handled by `precis_se.validate.kernel_scale`.
 | optimisation stack (surrogates, BO, annealing) | **here, §Optimisation** | new |
 | requirement→joint matching | **here, §Joint matching** | new |
 | view-dependent form | **here, §View-dependent form** | new |
+| scenario presets + service environment (lifetime master switch, standard load-case library) | `multiscale-design-system-spec.md` §1.3 | spec'd |
+| per-number provenance; envelope revisions, CoW design state, pin→branch comparison | spec §1.4–1.5, §5.6 | spec'd |
+| phase loop (topology→sizing→realisation, envelope tightening) | spec §1.6 | spec'd |
+| cross-domain coupling screen | spec §2.4 | spec'd |
+| optimiser refinements (Chebyshev, tempering/niching, hierarchical Pareto fronts, solve provenance) | spec §3 (invariants stay §Optimisation here) | spec'd |
+| termination nodes + representation escalation ladder | spec §4.2–4.3 | spec'd |
+| process repair/projection + composition + deferred commitment; lattice preference; catalogue ingestion | spec §4.4–4.7 | spec'd |
+| microfluidic cards; radiometric transport + irradiance contract | spec §4.8 | spec'd |
+| molecular `density_at` fidelity ladder, conformer enumeration, degradation/cleavage records | spec §4.9 | spec'd |
+| inspection toolkit (cast_ray, max_stress/under_utilised, digest, bookmarks); job searching→improving status | spec §5.4–5.7 | spec'd |
 
 ## Toolpath ownership — how far into the slicer we go (new)
 

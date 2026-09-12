@@ -94,6 +94,9 @@
 - **fisheye rail / eye-pressure** — the web reader's relevance side rail; smartdraft ranks chunks by *eye-pressure* (how much a chunk wants attention right now), LLM-free. → `src/precis_web/smartdraft.py`
 - **cite head** — the status glyph set rendered on an inline claim-hub citation in the web reader (claim / pending / refuted / hypothesis precedence). → `src/precis_web/linkify.py`
 - **extent ladder** — the `kwd < summary < verbatim < fisheye < fisheye+1hop` ordinal rungs (each strictly containing the previous) that `view=` picks a point on. → `src/precis/workers/working_set.py::Extent` · skill `precis-fisheye-help`
+- **brick / linker** — molecular-tier vocabulary: a brick is a substantive moiety, a linker a small connector, joined at typed **attachment points** (position + direction, angles from hybridisation); deliberately NOT "block"/"interface contract", which stay mechanical. → `docs/backlog/multiscale-design-system-spec.md` §0.3, §4.9
+- **termination node** — where a block's refinement stops, *per physics domain*: effective properties + validity range + statistical character of what lies below (Gaussian vs extreme-value). → `docs/backlog/multiscale-design-system-spec.md` §4.3
+- **envelope revision** — counter minted each time a late failure permanently tightens an early-phase envelope; every scored candidate records the revision it was scored under, so stale results are detectable rather than silently trusted. → `docs/backlog/multiscale-design-system-spec.md` §1.5
 
 ## Overloaded — which one?
 

@@ -996,6 +996,37 @@ def test_validate_envelope_overlap_skips_connected_and_nested_pairs(
     assert "envelope_overlap" not in resp.body
 
 
+def test_validate_envelope_overlap_skips_grandparent_nested_pair(
+    handler: NmHandler,
+) -> None:
+    # _is_nested's ancestor walk must climb the WHOLE parent chain, not just
+    # one hop: 'gp' -> 'mid' -> 'leaf' are three levels deep, all coincident
+    # (deep interpenetration between every pair), but 'gp'/'leaf' have no
+    # DIRECT parent/child edge between them — only a grandparent/grandchild
+    # one. A one-hop-only walk would treat 'gp'/'leaf' as unrelated and
+    # wrongly flag them.
+    ops = [
+        {"op": "add_block", "name": "gp", "envelope": "sphere:r4", "pose": [50, 0, 0]},
+        {
+            "op": "add_block",
+            "name": "mid",
+            "parent": "gp",
+            "envelope": "sphere:r4",
+            "pose": [50, 0, 0],
+        },
+        {
+            "op": "add_block",
+            "name": "leaf",
+            "parent": "mid",
+            "envelope": "sphere:r4",
+            "pose": [50, 0, 0],
+        },
+    ]
+    handler.put(id="overlap3", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="overlap3", view="validate")
+    assert "envelope_overlap" not in resp.body
+
+
 def test_validate_connect_cycle_warns_with_path(handler: NmHandler) -> None:
     # A 5-block ring closed head-to-tail — the dogfood's other repro: a
     # chain that's a cycle in the connect graph even though the block tree
@@ -1180,6 +1211,17 @@ def test_validate_external_port_skips_warn_with_info_line(handler: NmHandler) ->
             "roles": ["covalent"],
             "annotations": {"external": True},
         },
+        # A second 'external' port makes the info/warn counts ASYMMETRIC
+        # (2 info, 1 warn below) — a header count that quietly counted the
+        # wrong tier, or double-counted, would land on a number that still
+        # happens to match a symmetric split; this shape can't hide that.
+        {
+            "op": "add_port",
+            "block": "a",
+            "name": "ext2",
+            "roles": ["covalent"],
+            "annotations": {"external": True},
+        },
         {"op": "add_port", "block": "a", "name": "plain1", "roles": ["covalent"]},
     ]
     handler.put(id="ext1", text=json.dumps({"ops": ops}))
@@ -1190,6 +1232,10 @@ def test_validate_external_port_skips_warn_with_info_line(handler: NmHandler) ->
     assert plain_rows and all("warn" in ln for ln in plain_rows)
     ext_rows = [ln for ln in resp.body.splitlines() if "a.ext1" in ln]
     assert ext_rows and all("warn" not in ln for ln in ext_rows)
+    # The header's info count must match the TWO actual info-tier findings
+    # ('a.ext1'/'a.ext2') — not the one warn-tier finding ('a.plain1') it
+    # sits beside, and not double-counted either.
+    assert "2 info" in resp.body.splitlines()[0]
 
     # Round-trips through save/reload — annotations must not be dropped.
     resp2 = handler.get(id="ext1")
