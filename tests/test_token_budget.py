@@ -187,11 +187,20 @@ def test_tools_list_under_byte_budget() -> None:
     descriptions unchanged (the grammar rides in ``precis-checklist-help``
     and param comments) — schema-side growth only, same shape as the
     prior bumps; a 2 KB bump because one slice added a whole op grammar.
+
+    2026-09-13: cap raised from 27 KB → 28 KB to absorb the skill-graph
+    slice-1 kwargs (``docs/backlog/skill-graph.md``): ``full=``/``tag=``/
+    ``kinds=`` on ``get`` and ``tag=``/``kinds=`` on ``search`` — the
+    serve-ledger stub override and the skill topic/kind axis filters,
+    declared at the verb level for the usual strict-schema-client
+    reachability reason (~500 B). Verb descriptions unchanged (detail
+    rides in ``precis-toc-help``/param comments) — schema-side growth
+    only, same shape as the prior bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 27 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 27 KB). "
+    assert size < 28 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 28 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

@@ -306,3 +306,198 @@ def test_ingest_failure_str_format() -> None:
     assert "[x]" in s
     assert "oops" in s
     assert str(path) in s
+
+
+# ── graph gates: [[slug]] links, tags:, kinds: (WARN mode, slice 1) ────
+
+
+def test_scan_result_default_warnings_empty(tmp_path: Path) -> None:
+    r = scan_skill_dir(tmp_path)
+    assert r.warnings == ()
+
+
+def test_scan_extracts_wikilinks(tmp_path: Path) -> None:
+    _write(tmp_path, "a.md", "---\nflavor: reference\n---\n# A\n## op\nsee [[b]]\n")
+    _write(tmp_path, "b.md", "---\nflavor: reference\n---\n# B\n## op\nbody\n")
+    r = scan_skill_dir(tmp_path)
+    assert r.failures == ()
+    by_slug = {p.slug: p for p in r.plans}
+    assert by_slug["a"].links == ("b",)
+    assert by_slug["b"].links == ()
+
+
+def test_scan_wikilinks_deduplicated_and_self_link_dropped(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\n---\n# A\n## op\n[[b]] [[a]] [[b]] again\n",
+    )
+    _write(tmp_path, "b.md", "---\nflavor: reference\n---\n# B\n## op\nbody\n")
+    r = scan_skill_dir(tmp_path)
+    [a] = [p for p in r.plans if p.slug == "a"]
+    assert a.links == ("b",)
+
+
+def test_scan_dangling_wikilink_is_warning_not_failure(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\n---\n# A\n## op\nsee [[does-not-exist]]\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    # WARN mode (GRAPH_GATES_HARD_FAIL is False): the plan still ships.
+    assert r.failures == ()
+    assert len(r.plans) == 1
+    [w] = r.warnings
+    assert "[a]" in w
+    assert "dangling" in w
+    assert "does-not-exist" in w
+
+
+def test_scan_unknown_tag_is_warning(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\ntags:\n  - not-a-real-tag\n---\n# A\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.failures == ()
+    # A single-skill corpus also trips the (always-on) singleton-tag
+    # lint for the same tag — assert the gate finding is present rather
+    # than pinning the exact warning count.
+    assert any("not-a-real-tag" in w and "graph gate" in w for w in r.warnings)
+
+
+def test_scan_kind_named_tag_is_warning(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\ntags:\n  - paper\n---\n# A\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.failures == ()
+    assert any("paper" in w and "graph gate" in w for w in r.warnings)
+
+
+def test_scan_empty_kinds_is_warning(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\nkinds:\nstatus: active\n---\n# A\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.failures == ()
+    [w] = r.warnings
+    assert "kinds" in w
+    assert "empty" in w
+
+
+def test_scan_absent_kinds_is_not_a_warning(tmp_path: Path) -> None:
+    # kinds: entirely absent (not yet migrated) is legal — only a
+    # present-but-empty kinds: is a finding.
+    _write(tmp_path, "a.md", "---\nflavor: reference\n---\n# A\n## op\nbody\n")
+    r = scan_skill_dir(tmp_path)
+    assert r.warnings == ()
+
+
+def test_scan_valid_graph_axes_produce_no_warnings(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        (
+            "---\nflavor: reference\ntags:\n  - orientation\n"
+            "kinds:\n  - paper\n---\n# A\n## op\nsee [[b]]\n"
+        ),
+    )
+    # A second skill shares the tag so the (always-on, separate)
+    # singleton-tag lint doesn't fire and pollute this "clean" case.
+    _write(
+        tmp_path,
+        "b.md",
+        "---\nflavor: reference\ntags:\n  - orientation\n---\n# B\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.failures == ()
+    assert r.warnings == ()
+
+
+def test_scan_singleton_tag_is_always_a_warning(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\ntags:\n  - orientation\n---\n# A\n## op\nbody\n",
+    )
+    _write(
+        tmp_path,
+        "b.md",
+        "---\nflavor: reference\ntags:\n  - orientation\n---\n# B\n## op\nbody\n",
+    )
+    _write(
+        tmp_path,
+        "c.md",
+        "---\nflavor: reference\ntags:\n  - workflow\n---\n# C\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.failures == ()
+    # "orientation" is shared by two skills — no lint. "workflow" is used
+    # by only "c" — singleton lint fires.
+    assert len(r.warnings) == 1
+    assert "[c]" in r.warnings[0]
+    assert "workflow" in r.warnings[0]
+    assert "only this one skill" in r.warnings[0]
+
+
+def test_scan_graph_gates_hard_fail_flag_moves_to_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import precis.ingest.skill_ingest as skill_ingest_mod
+
+    monkeypatch.setattr(skill_ingest_mod, "GRAPH_GATES_HARD_FAIL", True)
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\n---\n# A\n## op\nsee [[does-not-exist]]\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.plans == ()
+    [f] = r.failures
+    assert f.slug == "a"
+    assert "dangling" in f.reason
+    # Hard-fail findings don't ALSO land in warnings.
+    assert r.warnings == ()
+
+
+# ── DB-side tag parity: KIND: + topic tags (item 6) ────────────────────
+
+
+def test_scan_emits_kind_tags(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        (
+            "---\nflavor: reference\nkinds:\n  - paper\n  - patent\n---\n"
+            "# A\n## op\nbody\n"
+        ),
+    )
+    r = scan_skill_dir(tmp_path)
+    [p] = r.plans
+    assert "KIND:paper" in p.tags
+    assert "KIND:patent" in p.tags
+
+
+def test_scan_emits_topic_tags(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\ntags:\n  - orientation\n---\n# A\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    [p] = r.plans
+    assert "topic:orientation" in p.tags
+
+
+def test_scan_no_kind_or_topic_tags_when_axes_absent(tmp_path: Path) -> None:
+    _write(tmp_path, "a.md", "---\nflavor: reference\n---\n# A\n## op\nbody\n")
+    r = scan_skill_dir(tmp_path)
+    [p] = r.plans
+    assert p.tags == ("FLAVOR:reference",)

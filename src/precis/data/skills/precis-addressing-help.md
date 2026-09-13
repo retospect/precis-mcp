@@ -121,3 +121,13 @@ agent-facing copy.
 - **Providers** (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,
   `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
   `random`) have **no handle** — addressed by URL / query / compute.
+
+## `[[slug]]` — skill-to-skill links
+
+Inside a skill's markdown body, `[[other-skill-slug]]` is a lateral
+cross-reference to another skill — the graph-derived successor to a
+prose `## See also` list (docs/backlog/skill-graph.md). It renders as
+`get(kind='skill', id='other-skill-slug')` in a full-skill or `~N`
+section serve, and raw `[[slug]]` in a search snippet means the same
+thing. The target must be a real, existing slug — a dangling link is a
+static ingest-gate finding (see `precis.ingest.skill_ingest`).

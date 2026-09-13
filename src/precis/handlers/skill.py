@@ -32,6 +32,7 @@ runtime — that's by design (skills are versioned with code).
 from __future__ import annotations
 
 import difflib
+import hashlib
 import importlib
 import logging
 import os
@@ -47,13 +48,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
+from precis import serve_ledger
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
-from precis.handlers._skill_common import SkillFrontmatter, parse_frontmatter
+from precis.handlers._skill_common import (
+    WIKILINK_RE,
+    SkillFrontmatter,
+    kind_label,
+    parse_frontmatter,
+)
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
-from precis.skill_index import FileCorpusIndex, SearchHit, chunk_by_h2
+from precis.skill_index import (
+    FileCorpusIndex,
+    SearchHit,
+    SkillGraph,
+    build_skill_graph,
+    chunk_by_h2,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -518,6 +531,9 @@ class SkillHandler(Handler):
         id: str | int | None = None,
         view: str | None = None,
         q: str | None = None,
+        full: bool = False,
+        tag: str | None = None,
+        kinds: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Round-2 picky 2026-05-30: ``get(kind='skill', q='reading a
@@ -528,7 +544,7 @@ class SkillHandler(Handler):
         if id is None and q is not None and q.strip():
             return self.search(q=q)
         if id is None or (isinstance(id, str) and id.startswith("/")):
-            return self._render_index()
+            return self._render_index(tag=tag, kinds=kinds)
 
         raw_id = str(id).strip()
         # Parse the id for skill-chunk selector syntax: ``slug~N``,
@@ -585,6 +601,11 @@ class SkillHandler(Handler):
                     f"synthesised skill {slug!r} has no renderer",
                     next="see SkillHandler._SYNTHESIZED_SKILLS",
                 )
+            # ``precis-toc`` is the only synth renderer that takes the
+            # tag=/kinds= catalogue filter — the others (precis-help,
+            # precis-status) render fixed content with no axis to filter.
+            if target == "precis-toc":
+                return Response(body=renderer(tag=tag, kinds=kinds))
             return Response(body=renderer())
 
         text = _load_skill(slug)
@@ -612,6 +633,20 @@ class SkillHandler(Handler):
                     "slug; get(kind='skill', id='toc') lists every skill"
                 ),
             )
+        # Serve ledger dedup (docs/backlog/skill-graph.md slice 1): a
+        # repeat whole-body get of a skill unchanged since it was last
+        # served THIS session degrades to a cheap stub instead of
+        # resending an unchanged multi-KB body. ``full=True`` always
+        # overrides; the sha is over the raw (include-expanded, pre-
+        # banner/footer) body so a serve-time-only addition below
+        # (the availability banner, the live-registry/graph footers)
+        # never itself counts as a content change.
+        body_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        prior = serve_ledger.lookup(slug)
+        if not full and prior is not None and prior[0] == body_sha:
+            return self._render_serve_stub(slug, text)
+        serve_ledger.record(slug, body_sha)
+
         # Banner if this skill is filtered from the index — the agent
         # asked for it explicitly, so we serve it, but we want them
         # to know the recipes inside may not all run on this build.
@@ -619,6 +654,10 @@ class SkillHandler(Handler):
         gap = _availability_gap(slug, hub=self.hub)
         if gap is not None:
             text = f"> **Heads up:** {gap}\n\n" + text
+        # ``[[slug]]`` wikilinks render as their full serve command in a
+        # whole-skill serve (docs/backlog/skill-graph.md slice 1;
+        # documented in precis-addressing-help).
+        text = _expand_wikilinks(text)
         # Append a live-registry footer so cross-cutting skills
         # (precis-overview, precis-files-help) that mention kinds in
         # tables can't drift against the active build. Each skill
@@ -626,7 +665,95 @@ class SkillHandler(Handler):
         # reader can cross-check their plan against reality.
         # MCP critic MAJOR-C 2026-05-02.
         text = text.rstrip() + "\n\n" + self._live_registry_footer()
+        # Four-line graph footer: linked skills, tags, kinds, tree
+        # siblings (docs/backlog/skill-graph.md slice 1 surfacing).
+        graph_footer = self._graph_footer(slug)
+        if graph_footer:
+            text = text.rstrip() + "\n\n" + graph_footer
         return Response(body=text, pagination_alt_hint=_pagination_alt_hint(slug))
+
+    def _render_serve_stub(self, slug: str, text: str) -> Response:
+        """Soft-dedup stub for a repeat get() of an unchanged skill.
+
+        docs/backlog/skill-graph.md slice 1 "Serve ledger": a cheap
+        section listing plus the one required re-fetch line. Never a
+        hard block — the stub always carries its own ``full=true``
+        escape hatch ("hint always, suppress never").
+        """
+        headings = [c.heading for c in chunk_by_h2(text) if c.heading]
+        lines = [f"# {slug} (unchanged this session)", ""]
+        if headings:
+            lines.append("## Sections")
+            lines.extend(f"- {h}" for h in headings)
+            lines.append("")
+        lines.append(
+            "unchanged since you read it this session — "
+            f"get(kind='skill', id='{slug}', full=true) to resend"
+        )
+        return Response(body="\n".join(lines))
+
+    def _graph_footer(self, slug: str) -> str:
+        """Four-line "Next:" footer over the skill graph (slice 1
+        surfacing): linked skills, tags, kinds, tree siblings.
+
+        Serve-time assembly only — built from the already-loaded
+        corpus text on every call, never baked into a chunk (no
+        ``CHUNKER_VERSION`` bump, no embedding pollution). ``""`` for a
+        persona skill (docs/backlog/skill-graph.md slice 2: personas
+        stay out of toc/footer surfacing — ``invokes_personas`` already
+        covers their edge type) or a skill with nothing on any axis.
+        """
+        raw = _load_skill(slug)
+        fm = parse_frontmatter(raw or "")
+        if fm.flavor == "persona":
+            return ""
+
+        graph = _get_skill_graph()
+        rows: list[tuple[str, str]] = []
+
+        neighbours = graph.linked(slug)
+        if neighbours:
+            capped = graph.linked(slug, cap=_FOOTER_LINK_CAP)
+            shown = ", ".join(_annotate_read(s) for s in capped)
+            if len(neighbours) > len(capped):
+                rows.append(
+                    (
+                        f"search(kind='skill', q={slug!r})",
+                        f"linked: {shown} (+{len(neighbours) - len(capped)} more)",
+                    )
+                )
+            else:
+                rows.append(
+                    (f"get(kind='skill', id={capped[0]!r})", f"linked: {shown}")
+                )
+
+        if fm.tags:
+            rows.append(
+                (
+                    f"get(kind='skill', id='toc', tag={fm.tags[0]!r})",
+                    f"tags: {', '.join(fm.tags)}",
+                )
+            )
+
+        if fm.kinds:
+            rows.append(
+                (
+                    f"get(kind='skill', id='toc', kinds={fm.kinds[0]!r})",
+                    f"kinds: {', '.join(kind_label(k) for k in fm.kinds)}",
+                )
+            )
+
+        siblings = _tree_siblings(slug)
+        if siblings:
+            shown_siblings = ", ".join(_annotate_read(s) for s in siblings)
+            rows.append(
+                (
+                    f"get(kind='skill', id={siblings[0]!r})",
+                    f"see also: {shown_siblings}",
+                )
+            )
+
+        return render_next_section(rows)
 
     def _live_registry_footer(self) -> str:
         """Markdown footer listing active kinds on this build.
@@ -659,6 +786,8 @@ class SkillHandler(Handler):
         *,
         q: str | None = None,
         page_size: int = 10,
+        tag: str | None = None,
+        kinds: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
@@ -668,7 +797,7 @@ class SkillHandler(Handler):
         # the agent a runnable second-step option that mirrors
         # ``get(kind='skill')``'s index.
         if q is None or not q.strip():
-            return self.get()
+            return self.get(tag=tag, kinds=kinds)
 
         # Two-stream search: cosine over chunk embeddings (best at
         # natural phrasing) merged with substring matches (best at
@@ -843,6 +972,13 @@ class SkillHandler(Handler):
 
         all_rows = sorted(merged.values(), key=lambda r: r.score, reverse=True)
 
+        # tag=/kinds= axis filter (docs/backlog/skill-graph.md slice 1)
+        # — applied before the availability partition below so a
+        # narrowed search is actually narrowed, not just annotated.
+        wanted = _axis_filter_set(tag=tag, kinds=kinds)
+        if wanted is not None:
+            all_rows = [row for row in all_rows if row.slug in wanted]
+
         # 2026-06-06: partition by availability. Unwired skills are
         # filtered from the result rows (recipes won't all run on
         # this build, and an LLM with no cross-session memory gains
@@ -917,6 +1053,15 @@ class SkillHandler(Handler):
                 "use `get(kind='skill', id='<slug>')` only to read for "
                 "context, not to invoke recipes."
             )
+
+        # ``related:`` line on the top hit (docs/backlog/skill-graph.md
+        # slice 1 surfacing) — the top result's graph neighbours, so a
+        # search doubles as a peek at what else is nearby before the
+        # agent commits to a full ``get()``.
+        if visible:
+            related = _get_skill_graph().linked(visible[0].slug, cap=_FOOTER_LINK_CAP)
+            if related:
+                body += "\n\nrelated: " + ", ".join(_annotate_read(s) for s in related)
 
         # Drill-down: interpolate the top hit's real slug (mirrors
         # tag.py's ``_render_search_body`` pattern) rather than a
@@ -1127,17 +1272,20 @@ class SkillHandler(Handler):
                 next=(f"get(kind='skill', id='{slug}/toc') for valid handles"),
             )
 
-        # Single chunk: heading + body. Range: concatenate.
+        # Single chunk: heading + body. Range: concatenate. ``[[slug]]``
+        # wikilinks expand to their full serve command here too — same
+        # convention as the whole-skill serve (docs/backlog/skill-graph
+        # .md slice 1).
         if lo == hi:
             chunk = chunks[lo]
             header = f"# {slug}~{lo}"
             if chunk.heading:
                 header += f" — {chunk.heading}"
-            body = f"{header}\n\n{chunk.text}"
+            body = f"{header}\n\n{_expand_wikilinks(chunk.text)}"
         else:
             parts = [f"# {slug}~{lo}..{hi}\n"]
             for i in range(lo, hi + 1):
-                parts.append(chunks[i].text)
+                parts.append(_expand_wikilinks(chunks[i].text))
             body = "\n\n".join(parts)
         body += render_next_section(
             [
@@ -1217,13 +1365,22 @@ class SkillHandler(Handler):
 
     # ── helpers ────────────────────────────────────────────────────
 
-    def _render_index(self) -> Response:
+    def _render_index(
+        self, *, tag: str | None = None, kinds: str | None = None
+    ) -> Response:
         # Build the candidate set: synth meta-skills + every file-
         # backed skill that's currently available (i.e. its subject
         # kind is wired in this build). Filtered-out skills accumulate
         # into the trailing "Hidden" section.
         synth = list(self._SYNTHESIZED_SKILLS.keys())
         file_slugs = sorted(_list_skills())
+        # tag=/kinds= toc filter (docs/backlog/skill-graph.md slice 1) —
+        # synth skills carry no tags:/kinds: frontmatter, so a filtered
+        # index shows only real, axis-matching skills.
+        wanted = _axis_filter_set(tag=tag, kinds=kinds)
+        if wanted is not None:
+            synth = []
+            file_slugs = [s for s in file_slugs if s in wanted]
         active: list[str] = list(synth)
         hidden_slugs: list[str] = []
         for slug in file_slugs:
@@ -1241,6 +1398,16 @@ class SkillHandler(Handler):
         total_active = sum(len(members) for _, members in groups) + len(uncategorised)
         skill_word = "skill" if total_active == 1 else "skills"
         lines = [f"# {total_active} {skill_word} (grouped by purpose)"]
+        if wanted is not None:
+            parts = [
+                p
+                for p in (
+                    f"tag={tag!r}" if tag else "",
+                    f"kinds={kinds!r}" if kinds else "",
+                )
+                if p
+            ]
+            lines.append(f"_Filtered by {', '.join(parts)}._")
 
         for category, slugs in groups:
             lines.append("")
@@ -1333,7 +1500,7 @@ class SkillHandler(Handler):
             return synth_desc
         return _skill_title(slug) or ""
 
-    def _render_toc(self) -> str:
+    def _render_toc(self, *, tag: str | None = None, kinds: str | None = None) -> str:
         """Render the synthesised ``precis-toc`` (alias: ``toc``) skill.
 
         Lists every available skill with its title and a one-line
@@ -1341,7 +1508,10 @@ class SkillHandler(Handler):
         Filtered the same way the index is — skills whose subject
         kind isn't wired or whose status is ``planned`` are listed
         in a separate "Hidden" section so an agent scanning the TOC
-        sees the live set first.
+        sees the live set first. ``tag=``/``kinds=`` further narrow the
+        listing to one ``tags:``/``kinds:`` frontmatter axis value
+        (docs/backlog/skill-graph.md slice 1) — HONORED here, not
+        swallowed.
 
         This is the embedding-search-poor-cousin: substring match
         on titles + summaries gets close enough for a 25-skill
@@ -1353,6 +1523,10 @@ class SkillHandler(Handler):
         # which slug to fetch in full.
         synth = list(self._SYNTHESIZED_SKILLS.keys())
         file_slugs = sorted(_list_skills())
+        wanted = _axis_filter_set(tag=tag, kinds=kinds)
+        if wanted is not None:
+            synth = []
+            file_slugs = [s for s in file_slugs if s in wanted]
         active: list[str] = list(synth)
         hidden: list[tuple[str, str]] = []
         for slug in file_slugs:
@@ -1368,6 +1542,17 @@ class SkillHandler(Handler):
             f"# precis-toc — {total_active} skills grouped by purpose",
             "",
         ]
+        if wanted is not None:
+            parts = [
+                p
+                for p in (
+                    f"tag={tag!r}" if tag else "",
+                    f"kinds={kinds!r}" if kinds else "",
+                )
+                if p
+            ]
+            lines[-1] = f"_Filtered by {', '.join(parts)}._"
+            lines.append("")
 
         def _row_for(slug: str) -> dict[str, str]:
             synth_desc = self._SYNTHESIZED_SKILLS.get(slug)
@@ -2244,11 +2429,98 @@ def _skill_title_tokens(slug: str) -> tuple[frozenset[str], frozenset[str]]:
 #: :func:`_load_skills_map_cache_clear` to force a re-scan.
 _SKILLS_MAP_CACHE: dict[str, str] | None = None
 
+#: Process-wide cache of the derived :class:`SkillGraph` (docs/backlog/
+#: skill-graph.md slice 1). Built once from :func:`skill_corpus_texts`
+#: — same static-for-the-life-of-the-process assumption as
+#: ``_SKILLS_MAP_CACHE`` — and dropped alongside it by
+#: :func:`_load_skills_map_cache_clear`.
+_SKILL_GRAPH_CACHE: SkillGraph | None = None
+
 
 def _load_skills_map_cache_clear() -> None:
-    """Drop the cached ``{slug → raw}`` map. Use in tests after edits."""
-    global _SKILLS_MAP_CACHE
+    """Drop the cached ``{slug → raw}`` map + derived graph.
+
+    Use in tests after edits.
+    """
+    global _SKILLS_MAP_CACHE, _SKILL_GRAPH_CACHE
     _SKILLS_MAP_CACHE = None
+    _SKILL_GRAPH_CACHE = None
+
+
+def _get_skill_graph() -> SkillGraph:
+    """Lazily build + cache the process-wide skill graph (slice 1).
+
+    Skills are static disk content for the life of the process (same
+    assumption ``_SKILLS_MAP_CACHE`` makes), so one wikilink/tag/kind
+    pass covers every caller — the served-skill footer, the search
+    ``related:`` line, and the ``toc``'s ``tag=``/``kinds=`` filter all
+    share this one instance.
+    """
+    global _SKILL_GRAPH_CACHE
+    if _SKILL_GRAPH_CACHE is None:
+        _SKILL_GRAPH_CACHE = build_skill_graph(skill_corpus_texts())
+    return _SKILL_GRAPH_CACHE
+
+
+#: Cap on the footer/related-line "linked" listing before it points at
+#: search instead of naming every neighbour — a heavily-linked hub
+#: skill's inbound edges would otherwise dwarf the footer (docs/backlog/
+#: skill-graph.md slice 1: "inbound CAPPED with a search pointer for
+#: hub skills").
+_FOOTER_LINK_CAP = 6
+
+
+def _annotate_read(slug: str) -> str:
+    """``slug``, suffixed with "(read this session)" if the serve
+    ledger already recorded it this session — see :mod:`precis.serve_ledger`."""
+    return f"{slug} (read this session)" if serve_ledger.was_served(slug) else slug
+
+
+def _expand_wikilinks(text: str) -> str:
+    """Render every ``[[slug]]`` wikilink as its full serve command.
+
+    docs/backlog/skill-graph.md slice 1: a full-skill or ``~N``/``~A..B``
+    section serve expands the lateral cross-reference syntax into a
+    directly pasteable call, rather than leaving the raw authoring
+    markup in the rendered body. A search snippet keeps the raw
+    ``[[slug]]`` form — documented once in ``precis-addressing-help``,
+    which covers both conventions.
+    """
+    return WIKILINK_RE.sub(lambda m: f"`get(kind='skill', id='{m.group(1)}')`", text)
+
+
+def _tree_siblings(slug: str) -> list[str]:
+    """Other slugs sharing ``slug``'s :data:`_SKILL_CATEGORIES` bucket.
+
+    ``[]`` when ``slug`` isn't categorised (an uncategorised or synth
+    skill) or has no siblings.
+    """
+    for _category, members in _SKILL_CATEGORIES:
+        if slug in members:
+            return [s for s in members if s != slug]
+    return []
+
+
+def _axis_filter_set(*, tag: str | None, kinds: str | None) -> frozenset[str] | None:
+    """Slugs matching the requested ``tag=``/``kinds=`` toc filter.
+
+    ``None`` when neither filter is given — "no restriction", distinct
+    from an empty result set. When both are given, intersects: a skill
+    must carry both to match. docs/backlog/skill-graph.md slice 1:
+    "``tag=``/``kind=`` filters on the toc — HONORED, never swallowed."
+    """
+    if tag is None and kinds is None:
+        return None
+    graph = _get_skill_graph()
+    sets: list[frozenset[str]] = []
+    if tag is not None:
+        sets.append(frozenset(graph.by_tag(tag)))
+    if kinds is not None:
+        sets.append(frozenset(graph.by_kind(kinds)))
+    result = sets[0]
+    for s in sets[1:]:
+        result &= s
+    return result
 
 
 #: Entry-point group third-party packages use to contribute skill
@@ -2344,6 +2616,21 @@ def skill_exists(slug: str) -> bool:
     return slug in _load_skills_map()
 
 
+def skill_corpus_texts() -> dict[str, str]:
+    """Public accessor: ``{slug: raw markdown body}`` for every shipped
+    (or plugin-contributed) skill.
+
+    Thin wrapper over :func:`_load_skills_map` so a caller outside this
+    module — the server seam's graph build
+    (:func:`precis.skill_index.build_skill_graph`), slice 4's kind-help
+    injection — doesn't reach through a leading-underscore private to
+    get the corpus (docs/backlog/skill-graph.md slice 1, item 3).
+    Returns a fresh copy each call so a caller can't mutate the
+    process-wide cache.
+    """
+    return dict(_load_skills_map())
+
+
 def _list_skills() -> list[str]:
     """Return all available skill slugs (without the ``.md`` suffix).
 
@@ -2412,7 +2699,12 @@ _NON_KIND_SLUG_STEMS = frozenset(
 def _kinds_referenced_by_skill(slug: str, fm: SkillFrontmatter) -> list[str]:
     """Return every kind the skill claims to apply to.
 
-    Two sources, in priority order:
+    docs/backlog/skill-graph.md slice 1: ``kinds:`` frontmatter is now
+    authoritative when present — ``fm.kinds is not None`` — since it's
+    validated against the kind registry at ingest and drives the tag/
+    toc-filter graph surfacing too; a legacy skill without it (``fm.kinds
+    is None``, the migration hasn't reached it yet) falls back to the
+    older text-derived sources, in priority order:
       1. Front-matter ``applies-to:`` — extract every ``kind='X'``.
       2. Slug suffix ``precis-<kind>-help`` — derived as a fallback
          so existing ``-help`` skills without explicit front-matter
@@ -2420,9 +2712,15 @@ def _kinds_referenced_by_skill(slug: str, fm: SkillFrontmatter) -> list[str]:
          (``precis-get-help`` etc.) are not treated as kind-targeted
          — see ``_NON_KIND_SLUG_STEMS``.
 
+    A present-but-empty ``kinds: []`` means "no kind gate" (the file's
+    own gate finding for that is a separate, ingest-time concern) —
+    it does NOT fall through to the legacy sources.
+
     Returns an empty list for cross-cutting skills (``precis-overview``,
     ``precis-tags``, …) that don't reference any specific kind.
     """
+    if fm.kinds is not None:
+        return list(fm.kinds)
     kinds: list[str] = []
     applies = fm.applies_to or ""
     if applies:

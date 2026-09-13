@@ -370,6 +370,21 @@ def test_skill_without_includes_is_unchanged(skill: SkillHandler) -> None:
         assert expanded == raw
 
 
+def test_skill_corpus_texts_is_public_mirror_of_private_map() -> None:
+    """``skill_corpus_texts`` (docs/backlog/skill-graph.md slice 1, item
+    3) is the public accessor a caller outside this module — the
+    server-seam graph build — uses instead of reaching through the
+    leading-underscore ``_load_skills_map``."""
+    from precis.handlers.skill import _load_skills_map, skill_corpus_texts
+
+    public = skill_corpus_texts()
+    private = _load_skills_map()
+    assert public == private
+    # A fresh copy each call — mutating it must not poison the cache.
+    public["bogus-slug"] = "junk"
+    assert "bogus-slug" not in _load_skills_map()
+
+
 # ── synthesized precis-help skill ────────────────────────────────────
 
 
@@ -1332,3 +1347,354 @@ def test_precis_overview_ref_kinds_table_matches_registry(hub: Hub) -> None:
         f"missing rows for: {missing}. Add a row each, or change the "
         "table's stated contract."
     )
+
+
+# ── slice 1 surfacing: graph footer, wikilink expansion, toc/search
+# filters, availability-gate cutover, serve ledger ─────────────────────
+#
+# docs/backlog/skill-graph.md slice 1. These use a synthetic corpus
+# (monkeypatched onto the module-level caches) rather than the real
+# shipped skills — slice 2 hasn't swept ``tags:``/``kinds:`` onto real
+# files yet, so exercising the surfacing logic needs files that
+# actually carry the axes.
+
+
+def _install_corpus(monkeypatch: pytest.MonkeyPatch, files: dict[str, str]) -> None:
+    """Replace the module-wide skill corpus + derived graph for one test."""
+    import precis.handlers.skill as skill_mod
+
+    monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", dict(files))
+    monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
+
+
+def _md(*, front: str = "flavor: reference", body: str = "body") -> str:
+    return f"---\n{front}\n---\n# T\n{body}\n"
+
+
+def test_graph_footer_shows_linked_tags_kinds_siblings(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "a": _md(
+                front=("flavor: reference\ntags:\n  - orientation\nkinds:\n  - paper"),
+                body="see [[b]]",
+            ),
+            "b": _md(body="body"),
+        },
+    )
+    out = skill.get(id="a")
+    assert "linked: b" in out.body
+    assert "tags: orientation" in out.body
+    assert "kinds: paper (pa)" in out.body
+
+
+def test_graph_footer_tree_siblings() -> None:
+    """Tree siblings come from ``_SKILL_CATEGORIES`` — use a real
+    category pair rather than the synthetic corpus (categories are a
+    fixed, shipped mapping)."""
+    from precis.handlers.skill import _tree_siblings
+
+    siblings = _tree_siblings("precis-get-help")
+    assert "precis-get-help" not in siblings
+    assert "precis-search-help" in siblings  # same "Core verbs" bucket
+
+
+def test_graph_footer_caps_inbound_with_search_pointer(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.handlers.skill import _FOOTER_LINK_CAP
+
+    hub_slug = "hub"
+    files = {hub_slug: _md(body="hub page")}
+    for i in range(_FOOTER_LINK_CAP + 2):
+        leaf = f"leaf{i}"
+        files[leaf] = _md(body=f"see [[{hub_slug}]]")
+    _install_corpus(monkeypatch, files)
+
+    out = skill.get(id=hub_slug)
+    assert f"search(kind='skill', q='{hub_slug}')" in out.body
+    assert "more)" in out.body
+
+
+def test_graph_footer_empty_for_persona(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {"p": _md(front="flavor: persona\ntags:\n  - orientation", body="body")},
+    )
+    out = skill.get(id="p")
+    assert "tags: orientation" not in out.body
+
+
+def test_wikilink_expands_in_full_serve(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {"a": _md(body="see [[b]] for more"), "b": _md(body="body")},
+    )
+    out = skill.get(id="a")
+    assert "[[b]]" not in out.body
+    assert "get(kind='skill', id='b')" in out.body
+
+
+def test_wikilink_expands_in_chunk_serve(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No H1/H2 heading: ``chunk_by_h2`` returns a single whole-body
+    # chunk at index 0 (a leading H1 would instead become its own
+    # empty-heading "head chunk" at ~0, pushing the wikilinked content
+    # to ~1) — see the chunker's head-chunk docstring.
+    _install_corpus(
+        monkeypatch,
+        {
+            "a": "---\nflavor: reference\n---\nsee [[b]]\n",
+            "b": _md(body="body"),
+        },
+    )
+    out = skill.get(id="a~0")
+    assert "[[b]]" not in out.body
+    assert "get(kind='skill', id='b')" in out.body
+
+
+def test_toc_filter_by_tag_actually_filters(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "zzq-orient": _md(
+                front="flavor: reference\ntags:\n  - orientation", body="body"
+            ),
+            "zzq-workflow": _md(
+                front="flavor: reference\ntags:\n  - workflow", body="body"
+            ),
+        },
+    )
+    out = skill.get(id="toc", tag="orientation")
+    assert "zzq-orient" in out.body
+    assert "zzq-workflow" not in out.body
+    # negative check the other direction too
+    out2 = skill.get(id="toc", tag="workflow")
+    assert "zzq-workflow" in out2.body
+    assert "zzq-orient" not in out2.body
+
+
+def test_toc_filter_by_kinds_actually_filters(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "zzq-paper": _md(front="flavor: reference\nkinds:\n  - paper", body="body"),
+            "zzq-patent": _md(
+                front="flavor: reference\nkinds:\n  - patent", body="body"
+            ),
+        },
+    )
+    out = skill.get(id="toc", kinds="paper")
+    assert "zzq-paper" in out.body
+    assert "zzq-patent" not in out.body
+    out2 = skill.get(id="toc", kinds="patent")
+    assert "zzq-patent" in out2.body
+    assert "zzq-paper" not in out2.body
+
+
+def test_index_filter_by_tag_actually_filters(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "aaa-orient": _md(
+                front="flavor: reference\ntags:\n  - orientation", body="body"
+            ),
+            "bbb-workflow": _md(
+                front="flavor: reference\ntags:\n  - workflow", body="body"
+            ),
+        },
+    )
+    out = skill.get(tag="orientation")
+    assert "aaa-orient" in out.body
+    assert "bbb-workflow" not in out.body
+
+
+def test_search_axis_filter_actually_filters(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "widget-orient": _md(
+                front="flavor: reference\ntags:\n  - orientation",
+                body="widget gadget thing",
+            ),
+            "widget-workflow": _md(
+                front="flavor: reference\ntags:\n  - workflow",
+                body="widget gadget thing",
+            ),
+        },
+    )
+    out = skill.search(q="widget gadget", tag="orientation")
+    assert "widget-orient" in out.body
+    assert "widget-workflow" not in out.body
+
+
+def test_search_related_line_on_top_hit(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "widget-help": _md(body="widget gadget thing see [[widget-parts]]"),
+            "widget-parts": _md(body="parts of a widget"),
+        },
+    )
+    out = skill.search(q="widget gadget thing")
+    assert "related: widget-parts" in out.body
+
+
+def test_availability_gate_prefers_kinds_frontmatter_over_applies_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """docs/backlog/skill-graph.md slice 1: ``kinds:`` frontmatter is
+    authoritative when present, even when ``applies-to:`` names a
+    different (wired) kind — the legacy regex must not override it."""
+    from precis.handlers.skill import _availability_gap
+
+    _install_corpus(
+        monkeypatch,
+        {
+            "precis-widget-help": (
+                "---\nflavor: reference\nkinds:\n  - nonexistent-kind\n"
+                "applies-to: get (kind='skill')\n---\n# T\nbody\n"
+            ),
+        },
+    )
+    # ``nonexistent-kind`` must be *known* to the gate (registered, even
+    # if disabled) for it to fire at all — see ``_kind_is_known``.
+    hub = _NoFileKindsHub()
+    hub.loadabilities = dict(hub.loadabilities)
+    hub.loadabilities["nonexistent-kind"] = _Loadability(False)
+    gap = _availability_gap("precis-widget-help", hub=hub)
+    assert gap is not None
+    assert "nonexistent-kind" in gap
+
+
+def test_availability_gate_empty_kinds_list_means_no_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A present-but-empty ``kinds:`` means "no kind gate" — it must
+    not fall back to the legacy applies-to/slug inference."""
+    from precis.handlers.skill import _availability_gap
+
+    _install_corpus(
+        monkeypatch,
+        {
+            # Slug looks like a kind-help skill for an unwired kind, and
+            # applies-to also names one — but an explicit empty kinds:
+            # overrides both. (Authored as a bare ``kinds:`` line
+            # immediately followed by another key — see
+            # ``_skill_common.parse_frontmatter``'s block-list flush;
+            # inline ``kinds: []`` is not the same shape.)
+            "precis-nonexistent-kind-help": (
+                "---\nflavor: reference\nkinds:\n"
+                "applies-to: get (kind='nonexistent-kind')\n---\n# T\nbody\n"
+            ),
+        },
+    )
+    hub = _NoFileKindsHub()
+    hub.loadabilities = dict(hub.loadabilities)
+    hub.loadabilities["nonexistent-kind"] = _Loadability(False)
+    assert _availability_gap("precis-nonexistent-kind-help", hub=hub) is None
+
+
+# ── serve ledger (session-keyed soft-dedup) ─────────────────────────────
+
+
+class _FakeSession:
+    """Weakly-referenceable stand-in for a real MCP session object."""
+
+
+def test_ledger_stub_on_repeat_get_unchanged(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import serve_ledger
+
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    session = _FakeSession()
+    with serve_ledger.session_scope(session):
+        first = skill.get(id="a")
+        assert "unchanged this session" not in first.body
+
+        second = skill.get(id="a")
+        assert "unchanged this session" in second.body
+        assert "get(kind='skill', id='a', full=true) to resend" in second.body
+
+
+def test_ledger_full_override_resends_full_body(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import serve_ledger
+
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    session = _FakeSession()
+    with serve_ledger.session_scope(session):
+        skill.get(id="a")
+        third = skill.get(id="a", full=True)
+        assert "unchanged this session" not in third.body
+
+
+def test_ledger_sha_change_forces_full_serve(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import precis.handlers.skill as skill_mod
+    from precis import serve_ledger
+
+    session = _FakeSession()
+    with serve_ledger.session_scope(session):
+        _install_corpus(monkeypatch, {"a": _md(body="body v1")})
+        first = skill.get(id="a")
+        assert "unchanged this session" not in first.body
+
+        # File content changes mid-session (e.g. a fresh cache build) —
+        # the sha no longer matches, so the next get must serve full,
+        # not the stub.
+        monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", {"a": _md(body="body v2")})
+        monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
+        second = skill.get(id="a")
+        assert "unchanged this session" not in second.body
+        assert "body v2" in second.body
+
+
+def test_ledger_two_sessions_never_share_state(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import serve_ledger
+
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    session1 = _FakeSession()
+    session2 = _FakeSession()
+
+    with serve_ledger.session_scope(session1):
+        skill.get(id="a")
+
+    # A different session has never read "a" — must get the full body,
+    # not session1's stub.
+    with serve_ledger.session_scope(session2):
+        out = skill.get(id="a")
+        assert "unchanged this session" not in out.body
+
+
+def test_ledger_no_bound_session_never_stubs(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Direct handler calls / the CLI bind no session — every get is a
+    full serve, ledger writes are no-ops."""
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    skill.get(id="a")
+    out = skill.get(id="a")
+    assert "unchanged this session" not in out.body

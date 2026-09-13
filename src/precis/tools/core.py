@@ -12,11 +12,14 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
+from precis import serve_ledger
+
 if TYPE_CHECKING:
     from precis.runtime import PrecisRuntime
 
 # Conditional imports for MCP types (not available in all environments)
 try:
+    from mcp.server.fastmcp import Context
     from mcp.types import CallToolResult, TextContent
 
     _MCP_AVAILABLE = True
@@ -37,6 +40,12 @@ except ImportError:
         def __init__(self, type, text):
             self.type = type
             self.text = text
+
+    class Context:  # type: ignore[no-redef]
+        """Fallback when ``mcp`` isn't importable — ``ctx`` is always
+        ``None`` in that case, so this shape is never touched."""
+
+        session: Any = None
 
 
 # FastMCP refuses ``str | CallToolResult`` return annotations on tool
@@ -392,6 +401,25 @@ def _coerce_text_body(text: str | dict[str, Any] | list[Any] | None) -> str | No
     return text
 
 
+def _ctx_session(ctx: Context | None) -> object | None:
+    """The live MCP session behind ``ctx``, or ``None``.
+
+    ``Context.session`` raises ``ValueError`` (not ``AttributeError``)
+    when the ``Context`` object exists but isn't bound to a live
+    request — e.g. ``FastMCP.call_tool()``/``get_context()`` invoked
+    directly outside a real client connection (several tests do this).
+    Treat that the same as "no session bound": the serve ledger
+    degrades to always-full-serve either way, per its own "loss
+    degrades to full serves" rule (:mod:`precis.serve_ledger`).
+    """
+    if ctx is None:
+        return None
+    try:
+        return ctx.session
+    except (AttributeError, ValueError):
+        return None
+
+
 def get(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
@@ -411,6 +439,25 @@ def get(
     # spec=/category= promotion) so strict-schema MCP clients don't strip
     # it; other kinds' get() ignore it (swallowed by their **kwargs).
     spec: str | None = None,
+    # skill (docs/backlog/skill-graph.md slice 1): get(kind='skill',
+    # id='<slug>', full=true) forces a full re-serve past the session
+    # serve-ledger's soft-dedup stub; tag=/kinds= narrow the *catalogue*
+    # listing (get(kind='skill', id='toc') or a bare get(kind='skill'))
+    # to one tags:/kinds: frontmatter axis value — distinct from a
+    # per-ref smart-toc (see precis-toc-help), which these don't touch.
+    # Declared at the verb level so strict-schema MCP clients don't
+    # strip them; other kinds' get() ignore them.
+    full: bool | None = None,
+    tag: str | None = None,
+    kinds: str | None = None,
+    # FastMCP injects the live per-request ``Context`` here when a
+    # tool function declares a parameter annotated with it — excluded
+    # from the wire schema (see ``mcp.server.fastmcp.tools.base.Tool.
+    # from_function``'s ``skip_names``), so this adds nothing to what a
+    # client sees or must pass. Used only to key the skill serve ledger
+    # off the real MCP session (``ctx.session``) for the duration of
+    # this call — see :mod:`precis.serve_ledger`.
+    ctx: Context | None = None,
 ) -> str:
     """Read a ref or compute a value.
 
@@ -421,32 +468,44 @@ def get(
     keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
     `project=` (draft only) looks up by owning project todo instead of id=.
     `spec=` (component only) picks the spec for `view='bom'`'s consistency
-    query.
+    query. `full=` (skill only) forces a full re-serve past the session
+    dedup stub; `tag=`/`kinds=` (skill only) filter `id='toc'`.
 
     Full reference: get(kind='skill', id='precis-get-help'), or
     search(kind='skill', q='reading a paper') for a topical lookup.
     """
-    payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
-    if args:
-        err = _check_reserved_args(args, reserved=("kind", "id", "view", "q"))
-        if err is not None:
-            return err
-        payload["__extras__"] = dict(args)
-    if project is not None:
-        payload["project"] = project
-    # component range/consistency filter — forwarded only when set so a
-    # plain get() never trips the spec= interception path in the
-    # component handler (mirrors search()'s spec=/category= promotion).
-    if spec is not None:
-        payload["spec"] = spec
+    session = _ctx_session(ctx)
+    token = serve_ledger.bind(session)
+    try:
+        payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
+        if args:
+            err = _check_reserved_args(args, reserved=("kind", "id", "view", "q"))
+            if err is not None:
+                return err
+            payload["__extras__"] = dict(args)
+        if project is not None:
+            payload["project"] = project
+        # component range/consistency filter — forwarded only when set so a
+        # plain get() never trips the spec= interception path in the
+        # component handler (mirrors search()'s spec=/category= promotion).
+        if spec is not None:
+            payload["spec"] = spec
+        if full is not None:
+            payload["full"] = full
+        if tag is not None:
+            payload["tag"] = tag
+        if kinds is not None:
+            payload["kinds"] = kinds
 
-    # ``_dispatch`` returns ``str`` on success and ``CallToolResult``
-    # with ``isError=True`` on failure. We propagate both verbatim;
-    # FastMCP's ``FuncMetadata.convert_result`` passes
-    # ``CallToolResult`` through unchanged so the protocol
-    # ``isError`` flag is preserved. CLI consumers unwrap via
-    # :func:`precis.tools.cli_adapter.run_tool_from_cli`.
-    return _dispatch("get", payload)
+        # ``_dispatch`` returns ``str`` on success and ``CallToolResult``
+        # with ``isError=True`` on failure. We propagate both verbatim;
+        # FastMCP's ``FuncMetadata.convert_result`` passes
+        # ``CallToolResult`` through unchanged so the protocol
+        # ``isError`` flag is preserved. CLI consumers unwrap via
+        # :func:`precis.tools.cli_adapter.run_tool_from_cli`.
+        return _dispatch("get", payload)
+    finally:
+        serve_ledger.unbind(token)
 
 
 def search(
@@ -555,6 +614,18 @@ def search(
     # verb level so strict-schema clients don't strip it before it ever
     # reaches the handler.
     link: str | None = None,
+    # skill (docs/backlog/skill-graph.md slice 1): narrows an empty-q=
+    # (index) or a real search to one tags:/kinds: frontmatter axis
+    # value. Distinct from the existing ``tags=`` list filter above (a
+    # different, cross-kind per-ref tag axis). Declared at the verb
+    # level so strict-schema clients don't strip them; other kinds'
+    # search() ignore them.
+    tag: str | None = None,
+    kinds: str | None = None,
+    # See ``get`` — FastMCP injects the live per-request ``Context``
+    # here (excluded from the wire schema); used only to key the skill
+    # serve ledger off the real MCP session for this call.
+    ctx: Context | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -786,9 +857,37 @@ def search(
     # trips the link= resolution path in the runtime dispatcher.
     if link is not None:
         payload["link"] = link
+    # skill tags:/kinds: axis filter — forwarded only when set, same
+    # discipline as every optional kwarg above. Single-kind skill search
+    # rejects the plural ``tags=`` (the cross-kind per-ref filter, which
+    # SkillHandler would silently swallow) so an agent reaching for the
+    # topic axis gets redirected instead of unfiltered hits.
+    if kind == "skill" and tags is not None:
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    "kind='skill' has no tags= filter — the topic axis "
+                    "is the singular tag=",
+                    next="search(kind='skill', q='…', tag='drafting')",
+                )
+            )
+        )
+    if tag is not None:
+        payload["tag"] = tag
+    if kinds is not None:
+        payload["kinds"] = kinds
 
-    # See ``get`` for the ``str | CallToolResult`` return contract.
-    return _dispatch("search", payload)
+    # See ``get`` for the ``str | CallToolResult`` return contract, and
+    # for why the serve-ledger session binds only around the dispatch
+    # that can actually reach a handler (every early return above this
+    # point is a pre-dispatch validation error).
+    session = _ctx_session(ctx)
+    token = serve_ledger.bind(session)
+    try:
+        return _dispatch("search", payload)
+    finally:
+        serve_ledger.unbind(token)
 
 
 def put(

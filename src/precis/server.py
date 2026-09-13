@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.tools import TOOL_REGISTRY
@@ -548,7 +548,11 @@ def _mcp_profile() -> str:
     return os.environ.get(_MCP_PROFILE_ENV, "typed")
 
 
-def precis(command: str, text: str | dict[str, Any] | list[Any] | None = None) -> Any:
+def precis(
+    command: str,
+    text: str | dict[str, Any] | list[Any] | None = None,
+    ctx: Context | None = None,
+) -> Any:
     """Execute one precis verb call parsed from ``command``.
 
     Parses via :func:`precis.tools.command_parser.parse_command` and
@@ -569,6 +573,12 @@ def precis(command: str, text: str | dict[str, Any] | list[Any] | None = None) -
     :func:`~precis.tools.command_parser.parse_command` unchanged into
     ``put``/``edit``, which each normalize it back to a JSON string via
     ``tools.core._coerce_text_body`` before touching a handler.
+
+    ``ctx`` is FastMCP's injected per-request Context (excluded from
+    the wire schema, same mechanism as the typed profile's own
+    ``get``/``search`` — see ``tools.core``) — forwarded into ``get``/
+    ``search`` so the skill serve ledger (docs/backlog/skill-graph.md
+    slice 1) works under the ``command`` profile too, not just typed.
     """
     from precis.errors import BadInput
     from precis.tools import TOOL_REGISTRY
@@ -583,6 +593,9 @@ def precis(command: str, text: str | dict[str, Any] | list[Any] | None = None) -
         verb, kwargs = parse_command(command, text=text)
     except CommandParseError as e:
         return _bad_input(str(e), hint=f"call must look like {_COMMAND_EXAMPLE}")
+
+    if verb in ("get", "search"):
+        kwargs["ctx"] = ctx
 
     try:
         return TOOL_REGISTRY[verb]["func"](**kwargs)

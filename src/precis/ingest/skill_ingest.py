@@ -19,6 +19,21 @@ Static gates of ``docs/backlog/docs-and-skills-redesign.md``):
 - For ``FLAVOR:runbook`` skills: every ``invokes_personas:`` entry
   resolves to an existing ``FLAVOR:persona`` skill in the same scan.
 
+Graph gates (docs/backlog/skill-graph.md slice 1) join the list above:
+
+- Every ``[[slug]]`` wikilink resolves to a real slug in the same scan
+  (no dangling link).
+- Every ``tags:`` entry is a known tag (:data:`VALID_TAGS`) and not a
+  registered kind name.
+- ``kinds:`` is not present-but-empty (``kinds:`` with zero items).
+
+These three ship in **WARN mode** — see :data:`GRAPH_GATES_HARD_FAIL` —
+logged and reported via :attr:`ScanResult.warnings` without failing the
+scan, since the existing 160 skill files predate the ``tags:``/``kinds:``
+axes (slice 2 sweeps them; slice 2's last step flips this to hard-fail).
+A singleton tag (used by exactly one skill corpus-wide) is a lint, not a
+gate — always a warning, never flipped to hard-fail.
+
 A file failing any gate goes into :class:`IngestFailure`; the scan
 continues so one bad skill doesn't block the rest.
 """
@@ -27,19 +42,30 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 from precis.handlers._skill_common import (
     FrontmatterError,
     SkillFrontmatter,
+    extract_wikilinks,
     flavor_tag,
     parse_frontmatter,
+    unknown_kinds,
+    unknown_tags,
 )
 from precis.ingest.skill_template import IncludeError, Includer
 from precis.skill_index.chunker import Chunk, chunk_by_h2
 
 log = logging.getLogger(__name__)
+
+#: Whether the three graph gates below are hard-fail (move the plan to
+#: ``ScanResult.failures``) or WARN-mode (log + report via
+#: ``ScanResult.warnings``, plan still ships). Slice 1 ships WARN
+#: (docs/backlog/skill-graph.md); slice 2's last step flips this once
+#: the 160-file sweep has populated ``tags:``/``kinds:`` everywhere.
+GRAPH_GATES_HARD_FAIL = False
 
 
 #: Default chunk-body size budget in characters. bge-m3 handles up
@@ -65,6 +91,15 @@ class IngestPlan:
     tags: tuple[str, ...]
     expanded_text: str
 
+    #: ``[[slug]]`` wikilink targets found in the body, order-preserving,
+    #: deduplicated, self-links dropped (docs/backlog/skill-graph.md
+    #: slice 1). May contain a dangling target — see
+    #: :func:`_validate_graph_gates`; the graph build
+    #: (:mod:`precis.skill_index.graph`) re-derives the same edges from
+    #: the raw text independently, so this field exists for the ingest
+    #: gate, not as the graph's only source.
+    links: tuple[str, ...] = ()
+
 
 @dataclass(frozen=True)
 class IngestFailure:
@@ -89,6 +124,13 @@ class ScanResult:
 
     plans: tuple[IngestPlan, ...]
     failures: tuple[IngestFailure, ...]
+
+    #: Non-fatal findings — WARN-mode graph gates (dangling link /
+    #: unknown tag / empty ``kinds:``) and the always-warn singleton-tag
+    #: lint. Each entry is pre-formatted (``str(IngestFailure(...))``
+    #: shape) so a caller can log or report it without re-deriving the
+    #: message. Empty when nothing to flag.
+    warnings: tuple[str, ...] = ()
 
 
 class _PlanError(ValueError):
@@ -123,7 +165,13 @@ def scan_skill_dir(
         plans.append(plan)
 
     plans, failures = _validate_cross_references(plans, failures)
-    return ScanResult(plans=tuple(plans), failures=tuple(failures))
+    plans, failures, graph_warnings = _validate_graph_gates(plans, failures)
+    warnings = graph_warnings + _singleton_tag_warnings(plans)
+    for w in warnings:
+        log.warning("skill graph gate: %s", w)
+    return ScanResult(
+        plans=tuple(plans), failures=tuple(failures), warnings=tuple(warnings)
+    )
 
 
 def _plan_one(
@@ -170,6 +218,7 @@ def _plan_one(
             )
 
     tags = _build_tags(fm)
+    links = tuple(t for t in extract_wikilinks(expanded) if t != slug)
 
     return IngestPlan(
         slug=slug,
@@ -179,11 +228,14 @@ def _plan_one(
         chunks=tuple(chunks),
         tags=tags,
         expanded_text=expanded,
+        links=links,
     )
 
 
 def _build_tags(fm: SkillFrontmatter) -> tuple[str, ...]:
-    """Emit the tag set declared by frontmatter (decisions 7 + 13)."""
+    """Emit the tag set declared by frontmatter (decisions 7 + 13, plus
+    the graph axes' DB-side parity — docs/backlog/skill-graph.md
+    slice 1, item 6: ``KIND:`` + topic tags alongside ``FLAVOR:``)."""
     out: list[str] = []
     ft = flavor_tag(fm)
     if ft is not None:
@@ -193,6 +245,19 @@ def _build_tags(fm: SkillFrontmatter) -> tuple[str, ...]:
         # multiple required env vars in the future without breaking
         # the existing tag-replace semantics.
         out.append(f"requires:{fm.available_when}")
+    for kind in fm.kinds or ():
+        # One ``KIND:`` tag per declared kind. Unlike ``FLAVOR:`` (a
+        # single-valued discriminator, decision 7's "replaces within
+        # prefix"), ``kinds:`` is multi-valued by design — a skill can
+        # legitimately cover more than one kind. No DB write path
+        # consumes these yet (slice 1 is scan-only parity, per
+        # skill_ingest's module docstring); a future write stage
+        # funnelling through the closed-vocab tag enforcer will need
+        # ``KIND:`` registered there as multi-valued too.
+        out.append(f"KIND:{kind}")
+    for tag in fm.tags:
+        # Lowercase prefix → accumulates, same rationale as ``requires:``.
+        out.append(f"topic:{tag}")
     return tuple(out)
 
 
@@ -233,3 +298,97 @@ def _validate_cross_references(
         else:
             good.append(plan)
     return good, failures
+
+
+def _validate_graph_gates(
+    plans: list[IngestPlan],
+    failures: list[IngestFailure],
+) -> tuple[list[IngestPlan], list[IngestFailure], list[str]]:
+    """Graph gates (docs/backlog/skill-graph.md slice 1): dangling
+    ``[[slug]]`` links, unknown/kind-named tags, invalid ``kinds:``.
+
+    WARN mode (:data:`GRAPH_GATES_HARD_FAIL` is ``False``, slice 1):
+    every finding becomes a warning string; the plan still ships.
+    Hard-fail mode (flipped at the end of slice 2): a finding moves the
+    plan into ``failures``, same shape as
+    :func:`_validate_cross_references`.
+    """
+    slugs = {p.slug for p in plans}
+    good: list[IngestPlan] = []
+    warnings: list[str] = []
+    for plan in plans:
+        findings: list[str] = []
+
+        dangling = [t for t in plan.links if t not in slugs]
+        if dangling:
+            findings.append(f"dangling [[slug]] link(s): {dangling}")
+
+        bad_tags = unknown_tags(plan.frontmatter.tags)
+        if bad_tags:
+            findings.append(
+                f"unknown or kind-named tag(s): {bad_tags} "
+                "(see VALID_TAGS in handlers/_skill_common.py)"
+            )
+
+        kinds = plan.frontmatter.kinds
+        if kinds is not None:
+            if kinds == ():
+                findings.append(
+                    "kinds: is present but empty — declare the kind(s) "
+                    "this skill's recipes operate on, or omit the key "
+                    "entirely (not-yet-migrated skills fall back to the "
+                    "applies-to: inference)"
+                )
+            else:
+                bad_kinds = unknown_kinds(kinds)
+                if bad_kinds:
+                    findings.append(
+                        f"kinds: unknown kind(s) {bad_kinds} — not in "
+                        "the kind registry (utils/handle_registry.py)"
+                    )
+
+        if not findings:
+            good.append(plan)
+            continue
+
+        reason = "graph gate — " + "; ".join(findings)
+        failure = IngestFailure(slug=plan.slug, file_path=plan.file_path, reason=reason)
+        if GRAPH_GATES_HARD_FAIL:
+            failures.append(failure)
+        else:
+            warnings.append(str(failure))
+            good.append(plan)
+
+    return good, failures, warnings
+
+
+def _singleton_tag_warnings(plans: list[IngestPlan]) -> list[str]:
+    """Lint (never a gate, always a warning): a tag used by exactly one
+    skill corpus-wide is probably a typo or premature — nothing else
+    will ever surface next to it via the ``tag=`` toc filter."""
+    counts: Counter[str] = Counter()
+    owner: dict[str, str] = {}
+    for plan in plans:
+        for tag in set(plan.frontmatter.tags):
+            counts[tag] += 1
+            owner[tag] = plan.slug
+    slug_to_plan = {p.slug: p for p in plans}
+
+    out: list[str] = []
+    for tag in sorted(t for t, n in counts.items() if n == 1):
+        slug = owner[tag]
+        plan = slug_to_plan[slug]
+        out.append(
+            str(
+                IngestFailure(
+                    slug=slug,
+                    file_path=plan.file_path,
+                    reason=(
+                        f"lint: tag {tag!r} is used by only this one "
+                        "skill in the corpus — check for a typo, or tag "
+                        "more related skills the same way"
+                    ),
+                )
+            )
+        )
+    return out

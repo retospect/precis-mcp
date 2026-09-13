@@ -8,7 +8,7 @@ power discovery over ``grimoire/`` prompts, curated wisdom corpora,
 or any other ships-with-the-wheel markdown the agent should be able
 to reach by topic.
 
-Three pieces:
+Four pieces:
 
 - :mod:`precis.skill_index.chunker` — split a markdown file into
   one chunk per H2 section (head + body), preserving the heading
@@ -21,6 +21,10 @@ Three pieces:
   self-describing and ``numpy`` stays an optional dep.
 - :mod:`precis.skill_index.index` — the public
   :class:`FileCorpusIndex` that ties them together.
+- :mod:`precis.skill_index.graph` — :class:`SkillGraph`, the lateral
+  wikilink/tag/kind structure over the same corpus (no embedder;
+  see :func:`build_skill_graph`). Independent of the three pieces
+  above — a text-derived sibling, not a consumer of embeddings.
 
 Design notes:
 
@@ -46,11 +50,14 @@ skill (score above threshold) or nothing at all — no cue/snippet tier.
 """
 
 from precis.skill_index.chunker import Chunk, chunk_by_h2
+from precis.skill_index.graph import SkillGraph, build_skill_graph
 from precis.skill_index.index import FileCorpusIndex, SearchHit
 
 __all__ = [
     "Chunk",
     "FileCorpusIndex",
     "SearchHit",
+    "SkillGraph",
+    "build_skill_graph",
     "chunk_by_h2",
 ]

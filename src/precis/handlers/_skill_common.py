@@ -15,8 +15,11 @@ discriminator), decision 9 (runbook orchestration), decision 13
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Final
+
+from precis.utils.handle_registry import code_for_kind, is_known_kind
 
 #: Defined flavours, per decision 7. The frontmatter field
 #: ``flavor: <value>`` is emitted as a ``FLAVOR:<value>`` tag (uppercase
@@ -28,6 +31,38 @@ VALID_FLAVORS: Final[tuple[str, ...]] = (
     "runbook",
     "concept",
 )
+
+#: Seed vocabulary for the ``tags:`` axis (docs/backlog/skill-graph.md
+#: slice 1). A skill's ``tags:`` list is checked against this tuple at
+#: ingest — see :func:`unknown_tags`. This is a lateral topic axis,
+#: distinct from ``kinds:`` (the kind(s) a skill's recipes operate on)
+#: and from ``flavor:`` (the single discriminator above): a skill can
+#: carry any number of tags, from any number of these buckets.
+#:
+#: ``verbs`` is a valid *tag value* here (a skill about get/put/search
+#: etc. can be tagged ``verbs``) — that's unrelated to the deferred
+#: ``verbs:`` frontmatter *axis* (docs/backlog/skill-graph.md "Explicitly
+#: NOT in scope"), which would name the specific verb(s) a skill covers.
+VALID_TAGS: Final[tuple[str, ...]] = (
+    "orientation",
+    "verbs",
+    "addressing",
+    "drafting",
+    "workflow",
+    "external-sources",
+    "troubleshooting",
+    "design",
+)
+
+#: ``[[slug]]`` wikilink pattern — a lateral skill-to-skill cross
+#: reference inside a skill body (docs/backlog/skill-graph.md; documented
+#: for agents in ``precis-addressing-help``). Mirrors the slug grammar
+#: at ``handlers/skill.py:_SLUG_RE`` — kept as a private copy here
+#: rather than imported, since ``skill.py`` imports from this module
+#: (importing back would cycle) and the two must never drift because
+#: both are anchored to the same "lowercase ascii + hyphens" filename
+#: convention skill slugs already follow.
+WIKILINK_RE: Final[re.Pattern[str]] = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]")
 
 
 class FrontmatterError(ValueError):
@@ -100,6 +135,23 @@ class SkillFrontmatter:
     #: Mirrored at ingest as a tag the search-time filter respects.
     available_when: str | None = None
 
+    #: Lateral topic tags, checked against :data:`VALID_TAGS` at ingest
+    #: (see :func:`unknown_tags`). A tag equal to a registered kind name
+    #: is also invalid — ``kinds:`` is a separate axis. Empty tuple when
+    #: absent (most existing skills predate this axis).
+    tags: tuple[str, ...] = ()
+
+    #: Kind(s) this skill's recipes operate on, validated against the
+    #: kind registry (``utils/handle_registry.py``) at ingest — see
+    #: :func:`unknown_kinds`. Drives availability gating in
+    #: ``skill.py`` (replacing the ``applies-to:`` regex inference).
+    #: ``None`` — distinct from ``()`` — means the frontmatter key is
+    #: *absent*: the skill predates the migration and availability
+    #: gating falls back to the legacy ``applies-to:`` inference. A
+    #: present-but-empty ``kinds:`` (``()``) is itself a gate finding
+    #: (docs/backlog/skill-graph.md slice 1).
+    kinds: tuple[str, ...] | None = None
+
     #: Any frontmatter keys we don't model explicitly. Preserved so a
     #: skill can carry experimental metadata without the parser
     #: rejecting it; the ingest pipeline can decide what to do with
@@ -133,6 +185,8 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "flavor",
         "invokes_personas",
         "available_when",
+        "tags",
+        "kinds",
     }
 )
 
@@ -155,10 +209,14 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     invokes-personas: precis-adversarial-reviewer, precis-citation-reviewer
     ```
 
-    Raises :class:`FrontmatterError` when ``flavor:`` is set to a
-    value outside :data:`VALID_FLAVORS` (the only validation that
-    happens here; cross-skill resolution like
-    ``invokes_personas`` membership is downstream).
+    ``tags:`` and ``kinds:`` accept the same two list shapes. Raises
+    :class:`FrontmatterError` when ``flavor:`` is set to a value
+    outside :data:`VALID_FLAVORS` (the only *hard-fail* validation
+    that happens here). ``tags:``/``kinds:`` membership validation
+    (:func:`unknown_tags` / :func:`unknown_kinds`) and cross-skill
+    resolution like ``invokes_personas`` membership are downstream,
+    static-gate concerns (``ingest/skill_ingest.py``) — this parser
+    stays pure text-in, typed-data-out.
 
     Files without leading ``---`` frontmatter return an empty
     :class:`SkillFrontmatter`.
@@ -214,7 +272,7 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
             continue
 
         # Inline comma-separated list, only for keys we know take lists.
-        list_keys = {"invokes-personas", "invokes_personas", "answers"}
+        list_keys = {"invokes-personas", "invokes_personas", "answers", "tags", "kinds"}
         if key in list_keys and "," in val:
             items = [v.strip().strip("\"'") for v in val.split(",")]
             raw[key] = tuple(v for v in items if v)
@@ -262,6 +320,23 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
         fields_in["answers"] = (ans,) if ans else ()
     # else already tuple from the parser
 
+    # tags: always tuple[str, ...] regardless of input shape — same
+    # normalisation as invokes_personas/answers above.
+    tg = fields_in.get("tags")
+    if tg is None:
+        fields_in["tags"] = ()
+    elif isinstance(tg, str):
+        fields_in["tags"] = (tg,) if tg else ()
+    # else already tuple from the parser
+
+    # kinds: unlike tags/answers/invokes_personas, absence is meaningful
+    # here (see SkillFrontmatter.kinds) — a missing key must stay
+    # ``None``, not normalise to ``()``. Only coerce a bare scalar.
+    kd = fields_in.get("kinds")
+    if isinstance(kd, str):
+        fields_in["kinds"] = (kd,) if kd else ()
+    # else: None (absent) or already tuple from the parser — untouched.
+
     # fields_in is dict[str, object] (frontmatter is parsed dynamically);
     # unpacking it into SkillFrontmatter's typed fields can't be checked
     # statically. Each value is coerced/validated above before landing here.
@@ -278,3 +353,49 @@ def flavor_tag(fm: SkillFrontmatter) -> str | None:
     if fm.flavor is None:
         return None
     return f"FLAVOR:{fm.flavor}"
+
+
+def unknown_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the subset of ``tags`` that fail the ``tags:`` axis gate.
+
+    A tag is invalid when it isn't in :data:`VALID_TAGS`, or when it
+    equals a registered kind name — ``kinds:`` is a separate axis, so
+    e.g. ``tags: [paper]`` is rejected in favour of ``kinds: [paper]``.
+    Order-preserving, may contain duplicates if the author repeated one.
+    """
+    return tuple(t for t in tags if is_known_kind(t) or t not in VALID_TAGS)
+
+
+def unknown_kinds(kinds: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the subset of ``kinds`` not present in the kind registry
+    (``utils/handle_registry.py``, built-ins + plugin kinds).
+    Order-preserving."""
+    return tuple(k for k in kinds if not is_known_kind(k))
+
+
+def kind_label(kind: str) -> str:
+    """Render ``kind`` with its short handle code, e.g. ``"paper (pa)"``.
+
+    Falls back to the bare kind name when it has no registered code
+    (defensive — every :data:`KIND_CODES` entry has one by construction,
+    but a caller may pass an unvalidated string).
+    """
+    try:
+        return f"{kind} ({code_for_kind(kind)})"
+    except KeyError:
+        return kind
+
+
+def extract_wikilinks(text: str) -> tuple[str, ...]:
+    """Extract every ``[[slug]]`` wikilink target from a skill body.
+
+    Order-preserving, deduplicated (a skill linking the same slug twice
+    counts once for graph-edge purposes). Matches anywhere in ``text``,
+    including inside the front-matter block — in practice front matter
+    never contains one, but scanning the whole file avoids a second
+    front-matter-stripping pass just for this.
+    """
+    seen: dict[str, None] = {}
+    for m in WIKILINK_RE.finditer(text):
+        seen.setdefault(m.group(1), None)
+    return tuple(seen)

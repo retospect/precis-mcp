@@ -273,6 +273,13 @@ def _kind_codes() -> dict[str, str]:
     return {**KIND_CODES, **_plugin_kind_codes}
 
 
+def is_known_kind(kind: str) -> bool:
+    """True if ``kind`` is in the full registry — built-ins *plus*
+    plugin-contributed kinds. Validators must use this rather than the
+    raw :data:`KIND_CODES` module dict, which is built-ins only."""
+    return kind in _kind_codes()
+
+
 def _chunk_codes() -> dict[str, str]:
     _load_plugin_codes()
     return {**CHUNK_CODES, **_plugin_chunk_codes}
