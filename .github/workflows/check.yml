@@ -10,9 +10,18 @@ on:
 permissions:
   contents: read
 
+# `main` advances by squash-merge bursts (scripts/ship): only the newest
+# commit's verdict matters, so a superseded push's ~50-minute test matrix
+# is cancelled instead of queueing behind the runner quota. PR runs get
+# the same per-ref collapsing for free.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -38,6 +47,10 @@ jobs:
   # hence the split from `test-other`.
   test-linux:
     runs-on: ubuntu-latest
+    # ~50 min steady-state; the cap is for hangs (a wedged test would
+    # otherwise hold the runner for GitHub's 6 h default while nobody
+    # is watching — this workflow is checked asynchronously).
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -91,7 +104,14 @@ jobs:
       # extensions, which only a superuser may install. The conftest
       # session fixture drops + re-applies the schema, so an empty
       # `precis_test` database is all that's required here.
-      - run: uv run --extra all pytest
+      #
+      # Same extras set as the mypy step above (and the ship gate's dev
+      # image): `--extra all` is only embed+paper+web, which leaves rdkit
+      # ([chem]) out — and two tests genuinely depend on it
+      # (test_nm_sugars' rdkit-primary-path assertion, and test_rxn's
+      # q='CCO' search, which only matches the rdkit-CANONICALISED
+      # ethanol; the raw fixture SMILES spells it OCC).
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest
         env:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
 
@@ -100,6 +120,7 @@ jobs:
   # cover the db-less suite + platform-specific paths.
   test-other:
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -110,7 +131,11 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv run --extra all pytest
+      # Same extras rationale as test-linux; every subtracted-set package
+      # ships win_amd64 + macosx_arm64 wheels (checked against uv.lock),
+      # and the platform-gated ones (marker-pdf, tblite) carry their own
+      # environment markers.
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest
 
   publish:
     needs: [lint, test-linux, test-other]

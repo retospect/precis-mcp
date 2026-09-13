@@ -476,6 +476,10 @@ def _production_callers(anchor: str) -> set[str]:
     if owner_qual:
         acceptable.add(f"{target_module}.{owner_qual}")
 
+    # Caller sets are posix-slash paths: they get set-subtracted against
+    # anchor relpaths like _IR_RELPATH (always posix), so a str(rel) here
+    # would leak the defining file back in as its own "consumer" on
+    # Windows, where str(Path) yields backslashes.
     callers: set[str] = set()
     for path in _tracked_py_files():
         rel = path.relative_to(_REPO_ROOT)
@@ -492,9 +496,9 @@ def _production_callers(anchor: str) -> set[str]:
         if not same_file:
             if not any(dotted in acceptable for dotted in imports.values()):
                 continue
-            callers.add(str(rel))
+            callers.add(rel.as_posix())
         elif any(ln != def_line for ln in lines):
-            callers.add(str(rel))
+            callers.add(rel.as_posix())
     return callers
 
 
@@ -640,7 +644,7 @@ def _field_write_sites(field: str) -> set[str]:
         if rel.parts[0] == "tests":
             continue
         if field in _file_write_index(str(path)):
-            out.add(str(rel))
+            out.add(rel.as_posix())
     return out
 
 
@@ -730,7 +734,7 @@ def _field_table_consumers(field: str, *, exclude_relpath: str) -> set[str]:
         if rel.parts[0] == "tests" or rel.as_posix() == exclude_relpath:
             continue
         if field in _string_constants_in_file(str(path)):
-            out.add(str(rel))
+            out.add(rel.as_posix())
     return out
 
 
