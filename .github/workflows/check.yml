@@ -6,6 +6,10 @@ on:
   pull_request:
   schedule:
     - cron: '6 4 3 * *'
+  # Manual lever for the check-asynchronously model: re-run the matrix on
+  # the current main without an empty commit — needed in practice because
+  # a push event dropped during a GitHub incident is never replayed.
+  workflow_dispatch:
 
 permissions:
   contents: read
