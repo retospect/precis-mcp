@@ -120,7 +120,12 @@ def _fake_podman(cmd, **kwargs):
     import json as _json
     from pathlib import Path as _Path
 
-    outdir = next(_Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+    # removesuffix, not split(":") — a Windows host path starts with a
+    # drive letter (`C:\...\out:/work/out`), so splitting on the first
+    # colon would truncate the mount source to the bare drive letter.
+    outdir = next(
+        _Path(a.removesuffix(":/work/out")) for a in cmd if a.endswith(":/work/out")
+    )
     (outdir / "out.mp3").write_bytes(b"fake-mp3")
     (outdir / "result.json").write_text(
         _json.dumps({"segments": 4, "duration_s": 7.5}), encoding="utf-8"
