@@ -962,3 +962,192 @@ def test_route_render_step_with_no_reactants_shows_dash() -> None:
     )
     body = g.render()
     assert "⇐ —" in body, body
+
+
+# ─────────────────────────── platform constraints ───────────────────────────
+
+
+def test_resolve_constraints_shapes() -> None:
+    from precis_chem.constraints import EWOD_OIL, resolve_constraints
+
+    assert resolve_constraints(None) == []
+    assert resolve_constraints([]) == []
+    assert [c.name for c in resolve_constraints("ewod-oil")] == ["ewod-oil"]
+    assert [c.name for c in resolve_constraints(["EWOD-OIL", "ewod-oil"])] == [
+        "ewod-oil"
+    ]  # case-folded + de-duped
+    assert resolve_constraints(["ewod-oil"])[0] is EWOD_OIL
+    with pytest.raises(ValueError, match="unknown platform constraint"):
+        resolve_constraints(["no-such-platform"])
+
+
+def test_cache_key_folds_constraints_only_when_present() -> None:
+    base = cache_key(target="CCO", engine="stub", engine_version="1")
+    empty = cache_key(target="CCO", engine="stub", engine_version="1", constraints=())
+    assert base == empty  # pre-constraint keys stay valid
+    constrained = cache_key(
+        target="CCO", engine="stub", engine_version="1", constraints=("ewod-oil",)
+    )
+    assert constrained != base
+
+
+def test_screen_step_flags_are_honest() -> None:
+    from precis_chem.constraints import EWOD_OIL, screen_step
+
+    def step(conditions: str | None) -> RouteStep:
+        return RouteStep(id=1, product="CCO", reactants=["CC"], conditions=conditions)
+
+    # No conditions from the engine ⇒ unscreened, never a fake pass.
+    assert "unscreened" in screen_step(step(None), EWOD_OIL)[0]
+    # Deny-listed solvent ⇒ check flag.
+    flags = screen_step(step("NaBH4, THF, 0 °C"), EWOD_OIL)
+    assert any("check" in f and "thf" in f for f in flags), flags
+    # Allow-listed solvent, no hazard ⇒ ok flag.
+    flags = screen_step(step("K2CO3, water, 25 °C"), EWOD_OIL)
+    assert any(": ok — " in f for f in flags), flags
+    # Hazard keyword ⇒ check flag even in an allowed solvent.
+    flags = screen_step(step("water, reflux"), EWOD_OIL)
+    assert any("reflux" in f for f in flags), flags
+    # A deny hit is never masked by a coincidental allow-term match.
+    flags = screen_step(step("water/THF mixture, 25 °C"), EWOD_OIL)
+    assert all(": ok — " not in f for f in flags), flags
+
+
+def test_screen_step_matches_on_word_boundaries_not_substrings() -> None:
+    """A reagent whose name merely contains a solvent name is not a solvent.
+
+    All three of these false-flagged under substring matching.
+    """
+    from precis_chem.constraints import EWOD_OIL, screen_step
+
+    def flags_for(conditions: str) -> list[str]:
+        return screen_step(
+            RouteStep(id=1, product="CCO", reactants=["CC"], conditions=conditions),
+            EWOD_OIL,
+        )
+
+    # 'p-toluenesulfonic acid' is not toluene; 'cyclohexane' is not hexane;
+    # 'acetohydroxamic' is not EtOH; 'acetoacetate' is not EtOAc.
+    for conditions, absent in [
+        ("p-toluenesulfonic acid, water, 40 °C", "toluene"),
+        ("benzenesulfonyl chloride, water, 25 °C", "benzene"),
+        ("acetohydroxamic acid workup in water", "etoh"),
+        ("ethyl acetoacetate, water, 30 °C", "etoac"),
+    ]:
+        got = flags_for(conditions)
+        assert all(f"'{absent}'" not in f for f in got), (conditions, got)
+        # …and the real (allowed) solvent still earns its ok.
+        assert any(": ok — " in f for f in got), (conditions, got)
+
+    # 'cyclohexane' must not be reported as 'hexane' (same verdict, wrong name).
+    got = flags_for("cyclohexane wash")
+    assert all("'hexane'" not in f for f in got), got
+    # The deny list still fires on the real solvent, standalone.
+    assert any("'hexane'" in f for f in flags_for("hexane, 25 °C"))
+    assert any("'toluene'" in f for f in flags_for("toluene, 80 °C"))
+
+
+def test_temperature_is_parsed_not_keyword_matched() -> None:
+    """`150 °C` / `150°C` / `150 C` are one hazard, not three spellings."""
+    from precis_chem.constraints import EWOD_OIL, _temperatures_c, screen_step
+
+    def flags_for(conditions: str) -> list[str]:
+        return screen_step(
+            RouteStep(id=1, product="CCO", reactants=["CC"], conditions=conditions),
+            EWOD_OIL,
+        )
+
+    # Every spelling of an over-ceiling temperature is caught.
+    for conditions in ("heat to 160°C, 2 h", "160 °C", "160 C", "at 160 degrees C"):
+        got = flags_for(conditions)
+        assert any("above the platform ceiling" in f for f in got), (conditions, got)
+
+    # Inside the envelope ⇒ no temperature flag.
+    assert not any("ceiling" in f for f in flags_for("water, 80 °C"))
+    # Below the floor (cryogenic) ⇒ flagged.
+    assert any("below the platform floor" in f for f in flags_for("water, -78 °C"))
+    # A range's upper end is what trips it; '70-78 °C' is NOT read as -78.
+    assert not any("floor" in f for f in flags_for("water, 70-78 °C"))
+
+    # Formulas and column names are not temperatures.
+    for text in ("cs2co3", "cacl2 brine", "c18 column", "5 equiv k2co3"):
+        assert _temperatures_c(text) == [], text
+    # Unrecognised units fall through rather than being rescaled.
+    assert _temperatures_c("423 k") == []
+
+
+def test_render_distinguishes_unscreened_from_check() -> None:
+    """`unscreened` (no data) and `check` (a problem) must not share a glyph."""
+    from precis_chem.constraints import screen_route
+
+    g = RouteGraph(
+        target="CCO",
+        engine="stub",
+        engine_version="0",
+        steps=[
+            RouteStep(id=1, product="CCO", reactants=["CC"], conditions=None),
+            RouteStep(id=2, product="CC", reactants=["C"], conditions="THF, 0 °C"),
+            RouteStep(id=3, product="C", reactants=["O"], conditions="water, 25 °C"),
+        ],
+    )
+    body = screen_route(g, ["ewod-oil"]).render()
+    assert "· ewod-oil: unscreened" in body, body
+    assert "⚠ ewod-oil: check" in body, body
+    assert "✓ ewod-oil: ok" in body, body
+
+
+def test_screen_route_sets_constraints_and_flags_roundtrip() -> None:
+    from precis_chem.constraints import screen_route
+
+    g = RouteGraph(
+        target="CCO",
+        engine="stub",
+        engine_version="0",
+        steps=[RouteStep(id=1, product="CCO", reactants=["CC"], conditions="water")],
+    )
+    out = screen_route(g, ["ewod-oil"])
+    assert out.constraints == ["ewod-oil"]
+    assert out.steps[0].constraint_flags
+    # Serialization round-trips the new fields.
+    back = RouteGraph.from_json(out.to_json())
+    assert back.constraints == ["ewod-oil"]
+    assert back.steps[0].constraint_flags == out.steps[0].constraint_flags
+    # And renders the ledger + per-step flag.
+    body = out.render()
+    assert "constraints: ewod-oil" in body
+    assert "## constraint: ewod-oil" in body
+    # No-op path returns the graph unchanged.
+    assert screen_route(g, []) is g
+
+
+def test_put_with_constraint_screens_and_stamps(route_store: Store) -> None:
+    h = RouteHandler(hub=Hub(store=route_store))
+    resp = h.put(
+        id="aspirin-ewod",
+        target="CC(=O)Oc1ccccc1C(=O)O",
+        engine="stub",
+        constraints=["ewod-oil"],
+    )
+    assert "constraints: ewod-oil" in resp.body
+    meta = _route_meta(route_store, "aspirin-ewod")
+    assert meta.get("constraints") == ["ewod-oil"]
+    assert meta.get("route", {}).get("constraints") == ["ewod-oil"]
+    # The stub reports no real solvent ⇒ the step carries an honest flag.
+    step_flags = meta["route"]["steps"][0]["constraint_flags"]
+    assert step_flags and "ewod-oil" in step_flags[0]
+
+
+def test_put_constrained_is_distinct_cache_row(route_store: Store) -> None:
+    """Same target with vs without a constraint must not share a cache hit."""
+    h = RouteHandler(hub=Hub(store=route_store))
+    h.put(id="tgt", target="CC(=O)O", engine="stub")
+    resp = h.put(id="tgt", target="CC(=O)O", engine="stub", constraints=["ewod-oil"])
+    assert "cache hit" not in resp.body
+
+
+def test_put_unknown_constraint_is_bad_input(route_store: Store) -> None:
+    from precis.errors import BadInput
+
+    h = RouteHandler(hub=Hub(store=route_store))
+    with pytest.raises(BadInput, match="unknown platform constraint"):
+        h.put(id="x", target="CCO", engine="stub", constraints=["mars-glovebox"])

@@ -868,6 +868,22 @@ def put(
     verifier_confidence: float | None = None,
     verifier_caveats: str | None = None,
     verified_at: str | None = None,
+    # route / protein compute-mint (see precis-lab-help): the engine
+    # selector plus its knobs. ``target=`` (the product SMILES / the
+    # sequence) already rides the cron block below. Declared at the verb
+    # level (the gr262482 pattern) because the whole precis-chem /
+    # precis-bio mint surface was otherwise unreachable over MCP —
+    # ``RouteHandler.put`` and ``ProteinHandler.put`` accepted these all
+    # along, but a strict-schema client strips what the schema omits and
+    # every handler's ``**_kw`` swallows the rest silently.
+    # ``constraints=['ewod-oil']`` declares the execution platform a route
+    # is planned for; ``sequence``/``seeds`` are the protein side.
+    engine: str | None = None,
+    max_steps: int | None = None,
+    requested_by: int | str | None = None,
+    constraints: list[str] | str | None = None,
+    sequence: str | None = None,
+    seeds: int | None = None,
     # job (see precis-job-help):
     job_type: str | None = None,
     executor: str | None = None,
@@ -1086,6 +1102,12 @@ def put(
             "verifier_confidence": verifier_confidence,
             "verifier_caveats": verifier_caveats,
             "verified_at": verified_at,
+            "engine": engine,
+            "max_steps": max_steps,
+            "requested_by": requested_by,
+            "constraints": constraints,
+            "sequence": sequence,
+            "seeds": seeds,
             "job_type": job_type,
             "executor": executor,
             "params": params,

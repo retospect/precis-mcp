@@ -11,7 +11,9 @@ onto the seven verbs:
   same target+engine was already planned; else runs the engine
   (in-process ``stub``) or mints a ``retrosynth`` compute job pinned to
   ``PRECIS_CHEM_ROUTE_NODE``. ``requested_by=<todo>`` blocks that todo on
-  the job.
+  the job. ``constraints=['ewod-oil']`` declares an execution-platform
+  constraint (``precis_chem.constraints``): recorded on the route, part of
+  the content address, and screened advisorily over each planned step.
 - ``get``    — list routes, or render one route graph (``id=slug``).
 - ``delete`` — soft-retire a route.
 
@@ -29,6 +31,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis_chem.constraints import resolve_constraints, screen_route
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
 from precis_chem.ir import RouteGraph, cache_key, normalize_smiles
 from precis_chem.persist import apply_route_result
@@ -46,11 +49,14 @@ class RouteHandler(Handler):
         description=(
             "A retrosynthesis route-graph (precis-chem plugin). "
             "put(id='<slug>', target='<SMILES>', engine='stub'|'aizynth', "
-            "requested_by=<todo>) plans a synthetic route — a content-addressed "
-            "cache hit if already planned, else an in-process solve or a minted "
-            "retrosynth compute job. get lists routes or renders one graph "
-            "(id=slug); delete soft-retires. The LLM traverses the graph, never "
-            "runs a planner in the request path."
+            "requested_by=<todo>, constraints=['ewod-oil']) plans a synthetic "
+            "route — a content-addressed cache hit if already planned, else an "
+            "in-process solve or a minted retrosynth compute job; a declared "
+            "platform constraint (e.g. ewod-oil — EWOD digital microfluidics "
+            "in oil) is recorded, cache-keyed, and advisorily screened per "
+            "step. get lists routes or renders one graph (id=slug); delete "
+            "soft-retires. The LLM traverses the graph, never runs a planner "
+            "in the request path."
         ),
         supports_get=True,
         supports_put=True,
@@ -78,6 +84,7 @@ class RouteHandler(Handler):
         title: str | None = None,
         requested_by: int | str | None = None,
         max_steps: int | None = None,
+        constraints: list[str] | str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -99,11 +106,16 @@ class RouteHandler(Handler):
         except ValueError as exc:
             raise BadInput(str(exc), next="engine='stub' | 'aizynth'") from exc
         steps = int(max_steps) if max_steps is not None else DEFAULT_MAX_STEPS
+        try:
+            declared = [c.name for c in resolve_constraints(constraints)]
+        except ValueError as exc:
+            raise BadInput(str(exc), next="constraints=['ewod-oil']") from exc
         key = cache_key(
             target=tgt,
             engine=eng.name,
             engine_version=eng.version,
             max_steps=steps,
+            constraints=declared,
         )
 
         existing = self.store.get_ref(kind="route", id=slug)
@@ -119,33 +131,25 @@ class RouteHandler(Handler):
                 )
 
         # Ensure the ref exists (create on first put; re-plan updates meta).
+        stamp = {
+            "target": tgt,
+            "engine": eng.name,
+            "engine_version": eng.version,
+            "cache_key": key,
+            "status": "planning",
+            "max_steps": steps,
+            "constraints": declared,
+        }
         if existing is None:
             ref = self.store.insert_ref(
                 kind="route",
                 slug=slug,
                 title=(title or slug).strip() or slug,
-                meta={
-                    "target": tgt,
-                    "engine": eng.name,
-                    "engine_version": eng.version,
-                    "cache_key": key,
-                    "status": "planning",
-                    "max_steps": steps,
-                },
+                meta=stamp,
             )
         else:
             ref = existing
-            self.store.stamp_ref_meta(
-                ref.id,
-                {
-                    "target": tgt,
-                    "engine": eng.name,
-                    "engine_version": eng.version,
-                    "cache_key": key,
-                    "status": "planning",
-                    "max_steps": steps,
-                },
-            )
+            self.store.stamp_ref_meta(ref.id, stamp)
 
         params = {
             "route_ref_id": ref.id,
@@ -154,6 +158,7 @@ class RouteHandler(Handler):
             "engine_version": eng.version,
             "cache_key": key,
             "max_steps": steps,
+            "constraints": declared,
         }
 
         node = os.environ.get(ROUTE_NODE_ENV)
@@ -172,6 +177,7 @@ class RouteHandler(Handler):
                 next=f"set {ROUTE_NODE_ENV}=<node> (and build the wrapper image), "
                 "or use engine='stub'",
             ) from exc
+        graph = screen_route(graph, declared)
         apply_route_result(self.store, ref.id, graph, cache_key=key)
         state = "solved" if graph.solved else "unsolved"
         return Response(

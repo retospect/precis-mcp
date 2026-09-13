@@ -49,6 +49,19 @@ buyable leaves; an unsolved one is a hypothesis to refine (deeper `max_steps`, a
 different engine). Depth: `precis-search-help` (no retrosynthesis depth
 skill yet — this recipe is the depth for `route`).
 
+**Plan for an execution platform** with `constraints=` — e.g.
+`constraints=['ewod-oil']` (EWOD digital microfluidics, oil filler). The
+declared constraint is recorded on the route, folds into the content
+address (a constrained plan is a distinct cache row), and each planned
+step is screened **advisorily** against the platform's rules — for
+`ewod-oil`: droplet solvent must be immiscible with silicone oil (in
+practice water/aqueous or acetonitrile), ≈20–120 °C thermal window, no
+gas evolution, no filtration, solutes that partition into oil
+cross-contaminate. The screen is honest: a step whose engine reported no
+conditions renders `unscreened`, never a fake pass — the planner itself
+does not condition its search on the platform (no engine supports that),
+so read the flags as review guidance, not a guarantee.
+
 ## Recipe: fold + inspect a protein target
 
 ```

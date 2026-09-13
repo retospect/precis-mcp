@@ -55,6 +55,24 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
   including the core-vs-plugin question for the new `reaction` kind; that item
   is the reconciliation point for "don't grow two chem surfaces".
 
+- **Platform constraints beyond advisory** — `precis_chem.constraints`
+  ships `constraints=['ewod-oil']` on `put(kind='route')`: the declared
+  set is recorded, folded into `cache_key`, and screened *lexically*
+  over each step's free-text `conditions`. That is the honest ceiling of
+  what today's engines allow — neither AiZynthFinder nor ASKCOS can
+  condition its search on reaction medium, and the IR carries no
+  structured solvent/temperature field. Two follow-ups, in order:
+  (1) a structured `conditions` model on `RouteStep` (solvent,
+  temperature, atmosphere) populated by a conditions-prediction model,
+  so the screen stops being substring-matching over prose;
+  (2) constraint-aware *search* — a reaction-template filter or a
+  re-ranking pass over multiple returned routes, which is where a
+  declared constraint would actually change the plan rather than
+  annotate it. Until (1) lands, a step with no engine-reported
+  conditions renders `unscreened`, and that must stay visible — a
+  constrained route whose flags all read `unscreened` has been screened
+  against nothing.
+
 - **4c — `structure` convergence:** `cif → ASE → Scene.from_ase`
   (ADR 0043) for a 3D viewer / graph probes; a ColabFold MSA-mode
   engine for real accuracy (needs-decision: containerize + pick the

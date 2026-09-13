@@ -24,6 +24,16 @@ job; the always-on request path needs none of them — a deterministic
 in-process ``stub`` engine proves the compute-lane round-trip + the
 content-addressed cache without a cluster or a built image.
 
+``put(kind='route', constraints=['ewod-oil'])`` declares the **execution
+platform** a synthesis is planned for (:mod:`precis_chem.constraints`).
+No engine can condition its search on reaction medium, so the constraint
+is deliberately scoped to what is honest: recorded on the route, folded
+into the content address (a constrained plan is a distinct cache row),
+and screened *lexically* over each step's free-text ``conditions`` —
+``ok`` / ``check`` / ``unscreened``, never a silent pass. Structured
+conditions + constraint-aware search are the follow-ups
+(``docs/backlog/chem-tools-integration.md``).
+
 One canonical ``route`` IR, every engine normalizes to it: LinChemIn
 runs *inside* the engine container (or a standalone normalizer container
 for service engines) and emits a precis-canonical ``route.json`` —

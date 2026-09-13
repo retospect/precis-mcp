@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from precis_chem.askcos import (
     build_treebuilder_request,
     extract_paths,
 )
+from precis_chem.constraints import screen_route
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
 from precis_chem.ir import RouteGraph
 from precis_chem.normalize import ROUTE_FILE, parse_syngraph
@@ -190,6 +192,8 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # The content address — same key ⇒ zero recompute.
         "cache_key": {"type": "string"},
         "max_steps": {"type": "integer"},
+        # Declared platform constraints (advisory screen; part of cache_key).
+        "constraints": {"type": "array", "items": {"type": "string"}},
         # The node this plan pins itself to (the claim gate): only that node's
         # worker claims it. NULL ⇒ any node (used only by the in-process stub).
         "target_node": {"type": ["string", "null"]},
@@ -405,6 +409,35 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         except Exception as exc:  # engine blew up — bubble, don't crash worker.
             ctx.record_failure(f"retrosynth: engine failed on {target!r} ({exc})")
             return
+
+    declared = [str(c) for c in params.get("constraints") or []]
+    if declared:
+        try:
+            graph = screen_route(graph, declared)
+        except ValueError as exc:
+            # An unknown constraint name should have been rejected at put;
+            # reaching here means the registry changed under a replayed
+            # cache_key. Don't lose the plan over the advisory overlay — but
+            # the cache_key was computed FROM `declared`, so the stored blob
+            # must still say it is constrained, or the row and its own
+            # address would disagree about that. Record the names with an
+            # explicit per-step flag that the screen did not run.
+            graph = replace(
+                graph,
+                constraints=declared,
+                steps=[
+                    replace(
+                        s,
+                        constraint_flags=[
+                            f"{n}: unscreened — constraint not in this "
+                            f"build's registry ({exc})"
+                            for n in declared
+                        ],
+                    )
+                    for s in graph.steps
+                ],
+            )
+            ctx.append_chunk("job_event", f"constraint screen skipped: {exc}")
 
     apply_route_result(ctx.store, route_ref_id, graph, cache_key=cache_key)
 

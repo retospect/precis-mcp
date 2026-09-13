@@ -58,6 +58,9 @@ class RouteStep:
     confidence: float | None = None
     #: True when *every* reactant is a buyable/stock leaf (this branch is solved).
     in_stock: bool = False
+    #: Advisory platform-constraint flags (``precis_chem.constraints``) —
+    #: empty on an unconstrained route. Additive: absent in old blobs.
+    constraint_flags: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -73,6 +76,7 @@ class RouteStep:
             conditions=d.get("conditions"),
             confidence=d.get("confidence"),
             in_stock=bool(d.get("in_stock", False)),
+            constraint_flags=[str(f) for f in d.get("constraint_flags", [])],
         )
 
 
@@ -96,6 +100,9 @@ class RouteGraph:
     metrics: dict[str, Any] = field(default_factory=dict)
     #: Free-form engine provenance (image digest, model version, stock set, …).
     provenance: dict[str, Any] = field(default_factory=dict)
+    #: Declared platform constraints (``precis_chem.constraints`` names, e.g.
+    #: ``ewod-oil``) — advisory screen, part of the plan's content address.
+    constraints: list[str] = field(default_factory=list)
 
     # ── serialization ────────────────────────────────────────────────
     def to_json(self) -> dict[str, Any]:
@@ -109,6 +116,7 @@ class RouteGraph:
             "steps": [s.to_json() for s in self.steps],
             "metrics": self.metrics,
             "provenance": self.provenance,
+            "constraints": self.constraints,
         }
 
     @classmethod
@@ -122,6 +130,7 @@ class RouteGraph:
             score=d.get("score"),
             metrics=dict(d.get("metrics", {})),
             provenance=dict(d.get("provenance", {})),
+            constraints=[str(c) for c in d.get("constraints", [])],
         )
 
     # ── renders ──────────────────────────────────────────────────────
@@ -146,8 +155,12 @@ class RouteGraph:
         )
         if self.score is not None:
             head += f" · score {self.score:.3f}"
+        if self.constraints:
+            head += (
+                "\nconstraints: " + ", ".join(self.constraints) + " (advisory screen)"
+            )
         if not self.steps:
-            return head + "\n\n(no route found)"
+            return head + "\n\n(no route found)" + self._constraints_tail()
         lines = [head, ""]
         for s in self.steps:
             precursors = " + ".join(f"`{r}`" for r in s.reactants) or "—"
@@ -165,9 +178,33 @@ class RouteGraph:
                 # grammar as a SMILES stereocentre and would drop the catalyst
                 # from the rendered line.
                 lines.append(f"   conditions: `{s.conditions}`")
+            for flag in s.constraint_flags:
+                # Three outcomes, three glyphs. "unscreened" (no data) and
+                # "check" (a known incompatibility) are opposite in urgency;
+                # collapsing both to ⚠ would let a reader skimming for
+                # trouble mistake one for the other.
+                if ": ok — " in flag:
+                    mark = "✓"
+                elif ": unscreened — " in flag:
+                    mark = "·"
+                else:
+                    mark = "⚠"
+                lines.append(f"   {mark} {flag}")
         if self.metrics:
             lines += ["", self._metrics_line()]
-        return "\n".join(lines)
+        return "\n".join(lines) + self._constraints_tail()
+
+    def _constraints_tail(self) -> str:
+        """The declared-constraint requirement ledger appended to render()."""
+        if not self.constraints:
+            return ""
+        # Function-local by necessity, not by oversight: constraints.py
+        # imports RouteGraph/RouteStep from here at module level and
+        # *constructs* them, so it needs the real classes — hoisting this to
+        # the top would close the cycle. Leave it here.
+        from precis_chem.constraints import requirements_render
+
+        return "\n\n" + requirements_render(self.constraints)
 
     #: Descriptor keys rendered first, in this order, when present (the rest
     #: follow alphabetically). Keeps the human-facing summary stable across
@@ -237,23 +274,26 @@ def cache_key(
     engine_version: str,
     stock: str = "",
     max_steps: int = 0,
+    constraints: tuple[str, ...] | list[str] = (),
 ) -> str:
     """Content address for a route plan.
 
-    Same ``(target, engine, engine_version, stock snapshot, depth)`` ⇒ same
-    key ⇒ zero recompute. The engine *version* (an image digest in prod)
-    invalidates the cache when the model changes; ``stock`` is the buyable-set
-    snapshot id. Returned as ``retrosynth:<sha256[:16]>``.
+    Same ``(target, engine, engine_version, stock snapshot, depth,
+    constraints)`` ⇒ same key ⇒ zero recompute. The engine *version* (an
+    image digest in prod) invalidates the cache when the model changes;
+    ``stock`` is the buyable-set snapshot id. Declared platform constraints
+    fold in only when non-empty, so every pre-constraint key stays valid.
+    Returned as ``retrosynth:<sha256[:16]>``.
     """
-    payload = json.dumps(
-        {
-            "t": normalize_smiles(target),
-            "e": engine,
-            "v": engine_version,
-            "s": stock,
-            "n": int(max_steps),
-        },
-        sort_keys=True,
-    )
+    body: dict[str, Any] = {
+        "t": normalize_smiles(target),
+        "e": engine,
+        "v": engine_version,
+        "s": stock,
+        "n": int(max_steps),
+    }
+    if constraints:
+        body["c"] = sorted(str(c) for c in constraints)
+    payload = json.dumps(body, sort_keys=True)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     return f"retrosynth:{digest}"

@@ -137,15 +137,14 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         # -- put: in-process planner state ---------------------------------
         ("plan", "put", "belief"),
         ("plan", "put", "status"),
-        # -- put: protein (AlphaFold) mint ----------------------------------
-        ("protein", "put", "engine"),
-        ("protein", "put", "requested_by"),
-        ("protein", "put", "seeds"),
-        ("protein", "put", "sequence"),
-        # -- put: reaction-route mint ---------------------------------------
-        ("route", "put", "engine"),
-        ("route", "put", "max_steps"),
-        ("route", "put", "requested_by"),
+        # -- put: protein (AlphaFold) + reaction-route mint -----------------
+        # WIRED THROUGH 2026-09-13: engine/max_steps/requested_by/sequence/
+        # seeds (and the new route constraints=) are now declared on
+        # tools/core.py::put and forwarded in its payload, so the whole
+        # precis-chem / precis-bio mint surface is reachable over MCP. The
+        # eight entries that used to sit here left the ledger by being
+        # fixed, not deleted — which is the only way out per this module's
+        # docstring.
         # -- put: structure (crystal/molecule) edit ops ---------------------
         ("structure", "put", "normalize"),
         # -- edit: bibliographic-metadata repair, paper-like kinds --------
