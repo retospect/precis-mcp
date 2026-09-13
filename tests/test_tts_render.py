@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,15 +12,14 @@ import pytest
 from precis.draft.narrate import NarrationSegment
 from precis.tts.render import ContainerRenderError, render_episode, render_via_container
 
-# The fake podman helpers below parse a "<host-path>:/work/out"-style bind
-# mount by splitting on the first ':' — Windows host paths carry their own
-# drive-letter colon (e.g. "C:\\...\\tmp:/work/out"), so the split lands on
-# the wrong separator and mangles the path.
-_needs_posix_mount_paths = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="fake-podman mount-arg split on ':' collides with the Windows"
-    " drive-letter colon in the host path",
-)
+
+def _mount_src(cmd, suffix):
+    """Host side of the `-v <host><suffix>` bind-mount arg. removesuffix,
+    not split(':') — a Windows host path carries its own drive-letter colon
+    ("C:\\...\\tmp:/work/out"), which a first-colon split would truncate to
+    the bare drive letter."""
+    return next(Path(a.removesuffix(suffix)) for a in cmd if a.endswith(suffix))
+
 
 _SEGS = [
     NarrationSegment("Hello.", "af_heart", "en-us", "para"),
@@ -36,8 +34,8 @@ _SEGS_WITH_GAP = [
 
 def _fake_podman(cmd, **kwargs):
     # find the -v <outdir>:/work/out mount, drop a render there
-    outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
-    indir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro"))
+    outdir = _mount_src(cmd, ":/work/out")
+    indir = _mount_src(cmd, ":/work/in:ro")
     # the worker staged the voice-score for the container to read
     payload = json.loads((indir / "segments.json").read_text(encoding="utf-8"))
     assert [s["lang"] for s in payload["segments"]] == ["en-us", "cmn"]
@@ -47,7 +45,6 @@ def _fake_podman(cmd, **kwargs):
     )
 
 
-@_needs_posix_mount_paths
 def test_render_via_container_stages_runs_and_copies(tmp_path):
     out = tmp_path / "ep.mp3"
     result = render_via_container(_SEGS, out, image="precis-tts:test", run=_fake_podman)
@@ -55,12 +52,11 @@ def test_render_via_container_stages_runs_and_copies(tmp_path):
     assert result == {"segments": 2, "duration_s": 3.2, "audio_path": str(out)}
 
 
-@_needs_posix_mount_paths
 def test_render_via_container_tolerates_legacy_m4a_image(tmp_path):
     # An older, un-rebuilt precis-tts image still writes out.m4a. The read-back
     # must publish it as m4a (matching bytes/mime) rather than dark-holing it.
     def _old_image(cmd, **kw):
-        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        outdir = _mount_src(cmd, ":/work/out")
         (outdir / "out.m4a").write_bytes(b"m4a-bytes")
 
     out = tmp_path / "ep.mp3"  # caller asked for mp3
@@ -71,7 +67,6 @@ def test_render_via_container_tolerates_legacy_m4a_image(tmp_path):
     assert not out.exists()
 
 
-@_needs_posix_mount_paths
 def test_render_episode_dispatches_to_container(tmp_path):
     out = tmp_path / "ep.mp3"
     result = render_episode(_SEGS, out, image="precis-tts:test", run=_fake_podman)
@@ -79,15 +74,12 @@ def test_render_episode_dispatches_to_container(tmp_path):
     assert result["audio_path"] == str(out)
 
 
-@_needs_posix_mount_paths
 def test_render_via_container_serializes_gap_after_per_segment(tmp_path):
     captured_payload = {}
 
     def _capture_podman(cmd, **kwargs):
-        indir = next(
-            Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro")
-        )
-        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        indir = _mount_src(cmd, ":/work/in:ro")
+        outdir = _mount_src(cmd, ":/work/out")
         captured_payload.update(
             json.loads((indir / "segments.json").read_text(encoding="utf-8"))
         )
@@ -105,15 +97,12 @@ def test_render_via_container_serializes_gap_after_per_segment(tmp_path):
     assert segs[1]["gap_after"] is None
 
 
-@_needs_posix_mount_paths
 def test_render_episode_forwards_gap_after_to_container(tmp_path):
     captured = {}
 
     def _run(cmd, **kw):
-        indir = next(
-            Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro")
-        )
-        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        indir = _mount_src(cmd, ":/work/in:ro")
+        outdir = _mount_src(cmd, ":/work/out")
         captured.update(
             json.loads((indir / "segments.json").read_text(encoding="utf-8"))
         )
@@ -124,13 +113,12 @@ def test_render_episode_forwards_gap_after_to_container(tmp_path):
     assert captured["segments"][0]["gap_after"] == 1.5
 
 
-@_needs_posix_mount_paths
 def test_render_via_container_bounds_the_run_with_a_timeout(tmp_path):
     captured = {}
 
     def _run(cmd, **kw):
         captured.update(kw)
-        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        outdir = _mount_src(cmd, ":/work/out")
         (outdir / "out.mp3").write_bytes(b"x")
 
     render_via_container(_SEGS, tmp_path / "e.mp3", image="x", timeout=42, run=_run)
