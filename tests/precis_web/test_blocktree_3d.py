@@ -751,6 +751,34 @@ def test_scene_scale_is_a_near_noop_for_an_already_legible_metre_design() -> Non
     assert 1.0 <= scale <= 1000.0
 
 
+def test_scene_scale_uses_extent_not_midpoint_for_a_symmetric_design() -> None:
+    # Two spheres symmetric about the origin: hi + lo cancels to ~0 while
+    # hi - lo is the real ~1.2e-8 extent — a diag computed from the
+    # midpoint would collapse to the degenerate 1.0 fallback instead of
+    # the nm-scale boost.
+    tree = _tree(
+        a=BlockNode(name="a", pose=[-5e-9, 0, 0], envelope="sphere:r1e-9"),
+        b=BlockNode(name="b", pose=[5e-9, 0, 0], envelope="sphere:r1e-9"),
+    )
+    assert scene_scale(tree, _effective_envelope) == 1e9
+
+
+def test_scene_scale_falls_back_to_noop_for_a_single_point_design() -> None:
+    # One bare-pose block: bounds collapse to a point — diag is exactly
+    # 0.0 yet finite, so only the zero half of the degenerate guard can
+    # catch it before log10(0) blows up.
+    tree = _tree(a=BlockNode(name="a", pose=[0, 0, 0], envelope=None))
+    assert scene_scale(tree, _effective_envelope) == 1.0
+
+
+def test_scene_scale_includes_envelope_extent_beyond_the_pose_points() -> None:
+    # A single origin-posed block whose envelope supplies ALL the extent:
+    # pose points alone give a zero-size bb (scale 1.0); only the mesh
+    # bounds produce the nm-scale factor.
+    tree = _tree(a=BlockNode(name="a", pose=[0, 0, 0], envelope="sphere:r5e-9"))
+    assert scene_scale(tree, _effective_envelope) == 1e9
+
+
 def test_build_scene_nm_and_metre_scale_share_topology_and_land_in_working_range() -> (
     None
 ):
