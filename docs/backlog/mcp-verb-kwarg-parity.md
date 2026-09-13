@@ -44,18 +44,21 @@ High-impact, called out by name:
 - **`draft.put(image=)`** — self-evidencing: `tools/core.py:818`'s own
   comment documents `image=<base64> for an uploaded image`, and the
   signature never declares it. The door documents a parameter it drops.
-- **`protein.put(sequence=)`** (+ `engine=`/`requested_by=`/`seeds=`) — a
-  protein-structure mint with no `sequence=` reachable is not a mint at all;
-  worth confirming whether `protein.put` is callable over MCP in *any* shape
-  today.
+- ~~**`protein.put(sequence=)`** (+ `engine=`/`requested_by=`/`seeds=`)~~ —
+  **FIXED 2026-09-13** (`ff2a4c79`). All four now declared on
+  `tools/core.py::put` and forwarded in its dispatch payload; the four
+  `_KNOWN_GAPS` lines left the ledger.
 - **`llm.put(model_id=)`** (+ `capability=`/`offerings=`/`served_by=`/
   `tier_floor=`) — the entire variant-precise catalog-mint surface from the
   `llm` catalog proposal (memory `llm_catalog_proposal`: "shipped but dark").
   Consistent with that memory note — this may simply be unactivated rather
   than actively wanted, but it means the catalog can't be seeded via MCP at
   all right now.
-- **`route.put(engine=)`** (+ `max_steps=`/`requested_by=`) — same shape as
-  protein: a reaction-route mint with no `engine=` looks unusable over MCP.
+- ~~**`route.put(engine=)`** (+ `max_steps=`/`requested_by=`)~~ — **FIXED
+  2026-09-13** (`ff2a4c79`), same pass as `protein.put` above; the three
+  `_KNOWN_GAPS` lines left the ledger. That commit also added
+  `route.put(constraints=)` (platform-constraint declaration, new — never a
+  gap) on the same wire.
 - **`paper.edit(year=)`** (+ `abstract=`/`journal=`/`entry_type=`), and the
   same four fields on **`cfp.edit`**, plus **`datasheet.edit(part_lcsc=/
   subtype=/vendor=)`** — bibliographic/metadata repair. `PaperHandler.edit`'s
@@ -142,10 +145,6 @@ actually fail when a handler declares `args=` and the tool cannot pass it.
 - `llm.put(...)` catalog fields — per memory `llm_catalog_proposal` the
   surface is "shipped but dark"; unclear whether activating MCP reachability
   is wanted yet or premature (the catalog itself may not be seeded).
-- `protein.put`/`route.put` — didn't confirm whether either kind is reachable
-  over MCP in *some* working shape today (e.g. via a different required-arg
-  combination) or is fully dead; check before assuming these are the
-  blocking gap.
 
 ## Sizing: declaring all 71 has a wire cost, and `args=` is how you avoid it
 
