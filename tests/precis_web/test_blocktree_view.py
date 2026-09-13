@@ -267,8 +267,9 @@ def test_se_list_shows_seeded_design(blocktree_client, runtime_with_store) -> No
 def test_se_detail_renders_selectors_and_image(
     blocktree_client, runtime_with_store
 ) -> None:
+    # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
     _seed_se(runtime_with_store)
-    r = blocktree_client.get("/se/unicycle_web")
+    r = blocktree_client.get("/se/unicycle_web/2d")
     assert r.status_code == 200
     assert "/se/unicycle_web/view.svg" in r.text
     # the isolate dropdown lists every block name
@@ -365,7 +366,8 @@ def test_se_detail_and_view_svg_url_encode_metacharacter_block_names(
     ]
     SeHandler(hub=runtime_with_store.hub).put(id=slug, text=json.dumps({"ops": ops}))
 
-    r = blocktree_client.get(f"/se/{slug}?isolate=fork+%26+tip")
+    # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
+    r = blocktree_client.get(f"/se/{slug}/2d?isolate=fork+%26+tip")
     assert r.status_code == 200
     # the <img> src carries a single, correctly percent-encoded isolate
     # param -- never a bare '&' that would split into a second query key.
@@ -410,8 +412,9 @@ def test_se_view_svg_part_colour_groups_by_render_root(
 
 
 def test_nm_detail_and_view_svg(blocktree_client, runtime_with_store) -> None:
+    # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
     _seed_nm(runtime_with_store)
-    r = blocktree_client.get("/nm/rotaxane_web")
+    r = blocktree_client.get("/nm/rotaxane_web/2d")
     assert r.status_code == 200
     assert "/nm/rotaxane_web/view.svg" in r.text
 
@@ -456,18 +459,22 @@ def test_se_view_svg_overrides_unknown_level_is_400(
 def test_se_detail_page_shows_view3d_link_and_overrides_field(
     blocktree_client, runtime_with_store
 ) -> None:
+    # gr337745: the 3D view is now the default landing page (no
+    # '/view3d' suffix) — the 2D page's own "3D view" link points there.
     _seed_se(runtime_with_store)
-    r = blocktree_client.get("/se/unicycle_web?overrides=fork%3Arefined")
+    r = blocktree_client.get("/se/unicycle_web/2d?overrides=fork%3Arefined")
     assert r.status_code == 200
-    assert "/se/unicycle_web/view3d" in r.text
+    assert 'href="/se/unicycle_web?' in r.text
+    assert "/se/unicycle_web/view3d" not in r.text
     assert 'value="fork:refined"' in r.text
 
 
-# ── round 2a: three-cad-viewer 3D route ───────────────────────────────────
+# ── round 2a: three-cad-viewer 3D route (gr337745: now the default) ──────
 
 
 def test_se_view3d_404(client) -> None:
-    r = client.get("/se/nope/view3d")
+    # the 2D reader's own 404 path (gr337745 moved it to '/2d').
+    r = client.get("/se/nope/2d")
     assert r.status_code == 404
 
 
@@ -478,10 +485,22 @@ def test_se_scene3d_404(client) -> None:
 
 def test_se_view3d_page_renders(blocktree_client, runtime_with_store) -> None:
     _seed_se(runtime_with_store)
-    r = blocktree_client.get("/se/unicycle_web/view3d")
+    r = blocktree_client.get("/se/unicycle_web")
     assert r.status_code == 200
     assert "/se/unicycle_web/scene3d.json" in r.text
     assert "three-cad-viewer" in r.text
+
+
+@pytest.mark.parametrize("kind", ["se", "nm"])
+def test_view3d_url_permanently_redirects_to_the_new_default(client, kind: str) -> None:
+    """gr337745 moved the 3D view off ``/{kind}/{slug}/view3d`` onto the
+    bare slug URL — the old URL must still resolve via a permanent
+    redirect (never a bare 404), query string forwarded unchanged."""
+    r = client.get(
+        f"/{kind}/unicycle_web/view3d?level=envelope", follow_redirects=False
+    )
+    assert r.status_code == 308
+    assert r.headers["location"] == f"/{kind}/unicycle_web?level=envelope"
 
 
 def test_se_scene3d_json_shapes_tree_and_connections(
@@ -563,9 +582,7 @@ def test_se_view3d_hostile_overrides_excluded_from_scene_url(
 
     _seed_se(runtime_with_store)
     hostile = "<script>alert(1)</script>"
-    r = blocktree_client.get(
-        f"/se/unicycle_web/view3d?overrides={quote('hub:' + hostile)}"
-    )
+    r = blocktree_client.get(f"/se/unicycle_web?overrides={quote('hub:' + hostile)}")
     assert r.status_code == 200
     scene_url_line = next(line for line in r.text.splitlines() if "sceneUrl" in line)
     assert hostile not in scene_url_line
@@ -576,7 +593,7 @@ def test_se_view3d_hostile_overrides_excluded_from_scene_url(
 
 def test_nm_view3d_and_scene3d(blocktree_client, runtime_with_store) -> None:
     _seed_nm(runtime_with_store)
-    r = blocktree_client.get("/nm/rotaxane_web/view3d")
+    r = blocktree_client.get("/nm/rotaxane_web")
     assert r.status_code == 200
     r2 = blocktree_client.get("/nm/rotaxane_web/scene3d.json")
     assert r2.status_code == 200

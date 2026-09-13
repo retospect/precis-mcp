@@ -6,20 +6,27 @@ fixtures, no DB."""
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
 from precis.blocktree.types import BlockNode, Connect, Tree
+from precis_web import blocktree_3d
 from precis_web.blocktree_3d import (
     Assembly3D,
+    ConnLine,
+    _witness_point,
     build_scene,
     build_shapes_node,
+    connectivity_leaf,
     connectivity_lines,
     explode_offsets,
     feature_edges,
     group_planar_faces,
     mermaid_topology,
     pose_spread,
+    scene_scale,
     shape_json,
     world_mesh,
 )
@@ -266,6 +273,351 @@ def test_connectivity_lines_dedupes_and_drops_self_loops() -> None:
     assert len(lines) == 1  # both connects resolve to the same (hub, rim) pair
 
 
+# ── witness-anchored connect geometry (gr337917) ──────────────────────────
+#
+# The connect overlay used to be a straight pose-to-pose segment nudged
+# sideways by a fixed fraction of the design's diagonal — with
+# base-at-pose envelope conventions the pose point can be a corner, not
+# a part's centre, so the offset segment could float through empty
+# space nowhere near the actual joint (user report, se:unicycle-mk2).
+# Spheres are pose-CENTRED regardless of any base-vs-centre convention
+# debate (only ``box`` has one), so these fixtures isolate the witness
+# math from that question entirely.
+
+
+def _overlapping_pair() -> Tree[BlockNode, Connect]:
+    tree = _tree(
+        a=BlockNode(name="a", pose=[0.0, 0.0, 0.0], envelope="sphere:r0.6"),
+        b=BlockNode(name="b", pose=[0.5, 0.0, 0.0], envelope="sphere:r0.6"),
+    )
+    tree.connects = [Connect(a_block="a", a_port="p", b_block="b", b_port="p")]
+    return tree
+
+
+def _touching_pair() -> Tree[BlockNode, Connect]:
+    tree = _tree(
+        a=BlockNode(name="a", pose=[0.0, 0.0, 0.0], envelope="sphere:r0.5"),
+        b=BlockNode(name="b", pose=[1.0, 0.0, 0.0], envelope="sphere:r0.5"),
+    )
+    tree.connects = [Connect(a_block="a", a_port="p", b_block="b", b_port="p")]
+    return tree
+
+
+def test_witness_point_overlapping_pair_is_interfering() -> None:
+    tree = _overlapping_pair()
+    found = _witness_point(tree, _effective_envelope, "a", "b", scale=1.0)
+    assert found is not None
+    point, gap = found
+    assert gap < 0.0  # the two spheres genuinely interpenetrate
+    # the witness sits between the two centres (0.0 and 0.5 on x), never
+    # off in some unrelated direction.
+    assert -0.1 < point[0] < 0.6
+
+
+def test_witness_point_touching_pair_gap_near_zero() -> None:
+    tree = _touching_pair()
+    found = _witness_point(tree, _effective_envelope, "a", "b", scale=1.0)
+    assert found is not None
+    _point, gap = found
+    assert abs(gap) < 1e-2  # touching, within the kernel's own resolution
+
+
+def test_witness_point_none_on_unparseable_envelope() -> None:
+    """Fallback path, part 1: a bad envelope must never raise into a
+    scene build — ``None``, for the caller to degrade on."""
+    tree = _tree(
+        a=BlockNode(name="a", pose=[0.0, 0.0, 0.0], envelope="not-a-shape"),
+        b=BlockNode(name="b", pose=[1.0, 0.0, 0.0], envelope="sphere:r0.5"),
+    )
+    assert _witness_point(tree, _effective_envelope, "a", "b", scale=1.0) is None
+
+
+def test_witness_point_none_on_absent_envelope() -> None:
+    tree = _tree(
+        a=BlockNode(name="a", pose=[0.0, 0.0, 0.0], envelope=None),
+        b=BlockNode(name="b", pose=[1.0, 0.0, 0.0], envelope="sphere:r0.5"),
+    )
+    assert _witness_point(tree, _effective_envelope, "a", "b", scale=1.0) is None
+
+
+def test_connectivity_lines_sets_witness_when_effective_envelope_given() -> None:
+    tree = _overlapping_pair()
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    assembly = Assembly3D()
+    for r in plan.render_roots:
+        build_shapes_node(
+            tree,
+            _effective_envelope,
+            kids,
+            plan,
+            {"a": 1, "b": 2},
+            r,
+            "/se-x",
+            assembly,
+        )
+    lines = connectivity_lines(
+        tree,
+        plan,
+        assembly.primary_path,
+        lambda c: "tie",
+        lambda c: "#16a34a",
+        "/g",
+        effective_envelope=_effective_envelope,
+        scale=1.0,
+    )
+    assert len(lines) == 1
+    assert lines[0].witness is not None
+    assert lines[0].witness_gap < 0.0
+    # the "a.port—b.port (joint class)" label (gr337917's own hover/tree-
+    # row identification ask) — the stability report's own convention.
+    assert lines[0].label == "a.p—b.p (tie)"
+
+
+def test_connectivity_lines_witness_is_none_without_effective_envelope() -> None:
+    """Omitting ``effective_envelope``/``scale`` keeps every line
+    witness-less — the historical pose-to-pose-only shape older callers/
+    fixtures still get (backward compatible default)."""
+    tree = _overlapping_pair()
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    assembly = Assembly3D()
+    for r in plan.render_roots:
+        build_shapes_node(
+            tree,
+            _effective_envelope,
+            kids,
+            plan,
+            {"a": 1, "b": 2},
+            r,
+            "/se-x",
+            assembly,
+        )
+    lines = connectivity_lines(
+        tree, plan, assembly.primary_path, lambda c: "tie", lambda c: "#16a34a", "/g"
+    )
+    assert lines[0].witness is None
+
+
+def test_connectivity_leaf_anchors_at_the_witness_point_when_available() -> None:
+    line = ConnLine(
+        path="/g/c0",
+        a_name="a",
+        b_name="b",
+        a_path="/x/1",
+        b_path="/x/2",
+        label="a.p—b.p (tie)",
+        colour="#16a34a",
+        witness=(5.0, 0.0, 0.0),
+        witness_gap=0.4,
+    )
+    leaf = connectivity_leaf(
+        line,
+        a_pose=(0.0, 0.0, 0.0),
+        b_pose=(10.0, 0.0, 0.0),
+        offset_len=1.0,
+        eps=1e-6,
+        min_stub=0.1,
+    )
+    edges = leaf["shape"]["edges"]
+    pa, pb = np.array(edges[:3]), np.array(edges[3:])
+    assert np.allclose(0.5 * (pa + pb), [5.0, 0.0, 0.0])  # through the witness
+    assert np.allclose(pb - pa, [0.4, 0.0, 0.0])  # half the ACTUAL gap each way
+
+
+def test_connectivity_leaf_floors_stub_length_for_a_touching_pair() -> None:
+    line = ConnLine(
+        path="/g/c0",
+        a_name="a",
+        b_name="b",
+        a_path="/x/1",
+        b_path="/x/2",
+        label="a.p—b.p (tie)",
+        colour="#16a34a",
+        witness=(5.0, 0.0, 0.0),
+        witness_gap=0.0,
+    )
+    leaf = connectivity_leaf(
+        line,
+        a_pose=(0.0, 0.0, 0.0),
+        b_pose=(10.0, 0.0, 0.0),
+        offset_len=1.0,
+        eps=1e-6,
+        min_stub=0.3,
+    )
+    edges = leaf["shape"]["edges"]
+    pa, pb = np.array(edges[:3]), np.array(edges[3:])
+    assert np.linalg.norm(pb - pa) == pytest.approx(0.6)  # 2 * min_stub
+
+
+def test_connectivity_leaf_falls_back_to_pose_offset_when_no_witness() -> None:
+    """Fallback path, part 2: ``line.witness is None`` (the historical
+    shape) must still draw the pose-to-pose-plus-sideways-offset
+    segment, unchanged."""
+    line = ConnLine(
+        path="/g/c0",
+        a_name="a",
+        b_name="b",
+        a_path="/x/1",
+        b_path="/x/2",
+        label="a.p—b.p (tie)",
+        colour="#16a34a",
+    )
+    leaf = connectivity_leaf(
+        line,
+        a_pose=(0.0, 0.0, 0.0),
+        b_pose=(1.0, 0.0, 0.0),
+        offset_len=0.1,
+        eps=1e-9,
+        min_stub=0.02,
+    )
+    edges = leaf["shape"]["edges"]
+    pa, pb = np.array(edges[:3]), np.array(edges[3:])
+    # offset sideways off the pose-to-pose line, not collapsed onto it.
+    assert pa[1] != 0.0 or pa[2] != 0.0
+
+
+def test_witness_point_respects_rotation_for_tipped_cylinders() -> None:
+    """Test-gap follow-up (re-review): every witness test above uses
+    identity-rot spheres, so ``cad_as_vec3(node.rot)`` is never actually
+    exercised there — a dropped/swapped rot term would pass all of them
+    while misanchoring the common real case (the unicycle's own
+    ``rot=[0, pi/2, 0]`` strut cylinders). Two short, wide cylinders
+    (``cyl:r0.5h0.2`` — the local-Z axis, base-at-origin per
+    ``CircularFrustum``, is the SHORT 0.2 dimension) tipped 90° about Y
+    so local Z maps to world X (:func:`precis.cad.vec.rotation`'s own
+    ``Rz@Ry@Rx`` convention: ``Ry(90°)·(0,0,1) = (1,0,0)``) and offset
+    0.3 apart along X: the facing END disks sit at world x=0.2 (a) and
+    x=0.3 (b) — a real 0.1 gap on-axis. A dropped rot would instead
+    leave both as UPRIGHT 0.5-radius pucks 0.3 apart, deeply
+    interfering — nowhere near this answer."""
+    tree = _tree(
+        a=BlockNode(
+            name="a",
+            pose=[0.0, 0.0, 0.0],
+            rot=[0.0, math.pi / 2, 0.0],
+            envelope="cyl:r0.5h0.2",
+        ),
+        b=BlockNode(
+            name="b",
+            pose=[0.3, 0.0, 0.0],
+            rot=[0.0, math.pi / 2, 0.0],
+            envelope="cyl:r0.5h0.2",
+        ),
+    )
+    found = _witness_point(tree, _effective_envelope, "a", "b", scale=1.0)
+    assert found is not None
+    point, gap = found
+    assert gap == pytest.approx(0.1, abs=0.02)
+    # between the facing end faces, on the rotated axis (x) ...
+    assert 0.15 < point[0] < 0.35
+    # ... and ON-axis (y/z ~ 0), not off at the disk's 0.5 radius, which
+    # is where an unrotated (upright) pair's witness would land instead.
+    assert abs(point[1]) < 0.1
+    assert abs(point[2]) < 0.1
+
+
+def test_witness_point_cache_avoids_recomputing_clearance(monkeypatch) -> None:
+    """gr337917 perf follow-up: a repeat query for the SAME witness
+    identity must hit :data:`blocktree_3d._witness_cache` instead of
+    re-running the multi-seed SDF search — proven by counting the
+    underlying ``cad_relate.clearance`` calls directly."""
+    blocktree_3d._witness_cache.clear()
+    calls = {"n": 0}
+    real_clearance = blocktree_3d.cad_relate.clearance
+
+    def counting_clearance(design, a, b):
+        calls["n"] += 1
+        return real_clearance(design, a, b)
+
+    monkeypatch.setattr(blocktree_3d.cad_relate, "clearance", counting_clearance)
+    tree = _overlapping_pair()
+
+    first = _witness_point(tree, _effective_envelope, "a", "b", scale=1.0)
+    second = _witness_point(tree, _effective_envelope, "a", "b", scale=1.0)
+
+    assert calls["n"] == 1  # the second call hit the cache
+    assert first == second
+
+
+def test_witness_point_cache_distinguishes_different_queries(monkeypatch) -> None:
+    """The cache key carries the full witness identity — a DIFFERENT
+    pose must still trigger a real (uncached) computation, not
+    accidentally reuse an unrelated pair's answer."""
+    blocktree_3d._witness_cache.clear()
+    calls = {"n": 0}
+    real_clearance = blocktree_3d.cad_relate.clearance
+
+    def counting_clearance(design, a, b):
+        calls["n"] += 1
+        return real_clearance(design, a, b)
+
+    monkeypatch.setattr(blocktree_3d.cad_relate, "clearance", counting_clearance)
+    tree_a = _overlapping_pair()
+    tree_b = _touching_pair()
+
+    _witness_point(tree_a, _effective_envelope, "a", "b", scale=1.0)
+    _witness_point(tree_b, _effective_envelope, "a", "b", scale=1.0)
+
+    assert calls["n"] == 2  # two distinct queries, no false cache hit
+
+
+def test_connectivity_lines_witness_budget_caps_computations_per_scene(
+    monkeypatch,
+) -> None:
+    """gr337917 perf follow-up: a design with more distinct connects than
+    the per-scene witness budget must fall back to the pose-to-pose
+    segment for the overflow rather than growing the per-request SDF-
+    search cost unboundedly. Budget patched down to 2 (real geometry,
+    kept small so the test itself stays fast) over 3 distinct
+    (uncached-on-purpose) overlapping pairs."""
+    blocktree_3d._witness_cache.clear()
+    monkeypatch.setattr(blocktree_3d, "_WITNESS_BUDGET_PER_SCENE", 2)
+
+    blocks: dict[str, BlockNode] = {}
+    connects: list[Connect] = []
+    for i in range(3):
+        blocks[f"a{i}"] = BlockNode(
+            name=f"a{i}", pose=[float(i) * 10, 0.0, 0.0], envelope="sphere:r0.6"
+        )
+        blocks[f"b{i}"] = BlockNode(
+            name=f"b{i}", pose=[float(i) * 10 + 0.5, 0.0, 0.0], envelope="sphere:r0.6"
+        )
+        connects.append(
+            Connect(a_block=f"a{i}", a_port="p", b_block=f"b{i}", b_port="p")
+        )
+    tree = _tree(**blocks)
+    tree.connects = connects
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    assembly = Assembly3D()
+    id_by_name = {name: idx + 1 for idx, name in enumerate(sorted(blocks))}
+    for r in plan.render_roots:
+        build_shapes_node(
+            tree,
+            _effective_envelope,
+            kids,
+            plan,
+            id_by_name,
+            r,
+            "/se-x",
+            assembly,
+        )
+    lines = connectivity_lines(
+        tree,
+        plan,
+        assembly.primary_path,
+        lambda c: "tie",
+        lambda c: "#16a34a",
+        "/g",
+        effective_envelope=_effective_envelope,
+        scale=1.0,
+    )
+    assert len(lines) == 3
+    with_witness = sum(1 for line in lines if line.witness is not None)
+    assert with_witness == 2  # budget capped it — the 3rd falls back
+
+
 def test_explode_offsets_pull_connected_blocks_apart() -> None:
     tree = _connected_tree()
     kids = children_map(tree)
@@ -332,6 +684,110 @@ def test_mermaid_topology_labels_edges_with_joint_kind() -> None:
 
 
 # ── build_scene end to end ─────────────────────────────────────────────────
+
+
+# ── display scale (gr337751) ─────────────────────────────────────────────
+
+
+def _hub_rim_tree(pose_scale: float) -> Tree[BlockNode, Connect]:
+    """The same hub/rim design at two different SI magnitudes — metre
+    scale (the unicycle fixture's own numbers) and nanometre scale
+    (boxel-3nm's own report: a whole bb diagonal ~4e-9 m)."""
+    tree = _tree(
+        hub=BlockNode(
+            name="hub",
+            pose=[0, 0, 0],
+            envelope=f"cyl:r{0.02 * pose_scale}h{0.05 * pose_scale}",
+        ),
+        rim=BlockNode(
+            name="rim",
+            pose=[0, 0, 0.3 * pose_scale],
+            envelope=f"torus:R{0.3 * pose_scale}r{0.01 * pose_scale}",
+        ),
+    )
+    tree.connects = [Connect(a_block="hub", a_port="pin", b_block="rim", b_port="pin")]
+    return tree
+
+
+def _hub_rim_scene(pose_scale: float):
+    tree = _hub_rim_tree(pose_scale)
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    return build_scene(
+        tree,
+        _effective_envelope,
+        kids,
+        plan,
+        {"hub": 1, "rim": 2},
+        root_id="/se-x",
+        root_name="x",
+        label_fn=lambda c: "tie",
+        colour_fn=lambda c: "#16a34a",
+    )
+
+
+def _scene_verts(scene) -> np.ndarray:
+    out: list[float] = []
+
+    def _walk(n: dict) -> None:
+        if "shape" in n:
+            out.extend(n["shape"]["obj_vertices"])
+        for p in n.get("parts", []):
+            _walk(p)
+
+    _walk(scene.shapes)
+    return np.array(out, dtype=np.float64).reshape(-1, 3)
+
+
+def test_scene_scale_brings_nm_scale_bounds_into_the_working_range() -> None:
+    nm_tree = _hub_rim_tree(1e-9)
+    scale = scene_scale(nm_tree, _effective_envelope)
+    assert scale >= 1e6  # a flat 1.0 (no-op) would leave it at ~1e-9
+
+
+def test_scene_scale_is_a_near_noop_for_an_already_legible_metre_design() -> None:
+    metre_tree = _hub_rim_tree(1.0)
+    scale = scene_scale(metre_tree, _effective_envelope)
+    assert 1.0 <= scale <= 1000.0
+
+
+def test_build_scene_nm_and_metre_scale_share_topology_and_land_in_working_range() -> (
+    None
+):
+    """gr337751: raw SI metres put a nanometre-scale design's own bounds
+    outside three.js's near/far-plane working range (a blank canvas),
+    and the module's own absolute epsilon floors degenerated its explode
+    offsets to zero on top of that. A metre-scale and an otherwise-
+    identical nanometre-scale design must produce the SAME topology,
+    coordinates landing in roughly O(1-1000) regardless of the DB's own
+    SI units, and NONZERO explode offsets for both."""
+    metre_scene = _hub_rim_scene(1.0)
+    nm_scene = _hub_rim_scene(1e-9)
+
+    def _ids(scene) -> set[str]:
+        out: set[str] = set()
+
+        def _walk(n: dict) -> None:
+            out.add(n["id"])
+            for p in n.get("parts", []):
+                _walk(p)
+
+        _walk(scene.shapes)
+        return out
+
+    assert _ids(metre_scene) == _ids(nm_scene)
+
+    for scene in (metre_scene, nm_scene):
+        verts = _scene_verts(scene)
+        diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+        assert 1.0 <= diag <= 1000.0
+
+    # the actual bug report: nm-scale explode offsets used to floor to
+    # zero for every path (the norm<1e-9 absolute cutoffs).
+    assert nm_scene.explode
+    assert all(any(c != 0.0 for c in v) for v in nm_scene.explode.values())
+    assert metre_scene.explode
+    assert all(any(c != 0.0 for c in v) for v in metre_scene.explode.values())
 
 
 def test_build_scene_bundles_shapes_connections_explode_and_mermaid() -> None:

@@ -1,0 +1,48 @@
+/* blocktree-3d-overrides.css — OUR OWN overrides for the vendored
+ * (never-edited) three-cad-viewer chrome, loaded AFTER
+ * three-cad-viewer.css (templates/blocktree/detail3d.html.j2) and
+ * scoped under #bt3d-viewer so nothing else on the page is touched.
+ * gr337753/gr337747/gr337752 — the viewer-2b embed-layout bundle.
+ *
+ * blocktree-3d.js does the primary sizing fix (gr337753): it hands the
+ * vendored Display a cadWidth/height/treeHeight budgeted to fit inside
+ * the #bt3d-viewer shell, then measures the REAL outer footprint after
+ * construction and shrinks it further via the viewer's own
+ * resizeCadView() if the vendored chrome still overflows. This file is
+ * the CSS-only backstop for what that JS-side budgeting can't reach.
+ */
+
+/* gr337753 backstop: the vendored widget's own chrome (toolbar row,
+ * z-index:100 tree/info column) paints OVER whatever sits next to/below
+ * our shell when it overflows — clip it to the shell instead, so a
+ * sizing miss (window resize, a future vendored-layout change) can
+ * never again hide the "Assembly"/"Topology" headings behind it. */
+#bt3d-viewer {
+  overflow: hidden;
+}
+
+/* gr337747: the tree panel's own .tcv_box_content{overflow:auto;
+ * height:100%} chain needs a REAL (non-auto) height on every flex
+ * ancestor between our shell and that box to resolve against — give
+ * each one min-height:0 (the standard fix for a flex item's implicit
+ * min-height:auto silently defeating height:100%/overflow:auto on a
+ * descendant), so a tall tree scrolls to its own bottom instead of
+ * drifting past its box with no working scrollbar. */
+#bt3d-viewer .tcv_cad_viewer,
+#bt3d-viewer .tcv_cad_body,
+#bt3d-viewer .tcv_cad_navigation {
+  min-height: 0;
+}
+
+/* gr337752: the vendored [data-tooltip]:before pseudo-element is
+ * `position: absolute` inside `.tcv_cad_toolbar` (`position: relative`)
+ * with `margin-top: 2.5em` — meant to drop it BELOW the button row. The
+ * toolbar itself is styled `overflow-x: clip; overflow-y: visible`
+ * (three-cad-viewer.css ~L483); per the CSS overflow spec, pairing a
+ * non-'visible' overflow-x with a 'visible' overflow-y computes the
+ * 'visible' axis to 'auto' instead — so the toolbar clips the tooltip
+ * at its own bottom edge despite asking for overflow-y: visible. Force
+ * BOTH axes to true visible here so the tooltip is never cut off. */
+#bt3d-viewer .tcv_cad_toolbar {
+  overflow: visible;
+}

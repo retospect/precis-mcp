@@ -7,7 +7,16 @@
 //
 // Vertex/edge/face/solid picking, three-state visibility, and the
 // hierarchical assembly tree are all native to the vendored viewer —
-// nothing to wire for those.
+// nothing to wire for those, EXCEPT the "connections" group's own
+// eyeball (gr337746 — see the connections-toggle section below: its
+// tree-node visibility icon is permanently disabled by the vendored
+// model itself for an edges-only leaf, so a working toggle needs our
+// own page chrome driving the viewer's public setState() API instead).
+//
+// This file also budgets/measures the Display's own footprint against
+// its shell (gr337753/gr337747 — see _fitViewerToShell below): the
+// vendored chrome (toolbar row, tree panel) is added AROUND the
+// cadWidth/height canvas, not accounted for by it.
 //
 // KNOWN SIMPLIFICATION (documented, not silently assumed): the
 // vendored viewer's single-click "select" tool only fires a
@@ -88,10 +97,56 @@ function showError(container, message) {
   container.replaceChildren(p);
 }
 
+//: Room reserved (px) for the vendored tree panel's OWN sibling "info"
+// box below it (Data Format.md's per-leaf property readout) when we
+// hand the Display an explicit treeHeight — matches that box's own CSS
+// default height (three-cad-viewer.css .tcv_cad_info) so we're not
+// fighting its natural size, just no longer letting the TREE panel
+// default to a flat 250px regardless of how tall our own shell is
+// (gr337747 — a design with enough blocks/connects to overflow that
+// fixed 250px never gets to scroll into view within it).
+const _INFO_PANEL_HEIGHT = 146;
+//: A conservative estimate of the vendored toolbar row's own height —
+// only used to size the FIRST render pass before we can measure the
+// real thing; :func:`_fitViewerToShell` corrects any remaining miss
+// against the actual DOM after construction (gr337753).
+const _TOOLBAR_HEIGHT_GUESS = 40;
+const _MIN_CAD_WIDTH = 200;
+const _MIN_CAD_HEIGHT = 200;
+
+// gr337753: the vendored Display ADDS its own toolbar row + tree panel
+// AROUND the cadWidth/height canvas we hand it — its outer element's
+// real footprint can end up bigger than the shell we gave it in either
+// axis, and its z-index:100 chrome then paints OVER whatever sits next
+// to it (the "Assembly"/"Topology" headings) instead of clipping.
+// Rather than hard-code the toolbar/tree chrome's own pixel sizes
+// (version-fragile — they live in the vendored, never-edited, minified
+// bundle), measure the REAL outer element's bounding box after
+// construction and shrink cadWidth/height by the actual overflow via
+// the viewer's own public resizeCadView() API until it fits the shell.
+function _fitViewerToShell(viewer, shellEl, treeWidth, cadWidth, height) {
+  const outer = shellEl.querySelector(".tcv_cad_viewer");
+  if (!outer) return;
+  const shellRect = shellEl.getBoundingClientRect();
+  const outerRect = outer.getBoundingClientRect();
+  const overW = outerRect.width - shellRect.width;
+  const overH = outerRect.height - shellRect.height;
+  if (overW <= 0 && overH <= 0) return;
+  const nextCadWidth = Math.max(_MIN_CAD_WIDTH, cadWidth - Math.max(0, overW));
+  const nextHeight = Math.max(_MIN_CAD_HEIGHT, height - Math.max(0, overH));
+  try {
+    viewer.resizeCadView(nextCadWidth, treeWidth, nextHeight);
+  } catch (err) {
+    // Best-effort — see recolour's own try/catch for the convention.
+    console.error("blocktree-3d: resizeCadView failed", err);
+  }
+}
+
 export async function blocktreeViewer3D({
   viewerEl,
   mermaidEl,
   explodeButton,
+  connectionsToggle,
   sceneUrl,
 }) {
   let data;
@@ -149,10 +204,26 @@ export async function blocktreeViewer3D({
   }
 
   // ── 3D viewer ────────────────────────────────────────────────────────
+  // gr337753: budget cadWidth/height so the toolbar row + tree panel the
+  // vendored Display ADDS around them still fit inside our own shell,
+  // rather than handing it the shell's own full clientWidth/clientHeight
+  // (which is what used to overflow the shell on every axis).
+  const treeWidth = 220;
+  const shellWidth = viewerEl.clientWidth || 600;
+  const shellHeight = viewerEl.clientHeight || 500;
+  const initialCadWidth = Math.max(_MIN_CAD_WIDTH, shellWidth - treeWidth);
+  const initialHeight = Math.max(
+    _MIN_CAD_HEIGHT,
+    shellHeight - _TOOLBAR_HEIGHT_GUESS
+  );
   const displayOptions = {
-    cadWidth: viewerEl.clientWidth || 600,
-    height: viewerEl.clientHeight || 500,
-    treeWidth: 220,
+    cadWidth: initialCadWidth,
+    height: initialHeight,
+    treeWidth,
+    // gr337747: give the tree panel real vertical room proportional to
+    // OUR shell instead of the vendored default's flat 250px — the info
+    // panel below it keeps its own natural size.
+    treeHeight: Math.max(80, initialHeight - _INFO_PANEL_HEIGHT),
     theme: "browser",
     pinning: false,
   };
@@ -218,6 +289,7 @@ export async function blocktreeViewer3D({
     const display = new Display(viewerEl, displayOptions);
     viewer = new Viewer(display, viewerOptions, notify);
     viewer.render(data.shapes, renderOptions, viewerOptions);
+    _fitViewerToShell(viewer, viewerEl, treeWidth, initialCadWidth, initialHeight);
   } catch (err) {
     showError(viewerEl, "3D viewer failed to start: " + String(err));
     console.error("blocktree-3d: viewer init failed", err);
@@ -263,6 +335,34 @@ export async function blocktreeViewer3D({
         exploded = !exploded;
       } catch (err) {
         console.error("blocktree-3d: explode toggle failed", err);
+      }
+    });
+  }
+
+  // ── connections visibility toggle (gr337746) ─────────────────────────
+  // A drawn connect is an edges-only leaf (blocktree_3d.connectivity_leaf
+  // ships ``state: [3, 1]`` — slot 0/SHAPE is 3, "not applicable"). The
+  // vendored tree's own eyeball for that slot reads permanently disabled
+  // by design: its model-level toggle bails immediately whenever the
+  // CURRENT value of the slot it's asked to flip is 3, no matter what
+  // gets pushed at it — there is no vendored way to re-enable it. Slot 1/
+  // EDGE is a real, working visible/hidden flag though, so this checkbox
+  // drives THAT slot directly via the viewer's own public ``setState``
+  // API, one connectivity leaf at a time — no vendored code touched.
+  if (connectionsToggle) {
+    connectionsToggle.addEventListener("change", () => {
+      if (!viewer) return;
+      const edgeState = connectionsToggle.checked ? 1 : 0;
+      for (const c of data.connections || []) {
+        try {
+          viewer.setState(c.path, [3, edgeState]);
+        } catch (err) {
+          console.error(
+            "blocktree-3d: connections toggle failed for",
+            c.path,
+            err
+          );
+        }
       }
     });
   }

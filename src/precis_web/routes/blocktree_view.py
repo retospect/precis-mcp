@@ -12,32 +12,37 @@ no whole-structure verdict concept.
 
 * ``GET  /se``, ``GET  /nm`` — the design list (mirrors
   ``routes/cad.py``'s ``/cad``).
-* ``GET  /se/{slug}``, ``GET  /nm/{slug}`` — the reader page: axis/level/
-  colour/isolate selectors (a plain GET form — no client JS needed for
-  round 1) over an ``<img>`` of the SVG endpoint.
-* ``GET  /se/{slug}/view.svg``, ``GET  /nm/{slug}/view.svg`` — the
-  render itself. Query params: ``axis`` (x|y|z, default z — top view),
-  ``level`` (the named abstraction ladder, default 'refined'),
-  ``colour`` (the fill channel, default 'part'), ``isolate`` (a block
+* ``GET  /se/{slug}``, ``GET  /nm/{slug}`` — the reader page, landing on
+  the three-cad-viewer 3D view by default (gr337745 — the 2D SVG
+  projection is depthless/overlap-heavy for a real multi-block design
+  and no longer earns the default slot). Query params: ``level`` (the
+  named abstraction ladder, default 'refined'), ``isolate`` (a block
   name — render only its subtree, recentred), ``overrides`` (round 2a —
   ``"name:level, name2:level2"``, per-subtree level override; see
   :mod:`precis_web.blocktree_svg`'s ``plan_visibility`` docstring).
-
-Round 2a adds the three-cad-viewer 3D route (gr335242 comment 5 / spec
-§5.8) alongside the SVG one, off the same shared plan
-(:mod:`precis_web.blocktree_3d`, kept SEPARATE from the SVG projection
-math but sharing ``plan_visibility``/``children_map`` so the level
-ladder, isolation, and override behave identically in both readers):
-
-* ``GET  /se/{slug}/view3d``, ``GET  /nm/{slug}/view3d`` — the 3D reader
-  page: the vendored ``three-cad-viewer`` canvas (assembly tree, 3-state
-  visibility, vertex/edge/face/solid picking — all native to the
-  library) beside a linked mermaid topology graph, same query params as
-  the SVG route (no ``axis``/``colour`` — those are SVG-projection-only).
 * ``GET  /se/{slug}/scene3d.json``, ``GET  /nm/{slug}/scene3d.json`` —
   the data the 3D page fetches: the viewer's own ``Shapes`` tree plus
   the connectivity/explode/mermaid side data
   (:class:`~precis_web.blocktree_3d.Scene3D`).
+* ``GET  /se/{slug}/2d``, ``GET  /nm/{slug}/2d`` — the 2D SVG reader
+  page, still reachable via a link off the 3D page: axis/level/colour/
+  isolate selectors (a plain GET form — no client JS needed) over an
+  ``<img>`` of the SVG endpoint below. Each page links the other.
+* ``GET  /se/{slug}/view.svg``, ``GET  /nm/{slug}/view.svg`` — the SVG
+  render itself. Same params as ``/2d`` plus ``axis`` (x|y|z, default z
+  — top view) and ``colour`` (the fill channel, default 'part') — both
+  SVG-projection-only, so absent from the 3D/``/2d`` page URLs above.
+
+Round 2a added the three-cad-viewer 3D route (gr335242 comment 5 / spec
+§5.8) off the same shared plan (:mod:`precis_web.blocktree_3d`, kept
+SEPARATE from the SVG projection math but sharing
+``plan_visibility``/``children_map`` so the level ladder, isolation, and
+override behave identically in both readers) — gr337745 later promoted
+it to the ``/{slug}`` default above. Its old
+``GET /se/{slug}/view3d``/``GET /nm/{slug}/view3d`` URL still resolves —
+a permanent (308) redirect to the new bare-slug URL, query string
+forwarded unchanged (``_view3d_redirect``), so an old bookmark/link
+never just 404s.
 
 Still out of scope this round (see the gripe): argue-with-points (click
 → anchor → job) and the anchored-notes layer.
@@ -51,7 +56,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.blocktree.types import BlockNode, Tree
 from precis.errors import NotFound
@@ -380,7 +385,9 @@ async def _detail_page(
     if overrides.strip():
         common_qs += f"&overrides={quote(overrides, safe='')}"
     svg_url = f"/{kind}/{quote(slug, safe='')}/view.svg?axis={axis}&{common_qs}&colour={colour}"
-    view3d_url = f"/{kind}/{quote(slug, safe='')}/view3d?{common_qs}"
+    # gr337745: the 3D view is now the default landing page at the bare
+    # slug URL — no '/view3d' suffix.
+    view3d_url = f"/{kind}/{quote(slug, safe='')}?{common_qs}"
     return templates.TemplateResponse(
         request,
         "blocktree/detail.html.j2",
@@ -591,7 +598,8 @@ async def _view3d_page(
     if valid_overrides_qs:
         common_qs += f"&overrides={quote(valid_overrides_qs, safe='')}"
     scene_url = f"/{kind}/{quote(slug, safe='')}/scene3d.json?{common_qs}"
-    detail_2d_url = f"/{kind}/{quote(slug, safe='')}?{common_qs}"
+    # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
+    detail_2d_url = f"/{kind}/{quote(slug, safe='')}/2d?{common_qs}"
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",
@@ -702,6 +710,18 @@ async def _scene3d_response(
     )
 
 
+async def _view3d_redirect(request: Request, kind: str, slug: str) -> Response:
+    """gr337745 moved the 3D view off ``/{kind}/{slug}/view3d`` onto the
+    bare slug URL — a PERMANENT redirect (308, GET-only so 307 vs 308
+    behave identically here) keeps any old bookmark/link working rather
+    than 404ing outright. Forwards the query string (``level``/
+    ``isolate``/``overrides``) unchanged; it's already percent-encoded
+    off the incoming request, so no re-encoding needed."""
+    qs = request.url.query
+    target = f"/{kind}/{quote(slug, safe='')}" + (f"?{qs}" if qs else "")
+    return RedirectResponse(target, status_code=308)
+
+
 # ── se routes ────────────────────────────────────────────────────────────
 
 
@@ -712,6 +732,25 @@ async def se_list(request: Request) -> HTMLResponse:
 
 @router.get("/se/{slug}")
 async def se_detail(
+    request: Request,
+    slug: str,
+    level: str = "refined",
+    isolate: str | None = None,
+    overrides: str = "",
+) -> Any:
+    # gr337745: the 3D view is the default landing page now.
+    return await _view3d_page(
+        request, "se", slug, level=level, isolate=isolate, overrides=overrides
+    )
+
+
+@router.get("/se/{slug}/view3d")
+async def se_view3d_redirect(request: Request, slug: str) -> Response:
+    return await _view3d_redirect(request, "se", slug)
+
+
+@router.get("/se/{slug}/2d")
+async def se_detail_2d(
     request: Request,
     slug: str,
     axis: str = "z",
@@ -754,19 +793,6 @@ async def se_view_svg(
     )
 
 
-@router.get("/se/{slug}/view3d")
-async def se_view3d(
-    request: Request,
-    slug: str,
-    level: str = "refined",
-    isolate: str | None = None,
-    overrides: str = "",
-) -> Any:
-    return await _view3d_page(
-        request, "se", slug, level=level, isolate=isolate, overrides=overrides
-    )
-
-
 @router.get("/se/{slug}/scene3d.json")
 async def se_scene3d(
     request: Request,
@@ -790,6 +816,25 @@ async def nm_list(request: Request) -> HTMLResponse:
 
 @router.get("/nm/{slug}")
 async def nm_detail(
+    request: Request,
+    slug: str,
+    level: str = "refined",
+    isolate: str | None = None,
+    overrides: str = "",
+) -> Any:
+    # gr337745: the 3D view is the default landing page now.
+    return await _view3d_page(
+        request, "nm", slug, level=level, isolate=isolate, overrides=overrides
+    )
+
+
+@router.get("/nm/{slug}/view3d")
+async def nm_view3d_redirect(request: Request, slug: str) -> Response:
+    return await _view3d_redirect(request, "nm", slug)
+
+
+@router.get("/nm/{slug}/2d")
+async def nm_detail_2d(
     request: Request,
     slug: str,
     axis: str = "z",
@@ -829,19 +874,6 @@ async def nm_view_svg(
         colour=colour,
         isolate=isolate,
         overrides=overrides,
-    )
-
-
-@router.get("/nm/{slug}/view3d")
-async def nm_view3d(
-    request: Request,
-    slug: str,
-    level: str = "refined",
-    isolate: str | None = None,
-    overrides: str = "",
-) -> Any:
-    return await _view3d_page(
-        request, "nm", slug, level=level, isolate=isolate, overrides=overrides
     )
 
 

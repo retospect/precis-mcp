@@ -44,15 +44,20 @@ alongside the SVG projector's convex-hull-for-concave-envelopes one):
   groups (or a genuine mesh boundary) — each rendered as ONE straight
   segment, never a multi-segment analytic curve loop (the mesh has no
   memory of which straight sub-segments belong to the same curved edge).
-* **Connectivity link geometry.** A connect's two endpoints are drawn as
-  a straight line between the two blocks' own POSE points (not a solved
-  contact point) — the same "one representative point" convention
-  :mod:`precis_web.blocktree_svg`'s member overlay uses for axial
-  members — nudged sideways by a small, fixed fraction of the design's
-  own pose-point spread so it reads as a separate link rather than
-  tunnelling through solid geometry. This is a legibility heuristic, not
-  a verified clearance: the line can still graze a solid on an unlucky
-  orientation.
+* **Connectivity link geometry.** A connect's line is anchored at the
+  cad kernel's own closest-point WITNESS between the connect's literal
+  ``a_block``/``b_block`` envelopes (:func:`_witness_point`,
+  :func:`~precis.cad.relate.clearance` — gr337917), half the actual
+  surface gap each way (floored to a small visible stub for a touching/
+  interfering pair), rather than the two blocks' bare POSE points — a
+  base-at-pose envelope's pose can be a corner, not the part's centre,
+  so a pose-to-pose line could float through empty space nowhere near
+  the real joint. Falls back to the HISTORICAL pose-to-pose segment,
+  nudged sideways by a small fixed fraction of the design's own
+  pose-point spread, only when the witness query fails (an absent/
+  unparseable envelope, or a degenerate SDF query) — this is still a
+  legibility heuristic, not a verified clearance render: the line can
+  still graze a solid on an unlucky orientation.
 * **Exploded view** moves each visible top node along the SUM of its own
   unit vectors away from every block it's DRAWN-connected to (the same
   connect data the link overlay draws) — a real "pull apart along
@@ -67,6 +72,7 @@ alongside the SVG projector's convex-hull-for-concave-envelopes one):
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -75,7 +81,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from precis.blocktree.types import BlockNode, Connect, Tree
+from precis.cad import dsl as cad_dsl
+from precis.cad import relate as cad_relate
+from precis.cad.graph import Design as CadDesign
 from precis.cad.tessellate import apply_rigid, mesh_config
+from precis.cad.vec import LINEAR_REL_EPS
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis_web.blocktree_svg import EffectiveEnvelopeFn, VisiblePlan
@@ -276,6 +286,64 @@ def _box_mesh(lo: Vec3f, hi: Vec3f) -> tuple[NDArray[np.float64], NDArray[np.int
     return corners, tris
 
 
+# ── display scale (gr337751) ────────────────────────────────────────────
+#
+# The DB stores every pose/envelope in raw SI metres; a nanometre-scale
+# design's own bounding-box diagonal (~1e-9) sits outside three.js's
+# camera near/far-plane working range, rendering a blank canvas even
+# though the scene is otherwise correct. This is a DISPLAY-ONLY fix:
+# :func:`scene_scale` picks a power-of-ten multiplier and
+# :func:`build_scene`/:func:`build_shapes_node` apply it to every
+# emitted vertex/edge/connectivity coordinate — the store round trip
+# (``adapter.load_tree``) and everything this module reads off ``tree``
+# stay SI throughout.
+
+
+def _overall_bounds(
+    tree: Tree[BlockNode, Connect], effective_envelope: EffectiveEnvelopeFn
+) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+    """Axis-aligned bounds spanning every block's own pose point AND its
+    effective-envelope world mesh — :func:`scene_scale`'s "overall
+    bounds" input (poses alone would miss a block whose envelope extends
+    far past its own pose point; meshes alone would miss a bare-pose
+    block whose envelope is absent/invalid). ``None`` for an empty tree."""
+    pts: list[NDArray[np.float64]] = []
+    for node in tree.blocks.values():
+        pts.append(np.array(node.pose, dtype=np.float64))
+        env = effective_envelope(tree, node)
+        mesh = world_mesh(env, node.pose, node.rot) if env else None
+        if mesh is not None:
+            pts.append(mesh[0].min(axis=0))
+            pts.append(mesh[0].max(axis=0))
+    if not pts:
+        return None
+    arr = np.array(pts, dtype=np.float64)
+    return arr.min(axis=0), arr.max(axis=0)
+
+
+def scene_scale(
+    tree: Tree[BlockNode, Connect], effective_envelope: EffectiveEnvelopeFn
+) -> float:
+    """A per-scene power-of-ten display multiplier bringing the whole
+    design's overall bounding-box diagonal into three.js's comfortable
+    working range (roughly O(1-1000)) — see the module-level note above.
+    ``1.0`` (no-op) for an empty/degenerate tree, so an already-legible
+    metre-scale design is left alone rather than nudged for no reason."""
+    bounds = _overall_bounds(tree, effective_envelope)
+    if bounds is None:
+        return 1.0
+    lo, hi = bounds
+    diag = float(np.linalg.norm(hi - lo))
+    if diag <= 0.0 or not math.isfinite(diag):
+        return 1.0
+    # Power-of-ten factor centring the scaled diagonal near the middle of
+    # the target decade band (10**1.5 ≈ 32) rather than an edge, so a
+    # design already inside the working range still gets at most a
+    # modest nudge instead of drifting all the way to one boundary.
+    exponent = round(1.5 - math.log10(diag))
+    return 10.0**exponent
+
+
 # ── leaf/group construction ────────────────────────────────────────────
 
 
@@ -329,6 +397,7 @@ def build_shapes_node(
     path_prefix: str,
     assembly: Assembly3D,
     seen: set[str] | None = None,
+    scale: float = 1.0,
 ) -> dict[str, Any] | None:
     """Recursively build the ``Shapes`` node for ``name`` (module
     docstring: leaf id ends in the DB block id; a node with both its own
@@ -337,6 +406,10 @@ def build_shapes_node(
     effect. Returns ``None`` when there is nothing to draw (bad/absent
     envelope, no descendant geometry either) — dropped by the caller,
     matching the SVG projector's own honest-absence convention.
+
+    ``scale`` (default ``1.0``, a no-op) is :func:`scene_scale`'s
+    display-only multiplier (gr337751) — applied to every emitted
+    vertex, never to anything read back off ``tree``.
 
     ``seen`` guards against a stored parent cycle: ``plan_visibility``
     legitimately marks every node of a cyclic ``parent`` chain "shape"
@@ -375,7 +448,7 @@ def build_shapes_node(
                 pts.append(mesh[0])
         if not pts:
             return None
-        all_pts = np.concatenate(pts, axis=0)
+        all_pts = np.concatenate(pts, axis=0) * scale
         mn, mx = all_pts.min(axis=0), all_pts.max(axis=0)
         lo: Vec3f = (float(mn[0]), float(mn[1]), float(mn[2]))
         hi: Vec3f = (float(mx[0]), float(mx[1]), float(mx[2]))
@@ -385,7 +458,8 @@ def build_shapes_node(
     # kind == "shape"
     visible_kids = sorted(k for k in kids.get(name, []) if k in plan.shown)
     env = effective_envelope(tree, node)
-    mesh = world_mesh(env, node.pose, node.rot) if env else None
+    raw_mesh = world_mesh(env, node.pose, node.rot) if env else None
+    mesh = (raw_mesh[0] * scale, raw_mesh[1]) if raw_mesh is not None else None
 
     if not visible_kids:
         if mesh is None:
@@ -407,6 +481,7 @@ def build_shapes_node(
             own_path,
             assembly,
             seen,
+            scale=scale,
         )
         if child is not None:
             parts.append(child)
@@ -467,6 +542,141 @@ class ConnLine:
     b_path: str
     label: str
     colour: str
+    #: gr337917 — the kernel's own closest-point witness between the
+    #: connect's LITERAL ``a_block``/``b_block`` envelopes (never the
+    #: possibly-collapsed ancestor ``a_path``/``b_path`` resolve to), in
+    #: the SAME display-scaled coordinates :func:`build_scene` emits
+    #: everywhere else. ``None`` when it couldn't be computed (an
+    #: absent/unparseable envelope, or the SDF query itself failing) —
+    #: :func:`connectivity_leaf` then falls back to the historical
+    #: pose-to-pose segment.
+    witness: Vec3f | None = None
+    witness_gap: float = 0.0
+
+
+#: DSL param keys that are not lengths (counts/angles) — mirrors
+#: :mod:`precis_se.validate`'s own ``_UNSCALED_KEYS``: everything else a
+#: parsed envelope carries is a length in the design's own metres, so
+#: only these skip :func:`_witness_point`'s scale multiply.
+_UNSCALED_KEYS = frozenset({"n", "angle"})
+
+
+#: gr337917 perf follow-up (adjacent to the gr337045 >120s validate
+#: hang): ``cad_relate.clearance`` is a full multi-seed SDF search
+#: (relate.py's own coarse grid + closest-point seeds + several
+#: 80-iteration descents per call) — expensive enough that calling it
+#: uncached, once per connect, on every ``scene3d.json`` request would
+#: reproduce that hang on a design with many connects. Bounded LRU
+#: keyed on the full witness identity (both envelopes/poses/rots plus
+#: the display scale — any of those changing is a genuinely different
+#: query); a module-level cache (not per-request) since a design's own
+#: geometry changes far less often than its scene gets re-rendered, and
+#: a size cap (not a TTL) is enough — stale entries simply age out via
+#: eviction, no explicit invalidation needed.
+_WITNESS_CACHE_MAX = 1024
+_witness_cache: OrderedDict[tuple[Any, ...], tuple[Vec3f, float] | None] = OrderedDict()
+
+#: Hard cap on ACTUAL witness computations (cache hits don't count —
+#: they're cheap) per :func:`connectivity_lines` call — independent of
+#: the cache above: a pathological design with hundreds of distinct
+#: connects must not multiply the per-request cost unboundedly even on
+#: an all-cache-miss first render. Lines beyond the budget fall back to
+#: the historical pose-to-pose segment, same as any other
+#: witness-computation failure.
+_WITNESS_BUDGET_PER_SCENE = 64
+
+
+def _witness_point(
+    tree: Tree[BlockNode, Connect],
+    effective_envelope: EffectiveEnvelopeFn,
+    a_block: str,
+    b_block: str,
+    scale: float,
+) -> tuple[Vec3f, float] | None:
+    """The actual contact anchor for a drawn connect (gr337917) — the
+    cad kernel's own closest-point witness
+    (:func:`precis.cad.relate.clearance`) between ``a_block``'s and
+    ``b_block``'s EFFECTIVE envelopes, so the connect line lands where
+    the parts actually meet instead of floating between two bare pose
+    points that may be corners, not centres.
+
+    Builds a throwaway 2-component :class:`~precis.cad.graph.Design`
+    with both envelope lengths and pose scaled by the SAME ``scale``
+    :func:`build_scene` already applies to every other emitted
+    coordinate (gr337751's :func:`scene_scale`) — the returned
+    point/gap come back already in DISPLAY units, no separate unscale
+    step needed. ``None`` on ANY failure (a missing/unparseable
+    envelope, a degenerate SDF query, ...) — the caller falls back to
+    the historical pose-to-pose segment rather than ever raising into a
+    scene build.
+
+    Memoized in :data:`_witness_cache` (module docstring above) — a
+    repeat query for the SAME two envelopes at the SAME poses/rots/scale
+    returns the cached answer (including a cached ``None`` failure)
+    without re-running the SDF search."""
+    a_node = tree.blocks.get(a_block)
+    b_node = tree.blocks.get(b_block)
+    if a_node is None or b_node is None:
+        return None
+    a_env = effective_envelope(tree, a_node)
+    b_env = effective_envelope(tree, b_node)
+    if not a_env or not b_env:
+        return None
+    key = (
+        a_env,
+        tuple(float(c) for c in a_node.pose),
+        tuple(float(c) for c in a_node.rot),
+        b_env,
+        tuple(float(c) for c in b_node.pose),
+        tuple(float(c) for c in b_node.rot),
+        float(scale),
+    )
+    if key in _witness_cache:
+        _witness_cache.move_to_end(key)
+        return _witness_cache[key]
+    result = _compute_witness_point(
+        a_block, a_env, a_node, b_block, b_env, b_node, scale
+    )
+    _witness_cache[key] = result
+    if len(_witness_cache) > _WITNESS_CACHE_MAX:
+        _witness_cache.popitem(last=False)  # evict the least-recently-used entry
+    return result
+
+
+def _compute_witness_point(
+    a_block: str,
+    a_env: str,
+    a_node: BlockNode,
+    b_block: str,
+    b_env: str,
+    b_node: BlockNode,
+    scale: float,
+) -> tuple[Vec3f, float] | None:
+    """The uncached SDF search behind :func:`_witness_point` — split out
+    purely so the cache wrapper above stays readable; never call this
+    directly outside that wrapper."""
+    try:
+        design = CadDesign()
+        for name, env, node in ((a_block, a_env, a_node), (b_block, b_env, b_node)):
+            spec = cad_dsl.parse(env)
+            if scale != 1.0:
+                spec = cad_dsl.ShapeSpec(
+                    spec.alias,
+                    {
+                        k: (v if k in _UNSCALED_KEYS else v * scale)
+                        for k, v in spec.params.items()
+                    },
+                )
+            prim = cad_dsl.build(spec)
+            pose_scaled = cad_as_vec3([float(c) * scale for c in node.pose])
+            xform = cad_pose(pose_scaled, cad_as_vec3(node.rot))
+            design.add_component(name, design.prim(name, prim, xform))
+        result = cad_relate.clearance(design, a_block, b_block)
+    except Exception:
+        # Best-effort — see connectivity_leaf's own pose-to-pose fallback.
+        return None
+    p = result.point
+    return (float(p[0]), float(p[1]), float(p[2])), float(result.gap)
 
 
 def connectivity_lines(
@@ -476,15 +686,36 @@ def connectivity_lines(
     label_fn: Any,
     colour_fn: Any,
     group_path: str,
+    *,
+    effective_envelope: EffectiveEnvelopeFn | None = None,
+    scale: float = 1.0,
 ) -> list[ConnLine]:
     """One :class:`ConnLine` per distinct visible-endpoint pair among
     ``tree.connects`` (module docstring: DRAWN connectivity, resolved
     through collapsed boxes/isolation to the nearest visible
     representative — two connects that both resolve to the same pair, or
-    to the same block on both ends, contribute at most one line)."""
+    to the same block on both ends, contribute at most one line).
+
+    ``effective_envelope``/``scale`` (both optional; omitting either
+    leaves every line witness-less — the historical pose-to-pose-only
+    shape older callers/fixtures still get) feed :func:`_witness_point`
+    per connect, anchoring the drawn line at the kernel's own closest-
+    point witness between the connect's LITERAL ``a_block``/``b_block``
+    envelopes (gr337917) rather than their bare pose points, up to
+    :data:`_WITNESS_BUDGET_PER_SCENE` witness computations per call —
+    a design with more distinct connects than that just gets the
+    historical pose-to-pose segment for the overflow, same as any other
+    witness-computation failure, rather than letting one pathological
+    design multiply the per-request SDF-search cost unboundedly. Each
+    line's own ``label`` is now ``"a.port—b.port (joint class)"`` (the
+    stability report's own ``subject`` convention,
+    :mod:`precis_se.stability`) — the tree row/mermaid edge previously
+    showed only the bare joint class, unidentifiable among several
+    connects to the same block."""
     seen: set[tuple[str, str]] = set()
     lines: list[ConnLine] = []
     i = 0
+    witness_budget = _WITNESS_BUDGET_PER_SCENE
     for c in tree.connects:
         a_vis = _visible_ancestor(tree, c.a_block, plan.shown)
         b_vis = _visible_ancestor(tree, c.b_block, plan.shown)
@@ -498,6 +729,16 @@ def connectivity_lines(
         b_path = primary_path.get(b_vis)
         if a_path is None or b_path is None:
             continue
+        witness: Vec3f | None = None
+        witness_gap = 0.0
+        if effective_envelope is not None and witness_budget > 0:
+            witness_budget -= 1
+            found = _witness_point(
+                tree, effective_envelope, c.a_block, c.b_block, scale
+            )
+            if found is not None:
+                witness, witness_gap = found
+        subject = f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}"
         lines.append(
             ConnLine(
                 path=f"{group_path}/c{i}",
@@ -505,39 +746,73 @@ def connectivity_lines(
                 b_name=b_vis,
                 a_path=a_path,
                 b_path=b_path,
-                label=label_fn(c),
+                label=f"{subject} ({label_fn(c)})",
                 colour=colour_fn(c),
+                witness=witness,
+                witness_gap=witness_gap,
             )
         )
         i += 1
     return lines
 
 
-def _offset_vector(a: Vec3f, b: Vec3f, up: Vec3f = (0.0, 0.0, 1.0)) -> Vec3f:
+def _offset_vector(
+    a: Vec3f, b: Vec3f, up: Vec3f = (0.0, 0.0, 1.0), *, eps: float
+) -> Vec3f:
     """A sideways nudge off the straight ``a``→``b`` line — module
-    docstring's "connectivity link geometry" simplification."""
+    docstring's "connectivity link geometry" simplification. ``eps`` is
+    the caller's own scale-relative "meaningfully zero" tolerance
+    (gr337751 — a flat ``1e-9`` absolute floor degenerates every offset
+    to zero at nanometre scale, since ``a``/``b`` themselves sit near
+    that magnitude there)."""
     d = np.array(b) - np.array(a)
     n = np.cross(d, np.array(up))
-    if float(np.linalg.norm(n)) < 1e-9:
+    if float(np.linalg.norm(n)) < eps:
         n = np.cross(d, np.array([1.0, 0.0, 0.0]))
     norm = float(np.linalg.norm(n))
-    if norm < 1e-9:
+    if norm < eps:
         return (0.0, 0.0, 0.0)
     u = n / norm
     return (float(u[0]), float(u[1]), float(u[2]))
 
 
 def connectivity_leaf(
-    line: ConnLine, a_pose: Vec3f, b_pose: Vec3f, offset_len: float
+    line: ConnLine,
+    a_pose: Vec3f,
+    b_pose: Vec3f,
+    offset_len: float,
+    *,
+    eps: float,
+    min_stub: float,
 ) -> dict[str, Any]:
-    """The drawn link as an ``type: "edges"`` leaf (no solid geometry) —
-    two endpoints, offset sideways so the line reads as a separate
-    overlay rather than tunnelling through the blocks it connects."""
-    ov = _offset_vector(a_pose, b_pose)
-    off: Vec3f = (ov[0] * offset_len, ov[1] * offset_len, ov[2] * offset_len)
-    pa: Vec3f = (a_pose[0] + off[0], a_pose[1] + off[1], a_pose[2] + off[2])
-    pb: Vec3f = (b_pose[0] + off[0], b_pose[1] + off[1], b_pose[2] + off[2])
-    flat = [float(c) for c in (*pa, *pb)]
+    """The drawn link as an ``type: "edges"`` leaf (no solid geometry).
+
+    gr337917: when the connect's own kernel witness point is available
+    (``line.witness``), the segment runs THROUGH it along the a→b pose
+    direction, half the ACTUAL surface gap each way (the witness is the
+    midpoint between the two nearest surface points, so ± half the gap
+    recovers roughly where each surface is) — floored to ``min_stub`` so
+    a touching/interfering pair (gap ~0) still draws a visible marker,
+    per the gripe's own "single witness point ± a short stub" fallback
+    shape. Falls back to the HISTORICAL pose-to-pose segment, offset
+    sideways so it reads as a separate overlay rather than tunnelling
+    through solid geometry (module docstring's "connectivity link
+    geometry" simplification), only when no witness could be computed."""
+    if line.witness is not None:
+        centre = np.array(line.witness, dtype=np.float64)
+        d = np.array(b_pose) - np.array(a_pose)
+        norm = float(np.linalg.norm(d))
+        unit = d / norm if norm > eps else np.array([1.0, 0.0, 0.0])
+        half = max(abs(line.witness_gap) / 2.0, min_stub)
+        pa_arr = centre - unit * half
+        pb_arr = centre + unit * half
+        flat = [float(c) for c in (*pa_arr, *pb_arr)]
+    else:
+        ov = _offset_vector(a_pose, b_pose, eps=eps)
+        off: Vec3f = (ov[0] * offset_len, ov[1] * offset_len, ov[2] * offset_len)
+        pa: Vec3f = (a_pose[0] + off[0], a_pose[1] + off[1], a_pose[2] + off[2])
+        pb: Vec3f = (b_pose[0] + off[0], b_pose[1] + off[1], b_pose[2] + off[2])
+        flat = [float(c) for c in (*pa, *pb)]
     return {
         "version": 3,
         "id": line.path,
@@ -575,14 +850,23 @@ def explode_offsets(
     "along attachment directions" explode: each node moves along the sum
     of its own unit vectors away from every block it is DRAWN-connected
     to (falling back to away-from-centroid when a node has no drawn
-    connects at all, so it still moves somewhere)."""
+    connects at all, so it still moves somewhere).
+
+    "Meaningfully zero" (a genuinely coincident pair, or a genuinely
+    self-cancelling sum) is judged against a tolerance RELATIVE to the
+    whole tree's own pose spread (:func:`pose_spread`), not a flat
+    absolute constant (gr337751 — a nanometre-scale design's own pose
+    deltas sit at/under a flat ``1e-9`` floor, so every explode offset
+    silently zeroed; same ``LINEAR_REL_EPS`` relative-tolerance pattern
+    as :mod:`precis.cad.primitives`'s ``_linear_eps``)."""
+    eps = LINEAR_REL_EPS * pose_spread(tree)
     by_path: dict[str, list[NDArray[np.float64]]] = {}
     for line in lines:
         a = np.array(tree.blocks[line.a_name].pose, dtype=np.float64)
         b = np.array(tree.blocks[line.b_name].pose, dtype=np.float64)
         d = b - a
         norm = float(np.linalg.norm(d))
-        if norm < 1e-9:
+        if norm < eps:
             continue
         unit = d / norm
         by_path.setdefault(line.a_path, []).append(-unit)
@@ -601,12 +885,12 @@ def explode_offsets(
         if vecs:
             total = np.sum(vecs, axis=0)
             norm = float(np.linalg.norm(total))
-            direction = total / norm if norm > 1e-9 else np.zeros(3)
+            direction = total / norm if norm > eps else np.zeros(3)
         else:
             pose = np.array(tree.blocks[name].pose, dtype=np.float64)
             d = pose - centroid
             norm = float(np.linalg.norm(d))
-            direction = d / norm if norm > 1e-9 else np.zeros(3)
+            direction = d / norm if norm > eps else np.zeros(3)
         scaled = direction * magnitude
         offsets[path] = (float(scaled[0]), float(scaled[1]), float(scaled[2]))
     return offsets
@@ -616,7 +900,14 @@ def pose_spread(tree: Tree[BlockNode, Connect]) -> float:
     """The diagonal of the bounding box of every block's own pose point —
     the scale reference :func:`connectivity_leaf`'s offset and
     :func:`explode_offsets`'s magnitude are a fixed fraction of, so both
-    stay legible whether the design is millimetre- or metre-scaled."""
+    stay legible whether the design is millimetre- or metre-scaled.
+
+    The empty/degenerate-spread fallback (``1.0``, a dimensionless
+    sentinel — every block coincides, or there's only one) tests the
+    diagonal against exact zero, never an absolute epsilon (gr337751): a
+    fixed ``1e-9`` cutoff would itself misfire on a genuinely tiny but
+    REAL nanometre-scale spread, the same absolute-epsilon-at-the-wrong-
+    magnitude bug this whole function exists to avoid for its callers."""
     poses = [node.pose for node in tree.blocks.values()]
     if not poses:
         return 1.0
@@ -624,7 +915,7 @@ def pose_spread(tree: Tree[BlockNode, Connect]) -> float:
     lo = arr.min(axis=0)
     hi = arr.max(axis=0)
     diag = float(np.linalg.norm(hi - lo))
-    return diag if diag > 1e-9 else 1.0
+    return diag if diag > 0.0 else 1.0
 
 
 # ── mermaid topology (linked selection with the 3D view) ────────────────
@@ -670,24 +961,52 @@ def build_scene(
     # plan_visibility's own single ``visited`` set spanning its whole
     # ``for r in roots`` loop (build_shapes_node's own docstring).
     seen: set[str] = set()
+    # gr337751 — every emitted coordinate below is multiplied by this
+    # display-only factor; the tree/poses read off ``tree`` stay SI.
+    scale = scene_scale(tree, effective_envelope)
     for r in plan.render_roots:
         node = build_shapes_node(
-            tree, effective_envelope, kids, plan, id_by_name, r, root_id, assembly, seen
+            tree,
+            effective_envelope,
+            kids,
+            plan,
+            id_by_name,
+            r,
+            root_id,
+            assembly,
+            seen,
+            scale=scale,
         )
         if node is not None:
             parts.append(node)
 
-    diag = pose_spread(tree)
+    diag = pose_spread(tree) * scale
     conn_group_path = f"{root_id}/_connections"
     lines = connectivity_lines(
-        tree, plan, assembly.primary_path, label_fn, colour_fn, conn_group_path
+        tree,
+        plan,
+        assembly.primary_path,
+        label_fn,
+        colour_fn,
+        conn_group_path,
+        effective_envelope=effective_envelope,
+        scale=scale,
     )
     offset_len = 0.05 * diag
+    offset_eps = LINEAR_REL_EPS * diag
+    # gr337917 — a touching/interfering pair's own gap collapses toward
+    # zero, so the witness-anchored stub still needs a legible minimum
+    # size (connectivity_leaf's own docstring).
+    min_stub = 0.01 * diag
     conn_parts = []
     for line in lines:
-        a_pose = _as_vec3f(tree.blocks[line.a_name].pose)
-        b_pose = _as_vec3f(tree.blocks[line.b_name].pose)
-        conn_parts.append(connectivity_leaf(line, a_pose, b_pose, offset_len))
+        a_pose = _as_vec3f([c * scale for c in tree.blocks[line.a_name].pose])
+        b_pose = _as_vec3f([c * scale for c in tree.blocks[line.b_name].pose])
+        conn_parts.append(
+            connectivity_leaf(
+                line, a_pose, b_pose, offset_len, eps=offset_eps, min_stub=min_stub
+            )
+        )
     if conn_parts:
         parts.append(
             {

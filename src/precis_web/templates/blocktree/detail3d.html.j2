@@ -3,6 +3,9 @@
 {% block title %}{{ title }} — 3D{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="/static/three-cad-viewer/three-cad-viewer.css" />
+<!-- our own overrides for the vendored chrome above (gr337753/gr337747/
+     gr337752) -- NEVER edit the vendored stylesheet itself. -->
+<link rel="stylesheet" href="/static/blocktree-3d-overrides.css" />
 
 <div class="flex items-center gap-3 mb-4">
   {{ drive_back(kind, kind_label) }}
@@ -38,6 +41,10 @@
   <button type="button" id="bt3d-explode" class="px-3 py-1 rounded border border-slate-300 hover:bg-slate-100">
     explode
   </button>
+  <label class="flex items-center gap-1 text-xs text-slate-600">
+    <input type="checkbox" id="bt3d-connections" checked />
+    connections
+  </label>
 </form>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -67,6 +74,7 @@
     viewerEl: document.getElementById("bt3d-viewer"),
     mermaidEl: document.getElementById("bt3d-mermaid"),
     explodeButton: document.getElementById("bt3d-explode"),
+    connectionsToggle: document.getElementById("bt3d-connections"),
     sceneUrl: {{ scene_url | tojson }},
   });
 </script>
