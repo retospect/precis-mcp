@@ -54,10 +54,20 @@ precis_worker_summarize_timeout: 120
 # (the summarizer llama-server host) like llm_summarize.
 precis_worker_classify: false
 
-# taproot chase forward-bridge (ADR 0073 / Phase-3 W1). Default OFF; enable on
-# the gateway (needs the LLM verifier verdict + remote embedder). Emits
+# taproot chase forward-bridge (ADR 0073 / Phase-3 W1). Emits
 # PRECIS_TAPROOT_CHASE_ENABLED=1 + PRECIS_CHASE_LLM=1 on the system worker so an
 # establishing chase finding mints/attaches a claim hub + evidence edge.
+# gr333965 (2026-09-11): the LIVE collapsed unit (20b) no longer reads this
+# var — the pair renders unconditionally on every darwin host that play
+# reaches, because `chase`/finding_chase is a default-profile system pass
+# that runs on all of them regardless (opt-in per host left the
+# scheduler-group host, also darwin and running the same pass, without the
+# LLM-verifier hook). This
+# default (and the false-by-default semantics) still gates the dormant
+# split-unit rollback plist (precis-worker.plist.j2 / 20-precis-worker.yml)
+# and is mirrored into 20d's drain-lane env for parity with the gateway's
+# main unit — that lane runs `--only job_inproc` and never claims `chase`
+# work, so the mirror there is inert either way.
 precis_worker_taproot_chase: false
 
 # markup-first ingest leg (devin). Default OFF; enable on the OA-fetch
