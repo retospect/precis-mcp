@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.errors import PrecisError
 from precis.hints import Hint, HintBus
 
 
@@ -124,3 +125,98 @@ def test_skill_breadcrumb_skips_nonexistent_kind_skill() -> None:
 def test_skill_breadcrumb_overview_fallback_for_odd_verb() -> None:
     hint = _breadcrumb("no-such-kind-xyz", verb="frobnicate")
     assert hint == "get(kind='skill', id='precis-overview')"
+
+
+# ── kind-graph error hint (_maybe_add_kind_skills_hint, slice 4) ─────────
+
+
+def _kind_skills_hint(
+    err: PrecisError, kind: str | None, verb: str = "put"
+) -> str | list[str] | None:
+    from typing import cast
+
+    from precis.runtime.hints import HintsMixin
+
+    args = {"kind": kind} if kind is not None else {}
+    stub = cast(HintsMixin, _StubRuntime([kind] if kind else []))
+    HintsMixin._maybe_add_kind_skills_hint(stub, err, verb, args)
+    return err.next
+
+
+def test_kind_skills_hint_appended_for_bad_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.errors import BadInput
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills,
+        "kind_skill_hint",
+        lambda kind, **kw: f"skills for kind={kind!r}: ...",
+    )
+    err = BadInput("bad payload")
+    result = _kind_skills_hint(err, "se")
+    assert result == "skills for kind='se': ..."
+
+
+def test_kind_skills_hint_appended_for_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.errors import Unsupported
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills, "kind_skill_hint", lambda kind, **kw: "skills for kind=..."
+    )
+    err = Unsupported("unsupported view")
+    assert _kind_skills_hint(err, "se") == "skills for kind=..."
+
+
+def test_kind_skills_hint_skipped_for_infra_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Internal/Upstream/RateLimited are not kind-shaped — never append
+    the graph hint there, even when a real ``kind=`` was named."""
+    from precis.errors import Internal
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills, "kind_skill_hint", lambda kind, **kw: "should not appear"
+    )
+    err = Internal("server bug")
+    assert _kind_skills_hint(err, "se") is None
+
+
+def test_kind_skills_hint_none_when_kind_has_no_skills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.errors import BadInput
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(kind_skills, "kind_skill_hint", lambda kind, **kw: None)
+    err = BadInput("bad payload")
+    assert _kind_skills_hint(err, "no-such-kind") is None
+
+
+def test_kind_skills_hint_skipped_for_wildcard_or_list_kind() -> None:
+    from precis.errors import BadInput
+
+    for kind in ("*", "paper,patent"):
+        err = BadInput("bad payload")
+        assert _kind_skills_hint(err, kind) is None
+
+
+def test_kind_skills_hint_degrades_silently_on_graph_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken graph must never break error rendering — the hint is
+    simply absent, the original error content untouched."""
+    from precis.errors import BadInput
+    from precis.skill_index import kind_skills
+
+    def _boom(kind: str, **kw: object) -> str:
+        raise RuntimeError("graph build blew up")
+
+    monkeypatch.setattr(kind_skills, "kind_skill_hint", _boom)
+    err = BadInput("bad payload")
+    assert _kind_skills_hint(err, "se") is None

@@ -73,7 +73,7 @@ unspeakable. Rewrite:
   voice it
 - a backslash line break or LaTeX crumb → delete it; write the sentence out
 
-## How do I make an audio draft? — rules 4-6
+## What are the audio-draft numbering rules?
 
 ### 4. Flowing prose only — no lists, tables, code, figures
 

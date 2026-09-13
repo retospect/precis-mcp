@@ -1,9 +1,0 @@
-## batch-aa flags
-
-- `precis-addressing-help.md` — ## The 2-char type codes — drift — table lists a `cron` kind (`cr`/`cp` codes); `cron` is not in `KIND_CODES`/`CHUNK_CODES` (`utils/handle_registry.py`) or `is_known_kind` — either the table row is stale or the kind was never registered.
-- `precis-agentlog-help.md` — ## Related skills — pin — uses a bare bullet list under a non-`## See also` heading (not converted per sweep scope); same graph-edge intent as `## See also` — worth folding into the standard heading/wikilink form in a later slice.
-- `precis-alert-help.md` — ## Related skills — pin — same as above: bare bullet list under `## Related skills`, not `## See also`; not converted, candidate for heading normalization.
-- `precis-auto-todo-help.md` — ## Evaluator catalogue — drift — the table documents 6 evaluators (`paper_ingested`, `discord_reply_received`, `time_past`, `tag_present`, `child_job_succeeded`, `derived_job_succeeded`); `workers/auto_check_evaluators/__init__.py::REGISTRY` also carries `all_child_findings_resolved`, `placement_legal`, `route_complete`, `netlist_drc_clean` (pcb-guided-place-route slices 8/10) — undocumented rows, not a body rewrite I made per scope.
-- `precis-anki-help.md` — ## Make a cloze card from a fact worth remembering — pin — worked `put(kind="anki", ...)` examples (single + linked) are concrete and copy-pasteable; good round-trip candidates.
-- `precis-auto-todo-help.md` — ## Pattern 1 — wait on the ingest pipeline — pin — full multi-call worked example (`put(kind='paper')` → `put(kind='todo', meta.auto_check)` → `link(rel='blocked-by')`); exercises a real evaluator end to end, good round-trip candidate.
-- `precis-author-discovery-help.md` — ## The loop — pin — the 4-step `semanticscholar`/`orcid` BFS loop is a concrete, high-value worked recipe (discovery frontier); candidate for a round-trip pin against the dev DB.

@@ -318,6 +318,7 @@ class DispatchMixin(RuntimeShape):
             except PrecisError as e:
                 self._maybe_add_skill_hint(e, verb, args)
                 self._maybe_add_schema_drift_hint(e)
+                self._maybe_add_kind_skills_hint(e, verb, args)
                 body = self.render_error(e)
                 self._record_tool_call(verb, args, body, True, started)
                 return body, True
@@ -1277,7 +1278,45 @@ class DispatchMixin(RuntimeShape):
 
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
+        if verb == "get" and self._is_id_empty(args.get("id")):
+            response = self._maybe_append_kind_skill_footer(response, kind)
         return response
+
+    @staticmethod
+    def _is_id_empty(id_val: Any) -> bool:
+        """Whether a ``get()`` call's ``id=`` is effectively absent —
+        the shape every kind's handler treats as "render the kind's own
+        list/help landing surface" (``se``'s ``_render_list``, ``paper``'s
+        ``_render_list_papers``, etc.), rather than reaching for a
+        specific ref."""
+        return id_val is None or (
+            isinstance(id_val, str) and id_val.strip() in ("", "/")
+        )
+
+    def _maybe_append_kind_skill_footer(
+        self, response: Response, kind: str
+    ) -> Response:
+        """Append the kind's skill-graph breadcrumb to a no-``id=``
+        ``get()`` read (docs/backlog/skill-graph.md slice 4 — the kind's
+        help/landing surface, whatever shape a specific handler gives it).
+
+        Best-effort: :func:`~precis.skill_index.kind_skills.kind_skill_hint`
+        already degrades to ``None`` on its own build failure, but the
+        import + call is wrapped again here so a future refactor of that
+        module can't turn "no hint" into "no response" for every kind's
+        landing read.
+        """
+        try:
+            from precis.skill_index.kind_skills import kind_skill_hint
+
+            hint = kind_skill_hint(kind)
+        except Exception:
+            hint = None
+        if hint is None:
+            return response
+        from dataclasses import replace as _replace
+
+        return _replace(response, body=f"{response.body}\n\n{hint}")
 
     def _apply_default_tags_policy(
         self,

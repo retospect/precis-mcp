@@ -25,6 +25,9 @@ Four pieces:
   wikilink/tag/kind structure over the same corpus (no embedder;
   see :func:`build_skill_graph`). Independent of the three pieces
   above — a text-derived sibling, not a consumer of embeddings.
+  :mod:`precis.skill_index.kind_skills` wraps it in a process-cached,
+  never-raising ``kind_skill_hint(kind)`` for consumers outside the
+  skill handler (kind-help footers, kind-shaped error hints).
 
 Design notes:
 

@@ -1,10 +1,12 @@
 """Hint-emitting helpers: the tag-shaped-``q=`` tip and the skill breadcrumb.
 
-``HintsMixin`` carries two independent hint producers: ``_maybe_hint_tag_shaped_q``
+``HintsMixin`` carries three independent hint producers: ``_maybe_hint_tag_shaped_q``
 emits a ``HintBus`` tip mid-request when a search query looks like a tag
-string, and ``_maybe_add_skill_hint`` appends a ``get(kind='skill', ...)``
-recovery pointer to an outgoing :class:`~precis.errors.PrecisError`. Distinct
-from :mod:`precis.runtime.error`, which renders the final error string —
+string, ``_maybe_add_skill_hint`` appends a ``get(kind='skill', ...)``
+recovery pointer to an outgoing :class:`~precis.errors.PrecisError`, and
+``_maybe_add_kind_skills_hint`` appends that failing kind's skill-graph
+breadcrumb (docs/backlog/skill-graph.md slice 4). Distinct from
+:mod:`precis.runtime.error`, which renders the final error string —
 these only *decorate* the hint/error objects before rendering happens.
 """
 
@@ -13,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from precis.errors import PrecisError
+from precis.errors import BadInput, PrecisError, Unsupported
 from precis.runtime._shared import RuntimeShape
 
 #: Kind → skill alias map for the auto-discovery hint.
@@ -157,6 +159,49 @@ class HintsMixin(RuntimeShape):
             hint = f"get(kind='skill', id='precis-{verb}-help')"
         elif hint is None:
             hint = "get(kind='skill', id='precis-overview')"
+
+        existing = err.next
+        if existing is None:
+            err.next = hint
+        elif isinstance(existing, str):
+            if hint not in existing:
+                err.next = [existing, hint]
+        else:
+            if hint not in existing:
+                err.next = [*existing, hint]
+
+    def _maybe_add_kind_skills_hint(
+        self, err: PrecisError, verb: str, args: dict[str, Any]
+    ) -> None:
+        """Append the failing kind's skill-graph breadcrumb to a
+        kind-shaped error (docs/backlog/skill-graph.md slice 4).
+
+        "Kind-shaped" is narrowed to ``BadInput``/``Unsupported`` — the
+        unknown-verb / unsupported-view / bad-payload family the slice
+        spec calls out — never ``Internal``/``Upstream``/``RateLimited``/
+        ``NotFound``: an infra failure or a missing-ref lookup isn't a
+        signal that the caller reached for the wrong skill, and adding
+        this line to every outage would just be noise. One line,
+        appended once (same dedup shape as :meth:`_maybe_add_skill_hint`
+        above); :func:`~precis.skill_index.kind_skills.kind_skill_hint`
+        already degrades to ``None`` on its own build failure, and the
+        call is wrapped again here so a broken graph can never surface
+        as a broken error render.
+        """
+        if not isinstance(err, (BadInput, Unsupported)):
+            return
+        kind = args.get("kind") if isinstance(args, dict) else None
+        if not isinstance(kind, str) or "," in kind or kind == "*":
+            return
+
+        try:
+            from precis.skill_index.kind_skills import kind_skill_hint
+
+            hint = kind_skill_hint(kind)
+        except Exception:
+            hint = None
+        if hint is None:
+            return
 
         existing = err.next
         if existing is None:

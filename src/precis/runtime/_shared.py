@@ -102,6 +102,11 @@ class RuntimeShape:
     ) -> None:
         raise NotImplementedError
 
+    def _maybe_add_kind_skills_hint(
+        self, err: PrecisError, verb: str, args: dict[str, Any]
+    ) -> None:
+        raise NotImplementedError
+
     def _maybe_hint_tag_shaped_q(self, args: dict[str, Any]) -> None:
         raise NotImplementedError
 

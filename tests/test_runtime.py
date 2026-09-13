@@ -111,6 +111,66 @@ def test_hints_appended_to_response(runtime: PrecisRuntime) -> None:
     assert "[tip] calc tip" in out
 
 
+def test_kind_help_read_appends_skill_graph_hint(
+    runtime_with_store: PrecisRuntime, monkeypatch
+) -> None:
+    """``get(kind=X)`` with no ``id=`` — the kind's own help/landing
+    surface (here: ``memory``'s bare-get "list recent" fallback) —
+    appends the kind's skill-graph breadcrumb (docs/backlog/skill-
+    graph.md slice 4)."""
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills,
+        "kind_skill_hint",
+        lambda kind, **kw: f"skills for kind={kind!r}: ...",
+    )
+    out = runtime_with_store.dispatch("get", {"kind": "memory"})
+    assert "skills for kind='memory': ..." in out
+
+
+def test_kind_help_read_omits_hint_when_kind_has_no_skills(
+    runtime_with_store: PrecisRuntime, monkeypatch
+) -> None:
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(kind_skills, "kind_skill_hint", lambda kind, **kw: None)
+    out = runtime_with_store.dispatch("get", {"kind": "memory"})
+    assert "skills for kind=" not in out
+
+
+def test_kind_help_read_with_id_never_appends_hint(
+    runtime_with_store: PrecisRuntime, monkeypatch
+) -> None:
+    """The breadcrumb is only for the no-``id=`` landing surface — a
+    ``get(id=...)`` read for a nonexistent id still errors before ever
+    reaching the footer seam, so it never gets appended either."""
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills,
+        "kind_skill_hint",
+        lambda kind, **kw: f"skills for kind={kind!r}: ...",
+    )
+    out = runtime_with_store.dispatch("get", {"kind": "memory", "id": "999999999"})
+    assert "skills for kind=" not in out
+
+
+def test_kind_help_read_degrades_silently_on_graph_failure(
+    runtime_with_store: PrecisRuntime, monkeypatch
+) -> None:
+    """A broken skill-graph consumer must never break the kind-help
+    read itself — the footer is simply absent."""
+    from precis.skill_index import kind_skills
+
+    def _boom(kind: str, **kw: object) -> str:
+        raise RuntimeError("graph build blew up")
+
+    monkeypatch.setattr(kind_skills, "kind_skill_hint", _boom)
+    out = runtime_with_store.dispatch("get", {"kind": "memory"})
+    assert "[error:" not in out
+
+
 def test_search_without_kind_in_stateless_runtime_errors_with_hint(
     runtime: PrecisRuntime,
 ) -> None:

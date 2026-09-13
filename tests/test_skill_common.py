@@ -300,6 +300,17 @@ def test_tags_default_empty() -> None:
     assert fm.tags == ()
 
 
+def test_scalar_field_with_comma_stays_scalar() -> None:
+    # The comma-split branch applies to list keys ONLY — a scalar field
+    # containing commas (a title, a prose applies-to) must survive as
+    # one string. Pins the `key in list_keys and "," in val` guard
+    # (mutation survivors 2026-09-13: and->or, in->not in).
+    text = "---\ntitle: search, tags, and the toc\ntags: workflow\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.title == "search, tags, and the toc"
+    assert fm.tags == ("workflow",)
+
+
 def test_unknown_tags_flags_out_of_vocab_value() -> None:
     assert unknown_tags(("orientation", "not-a-real-tag")) == ("not-a-real-tag",)
 
