@@ -35,10 +35,14 @@ Pure Python, zero chemistry deps — imports clean on the request path
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 
 from precis_chem.ir import RouteGraph, RouteStep
+
+#: Vacuum permittivity, F/m.
+EPS_0 = 8.8541878128e-12
 
 #: Celsius temperatures in a conditions string: an optional sign, digits,
 #: optional decimal, optional space/degree-sign, then a ``C`` that ends a
@@ -53,6 +57,58 @@ _TEMP_C_RE = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)\s*(?:°|deg(?:rees)?\s*)?[
 def _word_re(term: str) -> re.Pattern[str]:
     """Word-boundary matcher for one lexicon term (may contain spaces)."""
     return re.compile(rf"(?<!\w){re.escape(term)}(?!\w)")
+
+
+def charge_relaxation_frequency_hz(sigma_s_per_m: float, eps_r: float) -> float:
+    """The droplet's Maxwell–Wagner charge-relaxation frequency, Hz.
+
+    ``f_c = σ / (2π εr ε0)``. Below ``f_c`` the liquid relaxes charge faster
+    than the field alternates, so it behaves as a **conductor**: the whole
+    potential drop lands across the dielectric layer and electrowetting gets
+    its full force. Above ``f_c`` the field penetrates the bulk, the voltage
+    divides between droplet and dielectric, and the force decays toward the
+    liquid-dielectrophoresis limit — the droplet stops responding to EWOD.
+
+    So this is not a device parameter: it is a property of **the reaction
+    medium**, and it moves when the chemistry changes the ionic strength.
+    """
+    if eps_r <= 0:
+        raise ValueError("eps_r must be positive")
+    return sigma_s_per_m / (2.0 * math.pi * eps_r * EPS_0)
+
+
+#: Order-of-magnitude conductivity/permittivity for candidate droplet media —
+#: handbook values, used only for the advisory verdict below, never asserted
+#: as a claim. Conductivity of a nominally pure organic is purity-dominated
+#: and spans decades; that is the point being made, not a number to cite.
+DROPLET_MEDIA: dict[str, tuple[float, float]] = {
+    # name: (sigma S/m, eps_r)
+    "water, ultrapure": (5.5e-6, 80.0),
+    "water, deionized (CO2-equilibrated)": (1e-4, 80.0),
+    "aqueous buffer, 10 mM": (0.12, 80.0),
+    "aqueous buffer, 100 mM / PBS": (1.2, 80.0),
+    "acetonitrile, neat": (1e-8, 37.5),
+    "acetonitrile, 0.1 M supporting electrolyte": (1.5, 37.5),
+    "toluene": (1e-12, 2.4),
+}
+
+
+def polarization_regime(
+    sigma_s_per_m: float, eps_r: float, f_actuation_hz: float
+) -> str:
+    """``electrowetting`` / ``marginal`` / ``dielectrophoretic`` at ``f``.
+
+    ``marginal`` is the decade bracketing ``f_c`` — where the force is
+    falling but not gone, and where a small chemistry-driven change in ionic
+    strength flips the behaviour. A medium that lands there is not usable
+    for a reproducible multi-step route even though single droplets may move.
+    """
+    f_c = charge_relaxation_frequency_hz(sigma_s_per_m, eps_r)
+    if f_actuation_hz <= f_c / 3.0:
+        return "electrowetting"
+    if f_actuation_hz <= f_c * 3.0:
+        return "marginal"
+    return "dielectrophoretic"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +131,19 @@ class PlatformConstraint:
     #: unhashable). Temperature limits do NOT belong here — use the
     #: ``temp_*_c`` bounds, which are parsed numerically.
     hazard_terms: tuple[tuple[str, str], ...] = field(default=())
+    #: ``term → reason`` — conditions that put the droplet's charge-relaxation
+    #: frequency near or below the actuation band, so it stops responding to
+    #: electrowetting (see :func:`polarization_regime`). Kept separate from
+    #: ``hazard_terms`` because the remedy is different in kind: a hazard says
+    #: "this step can't run here", a polarization flag says "this step needs a
+    #: supporting electrolyte it didn't ask for, which is a chemistry change".
+    polarization_terms: tuple[tuple[str, str], ...] = field(default=())
+    #: Practical AC actuation band in Hz (low, high). The low end is set by
+    #: electrolysis (DC and near-DC drive Faradaic damage), the high end by
+    #: the droplet's own ``f_c``. A medium whose ``f_c`` falls below the low
+    #: end has an **empty** window — no frequency both avoids electrolysis
+    #: and keeps the droplet in the electrowetting regime.
+    actuation_band_hz: tuple[float, float] | None = None
     #: Droplet thermal envelope in °C. A parsed temperature outside
     #: ``[temp_min_c, temp_max_c]`` raises a ``check``. ``None`` disables
     #: that side of the bound.
@@ -112,10 +181,40 @@ EWOD_OIL = PlatformConstraint(
         "distillation, no cryogenic steps",
         "actuation ≈ 20–80 V on ~0.5–0.7 µm Cytop/Teflon-AF stacks; "
         "strongly ionic media need AC actuation to avoid electrolysis",
+        "the droplet must POLARIZE faster than the field alternates: "
+        "f_c = σ/(2π εr ε0) must sit above the actuation band, else the "
+        "liquid acts as a dielectric and EWOD force collapses. Neat "
+        "acetonitrile is f_c ≈ 5 Hz and ultrapure water ≈ 1 kHz — both at "
+        "or below a practical 100 Hz–10 kHz band — so the platform FORCES a "
+        "supporting electrolyte into the droplet phase (~0.1 M). That is a "
+        "reagent the chemistry did not choose: it shifts ionic strength, "
+        "adds a counter-ion that may coordinate or compete, is usually "
+        "hygroscopic (fighting anhydrous steps), and cannot be removed "
+        "on-chip",
+        "conductivity DRIFTS along a route — a step that consumes ions, "
+        "chelates them, or precipitates a salt lowers σ and can push a "
+        "droplet out of the actuation regime partway through a synthesis "
+        "that started fine",
         "no vigorous gas evolution (bubbles pin at the contact line and "
         "break actuation)",
-        "precipitates/solids only at low loading — no on-chip filtration; "
-        "dense slurries stall transport and foul the surface",
+        "NO SEPARATIONS: no filtration, chromatography, distillation, or "
+        "phase split except partitioning into the filler oil. Inter-step "
+        "purification is unavailable, so conversions multiply and side "
+        "products accumulate over a multi-step route",
+        "precipitates/solids only at low loading — dense slurries stall "
+        "transport and foul the surface",
+        "droplet volume is quantized by electrode area × gap height, and a "
+        "reliable split needs ≈2:1 — so stoichiometry comes in integer unit "
+        "droplets; a non-integer ratio costs a dilution series",
+        "the device WEARS: dielectric charge trapping drifts the threshold "
+        "voltage up over cycles, and hydrophobic/proteinaceous adsorption "
+        "kills a spot's hydrophobicity irreversibly (the droplet pins "
+        "there). Both scale with step count",
+        "no inert atmosphere — silicone oil dissolves O2 readily, so "
+        "air- and moisture-sensitive chemistry is compromised",
+        "in-situ observation is optical only (fluorescence/imaging); no "
+        "NMR/IR/MS without taking material off-chip, and there is little "
+        "material to take",
         "hydrophobic solutes partition into the oil — reagent loss and "
         "droplet-to-droplet cross-contamination scale with residence time",
         "surfactants alter interfacial tension — keep below the "
@@ -172,7 +271,79 @@ EWOD_OIL = PlatformConstraint(
         ("sparge", "gas sparging breaks droplet actuation"),
         ("autoclave", "sealed-vessel pressure is not available on chip"),
         ("solvothermal", "solvothermal conditions exceed the thermal envelope"),
+        # Separations: the platform does liquid handling, not unit operations.
+        ("chromatography", "no on-chip chromatography — purify off-chip"),
+        ("chromatograph", "no on-chip chromatography — purify off-chip"),
+        # Same reason string as "chromatography" above, deliberately: the
+        # dedup in screen_step keys on the reason, so sharing it makes
+        # "column chromatography" report one finding instead of two.
+        ("column", "no on-chip chromatography — purify off-chip"),
+        ("recrystallize", "no mother-liquor removal on chip"),
+        ("recrystallise", "no mother-liquor removal on chip"),
+        ("extraction", "no phase split on chip except into the filler oil"),
+        ("extract", "no phase split on chip except into the filler oil"),
+        ("wash", "no phase split on chip except into the filler oil"),
+        ("separatory", "no phase split on chip except into the filler oil"),
+        ("inert atmosphere", "silicone oil dissolves O2 — no inert blanket"),
+        ("under argon", "silicone oil dissolves O2 — no inert blanket"),
+        ("under nitrogen", "silicone oil dissolves O2 — no inert blanket"),
+        ("glovebox", "silicone oil dissolves O2 — no inert blanket"),
     ),
+    polarization_terms=(
+        (
+            "anhydrous",
+            "an anhydrous droplet is low-σ unless something ionic is "
+            "dissolved in it — confirm the medium carries enough electrolyte "
+            "to actuate (in ¹⁸F chemistry the K222/K⁺ or TBA⁺ phase-transfer "
+            "agent already serves as one; a neat dry solvent does not), and "
+            "note that such salts are hygroscopic",
+        ),
+        (
+            "deionized water",
+            "deionized water is f_c ≈ 1–20 kHz, at or inside the actuation "
+            "band — buffer or salt it to actuate reproducibly",
+        ),
+        (
+            "di water",
+            "deionized water is f_c ≈ 1–20 kHz, at or inside the actuation "
+            "band — buffer or salt it to actuate reproducibly",
+        ),
+        (
+            "ultrapure water",
+            "ultrapure water is f_c ≈ 1 kHz — inside the actuation band; "
+            "add electrolyte",
+        ),
+        (
+            "distilled water",
+            "distilled water has low σ — add electrolyte to actuate",
+        ),
+        (
+            "salt-free",
+            "the platform requires a supporting electrolyte to actuate at all",
+        ),
+        (
+            "salt free",
+            "the platform requires a supporting electrolyte to actuate at all",
+        ),
+        (
+            "electrolyte-free",
+            "the platform requires a supporting electrolyte to actuate at all",
+        ),
+        (
+            "desalt",
+            "desalting removes the conductivity the platform needs to actuate",
+        ),
+        (
+            "ion exchange",
+            "ion exchange removes the conductivity the platform needs",
+        ),
+        (
+            "low ionic strength",
+            "low ionic strength lowers f_c toward the actuation band",
+        ),
+    ),
+    # Low end set by electrolysis at/near DC, high end by practice.
+    actuation_band_hz=(100.0, 10_000.0),
     # Fluoropolymer dielectric + silicone-oil stability set the ceiling;
     # below 0 °C the filler oil's viscosity stalls droplet transport.
     temp_min_c=0.0,
@@ -239,8 +410,15 @@ def screen_step(step: RouteStep, constraint: PlatformConstraint) -> list[str]:
                 f"{constraint.name}: check — solvent '{solvent}' is "
                 "incompatible with the oil filler"
             )
-    for term, reason in constraint.hazard_terms:
+    # Several spellings map to one reason ("chromatography"/"column",
+    # "extract"/"wash"/"extraction"). Report the finding once — a step that
+    # says "column chromatography" has one problem, not two.
+    seen_reasons: set[str] = set()
+    for term, reason in (*constraint.hazard_terms, *constraint.polarization_terms):
+        if reason in seen_reasons:
+            continue
         if _word_re(term).search(text):
+            seen_reasons.add(reason)
             flags.append(f"{constraint.name}: check — {reason}")
     for temp in _temperatures_c(text):
         if constraint.temp_max_c is not None and temp > constraint.temp_max_c:
@@ -299,6 +477,38 @@ def screen_route(graph: RouteGraph, names: list[str]) -> RouteGraph:
         metrics=graph.metrics,
         provenance=graph.provenance,
         constraints=[c.name for c in constraints],
+    )
+
+
+def medium_verdict(constraint: PlatformConstraint, medium: str) -> str:
+    """Is ``medium`` (a :data:`DROPLET_MEDIA` key) actuatable on ``constraint``?
+
+    Evaluates the whole actuation band, not one frequency: the band's LOW end
+    is the most favourable frequency available (electrolysis sets the floor),
+    so if the medium is already dielectrophoretic there, no usable frequency
+    exists and the window is empty.
+    """
+    if medium not in DROPLET_MEDIA:
+        raise ValueError(f"unknown medium {medium!r}; known: {sorted(DROPLET_MEDIA)}")
+    if constraint.actuation_band_hz is None:
+        return f"{medium}: no actuation band declared for {constraint.name}"
+    sigma, eps_r = DROPLET_MEDIA[medium]
+    low, high = constraint.actuation_band_hz
+    f_c = charge_relaxation_frequency_hz(sigma, eps_r)
+    at_low = polarization_regime(sigma, eps_r, low)
+    at_high = polarization_regime(sigma, eps_r, high)
+    head = f"{medium}: f_c ≈ {f_c:.3g} Hz vs band {low:g}–{high:g} Hz — "
+    if at_low == "dielectrophoretic":
+        return head + (
+            "EMPTY WINDOW: dielectrophoretic even at the band floor, so no "
+            "frequency both avoids electrolysis and actuates. Needs a "
+            "supporting electrolyte (a chemistry change)."
+        )
+    if at_high == "electrowetting":
+        return head + "ok: electrowetting across the whole band."
+    return head + (
+        f"marginal: electrowetting near {low:g} Hz but {at_high} by "
+        f"{high:g} Hz — actuation depends on ionic strength holding up."
     )
 
 

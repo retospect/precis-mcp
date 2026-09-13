@@ -1151,3 +1151,110 @@ def test_put_unknown_constraint_is_bad_input(route_store: Store) -> None:
     h = RouteHandler(hub=Hub(store=route_store))
     with pytest.raises(BadInput, match="unknown platform constraint"):
         h.put(id="x", target="CCO", engine="stub", constraints=["mars-glovebox"])
+
+
+# ──────────────────── droplet polarization / RC constraint ────────────────────
+
+
+def test_charge_relaxation_frequency_physics() -> None:
+    """f_c = σ/(2π εr ε0) — the Maxwell–Wagner relaxation frequency."""
+    import math
+
+    from precis_chem.constraints import EPS_0, charge_relaxation_frequency_hz
+
+    # Closed form, checked against a hand computation.
+    assert charge_relaxation_frequency_hz(1.2, 80.0) == pytest.approx(
+        1.2 / (2 * math.pi * 80.0 * EPS_0), rel=1e-12
+    )
+    # 100 mM buffer sits in the hundreds of MHz — far above any EWOD band.
+    assert charge_relaxation_frequency_hz(1.2, 80.0) == pytest.approx(2.7e8, rel=0.05)
+    # Neat acetonitrile lands at single-digit Hz. This is the load-bearing
+    # number: it is why the platform's second permitted solvent needs salt.
+    assert charge_relaxation_frequency_hz(1e-8, 37.5) == pytest.approx(4.8, rel=0.05)
+    # Scaling is linear in σ and inverse in εr.
+    assert charge_relaxation_frequency_hz(2e-8, 37.5) == pytest.approx(
+        2 * charge_relaxation_frequency_hz(1e-8, 37.5)
+    )
+    with pytest.raises(ValueError, match="eps_r must be positive"):
+        charge_relaxation_frequency_hz(1.0, 0.0)
+
+
+def test_polarization_regime_crossover() -> None:
+    from precis_chem.constraints import (
+        charge_relaxation_frequency_hz,
+        polarization_regime,
+    )
+
+    sigma, eps_r = 1e-4, 80.0  # DI water, f_c ≈ 22 kHz
+    f_c = charge_relaxation_frequency_hz(sigma, eps_r)
+    # Well below f_c ⇒ conductor ⇒ full electrowetting force.
+    assert polarization_regime(sigma, eps_r, f_c / 100) == "electrowetting"
+    # At f_c ⇒ the marginal decade, where ionic strength decides behaviour.
+    assert polarization_regime(sigma, eps_r, f_c) == "marginal"
+    # Well above ⇒ the liquid is a dielectric; EWOD force has collapsed.
+    assert polarization_regime(sigma, eps_r, f_c * 100) == "dielectrophoretic"
+
+
+def test_medium_verdict_flags_the_empty_window() -> None:
+    """Neat MeCN and toluene have NO usable actuation frequency."""
+    from precis_chem.constraints import DROPLET_MEDIA, EWOD_OIL, medium_verdict
+
+    # Dielectrophoretic even at the band floor ⇒ empty window, needs salt.
+    for medium in ("acetonitrile, neat", "toluene"):
+        assert "EMPTY WINDOW" in medium_verdict(EWOD_OIL, medium), medium
+    # Buffered aqueous and salted MeCN actuate across the whole band.
+    for medium in (
+        "aqueous buffer, 10 mM",
+        "aqueous buffer, 100 mM / PBS",
+        "acetonitrile, 0.1 M supporting electrolyte",
+    ):
+        assert "ok: electrowetting" in medium_verdict(EWOD_OIL, medium), medium
+    # Pure water is marginal, not ok — the band straddles its f_c.
+    assert "marginal" in medium_verdict(EWOD_OIL, "water, ultrapure")
+    # Every reference medium is evaluable.
+    for medium in DROPLET_MEDIA:
+        assert medium_verdict(EWOD_OIL, medium)
+    with pytest.raises(ValueError, match="unknown medium"):
+        medium_verdict(EWOD_OIL, "liquid helium")
+
+
+def test_screen_flags_polarization_and_separation_conditions() -> None:
+    from precis_chem.constraints import EWOD_OIL, screen_step
+
+    def flags_for(conditions: str) -> list[str]:
+        return screen_step(
+            RouteStep(id=1, product="C", reactants=["O"], conditions=conditions),
+            EWOD_OIL,
+        )
+
+    # Low-σ media: the platform forces an electrolyte the chemistry didn't pick.
+    assert any("electrolyte" in f for f in flags_for("anhydrous MeCN, 100 °C"))
+    assert any("buffer or salt it" in f for f in flags_for("deionized water, 25 °C"))
+    assert any("electrolyte" in f for f in flags_for("salt-free conditions"))
+    # Operations that REMOVE the needed conductivity.
+    assert any("conductivity" in f for f in flags_for("desalt the product"))
+    # Separations are absent on chip.
+    assert any("chromatography" in f for f in flags_for("purify by chromatography"))
+    assert any("phase split" in f for f in flags_for("aqueous wash"))
+    # No inert blanket.
+    assert any("dissolves O2" in f for f in flags_for("under argon, water"))
+    # Buffered aqueous is the sweet spot — no polarization flag at all.
+    got = flags_for("aqueous buffer, 37 °C")
+    assert any(": ok — " in f for f in got), got
+
+
+def test_one_finding_reported_once_not_per_spelling() -> None:
+    """'column chromatography' is one problem; several terms map to it."""
+    from precis_chem.constraints import EWOD_OIL, screen_step
+
+    flags = screen_step(
+        RouteStep(
+            id=1,
+            product="C",
+            reactants=["O"],
+            conditions="purify by column chromatography",
+        ),
+        EWOD_OIL,
+    )
+    chroma = [f for f in flags if "chromatography" in f or "column" in f]
+    assert len(chroma) == 1, flags
