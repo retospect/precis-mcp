@@ -9,6 +9,8 @@ answers:
   - how do I cancel a job that's taking too long?
   - how do I submit a job idempotently so a retry doesn't double-run it?
 applies-to: get/search/put/tag (kind='job')
+tags: workflow, verbs, troubleshooting
+kinds: job, todo
 status: active
 ---
 
@@ -343,8 +345,6 @@ its own todo to yield the same way — see `precis-todo-tree-help`,
 
 ## See also
 
-```python
-get(kind="skill", id="precis-gripe-help")  # the bug tracker
-get(kind="skill", id="precis-fix-gripe-help")  # fix_gripe recipe
-get(kind="skill", id="precis-search-help")  # find jobs by link/status
-```
+- [[precis-gripe-help]] — the bug tracker
+- [[precis-fix-gripe-help]] — fix_gripe recipe
+- [[precis-search-help]] — find jobs by link/status

@@ -8,6 +8,8 @@ answers:
   - what happens if I pin a slug that doesn't exist?
 applies-to: PRECIS_STARTUP_SKILLS env var
 status: active
+tags: orientation, workflow
+kinds: skill
 ---
 
 # precis-startup-skills-help — pin skills into the cold-start banner
@@ -102,10 +104,6 @@ what this MCP session can do. Use the `scaffold` agent, or read
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-search-help")  # default cold-start action
-get(
-    kind="skill", id="precis-kinds-disabled-help"
-)  # PRECIS_KINDS_DISABLED sibling env var
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-search-help]] — default cold-start action
+- [[precis-kinds-disabled-help]] — PRECIS_KINDS_DISABLED sibling env var

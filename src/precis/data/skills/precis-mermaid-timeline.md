@@ -5,6 +5,8 @@ summary: a mermaid timeline — dated events in chronological order
 answers:
   - how do I diagram a chronology of dated events?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **timeline** lays out dated events in chronological order (a history, a

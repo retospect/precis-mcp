@@ -1,0 +1,10 @@
+## batch-ah flags
+
+- precis-toolpath-help.md — ## See also — drift — `get(kind='skill', id='precis-help')` and `id='toc'` are synthesized skill ids (`skill.py` `_SYNTHESIZED_SLUG` / toc alias), not files under `data/skills/`; left as plain `get()` mentions rather than `[[wikilinks]]` since either would dangle the slice-1 graph scan (same pattern batch-ac flagged for `precis-kinds-disabled-help.md`).
+- precis-toon.md — ## Continuing a truncated table — pin — `more(cursor=...)` single-use/expiry/sequential-drain contract is concrete and testable; good round-trip pin.
+- precis-toon.md — ## Parse a TOON response in Python — pin — `toon.load()` round-trip (brace-stripped header, tab-split rows, quoted-cell doubling) is a clean unit pin against `precis.format.toon`.
+- precis-web-help.md — ## Why did the same URL produce different cache entries? — pin — the SPA fragment-preservation host list (arxiv.org, github.com, gist.github.com, notion.so) is a concrete enumerable list; pin it so a host-list edit in `utils/url.py` can't silently drift the doc.
+- precis-wikipedia-help.md — ## The `ORIGIN:wikipedia` fence — pin — the four `search()` variants demonstrating fence-lift vs fence-exclude are high-value and easy to get subtly wrong; good round-trip pin.
+- precis-youtube-help.md — ## What does a youtube id look like? — pin — the 5 URL-form-to-id normalization examples are a clean unit-test pin against the id-extraction path in `handlers/youtube.py`.
+- precis-todo-tree-help.md — ## Priority is set with the prio=N kwarg — pin — PRIO alias→int mapping (urgent=1/high=3/normal=5/low=8) verified exact against `handlers/_prio_tag.py`; pin so doc and dict can't silently diverge.
+- precis-voice.md — ## 6. Numbers: keep the numerals, round them, and let the narrator speak them — pin — the `verbalize_numbers` input/output pairs (`2-4`→"two to four", `14:30`→"two thirty", `$1.2M`→"one point two million dollars") are concrete round-trip pin candidates against `precis.draft.verbalize.verbalize_numbers`.

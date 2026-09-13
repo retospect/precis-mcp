@@ -9,6 +9,8 @@ answers:
   - how do I reject a fix and ask for another pass?
   - how do I cancel a fix job that's stuck?
 applies-to: put (kind='job', job_type='fix_gripe')
+tags: workflow, troubleshooting
+kinds: job, gripe, todo
 status: active
 ---
 
@@ -264,7 +266,5 @@ No accidental fan-out.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-gripe-help")  # the bug tracker
-get(kind="skill", id="precis-job-help")  # jobs in general
-```
+- [[precis-gripe-help]] — the bug tracker
+- [[precis-job-help]] — jobs in general

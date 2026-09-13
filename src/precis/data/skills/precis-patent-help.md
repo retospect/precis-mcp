@@ -10,6 +10,8 @@ answers:
   - how do I tag or cross-link a patent to a paper?
 applies-to: get/search/tag/link (kind='patent')
 status: active
+tags: [addressing, workflow]
+kinds: [patent]
 ---
 
 # precis-patent-help — find, read, cite patents
@@ -188,13 +190,11 @@ put(kind="memory", text="<note>", link="pt40", rel="annotates")
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-patent-search-help")  # reach=, CQL, watches
-get(kind="skill", id="precis-patent-power")  # raw OPS CQL grammar
-get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-paper-help")  # sibling kind, same ~N..M syntax
-get(kind="skill", id="precis-tags")  # axis vocabulary
-get(kind="skill", id="precis-finding-help")  # register a chase target
-get(kind="skill", id="precis-memory-help")  # notes attached to a patent
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-patent-search-help]] — reach=, CQL, watches
+- [[precis-patent-power]] — raw OPS CQL grammar
+- [[precis-search-help]] — search mechanics
+- [[precis-paper-help]] — sibling kind, same ~N..M syntax
+- [[precis-tags]] — axis vocabulary
+- [[precis-finding-help]] — register a chase target
+- [[precis-memory-help]] — notes attached to a patent

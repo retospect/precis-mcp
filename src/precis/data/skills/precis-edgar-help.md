@@ -9,6 +9,8 @@ answers:
   - how do I list all of a company's filings?
 applies-to: get/search/tag/link (kind='edgar')
 status: active
+tags: [external-sources]
+kinds: [edgar]
 ---
 
 # precis-edgar-help — find, read, compare SEC filings
@@ -146,9 +148,7 @@ put(kind="memory", text="<note>", link="ed40", rel="annotates")
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-patent-help")  # sibling public-record kind
-get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-tags")  # axis vocabulary
-```
+- [[precis-overview]] — verbs and kinds.
+- [[precis-patent-help]] — sibling public-record kind.
+- [[precis-search-help]] — search mechanics.
+- [[precis-tags]] — axis vocabulary.

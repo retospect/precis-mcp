@@ -6,6 +6,8 @@ answers:
   - how do I convert a draft's legacy [pc<id>] cites into hub [fi<id>] cites?
 applies-to: put(kind='job', job_type='taproot_backfill') for draft backfill; precis taproot backfill (CLI equivalent)
 status: active
+tags: workflow, verbs
+kinds: todo, job, citation
 ---
 
 # precis-taproot-backfill-help — convert a draft's [pc]/[pa] cites into hub cites
@@ -73,6 +75,8 @@ pointer-only span (no groundable claim) is left as-is. It is
 **on-demand, per draft or section** — not a corpus sweep — and
 idempotent: a re-run finds no `[pc…]` left to convert.
 
+## Backfill — the `[pa]` arm and grounding rules
+
 **Whole-paper `[pa<id>]` cites (the `[pa]` arm).** The same command also
 recognizes bare whole-paper `[pa<id>]` cites (kept in their own groups — a
 `[pa]` and a `[pc]` never fold together). Each is classified by whether its
@@ -136,13 +140,7 @@ CLI equivalent: `precis taproot backfill --chunk dc1652005 --apply [--ref-level]
 
 ## See also
 
-```python
-get(kind="skill", id="precis-taproot-help")  # what a hub is; citing [fi<id>]
-get(
-    kind="skill", id="precis-taproot-mint-help"
-)  # admissibility rubric the extraction cascade applies
-get(
-    kind="skill", id="precis-draft-help"
-)  # draft chunk model, the edit door the rewrite uses
-get(kind="skill", id="precis-citation-help")  # the inline [pc<id>] cite, write side
-```
+- [[precis-taproot-help]] — what a hub is; citing [fi<id>]
+- [[precis-taproot-mint-help]] — admissibility rubric the extraction cascade applies
+- [[precis-draft-help]] — draft chunk model, the edit door the rewrite uses
+- [[precis-citation-help]] — the inline [pc<id>] cite, write side

@@ -9,6 +9,8 @@ answers:
   - how do I attach a memory to the paper section it came from?
   - how do I distil an expensive research-cache answer into a durable memory?
 applies-to: get/search (kind='memory'), put (kind='memory')
+tags: [drafting, addressing, workflow]
+kinds: [memory]
 status: active
 ---
 
@@ -295,17 +297,11 @@ See `precis-tags` for the full axis vocabulary and per-kind matrix.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-tags")  # open-tag axes, bare flags
-get(kind="skill", id="precis-relations")  # rel= vocabulary
-get(kind="skill", id="precis-link-help")  # link verb mechanics
-get(
-    kind="skill", id="precis-cache"
-)  # perplexity-research/perplexity-reasoning/web TTLs
-get(kind="skill", id="precis-search-help")  # hybrid search mechanics
-get(kind="skill", id="precis-put-help")  # put-verb arg shapes
-get(
-    kind="skill", id="precis-argument-help"
-)  # kind:lemma/kind:inference workflow, view='argument'
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-tags]] — open-tag axes, bare flags
+- [[precis-relations]] — rel= vocabulary
+- [[precis-link-help]] — link verb mechanics
+- [[precis-cache]] — perplexity-research/perplexity-reasoning/web TTLs
+- [[precis-search-help]] — hybrid search mechanics
+- [[precis-put-help]] — put-verb arg shapes
+- [[precis-argument-help]] — kind:lemma/kind:inference workflow, view='argument'

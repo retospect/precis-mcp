@@ -11,6 +11,8 @@ flavor: persona
 status: active
 applies-to: claim-hub adjudication (kind='finding', tags=['TAPROOT:claim']); Phase 4 of docs/backlog/nanopub-corpus-remediation.md
 last-updated: 2026-08-19
+tags: [workflow]
+kinds: [finding]
 ---
 
 # precis-claim-adversary — hunt disagreement the extraction passes never file

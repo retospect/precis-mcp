@@ -8,6 +8,8 @@ answers:
   - how do I verify a DOI's metadata actually matches the paper I think I'm citing?
   - how do I check whether my own sources cite retracted work?
 applies-to: get (kind='provenance'), jobs check-provenance
+kinds: [provenance]
+tags: troubleshooting, external-sources
 status: active
 ---
 
@@ -145,9 +147,7 @@ paragraph) and decide.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-provenance-help")  # full provenance kind docs
-get(kind="skill", id="precis-paper-help")  # ingest notice DOIs as papers
-get(kind="skill", id="precis-doi-resolution")  # DOI canonicalisation rules
-get(kind="skill", id="precis-citation-help")  # verifier workflow for writing
-```
+- [[precis-provenance-help]] — full provenance kind docs
+- [[precis-paper-help]] — ingest notice DOIs as papers
+- [[precis-doi-resolution]] — DOI canonicalisation rules
+- [[precis-citation-help]] — verifier workflow for writing

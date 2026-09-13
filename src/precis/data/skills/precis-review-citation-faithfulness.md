@@ -7,6 +7,8 @@ answers:
   - what counts as 'support' for a citation faithfulness check?
   - how do I file a finding for each faithfulness problem I find?
 applies-to: get (kind='draft'|'paper'), put (kind='finding'|'todo')
+tags: troubleshooting, workflow
+kinds: draft, paper, finding, todo
 status: active
 ---
 
@@ -163,12 +165,8 @@ unsupported citation that survives review is expensive.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-draft-help")  # write side: inline [pc<id>] citations
-get(kind="skill", id="precis-bibliography-help")  # read side: who cites a paper
-get(
-    kind="skill", id="precis-review-paper-help"
-)  # full adversarial review including claim-support
-get(kind="skill", id="precis-common-reviewer")  # shared reviewer discipline
-get(kind="skill", id="precis-finding-help")  # how to write a finding
-```
+- [[precis-draft-help]] — write side: inline [pc<id>] citations
+- [[precis-bibliography-help]] — read side: who cites a paper
+- [[precis-review-paper-help]] — full adversarial review including claim-support
+- [[precis-common-reviewer]] — shared reviewer discipline
+- [[precis-finding-help]] — how to write a finding

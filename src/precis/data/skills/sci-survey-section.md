@@ -6,6 +6,8 @@ answers:
   - how do I write a thematic synthesis section for a review paper?
   - how do I surface consensus vs open contention across sources?
 status: active
+tags: [drafting]
+kinds: [draft]
 style: sci-survey-section
 role: section
 archetype: prose

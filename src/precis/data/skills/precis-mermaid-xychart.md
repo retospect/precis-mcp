@@ -5,6 +5,8 @@ summary: a mermaid xychart — a bar and/or line chart over an x-axis
 answers:
   - how do I draw a bar or line chart of values over an x-axis?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 An **xy chart** is a bar and/or line chart over an x-axis — a quantitative

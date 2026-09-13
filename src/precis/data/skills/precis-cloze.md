@@ -9,6 +9,8 @@ answers:
   - how do I make cloze cards for language characters or math notation?
 applies-to: put/search (kind='anki')
 status: active
+tags: [drafting]
+kinds: [anki]
 ---
 
 # precis-cloze — how to write cloze cards that actually stick
@@ -83,6 +85,8 @@ If the same answer text appears more than once in the sentence, cloze
 answer (same failure as rule 5) — it isn't extra practice, it's required:
 `{{c1::heart}} pumps blood through the arteries, capillaries, and veins back
 to the {{c1::heart}}.`
+
+## How do I write good anki cards? — rules 3+
 
 ### 3. Order cN by difficulty — easiest first, hardest last
 
@@ -229,7 +233,5 @@ the **raw LaTeX** (what you'd type) at the highest index, hinted `::latex`.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-anki-help")  # verbs, sync, precis-fix, /leeches
-get(kind="skill", id="precis-tags")  # tag conventions (incl. deck-<topic>)
-```
+- [[precis-anki-help]] — verbs, sync, precis-fix, /leeches.
+- [[precis-tags]] — tag conventions (incl. `deck-<topic>`).

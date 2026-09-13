@@ -15,6 +15,7 @@ import re
 
 import pytest
 
+from precis.runtime import PrecisRuntime
 from precis.utils import handle_registry as hr
 
 # Mirror of the addressable persistent-ref kinds registered in
@@ -352,6 +353,55 @@ def test_protein_handle_code_registers_formats_and_parses(
     # unaffected by registering it.
     assert "protein" not in hr.KIND_CODES
     assert set(hr.KIND_CODES) == EXPECTED_PERSISTENT_KINDS
+
+
+# --- codeless kinds (docs/backlog/skill-graph.md gripe 338099) -----------
+# Provider/stateless/live-adapter kinds have no handle code (no row, so
+# nothing to encode) but still need ``is_known_kind`` to accept them, so a
+# skill can declare ``kinds: [web]``. ``CODELESS_KINDS`` is curated, not
+# derived — this test is the totality guard in the OTHER direction from
+# ``test_every_persistent_kind_has_a_record_code``: every kind the live hub
+# actually registers must be either handle-coded or in ``CODELESS_KINDS``,
+# so a newly-added codeless kind can't silently rot the ``kinds:`` gate.
+
+
+def test_codeless_kinds_are_recognised() -> None:
+    for kind in hr.CODELESS_KINDS:
+        assert hr.is_known_kind(kind), kind
+        with pytest.raises(KeyError):
+            hr.code_for_kind(kind)  # still genuinely codeless
+
+
+#: Plugin packages (``dispatch._load_plugins``, ``precis.handlers`` entry
+#: point group) contribute their own kind + handle code together and are
+#: covered by their own dedicated tests above (against a *fake* entry-point
+#: module, so they're immune to the installed dist-info lagging a freshly
+#: added ``pyproject.toml`` entry in a not-yet-rebuilt dev image — see
+#: "new core dep: image + UV_WITH" in project memory). Excluded here so
+#: this totality guard checks precis-mcp's own core registrations, not
+#: plugin-install freshness.
+_PLUGIN_MODULE_PREFIXES = (
+    "precis_bio.",
+    "precis_chem.",
+    "precis_nm.",
+    "precis_se.",
+    "precis_pathway.",
+    "precis_estimate.",
+)
+
+
+def test_every_registered_kind_is_coded_or_codeless(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    hub = runtime_with_store.hub
+    for kind, handler in hub.handlers.items():
+        if type(handler).__module__.startswith(_PLUGIN_MODULE_PREFIXES):
+            continue
+        assert hr.is_known_kind(kind), (
+            f"kind {kind!r} is registered but has no handle code and is "
+            "not in CODELESS_KINDS — add a record code, or add it to "
+            "CODELESS_KINDS if it's a provider/stateless/live-adapter kind"
+        )
 
 
 def test_all_four_plugin_codes_plus_new_kinds_are_pairwise_distinct() -> None:

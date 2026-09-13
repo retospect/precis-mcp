@@ -8,6 +8,8 @@ answers:
   - how do I move a plan node, or mark it open/wip/done?
   - how is a plan different from a draft or a todo?
 applies-to: put / get / edit / delete / link (kind='plan')
+tags: verbs, workflow
+kinds: plan
 status: active
 ---
 

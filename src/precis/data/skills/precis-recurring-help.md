@@ -8,6 +8,8 @@ answers:
   - what's the Watches umbrella and how do I see what's watched?
   - what are the anti-patterns to avoid with recurring todos?
 applies-to: put (kind='todo' with meta.schedule [+ meta.deliver]); precis worker --only schedule
+tags: workflow
+kinds: todo
 status: active
 ---
 
@@ -205,10 +207,10 @@ backfills); the default rotation includes it alongside `auto_check`.
   sources. If you really want minute-by-minute cadence, run it
   inline; the queue isn't built for it.
 
-## Related skills
+## See also
 
-* `precis-todo-tree-help` — the tree shape, level gradient, doable rules
-* `precis-auto-todo-help` — `meta.auto_check` leaves (the other
+- [[precis-todo-tree-help]] — the tree shape, level gradient, doable rules
+- [[precis-auto-todo-help]] — `meta.auto_check` leaves (the other
   worker-driven leaf pattern; orthogonal to `meta.schedule`)
-* `precis-automations` — the standing-automation convention
+- [[precis-automations]] — the standing-automation convention
   (`automation` tag) for a push- or job-driven recurring

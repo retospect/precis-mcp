@@ -7,6 +7,8 @@ answers:
   - what does the planner do automatically on each proposal tick?
   - why is a cfp its own kind instead of just a paper?
 applies-to: kind='cfp' (get/search), kind='draft' (put/edit get view='wordcount'), kind='todo' (meta.llm_tier project), link rel='has-requirement'
+tags: workflow, drafting
+kinds: cfp, draft, todo
 status: active
 ---
 

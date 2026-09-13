@@ -9,6 +9,8 @@ answers:
   - how do I probe a design — find a point, section, or volume?
 applies-to: get/search/put/delete (kind='cad')
 status: active
+tags: [design]
+kinds: [cad]
 ---
 
 # precis-cad-help — design solids the LLM can *read*
@@ -115,6 +117,8 @@ it is, and the exports carry it as a named body like any other component.
 - Edit the sub-design and every assembly using it picks the change up on
   its next read; there is no stale copy to re-sync.
 
+## Author a design — assembly and payloads
+
 ### Assemble by interface — `port` and `mate`
 
 Typing world coordinates for every sub-assembly is where designs (and
@@ -196,6 +200,8 @@ the host (a recess doesn't swing with the hinge). An instanced module
 whose payload port is never mated is flagged at `put`
 (`⚠ payload port(s) never mated`) — the geometry would exist in no host.
 
+## Author a design — joints and print-in-place
+
 ### Articulate — `joint`, `state`, and `view='sweep'`
 
 A **mate is a `fixed` joint**. The articulated kinds insert one degree of
@@ -265,6 +271,8 @@ whose two hosts are `made-by` **different print steps** is flagged on
 the design's `view='links'` — a captive joint needs both sides in the
 same print.
 
+## Author a design — analysis and catalog parts
+
 ### Attach analysis results — `link` `rel='analyzed-by'`
 
 An analysis number (FEA stress, a multiphysics result — stored as a
@@ -327,6 +335,8 @@ not BOM lines. **`se` designs emit the same edge** from their
 `set_binding` bindings, so asking a component what calls for it
 (`rel='realizes'`) reaches both tracks in one query; each sync prunes
 only its own managed rows.
+
+## Author a design — build planning, dimensions, mass
 
 ### Plan how it's built — `kind='make'` + `rel='made-by'`
 
@@ -401,6 +411,8 @@ CoM. Components without a material are listed as excluded, loudly —
 never silently zeroed. Sub-designs bring their own assignments in
 (namespaced), and `state=` poses the design first, so CoM at a joint
 state is one call.
+
+## Author a design — description and the config DSL
 
 ### Describe what it's *for* — `desc:` / `use:`
 

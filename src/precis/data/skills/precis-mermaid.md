@@ -7,6 +7,8 @@ answers:
   - how do I name nodes so they're addressable?
   - what should I never author directly in mermaid source?
 applies-to: kind='mermaid' (the source you author via put/edit or the web turn loop)
+tags: [drafting, design]
+kinds: [mermaid]
 status: active
 ---
 

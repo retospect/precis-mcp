@@ -8,6 +8,8 @@ answers:
   - how do I search across pages I've already fetched?
   - how do I bookmark a fetched page with tags?
 applies-to: get/search/tag/link (kind='web')
+tags: [external-sources]
+kinds: [web]
 status: active
 ---
 
@@ -151,10 +153,8 @@ link(kind="web", id="https://example.com/article", target="memory:42", mode="rem
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-tags")  # axis vocabulary
-get(kind="skill", id="precis-relations")  # link relation slugs
-get(kind="skill", id="precis-memory-help")  # capturing why you kept a page
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-search-help]] — search mechanics
+- [[precis-tags]] — axis vocabulary
+- [[precis-relations]] — link relation slugs
+- [[precis-memory-help]] — capturing why you kept a page

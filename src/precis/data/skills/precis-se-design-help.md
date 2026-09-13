@@ -9,6 +9,8 @@ answers:
   - how do I express and resolve tradeoffs in a design?
 applies-to: get/edit/put (kind='se'); read precis-se-help first for the op grammar
 status: active
+tags: workflow, design
+kinds: se
 ---
 
 # precis-se-design-help — how to walk the ladder

@@ -9,6 +9,8 @@ answers:
   - how do I browse recent conversation transcripts?
 applies-to: get/search/put/tag/link (kind='conv')
 status: active
+tags: [addressing]
+kinds: [conv]
 ---
 
 # precis-conv-help — find, read, tag past conversations
@@ -122,10 +124,8 @@ capturing the same turn).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-memory-help")  # annotate a conversation
-get(kind="skill", id="precis-relations")  # derived-from, supports, cites
-get(kind="skill", id="precis-tags")  # tag vocabulary
-```
+- [[precis-overview]] — verbs and kinds.
+- [[precis-search-help]] — search mechanics.
+- [[precis-memory-help]] — annotate a conversation.
+- [[precis-relations]] — derived-from, supports, cites.
+- [[precis-tags]] — tag vocabulary.

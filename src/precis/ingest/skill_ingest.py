@@ -22,17 +22,20 @@ Static gates of ``docs/backlog/docs-and-skills-redesign.md``):
 Graph gates (docs/backlog/skill-graph.md slice 1) join the list above:
 
 - Every ``[[slug]]`` wikilink resolves to a real slug in the same scan
-  (no dangling link).
+  or a synthesised meta-skill (:data:`~precis.handlers._skill_common.
+  SYNTH_SKILL_SLUGS` — ``precis-help``/``precis-status``/``precis-toc``/
+  ``toc``, not files) (no dangling link).
 - Every ``tags:`` entry is a known tag (:data:`VALID_TAGS`) and not a
   registered kind name.
 - ``kinds:`` is not present-but-empty (``kinds:`` with zero items).
 
-These three ship in **WARN mode** — see :data:`GRAPH_GATES_HARD_FAIL` —
-logged and reported via :attr:`ScanResult.warnings` without failing the
-scan, since the existing 160 skill files predate the ``tags:``/``kinds:``
-axes (slice 2 sweeps them; slice 2's last step flips this to hard-fail).
-A singleton tag (used by exactly one skill corpus-wide) is a lint, not a
-gate — always a warning, never flipped to hard-fail.
+These three are **hard-fail** — see :data:`GRAPH_GATES_HARD_FAIL` — as of
+slice 2's last step, once the 160-file sweep populated ``tags:``/
+``kinds:`` everywhere; a finding moves the plan into
+:attr:`ScanResult.failures` instead of shipping it. (Slice 1 shipped
+these in WARN mode while the sweep was in flight.) A singleton tag (used
+by exactly one skill corpus-wide) is a lint, not a gate — always a
+warning, never flipped to hard-fail.
 
 A file failing any gate goes into :class:`IngestFailure`; the scan
 continues so one bad skill doesn't block the rest.
@@ -47,6 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from precis.handlers._skill_common import (
+    SYNTH_SKILL_SLUGS,
     FrontmatterError,
     SkillFrontmatter,
     extract_wikilinks,
@@ -62,10 +66,12 @@ log = logging.getLogger(__name__)
 
 #: Whether the three graph gates below are hard-fail (move the plan to
 #: ``ScanResult.failures``) or WARN-mode (log + report via
-#: ``ScanResult.warnings``, plan still ships). Slice 1 ships WARN
-#: (docs/backlog/skill-graph.md); slice 2's last step flips this once
-#: the 160-file sweep has populated ``tags:``/``kinds:`` everywhere.
-GRAPH_GATES_HARD_FAIL = False
+#: ``ScanResult.warnings``, plan still ships). Slice 1 shipped WARN
+#: (docs/backlog/skill-graph.md); slice 2's last step flips this now that
+#: the 160-file sweep has populated ``tags:``/``kinds:`` everywhere —
+#: ``tests/test_skill_ingest.py`` pins the real shipped corpus at zero
+#: findings.
+GRAPH_GATES_HARD_FAIL = True
 
 
 #: Default chunk-body size budget in characters. bge-m3 handles up
@@ -165,7 +171,13 @@ def scan_skill_dir(
         plans.append(plan)
 
     plans, failures = _validate_cross_references(plans, failures)
-    plans, failures, graph_warnings = _validate_graph_gates(plans, failures)
+    # Wikilinks resolve against every *scanned* slug, including ones a
+    # prior gate failed: a broken file still exists as a link target, and
+    # one bad file must not cascade an unrelated [[link]] into "dangling".
+    corpus_slugs = {p.slug for p in plans} | {f.slug for f in failures}
+    plans, failures, graph_warnings = _validate_graph_gates(
+        plans, failures, corpus_slugs
+    )
     warnings = graph_warnings + _singleton_tag_warnings(plans)
     for w in warnings:
         log.warning("skill graph gate: %s", w)
@@ -303,17 +315,26 @@ def _validate_cross_references(
 def _validate_graph_gates(
     plans: list[IngestPlan],
     failures: list[IngestFailure],
+    corpus_slugs: set[str],
 ) -> tuple[list[IngestPlan], list[IngestFailure], list[str]]:
     """Graph gates (docs/backlog/skill-graph.md slice 1): dangling
     ``[[slug]]`` links, unknown/kind-named tags, invalid ``kinds:``.
 
-    WARN mode (:data:`GRAPH_GATES_HARD_FAIL` is ``False``, slice 1):
-    every finding becomes a warning string; the plan still ships.
-    Hard-fail mode (flipped at the end of slice 2): a finding moves the
-    plan into ``failures``, same shape as
-    :func:`_validate_cross_references`.
+    Hard-fail mode (:data:`GRAPH_GATES_HARD_FAIL` is ``True``, flipped at
+    the end of slice 2): a finding moves the plan into ``failures``, same
+    shape as :func:`_validate_cross_references`. WARN mode (slice 1,
+    while the 160-file sweep was in flight): every finding becomes a
+    warning string instead and the plan still ships — a caller can still
+    exercise this path via ``monkeypatch.setattr(..., "GRAPH_GATES_HARD_FAIL",
+    False)``, see ``tests/test_skill_ingest.py``.
     """
-    slugs = {p.slug for p in plans}
+    # A wikilink resolves against every scanned corpus slug (passed in by
+    # the caller so a plan a *prior* gate failed still counts — one bad
+    # file must not cascade an unrelated ``[[link]]`` into "dangling")
+    # *or* a synthesised meta-skill (``precis-help``/``precis-status``/
+    # ``precis-toc``/``toc`` — not files, so never in ``plans``, but
+    # legitimate `get(kind='skill', id=...)` targets all the same).
+    slugs = corpus_slugs | SYNTH_SKILL_SLUGS
     good: list[IngestPlan] = []
     warnings: list[str] = []
     for plan in plans:

@@ -7,6 +7,8 @@ answers:
   - how do I bind a figure element to the chunk it depicts?
   - what SVG features get stripped by the sanitizer?
 applies-to: get/put/edit/delete/link (kind='figure')
+tags: orientation, drafting, design
+kinds: figure
 status: active
 ---
 

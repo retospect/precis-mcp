@@ -9,6 +9,8 @@ answers:
   - how do I comment on or correct a gripe thread?
   - how do I mark a gripe ready for someone to fix?
 applies-to: get/search/put/delete/tag/link (kind='gripe')
+tags: workflow, troubleshooting
+kinds: gripe
 status: active
 ---
 
@@ -363,9 +365,7 @@ citation audit emits findings and todos, not gripes.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-fix-gripe-help")  # the agent-fix recipe
-get(kind="skill", id="precis-job-help")  # monitor/cancel fix attempts
-get(kind="skill", id="precis-search-help")  # search across kinds
-get(kind="skill", id="precis-todo-help")  # promote a gripe to a todo
-```
+- [[precis-fix-gripe-help]] — the agent-fix recipe
+- [[precis-job-help]] — monitor/cancel fix attempts
+- [[precis-search-help]] — search across kinds
+- [[precis-todo-help]] — promote a gripe to a todo

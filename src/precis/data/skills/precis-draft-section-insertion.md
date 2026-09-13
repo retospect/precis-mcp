@@ -7,6 +7,8 @@ answers:
   - what should I check before inserting a new section into a draft?
 applies-to: put/edit (kind='draft')
 status: active
+tags: [drafting, workflow]
+kinds: [draft, quest]
 ---
 A protocol, not a ban — new sections are allowed, but earn their place.
 

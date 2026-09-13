@@ -5,6 +5,8 @@ summary: a mermaid flowchart — boxes and arrows for a process, decision tree, 
 answers:
   - how do I draw a process diagram, decision tree, or org chart?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **flowchart** models a process, decision tree, org chart, or workflow as

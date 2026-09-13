@@ -7,6 +7,8 @@ answers:
   - how do I fold and inspect a protein target?
   - how do I chain route/protein/structure/literature into one research design loop?
 applies-to: put/get/search (kind='route'|'protein'|'structure'|'paper')
+tags: workflow, design
+kinds: route, protein, structure, paper
 status: active
 ---
 

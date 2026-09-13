@@ -6,6 +6,8 @@ answers:
   - how do I animate an element in a figure canvas?
   - what keeps a figure animation measurable and in-bounds?
 applies-to: kind='figure' (author motion into the SVG source you edit via put/edit or the web turn loop)
+tags: drafting, design
+kinds: figure
 status: active
 ---
 

@@ -9,6 +9,8 @@ answers:
   - what are common gotchas with OPS CQL queries?
 applies-to: search (kind='patent', q=<CQL>)
 status: active
+tags: [external-sources, workflow]
+kinds: [patent]
 ---
 
 # precis-patent-power — raw CQL for `kind='patent'`
@@ -174,9 +176,7 @@ precis jobs watch-patents --name limerick-cat --delete
 
 ## See also
 
-```python
-get(kind="skill", id="precis-patent-search-help")  # friendly q= form, reach= matrix
-get(kind="skill", id="precis-patent-help")  # read patents (get, views, slugs)
-get(kind="skill", id="precis-search-help")  # cross-kind search mechanics
-get(kind="skill", id="precis-tags")  # tag axes that lift to CQL
-```
+- [[precis-patent-search-help]] — friendly q= form, reach= matrix
+- [[precis-patent-help]] — read patents (get, views, slugs)
+- [[precis-search-help]] — cross-kind search mechanics
+- [[precis-tags]] — tag axes that lift to CQL

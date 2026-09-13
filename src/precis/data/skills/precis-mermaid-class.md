@@ -6,6 +6,8 @@ answers:
   - how do I draw a UML class diagram or object model?
   - how do I show inheritance between classes in mermaid?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **class diagram** is UML: classes with fields and methods, and the

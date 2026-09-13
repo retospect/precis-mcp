@@ -9,6 +9,7 @@ answers:
 flavor: reference
 status: active
 applies-to: every reviewer persona under src/precis/data/skills/personas/
+tags: [workflow]
 ---
 
 # precis-common-reviewer — shared conventions for reviewer personas

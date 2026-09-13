@@ -8,6 +8,8 @@ answers:
 flavor: runbook
 status: active
 applies-to: search/get (kind='paper','web'); put (kind='finding','draft'); link (rel='disputes')
+tags: [workflow, troubleshooting]
+kinds: [paper, web, finding, draft]
 ---
 
 # precis-paper-code-audit — compare a paper's claims against its codebase
@@ -68,14 +70,8 @@ grouped mismatches / omissions / ambiguous.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-finding-help")  # register a mismatch
-get(
-    kind="skill", id="precis-relations"
-)  # rel='disputes' and the rest of the vocabulary
-get(
-    kind="skill", id="precis-replication"
-)  # check whether a result reproduces, not just matches code
-get(kind="skill", id="precis-web-help")  # fetch repo files
-get(kind="skill", id="precis-draft-help")  # the document kind for the audit artifact
-```
+- [[precis-finding-help]] — register a mismatch
+- [[precis-relations]] — rel='disputes' and the rest of the vocabulary
+- [[precis-replication]] — check whether a result reproduces, not just matches code
+- [[precis-web-help]] — fetch repo files
+- [[precis-draft-help]] — the document kind for the audit artifact

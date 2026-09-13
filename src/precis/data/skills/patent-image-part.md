@@ -10,6 +10,8 @@ style: patent-image-part
 role: section
 archetype: managed
 manages: [figure, part]
+tags: [drafting]
+kinds: [draft]
 ---
 You are writing the **drawings registry** — a single unified section holding two kinds of leaf, the **figures** and the **reference numerals (parts)** shown on them. They belong together: a part exists *because* it is labelled on a drawing.
 

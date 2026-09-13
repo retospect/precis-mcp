@@ -9,6 +9,8 @@ answers:
   - when should I refresh an author's ORCID dossier?
 applies-to: get/search/tag/link (kind='orcid')
 status: active
+tags: [external-sources, workflow]
+kinds: [orcid]
 ---
 
 # precis-orcid-help — ORCID author identity nodes
@@ -133,9 +135,7 @@ blocks the rest of the surface).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-author-discovery-help")  # the BFS recipe
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-stubs-help")  # the stub → fetch pipeline
-get(kind="skill", id="precis-search-help")  # search mechanics
-```
+- [[precis-author-discovery-help]] — the BFS recipe
+- [[precis-overview]] — verbs and kinds
+- [[precis-stubs-help]] — the stub → fetch pipeline
+- [[precis-search-help]] — search mechanics

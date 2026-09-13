@@ -139,10 +139,12 @@ fan-out's per-hit `kind` tag might warrant an example.
 
 ### 8. Decorative front-matter
 
-The loader (`handlers/skill.py:_parse_frontmatter`) reads exactly
-four fields: `id`, `title`, `applies-to`, `status`. Plus the
-upcoming `flavor`, `invokes_personas`, `available-when` once the
-redesign lands.
+The loader (`handlers/_skill_common.py:parse_frontmatter`) reads a
+fixed field set — `id`, `title`, `applies-to`, `status`, `summary`,
+`answers`, `flavor`, `invokes-personas`, `available-when`, `tags`,
+`kinds` — see [Cross-reference and classification
+axes](#cross-reference-and-classification-axes-tags-kinds-wikilink)
+below for the last two.
 
 Drop these — nothing reads them:
 
@@ -258,6 +260,8 @@ to the LLM than highlighting fidelity.
 id: precis-<kind>-help
 title: precis — <short imperative summary>
 applies-to: <verb>(kind='<kind>', …)
+kinds: [<kind>]
+tags: [<topic-bucket>]
 status: active
 ---
 
@@ -280,16 +284,13 @@ status: active
 
 ## See also
 
-```python
-get(kind="skill", id="precis-<sibling>")  # <why you'd hop there>
-```
+- [[precis-<sibling>]] — <why you'd hop there>
 ```
 
-The See also block is a code block of `get(kind='skill', ...)` calls
-with inline `# comment` hints — not a bullet list. The LLM gets the
-slug, the fetch syntax, and the reason in one move; copy-paste lands
-the call. A bullet list of bare slugs forces the LLM to construct the
-fetch call from address-scheme memory, which is one extra step.
+The See also list is `[[slug]]` wikilink bullets (docs/backlog/
+skill-graph.md) — a dangling target reddens the ingest gate, so every
+entry must resolve to a real file stem or a synthesised meta-skill
+(`precis-help`/`precis-status`/`precis-toc`/`toc`).
 
 ### No "Not yet" / negative-laundry sections
 
@@ -404,6 +405,36 @@ body overruns the embedder's chunk budget, ingest hard-fails — split
 into multiple H2s. Cut prose before splitting; usually the prose
 needed cutting anyway.
 
+## Cross-reference and classification axes (tags:, kinds:, [[wikilink]])
+
+Three frontmatter/body axes, all gated at ingest (hard-fail —
+docs/backlog/skill-graph.md slice 2):
+
+- **`tags:`** — lateral topic bucket(s), checked against `VALID_TAGS`
+  in `handlers/_skill_common.py` (the vocabulary; don't invent a new
+  value without adding it there first). A tag equal to a registered
+  kind name is rejected — that's `kinds:`'s job.
+  ```yaml
+  tags: [workflow, troubleshooting]
+  ```
+- **`kinds:`** — the kind(s) this skill's recipes operate on,
+  validated against the kind registry (`utils/handle_registry.py`);
+  drives availability gating (hidden when none of a skill's kinds are
+  wired). Omit the key entirely for a kind-agnostic skill (e.g.
+  `precis-overview`) — never `kinds: []` (present-but-empty is itself
+  a gate finding).
+  ```yaml
+  kinds: [paper, web]
+  ```
+- **`[[slug]]`** — a lateral cross-reference in the body (the `## See
+  also` list above, or inline). Resolves against every file stem in
+  the corpus plus the synthesised meta-skills; a dangling target is a
+  hard gate failure, so don't invent a slug you haven't confirmed
+  exists.
+  ```markdown
+  [[precis-search-help]] — search mechanics
+  ```
+
 ## Tone notes
 
 - No "by design," "that's by design," "explicit by design."
@@ -426,5 +457,5 @@ different *because of this sentence*?" If no, cut it.
 
 - [`docs-and-skills-redesign.md`](../backlog/docs-and-skills-redesign.md) —
   ingest, chunking, alias groups, `FLAVOR:` tags, static gates.
-- `src/precis/handlers/skill.py:_parse_frontmatter` — the only
+- `src/precis/handlers/_skill_common.py:parse_frontmatter` — the only
   authoritative list of front-matter fields the loader honors.

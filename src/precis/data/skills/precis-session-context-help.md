@@ -9,6 +9,7 @@ answers:
   - what does the workspace tag mean on a file?
 applies-to: env (PRECIS_STARTUP_SKILLS, PRECIS_KINDS_DISABLED, PRECIS_DEFAULT_TAGS)
 status: active
+tags: orientation, troubleshooting
 ---
 
 # precis-session-context-help — what the operator has set for this session
@@ -116,10 +117,8 @@ Read the cold-start banner. It carries:
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-startup-skills-help")  # PRECIS_STARTUP_SKILLS detail
-get(kind="skill", id="precis-kinds-disabled-help")  # PRECIS_KINDS_DISABLED detail
-get(kind="skill", id="precis-tags")  # tag axis matrix, closed prefixes
-get(kind="skill", id="precis-files-help")  # PRECIS_ROOT and file-rooted kinds
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-startup-skills-help]] — PRECIS_STARTUP_SKILLS detail
+- [[precis-kinds-disabled-help]] — PRECIS_KINDS_DISABLED detail
+- [[precis-tags]] — tag axis matrix, closed prefixes
+- [[precis-files-help]] — PRECIS_ROOT and file-rooted kinds

@@ -7,6 +7,8 @@ answers:
   - how do I scope a search to just one folder's subtree?
   - what's the reserved 'parent' relation for placing something into a folder?
 applies-to: kind='folder'; link(rel='parent') on draft/structure/cad/todo; search(folder=...)
+tags: workflow, verbs
+kinds: folder, draft, structure, cad, todo
 status: active
 ---
 
@@ -95,5 +97,10 @@ only. If a folder wants a third level, it probably wants to be a
 project (a strategic todo with `meta.workspace`). No auto-foldering
 pass exists on purpose; placement is an authored act.
 
-Cross-refs: `precis-todo-tree-help` (projects), `precis-structure-help`,
-`precis-cad-help`, `precis-draft-help`, `precis-search-help`.
+## See also
+
+- [[precis-todo-tree-help]] — projects (a strategic todo with `meta.workspace`)
+- [[precis-structure-help]]
+- [[precis-cad-help]]
+- [[precis-draft-help]]
+- [[precis-search-help]] — `folder=` scope on cross-kind search

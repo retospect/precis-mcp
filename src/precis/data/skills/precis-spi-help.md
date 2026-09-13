@@ -7,6 +7,8 @@ answers:
   - how do I check that an SPI bus is wired correctly?
 applies-to: put (kind='pcb'); pattern playbook
 status: active
+tags: design, workflow
+kinds: pcb
 ---
 
 # precis-spi-help — the four-wire bus

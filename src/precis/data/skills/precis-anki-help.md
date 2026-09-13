@@ -11,6 +11,8 @@ answers:
 applies-to: get/search/put/delete/tag/link (kind='anki')
 status: active
 supersedes: precis-flashcard-help (flashcard kind retired 2026-07)
+tags: [drafting, workflow]
+kinds: [anki]
 ---
 
 # precis-anki-help — Anki cloze cards
@@ -182,10 +184,8 @@ the next sync — own-guid lookups only, so your hand-made cards are unreachable
 
 ## See also
 
-```python
-get(kind="skill", id="precis-cloze")  # HOW to write good cards (the craft)
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-memory-help")  # prose notes that aren't recall targets
-get(kind="skill", id="precis-tags")  # tag axis conventions
-get(kind="skill", id="precis-relations")  # link relations (derived-from, …)
-```
+- [[precis-cloze]] — HOW to write good cards (the craft)
+- [[precis-overview]] — verbs and kinds
+- [[precis-memory-help]] — prose notes that aren't recall targets
+- [[precis-tags]] — tag axis conventions
+- [[precis-relations]] — link relations (derived-from, …)

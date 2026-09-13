@@ -1,0 +1,9 @@
+## batch-ae flags
+
+- `precis-nursery-help.md` — ## Related skills — drift — section is titled "Related skills", not "## See also" (bullet list, plain `` `precis-x-help` `` names, no wikilinks) — same pattern as the graph's target section but named differently, so slice-1's `[[slug]]` extraction/gate won't touch it; leave for a future pass to either rename the heading or fold it into a genuine `## See also`.
+- `precis-ml-recipe.md` — ## Rank and write the brief — pin — the `put(kind='draft', ...)` table-chunk recipe (header/rows shape + `at={'last': True}`) is a good round-trip candidate for slice 3.
+- `precis-nm-help.md` — ## Generate — parametric block factories — pin — the `cnt`/`fullerene`/`cone`/`cyclodextrin` generator ops are deterministic (no LLM) and worth a slice-3 round-trip pin (chirality validation, port minting, bind-on-generate).
+- `precis-nanopub-help.md` — ## Hypothesis — the artifact type an agent can originate — pin — the `put(kind='finding', hypothesis=True, ...)` worked example (>=2 sources, llm_models required) is high-traffic and gate-sensitive; good slice-3 candidate against the dev DB.
+- `precis-pcb-route-help.md` — ## The rip-up loop — pin — `op='rip'` → `op='pin_side'` → `op='route'` is the canonical failure-recovery sequence; worth pinning once slice 3 opens (dev DB only, per the write-path rule).
+- `precis-pathway-help.md` — ## Frame a run without spending compute — pin — the `mode='preview'` YAML config (note the `substrate: "NO"` quoting gotcha called out in the doc itself) is a cheap, deterministic, no-compute round-trip candidate.
+- `precis-part-select-help.md` — ## Use it in a design — the auto-stamp — pin — the `part='C1525'` auto-stamp-onto-`pcb`-component example is a good cross-kind round-trip (part catalog → pcb component) for slice 3.

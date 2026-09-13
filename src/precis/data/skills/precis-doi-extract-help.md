@@ -8,6 +8,8 @@ answers:
   - when should I skip DOI extraction entirely?
 applies-to: planner step after perplexity-research / web search; put(kind='paper', identifier=/doi=/arxiv=/title=)
 status: active
+tags: [workflow]
+kinds: [paper]
 ---
 
 # precis-doi-extract-help — turn research output into paper stubs
@@ -116,10 +118,6 @@ collapse into the existing ref.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-paper-help")  # corpus read / search side
-get(kind="skill", id="precis-citation-help")  # using fetched papers as cite sources
-get(
-    kind="skill", id="precis-draft-help"
-)  # cite a paper inline by its [pc<id>] chunk handle
-```
+- [[precis-paper-help]] — corpus read / search side.
+- [[precis-citation-help]] — using fetched papers as cite sources.
+- [[precis-draft-help]] — cite a paper inline by its `[pc<id>]` chunk handle.

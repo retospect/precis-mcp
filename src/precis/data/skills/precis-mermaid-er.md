@@ -5,6 +5,8 @@ summary: a mermaid ER diagram — entities, attributes, and their relationships
 answers:
   - how do I draw a database schema / entity-relationship diagram?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 An **ER diagram** models entities and the relationships between them — the

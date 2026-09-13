@@ -7,6 +7,8 @@ answers:
   - which block kinds get skipped by the paragraph-flow check?
   - how do I file one finding per broken paragraph?
 applies-to: get (kind='tex'), put (kind='finding')
+tags: troubleshooting
+kinds: tex, finding
 status: active
 ---
 
@@ -129,9 +131,7 @@ Severity guide:
 
 ## See also
 
-```python
-get(kind="skill", id="precis-review-section-structure")  # section-level structure
-get(kind="skill", id="precis-tex-help")  # block grammar
-get(kind="skill", id="precis-common-reviewer")  # shared reviewer discipline
-get(kind="skill", id="precis-finding-help")  # finding shape
-```
+- [[precis-review-section-structure]] — section-level structure
+- [[precis-tex-help]] — block grammar
+- [[precis-common-reviewer]] — shared reviewer discipline
+- [[precis-finding-help]] — finding shape

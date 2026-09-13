@@ -9,6 +9,7 @@ answers:
   - how do I toggle a bare flag tag like pinned?
 applies-to: tag (every kind that supports it)
 status: active
+tags: verbs, workflow
 ---
 
 # precis-tag-help — add and remove tags on a ref
@@ -85,12 +86,8 @@ kinds, `SRC:`/`CACHE:` on provenance kinds). The matrix lives in
 
 ## See also
 
-```python
-get(kind="skill", id="precis-tags")  # axis vocabulary + per-kind matrix
-get(kind="skill", id="precis-paper-tag-axes")  # paper-specific axes
-get(kind="skill", id="precis-put-help")  # tags= at creation
-get(
-    kind="skill", id="precis-relations"
-)  # link verb (typed cross-refs, distinct from tags)
-get(kind="skill", id="precis-session-context-help")  # PRECIS_DEFAULT_TAGS hint surface
-```
+- [[precis-tags]] — axis vocabulary + per-kind matrix
+- [[precis-paper-tag-axes]] — paper-specific axes
+- [[precis-put-help]] — tags= at creation
+- [[precis-relations]] — link verb (typed cross-refs, distinct from tags)
+- [[precis-session-context-help]] — PRECIS_DEFAULT_TAGS hint surface

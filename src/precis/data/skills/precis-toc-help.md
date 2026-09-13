@@ -8,6 +8,8 @@ answers:
   - I picked a TOC row — how do I drill into it?
 applies-to: get(view='toc'), slug~N / slug~A..B / slug/toc
 status: active
+tags: addressing, verbs
+kinds: paper, skill
 ---
 
 # precis-toc-help — table of contents for any TOC-capable kind
@@ -82,9 +84,7 @@ retryable error. Full mechanics: `precis-toon`.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-paper-help")  # paper-specific TOC + drill-in
-get(kind="skill", id="precis-overview")  # address grammar (slug~N, /toc)
-get(kind="skill", id="precis-search-help")  # search returns pc<id> chunk handles
-get(kind="skill", id="precis-toon")  # the table wire format + more(cursor=...)
-```
+- [[precis-paper-help]] — paper-specific TOC + drill-in
+- [[precis-overview]] — address grammar (slug~N, /toc)
+- [[precis-search-help]] — search returns pc<id> chunk handles
+- [[precis-toon]] — the table wire format + more(cursor=...)

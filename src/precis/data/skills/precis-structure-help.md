@@ -13,6 +13,8 @@ answers:
   - how do I place an adsorbate on a real site (top/bridge/hollow) without guessing a z coordinate?
 applies-to: get/search/put/edit/delete (kind='structure')
 status: active
+tags: design, verbs
+kinds: structure
 ---
 
 # precis-structure-help — atoms the LLM can *read*
@@ -100,6 +102,8 @@ put(
   immediately. Re-`put`ting a slug **replaces** it (old atoms/bonds
   soft-retired, recoverable). Atom labels are minted in op order.
 
+## Author a design — the ops table
+
 ### The ops (also used by `edit`)
 
 | op | args | effect |
@@ -118,6 +122,10 @@ put(
 | `measure` | `kind`, `atoms:[…]`, `direction?`, `goal?`, `strength?`, `for?` | pin a measurement with an optional graded goal |
 | `unmark` | `name` | retire an eye by name |
 | `remove_measure` | `kind`, `atoms:[…]` | retire a measure |
+## Author a design — the ops table, continued
+
+| op | args | effect |
+|----|------|--------|
 | `ring` | `element`, `n:3-12`, `aromatic?`, `center?:[x,y,z]`, `normal?:[nx,ny,nz]`, `bond_length?` | mint a regular n-gon ring (Cartesian plane through `center` ⟂ `normal`); `aromatic:true` → order-1.5 aromatic bonds + `hybridization:sp2` on each atom, else order-1 pairwise bonds |
 | `attach` | `from`, `to`, `order?`, `distance?`, `direction?:[x,y,z]`, `from_direction?:[x,y,z]` | rigidly move the whole fragment containing `from` so it bonds to `to` (aligned to `to`'s open coordination direction); `from`/`to` already in the same fragment is rejected — use `add_bond` for a ring closure |
 | `import_fragment` | `design`, `offset?:[x,y,z]` | copy another design's atoms + declared bonds in as a positioned fragment (handler-level; response echoes the old→new label mapping so a follow-up `attach` can reference the new labels) |
@@ -401,6 +409,8 @@ get(
     kind="structure", id="pd111", view="runs"
 )  # the compute history: fidelity · converged · steps · energy · max_force
 ```
+
+## Relax — the GPU dispatch path
 
 ### Energy rungs run on the GPU node — no todo needed (ADR 0044)
 

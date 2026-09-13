@@ -7,6 +7,8 @@ answers:
   - how does a health-digest finding turn into an alert?
   - when does a health-digest result get pushed to me vs stay quiet?
 applies-to: precis worker --only health_digest; kind='alert' (alert-source:watchdog:*); kind='gripe' (origin:health-digest-router)
+tags: troubleshooting, workflow
+kinds: alert, gripe
 status: active
 ---
 
@@ -146,9 +148,9 @@ healthchecks.io-style. Covers the one failure mode nothing DB-mediated can:
 a total fleet/DB outage. Dark by default. See
 `docs/runbooks/dead-mans-switch.md` for setup.
 
-## Related skills
+## See also
 
-* `precis-nursery-help` — the `critical`, page-now sibling reviewer (also
+- [[precis-nursery-help]] — the `critical`, page-now sibling reviewer (also
   carries the `host-dark` detector, which `health_digest`'s own
   `hosts_alive` check mirrors as a non-paging digest line)
-* `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)
+- [[precis-alert-help]] — the `alert` kind (lifecycle, dedup, tab)

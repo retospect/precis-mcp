@@ -6,6 +6,8 @@ answers:
   - how do I organize a related-work section thematically instead of as a list?
   - how do I position my work against the gap in related work?
 status: active
+tags: [drafting]
+kinds: [draft]
 style: sci-related-work
 role: section
 archetype: prose

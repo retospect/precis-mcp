@@ -7,6 +7,8 @@ answers:
   - why doesn't my fetched Wikipedia article show up in cross-kind search by default?
   - how do I fetch a Wikipedia article in a language other than English?
 applies-to: get/search/tag/link (kind='wikipedia')
+tags: [external-sources]
+kinds: [wikipedia]
 status: active
 ---
 
@@ -134,9 +136,7 @@ fetch (text is CC BY-SA, a tertiary summary).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-web-help")  # arbitrary URL fetch (kind='web')
-get(kind="skill", id="precis-search-help")  # search mechanics, fencing
-get(kind="skill", id="precis-tags")  # axis vocabulary (ORIGIN, …)
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-web-help]] — arbitrary URL fetch (kind='web')
+- [[precis-search-help]] — search mechanics, fencing
+- [[precis-tags]] — axis vocabulary (ORIGIN, …)

@@ -7,6 +7,8 @@ answers:
   - how do I read back a completed fold?
   - how do I block a task on a fold finishing?
 applies-to: get/put/delete (kind='protein')
+tags: design
+kinds: protein
 status: active
 ---
 

@@ -11,6 +11,8 @@ style: components
 role: section
 archetype: managed
 manages: [term]
+tags: [drafting]
+kinds: [draft]
 ---
 You are writing the **components registry** (the bill of materials) of a system-description / manufacturing document. Each component is a **registry entry** — the same structured `term` leaf the glossary and the patent parts registry use (ADR 0052), just with a richer attribute bag.
 

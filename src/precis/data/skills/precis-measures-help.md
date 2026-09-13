@@ -7,6 +7,8 @@ answers:
   - how do I evaluate a design's current measures?
   - how do measures interact with placement?
 applies-to: put (kind='pcb') measures[]; get(view='measures')
+tags: [design]
+kinds: [pcb]
 status: active
 ---
 

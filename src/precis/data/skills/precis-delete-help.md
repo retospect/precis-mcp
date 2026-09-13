@@ -10,6 +10,7 @@ answers:
   - why can't I delete a paper or a cached tool answer?
 applies-to: delete (every kind that supports it)
 status: active
+tags: [verbs]
 ---
 
 # precis-delete-help — remove a ref or a selector region
@@ -121,10 +122,8 @@ file; recover from VCS or your editor's undo.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-edit-help")  # span-delete, find-replace, whole-file clear
-get(kind="skill", id="precis-files-help")  # selector grammar for file kinds
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-memory-help")  # what a soft-deleted memory looks like
-get(kind="skill", id="precis-todo-help")  # closing vs deleting a todo
-```
+- [[precis-edit-help]] — span-delete, find-replace, whole-file clear.
+- [[precis-files-help]] — selector grammar for file kinds.
+- [[precis-overview]] — verbs and kinds.
+- [[precis-memory-help]] — what a soft-deleted memory looks like.
+- [[precis-todo-help]] — closing vs deleting a todo.

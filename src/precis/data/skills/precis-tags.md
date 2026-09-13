@@ -10,6 +10,8 @@ answers:
   - which closed UPPERCASE axes apply to which kind?
 applies-to: tag (add=, remove=), search (tags=), put (tags= on create), get/search (kind='tag')
 status: active
+tags: verbs, orientation
+kinds: tag
 ---
 
 # precis-tags — set, filter by, and discover tags
@@ -265,11 +267,9 @@ closed form).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-tag-help")  # the tag verb mechanics
-get(kind="skill", id="precis-search-help")  # tags= filter inside search
-get(kind="skill", id="precis-cache")  # CACHE:* and the pinned flag
-get(kind="skill", id="precis-todo-help")  # STATUS:/PRIO: lifecycle
-get(kind="skill", id="precis-memory-help")  # open-tag categorisation
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-tag-help]] — the tag verb mechanics
+- [[precis-search-help]] — tags= filter inside search
+- [[precis-cache]] — CACHE:* and the pinned flag
+- [[precis-todo-help]] — STATUS:/PRIO: lifecycle
+- [[precis-memory-help]] — open-tag categorisation

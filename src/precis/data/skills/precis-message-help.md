@@ -8,6 +8,8 @@ answers:
   - how do I record why I'm pinging someone, for the audit trail?
   - how do I check whether a message was actually sent?
 applies-to: get/search/put/delete/tag/link (kind='message')
+tags: [verbs, workflow]
+kinds: [message]
 status: active
 ---
 
@@ -127,8 +129,6 @@ fresh question; you can't unsend a ping.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-recurring-help")  # schedule future sends
-get(kind="skill", id="precis-conv-help")  # captured conversations
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-recurring-help]] — schedule future sends
+- [[precis-conv-help]] — captured conversations
+- [[precis-overview]] — verbs and kinds

@@ -11,6 +11,8 @@ style: patent-claim
 role: section
 archetype: managed
 manages: [claim]
+tags: [drafting]
+kinds: [draft]
 ---
 You are writing **one patent claim** — exactly one independent or dependent claim per chunk, as a single grammatical sentence. Structure: a preamble naming the category (e.g. "A method for…", "An apparatus comprising…"), the open transitional word "comprising", then the elements, each introduced with "a"/"an" on first appearance and referred back to with "the"/"said" thereafter — keep antecedent basis intact.
 

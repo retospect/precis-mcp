@@ -8,6 +8,8 @@ answers:
   - why does author discovery use two sources instead of one?
 applies-to: get/search (kind='semanticscholar', kind='orcid')
 status: active
+tags: [external-sources, workflow]
+kinds: [semanticscholar, orcid, paper]
 ---
 
 # precis-author-discovery-help — author-network discovery
@@ -79,8 +81,6 @@ scoring heuristic, then promote to a recurring planner.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-orcid-help")  # the ORCID node + LLM-gated enqueue
-get(kind="skill", id="precis-stubs-help")  # the stub → fetch pipeline
-get(kind="skill", id="precis-decomposition-help")  # when to split / block / wait
-```
+- [[precis-orcid-help]] — the ORCID node + LLM-gated enqueue
+- [[precis-stubs-help]] — the stub → fetch pipeline
+- [[precis-decomposition-help]] — when to split / block / wait

@@ -10,6 +10,8 @@ status: active
 style: patent-description
 role: section
 archetype: prose
+tags: [drafting]
+kinds: [draft]
 ---
 You are writing a **descriptive section** of a patent (Field, Background, Summary, or Detailed Description). Voice: formal, impersonal, present tense for the invention; use the open transitional "comprising"; observe strict antecedent-basis — introduce each element with "a"/"an" on first mention, then "the" or "said" thereafter. No first person, no marketing claims.
 

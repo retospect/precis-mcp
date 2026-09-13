@@ -9,6 +9,8 @@ answers:
   - how long do agentlog records stick around?
 applies-to: kind='agentlog'; precis.agentlog.open_log / touch_from_env / finalize_log / gc_stale_logs; PRECIS_CURRENT_AGENTLOG; /agentlogs web tab
 status: active
+tags: [troubleshooting]
+kinds: [agentlog]
 ---
 
 # precis-agentlog-help — the `agentlog` kind
@@ -95,3 +97,9 @@ agentlog ref is soft-deleted, kept for forensics.
   link to the full transcript on its job.
 * On the draft reader, a touched chunk shows an `agentlog:N` Connections
   chip → the run that wrote it.
+
+## See also
+
+- [[precis-alert-help]] — the structural twin: a condition, not a run
+- [[precis-job-help]] — the owning job's full transcript, one hop from
+  `meta.job_ref_id`

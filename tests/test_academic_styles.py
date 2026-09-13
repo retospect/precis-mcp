@@ -65,4 +65,7 @@ def test_sci_methods_injects_real_body(draft: DraftHandler, hub: Hub) -> None:
     block = _render_section_style(hub.live_store, cr)
     assert "Section style — sci-methods" in block
     assert "reproduce" in block  # body content, not the pointer
-    assert "get(kind='skill'" not in block
+    # i.e. it did NOT fall back to the missing-skill pointer (distinct
+    # from the served body's own footer, which legitimately carries a
+    # `get(kind='skill', ...)` navigation hint via `kinds:`)
+    assert "load it with" not in block

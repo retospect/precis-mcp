@@ -8,7 +8,9 @@ answers:
   - how do I pin a cached row so it never goes stale?
   - what makes two queries hit the same cache row?
 applies-to: get (kind in math/web/websearch/perplexity-reasoning/perplexity-research/youtube)
+kinds: [math, web, websearch, perplexity-reasoning, perplexity-research, youtube]
 status: active
+tags: [troubleshooting, external-sources]
 ---
 
 # precis-cache — TTLs, freshness, force-refresh
@@ -112,13 +114,9 @@ and the row reports as `CACHE:pinned`. Imported entries (e.g.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-tags")  # CACHE:* axis, pinned flag
-get(
-    kind="skill", id="precis-perplexity-help"
-)  # websearch / perplexity-reasoning / perplexity-research
-get(kind="skill", id="precis-math-help")  # Wolfram Alpha
-get(kind="skill", id="precis-web-help")  # direct page fetch
-get(kind="skill", id="precis-youtube-help")  # transcript fetch
-```
+- [[precis-overview]] — verbs and kinds.
+- [[precis-tags]] — `CACHE:*` axis, pinned flag.
+- [[precis-perplexity-help]] — websearch / perplexity-reasoning / perplexity-research.
+- [[precis-math-help]] — Wolfram Alpha.
+- [[precis-web-help]] — direct page fetch.
+- [[precis-youtube-help]] — transcript fetch.

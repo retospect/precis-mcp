@@ -5,6 +5,8 @@ summary: a mermaid gitGraph — branches, commits, and merges of a git history
 answers:
   - how do I diagram git branches, commits, and merges?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **git graph** draws a git history: branches, commits, and merges. Reach for

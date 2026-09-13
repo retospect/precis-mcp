@@ -9,6 +9,8 @@ answers:
   - how do I trace the call path from a console script entry point to a function?
   - how do I replace a function body by its qualname?
 applies-to: get/search/put/edit/delete (kind='python')
+tags: orientation, addressing
+kinds: python
 status: active
 ---
 
@@ -356,9 +358,7 @@ commits (working tree is left dirty).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-files-help")  # shared file address grammar
-get(kind="skill", id="precis-edit-help")  # anchored find-replace + insert grammar
-get(kind="skill", id="precis-markdown-help")  # .md block grammar
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-files-help]] — shared file address grammar
+- [[precis-edit-help]] — anchored find-replace + insert grammar
+- [[precis-markdown-help]] — .md block grammar
+- [[precis-overview]] — verbs and kinds

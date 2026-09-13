@@ -6,6 +6,8 @@ answers:
   - how do I wire an I2C bus on a PCB design?
   - how do I check that an I2C bus is wired correctly?
 applies-to: put (kind='pcb'); pattern playbook
+tags: design
+kinds: pcb
 status: active
 ---
 

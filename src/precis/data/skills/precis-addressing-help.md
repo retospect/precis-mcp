@@ -9,6 +9,7 @@ answers:
   - a ref got merged or superseded — do I need to update the handle I saved?
 applies-to: get / edit / delete / tag / link (any verb that addresses an existing ref)
 status: stable
+tags: [addressing, orientation]
 ---
 
 # precis-addressing-help — one handle for every ref and chunk
@@ -122,12 +123,15 @@ agent-facing copy.
   `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
   `random`) have **no handle** — addressed by URL / query / compute.
 
-## `[[slug]]` — skill-to-skill links
+## The `[[…]]` wikilink — skill-to-skill links
 
-Inside a skill's markdown body, `[[other-skill-slug]]` is a lateral
-cross-reference to another skill — the graph-derived successor to a
-prose `## See also` list (docs/backlog/skill-graph.md). It renders as
-`get(kind='skill', id='other-skill-slug')` in a full-skill or `~N`
-section serve, and raw `[[slug]]` in a search snippet means the same
-thing. The target must be a real, existing slug — a dangling link is a
-static ingest-gate finding (see `precis.ingest.skill_ingest`).
+Inside a skill's markdown body, `[[precis-overview]]` (double brackets
+around a skill slug) is a lateral cross-reference to another skill —
+the graph-derived successor to a prose `## See also` list
+(docs/backlog/skill-graph.md). It renders as
+`get(kind='skill', id='precis-overview')` in a full-skill or `~N`
+section serve, and a raw `[[precis-overview]]` in a search snippet
+means the same thing. The target must resolve — either a real file
+slug or a synthesised meta-skill (`precis-help`/`precis-status`/
+`precis-toc`/`toc`) — a dangling link is a static ingest-gate finding
+(see `precis.ingest.skill_ingest`).

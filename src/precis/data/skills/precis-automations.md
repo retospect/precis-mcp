@@ -9,6 +9,8 @@ answers:
   - how do I link an automation to the artifact it produced?
 applies-to: recurring (meta.schedule set) todos; search(kind='todo', view='roots'); the podcast casts + briefing
 status: active
+tags: [workflow, troubleshooting]
+kinds: [todo, draft]
 ---
 
 # precis-automations — the index of things that run *you*
@@ -112,10 +114,6 @@ on every fire.
 
 ## See also
 
-```python
-get(
-    kind="skill", id="precis-recurring-help"
-)  # the unified schedule mechanism (cron/every/at, deliver)
-get(kind="skill", id="precis-voice")  # how to author a cast payload for the ear
-get(kind="skill", id="precis-audio-help")  # the narration + podcast-feed mechanism
-```
+- [[precis-recurring-help]] — the unified schedule mechanism (cron/every/at, deliver)
+- [[precis-voice]] — how to author a cast payload for the ear
+- [[precis-audio-help]] — the narration + podcast-feed mechanism

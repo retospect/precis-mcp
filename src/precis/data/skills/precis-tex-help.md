@@ -9,6 +9,8 @@ answers:
   - how do I create a new .tex file?
 applies-to: get/search/put/edit/delete (kind='tex')
 status: active
+tags: addressing, verbs
+kinds: tex
 ---
 
 # precis-tex-help — `.tex` files, section-aware
@@ -215,11 +217,9 @@ put(
 
 ## See also
 
-```python
-get(kind="skill", id="precis-files-help")  # shared address grammar, write modes
-get(kind="skill", id="precis-edit-help")  # find-replace + insert grammar
-get(kind="skill", id="precis-plaintext-help")  # block grammar tex extends
-get(kind="skill", id="precis-paper-help")  # citation-graph navigation
-get(kind="skill", id="precis-markdown-help")  # .md block grammar for prose notes
-get(kind="skill", id="precis-search-help")  # search mechanics
-```
+- [[precis-files-help]] — shared address grammar, write modes
+- [[precis-edit-help]] — find-replace + insert grammar
+- [[precis-plaintext-help]] — block grammar tex extends
+- [[precis-paper-help]] — citation-graph navigation
+- [[precis-markdown-help]] — .md block grammar for prose notes
+- [[precis-search-help]] — search mechanics

@@ -10,6 +10,8 @@ answers:
   - what counts as a spin loop and what threshold triggers it?
 applies-to: precis worker --only nursery; kind='alert' (alert-source:nursery:*)
 status: active
+tags: [troubleshooting]
+kinds: [alert]
 ---
 
 # precis-nursery-help — tree-incoherence detectors → alerts
@@ -55,6 +57,8 @@ outcome that never clears the claim predicate). The detail names the
 source + last event + rate so triage starts at the worker. The same
 loops are also surfaced on the web Status page's "Background health"
 panel for pull-style monitoring.
+
+## Detector catalogue — worker-health detail
 
 The three **worker-health** detectors watch daemon liveness / work
 flow, not the todo graph; together with `orphaned-coordinator`,
@@ -154,12 +158,12 @@ alert rows). An operator preamble can read the open set via
 * Not a worker dispatcher — the nursery describes; asa-bot
   decides whether to act on a finding when next chatting.
 
-## Related skills
+## See also
 
-* `precis-health-digest-help` — the slow-rot, non-paging digest sibling
+- [[precis-health-digest-help]] — the slow-rot, non-paging digest sibling
   tier — outcome checks, cadence staleness, registry coherence
-* `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)
-* `precis-todo-tree-help` — the tree shape + level gradient
-* `precis-decomposition-help` — the GTD interrogation
-* `precis-recurring-help` — `meta.schedule` + the Watches umbrella
-* `precis-auto-todo-help` — `meta.auto_check` leaves
+- [[precis-alert-help]] — the `alert` kind (lifecycle, dedup, tab)
+- [[precis-todo-tree-help]] — the tree shape + level gradient
+- [[precis-decomposition-help]] — the GTD interrogation
+- [[precis-recurring-help]] — `meta.schedule` + the Watches umbrella
+- [[precis-auto-todo-help]] — `meta.auto_check` leaves

@@ -9,6 +9,8 @@ answers:
   - where does a narrated draft end up — how do I listen to it?
 applies-to: draft narration/audio export; chunk meta.voice/lang; meta.pronunciation; PRECIS_LEXICON_FILE; precis draft audio; precis podcast
 status: active
+tags: [drafting]
+kinds: [draft]
 ---
 
 # precis-audio-help — voice drafts + pronunciation

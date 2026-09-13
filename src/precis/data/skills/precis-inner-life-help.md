@@ -9,6 +9,8 @@ answers:
   - how do I promote a speculative dream connection into something durable?
   - how do I browse older inner-life items the cold-start preamble didn't show?
 applies-to: put/get/search/tag (kind='memory'), tags=['internal-state'|'internal-thought'|'DREAM:speculative'|'user:asa'|'interest:*'|'changed-mind:*']
+tags: drafting, workflow
+kinds: memory
 status: active
 ---
 
@@ -196,9 +198,9 @@ put(
 )
 ```
 
-## Related skills
+## See also
 
-- `precis-memory-help` — the general memory verb surface
-- `precis-tag-help` — tag verb mechanics (add / remove / TTL)
-- `precis-search-help` — the search verb shape
-- `precis-oracle-help` — the I-Ching + cards oracle (for re-framing prompts)
+- [[precis-memory-help]] — the general memory verb surface
+- [[precis-tag-help]] — tag verb mechanics (add / remove / TTL)
+- [[precis-search-help]] — the search verb shape
+- [[precis-oracle-help]] — the I-Ching + cards oracle (for re-framing prompts)

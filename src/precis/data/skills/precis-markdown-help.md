@@ -8,6 +8,8 @@ answers:
   - how do I rewrite just one paragraph without touching the rest of the file?
   - how do I make a surgical find-replace edit inside one chunk?
 applies-to: get/search/put/edit/delete (kind='markdown')
+tags: addressing, verbs
+kinds: markdown
 status: active
 ---
 
@@ -180,11 +182,9 @@ put(
 
 ## See also
 
-```python
-get(kind="skill", id="precis-files-help")  # shared address grammar, write modes
-get(kind="skill", id="precis-edit-help")  # find-replace + insert grammar
-get(kind="skill", id="precis-plaintext-help")  # .txt / .log — no chunk grammar
-get(kind="skill", id="precis-tex-help")  # .tex section-aware chunks
-get(kind="skill", id="precis-python-help")  # code navigation, AST-gated edits
-get(kind="skill", id="precis-relations")  # typed links between files and refs
-```
+- [[precis-files-help]] — shared address grammar, write modes
+- [[precis-edit-help]] — find-replace + insert grammar
+- [[precis-plaintext-help]] — .txt / .log — no chunk grammar
+- [[precis-tex-help]] — .tex section-aware chunks
+- [[precis-python-help]] — code navigation, AST-gated edits
+- [[precis-relations]] — typed links between files and refs

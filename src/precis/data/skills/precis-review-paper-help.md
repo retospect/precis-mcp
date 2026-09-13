@@ -7,6 +7,8 @@ answers:
   - what output format should my review findings take?
   - when do I mint a kind='finding' ref during a review instead of just noting it?
 applies-to: get/search (kind='paper'|'chunk'|'citation'|'todo'), put (kind='finding')
+tags: troubleshooting, workflow
+kinds: paper, citation, todo, finding
 status: active
 ---
 

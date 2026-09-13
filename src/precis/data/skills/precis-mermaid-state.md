@@ -5,6 +5,8 @@ summary: a mermaid state diagram — states and the transitions between them
 answers:
   - how do I draw a state machine or lifecycle diagram?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **state diagram** models a state machine (FSM): the states a thing can be

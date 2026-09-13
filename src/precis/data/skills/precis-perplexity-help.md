@@ -10,6 +10,8 @@ answers:
   - how do I see what I've already asked Perplexity recently?
 applies-to: get/search/put/tag/link (kind='websearch' | 'perplexity-reasoning' | 'perplexity-research')
 status: active
+tags: [external-sources, troubleshooting]
+kinds: [websearch, perplexity-reasoning, perplexity-research]
 ---
 
 # precis-perplexity-help — Perplexity Sonar, three tiers
@@ -195,10 +197,8 @@ Imports, `/recent`, and cache hits never need it.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-cache")  # TTLs, force-refresh, CACHE:* axis
-get(kind="skill", id="precis-math-help")  # facts and world data (Wolfram)
-get(kind="skill", id="precis-web-help")  # direct page fetch
-get(kind="skill", id="precis-markdown-help")  # block parser used by imports
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-cache]] — TTLs, force-refresh, CACHE:* axis
+- [[precis-math-help]] — facts and world data (Wolfram)
+- [[precis-web-help]] — direct page fetch
+- [[precis-markdown-help]] — block parser used by imports

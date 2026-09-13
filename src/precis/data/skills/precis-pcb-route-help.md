@@ -10,6 +10,8 @@ answers:
   - which pcb move classes actually do anything right now?
 applies-to: put(kind='pcb', args={'op': ...}); see also kind='pcb', kind='job'
 status: active
+tags: [design, troubleshooting]
+kinds: [pcb, job]
 ---
 
 # precis-pcb-route-help — place + route as enqueued jobs

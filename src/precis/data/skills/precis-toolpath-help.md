@@ -9,6 +9,7 @@ answers:
   - how do I wire a job under a todo?
   - a search(kind='skill') reply looks like an error — should I reword the query?
 applies-to: all
+tags: [orientation, workflow]
 status: active
 ---
 
@@ -167,12 +168,12 @@ similar-sounding names — don't conflate them.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # kinds table + address scheme + view roster
-get(kind="skill", id="precis-tags")  # tag axis vocabulary
-get(kind="skill", id="precis-help")  # verb table from the live registry
-get(kind="skill", id="toc")  # every skill, one-line synopsis
-```
+- [[precis-overview]] — kinds table + address scheme + view roster
+- [[precis-tags]] — tag axis vocabulary
+- [[precis-help]] — verb table from the live registry (synthesized,
+  not a file — still a valid wikilink target)
+- [[toc]] — every skill, one-line synopsis (synthesized alias of
+  [[precis-toc]])
 
 ---
 Read `precis-overview` for the full kinds catalogue and the handle /

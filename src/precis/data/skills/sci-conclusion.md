@@ -5,6 +5,8 @@ summary: write the conclusion — restate problem + contribution, name the princ
 answers:
   - how do I write a research-paper conclusion without repeating every result?
 status: active
+tags: [drafting]
+kinds: [draft]
 style: sci-conclusion
 role: section
 archetype: prose

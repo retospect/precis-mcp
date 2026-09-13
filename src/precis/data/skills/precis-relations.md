@@ -9,6 +9,7 @@ answers:
   - how do I block one todo on another?
   - how do I record a retraction or correction relation?
 applies-to: link (rel=), put (rel= on create)
+tags: verbs
 status: active
 ---
 
@@ -224,14 +225,10 @@ edge without a separate inverse row. Omit `rel=` to get it.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-link-help")  # link verb mechanics, target=, mode=
-get(kind="skill", id="precis-tags")  # tag vocabulary (axes vs relations)
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-todo-help")  # blocks/blocked-by workflow filter
-get(kind="skill", id="precis-citation-help")  # verifier workflow for cites
-get(kind="skill", id="precis-provenance-help")  # retraction/correction notices
-get(
-    kind="skill", id="precis-argument-help"
-)  # entails/qualifies workflow, meta.rule/warrant
-```
+- [[precis-link-help]] — link verb mechanics, target=, mode=
+- [[precis-tags]] — tag vocabulary (axes vs relations)
+- [[precis-overview]] — verbs and kinds
+- [[precis-todo-help]] — blocks/blocked-by workflow filter
+- [[precis-citation-help]] — verifier workflow for cites
+- [[precis-provenance-help]] — retraction/correction notices
+- [[precis-argument-help]] — entails/qualifies workflow, meta.rule/warrant

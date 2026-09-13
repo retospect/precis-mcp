@@ -10,6 +10,8 @@ answers:
   - how is `rxn` different from `route` and `pathway`?
 applies-to: get/put/search (kind='rxn')
 status: active
+tags: orientation, verbs, external-sources
+kinds: rxn
 ---
 
 # precis-rxn-help — reaction facts
@@ -172,8 +174,6 @@ the fact store those will read from.
 
 ## See also
 
-```python
-get(kind='skill', id='precis-material-help')  # the same star schema, for substances
-get(kind='skill', id='precis-lab-help')       # chaining route/protein/structure
-get(kind='skill', id='precis-search-help')    # grounding in the paper corpus
-```
+- [[precis-material-help]] — the same star schema, for substances
+- [[precis-lab-help]] — chaining route/protein/structure
+- [[precis-search-help]] — grounding in the paper corpus

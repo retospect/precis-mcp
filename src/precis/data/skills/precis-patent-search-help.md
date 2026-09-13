@@ -9,6 +9,8 @@ answers:
   - what's the difference between local and remote patent search hits?
 applies-to: search (kind='patent')
 status: active
+tags: [workflow, external-sources]
+kinds: [patent]
 ---
 
 # precis-patent-search-help — search × patent
@@ -140,10 +142,8 @@ get(kind="skill", id="precis-patent-power")  # full CQL grammar + saved watches
 
 ## See also
 
-```python
-get(kind="skill", id="precis-search-help")  # cross-kind search mechanics
-get(kind="skill", id="precis-patent-help")  # read patents (get, views, slugs)
-get(kind="skill", id="precis-patent-power")  # OPS CQL grammar, saved watches
-get(kind="skill", id="precis-finding-help")  # register a chase target on a miss
-get(kind="skill", id="precis-tags")  # tag axis vocabulary
-```
+- [[precis-search-help]] — cross-kind search mechanics
+- [[precis-patent-help]] — read patents (get, views, slugs)
+- [[precis-patent-power]] — OPS CQL grammar, saved watches
+- [[precis-finding-help]] — register a chase target on a miss
+- [[precis-tags]] — tag axis vocabulary

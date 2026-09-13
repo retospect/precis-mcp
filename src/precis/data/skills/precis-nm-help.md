@@ -14,6 +14,8 @@ answers:
   - what are the pose/envelope geometry conventions (units, centring, rotation order)?
 applies-to: get/search/put/edit/delete (kind='nm')
 status: active
+tags: [design]
+kinds: [nm]
 ---
 
 # precis-nm-help — nanomachine block trees over atoms
@@ -297,6 +299,8 @@ its own only** — a child's envelope is never unioned into its parent's for
 this check, so the response notes it when either queried block has children
 that themselves declare an envelope (a later increment, not modeled today).
 
+## Read the design — `view='validate'`, every rule
+
 ### `view='validate'` — every rule
 
 | rule | severity | catches |
@@ -395,8 +399,6 @@ the one general off-switch; see `precis-kinds-disabled-help`.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-structure-help")  # the atom side — bind_structure's target, relax, DFT ladder
-get(kind="skill", id="precis-cad-help")  # the envelope mini-DSL and the clearance kernel nm reuses
-get(kind="skill", id="precis-settings-help")  # requires_setting gating, how an operator enables a dark kind
-```
+- [[precis-structure-help]] — the atom side: bind_structure's target, relax, DFT ladder
+- [[precis-cad-help]] — the envelope mini-DSL and the clearance kernel nm reuses
+- [[precis-settings-help]] — requires_setting gating, how an operator enables a dark kind

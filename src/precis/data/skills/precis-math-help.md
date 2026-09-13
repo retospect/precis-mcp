@@ -8,6 +8,8 @@ answers:
   - how do I force a fresh Wolfram call instead of the cached answer?
   - what env var does the math kind need?
 applies-to: get (kind='math')
+tags: [external-sources, troubleshooting]
+kinds: [math]
 status: active
 ---
 
@@ -112,10 +114,6 @@ pinned failures (above).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-cache")  # TTLs, pinning, force-refresh
-get(
-    kind="skill", id="precis-perplexity-help"
-)  # websearch / perplexity-reasoning / perplexity-research
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-cache]] — TTLs, pinning, force-refresh
+- [[precis-perplexity-help]] — websearch / perplexity-reasoning / perplexity-research

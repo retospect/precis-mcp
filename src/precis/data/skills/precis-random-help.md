@@ -7,6 +7,8 @@ answers:
   - how do I sanity-check that a fresh corpus actually has content?
   - how do I mint a random short opaque identifier?
 applies-to: get(kind='random')
+kinds: [random]
+tags: orientation
 status: active
 ---
 
@@ -71,8 +73,6 @@ of ≥ 2 distinct characters.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-paper-help")  # where most picks land
-get(kind="skill", id="precis-oracle-help")  # tradition-scoped pick
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-paper-help]] — where most picks land
+- [[precis-oracle-help]] — tradition-scoped pick

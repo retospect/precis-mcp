@@ -8,6 +8,8 @@ answers:
   - how do I undo a consolidation I got wrong?
 applies-to: search/get/put/link/tag (kind='memory'), rel='supersedes'
 status: active
+tags: workflow, verbs
+kinds: memory
 ---
 
 # precis-self-consolidation-help — consolidating inner life over time
@@ -191,13 +193,13 @@ get(kind="memory", id=synth_id, view="links")
 tag(kind="memory", id=synth_id, add=["retired"])
 ```
 
-## Related skills
+## See also
 
-- `precis-inner-life-help` — the tag protocol the preamble renders
-- `precis-memory-help` — the general memory verb surface
-- `precis-link-help` — `link` verb mechanics + relation slugs
-- `precis-tag-help` — tag verb mechanics (add / remove / TTL)
-- `precis-oracle-help` — re-framing prompts when stuck on a cluster
+- [[precis-inner-life-help]] — the tag protocol the preamble renders
+- [[precis-memory-help]] — the general memory verb surface
+- [[precis-link-help]] — `link` verb mechanics + relation slugs
+- [[precis-tag-help]] — tag verb mechanics (add / remove / TTL)
+- [[precis-oracle-help]] — re-framing prompts when stuck on a cluster
 
 ## Anticipated cadence
 

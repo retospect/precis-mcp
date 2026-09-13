@@ -8,6 +8,8 @@ answers:
   - how do I verify a DOI actually matches the bib entry I have for it?
   - how do I chase retractions one citation-hop deep?
 applies-to: get (kind='provenance')
+kinds: [provenance]
+tags: troubleshooting, external-sources
 status: active
 ---
 
@@ -174,11 +176,7 @@ manuscript-release recipe.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-preflight")  # manuscript-release recipe
-get(
-    kind="skill", id="precis-paper-help"
-)  # ingest a paper so writes-through take effect
-get(kind="skill", id="precis-doi-resolution")  # DOI canonicalisation rules
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-preflight]] — manuscript-release recipe
+- [[precis-paper-help]] — ingest a paper so writes-through take effect
+- [[precis-doi-resolution]] — DOI canonicalisation rules
+- [[precis-overview]] — verbs and kinds

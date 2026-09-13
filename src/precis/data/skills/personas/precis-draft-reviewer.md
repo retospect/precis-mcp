@@ -10,6 +10,8 @@ flavor: persona
 status: active
 applies-to: a review-todo (meta.review set) ticking on a draft section
 last-updated: 2026-06-25
+tags: [workflow, drafting]
+kinds: [draft, todo]
 ---
 
 # precis-draft-reviewer — draft-section reviewer

@@ -8,6 +8,8 @@ answers:
   - where does the technical detail go if not in the quest itself?
   - why should quests stay few in number?
 applies-to: put (kind='quest') — the judgment call before you call it
+tags: drafting, workflow
+kinds: quest
 status: active
 ---
 
@@ -143,12 +145,6 @@ cited once actually ingested — not described from memory.
 
 ## See also
 
-```python
-get(
-    kind="skill", id="precis-quest-help"
-)  # verbs, lifecycle, logbook, dossier mechanics
-get(kind="skill", id="precis-cite-paper-help")  # citing a paper properly in the dossier
-get(
-    kind="skill", id="precis-perplexity-help"
-)  # research a technique before writing it up
-```
+- [[precis-quest-help]] — verbs, lifecycle, logbook, dossier mechanics
+- [[precis-cite-paper-help]] — citing a paper properly in the dossier
+- [[precis-perplexity-help]] — research a technique before writing it up

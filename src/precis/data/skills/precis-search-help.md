@@ -14,6 +14,7 @@ answers:
   - how do I search for sources a draft hasn't cited yet?
 applies-to: search (every kind that supports it)
 status: active
+tags: orientation, verbs, troubleshooting
 ---
 
 # precis-search-help — search across kinds
@@ -417,11 +418,9 @@ the local store. CQL details in `precis-patent-search-help`.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-paper-help")  # paper-specific search shape
-get(kind="skill", id="precis-patent-search-help")  # CQL + reach= matrix
-get(kind="skill", id="precis-tags")  # axis vocabulary
-get(kind="skill", id="precis-relations")  # link vocabulary
-get(kind="skill", id="precis-toc-help")  # drilling into hits via /toc
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-paper-help]] — paper-specific search shape
+- [[precis-patent-search-help]] — CQL + reach= matrix
+- [[precis-tags]] — axis vocabulary
+- [[precis-relations]] — link vocabulary
+- [[precis-toc-help]] — drilling into hits via /toc

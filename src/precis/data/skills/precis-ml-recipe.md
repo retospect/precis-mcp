@@ -9,6 +9,8 @@ answers:
 flavor: runbook
 status: active
 applies-to: search/get (kind='paper','citation','web'); put (kind='draft','plan')
+tags: [workflow, drafting]
+kinds: [paper, citation, web, draft, plan]
 ---
 
 # precis-ml-recipe — extract ranked, implementable recipes from the corpus
@@ -92,12 +94,8 @@ passage. A field you're still chasing gets a `finding`, not a guess.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-replication")  # design a check before you run one
-get(
-    kind="skill", id="precis-paper-code-audit"
-)  # verify a recipe against its actual code
-get(kind="skill", id="precis-finding-help")  # chase a cited-but-unheld source
-get(kind="skill", id="precis-draft-help")  # the document kind used for the final brief
-get(kind="skill", id="precis-plan-help")  # scratch-work alternative to a draft
-```
+- [[precis-replication]] — design a check before you run one
+- [[precis-paper-code-audit]] — verify a recipe against its actual code
+- [[precis-finding-help]] — chase a cited-but-unheld source
+- [[precis-draft-help]] — the document kind used for the final brief
+- [[precis-plan-help]] — scratch-work alternative to a draft

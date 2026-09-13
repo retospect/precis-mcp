@@ -12,6 +12,8 @@ answers:
   - why does a claim hub show as unmintable?
 applies-to: get (kind='finding', view='nanopub'|'mint-preflight'); put (kind='finding', hypothesis=True); precis nanopub CLI (human-run); reading publish state
 status: active
+tags: [workflow, troubleshooting]
+kinds: [finding]
 ---
 
 # precis-nanopub-help — the published identity of a taproot claim
@@ -99,6 +101,8 @@ put(kind='finding', hypothesis=True,
     llm_models=['claude-fable-5'],      # required: the model id(s) authoring this
     from_memory='me4567')               # optional: the note it came from
 ```
+
+## Hypothesis — the mint door's rules
 
 Rules the door enforces:
 
@@ -208,6 +212,8 @@ failures an extraction agent can avoid up front:
   refused. Remedy: extend the quote one sentence into text unique to
   its chunk and snip there — never weaken the snip.
 
+## Mint gates — grounding and style
+
 Grounding reaches the prefill through **both** edge shapes: inbound
 evidence edges carry per-edge grounding-chunk pointers; outbound
 `derived-from` links ground through their `dst_chunk_id` pin. A hub
@@ -274,6 +280,8 @@ sentence, shaped **general → specific**: `[epistemic mode + method] +
   Never *measures/observes/demonstrates* for a simulation; reserve
   *predicts* for forward-looking claims — a within-model comparison is
   *found*, not *predicted*.
+## Claim-sentence grammar — tense and remaining rules
+
 - **Tense encodes how the claim relates to time — simple present is
   the default,** for both the evidence verb and the asserted content:
   "DFT calculations show that X adsorbs Y." ("Showed" reads as a

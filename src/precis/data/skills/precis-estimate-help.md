@@ -10,6 +10,8 @@ answers:
   - how do I ask "what did this dopant/op DO" to a structure without dispatching a relax?
 applies-to: get (kind='estimate')
 status: active
+tags: [design]
+kinds: [estimate, structure]
 ---
 
 # precis-estimate-help — the millisecond chemistry-workup panel

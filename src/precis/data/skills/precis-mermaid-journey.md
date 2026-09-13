@@ -5,6 +5,8 @@ summary: a mermaid user-journey diagram — steps of an experience scored by sen
 answers:
   - how do I diagram a user or customer journey scored by sentiment?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **user journey** maps the steps of an experience, each scored by sentiment

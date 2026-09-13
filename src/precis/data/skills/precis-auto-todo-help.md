@@ -9,6 +9,8 @@ answers:
   - how do I schedule a todo to wake up at a specific time?
 applies-to: put (kind='todo' with meta.auto_check); precis worker --only auto_check
 status: active
+tags: [workflow]
+kinds: [todo, job, message]
 ---
 
 # precis-auto-todo-help — wait-for-condition todos
@@ -203,8 +205,6 @@ in the default rotation. Polling cadence matches the worker's
 
 ## See also
 
-```python
-get(kind="skill", id="precis-todo-tree-help")  # the tree itself
-get(kind="skill", id="precis-tags")  # STATUS / PRIO / open tag rules
-get(kind="skill", id="precis-relations")  # blocked-by + note-for links
-```
+- [[precis-todo-tree-help]] — the tree itself
+- [[precis-tags]] — STATUS / PRIO / open tag rules
+- [[precis-relations]] — blocked-by + note-for links

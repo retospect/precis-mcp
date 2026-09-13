@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from precis.handlers._skill_common import (
+    SYNTH_SKILL_SLUGS,
     VALID_FLAVORS,
     VALID_TAGS,
     FrontmatterError,
@@ -139,6 +140,28 @@ def test_invokes_personas_inline_comma_form() -> None:
     )
 
 
+def test_invokes_personas_bracket_form() -> None:
+    text = (
+        "---\n"
+        "flavor: runbook\n"
+        "invokes-personas: [precis-adversarial-reviewer, precis-citation-reviewer]\n"
+        "---\n"
+    )
+    fm = parse_frontmatter(text)
+    assert fm.invokes_personas == (
+        "precis-adversarial-reviewer",
+        "precis-citation-reviewer",
+    )
+
+
+def test_invokes_personas_bracket_form_single_item() -> None:
+    text = (
+        "---\nflavor: runbook\ninvokes-personas: [precis-adversarial-reviewer]\n---\n"
+    )
+    fm = parse_frontmatter(text)
+    assert fm.invokes_personas == ("precis-adversarial-reviewer",)
+
+
 def test_invokes_personas_default_empty() -> None:
     fm = parse_frontmatter("---\nflavor: persona\n---\n")
     assert fm.invokes_personas == ()
@@ -186,6 +209,18 @@ def test_answers_inline_comma_form() -> None:
     text = "---\nanswers: first question?, second question?\n---\n"
     fm = parse_frontmatter(text)
     assert fm.answers == ("first question?", "second question?")
+
+
+def test_answers_bracket_form() -> None:
+    text = "---\nanswers: [first question?, second question?]\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.answers == ("first question?", "second question?")
+
+
+def test_answers_bracket_form_single_item() -> None:
+    text = "---\nanswers: [a single question?]\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.answers == ("a single question?",)
 
 
 def test_answers_default_empty() -> None:
@@ -248,6 +283,18 @@ def test_tags_inline_comma_form() -> None:
     assert fm.tags == ("orientation", "workflow")
 
 
+def test_tags_bracket_form() -> None:
+    text = "---\ntags: [orientation, workflow]\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.tags == ("orientation", "workflow")
+
+
+def test_tags_bracket_form_single_item() -> None:
+    text = "---\ntags: [orientation]\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.tags == ("orientation",)
+
+
 def test_tags_default_empty() -> None:
     fm = parse_frontmatter("---\nid: precis-overview\n---\n")
     assert fm.tags == ()
@@ -283,6 +330,20 @@ def test_kinds_inline_comma_form() -> None:
     assert fm.kinds == ("paper", "patent")
 
 
+def test_kinds_bracket_form() -> None:
+    text = "---\nkinds: [paper, patent]\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.kinds == ("paper", "patent")
+
+
+def test_kinds_bracket_form_single_item() -> None:
+    # gr338101/gr338104: `kinds: [tex]` used to parse to the unknown
+    # literal token "[tex]", silently skipping the availability gate.
+    text = "---\nkinds: [tex]\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.kinds == ("tex",)
+
+
 def test_kinds_absent_is_none() -> None:
     # Distinct from present-but-empty — absence means "not yet
     # migrated", and availability gating falls back to applies-to:.
@@ -292,6 +353,13 @@ def test_kinds_absent_is_none() -> None:
 
 def test_kinds_present_but_empty_is_empty_tuple() -> None:
     text = "---\nkinds:\nstatus: active\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.kinds == ()
+    assert fm.status == "active"
+
+
+def test_kinds_empty_bracket_form_is_empty_tuple() -> None:
+    text = "---\nkinds: []\nstatus: active\n---\n"
     fm = parse_frontmatter(text)
     assert fm.kinds == ()
     assert fm.status == "active"
@@ -340,3 +408,15 @@ def test_extract_wikilinks_deduplicates_order_preserving() -> None:
 
 def test_extract_wikilinks_empty_when_none() -> None:
     assert extract_wikilinks("no links here") == ()
+
+
+# ── SYNTH_SKILL_SLUGS parity with skill.py ─────────────────────────────
+
+
+def test_synth_skill_slugs_matches_skill_handler() -> None:
+    # SYNTH_SKILL_SLUGS is a private copy of skill.py's authoritative
+    # ``_SYNTHESIZED_SKILLS`` keys (import-cycle avoidance — see the
+    # docstring). Pin parity so the two can't silently drift.
+    from precis.handlers.skill import SkillHandler
+
+    assert frozenset(SkillHandler._SYNTHESIZED_SKILLS) == SYNTH_SKILL_SLUGS

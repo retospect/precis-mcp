@@ -5,6 +5,8 @@ summary: a mermaid requirement diagram — requirements and what satisfies/verif
 answers:
   - how do I diagram requirements and what verifies or satisfies them?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **requirement diagram** (SysML-style) captures requirements and the

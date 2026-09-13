@@ -10,6 +10,8 @@ answers:
   - how do I tag a todo with a project or topic?
 applies-to: get/search/put/delete/tag/link (kind='todo')
 status: active
+tags: verbs, workflow
+kinds: todo
 ---
 
 # precis-todo-help — create, prioritise, complete todos
@@ -208,9 +210,7 @@ worth keeping a record of.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-tags")  # STATUS:/PRIO: vocabulary, validation
-get(kind="skill", id="precis-relations")  # blocked-by / blocks and other rels
-get(kind="skill", id="precis-search-help")  # tags= filter, q= ranking
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-tags]] — STATUS:/PRIO: vocabulary, validation
+- [[precis-relations]] — blocked-by / blocks and other rels
+- [[precis-search-help]] — tags= filter, q= ranking

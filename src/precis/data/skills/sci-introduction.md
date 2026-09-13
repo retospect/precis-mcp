@@ -6,6 +6,8 @@ answers:
   - how do I write an introduction that motivates the gap and states contributions?
   - how do I end an introduction with a roadmap of the paper?
 status: active
+tags: [drafting]
+kinds: [draft]
 style: sci-introduction
 role: section
 archetype: prose

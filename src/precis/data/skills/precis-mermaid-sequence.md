@@ -5,6 +5,8 @@ summary: a mermaid sequence diagram — actors exchanging messages over time
 answers:
   - how do I diagram a sequence of messages exchanged between actors over time?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **sequence diagram** shows actors/participants exchanging messages over

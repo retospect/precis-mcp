@@ -308,7 +308,7 @@ def test_ingest_failure_str_format() -> None:
     assert str(path) in s
 
 
-# ── graph gates: [[slug]] links, tags:, kinds: (WARN mode, slice 1) ────
+# ── graph gates: [[slug]] links, tags:, kinds: (hard-fail, slice 2) ────
 
 
 def test_scan_result_default_warnings_empty(tmp_path: Path) -> None:
@@ -338,58 +338,77 @@ def test_scan_wikilinks_deduplicated_and_self_link_dropped(tmp_path: Path) -> No
     assert a.links == ("b",)
 
 
-def test_scan_dangling_wikilink_is_warning_not_failure(tmp_path: Path) -> None:
+def test_scan_dangling_wikilink_is_hard_failure_by_default(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "a.md",
         "---\nflavor: reference\n---\n# A\n## op\nsee [[does-not-exist]]\n",
     )
     r = scan_skill_dir(tmp_path)
-    # WARN mode (GRAPH_GATES_HARD_FAIL is False): the plan still ships.
+    # Hard-fail by default (GRAPH_GATES_HARD_FAIL is True, slice 2): the
+    # plan does not ship.
+    assert r.plans == ()
+    assert r.warnings == ()
+    [f] = r.failures
+    assert f.slug == "a"
+    assert "dangling" in f.reason
+    assert "does-not-exist" in f.reason
+
+
+def test_scan_synth_slug_wikilink_is_not_dangling(tmp_path: Path) -> None:
+    # precis-help / precis-status / precis-toc / toc are synthesised at
+    # runtime (handlers/skill.py), never a file — a [[slug]] targeting
+    # one is a valid resolvable link, not a dangling one.
+    _write(
+        tmp_path,
+        "a.md",
+        (
+            "---\nflavor: reference\n---\n# A\n## op\n"
+            "see [[precis-help]], [[precis-status]], [[precis-toc]], [[toc]]\n"
+        ),
+    )
+    r = scan_skill_dir(tmp_path)
     assert r.failures == ()
-    assert len(r.plans) == 1
-    [w] = r.warnings
-    assert "[a]" in w
-    assert "dangling" in w
-    assert "does-not-exist" in w
+    assert r.warnings == ()
 
 
-def test_scan_unknown_tag_is_warning(tmp_path: Path) -> None:
+def test_scan_unknown_tag_is_hard_failure_by_default(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "a.md",
         "---\nflavor: reference\ntags:\n  - not-a-real-tag\n---\n# A\n## op\nbody\n",
     )
     r = scan_skill_dir(tmp_path)
-    assert r.failures == ()
-    # A single-skill corpus also trips the (always-on) singleton-tag
-    # lint for the same tag — assert the gate finding is present rather
-    # than pinning the exact warning count.
-    assert any("not-a-real-tag" in w and "graph gate" in w for w in r.warnings)
+    assert r.plans == ()
+    [f] = r.failures
+    assert "not-a-real-tag" in f.reason
+    assert "graph gate" in f.reason
 
 
-def test_scan_kind_named_tag_is_warning(tmp_path: Path) -> None:
+def test_scan_kind_named_tag_is_hard_failure_by_default(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "a.md",
         "---\nflavor: reference\ntags:\n  - paper\n---\n# A\n## op\nbody\n",
     )
     r = scan_skill_dir(tmp_path)
-    assert r.failures == ()
-    assert any("paper" in w and "graph gate" in w for w in r.warnings)
+    assert r.plans == ()
+    [f] = r.failures
+    assert "paper" in f.reason
+    assert "graph gate" in f.reason
 
 
-def test_scan_empty_kinds_is_warning(tmp_path: Path) -> None:
+def test_scan_empty_kinds_is_hard_failure_by_default(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "a.md",
         "---\nflavor: reference\nkinds:\nstatus: active\n---\n# A\n## op\nbody\n",
     )
     r = scan_skill_dir(tmp_path)
-    assert r.failures == ()
-    [w] = r.warnings
-    assert "kinds" in w
-    assert "empty" in w
+    assert r.plans == ()
+    [f] = r.failures
+    assert "kinds" in f.reason
+    assert "empty" in f.reason
 
 
 def test_scan_absent_kinds_is_not_a_warning(tmp_path: Path) -> None:
@@ -447,24 +466,27 @@ def test_scan_singleton_tag_is_always_a_warning(tmp_path: Path) -> None:
     assert "only this one skill" in r.warnings[0]
 
 
-def test_scan_graph_gates_hard_fail_flag_moves_to_failures(
+def test_scan_graph_gates_can_be_downgraded_to_warn_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # GRAPH_GATES_HARD_FAIL is True by default (slice 2's last step); the
+    # WARN-mode code path (slice 1's ship mode, while the 160-file sweep
+    # was in flight) stays reachable/tested via an explicit downgrade.
     import precis.ingest.skill_ingest as skill_ingest_mod
 
-    monkeypatch.setattr(skill_ingest_mod, "GRAPH_GATES_HARD_FAIL", True)
+    monkeypatch.setattr(skill_ingest_mod, "GRAPH_GATES_HARD_FAIL", False)
     _write(
         tmp_path,
         "a.md",
         "---\nflavor: reference\n---\n# A\n## op\nsee [[does-not-exist]]\n",
     )
     r = scan_skill_dir(tmp_path)
-    assert r.plans == ()
-    [f] = r.failures
-    assert f.slug == "a"
-    assert "dangling" in f.reason
-    # Hard-fail findings don't ALSO land in warnings.
-    assert r.warnings == ()
+    assert r.failures == ()
+    assert len(r.plans) == 1
+    [w] = r.warnings
+    assert "[a]" in w
+    assert "dangling" in w
+    assert "does-not-exist" in w
 
 
 # ── DB-side tag parity: KIND: + topic tags (item 6) ────────────────────
@@ -501,3 +523,84 @@ def test_scan_no_kind_or_topic_tags_when_axes_absent(tmp_path: Path) -> None:
     r = scan_skill_dir(tmp_path)
     [p] = r.plans
     assert p.tags == ("FLAVOR:reference",)
+
+
+# ── the real shipped corpus (docs/backlog/skill-graph.md slice 2 accept-
+# ance criterion) ───────────────────────────────────────────────────────
+
+
+def test_shipped_skill_corpus_has_zero_gate_findings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hard-fail gate (:data:`GRAPH_GATES_HARD_FAIL`) against the real
+    ``src/precis/data/skills/`` tree: every ``[[slug]]`` wikilink resolves
+    (file or synth), every ``tags:``/``kinds:`` entry is valid, and no
+    chunk exceeds the size budget.
+
+    Plugin kinds (``se``/``route``/``protein``/…) are validated against
+    their real ``handle_codes`` modules directly rather than the
+    installed dist-info: a dev image bakes ``pyproject.toml`` entry
+    points at build time, so it can lag a freshly-added plugin
+    registration (see "new core dep: image + UV_WITH" in project
+    memory) — this test asserts against the current source tree's
+    promise, not a possibly-stale build artifact.
+    """
+    from importlib.resources import files
+
+    from precis.ingest.skill_template import DocResolver, Includer
+    from precis.utils import handle_registry as hr
+    from precis_bio import handles as bio_handles
+    from precis_chem import handles as chem_handles
+    from precis_estimate import handles as estimate_handles
+    from precis_nm import handles as nm_handles
+    from precis_pathway import handles as pathway_handles
+    from precis_se import handles as se_handles
+
+    plugin_kind_codes: dict[str, str] = {}
+    plugin_chunk_codes: dict[str, str] = {}
+    for mod in (
+        pathway_handles,
+        estimate_handles,
+        nm_handles,
+        se_handles,
+        chem_handles,
+        bio_handles,
+    ):
+        plugin_kind_codes.update(mod.RECORD_CODES)
+        plugin_chunk_codes.update(mod.CHUNK_CODES)
+    monkeypatch.setattr(hr, "_plugins_loaded", True)
+    monkeypatch.setattr(hr, "_plugin_kind_codes", plugin_kind_codes)
+    monkeypatch.setattr(hr, "_plugin_chunk_codes", plugin_chunk_codes)
+
+    skills_dir = Path(str(files("precis.data.skills")))
+    docs = {p.stem: p.read_text(encoding="utf-8") for p in skills_dir.rglob("*.md")}
+    includer = Includer(resolvers={"doc": DocResolver(docs=docs)})
+
+    r = scan_skill_dir(skills_dir, includer=includer)
+    assert r.failures == (), "\n".join(str(f) for f in r.failures)
+
+
+def test_link_to_gate_failed_file_does_not_cascade(tmp_path: Path) -> None:
+    """A file that fails a prior gate is still a valid wikilink target —
+    one bad file must not turn an unrelated ``[[link]]`` dangling."""
+    _write(
+        tmp_path,
+        "precis-broken.md",
+        # runbook whose invokes_personas target doesn't exist → fails
+        # the cross-reference gate, before the graph gates run.
+        (
+            "---\nflavor: runbook\ninvokes-personas: precis-nope\n---\n"
+            "# broken\n## Run it\nbody\n"
+        ),
+    )
+    _write(
+        tmp_path,
+        "precis-fine.md",
+        (
+            "---\nflavor: reference\ntags: workflow\n---\n"
+            "# fine\n## Use it\nSee [[precis-broken]] for the runbook.\n"
+        ),
+    )
+    r = scan_skill_dir(tmp_path)
+    assert {f.slug for f in r.failures} == {"precis-broken"}
+    assert {p.slug for p in r.plans} == {"precis-fine"}

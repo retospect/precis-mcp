@@ -11,6 +11,8 @@ answers:
   - how do I exclude a draft's cites from a discovery search?
 applies-to: search(kind='paper', view='stubs'|'chase-queue', exclude=), get(kind='semanticscholar'), put (kind='paper')
 status: active
+tags: external-sources, workflow
+kinds: paper, semanticscholar
 ---
 
 # precis-stubs-help — papers we still need to get
@@ -182,8 +184,6 @@ id=<ref_id>)`, which shows the status on the ref.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-paper-help")  # read, cite, search held papers (+ S2 nav)
-get(kind="skill", id="precis-finding-help")  # chasing un-ingested DOIs
-get(kind="skill", id="precis-search-help")  # search args incl. view=
-```
+- [[precis-paper-help]] — read, cite, search held papers (+ S2 nav)
+- [[precis-finding-help]] — chasing un-ingested DOIs
+- [[precis-search-help]] — search args incl. view=

@@ -7,6 +7,8 @@ answers:
   - how do I name figure elements so they're addressable?
   - what should I never author directly in figure SVG?
 applies-to: kind='figure' (the SVG source you author via put/edit or the web turn loop)
+tags: drafting, design
+kinds: figure
 status: active
 ---
 

@@ -9,6 +9,8 @@ answers:
 flavor: runbook
 status: active
 applies-to: search (cross-kind); put (kind='draft'); link (rel='disputes')
+tags: workflow, external-sources
+kinds: draft, mermaid, paper
 ---
 
 # precis-source-comparison — compare multiple sources on a topic
@@ -70,12 +72,8 @@ agreement/disagreement comparisons on its own.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-search-help")  # cross-kind fan-out mechanics
-get(
-    kind="skill", id="precis-relations"
-)  # rel='disputes' and the rest of the vocabulary
-get(kind="skill", id="precis-draft-help")  # the document kind for the matrix
-get(kind="skill", id="precis-mermaid-help")  # when a diagram is warranted
-get(kind="skill", id="precis-paper-code-audit")  # claim-vs-code, a narrower comparison
-```
+- [[precis-search-help]] — cross-kind fan-out mechanics
+- [[precis-relations]] — rel='disputes' and the rest of the vocabulary
+- [[precis-draft-help]] — the document kind for the matrix
+- [[precis-mermaid-help]] — when a diagram is warranted
+- [[precis-paper-code-audit]] — claim-vs-code, a narrower comparison

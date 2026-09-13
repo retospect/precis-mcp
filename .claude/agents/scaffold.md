@@ -68,6 +68,13 @@ filler.
   `applies-to`; section/style skills (e.g. `patent-*`) add `style`, `role`,
   `archetype` instead. Read the closest existing sibling before writing
   frontmatter — copy its exact field set, don't guess a superset.
+- Also add `tags:` (checked-vocabulary topic bucket(s), e.g.
+  `tags: [workflow]` — see `VALID_TAGS` in `handlers/_skill_common.py`)
+  and, unless the skill is genuinely kind-agnostic, `kinds:` (the
+  kind(s) its recipes operate on, e.g. `kinds: [paper]`). A `## See
+  also` list uses `[[slug]]` wikilink bullets, not `get()` calls — a
+  dangling target hard-fails the ingest gate, so only link a slug you
+  confirmed exists (docs/conventions/skill-authoring-style.md).
 - Steps:
   1. Glob `src/precis/data/skills/` for the sibling family the new skill
      belongs to; Read 1-2 of them.

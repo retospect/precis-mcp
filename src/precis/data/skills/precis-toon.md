@@ -7,6 +7,7 @@ answers:
   - how do I parse a TOON table programmatically?
   - when does a TOON cell get quoted?
 applies-to: tabular responses from search, get(view='toc'), and list views
+tags: [addressing, verbs]
 status: active
 ---
 
@@ -129,8 +130,6 @@ records or nested structures; TOON is for homogeneous row lists.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-search-help")  # search response shape
-get(kind="skill", id="precis-toc-help")  # TOC machinery + drill-in
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-search-help]] — search response shape
+- [[precis-toc-help]] — TOC machinery + drill-in

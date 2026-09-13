@@ -10,6 +10,8 @@ answers:
   - what units does se use, and what do envelope w/d/h mean?
 applies-to: get/search/put/edit/delete (kind='se')
 status: active
+tags: verbs, design
+kinds: se
 ---
 
 # precis-se-help — the call surface

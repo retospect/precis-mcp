@@ -8,6 +8,8 @@ answers:
   - how does a parent todo know its child job succeeded?
   - what's the difference between the minter worker and putting a job directly?
 applies-to: put (kind='todo' with meta.executor); the precis worker --only minter pass
+tags: [workflow, troubleshooting]
+kinds: [todo, job]
 status: active
 ---
 
@@ -194,9 +196,7 @@ OF r SKIP LOCKED` per candidate parent.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-job-help")  # the kind='job' surface
-get(kind="skill", id="precis-fix-gripe-help")  # the first concrete job_type
-get(kind="skill", id="precis-auto-todo-help")  # the child_job_succeeded evaluator
-get(kind="skill", id="precis-todo-tree-help")  # the todo tree shape
-```
+- [[precis-job-help]] — the kind='job' surface
+- [[precis-fix-gripe-help]] — the first concrete job_type
+- [[precis-auto-todo-help]] — the child_job_succeeded evaluator
+- [[precis-todo-tree-help]] — the todo tree shape

@@ -8,6 +8,8 @@ answers:
   - do I have to type the canonical symbols when searching?
 applies-to: put/edit(kind='finding') claim-hub title text; taproot/notation.py::lint_notation; nanopub mint-gate title checks; search(kind='finding') query wording — see precis-search-help "Notation"
 status: active
+tags: [drafting, troubleshooting]
+kinds: [finding]
 ---
 
 # precis-notation-canon — one spelling per quantity
@@ -36,6 +38,8 @@ unit-internal spacing (`cm²V⁻¹s⁻¹` vs `cm² V⁻¹ s⁻¹`); solidus vs n
 exponent (`cm²/Vs` vs `cm² V⁻¹ s⁻¹`); superscript minus (`⁻` U+207B folds
 to `−` U+2212, **not** to ASCII `-`); digit grouping (`4,600` vs `4600`).
 
+## The notation table
+
 | question | rule |
 |---|---|
 | exponents | UTF-8 superscript — `cm²`, `10⁻¹⁰`. Never `cm^2`, never TeX `$\mathrm{cm}^2$`. |
@@ -53,6 +57,8 @@ to `−` U+2212, **not** to ASCII `-`); digit grouping (`4,600` vs `4600`).
 | approximation | `≈`, no space before a bare quantity (`≈1 Å`); space when it's a binary relation with a symbol on the left (`n ≈ 10²²`). Only for a numeral — `~` between two expressions is proportionality (`E_g ~ 1/W`), not approximation, and stays `~`. |
 | percent / degrees | `50%`, `85°` unspaced; `300 K`, `25 °C` spaced. |
 | temperature scale | **keep the scale the authors used** — never convert °C to K (carve-out 2). `°K` is banned outright (abolished 1967); a bare `C` after a number becomes `°C`, since `450C` is ambiguous between Celsius, coulombs and carbon. |
+
+## ASCII → UTF-8 fallback
 
 **Letter sub/superscripts stay ASCII.** `K_d`, `E_g`, `ΔG_aq`, `R_Q`, `2^N`
 keep underscore/caret form — don't hunt for a subscript letter. Unicode has
@@ -99,6 +105,8 @@ met; carve-out 2 does not gate it. (All three normalization agents on the
 2026-08-19 pass stalled on this exact ambiguity — it must not be misread
 again.)
 
+## Em-dash and terseness
+
 **Em-dash is never a claim separator.** ` — ` (and its ASCII stand-ins
 ` -- ` and spaced ` - ` used the same way) splits a citation from a topic
 — `Landauer 1957/1970 — conductance as transmission`, `Yoon & Guo 2007 —
@@ -121,6 +129,8 @@ two atoms — split it; a 506-character claim is not an atomic claim.
 Shorter atoms also close a known failure: the SMALL-tier extractor
 collapses a multi-clause claim into one truncated atom, and an atom that
 can't be multi-clause can't collapse that way.
+
+## Carve-outs — these outrank the table
 
 Three carve-outs, all of which **outrank the table**:
 
@@ -163,9 +173,5 @@ mint gate.
 
 ## See also
 
-```python
-get(
-    kind="skill", id="precis-taproot-mint-help"
-)  # mint/reword doors, admissibility rubric
-get(kind="skill", id="precis-nanopub-help")  # claim-sentence grammar, mint gates
-```
+- [[precis-taproot-mint-help]] — mint/reword doors, admissibility rubric
+- [[precis-nanopub-help]] — claim-sentence grammar, mint gates

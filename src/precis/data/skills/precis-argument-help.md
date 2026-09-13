@@ -9,6 +9,8 @@ answers:
   - when should I NOT use the argument graph?
 applies-to: put / get / link / tag (kind='memory', kind='finding')
 status: active
+tags: [drafting, workflow]
+kinds: [memory, finding, draft]
 ---
 
 # precis-argument-help — the reasoning shadow beside a draft
@@ -247,14 +249,8 @@ forget it's there (ADR 0054 §7/§8).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-finding-help")  # grounded (single-source) lemma
-get(kind="skill", id="precis-citation-help")  # verified quote + verifier confidence
-get(
-    kind="skill", id="precis-relations"
-)  # entails/qualifies + the retracts/raises-concern-about pair
-get(kind="skill", id="precis-provenance-help")  # retraction/correction/concern checks
-get(
-    kind="skill", id="precis-memory-help"
-)  # kind:lemma/kind:inference sub-kinds, meta.rule/warrant
-```
+- [[precis-finding-help]] — grounded (single-source) lemma
+- [[precis-citation-help]] — verified quote + verifier confidence
+- [[precis-relations]] — entails/qualifies + the retracts/raises-concern-about pair
+- [[precis-provenance-help]] — retraction/correction/concern checks
+- [[precis-memory-help]] — kind:lemma/kind:inference sub-kinds, meta.rule/warrant

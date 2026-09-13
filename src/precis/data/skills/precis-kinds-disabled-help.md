@@ -8,6 +8,7 @@ answers:
   - how do I check what's actually live in this build?
   - what does reason='prohibited' mean on a kind?
 applies-to: all kinds (boot-time enablement)
+tags: troubleshooting
 status: active
 ---
 
@@ -96,8 +97,6 @@ enable the kind or remove the skill from `PRECIS_STARTUP_SKILLS`.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # Needs column maps kinds to env vars
-get(kind="skill", id="precis-startup-skills-help")  # sibling env var for pinned skills
-get(kind="skill", id="precis-preflight")  # health probe before calling unfamiliar kinds
-```
+- [[precis-overview]] — Needs column maps kinds to env vars
+- [[precis-startup-skills-help]] — sibling env var for pinned skills
+- [[precis-preflight]] — health probe before calling unfamiliar kinds

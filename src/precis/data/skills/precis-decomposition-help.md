@@ -9,6 +9,8 @@ answers:
   - when do I use a halt:* tag instead of decomposing?
 applies-to: put (kind='todo', parent_id=…), link (rel='blocked-by')
 status: active
+tags: [workflow]
+kinds: [todo]
 ---
 
 # precis-decomposition-help — split well or don't split

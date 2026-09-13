@@ -9,6 +9,8 @@ answers:
   - should I use an inline handle, a finding, a citation record, or bibtex?
 applies-to: get/put (kind='paper'|'citation'|'finding'|'todo')
 status: active
+tags: [drafting, orientation]
+kinds: [paper, citation, finding, todo]
 ---
 
 # precis-cite-paper-help — how do I cite a paper?
@@ -211,26 +213,12 @@ stub the missing source, wait, then drop its `[pc<id>]` handle inline.
 
 ## See also
 
-```python
-get(
-    kind="skill", id="precis-citation-help"
-)  # the inline [pc<id>] cite + optional verification record
-get(
-    kind="skill", id="precis-check-source-help"
-)  # find the chunk, read its surrounds, judge support
-get(kind="skill", id="precis-finding-help")  # chase a claim to its primary source
-get(kind="skill", id="precis-stubs-help")  # request a paper we don't hold
-get(
-    kind="skill", id="precis-auto-todo-help"
-)  # a todo that waits for the paper to appear
-get(
-    kind="skill", id="precis-paper-help"
-)  # find/read papers; pa<id>/pc<id> handles; bibtex/ris views
-get(
-    kind="skill", id="precis-write-paper-help"
-)  # claim-level citation density discipline
-get(kind="skill", id="precis-bibliography-help")  # read side: who cites this paper
-get(
-    kind="skill", id="precis-taproot-mint-help"
-)  # converge multi-paper claims into one living [fi<id>] hub
-```
+- [[precis-citation-help]] — the inline `[pc<id>]` cite + optional verification record.
+- [[precis-check-source-help]] — find the chunk, read its surrounds, judge support.
+- [[precis-finding-help]] — chase a claim to its primary source.
+- [[precis-stubs-help]] — request a paper we don't hold.
+- [[precis-auto-todo-help]] — a todo that waits for the paper to appear.
+- [[precis-paper-help]] — find/read papers; `pa<id>`/`pc<id>` handles; bibtex/ris views.
+- [[precis-write-paper-help]] — claim-level citation density discipline.
+- [[precis-bibliography-help]] — read side: who cites this paper.
+- [[precis-taproot-mint-help]] — converge multi-paper claims into one living `[fi<id>]` hub.

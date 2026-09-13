@@ -10,6 +10,8 @@ answers:
   - how do I filter papers by publication year?
 applies-to: get/search/tag/link (kind='paper')
 status: active
+tags: [addressing, workflow]
+kinds: [paper]
 ---
 
 # precis-paper-help — find, read, cite papers
@@ -359,18 +361,14 @@ per hop.)
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-relations")  # related-to, disputes between papers
-get(kind="skill", id="precis-tags")  # axis vocabulary
-get(kind="skill", id="precis-paper-tag-axes")  # paper-specific axes
-get(kind="skill", id="precis-finding-help")  # chasing un-ingested DOIs
-get(kind="skill", id="precis-stubs-help")  # papers we still need to get
-get(kind="skill", id="precis-cite-paper-help")  # how do I cite a paper? (the router)
-get(
-    kind="skill", id="precis-check-source-help"
-)  # find a citation, read surrounds, judge support
-get(kind="skill", id="precis-citation-help")  # verifier workflow for writing
-get(kind="skill", id="precis-memory-help")  # capturing thoughts from a paper
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-search-help]] — search mechanics
+- [[precis-relations]] — related-to, disputes between papers
+- [[precis-tags]] — axis vocabulary
+- [[precis-paper-tag-axes]] — paper-specific axes
+- [[precis-finding-help]] — chasing un-ingested DOIs
+- [[precis-stubs-help]] — papers we still need to get
+- [[precis-cite-paper-help]] — how do I cite a paper? (the router)
+- [[precis-check-source-help]] — find a citation, read surrounds, judge support
+- [[precis-citation-help]] — verifier workflow for writing
+- [[precis-memory-help]] — capturing thoughts from a paper

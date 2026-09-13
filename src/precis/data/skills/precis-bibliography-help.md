@@ -9,6 +9,8 @@ answers:
   - how do I find citations across all papers, not just one?
 applies-to: get (kind='paper', view='bibliography')
 status: active
+tags: [verbs]
+kinds: [paper, citation, draft]
 ---
 
 # precis-bibliography-help — read citations that cite a paper
@@ -99,11 +101,7 @@ appear in the bibliography so the audit trail survives.
 
 ## See also
 
-```python
-get(
-    kind="skill", id="precis-draft-help"
-)  # write-side: inline [pc<id>] citations in a draft
-get(kind="skill", id="precis-citation-help")  # the citation kind + verifier loop
-get(kind="skill", id="precis-paper-help")  # paper views, pa<id> handle, short-form cite
-get(kind="skill", id="precis-link-help")  # the cites relation in the graph
-```
+- [[precis-draft-help]] — write-side: inline [pc<id>] citations in a draft
+- [[precis-citation-help]] — the citation kind + verifier loop
+- [[precis-paper-help]] — paper views, pa<id> handle, short-form cite
+- [[precis-link-help]] — the cites relation in the graph

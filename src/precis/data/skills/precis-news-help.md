@@ -8,6 +8,8 @@ answers:
   - how do I get a morning news briefing scheduled?
 applies-to: get/search (kind='news'); precis worker --only news_poll|briefing; news_sources table; recurring-todo scheduling
 status: active
+tags: [workflow, external-sources]
+kinds: [news]
 ---
 
 # precis-news-help — news in the corpus

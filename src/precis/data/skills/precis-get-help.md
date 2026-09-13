@@ -9,6 +9,7 @@ answers:
   - what's the difference between id='slug/view' and passing view= directly?
   - how do I address a paper by DOI instead of slug?
 applies-to: get (every kind that supports it)
+tags: orientation, verbs, addressing
 status: active
 ---
 
@@ -179,11 +180,9 @@ grammar).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-search-help")  # the discovery verb
-get(kind="skill", id="precis-edit-help")  # region edits
-get(kind="skill", id="precis-files-help")  # file-backed address grammar
-get(kind="skill", id="precis-cache")  # paid-tool caching, TTLs
-get(kind="skill", id="precis-finding-help")  # chasing un-ingested DOIs
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-search-help]] — the discovery verb
+- [[precis-edit-help]] — region edits
+- [[precis-files-help]] — file-backed address grammar
+- [[precis-cache]] — paid-tool caching, TTLs
+- [[precis-finding-help]] — chasing un-ingested DOIs

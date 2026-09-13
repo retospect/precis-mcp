@@ -11,6 +11,8 @@ answers:
   - what's the difference between the category registry and the spec registry?
 applies-to: get/put/search (kind='component')
 status: active
+tags: [design]
+kinds: [component, material, part]
 ---
 
 # precis-component-help — sourced component specs, canonical units only
@@ -80,6 +82,8 @@ datasheet | estimated | standard` (optional; omit to leave it unset —
 `standard` is what the series-mint path below records). `as_of=`
 (`'YYYY-MM-DD'`) dates the measurement — load-bearing for `unit_cost`.
 
+## Two writes share one `put` — made_of and contains
+
 ### 3. made_of — what it's made of
 
 ```python
@@ -134,6 +138,8 @@ get(kind="component", id="enclosure", view="tree")
 # - Bracket (bracket) x1
 # - M6 bolt (m6-bolt) x4
 ```
+
+## Two writes share one `put` — the BOM rollup
 
 `view='bom'` flattens the tree to leaf line items, multiplying `qty=` down
 each path and summing per distinct leaf (a leaf reached via two paths gets

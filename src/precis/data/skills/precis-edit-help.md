@@ -10,6 +10,8 @@ answers:
   - how do I edit a Python function by its qualname?
 applies-to: edit (kind='markdown'|'plaintext'|'tex'|'python')
 status: active
+tags: [verbs]
+kinds: [markdown, plaintext, tex, python]
 ---
 
 # precis-edit-help — anchored region edits across file kinds
@@ -282,14 +284,10 @@ in `precis-draft-help` § "Edit, review & retire a chunk".
 
 ## See also
 
-```python
-get(kind="skill", id="precis-files-help")  # shared address grammar (~L, ~N, qualnames)
-get(kind="skill", id="precis-markdown-help")  # markdown recipes
-get(kind="skill", id="precis-python-help")  # python AST gates + ruff
-get(kind="skill", id="precis-plaintext-help")  # plaintext quirks
-get(kind="skill", id="precis-put-help")  # creating new files
-get(kind="skill", id="precis-delete-help")  # whole-file and whole-chunk removal
-get(
-    kind="skill", id="precis-draft-help"
-)  # draft-only edit ops: move/table/review/authoring/…
-```
+- [[precis-files-help]] — shared address grammar (`~L`, `~N`, qualnames).
+- [[precis-markdown-help]] — markdown recipes.
+- [[precis-python-help]] — python AST gates + ruff.
+- [[precis-plaintext-help]] — plaintext quirks.
+- [[precis-put-help]] — creating new files.
+- [[precis-delete-help]] — whole-file and whole-chunk removal.
+- [[precis-draft-help]] — draft-only edit ops: move/table/review/authoring/….

@@ -9,6 +9,8 @@ answers:
   - I'm stuck on a leaf — how do I decompose it?
   - how do I attach a longer spec or acceptance criteria to a todo?
 applies-to: get/search/put/delete/tag/link (kind='todo'; tree views)
+tags: [workflow, troubleshooting]
+kinds: [todo]
 status: active
 ---
 
@@ -270,21 +272,12 @@ discipline on top.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-todo-help")  # flat todo surface
-get(
-    kind="skill", id="precis-decomposition-help"
-)  # GTD interrogation, split rule
-get(kind="skill", id="precis-auto-todo-help")  # meta.auto_check leaves
-get(
-    kind="skill", id="precis-recurring-help"
-)  # meta.schedule + Watches umbrella
-get(
-    kind="skill", id="precis-minter-help"
-)  # meta.executor + minter worker
-get(kind="skill", id="precis-job-help")  # the kind='job' substrate
-get(kind="skill", id="precis-nursery-help")  # hourly review digest tier
-get(kind="skill", id="precis-tags")  # STATUS / PRIO vocabulary
-get(kind="skill", id="precis-relations")  # blocked-by / blocks / note-for
-search(kind="skill", q="your goal")  # if none of the above fit
-```
+- [[precis-todo-help]] — flat todo surface
+- [[precis-decomposition-help]] — GTD interrogation, split rule
+- [[precis-auto-todo-help]] — meta.auto_check leaves
+- [[precis-recurring-help]] — meta.schedule + Watches umbrella
+- [[precis-minter-help]] — meta.executor + minter worker
+- [[precis-job-help]] — the kind='job' substrate
+- [[precis-nursery-help]] — hourly review digest tier
+- [[precis-tags]] — STATUS / PRIO vocabulary
+- [[precis-relations]] — blocked-by / blocks / note-for

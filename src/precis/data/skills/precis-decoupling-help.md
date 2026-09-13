@@ -7,6 +7,8 @@ answers:
   - how do I check that decoupling caps are actually placed correctly?
 applies-to: put (kind='pcb'); pattern playbook
 status: active
+tags: [design]
+kinds: [pcb, datasheet]
 ---
 
 # precis-decoupling-help — bypass caps, done right

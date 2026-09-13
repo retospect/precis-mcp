@@ -10,6 +10,8 @@ answers:
   - is the running server the same code as the checkout in front of me?
 applies-to: precis-status (synthesised skill)
 status: active
+tags: orientation, troubleshooting
+kinds: skill
 ---
 
 # precis-status-help — see your build, runtime, and DB at a glance
@@ -228,7 +230,7 @@ Reading it:
 
 ## See also
 
-- `get(kind='skill', id='precis-overview')` — orientation: seven
-  verbs, one address scheme.
-- `get(kind='skill', id='precis-help')` — active kinds + verbs on
-  this server (from the live hub).
+- [[precis-overview]] — orientation: seven verbs, one address scheme.
+- [[precis-help]] — the synthesised skill listing active kinds + verbs
+  on this server (from the live hub, not a file — still a valid
+  wikilink target, resolved against the synth slug set).

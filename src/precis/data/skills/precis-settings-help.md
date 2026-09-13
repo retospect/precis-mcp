@@ -8,6 +8,7 @@ answers:
   - how do I see settings drift across the fleet?
 applies-to: precis.settings (get_str/get_float/get_int/get_bool/resolve/set_setting/clear_setting); precis settings CLI; /settings web page; KindSpec.requires_setting
 status: active
+tags: workflow, troubleshooting
 ---
 
 # precis-settings-help — non-secret config that lives in the DB
@@ -125,5 +126,5 @@ registered inventory with `updated_at`/`updated_by`.
 - `precis.settings` module docstring — the full why, precedence
   argument, and never-moves-here boundary.
 - `docs/backlog/db-resident-settings.md` — build history across slices.
-- `get(kind='skill', id='precis-status')` — per-process runtime facts
-  (build, DB connection, migration state).
+- [[precis-status]] — per-process runtime facts (build, DB connection,
+  migration state).

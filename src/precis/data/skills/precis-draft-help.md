@@ -10,6 +10,8 @@ answers:
   - how do I cite a paper I don't have yet without faking the reference?
 applies-to: get/search/put/edit/delete (kind='draft')
 status: active
+tags: [drafting]
+kinds: [draft]
 ---
 
 # precis-draft-help — author a living document
@@ -77,6 +79,8 @@ call)
 
 Structural ops (`move`/`table`/`authors`) have no diff and reject
 `dry_run`; `sub=` previews by default and commits on `apply=True`.
+
+## Quick reference — move/table/authors grammar, put
 
 **`move=` grammar**
 
@@ -805,22 +809,12 @@ of a held paper) or the export marks a stub + warns.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-citation-help")  # citation kind + verifier workflow
-get(kind="skill", id="precis-paper-help")  # read, cite, search held papers
-get(
-    kind="skill", id="precis-stubs-help"
-)  # request a paper we don't have (acquisition backlog)
-get(kind="skill", id="precis-finding-help")  # flag a claim / chase an un-ingested DOI
-get(
-    kind="skill", id="precis-fisheye-help"
-)  # view='fisheye'/'fisheye+1hop' — a chunk + its neighborhood/reference ring
-get(
-    kind="skill", id="precis-auto-todo-help"
-)  # wait-on-ingest (paper_ingested) leaf pattern
-get(kind="skill", id="precis-taproot-help")  # cite a claim hub (living [fi<id>])
-get(kind="skill", id="precis-taproot-mint-help")  # mint a claim hub
-get(
-    kind="skill", id="precis-taproot-backfill-help"
-)  # backfill [pc<id>]/[pa<id>] cites to hub cites
-```
+- [[precis-citation-help]] — citation kind + verifier workflow.
+- [[precis-paper-help]] — read, cite, search held papers.
+- [[precis-stubs-help]] — request a paper we don't have (acquisition backlog).
+- [[precis-finding-help]] — flag a claim / chase an un-ingested DOI.
+- [[precis-fisheye-help]] — `view='fisheye'`/`'fisheye+1hop'` — a chunk + its neighborhood/reference ring.
+- [[precis-auto-todo-help]] — wait-on-ingest (`paper_ingested`) leaf pattern.
+- [[precis-taproot-help]] — cite a claim hub (living `[fi<id>]`).
+- [[precis-taproot-mint-help]] — mint a claim hub.
+- [[precis-taproot-backfill-help]] — backfill `[pc<id>]`/`[pa<id>]` cites to hub cites.

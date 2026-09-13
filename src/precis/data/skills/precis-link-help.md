@@ -8,6 +8,7 @@ answers:
   - how do I remove a link I added earlier?
   - how do I link two refs at creation time instead of with a separate call?
 applies-to: link (every kind that supports it)
+tags: verbs, addressing
 status: active
 ---
 
@@ -130,9 +131,7 @@ the full tree workflow.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-relations")  # relation vocabulary, per-kind constraints
-get(kind="skill", id="precis-put-help")  # link= on creation
-get(kind="skill", id="precis-tags")  # tags vs links — when to reach for which
-get(kind="skill", id="precis-overview")  # verbs and address grammar
-```
+- [[precis-relations]] — relation vocabulary, per-kind constraints
+- [[precis-put-help]] — link= on creation
+- [[precis-tags]] — tags vs links — when to reach for which
+- [[precis-overview]] — verbs and address grammar

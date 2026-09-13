@@ -8,6 +8,8 @@ answers:
   - how do I fetch a transcript in a specific language?
   - what happens when a video has no transcript?
 applies-to: get (kind='youtube')
+tags: [external-sources]
+kinds: [youtube]
 status: active
 ---
 
@@ -88,8 +90,6 @@ before committing to a fetch when you're unsure which codes work.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-cache")  # TTL and freshness
-get(kind="skill", id="precis-web-help")  # fetch arbitrary URLs
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-cache]] — TTL and freshness
+- [[precis-web-help]] — fetch arbitrary URLs

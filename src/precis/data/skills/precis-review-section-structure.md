@@ -7,6 +7,8 @@ answers:
   - what are the four structural checks for section-structure review?
   - what order should I run the structure checks in?
 applies-to: get (kind='tex'), put (kind='finding')
+tags: troubleshooting
+kinds: tex, finding
 status: active
 ---
 
@@ -136,9 +138,7 @@ Recommended order — saves time if an early check fails badly:
 
 ## See also
 
-```python
-get(kind="skill", id="precis-review-paragraph-flow")  # paragraph-level
-get(kind="skill", id="precis-review-citation-faithfulness")  # claim ↔ source
-get(kind="skill", id="precis-polish-paper")  # runbook tying review passes together
-get(kind="skill", id="precis-finding-help")  # finding shape
-```
+- [[precis-review-paragraph-flow]] — paragraph-level
+- [[precis-review-citation-faithfulness]] — claim ↔ source
+- [[precis-polish-paper]] — runbook tying review passes together
+- [[precis-finding-help]] — finding shape

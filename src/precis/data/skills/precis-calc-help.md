@@ -8,7 +8,9 @@ answers:
   - does calc use degrees or radians by default?
   - what should I do if calc returns an error?
 applies-to: get (kind='calc')
+kinds: [calc]
 status: active
+tags: [workflow]
 ---
 
 # precis-calc-help — exact local math via SymPy

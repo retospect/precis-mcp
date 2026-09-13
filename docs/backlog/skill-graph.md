@@ -155,3 +155,23 @@ server trap); verify against deployed CLI/web, not the session MCP.
   precis-stubs-help delta is main being newer (tags-only paper search
   shipped in 45750371, contradicting the stranded text). Nothing to
   salvage; tree is reap-eligible via the user's reap loop.
+- 2026-09-13 slice-2 post-sweep code round DONE (gripes 338099/338101/
+  338104): frontmatter parser gained YAML flow-sequence (`[a, b]`)
+  support; `CODELESS_KINDS` added to `handle_registry` for provider/
+  stateless/live-adapter kinds (calc/math/provenance/random/web/
+  websearch/perplexity-*/semanticscholar/wikipedia/youtube/email),
+  totality-tested against the live hub (plugin kinds excluded — their
+  own fake-entry-point tests cover them, immune to a dev image lagging
+  a freshly-added `pyproject.toml` handle_codes entry); `kinds:` re-
+  added to the files that omitted it only for lack of a code; synth
+  meta-skill slugs (`precis-help`/`precis-status`/`precis-toc`/`toc`)
+  resolve as valid `[[wikilink]]` targets; `## Related skills`/
+  `Cross-refs:` variant headings normalized to `## See also`
+  `[[slug]]` bullets; ~17 files split at the 4000-char chunk budget
+  (decision 5) that the corpus had never actually been scanned
+  against; `GRAPH_GATES_HARD_FAIL` flipped True, real-corpus zero-
+  findings test pinned in `tests/test_skill_ingest.py`. Scaffold
+  agent + `docs/conventions/skill-authoring-style.md` updated with the
+  tags:/kinds:/wikilink axes (the style doc's own `## See also`
+  skeleton was still teaching the pre-slice-2 `get()`-call convention
+  — fixed alongside).

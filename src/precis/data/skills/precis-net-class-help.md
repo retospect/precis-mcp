@@ -8,6 +8,8 @@ answers:
   - where do net classes come from in a PCB design?
 applies-to: put (kind='pcb') nets[]; drives width / planes / measures
 status: active
+tags: [design]
+kinds: [pcb]
 ---
 
 # precis-net-class-help — a net's name and class carry its meaning

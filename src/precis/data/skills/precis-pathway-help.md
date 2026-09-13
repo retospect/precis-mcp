@@ -10,6 +10,8 @@ answers:
   - how do I compare two candidate pathways to see which is better?
 applies-to: get/put (kind='pathway')
 status: active
+tags: [workflow, troubleshooting]
+kinds: [pathway]
 ---
 
 # precis-pathway-help — reaction pathways (autocatpath)
@@ -239,7 +241,8 @@ above don't change — only what you can put in the config.
 
 ## See also
 
-- `precis-search-help` — grounding levers in the paper corpus.
-- `precis-todo-tree-help` / `precis-decomposition-help` — running a standing
-  optimization campaign on the todo tree.
-- `precis-structure-help` — the atomistic structures behind each intermediate.
+- [[precis-search-help]] — grounding levers in the paper corpus.
+- [[precis-todo-tree-help]] / [[precis-decomposition-help]] — running a
+  standing optimization campaign on the todo tree.
+- [[precis-structure-help]] — the atomistic structures behind each
+  intermediate.

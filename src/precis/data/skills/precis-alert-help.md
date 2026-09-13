@@ -9,6 +9,8 @@ answers:
   - does an alert show up in normal search?
 applies-to: kind='alert'; precis.alerts.raise_alert / resolve_stale_alerts / resolve_alert; /alerts web tab
 status: active
+tags: [troubleshooting]
+kinds: [alert]
 ---
 
 # precis-alert-help — the `alert` kind
@@ -126,7 +128,7 @@ detected condition), but their failure modes DO raise alerts: a
 tool-starved or silent-empty pass raises the per-reviewer sources
 above and auto-resolves on the next real digest.
 
-## Related skills
+## See also
 
-* `precis-nursery-help` — the detector pass that produces most alerts
-* `precis-overview` — the master kinds table
+- [[precis-nursery-help]] — the detector pass that produces most alerts
+- [[precis-overview]] — the master kinds table

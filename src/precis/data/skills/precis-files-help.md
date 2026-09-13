@@ -9,6 +9,8 @@ answers:
   - what's the difference between coordinate addressing and durable-slug addressing?
   - what do I do if a file's slug went stale after an edit?
 applies-to: cross-cutting (file-rooted kinds)
+tags: addressing, verbs, workflow
+kinds: markdown, plaintext, tex, python
 status: active
 ---
 
@@ -263,12 +265,10 @@ nearest matches.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-edit-help")  # universal find-replace + insert grammar
-get(kind="skill", id="precis-markdown-help")  # .md block grammar and recipes
-get(kind="skill", id="precis-plaintext-help")  # .txt / .log specifics
-get(kind="skill", id="precis-tex-help")  # .tex section-aware blocks
-get(kind="skill", id="precis-python-help")  # Python navigation + AST-gated edits
-get(kind="skill", id="precis-relations")  # typed links (file ↔ paper ↔ memory)
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-edit-help]] — universal find-replace + insert grammar
+- [[precis-markdown-help]] — .md block grammar and recipes
+- [[precis-plaintext-help]] — .txt / .log specifics
+- [[precis-tex-help]] — .tex section-aware blocks
+- [[precis-python-help]] — Python navigation + AST-gated edits
+- [[precis-relations]] — typed links (file ↔ paper ↔ memory)

@@ -10,6 +10,8 @@ flavor: persona
 status: active
 applies-to: a review-todo with meta.review ∈ {cites, structure} AND meta.author=true, ticking on a draft section
 last-updated: 2026-07-25
+tags: [workflow, drafting]
+kinds: [draft, citation, todo]
 ---
 
 # precis-review-authoring — the reviewer that fixes when it can ground the fix

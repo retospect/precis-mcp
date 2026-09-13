@@ -9,6 +9,8 @@ answers:
   - which taproot features are live vs still dark?
 applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose
 status: active
+tags: orientation, design
+kinds: finding
 ---
 
 # precis-taproot-help — one claim, many papers, one citable hub
@@ -86,6 +88,8 @@ A compound's **trust** is derived, not absent: worst-of its atoms' own
 trust states (`taproot/trust.py::_compound_trust`, status `hub-compound`)
 — `get(id='fi<id>', view='evidence')` shows a trust label with no direct
 edges underneath, the expected depth-1 rollup, not missing data.
+
+## The evidence model — edge grounding
 
 **Edges are chunk-grounded.** An evidence edge names the *specific
 passage* that supports the claim: supply a supporter's `source_handle`
@@ -175,18 +179,10 @@ conversion.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-taproot-mint-help")  # author, mint, sharpen, merge a hub
-get(
-    kind="skill", id="precis-taproot-backfill-help"
-)  # convert a draft's [pc]/[pa] cites in bulk
-get(kind="skill", id="precis-fisheye-help")  # Claims explosion in the reference ring
-get(
-    kind="skill", id="precis-finding-help"
-)  # finding lifecycle, chase, the evidence view
-get(kind="skill", id="precis-citation-help")  # the inline [pc<id>] cite, write side
-get(kind="skill", id="precis-draft-help")  # authoring prose that cites hubs
-get(
-    kind="skill", id="precis-nanopub-help"
-)  # mint gates + claim-sentence grammar (authoring-scope) + publish pipeline
-```
+- [[precis-taproot-mint-help]] — author, mint, sharpen, merge a hub
+- [[precis-taproot-backfill-help]] — convert a draft's [pc]/[pa] cites in bulk
+- [[precis-fisheye-help]] — Claims explosion in the reference ring
+- [[precis-finding-help]] — finding lifecycle, chase, the evidence view
+- [[precis-citation-help]] — the inline [pc<id>] cite, write side
+- [[precis-draft-help]] — authoring prose that cites hubs
+- [[precis-nanopub-help]] — mint gates + claim-sentence grammar (authoring-scope) + publish pipeline

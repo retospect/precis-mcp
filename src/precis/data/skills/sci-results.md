@@ -6,6 +6,8 @@ answers:
   - how do I write a results section without interpreting the findings?
   - how do I report numbers with proper units and uncertainty?
 status: active
+tags: [drafting]
+kinds: [draft]
 style: sci-results
 role: section
 archetype: prose

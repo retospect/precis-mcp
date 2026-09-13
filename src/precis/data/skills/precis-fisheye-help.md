@@ -9,6 +9,8 @@ answers:
   - does the fisheye neighborhood shape change per kind?
   - why does view='fisheye' on a paper or memory raise Unsupported?
 applies-to: get(kind='draft'|'finding', view=)
+tags: addressing, verbs
+kinds: draft, finding
 status: active
 ---
 
@@ -84,7 +86,7 @@ near this"), `fisheye+1hop` adds the **reference ring** — what the
 section *points at*, one edge out:
 
 - **Cited** — papers / datasheets / patents the section cites
-- **Cross-refs** — other draft/plan chunks it links (`[[dc41]]`)
+- **Cross-refs** — other draft/plan chunks it links (`[dc<id>]`)
 - **Notes** — memories/findings/etc. **linked to** the section (inbound
   edges — `related-to`, `see-also`, `cites`, …)
 - **Claims** (Taproot) — a `[fi<id>]` (or `[pub_id]`) claim-hub cite in
@@ -189,17 +191,9 @@ surroundings rendered around it — live on `draft` and `finding` only
 
 ## See also
 
-```python
-get(kind="skill", id="precis-draft-help")  # draft chunk addressing, editing
-get(kind="skill", id="precis-toc-help")  # the recursive drill-down TOC render
-get(kind="skill", id="precis-get-help")  # the get verb generally
-get(
-    kind="skill", id="precis-paper-help"
-)  # paper chunk handles (pc<id>), citation export
-get(
-    kind="skill", id="precis-relations"
-)  # link relation vocabulary (cites, see-also, …)
-get(
-    kind="skill", id="precis-taproot-help"
-)  # the Claims group's claim hubs, evidence edges
-```
+- [[precis-draft-help]] — draft chunk addressing, editing
+- [[precis-toc-help]] — the recursive drill-down TOC render
+- [[precis-get-help]] — the get verb generally
+- [[precis-paper-help]] — paper chunk handles (pc<id>), citation export
+- [[precis-relations]] — link relation vocabulary (cites, see-also, …)
+- [[precis-taproot-help]] — the Claims group's claim hubs, evidence edges

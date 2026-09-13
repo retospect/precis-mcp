@@ -9,6 +9,8 @@ answers:
 flavor: runbook
 status: active
 applies-to: orchestrating multi-pass paper review before submission
+tags: workflow, troubleshooting
+kinds: paper
 invokes-personas:
   - precis-adversarial-reviewer
   - precis-citation-reviewer
@@ -44,8 +46,8 @@ The two ways to drive it:
 
 Personas this runbook orchestrates:
 
-- [[skill:precis-adversarial-reviewer]] — claims and method.
-- [[skill:precis-citation-reviewer]] — bibliography integrity.
+- [[precis-adversarial-reviewer]] — claims and method.
+- [[precis-citation-reviewer]] — bibliography integrity.
 
 (More personas land here as they're authored —
 flow-and-arc, paragraph-structure, statistics, novelty.)

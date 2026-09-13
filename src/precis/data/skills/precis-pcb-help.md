@@ -9,6 +9,8 @@ answers:
   - how do I read a PCB design as a graph — pins, nets, neighbours?
 applies-to: get/search/put/delete (kind='pcb'); see also kind='part', kind='datasheet'
 status: active
+tags: [design]
+kinds: [pcb]
 ---
 
 # precis-pcb-help — design circuits the LLM can *read*
@@ -94,6 +96,8 @@ put(
     },
 )
 ```
+
+## Author a design — field notes
 
 Field notes:
 - **component**: `refdes` (required), `label`, `part` (an LCSC C-number —

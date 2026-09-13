@@ -10,6 +10,8 @@ answers:
   - how do I find which ingested papers cite a given DOI?
 applies-to: get(kind='paper', id='<DOI>')
 status: active
+tags: [addressing]
+kinds: [paper]
 ---
 
 # precis-doi-resolution — resolve a DOI to a paper at the agent boundary
@@ -106,9 +108,7 @@ Searching a DOI string finds papers that *mention* it in body text
 
 ## See also
 
-```python
-get(kind="skill", id="precis-paper-help")  # slug grammar, views, chunk selectors
-get(kind="skill", id="precis-finding-help")  # chase pipeline for un-ingested DOIs
-get(kind="skill", id="precis-search-help")  # query mechanics
-get(kind="skill", id="precis-citation-help")  # verifier workflow for writing
-```
+- [[precis-paper-help]] — slug grammar, views, chunk selectors.
+- [[precis-finding-help]] — chase pipeline for un-ingested DOIs.
+- [[precis-search-help]] — query mechanics.
+- [[precis-citation-help]] — verifier workflow for writing.

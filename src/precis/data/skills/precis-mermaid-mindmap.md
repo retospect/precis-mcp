@@ -5,6 +5,8 @@ summary: a mermaid mindmap — a central idea branching into a tree of sub-topic
 answers:
   - how do I draw a mind map / concept map for brainstorming?
 applies-to: kind='mermaid'
+tags: [orientation, drafting]
+kinds: [mermaid]
 status: active
 ---
 A **mindmap** branches a central idea into a tree of sub-topics — a

@@ -64,6 +64,19 @@ VALID_TAGS: Final[tuple[str, ...]] = (
 #: convention skill slugs already follow.
 WIKILINK_RE: Final[re.Pattern[str]] = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]")
 
+#: Slugs synthesised at runtime rather than served from a markdown file
+#: (``handlers/skill.py::SkillHandler._SYNTHESIZED_SKILLS`` is the
+#: authoritative content; kept as a private copy here — same rationale as
+#: :data:`WIKILINK_RE` above — since ``skill.py`` imports from this module
+#: and importing back would cycle). A ``[[slug]]`` targeting one of these
+#: is a valid wikilink, not a dangling link: the ingest gate
+#: (``ingest/skill_ingest.py``) and the graph resolve against file stems
+#: **union** this set. ``tests/test_skill_common.py`` pins parity against
+#: ``skill.py`` so the two can't drift.
+SYNTH_SKILL_SLUGS: Final[frozenset[str]] = frozenset(
+    {"precis-help", "precis-status", "precis-toc", "toc"}
+)
+
 
 class FrontmatterError(ValueError):
     """Raised on a hard-fail static gate (decision 7 / 9 / 13)."""
@@ -209,7 +222,13 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     invokes-personas: precis-adversarial-reviewer, precis-citation-reviewer
     ```
 
-    ``tags:`` and ``kinds:`` accept the same two list shapes. Raises
+    Or inline YAML flow-sequence, including a single-item list:
+    ```
+    invokes-personas: [precis-adversarial-reviewer, precis-citation-reviewer]
+    tags: [orientation]
+    ```
+
+    ``tags:`` and ``kinds:`` accept the same three list shapes. Raises
     :class:`FrontmatterError` when ``flavor:`` is set to a value
     outside :data:`VALID_FLAVORS` (the only *hard-fail* validation
     that happens here). ``tags:``/``kinds:`` membership validation
@@ -271,9 +290,16 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
             current_list_key = key
             continue
 
-        # Inline comma-separated list, only for keys we know take lists.
+        # Inline list, only for keys we know take lists. Two inline
+        # shapes: bare comma-separated (``a, b``) and YAML flow-sequence
+        # (``[a, b]``, incl. single-item ``[x]``) — the bracket form is
+        # stripped before splitting so both parse identically.
         list_keys = {"invokes-personas", "invokes_personas", "answers", "tags", "kinds"}
-        if key in list_keys and "," in val:
+        if key in list_keys and val.startswith("[") and val.endswith("]"):
+            inner = val[1:-1].strip()
+            items = [v.strip().strip("\"'") for v in inner.split(",")] if inner else []
+            raw[key] = tuple(v for v in items if v)
+        elif key in list_keys and "," in val:
             items = [v.strip().strip("\"'") for v in val.split(",")]
             raw[key] = tuple(v for v in items if v)
         else:

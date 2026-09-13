@@ -8,6 +8,8 @@ answers:
   - how do I search materials by a property range, like thermal conductivity under 0.05?
   - how do I record an uncertainty band on a property value?
 applies-to: get/put/search (kind='material')
+tags: design, external-sources
+kinds: material
 status: active
 ---
 

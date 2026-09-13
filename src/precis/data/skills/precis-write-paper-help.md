@@ -7,6 +7,8 @@ answers:
   - what output format should a paper-writing pass produce?
   - how does the verifier loop hand off after I finish a writing pass?
 applies-to: get/search (kind='paper'|'chunk'|'memory'|'citation'), put (kind='citation')
+tags: [drafting]
+kinds: [paper, memory, citation]
 status: active
 ---
 

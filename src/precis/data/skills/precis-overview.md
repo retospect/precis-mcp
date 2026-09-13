@@ -10,6 +10,7 @@ answers:
   - which skill do I need for a given kind?
 applies-to: all
 status: active
+tags: [orientation, verbs]
 ---
 
 # precis-overview — seven verbs, one address scheme
@@ -58,6 +59,10 @@ name/path.
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
 | `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. See `precis-draft-help`. | store |
 | `plan` | `po3` | A thread's reasoning outline — hierarchical todo-list + notes, never exported. One per project (`plan-of` link). See `precis-plan-help`. | store |
+## The ref kinds, continued — designs and materials
+
+| Kind | Example id | What | Needs |
+|---|---|---|---|
 | `make` | `mt3` | A make-tree: assembly/synthesis ORDER for a design — first-class steps (`mk<id>`) with conditions in meta; blocks align via `made-by` links from the design side. See `precis-cad-help`. | store |
 | `figure` | `fg7` | Interactive SVG canvas you draw *with* the model — a chunk-tree, never exported, rendered in the browser (`/figure`). See `precis-figure-help`. | store |
 | `mermaid` | `mm7` | A mermaid diagram you draw *with* the model (flowchart / sequence / state / class …), never exported. Web editor `/mermaid`; each diagram type has a `precis-mermaid-<type>` skill. See `precis-mermaid-help`. | store |
@@ -69,6 +74,10 @@ name/path.
 | `material` | `ma7` | Engineering material properties store — sourced values per property, canonical-units-only; `search(property=, min=, max=)` filters by range. See `precis-material-help`. | store |
 | `rxn` | `rx7` | Reaction-fact store — one transformation plus every reported yield/condition, each sourced to a paper or patent. MANY rows per (reaction, property) is the point: the spread IS the answer, never an average. `search(property='yield', reaction_class=)` is the precedent read. Distinct from `route` (a planned synthesis) and `pathway` (a computed surface network). See `precis-rxn-help`. | store |
 | `component` | `cp7` | General procurable-part store (bolt/hose/pipe/beam/gasket/bearing/adhesive/electronic part) — sourced per-spec values, canonical-units-only. Distinct from `part` (the JLCPCB/LCSC ingest-only catalog). See `precis-component-help`. | store |
+## The ref kinds, continued — operational and reasoning kinds
+
+| Kind | Example id | What | Needs |
+|---|---|---|---|
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
 | `md` | `docs/backlog/some-item.md~Motivation` | Read-only, DB-free hybrid search over configured markdown roots (docs, backlog, skills prose) | `PRECIS_MD_ROOTS` |
 | `folder` | `fo12` | Organizational container for authored artifacts — single-parent placement via `link(rel='parent')`; `search(folder=...)` scopes to the subtree. See `precis-folder-help`. | store |
@@ -217,37 +226,21 @@ shows up in output and is ambiguous:
 
 ## See also
 
-```python
-get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-tags")  # axis vocabulary
-get(kind="skill", id="precis-relations")  # link vocabulary
-get(kind="skill", id="precis-cache")  # paid-tool caching, TTLs
-get(kind="skill", id="precis-paper-help")  # paper views, citation export
-get(kind="skill", id="precis-files-help")  # shared file-backed address grammar
-get(kind="skill", id="precis-addressing-help")  # handle format, relative grammar, type codes
-get(kind="skill", id="precis-toc-help")  # TOC navigation, sub-range zoom
-get(
-    kind="skill", id="precis-fisheye-help"
-)  # view='fisheye'/'fisheye+1hop' — read a chunk with its neighborhood
-get(kind="skill", id="precis-random-help")  # random corpus pick
-get(kind="skill", id="precis-folder-help")  # folders, placement, folder= search scope
-get(kind="skill", id="precis-taproot-help")  # cross-paper claim hubs, living citation
-get(
-    kind="skill", id="precis-taproot-mint-help"
-)  # author/mint/sharpen/merge a claim hub
-get(
-    kind="skill", id="precis-taproot-backfill-help"
-)  # batch-convert [pc]/[pa] cites into hub cites
-get(
-    kind="skill", id="precis-notation-canon"
-)  # how to spell numbers/units in a claim sentence (blocks at approve)
-get(
-    kind="skill", id="precis-gripe-help"
-)  # hit a bug / tool friction? file a gripe (search existing first)
-get(
-    kind="skill", id="precis-audio-help"
-)  # narrate a draft to audio: voice score + pronunciation lexicon
-get(
-    kind="skill", id="precis-lab-help"
-)  # in-silico lab: chain route/protein/structure/literature toward a research goal
-```
+- [[precis-search-help]] — search mechanics
+- [[precis-tags]] — axis vocabulary
+- [[precis-relations]] — link vocabulary
+- [[precis-cache]] — paid-tool caching, TTLs
+- [[precis-paper-help]] — paper views, citation export
+- [[precis-files-help]] — shared file-backed address grammar
+- [[precis-addressing-help]] — handle format, relative grammar, type codes
+- [[precis-toc-help]] — TOC navigation, sub-range zoom
+- [[precis-fisheye-help]] — view='fisheye'/'fisheye+1hop' — read a chunk with its neighborhood
+- [[precis-random-help]] — random corpus pick
+- [[precis-folder-help]] — folders, placement, folder= search scope
+- [[precis-taproot-help]] — cross-paper claim hubs, living citation
+- [[precis-taproot-mint-help]] — author/mint/sharpen/merge a claim hub
+- [[precis-taproot-backfill-help]] — batch-convert [pc]/[pa] cites into hub cites
+- [[precis-notation-canon]] — how to spell numbers/units in a claim sentence (blocks at approve)
+- [[precis-gripe-help]] — hit a bug / tool friction? file a gripe (search existing first)
+- [[precis-audio-help]] — narrate a draft to audio: voice score + pronunciation lexicon
+- [[precis-lab-help]] — in-silico lab: chain route/protein/structure/literature toward a research goal

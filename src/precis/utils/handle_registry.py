@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import re
 from importlib.metadata import entry_points
+from typing import Final
 
 log = logging.getLogger(__name__)
 
@@ -192,6 +193,31 @@ _FILE_BACKED_KINDS = frozenset({"skill", "python", "md"})
 # are refs-backed and resolve normally.
 _OTHER_TABLE_KINDS = frozenset({"tag", "part"})
 
+# --- codeless kinds (providers / stateless tools / live adapters) ---------
+# Registered handler kinds (``dispatch.boot()``) that are never addressed by
+# a computed ``<code><pk>`` handle — no row, so nothing to encode. Curated
+# (not derived) because these kinds are a closed, deliberate set; totality
+# in the OTHER direction — every *registered* kind is either handle-coded or
+# listed here — is enforced by ``tests/test_handle_registry.py`` against the
+# live hub, so this tuple can't silently rot as new codeless kinds land.
+CODELESS_KINDS: Final[tuple[str, ...]] = (
+    # stateless compute / lookups
+    "calc",
+    "math",
+    "provenance",
+    "random",
+    # web/document providers, addressed by URL or query, not a stored pk
+    "web",
+    "websearch",
+    "perplexity-reasoning",
+    "perplexity-research",
+    "semanticscholar",
+    "wikipedia",
+    "youtube",
+    # live adapter — IMAP is the source of truth, addressed by folder/uid
+    "email",
+)
+
 #: Codes whose body is the row's decimal primary key and which
 #: :func:`parse` can decode to a ``(kind, is_chunk, pk)`` triple —
 #: every record code except the file-backed / other-table kinds, plus
@@ -275,9 +301,11 @@ def _kind_codes() -> dict[str, str]:
 
 def is_known_kind(kind: str) -> bool:
     """True if ``kind`` is in the full registry — built-ins *plus*
-    plugin-contributed kinds. Validators must use this rather than the
-    raw :data:`KIND_CODES` module dict, which is built-ins only."""
-    return kind in _kind_codes()
+    plugin-contributed kinds *plus* :data:`CODELESS_KINDS` (registered
+    provider/stateless kinds with no handle code). Validators must use
+    this rather than the raw :data:`KIND_CODES` module dict, which is
+    built-ins only and excludes codeless kinds entirely."""
+    return kind in _kind_codes() or kind in CODELESS_KINDS
 
 
 def _chunk_codes() -> dict[str, str]:

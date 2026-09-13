@@ -8,6 +8,8 @@ answers:
   - how do I leave a note about how a model performed?
   - what's the difference between meta.llm_tier and a specific model?
 applies-to: get/search/put (append a review)/tag/link (kind='llm')
+tags: verbs, workflow
+kinds: llm
 status: active
 ---
 
@@ -115,7 +117,5 @@ link(kind="llm", id="claude-opus-4-8", target="memory:me812", rel="see-also")
 
 ## See also
 
-```python
-get(kind="skill", id="precis-minter-help")  # meta.llm_tier → minter worker → model
-get(kind="skill", id="precis-todo-tree-help")  # facet vocabulary on the todo tree
-```
+- [[precis-minter-help]] — meta.llm_tier → minter worker → model
+- [[precis-todo-tree-help]] — facet vocabulary on the todo tree

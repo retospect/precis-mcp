@@ -6,6 +6,8 @@ answers:
   - how do I write a discussion section that interprets results without overclaiming?
   - how do I state limitations honestly in a discussion section?
 status: active
+tags: [drafting]
+kinds: [draft]
 style: sci-discussion
 role: section
 archetype: prose

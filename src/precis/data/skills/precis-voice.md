@@ -7,6 +7,8 @@ answers:
   - how do I handle Japanese or mixed-script narration?
   - what are the two standing voice profiles I can use?
 applies-to: draft narration (render_narration / export_audio, kind='draft')
+tags: [drafting]
+kinds: [draft]
 status: active
 ---
 
@@ -70,6 +72,8 @@ unspeakable. Rewrite:
 - a file path or URL → describe it ("the config file", "the project page"), don't
   voice it
 - a backslash line break or LaTeX crumb → delete it; write the sentence out
+
+## How do I make an audio draft? — rules 4-6
 
 ### 4. Flowing prose only — no lists, tables, code, figures
 
@@ -221,12 +225,8 @@ by URL over Tailscale). Set the draft's default voice per profile
 This skill is the **craft** (how to write speakable prose + the standing
 profiles). For the **mechanism** — audio as a cross-cutting export layer, the
 `precis draft audio` CLI, per-chunk `meta.voice`/`meta.lang`, and the two-level
-pronunciation lexicon — see `precis-audio-help`.
+pronunciation lexicon — see [[precis-audio-help]].
 
-```python
-get(
-    kind="skill", id="precis-audio-help"
-)  # the mechanism: narrate a draft, lexicon, feed
-get(kind="skill", id="precis-cloze")  # authoring recall cards (the active complement)
-get(kind="skill", id="precis-overview")  # kinds + skills index
-```
+- [[precis-audio-help]] — the mechanism: narrate a draft, lexicon, feed
+- [[precis-cloze]] — authoring recall cards (the active complement)
+- [[precis-overview]] — kinds + skills index

@@ -10,6 +10,8 @@ flavor: persona
 status: active
 applies-to: paper review via scripts/review-paper/run.sh
 last-updated: 2026-06-05
+tags: [workflow]
+kinds: [paper]
 ---
 
 # precis-adversarial-reviewer — adversarial paper reviewer

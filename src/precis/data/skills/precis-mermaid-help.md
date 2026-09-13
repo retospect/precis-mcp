@@ -8,6 +8,8 @@ answers:
   - how do I validate, render, or export a mermaid diagram?
   - how do I draw a mermaid diagram together with the model in the browser?
 applies-to: kind='mermaid'
+tags: [orientation, verbs]
+kinds: [mermaid]
 status: active
 ---
 

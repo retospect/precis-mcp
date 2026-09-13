@@ -8,6 +8,7 @@ answers:
   - how do I create a new markdown, plaintext, or tex file?
   - how do I import a Perplexity report I already paid for in the web UI?
 applies-to: put (every kind that supports it)
+tags: verbs
 status: active
 ---
 
@@ -216,15 +217,11 @@ Same trick works for any read-only kind.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # seven verbs, address grammar
-get(kind="skill", id="precis-edit-help")  # sub-region rewrites of existing refs
-get(
-    kind="skill", id="precis-delete-help"
-)  # soft-delete numeric refs, region delete on files
-get(kind="skill", id="precis-tag-help")  # tag vocabulary and axis gating
-get(kind="skill", id="precis-link-help")  # relation vocabulary
-get(kind="skill", id="precis-citation-help")  # verifier-workflow citation shape
-get(kind="skill", id="precis-perplexity-help")  # mode='import' for paid kinds
-get(kind="skill", id="precis-files-help")  # file-kind addressing
-```
+- [[precis-overview]] — seven verbs, address grammar
+- [[precis-edit-help]] — sub-region rewrites of existing refs
+- [[precis-delete-help]] — soft-delete numeric refs, region delete on files
+- [[precis-tag-help]] — tag vocabulary and axis gating
+- [[precis-link-help]] — relation vocabulary
+- [[precis-citation-help]] — verifier-workflow citation shape
+- [[precis-perplexity-help]] — mode='import' for paid kinds
+- [[precis-files-help]] — file-kind addressing

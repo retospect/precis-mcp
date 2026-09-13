@@ -9,6 +9,8 @@ answers:
   - what happens to a paper's own inline [N] reference markers?
 applies-to: drafting prose; put (kind='citation'), get (kind='citation')
 status: active
+tags: [drafting]
+kinds: [citation]
 ---
 
 # precis-citation-help — cite a paper inline
@@ -181,21 +183,11 @@ trust-state flip.
 
 ## See also
 
-```python
-get(
-    kind="skill", id="precis-cite-paper-help"
-)  # the cite-a-paper router (in/out of corpus, which branch)
-get(
-    kind="skill", id="precis-check-source-help"
-)  # reader side: find the chunk, read surrounds, judge support
-get(
-    kind="skill", id="precis-finding-help"
-)  # chase side: claim → primary source, cite [fi<id>] meanwhile
-get(kind="skill", id="precis-search-help")  # find the chunk handle to cite
-get(kind="skill", id="precis-paper-help")  # fetch chunks; pc<id> / ~N grammar
-get(kind="skill", id="precis-link-help")  # cites and other graph relations
-get(
-    kind="skill", id="precis-taproot-help"
-)  # cross-paper claim hubs, [fi<id>] living citation
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-cite-paper-help]] — the cite-a-paper router (in/out of corpus, which branch).
+- [[precis-check-source-help]] — reader side: find the chunk, read surrounds, judge support.
+- [[precis-finding-help]] — chase side: claim → primary source, cite `[fi<id>]` meanwhile.
+- [[precis-search-help]] — find the chunk handle to cite.
+- [[precis-paper-help]] — fetch chunks; `pc<id>` / `~N` grammar.
+- [[precis-link-help]] — cites and other graph relations.
+- [[precis-taproot-help]] — cross-paper claim hubs, `[fi<id>]` living citation.
+- [[precis-overview]] — verbs and kinds.

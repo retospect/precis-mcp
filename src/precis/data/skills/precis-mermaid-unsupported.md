@@ -6,6 +6,8 @@ answers:
   - can precis render a sankey or block diagram?
   - what should I use instead of an unsupported mermaid diagram type?
 applies-to: kind='mermaid'
+tags: [troubleshooting]
+kinds: [mermaid]
 status: active
 ---
 The in-process render engine (mermaidx / QuickJS, no browser DOM) **cannot

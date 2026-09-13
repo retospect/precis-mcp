@@ -9,6 +9,8 @@ answers:
 flavor: runbook
 status: active
 applies-to: search/get (kind='paper','web'); put (kind='plan','todo','finding','memory')
+tags: workflow, external-sources
+kinds: paper, web, plan, todo, finding, memory
 ---
 
 # precis-replication — plan a replication check for a paper's claim
@@ -94,11 +96,9 @@ own plan or notes.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-plan-help")  # the reasoning-outline kind
-get(kind="skill", id="precis-finding-help")  # register a mismatch as a citation target
-get(kind="skill", id="precis-ml-recipe")  # extracting a recipe in more depth
-get(kind="skill", id="precis-web-help")  # fetch the paper's code repo
-get(kind="skill", id="precis-todo-tree-help")  # dispatch execution as a todo
-get(kind="skill", id="precis-minter-help")  # meta.executor for automated dispatch
-```
+- [[precis-plan-help]] — the reasoning-outline kind
+- [[precis-finding-help]] — register a mismatch as a citation target
+- [[precis-ml-recipe]] — extracting a recipe in more depth
+- [[precis-web-help]] — fetch the paper's code repo
+- [[precis-todo-tree-help]] — dispatch execution as a todo
+- [[precis-minter-help]] — meta.executor for automated dispatch

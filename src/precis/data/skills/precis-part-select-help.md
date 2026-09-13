@@ -8,6 +8,8 @@ answers:
   - how do I pick parts for a typical board function, like decoupling or an MCU?
 applies-to: get/search (kind='part'); feeds put (kind='pcb')
 status: active
+tags: [design]
+kinds: [part, pcb]
 ---
 
 # precis-part-select-help — pick parts that JLCPCB can actually build

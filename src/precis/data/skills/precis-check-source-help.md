@@ -9,6 +9,8 @@ answers:
   - how is reviewing someone else's citation different from finding my own?
 applies-to: get/search (kind='paper'), drafting prose, put (kind='finding')
 status: active
+tags: [drafting]
+kinds: [paper, finding]
 ---
 
 # precis-check-source-help — does the source actually support the point?
@@ -135,13 +137,9 @@ pass is [[precis-review-citation-faithfulness]].
 
 ## See also
 
-```python
-get(
-    kind="skill", id="precis-citation-help"
-)  # write side: the inline [pc<id>] cite + optional record
-get(kind="skill", id="precis-cite-paper-help")  # the cite-a-paper router
-get(kind="skill", id="precis-paper-help")  # ~A..B grammar, TOC, scoped search
-get(kind="skill", id="precis-finding-help")  # chase a claim to its primary source
-get(kind="skill", id="precis-review-citation-faithfulness")  # batch faithfulness review
-get(kind="skill", id="precis-search-help")  # search mechanics, excerpt vs chunk
-```
+- [[precis-citation-help]] — write side: the inline `[pc<id>]` cite + optional record.
+- [[precis-cite-paper-help]] — the cite-a-paper router.
+- [[precis-paper-help]] — `~A..B` grammar, TOC, scoped search.
+- [[precis-finding-help]] — chase a claim to its primary source.
+- [[precis-review-citation-faithfulness]] — batch faithfulness review.
+- [[precis-search-help]] — search mechanics, excerpt vs chunk.

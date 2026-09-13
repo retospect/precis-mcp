@@ -6,6 +6,8 @@ answers:
   - how do I write a research-paper abstract?
   - when should I write the abstract relative to the rest of the paper?
 status: active
+tags: [drafting]
+kinds: [draft]
 style: sci-abstract
 role: section
 archetype: prose

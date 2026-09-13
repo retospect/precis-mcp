@@ -8,6 +8,8 @@ answers:
   - what do I do when the corpus is thin on a topic?
   - when should I split a research task into sibling subtasks?
 applies-to: get/search (kind='paper'|'chunk'|'memory'|'citation'), put (kind='citation')
+tags: workflow, external-sources
+kinds: paper, memory, citation
 status: active
 ---
 

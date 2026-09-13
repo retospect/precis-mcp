@@ -6,6 +6,8 @@ answers:
   - why does the first line of a memory or todo matter so much?
   - what's the actionable-axis pattern for something that points forward?
 applies-to: put (kind='memory'/'todo'/'gripe')
+tags: drafting
+kinds: memory, todo, gripe
 status: active
 ---
 
@@ -82,8 +84,6 @@ No dangling "this / that / it" — name the thing.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-memory-help")  # memory capture mechanics
-get(kind="skill", id="precis-todo-tree-help")  # todo shapes + GTD next-action
-get(kind="skill", id="precis-gripe-help")  # the bug tracker
-```
+- [[precis-memory-help]] — memory capture mechanics
+- [[precis-todo-tree-help]] — todo shapes + GTD next-action
+- [[precis-gripe-help]] — the bug tracker

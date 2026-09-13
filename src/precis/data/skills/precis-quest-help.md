@@ -9,6 +9,8 @@ answers:
   - how is a quest different from a todo — why does it never go done?
   - how do I know a barrier number is trustworthy before I rank candidates or cite it?
 applies-to: get/search/put/delete/tag/link (kind='quest')
+tags: workflow
+kinds: quest
 status: active
 ---
 
@@ -258,6 +260,8 @@ you expect to find, not as a question — *"subsurface H co-doping on
 Pd(111) lowers NO dissociation barrier"*, not *"does H help?"*. Search
 matches statements; [[precis-search-help]]'s `answers=` legs are the
 same move for papers.
+
+## A research tick
 
 A **research tick** is one bounded step of the (future) autonomous loop:
 it reads the quest's rolling context (statement + dossier + gaps +

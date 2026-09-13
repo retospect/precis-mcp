@@ -7,6 +7,8 @@ answers:
   - how do I capture an unpublished writeup or course notes?
   - how do I find a specific slide or paragraph in a stored deck?
 applies-to: get/search/put/tag/link (kind='pres')
+tags: addressing, drafting
+kinds: pres
 status: active
 ---
 
@@ -147,9 +149,7 @@ tag(
 
 ## See also
 
-```python
-get(kind="skill", id="precis-overview")  # verbs and kinds
-get(kind="skill", id="precis-search-help")  # search mechanics
-get(kind="skill", id="precis-paper-help")  # academic papers (cite_key shape)
-get(kind="skill", id="precis-relations")  # cites, derived-from, supports
-```
+- [[precis-overview]] — verbs and kinds
+- [[precis-search-help]] — search mechanics
+- [[precis-paper-help]] — academic papers (cite_key shape)
+- [[precis-relations]] — cites, derived-from, supports

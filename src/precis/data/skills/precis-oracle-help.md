@@ -10,6 +10,8 @@ answers:
   - how do I look up a specific oracle entry, like I-Ching hexagram 49?
 applies-to: get/search/tag/link (kind='oracle')
 status: active
+tags: [orientation, addressing]
+kinds: [oracle]
 ---
 
 # precis-oracle-help — consult an oracle
@@ -164,9 +166,7 @@ The oracle perturbs; the decision is still yours.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-random-help")  # random pick from the whole corpus
-get(kind="skill", id="precis-citation-help")  # quote oracle entries with provenance
-get(kind="skill", id="precis-memory-help")  # log the decision an oracle helped make
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-random-help]] — random pick from the whole corpus
+- [[precis-citation-help]] — quote oracle entries with provenance
+- [[precis-memory-help]] — log the decision an oracle helped make
+- [[precis-overview]] — verbs and kinds

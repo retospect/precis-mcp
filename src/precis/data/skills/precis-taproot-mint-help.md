@@ -10,6 +10,8 @@ answers:
   - how do I merge two claim hubs that say the same thing?
 applies-to: put/link/edit(kind='finding') hub-authoring doors; precis taproot mint / refine (CLI equivalents)
 status: active
+tags: workflow, design
+kinds: finding
 ---
 
 # precis-taproot-mint-help — turn a sourced claim into a citable hub
@@ -159,6 +161,8 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   synthesis identifies…", "Meta-analysis of…"), which makes the review
   the primary. Remedies: re-ground in the primary, drop the review
   edge, or mint explicitly hanging.
+
+## What makes a mintable claim — soft flags and claim sorts
 
 **Soft flags — mint, but expect review:**
 
@@ -330,6 +334,8 @@ quote the most distinctive phrase you have. [[precis-check-source-help]]
 is the full find → read-surrounds → judge loop; run it before attaching,
 not after.
 
+## Mint a claim hub — link what you find, and the batch CLI
+
 **What you link is what the next agent can see, and that is a smaller
 world than you think.** Measured over the live claim cohort
 (2026-08-24, n=60): of the claims that no later pass could repair —
@@ -475,9 +481,7 @@ it's gone.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-taproot-help")  # what a hub is; citing [fi<id>]
-get(kind="skill", id="precis-notation-canon")  # claim-sentence notation rules
-get(kind="skill", id="precis-nanopub-help")  # mint gates + publish pipeline
-get(kind="skill", id="precis-finding-help")  # non-hub finding modes
-```
+- [[precis-taproot-help]] — what a hub is; citing [fi<id>]
+- [[precis-notation-canon]] — claim-sentence notation rules
+- [[precis-nanopub-help]] — mint gates + publish pipeline
+- [[precis-finding-help]] — non-hub finding modes

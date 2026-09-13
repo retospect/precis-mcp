@@ -8,6 +8,8 @@ answers:
   - what should I pull out of a datasheet and where does it go?
 applies-to: get/search (kind='datasheet'); feeds pcb net-class + measures
 status: active
+tags: [design]
+kinds: [datasheet, pcb, part]
 ---
 
 # precis-datasheet-help — turn a datasheet into design decisions

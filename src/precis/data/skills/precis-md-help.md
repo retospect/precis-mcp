@@ -9,6 +9,8 @@ answers:
   - why does a search say "lexical only" or show a percentage?
   - how is this different from kind='markdown'?
 applies-to: get/search (kind='md')
+tags: [addressing, troubleshooting]
+kinds: [md]
 status: active
 ---
 
@@ -90,8 +92,6 @@ without ingesting them. Use `markdown` to author corpus notes; use
 
 ## See also
 
-```python
-get(kind="skill", id="precis-python-help")  # sibling DB-free index, over code
-get(kind="skill", id="precis-markdown-help")  # the DB-backed, writable markdown kind
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-python-help]] — sibling DB-free index, over code
+- [[precis-markdown-help]] — the DB-backed, writable markdown kind
+- [[precis-overview]] — verbs and kinds

@@ -9,6 +9,8 @@ answers:
   - how do I resolve a finding with multiple candidate sources?
   - how do I use a finding's handle in my draft?
 applies-to: put / get / search (kind='finding')
+tags: external-sources, workflow, troubleshooting
+kinds: finding
 status: active
 ---
 
@@ -434,13 +436,9 @@ citing chunk directly for its "Cites (verified):" sidecar. See
 
 ## See also
 
-```python
-get(kind="skill", id="precis-citation-help")  # verifier-write side of citations
-get(kind="skill", id="precis-paper-help")  # chunk-handle grammar (~N, ~A..B)
-get(kind="skill", id="precis-search-help")  # query mechanics
-get(kind="skill", id="precis-bibliography-help")  # who cites this paper
-get(
-    kind="skill", id="precis-taproot-help"
-)  # claim hubs, evidence edges, living citation
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-citation-help]] — verifier-write side of citations
+- [[precis-paper-help]] — chunk-handle grammar (~N, ~A..B)
+- [[precis-search-help]] — query mechanics
+- [[precis-bibliography-help]] — who cites this paper
+- [[precis-taproot-help]] — claim hubs, evidence edges, living citation
+- [[precis-overview]] — verbs and kinds

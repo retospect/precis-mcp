@@ -9,6 +9,8 @@ answers:
   - what chunk-level tag axes exist?
 applies-to: tag (kind='paper'), search (tags=, kind='paper')
 status: active
+tags: [workflow]
+kinds: [paper]
 ---
 
 # precis-paper-tag-axes — paper auto-tagging taxonomy
@@ -104,6 +106,8 @@ than running them to `n-a`).
 | `interfacial` | conduction at an interface or grain boundary |
 | `unknown` | studies transport but the geometry isn't pinned down |
 | `n-a` | electrical property but no transport-path geometry (e.g. dielectric) |
+
+## Auto-tagging vocabulary for papers — studytype, material
 
 ### `studytype:` — epistemic mode: how the paper knows  *(all papers)*
 
@@ -255,9 +259,7 @@ chunks. Design: `chunk-classifier-cascade` (git-only).
 
 ## See also
 
-```python
-get(kind="skill", id="precis-tags")  # closed axes (SRC, CACHE), validation
-get(kind="skill", id="precis-paper-help")  # find, read, cite papers
-get(kind="skill", id="precis-search-help")  # tags= filter mechanics
-get(kind="skill", id="precis-tag-help")  # the tag verb itself
-```
+- [[precis-tags]] — closed axes (SRC, CACHE), validation
+- [[precis-paper-help]] — find, read, cite papers
+- [[precis-search-help]] — tags= filter mechanics
+- [[precis-tag-help]] — the tag verb itself

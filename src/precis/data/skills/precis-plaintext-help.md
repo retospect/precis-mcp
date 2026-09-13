@@ -7,6 +7,8 @@ answers:
   - how do I create or append to a plaintext file?
   - how do I make a surgical find-replace edit inside one paragraph of a log?
 applies-to: get/search/put/edit/delete (kind='plaintext')
+tags: addressing, drafting
+kinds: plaintext
 status: active
 ---
 
@@ -137,10 +139,8 @@ Full edit grammar lives in `precis-edit-help`.
 
 ## See also
 
-```python
-get(kind="skill", id="precis-files-help")  # shared address grammar, write modes
-get(kind="skill", id="precis-edit-help")  # find-replace + insert
-get(kind="skill", id="precis-markdown-help")  # use this for structured notes
-get(kind="skill", id="precis-tex-help")  # .tex files
-get(kind="skill", id="precis-overview")  # verbs and kinds
-```
+- [[precis-files-help]] — shared address grammar, write modes
+- [[precis-edit-help]] — find-replace + insert
+- [[precis-markdown-help]] — use this for structured notes
+- [[precis-tex-help]] — .tex files
+- [[precis-overview]] — verbs and kinds
