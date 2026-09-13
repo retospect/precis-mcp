@@ -1531,6 +1531,9 @@ async def send_remarkable_route(request: Request, ident: str) -> Response:
     params: dict[str, Any] = {"draft": slug}
     if login:
         params["user"] = login
+    form = await request.form()
+    if str(form.get("placeholder_figures") or "") in {"1", "true", "on"}:
+        params["placeholder_figures"] = True
     return await redirect_or_error(
         request,
         "put",

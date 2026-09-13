@@ -285,6 +285,22 @@ def test_focus_index_defaults_to_first_body_chunk() -> None:
     assert focus_index(nodes, "dc999") == 1  # stale handle → default
 
 
+def test_focus_index_default_skips_a_leading_glossary() -> None:
+    # A draft that opens with a Glossary section: the default focus lands on
+    # the first PROSE chunk, not a term leaf — an explicit term handle still
+    # wins, and an all-term body degrades to the first term.
+    nodes = [
+        _node(0, ["t"], kind="heading"),
+        _node(1, ["g"], kind="term"),
+        _node(2, ["g"], kind="term"),
+        _node(3, ["a"]),
+    ]
+    assert focus_index(nodes, None) == 3  # skips heading + glossary terms
+    assert focus_index(nodes, "dc101") == 1  # explicit term handle wins
+    all_terms = nodes[:3]
+    assert focus_index(all_terms, None) == 1  # no prose → first body chunk
+
+
 # ── the whole view (real store) ───────────────────────────────────────
 
 

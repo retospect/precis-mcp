@@ -715,9 +715,15 @@
        ``sticky`` wrapper (not each individually sticky) — the grid only
        expects a single child per column; a second top-level sticky div here
        would wrap onto a 4th, unstyled grid row instead of stacking in the
-       right column. ── #}
-  <div class="sticky top-2 self-start space-y-2">
-    <div id="claim-pane" class="hidden rounded border border-violet-200 bg-violet-50">
+       right column. The rail is a viewport-capped flex column: the
+       Collaborate CONTENT scrolls (min-h-0 + overflow-y-auto below) while the
+       claim pane and the Tools pane stay pinned, so export/meta/actions are
+       reachable without scrolling the document past a long claims/thread
+       list. The overflow container deliberately excludes the Tools pane —
+       its upward-opening popovers aren't teleported and an overflow ancestor
+       would clip them. ── #}
+  <div class="sticky top-2 flex max-h-[calc(100vh-1rem)] flex-col gap-2 self-start">
+    <div id="claim-pane" class="hidden shrink-0 rounded border border-violet-200 bg-violet-50">
       <div class="flex items-center justify-between border-b border-violet-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-600">
         <span>Claim</span>
         <div class="flex items-center gap-2 normal-case tracking-normal">
@@ -730,15 +736,15 @@
       <div id="claim-pane-body" class="max-h-72 overflow-y-auto p-2 text-xs tex-scope"></div>
     </div>
 
-  <div class="rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')"
+  <div class="flex min-h-0 flex-col rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')"
        @llm-select="handleLlmSelect($event.detail)">
-    <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
-    <div class="space-y-2 p-2 text-xs">
+    <div class="shrink-0 border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
+    <div class="min-h-0 space-y-2 overflow-y-auto p-2 text-xs">
       {% if needs %}
       <div class="rounded border border-amber-200 bg-amber-50 p-1.5">
         <div class="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">Needs · in-flight</div>
-        {# Cap + scroll (not the sticky rail as a whole — that would clip the
-           Tools pane's upward-opening Meta popovers, which aren't teleported). #}
+        {# Per-section cap + scroll, on top of the pane-level scroll — keeps
+           any one list from monopolising the shared Collaborate scroller. #}
         <div class="max-h-40 overflow-y-auto">
         {% for w in needs %}
         <div class="flex items-center gap-1 py-0.5 text-[10px]">
@@ -923,7 +929,7 @@
          redirects back to its own reader) are intercepted in the submit
          handler below and refreshed in place — fork/delete correctly navigate
          away (new copy / drafts list). #}
-    <div class="border-t border-slate-100" x-data="{ tool: 'export' }">
+    <div class="shrink-0 border-t border-slate-100" x-data="{ tool: 'export' }">
       <div class="flex items-center gap-1 border-b border-slate-100 px-2 py-1">
         <span class="mr-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Tools</span>
         <template x-for="t in ['export', 'meta', 'actions']" :key="t">
@@ -947,6 +953,7 @@
            x-data="{
              withSources: false,
              overrideRetraction: false,
+             placeholderFigures: false,
              forceRecheck: false,
              retraction: null,
              retractionChecking: false,
@@ -1124,9 +1131,14 @@
              title="papers this draft cites but the corpus is missing — the fetch worklist">papers to fetch ▸</a>
           {% if remarkable_ready %}
           <form method="post" action="/drafts/{{ ident }}/remarkable" class="inline">
+            <input type="hidden" name="placeholder_figures" :value="placeholderFigures ? '1' : ''">
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="export in reMarkable mode (footnoted references) and send to the tablet">→ reMarkable</button>
           </form>
+          <label class="inline-flex items-center gap-1 text-[10px] text-slate-400"
+                 title="send even when figures have no image yet — they appear as visible placeholders; a licensing block (uncleared third-party image) still stops the send">
+            <input type="checkbox" x-model="placeholderFigures" class="h-3 w-3"> allow placeholder figures
+          </label>
           <form method="post" action="/drafts/{{ ident }}/remarkable-papers" class="inline">
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="send every cited source PDF on this host to the tablet, into a per-draft folder">papers → reMarkable</button>

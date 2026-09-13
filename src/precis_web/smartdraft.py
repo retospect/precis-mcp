@@ -434,8 +434,11 @@ def _load_chunk_tags(store: Store, ref_id: int) -> dict[int, list[str]]:
 
 
 def focus_index(nodes: list[ChunkNode], focus_dc: str | None) -> int:
-    """The reading-order index of the focus chunk, defaulting to the first body
-    chunk (else 0). A missing/stale handle degrades to the default.
+    """The reading-order index of the focus chunk, defaulting to the first
+    *prose* body chunk — skipping glossary ``term`` leaves, so a draft that
+    opens with a big Glossary section lands the reader on its intro paragraph,
+    not an abbreviation (else first body chunk, else 0). A missing/stale
+    handle degrades to the same default.
 
     ``focus_dc`` may be the universal ``dc<id>`` handle OR the legacy base58
     anchor (``chunks.handle``, optionally ``¶``/``c-`` prefixed): the app-wide
@@ -448,6 +451,9 @@ def focus_index(nodes: list[ChunkNode], focus_dc: str | None) -> int:
         for n in nodes:
             if n.dc == focus_dc or n.base58 == base:
                 return n.idx
+    for n in nodes:
+        if not n.is_heading and not n.is_term:
+            return n.idx
     for n in nodes:
         if not n.is_heading:
             return n.idx

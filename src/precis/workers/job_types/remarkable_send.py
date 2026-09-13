@@ -45,6 +45,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # The signed-in login to resolve a per-user paired device for —
         # threaded by the web route; absent for agent-started sends.
         "user": {"type": "string"},
+        # Opt-in: send even when IMAGE-LESS figures are uncleared — they ship
+        # as the exporter's visible placeholders. A licensing block (an
+        # uncleared figure with a real image) still fails the send.
+        "placeholder_figures": {"type": "boolean"},
     },
     "required": ["draft"],
     "additionalProperties": False,
@@ -90,15 +94,27 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
 
-    # Figure clearance gate — same as draft_export: an
-    # uncleared figure must not ship.
+    # Figure clearance gate — same as draft_export: an uncleared figure must
+    # not ship. ``placeholder_figures`` waives only ASSET-LESS blocks (the
+    # export renders a visible placeholder — nothing uncleared actually
+    # ships); a licensing block on a real image is never waivable.
     from precis.utils.figure_clearance import draft_figure_clearance
 
     clearance = draft_figure_clearance(ctx.store, ref.id)
-    if clearance.uncleared:
-        lines = "; ".join(f"{f.dc} ({f.reason})" for f in clearance.uncleared)
+    uncleared = clearance.uncleared
+    if uncleared and params.get("placeholder_figures"):
+        waived = [f for f in uncleared if f.assetless]
+        if waived:
+            ctx.append_chunk(
+                "job_event",
+                f"warn: {len(waived)} image-less figure(s) ship as visible "
+                f"placeholders — {'; '.join(f.dc for f in waived)}",
+            )
+        uncleared = [f for f in uncleared if not f.assetless]
+    if uncleared:
+        lines = "; ".join(f"{f.dc} ({f.reason})" for f in uncleared)
         ctx.record_failure(
-            f"remarkable_send: {len(clearance.uncleared)} of {clearance.total} "
+            f"remarkable_send: {len(uncleared)} of {clearance.total} "
             f"figure(s) not cleared to ship — {lines}."
         )
         return

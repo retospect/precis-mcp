@@ -132,6 +132,16 @@ def test_bold_code_sub_sup() -> None:
     assert r"\textsubscript{2}" in out and r"\textsuperscript{-1}" in out
 
 
+def test_math_inside_inline_code_restores_no_nul_placeholder() -> None:
+    # Math stashed in step 1 lands INSIDE the later-stashed \texttt span; the
+    # restore must run until no \x00i\x00 placeholder remains — a leftover is
+    # a literal NUL in the .tex, which LuaTeX fatals on ("invalid character").
+    out, _ = _inline("`[Biotin]–[PEG$_{7nm}$]–[comp-E]`")
+    assert "\x00" not in out
+    # the math span survived verbatim (empty-base repair folds PEG inside)
+    assert "$PEG_{7nm}$" in out
+
+
 def test_italic_single_star_to_emph() -> None:
     # Single-* emphasis → \emph (parity with the web reader + docx). ** stays
     # bold (not italicised), spaced multiplication is left alone, and * inside

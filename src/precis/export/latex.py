@@ -456,8 +456,18 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
     s = _MD_ITALIC.sub(r"\\emph{\1}", s)
     # 6. Abbreviations → \gls (first use) / \glstip tooltip (later uses).
     s = _glsify(s, ctx.keymap, ctx.seen_acr)
-    # 7. Restore the stashed verbatim spans.
-    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], s)
+    # 7. Restore the stashed verbatim spans — iteratively: a span stashed in
+    #    an earlier step can sit INSIDE a later-stashed span (math inside
+    #    inline code, e.g. `` `…[PEG$_{7nm}$]…` ``), so a single pass leaves
+    #    its \x00i\x00 placeholder behind — NUL bytes LuaTeX rejects with
+    #    "Text line contains an invalid character". Nesting only ever points
+    #    at EARLIER stash entries, so len(stash) passes is a hard bound.
+    placeholder = re.compile(r"\x00(\d+)\x00")
+    for _ in range(len(stash) + 1):
+        s, n = placeholder.subn(lambda m: stash[int(m.group(1))], s)
+        if not n:
+            break
+    return s
 
 
 def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:

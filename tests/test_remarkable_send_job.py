@@ -94,6 +94,61 @@ def test_dispatch_fails_without_latexmk(hub: Hub, monkeypatch: Any) -> None:
     assert any("latexmk" in f for f in ctx.failures), ctx.failures
 
 
+def test_placeholder_figures_waives_imageless_gate(hub: Hub, monkeypatch: Any) -> None:
+    """An image-less (caption-only) figure blocks the send by default, but the
+    ``placeholder_figures`` opt-in waives it — proven by dispatch reaching the
+    later latexmk failure — and logs a placeholder warning event."""
+    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
+    slug = _project_and_draft(hub)
+    DraftHandler(hub=hub).put(
+        id=slug, chunk_kind="figure", text="Fig 1: planned TEM observation."
+    )
+    spec = get_job_type("remarkable_send")
+    assert spec is not None and spec.dispatch is not None
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    spec.dispatch(ctx, spec)
+    assert any("not cleared" in f for f in ctx.failures), ctx.failures
+    ctx2 = _FakeCtx(
+        store=hub.live_store,
+        meta={"params": {"draft": slug, "placeholder_figures": True}},
+    )
+    spec.dispatch(ctx2, spec)
+    assert not any("not cleared" in f for f in ctx2.failures), ctx2.failures
+    assert any("latexmk" in f for f in ctx2.failures), ctx2.failures
+    assert any("placeholder" in t for _k, t in ctx2.events), ctx2.events
+
+
+def test_placeholder_figures_never_waives_a_licensing_block(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """A third-party figure WITH a real image and no granted permission stays
+    a hard block even under ``placeholder_figures`` — the waiver is only for
+    figures that would export as placeholders anyway."""
+    import base64
+
+    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
+    slug = _project_and_draft(hub)
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+    DraftHandler(hub=hub).put(
+        id=slug,
+        chunk_kind="figure",
+        text="Fig 1 (borrowed).",
+        image=png,
+        origin="third_party",
+        permission={"publisher": "X", "permission_id": "Y", "status": "requested"},
+    )
+    spec = get_job_type("remarkable_send")
+    assert spec is not None and spec.dispatch is not None
+    ctx = _FakeCtx(
+        store=hub.live_store,
+        meta={"params": {"draft": slug, "placeholder_figures": True}},
+    )
+    spec.dispatch(ctx, spec)
+    assert any("not cleared" in f for f in ctx.failures), ctx.failures
+
+
 def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:
     spec = get_job_type("remarkable_send")
     ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": "nope"}})

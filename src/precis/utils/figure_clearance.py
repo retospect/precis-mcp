@@ -60,6 +60,11 @@ class FigureClear:
     origin: str | None
     cleared: bool
     reason: str
+    #: True when the figure has no exportable asset at all (caption-only, or
+    #: an empty canvas) — export renders a visible placeholder, so an opt-in
+    #: send may skip the gate for it. False = a real image is present and the
+    #: block is a licensing/permission verdict that must never be skipped.
+    assetless: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,10 @@ def draft_figure_clearance(store: Store, ref_id: int) -> ClearanceSummary:
                     origin=fig.get("origin"),
                     cleared=False,
                     reason=src.reason,
+                    # medium 'none' = caption-only; an uncleared 'canvas' is
+                    # only ever the empty birth canvas — both export as a
+                    # placeholder, never an image (figure_export_asset).
+                    assetless=src.medium == "none" or src.medium == "canvas",
                 )
             )
     return ClearanceSummary(total=total, uncleared=uncleared)
