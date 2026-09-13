@@ -30,9 +30,11 @@ refine, tradeoffs) see `precis-se-design-help`.
   `units-policy-cutover.md`'s decisions log). `cyl:r0.02h0.01` is a
   2 cm × 1 cm cylinder — the cad kernel is unit-agnostic; `se` stores
   metres.
-- **⚠ Envelope `box` `w`/`d`/`h` are HALF-extents**: `box:w0.028d0.240
-  h0.020` is a 56 × 480 × 40 mm block. Measured, not documented
-  elsewhere; mis-authoring by 2× is the most common corpus error.
+- **Envelope `box` `w`/`d`/`h` are FULL dimensions**: `box:w0.028d0.240
+  h0.020` is a 28 × 240 × 20 mm block — centred in x/y, **base at
+  `z=0`** (spans z=0..h, like `cyl`). Verified against the kernel
+  (`box:w0.028d0.240h0.020` → AABB x ±0.014, y ±0.12, z 0..0.02);
+  an earlier revision of this skill claimed half-extents — wrong.
 - `cyl` has its **base at the pose** (not centred); `sphere` is centred.
 - `rot` is a bare **radians** vector (Euler, composed `Rz@Ry@Rx`) — reads
   render it back in degrees (the shared neat formatter), but the op-level

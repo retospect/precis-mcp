@@ -363,7 +363,9 @@ the one general off-switch; see `precis-kinds-disabled-help`.
   "Units" above); don't confuse the two.
 - `cyl` has its **base at the pose** (not centred — an 8 Å error on a
   16.5 Å rod if you assume centring); `sphere` is centred.
-- Envelope `box` `w`/`d`/`h` are **half-extents**.
+- Envelope `box` `w`/`d`/`h` are **full dimensions** (centred in x/y,
+  base at `z=0` — spans z=0..h like `cyl`; kernel-verified, see
+  precis-se-help).
 - `rot` is a bare **radians** vector, Euler composed `Rz@Ry@Rx` — `90°`
   about z is `[0, 0, 1.5707963267948966]`, not `[0, 0, 90]`.
 

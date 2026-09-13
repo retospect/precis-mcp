@@ -342,8 +342,9 @@ it; `se`'s `pose_rot` and `nm`'s pose/envelope columns carry a
 forward-only migration/wipe to the units this section describes. Cross-
 kind seams (`bind_structure`, `realized-by`, formfind feeds) are trivial
 now the internal rep is shared. The clearance sign-flip (gr334763) and
-the box half-extent ambiguity (gr334785, `box-full-dims-cutover.md`) are
-the same family and land in the same window.
+the box half-extent ambiguity (gr334785 — RESOLVED 2026-09-13: the
+surface verifiably reads full dims, kernel-checked and prod-checked;
+skills corrected) are the same family and land in the same window.
 
 ## Physics layers — deferred, with the notes that shouldn't be re-derived
 
