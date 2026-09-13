@@ -17,7 +17,9 @@ gate on GitHub (`scripts/ship --remote`: commit WIP → sync main → push
 `ci/<branch>` → wait for the full check.yml matrix (~1h; run ship in
 background, output to a log) → atomic CAS squash-merge to `main` — main only
 advances through a tree the matrix tested against the then-current main; if
-main moves meanwhile, ship re-syncs + re-runs CI itself. Squawk on new
+main moves meanwhile, the hybrid race policy re-syncs and validates the
+integrated tree with the full LOCAL gate (~10 min) instead of a second CI
+hour. Squawk on new
 migration SQL stays host-side. `--remote --impacted` = opt-in local impacted
 pre-gate first; bare `--impacted` = legacy local-only gate). **`/go`** = ship
 with the full LOCAL suite + diff-coverage gate (changed src lines need

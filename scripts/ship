@@ -56,11 +56,14 @@
 #                                        # push the synced branch to ci/<branch>,
 #                                        # wait for the full check.yml matrix
 #                                        # (Linux+db, macOS, Windows), then the same
-#                                        # atomic CAS squash-push. Main only ever
-#                                        # advances through a tree the full matrix
-#                                        # tested against the then-current main; if
-#                                        # main moves during the CI wait, re-sync +
-#                                        # re-CI + retry (≤3×). Add --impacted for an
+#                                        # atomic CAS squash-push. If main moves
+#                                        # during the CI wait, the HYBRID race
+#                                        # policy engages: keep the ship lock,
+#                                        # re-sync, validate the integrated tree
+#                                        # with the full LOCAL gate (~10 min), push
+#                                        # (never a second CI hour — three green
+#                                        # runs starved during one burst afternoon,
+#                                        # 2026-09-13). Add --impacted for an
 #                                        # opt-in local impacted gate BEFORE burning
 #                                        # a CI cycle. (also via PRECIS_SHIP_REMOTE=1)
 #                                        # Env: PRECIS_REMOTE_CI_TIMEOUT_MIN (150).
@@ -113,6 +116,14 @@ QUICK="${PRECIS_SHIP_QUICK:-0}"
 # staleness steal and starve sibling ships) — it's taken only around the
 # final CAS section.
 REMOTE="${PRECIS_SHIP_REMOTE:-0}"
+# Hybrid race policy (user-decided 2026-09-13): when a GREEN remote gate
+# loses the CAS race (main moved during the ~1h matrix — measured: three
+# consecutive green runs starved during one burst afternoon), do NOT burn
+# another CI hour. Keep the ship lock, re-sync, and validate the integrated
+# tree with the FULL LOCAL container gate (~10 min) instead, then push. The
+# change itself still had a full pre-merge matrix; only the merge-integration
+# delta (siblings' already-shipped commits) gets the local-suite check.
+REMOTE_FALLBACK=0
 MSG=""
 while :; do
     case "${1:-}" in
@@ -293,14 +304,13 @@ fi
 source "${WORKTREE}/scripts/lib/gate-slot.sh"
 
 GATE_MODE=bind
-if [[ "$QUICK" == 1 ]]; then
-    say "quick ship (--quick) — gate SKIPPED: no ruff/mypy/pytest, no gate containers"
-elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
-    # Pure remote gate: no local containers at all — GitHub's matrix is the
-    # gate. (--remote --impacted keeps the infra: local impacted pre-gate
-    # first, then the remote matrix.)
-    say "remote ship (--remote) — local gate skipped; GitHub check.yml is the gate"
-else
+GATE_INFRA_READY=0
+# Deferred so remote mode can start it lazily — only if the hybrid race
+# fallback actually needs a local gate (the quiet-path remote ship never
+# touches a container).
+setup_gate_infra() {
+    [[ "$GATE_INFRA_READY" == 1 ]] && return 0
+    GATE_INFRA_READY=1
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || die "compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)."
 
@@ -345,7 +355,19 @@ if compose up -d --wait precis-gate >/dev/null 2>&1; then
 else
     echo "WARNING: precis-gate didn't start — gate falls back to the per-run bind-mount container"
 fi
-fi  # end of non-quick gate-infra setup
+}  # end setup_gate_infra
+
+if [[ "$QUICK" == 1 ]]; then
+    say "quick ship (--quick) — gate SKIPPED: no ruff/mypy/pytest, no gate containers"
+elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
+    # Pure remote gate: no local containers on the quiet path — GitHub's
+    # matrix is the gate. The hybrid race fallback calls setup_gate_infra
+    # lazily inside the loop if it engages. (--remote --impacted keeps the
+    # infra up-front: local impacted pre-gate first, then the remote matrix.)
+    say "remote ship (--remote) — local gate skipped; GitHub check.yml is the gate"
+else
+    setup_gate_infra
+fi
 
 # Mirror the worktree into the warm container's native /app. `git archive
 # HEAD` streams exactly the committed tree (no .git, no caches, portable across
@@ -498,6 +520,11 @@ _release_ship_lock() {
 }
 acquire_ship_lock() {
     local _waited=0 holder holder_desc holder_pid
+    # Re-entrant: the hybrid race fallback keeps the lock across its retry
+    # iteration — a second acquire from the same pid is a no-op, not a
+    # self-deadlock.
+    holder_pid="$(sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' "$LOCKDIR/holder" 2>/dev/null || true)"
+    [[ "$holder_pid" == "$$" ]] && return 0
     while ! mkdir "$LOCKDIR" 2>/dev/null; do
         holder="$(cat "$LOCKDIR/holder" 2>/dev/null || true)"
         holder_desc="${holder:-<lock present, no holder file — crashed before it could write one>}"
@@ -643,9 +670,10 @@ for attempt in 1 2 3; do
 
     if [[ "$QUICK" == 1 ]]; then
         say "quick ship — gate skipped (validation deferred to the next full gate: /go or bare scripts/ship)"
-    elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
+    elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 && "$REMOTE_FALLBACK" != 1 ]]; then
         say "remote ship — no local gate; the GitHub matrix below is the gate"
     else
+        setup_gate_infra
 
     # Classify the change: a docs/config-only ship can't break the test
     # suite, so it skips the ~3-min mypy+pytest gate and runs only ruff + the
@@ -757,7 +785,9 @@ for attempt in 1 2 3; do
 
     # Remote gate (--remote): CI on GitHub over exactly this tree. Runs
     # UNLOCKED (see acquire_ship_lock); red/timeout aborts, never retries.
-    if [[ "$REMOTE" == 1 ]]; then
+    # Skipped entirely on a hybrid-fallback iteration — the full LOCAL gate
+    # above already validated the integrated tree, under the held lock.
+    if [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]]; then
         remote_gate_wait \
             || die "remote gate failed — fix the failure above and re-run scripts/ship --remote."
         # Only now serialise against sibling ships, for the short CAS section.
@@ -775,7 +805,10 @@ for attempt in 1 2 3; do
     git fetch -q origin main
     if ! git merge-base --is-ancestor origin/main HEAD; then
         say "origin/main advanced during the gate — re-syncing"
-        [[ "$REMOTE" == 1 ]] && { _release_ship_lock; say "re-running the remote gate on the re-synced tree"; }
+        if [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]]; then
+            REMOTE_FALLBACK=1; IMPACTED=0
+            say "hybrid race policy — lock stays held; the integrated tree gets the FULL LOCAL gate (~10 min) instead of another CI hour"
+        fi
         continue
     fi
     OLD_MAIN="$(git rev-parse origin/main)"
@@ -800,7 +833,10 @@ EOF
         break
     fi
     say "CAS push rejected — origin/main moved from elsewhere; re-syncing and retrying"
-    [[ "$REMOTE" == 1 ]] && { _release_ship_lock; say "re-running the remote gate on the re-synced tree"; }
+    if [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]]; then
+        REMOTE_FALLBACK=1; IMPACTED=0
+        say "hybrid race policy — lock stays held; the integrated tree gets the FULL LOCAL gate (~10 min) instead of another CI hour"
+    fi
 done
 [[ "$shipped" == 1 ]] || die "could not ship after 3 attempts — main kept moving under us. Re-run scripts/ship."
 git push origin --delete "$BRANCH" 2>/dev/null || true
