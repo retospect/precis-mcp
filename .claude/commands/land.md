@@ -1,5 +1,5 @@
 ---
-description: End-of-session wrap-up — commit WIP, sync onto main, gate against the worktree, then squash-merge to main. Runs the deterministic scripts/ship. Run from inside a feature worktree.
+description: End-of-session wrap-up — commit WIP, sync onto main, gate on GitHub's full CI matrix (scripts/ship --remote), then atomically squash-merge to main. Run from inside a feature worktree.
 argument-hint: "[optional commit/ship message]"
 allowed-tools: Bash(scripts/ship:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Agent
 ---
@@ -52,30 +52,45 @@ Optional ship message from the user: `$ARGUMENTS`
    step 4.
 
 4. **Run the script.** It is idempotent — re-running after a fix resumes
-   cleanly.
+   cleanly. **Run it in the background with output redirected to a log**
+   (the remote gate takes ~1h; a foreground run would block the session and
+   raw output would flood context):
    ```
-   scripts/ship --impacted "<message>"
+   scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
    ```
-   The `--impacted` flag narrows the gate's **pytest** to the tests testmon
-   says this change affects (fast inner-loop ship); `ruff · format · mypy`
-   still run in full, and `/go` runs the full suite before a deploy. On a fresh
-   worktree with no testmon map, the first `--impacted` ship runs everything
-   once and builds the map, then later ones are the fast selection.
+   `--remote` gates on **GitHub's computers**: the synced branch goes to
+   `ci/<branch>`, the full check.yml matrix (lint · mypy · Linux+db
+   3.12/3.13 · macOS · Windows) runs there, and only a green run reaches
+   `main` — via the same atomic CAS squash-push, so main only ever advances
+   through a tree the matrix tested against the then-current main. If main
+   moves during the wait, ship re-syncs and re-runs CI automatically (≤3×).
+   Opt-in belt for risky diffs: `scripts/ship --remote --impacted` runs the
+   local impacted container gate FIRST, before spending a CI cycle.
+   (`scripts/ship --impacted` without `--remote` is the legacy local-gate
+   ship — still valid when GitHub is down.)
 
-   `scripts/ship` does, in order: refuse-if-on-main → commit any WIP → sync
-   (`git fetch` + `git merge` origin/main) → **integration gate against this
-   worktree** in the precis-dev container (it auto-fixes ruff `--fix` +
-   `format` and amends them, then runs
-   `ruff · format · mypy · pytest`) → squash-merge to `main` via `commit-tree`
-   + a `--force-with-lease` CAS push → delete the remote feature branch →
-   reset the feature branch to the shipped `main` (zero divergence) →
-   fast-forward the local `main` → print the new `main` sha.
+   `scripts/ship --remote` does, in order: refuse-if-on-main → commit any
+   WIP → sync (`git fetch` + `git merge` origin/main) → push to
+   `ci/<branch>` → **poll the check.yml run to conclusion** → squash-merge
+   to `main` via `commit-tree` + a `--force-with-lease` CAS push → delete
+   the remote feature + ci branches → reset the feature branch to the
+   shipped `main` (zero divergence) → fast-forward the local `main` → print
+   the new `main` sha.
 
 5. **Handle failures.** The script exits non-zero and prints a `✖` line only
    on something it can't do mechanically:
    - **Merge conflict during sync** — resolve the conflict, then
      `git add -A && git commit`, then re-run `scripts/ship`.
-   - **Red gate (mypy/pytest)** — the failure is printed above the `✖`. Ruff
+   - **Red remote gate** — ship prints the failing jobs and the
+     `gh run view <id> --log-failed` pointer. Diagnose from the run log,
+     fix, re-run `scripts/ship --remote`. Reproduce locally with
+     `scripts/test <path or -k>`; remember the matrix covers macOS/Windows
+     paths the local container can't (auto-memory `green-gate-neq-green-ci`).
+   - **Remote gate timeout / no run appears** — ship already retries via one
+     `workflow_dispatch` after 10 min (dropped push events during GitHub
+     incidents are never replayed); if it still times out, check
+     githubstatus.com, then re-run.
+   - **Red gate (mypy/pytest)** (local-gate modes) — the failure is printed above the `✖`. Ruff
      lint/format drift is auto-fixed, so a ruff failure here means an
      *unfixable* lint error. Fix the code and re-run. Reproduce/iterate on a
      red test locally with `scripts/test <path or -k>` (same container + test

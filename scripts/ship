@@ -52,6 +52,18 @@
 #                                        # PRECIS_SHIP_QUICK=1). For burst-landing
 #                                        # many worktrees; main is unvalidated until
 #                                        # the next full gate (/go or bare ship).
+#         scripts/ship --remote "…"     # /land: the gate runs on GITHUB, not here —
+#                                        # push the synced branch to ci/<branch>,
+#                                        # wait for the full check.yml matrix
+#                                        # (Linux+db, macOS, Windows), then the same
+#                                        # atomic CAS squash-push. Main only ever
+#                                        # advances through a tree the full matrix
+#                                        # tested against the then-current main; if
+#                                        # main moves during the CI wait, re-sync +
+#                                        # re-CI + retry (≤3×). Add --impacted for an
+#                                        # opt-in local impacted gate BEFORE burning
+#                                        # a CI cycle. (also via PRECIS_SHIP_REMOTE=1)
+#                                        # Env: PRECIS_REMOTE_CI_TIMEOUT_MIN (150).
 #
 # The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
 # pytest runs under pytest-cov in the container, then diff-cover on the HOST
@@ -91,21 +103,37 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # Flags accepted in any order.
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
+# --remote (/land, or PRECIS_SHIP_REMOTE=1): the correctness gate is GitHub's
+# full check.yml matrix instead of the local container. Push the synced branch
+# to ci/<branch>, poll the check run to conclusion, then do the ordinary CAS
+# squash-push — the --force-with-lease IS the "did anything land meanwhile"
+# check, and a rejection loops back through sync + a fresh CI run, so main
+# only ever advances through an exactly-tested tree. The ship lock is NOT
+# held across the CI wait (the ~55-min matrix would trip the lock's 30-min
+# staleness steal and starve sibling ships) — it's taken only around the
+# final CAS section.
+REMOTE="${PRECIS_SHIP_REMOTE:-0}"
 MSG=""
 while :; do
     case "${1:-}" in
         --impacted) IMPACTED=1; shift ;;
         --mutate)   MUTATE=1; shift ;;
         --quick)    QUICK=1; shift ;;
+        --remote)   REMOTE=1; shift ;;
         # git-commit muscle memory: accept -m/--message rather than letting
         # the literal "-m" become the shipped subject and the real message
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
+
+[[ "$REMOTE" == 1 && "$QUICK" == 1 ]] && { printf '\033[31m✖ --remote and --quick are contradictory (remote gate vs no gate) — pick one.\033[0m\n' >&2; exit 2; }
+if [[ "$REMOTE" == 1 ]] && ! command -v gh >/dev/null 2>&1; then
+    printf '\033[31m✖ --remote needs the gh CLI (authenticated) to poll the check run.\033[0m\n' >&2; exit 2
+fi
 
 MSG="${MSG:-${1:-}}"
 CO_AUTHOR="Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -267,6 +295,11 @@ source "${WORKTREE}/scripts/lib/gate-slot.sh"
 GATE_MODE=bind
 if [[ "$QUICK" == 1 ]]; then
     say "quick ship (--quick) — gate SKIPPED: no ruff/mypy/pytest, no gate containers"
+elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
+    # Pure remote gate: no local containers at all — GitHub's matrix is the
+    # gate. (--remote --impacted keeps the infra: local impacted pre-gate
+    # first, then the remote matrix.)
+    say "remote ship (--remote) — local gate skipped; GitHub check.yml is the gate"
 else
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || die "compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)."
@@ -463,36 +496,98 @@ _release_ship_lock() {
         rm -rf "$LOCKDIR" 2>/dev/null || true
     fi
 }
-_waited=0
-while ! mkdir "$LOCKDIR" 2>/dev/null; do
-    holder="$(cat "$LOCKDIR/holder" 2>/dev/null || true)"
-    holder_desc="${holder:-<lock present, no holder file — crashed before it could write one>}"
-    holder_pid="$(printf '%s' "$holder" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
+acquire_ship_lock() {
+    local _waited=0 holder holder_desc holder_pid
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do
+        holder="$(cat "$LOCKDIR/holder" 2>/dev/null || true)"
+        holder_desc="${holder:-<lock present, no holder file — crashed before it could write one>}"
+        holder_pid="$(printf '%s' "$holder" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
 
-    if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
-        say "stealing the ship lock — holder is dead: ${holder_desc} (pid ${holder_pid} not running)"
-        rm -rf "$LOCKDIR"
-        continue
-    fi
+        if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+            say "stealing the ship lock — holder is dead: ${holder_desc} (pid ${holder_pid} not running)"
+            rm -rf "$LOCKDIR"
+            continue
+        fi
 
-    if find "$LOCKDIR" -maxdepth 0 -mmin +30 2>/dev/null | grep -q .; then
-        say "stealing the ship lock — held over 30 min by: ${holder_desc} (assuming crashed or from another host)"
-        rm -rf "$LOCKDIR"
-        continue
-    fi
+        if find "$LOCKDIR" -maxdepth 0 -mmin +30 2>/dev/null | grep -q .; then
+            say "stealing the ship lock — held over 30 min by: ${holder_desc} (assuming crashed or from another host)"
+            rm -rf "$LOCKDIR"
+            continue
+        fi
 
-    if [[ "$_waited" == 0 ]]; then
-        say "waiting for the ship lock — held by: ${holder_desc}"
-        echo "(will steal it immediately if that process dies, or after 30 min regardless)"
-    fi
-    _waited=1
-    sleep 3
-done
-printf '%s pid=%s\n' "$WORKTREE" "$$" > "$LOCKDIR/holder" 2>/dev/null || true
-# Arm the release trap only now that we actually hold the lock (gr202363) —
-# arming it earlier meant a kill mid-wait fired the trap against a lock we
-# never acquired.
-trap _release_ship_lock EXIT
+        if [[ "$_waited" == 0 ]]; then
+            say "waiting for the ship lock — held by: ${holder_desc}"
+            echo "(will steal it immediately if that process dies, or after 30 min regardless)"
+        fi
+        _waited=1
+        sleep 3
+    done
+    printf '%s pid=%s\n' "$WORKTREE" "$$" > "$LOCKDIR/holder" 2>/dev/null || true
+    # Arm the release trap only now that we actually hold the lock (gr202363) —
+    # arming it earlier meant a kill mid-wait fired the trap against a lock we
+    # never acquired. (Re-arming on a remote-mode re-acquire is idempotent.)
+    trap _release_ship_lock EXIT
+}
+
+# Classic modes hold the lock across the whole sync→gate→push section (the
+# gate is minutes). Remote mode takes it ONLY around the final CAS push —
+# holding it across a ~55-min GitHub matrix would starve every sibling ship
+# and trip the 30-min staleness steal above anyway.
+if [[ "$REMOTE" != 1 ]]; then
+    acquire_ship_lock
+fi
+
+# ── 3b. remote gate (--remote): push ci/<branch>, wait for check.yml ─────
+# The branch (already synced with origin/main by the loop below) goes to the
+# throwaway ref ci/<branch>; check.yml triggers on ci/** pushes and runs the
+# full matrix (lint · mypy · Linux+db 3.12/3.13 · macOS · Windows) on exactly
+# the tree the CAS push below will make main. A force-push retry to the same
+# ref auto-cancels the superseded run via the workflow's per-ref concurrency
+# group. Green → return 0; red/timeout → return 1 (caller dies — a red gate
+# is never retried, same contract as the local gate). If no run appears
+# within 10 min (GitHub incidents DROP push events and never replay them —
+# observed 2026-09-13), fall back to one explicit workflow_dispatch on the ref.
+remote_gate_wait() {
+    local sha run_id="" status dispatched=0 t0 deadline
+    sha="$(git rev-parse HEAD)"
+    t0="$(date +%s)"
+    deadline=$(( t0 + 60 * ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} ))
+    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (full matrix, ~1h)"
+    git push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
+        || { echo "✖ could not push ci/${BRANCH}" >&2; return 1; }
+    while :; do
+        if (( $(date +%s) > deadline )); then
+            echo "✖ remote gate timed out after ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} min (run: ${run_id:-never appeared})" >&2
+            return 1
+        fi
+        if [[ -z "$run_id" ]]; then
+            run_id="$(gh run list --workflow check.yml --branch "ci/${BRANCH}" --limit 10 \
+                --json databaseId,headSha \
+                --jq ".[] | select(.headSha==\"${sha}\") | .databaseId" 2>/dev/null | head -1 || true)"
+            if [[ -z "$run_id" ]]; then
+                if (( dispatched == 0 && $(date +%s) - t0 > 600 )); then
+                    say "no check run after 10 min — push event likely dropped; dispatching check.yml on ci/${BRANCH} explicitly"
+                    gh workflow run check.yml --ref "ci/${BRANCH}" 2>/dev/null || true
+                    dispatched=1
+                fi
+                sleep 20; continue
+            fi
+            echo "check run ${run_id} → $(gh run view "$run_id" --json url --jq .url 2>/dev/null || echo "gh run view ${run_id}")"
+        fi
+        status="$(gh run view "$run_id" --json status,conclusion \
+            --jq '.status + " " + (.conclusion // "")' 2>/dev/null || true)"
+        case "$status" in
+            "completed success"*) say "remote gate GREEN (run ${run_id})"; return 0 ;;
+            completed*)
+                echo "✖ remote gate RED: ${status#completed } — failing jobs:" >&2
+                gh run view "$run_id" --json jobs \
+                    --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null) | "  " + .name + ": " + .conclusion' >&2 2>/dev/null || true
+                echo "  → gh run view ${run_id} --log-failed" >&2
+                return 1 ;;
+            *) sleep 60 ;;
+        esac
+    done
+}
 
 # ── 4. sync → gate → ship, re-running if main moves under us ────────────
 # Hold the lock across the whole critical section so no sibling worktree can
@@ -548,6 +643,8 @@ for attempt in 1 2 3; do
 
     if [[ "$QUICK" == 1 ]]; then
         say "quick ship — gate skipped (validation deferred to the next full gate: /go or bare scripts/ship)"
+    elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
+        say "remote ship — no local gate; the GitHub matrix below is the gate"
     else
 
     # Classify the change: a docs/config-only ship can't break the test
@@ -658,13 +755,27 @@ for attempt in 1 2 3; do
 
     fi  # end of non-quick gate section (quick mode skips gate + diff-coverage)
 
+    # Remote gate (--remote): CI on GitHub over exactly this tree. Runs
+    # UNLOCKED (see acquire_ship_lock); red/timeout aborts, never retries.
+    if [[ "$REMOTE" == 1 ]]; then
+        remote_gate_wait \
+            || die "remote gate failed — fix the failure above and re-run scripts/ship --remote."
+        # Only now serialise against sibling ships, for the short CAS section.
+        acquire_ship_lock
+    fi
+
     # Squash-merge to main via plumbing. If main moved during the gate (the
     # ancestor check fails) or the CAS lease is rejected, loop: re-sync picks
     # up the new main, re-gate, re-push — never force a stale tree over it.
+    # In remote mode a retry means a FRESH CI cycle on the re-synced tree
+    # (that's the contract: main only advances through an exactly-tested
+    # tree), and the lock is dropped first so siblings aren't starved
+    # through the new ~1h wait.
     say "shipping to main"
     git fetch -q origin main
     if ! git merge-base --is-ancestor origin/main HEAD; then
         say "origin/main advanced during the gate — re-syncing"
+        [[ "$REMOTE" == 1 ]] && { _release_ship_lock; say "re-running the remote gate on the re-synced tree"; }
         continue
     fi
     OLD_MAIN="$(git rev-parse origin/main)"
@@ -689,9 +800,13 @@ EOF
         break
     fi
     say "CAS push rejected — origin/main moved from elsewhere; re-syncing and retrying"
+    [[ "$REMOTE" == 1 ]] && { _release_ship_lock; say "re-running the remote gate on the re-synced tree"; }
 done
 [[ "$shipped" == 1 ]] || die "could not ship after 3 attempts — main kept moving under us. Re-run scripts/ship."
 git push origin --delete "$BRANCH" 2>/dev/null || true
+if [[ "$REMOTE" == 1 ]]; then
+    git push origin --delete "ci/${BRANCH}" 2>/dev/null || true
+fi
 
 # ── 5. reset the feature branch to the freshly-shipped main ─────────────
 # The squash put this branch's tree onto main as a NEW commit that is not an

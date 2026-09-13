@@ -199,8 +199,10 @@ _COHORT_SQL = f"""\
 def _claim_hubs(store: Store, *, limit: int) -> list[tuple[int, str, dict[str, Any]]]:
     """Atomically claim up to ``limit`` due hubs: ``(ref_id, title, meta)``.
 
-    Same ``UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED) ...
-    RETURNING`` idiom as ``hub_tagline._claim_candidates`` — stamps
+    Same ``UPDATE ... FROM MATERIALIZED-CTE (SELECT ... FOR UPDATE SKIP
+    LOCKED) ... RETURNING`` idiom as ``hub_tagline._claim_candidates``
+    (see there for why the cohort must be a ``MATERIALIZED`` CTE, never an
+    inline subquery — a planner rescan over-claims past ``limit``) — stamps
     ``meta.conflict_search_claimed_at`` atomically so two racing nodes
     never both pay for the same hub's sweep within the lease TTL.
     """
@@ -209,10 +211,11 @@ def _claim_hubs(store: Store, *, limit: int) -> list[tuple[int, str, dict[str, A
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
+            WITH c AS MATERIALIZED ({_COHORT_SQL})
             UPDATE refs r
                SET meta = r.meta || jsonb_build_object(
                              'conflict_search_claimed_at', now()::text)
-              FROM ({_COHORT_SQL}) c
+              FROM c
              WHERE r.ref_id = c.ref_id
              RETURNING r.ref_id, c.title, c.meta
             """,

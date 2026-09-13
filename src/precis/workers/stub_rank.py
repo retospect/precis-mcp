@@ -845,9 +845,11 @@ def _claim_band_candidates(
     Unlike :func:`_claim_enrich_candidates`'s bare ``SELECT ... FOR
     UPDATE`` (whose lock releases at that same short transaction's commit,
     serializing nothing beyond the instant), this claim is a single
-    ``UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED) ... RETURNING``
-    statement that stamps ``meta.llm_band_claimed_at`` on the rows it
-    claims. That stamp IS the lease: a paid LLM call is expensive enough
+    ``UPDATE ... FROM MATERIALIZED-CTE (SELECT ... FOR UPDATE SKIP
+    LOCKED) ... RETURNING`` statement (MATERIALIZED for the same
+    planner-rescan-over-claims-past-``limit`` reason documented on
+    ``hub_tagline._claim_candidates``) that stamps
+    ``meta.llm_band_claimed_at`` on the rows it claims. That stamp IS the lease: a paid LLM call is expensive enough
     that two cluster nodes racing this pass in the same tick (``stub_rank``
     runs on the system profile, every node concurrently) must not both
     claim (and pay for) the same stub, which a lock that's already
@@ -872,10 +874,7 @@ def _claim_band_candidates(
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
-            UPDATE refs r
-               SET meta = r.meta || jsonb_build_object(
-                             'llm_band_claimed_at', now()::text)
-              FROM (
+            WITH c AS MATERIALIZED (
                     SELECT r2.ref_id, r2.prio
                       FROM refs r2
                      WHERE r2.ref_id = ANY(%(band_ids)s)
@@ -889,7 +888,11 @@ def _claim_band_candidates(
                      ORDER BY r2.prio ASC NULLS LAST, r2.ref_id DESC
                      LIMIT %(limit)s
                        FOR UPDATE OF r2 SKIP LOCKED
-                   ) c
+            )
+            UPDATE refs r
+               SET meta = r.meta || jsonb_build_object(
+                             'llm_band_claimed_at', now()::text)
+              FROM c
              WHERE r.ref_id = c.ref_id
              RETURNING r.ref_id, r.title, r.meta->>'abstract', c.prio
             """,

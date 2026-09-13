@@ -162,16 +162,25 @@ def _claim_candidates(
     lease TTL. ``RETURNING`` row order isn't guaranteed to match the
     inner ``ORDER BY``, so the claimed rows are re-sorted by ``ref_id``
     before being handed back (a stable, testable processing order).
+
+    The cohort is a ``MATERIALIZED`` CTE, not an inline ``FROM (...)``
+    subquery: the planner may rescan an inline subquery (nested-loop
+    inner side), and each rescan of a ``LIMIT n … SKIP LOCKED`` scan
+    skips the rows the previous scan locked and locks *different* ones —
+    the UPDATE then claims MORE than ``limit`` rows (caught live by
+    ``test_limit_caps_the_claim`` on one CI leg, 2026-09-13).
+    ``MATERIALIZED`` guarantees single evaluation.
     """
     if limit <= 0:
         return []
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
+            WITH c AS MATERIALIZED ({_COHORT_SQL})
             UPDATE refs r
                SET meta = r.meta || jsonb_build_object(
                              'tagline_claimed_at', now()::text)
-              FROM ({_COHORT_SQL}) c
+              FROM c
              WHERE r.ref_id = c.ref_id
              RETURNING r.ref_id, c.title, c.meta
             """,
