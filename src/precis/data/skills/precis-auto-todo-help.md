@@ -53,12 +53,16 @@ leaf.
 
 | `type` | Resolves true when | Required args |
 |---|---|---|
-| `paper_ingested` | A `paper` ref with the given identifier exists and has ≥1 embedded chunk | one of `doi` / `arxiv` / `s2` / `pubmed` |
+| `paper_ingested` | Paper actually ingested — a `paper` ref with the given identifier exists and has ≥1 embedded *body* chunk (`ord >= 0`); a metadata-only stub's card chunks (`ord < 0`) don't count | one of `doi` / `arxiv` / `s2` / `pubmed` |
 | `discord_reply_received` | A memory tagged `replied-to:<ask_message_id>` exists | `ask_message_id` |
 | `time_past` | `now() >= at` (ISO 8601 timestamp) | `at` |
 | `tag_present` | At least one live ref carries the given tag | `tag` (optional `kind` to narrow) |
 | `child_job_succeeded` | A non-deleted child `kind='job'` of *this leaf* hits `STATUS:succeeded`. Auto-injected by the dispatch worker when a writer sets `meta.executor` but no `auto_check` (Slice 5) | none — scoped to the calling leaf's children |
 | `derived_job_succeeded` | A `kind='job'` this leaf `requested` (link, ADR 0044) hits `STATUS:succeeded`. The compute-lane twin of `child_job_succeeded` for a *derived* build (DFT relax / route / compile) that parents on its subject artifact, not the leaf — so it's reached by the `requested` link, not by walking children. Auto-injected by the dispatch when the requester is named (e.g. relax `requested_by=<todo>`) | none — follows the leaf's `requested` links |
+| `all_child_findings_resolved` | Every direct `kind='finding'` child of this leaf reaches a terminal state (`STATUS:established` / `dead_chain` / `multi_candidate`) — `tracing` and `acquiring` block the close. Closes lit-hunt todos in the planner-coroutine cascade | none — walks the leaf's own finding children |
+| `placement_legal` | The PCB design's latest persisted placement has every instance placed, no courtyard overlaps, and every courtyard inside the board outline (pcb-guided-place-route Slice 10) | `pcb` (slug or ref id) |
+| `route_complete` | Every net on the PCB design's board is `pcb_routes.status='realized'` — none `unrouted`/`sketched`/`failed` | `pcb` (slug or ref id) |
+| `netlist_drc_clean` | The PCB design's latest persisted geometric-DRC run has zero `severity='error'` findings (`warn` doesn't block); `None` (leaf stays open) if DRC has never run | `pcb` (slug or ref id) |
 
 All shapes accept two optional fields: `timeout_at` — when the
 timeout passes before the evaluator resolves, the leaf flips to

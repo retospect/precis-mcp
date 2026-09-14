@@ -50,10 +50,19 @@ accumulate shipped-but-undeployed commits, so `scripts/ship` **surfaces**
 that gap (never blocks on it):
 
 - On a **successful deploy**, `scripts/deploy` writes a shared marker
-  (`<sha> <epoch>` in the git common dir, `.git/precis-deploy-state` — visible
-  to every worktree) recording what's actually running on the cluster. At
-  deploy start it writes an *attempt* stamp (`precis-deploy-attempt`), removed
-  on success — a surviving stamp means the last deploy never went green.
+  (`<sha> <epoch> <outcome>` in the git common dir, `.git/precis-deploy-state`
+  — visible to every worktree; the `<outcome>` field is additive, gr338201 —
+  old two-field markers still read fine) recording what's actually running on
+  the cluster. At deploy start it writes an *attempt* stamp
+  (`precis-deploy-attempt`), removed on success — a surviving stamp means the
+  last deploy never went green, unless its outcome is `refused` (see below),
+  in which case no host was ever touched.
+- **Rollback guard** (gr338201): before touching anything, `scripts/deploy`
+  refuses when the resolved target sha is a strict ancestor of either the
+  deployed-state marker's sha or a freshly-fetched `origin/main` — the real
+  incident this fixes was a stale worktree pinned to an old sha rolling the
+  whole fleet backward. Equal-sha (no-op redeploy) and a missing marker
+  (first-ever deploy) both proceed; `--force-rollback` is the sole override.
 - At the **start** of a ship, if the oldest undeployed commit is older than
   `PRECIS_DEPLOY_STALE_HOURS` (default `1`), `scripts/ship` prints a loud
   `⚠ deploy lag` warning — the "begin of next ship burst" moment is the

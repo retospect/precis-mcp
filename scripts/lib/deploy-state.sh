@@ -45,6 +45,25 @@
 # `_rollout_converged`. A genuine rollout-host failure still leaves the stamp
 # in place, same as before this graft.
 #
+# gr338201 (2026-09-13): rollback guard + ledger outcome field.
+#   • Format extension. Both files hold `<sha> <epoch> [outcome]` — the third
+#     field is new; every existing reader (scripts/ship's awk '{print $1}' /
+#     '{print $2}', this file's own consumers) only ever reads fields 1/2, so
+#     an old two-field marker/attempt written by a pre-gr338201 scripts/deploy
+#     reads exactly as before. Known outcomes: attempt marker →
+#     "attempt" (touching hosts now) or "refused" (the rollback guard
+#     tripped — no host was touched, a materially different situation from a
+#     died-red/still-running attempt, see scripts/ship's advisory reads);
+#     success marker → "success" (the only outcome ever written there).
+#   • Rollback guard. Before touching anything, scripts/deploy now resolves
+#     the sha it's about to deploy and refuses when it is a strict ancestor
+#     of either the sha this success marker names, or origin/main — the
+#     real incident (2026-09-13): a stale worktree pinned to an ancestor
+#     commit of what was already live ran scripts/deploy and rolled the
+#     whole fleet backward. Equal-sha (no-op redeploy) and a missing marker
+#     (first-ever deploy) are both allowed through; `--force-rollback`
+#     overrides deliberately. See the guard in scripts/deploy itself.
+#
 # Usage:  . "$(dirname "$0")/lib/deploy-state.sh"
 #         path="$(deploy_state_path "$REPO_ROOT")"
 

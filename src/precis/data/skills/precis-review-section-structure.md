@@ -6,9 +6,9 @@ answers:
   - how do I check whether the intro's promised contributions actually land in the results?
   - what are the four structural checks for section-structure review?
   - what order should I run the structure checks in?
-applies-to: get (kind='tex'), put (kind='finding')
+applies-to: get (kind='tex'), put (kind='memory')
 tags: troubleshooting
-kinds: tex, finding
+kinds: tex, memory
 status: active
 ---
 
@@ -35,7 +35,7 @@ Read the intro. Ask:
 - **How is the rest of the paper organised?** A roadmap. ("In §2 we
   …, in §3 we …, in §4 we …, §5 concludes.")
 
-Any of these missing or vague is a finding. The "what does this
+Any of these missing or vague is a flag. The "what does this
 paper contribute" sentence is the bar — the rest of the paper is
 the evidence for it. If you can't paraphrase it after reading the
 intro, the paper has no thesis.
@@ -53,7 +53,7 @@ section list:
   the intro).
 
 A section that exists but doesn't appear in the intro's roadmap is
-a finding: either (a) the section is unmotivated and the reader
+a flag: either (a) the section is unmotivated and the reader
 hits it cold, or (b) the intro is stale.
 
 ### 3. Each section's first paragraph frames its own work
@@ -66,7 +66,7 @@ should:
 - Set up what's about to happen in this section.
 
 A section that dives into details without this scaffolding is a
-finding. The reader needs the local frame to know which level of
+flag. The reader needs the local frame to know which level of
 the argument they're at.
 
 ### 4. Conclusion follows from sections
@@ -77,21 +77,27 @@ mark which section(s) support it.
 
 Failure modes:
 
-- Conclusion claim with no body-section evidence — finding.
-  Strongest finding type at this level; the paper claims something
+- Conclusion claim with no body-section evidence — flag.
+  Strongest flag type at this level; the paper claims something
   it didn't show.
 - Body-section result that doesn't surface in the conclusion —
-  weaker finding, "lost contribution". Usually means the
+  weaker flag, "lost contribution". Usually means the
   conclusion is undercount­ing the paper's own work.
 - Conclusion that introduces a new claim absent from intro and
-  body — finding. The conclusion is not the place to add results.
+  body — flag. The conclusion is not the place to add results.
 
-## Output: one finding per structural break
+## Output: one flag per structural break
+
+`kind='finding'` doesn't fit here — it's a citation-chase target
+(`cited_in=` mandatory, "your own synthesis with no single source
+→ not a finding"; see `precis-finding-help`). A structural read is
+your own synthesis across the manuscript, not a sourced claim, so
+record it as a `kind='memory'` linked to the section it's about:
 
 ```python
 put(
-    kind="finding",
-    text="""Structure finding: intro promises a comparison of CNT vs
+    kind="memory",
+    text="""Structure flag: intro promises a comparison of CNT vs
 GNR mobility but §4 only covers CNTs. The promised GNR comparison
 is missing.
 
@@ -102,7 +108,8 @@ Specifically:
 
 Severity: SUBSTANTIVE — the intro contract is broken. Either add a
 §4.2 GNR mobility subsection, or trim the intro's promise.""",
-    rel="section-structure-finding",
+    tags=["topic:section-structure-review"],
+    link="xc<id>",  # the §4 section handle, from get() output
 )
 ```
 
@@ -119,7 +126,7 @@ Severity guide:
 Recommended order — saves time if an early check fails badly:
 
 1. Thesis check (intro). If you can't extract a thesis, **stop
-   here** and mint that as the single SUBSTANTIVE finding. The
+   here** and record that as the single SUBSTANTIVE flag. The
    rest of the review is downstream of fixing this.
 2. Roadmap-vs-sections.
 3. Per-section mini-intros.
@@ -141,4 +148,4 @@ Recommended order — saves time if an early check fails badly:
 - [[precis-review-paragraph-flow]] — paragraph-level
 - [[precis-review-citation-faithfulness]] — claim ↔ source
 - [[precis-polish-paper]] — runbook tying review passes together
-- [[precis-finding-help]] — finding shape
+- [[precis-memory-help]] — memory shape, link=/rel= on create

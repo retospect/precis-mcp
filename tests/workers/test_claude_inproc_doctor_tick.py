@@ -106,6 +106,12 @@ def test_failure_marks_failed_and_records_error(store: Store) -> None:
     assert "STATUS:failed" in job_tags
     result_texts = _job_result_texts(store, job_id)
     assert any("empty reply" in t for t in result_texts)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'error' FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "doctor_tick: empty reply — nothing to report"
 
 
 def test_run_raising_is_recorded_as_a_job_event_and_failed(store: Store) -> None:

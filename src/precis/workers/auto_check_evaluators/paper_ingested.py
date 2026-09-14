@@ -1,11 +1,16 @@
 """``type='paper_ingested'`` — wait for a DOI to land + embed.
 
 Resolves to ``True`` when a live ``paper`` ref with the supplied
-external identifier exists *and* has at least one embedded chunk
-(``chunk_embeddings.status='ok'``). The two conditions matter
-separately: a freshly-minted stub passes the first but not the
-second; we want to release the leaf only when the consumer can
-actually run semantic search against the paper.
+external identifier exists *and* has at least one embedded *body*
+chunk (``ord >= 0``, ``chunk_embeddings.status='ok'``). The ``ord >= 0``
+filter matters: a metadata-only stub (``precis add --doi`` / chase)
+already carries synthesized *card* chunks (``ord < 0`` — title/abstract)
+that get embedded independently of any real fetch, per
+``ingest/db_writer.py``'s own stub-vs-body distinction. Counting those
+flipped waiting todos to ``STATUS:done`` on a bare fetch attempt or a
+stub-metadata update, with no article body landed at all (gr338195,
+gr338551). We want to release the leaf only when the consumer can
+actually run semantic search against the paper's *content*.
 
 Spec
 ====
@@ -55,6 +60,7 @@ def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
                    SELECT 1 FROM chunks c
                      JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
                     WHERE c.ref_id = r.ref_id
+                      AND c.ord >= 0
                       AND ce.status = 'ok'
                )
              LIMIT 1

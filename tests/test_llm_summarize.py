@@ -30,6 +30,7 @@ from precis.workers.llm_summarize import (
     LlmConfig,
     _Claimed,
     _mark_failed,
+    _reject_reason,
     build_messages,
     claim_chunks_without_summary,
     parse_summary,
@@ -63,6 +64,29 @@ class _FakeTransport:
         return {
             "choices": [{"message": {"content": self.content}}],
             "usage": usage,
+        }
+
+
+class _SequenceTransport:
+    """Returns each ``contents`` entry in order, sticking on the last one."""
+
+    def __init__(self, contents: list[str]) -> None:
+        self.contents = contents
+        self.calls: list[dict[str, Any]] = []
+
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> dict[str, Any]:
+        idx = min(len(self.calls), len(self.contents) - 1)
+        self.calls.append({"url": url, "payload": payload, "headers": headers})
+        return {
+            "choices": [{"message": {"content": self.contents[idx]}}],
+            "usage": {"total_tokens": 7},
         }
 
 
@@ -406,6 +430,118 @@ def test_config_concurrency_from_env() -> None:
     assert LlmConfig.from_env({"PRECIS_SUMMARIZE_CONCURRENCY": "3"}).concurrency == 3
     # Floors at 1 — 0 / negative would make the thread pool meaningless.
     assert LlmConfig.from_env({"PRECIS_SUMMARIZE_CONCURRENCY": "0"}).concurrency == 1
+
+
+# --------------------------------------------------------------------------
+# output-contract post-check (gr338215 — leaked chain-of-thought)
+# --------------------------------------------------------------------------
+
+#: The verbatim leaked-reasoning summary from gr338215.
+_LEAKED_REASONING = (
+    "at most 15 words, self-contained gist in one clause. Something like: "
+    '"boxel platform lacks purification and separation, so yields and '
+    'stereochemistry suffer" - count words: boxel(1) platform(2)... Good, '
+    "11 words."
+)
+
+
+def test_reject_reason_catches_verbatim_gripe_example() -> None:
+    assert _reject_reason(_LEAKED_REASONING) is not None
+
+
+def test_reject_reason_tally_pattern_alone() -> None:
+    """The digit-parenthesis tally regex alone is enough to trip the check,
+    independent of the instruction-echo substrings."""
+    reason = _reject_reason("boxel(1) platform(2) purification(3) suffer(4)")
+    assert reason == "digit-parenthesis tally pattern"
+
+
+def test_reject_reason_accepts_clean_candidate() -> None:
+    clean = (
+        "cobalt catalyst triples proton-reduction turnover over palladium\n\n"
+        "12,000 h⁻¹ at 80 °C in acidic acetonitrile."
+    )
+    assert _reject_reason(clean) is None
+
+
+def test_reject_reason_quote_wrapped_gist() -> None:
+    assert _reject_reason('"the whole gist wrapped in quotes"\n\ndetail.') is not None
+
+
+def test_reject_reason_grossly_over_length() -> None:
+    long_brief = " ".join(f"word{i}" for i in range(40))
+    assert _reject_reason(long_brief) is not None
+
+
+def test_run_pass_rejects_leaked_reasoning_then_retries_clean(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A leaked-reasoning candidate is never stored: one retry with a terse
+    reinforcement line recovers a clean summary."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    t = _SequenceTransport([_LEAKED_REASONING, "BRIEF: g\nDETAIL: d."])
+    client = LlmClient(LlmConfig(), transport=t)
+
+    with caplog.at_level(logging.WARNING):
+        result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert len(t.calls) == 2  # original candidate + one reinforced retry
+    retry_messages = t.calls[1]["payload"]["messages"]
+    assert "output contract" in retry_messages[-1]["content"].lower()
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "g\n\nd."  # the retry's clean summary, not the leak
+    rejects = [r for r in caplog.records if "candidate rejected" in r.getMessage()]
+    assert len(rejects) == 1
+    assert "chunk_id=1" in rejects[0].getMessage()
+
+
+def test_run_pass_falls_back_to_truncation_when_retry_also_leaks(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Both the original candidate and its reinforced retry leak reasoning →
+    deterministic truncation of the chunk text is stored instead, never the
+    model's chain of thought, and the fallback is warn-logged."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    t = _FakeTransport(_LEAKED_REASONING)  # every call leaks
+    client = LlmClient(LlmConfig(), transport=t)
+
+    with caplog.at_level(logging.WARNING):
+        result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    # The fallback always succeeds (no LLM call), so the chunk still lands ok.
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert len(t.calls) == 2  # original + the one reinforced retry
+    (_sql, params), *_ = conn.writes
+    stored = params[2]
+    assert "at most" not in stored.lower()
+    assert "count words" not in stored.lower()
+    # Deterministic truncation of the claimed chunk's own text.
+    assert stored == "We synthesized MOF-5 and measured a band gap of 3.5 eV."
+    fallback_warns = [
+        r
+        for r in caplog.records
+        if "falling back to deterministic truncation" in r.getMessage()
+    ]
+    assert len(fallback_warns) == 1
+    assert "chunk_id=1" in fallback_warns[0].getMessage()
+
+
+def test_run_pass_clean_candidate_stored_untouched() -> None:
+    """A clean candidate is stored as-is — the post-check never fires."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    t = _FakeTransport("BRIEF: cobalt catalyst triples turnover\nDETAIL: 12,000 h-1.")
+    client = LlmClient(LlmConfig(), transport=t)
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert len(t.calls) == 1  # no retry needed
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "cobalt catalyst triples turnover\n\n12,000 h-1."
 
 
 # --------------------------------------------------------------------------

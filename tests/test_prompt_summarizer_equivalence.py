@@ -9,7 +9,12 @@ hand-rolled prompt they replaced.
 The reference is a verbatim copy of the pre-refactor implementations
 (``_legacy_build_messages`` / ``_legacy_briefing_messages``), captured here
 as the known-good golden. Each test asserts the new path reproduces it
-exactly for a representative input.
+exactly for a representative input. Post-refactor prompt-*wording* changes
+(not the refactor itself) still land here too, kept byte-identical to
+``_INSTRUCTION_BLOCK`` — e.g. the gr338215 "no reasoning / no word count"
+line — so this file stays what it claims to be: the live wire text the
+litellm ``summarizer`` alias actually receives, not a stale pre-refactor
+snapshot.
 
 Documented mapping (see :class:`LiteLLMAdapter`): the three CACHED blocks
 (instruction + examples + doc-header) join into the leading ``system``
@@ -44,7 +49,9 @@ def _legacy_build_messages(claim: _Claimed, *, doc_card: str) -> list[dict[str, 
     system = (
         "You summarize a single passage from a larger document, "
         "as a navigation gloss.\n"
-        "Output EXACTLY two lines and nothing else:\n"
+        "Output EXACTLY two lines and nothing else: no reasoning, no drafts, "
+        "no restating or verifying these instructions, no word count — just "
+        "the two final lines.\n"
         f"BRIEF: <a self-contained gist in one clause, at most {_BRIEF_MAX_WORDS} words>\n"
         "DETAIL: <1-3 terse fragments adding specifics NOT already in BRIEF — "
         "quantities, named entities, method, caveats>\n"

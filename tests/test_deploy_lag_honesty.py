@@ -68,6 +68,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -246,7 +247,11 @@ def deploy_repo(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _run_deploy(
-    repo: Path, cluster_dir: Path, fakebin: Path, scenario: str
+    repo: Path,
+    cluster_dir: Path,
+    fakebin: Path,
+    scenario: str,
+    *extra_args: str,
 ) -> subprocess.CompletedProcess[str]:
     env = _test_env(
         PRECIS_DEPLOY_ALLOW_STALE="1",
@@ -258,7 +263,7 @@ def _run_deploy(
     )
     env["PATH"] = f"{fakebin}:{env['PATH']}"
     return subprocess.run(
-        ["bash", str(repo / "scripts" / "deploy")],
+        ["bash", str(repo / "scripts" / "deploy"), *extra_args],
         cwd=str(repo),
         env=env,
         capture_output=True,
@@ -295,6 +300,8 @@ def test_deploy_writes_marker_and_clears_stamp_when_rollout_converges_despite_re
         "the attempt stamp must be cleared on a converged rollout"
     )
     assert "recording the deploy-state marker" in result.stdout
+    # gr338201: the ledger's outcome field.
+    assert marker.read_text(encoding="utf-8").split()[2] == "success"
 
 
 def test_deploy_leaves_stamp_and_writes_no_marker_when_rollout_itself_fails(
@@ -316,8 +323,11 @@ def test_deploy_leaves_stamp_and_writes_no_marker_when_rollout_itself_fails(
         f"\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert stamp.exists(), "the attempt stamp must survive a genuine rollout failure"
-    recorded_sha = stamp.read_text(encoding="utf-8").split()[0]
-    assert recorded_sha == _git(repo, "rev-parse", "main").stdout.strip()
+    stamp_fields = stamp.read_text(encoding="utf-8").split()
+    assert stamp_fields[0] == _git(repo, "rev-parse", "main").stdout.strip()
+    # gr338201: the ledger's outcome field — "attempt", not the rollback
+    # guard's "refused" (nothing here tripped that guard).
+    assert stamp_fields[2] == "attempt"
 
 
 def test_deploy_writes_marker_and_clears_stamp_on_full_success(
@@ -337,6 +347,125 @@ def test_deploy_writes_marker_and_clears_stamp_on_full_success(
     recorded_sha = marker.read_text(encoding="utf-8").split()[0]
     assert recorded_sha == _git(repo, "rev-parse", "main").stdout.strip()
     assert not stamp.exists()
+    # gr338201: the ledger's outcome field.
+    assert marker.read_text(encoding="utf-8").split()[2] == "success"
+
+
+# ───────────────────── scripts/deploy rollback guard (gr338201) ──────────────
+#
+# Real incident, 2026-09-13: a Remote Control session ran scripts/deploy from
+# a stale worktree pinned to an ANCESTOR of the sha already live on the
+# fleet, and the deploy proceeded to roll the whole cluster back. The local
+# pid-lock (_acquire_deploy_lock) serialises concurrent runs but does nothing
+# about direction — a solo, uncontended run of an old ref sailed straight
+# through. These tests exercise the independent guard added to scripts/deploy
+# that resolves the target sha and refuses when it is a strict ancestor of
+# either the sha the deploy-state marker names, or origin/main (not exercised
+# here — these throwaway repos carry no `origin` remote, so that branch is a
+# no-op fetch failure; the marker branch alone is sufficient to prove the
+# mechanism and is what the incident actually needed).
+
+
+def test_deploy_refuses_ancestor_of_deployed_marker(
+    deploy_repo: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """The core case: target is an ancestor of the recorded deployed sha —
+    refuse loudly, naming both shas, and leave a "refused" ledger entry (no
+    host was ever touched, so this must never read as "died red")."""
+    repo, cluster_dir = deploy_repo
+    fakebin = _make_fake_bin(tmp_path)
+    ancestor_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    deployed_sha = _commit(repo, "newer.txt")
+    marker = _marker_path(repo)
+    marker.write_text(f"{deployed_sha} {int(time.time())} success\n", encoding="utf-8")
+
+    result = _run_deploy(repo, cluster_dir, fakebin, "ok", ancestor_sha)
+
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "REFUSING TO DEPLOY" in combined, combined
+    assert ancestor_sha[:8] in combined, combined
+    assert deployed_sha[:8] in combined, combined
+    # the marker itself must be untouched — nothing was deployed.
+    assert marker.read_text(encoding="utf-8").split()[0] == deployed_sha
+    stamp = _attempt_path(repo)
+    assert stamp.exists(), "a refusal must still leave a ledger entry"
+    stamp_fields = stamp.read_text(encoding="utf-8").split()
+    assert stamp_fields[0] == ancestor_sha
+    assert stamp_fields[2] == "refused"
+
+
+def test_deploy_force_rollback_overrides_ancestor_refusal(
+    deploy_repo: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """--force-rollback is the sole, explicit override — a deliberate
+    rollback must still be possible."""
+    repo, cluster_dir = deploy_repo
+    fakebin = _make_fake_bin(tmp_path)
+    ancestor_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    deployed_sha = _commit(repo, "newer.txt")
+    marker = _marker_path(repo)
+    marker.write_text(f"{deployed_sha} {int(time.time())} success\n", encoding="utf-8")
+
+    result = _run_deploy(
+        repo, cluster_dir, fakebin, "ok", ancestor_sha, "--force-rollback"
+    )
+
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "REFUSING TO DEPLOY" not in (result.stdout + result.stderr)
+    # a deliberate rollback still records what actually got deployed.
+    assert marker.read_text(encoding="utf-8").split()[0] == ancestor_sha
+
+
+def test_deploy_allows_equal_sha_noop_redeploy(
+    deploy_repo: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Re-deploying the exact sha already recorded (e.g. to pick up a config
+    change with no code change) is not a rollback and must proceed."""
+    repo, cluster_dir = deploy_repo
+    fakebin = _make_fake_bin(tmp_path)
+    head_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    marker = _marker_path(repo)
+    marker.write_text(f"{head_sha} {int(time.time())} success\n", encoding="utf-8")
+
+    result = _run_deploy(repo, cluster_dir, fakebin, "ok")
+
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "REFUSING TO DEPLOY" not in (result.stdout + result.stderr)
+
+
+def test_deploy_first_deploy_no_marker_proceeds(
+    deploy_repo: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """No deploy-state marker on record at all (first-ever deploy) must not
+    be mistaken for a rollback."""
+    repo, cluster_dir = deploy_repo
+    fakebin = _make_fake_bin(tmp_path)
+    assert not _marker_path(repo).exists()
+
+    result = _run_deploy(repo, cluster_dir, fakebin, "ok")
+
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "REFUSING TO DEPLOY" not in (result.stdout + result.stderr)
+
+
+def test_deploy_rollback_guard_reads_old_two_field_marker(
+    deploy_repo: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """A marker written by a pre-gr338201 scripts/deploy (`<sha> <epoch>`,
+    no outcome field) must still be read correctly by the new guard — the
+    format extension is additive, not a breaking rewrite."""
+    repo, cluster_dir = deploy_repo
+    fakebin = _make_fake_bin(tmp_path)
+    ancestor_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    deployed_sha = _commit(repo, "newer.txt")
+    marker = _marker_path(repo)
+    marker.write_text(f"{deployed_sha} {int(time.time())}\n", encoding="utf-8")
+
+    result = _run_deploy(repo, cluster_dir, fakebin, "ok", ancestor_sha)
+
+    assert result.returncode != 0
+    assert "REFUSING TO DEPLOY" in (result.stdout + result.stderr)
 
 
 # ──────────────────────── scripts/ship footer (base design) ──────────────────
@@ -446,6 +575,24 @@ def test_deploy_lag_footer_reports_ordinary_count_when_marker_is_current(
     assert "1 commit(s) on main not yet deployed" in result.stdout, result.stdout
     assert "uncertain" not in result.stdout, result.stdout
     assert "no successful deploy on record" not in result.stdout, result.stdout
+
+
+def test_deploy_lag_footer_distinguishes_refused_attempt_from_a_crash(
+    ship_repo: Path,
+) -> None:
+    """gr338201: a "refused" attempt (the rollback guard tripped, no host was
+    ever touched) must read as materially different from the base design's
+    "died red or still running" — reporting the latter for a refusal would be
+    alarm fatigue in a new place (nothing is actually wrong with the fleet)."""
+    repo = ship_repo
+    attempt = _attempt_path(repo)
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    attempt.write_text(f"{sha} 1 refused\n", encoding="utf-8")
+
+    result = _run_ship_probe(repo, _footer_block())
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "REFUSED by the rollback guard" in result.stdout, result.stdout
+    assert "died red or still running" not in result.stdout, result.stdout
 
 
 def test_deploy_lag_footer_reports_no_record_when_neither_marker_nor_stamp_exist(

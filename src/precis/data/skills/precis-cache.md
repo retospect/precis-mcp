@@ -28,12 +28,17 @@ hits the cache and skips the upstream cost.
 | `web`       | 7 days  | direct fetch           | free         |
 | `youtube`   | 30 days | youtube-transcript-api | free         |
 | `websearch` | 7 days  | Perplexity Sonar       | ~$0.001      |
-| `perplexity-reasoning` | 30 days | Sonar Reasoning Pro | ~$0.005   |
+| `perplexity-reasoning` | pinned  | Sonar Reasoning Pro | ~$0.005   |
 | `perplexity-research`  | pinned  | Sonar Deep Research | ~$0.50    |
 
-`pinned` means never expires automatically. TTLs are stamped on the
-row at write time — changing a handler constant only affects rows
-written after.
+`pinned` means never expires automatically. `perplexity-reasoning`
+is pinned by default (a wrong cached answer is bounded — citations
+trace to real papers via the chase/finding pipeline, not to
+Perplexity — so the cost of staying wrong is low next to the cost
+of re-running a $0.005 call); override per call with
+`args={'ttl_days': N}` if you want that one row to decay. TTLs are
+stamped on the row at write time — changing a handler constant only
+affects rows written after.
 
 ## How is a cache key composed?
 ## What makes two queries hit the same cache row?
@@ -73,7 +78,7 @@ The `CACHE:` axis is system-applied, closed-vocab:
 Filter on it:
 
 ```python
-search(kind="perplexity-reasoning", q="photocatalysis", tags=["CACHE:fresh"])
+search(kind="websearch", q="photocatalysis", tags=["CACHE:fresh"])
 search(kind="web", q="reactor design", tags=["CACHE:stale"])
 ```
 
@@ -81,7 +86,8 @@ The response footer also reports it inline:
 
 ```text
 (perplexity-research cache · age 12d · pinned)
-(perplexity-reasoning cache · age 22d · stale)
+(perplexity-reasoning cache · age 22d · pinned)
+(websearch cache · age 9d · stale)
 ```
 
 ## How do I force a refetch?

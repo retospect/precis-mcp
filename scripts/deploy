@@ -19,6 +19,20 @@
 #
 # Usage:  scripts/deploy            # deploy main (default)
 #         scripts/deploy some-branch
+#         scripts/deploy <old-sha> --force-rollback   # deliberate rollback
+#
+# gr338201 (2026-09-13 incident): a stale worktree pinned to an ancestor
+# commit of what was already live ran scripts/deploy and rolled the whole
+# cluster BACKWARD — the freshness guard below only catches drift on the
+# *local checkout* (`git rev-parse "$REF"` vs origin), and no-ops the moment
+# REF is a literal sha (there is no `origin/<sha>` ref to compare against),
+# which is exactly the shape of that incident. A second, independent guard
+# (below the freshness guard) resolves the target sha and refuses when it is
+# a strict ancestor of either (a) the sha recorded as currently deployed
+# (the shared deploy-state marker — see scripts/lib/deploy-state.sh) or (b)
+# origin/main freshly fetched. Equal-sha (no-op redeploy) is allowed; a
+# missing marker (first-ever deploy) is not a refusal. Deliberate rollback:
+# pass --force-rollback (anywhere in argv).
 #
 # PRECIS_DEPLOY_EXTRA_VARS — optional extra `-e key=value` pairs passed through
 # to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
@@ -46,7 +60,15 @@
 #     custom `precis heartbeat --host`); default is the canary name itself.
 set -euo pipefail
 
-REF="${1:-main}"
+FORCE_ROLLBACK=0
+_POSITIONAL=()
+for _a in "$@"; do
+    case "$_a" in
+        --force-rollback) FORCE_ROLLBACK=1 ;;
+        *) _POSITIONAL+=("$_a") ;;
+    esac
+done
+REF="${_POSITIONAL[0]:-main}"
 EXTRA_ARGS=()
 for _v in ${PRECIS_DEPLOY_EXTRA_VARS:-}; do
     EXTRA_ARGS+=(-e "$_v")
@@ -93,7 +115,7 @@ _write_deploy_state_marker() {
     sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
     [[ -n "$sha" ]] || return 0
     . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
-    printf '%s %s\n' "$sha" "$(date +%s)" > "$(deploy_state_path "$REPO_ROOT")"
+    printf '%s %s %s\n' "$sha" "$(date +%s)" "success" > "$(deploy_state_path "$REPO_ROOT")"
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
 }
 
@@ -190,6 +212,47 @@ if [[ -z "${PRECIS_DEPLOY_ALLOW_STALE:-}" ]]; then
     fi
     _dirty="$(git -C "$REPO_ROOT" status --porcelain -- deploy/ 2>/dev/null || true)"
     [[ -z "$_dirty" ]] || die "deploy/ tree has uncommitted changes — templates would render unshipped state. Commit/ship first, or set PRECIS_DEPLOY_ALLOW_STALE=1."
+fi
+
+# ── rollback guard (gr338201): refuse an ancestor-sha deploy ─────────────
+# Independent of the freshness guard above (which only compares the LOCAL
+# checkout to origin/$REF and no-ops for a literal-sha REF). This compares
+# the resolved TARGET sha itself against the sha already recorded as
+# deployed (the shared deploy-state marker) and against a freshly-fetched
+# origin/main — the two things that jointly define "already ahead of this".
+# Not gated by PRECIS_DEPLOY_ALLOW_STALE (a different problem: template
+# skew, not direction). Only --force-rollback bypasses it.
+if [[ "$FORCE_ROLLBACK" != 1 ]]; then
+    _rb_target="$(git -C "$REPO_ROOT" rev-parse -q --verify "${REF}^{commit}" 2>/dev/null || true)"
+    if [[ -n "$_rb_target" ]]; then
+        . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+        _rb_marker="$(deploy_state_read_path "$REPO_ROOT")"
+        _rb_deployed=""
+        if [[ -n "$_rb_marker" && -f "$_rb_marker" ]]; then
+            _rb_deployed="$(awk '{print $1}' "$_rb_marker" 2>/dev/null || true)"
+            git -C "$REPO_ROOT" cat-file -e "${_rb_deployed}^{commit}" 2>/dev/null || _rb_deployed=""
+        fi
+        git -C "$REPO_ROOT" fetch -q origin main 2>/dev/null || true
+        _rb_origin_main="$(git -C "$REPO_ROOT" rev-parse -q --verify origin/main 2>/dev/null || true)"
+
+        _rb_against=""
+        if [[ -n "$_rb_deployed" && "$_rb_target" != "$_rb_deployed" ]] \
+            && git -C "$REPO_ROOT" merge-base --is-ancestor "$_rb_target" "$_rb_deployed" 2>/dev/null; then
+            _rb_against="the currently-deployed sha ${_rb_deployed:0:8} (deploy-state marker)"
+        elif [[ -n "$_rb_origin_main" && "$_rb_target" != "$_rb_origin_main" ]] \
+            && git -C "$REPO_ROOT" merge-base --is-ancestor "$_rb_target" "$_rb_origin_main" 2>/dev/null; then
+            _rb_against="origin/main (${_rb_origin_main:0:8})"
+        fi
+
+        if [[ -n "$_rb_against" ]]; then
+            {
+                . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+                printf '%s %s %s\n' "$_rb_target" "$(date +%s)" "refused" \
+                    > "$(deploy_attempt_path "$REPO_ROOT")"
+            } 2>/dev/null || true
+            die "REFUSING TO DEPLOY: target '${REF}' (${_rb_target:0:8}) is an ANCESTOR of ${_rb_against} — this would roll the cluster BACKWARD (gr338201: this is exactly the 2026-09-13 stale-worktree incident shape). deployed=${_rb_deployed:-unknown} target=${_rb_target} origin/main=${_rb_origin_main:-unknown}. If this rollback is deliberate, re-run with --force-rollback."
+        fi
+    fi
 fi
 
 # ── slice 12a: install-from-tree is the DEFAULT (cutover complete 2026-07-19).
@@ -360,7 +423,7 @@ fi
 # Best-effort — never blocks a deploy.
 {
     . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
-    printf '%s %s\n' "$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || printf '%s' "$REF")" "$(date +%s)" \
+    printf '%s %s %s\n' "$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || printf '%s' "$REF")" "$(date +%s)" "attempt" \
         > "$(deploy_attempt_path "$REPO_ROOT")"
 } 2>/dev/null || true
 
@@ -442,10 +505,13 @@ ${_rollback_hint}"
     say "deployed — cluster is running '${REF}' (canary ${CANARY} verified first, then the fleet)."
 fi
 
-# ── 3. record the deploy-state marker (for scripts/ship's lag report) ────
-# Gitignored, local-only: `<sha> <epoch>` of what's now actually running on
-# the cluster, so a later `scripts/ship` can tell how many commits + how much
-# time have accumulated since. Best-effort — never fails a successful deploy.
+# ── 3. record the deploy-state marker (for scripts/ship's lag report and
+# scripts/deploy's own rollback guard) ────────────────────────────────────
+# Gitignored, local-only: `<sha> <epoch> <outcome>` of what's now actually
+# running on the cluster, so a later `scripts/ship` can tell how many commits
+# + how much time have accumulated since, and a later `scripts/deploy` can
+# refuse to roll it backward (gr338201). Best-effort — never fails a
+# successful deploy.
 {
     . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
     DEPLOYED_SHA="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
@@ -454,7 +520,7 @@ fi
         # fact, and a per-worktree marker made every OTHER tree's ship
         # over-report the lag. See scripts/lib/deploy-state.sh.
         . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
-        printf '%s %s\n' "$DEPLOYED_SHA" "$(date +%s)" \
+        printf '%s %s %s\n' "$DEPLOYED_SHA" "$(date +%s)" "success" \
             > "$(deploy_state_path "$REPO_ROOT")"
     fi
     # Success: clear the attempt stamp so ship stops reporting "uncertain"

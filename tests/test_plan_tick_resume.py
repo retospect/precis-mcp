@@ -340,6 +340,35 @@ def test_real_failure_still_bubbles_and_resets_streak(store: Store) -> None:
     assert present_row[0] is False  # reset
 
 
+def test_run_raising_bubbles_and_records_meta_error(store: Store) -> None:
+    """``spec.run`` raising (not a captured CLI outcome, e.g. a store call
+    inside plan_tick blowing up) must still stamp ``meta.error`` so an ops
+    digest of the failure isn't left with an empty error field — the full
+    ``repr(exc)`` also lands in the ``job_event`` chunk regardless
+    (gr338335)."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+
+    class _RaisingSpec:
+        name = "plan_tick"
+
+        def run(self, **_kw: object) -> PlanTickOutcome:
+            raise RuntimeError("boom")
+
+    ci._run_plan_tick(store, job_id, _RaisingSpec())
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert f"child-failed:{job_id}" in parent_tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'error' FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    assert "boom" in row[0]
+
+
 def test_clean_tick_succeeds_and_resets_streak(store: Store) -> None:
     parent_id = _mk_parent(store)
     _run(store, _mk_job(store, parent_id), _MAX_TURNS, exit_code=1)  # prime streak

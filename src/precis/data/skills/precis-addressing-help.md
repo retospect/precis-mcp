@@ -108,9 +108,9 @@ agent-facing copy.
 | markdown | `md` | `mc` | | job | `jo` | `jc` |
 | plaintext | `pl` | `lc` | | alert | `al` | — |
 | tex | `tx` | `xc` | | agentlog | `ag` | — |
-| python | `py` | — | | cron | `cr` | `cp` |
-| gripe | `gr` | `gc` | | message | `ms` | `mb` |
-| skill | `sk` | — | | tag | `tg` | — |
+| python | `py` | — | | message | `ms` | `mb` |
+| gripe | `gr` | `gc` | | tag | `tg` | — |
+| skill | `sk` | — | | | | |
 
 - **`skill` / `python` / `tag`** carry codes for completeness but are still
   addressed by their slug/path or `kind=`+id — a bare `sk…`/`py…`/`tg…` is not

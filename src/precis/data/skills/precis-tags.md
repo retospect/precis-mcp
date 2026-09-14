@@ -185,7 +185,10 @@ tagging:
 | Job queue | `job` | `queued`, `submitted`, `running`, `succeeded`, `failed`, `cancelled`, `cancel_requested` |
 
 The runtime rejects unknown values at write time with the full options
-list. To see the live set, `get(kind='skill', id='precis-status-help')`.
+list. To see the live set without triggering a write, `get(kind='tag',
+id='STATUS:open')` — the `sibling values` line surfaces the full closed
+vocabulary for the axis (`precis-status-help` is unrelated — build/DB
+introspection, not tag axes).
 
 ## Which closed axes apply to which kind?
 ## Per-kind axis matrix

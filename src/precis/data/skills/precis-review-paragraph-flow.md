@@ -1,14 +1,14 @@
 ---
 id: precis-review-paragraph-flow
 title: precis — one-pass paragraph-flow review
-summary: Every paragraph must have a topic sentence, a developed body, and a transition; check each one and mint findings on offenders
+summary: Every paragraph must have a topic sentence, a developed body, and a transition; check each one and record a flag on offenders
 answers:
   - how do I check that every paragraph has a topic sentence and a developed body?
   - which block kinds get skipped by the paragraph-flow check?
-  - how do I file one finding per broken paragraph?
-applies-to: get (kind='tex'), put (kind='finding')
+  - how do I file one flag per broken paragraph?
+applies-to: get (kind='tex'), put (kind='memory')
 tags: troubleshooting
-kinds: tex, finding
+kinds: tex, memory
 status: active
 ---
 
@@ -54,7 +54,7 @@ For each prose paragraph, check four things:
 Read sentence 1. Ask: "if I read only this sentence, do I know what
 this paragraph will argue?" If yes — pass. If no, the topic sentence
 is missing or buried. Find where the actual claim lives (often
-sentence 3 or 4) and mint a finding asking the writer to lift it
+sentence 3 or 4) and record a flag asking the writer to lift it
 to the lead.
 
 ### 2. Single claim, body develops it
@@ -62,7 +62,7 @@ to the lead.
 Walk sentences 2 through N-1. Each should support, qualify, give
 evidence for, or extend the topic sentence's claim. If a sentence
 introduces a new claim unrelated to the topic, the paragraph is
-doing two things — finding: paragraph splits.
+doing two things — flag: paragraph splits.
 
 ### 3. Transition to next paragraph
 
@@ -71,23 +71,27 @@ paragraph?" The transition can be explicit ("This raises the
 question of …", "The same reasoning extends to …") or implicit
 (end-of-paragraph claim is the start-of-next-paragraph subject).
 A flat full-stop on a stand-alone claim with no link to the next
-paragraph's subject is a broken transition — finding.
+paragraph's subject is a broken transition — flag.
 
 ### 4. Cross-paragraph continuity
 
 Read sentence N of paragraph P and sentence 1 of paragraph P+1
 back-to-back. The reader should feel a forward step, not a topic
 jump. If P+1 starts a wholly new subject without a section break,
-that's a missing subhead — finding.
+that's a missing subhead — flag.
 
-## Output: one finding per paragraph
+## Output: one flag per paragraph
 
-Mint `kind='finding'` refs against the manuscript ref. Body shape:
+`kind='finding'` doesn't fit here — it's a citation-chase target
+(`cited_in=` mandatory, "your own synthesis with no single source
+→ not a finding"; see `precis-finding-help`). A paragraph-flow
+observation is your own read of the prose, not a sourced claim, so
+record it as a `kind='memory'` linked to the reviewed block:
 
 ```python
 put(
-    kind="finding",
-    text="""Paragraph-flow finding in chapters--intro~motivation block 4:
+    kind="memory",
+    text="""Paragraph-flow flag in chapters/intro.tex block 4:
 
 Sentence 1: "Carbon nanotubes have been studied since the 1990s."
 Sentence 3 carries the actual claim: "Their ballistic transport at
@@ -97,7 +101,8 @@ Severity: MODERATE — the topic sentence is generic background;
 the paragraph's actual point is buried mid-paragraph. Lift sentence
 3 to the lead and re-paragraph the historical context as a separate
 "Background" paragraph or trim it.""",
-    rel="paragraph-flow-finding",
+    tags=["topic:paragraph-flow-review"],
+    link="xc<id>",  # the reviewed block's handle, from get() output
 )
 ```
 
@@ -126,12 +131,12 @@ Severity guide:
   structure, not prose.
 - Marking every paragraph that opens with a transition word as
   "good flow". Form ≠ function. Read the actual claims.
-- Bundling all paragraph findings into a section-level summary.
-  One finding per paragraph so each can be resolved independently.
+- Bundling all paragraph flags into a section-level summary.
+  One flag per paragraph so each can be resolved independently.
 
 ## See also
 
 - [[precis-review-section-structure]] — section-level structure
 - [[precis-tex-help]] — block grammar
 - [[precis-common-reviewer]] — shared reviewer discipline
-- [[precis-finding-help]] — finding shape
+- [[precis-memory-help]] — memory shape, link=/rel= on create

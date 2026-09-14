@@ -28,6 +28,16 @@ chunks; per-chunk specifics go LAST. Chunks are claimed ordered
 ``ref_id, ord`` with the doc card cached per ref, so consecutive chunks
 reuse the prefix. Pin the litellm ``summarizer`` alias to a single
 backend — least-busy routing across nodes destroys this locality.
+
+**Fail-closed output contract** (gr338215): the shared reasoning-capable
+backend occasionally bleeds chain-of-thought about the *instructions*
+into ``content`` instead of the BRIEF/DETAIL answer. Every candidate is
+checked (:func:`_reject_reason`) for instruction-echo, a leaked
+self-verification tally, quote-wrapping, or gross length overshoot before
+it is ever written; a rejected candidate gets one reinforced retry
+(:func:`_retry_with_reinforcement`), then falls back to a deterministic
+truncation of the chunk text (:func:`_fallback_summary`) — never a raw
+model call's reasoning trace.
 """
 
 from __future__ import annotations
@@ -36,6 +46,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -734,7 +745,9 @@ def _kind_noun(ref_kind: str) -> str:
 _INSTRUCTION_BLOCK = (
     "You summarize a single passage from a larger document, "
     "as a navigation gloss.\n"
-    "Output EXACTLY two lines and nothing else:\n"
+    "Output EXACTLY two lines and nothing else: no reasoning, no drafts, "
+    "no restating or verifying these instructions, no word count — just "
+    "the two final lines.\n"
     f"BRIEF: <a self-contained gist in one clause, at most {_BRIEF_MAX_WORDS} words>\n"
     "DETAIL: <1-3 terse fragments adding specifics NOT already in BRIEF — "
     "quantities, named entities, method, caveats>\n"
@@ -963,6 +976,134 @@ def parse_summary(text: str) -> str:
     if not brief:  # label drift — promote first sentence of detail
         brief = detail.split(". ", 1)[0]
     return f"{brief}\n\n{detail}".strip()
+
+
+# ---------------------------------------------------------------------------
+# Output-contract post-check (gr338215)
+# ---------------------------------------------------------------------------
+#
+# gr338215: the shared reasoning-capable backend occasionally bleeds its
+# chain-of-thought about the *instructions* into ``content`` instead of (or
+# alongside) the actual BRIEF/DETAIL answer — e.g. a stored summary of "at
+# most 15 words, self-contained gist in one clause. Something like: \"…\" -
+# count words: boxel(1) platform(2)... Good, 11 words." No literal
+# self-verification instruction was found in ``_INSTRUCTION_BLOCK`` (it never
+# asks the model to count or double-check anything) — the leak reads as an
+# infra-level reasoning/content split failure on the backend, not a specific
+# prompt phrase, so ``_INSTRUCTION_BLOCK`` above was hardened with an
+# explicit "no reasoning / no word count" line as a belt-and-braces measure.
+# Since a fully reliable prompt-side fix can't be guaranteed against a
+# reasoning model doing this, the contract is enforced fail-closed here: a
+# candidate that reads like leaked reasoning is never stored, full stop.
+
+#: Case-insensitive substrings that only ever appear in a candidate when the
+#: model is talking ABOUT the instructions rather than answering them —
+#: lifted verbatim from ``_INSTRUCTION_BLOCK``'s own wording (a leak that
+#: echoes the contract back at us trips on the contract's own words).
+_INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
+    "at most",
+    "self-contained",
+    "something like",
+    "count words",
+    "count the words",
+    "words:",
+)
+
+#: A leaked self-verification tally: "boxel(1) platform(2) ... 11 words.".
+_TALLY_RE = re.compile(r"\b\w+\(\d+\)")
+
+#: A candidate whose BRIEF clause is more than this many times the prompt's
+#: own word budget is not a compression failure, it's a different kind of
+#: text entirely (usually leaked reasoning running on past the actual gist).
+_BRIEF_WORD_OVERSHOOT = 2
+
+
+def _reject_reason(candidate: str) -> str | None:
+    """Cheap, deterministic check for leaked reasoning in a candidate summary.
+
+    Runs on :func:`parse_summary`'s output — already normalized to
+    ``"brief\\n\\ndetail"``, or an unlabeled blob when the model dropped the
+    BRIEF:/DETAIL: labels entirely (exactly the shape gr338215's leak took:
+    reasoning prose with no labels, which ``parse_summary`` keeps verbatim
+    rather than discarding). Returns the trip reason, or ``None`` when the
+    candidate is clean. Deliberately no LLM judge — string/regex checks only,
+    so the check itself can never hallucinate or cost a call.
+    """
+    if not candidate:
+        return None
+    low = candidate.lower()
+    for needle in _INSTRUCTION_ECHO_SUBSTRINGS:
+        if needle in low:
+            return f"instruction-echo substring {needle!r}"
+    if _TALLY_RE.search(candidate):
+        return "digit-parenthesis tally pattern"
+    brief = candidate.split("\n\n", 1)[0].strip()
+    if len(brief) >= 2 and (
+        (brief[0] == '"' and brief[-1] == '"')
+        or (brief[0] == "'" and brief[-1] == "'")
+        or (brief[0] in "“‘" and brief[-1] in "”’")
+    ):
+        return "quote-wrapped gist"
+    brief_words = brief.split()
+    if len(brief_words) > _BRIEF_MAX_WORDS * _BRIEF_WORD_OVERSHOOT:
+        return f"brief grossly over budget ({len(brief_words)} words)"
+    return None
+
+
+def _fallback_summary(chunk_text: str) -> str:
+    """Deterministic truncation used when both the original candidate and its
+    reinforced retry fail :func:`_reject_reason`.
+
+    No model call: the chunk's own first sentence, word-capped to the same
+    budget the prompt asks the model for — mirrors this module's own
+    "promote first sentence" idiom in :func:`parse_summary` rather than
+    inventing a new truncation rule.
+    """
+    clean = _sanitize_model_text(chunk_text or "").strip()
+    first_line = clean.split("\n", 1)[0]
+    first_sentence = first_line.split(". ", 1)[0].strip()
+    words = first_sentence.split()
+    if len(words) > _BRIEF_MAX_WORDS:
+        first_sentence = " ".join(words[:_BRIEF_MAX_WORDS])
+    return first_sentence or clean[:120]
+
+
+#: Reinforcement turn appended for the one contract-violation retry — terse,
+#: and explicit about the exact failure mode seen in gr338215.
+_REINFORCEMENT_MESSAGE = {
+    "role": "user",
+    "content": (
+        "Your previous reply violated the output contract (it included "
+        "reasoning, commentary, or a word tally instead of just the answer). "
+        "Output ONLY the two required lines, BRIEF: and DETAIL: — nothing "
+        "else."
+    ),
+}
+
+
+def _retry_with_reinforcement(
+    client: Any, claim: _Claimed, messages: list[dict[str, str]]
+) -> tuple[str | None, int | None]:
+    """One extra call, with a terse reinforcement line appended, for a
+    candidate that failed :func:`_reject_reason`.
+
+    Returns ``(summary, total_tokens)`` on a clean retry, else ``(None,
+    None)`` — the caller falls back to :func:`_fallback_summary`. Any
+    transport/parse error on the retry is swallowed and logged here (this is
+    already the fallback path; it must not raise out of the pass).
+    """
+    try:
+        result = client.complete(messages + [_REINFORCEMENT_MESSAGE])
+        summary = parse_summary(result.text)
+    except Exception:
+        log.warning(
+            "llm_summarize: chunk_id=%s output-contract retry itself failed",
+            claim.chunk_id,
+        )
+        return None, None
+    if _reject_reason(summary) is not None:
+        return None, None
+    return summary, result.total_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -1200,7 +1341,34 @@ def run_llm_summarize_pass(
             try:
                 result = client.complete(messages)
                 summary = parse_summary(result.text)
-                return _Outcome(claim, prompt_hash, summary, result.total_tokens, None)
+                reason = _reject_reason(summary)
+                if reason is None:
+                    return _Outcome(
+                        claim, prompt_hash, summary, result.total_tokens, None
+                    )
+                # Fail-closed output contract (gr338215): never store a
+                # candidate that reads like leaked reasoning. One retry with
+                # a terse reinforcement line, then a deterministic
+                # truncation fallback — never a raw model call's chain of
+                # thought.
+                log.warning(
+                    "llm_summarize: chunk_id=%s candidate rejected (%s): %r",
+                    claim.chunk_id,
+                    reason,
+                    summary[:80],
+                )
+                retry_summary, retry_tokens = _retry_with_reinforcement(
+                    client, claim, messages
+                )
+                if retry_summary is not None:
+                    return _Outcome(claim, prompt_hash, retry_summary, retry_tokens, None)
+                fallback = _fallback_summary(claim.text)
+                log.warning(
+                    "llm_summarize: chunk_id=%s output contract failed twice; "
+                    "falling back to deterministic truncation",
+                    claim.chunk_id,
+                )
+                return _Outcome(claim, prompt_hash, fallback, None, None)
             except EmptySummaryError as exc:
                 # A model/backend miss, not a bug — no per-chunk ERROR traceback
                 # (it floods the log surface). Recorded below only if *every*

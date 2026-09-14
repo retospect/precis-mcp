@@ -184,11 +184,15 @@ _deploy_lag_stats() {
 }
 
 _deploy_attempt_pending() {
-    # prints "<sha> <epoch>" when the last deploy attempt never recorded
-    # success (no marker, or the marker predates the attempt) — the fleet's
-    # sha is unknown and lag can't honestly be counted. gr332009; see
-    # lib/deploy-state.sh.
-    local attempt marker a_sha a_ep m_ep
+    # prints "<sha> <epoch> <outcome>" when the last deploy attempt never
+    # recorded success (no marker, or the marker predates the attempt) — the
+    # fleet's sha is unknown and lag can't honestly be counted. gr332009; see
+    # lib/deploy-state.sh. <outcome> is a gr338201 addition (empty string on
+    # an old-format two-field attempt file — a real crash/still-running, same
+    # as before); "refused" means scripts/deploy's rollback guard tripped and
+    # NO host was ever touched, a materially different (and much less
+    # alarming) situation from a died-red or still-running attempt.
+    local attempt marker a_sha a_ep a_outcome m_ep
     [[ -f "${WORKTREE}/scripts/lib/deploy-state.sh" ]] || return 0
     . "${WORKTREE}/scripts/lib/deploy-state.sh"
     command -v deploy_attempt_path >/dev/null 2>&1 || return 0
@@ -196,13 +200,14 @@ _deploy_attempt_pending() {
     [[ -n "$attempt" && -f "$attempt" ]] || return 0
     a_sha="$(awk '{print $1}' "$attempt" 2>/dev/null || true)"
     a_ep="$(awk '{print $2}' "$attempt" 2>/dev/null || true)"
+    a_outcome="$(awk '{print $3}' "$attempt" 2>/dev/null || true)"
     [[ -n "$a_sha" && -n "$a_ep" ]] || return 0
     marker="$(deploy_state_read_path "${WORKTREE}")"
     if [[ -n "$marker" && -f "$marker" ]]; then
         m_ep="$(awk '{print $2}' "$marker" 2>/dev/null || true)"
         [[ -n "$m_ep" ]] && (( m_ep >= a_ep )) && return 0
     fi
-    printf '%s %s\n' "$a_sha" "$a_ep"
+    printf '%s %s %s\n' "$a_sha" "$a_ep" "${a_outcome:-attempt}"
 }
 
 _deploy_marker_missing() {
@@ -253,9 +258,13 @@ _relock
 # ── 1a. deploy-lag warning (loud, WARN-only — the "begin of next ship burst"
 # moment; never blocks) ───────────────────────────────────────────────────
 if pending="$(_deploy_attempt_pending)" 2>/dev/null && [[ -n "$pending" ]]; then
-    read -r _att_sha _att_ep <<< "$pending"
+    read -r _att_sha _att_ep _att_outcome <<< "$pending"
     _att_age_h=$(( ( $(date +%s) - _att_ep ) / 3600 ))
-    printf '\n\033[33m⚠ deploy state uncertain: a deploy of %.8s started %sh ago and never recorded success (died red or still running) — scripts/deploy to retry.\033[0m\n' "$_att_sha" "$_att_age_h"
+    if [[ "$_att_outcome" == "refused" ]]; then
+        printf '\n\033[33m⚠ last deploy attempt of %.8s (%sh ago) was REFUSED by the rollback guard (target was an ancestor of the deployed/main sha) — no host was touched; fleet is unaffected. gr338201.\033[0m\n' "$_att_sha" "$_att_age_h"
+    else
+        printf '\n\033[33m⚠ deploy state uncertain: a deploy of %.8s started %sh ago and never recorded success (died red or still running) — scripts/deploy to retry.\033[0m\n' "$_att_sha" "$_att_age_h"
+    fi
 elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
     read -r _lag_n _lag_oldest <<< "$stats"
     _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))
@@ -898,9 +907,13 @@ fi
 # a pending attempt with no recorded success → "uncertain"; a marker →
 # commit count; no marker at all → "no successful deploy on record". ─────
 if pending="$(_deploy_attempt_pending)" 2>/dev/null && [[ -n "$pending" ]]; then
-    read -r _att_sha _att_ep <<< "$pending"
+    read -r _att_sha _att_ep _att_outcome <<< "$pending"
     _att_age_h=$(( ( $(date +%s) - _att_ep ) / 3600 ))
-    printf '📦 deploy state uncertain — deploy of %.8s started %sh ago, no success recorded (died red or still running); scripts/deploy to retry.\n' "$_att_sha" "$_att_age_h"
+    if [[ "$_att_outcome" == "refused" ]]; then
+        printf '📦 last deploy attempt of %.8s (%sh ago) was REFUSED by the rollback guard — no host touched; fleet unaffected (gr338201).\n' "$_att_sha" "$_att_age_h"
+    else
+        printf '📦 deploy state uncertain — deploy of %.8s started %sh ago, no success recorded (died red or still running); scripts/deploy to retry.\n' "$_att_sha" "$_att_age_h"
+    fi
 elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
     read -r _lag_n _lag_oldest <<< "$stats"
     _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))

@@ -208,38 +208,35 @@ tag(kind="memory", id=73, add=["confidence-certain"], remove=["confidence-modera
 Levels: `confidence-tentative` → `confidence-moderate` →
 `confidence-strong` → `confidence-certain`.
 
-## Sticky memories — show up every turn until they decay
+## Sticky memories — show up every turn until you unpin them
 
 Some memories matter so much you want them in front of you on every
-turn until they don't. Tag them sticky:
+turn. Tag them sticky:
 
 ```python
-# Pin to this thread for 30 days (the default TTL)
+# Pin to this thread
 tag(kind="memory", id=42, add=["sticky:thread"])
 
-# Pin globally — visible in every conv — for 90 days (default)
+# Pin globally — visible in every conv
 tag(kind="memory", id=42, add=["sticky:global"])
 
-# Pin for a specific TTL — re-tag bumps it back to that window
-tag(kind="memory", id=42, add=["sticky:thread"], ttl_days=7)
-tag(kind="memory", id=42, add=["sticky:global"], ttl_days=180)
-
-# Refresh — re-tagging resets the expiry to a fresh window
-tag(kind="memory", id=42, add=["sticky:thread"])  # TTL → 30d again
-
-# Actively unpin (before expiry)
+# Unpin
 tag(kind="memory", id=42, remove=["sticky:thread"])
 ```
 
-**Memory survives forever.** The sticky tag is a view-state — when
-it expires (or you remove it), the memory itself stays in the
-corpus and remains searchable; only the per-turn preamble injection
-stops. asa_bot's preamble shows a `[expires in Nd]` warning when a
-sticky tag is within 3 days of decay, so you can decide whether to
-refresh or let it go.
+**No TTL — the `tag()` verb doesn't accept `ttl_days=`.** A sticky
+tag persists until you `remove=` it; nothing auto-expires it.
+(Don't confuse this with `tag(kind='memory', add=['DREAM:...'])` —
+a different, system-only axis.) **Memory survives forever** either
+way: the sticky tag is view-state on top of the memory, not a
+lifetime — unpinning drops it from the per-turn preamble but the
+memory itself stays in the corpus and searchable.
 
 Use sparingly — every sticky memory eats prompt budget every turn.
-~5 thread-scoped + ~5 global is the soft cap.
+asa_bot's preamble caps the injected set at ~5 thread-scoped + ~5
+global (`sticky_max_thread` / `sticky_max_global` in
+`asa_bot/config.py`) — stay under that or some pins won't make the
+per-turn read.
 
 ## The argument graph — kind:lemma / kind:inference sub-kinds
 

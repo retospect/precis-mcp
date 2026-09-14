@@ -295,6 +295,57 @@ def test_paper_ingested_requires_chunk_embedding(store: Store) -> None:
     assert paper_ingested.evaluate(store, spec) is True
 
 
+def test_paper_ingested_rejects_card_only_stub(store: Store) -> None:
+    """gr338195/gr338551: a fetch-attempted stub must NOT satisfy the check.
+
+    ``precis add --doi`` / chase mints a metadata-only stub whose *card*
+    chunks (``ord < 0`` — title/abstract) get embedded independently of
+    any real fetch. An embedded card must not flip a waiting todo done;
+    only a body chunk (``ord >= 0``) counts as "ingested".
+    """
+    paper = store.insert_ref(
+        kind="paper", slug="test-2026-stub", title="A stub paper", meta={}
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id) "
+            "VALUES (%s, %s, %s)",
+            ("doi", "10.1234/stub-paper", paper.id),
+        )
+        chunk_row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, -1, 'card_title', 'A stub paper') RETURNING chunk_id",
+            (paper.id,),
+        ).fetchone()
+        assert chunk_row is not None
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, status) "
+            "VALUES (%s, %s, 'ok')",
+            (int(chunk_row[0]), "bge-m3"),
+        )
+        conn.commit()
+    spec = {"type": "paper_ingested", "doi": "10.1234/stub-paper"}
+    # Card-only, zero body chunks — the fetch-attempted/stub state from
+    # both incidents. Must stay open.
+    assert paper_ingested.evaluate(store, spec) is False
+
+    # Real ingestion lands a body chunk (ord >= 0) → now it flips.
+    with store.pool.connection() as conn:
+        body_row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', 'body') RETURNING chunk_id",
+            (paper.id,),
+        ).fetchone()
+        assert body_row is not None
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, status) "
+            "VALUES (%s, %s, 'ok')",
+            (int(body_row[0]), "bge-m3"),
+        )
+        conn.commit()
+    assert paper_ingested.evaluate(store, spec) is True
+
+
 def test_paper_ingested_rejects_no_identifier(store: Store) -> None:
     with pytest.raises(BadInput, match="paper_ingested needs an identifier"):
         paper_ingested.evaluate(store, {"type": "paper_ingested"})

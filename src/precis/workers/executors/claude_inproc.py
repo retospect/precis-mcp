@@ -89,6 +89,15 @@ _EXECUTOR_NAME = "claude_inproc"
 # Chunk kind specific to this executor's gripe-comment timeline.
 _GRIPE_COMMENT_KIND = "gripe_comment"
 
+# Cap on the error text mirrored into ``refs.meta.error`` for the two
+# hand-rolled dispatch arms below (``_run_plan_tick``'s exception branch,
+# ``_run_doctor_tick``'s non-zero-exit branch) — mirrors
+# ``_common.record_failure``'s ``_ERROR_META_CAP`` breadcrumb convention.
+# The full text always lands in the ``job_event``/``job_result`` chunk
+# either way; this is just a bounded copy so ops digests that only read
+# ``meta`` aren't left with an empty error field (gr338335).
+_ERROR_META_CAP = 500
+
 
 # ── Claim ─────────────────────────────────────────────────────────
 
@@ -487,7 +496,12 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                 conn=conn,
             )
             _set_status(store, ref_id, _FAILED, conn=conn)
-            _set_meta(conn, ref_id, wall_seconds=wall)
+            _set_meta(
+                conn,
+                ref_id,
+                wall_seconds=wall,
+                error=repr(exc)[:_ERROR_META_CAP],
+            )
             conn.commit()
             from precis.handlers._job_bubble import bubble_job_failure
 
@@ -1397,6 +1411,8 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
         else:
             _set_status(store, ref_id, _FAILED, conn=conn)
+            error_text = outcome.error or f"exit={outcome.exit_code}"
+            _set_meta(conn, ref_id, error=error_text[:_ERROR_META_CAP])
             # Parentless (cadence-minted, like draft_refresh) — a no-op
             # for the common case; harmless when a caller ever gives a
             # doctor_tick job a parent todo.

@@ -176,10 +176,18 @@ provides (e.g. `clones_dir`); a job_type's requirements must be a
 subset at submit.
 
 Executors today: `claude_inproc` (offline `claude -p`, provides
-`{claude_bin, git, clones_dir, claude_config_mount}`), `ssh_node`
-(remote GPU-node compute), and `coordinator` (yield/resume phase
-machines — empty PROVIDES; the job_type's `dispatch` does the work in
-slices and parks at `STATUS:waiting_*` between them).
+`{claude_bin, git, clones_dir, claude_config_mount, mcp_config}`),
+`ssh_node` (remote GPU-node compute, provides `{has_gpaw}`),
+`claude_docker` (sandboxed detached container run, provides
+`{podman, claude_oauth}` — only satisfiable on
+`PRECIS_SANDBOX_ENABLED=1` hosts), `job_inproc` (in-process bounded
+compute with slot reservation, empty PROVIDES — gated by
+`resource_slots`, not this capability check), and `coordinator`
+(yield/resume phase machines — provides `{claude_bin}`, needed by
+`quest_tick`'s inline LLM slice; most coordinator job_types declare
+`REQUIRES=frozenset()` since the real work happens in spawned
+children — the job_type's `dispatch` does the work in slices and
+parks at `STATUS:waiting_*` between them).
 Job_types pair with a compatible executor at submit; see the table
 in `precis-job-help`.
 
